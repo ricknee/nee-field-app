@@ -1,6 +1,7 @@
 const BASE_URL = 'https://api.airtable.com/v0';
 const JOBS_TABLE = 'tblfphTqRzN24qmZS';
 const INSPECT_TABLE = 'tblTbd2bfab4Ce8n9';
+const GEN_TABLE = 'tbltrxCj8k5WyWT6s';
 
 function parseCookies(header = '') {
   return Object.fromEntries(
@@ -48,7 +49,7 @@ function getAllowed(role, method, tableId) {
   if (role === 'admin') return true;
   if (role !== 'employee') return false;
   if (method === 'GET') return true;
-  return tableId === INSPECT_TABLE;
+  return tableId === INSPECT_TABLE || tableId === GEN_TABLE;
 }
 
 async function airtableFetch(path, options = {}) {

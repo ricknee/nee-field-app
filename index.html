@@ -178,10 +178,11 @@
     <div class="topbar-logo">
       <svg viewBox="0 0 20 20" fill="none"><path d="M10 2L3 7v11h14V7L10 2z" stroke="white" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 6l2.5 4H12v4H8v-4h-.5L10 6z" fill="white"/></svg>
     </div>
-    <div>
+    <div style="flex:1">
       <div class="topbar-title">Northeastern Electric</div>
       <div class="topbar-sub">Field job lookup</div>
     </div>
+    <button onclick="employeeLogout()" style="background:rgba(255,255,255,0.15);border:none;color:#fff;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:'DM Sans',sans-serif">Logout</button>
   </div>
   <div class="search-wrap">
     <div class="search-row">
@@ -1225,7 +1226,8 @@ const AGENCIES=[
   {id:'recxyx075rVZT6yQO',name:'Wayne County'}
 ].sort((a,b)=>a.name.localeCompare(b.name));
 
-async function adminLogout(){ await apiLogout(); location.reload(); }
+async async function employeeLogout(){ await apiLogout(); location.reload(); }
+function adminLogout(){ await apiLogout(); location.reload(); }
 
 function showAdminTab(tab,btn){
   document.querySelectorAll('#adminContent .tab-btn').forEach(b=>b.classList.remove('active'));

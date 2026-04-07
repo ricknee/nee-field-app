@@ -178,10 +178,11 @@
     <div class="topbar-logo">
       <svg viewBox="0 0 20 20" fill="none"><path d="M10 2L3 7v11h14V7L10 2z" stroke="white" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 6l2.5 4H12v4H8v-4h-.5L10 6z" fill="white"/></svg>
     </div>
-    <div style="flex:1">
+    <div>
       <div class="topbar-title">Northeastern Electric</div>
       <div class="topbar-sub">Field job lookup</div>
     </div>
+    <div style="flex:1"></div>
     <button onclick="employeeLogout()" style="background:rgba(255,255,255,0.15);border:none;color:#fff;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:'DM Sans',sans-serif">Logout</button>
   </div>
   <div class="search-wrap">
@@ -252,56 +253,38 @@ const JOBS_TABLE     = 'tblfphTqRzN24qmZS';
 const INSPECT_TABLE  = 'tblTbd2bfab4Ce8n9';
 const GEN_TABLE      = 'tbltrxCj8k5WyWT6s';
 
-const API_PROXY = '/.netlify/functions/airtable';
+const API_KEY = '';
 
 let allJobs=[], currentJob=null, selectedYear='';
 let inspectCache={}, genCache={};
 
 async function fetchAirtable(tableId, fields, filterFormula, recordIdOrPageSize) {
-  const params = new URLSearchParams({ tableId });
-  if (fields && fields.length) fields.forEach(f => params.append('fields[]', f));
-  if (filterFormula) params.set('filterByFormula', filterFormula);
-  if (typeof recordIdOrPageSize === 'string' && recordIdOrPageSize.startsWith('rec')) {
-    params.set('recordId', recordIdOrPageSize);
-  } else {
-    params.set('pageSize', String(typeof recordIdOrPageSize === 'number' ? recordIdOrPageSize : 100));
+  const params=new URLSearchParams();
+  if(fields&&fields.length) fields.forEach(f=>params.append('fields[]',f));
+  if(filterFormula) params.set('filterByFormula',filterFormula);
+  if(typeof recordIdOrPageSize==='string'&&recordIdOrPageSize.startsWith('rec')){
+    const res=await fetch(`https://api.airtable.com/v0/${BASE_ID}/${tableId}/${recordIdOrPageSize}`,
+      {headers:{Authorization:`Bearer ${API_KEY}`}});
+    if(!res.ok) throw new Error('Airtable error '+res.status);
+    const rec=await res.json();
+    return rec.fields?[rec]:[];
   }
-  const res = await fetch(`${API_PROXY}?${params.toString()}`, { credentials: 'include' });
-  if (!res.ok) {
-    let msg = 'API error ' + res.status;
-    try { const j = await res.json(); msg = j.error || j.message || msg; } catch (e) {}
-    throw new Error(msg);
-  }
-  const json = await res.json();
-  if (params.get('recordId')) return json.fields ? [json] : [];
-  return json.records || [];
+  params.set('pageSize',String(typeof recordIdOrPageSize==='number'?recordIdOrPageSize:100));
+  const res=await fetch(`https://api.airtable.com/v0/${BASE_ID}/${tableId}?${params}`,
+    {headers:{Authorization:`Bearer ${API_KEY}`}});
+  if(!res.ok) throw new Error('Airtable error '+res.status);
+  return (await res.json()).records||[];
 }
 
 async function patchAirtable(tableId, recordId, fields) {
-  const res = await fetch(API_PROXY, {
-    method: 'PATCH',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tableId, recordId, fields })
+  const res=await fetch(`https://api.airtable.com/v0/${BASE_ID}/${tableId}/${recordId}`,{
+    method:'PATCH',
+    headers:{Authorization:`Bearer ${API_KEY}`,'Content-Type':'application/json'},
+    body:JSON.stringify({fields})
   });
-  if (!res.ok) {
-    let msg = 'Patch error ' + res.status;
-    try { const j = await res.json(); msg = j.error || j.message || msg; } catch (e) {}
-    throw new Error(msg);
-  }
-  return res.json();
-}
-
-async function createAirtable(tableId, fields) {
-  const res = await fetch(API_PROXY, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tableId, fields })
-  });
-  if (!res.ok) {
-    let msg = 'Create error ' + res.status;
-    try { const j = await res.json(); msg = j.error || j.message || msg; } catch (e) {}
+  if(!res.ok){
+    let msg='Patch error '+res.status;
+    try{const j=await res.json();msg=j.error?.message||j.error?.type||msg;}catch(e){}
     throw new Error(msg);
   }
   return res.json();
@@ -1054,56 +1037,31 @@ function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').
 function fmtDate(d){if(!d)return'';try{const dt=new Date(d+'T00:00:00');return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}catch(e){return d}}
 
 
+const EMPLOYEE_PIN='1991';
+const ADMIN_PIN='1184';
 let currentMode='';
 
-async function apiLogin(pin){
-  const res = await fetch('/.netlify/functions/auth', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pin })
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(json.error || 'Login failed');
-  return json;
-}
-
-async function apiSession(){
-  const res = await fetch('/.netlify/functions/auth', { credentials: 'include' });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) return { authenticated:false };
-  return json;
-}
-
-async function apiLogout(){
-  await fetch('/.netlify/functions/auth', { method: 'DELETE', credentials: 'include' }).catch(()=>null);
-}
-
-async function checkPin(){
-  const input=document.getElementById('pinInput');
-  const v=input.value.trim();
-  const e=document.getElementById('pinError');
-  if(!v){
-    e.textContent='Enter your PIN.';
+function checkPin(){
+  const v=document.getElementById('pinInput').value;
+  if(v===EMPLOYEE_PIN){
+    currentMode='employee';
+    sessionStorage.setItem('ne_ok','employee');
+    showApp('employee');
+  } else if(v===ADMIN_PIN){
+    currentMode='admin';
+    sessionStorage.setItem('ne_ok','admin');
+    showApp('admin');
+  } else {
+    const e=document.getElementById('pinError');
     e.style.display='block';
-    return;
-  }
-  try {
-    const data = await apiLogin(v);
-    currentMode=data.role;
-    showApp(data.role);
-  } catch(err) {
-    e.textContent='Incorrect PIN — try again.';
-    e.style.display='block';
-    input.value='';
-    input.focus();
+    document.getElementById('pinInput').value='';
+    document.getElementById('pinInput').focus();
     setTimeout(()=>e.style.display='none',2000);
   }
 }
 
 function showApp(mode){
   document.getElementById('pinScreen').style.display='none';
-  currentMode=mode;
   if(mode==='admin'){
     document.getElementById('appContent').style.display='none';
     document.getElementById('adminContent').style.display='';
@@ -1116,19 +1074,16 @@ function showApp(mode){
 }
 
 function pinKey(e){if(e.key==='Enter')checkPin()}
-
-async function bootAuth(){
-  const session = await apiSession();
-  if(session && session.authenticated && (session.role==='employee' || session.role==='admin')){
-    showApp(session.role);
-  } else {
-    document.getElementById('pinScreen').style.display='flex';
-    document.getElementById('appContent').style.display='none';
-    document.getElementById('adminContent').style.display='none';
-    setTimeout(()=>document.getElementById('pinInput').focus(),200);
-  }
+const saved=sessionStorage.getItem('ne_ok');
+if(saved==='employee'||saved==='admin'){
+  currentMode=saved;
+  showApp(saved);
+} else {
+  document.getElementById('pinScreen').style.display='flex';
+  document.getElementById('appContent').style.display='none';
+  document.getElementById('adminContent').style.display='none';
+  setTimeout(()=>document.getElementById('pinInput').focus(),200);
 }
-bootAuth();
 
 </script>
 
@@ -1226,8 +1181,7 @@ const AGENCIES=[
   {id:'recxyx075rVZT6yQO',name:'Wayne County'}
 ].sort((a,b)=>a.name.localeCompare(b.name));
 
-async async function employeeLogout(){ await apiLogout(); location.reload(); }
-function adminLogout(){ await apiLogout(); location.reload(); }
+function adminLogout(){sessionStorage.removeItem('ne_ok');location.reload()}
 
 function showAdminTab(tab,btn){
   document.querySelectorAll('#adminContent .tab-btn').forEach(b=>b.classList.remove('active'));

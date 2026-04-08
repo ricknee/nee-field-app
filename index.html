@@ -750,6 +750,7 @@
     </div>
     <div class="topbar-right">
       <span id="userBadge" class="user-badge">—</span>
+      <a id="btnNewJobIntake" href="https://airtable.com/appiqWg6SvKcGfMAu/pagLiAtFT6X2cBmBf/form" target="_blank" class="btn btn-primary btn-sm admin-only hidden" style="text-decoration:none; font-size:13px;">+ New Job Intake</a>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
@@ -772,8 +773,9 @@
             <option value="Awarded">Awarded</option>
             <option value="Estimating">Estimating</option>
             <option value="New Lead">New Lead</option>
-
+            <option value="Ready to Invoice">Ready to Invoice</option>
             <option value="Completed">Completed</option>
+            <option value="Not Awarded">Not Awarded</option>
           </select>
           <select id="typeFilter">
             <option value="">All Types</option>
@@ -810,6 +812,7 @@
               <span id="dStatusPill" class="pill default">—</span>
               <span id="dTypePill" class="pill default hidden">—</span>
               <span id="dGenPill" class="pill gen-no">No Generator</span>
+              <a id="btnNewJobEstimate" href="#" target="_blank" class="action-btn admin-only hidden" style="font-size:12px; text-decoration:none; padding:6px 12px;">📋 New Job Estimate</a>
             </div>
           </div>
         </div>
@@ -829,6 +832,9 @@
           <button class="tab-btn" data-tab="powerco">Power Co.</button>
           <button class="tab-btn" data-tab="inspections">Inspections</button>
           <button class="tab-btn" id="genTabBtn" data-tab="generator" style="display:none;">⚡ Generator</button>
+          <button class="tab-btn admin-only hidden" data-tab="live-perf">📊 Live Perf.</button>
+          <button class="tab-btn admin-only hidden" data-tab="closeout">✅ Closeout</button>
+          <button class="tab-btn admin-only hidden" data-tab="est-gp">📈 Est. GP</button>
         </div>
 
         <!-- TAB: PROJECT INFO -->
@@ -957,6 +963,40 @@
         </div>
 
       </div><!-- /jobDetail -->
+
+      <!-- ══════════════ ADMIN TABS ══════════════ -->
+
+      <!-- TAB: LIVE PERFORMANCE -->
+      <div class="tab-content" id="tab-live-perf">
+        <div class="section-header">Live Job Performance</div>
+        <div class="info-grid" id="livePerfGrid">
+          <div class="loading-msg">Select a job to view live performance.</div>
+        </div>
+      </div>
+
+      <!-- TAB: CLOSEOUT (FINAL) -->
+      <div class="tab-content" id="tab-closeout">
+        <div class="section-header">Profit Report</div>
+        <div class="info-grid" id="closeoutGrid">
+          <div class="loading-msg">Select a job to view closeout data.</div>
+        </div>
+        <div class="section-header" style="margin-top:8px;">Comparison Report</div>
+        <div class="info-grid" id="closeoutCompareGrid">
+          <div class="loading-msg"></div>
+        </div>
+        <div class="section-header" style="margin-top:8px;">Review Checklist</div>
+        <div class="info-grid" id="closeoutCheckGrid">
+          <div class="loading-msg"></div>
+        </div>
+      </div>
+
+      <!-- TAB: ESTIMATED GROSS PROFIT -->
+      <div class="tab-content" id="tab-est-gp">
+        <div class="section-header">Estimated Gross Profit</div>
+        <div class="info-grid" id="estGpGrid">
+          <div class="loading-msg">Select a job to view estimated gross profit.</div>
+        </div>
+      </div>
     </div><!-- /detailPanel -->
 
   </div><!-- /app-wrap -->
@@ -1106,6 +1146,10 @@
       const badge = $("userBadge");
       badge.textContent = `${state.user.name} (${state.user.role})`;
       badge.className = "user-badge" + (isAdmin() ? " admin" : "");
+      // Show/hide admin-only elements
+      document.querySelectorAll(".admin-only").forEach(el => {
+        el.classList.toggle("hidden", !isAdmin());
+      });
     } else {
       $("loginPage").classList.remove("hidden");
       $("appPage").classList.add("hidden");
@@ -1168,12 +1212,19 @@
   }
 
   function sortJobs(jobs) {
-    // Service Call Scheduled first (alpha), then Awarded (alpha), then rest (alpha)
+    const STATUS_ORDER = [
+      "service call scheduled",
+      "awarded",
+      "estimating",
+      "new lead",
+      "ready to invoice",
+      "completed",
+      "not awarded"
+    ];
     const order = s => {
       const n = (s||"").toLowerCase();
-      if (n.includes("service call")) return 0;
-      if (n.includes("award")) return 1;
-      return 2;
+      const idx = STATUS_ORDER.indexOf(n);
+      return idx === -1 ? STATUS_ORDER.length : idx;
     };
     return [...jobs].sort((a,b) => {
       const oa = order(a.status), ob = order(b.status);
@@ -1197,15 +1248,18 @@
     sorted.forEach(job => {
       const st = (job.status||"").toLowerCase();
       let group = null;
-      if (st.includes("service call")) group = "🔴 Service Call Scheduled";
-      else if (st.includes("award")) group = "🟢 Awarded";
+      if (st === "service call scheduled") group = "🔴 Service Call Scheduled";
+      else if (st === "awarded") group = "🟢 Awarded";
+      else if (st === "estimating") group = "🔵 Estimating";
+      else if (st === "new lead") group = "⚪ New Lead";
+      else if (st === "ready to invoice") group = "🟡 Ready to Invoice";
+      else if (st === "completed") group = "⬜ Completed";
+      else if (st === "not awarded") group = "🔺 Not Awarded";
+      else group = "Other";
 
-      if (group && group !== lastGroup) {
+      if (group !== lastGroup) {
         html += `<div class="section-label">${esc(group)}</div>`;
         lastGroup = group;
-      } else if (!group && lastGroup !== "other") {
-        html += `<div class="section-label">Other Jobs</div>`;
-        lastGroup = "other";
       }
 
       const isActive = state.selected?.id === job.id;
@@ -1271,6 +1325,14 @@
     setActionBtn($("btnPipe"), job.pipeLink, "Add Pipe");
     setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
     setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
+
+    // New Job Estimate button (admin only) - links to Airtable estimate form pre-filled with job
+    if (isAdmin()) {
+      const estBtn = $("btnNewJobEstimate");
+      const estimateFormUrl = `https://airtable.com/appiqWg6SvKcGfMAu/pagj0jbhFN6hxKRwC/form`;
+      estBtn.href = estimateFormUrl;
+      estBtn.classList.remove("disabled");
+    }
 
     // Trello card - build URL from card ID
     const trelloBtn = $("btnTrello");
@@ -1349,6 +1411,13 @@
       }
     }
 
+    // Admin tabs
+    if (isAdmin()) {
+      renderLivePerf(job);
+      renderCloseout(job);
+      renderEstGp(job);
+    }
+
     // Reset to project tab on new job selection
     switchTab("project");
 
@@ -1356,148 +1425,95 @@
     $("detailPanel").scrollTop = 0;
   }
 
-  function setActionBtn(el, url, label) {
-    if (url && url.startsWith("http")) {
-      el.href = url;
-      el.classList.remove("disabled");
-    } else {
-      el.href = "#";
-      el.classList.add("disabled");
-    }
+  // ── ADMIN TAB RENDERERS ──
+
+  function fmtCurrency(v) {
+    if (v === null || v === undefined || v === "" || v === "—") return "—";
+    const n = parseFloat(v);
+    if (isNaN(n)) return v;
+    return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
   }
 
-  // ── GENERATOR DATA ──
-  async function loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl) {
-    $("genInfoGrid").innerHTML = `<div class="loading-msg">Loading...</div>`;
-    $("serviceRecordsList").innerHTML = `<div class="loading-msg">Loading...</div>`;
-
-    try {
-      const d = await apiGet("generator", { jobId });
-
-      // Generator Asset
-      const gen = d.generator;
-      if (gen) {
-        $("genInfoGrid").innerHTML = `
-          <div class="info-box"><div class="info-label">Generator Asset ID</div><div class="info-value">${esc(val(gen.assetId))}</div></div>
-          <div class="info-box"><div class="info-label">Customer</div><div class="info-value">${esc(val(gen.customer))}</div></div>
-          <div class="info-box"><div class="info-label">Generator Brand</div><div class="info-value">${esc(val(gen.brand))}</div></div>
-          <div class="info-box"><div class="info-label">Generator Model</div><div class="info-value">${esc(val(gen.model))}</div></div>
-          <div class="info-box"><div class="info-label">Generator KW</div><div class="info-value">${esc(val(gen.kw))} kW</div></div>
-          <div class="info-box"><div class="info-label">Generator Serial #</div><div class="info-value">${esc(val(gen.serialNumber))}</div></div>
-          <div class="info-box"><div class="info-label">Transfer Switch Model</div><div class="info-value">${esc(val(gen.transferSwitchModel))}</div></div>
-          <div class="info-box"><div class="info-label">Transfer Switch Serial #</div><div class="info-value">${esc(val(gen.transferSwitchSerial))}</div></div>
-          <div class="info-box"><div class="info-label">Fuel Type</div><div class="info-value">${esc(val(gen.fuelType))}</div></div>
-          <div class="info-box"><div class="info-label">Install / In-Service Date</div><div class="info-value">${esc(fmtDate(gen.installDate))}</div></div>
-          <div class="info-box"><div class="info-label">Service Plan Active</div><div class="info-value">${gen.servicePlanActive ? "✅ Yes" : "No"}</div></div>
-          <div class="info-box"><div class="info-label">Service Interval (Months)</div><div class="info-value">${esc(val(gen.serviceIntervalMonths))}</div></div>
-          <div class="info-box"><div class="info-label">Next Service Due</div><div class="info-value">${esc(fmtDate(gen.nextServiceDue))}</div></div>
-          <div class="info-box"><div class="info-label">Service Status</div><div class="info-value">${esc(val(gen.serviceStatus))}</div></div>
-          <div class="info-box"><div class="info-label">Warranty Expiration</div><div class="info-value">${esc(fmtDate(gen.warrantyExpiration))}</div></div>
-          <div class="info-box"><div class="info-label">Status</div><div class="info-value">${esc(val(gen.status))}</div></div>
-          <div class="info-box"><div class="info-label">Battery Install Date</div><div class="info-value">${esc(fmtDate(gen.batteryInstallDate))}</div></div>
-          <div class="info-box"><div class="info-label">Battery Age</div><div class="info-value">${esc(val(gen.batteryAge))} yrs</div></div>
-        `;
-
-        // Wire generator form buttons from job fields
-        const commBtn = $("btnCommissionGen");
-        if (commissionFormUrl) {
-          commBtn.href = commissionFormUrl;
-          commBtn.classList.remove("disabled");
-        } else {
-          commBtn.href = "#";
-          commBtn.classList.add("disabled");
-        }
-
-        const svcBtn = $("btnServiceGen");
-        if (serviceFormUrl) {
-          svcBtn.href = serviceFormUrl;
-          svcBtn.classList.remove("disabled");
-        } else {
-          svcBtn.href = "#";
-          svcBtn.classList.add("disabled");
-        }
-      } else {
-        $("genInfoGrid").innerHTML = `<div class="empty-msg">No generator record linked to this job yet.</div>`;
-      }
-
-      // Service Records
-      const records = Array.isArray(d.serviceRecords) ? d.serviceRecords : [];
-      if (!records.length) {
-        $("serviceRecordsList").innerHTML = `<div class="empty-msg">No service records found.</div>`;
-      } else {
-        $("serviceRecordsList").innerHTML = records.map(r => {
-          const svcDateFmt = fmtDate(r.serviceDate);
-          const checks = [
-            ["Oil Changed", r.oilChanged],
-            ["Oil Filter", r.oilFilterChanged],
-            ["Air Filter", r.airFilterChanged],
-            ["Spark Plugs", r.sparkPlugsChanged],
-            ["Battery Tested", r.batteryTested],
-            ["Battery Replaced", r.batteryReplaced],
-            ["Load Test", r.loadTestPerformed],
-            ["Firmware/Settings", r.firmwareChecked],
-            ["Exercise Checked", r.exerciseChecked],
-          ];
-          return `
-          <div class="service-record">
-            <div class="service-record-header">
-              <div class="service-record-title">${esc(svcDateFmt)} — ${esc(val(r.serviceType))}</div>
-              <span class="pill default" style="font-size:11px;">${esc(val(r.technician))}</span>
-            </div>
-            <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
-              ${r.servicePlanVisit ? "✅ Service Plan Visit" : ""} &nbsp;
-              ${r.troubleCodesFound ? `⚠️ Trouble Codes: ${esc(r.troubleCodesFound)}` : ""}
-            </div>
-            <div class="service-checkboxes">
-              ${checks.map(([lbl, v]) => `<span class="check-badge ${v ? "yes":"no"}">${v ? "✓":"✗"} ${esc(lbl)}</span>`).join("")}
-            </div>
-            ${r.workNotes ? `<div style="margin-top:8px; font-size:13px; color:var(--muted);">📝 ${esc(r.workNotes)}</div>` : ""}
-            ${r.partsUsed ? `<div style="font-size:12px; color:var(--muted);">🔩 Parts: ${esc(r.partsUsed)}</div>` : ""}
-            ${r.laborHours ? `<div style="font-size:12px; color:var(--muted);">⏱ Labor: ${esc(r.laborHours)} hrs &nbsp; Gen Hours: ${esc(val(r.generatorHours))}</div>` : ""}
-          </div>`;
-        }).join("");
-      }
-
-    } catch(err) {
-      $("genInfoGrid").innerHTML = `<div class="empty-msg" style="color:#ff8b7e;">Error: ${esc(err.message)}</div>`;
-      $("serviceRecordsList").innerHTML = "";
-    }
+  function fmtPct(v) {
+    if (v === null || v === undefined || v === "" || v === "—") return "—";
+    const n = parseFloat(v);
+    if (isNaN(n)) return v;
+    return Math.round(n * 100) + "%";
   }
 
-  // ── TABS ──
-  function switchTab(tabId) {
-    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
-    document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
+  function infoBox(label, value, full) {
+    return `<div class="info-box${full ? " full" : ""}">
+      <div class="info-label">${esc(label)}</div>
+      <div class="info-value">${esc(String(value ?? "—"))}</div>
+    </div>`;
   }
 
-  // ── EVENTS ──
-  function wireEvents() {
-    $("loginBtn").addEventListener("click", handleLogin);
-    [$("loginId"), $("loginPin")].forEach(el => {
-      el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
-    });
-
-    $("logoutBtn").addEventListener("click", () => { clearUser(); });
-    $("refreshBtn").addEventListener("click", loadJobs);
-
-    $("searchInput").addEventListener("input", applyFilters);
-    $("statusFilter").addEventListener("change", applyFilters);
-    $("typeFilter").addEventListener("change", applyFilters);
-
-    document.querySelectorAll(".tab-btn").forEach(btn => {
-      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-    });
+  function checkBox(label, v) {
+    const icon = v ? "✅" : "—";
+    return `<div class="info-box">
+      <div class="info-label">${esc(label)}</div>
+      <div class="info-value">${icon}</div>
+    </div>`;
   }
 
-  // ── INIT ──
-  async function init() {
-    wireEvents();
-    loadStoredUser();
-    renderAuth();
-    if (state.user) await loadJobs();
+  function workflowDot(v) {
+    if (!v) return "—";
+    const s = String(v);
+    if (s.includes("green") || s === "🟢") return "🟢";
+    if (s.includes("yellow") || s === "🟡") return "🟡";
+    if (s.includes("red") || s === "🔴") return "🔴";
+    // The Airtable formula returns emoji text — just display it
+    return s;
   }
 
-  init();
-</script>
-</body>
-</html>
+  function renderLivePerf(job) {
+    const g = $("livePerfGrid");
+    g.innerHTML = [
+      infoBox("Total Revenue (Live)", fmtCurrency(job.totalRevenueLive)),
+      infoBox("Total Materials (Live)", fmtCurrency(job.totalMaterialsLive)),
+      infoBox("Total Labor Cost (Live)", fmtCurrency(job.totalLaborCostLive)),
+      infoBox("Total Wire Cost", fmtCurrency(job.totalWireCost)),
+      infoBox("Pipe Cost", fmtCurrency(job.pipeCost)),
+      infoBox("Materials In Progress", fmtCurrency(job.materialsInProgress)),
+      infoBox("Gross Profit (Live) $", fmtCurrency(job.grossProfitLiveDollar)),
+      infoBox("Gross Profit (Live) %", job.grossProfitLivePct != null ? Math.round(job.grossProfitLivePct * 100) + "%" : "—"),
+      infoBox("Workflow Status", workflowDot(job.workflowStatus)),
+      infoBox("Est. Labor Hours (from Estimates)", job.estimatedLaborHoursRollup != null ? job.estimatedLaborHoursRollup : "—"),
+      infoBox("Hours Rollup (from Time Entries)", job.hoursRollup != null ? job.hoursRollup : "—"),
+    ].join("");
+  }
+
+  function renderCloseout(job) {
+    $("closeoutGrid").innerHTML = [
+      infoBox("Expected Revenue", fmtCurrency(job.expectedRevenue)),
+      infoBox("Actual Job Cost (COGS)", fmtCurrency(job.actualJobCostCogs)),
+      infoBox("Total Reviewed Costs", fmtCurrency(job.totalReviewedCosts)),
+      infoBox("Total Labor Cost (Final)", fmtCurrency(job.totalLaborCostFinal)),
+      infoBox("Gross Profit (Final) $", fmtCurrency(job.grossProfitFinalDollar)),
+      infoBox("Gross Profit (Final) %", job.grossProfitFinalPct != null ? Math.round(job.grossProfitFinalPct * 100) + "%" : "—"),
+    ].join("");
+
+    $("closeoutCheckGrid").innerHTML = [
+      checkBox("All Materials Reviewed?", job.allMaterialsReviewed),
+      checkBox("All Wire Reviewed?", job.allWireReviewed),
+      checkBox("All Pipe Reviewed?", job.allPipeReviewed),
+      checkBox("All Expenses Reviewed?", job.allExpensesReviewed),
+      checkBox("All Labor Reviewed?", job.allLaborReviewed),
+    ].join("");
+
+    $("closeoutCompareGrid").innerHTML = [
+      infoBox("Est. Labor Hours (from Estimates)", job.estimatedLaborHoursRollup != null ? job.estimatedLaborHoursRollup : "—"),
+      infoBox("Hours Rollup (from Time Entries)", job.hoursRollup != null ? job.hoursRollup : "—"),
+    ].join("");
+  }
+
+  function renderEstGp(job) {
+    $("estGpGrid").innerHTML = [
+      infoBox("Job Name", val(job.name)),
+      infoBox("Expected Revenue (All Status)", fmtCurrency(job.expectedRevenueAllStatus)),
+      infoBox("Projected Estimated Total Cost", fmtCurrency(job.projectedEstimatedTotalCost)),
+      infoBox("Proj. Est. Labor Hours (from Estimates)", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—"),
+      infoBox("Proj. Est. Material Cost (from Estimates)", fmtCurrency(job.projectedEstimatedMaterialCost)),
+      infoBox("Proj. Est. Labor Cost (from Estimates)", fmtCurrency(job.projectedEstimatedLaborCost)),
+      infoBox("Projected Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar)),
+      infoBox("Projected Gross Profit %", job.projectedGrossProfitPct != null ? Math.round(job.project

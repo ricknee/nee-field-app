@@ -22,7 +22,7 @@ const FIELD_MAP = {
   jobs: {
     name: ["Job Name", "Name"],
     po: ["Job PO", "PO", "Project PO"],
-    status: ["Status"],
+    status: ["Job Status"],
     company: ["Company", "Contractor", "Customer"],
     contact: ["Primary Contact", "Contact", "Customer Contact"],
     address: ["Full Address", "Address", "Job Address", "Location Address"],

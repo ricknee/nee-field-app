@@ -488,6 +488,30 @@
     .pill.gen-yes { background: rgba(245,166,35,0.12); border-color: rgba(245,166,35,0.3); color: var(--accent); }
     .pill.gen-no { background: var(--panel-2); border-color: var(--line-2); color: var(--muted); }
 
+    /* ── AIRTABLE SELECT PILLS (info boxes) ── */
+    .at-pill {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid transparent;
+    }
+    /* Job Status colors */
+    .at-pill.blueLight2    { background:#dbeafe; border-color:#93c5fd; color:#1e40af; }
+    .at-pill.greenLight2   { background:#dcfce7; border-color:#86efac; color:#166534; }
+    .at-pill.cyanLight2    { background:#cffafe; border-color:#67e8f9; color:#155e75; }
+    .at-pill.tealLight2    { background:#ccfbf1; border-color:#5eead4; color:#134e4a; }
+    .at-pill.yellowLight2  { background:#fef9c3; border-color:#fde047; color:#854d0e; }
+    .at-pill.orangeLight2  { background:#ffedd5; border-color:#fdba74; color:#9a3412; }
+    .at-pill.redBright     { background:#fee2e2; border-color:#f87171; color:#991b1b; }
+    /* Job Type colors */
+    .at-pill.greenDark1    { background:#14532d; border-color:#166534; color:#bbf7d0; }
+    .at-pill.orangeBright  { background:#fff7ed; border-color:#fb923c; color:#c2410c; }
+    .at-pill.yellowBright  { background:#fefce8; border-color:#facc15; color:#713f12; }
+    /* Tax Status */
+    .at-pill.greenBright   { background:#f0fdf4; border-color:#4ade80; color:#166534; }
+
     /* ── SECTION HEADERS ── */
     .section-header {
       font-family: 'Rajdhani', sans-serif;
@@ -1363,9 +1387,9 @@
     // Project Info Tab
     $("piJobName").textContent = val(job.name);
     $("piJobPo").textContent = val(job.po);
-    $("piJobStatus").textContent = val(job.status);
-    $("piJobType").textContent = val(job.type);
-    if (isAdmin()) $("piTaxStatus").textContent = val(job.taxStatus);
+    $("piJobStatus").innerHTML = atPill(job.status, STATUS_COLORS);
+    $("piJobType").innerHTML = atPill(job.type, TYPE_COLORS);
+    if (isAdmin()) $("piTaxStatus").innerHTML = atPill(job.taxStatus, TAX_COLORS);
     $("piContractor").textContent = val(job.contractor);
     $("piGenerator").textContent = job.generatorInstalled ? "✅ Yes" : "No";
 
@@ -1446,6 +1470,33 @@
 
     // Scroll detail panel to top
     $("detailPanel").scrollTop = 0;
+  }
+
+  // ── AIRTABLE COLOR PILL HELPER ──
+  const STATUS_COLORS = {
+    "New Lead":               "blueLight2",
+    "Service Call Scheduled": "greenLight2",
+    "Estimating":             "cyanLight2",
+    "Awarded":                "tealLight2",
+    "Ready to Invoice":       "yellowLight2",
+    "Completed":              "orangeLight2",
+    "Not Awarded":            "redBright"
+  };
+  const TYPE_COLORS = {
+    "Contract":       "greenDark1",
+    "Time & Material":"cyanLight2",
+    "Warranty":       "orangeBright",
+    "Service Calls":  "yellowBright"
+  };
+  const TAX_COLORS = {
+    "Taxable":    "greenBright",
+    "Tax Exempt": "redBright"
+  };
+
+  function atPill(value, colorMap) {
+    if (!value || value === "—") return "<span style='color:var(--muted)'>—</span>";
+    const cls = colorMap[value] || "default";
+    return `<span class="at-pill ${esc(cls)}">${esc(value)}</span>`;
   }
 
   // ── ADMIN TAB RENDERERS ──
@@ -1654,76 +1705,4 @@
   // ── TABS ──
   function switchTab(tabId) {
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
-    document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
-  }
-
-  // ── STATUS CHANGE (admin) ──
-  async function handleStatusChange() {
-    if (!state.selected) return;
-    const newStatus = $("statusChangeSelect").value;
-    if (!newStatus) return;
-
-    const btn = $("statusChangeSaveBtn");
-    const msg = $("statusChangeMsg");
-    btn.disabled = true;
-    btn.textContent = "Saving...";
-    msg.style.display = "none";
-
-    try {
-      await apiPost("updateJobStatus", { jobId: state.selected.id, status: newStatus });
-
-      // Update local state so sidebar re-renders correctly
-      state.selected.status = newStatus;
-      state.jobs = state.jobs.map(j => j.id === state.selected.id ? { ...j, status: newStatus } : j);
-
-      // Update the status pill in the header
-      const sp = $("dStatusPill");
-      sp.textContent = newStatus;
-      sp.className = statusPillClass(newStatus);
-
-      // Re-render job list to reflect new status/group
-      applyFilters();
-
-      msg.style.display = "inline";
-      setTimeout(() => { msg.style.display = "none"; }, 2500);
-    } catch(err) {
-      alert("Failed to update status: " + err.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Save";
-    }
-  }
-
-  // ── EVENTS ──
-  function wireEvents() {
-    $("loginBtn").addEventListener("click", handleLogin);
-    [$("loginId"), $("loginPin")].forEach(el => {
-      el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
-    });
-
-    $("logoutBtn").addEventListener("click", () => { clearUser(); });
-    $("refreshBtn").addEventListener("click", loadJobs);
-
-    $("searchInput").addEventListener("input", applyFilters);
-    $("statusFilter").addEventListener("change", applyFilters);
-    $("typeFilter").addEventListener("change", applyFilters);
-
-    $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
-
-    document.querySelectorAll(".tab-btn").forEach(btn => {
-      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-    });
-  }
-
-  // ── INIT ──
-  async function init() {
-    wireEvents();
-    loadStoredUser();
-    renderAuth();
-    if (state.user) await loadJobs();
-  }
-
-  init();
-</script>
-</body>
-</html>
+    document.querySelectorAll(".tab-co

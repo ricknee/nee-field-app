@@ -896,6 +896,10 @@
               <div class="info-label">Permanent Work Order #</div>
               <div class="info-value" id="pcPerm">—</div>
             </div>
+            <div class="info-box">
+              <div class="info-label">Meter Number</div>
+              <div class="info-value" id="pcMeter">—</div>
+            </div>
           </div>
         </div>
 
@@ -1311,6 +1315,7 @@
     $("pcAic").textContent = val(job.aicNumber);
     $("pcTemp").textContent = val(job.tempWorkOrder);
     $("pcPerm").textContent = val(job.permWorkOrder);
+    $("pcMeter").textContent = val(job.meterNumber);
 
     // Inspections Tab
     $("inPermit").textContent = val(job.permitNumber);

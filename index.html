@@ -994,6 +994,12 @@
                   <option value="South Central REI">South Central REI</option>
                 </select>
               </div>
+              <div id="pcContactRow" style="grid-column:1/-1; display:none;">
+                <label class="edit-label">Contact</label>
+                <select id="pcEditContact" class="edit-input">
+                  <option value="">— Select Contact —</option>
+                </select>
+              </div>
               <div>
                 <label class="edit-label">AIC Number</label>
                 <input id="pcEditAic" type="text" class="edit-input" placeholder="AIC #" />
@@ -1526,6 +1532,7 @@
       $("pcEditTemp").value  = job.tempWorkOrder || "";
       $("pcEditPerm").value  = job.permWorkOrder || "";
       $("pcEditMeter").value = job.meterNumber || "";
+      updatePcContactDropdown(job.powerCompanyIntake || "", job.powerCompanyContact || "");
       $("pcSaveMsg").style.display = "none";
       $("pcSaveErr").style.display = "none";
     }
@@ -1780,6 +1787,32 @@
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
   }
 
+  // ── POWER CO CONTACTS (live data, filtered by company) ──
+  const PC_CONTACTS = [
+    { id: "rec0Pmo9JBNVSdJ23", name: "Dave Baker",    company: "First Energy",       phone: "(330) 802-0658", email: "" },
+    { id: "recejs6S1LHK4rbNN", name: "Dan Shaeffer",  company: "First Energy",       phone: "+1 330 719 6037", email: "" },
+    { id: "reczPDI9EgwALy07k", name: "Earnest Kash",  company: "First Energy",       phone: "+1 330 620 2418", email: "ekash@firstenergycop.com" },
+    { id: "rec1Z0Epjw6C8BK90", name: "Tom Shultz",    company: "Carroll Electric Co-op", phone: "(330) 627-8546", email: "" },
+    { id: "rec1kjUkMawcHocok", name: "Gavyn Lopez",   company: "Guernsey-Muskingum", phone: "+1 740 647 1899", email: "Glopez@gmenergy.com" },
+    { id: "recf5WUTUQdvUW2QR", name: "Diane Wintrow", company: "Pioneer Electric",   phone: "(800) 762-0997", email: "" },
+    { id: "reclI0d8M1mP4BpBM", name: "Dan Johnson",   company: "Pioneer Electric",   phone: "(937) 484-8121", email: "" },
+  ];
+
+  function updatePcContactDropdown(selectedCompany, currentContactName) {
+    const row = $("pcContactRow");
+    const sel = $("pcEditContact");
+    const filtered = PC_CONTACTS.filter(c => c.company === selectedCompany);
+
+    if (!selectedCompany || !filtered.length) {
+      row.style.display = "none";
+      return;
+    }
+
+    sel.innerHTML = `<option value="">— Select Contact —</option>` +
+      filtered.map(c => `<option value="${esc(c.name)}" ${c.name === currentContactName ? "selected" : ""}>${esc(c.name)}${c.phone ? " — " + esc(c.phone) : ""}</option>`).join("");
+    row.style.display = "";
+  }
+
   // ── POWER CO SAVE (admin) ──
   async function handlePowerCoSave() {
     if (!state.selected) return;
@@ -1795,6 +1828,7 @@
       await apiPost("updatePowerCo", {
         jobId:         state.selected.id,
         powerCompany:  $("pcEditCompany").value,
+        powerContact:  $("pcEditContact").value,
         aicNumber:     $("pcEditAic").value,
         tempWorkOrder: $("pcEditTemp").value,
         permWorkOrder: $("pcEditPerm").value,
@@ -1878,6 +1912,9 @@
 
     $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
     $("pcSaveBtn").addEventListener("click", handlePowerCoSave);
+    $("pcEditCompany").addEventListener("change", () => {
+      updatePcContactDropdown($("pcEditCompany").value, "");
+    });
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));

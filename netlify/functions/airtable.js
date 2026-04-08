@@ -54,7 +54,7 @@ const F = {
   },
   gen: {
     assetId:              "Generator Asset ID",
-    customer:             "Customer",
+    customer:             "Customer Name",
     customerPhone:        "Customer Phone #",
     job:                  "Job",
     siteAddress:          "Site Address",

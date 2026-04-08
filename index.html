@@ -2,1082 +2,1447 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1, viewport-fit=cover"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Northeastern Electric Field App</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     :root {
-      --bg: #0f172a;
-      --panel: #111827;
-      --panel-2: #1f2937;
-      --line: #334155;
-      --text: #e5e7eb;
-      --muted: #94a3b8;
-      --accent: #22c55e;
-      --accent-2: #16a34a;
-      --danger: #ef4444;
-      --warning: #f59e0b;
-      --info: #3b82f6;
-      --shadow: 0 8px 24px rgba(0,0,0,.28);
-      --radius: 16px;
+      --bg: #0a0f1a;
+      --panel: #0f1923;
+      --panel-2: #162030;
+      --panel-3: #1c2a3a;
+      --line: #1e3048;
+      --line-2: #2a4060;
+      --text: #e8eef5;
+      --muted: #6b8aaa;
+      --accent: #f5a623;
+      --accent-2: #d4891a;
+      --accent-glow: rgba(245,166,35,0.15);
+      --blue: #3b8eea;
+      --blue-dim: rgba(59,142,234,0.12);
+      --green: #2ecc71;
+      --green-dim: rgba(46,204,113,0.12);
+      --red: #e74c3c;
+      --red-dim: rgba(231,76,60,0.12);
+      --yellow: #f5a623;
+      --yellow-dim: rgba(245,166,35,0.12);
+      --shadow: 0 8px 32px rgba(0,0,0,0.4);
+      --radius: 14px;
     }
 
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     html, body {
-      margin: 0;
-      padding: 0;
-      background: linear-gradient(180deg, #0b1220 0%, #111827 100%);
+      background: var(--bg);
       color: var(--text);
-      font-family: Arial, Helvetica, sans-serif;
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
       min-height: 100%;
     }
 
-    body {
-      padding: 16px;
-    }
+    body { padding: 0; }
 
-    .app {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
-    .hidden {
-      display: none !important;
-    }
-
+    /* ── TOPBAR ── */
     .topbar {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 12px 20px;
       display: flex;
-      justify-content: space-between;
       align-items: center;
+      justify-content: space-between;
       gap: 12px;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
+      position: sticky;
+      top: 0;
+      z-index: 100;
     }
 
     .brand {
       display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .brand h1 {
-      margin: 0;
-      font-size: 24px;
-    }
-
-    .brand .sub {
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .topbar-actions {
-      display: flex;
-      gap: 10px;
       align-items: center;
+      gap: 12px;
+    }
+
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      background: var(--accent);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 18px;
+    }
+
+    .brand-text h1 {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.5px;
+      line-height: 1;
+    }
+
+    .brand-text .sub {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
       flex-wrap: wrap;
     }
 
-    .badge {
-      padding: 6px 10px;
+    .user-badge {
+      background: var(--panel-2);
+      border: 1px solid var(--line-2);
       border-radius: 999px;
-      background: rgba(34, 197, 94, 0.15);
-      color: #bbf7d0;
+      padding: 5px 12px;
       font-size: 12px;
-      border: 1px solid rgba(34, 197, 94, 0.35);
-    }
-
-    .badge.admin {
-      background: rgba(59, 130, 246, 0.15);
-      color: #bfdbfe;
-      border-color: rgba(59, 130, 246, 0.35);
-    }
-
-    .card {
-      background: rgba(17, 24, 39, 0.92);
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-
-    .panel {
-      padding: 18px;
-    }
-
-    .login-wrap {
-      max-width: 440px;
-      margin: 48px auto;
-    }
-
-    .login-title {
-      margin: 0 0 10px 0;
-      font-size: 24px;
-    }
-
-    .login-sub {
-      margin: 0 0 20px 0;
-      color: var(--muted);
-      line-height: 1.4;
-      font-size: 14px;
-    }
-
-    .field {
-      margin-bottom: 14px;
-    }
-
-    .field label {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 13px;
-      color: var(--muted);
-    }
-
-    .field input,
-    .field select,
-    .field textarea {
-      width: 100%;
-      padding: 12px 14px;
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      background: #0b1220;
       color: var(--text);
-      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .user-badge.admin { border-color: var(--accent); color: var(--accent); }
+
+    /* ── MAIN LAYOUT ── */
+    .app-wrap { display: flex; height: calc(100vh - 61px); }
+
+    /* ── SIDEBAR ── */
+    .sidebar {
+      width: 320px;
+      min-width: 280px;
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .sidebar-search {
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .search-input-wrap {
+      position: relative;
+    }
+
+    .search-input-wrap input {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      padding: 9px 12px 9px 34px;
+      color: var(--text);
+      font-size: 13px;
       outline: none;
     }
 
-    .field textarea {
-      min-height: 100px;
-      resize: vertical;
+    .search-input-wrap input:focus { border-color: var(--accent); }
+
+    .search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--muted);
+      font-size: 14px;
     }
 
-    .field input:focus,
-    .field select:focus,
-    .field textarea:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
+    .filter-row {
+      display: flex;
+      gap: 6px;
     }
 
-    .btn {
-      appearance: none;
-      border: none;
-      border-radius: 12px;
-      padding: 12px 16px;
-      font-size: 15px;
-      cursor: pointer;
+    .filter-row select {
+      flex: 1;
       background: var(--panel-2);
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      padding: 7px 10px;
       color: var(--text);
-      border: 1px solid var(--line);
-      transition: .15s ease;
+      font-size: 12px;
+      outline: none;
     }
 
-    .btn:hover {
-      transform: translateY(-1px);
+    .filter-row select:focus { border-color: var(--accent); }
+
+    .sidebar-jobs {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
     }
 
-    .btn.primary {
-      background: linear-gradient(180deg, var(--accent), var(--accent-2));
-      border-color: transparent;
-      color: #052e16;
-      font-weight: bold;
-    }
+    .sidebar-jobs::-webkit-scrollbar { width: 4px; }
+    .sidebar-jobs::-webkit-scrollbar-track { background: transparent; }
+    .sidebar-jobs::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 2px; }
 
-    .btn.danger {
-      background: rgba(239, 68, 68, 0.18);
-      border-color: rgba(239, 68, 68, 0.35);
-      color: #fecaca;
-    }
-
-    .btn.info {
-      background: rgba(59, 130, 246, 0.18);
-      border-color: rgba(59, 130, 246, 0.35);
-      color: #dbeafe;
-    }
-
-    .btn.warning {
-      background: rgba(245, 158, 11, 0.18);
-      border-color: rgba(245, 158, 11, 0.35);
-      color: #fde68a;
-    }
-
-    .btn.small {
-      padding: 9px 12px;
-      font-size: 13px;
+    .job-item {
+      padding: 12px 14px;
       border-radius: 10px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      margin-bottom: 4px;
+      transition: all 0.15s ease;
+      position: relative;
     }
 
-    .toolbar {
+    .job-item:hover {
+      background: var(--panel-2);
+      border-color: var(--line-2);
+    }
+
+    .job-item.active {
+      background: var(--panel-3);
+      border-color: var(--accent);
+    }
+
+    .job-item-name {
+      font-weight: 600;
+      font-size: 14px;
+      color: var(--text);
+      line-height: 1.3;
+      margin-bottom: 4px;
+    }
+
+    .job-item-po {
+      font-size: 11px;
+      color: var(--accent);
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+
+    .job-item-meta {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 4px;
+      flex-shrink: 0;
+    }
+
+    .gen-badge {
+      font-size: 10px;
+      background: var(--yellow-dim);
+      border: 1px solid rgba(245,166,35,0.3);
+      color: var(--accent);
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+
+    .section-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: var(--muted);
+      text-transform: uppercase;
+      padding: 10px 14px 4px;
+    }
+
+    /* ── DETAIL PANEL ── */
+    .detail-panel {
+      flex: 1;
+      overflow-y: auto;
+      background: var(--bg);
+    }
+
+    .detail-panel::-webkit-scrollbar { width: 4px; }
+    .detail-panel::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 2px; }
+
+    .no-selection {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted);
+      gap: 12px;
+      font-size: 15px;
+    }
+
+    .no-selection .icon { font-size: 48px; opacity: 0.3; }
+
+    /* ── JOB DETAIL HEADER ── */
+    .job-header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 20px 24px 0;
+    }
+
+    .job-header-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    .job-header-name {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 28px;
+      font-weight: 700;
+      line-height: 1.1;
+      color: var(--text);
+    }
+
+    .job-header-po {
+      font-size: 13px;
+      color: var(--accent);
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    .header-badges {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    /* ── ACTION BUTTONS ── */
+    .action-buttons {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 14px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .action-btn {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 9px 14px;
+      border-radius: 9px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid;
+      text-decoration: none;
+      transition: all 0.15s;
+      white-space: nowrap;
+    }
+
+    .action-btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+
+    .action-btn.wire {
+      background: rgba(245,166,35,0.12);
+      border-color: rgba(245,166,35,0.4);
+      color: var(--accent);
+    }
+
+    .action-btn.pipe {
+      background: rgba(59,142,234,0.12);
+      border-color: rgba(59,142,234,0.4);
+      color: var(--blue);
+    }
+
+    .action-btn.photo-add {
+      background: rgba(46,204,113,0.12);
+      border-color: rgba(46,204,113,0.4);
+      color: var(--green);
+    }
+
+    .action-btn.photo-view {
+      background: rgba(155,89,182,0.12);
+      border-color: rgba(155,89,182,0.4);
+      color: #a78bda;
+    }
+
+    .action-btn.disabled {
+      opacity: 0.35;
+      pointer-events: none;
+    }
+
+    /* ── TABS ── */
+    .tab-nav {
+      display: flex;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 0 24px;
+      overflow-x: auto;
+    }
+
+    .tab-nav::-webkit-scrollbar { height: 0; }
+
+    .tab-btn {
+      padding: 12px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      transition: all 0.15s;
+      background: none;
+      border-left: none;
+      border-right: none;
+      border-top: none;
+    }
+
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .tab-content { display: none; padding: 20px 24px; }
+    .tab-content.active { display: block; }
+
+    /* ── INFO GRID ── */
+    .info-grid {
       display: grid;
-      grid-template-columns: 1.2fr .8fr auto auto;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
       gap: 12px;
       margin-bottom: 16px;
     }
 
-    .jobs-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-      gap: 14px;
-    }
-
-    .job-card {
-      padding: 16px;
-      cursor: pointer;
-      transition: .15s ease;
-    }
-
-    .job-card:hover {
-      transform: translateY(-2px);
-      border-color: #475569;
-    }
-
-    .job-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-start;
-      gap: 10px;
-      margin-bottom: 12px;
-    }
-
-    .job-title {
-      font-size: 18px;
-      font-weight: 700;
-      margin: 0 0 4px 0;
-      line-height: 1.2;
-    }
-
-    .job-po {
-      color: #86efac;
-      font-size: 13px;
-      font-weight: 700;
-    }
-
-    .job-meta {
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.55;
-    }
-
-    .status-pill {
-      white-space: nowrap;
-      padding: 6px 10px;
-      border-radius: 999px;
-      font-size: 12px;
+    .info-box {
+      background: var(--panel);
       border: 1px solid var(--line);
-      color: var(--text);
-      background: #0b1220;
-    }
-
-    .job-actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 14px;
-      flex-wrap: wrap;
-    }
-
-    .message {
-      margin-top: 14px;
+      border-radius: 10px;
       padding: 12px 14px;
-      border-radius: 12px;
-      font-size: 14px;
-      line-height: 1.4;
-      border: 1px solid var(--line);
-      background: rgba(15, 23, 42, .8);
     }
 
-    .message.error {
-      border-color: rgba(239, 68, 68, 0.35);
-      background: rgba(127, 29, 29, 0.25);
-      color: #fecaca;
-    }
+    .info-box.full { grid-column: 1 / -1; }
 
-    .message.success {
-      border-color: rgba(34, 197, 94, 0.35);
-      background: rgba(20, 83, 45, 0.25);
-      color: #bbf7d0;
-    }
-
-    .message.info {
-      border-color: rgba(59, 130, 246, 0.35);
-      background: rgba(30, 64, 175, 0.18);
-      color: #dbeafe;
-    }
-
-    .empty {
-      text-align: center;
-      padding: 28px;
-      color: var(--muted);
-    }
-
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      background: rgba(2, 6, 23, 0.75);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 18px;
-      z-index: 1000;
-    }
-
-    .modal {
-      width: min(860px, 100%);
-      max-height: 92vh;
-      overflow: auto;
-      background: #0f172a;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      box-shadow: var(--shadow);
-    }
-
-    .modal-header, .modal-body, .modal-footer {
-      padding: 18px;
-    }
-
-    .modal-header {
-      border-bottom: 1px solid var(--line);
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: center;
-    }
-
-    .modal-title {
-      margin: 0;
-      font-size: 22px;
-    }
-
-    .detail-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 14px;
-    }
-
-    .detail-box {
-      background: rgba(17, 24, 39, 0.8);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 14px;
-    }
-
-    .detail-label {
-      color: var(--muted);
-      font-size: 12px;
-      margin-bottom: 6px;
+    .info-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin-bottom: 5px;
     }
 
-    .detail-value {
-      font-size: 15px;
-      line-height: 1.45;
+    .info-value {
+      font-size: 14px;
+      color: var(--text);
+      line-height: 1.4;
       word-break: break-word;
     }
 
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0,1fr));
-      gap: 14px;
+    .info-value a {
+      color: var(--blue);
+      text-decoration: none;
     }
 
-    .footer-actions {
+    .info-value a:hover { text-decoration: underline; }
+
+    .info-value.link-val a {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    /* ── STATUS PILLS ── */
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      border: 1px solid;
+    }
+
+    .pill.service-call { background: rgba(231,76,60,0.15); border-color: rgba(231,76,60,0.4); color: #ff8b7e; }
+    .pill.awarded { background: rgba(46,204,113,0.12); border-color: rgba(46,204,113,0.35); color: #5de0a0; }
+    .pill.completed { background: rgba(107,138,170,0.12); border-color: rgba(107,138,170,0.3); color: var(--muted); }
+    .pill.estimating { background: rgba(59,142,234,0.12); border-color: rgba(59,142,234,0.3); color: #7db8f5; }
+    .pill.invoice { background: rgba(245,166,35,0.12); border-color: rgba(245,166,35,0.3); color: var(--accent); }
+    .pill.default { background: var(--panel-2); border-color: var(--line-2); color: var(--muted); }
+
+    .pill.gen-yes { background: rgba(245,166,35,0.12); border-color: rgba(245,166,35,0.3); color: var(--accent); }
+    .pill.gen-no { background: var(--panel-2); border-color: var(--line-2); color: var(--muted); }
+
+    /* ── SECTION HEADERS ── */
+    .section-header {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: 0.5px;
+      margin: 20px 0 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--line);
+      text-transform: uppercase;
+    }
+
+    .section-header:first-child { margin-top: 0; }
+
+    /* ── GENERATOR RECORDS ── */
+    .service-records { display: flex; flex-direction: column; gap: 10px; }
+
+    .service-record {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+
+    .service-record-header {
       display: flex;
-      justify-content: flex-end;
-      gap: 10px;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
       flex-wrap: wrap;
+      gap: 8px;
     }
 
-    .small-note {
+    .service-record-title {
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    .service-checkboxes {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    .check-badge {
+      font-size: 11px;
+      padding: 3px 8px;
+      border-radius: 5px;
+      border: 1px solid;
+    }
+
+    .check-badge.yes { background: var(--green-dim); border-color: rgba(46,204,113,0.3); color: #5de0a0; }
+    .check-badge.no { background: var(--panel-2); border-color: var(--line); color: var(--muted); }
+
+    /* ── LOADING / EMPTY ── */
+    .loading-msg {
+      text-align: center;
+      padding: 30px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .empty-msg {
+      text-align: center;
+      padding: 20px;
+      color: var(--muted);
+      font-size: 13px;
+      font-style: italic;
+    }
+
+    /* ── LOGIN ── */
+    .login-page {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: radial-gradient(ellipse at 30% 40%, rgba(245,166,35,0.06) 0%, transparent 60%),
+                  radial-gradient(ellipse at 80% 80%, rgba(59,142,234,0.05) 0%, transparent 60%),
+                  var(--bg);
+    }
+
+    .login-card {
+      width: min(420px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line-2);
+      border-radius: 18px;
+      padding: 36px;
+      box-shadow: var(--shadow);
+    }
+
+    .login-logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .login-logo-icon {
+      width: 46px;
+      height: 46px;
+      background: var(--accent);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 22px;
+    }
+
+    .login-logo-text h1 {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 22px;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .login-logo-text p {
       font-size: 12px;
       color: var(--muted);
-      margin-top: 8px;
-      line-height: 1.45;
+      margin-top: 2px;
     }
 
-    @media (max-width: 800px) {
-      .toolbar,
-      .detail-grid,
-      .form-grid {
-        grid-template-columns: 1fr;
-      }
+    .login-field {
+      margin-bottom: 14px;
+    }
 
-      .modal {
-        max-height: 96vh;
-      }
+    .login-field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .login-field input {
+      width: 100%;
+      background: var(--panel-2);
+      border: 1px solid var(--line-2);
+      border-radius: 10px;
+      padding: 12px 14px;
+      color: var(--text);
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .login-field input:focus { border-color: var(--accent); }
+
+    /* ── BUTTONS ── */
+    .btn {
+      appearance: none;
+      border: none;
+      border-radius: 10px;
+      padding: 11px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      font-family: 'Inter', sans-serif;
+    }
+
+    .btn:hover { transform: translateY(-1px); }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #0a0f1a;
+      width: 100%;
+      padding: 13px;
+      font-size: 15px;
+      margin-top: 6px;
+    }
+
+    .btn-primary:hover { background: var(--accent-2); }
+
+    .btn-sm {
+      background: var(--panel-2);
+      border: 1px solid var(--line-2);
+      color: var(--text);
+      padding: 7px 12px;
+      font-size: 12px;
+      border-radius: 8px;
+    }
+
+    .btn-danger-sm {
+      background: var(--red-dim);
+      border: 1px solid rgba(231,76,60,0.3);
+      color: #ff8b7e;
+      padding: 7px 12px;
+      font-size: 12px;
+      border-radius: 8px;
+    }
+
+    /* ── ALERT MESSAGES ── */
+    .alert {
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-top: 12px;
+      border: 1px solid;
+    }
+
+    .alert.error { background: var(--red-dim); border-color: rgba(231,76,60,0.3); color: #ff8b7e; }
+    .alert.success { background: var(--green-dim); border-color: rgba(46,204,113,0.3); color: #5de0a0; }
+    .alert.info { background: var(--blue-dim); border-color: rgba(59,142,234,0.3); color: #7db8f5; }
+
+    .hidden { display: none !important; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 768px) {
+      .app-wrap { flex-direction: column; height: auto; }
+      .sidebar { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--line); max-height: 50vh; }
+      .detail-panel { min-height: 60vh; }
+      .info-grid { grid-template-columns: 1fr; }
+      .action-buttons { padding: 10px 14px; }
+      .tab-content { padding: 14px; }
+      .job-header { padding: 14px 14px 0; }
     }
   </style>
 </head>
 <body>
-  <div class="app">
-    <section id="loginScreen" class="login-wrap">
-      <div class="card panel">
-        <h1 class="login-title">Northeastern Electric Field App</h1>
-        <p class="login-sub">
-          Log in with your employee or admin credentials. This version uses the secure Netlify proxy and does not call Airtable directly from the browser.
-        </p>
 
-        <div class="field">
-          <label for="loginIdentifier">Username / Email / Employee Name</label>
-          <input id="loginIdentifier" type="text" placeholder="Enter username, email, or employee name" />
-        </div>
-
-        <div class="field">
-          <label for="loginPin">PIN / Password</label>
-          <input id="loginPin" type="password" placeholder="Enter PIN or password" />
-        </div>
-
-        <button id="loginBtn" class="btn primary" type="button">Log In</button>
-
-        <div class="small-note">
-          Employee users can view and open jobs. Admin users also have admin access and generator commissioning tools.
-        </div>
-
-        <div id="loginMessage" class="message info hidden"></div>
+<!-- ═══════════════════════ LOGIN PAGE ═══════════════════════ -->
+<div id="loginPage" class="login-page">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-logo-icon">⚡</div>
+      <div class="login-logo-text">
+        <h1>Northeastern Electric</h1>
+        <p>Field App — Secure Login</p>
       </div>
-    </section>
+    </div>
 
-    <section id="appScreen" class="hidden">
-      <div class="topbar">
-        <div class="brand">
-          <h1>Northeastern Electric Field App</h1>
-          <div class="sub">Secure Netlify proxy + Airtable backend</div>
-        </div>
+    <div class="login-field">
+      <label for="loginId">Username / Employee Name</label>
+      <input id="loginId" type="text" placeholder="Enter your name or username" autocomplete="username" />
+    </div>
 
-        <div class="topbar-actions">
-          <span id="currentUserBadge" class="badge">Not logged in</span>
-          <button id="refreshBtn" class="btn small info" type="button">Refresh Jobs</button>
-          <button id="logoutBtn" class="btn small danger" type="button">Log Out</button>
-        </div>
-      </div>
+    <div class="login-field">
+      <label for="loginPin">PIN / Password</label>
+      <input id="loginPin" type="password" placeholder="Enter your PIN" autocomplete="current-password" />
+    </div>
 
-      <div class="card panel">
-        <div class="toolbar">
-          <div class="field" style="margin-bottom:0;">
-            <label for="searchInput">Search Jobs</label>
-            <input id="searchInput" type="text" placeholder="Search by job name, PO, company, address..." />
-          </div>
+    <button id="loginBtn" class="btn btn-primary" type="button">Sign In</button>
 
-          <div class="field" style="margin-bottom:0;">
-            <label for="statusFilter">Status</label>
-            <select id="statusFilter">
-              <option value="">All Active</option>
-              <option value="New Lead">New Lead</option>
-              <option value="Estimating">Estimating</option>
-              <option value="Awarded">Awarded</option>
-              <option value="Service Call">Service Call</option>
-              <option value="Ready to Invoice">Ready to Invoice</option>
-              <option value="Completed">Completed</option>
-            </select>
-          </div>
-
-          <div style="display:flex; align-items:end;">
-            <button id="loadJobsBtn" class="btn primary" type="button">Load Jobs</button>
-          </div>
-
-          <div style="display:flex; align-items:end;">
-            <button id="clearFiltersBtn" class="btn" type="button">Clear</button>
-          </div>
-        </div>
-
-        <div id="jobsMessage" class="message info hidden"></div>
-        <div id="jobsGrid" class="jobs-grid"></div>
-        <div id="jobsEmpty" class="empty hidden">No jobs found.</div>
-      </div>
-    </section>
+    <div id="loginAlert" class="alert error hidden"></div>
   </div>
+</div>
 
-  <div id="jobModalBackdrop" class="modal-backdrop hidden">
-    <div class="modal">
-      <div class="modal-header">
-        <div>
-          <h2 id="jobModalTitle" class="modal-title">Job Details</h2>
-          <div id="jobModalSub" class="sub"></div>
-        </div>
-        <button id="closeJobModalBtn" class="btn small" type="button">Close</button>
-      </div>
+<!-- ═══════════════════════ APP ═══════════════════════ -->
+<div id="appPage" class="hidden">
 
-      <div class="modal-body">
-        <div id="jobDetailGrid" class="detail-grid"></div>
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="brand">
+      <div class="brand-icon">⚡</div>
+      <div class="brand-text">
+        <h1>Northeastern Electric</h1>
+        <div class="sub">FIELD APP</div>
       </div>
-
-      <div class="modal-footer">
-        <div class="footer-actions">
-          <button id="openCommissionBtn" class="btn warning hidden" type="button">Generator Commissioning</button>
-          <button id="jobModalCloseFooterBtn" class="btn" type="button">Close</button>
-        </div>
-      </div>
+    </div>
+    <div class="topbar-right">
+      <span id="userBadge" class="user-badge">—</span>
+      <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
+      <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
   </div>
 
-  <div id="commissionModalBackdrop" class="modal-backdrop hidden">
-    <div class="modal">
-      <div class="modal-header">
-        <div>
-          <h2 class="modal-title">Generator Commissioning</h2>
-          <div id="commissionJobLabel" class="sub"></div>
+  <!-- MAIN LAYOUT -->
+  <div class="app-wrap">
+
+    <!-- SIDEBAR -->
+    <div class="sidebar">
+      <div class="sidebar-search">
+        <div class="search-input-wrap">
+          <span class="search-icon">🔍</span>
+          <input id="searchInput" type="text" placeholder="Search jobs..." />
         </div>
-        <button id="closeCommissionModalBtn" class="btn small" type="button">Close</button>
+        <div class="filter-row">
+          <select id="statusFilter">
+            <option value="">All Statuses</option>
+            <option value="Service Call Scheduled">Service Call Scheduled</option>
+            <option value="Awarded">Awarded</option>
+            <option value="Estimating">Estimating</option>
+            <option value="New Lead">New Lead</option>
+            <option value="Ready to Invoice">Ready to Invoice</option>
+            <option value="Completed">Completed</option>
+          </select>
+          <select id="typeFilter">
+            <option value="">All Types</option>
+            <option value="Contract">Contract</option>
+            <option value="Time & Material">Time & Material</option>
+            <option value="Warranty">Warranty</option>
+            <option value="Service Calls">Service Calls</option>
+          </select>
+        </div>
       </div>
 
-      <div class="modal-body">
-        <form id="commissionForm">
-          <div class="form-grid">
-            <div class="field">
-              <label for="commissionDate">Commission Date</label>
-              <input id="commissionDate" name="commissionDate" type="date" />
-            </div>
-
-            <div class="field">
-              <label for="nextServiceDate">Next Service Date</label>
-              <input id="nextServiceDate" name="nextServiceDate" type="date" />
-            </div>
-
-            <div class="field">
-              <label for="generatorMake">Generator Make</label>
-              <input id="generatorMake" name="generatorMake" type="text" placeholder="Cummins / Generac / Kohler..." />
-            </div>
-
-            <div class="field">
-              <label for="generatorModel">Generator Model</label>
-              <input id="generatorModel" name="generatorModel" type="text" placeholder="20kW model" />
-            </div>
-
-            <div class="field">
-              <label for="generatorSerial">Generator Serial #</label>
-              <input id="generatorSerial" name="generatorSerial" type="text" placeholder="Generator serial number" />
-            </div>
-
-            <div class="field">
-              <label for="atsSerial">ATS Serial #</label>
-              <input id="atsSerial" name="atsSerial" type="text" placeholder="ATS serial number" />
-            </div>
-
-            <div class="field">
-              <label for="serviceIntervalMonths">Service Interval (Months)</label>
-              <input id="serviceIntervalMonths" name="serviceIntervalMonths" type="number" min="1" step="1" placeholder="12" />
-            </div>
-
-            <div class="field">
-              <label for="commissionedBy">Commissioned By</label>
-              <input id="commissionedBy" name="commissionedBy" type="text" placeholder="Tech name" />
-            </div>
-          </div>
-
-          <div class="field">
-            <label for="commissionNotes">Notes</label>
-            <textarea id="commissionNotes" name="commissionNotes" placeholder="Startup notes, battery/oil, settings, observations..."></textarea>
-          </div>
-
-          <div id="commissionMessage" class="message info hidden"></div>
-
-          <div class="footer-actions">
-            <button type="button" id="cancelCommissionBtn" class="btn">Cancel</button>
-            <button type="submit" id="saveCommissionBtn" class="btn primary">Save Commissioning</button>
-          </div>
-        </form>
+      <div id="jobsList" class="sidebar-jobs">
+        <div class="loading-msg">Log in to load jobs</div>
       </div>
     </div>
-  </div>
 
-  <script>
-    const API_URL = "/.netlify/functions/airtable";
-    const STORAGE_KEY = "neeFieldAppUser";
+    <!-- DETAIL PANEL -->
+    <div class="detail-panel" id="detailPanel">
+      <div class="no-selection" id="noSelection">
+        <div class="icon">📋</div>
+        <div>Select a job to view details</div>
+      </div>
 
-    const state = {
-      user: null,
-      jobs: [],
-      filteredJobs: [],
-      selectedJob: null
-    };
+      <div id="jobDetail" class="hidden">
 
-    const els = {
-      loginScreen: document.getElementById("loginScreen"),
-      appScreen: document.getElementById("appScreen"),
-      loginIdentifier: document.getElementById("loginIdentifier"),
-      loginPin: document.getElementById("loginPin"),
-      loginBtn: document.getElementById("loginBtn"),
-      loginMessage: document.getElementById("loginMessage"),
-
-      currentUserBadge: document.getElementById("currentUserBadge"),
-      logoutBtn: document.getElementById("logoutBtn"),
-      refreshBtn: document.getElementById("refreshBtn"),
-      loadJobsBtn: document.getElementById("loadJobsBtn"),
-      clearFiltersBtn: document.getElementById("clearFiltersBtn"),
-      searchInput: document.getElementById("searchInput"),
-      statusFilter: document.getElementById("statusFilter"),
-      jobsMessage: document.getElementById("jobsMessage"),
-      jobsGrid: document.getElementById("jobsGrid"),
-      jobsEmpty: document.getElementById("jobsEmpty"),
-
-      jobModalBackdrop: document.getElementById("jobModalBackdrop"),
-      jobModalTitle: document.getElementById("jobModalTitle"),
-      jobModalSub: document.getElementById("jobModalSub"),
-      jobDetailGrid: document.getElementById("jobDetailGrid"),
-      closeJobModalBtn: document.getElementById("closeJobModalBtn"),
-      jobModalCloseFooterBtn: document.getElementById("jobModalCloseFooterBtn"),
-      openCommissionBtn: document.getElementById("openCommissionBtn"),
-
-      commissionModalBackdrop: document.getElementById("commissionModalBackdrop"),
-      commissionForm: document.getElementById("commissionForm"),
-      commissionJobLabel: document.getElementById("commissionJobLabel"),
-      commissionMessage: document.getElementById("commissionMessage"),
-      closeCommissionModalBtn: document.getElementById("closeCommissionModalBtn"),
-      cancelCommissionBtn: document.getElementById("cancelCommissionBtn"),
-
-      commissionDate: document.getElementById("commissionDate"),
-      nextServiceDate: document.getElementById("nextServiceDate"),
-      generatorMake: document.getElementById("generatorMake"),
-      generatorModel: document.getElementById("generatorModel"),
-      generatorSerial: document.getElementById("generatorSerial"),
-      atsSerial: document.getElementById("atsSerial"),
-      serviceIntervalMonths: document.getElementById("serviceIntervalMonths"),
-      commissionedBy: document.getElementById("commissionedBy"),
-      commissionNotes: document.getElementById("commissionNotes")
-    };
-
-    function showMessage(element, text, type = "info") {
-      element.textContent = text;
-      element.className = "message " + type;
-      element.classList.remove("hidden");
-    }
-
-    function hideMessage(element) {
-      element.textContent = "";
-      element.className = "message info hidden";
-    }
-
-    async function apiGet(action, params = {}) {
-      const url = new URL(API_URL, window.location.origin);
-      url.searchParams.set("action", action);
-
-      Object.entries(params).forEach(([key, value]) => {
-        if (value !== undefined && value !== null && value !== "") {
-          url.searchParams.set(key, value);
-        }
-      });
-
-      const response = await fetch(url.toString(), {
-        method: "GET",
-        headers: { "Accept": "application/json" }
-      });
-
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error || "Request failed");
-      }
-      return data;
-    }
-
-    async function apiPost(action, body = {}) {
-      const response = await fetch(API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Accept": "application/json"
-        },
-        body: JSON.stringify({ action, ...body })
-      });
-
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || data.ok === false) {
-        throw new Error(data.error || "Request failed");
-      }
-      return data;
-    }
-
-    function saveUser(user) {
-      state.user = user;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(user));
-      renderAuth();
-    }
-
-    function clearUser() {
-      state.user = null;
-      localStorage.removeItem(STORAGE_KEY);
-      state.jobs = [];
-      state.filteredJobs = [];
-      state.selectedJob = null;
-      renderAuth();
-      renderJobs();
-    }
-
-    function loadUserFromStorage() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.id) {
-          state.user = parsed;
-        }
-      } catch (err) {
-        console.error("Failed to restore user", err);
-      }
-    }
-
-    function isAdmin() {
-      return !!state.user && String(state.user.role || "").toLowerCase() === "admin";
-    }
-
-    function renderAuth() {
-      if (state.user) {
-        els.loginScreen.classList.add("hidden");
-        els.appScreen.classList.remove("hidden");
-        els.currentUserBadge.textContent = state.user.name + " (" + state.user.role + ")";
-        els.currentUserBadge.className = "badge" + (isAdmin() ? " admin" : "");
-      } else {
-        els.loginScreen.classList.remove("hidden");
-        els.appScreen.classList.add("hidden");
-        els.currentUserBadge.textContent = "Not logged in";
-        els.currentUserBadge.className = "badge";
-      }
-    }
-
-    function normalizeText(value) {
-      return String(value || "").trim().toLowerCase();
-    }
-
-    function applyFilters() {
-      const q = normalizeText(els.searchInput.value);
-      const status = normalizeText(els.statusFilter.value);
-
-      state.filteredJobs = state.jobs.filter(job => {
-        const haystack = [
-          job.name,
-          job.po,
-          job.company,
-          job.address,
-          job.status,
-          job.powerCompany,
-          job.contact
-        ].map(normalizeText).join(" ");
-
-        const matchesSearch = !q || haystack.includes(q);
-        const matchesStatus = !status || normalizeText(job.status) === status;
-
-        return matchesSearch && matchesStatus;
-      });
-
-      renderJobs();
-    }
-
-    function statusClass(status) {
-      const s = normalizeText(status);
-      if (s.includes("award")) return "status-pill";
-      if (s.includes("complete")) return "status-pill";
-      if (s.includes("invoice")) return "status-pill";
-      return "status-pill";
-    }
-
-    function renderJobs() {
-      els.jobsGrid.innerHTML = "";
-
-      const jobs = state.filteredJobs || [];
-      if (!jobs.length) {
-        els.jobsEmpty.classList.remove("hidden");
-        return;
-      }
-
-      els.jobsEmpty.classList.add("hidden");
-
-      jobs.forEach(job => {
-        const article = document.createElement("article");
-        article.className = "card job-card";
-        article.innerHTML = `
-          <div class="job-top">
+        <!-- JOB HEADER -->
+        <div class="job-header">
+          <div class="job-header-top">
             <div>
-              <div class="job-title">${escapeHtml(job.name || "Untitled Job")}</div>
-              <div class="job-po">${escapeHtml(job.po || "No PO")}</div>
+              <div id="dJobName" class="job-header-name">—</div>
+              <div id="dJobPo" class="job-header-po">—</div>
             </div>
-            <span class="${statusClass(job.status)}">${escapeHtml(job.status || "No Status")}</span>
+            <div class="header-badges">
+              <span id="dStatusPill" class="pill default">—</span>
+              <span id="dTypePill" class="pill default hidden">—</span>
+              <span id="dGenPill" class="pill gen-no">No Generator</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ACTION BUTTONS -->
+        <div class="action-buttons">
+          <a id="btnWire" href="#" target="_blank" class="action-btn wire disabled">⚡ Add Wire / THHN</a>
+          <a id="btnPipe" href="#" target="_blank" class="action-btn pipe disabled">🔧 Add Pipe</a>
+          <a id="btnAddPhotos" href="#" target="_blank" class="action-btn photo-add disabled">📷 Add Photos</a>
+          <a id="btnViewPhotos" href="#" target="_blank" class="action-btn photo-view disabled">🖼 View pCloud Photos</a>
+        </div>
+
+        <!-- TABS -->
+        <div class="tab-nav" id="tabNav">
+          <button class="tab-btn active" data-tab="project">Project Info</button>
+          <button class="tab-btn" data-tab="powerco">Power Co.</button>
+          <button class="tab-btn" data-tab="inspections">Inspections</button>
+          <button class="tab-btn" id="genTabBtn" data-tab="generator" style="display:none;">⚡ Generator</button>
+        </div>
+
+        <!-- TAB: PROJECT INFO -->
+        <div class="tab-content active" id="tab-project">
+          <div class="info-grid">
+            <div class="info-box">
+              <div class="info-label">Job Name</div>
+              <div class="info-value" id="piJobName">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Job PO</div>
+              <div class="info-value" id="piJobPo">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Job Status</div>
+              <div class="info-value" id="piJobStatus">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Job Type</div>
+              <div class="info-value" id="piJobType">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Contractor</div>
+              <div class="info-value" id="piContractor">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Generator Installed</div>
+              <div class="info-value" id="piGenerator">—</div>
+            </div>
+            <div class="info-box full">
+              <div class="info-label">Job Address — Tap to Open in Maps</div>
+              <div class="info-value" id="piAddress">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB: POWER CO -->
+        <div class="tab-content" id="tab-powerco">
+          <div class="info-grid">
+            <div class="info-box">
+              <div class="info-label">Power Company</div>
+              <div class="info-value" id="pcName">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Primary Contact</div>
+              <div class="info-value" id="pcContact">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Phone</div>
+              <div class="info-value" id="pcPhone">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Email</div>
+              <div class="info-value" id="pcEmail">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">AIC Number</div>
+              <div class="info-value" id="pcAic">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Temporary Work Order #</div>
+              <div class="info-value" id="pcTemp">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Permanent Work Order #</div>
+              <div class="info-value" id="pcPerm">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB: INSPECTIONS -->
+        <div class="tab-content" id="tab-inspections">
+          <div class="info-grid">
+            <div class="info-box">
+              <div class="info-label">Permit Number</div>
+              <div class="info-value" id="inPermit">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Inspection Agency</div>
+              <div class="info-value" id="inAgency">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Agency Phone #</div>
+              <div class="info-value" id="inPhone">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Agency Email</div>
+              <div class="info-value" id="inEmail">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Inspection Contacts</div>
+              <div class="info-value" id="inContacts">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Job Inspections</div>
+              <div class="info-value" id="inJobInspections">—</div>
+            </div>
+            <div class="info-box full link-val">
+              <div class="info-label">Inspection Scheduling Link</div>
+              <div class="info-value" id="inSchedulingLink">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB: GENERATOR -->
+        <div class="tab-content" id="tab-generator">
+
+          <div class="section-header">Generator Asset Info</div>
+          <div class="info-grid" id="genInfoGrid">
+            <div class="loading-msg">Loading generator data...</div>
           </div>
 
-          <div class="job-meta">
-            <div><strong>Company:</strong> ${escapeHtml(job.company || "—")}</div>
-            <div><strong>Address:</strong> ${escapeHtml(job.address || "—")}</div>
-            <div><strong>Power Co:</strong> ${escapeHtml(job.powerCompany || "—")}</div>
-            <div><strong>Generator:</strong> ${job.generatorInstalled ? "Yes" : "No"}</div>
+          <div class="section-header" style="margin-top:24px;">
+            Service Records
+            <a id="btnServiceGen" href="#" target="_blank" class="action-btn photo-add" style="float:right; margin-top:-4px; font-size:12px; padding:6px 12px; text-decoration:none;">+ Log Service</a>
+          </div>
+          <div id="serviceRecordsList" class="service-records">
+            <div class="loading-msg">Loading service records...</div>
           </div>
 
-          <div class="job-actions">
-            <button class="btn small info" type="button" data-action="open">Open</button>
-            ${job.generatorInstalled && isAdmin() ? `<button class="btn small warning" type="button" data-action="commission">Commission</button>` : ``}
+        </div>
+
+      </div><!-- /jobDetail -->
+    </div><!-- /detailPanel -->
+
+  </div><!-- /app-wrap -->
+</div><!-- /appPage -->
+
+<script>
+  const API = "/.netlify/functions/airtable";
+  const STORAGE_KEY = "nee_user_v2";
+
+  const state = {
+    user: null,
+    jobs: [],
+    filtered: [],
+    selected: null
+  };
+
+  // ── DOM ──
+  const $ = id => document.getElementById(id);
+
+  // ── UTILS ──
+  function esc(v) {
+    return String(v ?? "")
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  function showAlert(el, msg, type="error") {
+    el.textContent = msg;
+    el.className = `alert ${type}`;
+    el.classList.remove("hidden");
+  }
+
+  function statusPillClass(s) {
+    const n = (s||"").toLowerCase();
+    if (n.includes("service call")) return "pill service-call";
+    if (n.includes("award")) return "pill awarded";
+    if (n.includes("complet")) return "pill completed";
+    if (n.includes("estimat")) return "pill estimating";
+    if (n.includes("invoice")) return "pill invoice";
+    return "pill default";
+  }
+
+  function statusDotColor(s) {
+    const n = (s||"").toLowerCase();
+    if (n.includes("service call")) return "#e74c3c";
+    if (n.includes("award")) return "#2ecc71";
+    if (n.includes("complet")) return "#6b8aaa";
+    if (n.includes("estimat")) return "#3b8eea";
+    if (n.includes("invoice")) return "#f5a623";
+    return "#4a6380";
+  }
+
+  function mapsLink(address) {
+    if (!address || address === "—") return null;
+    return `https://maps.google.com/?q=${encodeURIComponent(address)}`;
+  }
+
+  function val(v, fallback="—") {
+    if (v === null || v === undefined || v === "") return fallback;
+    if (Array.isArray(v)) return v.join(", ") || fallback;
+    return String(v);
+  }
+
+  function checkLink(url, label, el) {
+    if (url && url.startsWith("http")) {
+      el.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`;
+    } else {
+      el.textContent = url || "—";
+    }
+  }
+
+  // ── API ──
+  async function apiGet(action, params={}) {
+    const url = new URL(API, location.origin);
+    url.searchParams.set("action", action);
+    Object.entries(params).forEach(([k,v]) => { if (v != null && v !== "") url.searchParams.set(k,v); });
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || "Request failed");
+    return d;
+  }
+
+  async function apiPost(action, body={}) {
+    const r = await fetch(API, {
+      method: "POST",
+      headers: { "Content-Type":"application/json", Accept:"application/json" },
+      body: JSON.stringify({ action, ...body })
+    });
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || "Request failed");
+    return d;
+  }
+
+  // ── AUTH ──
+  function saveUser(u) {
+    state.user = u;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(u));
+    renderAuth();
+  }
+
+  function clearUser() {
+    state.user = null;
+    localStorage.removeItem(STORAGE_KEY);
+    state.jobs = [];
+    state.filtered = [];
+    state.selected = null;
+    renderAuth();
+  }
+
+  function loadStoredUser() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const u = JSON.parse(raw);
+        if (u?.id) state.user = u;
+      }
+    } catch {}
+  }
+
+  function isAdmin() {
+    return (state.user?.role||"").toLowerCase() === "admin";
+  }
+
+  function renderAuth() {
+    if (state.user) {
+      $("loginPage").classList.add("hidden");
+      $("appPage").classList.remove("hidden");
+      const badge = $("userBadge");
+      badge.textContent = `${state.user.name} (${state.user.role})`;
+      badge.className = "user-badge" + (isAdmin() ? " admin" : "");
+    } else {
+      $("loginPage").classList.remove("hidden");
+      $("appPage").classList.add("hidden");
+    }
+  }
+
+  // ── LOGIN ──
+  async function handleLogin() {
+    const identifier = $("loginId").value.trim();
+    const pin = $("loginPin").value.trim();
+    const alertEl = $("loginAlert");
+    alertEl.classList.add("hidden");
+
+    if (!identifier || !pin) {
+      showAlert(alertEl, "Please enter your name/username and PIN.");
+      return;
+    }
+
+    $("loginBtn").disabled = true;
+    $("loginBtn").textContent = "Signing in...";
+
+    try {
+      const d = await apiPost("login", { identifier, pin });
+      saveUser(d.user);
+      await loadJobs();
+    } catch(err) {
+      showAlert(alertEl, err.message || "Login failed.");
+    } finally {
+      $("loginBtn").disabled = false;
+      $("loginBtn").textContent = "Sign In";
+    }
+  }
+
+  // ── JOBS ──
+  async function loadJobs() {
+    $("jobsList").innerHTML = `<div class="loading-msg">Loading jobs...</div>`;
+    try {
+      const d = await apiGet("jobs");
+      state.jobs = Array.isArray(d.jobs) ? d.jobs : [];
+      applyFilters();
+    } catch(err) {
+      $("jobsList").innerHTML = `<div class="loading-msg" style="color:#ff8b7e;">${esc(err.message)}</div>`;
+    }
+  }
+
+  function applyFilters() {
+    const q = $("searchInput").value.trim().toLowerCase();
+    const st = $("statusFilter").value.toLowerCase();
+    const ty = $("typeFilter").value.toLowerCase();
+
+    state.filtered = state.jobs.filter(j => {
+      const hay = [j.name, j.po, j.address, j.status, j.type, j.contractor].join(" ").toLowerCase();
+      const mq = !q || hay.includes(q);
+      const ms = !st || (j.status||"").toLowerCase() === st;
+      const mt = !ty || (j.type||"").toLowerCase() === ty;
+      return mq && ms && mt;
+    });
+
+    renderJobList();
+  }
+
+  function sortJobs(jobs) {
+    // Service Call Scheduled first (alpha), then Awarded (alpha), then rest (alpha)
+    const order = s => {
+      const n = (s||"").toLowerCase();
+      if (n.includes("service call")) return 0;
+      if (n.includes("award")) return 1;
+      return 2;
+    };
+    return [...jobs].sort((a,b) => {
+      const oa = order(a.status), ob = order(b.status);
+      if (oa !== ob) return oa - ob;
+      return (a.name||"").localeCompare(b.name||"");
+    });
+  }
+
+  function renderJobList() {
+    const list = $("jobsList");
+    const sorted = sortJobs(state.filtered);
+
+    if (!sorted.length) {
+      list.innerHTML = `<div class="loading-msg">No jobs found.</div>`;
+      return;
+    }
+
+    let html = "";
+    let lastGroup = null;
+
+    sorted.forEach(job => {
+      const st = (job.status||"").toLowerCase();
+      let group = null;
+      if (st.includes("service call")) group = "🔴 Service Call Scheduled";
+      else if (st.includes("award")) group = "🟢 Awarded";
+
+      if (group && group !== lastGroup) {
+        html += `<div class="section-label">${esc(group)}</div>`;
+        lastGroup = group;
+      } else if (!group && lastGroup !== "other") {
+        html += `<div class="section-label">Other Jobs</div>`;
+        lastGroup = "other";
+      }
+
+      const isActive = state.selected?.id === job.id;
+      html += `
+        <div class="job-item${isActive ? " active" : ""}" data-id="${esc(job.id)}">
+          <div class="job-item-name">${esc(job.name||"Untitled")}</div>
+          <div class="job-item-po">${esc(job.po||"No PO")}</div>
+          <div class="job-item-meta">
+            <span>
+              <span class="status-dot" style="background:${statusDotColor(job.status)}"></span>
+              ${esc(job.status||"—")}
+            </span>
+            ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}
           </div>
+        </div>`;
+    });
+
+    list.innerHTML = html;
+
+    list.querySelectorAll(".job-item").forEach(el => {
+      el.addEventListener("click", () => {
+        const job = state.jobs.find(j => j.id === el.dataset.id);
+        if (job) selectJob(job);
+      });
+    });
+  }
+
+  // ── SELECT JOB ──
+  function selectJob(job) {
+    state.selected = job;
+    renderJobList(); // re-render to update active state
+
+    $("noSelection").classList.add("hidden");
+    $("jobDetail").classList.remove("hidden");
+
+    // Header
+    $("dJobName").textContent = job.name || "—";
+    $("dJobPo").textContent = job.po || "—";
+
+    const sp = $("dStatusPill");
+    sp.textContent = job.status || "—";
+    sp.className = statusPillClass(job.status);
+
+    const tp = $("dTypePill");
+    if (job.type) {
+      tp.textContent = job.type;
+      tp.classList.remove("hidden");
+    } else {
+      tp.classList.add("hidden");
+    }
+
+    const gp = $("dGenPill");
+    if (job.generatorInstalled) {
+      gp.textContent = "⚡ Generator Installed";
+      gp.className = "pill gen-yes";
+    } else {
+      gp.textContent = "No Generator";
+      gp.className = "pill gen-no";
+    }
+
+    // Action Buttons
+    setActionBtn($("btnWire"), job.wireLink, "Add Wire / THHN");
+    setActionBtn($("btnPipe"), job.pipeLink, "Add Pipe");
+    setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
+    setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
+
+    // Project Info Tab
+    $("piJobName").textContent = val(job.name);
+    $("piJobPo").textContent = val(job.po);
+    $("piJobStatus").textContent = val(job.status);
+    $("piJobType").textContent = val(job.type);
+    $("piContractor").textContent = val(job.contractor);
+    $("piGenerator").textContent = job.generatorInstalled ? "✅ Yes" : "No";
+
+    const addrEl = $("piAddress");
+    const mlink = mapsLink(job.address);
+    if (mlink && job.address) {
+      addrEl.innerHTML = `<a href="${esc(mlink)}" target="_blank" rel="noopener">📍 ${esc(job.address)}</a>`;
+    } else {
+      addrEl.textContent = val(job.address);
+    }
+
+    // Power Co Tab
+    $("pcName").textContent = val(job.powerCompanyName);
+    $("pcContact").textContent = val(job.powerCompanyContact);
+
+    const phEl = $("pcPhone");
+    if (job.powerCompanyPhone) {
+      phEl.innerHTML = `<a href="tel:${esc(job.powerCompanyPhone)}">${esc(job.powerCompanyPhone)}</a>`;
+    } else { phEl.textContent = "—"; }
+
+    const emEl = $("pcEmail");
+    if (job.powerCompanyEmail) {
+      emEl.innerHTML = `<a href="mailto:${esc(job.powerCompanyEmail)}">${esc(job.powerCompanyEmail)}</a>`;
+    } else { emEl.textContent = "—"; }
+
+    $("pcAic").textContent = val(job.aicNumber);
+    $("pcTemp").textContent = val(job.tempWorkOrder);
+    $("pcPerm").textContent = val(job.permWorkOrder);
+
+    // Inspections Tab
+    $("inPermit").textContent = val(job.permitNumber);
+    $("inAgency").textContent = val(job.inspectionAgency);
+
+    const iPhEl = $("inPhone");
+    if (job.inspectionAgencyPhone) {
+      iPhEl.innerHTML = `<a href="tel:${esc(job.inspectionAgencyPhone)}">${esc(job.inspectionAgencyPhone)}</a>`;
+    } else { iPhEl.textContent = "—"; }
+
+    const iEmEl = $("inEmail");
+    if (job.inspectionAgencyEmail) {
+      iEmEl.innerHTML = `<a href="mailto:${esc(job.inspectionAgencyEmail)}">${esc(job.inspectionAgencyEmail)}</a>`;
+    } else { iEmEl.textContent = "—"; }
+
+    $("inContacts").textContent = val(job.inspectionContacts);
+    $("inJobInspections").textContent = val(job.jobInspections);
+
+    const schEl = $("inSchedulingLink");
+    checkLink(job.inspectionSchedulingLink, "Open Scheduling Portal", schEl);
+
+    // Generator Tab visibility
+    const genTab = $("genTabBtn");
+    if (job.generatorInstalled) {
+      genTab.style.display = "";
+      loadGeneratorData(job.id);
+    } else {
+      genTab.style.display = "none";
+      // If generator tab was active, switch to project
+      if (document.querySelector(".tab-btn.active")?.dataset?.tab === "generator") {
+        switchTab("project");
+      }
+    }
+
+    // Reset to project tab on new job selection
+    switchTab("project");
+
+    // Scroll detail panel to top
+    $("detailPanel").scrollTop = 0;
+  }
+
+  function setActionBtn(el, url, label) {
+    if (url && url.startsWith("http")) {
+      el.href = url;
+      el.classList.remove("disabled");
+    } else {
+      el.href = "#";
+      el.classList.add("disabled");
+    }
+  }
+
+  // ── GENERATOR DATA ──
+  async function loadGeneratorData(jobId) {
+    $("genInfoGrid").innerHTML = `<div class="loading-msg">Loading...</div>`;
+    $("serviceRecordsList").innerHTML = `<div class="loading-msg">Loading...</div>`;
+
+    try {
+      const d = await apiGet("generator", { jobId });
+
+      // Generator Asset
+      const gen = d.generator;
+      if (gen) {
+        $("genInfoGrid").innerHTML = `
+          <div class="info-box"><div class="info-label">Generator Asset ID</div><div class="info-value">${esc(val(gen.assetId))}</div></div>
+          <div class="info-box"><div class="info-label">Customer</div><div class="info-value">${esc(val(gen.customer))}</div></div>
+          <div class="info-box"><div class="info-label">Generator Brand</div><div class="info-value">${esc(val(gen.brand))}</div></div>
+          <div class="info-box"><div class="info-label">Generator Model</div><div class="info-value">${esc(val(gen.model))}</div></div>
+          <div class="info-box"><div class="info-label">Generator KW</div><div class="info-value">${esc(val(gen.kw))}</div></div>
+          <div class="info-box"><div class="info-label">Generator Serial #</div><div class="info-value">${esc(val(gen.serialNumber))}</div></div>
+          <div class="info-box"><div class="info-label">Transfer Switch Model</div><div class="info-value">${esc(val(gen.transferSwitchModel))}</div></div>
+          <div class="info-box"><div class="info-label">Transfer Switch Serial #</div><div class="info-value">${esc(val(gen.transferSwitchSerial))}</div></div>
+          <div class="info-box"><div class="info-label">Fuel Type</div><div class="info-value">${esc(val(gen.fuelType))}</div></div>
+          <div class="info-box"><div class="info-label">Install / In-Service Date</div><div class="info-value">${esc(val(gen.installDate))}</div></div>
+          <div class="info-box"><div class="info-label">Service Plan Active</div><div class="info-value">${gen.servicePlanActive ? "✅ Yes" : "No"}</div></div>
+          <div class="info-box"><div class="info-label">Service Interval (Months)</div><div class="info-value">${esc(val(gen.serviceIntervalMonths))}</div></div>
+          <div class="info-box"><div class="info-label">Next Service Due</div><div class="info-value">${esc(val(gen.nextServiceDue))}</div></div>
+          <div class="info-box"><div class="info-label">Service Status</div><div class="info-value">${esc(val(gen.serviceStatus))}</div></div>
+          <div class="info-box"><div class="info-label">Warranty Expiration</div><div class="info-value">${esc(val(gen.warrantyExpiration))}</div></div>
+          <div class="info-box"><div class="info-label">Status</div><div class="info-value">${esc(val(gen.status))}</div></div>
+          <div class="info-box"><div class="info-label">Battery Install Date</div><div class="info-value">${esc(val(gen.batteryInstallDate))}</div></div>
+          <div class="info-box"><div class="info-label">Battery Age</div><div class="info-value">${esc(val(gen.batteryAge))}</div></div>
         `;
 
-        article.addEventListener("click", (e) => {
-          const btn = e.target.closest("button");
-          if (btn) {
-            const action = btn.getAttribute("data-action");
-            if (action === "commission") {
-              e.stopPropagation();
-              openCommissionModal(job);
-              return;
-            }
-            if (action === "open") {
-              e.stopPropagation();
-            }
-          }
-          openJobModal(job);
-        });
-
-        const buttons = article.querySelectorAll("button[data-action='open']");
-        buttons.forEach(btn => {
-          btn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            openJobModal(job);
-          });
-        });
-
-        const commissionButtons = article.querySelectorAll("button[data-action='commission']");
-        commissionButtons.forEach(btn => {
-          btn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            openCommissionModal(job);
-          });
-        });
-
-        els.jobsGrid.appendChild(article);
-      });
-    }
-
-    function openJobModal(job) {
-      state.selectedJob = job;
-      els.jobModalTitle.textContent = job.name || "Job Details";
-      els.jobModalSub.textContent = [job.po, job.company].filter(Boolean).join(" • ");
-
-      const fields = [
-        ["Status", job.status],
-        ["Job PO", job.po],
-        ["Company", job.company],
-        ["Contact", job.contact],
-        ["Address", job.address],
-        ["Power Company", job.powerCompany],
-        ["AIC #", job.aicNumber],
-        ["Temporary Work Order", job.tempWorkOrder],
-        ["Permanent Work Order", job.permWorkOrder],
-        ["Generator Installed", job.generatorInstalled ? "Yes" : "No"],
-        ["Generator Commissioned", job.generatorCommissioned ? "Yes" : "No"],
-        ["Commission Date", job.generatorCommissionDate],
-        ["Next Service Date", job.nextServiceDate],
-        ["Notes", job.notes]
-      ];
-
-      els.jobDetailGrid.innerHTML = fields.map(([label, value]) => `
-        <div class="detail-box">
-          <div class="detail-label">${escapeHtml(label)}</div>
-          <div class="detail-value">${escapeHtml(value || "—")}</div>
-        </div>
-      `).join("");
-
-      if (job.generatorInstalled && isAdmin()) {
-        els.openCommissionBtn.classList.remove("hidden");
-      } else {
-        els.openCommissionBtn.classList.add("hidden");
-      }
-
-      els.jobModalBackdrop.classList.remove("hidden");
-    }
-
-    function closeJobModal() {
-      els.jobModalBackdrop.classList.add("hidden");
-    }
-
-    function openCommissionModal(job) {
-      state.selectedJob = job;
-      hideMessage(els.commissionMessage);
-      els.commissionJobLabel.textContent = [job.name, job.po].filter(Boolean).join(" • ");
-
-      els.commissionDate.value = job.generatorCommissionDate || todayString();
-      els.nextServiceDate.value = job.nextServiceDate || "";
-      els.generatorMake.value = job.generatorMake || "";
-      els.generatorModel.value = job.generatorModel || "";
-      els.generatorSerial.value = job.generatorSerial || "";
-      els.atsSerial.value = job.atsSerial || "";
-      els.serviceIntervalMonths.value = job.serviceIntervalMonths || 12;
-      els.commissionedBy.value = state.user ? state.user.name : "";
-      els.commissionNotes.value = job.notes || "";
-
-      els.commissionModalBackdrop.classList.remove("hidden");
-    }
-
-    function closeCommissionModal() {
-      els.commissionModalBackdrop.classList.add("hidden");
-    }
-
-    function todayString() {
-      const d = new Date();
-      const yyyy = d.getFullYear();
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const dd = String(d.getDate()).padStart(2, "0");
-      return `${yyyy}-${mm}-${dd}`;
-    }
-
-    function escapeHtml(value) {
-      return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-    }
-
-    async function handleLogin() {
-      hideMessage(els.loginMessage);
-      const identifier = els.loginIdentifier.value.trim();
-      const pin = els.loginPin.value.trim();
-
-      if (!identifier || !pin) {
-        showMessage(els.loginMessage, "Enter your username/email/name and PIN/password.", "error");
-        return;
-      }
-
-      els.loginBtn.disabled = true;
-      els.loginBtn.textContent = "Logging in...";
-
-      try {
-        const data = await apiPost("login", { identifier, pin });
-        saveUser(data.user);
-        showMessage(els.jobsMessage, "Login successful. Loading jobs...", "success");
-        await loadJobs();
-      } catch (err) {
-        showMessage(els.loginMessage, err.message || "Login failed.", "error");
-      } finally {
-        els.loginBtn.disabled = false;
-        els.loginBtn.textContent = "Log In";
-      }
-    }
-
-    async function loadJobs() {
-      if (!state.user) return;
-
-      hideMessage(els.jobsMessage);
-      showMessage(els.jobsMessage, "Loading jobs...", "info");
-
-      try {
-        const data = await apiGet("jobs");
-        state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
-        applyFilters();
-
-        if (state.jobs.length) {
-          showMessage(els.jobsMessage, `Loaded ${state.jobs.length} job(s).`, "success");
+        // Set up service button
+        const svcBtn = $("btnServiceGen");
+        if (gen.serviceFormUrl) {
+          svcBtn.href = gen.serviceFormUrl;
+          svcBtn.classList.remove("disabled");
         } else {
-          showMessage(els.jobsMessage, "No jobs returned from Airtable.", "info");
+          svcBtn.href = "#";
+          svcBtn.classList.add("disabled");
         }
-      } catch (err) {
-        state.jobs = [];
-        state.filteredJobs = [];
-        renderJobs();
-        showMessage(els.jobsMessage, err.message || "Could not load jobs.", "error");
+      } else {
+        $("genInfoGrid").innerHTML = `<div class="empty-msg">No generator record linked to this job yet.</div>`;
       }
+
+      // Service Records
+      const records = Array.isArray(d.serviceRecords) ? d.serviceRecords : [];
+      if (!records.length) {
+        $("serviceRecordsList").innerHTML = `<div class="empty-msg">No service records found.</div>`;
+      } else {
+        $("serviceRecordsList").innerHTML = records.map(r => {
+          const checks = [
+            ["Oil Changed", r.oilChanged],
+            ["Oil Filter", r.oilFilterChanged],
+            ["Air Filter", r.airFilterChanged],
+            ["Spark Plugs", r.sparkPlugsChanged],
+            ["Battery Tested", r.batteryTested],
+            ["Battery Replaced", r.batteryReplaced],
+            ["Load Test", r.loadTestPerformed],
+            ["Firmware/Settings", r.firmwareChecked],
+            ["Exercise Checked", r.exerciseChecked],
+          ];
+          return `
+          <div class="service-record">
+            <div class="service-record-header">
+              <div class="service-record-title">${esc(val(r.serviceDate))} — ${esc(val(r.serviceType))}</div>
+              <span class="pill default" style="font-size:11px;">${esc(val(r.technician))}</span>
+            </div>
+            <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
+              ${r.servicePlanVisit ? "✅ Service Plan Visit" : ""} &nbsp;
+              ${r.troubleCodesFound ? `⚠️ Trouble Codes: ${esc(r.troubleCodesFound)}` : ""}
+            </div>
+            <div class="service-checkboxes">
+              ${checks.map(([lbl, v]) => `<span class="check-badge ${v ? "yes":"no"}">${v ? "✓":"✗"} ${esc(lbl)}</span>`).join("")}
+            </div>
+            ${r.workNotes ? `<div style="margin-top:8px; font-size:13px; color:var(--muted);">📝 ${esc(r.workNotes)}</div>` : ""}
+            ${r.partsUsed ? `<div style="font-size:12px; color:var(--muted);">🔩 Parts: ${esc(r.partsUsed)}</div>` : ""}
+            ${r.laborHours ? `<div style="font-size:12px; color:var(--muted);">⏱ Labor: ${esc(r.laborHours)} hrs &nbsp; Gen Hours: ${esc(val(r.generatorHours))}</div>` : ""}
+          </div>`;
+        }).join("");
+      }
+
+    } catch(err) {
+      $("genInfoGrid").innerHTML = `<div class="empty-msg" style="color:#ff8b7e;">Error: ${esc(err.message)}</div>`;
+      $("serviceRecordsList").innerHTML = "";
     }
+  }
 
-    async function handleCommissionSave(event) {
-      event.preventDefault();
-      hideMessage(els.commissionMessage);
+  // ── TABS ──
+  function switchTab(tabId) {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
+  }
 
-      if (!state.selectedJob || !state.user) {
-        showMessage(els.commissionMessage, "No job selected.", "error");
-        return;
-      }
+  // ── EVENTS ──
+  function wireEvents() {
+    $("loginBtn").addEventListener("click", handleLogin);
+    [$("loginId"), $("loginPin")].forEach(el => {
+      el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
+    });
 
-      if (!isAdmin()) {
-        showMessage(els.commissionMessage, "Only admin users can submit generator commissioning.", "error");
-        return;
-      }
+    $("logoutBtn").addEventListener("click", () => { clearUser(); });
+    $("refreshBtn").addEventListener("click", loadJobs);
 
-      const payload = {
-        jobId: state.selectedJob.id,
-        jobName: state.selectedJob.name,
-        commissionDate: els.commissionDate.value,
-        nextServiceDate: els.nextServiceDate.value,
-        generatorMake: els.generatorMake.value.trim(),
-        generatorModel: els.generatorModel.value.trim(),
-        generatorSerial: els.generatorSerial.value.trim(),
-        atsSerial: els.atsSerial.value.trim(),
-        serviceIntervalMonths: els.serviceIntervalMonths.value ? Number(els.serviceIntervalMonths.value) : null,
-        commissionedBy: els.commissionedBy.value.trim() || state.user.name,
-        notes: els.commissionNotes.value.trim(),
-        submittedByUserId: state.user.id,
-        submittedByName: state.user.name
-      };
+    $("searchInput").addEventListener("input", applyFilters);
+    $("statusFilter").addEventListener("change", applyFilters);
+    $("typeFilter").addEventListener("change", applyFilters);
 
-      const submitBtn = document.getElementById("saveCommissionBtn");
-      submitBtn.disabled = true;
-      submitBtn.textContent = "Saving...";
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
+  }
 
-      try {
-        await apiPost("commission", payload);
-        showMessage(els.commissionMessage, "Generator commissioning saved.", "success");
-        await loadJobs();
-        setTimeout(() => {
-          closeCommissionModal();
-          closeJobModal();
-        }, 700);
-      } catch (err) {
-        showMessage(els.commissionMessage, err.message || "Could not save commissioning.", "error");
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = "Save Commissioning";
-      }
-    }
+  // ── INIT ──
+  async function init() {
+    wireEvents();
+    loadStoredUser();
+    renderAuth();
+    if (state.user) await loadJobs();
+  }
 
-    function wireEvents() {
-      els.loginBtn.addEventListener("click", handleLogin);
-      els.loginPin.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") handleLogin();
-      });
-      els.loginIdentifier.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") handleLogin();
-      });
-
-      els.logoutBtn.addEventListener("click", () => {
-        clearUser();
-        hideMessage(els.loginMessage);
-        showMessage(els.loginMessage, "You have been logged out.", "success");
-      });
-
-      els.refreshBtn.addEventListener("click", loadJobs);
-      els.loadJobsBtn.addEventListener("click", loadJobs);
-      els.clearFiltersBtn.addEventListener("click", () => {
-        els.searchInput.value = "";
-        els.statusFilter.value = "";
-        applyFilters();
-      });
-
-      els.searchInput.addEventListener("input", applyFilters);
-      els.statusFilter.addEventListener("change", applyFilters);
-
-      els.closeJobModalBtn.addEventListener("click", closeJobModal);
-      els.jobModalCloseFooterBtn.addEventListener("click", closeJobModal);
-      els.jobModalBackdrop.addEventListener("click", (e) => {
-        if (e.target === els.jobModalBackdrop) closeJobModal();
-      });
-
-      els.openCommissionBtn.addEventListener("click", () => {
-        if (state.selectedJob) openCommissionModal(state.selectedJob);
-      });
-
-      els.closeCommissionModalBtn.addEventListener("click", closeCommissionModal);
-      els.cancelCommissionBtn.addEventListener("click", closeCommissionModal);
-      els.commissionModalBackdrop.addEventListener("click", (e) => {
-        if (e.target === els.commissionModalBackdrop) closeCommissionModal();
-      });
-
-      els.commissionForm.addEventListener("submit", handleCommissionSave);
-    }
-
-    async function init() {
-      wireEvents();
-      loadUserFromStorage();
-      renderAuth();
-
-      if (state.user) {
-        showMessage(els.jobsMessage, "Restored previous login. Loading jobs...", "info");
-        await loadJobs();
-      }
-    }
-
-    init();
-  </script>
+  init();
+</script>
 </body>
 </html>

@@ -874,6 +874,10 @@
               <div class="info-label">Job Type</div>
               <div class="info-value" id="piJobType">—</div>
             </div>
+            <div class="info-box admin-only hidden">
+              <div class="info-label">Tax Status</div>
+              <div class="info-value" id="piTaxStatus">—</div>
+            </div>
             <div class="info-box">
               <div class="info-label">Contractor</div>
               <div class="info-value" id="piContractor">—</div>
@@ -1361,6 +1365,7 @@
     $("piJobPo").textContent = val(job.po);
     $("piJobStatus").textContent = val(job.status);
     $("piJobType").textContent = val(job.type);
+    if (isAdmin()) $("piTaxStatus").textContent = val(job.taxStatus);
     $("piContractor").textContent = val(job.contractor);
     $("piGenerator").textContent = job.generatorInstalled ? "✅ Yes" : "No";
 

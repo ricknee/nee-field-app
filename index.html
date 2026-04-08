@@ -940,6 +940,7 @@
           <button class="tab-btn admin-only hidden" data-tab="closeout">✅ Closeout</button>
           <button class="tab-btn admin-only hidden" data-tab="est-gp">📈 Est. GP</button>
           <button class="tab-btn admin-only hidden" data-tab="expenses">🧾 Expenses</button>
+          <button class="tab-btn admin-only hidden" data-tab="time-entries">⏱ Time Entries</button>
         </div>
 
         <!-- TAB: PROJECT INFO -->
@@ -1150,6 +1151,14 @@
           <div class="section-header">Expenses</div>
           <div id="expensesList" style="overflow-x:auto;">
             <div class="loading-msg">Select a job to view expenses.</div>
+          </div>
+        </div>
+
+        <!-- TAB: TIME ENTRIES (admin only) -->
+        <div class="tab-content" id="tab-time-entries">
+          <div class="section-header">Time Entries</div>
+          <div id="timeEntriesList" style="overflow-x:auto;">
+            <div class="loading-msg">Select a job to view time entries.</div>
           </div>
         </div>
 
@@ -1590,6 +1599,7 @@
       renderCloseout(job);
       renderEstGp(job);
       loadExpenses(job.id);
+      loadTimeEntries(job.id);
     }
 
     // Reset to project tab on new job selection
@@ -1835,6 +1845,50 @@
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
   }
 
+  // ── TIME ENTRIES (admin) ──
+  async function loadTimeEntries(jobId) {
+    const el = $("timeEntriesList");
+    el.innerHTML = `<div class="loading-msg">Loading time entries...</div>`;
+    try {
+      const d = await apiGet("timeEntries", { jobId });
+      const entries = d.entries || [];
+      if (!entries.length) {
+        el.innerHTML = `<div class="empty-msg">No time entries found for this job.</div>`;
+        return;
+      }
+
+      const totalHours = entries.reduce((sum, e) => sum + (e.hours || 0), 0);
+
+      el.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+          <span style="font-size:13px; color:var(--muted);">${entries.length} entr${entries.length !== 1 ? "ies" : "y"}</span>
+          <span style="font-size:14px; font-weight:700; color:var(--text);">Total Hours: <span style="color:var(--accent);">${totalHours.toFixed(2)}</span></span>
+        </div>
+        <table class="expense-table">
+          <thead>
+            <tr>
+              <th>Work Date</th>
+              <th>Employee</th>
+              <th>Class</th>
+              <th>City Taxes</th>
+              <th style="text-align:right;">Hours</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entries.map(e => `<tr>
+              <td style="white-space:nowrap;">${esc(fmtDate(e.workDate))}</td>
+              <td>${esc(e.employee || "—")}</td>
+              <td>${esc(e.class || "—")}</td>
+              <td>${esc(e.cityTaxes || "—")}</td>
+              <td style="text-align:right;">${e.hours != null ? e.hours : "—"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>`;
+    } catch(err) {
+      el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
+    }
+  }
+
   // ── EXPENSES (admin) ──
   async function loadExpenses(jobId) {
     const el = $("expensesList");
@@ -1859,8 +1913,8 @@
           <thead>
             <tr>
               <th>Date</th>
-              <th>Description</th>
               <th>Vendor</th>
+              <th>Description</th>
               <th style="text-align:right;">Total Cost</th>
               <th>Markup %</th>
               <th style="text-align:right;">Billable Amt</th>
@@ -1876,8 +1930,8 @@
               const markup = e.jobMarkupPct != null ? Math.round(e.jobMarkupPct * 100) + "%" : "—";
               return `<tr>
                 <td style="white-space:nowrap;">${esc(fmtDate(e.date))}</td>
-                <td>${esc(e.description || "—")}</td>
                 <td>${esc(e.vendor || "—")}</td>
+                <td>${esc(e.description || "—")}</td>
                 <td style="text-align:right;">${e.totalCost != null ? fmtCurrency(e.totalCost) : "—"}</td>
                 <td>${esc(markup)}</td>
                 <td style="text-align:right;">${e.billableMaterial != null ? fmtCurrency(e.billableMaterial) : "—"}</td>

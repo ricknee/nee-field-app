@@ -1846,19 +1846,27 @@
         el.innerHTML = `<div class="empty-msg">No expenses found for this job.</div>`;
         return;
       }
+
+      // Grand total
+      const grandTotal = expenses.reduce((sum, e) => sum + (e.totalCost || 0), 0);
+
       el.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+          <span style="font-size:13px; color:var(--muted);">${expenses.length} expense${expenses.length !== 1 ? "s" : ""}</span>
+          <span style="font-size:14px; font-weight:700; color:var(--text);">Total: <span style="color:var(--accent);">${fmtCurrency(grandTotal)}</span></span>
+        </div>
         <table class="expense-table">
           <thead>
             <tr>
               <th>Date</th>
               <th>Description</th>
               <th>Vendor</th>
+              <th style="text-align:right;">Total Cost</th>
+              <th>Markup %</th>
+              <th style="text-align:right;">Billable Amt</th>
               <th>Type</th>
               <th>Status</th>
               <th>Billable?</th>
-              <th>Markup %</th>
-              <th>Total Cost</th>
-              <th>Billable Amt</th>
             </tr>
           </thead>
           <tbody>
@@ -1870,12 +1878,12 @@
                 <td style="white-space:nowrap;">${esc(fmtDate(e.date))}</td>
                 <td>${esc(e.description || "—")}</td>
                 <td>${esc(e.vendor || "—")}</td>
+                <td style="text-align:right;">${e.totalCost != null ? fmtCurrency(e.totalCost) : "—"}</td>
+                <td>${esc(markup)}</td>
+                <td style="text-align:right;">${e.billableMaterial != null ? fmtCurrency(e.billableMaterial) : "—"}</td>
                 <td>${esc(e.expenseType || "—")}</td>
                 <td><span class="expense-status-pill ${pillClass}">${esc(e.expenseStatus || "—")}</span></td>
                 <td style="text-align:center;">${e.billable ? "✅" : "—"}</td>
-                <td>${esc(markup)}</td>
-                <td style="text-align:right;">${e.totalCost != null ? fmtCurrency(e.totalCost) : "—"}</td>
-                <td style="text-align:right;">${e.billableMaterial != null ? fmtCurrency(e.billableMaterial) : "—"}</td>
               </tr>`;
             }).join("")}
           </tbody>

@@ -962,41 +962,35 @@
 
         </div>
 
+        <!-- TAB: LIVE PERFORMANCE (admin only) -->
+        <div class="tab-content" id="tab-live-perf">
+          <div class="section-header">Live Job Performance</div>
+          <div class="info-grid" id="livePerfGrid">
+            <div class="loading-msg">Select a job to view live performance.</div>
+          </div>
+        </div>
+
+        <!-- TAB: CLOSEOUT (admin only) -->
+        <div class="tab-content" id="tab-closeout">
+          <div class="section-header">Profit Report</div>
+          <div class="info-grid" id="closeoutGrid">
+            <div class="loading-msg">Select a job to view closeout data.</div>
+          </div>
+          <div class="section-header" style="margin-top:8px;">Comparison Report</div>
+          <div class="info-grid" id="closeoutCompareGrid"></div>
+          <div class="section-header" style="margin-top:8px;">Review Checklist</div>
+          <div class="info-grid" id="closeoutCheckGrid"></div>
+        </div>
+
+        <!-- TAB: ESTIMATED GROSS PROFIT (admin only) -->
+        <div class="tab-content" id="tab-est-gp">
+          <div class="section-header">Estimated Gross Profit</div>
+          <div class="info-grid" id="estGpGrid">
+            <div class="loading-msg">Select a job to view estimated gross profit.</div>
+          </div>
+        </div>
+
       </div><!-- /jobDetail -->
-
-      <!-- ══════════════ ADMIN TABS ══════════════ -->
-
-      <!-- TAB: LIVE PERFORMANCE -->
-      <div class="tab-content" id="tab-live-perf">
-        <div class="section-header">Live Job Performance</div>
-        <div class="info-grid" id="livePerfGrid">
-          <div class="loading-msg">Select a job to view live performance.</div>
-        </div>
-      </div>
-
-      <!-- TAB: CLOSEOUT (FINAL) -->
-      <div class="tab-content" id="tab-closeout">
-        <div class="section-header">Profit Report</div>
-        <div class="info-grid" id="closeoutGrid">
-          <div class="loading-msg">Select a job to view closeout data.</div>
-        </div>
-        <div class="section-header" style="margin-top:8px;">Comparison Report</div>
-        <div class="info-grid" id="closeoutCompareGrid">
-          <div class="loading-msg"></div>
-        </div>
-        <div class="section-header" style="margin-top:8px;">Review Checklist</div>
-        <div class="info-grid" id="closeoutCheckGrid">
-          <div class="loading-msg"></div>
-        </div>
-      </div>
-
-      <!-- TAB: ESTIMATED GROSS PROFIT -->
-      <div class="tab-content" id="tab-est-gp">
-        <div class="section-header">Estimated Gross Profit</div>
-        <div class="info-grid" id="estGpGrid">
-          <div class="loading-msg">Select a job to view estimated gross profit.</div>
-        </div>
-      </div>
     </div><!-- /detailPanel -->
 
   </div><!-- /app-wrap -->
@@ -1516,4 +1510,152 @@
       infoBox("Proj. Est. Material Cost (from Estimates)", fmtCurrency(job.projectedEstimatedMaterialCost)),
       infoBox("Proj. Est. Labor Cost (from Estimates)", fmtCurrency(job.projectedEstimatedLaborCost)),
       infoBox("Projected Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar)),
-      infoBox("Projected Gross Profit %", job.projectedGrossProfitPct != null ? Math.round(job.project
+      infoBox("Projected Gross Profit %", job.projectedGrossProfitPct != null ? Math.round(job.projectedGrossProfitPct * 100) + "%" : "—"),
+    ].join("");
+  }
+
+  function setActionBtn(el, url, label) {
+    if (url && url.startsWith("http")) {
+      el.href = url;
+      el.classList.remove("disabled");
+    } else {
+      el.href = "#";
+      el.classList.add("disabled");
+    }
+  }
+
+  // ── GENERATOR DATA ──
+  async function loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl) {
+    $("genInfoGrid").innerHTML = `<div class="loading-msg">Loading...</div>`;
+    $("serviceRecordsList").innerHTML = `<div class="loading-msg">Loading...</div>`;
+
+    try {
+      const d = await apiGet("generator", { jobId });
+
+      // Generator Asset
+      const gen = d.generator;
+      if (gen) {
+        $("genInfoGrid").innerHTML = `
+          <div class="info-box"><div class="info-label">Generator Asset ID</div><div class="info-value">${esc(val(gen.assetId))}</div></div>
+          <div class="info-box"><div class="info-label">Customer</div><div class="info-value">${esc(val(gen.customer))}</div></div>
+          <div class="info-box"><div class="info-label">Generator Brand</div><div class="info-value">${esc(val(gen.brand))}</div></div>
+          <div class="info-box"><div class="info-label">Generator Model</div><div class="info-value">${esc(val(gen.model))}</div></div>
+          <div class="info-box"><div class="info-label">Generator KW</div><div class="info-value">${esc(val(gen.kw))} kW</div></div>
+          <div class="info-box"><div class="info-label">Generator Serial #</div><div class="info-value">${esc(val(gen.serialNumber))}</div></div>
+          <div class="info-box"><div class="info-label">Transfer Switch Model</div><div class="info-value">${esc(val(gen.transferSwitchModel))}</div></div>
+          <div class="info-box"><div class="info-label">Transfer Switch Serial #</div><div class="info-value">${esc(val(gen.transferSwitchSerial))}</div></div>
+          <div class="info-box"><div class="info-label">Fuel Type</div><div class="info-value">${esc(val(gen.fuelType))}</div></div>
+          <div class="info-box"><div class="info-label">Install / In-Service Date</div><div class="info-value">${esc(fmtDate(gen.installDate))}</div></div>
+          <div class="info-box"><div class="info-label">Service Plan Active</div><div class="info-value">${gen.servicePlanActive ? "✅ Yes" : "No"}</div></div>
+          <div class="info-box"><div class="info-label">Service Interval (Months)</div><div class="info-value">${esc(val(gen.serviceIntervalMonths))}</div></div>
+          <div class="info-box"><div class="info-label">Next Service Due</div><div class="info-value">${esc(fmtDate(gen.nextServiceDue))}</div></div>
+          <div class="info-box"><div class="info-label">Service Status</div><div class="info-value">${esc(val(gen.serviceStatus))}</div></div>
+          <div class="info-box"><div class="info-label">Warranty Expiration</div><div class="info-value">${esc(fmtDate(gen.warrantyExpiration))}</div></div>
+          <div class="info-box"><div class="info-label">Status</div><div class="info-value">${esc(val(gen.status))}</div></div>
+          <div class="info-box"><div class="info-label">Battery Install Date</div><div class="info-value">${esc(fmtDate(gen.batteryInstallDate))}</div></div>
+          <div class="info-box"><div class="info-label">Battery Age</div><div class="info-value">${esc(val(gen.batteryAge))} yrs</div></div>
+        `;
+
+        // Wire generator form buttons from job fields
+        const commBtn = $("btnCommissionGen");
+        if (commissionFormUrl) {
+          commBtn.href = commissionFormUrl;
+          commBtn.classList.remove("disabled");
+        } else {
+          commBtn.href = "#";
+          commBtn.classList.add("disabled");
+        }
+
+        const svcBtn = $("btnServiceGen");
+        if (serviceFormUrl) {
+          svcBtn.href = serviceFormUrl;
+          svcBtn.classList.remove("disabled");
+        } else {
+          svcBtn.href = "#";
+          svcBtn.classList.add("disabled");
+        }
+      } else {
+        $("genInfoGrid").innerHTML = `<div class="empty-msg">No generator record linked to this job yet.</div>`;
+      }
+
+      // Service Records
+      const records = Array.isArray(d.serviceRecords) ? d.serviceRecords : [];
+      if (!records.length) {
+        $("serviceRecordsList").innerHTML = `<div class="empty-msg">No service records found.</div>`;
+      } else {
+        $("serviceRecordsList").innerHTML = records.map(r => {
+          const svcDateFmt = fmtDate(r.serviceDate);
+          const checks = [
+            ["Oil Changed", r.oilChanged],
+            ["Oil Filter", r.oilFilterChanged],
+            ["Air Filter", r.airFilterChanged],
+            ["Spark Plugs", r.sparkPlugsChanged],
+            ["Battery Tested", r.batteryTested],
+            ["Battery Replaced", r.batteryReplaced],
+            ["Load Test", r.loadTestPerformed],
+            ["Firmware/Settings", r.firmwareChecked],
+            ["Exercise Checked", r.exerciseChecked],
+          ];
+          return `
+          <div class="service-record">
+            <div class="service-record-header">
+              <div class="service-record-title">${esc(svcDateFmt)} — ${esc(val(r.serviceType))}</div>
+              <span class="pill default" style="font-size:11px;">${esc(val(r.technician))}</span>
+            </div>
+            <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
+              ${r.servicePlanVisit ? "✅ Service Plan Visit" : ""} &nbsp;
+              ${r.troubleCodesFound ? `⚠️ Trouble Codes: ${esc(r.troubleCodesFound)}` : ""}
+            </div>
+            <div class="service-checkboxes">
+              ${checks.map(([lbl, v]) => `<span class="check-badge ${v ? "yes":"no"}">${v ? "✓":"✗"} ${esc(lbl)}</span>`).join("")}
+            </div>
+            ${r.workNotes ? `<div style="margin-top:8px; font-size:13px; color:var(--muted);">📝 ${esc(r.workNotes)}</div>` : ""}
+            ${r.partsUsed ? `<div style="font-size:12px; color:var(--muted);">🔩 Parts: ${esc(r.partsUsed)}</div>` : ""}
+            ${r.laborHours ? `<div style="font-size:12px; color:var(--muted);">⏱ Labor: ${esc(r.laborHours)} hrs &nbsp; Gen Hours: ${esc(val(r.generatorHours))}</div>` : ""}
+          </div>`;
+        }).join("");
+      }
+
+    } catch(err) {
+      $("genInfoGrid").innerHTML = `<div class="empty-msg" style="color:#ff8b7e;">Error: ${esc(err.message)}</div>`;
+      $("serviceRecordsList").innerHTML = "";
+    }
+  }
+
+  // ── TABS ──
+  function switchTab(tabId) {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
+  }
+
+  // ── EVENTS ──
+  function wireEvents() {
+    $("loginBtn").addEventListener("click", handleLogin);
+    [$("loginId"), $("loginPin")].forEach(el => {
+      el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
+    });
+
+    $("logoutBtn").addEventListener("click", () => { clearUser(); });
+    $("refreshBtn").addEventListener("click", loadJobs);
+
+    $("searchInput").addEventListener("input", applyFilters);
+    $("statusFilter").addEventListener("change", applyFilters);
+    $("typeFilter").addEventListener("change", applyFilters);
+
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
+  }
+
+  // ── INIT ──
+  async function init() {
+    wireEvents();
+    loadStoredUser();
+    renderAuth();
+    if (state.user) await loadJobs();
+  }
+
+  init();
+</script>
+</body>
+</html>

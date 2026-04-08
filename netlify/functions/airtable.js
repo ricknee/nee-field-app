@@ -54,6 +54,7 @@ const F = {
   gen: {
     assetId:              "Generator Asset ID",
     customer:             "Customer",
+    customerName:         "Customer Name (lookup)",
     customerPhone:        "Customer Phone #",
     job:                  "Job",
     siteAddress:          "Site Address",
@@ -290,7 +291,9 @@ async function handleGenerator(params) {
     notes:                g(f, F.gen.notes) || ""
   };
 
-  const svcFilter = `FIND("${r.id}", ARRAYJOIN({${F.svc.generator}}))`;
+  // Search service records by generator display name (linked field returns name not ID)
+  const genAssetId = generator.assetId || "";
+  const svcFilter = genAssetId ? `FIND("${genAssetId}", ARRAYJOIN({${F.svc.generator}}))` : `FALSE()`;
   const svcRecords = await fetchAll(TABLES.generatorService, { filter: svcFilter, sortField: F.svc.serviceDate, sortDir: "desc" });
 
   const serviceRecords = svcRecords.map(sr => {

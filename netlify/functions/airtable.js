@@ -246,7 +246,7 @@ async function handleLogin(body) {
     const username = normalize(f[F.emp.username]);
     const email    = normalize(f[F.emp.email]);
     const savedPin = String(f[F.emp.pin] || "").trim();
-    const active   = f[F.emp.active] == null ? true : gBool(f, F.emp.active);
+    const active   = gBool(f, F.emp.active);
     const id       = normalize(identifier);
     return [name, username, email].includes(id) && savedPin !== "" && savedPin === String(pin).trim() && active;
   });

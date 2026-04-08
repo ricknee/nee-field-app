@@ -972,6 +972,15 @@
       .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
+  function fmtDate(v) {
+    if (!v || v === "—") return "—";
+    try {
+      const d = new Date(v);
+      if (isNaN(d.getTime())) return v;
+      return d.toLocaleDateString("en-US", { year:"numeric", month:"short", day:"numeric" });
+    } catch { return v; }
+  }
+
   function showAlert(el, msg, type="error") {
     el.textContent = msg;
     el.className = `alert ${type}`;
@@ -1351,20 +1360,20 @@
           <div class="info-box"><div class="info-label">Customer</div><div class="info-value">${esc(val(gen.customer))}</div></div>
           <div class="info-box"><div class="info-label">Generator Brand</div><div class="info-value">${esc(val(gen.brand))}</div></div>
           <div class="info-box"><div class="info-label">Generator Model</div><div class="info-value">${esc(val(gen.model))}</div></div>
-          <div class="info-box"><div class="info-label">Generator KW</div><div class="info-value">${esc(val(gen.kw))}</div></div>
+          <div class="info-box"><div class="info-label">Generator KW</div><div class="info-value">${esc(val(gen.kw))} kW</div></div>
           <div class="info-box"><div class="info-label">Generator Serial #</div><div class="info-value">${esc(val(gen.serialNumber))}</div></div>
           <div class="info-box"><div class="info-label">Transfer Switch Model</div><div class="info-value">${esc(val(gen.transferSwitchModel))}</div></div>
           <div class="info-box"><div class="info-label">Transfer Switch Serial #</div><div class="info-value">${esc(val(gen.transferSwitchSerial))}</div></div>
           <div class="info-box"><div class="info-label">Fuel Type</div><div class="info-value">${esc(val(gen.fuelType))}</div></div>
-          <div class="info-box"><div class="info-label">Install / In-Service Date</div><div class="info-value">${esc(val(gen.installDate))}</div></div>
+          <div class="info-box"><div class="info-label">Install / In-Service Date</div><div class="info-value">${esc(fmtDate(gen.installDate))}</div></div>
           <div class="info-box"><div class="info-label">Service Plan Active</div><div class="info-value">${gen.servicePlanActive ? "✅ Yes" : "No"}</div></div>
           <div class="info-box"><div class="info-label">Service Interval (Months)</div><div class="info-value">${esc(val(gen.serviceIntervalMonths))}</div></div>
-          <div class="info-box"><div class="info-label">Next Service Due</div><div class="info-value">${esc(val(gen.nextServiceDue))}</div></div>
+          <div class="info-box"><div class="info-label">Next Service Due</div><div class="info-value">${esc(fmtDate(gen.nextServiceDue))}</div></div>
           <div class="info-box"><div class="info-label">Service Status</div><div class="info-value">${esc(val(gen.serviceStatus))}</div></div>
-          <div class="info-box"><div class="info-label">Warranty Expiration</div><div class="info-value">${esc(val(gen.warrantyExpiration))}</div></div>
+          <div class="info-box"><div class="info-label">Warranty Expiration</div><div class="info-value">${esc(fmtDate(gen.warrantyExpiration))}</div></div>
           <div class="info-box"><div class="info-label">Status</div><div class="info-value">${esc(val(gen.status))}</div></div>
-          <div class="info-box"><div class="info-label">Battery Install Date</div><div class="info-value">${esc(val(gen.batteryInstallDate))}</div></div>
-          <div class="info-box"><div class="info-label">Battery Age</div><div class="info-value">${esc(val(gen.batteryAge))}</div></div>
+          <div class="info-box"><div class="info-label">Battery Install Date</div><div class="info-value">${esc(fmtDate(gen.batteryInstallDate))}</div></div>
+          <div class="info-box"><div class="info-label">Battery Age</div><div class="info-value">${esc(val(gen.batteryAge))} yrs</div></div>
         `;
 
         // Wire generator form buttons from job fields
@@ -1395,6 +1404,7 @@
         $("serviceRecordsList").innerHTML = `<div class="empty-msg">No service records found.</div>`;
       } else {
         $("serviceRecordsList").innerHTML = records.map(r => {
+          const svcDateFmt = fmtDate(r.serviceDate);
           const checks = [
             ["Oil Changed", r.oilChanged],
             ["Oil Filter", r.oilFilterChanged],
@@ -1409,7 +1419,7 @@
           return `
           <div class="service-record">
             <div class="service-record-header">
-              <div class="service-record-title">${esc(val(r.serviceDate))} — ${esc(val(r.serviceType))}</div>
+              <div class="service-record-title">${esc(svcDateFmt)} — ${esc(val(r.serviceType))}</div>
               <span class="pill default" style="font-size:11px;">${esc(val(r.technician))}</span>
             </div>
             <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">

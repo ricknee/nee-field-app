@@ -10,7 +10,8 @@ const TABLES = {
   employees:        "Employees",
   jobs:             "Jobs",
   generators:       "Generators",
-  generatorService: "Generator Service"
+  generatorService: "Generator Service",
+  timeEntries:      "Time Entries"
 };
 
 const F = {
@@ -478,6 +479,35 @@ async function handleUpdatePowerCo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleTimeEntries(params) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!jobRecords.length) return resp(200, { ok: true, entries: [] });
+  const jobName = jobRecords[0].fields["Job Name"] || "";
+
+  const records = await fetchAll(TABLES.timeEntries || "Time Entries", {
+    filter: `FIND("${jobName}", ARRAYJOIN({Job Name (Text)}))`,
+    sortField: "Work Date",
+    sortDir: "desc"
+  });
+
+  const entries = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:        r.id,
+      workDate:  f["Work Date"] || "",
+      employee:  f["Employee"] || "",
+      class:     f["Class"] || "",
+      cityTaxes: f["City Taxes"] || "",
+      hours:     f["Hours"] ?? null
+    };
+  });
+
+  return resp(200, { ok: true, entries });
+}
+
 async function handleExpenses(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -549,9 +579,10 @@ export async function handler(event) {
     if (event.httpMethod === "GET") {
       const action = event.queryStringParameters?.action;
       const params = event.queryStringParameters || {};
-      if (action === "jobs")      return await handleJobs();
-      if (action === "generator") return await handleGenerator(params);
-      if (action === "expenses")  return await handleExpenses(params);
+      if (action === "jobs")        return await handleJobs();
+      if (action === "generator")   return await handleGenerator(params);
+      if (action === "expenses")    return await handleExpenses(params);
+      if (action === "timeEntries") return await handleTimeEntries(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 

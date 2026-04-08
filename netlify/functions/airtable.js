@@ -53,6 +53,7 @@ const F = {
     generatorCommissioningForm: "Generator Startup / Commissioning Form",
     newGeneratorServiceForm:    "New Generator Service",
     taxStatus:                  "Tax Status",
+    powerCompanyIntake:         "Power Company (Intake)",
 
     // ── ADMIN: Live Performance ──
     totalRevenueLive:          "Total Revenue (Live)",
@@ -307,6 +308,7 @@ async function handleJobs() {
       generatorCommissioningForm: g(f, F.job.generatorCommissioningForm) || "",
       newGeneratorServiceForm:    g(f, F.job.newGeneratorServiceForm) || "",
       taxStatus:                  g(f, F.job.taxStatus) || "",
+      powerCompanyIntake:         g(f, F.job.powerCompanyIntake) || "",
 
       // ── ADMIN: Live Performance ──
       totalRevenueLive:          gNum(f, F.job.totalRevenueLive),
@@ -439,24 +441,23 @@ async function handleUpdateJobStatus(body) {
 }
 
 async function handleUpdatePowerCo(body) {
-  const { jobId, powerCompanyId, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
+  const { jobId, powerCompany, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
-  // Power Company is a linked record field — fld3fZ9isIQmcFDna
-  if (powerCompanyId && typeof powerCompanyId === "string" && powerCompanyId.startsWith("rec")) {
-    fields["fld3fZ9isIQmcFDna"] = [{ id: powerCompanyId }];
+  // Power Company (Intake) — singleSelect, only write if a value is selected
+  if (powerCompany && powerCompany.trim() !== "") {
+    fields["fldURTQ0ygHMMIbTU"] = powerCompany.trim();
   }
-  if (aicNumber    !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
+  // Plain text fields ✓
+  if (aicNumber     !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
   if (tempWorkOrder !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
   if (permWorkOrder !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;
-  if (meterNumber  !== undefined) fields["fldWXpfslcqLlwdTQ"] = meterNumber;
-
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "No fields to update." });
+  if (meterNumber   !== undefined) fields["fldWXpfslcqLlwdTQ"] = meterNumber;
 
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
     method: "PATCH",
-    body: JSON.stringify({ fields })
+    body: JSON.stringify({ fields, typecast: true })
   });
 
   return resp(200, { ok: true, updatedId: data.id });

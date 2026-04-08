@@ -38,7 +38,7 @@ const F = {
     tempWorkOrder:           "Temporary Work Order #",
     permWorkOrder:           "Permanent Work Order #",
     permitNumber:            "Permit Number",
-    inspectionAgency:        "Inspection Agency",
+    inspectionAgency:        "Inspection Agency Name (from Inspection Agency)",
     inspectionAgencyPhone:   "Inspection Agency Phone #",
     inspectionAgencyEmail:   "Inspection Agency Email Address",
     inspectionSchedulingLink:"Inspection Scheduling Link",
@@ -48,6 +48,7 @@ const F = {
     pipeLink:                "Add Pipe (Mobile)",
     addPhotosLink:           "Add Photos (Mobile)",
     viewPhotosLink:          "View pCloud Photos",
+    trelloCardId:               "Trello Card ID",
     generatorCommissioningForm: "Generator Startup / Commissioning Form",
     newGeneratorServiceForm:    "New Generator Service"
   },
@@ -240,6 +241,7 @@ async function handleJobs() {
       pipeLink:       extractUrl(g(f, F.job.pipeLink)),
       addPhotosLink:  extractUrl(g(f, F.job.addPhotosLink)),
       viewPhotosLink: extractUrl(g(f, F.job.viewPhotosLink)),
+      trelloCardId:               g(f, F.job.trelloCardId) || "",
       generatorCommissioningForm: g(f, F.job.generatorCommissioningForm) || "",
       newGeneratorServiceForm:    g(f, F.job.newGeneratorServiceForm) || ""
     };

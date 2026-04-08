@@ -52,6 +52,7 @@ const F = {
     trelloCardId:               "Trello Card ID",
     generatorCommissioningForm: "Generator Startup / Commissioning Form",
     newGeneratorServiceForm:    "New Generator Service",
+    taxStatus:                  "Tax Status",
 
     // ── ADMIN: Live Performance ──
     totalRevenueLive:          "Total Revenue (Live)",
@@ -305,6 +306,7 @@ async function handleJobs() {
       trelloCardId:               g(f, F.job.trelloCardId) || "",
       generatorCommissioningForm: g(f, F.job.generatorCommissioningForm) || "",
       newGeneratorServiceForm:    g(f, F.job.newGeneratorServiceForm) || "",
+      taxStatus:                  g(f, F.job.taxStatus) || "",
 
       // ── ADMIN: Live Performance ──
       totalRevenueLive:          gNum(f, F.job.totalRevenueLive),

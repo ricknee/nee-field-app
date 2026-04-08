@@ -977,8 +977,6 @@
               <div class="info-value" id="pcMeter">—</div>
             </div>
           </div>
-
-          <!-- ADMIN: Inline Power Co Edit Form -->
           <div class="admin-only hidden" id="pcEditForm" style="margin-top:20px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px;">
             <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">⚡ Update Power Co. Info</div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
@@ -986,14 +984,14 @@
                 <label class="edit-label">Power Company</label>
                 <select id="pcEditCompany" class="edit-input">
                   <option value="">— Select —</option>
-                  <option value="recobDmVVBXnBrltg">First Energy</option>
-                  <option value="recxYES0IBWBqtxtZ">Frontier Power</option>
-                  <option value="recTVvyltcnHKuPi0">Orrville Power</option>
-                  <option value="recDhtNAYIU2mSwVe">South Central REI</option>
-                  <option value="recpss11iaso9UswF">Carroll Electric Co-op</option>
-                  <option value="recrRzq7ILrfwkjqT">Guernsey-Muskingum</option>
-                  <option value="receFkiywTV0X866s">Pioneer Electric</option>
-                  <option value="reczmfcMakEnctKpC">AEP</option>
+                  <option value="AEP">AEP</option>
+                  <option value="Carroll Electric Co-op">Carroll Electric Co-op</option>
+                  <option value="First Energy">First Energy</option>
+                  <option value="Frontier Power">Frontier Power</option>
+                  <option value="Guernsey-Muskingum">Guernsey-Muskingum</option>
+                  <option value="Orrville Power">Orrville Power</option>
+                  <option value="Pioneer Electric">Pioneer Electric</option>
+                  <option value="South Central REI">South Central REI</option>
                 </select>
               </div>
               <div>
@@ -1523,8 +1521,7 @@
       $("statusChangeSelect").value = job.status || "";
       $("statusChangeMsg").style.display = "none";
       // Pre-fill Power Co edit form
-      const pcId = POWER_CO_IDS[job.powerCompanyName] || "";
-      $("pcEditCompany").value = pcId;
+      $("pcEditCompany").value = job.powerCompanyIntake || "";
       $("pcEditAic").value   = job.aicNumber || "";
       $("pcEditTemp").value  = job.tempWorkOrder || "";
       $("pcEditPerm").value  = job.permWorkOrder || "";
@@ -1784,18 +1781,6 @@
   }
 
   // ── POWER CO SAVE (admin) ──
-  // Power company record IDs map
-  const POWER_CO_IDS = {
-    "First Energy":        "recobDmVVBXnBrltg",
-    "Frontier Power":      "recxYES0IBWBqtxtZ",
-    "Orrville Power":      "recTVvyltcnHKuPi0",
-    "South Central REI":   "recDhtNAYIU2mSwVe",
-    "Carroll Electric Co-op": "recpss11iaso9UswF",
-    "Guernsey-Muskingum":  "recrRzq7ILrfwkjqT",
-    "Pioneer Electric":    "receFkiywTV0X866s",
-    "AEP":                 "reczmfcMakEnctKpC"
-  };
-
   async function handlePowerCoSave() {
     if (!state.selected) return;
     const btn = $("pcSaveBtn");
@@ -1809,7 +1794,7 @@
     try {
       await apiPost("updatePowerCo", {
         jobId:         state.selected.id,
-        powerCompanyId: $("pcEditCompany").value || undefined,
+        powerCompany:  $("pcEditCompany").value,
         aicNumber:     $("pcEditAic").value,
         tempWorkOrder: $("pcEditTemp").value,
         permWorkOrder: $("pcEditPerm").value,
@@ -1817,10 +1802,11 @@
       });
 
       // Update local state
-      state.selected.aicNumber   = $("pcEditAic").value;
+      state.selected.powerCompanyIntake = $("pcEditCompany").value;
+      state.selected.aicNumber     = $("pcEditAic").value;
       state.selected.tempWorkOrder = $("pcEditTemp").value;
       state.selected.permWorkOrder = $("pcEditPerm").value;
-      state.selected.meterNumber = $("pcEditMeter").value;
+      state.selected.meterNumber   = $("pcEditMeter").value;
 
       // Refresh display fields
       $("pcAic").textContent  = val(state.selected.aicNumber);

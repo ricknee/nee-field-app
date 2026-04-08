@@ -444,8 +444,10 @@ async function handleUpdatePowerCo(body) {
 
   const fields = {};
   // Power Company is a linked record field — fld3fZ9isIQmcFDna
-  if (powerCompanyId) fields["fld3fZ9isIQmcFDna"] = [{ id: String(powerCompanyId) }];
-  if (aicNumber   !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
+  if (powerCompanyId && typeof powerCompanyId === "string" && powerCompanyId.startsWith("rec")) {
+    fields["fld3fZ9isIQmcFDna"] = [{ id: powerCompanyId }];
+  }
+  if (aicNumber    !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
   if (tempWorkOrder !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
   if (permWorkOrder !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;
   if (meterNumber  !== undefined) fields["fldWXpfslcqLlwdTQ"] = meterNumber;

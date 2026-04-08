@@ -496,12 +496,14 @@ async function handleTimeEntries(params) {
   const entries = records.map(r => {
     const f = r.fields || {};
     return {
-      id:        r.id,
-      workDate:  f["Work Date"] || "",
-      employee:  f["Employee"] || "",
-      class:     f["Class"] || "",
-      cityTaxes: f["City Taxes"] || "",
-      hours:     f["Hours"] ?? null
+      id:          r.id,
+      workDate:    f["Work Date"] || "",
+      employee:    f["Employee"] || "",
+      class:       f["Class"] || "",
+      cityTaxes:   f["City Taxes"] || "",
+      hours:       f["Hours"] ?? null,
+      reviewed:    f["Labor Reviewed"] === true,
+      notes:       f["Notes"] || ""
     };
   });
 

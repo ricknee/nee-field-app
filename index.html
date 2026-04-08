@@ -110,6 +110,8 @@
 
     .user-badge.admin { border-color: var(--accent); color: var(--accent); }
 
+    #statusChangeRow:not(.hidden) { display: flex; }
+
     /* ── MAIN LAYOUT ── */
     .app-wrap { display: flex; height: calc(100vh - 61px); }
 
@@ -815,6 +817,22 @@
               <a id="btnNewJobEstimate" href="#" target="_blank" class="action-btn admin-only hidden" style="font-size:12px; text-decoration:none; padding:6px 12px;">📋 New Job Estimate</a>
             </div>
           </div>
+          <!-- ADMIN: Change Job Status -->
+          <div class="admin-only hidden" id="statusChangeRow" style="align-items:center; gap:10px; padding: 10px 0 4px; flex-wrap:wrap;">
+            <label style="font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap;">Change Status:</label>
+            <select id="statusChangeSelect" style="background:var(--panel-2); border:1px solid var(--line-2); border-radius:8px; padding:6px 10px; font-size:13px; color:var(--text); outline:none; flex:1; max-width:220px;">
+              <option value="">— Select New Status —</option>
+              <option value="New Lead">New Lead</option>
+              <option value="Estimating">Estimating</option>
+              <option value="Awarded">Awarded</option>
+              <option value="Service Call Scheduled">Service Call Scheduled</option>
+              <option value="Ready to Invoice">Ready to Invoice</option>
+              <option value="Completed">Completed</option>
+              <option value="Not Awarded">Not Awarded</option>
+            </select>
+            <button id="statusChangeSaveBtn" class="btn btn-primary btn-sm" type="button" style="font-size:13px;">Save</button>
+            <span id="statusChangeMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+          </div>
         </div>
 
         <!-- ACTION BUTTONS -->
@@ -1405,6 +1423,12 @@
       }
     }
 
+    // Admin: pre-fill status change dropdown
+    if (isAdmin()) {
+      $("statusChangeSelect").value = job.status || "";
+      $("statusChangeMsg").style.display = "none";
+    }
+
     // Admin tabs
     if (isAdmin()) {
       renderLivePerf(job);
@@ -1628,6 +1652,43 @@
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
   }
 
+  // ── STATUS CHANGE (admin) ──
+  async function handleStatusChange() {
+    if (!state.selected) return;
+    const newStatus = $("statusChangeSelect").value;
+    if (!newStatus) return;
+
+    const btn = $("statusChangeSaveBtn");
+    const msg = $("statusChangeMsg");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    msg.style.display = "none";
+
+    try {
+      await apiPost("updateJobStatus", { jobId: state.selected.id, status: newStatus });
+
+      // Update local state so sidebar re-renders correctly
+      state.selected.status = newStatus;
+      state.jobs = state.jobs.map(j => j.id === state.selected.id ? { ...j, status: newStatus } : j);
+
+      // Update the status pill in the header
+      const sp = $("dStatusPill");
+      sp.textContent = newStatus;
+      sp.className = statusPillClass(newStatus);
+
+      // Re-render job list to reflect new status/group
+      applyFilters();
+
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+    } catch(err) {
+      alert("Failed to update status: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save";
+    }
+  }
+
   // ── EVENTS ──
   function wireEvents() {
     $("loginBtn").addEventListener("click", handleLogin);
@@ -1641,6 +1702,8 @@
     $("searchInput").addEventListener("input", applyFilters);
     $("statusFilter").addEventListener("change", applyFilters);
     $("typeFilter").addEventListener("change", applyFilters);
+
+    $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));

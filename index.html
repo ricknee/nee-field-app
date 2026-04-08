@@ -1915,4 +1915,119 @@
   async function handlePowerCoSave() {
     if (!state.selected) return;
     const btn = $("pcSaveBtn");
-    const msg 
+    const msg = $("pcSaveMsg");
+    const err = $("pcSaveErr");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    msg.style.display = "none";
+    err.style.display = "none";
+
+    try {
+      await apiPost("updatePowerCo", {
+        jobId:         state.selected.id,
+        powerCompany:  $("pcEditCompany").value,
+        powerContact:  $("pcEditContact").value,
+        aicNumber:     $("pcEditAic").value,
+        tempWorkOrder: $("pcEditTemp").value,
+        permWorkOrder: $("pcEditPerm").value,
+        meterNumber:   $("pcEditMeter").value
+      });
+
+      // Update local state
+      state.selected.powerCompanyIntake = $("pcEditCompany").value;
+      state.selected.aicNumber     = $("pcEditAic").value;
+      state.selected.tempWorkOrder = $("pcEditTemp").value;
+      state.selected.permWorkOrder = $("pcEditPerm").value;
+      state.selected.meterNumber   = $("pcEditMeter").value;
+
+      // Refresh display fields
+      $("pcAic").textContent  = val(state.selected.aicNumber);
+      $("pcTemp").textContent = val(state.selected.tempWorkOrder);
+      $("pcPerm").textContent = val(state.selected.permWorkOrder);
+      $("pcMeter").textContent = val(state.selected.meterNumber);
+
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+    } catch(e) {
+      err.textContent = "Error: " + e.message;
+      err.style.display = "inline";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save Changes";
+    }
+  }
+
+  // ── STATUS CHANGE (admin) ──
+  async function handleStatusChange() {
+    if (!state.selected) return;
+    const newStatus = $("statusChangeSelect").value;
+    if (!newStatus) return;
+
+    const btn = $("statusChangeSaveBtn");
+    const msg = $("statusChangeMsg");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    msg.style.display = "none";
+
+    try {
+      await apiPost("updateJobStatus", { jobId: state.selected.id, status: newStatus });
+
+      // Update local state so sidebar re-renders correctly
+      state.selected.status = newStatus;
+      state.jobs = state.jobs.map(j => j.id === state.selected.id ? { ...j, status: newStatus } : j);
+
+      // Update the status pill in the header
+      const sp = $("dStatusPill");
+      sp.textContent = newStatus;
+      sp.className = statusPillClass(newStatus);
+
+      // Re-render job list to reflect new status/group
+      applyFilters();
+
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+    } catch(err) {
+      alert("Failed to update status: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save";
+    }
+  }
+
+  // ── EVENTS ──
+  function wireEvents() {
+    $("loginBtn").addEventListener("click", handleLogin);
+    [$("loginId"), $("loginPin")].forEach(el => {
+      el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
+    });
+
+    $("logoutBtn").addEventListener("click", () => { clearUser(); });
+    $("refreshBtn").addEventListener("click", loadJobs);
+
+    $("searchInput").addEventListener("input", applyFilters);
+    $("statusFilter").addEventListener("change", applyFilters);
+    $("typeFilter").addEventListener("change", applyFilters);
+
+    $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
+    $("pcSaveBtn").addEventListener("click", handlePowerCoSave);
+    $("pcEditCompany").addEventListener("change", () => {
+      updatePcContactDropdown($("pcEditCompany").value, "");
+    });
+
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
+  }
+
+  // ── INIT ──
+  async function init() {
+    wireEvents();
+    loadStoredUser();
+    renderAuth();
+    if (state.user) await loadJobs();
+  }
+
+  init();
+</script>
+</body>
+</html>

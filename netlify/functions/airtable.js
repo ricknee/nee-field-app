@@ -42,8 +42,8 @@ const F = {
     inspectionAgencyPhone:   "Inspection Agency Phone #",
     inspectionAgencyEmail:   "Inspection Agency Email Address",
     inspectionSchedulingLink:"Inspection Scheduling Link",
-    inspectionContacts:      "Inspection Contacts",
-    jobInspections:          "Job Inspections",
+    inspectionContacts:      "Inspection Name (from Inspection Contacts)",
+    jobInspections:          "Inspection Name (from Job Inspections)",
     wireLink:                "Wire (Mobile) or THHN (Mobile)",
     pipeLink:                "Add Pipe (Mobile)",
     addPhotosLink:           "Add Photos (Mobile)",
@@ -251,7 +251,14 @@ async function handleGenerator(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  const filter = `FIND("${jobId}", ARRAYJOIN({${F.gen.job}}))`;
+  // Look up the job name first so we can search generators by name
+  const jobRecords = await fetchAll(TABLES.jobs, {
+    filter: `RECORD_ID()="${jobId}"`
+  });
+  if (!jobRecords.length) return resp(200, { ok: true, generator: null, serviceRecords: [] });
+  const jobName = jobRecords[0].fields[F.job.name] || "";
+
+  const filter = `FIND("${jobName}", ARRAYJOIN({${F.gen.job}}))`;
   const genRecords = await fetchAll(TABLES.generators, { filter });
 
   if (!genRecords.length) return resp(200, { ok: true, generator: null, serviceRecords: [] });

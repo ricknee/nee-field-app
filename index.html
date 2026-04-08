@@ -112,6 +112,30 @@
 
     #statusChangeRow:not(.hidden) { display: flex; }
 
+    .edit-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+
+    .edit-input {
+      width: 100%;
+      background: var(--panel);
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+      color: var(--text);
+      outline: none;
+      font-family: 'Inter', sans-serif;
+    }
+
+    .edit-input:focus { border-color: var(--accent); }
+
     /* ── MAIN LAYOUT ── */
     .app-wrap { display: flex; height: calc(100vh - 61px); }
 
@@ -953,8 +977,47 @@
               <div class="info-value" id="pcMeter">—</div>
             </div>
           </div>
-          <div class="admin-only hidden" style="margin-top:16px;">
-            <a id="btnUpdatePowerCo" href="#" target="_blank" class="action-btn pipe" style="display:inline-flex; text-decoration:none; font-size:13px;">⚡ Update Power Co. Info</a>
+
+          <!-- ADMIN: Inline Power Co Edit Form -->
+          <div class="admin-only hidden" id="pcEditForm" style="margin-top:20px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px;">
+            <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">⚡ Update Power Co. Info</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div style="grid-column:1/-1;">
+                <label class="edit-label">Power Company</label>
+                <select id="pcEditCompany" class="edit-input">
+                  <option value="">— Select —</option>
+                  <option value="recobDmVVBXnBrltg">First Energy</option>
+                  <option value="recxYES0IBWBqtxtZ">Frontier Power</option>
+                  <option value="recTVvyltcnHKuPi0">Orrville Power</option>
+                  <option value="receDhtNAYIU2mSwVe">South Central REI</option>
+                  <option value="recpss11iaso9UswF">Carroll Electric Co-op</option>
+                  <option value="recrRzq7ILrfwkjqT">Guernsey-Muskingum</option>
+                  <option value="receFkiywTV0X866s">Pioneer Electric</option>
+                  <option value="reczmfcMakEnctKpC">AEP</option>
+                </select>
+              </div>
+              <div>
+                <label class="edit-label">AIC Number</label>
+                <input id="pcEditAic" type="text" class="edit-input" placeholder="AIC #" />
+              </div>
+              <div>
+                <label class="edit-label">Temporary Work Order #</label>
+                <input id="pcEditTemp" type="text" class="edit-input" placeholder="Temp WO #" />
+              </div>
+              <div>
+                <label class="edit-label">Permanent Work Order #</label>
+                <input id="pcEditPerm" type="text" class="edit-input" placeholder="Perm WO #" />
+              </div>
+              <div>
+                <label class="edit-label">Meter Number</label>
+                <input id="pcEditMeter" type="text" class="edit-input" placeholder="Meter #" />
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; margin-top:14px;">
+              <button id="pcSaveBtn" class="btn btn-primary btn-sm" type="button">Save Changes</button>
+              <span id="pcSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+              <span id="pcSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
+            </div>
           </div>
         </div>
 
@@ -1459,10 +1522,15 @@
     if (isAdmin()) {
       $("statusChangeSelect").value = job.status || "";
       $("statusChangeMsg").style.display = "none";
-      // Power Co form — pre-fill job name via URL param
-      const pcBtn = $("btnUpdatePowerCo");
-      const jobNameEncoded = encodeURIComponent(job.name || "");
-      pcBtn.href = `https://form.jotform.com/260974648433063?jobName=${jobNameEncoded}`;
+      // Pre-fill Power Co edit form
+      const pcId = POWER_CO_IDS[job.powerCompanyName] || "";
+      $("pcEditCompany").value = pcId;
+      $("pcEditAic").value   = job.aicNumber || "";
+      $("pcEditTemp").value  = job.tempWorkOrder || "";
+      $("pcEditPerm").value  = job.permWorkOrder || "";
+      $("pcEditMeter").value = job.meterNumber || "";
+      $("pcSaveMsg").style.display = "none";
+      $("pcSaveErr").style.display = "none";
     }
 
     // Admin tabs
@@ -1715,6 +1783,62 @@
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
   }
 
+  // ── POWER CO SAVE (admin) ──
+  // Power company record IDs map
+  const POWER_CO_IDS = {
+    "First Energy":        "recobDmVVBXnBrltg",
+    "Frontier Power":      "recxYES0IBWBqtxtZ",
+    "Orrville Power":      "recTVvyltcnHKuPi0",
+    "South Central REI":   "recDhtNAYIU2mSwVe",
+    "Carroll Electric Co-op": "recpss11iaso9UswF",
+    "Guernsey-Muskingum":  "recrRzq7ILrfwkjqT",
+    "Pioneer Electric":    "receFkiywTV0X866s",
+    "AEP":                 "reczmfcMakEnctKpC"
+  };
+
+  async function handlePowerCoSave() {
+    if (!state.selected) return;
+    const btn = $("pcSaveBtn");
+    const msg = $("pcSaveMsg");
+    const err = $("pcSaveErr");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    msg.style.display = "none";
+    err.style.display = "none";
+
+    try {
+      await apiPost("updatePowerCo", {
+        jobId:         state.selected.id,
+        powerCompanyId: $("pcEditCompany").value || undefined,
+        aicNumber:     $("pcEditAic").value,
+        tempWorkOrder: $("pcEditTemp").value,
+        permWorkOrder: $("pcEditPerm").value,
+        meterNumber:   $("pcEditMeter").value
+      });
+
+      // Update local state
+      state.selected.aicNumber   = $("pcEditAic").value;
+      state.selected.tempWorkOrder = $("pcEditTemp").value;
+      state.selected.permWorkOrder = $("pcEditPerm").value;
+      state.selected.meterNumber = $("pcEditMeter").value;
+
+      // Refresh display fields
+      $("pcAic").textContent  = val(state.selected.aicNumber);
+      $("pcTemp").textContent = val(state.selected.tempWorkOrder);
+      $("pcPerm").textContent = val(state.selected.permWorkOrder);
+      $("pcMeter").textContent = val(state.selected.meterNumber);
+
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+    } catch(e) {
+      err.textContent = "Error: " + e.message;
+      err.style.display = "inline";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save Changes";
+    }
+  }
+
   // ── STATUS CHANGE (admin) ──
   async function handleStatusChange() {
     if (!state.selected) return;
@@ -1767,6 +1891,7 @@
     $("typeFilter").addEventListener("change", applyFilters);
 
     $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
+    $("pcSaveBtn").addEventListener("click", handlePowerCoSave);
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));

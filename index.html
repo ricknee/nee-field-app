@@ -136,6 +136,44 @@
 
     .edit-input:focus { border-color: var(--accent); }
 
+    /* ── EXPENSES TABLE ── */
+    .expense-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      min-width: 700px;
+    }
+    .expense-table th {
+      background: var(--panel-2);
+      border-bottom: 2px solid var(--line);
+      padding: 9px 12px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .expense-table td {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line);
+      color: var(--text);
+      vertical-align: middle;
+    }
+    .expense-table tr:last-child td { border-bottom: none; }
+    .expense-table tr:hover td { background: var(--panel-2); }
+    .expense-status-pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .expense-status-pill.reviewed   { background:#dcfce7; color:#166534; border:1px solid #86efac; }
+    .expense-status-pill.unreviewed { background:#fee2e2; color:#991b1b; border:1px solid #f87171; }
+    .expense-status-pill.default    { background:var(--panel-2); color:var(--muted); border:1px solid var(--line-2); }
+
     /* ── MAIN LAYOUT ── */
     .app-wrap { display: flex; height: calc(100vh - 61px); }
 
@@ -901,6 +939,7 @@
           <button class="tab-btn admin-only hidden" data-tab="live-perf">📊 Live Perf.</button>
           <button class="tab-btn admin-only hidden" data-tab="closeout">✅ Closeout</button>
           <button class="tab-btn admin-only hidden" data-tab="est-gp">📈 Est. GP</button>
+          <button class="tab-btn admin-only hidden" data-tab="expenses">🧾 Expenses</button>
         </div>
 
         <!-- TAB: PROJECT INFO -->
@@ -1103,6 +1142,14 @@
           <div class="section-header">Estimated Gross Profit</div>
           <div class="info-grid" id="estGpGrid">
             <div class="loading-msg">Select a job to view estimated gross profit.</div>
+          </div>
+        </div>
+
+        <!-- TAB: EXPENSES (admin only) -->
+        <div class="tab-content" id="tab-expenses">
+          <div class="section-header">Expenses</div>
+          <div id="expensesList" style="overflow-x:auto;">
+            <div class="loading-msg">Select a job to view expenses.</div>
           </div>
         </div>
 
@@ -1542,6 +1589,7 @@
       renderLivePerf(job);
       renderCloseout(job);
       renderEstGp(job);
+      loadExpenses(job.id);
     }
 
     // Reset to project tab on new job selection
@@ -1787,6 +1835,56 @@
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
   }
 
+  // ── EXPENSES (admin) ──
+  async function loadExpenses(jobId) {
+    const el = $("expensesList");
+    el.innerHTML = `<div class="loading-msg">Loading expenses...</div>`;
+    try {
+      const d = await apiGet("expenses", { jobId });
+      const expenses = d.expenses || [];
+      if (!expenses.length) {
+        el.innerHTML = `<div class="empty-msg">No expenses found for this job.</div>`;
+        return;
+      }
+      el.innerHTML = `
+        <table class="expense-table">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Description</th>
+              <th>Vendor</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Billable?</th>
+              <th>Markup %</th>
+              <th>Total Cost</th>
+              <th>Billable Amt</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${expenses.map(e => {
+              const statusLower = (e.expenseStatus || "").toLowerCase();
+              const pillClass = statusLower.includes("not") ? "unreviewed" : statusLower.includes("review") ? "reviewed" : "default";
+              const markup = e.jobMarkupPct != null ? Math.round(e.jobMarkupPct * 100) + "%" : "—";
+              return `<tr>
+                <td style="white-space:nowrap;">${esc(fmtDate(e.date))}</td>
+                <td>${esc(e.description || "—")}</td>
+                <td>${esc(e.vendor || "—")}</td>
+                <td>${esc(e.expenseType || "—")}</td>
+                <td><span class="expense-status-pill ${pillClass}">${esc(e.expenseStatus || "—")}</span></td>
+                <td style="text-align:center;">${e.billable ? "✅" : "—"}</td>
+                <td>${esc(markup)}</td>
+                <td style="text-align:right;">${e.totalCost != null ? fmtCurrency(e.totalCost) : "—"}</td>
+                <td style="text-align:right;">${e.billableMaterial != null ? fmtCurrency(e.billableMaterial) : "—"}</td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>`;
+    } catch(err) {
+      el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
+    }
+  }
+
   // ── POWER CO CONTACTS (live data, filtered by company) ──
   const PC_CONTACTS = [
     { id: "rec0Pmo9JBNVSdJ23", name: "Dave Baker",    company: "First Energy",       phone: "(330) 802-0658", email: "" },
@@ -1817,119 +1915,4 @@
   async function handlePowerCoSave() {
     if (!state.selected) return;
     const btn = $("pcSaveBtn");
-    const msg = $("pcSaveMsg");
-    const err = $("pcSaveErr");
-    btn.disabled = true;
-    btn.textContent = "Saving...";
-    msg.style.display = "none";
-    err.style.display = "none";
-
-    try {
-      await apiPost("updatePowerCo", {
-        jobId:         state.selected.id,
-        powerCompany:  $("pcEditCompany").value,
-        powerContact:  $("pcEditContact").value,
-        aicNumber:     $("pcEditAic").value,
-        tempWorkOrder: $("pcEditTemp").value,
-        permWorkOrder: $("pcEditPerm").value,
-        meterNumber:   $("pcEditMeter").value
-      });
-
-      // Update local state
-      state.selected.powerCompanyIntake = $("pcEditCompany").value;
-      state.selected.aicNumber     = $("pcEditAic").value;
-      state.selected.tempWorkOrder = $("pcEditTemp").value;
-      state.selected.permWorkOrder = $("pcEditPerm").value;
-      state.selected.meterNumber   = $("pcEditMeter").value;
-
-      // Refresh display fields
-      $("pcAic").textContent  = val(state.selected.aicNumber);
-      $("pcTemp").textContent = val(state.selected.tempWorkOrder);
-      $("pcPerm").textContent = val(state.selected.permWorkOrder);
-      $("pcMeter").textContent = val(state.selected.meterNumber);
-
-      msg.style.display = "inline";
-      setTimeout(() => { msg.style.display = "none"; }, 2500);
-    } catch(e) {
-      err.textContent = "Error: " + e.message;
-      err.style.display = "inline";
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Save Changes";
-    }
-  }
-
-  // ── STATUS CHANGE (admin) ──
-  async function handleStatusChange() {
-    if (!state.selected) return;
-    const newStatus = $("statusChangeSelect").value;
-    if (!newStatus) return;
-
-    const btn = $("statusChangeSaveBtn");
-    const msg = $("statusChangeMsg");
-    btn.disabled = true;
-    btn.textContent = "Saving...";
-    msg.style.display = "none";
-
-    try {
-      await apiPost("updateJobStatus", { jobId: state.selected.id, status: newStatus });
-
-      // Update local state so sidebar re-renders correctly
-      state.selected.status = newStatus;
-      state.jobs = state.jobs.map(j => j.id === state.selected.id ? { ...j, status: newStatus } : j);
-
-      // Update the status pill in the header
-      const sp = $("dStatusPill");
-      sp.textContent = newStatus;
-      sp.className = statusPillClass(newStatus);
-
-      // Re-render job list to reflect new status/group
-      applyFilters();
-
-      msg.style.display = "inline";
-      setTimeout(() => { msg.style.display = "none"; }, 2500);
-    } catch(err) {
-      alert("Failed to update status: " + err.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Save";
-    }
-  }
-
-  // ── EVENTS ──
-  function wireEvents() {
-    $("loginBtn").addEventListener("click", handleLogin);
-    [$("loginId"), $("loginPin")].forEach(el => {
-      el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
-    });
-
-    $("logoutBtn").addEventListener("click", () => { clearUser(); });
-    $("refreshBtn").addEventListener("click", loadJobs);
-
-    $("searchInput").addEventListener("input", applyFilters);
-    $("statusFilter").addEventListener("change", applyFilters);
-    $("typeFilter").addEventListener("change", applyFilters);
-
-    $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
-    $("pcSaveBtn").addEventListener("click", handlePowerCoSave);
-    $("pcEditCompany").addEventListener("change", () => {
-      updatePcContactDropdown($("pcEditCompany").value, "");
-    });
-
-    document.querySelectorAll(".tab-btn").forEach(btn => {
-      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
-    });
-  }
-
-  // ── INIT ──
-  async function init() {
-    wireEvents();
-    loadStoredUser();
-    renderAuth();
-    if (state.user) await loadJobs();
-  }
-
-  init();
-</script>
-</body>
-</html>
+    const msg 

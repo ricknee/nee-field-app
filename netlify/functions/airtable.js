@@ -478,6 +478,48 @@ async function handleUpdatePowerCo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleExpenses(params) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // Find the job name first to filter expenses
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!jobRecords.length) return resp(200, { ok: true, expenses: [] });
+  const jobName = jobRecords[0].fields["Job Name"] || "";
+
+  // Fetch expenses filtered by job name, sorted by date desc
+  const records = await fetchAll("Expenses", {
+    filter: `FIND("${jobName}", ARRAYJOIN({Job}))`,
+    sortField: "Expense Date",
+    sortDir: "desc"
+  });
+
+  const expenses = records.map(r => {
+    const f = r.fields || {};
+    // Vendor is a linked record — get display name
+    const vendorRaw = f["Vendor"];
+    const vendor = Array.isArray(vendorRaw) ? vendorRaw.map(v => v.name || v).join(", ") : (vendorRaw || "");
+    // Job Markup % is a lookup — returns array
+    const markupRaw = f["Job Markup %"];
+    const markup = Array.isArray(markupRaw) ? markupRaw[0] : markupRaw;
+
+    return {
+      id:              r.id,
+      date:            f["Expense Date"] || "",
+      description:     f["Description"] || "",
+      vendor,
+      expenseType:     f["Expense Type"]?.name || f["Expense Type"] || "",
+      totalCost:       f["Total Cost (Actual)"] ?? null,
+      expenseStatus:   f["Expense Status"]?.name || f["Expense Status"] || "",
+      billable:        f["Billable?"] === true,
+      jobMarkupPct:    markup ?? null,
+      billableMaterial: f["Billable Material Amount $"] ?? null
+    };
+  });
+
+  return resp(200, { ok: true, expenses });
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -488,6 +530,7 @@ export async function handler(event) {
       const params = event.queryStringParameters || {};
       if (action === "jobs")      return await handleJobs();
       if (action === "generator") return await handleGenerator(params);
+      if (action === "expenses")  return await handleExpenses(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 

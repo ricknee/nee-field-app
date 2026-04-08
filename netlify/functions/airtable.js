@@ -420,6 +420,22 @@ async function handleGenerator(params) {
   return resp(200, { ok: true, generator, serviceRecords });
 }
 
+async function handleUpdateJobStatus(body) {
+  const { jobId, status } = body || {};
+  if (!jobId || !status) return resp(400, { ok: false, error: "Missing jobId or status." });
+
+  const VALID = ["New Lead","Estimating","Awarded","Service Call Scheduled","Ready to Invoice","Completed","Not Awarded"];
+  if (!VALID.includes(status)) return resp(400, { ok: false, error: "Invalid status value." });
+
+  // Job Status field ID: fld2FBMjvkOsy9Puu (singleSelect — must use field ID for writes)
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fld2FBMjvkOsy9Puu": status } })
+  });
+
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -436,6 +452,7 @@ export async function handler(event) {
     if (event.httpMethod === "POST") {
       const body = event.body ? JSON.parse(event.body) : {};
       if (body.action === "login") return await handleLogin(body);
+      if (body.action === "updateJobStatus") return await handleUpdateJobStatus(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

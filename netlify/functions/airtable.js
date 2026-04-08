@@ -99,12 +99,6 @@ function asBool(value) {
   return false;
 }
 
-function asArray(value) {
-  if (Array.isArray(value)) return value;
-  if (value == null) return [];
-  return [value];
-}
-
 function normalize(value) {
   return String(value || "").trim().toLowerCase();
 }
@@ -270,16 +264,15 @@ async function handleLogin(body) {
 }
 
 async function handleJobs() {
-  const records = await fetchAllRecords(TABLES.jobs, {
-    sortField: "Created"
-  });
+  const records = await fetchAllRecords(TABLES.jobs);
 
   const jobs = records
     .map(mapJob)
     .filter(job => {
       const status = normalize(job.status);
       return !["archived", "cancelled", "canceled"].includes(status);
-    });
+    })
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
 
   return response(200, { ok: true, jobs });
 }
@@ -332,8 +325,7 @@ async function handleCommission(body) {
   } catch (err) {
     return response(200, {
       ok: true,
-      warning:
-        "Job was updated, but generator asset record could not be created. Check your Generators table field names.",
+      warning: "Job was updated, but generator asset record could not be created. Check your Generators table field names.",
       errorDetail: err.message
     });
   }

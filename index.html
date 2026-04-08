@@ -954,7 +954,7 @@
             </div>
           </div>
           <div class="admin-only hidden" style="margin-top:16px;">
-            <a id="btnUpdatePowerCo" href="https://form.jotform.com/260974648433063" target="_blank" class="action-btn pipe" style="display:inline-flex; text-decoration:none; font-size:13px;">⚡ Update Power Co. Info</a>
+            <a id="btnUpdatePowerCo" href="#" target="_blank" class="action-btn pipe" style="display:inline-flex; text-decoration:none; font-size:13px;">⚡ Update Power Co. Info</a>
           </div>
         </div>
 
@@ -1459,6 +1459,10 @@
     if (isAdmin()) {
       $("statusChangeSelect").value = job.status || "";
       $("statusChangeMsg").style.display = "none";
+      // Power Co form — pre-fill job name via URL param
+      const pcBtn = $("btnUpdatePowerCo");
+      const jobNameEncoded = encodeURIComponent(job.name || "");
+      pcBtn.href = `https://form.jotform.com/260974648433063?jobName=${jobNameEncoded}`;
     }
 
     // Admin tabs

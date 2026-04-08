@@ -375,6 +375,12 @@
       color: #e65100;
     }
 
+    .action-btn.trello {
+      background: rgba(0,121,191,0.10);
+      border-color: rgba(0,121,191,0.35);
+      color: #0079bf;
+    }
+
     .action-btn.disabled {
       opacity: 0.35;
       pointer-events: none;
@@ -766,7 +772,7 @@
             <option value="Awarded">Awarded</option>
             <option value="Estimating">Estimating</option>
             <option value="New Lead">New Lead</option>
-            <option value="Ready to Invoice">Ready to Invoice</option>
+
             <option value="Completed">Completed</option>
           </select>
           <select id="typeFilter">
@@ -814,6 +820,7 @@
           <a id="btnPipe" href="#" target="_blank" class="action-btn pipe disabled">🔧 Add Pipe</a>
           <a id="btnAddPhotos" href="#" target="_blank" class="action-btn photo-add disabled">📷 Add Photos</a>
           <a id="btnViewPhotos" href="#" target="_blank" class="action-btn photo-view disabled">🖼 View pCloud Photos</a>
+          <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled">📋 Trello Card</a>
         </div>
 
         <!-- TABS -->
@@ -1260,6 +1267,16 @@
     setActionBtn($("btnPipe"), job.pipeLink, "Add Pipe");
     setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
     setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
+
+    // Trello card - build URL from card ID
+    const trelloBtn = $("btnTrello");
+    if (job.trelloCardId) {
+      trelloBtn.href = `https://trello.com/c/${job.trelloCardId}`;
+      trelloBtn.classList.remove("disabled");
+    } else {
+      trelloBtn.href = "#";
+      trelloBtn.classList.add("disabled");
+    }
 
     // Project Info Tab
     $("piJobName").textContent = val(job.name);

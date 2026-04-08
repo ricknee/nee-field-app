@@ -1705,4 +1705,76 @@
   // ── TABS ──
   function switchTab(tabId) {
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
-    document.querySelectorAll(".tab-co
+    document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
+  }
+
+  // ── STATUS CHANGE (admin) ──
+  async function handleStatusChange() {
+    if (!state.selected) return;
+    const newStatus = $("statusChangeSelect").value;
+    if (!newStatus) return;
+
+    const btn = $("statusChangeSaveBtn");
+    const msg = $("statusChangeMsg");
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    msg.style.display = "none";
+
+    try {
+      await apiPost("updateJobStatus", { jobId: state.selected.id, status: newStatus });
+
+      // Update local state so sidebar re-renders correctly
+      state.selected.status = newStatus;
+      state.jobs = state.jobs.map(j => j.id === state.selected.id ? { ...j, status: newStatus } : j);
+
+      // Update the status pill in the header
+      const sp = $("dStatusPill");
+      sp.textContent = newStatus;
+      sp.className = statusPillClass(newStatus);
+
+      // Re-render job list to reflect new status/group
+      applyFilters();
+
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+    } catch(err) {
+      alert("Failed to update status: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save";
+    }
+  }
+
+  // ── EVENTS ──
+  function wireEvents() {
+    $("loginBtn").addEventListener("click", handleLogin);
+    [$("loginId"), $("loginPin")].forEach(el => {
+      el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
+    });
+
+    $("logoutBtn").addEventListener("click", () => { clearUser(); });
+    $("refreshBtn").addEventListener("click", loadJobs);
+
+    $("searchInput").addEventListener("input", applyFilters);
+    $("statusFilter").addEventListener("change", applyFilters);
+    $("typeFilter").addEventListener("change", applyFilters);
+
+    $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
+
+    document.querySelectorAll(".tab-btn").forEach(btn => {
+      btn.addEventListener("click", () => switchTab(btn.dataset.tab));
+    });
+  }
+
+  // ── INIT ──
+  async function init() {
+    wireEvents();
+    loadStoredUser();
+    renderAuth();
+    if (state.user) await loadJobs();
+  }
+
+  init();
+</script>
+</body>
+</html>

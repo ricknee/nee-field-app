@@ -441,15 +441,30 @@ async function handleUpdateJobStatus(body) {
 }
 
 async function handleUpdatePowerCo(body) {
-  const { jobId, powerCompany, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
+  const { jobId, powerCompany, powerContact, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
+  // Contact name → record ID map
+  const CONTACT_IDS = {
+    "Dave Baker":    "rec0Pmo9JBNVSdJ23",
+    "Dan Shaeffer":  "recejs6S1LHK4rbNN",
+    "Earnest Kash":  "reczPDI9EgwALy07k",
+    "Tom Shultz":    "rec1Z0Epjw6C8BK90",
+    "Gavyn Lopez":   "rec1kjUkMawcHocok",
+    "Diane Wintrow": "recf5WUTUQdvUW2QR",
+    "Dan Johnson":   "reclI0d8M1mP4BpBM"
+  };
+
   const fields = {};
-  // Power Company (Intake) — singleSelect, only write if a value is selected
+  // Power Company (Intake) — singleSelect
   if (powerCompany && powerCompany.trim() !== "") {
     fields["fldURTQ0ygHMMIbTU"] = powerCompany.trim();
   }
-  // Plain text fields ✓
+  // Power Company Contact — linked record, write using record ID
+  if (powerContact && CONTACT_IDS[powerContact]) {
+    fields["fldhKlMCFsnmHo5PH"] = [{ id: CONTACT_IDS[powerContact] }];
+  }
+  // Plain text fields
   if (aicNumber     !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
   if (tempWorkOrder !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
   if (permWorkOrder !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;

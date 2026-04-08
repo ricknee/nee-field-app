@@ -495,11 +495,23 @@ async function handleExpenses(params) {
   const expenses = records.map(r => {
     const f = r.fields || {};
 
-    // Vendor — linked record already returns name property
-    const vendorLinked = f["Vendor"];
-    const vendor = Array.isArray(vendorLinked)
-      ? vendorLinked.map(v => (typeof v === "object" ? v.name : v) || "").filter(Boolean).join(", ")
-      : "";
+    // Vendor — use "Vendor Name (from Vendor)" lookup which returns plain strings
+    const vendorLookup = f["Vendor Name (from Vendor)"];
+    let vendor = "";
+    if (Array.isArray(vendorLookup)) {
+      vendor = vendorLookup.filter(Boolean).join(", ");
+    } else if (vendorLookup && typeof vendorLookup === "object" && vendorLookup.valuesByLinkedRecordId) {
+      vendor = Object.values(vendorLookup.valuesByLinkedRecordId).flat().join(", ");
+    } else if (typeof vendorLookup === "string") {
+      vendor = vendorLookup;
+    }
+    // Fallback to linked record name property
+    if (!vendor) {
+      const vendorArr = f["Vendor"];
+      vendor = Array.isArray(vendorArr)
+        ? vendorArr.map(v => (v && typeof v === "object" ? v.name : String(v)) || "").filter(Boolean).join(", ")
+        : "";
+    }
 
     // Job Markup % is a lookup — extract value
     const markupRaw = f["Job Markup %"];

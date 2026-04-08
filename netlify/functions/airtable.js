@@ -438,6 +438,28 @@ async function handleUpdateJobStatus(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleUpdatePowerCo(body) {
+  const { jobId, powerCompanyId, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const fields = {};
+  // Power Company is a linked record field — fld3fZ9isIQmcFDna
+  if (powerCompanyId) fields["fld3fZ9isIQmcFDna"] = [{ id: String(powerCompanyId) }];
+  if (aicNumber   !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
+  if (tempWorkOrder !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
+  if (permWorkOrder !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;
+  if (meterNumber  !== undefined) fields["fldWXpfslcqLlwdTQ"] = meterNumber;
+
+  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "No fields to update." });
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields })
+  });
+
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -455,6 +477,7 @@ export async function handler(event) {
       const body = event.body ? JSON.parse(event.body) : {};
       if (body.action === "login") return await handleLogin(body);
       if (body.action === "updateJobStatus") return await handleUpdateJobStatus(body);
+      if (body.action === "updatePowerCo") return await handleUpdatePowerCo(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

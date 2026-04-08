@@ -51,7 +51,42 @@ const F = {
     viewPhotosLink:          "View pCloud Photos",
     trelloCardId:               "Trello Card ID",
     generatorCommissioningForm: "Generator Startup / Commissioning Form",
-    newGeneratorServiceForm:    "New Generator Service"
+    newGeneratorServiceForm:    "New Generator Service",
+
+    // ── ADMIN: Live Performance ──
+    totalRevenueLive:          "Total Revenue (Live)",
+    totalMaterialsLive:        "Total Materials (Live)",
+    totalLaborCostLive:        "Total Labor Cost (Live)",
+    totalWireCost:             "Total Wire Cost",
+    pipeCost:                  "Pipe Cost",
+    materialsInProgress:       "Materials In Progress",
+    grossProfitLiveDollar:     "Gross Profit (Live) $",
+    grossProfitLivePct:        "Gross Profit (Live) %",
+    workflowStatus:            "Worklfow Status",
+    estimatedLaborHoursRollup: "Estimated Labor Hours Rollup (from Job Estimates)",
+    hoursRollup:               "Hours Rollup (from Time Entries)",
+
+    // ── ADMIN: Closeout (Final) ──
+    expectedRevenue:           "Expected Revenue",
+    actualJobCostCogs:         "Actual Job Cost (COGS)",
+    totalReviewedCosts:        "Total Reviewed Costs",
+    totalLaborCostFinal:       "Total Labor Cost (Final)",
+    grossProfitFinalDollar:    "Gross Profit (Final) $",
+    grossProfitFinalPct:       "Gross Profit (Final) %",
+    allMaterialsReviewed:      "All Materials Reviewed?",
+    allWireReviewed:           "All Wire Reviewed?",
+    allPipeReviewed:           "All Pipe Reviewed?",
+    allExpensesReviewed:       "All Expenses Reviewed?",
+    allLaborReviewed:          "All Labor Reviewed",
+
+    // ── ADMIN: Estimated Gross Profit ──
+    expectedRevenueAllStatus:          "Expected Revenue (All Status)",
+    projectedEstimatedTotalCost:       "Projected Estimated Total Cost",
+    projectedEstimatedLaborHours:      "Projected Estimated Labor Hours (from Job Estimates)",
+    projectedEstimatedMaterialCost:    "Projected Estimated Material Cost (from Job Estimates)",
+    projectedEstimatedLaborCost:       "Projected Estimated Labor Cost (from Job Estimates)",
+    projectedGrossProfitDollar:        "Projected Gross Profit $",
+    projectedGrossProfitPct:           "Projected Gross Profit %"
   },
   gen: {
     assetId:              "Generator Asset ID",
@@ -127,11 +162,30 @@ function g(fields, fieldName) {
   return v ?? null;
 }
 
+function gNum(fields, fieldName) {
+  const v = fields[fieldName];
+  if (v === null || v === undefined || v === "") return null;
+  const n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+
 function gBool(fields, fieldName) {
   const v = fields[fieldName];
   if (typeof v === "boolean") return v;
   if (typeof v === "number") return v !== 0;
   if (typeof v === "string") return ["true","yes","1"].includes(v.trim().toLowerCase());
+  return false;
+}
+
+function gFormulaBool(fields, fieldName) {
+  // Formula fields that return 1/0 or "yes"/"no" or true/false
+  const v = fields[fieldName];
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    return s === "1" || s === "true" || s === "yes";
+  }
   return false;
 }
 
@@ -223,6 +277,8 @@ async function handleJobs() {
       address:      g(f, F.job.address) || "",
       contractor:   g(f, F.job.contractor) || "",
       generatorInstalled: gBool(f, F.job.generatorInstalled),
+
+      // Power Co
       powerCompanyName:    g(f, F.job.powerCompanyName) || "",
       powerCompanyContact: g(f, F.job.powerCompanyContact) || "",
       powerCompanyPhone:   g(f, F.job.powerCompanyPhone) || "",
@@ -231,6 +287,8 @@ async function handleJobs() {
       tempWorkOrder:       g(f, F.job.tempWorkOrder) || "",
       permWorkOrder:       g(f, F.job.permWorkOrder) || "",
       meterNumber:         g(f, F.job.meterNumber) || "",
+
+      // Inspections
       permitNumber:             g(f, F.job.permitNumber) || "",
       inspectionAgency:         g(f, F.job.inspectionAgency) || "",
       inspectionAgencyPhone:    g(f, F.job.inspectionAgencyPhone) || "",
@@ -238,13 +296,50 @@ async function handleJobs() {
       inspectionSchedulingLink: g(f, F.job.inspectionSchedulingLink) || "",
       inspectionContacts:       g(f, F.job.inspectionContacts) || "",
       jobInspections:           g(f, F.job.jobInspections) || "",
+
+      // Action links
       wireLink:       extractUrl(g(f, F.job.wireLink)),
       pipeLink:       extractUrl(g(f, F.job.pipeLink)),
       addPhotosLink:  extractUrl(g(f, F.job.addPhotosLink)),
       viewPhotosLink: extractUrl(g(f, F.job.viewPhotosLink)),
       trelloCardId:               g(f, F.job.trelloCardId) || "",
       generatorCommissioningForm: g(f, F.job.generatorCommissioningForm) || "",
-      newGeneratorServiceForm:    g(f, F.job.newGeneratorServiceForm) || ""
+      newGeneratorServiceForm:    g(f, F.job.newGeneratorServiceForm) || "",
+
+      // ── ADMIN: Live Performance ──
+      totalRevenueLive:          gNum(f, F.job.totalRevenueLive),
+      totalMaterialsLive:        gNum(f, F.job.totalMaterialsLive),
+      totalLaborCostLive:        gNum(f, F.job.totalLaborCostLive),
+      totalWireCost:             gNum(f, F.job.totalWireCost),
+      pipeCost:                  gNum(f, F.job.pipeCost),
+      materialsInProgress:       gNum(f, F.job.materialsInProgress),
+      grossProfitLiveDollar:     gNum(f, F.job.grossProfitLiveDollar),
+      grossProfitLivePct:        gNum(f, F.job.grossProfitLivePct),
+      workflowStatus:            g(f, F.job.workflowStatus),
+      estimatedLaborHoursRollup: gNum(f, F.job.estimatedLaborHoursRollup),
+      hoursRollup:               gNum(f, F.job.hoursRollup),
+
+      // ── ADMIN: Closeout (Final) ──
+      expectedRevenue:        gNum(f, F.job.expectedRevenue),
+      actualJobCostCogs:      gNum(f, F.job.actualJobCostCogs),
+      totalReviewedCosts:     gNum(f, F.job.totalReviewedCosts),
+      totalLaborCostFinal:    gNum(f, F.job.totalLaborCostFinal),
+      grossProfitFinalDollar: gNum(f, F.job.grossProfitFinalDollar),
+      grossProfitFinalPct:    gNum(f, F.job.grossProfitFinalPct),
+      allMaterialsReviewed:   gFormulaBool(f, F.job.allMaterialsReviewed),
+      allWireReviewed:        gFormulaBool(f, F.job.allWireReviewed),
+      allPipeReviewed:        gFormulaBool(f, F.job.allPipeReviewed),
+      allExpensesReviewed:    gFormulaBool(f, F.job.allExpensesReviewed),
+      allLaborReviewed:       gFormulaBool(f, F.job.allLaborReviewed),
+
+      // ── ADMIN: Estimated Gross Profit ──
+      expectedRevenueAllStatus:       gNum(f, F.job.expectedRevenueAllStatus),
+      projectedEstimatedTotalCost:    gNum(f, F.job.projectedEstimatedTotalCost),
+      projectedEstimatedLaborHours:   gNum(f, F.job.projectedEstimatedLaborHours),
+      projectedEstimatedMaterialCost: gNum(f, F.job.projectedEstimatedMaterialCost),
+      projectedEstimatedLaborCost:    gNum(f, F.job.projectedEstimatedLaborCost),
+      projectedGrossProfitDollar:     gNum(f, F.job.projectedGrossProfitDollar),
+      projectedGrossProfitPct:        gNum(f, F.job.projectedGrossProfitPct)
     };
   }).filter(j => !["archived","cancelled","canceled","closed"].includes(normalize(j.status)));
 
@@ -255,7 +350,6 @@ async function handleGenerator(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // Look up the job name first so we can search generators by name
   const jobRecords = await fetchAll(TABLES.jobs, {
     filter: `RECORD_ID()="${jobId}"`
   });
@@ -294,7 +388,6 @@ async function handleGenerator(params) {
     notes:                g(f, F.gen.notes) || ""
   };
 
-  // Search service records by generator display name (linked field returns name not ID)
   const genAssetId = generator.assetId || "";
   const svcFilter = genAssetId ? `FIND("${genAssetId}", ARRAYJOIN({${F.svc.generator}}))` : `FALSE()`;
   const svcRecords = await fetchAll(TABLES.generatorService, { filter: svcFilter, sortField: F.svc.serviceDate, sortDir: "desc" });

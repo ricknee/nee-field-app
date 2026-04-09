@@ -11,7 +11,8 @@ const TABLES = {
   jobs:             "Jobs",
   generators:       "Generators",
   generatorService: "Generator Service",
-  timeEntries:      "Time Entries"
+  timeEntries:      "Time Entries",
+  scissorLifts:     "Scissor Lifts"
 };
 
 const F = {
@@ -497,6 +498,42 @@ async function handleApproveExpense(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleScissorLifts() {
+  const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
+  const lifts = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:           r.id,
+      name:         f["Lift Name"] || "",
+      status:       f["Status"] || "Available",
+      currentJob:   f["Current Job"] || "",
+      assignedTo:   f["Assigned To"] || "",
+      dateDeployed: f["Date Deployed"] || "",
+      notes:        f["Notes"] || ""
+    };
+  });
+  return resp(200, { ok: true, lifts });
+}
+
+async function handleUpdateScissorLift(body) {
+  const { liftId, status, currentJob, assignedTo, dateDeployed, notes } = body || {};
+  if (!liftId) return resp(400, { ok: false, error: "Missing liftId." });
+
+  const fields = {};
+  // All plain text/singleSelect — no linked records!
+  if (status)       fields["fldB9Kwqm0NS3RFFP"] = status;
+  if (currentJob !== undefined) fields["fldZpCcD52inR2PGm"] = currentJob;
+  if (assignedTo !== undefined) fields["fldkjsgzYiedjTaJ5"] = assignedTo || null;
+  if (dateDeployed) fields["fldqRXHkwiFQdjqor"] = dateDeployed;
+  if (notes !== undefined) fields["fldG5MLCzQbyClax0"] = notes;
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.scissorLifts)}/${liftId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 async function handleDeleteTimeEntry(body) {
   const { entryId } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
@@ -630,10 +667,11 @@ export async function handler(event) {
     if (event.httpMethod === "GET") {
       const action = event.queryStringParameters?.action;
       const params = event.queryStringParameters || {};
-      if (action === "jobs")        return await handleJobs();
-      if (action === "generator")   return await handleGenerator(params);
-      if (action === "expenses")    return await handleExpenses(params);
-      if (action === "timeEntries") return await handleTimeEntries(params);
+      if (action === "jobs")          return await handleJobs();
+      if (action === "generator")     return await handleGenerator(params);
+      if (action === "expenses")      return await handleExpenses(params);
+      if (action === "timeEntries")   return await handleTimeEntries(params);
+      if (action === "scissorLifts")  return await handleScissorLifts();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -646,6 +684,7 @@ export async function handler(event) {
       if (body.action === "deleteTimeEntry") return await handleDeleteTimeEntry(body);
       if (body.action === "deleteExpense")   return await handleDeleteExpense(body);
       if (body.action === "approveExpense")  return await handleApproveExpense(body);
+      if (body.action === "updateScissorLift") return await handleUpdateScissorLift(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

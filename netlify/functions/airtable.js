@@ -479,6 +479,17 @@ async function handleUpdatePowerCo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleDeleteTimeEntry(body) {
+  const { entryId } = body || {};
+  if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
+
+  await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, {
+    method: "DELETE"
+  });
+
+  return resp(200, { ok: true, deleted: entryId });
+}
+
 async function handleUpdateTimeEntry(body) {
   const { entryId, reviewed, duration } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
@@ -613,6 +624,7 @@ export async function handler(event) {
       if (body.action === "updateJobStatus") return await handleUpdateJobStatus(body);
       if (body.action === "updatePowerCo") return await handleUpdatePowerCo(body);
       if (body.action === "updateTimeEntry") return await handleUpdateTimeEntry(body);
+      if (body.action === "deleteTimeEntry") return await handleDeleteTimeEntry(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

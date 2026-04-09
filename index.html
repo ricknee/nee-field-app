@@ -112,6 +112,54 @@
 
     #statusChangeRow:not(.hidden) { display: flex; }
 
+    /* ── SCISSOR LIFT MODAL ── */
+    .sl-modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+      z-index: 500; display: flex; align-items: center; justify-content: center;
+    }
+    .sl-modal {
+      background: var(--panel); border-radius: 14px; width: 90%; max-width: 820px;
+      max-height: 88vh; overflow-y: auto; box-shadow: 0 8px 40px rgba(0,0,0,0.25);
+      display: flex; flex-direction: column;
+    }
+    .sl-modal-header {
+      padding: 18px 22px 14px; border-bottom: 1px solid var(--line);
+      display: flex; justify-content: space-between; align-items: center;
+      position: sticky; top: 0; background: var(--panel); z-index: 1;
+    }
+    .sl-modal-header h2 {
+      font-family: 'Rajdhani', sans-serif; font-size: 20px; font-weight: 700;
+      color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .sl-modal-body { padding: 18px 22px; }
+    .sl-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .sl-card {
+      border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+      background: var(--panel-2); transition: border-color 0.15s;
+    }
+    .sl-card:hover { border-color: var(--accent); }
+    .sl-card-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .sl-card-title { font-weight: 700; font-size: 15px; color: var(--text); }
+    .sl-status-pill {
+      font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+      border: 1px solid;
+    }
+    .sl-status-pill.available   { background:#dcfce7; border-color:#86efac; color:#166534; }
+    .sl-status-pill.on-job      { background:#fef9c3; border-color:#fde047; color:#854d0e; }
+    .sl-status-pill.needs-service { background:#fee2e2; border-color:#f87171; color:#991b1b; }
+    .sl-field { margin-bottom: 8px; }
+    .sl-field label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
+    .sl-field select, .sl-field input { width: 100%; background: var(--panel); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 8px; font-size: 12px; color: var(--text); outline: none; font-family: 'Inter', sans-serif; }
+    .sl-field select:focus, .sl-field input:focus { border-color: var(--accent); }
+    .sl-save-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+    .sl-save-msg { font-size: 11px; color: var(--green); display: none; }
+
     .edit-label {
       display: block;
       font-size: 11px;
@@ -839,6 +887,7 @@
     <div class="topbar-right">
       <span id="userBadge" class="user-badge">—</span>
       <a id="btnNewJobIntake" href="https://form.jotform.com/260972873590065" target="_blank" class="btn btn-primary btn-sm admin-only hidden" style="text-decoration:none; font-size:13px;">+ New Project</a>
+      <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button" style="font-size:13px;">🏗 Scissor Lifts</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
@@ -2292,6 +2341,108 @@
     }
   }
 
+  // ── SCISSOR LIFTS ──
+  const SL_EMPLOYEES = ["Jeff Koehn","Scott Koehn","Patrick Gingerich","Nicholas Stoltzfus","Miles Unruh","Larry Unruh","Rick Unruh"];
+
+  async function openScissorLifts() {
+    $("slModal").style.display = "flex";
+    await loadScissorLifts();
+  }
+
+  async function loadScissorLifts() {
+    $("slGrid").innerHTML = `<div class="loading-msg">Loading lifts...</div>`;
+    $("slSummaryBar").innerHTML = "";
+    try {
+      const d = await apiGet("scissorLifts");
+      const lifts = d.lifts || [];
+
+      // Summary bar
+      const avail   = lifts.filter(l => l.status === "Available").length;
+      const onJob   = lifts.filter(l => l.status === "On Job").length;
+      const service = lifts.filter(l => l.status === "Needs Service").length;
+      $("slSummaryBar").innerHTML = `
+        <span style="color:var(--green);">✅ Available: ${avail}</span>
+        <span style="color:#854d0e;">🟡 On Job: ${onJob}</span>
+        <span style="color:var(--red);">🔴 Needs Service: ${service}</span>`;
+
+      // Render cards
+      $("slGrid").innerHTML = lifts.map(lift => {
+        const statusClass = lift.status === "Available" ? "available" : lift.status === "On Job" ? "on-job" : "needs-service";
+        return `
+          <div class="sl-card">
+            <div class="sl-card-header">
+              <span class="sl-card-title">${esc(lift.name)}</span>
+              <span class="sl-status-pill ${statusClass}">${esc(lift.status || "—")}</span>
+            </div>
+            <div class="sl-field">
+              <label>Status</label>
+              <select data-lift-id="${esc(lift.id)}" class="sl-status-sel">
+                <option value="Available" ${lift.status==="Available"?"selected":""}>Available</option>
+                <option value="On Job" ${lift.status==="On Job"?"selected":""}>On Job</option>
+                <option value="Needs Service" ${lift.status==="Needs Service"?"selected":""}>Needs Service</option>
+              </select>
+            </div>
+            <div class="sl-field">
+              <label>Current Job</label>
+              <input type="text" data-lift-id="${esc(lift.id)}" class="sl-job-input" value="${esc(lift.currentJob || "")}" placeholder="Job name..." />
+            </div>
+            <div class="sl-field">
+              <label>Assigned To</label>
+              <select data-lift-id="${esc(lift.id)}" class="sl-emp-sel">
+                <option value="">— None —</option>
+                ${SL_EMPLOYEES.map(e => `<option value="${esc(e)}" ${lift.assignedTo===e?"selected":""}>${esc(e)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="sl-field">
+              <label>Date Deployed</label>
+              <input type="date" data-lift-id="${esc(lift.id)}" class="sl-date-input" value="${esc(lift.dateDeployed || "")}" />
+            </div>
+            <div class="sl-field">
+              <label>Notes</label>
+              <input type="text" data-lift-id="${esc(lift.id)}" class="sl-notes-input" value="${esc(lift.notes || "")}" placeholder="Notes..." />
+            </div>
+            <div class="sl-save-row">
+              <button data-lift-id="${esc(lift.id)}" class="sl-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save</button>
+              <span data-lift-id="${esc(lift.id)}" class="sl-save-msg">✓ Saved</span>
+            </div>
+          </div>`;
+      }).join("");
+
+      // Wire save buttons
+      $("slGrid").querySelectorAll(".sl-save-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const id = btn.dataset.liftId;
+          const card = btn.closest(".sl-card");
+          const status     = card.querySelector(".sl-status-sel").value;
+          const currentJob = card.querySelector(".sl-job-input").value;
+          const assignedTo = card.querySelector(".sl-emp-sel").value;
+          const date       = card.querySelector(".sl-date-input").value;
+          const notes      = card.querySelector(".sl-notes-input").value;
+          btn.disabled = true; btn.textContent = "...";
+          try {
+            await apiPost("updateScissorLift", { liftId: id, status, currentJob, assignedTo, dateDeployed: date, notes });
+            const msg = card.querySelector(".sl-save-msg");
+            msg.style.display = "inline";
+            setTimeout(() => { msg.style.display = "none"; }, 2000);
+            // Update status pill
+            const pill = card.querySelector(".sl-status-pill");
+            pill.textContent = status;
+            pill.className = "sl-status-pill " + (status==="Available"?"available":status==="On Job"?"on-job":"needs-service");
+            // Refresh summary
+            await loadScissorLifts();
+          } catch(e) {
+            alert("Error: " + e.message);
+          } finally {
+            btn.disabled = false; btn.textContent = "Save";
+          }
+        });
+      });
+
+    } catch(err) {
+      $("slGrid").innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
+    }
+  }
+
   // ── EVENTS ──
   function wireEvents() {
     $("loginBtn").addEventListener("click", handleLogin);
@@ -2311,6 +2462,7 @@
     $("pcEditCompany").addEventListener("change", () => {
       updatePcContactDropdown($("pcEditCompany").value, "");
     });
+    $("btnScissorLifts").addEventListener("click", openScissorLifts);
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -2327,5 +2479,21 @@
 
   init();
 </script>
+<!-- SCISSOR LIFT MODAL -->
+<div id="slModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2>🏗 Scissor Lift Tracker</h2>
+      <button onclick="document.getElementById('slModal').style.display='none'" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="slSummaryBar" style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding:10px 14px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; font-size:13px; font-weight:600;"></div>
+      <div id="slGrid" class="sl-grid">
+        <div class="loading-msg">Loading lifts...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

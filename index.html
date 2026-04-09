@@ -2055,51 +2055,133 @@
         return;
       }
 
-      // Grand total
-      const grandTotal = expenses.reduce((sum, e) => sum + (e.totalCost || 0), 0);
+      const reviewed = expenses.filter(e => e.reviewed);
+      const pending  = expenses.filter(e => !e.reviewed);
+      const totalRev  = reviewed.reduce((s, e) => s + (e.totalCost || 0), 0);
+      const totalPend = pending.reduce((s,  e) => s + (e.totalCost || 0), 0);
+      const grandTotal = totalRev + totalPend;
+
+      // Sort each by date desc
+      const byDateDesc = (a, b) => (b.date || "").localeCompare(a.date || "");
+      reviewed.sort(byDateDesc);
+      pending.sort(byDateDesc);
+
+      function expenseRow(e, showActions) {
+        const markup = e.jobMarkupPct != null ? Math.round(e.jobMarkupPct * 100) + "%" : "—";
+        return `<tr>
+          <td style="white-space:nowrap;">${esc(fmtDate(e.date))}</td>
+          <td>${esc(e.vendor || "—")}</td>
+          <td>${esc(e.description || "—")}</td>
+          <td style="text-align:right;">${e.totalCost != null ? fmtCurrency(e.totalCost) : "—"}</td>
+          <td>${esc(markup)}</td>
+          <td style="text-align:right;">${e.billableMaterial != null ? fmtCurrency(e.billableMaterial) : "—"}</td>
+          <td>${esc(e.expenseType || "—")}</td>
+          <td style="text-align:center;">${e.billable ? "✅" : "—"}</td>
+          ${showActions ? `
+          <td style="text-align:center;">
+            <input type="checkbox" data-expense-id="${esc(e.id)}" class="exp-review-chk" title="Mark as reviewed" style="cursor:pointer; width:16px; height:16px;" />
+          </td>
+          <td style="text-align:center;">
+            <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(fmtDate(e.date))} – ${esc(e.vendor || e.description || "")}" class="exp-delete-btn" title="Delete" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;">🗑</button>
+          </td>` : ""}
+        </tr>`;
+      }
+
+      function renderPendingTab(list) {
+        if (!list.length) return `<div class="empty-msg">No unreviewed expenses.</div>`;
+        return `<table class="expense-table">
+          <thead><tr>
+            <th>Date</th><th>Vendor</th><th>Description</th>
+            <th style="text-align:right;">Total Cost</th><th>Markup %</th>
+            <th style="text-align:right;">Billable Amt</th><th>Type</th>
+            <th>Billable?</th><th>Approve</th><th></th>
+          </tr></thead>
+          <tbody>${list.map(e => expenseRow(e, true)).join("")}</tbody>
+        </table>`;
+      }
+
+      function renderReviewedTab(list) {
+        if (!list.length) return `<div class="empty-msg">No reviewed expenses.</div>`;
+        return `<table class="expense-table">
+          <thead><tr>
+            <th>Date</th><th>Vendor</th><th>Description</th>
+            <th style="text-align:right;">Total Cost</th><th>Markup %</th>
+            <th style="text-align:right;">Billable Amt</th><th>Type</th>
+            <th>Billable?</th>
+          </tr></thead>
+          <tbody>${list.map(e => expenseRow(e, false)).join("")}</tbody>
+        </table>`;
+      }
 
       el.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-          <span style="font-size:13px; color:var(--muted);">${expenses.length} expense${expenses.length !== 1 ? "s" : ""}</span>
-          <span style="font-size:14px; font-weight:700; color:var(--text);">Total: <span style="color:var(--accent);">${fmtCurrency(grandTotal)}</span></span>
+        <!-- Grand Total Banner -->
+        <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; align-items:center;">
+          <span style="font-size:13px; font-weight:700; color:var(--text);">Total: <span style="color:var(--accent);">${fmtCurrency(grandTotal)}</span></span>
+          <span style="font-size:13px; color:var(--green); font-weight:600;">✅ Reviewed: ${fmtCurrency(totalRev)}</span>
+          <span style="font-size:13px; color:var(--red); font-weight:600;">⬜ Pending: ${fmtCurrency(totalPend)}</span>
         </div>
-        <table class="expense-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Vendor</th>
-              <th>Description</th>
-              <th style="text-align:right;">Total Cost</th>
-              <th>Markup %</th>
-              <th style="text-align:right;">Billable Amt</th>
-              <th>Type</th>
-              <th>Status</th>
-              <th>Billable?</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${expenses.map(e => {
-              const statusLower = (e.expenseStatus || "").toLowerCase();
-              const pillClass = statusLower.includes("not") ? "unreviewed" : statusLower.includes("review") ? "reviewed" : "default";
-              const markup = e.jobMarkupPct != null ? Math.round(e.jobMarkupPct * 100) + "%" : "—";
-              return `<tr>
-                <td style="white-space:nowrap;">${esc(fmtDate(e.date))}</td>
-                <td>${esc(e.vendor || "—")}</td>
-                <td>${esc(e.description || "—")}</td>
-                <td style="text-align:right;">${e.totalCost != null ? fmtCurrency(e.totalCost) : "—"}</td>
-                <td>${esc(markup)}</td>
-                <td style="text-align:right;">${e.billableMaterial != null ? fmtCurrency(e.billableMaterial) : "—"}</td>
-                <td>${esc(e.expenseType || "—")}</td>
-                <td><span class="expense-status-pill ${pillClass}">${esc(e.expenseStatus || "—")}</span></td>
-                <td style="text-align:center;">${e.billable ? "✅" : "—"}</td>
-              </tr>`;
-            }).join("")}
-          </tbody>
-        </table>`;
+        <!-- Sub-tabs -->
+        <div style="display:flex; gap:0; margin-bottom:14px; border-bottom:2px solid var(--line);">
+          <button id="exp-tab-pending" onclick="expShowTab('pending')" style="padding:8px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; border-bottom:3px solid var(--accent); color:var(--accent); margin-bottom:-2px;">⬜ Not Reviewed (${pending.length})</button>
+          <button id="exp-tab-reviewed" onclick="expShowTab('reviewed')" style="padding:8px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; color:var(--muted); border-bottom:3px solid transparent; margin-bottom:-2px;">✅ Reviewed (${reviewed.length})</button>
+        </div>
+        <div id="exp-pending-content" style="overflow-x:auto;">${renderPendingTab(pending)}</div>
+        <div id="exp-reviewed-content" style="overflow-x:auto; display:none;">${renderReviewedTab(reviewed)}</div>`;
+
+      // Wire approve checkboxes
+      el.querySelectorAll(".exp-review-chk").forEach(chk => {
+        chk.addEventListener("change", async () => {
+          const expenseId = chk.dataset.expenseId;
+          chk.disabled = true;
+          try {
+            await apiPost("approveExpense", { expenseId });
+            await loadExpenses(jobId);
+          } catch(err) {
+            alert("Error: " + err.message);
+            chk.disabled = false;
+            chk.checked = false;
+          }
+        });
+      });
+
+      // Wire delete buttons
+      el.querySelectorAll(".exp-delete-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const expenseId = btn.dataset.expenseId;
+          const label     = btn.dataset.expenseLabel;
+          if (!confirm(`Delete this expense?\n\n${label}\n\nThis cannot be undone.`)) return;
+          btn.disabled = true;
+          btn.textContent = "...";
+          try {
+            await apiPost("deleteExpense", { expenseId });
+            await loadExpenses(jobId);
+          } catch(err) {
+            alert("Error deleting: " + err.message);
+            btn.disabled = false;
+            btn.textContent = "🗑";
+          }
+        });
+      });
+
     } catch(err) {
       el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
     }
   }
+
+  // Sub-tab switcher for Expenses (global so onclick works)
+  window.expShowTab = function(tab) {
+    $("exp-pending-content").style.display  = tab === "pending"  ? "" : "none";
+    $("exp-reviewed-content").style.display = tab === "reviewed" ? "" : "none";
+    const pendBtn = $("exp-tab-pending");
+    const revBtn  = $("exp-tab-reviewed");
+    if (tab === "pending") {
+      pendBtn.style.borderBottomColor = "var(--accent)"; pendBtn.style.color = "var(--accent)";
+      revBtn.style.borderBottomColor  = "transparent";   revBtn.style.color  = "var(--muted)";
+    } else {
+      revBtn.style.borderBottomColor  = "var(--accent)"; revBtn.style.color  = "var(--accent)";
+      pendBtn.style.borderBottomColor = "transparent";   pendBtn.style.color = "var(--muted)";
+    }
+  };
 
   // ── POWER CO CONTACTS (live data, filtered by company) ──
   const PC_CONTACTS = [

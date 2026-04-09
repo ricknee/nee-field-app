@@ -498,6 +498,29 @@ async function handleApproveExpense(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleScissorLiftsByJob(params) {
+  const { jobName } = params || {};
+  if (!jobName) return resp(200, { ok: true, lifts: [] });
+
+  const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
+  const lifts = records
+    .map(r => {
+      const f = r.fields || {};
+      return {
+        id:          r.id,
+        name:        f["Lift Name"] || "",
+        status:      f["Status"] || "Available",
+        currentJob:  f["Current Job"] || "",
+        assignedTo:  f["Assigned To"] || "",
+        dateDeployed: f["Date Deployed"] || "",
+        notes:       f["Notes"] || ""
+      };
+    })
+    .filter(l => l.currentJob === jobName && l.status === "On Job");
+
+  return resp(200, { ok: true, lifts });
+}
+
 async function handleScissorLifts() {
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => {
@@ -671,7 +694,8 @@ export async function handler(event) {
       if (action === "generator")     return await handleGenerator(params);
       if (action === "expenses")      return await handleExpenses(params);
       if (action === "timeEntries")   return await handleTimeEntries(params);
-      if (action === "scissorLifts")  return await handleScissorLifts();
+      if (action === "scissorLifts")      return await handleScissorLifts();
+      if (action === "scissorLiftsByJob") return await handleScissorLiftsByJob(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 

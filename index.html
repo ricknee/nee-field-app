@@ -1866,69 +1866,152 @@
         return;
       }
 
-      // Sort: unreviewed first, then by date desc within each group
-      entries.sort((a, b) => {
-        if (a.reviewed !== b.reviewed) return a.reviewed ? 1 : -1;
-        return (b.workDate || "").localeCompare(a.workDate || "");
-      });
+      const reviewed  = entries.filter(e => e.reviewed);
+      const pending   = entries.filter(e => !e.reviewed);
+      const totalRev  = reviewed.reduce((s, e) => s + (e.hours || 0), 0);
+      const totalPend = pending.reduce((s, e)  => s + (e.hours || 0), 0);
+      const grandTotal = totalRev + totalPend;
 
-      // Group by employee
-      const groups = {};
-      entries.forEach(e => {
-        const emp = e.employee || "Unknown";
-        if (!groups[emp]) groups[emp] = [];
-        groups[emp].push(e);
-      });
+      // Sort each by date desc
+      const byDateDesc = (a, b) => (b.workDate || "").localeCompare(a.workDate || "");
+      reviewed.sort(byDateDesc);
+      pending.sort(byDateDesc);
 
-      const totalHours = entries.reduce((sum, e) => sum + (e.hours || 0), 0);
+      function groupByEmp(list) {
+        const g = {};
+        list.forEach(e => { const k = e.employee || "Unknown"; if (!g[k]) g[k] = []; g[k].push(e); });
+        return g;
+      }
 
-      let html = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:8px;">
-          <span style="font-size:13px; color:var(--muted);">${entries.length} entr${entries.length !== 1 ? "ies" : "y"}</span>
-          <span style="font-size:14px; font-weight:700; color:var(--text);">Total Hours: <span style="color:var(--accent);">${totalHours.toFixed(2)}</span></span>
-        </div>`;
+      function renderReviewedTab(list) {
+        if (!list.length) return `<div class="empty-msg">No reviewed entries.</div>`;
+        const groups = groupByEmp(list);
+        let html = "";
+        Object.entries(groups).forEach(([emp, empEntries]) => {
+          const colors = EMP_COLORS[emp] || { bg:"#f4f6f9", border:"#dde1e8", text:"#1a2233" };
+          const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0);
+          html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; margin-bottom:6px; border-radius:8px; border:1px solid ${colors.border}; background:${colors.bg};">
+            <span style="font-weight:700; font-size:14px; color:${colors.text};">${esc(emp)}</span>
+            <span style="font-size:13px; font-weight:600; color:${colors.text};">${empTotal.toFixed(2)} hrs ✅</span>
+          </div>`;
+        });
+        return html;
+      }
 
-      Object.entries(groups).forEach(([emp, empEntries]) => {
-        const colors = EMP_COLORS[emp] || { bg: "#f4f6f9", border: "#dde1e8", text: "#1a2233" };
-        const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0);
-
-        html += `
-          <div style="margin-bottom:18px; border-radius:10px; overflow:hidden; border:1px solid ${colors.border};">
-            <div style="background:${colors.bg}; padding:10px 14px; display:flex; justify-content:space-between; align-items:center;">
-              <span style="font-weight:700; font-size:14px; color:${colors.text};">${esc(emp)}</span>
-              <span style="font-size:13px; font-weight:600; color:${colors.text};">${empTotal.toFixed(2)} hrs</span>
-            </div>
-            <table class="expense-table" style="margin:0; border-radius:0;">
-              <thead>
-                <tr>
-                  <th>Work Date</th>
-                  <th>Class</th>
-                  <th>City Taxes</th>
+      function renderPendingTab(list) {
+        if (!list.length) return `<div class="empty-msg">No unreviewed entries.</div>`;
+        const groups = groupByEmp(list);
+        let html = "";
+        Object.entries(groups).forEach(([emp, empEntries]) => {
+          const colors = EMP_COLORS[emp] || { bg:"#f4f6f9", border:"#dde1e8", text:"#1a2233" };
+          const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0);
+          html += `
+            <div style="margin-bottom:18px; border-radius:10px; overflow:hidden; border:1px solid ${colors.border};">
+              <div style="background:${colors.bg}; padding:10px 14px; display:flex; justify-content:space-between; align-items:center;">
+                <span style="font-weight:700; font-size:14px; color:${colors.text};">${esc(emp)}</span>
+                <span style="font-size:13px; font-weight:600; color:${colors.text};">${empTotal.toFixed(2)} hrs</span>
+              </div>
+              <table class="expense-table" style="margin:0; border-radius:0;">
+                <thead><tr>
+                  <th>Work Date</th><th>Class</th><th>City Taxes</th>
                   <th style="text-align:right;">Hours</th>
-                  <th>Reviewed</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${empEntries.map(e => `
-                  <tr style="${e.reviewed ? "" : "background:rgba(255,255,255,0.6);"}">
+                  <th>Approve</th><th>Notes</th>
+                  <th style="text-align:right;">Duration (sec)</th>
+                </tr></thead>
+                <tbody>
+                  ${empEntries.map(e => `<tr>
                     <td style="white-space:nowrap;">${esc(fmtDate(e.workDate))}</td>
                     <td>${esc(e.class || "—")}</td>
                     <td>${esc(e.cityTaxes || "—")}</td>
                     <td style="text-align:right; font-weight:600;">${e.hours != null ? e.hours : "—"}</td>
-                    <td style="text-align:center;">${e.reviewed ? "✅" : "⬜"}</td>
+                    <td style="text-align:center;">
+                      <input type="checkbox" data-entry-id="${esc(e.id)}" class="te-review-chk" title="Mark as reviewed" style="cursor:pointer; width:16px; height:16px;" />
+                    </td>
                     <td style="color:var(--muted); font-size:12px;">${esc(e.notes || "")}</td>
+                    <td style="text-align:right;">
+                      <input type="number" value="${e.duration != null ? e.duration : ""}" data-entry-id="${esc(e.id)}" class="te-duration-input" style="width:80px; border:1px solid var(--line-2); border-radius:6px; padding:3px 6px; font-size:12px; text-align:right; background:var(--panel);" />
+                      <button data-entry-id="${esc(e.id)}" class="te-duration-save btn btn-sm" style="font-size:11px; padding:3px 8px; margin-left:4px;">Save</button>
+                    </td>
                   </tr>`).join("")}
-              </tbody>
-            </table>
-          </div>`;
+                </tbody>
+              </table>
+            </div>`;
+        });
+        return html;
+      }
+
+      el.innerHTML = `
+        <!-- Grand Total Banner -->
+        <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; align-items:center;">
+          <span style="font-size:13px; font-weight:700; color:var(--text);">Total Hours: <span style="color:var(--accent);">${grandTotal.toFixed(2)}</span></span>
+          <span style="font-size:13px; color:var(--green); font-weight:600;">✅ Reviewed: ${totalRev.toFixed(2)}</span>
+          <span style="font-size:13px; color:var(--red); font-weight:600;">⬜ Pending: ${totalPend.toFixed(2)}</span>
+        </div>
+        <!-- Sub-tabs -->
+        <div style="display:flex; gap:0; margin-bottom:14px; border-bottom:2px solid var(--line);">
+          <button id="te-tab-pending" onclick="teShowTab('pending')" style="padding:8px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; border-bottom:3px solid var(--accent); color:var(--accent); margin-bottom:-2px;">⬜ Not Reviewed (${pending.length})</button>
+          <button id="te-tab-reviewed" onclick="teShowTab('reviewed')" style="padding:8px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; color:var(--muted); border-bottom:3px solid transparent; margin-bottom:-2px;">✅ Reviewed (${reviewed.length})</button>
+        </div>
+        <div id="te-pending-content">${renderPendingTab(pending)}</div>
+        <div id="te-reviewed-content" style="display:none;">${renderReviewedTab(reviewed)}</div>`;
+
+      // Wire approve checkboxes
+      el.querySelectorAll(".te-review-chk").forEach(chk => {
+        chk.addEventListener("change", async () => {
+          const entryId = chk.dataset.entryId;
+          chk.disabled = true;
+          try {
+            await apiPost("updateTimeEntry", { entryId, reviewed: true });
+            // Reload to reflect change
+            await loadTimeEntries(jobId);
+          } catch(err) {
+            alert("Error: " + err.message);
+            chk.disabled = false;
+            chk.checked = false;
+          }
+        });
       });
 
-      el.innerHTML = html;
+      // Wire duration save buttons
+      el.querySelectorAll(".te-duration-save").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const entryId = btn.dataset.entryId;
+          const input = el.querySelector(`.te-duration-input[data-entry-id="${entryId}"]`);
+          const duration = parseInt(input.value);
+          if (isNaN(duration)) return;
+          btn.disabled = true;
+          btn.textContent = "...";
+          try {
+            await apiPost("updateTimeEntry", { entryId, duration });
+            btn.textContent = "✓";
+            setTimeout(() => { btn.textContent = "Save"; btn.disabled = false; }, 1500);
+          } catch(err) {
+            alert("Error: " + err.message);
+            btn.textContent = "Save";
+            btn.disabled = false;
+          }
+        });
+      });
+
     } catch(err) {
       el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
     }
   }
+
+  // Sub-tab switcher for Time Entries (global so onclick works)
+  window.teShowTab = function(tab) {
+    $("te-pending-content").style.display  = tab === "pending"  ? "" : "none";
+    $("te-reviewed-content").style.display = tab === "reviewed" ? "" : "none";
+    const pendBtn = $("te-tab-pending");
+    const revBtn  = $("te-tab-reviewed");
+    if (tab === "pending") {
+      pendBtn.style.borderBottomColor = "var(--accent)"; pendBtn.style.color = "var(--accent)";
+      revBtn.style.borderBottomColor  = "transparent";   revBtn.style.color  = "var(--muted)";
+    } else {
+      revBtn.style.borderBottomColor  = "var(--accent)"; revBtn.style.color  = "var(--accent)";
+      pendBtn.style.borderBottomColor = "transparent";   pendBtn.style.color = "var(--muted)";
+    }
+  };
 
   // ── EXPENSES (admin) ──
   async function loadExpenses(jobId) {

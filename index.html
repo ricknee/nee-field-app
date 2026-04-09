@@ -1031,8 +1031,19 @@
 
           <!-- Scissor Lifts at this job (visible to all) -->
           <div id="jobLiftsSection" style="margin-top:16px; display:none;">
-            <div class="section-header">🏗 Scissor Lifts at this Job</div>
-            <div id="jobLiftsList" style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;"></div>
+            <div class="section-header" style="display:flex; justify-content:space-between; align-items:center;">
+              <span>🏗 Scissor Lifts at this Job</span>
+              <button id="btnAddLiftToJob" class="btn btn-sm" style="font-size:12px;" type="button">+ Add Lift</button>
+            </div>
+            <div id="jobLiftsList" style="display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;"></div>
+            <div id="addLiftPanel" style="display:none; margin-top:10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:12px;">
+              <div style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Deploy a Lift to this Job</div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <select id="addLiftSelect" class="edit-input" style="font-size:13px; flex:1; min-width:160px;"></select>
+                <button id="addLiftConfirm" class="btn btn-primary btn-sm" type="button" style="font-size:12px;">Deploy</button>
+                <button onclick="document.getElementById('addLiftPanel').style.display='none'" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -2354,21 +2365,93 @@
   async function loadJobLifts(jobName) {
     const section = $("jobLiftsSection");
     const list    = $("jobLiftsList");
-    section.style.display = "none";
-    list.innerHTML = "";
+    section.style.display = "";
+    list.innerHTML = `<div class="loading-msg" style="font-size:12px;">Loading...</div>`;
+
     try {
-      const d = await apiGet("scissorLiftsByJob", { jobName });
-      const lifts = d.lifts || [];
-      if (!lifts.length) return;
-      section.style.display = "";
-      list.innerHTML = lifts.map(l => `
-        <div style="background:var(--panel); border:1px solid var(--line-2); border-radius:8px; padding:8px 12px; font-size:13px;">
-          <span style="font-weight:700; color:var(--accent);">🏗 ${esc(l.name)}</span>
-          ${l.assignedTo ? `<span style="color:var(--muted); margin-left:8px;">— ${esc(l.assignedTo)}</span>` : ""}
-          ${l.dateDeployed ? `<span style="color:var(--muted); font-size:11px; margin-left:6px;">(since ${esc(fmtDate(l.dateDeployed))})</span>` : ""}
-        </div>`).join("");
+      // Load all lifts to split into on-job and available
+      const d = await apiGet("scissorLifts");
+      const allLifts  = d.lifts || [];
+      const onJob     = allLifts.filter(l => l.currentJob === jobName && l.status === "On Job");
+      const available = allLifts.filter(l => l.status === "Available");
+
+      // Populate Add Lift dropdown
+      const sel = $("addLiftSelect");
+      if (sel) {
+        sel.innerHTML = available.length
+          ? `<option value="">— Select Lift —</option>` + available.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join("")
+          : `<option value="">No lifts available</option>`;
+      }
+
+      if (!onJob.length) {
+        list.innerHTML = `<div style="font-size:13px; color:var(--muted);">No lifts currently at this job.</div>`;
+      } else {
+        list.innerHTML = onJob.map(l => `
+          <div style="background:var(--panel); border:1px solid var(--line-2); border-radius:10px; padding:12px 14px; min-width:160px;">
+            <div style="font-weight:700; color:var(--accent); font-size:14px; margin-bottom:8px;">🏗 ${esc(l.name)}</div>
+            ${l.assignedTo ? `<div style="font-size:12px; color:var(--muted); margin-bottom:8px;">👤 ${esc(l.assignedTo)}</div>` : ""}
+            <div style="margin-bottom:6px;">
+              <label style="font-size:10px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:3px;">Status</label>
+              <select data-lift-id="${esc(l.id)}" class="job-lift-status edit-input" style="font-size:12px; padding:5px 8px;">
+                <option value="On Job">On Job</option>
+                <option value="Available">Return to Shop</option>
+                <option value="Needs Service">Needs Service</option>
+              </select>
+            </div>
+            <button data-lift-id="${esc(l.id)}" data-job="${esc(jobName)}" class="job-lift-save btn btn-primary btn-sm" style="width:100%; font-size:12px; margin-top:4px;">Save</button>
+            <span class="job-lift-msg" style="font-size:11px; color:var(--green); display:none; margin-top:4px; display:block;">✓ Updated</span>
+          </div>`).join("");
+
+        // Wire save buttons
+        list.querySelectorAll(".job-lift-save").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            const liftId = btn.dataset.liftId;
+            const jobN   = btn.dataset.job;
+            const card   = btn.parentElement;
+            const status = card.querySelector(".job-lift-status").value;
+            btn.disabled = true; btn.textContent = "...";
+            try {
+              const newJob = status === "On Job" ? jobN : "";
+              await apiPost("updateScissorLift", { liftId, status, currentJob: newJob });
+              await loadJobLifts(jobN);
+            } catch(e) {
+              alert("Error: " + e.message);
+              btn.disabled = false; btn.textContent = "Save";
+            }
+          });
+        });
+      }
+
+      // Wire Add Lift button
+      const addBtn = $("btnAddLiftToJob");
+      if (addBtn) {
+        addBtn.onclick = () => {
+          const panel = $("addLiftPanel");
+          panel.style.display = panel.style.display === "none" ? "" : "none";
+        };
+      }
+
+      // Wire Deploy button
+      const deployBtn = $("addLiftConfirm");
+      if (deployBtn) {
+        deployBtn.onclick = async () => {
+          const liftId = $("addLiftSelect").value;
+          if (!liftId) return;
+          deployBtn.disabled = true; deployBtn.textContent = "...";
+          try {
+            await apiPost("updateScissorLift", { liftId, status: "On Job", currentJob: jobName });
+            $("addLiftPanel").style.display = "none";
+            await loadJobLifts(jobName);
+          } catch(e) {
+            alert("Error: " + e.message);
+          } finally {
+            deployBtn.disabled = false; deployBtn.textContent = "Deploy";
+          }
+        };
+      }
+
     } catch(e) {
-      // Silently fail — not critical
+      list.innerHTML = "";
     }
   }
 

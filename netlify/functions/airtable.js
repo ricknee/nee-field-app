@@ -479,6 +479,24 @@ async function handleUpdatePowerCo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleUpdateTimeEntry(body) {
+  const { entryId, reviewed, duration } = body || {};
+  if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
+
+  const fields = {};
+  if (reviewed !== undefined) fields["fldQn7d06doEkrGBv"] = reviewed === true;
+  if (duration !== undefined && duration !== null) fields["fld9mz6As3099VPVp"] = Number(duration);
+
+  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields })
+  });
+
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 async function handleTimeEntries(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -503,7 +521,8 @@ async function handleTimeEntries(params) {
       cityTaxes:   f["City Taxes"] || "",
       hours:       f["Hours"] ?? null,
       reviewed:    f["Labor Reviewed"] === true,
-      notes:       f["Notes"] || ""
+      notes:       f["Notes"] || "",
+      duration:    f["Duration (Seconds)"] ?? null
     };
   });
 
@@ -593,6 +612,7 @@ export async function handler(event) {
       if (body.action === "login") return await handleLogin(body);
       if (body.action === "updateJobStatus") return await handleUpdateJobStatus(body);
       if (body.action === "updatePowerCo") return await handleUpdatePowerCo(body);
+      if (body.action === "updateTimeEntry") return await handleUpdateTimeEntry(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

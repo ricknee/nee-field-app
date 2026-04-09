@@ -2384,7 +2384,14 @@
             </div>
             <div class="sl-field">
               <label>Current Job</label>
-              <input type="text" data-lift-id="${esc(lift.id)}" class="sl-job-input" value="${esc(lift.currentJob || "")}" placeholder="Job name..." />
+              <select data-lift-id="${esc(lift.id)}" class="sl-job-input">
+                <option value="">— None —</option>
+                ${state.jobs
+                  .filter(j => ["awarded","service call scheduled"].includes((j.status||"").toLowerCase()))
+                  .sort((a,b) => (a.name||"").localeCompare(b.name||""))
+                  .map(j => `<option value="${esc(j.name)}" ${lift.currentJob===j.name?"selected":""}>${esc(j.name)}</option>`)
+                  .join("")}
+              </select>
             </div>
             <div class="sl-field">
               <label>Assigned To</label>

@@ -1917,6 +1917,7 @@
                   <th style="text-align:right;">Hours</th>
                   <th>Approve</th><th>Notes</th>
                   <th style="text-align:right;">Duration (sec)</th>
+                  <th></th>
                 </tr></thead>
                 <tbody>
                   ${empEntries.map(e => `<tr>
@@ -1931,6 +1932,9 @@
                     <td style="text-align:right;">
                       <input type="number" value="${e.duration != null ? e.duration : ""}" data-entry-id="${esc(e.id)}" class="te-duration-input" style="width:80px; border:1px solid var(--line-2); border-radius:6px; padding:3px 6px; font-size:12px; text-align:right; background:var(--panel);" />
                       <button data-entry-id="${esc(e.id)}" class="te-duration-save btn btn-sm" style="font-size:11px; padding:3px 8px; margin-left:4px;">Save</button>
+                    </td>
+                    <td style="text-align:center;">
+                      <button data-entry-id="${esc(e.id)}" data-entry-label="${esc(fmtDate(e.workDate))} – ${esc(e.employee || "")}" class="te-delete-btn" title="Delete this time entry" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;" >🗑</button>
                     </td>
                   </tr>`).join("")}
                 </tbody>
@@ -1989,6 +1993,25 @@
             alert("Error: " + err.message);
             btn.textContent = "Save";
             btn.disabled = false;
+          }
+        });
+      });
+
+      // Wire delete buttons
+      el.querySelectorAll(".te-delete-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const entryId = btn.dataset.entryId;
+          const label   = btn.dataset.entryLabel;
+          if (!confirm(`Delete this time entry?\n\n${label}\n\nThis cannot be undone.`)) return;
+          btn.disabled = true;
+          btn.textContent = "...";
+          try {
+            await apiPost("deleteTimeEntry", { entryId });
+            await loadTimeEntries(jobId);
+          } catch(err) {
+            alert("Error deleting: " + err.message);
+            btn.disabled = false;
+            btn.textContent = "🗑";
           }
         });
       });

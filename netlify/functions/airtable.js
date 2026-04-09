@@ -479,6 +479,24 @@ async function handleUpdatePowerCo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleDeleteExpense(body) {
+  const { expenseId } = body || {};
+  if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
+  await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "DELETE" });
+  return resp(200, { ok: true, deleted: expenseId });
+}
+
+async function handleApproveExpense(body) {
+  const { expenseId } = body || {};
+  if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
+  // Reviewed checkbox field ID: fldwSsga6eashzJsw
+  const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fldwSsga6eashzJsw": true } })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 async function handleDeleteTimeEntry(body) {
   const { entryId } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
@@ -596,7 +614,8 @@ async function handleExpenses(params) {
       expenseStatus:    f["Expense Status"]?.name || f["Expense Status"] || "",
       billable:         f["Billable?"] === true,
       jobMarkupPct:     markup,
-      billableMaterial: f["Billable Material Amount $"] ?? null
+      billableMaterial: f["Billable Material Amount $"] ?? null,
+      reviewed:         f["Reviewed"] === true
     };
   });
 
@@ -625,6 +644,8 @@ export async function handler(event) {
       if (body.action === "updatePowerCo") return await handleUpdatePowerCo(body);
       if (body.action === "updateTimeEntry") return await handleUpdateTimeEntry(body);
       if (body.action === "deleteTimeEntry") return await handleDeleteTimeEntry(body);
+      if (body.action === "deleteExpense")   return await handleDeleteExpense(body);
+      if (body.action === "approveExpense")  return await handleApproveExpense(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

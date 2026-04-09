@@ -2398,8 +2398,12 @@
                 <option value="Needs Service">Needs Service</option>
               </select>
             </div>
+            <div style="margin-bottom:6px;">
+              <label style="font-size:10px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:3px;">Notes</label>
+              <input type="text" class="job-lift-notes edit-input" style="font-size:12px; padding:5px 8px;" placeholder="e.g. needs service, bringing back..." value="${esc(l.notes || "")}" />
+            </div>
             <button data-lift-id="${esc(l.id)}" data-job="${esc(jobName)}" class="job-lift-save btn btn-primary btn-sm" style="width:100%; font-size:12px; margin-top:4px;">Save</button>
-            <span class="job-lift-msg" style="font-size:11px; color:var(--green); display:none; margin-top:4px; display:block;">✓ Updated</span>
+            <span class="job-lift-msg" style="font-size:11px; color:var(--green); display:none; margin-top:4px;">✓ Updated</span>
           </div>`).join("");
 
         // Wire save buttons
@@ -2409,10 +2413,11 @@
             const jobN   = btn.dataset.job;
             const card   = btn.parentElement;
             const status = card.querySelector(".job-lift-status").value;
+            const notes  = card.querySelector(".job-lift-notes").value;
             btn.disabled = true; btn.textContent = "...";
             try {
               const newJob = status === "On Job" ? jobN : "";
-              await apiPost("updateScissorLift", { liftId, status, currentJob: newJob });
+              await apiPost("updateScissorLift", { liftId, status, currentJob: newJob, notes });
               await loadJobLifts(jobN);
             } catch(e) {
               alert("Error: " + e.message);

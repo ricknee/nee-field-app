@@ -1192,6 +1192,13 @@
   function fmtDate(v) {
     if (!v || v === "—") return "—";
     try {
+      // If it's a plain date string (YYYY-MM-DD), parse it directly to avoid
+      // UTC midnight shifting the date back one day in local timezones
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        const [year, month, day] = v.split("-").map(Number);
+        const d = new Date(year, month - 1, day); // local time, no UTC shift
+        return d.toLocaleDateString("en-US", { year:"numeric", month:"short", day:"numeric" });
+      }
       const d = new Date(v);
       if (isNaN(d.getTime())) return v;
       return d.toLocaleDateString("en-US", { year:"numeric", month:"short", day:"numeric" });

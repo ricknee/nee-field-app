@@ -506,6 +506,7 @@ async function handleScissorLiftsByJob(params) {
   const lifts = records
     .map(r => {
       const f = r.fields || {};
+      const photos = (f["Photo"] || []).map(a => a.url);
       return {
         id:          r.id,
         name:        f["Lift Name"] || "",
@@ -513,7 +514,8 @@ async function handleScissorLiftsByJob(params) {
         currentJob:  f["Current Job"] || "",
         assignedTo:  f["Assigned To"] || "",
         dateDeployed: f["Date Deployed"] || "",
-        notes:       f["Notes"] || ""
+        notes:       f["Notes"] || "",
+        photoUrl:    photos[0] || ""
       };
     })
     .filter(l => l.currentJob === jobName && l.status === "On Job");
@@ -642,6 +644,7 @@ async function handleScissorLifts() {
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => {
     const f = r.fields || {};
+    const photos = (f["Photo"] || []).map(a => a.url);
     return {
       id:           r.id,
       name:         f["Lift Name"] || "",
@@ -649,7 +652,8 @@ async function handleScissorLifts() {
       currentJob:   f["Current Job"] || "",
       assignedTo:   f["Assigned To"] || "",
       dateDeployed: f["Date Deployed"] || "",
-      notes:        f["Notes"] || ""
+      notes:        f["Notes"] || "",
+      photoUrl:     photos[0] || ""
     };
   });
   return resp(200, { ok: true, lifts });

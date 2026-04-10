@@ -1702,7 +1702,7 @@
     } else { iEmEl.textContent = "—"; }
 
     $("inContacts").textContent = val(job.inspectionContacts);
-    $("inJobInspections").textContent = val(job.jobInspections);
+    // inJobInspections removed — inspections now loaded via loadInspections()
 
     const schEl = $("inSchedulingLink");
     checkLink(job.inspectionSchedulingLink, "Open Scheduling Portal", schEl);

@@ -521,6 +521,59 @@ async function handleScissorLiftsByJob(params) {
   return resp(200, { ok: true, lifts });
 }
 
+async function handleJobInspections(params) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const records = await fetchAll("Job Inspections", {
+    filter: `FIND("${jobId}", ARRAYJOIN(RECORD_ID({Job})))`,
+    sortField: "Inspection Date",
+    sortDir: "desc"
+  });
+
+  const inspections = records.map(r => {
+    const f = r.fields || {};
+    // Permit number is a lookup
+    const permitRaw = f["Permit Number"];
+    const permit = Array.isArray(permitRaw) ? permitRaw[0] : (permitRaw || "");
+    // Agency phone is a lookup
+    const phoneRaw = f["Inspections Agency Phone #"];
+    const agencyPhone = Array.isArray(phoneRaw) ? phoneRaw[0] : (phoneRaw || "");
+
+    return {
+      id:             r.id,
+      inspectionType: f["Inspection Type"]?.name || f["Inspection Type"] || "",
+      date:           f["Inspection Date"] || "",
+      status:         f["Inspection Status"]?.name || f["Inspection Status"] || "",
+      notes:          f["Notes"] || "",
+      permitNumber:   permit,
+      agencyPhone
+    };
+  });
+
+  return resp(200, { ok: true, inspections });
+}
+
+async function handleCreateInspection(body) {
+  const { jobId, inspectionType, date, status, notes } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const fields = {};
+  // Job is a linked record — use record ID
+  fields["fldqk2pA5w3TSN3q8"] = [{ id: String(jobId) }];
+  if (inspectionType) fields["fldR2IQkaeRHXytsR"] = inspectionType;
+  if (date)           fields["fldPblyNOIryMLFB6"] = date;
+  if (status)         fields["fld7kH2SEHsxaS9vz"] = status;
+  if (notes)          fields["fldmz5dOw6In5OkU7"] = notes;
+
+  const data = await atFetch(`${encodeURIComponent("Job Inspections")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+
+  return resp(200, { ok: true, id: data.id });
+}
+
 async function handleScissorLifts() {
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => {
@@ -696,6 +749,7 @@ export async function handler(event) {
       if (action === "timeEntries")   return await handleTimeEntries(params);
       if (action === "scissorLifts")      return await handleScissorLifts();
       if (action === "scissorLiftsByJob") return await handleScissorLiftsByJob(params);
+      if (action === "jobInspections")    return await handleJobInspections(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -708,7 +762,8 @@ export async function handler(event) {
       if (body.action === "deleteTimeEntry") return await handleDeleteTimeEntry(body);
       if (body.action === "deleteExpense")   return await handleDeleteExpense(body);
       if (body.action === "approveExpense")  return await handleApproveExpense(body);
-      if (body.action === "updateScissorLift") return await handleUpdateScissorLift(body);
+      if (body.action === "updateScissorLift")  return await handleUpdateScissorLift(body);
+      if (body.action === "createInspection")   return await handleCreateInspection(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

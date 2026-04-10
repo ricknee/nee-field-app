@@ -580,6 +580,64 @@ async function handleCreateInspection(body) {
   return resp(200, { ok: true, id: data.id });
 }
 
+async function handleJobEstimates(params) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // Get job name first to filter estimates
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!jobRecords.length) return resp(200, { ok: true, estimates: [] });
+  const jobName = jobRecords[0].fields["Job Name"] || "";
+
+  const records = await fetchAll("Job Estimates", {
+    filter: `FIND("${jobName}", ARRAYJOIN({Job}))`,
+    sortField: "Estimate Date",
+    sortDir: "desc"
+  });
+
+  const estimates = records.map(r => {
+    const f = r.fields || {};
+    const pdfs = (f["Estimate PDF"] || []).map(att => ({
+      url:      att.url,
+      filename: att.filename,
+      size:     att.size
+    }));
+    return {
+      id:               r.id,
+      name:             f["Estimate Name"] || "",
+      estimateType:     f["Estimate Type"]?.name || f["Estimate Type"] || "",
+      status:           f["Status"]?.name || f["Status"] || "",
+      date:             f["Estimate Date"] || "",
+      actualEstimate:   f["Actual Estimate Sent"] ?? null,
+      laborHours:       f["Estimated Labor Hours"] ?? null,
+      materialCost:     f["Estimated Material Cost"] ?? null,
+      calculatedTotal:  f["Calculated Estimated Total"] ?? null,
+      notes:            f["Notes"] || "",
+      pdfs
+    };
+  });
+
+  return resp(200, { ok: true, estimates });
+}
+
+async function handleUpdateEstimate(body) {
+  const { estimateId, actualEstimate, laborHours, materialCost } = body || {};
+  if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
+
+  const fields = {};
+  if (actualEstimate !== undefined && actualEstimate !== null) fields["fldJTAPtFpXH2vRwF"] = Number(actualEstimate);
+  if (laborHours     !== undefined && laborHours     !== null) fields["fldH7bJSZikzOYxkm"] = Number(laborHours);
+  if (materialCost   !== undefined && materialCost   !== null) fields["fldDEUGzVrfA56aBq"] = Number(materialCost);
+
+  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  const data = await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 async function handleScissorLifts() {
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => {
@@ -756,6 +814,7 @@ export async function handler(event) {
       if (action === "scissorLifts")      return await handleScissorLifts();
       if (action === "scissorLiftsByJob") return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")    return await handleJobInspections(params);
+      if (action === "jobEstimates")      return await handleJobEstimates(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -770,6 +829,7 @@ export async function handler(event) {
       if (body.action === "approveExpense")  return await handleApproveExpense(body);
       if (body.action === "updateScissorLift")  return await handleUpdateScissorLift(body);
       if (body.action === "createInspection")   return await handleCreateInspection(body);
+      if (body.action === "updateEstimate")      return await handleUpdateEstimate(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

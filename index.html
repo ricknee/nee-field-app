@@ -1657,7 +1657,8 @@
 
     // Load inspection records
     loadInspections(job.id);
-    $("addInspectionForm").style.display = "none";
+    const aif = $("addInspectionForm");
+    if (aif) aif.style.display = "none";
 
     const addrEl = $("piAddress");
     const mlink = mapsLink(job.address);
@@ -2720,12 +2721,15 @@
     $("pcEditCompany").addEventListener("change", () => {
       updatePcContactDropdown($("pcEditCompany").value, "");
     });
-    $("btnScissorLifts").addEventListener("click", openScissorLifts);
-    $("btnAddInspection").addEventListener("click", () => {
+    const slBtn = $("btnScissorLifts");
+    if (slBtn) slBtn.addEventListener("click", openScissorLifts);
+    const addInspBtn = $("btnAddInspection");
+    if (addInspBtn) addInspBtn.addEventListener("click", () => {
       const form = $("addInspectionForm");
-      form.style.display = form.style.display === "none" ? "" : "none";
+      if (form) form.style.display = form.style.display === "none" ? "" : "none";
     });
-    $("saveInspectionBtn").addEventListener("click", handleSaveInspection);
+    const saveInspBtn = $("saveInspectionBtn");
+    if (saveInspBtn) saveInspBtn.addEventListener("click", handleSaveInspection);
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));

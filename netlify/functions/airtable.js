@@ -525,9 +525,14 @@ async function handleJobInspections(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // Filter by job record ID — FIND works on the linked record IDs
+  // First get the job name from the job ID
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!jobRecords.length) return resp(200, { ok: true, inspections: [] });
+  const jobName = jobRecords[0].fields["Job Name"] || "";
+
+  // Filter inspections by job name via the linked record's display name
   const records = await fetchAll("Job Inspections", {
-    filter: `FIND("${jobId}", ARRAYJOIN({Job}))`,
+    filter: `FIND("${jobName}", ARRAYJOIN({Job}))`,
     sortField: "Inspection Date",
     sortDir: "desc"
   });

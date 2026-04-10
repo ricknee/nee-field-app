@@ -525,8 +525,9 @@ async function handleJobInspections(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
+  // Filter by job record ID — FIND works on the linked record IDs
   const records = await fetchAll("Job Inspections", {
-    filter: `FIND("${jobId}", ARRAYJOIN(RECORD_ID({Job})))`,
+    filter: `FIND("${jobId}", ARRAYJOIN({Job}))`,
     sortField: "Inspection Date",
     sortDir: "desc"
   });

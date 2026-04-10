@@ -1653,10 +1653,10 @@
     $("piGenerator").textContent = job.generatorInstalled ? "✅ Yes" : "No";
 
     // Load scissor lifts at this job
-    loadJobLifts(job.name);
+    try { loadJobLifts(job.name); } catch(e) { console.error("loadJobLifts:", e); }
 
     // Load inspection records
-    loadInspections(job.id);
+    try { loadInspections(job.id); } catch(e) { console.error("loadInspections:", e); }
     const aif = $("addInspectionForm");
     if (aif) aif.style.display = "none";
 
@@ -1736,11 +1736,11 @@
 
     // Admin tabs
     if (isAdmin()) {
-      renderLivePerf(job);
-      renderCloseout(job);
-      renderEstGp(job);
-      loadExpenses(job.id);
-      loadTimeEntries(job.id);
+      try { renderLivePerf(job); } catch(e) { console.error("renderLivePerf:", e); }
+      try { renderCloseout(job); } catch(e) { console.error("renderCloseout:", e); }
+      try { renderEstGp(job); }    catch(e) { console.error("renderEstGp:", e); }
+      try { loadExpenses(job.id); } catch(e) { console.error("loadExpenses:", e); }
+      try { loadTimeEntries(job.id); } catch(e) { console.error("loadTimeEntries:", e); }
     }
 
     // Reset to project tab on new job selection

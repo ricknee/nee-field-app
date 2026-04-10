@@ -958,7 +958,7 @@
               <span id="dStatusPill" class="pill default">—</span>
               <span id="dTypePill" class="pill default hidden">—</span>
               <span id="dGenPill" class="pill gen-no">No Generator</span>
-              <a id="btnNewJobEstimate" href="#" target="_blank" class="action-btn admin-only hidden" style="font-size:12px; text-decoration:none; padding:6px 12px;">📋 New Job Estimate</a>
+              <button id="btnNewJobEstimate" class="action-btn admin-only hidden" style="font-size:12px; padding:6px 12px; cursor:pointer; border:none;">📋 New Job Estimate</button>
             </div>
           </div>
           <!-- ADMIN: Change Job Status -->
@@ -1269,6 +1269,10 @@
           <div class="section-header">Estimated Gross Profit</div>
           <div class="info-grid" id="estGpGrid">
             <div class="loading-msg">Select a job to view estimated gross profit.</div>
+          </div>
+          <div class="section-header" style="margin-top:18px;">📋 Job Estimates</div>
+          <div id="estGpEstimates" style="margin-top:10px;">
+            <div class="loading-msg">Select a job to view estimates.</div>
           </div>
         </div>
 
@@ -1625,12 +1629,10 @@
     setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
     setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
 
-    // New Job Estimate button (admin only) - links to Airtable estimate form pre-filled with job
+    // New Job Estimate button (admin only) - links to Airtable estimate form
     if (isAdmin()) {
       const estBtn = $("btnNewJobEstimate");
-      const estimateFormUrl = `https://airtable.com/appiqWg6SvKcGfMAu/pagREqiZh84BGivDO/form`;
-      estBtn.href = estimateFormUrl;
-      estBtn.classList.remove("disabled");
+      estBtn.onclick = () => window.open("https://airtable.com/appiqWg6SvKcGfMAu/pagREqiZh84BGivDO/form", "_blank");
     }
 
     // Trello card - build URL from card ID
@@ -1736,11 +1738,11 @@
 
     // Admin tabs
     if (isAdmin()) {
-      try { renderLivePerf(job); } catch(e) { console.error("renderLivePerf:", e); }
-      try { renderCloseout(job); } catch(e) { console.error("renderCloseout:", e); }
-      try { renderEstGp(job); }    catch(e) { console.error("renderEstGp:", e); }
-      try { loadExpenses(job.id); } catch(e) { console.error("loadExpenses:", e); }
-      try { loadTimeEntries(job.id); } catch(e) { console.error("loadTimeEntries:", e); }
+      try { renderLivePerf(job); }         catch(e) { console.error("renderLivePerf:", e); }
+      try { renderCloseout(job); }         catch(e) { console.error("renderCloseout:", e); }
+      try { renderEstGp(job); }            catch(e) { console.error("renderEstGp:", e); }
+      try { loadExpenses(job.id); }        catch(e) { console.error("loadExpenses:", e); }
+      try { loadTimeEntries(job.id); }     catch(e) { console.error("loadTimeEntries:", e); }
     }
 
     // Reset to project tab on new job selection
@@ -1859,17 +1861,92 @@
     ].join("");
   }
 
-  function renderEstGp(job) {
-    $("estGpGrid").innerHTML = [
-      infoBox("Job Name", val(job.name)),
-      infoBox("Expected Revenue (All Status)", fmtCurrency(job.expectedRevenueAllStatus)),
-      infoBox("Projected Estimated Total Cost", fmtCurrency(job.projectedEstimatedTotalCost)),
-      infoBox("Proj. Est. Labor Hours (from Estimates)", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—"),
-      infoBox("Proj. Est. Material Cost (from Estimates)", fmtCurrency(job.projectedEstimatedMaterialCost)),
-      infoBox("Proj. Est. Labor Cost (from Estimates)", fmtCurrency(job.projectedEstimatedLaborCost)),
-      infoBox("Projected Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar)),
-      infoBox("Projected Gross Profit %", job.projectedGrossProfitPct != null ? Math.round(job.projectedGrossProfitPct * 100) + "%" : "—"),
-    ].join("");
+  async function renderEstGp(job) {
+    const grid = $("estGpGrid");
+    grid.innerHTML = `
+      ${infoBox("Job Name", val(job.name))}
+      ${infoBox("Expected Revenue (All Status)", fmtCurrency(job.expectedRevenueAllStatus))}
+      ${infoBox("Projected Est. Total Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
+      ${infoBox("Proj. Est. Labor Hours", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—")}
+      ${infoBox("Proj. Est. Material Cost", fmtCurrency(job.projectedEstimatedMaterialCost))}
+      ${infoBox("Proj. Est. Labor Cost", fmtCurrency(job.projectedEstimatedLaborCost))}
+      ${infoBox("Projected Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar))}
+      ${infoBox("Projected Gross Profit %", job.projectedGrossProfitPct != null ? Math.round(job.projectedGrossProfitPct * 100) + "%" : "—")}`;
+
+    // Load estimates for this job
+    const estimatesSection = $("estGpEstimates");
+    estimatesSection.innerHTML = `<div class="loading-msg">Loading estimates...</div>`;
+    try {
+      const d = await apiGet("jobEstimates", { jobId: job.id });
+      const estimates = d.estimates || [];
+      if (!estimates.length) {
+        estimatesSection.innerHTML = `<div class="empty-msg">No estimates found for this job.</div>`;
+        return;
+      }
+      estimatesSection.innerHTML = estimates.map(est => {
+        const statusColor = est.status === "Approved" ? "var(--green)" : est.status === "Sent" ? "var(--accent)" : "var(--muted)";
+        return `
+          <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+              <div>
+                <span style="font-weight:700; font-size:14px; color:var(--text);">${esc(est.name)}</span>
+                ${est.estimateType ? `<span style="font-size:11px; background:var(--panel-3); color:var(--accent); padding:2px 8px; border-radius:6px; margin-left:8px;">${esc(est.estimateType)}</span>` : ""}
+              </div>
+              <span style="font-size:12px; font-weight:700; color:${statusColor};">${esc(est.status)}</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:12px;">
+              <div>
+                <label class="edit-label">Actual Estimate Sent ($)</label>
+                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-actual edit-input" style="font-size:13px;" value="${est.actualEstimate != null ? est.actualEstimate : ""}" placeholder="0.00" />
+              </div>
+              <div>
+                <label class="edit-label">Est. Labor Hours</label>
+                <input type="number" step="0.5" data-est-id="${esc(est.id)}" class="est-hours edit-input" style="font-size:13px;" value="${est.laborHours != null ? est.laborHours : ""}" placeholder="0" />
+              </div>
+              <div>
+                <label class="edit-label">Est. Material Cost ($)</label>
+                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-material edit-input" style="font-size:13px;" value="${est.materialCost != null ? est.materialCost : ""}" placeholder="0.00" />
+              </div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <button data-est-id="${esc(est.id)}" class="est-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save Changes</button>
+              <span data-est-id="${esc(est.id)}" class="est-save-msg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+              ${est.calculatedTotal != null ? `<span style="font-size:12px; color:var(--muted);">Calc. Total: <strong>${fmtCurrency(est.calculatedTotal)}</strong></span>` : ""}
+              ${est.pdfs && est.pdfs.length ? est.pdfs.map(pdf => `
+                <a href="${esc(pdf.url)}" target="_blank" style="font-size:12px; color:var(--accent); text-decoration:none; display:flex; align-items:center; gap:4px;">
+                  📄 ${esc(pdf.filename)}
+                </a>`).join("") : ""}
+            </div>
+          </div>`;
+      }).join("");
+
+      // Wire save buttons
+      estimatesSection.querySelectorAll(".est-save-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const estId = btn.dataset.estId;
+          const row   = btn.closest("div[style*='border-radius:10px']");
+          const actualEstimate = row.querySelector(`.est-actual[data-est-id="${estId}"]`).value;
+          const laborHours     = row.querySelector(`.est-hours[data-est-id="${estId}"]`).value;
+          const materialCost   = row.querySelector(`.est-material[data-est-id="${estId}"]`).value;
+          btn.disabled = true; btn.textContent = "Saving...";
+          try {
+            await apiPost("updateEstimate", { estimateId: estId, actualEstimate, laborHours, materialCost });
+            const msg = row.querySelector(`.est-save-msg[data-est-id="${estId}"]`);
+            msg.style.display = "inline";
+            setTimeout(() => { msg.style.display = "none"; }, 2500);
+          } catch(e) {
+            alert("Error: " + e.message);
+          } finally {
+            btn.disabled = false; btn.textContent = "Save Changes";
+          }
+        });
+      });
+
+    } catch(e) {
+      estimatesSection.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error loading estimates: ${esc(e.message)}</div>`;
+    }
   }
 
   function setActionBtn(el, url, label) {

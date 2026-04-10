@@ -222,6 +222,15 @@
     .expense-status-pill.unreviewed { background:#fee2e2; color:#991b1b; border:1px solid #f87171; }
     .expense-status-pill.default    { background:var(--panel-2); color:var(--muted); border:1px solid var(--line-2); }
 
+    /* ── INSPECTION PILLS ── */
+    .insp-pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700; border:1px solid; }
+    .insp-pill.scheduled      { background:#dbeafe; border-color:#93c5fd; color:#1e40af; }
+    .insp-pill.passed         { background:#dcfce7; border-color:#86efac; color:#166534; }
+    .insp-pill.failed         { background:#fee2e2; border-color:#f87171; color:#991b1b; }
+    .insp-pill.reinspect      { background:#fef9c3; border-color:#fde047; color:#854d0e; }
+    .insp-pill.default        { background:var(--panel-2); border-color:var(--line-2); color:var(--muted); }
+    .insp-type-pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:700; background:var(--panel-3); color:var(--accent); margin-right:6px; }
+
     /* ── MAIN LAYOUT ── */
     .app-wrap { display: flex; height: calc(100vh - 61px); }
 
@@ -1133,6 +1142,7 @@
 
         <!-- TAB: INSPECTIONS -->
         <div class="tab-content" id="tab-inspections">
+          <!-- Job/Agency info (existing) -->
           <div class="info-grid">
             <div class="info-box">
               <div class="info-label">Permit Number</div>
@@ -1154,13 +1164,63 @@
               <div class="info-label">Inspection Contacts</div>
               <div class="info-value" id="inContacts">—</div>
             </div>
-            <div class="info-box">
-              <div class="info-label">Job Inspections</div>
-              <div class="info-value" id="inJobInspections">—</div>
-            </div>
             <div class="info-box full link-val">
               <div class="info-label">Inspection Scheduling Link</div>
               <div class="info-value" id="inSchedulingLink">—</div>
+            </div>
+          </div>
+
+          <!-- Inspection Records -->
+          <div style="margin-top:18px;">
+            <div class="section-header" style="display:flex; justify-content:space-between; align-items:center;">
+              <span>📋 Inspection Records</span>
+              <button id="btnAddInspection" class="btn btn-primary btn-sm" type="button" style="font-size:12px;">+ Add Inspection</button>
+            </div>
+
+            <!-- Add Inspection Form -->
+            <div id="addInspectionForm" style="display:none; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:14px; margin-top:10px;">
+              <div style="font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px;">New Inspection</div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <div>
+                  <label class="edit-label">Inspection Type</label>
+                  <select id="newInspType" class="edit-input">
+                    <option value="">— Select —</option>
+                    <option value="Rough">Rough</option>
+                    <option value="Service">Service</option>
+                    <option value="Temp">Temp</option>
+                    <option value="Final">Final</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="edit-label">Inspection Date</label>
+                  <input type="date" id="newInspDate" class="edit-input" />
+                </div>
+                <div>
+                  <label class="edit-label">Status</label>
+                  <select id="newInspStatus" class="edit-input">
+                    <option value="Scheduled">Scheduled</option>
+                    <option value="Passed">Passed</option>
+                    <option value="Failed">Failed</option>
+                    <option value="Re-Inspect Needed">Re-Inspect Needed</option>
+                  </select>
+                </div>
+                <div style="grid-column:1/-1;">
+                  <label class="edit-label">Notes</label>
+                  <input type="text" id="newInspNotes" class="edit-input" placeholder="Notes..." />
+                </div>
+              </div>
+              <div style="display:flex; gap:8px; margin-top:10px; align-items:center;">
+                <button id="saveInspectionBtn" class="btn btn-primary btn-sm" type="button">Save Inspection</button>
+                <button onclick="document.getElementById('addInspectionForm').style.display='none'" class="btn btn-sm" type="button">Cancel</button>
+                <span id="inspSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+                <span id="inspSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
+              </div>
+            </div>
+
+            <!-- Inspection List -->
+            <div id="inspectionRecordsList" style="margin-top:10px;">
+              <div class="loading-msg">Select a job to view inspections.</div>
             </div>
           </div>
         </div>
@@ -1594,6 +1654,10 @@
 
     // Load scissor lifts at this job
     loadJobLifts(job.name);
+
+    // Load inspection records
+    loadInspections(job.id);
+    $("addInspectionForm").style.display = "none";
 
     const addrEl = $("piAddress");
     const mlink = mapsLink(job.address);
@@ -2361,6 +2425,74 @@
     }
   }
 
+  // ── INSPECTIONS ──
+  function inspStatusPill(status) {
+    const s = (status || "").toLowerCase();
+    const cls = s.includes("pass") ? "passed" : s.includes("fail") ? "failed" : s.includes("re-inspect") ? "reinspect" : s.includes("sched") ? "scheduled" : "default";
+    return `<span class="insp-pill ${cls}">${esc(status || "—")}</span>`;
+  }
+
+  async function loadInspections(jobId) {
+    const list = $("inspectionRecordsList");
+    list.innerHTML = `<div class="loading-msg">Loading...</div>`;
+    try {
+      const d = await apiGet("jobInspections", { jobId });
+      const inspections = d.inspections || [];
+      if (!inspections.length) {
+        list.innerHTML = `<div class="empty-msg">No inspection records yet.</div>`;
+        return;
+      }
+      list.innerHTML = inspections.map(ins => `
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
+            <div>
+              <span class="insp-type-pill">${esc(ins.inspectionType || "—")}</span>
+              <span style="font-size:13px; font-weight:600; color:var(--text);">${esc(fmtDate(ins.date))}</span>
+            </div>
+            ${inspStatusPill(ins.status)}
+          </div>
+          ${ins.permitNumber ? `<div style="font-size:12px; color:var(--muted);">📄 Permit: ${esc(ins.permitNumber)}</div>` : ""}
+          ${ins.agencyPhone  ? `<div style="font-size:12px; color:var(--muted);">📞 ${esc(ins.agencyPhone)}</div>` : ""}
+          ${ins.notes        ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">📝 ${esc(ins.notes)}</div>` : ""}
+        </div>`).join("");
+    } catch(err) {
+      list.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
+    }
+  }
+
+  async function handleSaveInspection() {
+    if (!state.selected) return;
+    const btn = $("saveInspectionBtn");
+    const msg = $("inspSaveMsg");
+    const err = $("inspSaveErr");
+    btn.disabled = true; btn.textContent = "Saving...";
+    msg.style.display = "none"; err.style.display = "none";
+    try {
+      await apiPost("createInspection", {
+        jobId:          state.selected.id,
+        inspectionType: $("newInspType").value,
+        date:           $("newInspDate").value,
+        status:         $("newInspStatus").value,
+        notes:          $("newInspNotes").value
+      });
+      // Reset form
+      $("newInspType").value = "";
+      $("newInspDate").value = "";
+      $("newInspStatus").value = "Scheduled";
+      $("newInspNotes").value = "";
+      $("addInspectionForm").style.display = "none";
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+      // Reload list
+      await loadInspections(state.selected.id);
+    } catch(e) {
+      err.textContent = "Error: " + e.message;
+      err.style.display = "inline";
+    } finally {
+      btn.disabled = false; btn.textContent = "Save Inspection";
+    }
+  }
+
   // ── SCISSOR LIFTS AT JOB (all users) ──
   async function loadJobLifts(jobName) {
     const section = $("jobLiftsSection");
@@ -2589,6 +2721,11 @@
       updatePcContactDropdown($("pcEditCompany").value, "");
     });
     $("btnScissorLifts").addEventListener("click", openScissorLifts);
+    $("btnAddInspection").addEventListener("click", () => {
+      const form = $("addInspectionForm");
+      form.style.display = form.style.display === "none" ? "" : "none";
+    });
+    $("saveInspectionBtn").addEventListener("click", handleSaveInspection);
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));

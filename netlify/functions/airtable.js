@@ -769,32 +769,27 @@ async function handleUpdateFleetVehicle(body) {
 }
 
 async function handleAddFleetService(body) {
-  const { vehicleId, vehicleName, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
-  if (!vehicleId && !vehicleName) return resp(400, { ok: false, error: "Missing vehicleId." });
+  const { vehicleId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
+  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
 
-  // Look up vehicle name if not provided
-  let vName = vehicleName;
-  if (!vName && vehicleId) {
-    const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
-    vName = vehRecords.length ? (vehRecords[0].fields["Vehicle Name"] || "") : "";
-  }
-
+  // Use field IDs with table ID in URL — this is the only reliable way to write linked records
+  const TABLE_ID = "tbltt7ygP4hLE1ac8";
   const fields = {};
-  if (vName) fields["Vehicle"] = [{ id: String(vehicleId) }];
-  if (date)         fields["Date"]                 = date;
-  if (mileage)      fields["Mileage at Service"]   = Number(mileage);
-  if (serviceTypes && serviceTypes.length) fields["Service Types"] = serviceTypes;
-  if (oilBrand)     fields["Filter #"]             = oilBrand;
-  if (oilType)      fields["Oil Type Used"]        = oilType;
-  if (oilQty)       fields["Oil Qty (qts)"]        = Number(oilQty);
-  if (cost)         fields["Cost"]                 = Number(cost);
-  if (tireBrand)    fields["Tire Brand Installed"] = tireBrand;
-  if (tireSize)     fields["Tire Size Installed"]  = tireSize;
-  if (performedBy)  fields["Performed By"]         = performedBy;
-  if (shop)         fields["Shop / Location"]      = shop;
-  if (notes)        fields["Notes"]                = notes;
+  fields["fld12gpaArqYw7BWU"] = [{ id: String(vehicleId) }];  // Vehicle linked field
+  if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
+  if (mileage)      fields["fldE7SlKw7n85bZWD"] = Number(mileage);
+  if (serviceTypes && serviceTypes.length) fields["fldCiHkwHtsOZmkWk"] = serviceTypes;
+  if (oilBrand)     fields["fldO7RALeUnXSgC6J"] = oilBrand;
+  if (oilType)      fields["fldcgXpATus1HqW81"] = oilType;
+  if (oilQty)       fields["fldwaUKNsJQvjwlK1"] = Number(oilQty);
+  if (cost)         fields["fldwYmFTQLvOuDKIE"] = Number(cost);
+  if (tireBrand)    fields["fldSw3UKcWky8bQlA"] = tireBrand;
+  if (tireSize)     fields["fldVEwTlmNaWmRUiJ"] = tireSize;
+  if (performedBy)  fields["fld4mHAqeBjCqSjkB"] = performedBy;
+  if (shop)         fields["fldZddoeHsPrxapz1"] = shop;
+  if (notes)        fields["fldwNDO1V7E26vql1"] = notes;
 
-  const data = await atFetch(`${encodeURIComponent(FLEET_TABLES.maintenance)}`, {
+  const data = await atFetch(`${encodeURIComponent(TABLE_ID)}`, {
     method: "POST", body: JSON.stringify({ fields, typecast: true })
   });
   return resp(200, { ok: true, id: data.id });

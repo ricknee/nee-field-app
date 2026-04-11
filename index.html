@@ -2806,15 +2806,22 @@
       const d = await apiGet("fleetServiceHistory", { vehicleId });
       const records = d.records || [];
       if (!records.length) { list.innerHTML = `<div class="empty-msg">No service records yet.</div>`; return; }
+
+      const admin = isAdmin();
+      const SERVICE_TYPES = ["Oil Change","Air Filter","Fuel Filter","Tire Rotation","Tires Replaced","Inspection","Brakes","Battery","Other"];
+
       list.innerHTML = records.map(r => `
-        <div class="fleet-service-row">
+        <div class="fleet-service-row" id="svcrow-${esc(r.id)}">
           <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
             <span style="font-weight:700; font-size:14px; color:var(--text);">${esc(fmtDate(r.date))}</span>
-            <div style="display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:var(--muted);">
-              ${r.mileage ? `<span>📍 ${r.mileage.toLocaleString()} mi</span>` : ""}
-              ${r.cost ? `<span>💵 ${fmtCurrency(r.cost)}</span>` : ""}
-              ${r.performedBy ? `<span>👤 ${esc(r.performedBy)}</span>` : ""}
-              ${r.shop ? `<span>🏪 ${esc(r.shop)}</span>` : ""}
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+              ${r.mileage ? `<span style="font-size:12px; color:var(--muted);">📍 ${r.mileage.toLocaleString()} mi</span>` : ""}
+              ${r.cost ? `<span style="font-size:12px; color:var(--muted);">💵 ${fmtCurrency(r.cost)}</span>` : ""}
+              ${r.performedBy ? `<span style="font-size:12px; color:var(--muted);">👤 ${esc(r.performedBy)}</span>` : ""}
+              ${admin ? `
+                <button data-svc-id="${esc(r.id)}" class="fleet-svc-edit-btn btn btn-sm" style="font-size:11px; padding:2px 8px;">✏️ Edit</button>
+                <button data-svc-id="${esc(r.id)}" data-svc-label="${esc(fmtDate(r.date))}" class="fleet-svc-del-btn" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;" title="Delete">🗑</button>
+              ` : ""}
             </div>
           </div>
           <div class="fleet-service-chips">
@@ -2823,7 +2830,92 @@
           ${r.oilBrand||r.oilType||r.oilQty ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">🛢 ${[r.oilType, r.oilQty ? r.oilQty+"qts" : "", r.oilBrand ? "Filter: "+r.oilBrand : ""].filter(Boolean).join(" · ")}</div>` : ""}
           ${r.tireBrand||r.tireSize ? `<div style="font-size:12px; color:var(--muted); margin-top:2px;">🔄 Tires: ${[r.tireBrand, r.tireSize].filter(Boolean).join(" ")}</div>` : ""}
           ${r.notes ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">📝 ${esc(r.notes)}</div>` : ""}
+
+          ${admin ? `
+          <!-- Inline edit form (hidden by default) -->
+          <div id="svcedit-${esc(r.id)}" style="display:none; margin-top:10px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:12px;">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
+              <div><label class="edit-label">Date</label><input type="date" id="ed-date-${esc(r.id)}" class="edit-input" value="${esc(r.date)}" /></div>
+              <div><label class="edit-label">Mileage</label><input type="number" id="ed-mil-${esc(r.id)}" class="edit-input" value="${r.mileage||""}" /></div>
+              <div style="grid-column:1/-1;">
+                <label class="edit-label">Service Types</label>
+                <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
+                  ${SERVICE_TYPES.map(t => `<label style="display:flex; align-items:center; gap:3px; font-size:12px; cursor:pointer;">
+                    <input type="checkbox" value="${t}" class="ed-type-${esc(r.id)}" ${(r.serviceTypes||[]).includes(t)?"checked":""} /> ${t}
+                  </label>`).join("")}
+                </div>
+              </div>
+              <div><label class="edit-label">Oil Type</label><input type="text" id="ed-oil-${esc(r.id)}" class="edit-input" value="${esc(r.oilType||"")}" /></div>
+              <div><label class="edit-label">Filter #</label><input type="text" id="ed-filt-${esc(r.id)}" class="edit-input" value="${esc(r.oilBrand||"")}" /></div>
+              <div><label class="edit-label">Oil Qty (qts)</label><input type="number" step="0.5" id="ed-qty-${esc(r.id)}" class="edit-input" value="${r.oilQty||""}" /></div>
+              <div><label class="edit-label">Cost ($)</label><input type="number" step="0.01" id="ed-cost-${esc(r.id)}" class="edit-input" value="${r.cost||""}" /></div>
+              <div><label class="edit-label">Tire Brand</label><input type="text" id="ed-tbrand-${esc(r.id)}" class="edit-input" value="${esc(r.tireBrand||"")}" /></div>
+              <div><label class="edit-label">Tire Size</label><input type="text" id="ed-tsize-${esc(r.id)}" class="edit-input" value="${esc(r.tireSize||"")}" /></div>
+              <div><label class="edit-label">Performed By</label><input type="text" id="ed-by-${esc(r.id)}" class="edit-input" value="${esc(r.performedBy||"")}" /></div>
+              <div><label class="edit-label">Shop</label><input type="text" id="ed-shop-${esc(r.id)}" class="edit-input" value="${esc(r.shop||"")}" /></div>
+              <div style="grid-column:1/-1;"><label class="edit-label">Notes</label><input type="text" id="ed-notes-${esc(r.id)}" class="edit-input" value="${esc(r.notes||"")}" /></div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button data-svc-id="${esc(r.id)}" class="fleet-svc-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save</button>
+              <button onclick="document.getElementById('svcedit-${esc(r.id)}').style.display='none'" class="btn btn-sm" style="font-size:12px;">Cancel</button>
+              <span id="ed-msg-${esc(r.id)}" style="font-size:11px; color:var(--green); display:none;">✓ Saved</span>
+            </div>
+          </div>` : ""}
         </div>`).join("");
+
+      if (admin) {
+        // Wire edit toggles
+        list.querySelectorAll(".fleet-svc-edit-btn").forEach(btn => {
+          btn.addEventListener("click", () => {
+            const form = $(`svcedit-${btn.dataset.svcId}`);
+            form.style.display = form.style.display === "none" ? "" : "none";
+          });
+        });
+
+        // Wire save buttons
+        list.querySelectorAll(".fleet-svc-save-btn").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            const id = btn.dataset.svcId;
+            const types = [...document.querySelectorAll(`.ed-type-${id}:checked`)].map(c => c.value);
+            btn.disabled = true; btn.textContent = "...";
+            try {
+              await apiPost("updateFleetService", {
+                serviceRecordId: id,
+                date:        $(`ed-date-${id}`).value,
+                mileage:     $(`ed-mil-${id}`).value ? parseInt($(`ed-mil-${id}`).value) : null,
+                serviceTypes: types,
+                oilType:     $(`ed-oil-${id}`).value,
+                oilBrand:    $(`ed-filt-${id}`).value,
+                oilQty:      $(`ed-qty-${id}`).value ? parseFloat($(`ed-qty-${id}`).value) : null,
+                cost:        $(`ed-cost-${id}`).value ? parseFloat($(`ed-cost-${id}`).value) : null,
+                tireBrand:   $(`ed-tbrand-${id}`).value,
+                tireSize:    $(`ed-tsize-${id}`).value,
+                performedBy: $(`ed-by-${id}`).value,
+                shop:        $(`ed-shop-${id}`).value,
+                notes:       $(`ed-notes-${id}`).value
+              });
+              const msg = $(`ed-msg-${id}`);
+              msg.style.display = "inline";
+              setTimeout(() => { msg.style.display = "none"; }, 2000);
+              await loadFleetServiceHistory(vehicleId);
+            } catch(e) { alert("Error: " + e.message); }
+            finally { btn.disabled = false; btn.textContent = "Save"; }
+          });
+        });
+
+        // Wire delete buttons
+        list.querySelectorAll(".fleet-svc-del-btn").forEach(btn => {
+          btn.addEventListener("click", async () => {
+            if (!confirm(`Delete this service record?\n\n${btn.dataset.svcLabel}\n\nThis cannot be undone.`)) return;
+            btn.disabled = true; btn.textContent = "...";
+            try {
+              await apiPost("deleteFleetService", { serviceRecordId: btn.dataset.svcId });
+              await loadFleetServiceHistory(vehicleId);
+            } catch(e) { alert("Error: " + e.message); btn.disabled = false; btn.textContent = "🗑"; }
+          });
+        });
+      }
+
     } catch(e) {
       list.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(e.message)}</div>`;
     }
@@ -3111,16 +3203,16 @@
           <span id="fleetDetailTitle" style="font-weight:700; font-size:18px; color:var(--text);"></span>
         </div>
 
-        <!-- Vehicle info cards -->
-        <div class="info-grid" id="fleetVehicleInfo" style="margin-bottom:16px;"></div>
-
-        <!-- Update mileage -->
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
-          <span style="font-size:13px; font-weight:600; color:var(--muted);">Update Mileage:</span>
-          <input type="number" id="fleetMileageInput" class="edit-input" style="width:130px; font-size:13px;" placeholder="Current miles" />
+        <!-- Update mileage — TOP of detail view -->
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; padding:10px 14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
+          <span style="font-size:13px; font-weight:700; color:var(--text);">📍 Current Mileage:</span>
+          <input type="number" id="fleetMileageInput" class="edit-input" style="width:130px; font-size:13px;" placeholder="Miles" />
           <button id="fleetMileageSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save Mileage</button>
           <span id="fleetMileageMsg" style="font-size:12px; color:var(--green); display:none;">✓ Updated</span>
         </div>
+
+        <!-- Vehicle info cards -->
+        <div class="info-grid" id="fleetVehicleInfo" style="margin-bottom:16px;"></div>
 
         <!-- Service History -->
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">

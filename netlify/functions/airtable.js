@@ -684,27 +684,27 @@ const FM = { // Fleet Maintenance field IDs
 async function handleFleetVehicles() {
   const records = await fetchAll(FLEET_TABLES.vehicles, { sortField: "Vehicle Name", sortDir: "asc" });
   const vehicles = records
-    .filter(r => r.fields[FV.active] === true)
+    .filter(r => r.fields["Active"] === true)
     .map(r => {
       const f = r.fields || {};
       return {
         id:             r.id,
-        name:           f[FV.name]    || "",
-        year:           f[FV.year]    || null,
-        make:           f[FV.make]    || "",
-        model:          f[FV.model]   || "",
-        color:          f[FV.color]   || "",
-        vin:            f[FV.vin]     || "",
-        plate:          f[FV.plate]   || "",
-        type:           f[FV.type]?.name || f[FV.type] || "",
-        currentMileage: f[FV.mileage] ?? null,
-        mileageDate:    f[FV.mileageDate] || "",
-        oilType:        f[FV.oilType] || "",
-        oilCapacity:    f[FV.oilCapacity] ?? null,
-        tireBrand:      f[FV.tireBrand] || "",
-        tireSize:       f[FV.tireSize]  || "",
-        tireInstallDate: f[FV.tireInstall] || "",
-        notes:          f[FV.notes]   || ""
+        name:           f["Vehicle Name"]       || "",
+        year:           f["Year"]               || null,
+        make:           f["Make"]               || "",
+        model:          f["Model"]              || "",
+        color:          f["Color"]              || "",
+        vin:            f["VIN"]                || "",
+        plate:          f["License Plate"]      || "",
+        type:           f["Vehicle Type"]?.name || f["Vehicle Type"] || "",
+        currentMileage: f["Current Mileage"]    ?? null,
+        mileageDate:    f["Mileage Date"]       || "",
+        oilType:        f["Oil Type"]           || "",
+        oilCapacity:    f["Oil Capacity (qts)"] ?? null,
+        tireBrand:      f["Tire Brand"]         || "",
+        tireSize:       f["Tire Size"]          || "",
+        tireInstallDate: f["Tire Install Date"] || "",
+        notes:          f["Notes"]              || ""
       };
     });
   return resp(200, { ok: true, vehicles });

@@ -263,7 +263,7 @@ async function handleLogin(body) {
     user: {
       id:   match.id,
       name: f[F.emp.name] || "Unknown",
-      role: normalize(f[F.emp.role]) === "admin" ? "admin" : "employee"
+      role: normalize(f[F.emp.role]) === "admin" ? "admin" : normalize(f[F.emp.role]) === "viewer" ? "viewer" : "employee"
     }
   });
 }

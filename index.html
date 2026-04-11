@@ -2754,9 +2754,9 @@
     // Wire Add Service button
     $("btnAddService").onclick = () => {
       const f = $("fleetAddForm");
-      f.style.display = f.style.display === "none" ? "" : "none";
-      // Set today's date
-      if (f.style.display !== "none") $("svcDate").value = new Date().toISOString().slice(0,10);
+      const isHidden = getComputedStyle(f).display === "none";
+      f.style.display = isHidden ? "block" : "none";
+      if (isHidden) $("svcDate").value = new Date().toISOString().slice(0,10);
     };
 
     // Wire Save Service button

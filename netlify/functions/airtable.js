@@ -705,7 +705,9 @@ async function handleFleetVehicles() {
         tireSize:       f["Tire Size"]          || "",
         tireInstallDate: f["Tire Install Date"] || "",
         notes:          f["Notes"]              || "",
-        photoUrl:       (f["Photo"] || [])[0]?.url || ""
+        photoUrl:       (f["Photo"] || [])[0]?.url || "",
+        wrenchSize:     f["Oil Drain Wrench Size"] || "",
+        lugTorque:      f["Lug Torque (ft-lbs)"] ?? null
       };
     });
   return resp(200, { ok: true, vehicles });

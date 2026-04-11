@@ -715,16 +715,20 @@ async function handleFleetServiceHistory(params) {
   const { vehicleId } = params || {};
   if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
 
-  // Filter using RECORD_ID match on the linked Vehicle field
+  // Get vehicle name to use in filter (linked field filters by name in Airtable formula)
+  const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
+  if (!vehRecords.length) return resp(200, { ok: true, records: [] });
+  const vehName = vehRecords[0].fields["Vehicle Name"] || "";
+
+  // Filter by vehicle name — linked record fields in filterByFormula match on display name
   const records = await fetchAll(FLEET_TABLES.maintenance, {
-    filter: `FIND("${vehicleId}", ARRAYJOIN(RECORD_ID({Vehicle})))`,
+    filter: `{Vehicle}="${vehName}"`,
     sortField: "Date",
     sortDir:   "desc"
   });
 
   const serviceRecords = records.map(r => {
     const f = r.fields || {};
-    // Fields returned by name when querying by table name
     const types = (f["Service Types"] || []).map(s => (typeof s === "object" ? s.name : s));
     return {
       id:           r.id,
@@ -765,10 +769,18 @@ async function handleUpdateFleetVehicle(body) {
 }
 
 async function handleAddFleetService(body) {
-  const { vehicleId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
-  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+  const { vehicleId, vehicleName, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
+  if (!vehicleId && !vehicleName) return resp(400, { ok: false, error: "Missing vehicleId." });
+
+  // Look up vehicle name if not provided
+  let vName = vehicleName;
+  if (!vName && vehicleId) {
+    const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
+    vName = vehRecords.length ? (vehRecords[0].fields["Vehicle Name"] || "") : "";
+  }
+
   const fields = {};
-  fields["Vehicle"]              = [{ id: String(vehicleId) }];
+  if (vName) fields["Vehicle"] = [{ id: String(vehicleId) }];
   if (date)         fields["Date"]                 = date;
   if (mileage)      fields["Mileage at Service"]   = Number(mileage);
   if (serviceTypes && serviceTypes.length) fields["Service Types"] = serviceTypes;
@@ -781,6 +793,7 @@ async function handleAddFleetService(body) {
   if (performedBy)  fields["Performed By"]         = performedBy;
   if (shop)         fields["Shop / Location"]      = shop;
   if (notes)        fields["Notes"]                = notes;
+
   const data = await atFetch(`${encodeURIComponent(FLEET_TABLES.maintenance)}`, {
     method: "POST", body: JSON.stringify({ fields, typecast: true })
   });

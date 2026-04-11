@@ -2819,7 +2819,7 @@
           <div class="fleet-service-chips">
             ${(r.serviceTypes||[]).map(t => `<span class="fleet-service-chip">${esc(t)}</span>`).join("")}
           </div>
-          ${r.oilBrand||r.oilType||r.oilQty ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">🛢 ${[r.oilBrand, r.oilType, r.oilQty ? r.oilQty+"qts" : ""].filter(Boolean).join(" · ")}</div>` : ""}
+          ${r.oilBrand||r.oilType||r.oilQty ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">🛢 ${[r.oilType, r.oilQty ? r.oilQty+"qts" : "", r.oilBrand ? "Filter: "+r.oilBrand : ""].filter(Boolean).join(" · ")}</div>` : ""}
           ${r.tireBrand||r.tireSize ? `<div style="font-size:12px; color:var(--muted); margin-top:2px;">🔄 Tires: ${[r.tireBrand, r.tireSize].filter(Boolean).join(" ")}</div>` : ""}
           ${r.notes ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">📝 ${esc(r.notes)}</div>` : ""}
         </div>`).join("");
@@ -3142,15 +3142,20 @@
             <div class="full">
               <label class="edit-label">Service Types (check all that apply)</label>
               <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:4px;" id="svcTypeChecks">
-                ${["Oil Change","Air Filter","Fuel Filter","Tire Rotation","Tires Replaced","Inspection","Brakes","Battery","Other"].map(t =>
-                  `<label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;">
-                    <input type="checkbox" value="${t}" class="svc-type-chk" /> ${t}
-                  </label>`).join("")}
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Oil Change" class="svc-type-chk" /> Oil Change</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Air Filter" class="svc-type-chk" /> Air Filter</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Fuel Filter" class="svc-type-chk" /> Fuel Filter</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Tire Rotation" class="svc-type-chk" /> Tire Rotation</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Tires Replaced" class="svc-type-chk" /> Tires Replaced</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Inspection" class="svc-type-chk" /> Inspection</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Brakes" class="svc-type-chk" /> Brakes</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Battery" class="svc-type-chk" /> Battery</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Other" class="svc-type-chk" /> Other</label>
               </div>
             </div>
             <div>
-              <label class="edit-label">Oil Brand</label>
-              <input type="text" id="svcOilBrand" class="edit-input" placeholder="e.g. Mobil 1" />
+              <label class="edit-label">Filter #</label>
+              <input type="text" id="svcOilBrand" class="edit-input" placeholder="e.g. 7151" />
             </div>
             <div>
               <label class="edit-label">Oil Type</label>

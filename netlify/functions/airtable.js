@@ -769,11 +769,15 @@ async function handleUpdateFleetVehicle(body) {
 }
 
 async function handleAddFleetService(body) {
-  const { vehicleId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
-  if (!vehicleId) return resp(400, { ok: false, error: `Missing vehicleId. Body keys: ${Object.keys(body||{}).join(",")}` });
+  const { vehicleId, vehicleName, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
+  if (!vehicleId) return resp(400, { ok: false, error: `Missing vehicleId. Keys: ${Object.keys(body||{}).join(",")}` });
 
   const fields = {};
-  fields["fld12gpaArqYw7BWU"] = [{ id: String(vehicleId) }];
+  // Try both approaches: ID-based and name-based (typecast resolves names)
+  fields["fld12gpaArqYw7BWU"] = vehicleName
+    ? [vehicleName]           // typecast: true will resolve name to record ID
+    : [{ id: String(vehicleId) }];
+
   if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
   if (mileage)      fields["fldE7SlKw7n85bZWD"] = Number(mileage);
   if (serviceTypes && serviceTypes.length) fields["fldCiHkwHtsOZmkWk"] = serviceTypes;
@@ -791,7 +795,7 @@ async function handleAddFleetService(body) {
     method: "POST",
     body: JSON.stringify({ fields, typecast: true })
   });
-  return resp(200, { ok: true, id: data.id, vehicleId, linkedField: fields["fld12gpaArqYw7BWU"] });
+  return resp(200, { ok: true, id: data.id, vehicleId, vehicleName, linked: fields["fld12gpaArqYw7BWU"] });
 }
 
 async function handleScissorLifts() {

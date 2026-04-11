@@ -112,7 +112,79 @@
 
     #statusChangeRow:not(.hidden) { display: flex; }
 
-    /* ── SCISSOR LIFT MODAL ── */
+    /* ── FLEET MODAL ── */
+    .fleet-modal-backdrop {
+      position:fixed; inset:0; background:rgba(0,0,0,0.5);
+      z-index:600; display:flex; align-items:center; justify-content:center;
+    }
+    .fleet-modal {
+      background:var(--panel); border-radius:16px; width:94%; max-width:960px;
+      max-height:90vh; overflow-y:auto; box-shadow:0 8px 48px rgba(0,0,0,0.28);
+      display:flex; flex-direction:column;
+    }
+    .fleet-modal-header {
+      padding:18px 24px 14px; border-bottom:1px solid var(--line);
+      display:flex; justify-content:space-between; align-items:center;
+      position:sticky; top:0; background:var(--panel); z-index:1;
+    }
+    .fleet-modal-header h2 {
+      font-family:'Rajdhani',sans-serif; font-size:20px; font-weight:700;
+      color:var(--accent); text-transform:uppercase; letter-spacing:0.5px;
+    }
+    .fleet-modal-body { padding:20px 24px; }
+    .fleet-vehicles-grid {
+      display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px;
+    }
+    .fleet-vehicle-card {
+      border:1px solid var(--line); border-radius:12px; overflow:hidden;
+      background:var(--panel-2); cursor:pointer; transition:border-color 0.15s, box-shadow 0.15s;
+    }
+    .fleet-vehicle-card:hover { border-color:var(--accent); box-shadow:0 2px 12px rgba(21,101,192,0.12); }
+    .fleet-vehicle-card-header {
+      padding:12px 14px; display:flex; justify-content:space-between; align-items:center;
+      background:var(--panel);
+    }
+    .fleet-vehicle-card-title { font-weight:700; font-size:15px; color:var(--text); }
+    .fleet-type-pill {
+      font-size:11px; font-weight:700; padding:2px 8px; border-radius:999px; border:1px solid;
+    }
+    .fleet-type-pill.pickup   { background:#dbeafe; border-color:#93c5fd; color:#1e40af; }
+    .fleet-type-pill.van      { background:#dcfce7; border-color:#86efac; color:#166534; }
+    .fleet-type-pill.box      { background:#ffedd5; border-color:#fdba74; color:#9a3412; }
+    .fleet-type-pill.flatbed  { background:#fef9c3; border-color:#fde047; color:#854d0e; }
+    .fleet-vehicle-card-body  { padding:12px 14px; font-size:13px; }
+    .fleet-stat { display:flex; justify-content:space-between; margin-bottom:4px; }
+    .fleet-stat-label { color:var(--muted); }
+    .fleet-stat-value { font-weight:600; color:var(--text); }
+
+    /* Fleet detail panel */
+    .fleet-detail { display:none; }
+    .fleet-detail.active { display:block; }
+    .fleet-detail-header {
+      display:flex; align-items:center; gap:10px; margin-bottom:16px;
+    }
+    .fleet-back-btn {
+      background:none; border:1px solid var(--line-2); border-radius:8px;
+      padding:5px 12px; font-size:13px; cursor:pointer; color:var(--muted);
+    }
+    .fleet-back-btn:hover { border-color:var(--accent); color:var(--accent); }
+    .fleet-service-row {
+      background:var(--panel); border:1px solid var(--line); border-radius:10px;
+      padding:12px 14px; margin-bottom:8px;
+    }
+    .fleet-service-chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+    .fleet-service-chip {
+      font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
+      background:var(--accent-glow); color:var(--accent); border:1px solid var(--accent);
+    }
+    .fleet-add-form {
+      background:var(--panel-2); border:1px solid var(--line); border-radius:10px;
+      padding:16px; margin-top:14px; display:none;
+    }
+    .fleet-form-grid {
+      display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;
+    }
+    .fleet-form-grid .full { grid-column:1/-1; }
     .sl-modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.45);
       z-index: 500; display: flex; align-items: center; justify-content: center;
@@ -897,6 +969,7 @@
       <span id="userBadge" class="user-badge">—</span>
       <a id="btnNewJobIntake" href="https://form.jotform.com/260972873590065" target="_blank" class="btn btn-primary btn-sm admin-only hidden" style="text-decoration:none; font-size:13px;">+ New Project</a>
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button" style="font-size:13px;">🏗 Scissor Lifts</button>
+      <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button" style="font-size:13px;">🚗 Fleet</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
@@ -2571,6 +2644,176 @@
     }
   }
 
+  // ── FLEET ──
+  let fleetState = { vehicles: [], selectedVehicle: null };
+
+  function fleetTypePill(type) {
+    const t = (type||"").toLowerCase();
+    const cls = t.includes("pickup") ? "pickup" : t.includes("van") ? "van" : t.includes("box") ? "box" : t.includes("flat") ? "flatbed" : "pickup";
+    return `<span class="fleet-type-pill ${cls}">${esc(type||"—")}</span>`;
+  }
+
+  async function openFleet() {
+    $("fleetModal").style.display = "flex";
+    fleetShowList();
+    await loadFleetVehicles();
+  }
+
+  function fleetShowList() {
+    $("fleetListView").style.display = "";
+    $("fleetDetailView").classList.remove("active");
+  }
+
+  async function loadFleetVehicles() {
+    $("fleetVehiclesGrid").innerHTML = `<div class="loading-msg">Loading fleet...</div>`;
+    try {
+      const d = await apiGet("fleetVehicles");
+      fleetState.vehicles = d.vehicles || [];
+      renderFleetGrid();
+    } catch(e) {
+      $("fleetVehiclesGrid").innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderFleetGrid() {
+    const v = fleetState.vehicles;
+    if (!v.length) { $("fleetVehiclesGrid").innerHTML = `<div class="empty-msg">No vehicles found.</div>`; return; }
+    $("fleetVehiclesGrid").innerHTML = v.map(veh => `
+      <div class="fleet-vehicle-card" onclick="openFleetDetail('${esc(veh.id)}')">
+        <div class="fleet-vehicle-card-header">
+          <span class="fleet-vehicle-card-title">${esc(veh.name)}</span>
+          ${fleetTypePill(veh.type)}
+        </div>
+        <div class="fleet-vehicle-card-body">
+          <div class="fleet-stat"><span class="fleet-stat-label">Year / Make / Model</span><span class="fleet-stat-value">${veh.year ? veh.year+" " : ""}${esc(veh.make||"")} ${esc(veh.model||"")}</span></div>
+          <div class="fleet-stat"><span class="fleet-stat-label">Color</span><span class="fleet-stat-value">${esc(veh.color||"—")}</span></div>
+          ${veh.currentMileage ? `<div class="fleet-stat"><span class="fleet-stat-label">Mileage</span><span class="fleet-stat-value">${veh.currentMileage.toLocaleString()} mi</span></div>` : ""}
+          ${veh.oilType ? `<div class="fleet-stat"><span class="fleet-stat-label">Oil</span><span class="fleet-stat-value">${esc(veh.oilType)}</span></div>` : ""}
+          ${veh.tireBrand ? `<div class="fleet-stat"><span class="fleet-stat-label">Tires</span><span class="fleet-stat-value">${esc(veh.tireBrand)} ${esc(veh.tireSize||"")}</span></div>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  async function openFleetDetail(vehicleId) {
+    const veh = fleetState.vehicles.find(v => v.id === vehicleId);
+    if (!veh) return;
+    fleetState.selectedVehicle = veh;
+
+    $("fleetListView").style.display = "none";
+    $("fleetDetailView").classList.add("active");
+    $("fleetDetailTitle").textContent = veh.name;
+    $("fleetAddForm").style.display = "none";
+    $("fleetMileageInput").value = veh.currentMileage || "";
+
+    // Vehicle info grid
+    $("fleetVehicleInfo").innerHTML = [
+      infoBox("Year / Make / Model", `${veh.year||""} ${veh.make||""} ${veh.model||""}`),
+      infoBox("Color", veh.color||"—"),
+      infoBox("Type", veh.type||"—"),
+      infoBox("VIN", veh.vin||"—"),
+      infoBox("Current Mileage", veh.currentMileage ? veh.currentMileage.toLocaleString()+" mi" : "—"),
+      infoBox("Oil Type", veh.oilType||"—"),
+      infoBox("Oil Capacity", veh.oilCapacity ? veh.oilCapacity+" qts" : "—"),
+      infoBox("Tire Brand", veh.tireBrand||"—"),
+      infoBox("Tire Size", veh.tireSize||"—"),
+      infoBox("Tire Install Date", veh.tireInstallDate ? fmtDate(veh.tireInstallDate) : "—"),
+    ].join("");
+
+    // Wire mileage save
+    $("fleetMileageSaveBtn").onclick = async () => {
+      const miles = parseInt($("fleetMileageInput").value);
+      if (isNaN(miles)) return;
+      $("fleetMileageSaveBtn").disabled = true;
+      try {
+        await apiPost("updateFleetVehicle", { vehicleId: veh.id, currentMileage: miles });
+        veh.currentMileage = miles;
+        $("fleetMileageMsg").style.display = "inline";
+        setTimeout(() => { $("fleetMileageMsg").style.display = "none"; }, 2000);
+        renderFleetGrid();
+      } catch(e) { alert("Error: " + e.message); }
+      finally { $("fleetMileageSaveBtn").disabled = false; }
+    };
+
+    // Wire Add Service button
+    $("btnAddService").onclick = () => {
+      const f = $("fleetAddForm");
+      f.style.display = f.style.display === "none" ? "" : "none";
+      // Set today's date
+      if (f.style.display !== "none") $("svcDate").value = new Date().toISOString().slice(0,10);
+    };
+
+    // Wire Save Service button
+    $("svcSaveBtn").onclick = async () => {
+      const btn = $("svcSaveBtn");
+      const msg = $("svcSaveMsg");
+      const err = $("svcSaveErr");
+      btn.disabled = true; btn.textContent = "Saving...";
+      msg.style.display = "none"; err.style.display = "none";
+      try {
+        const types = [...document.querySelectorAll(".svc-type-chk:checked")].map(c => c.value);
+        await apiPost("addFleetService", {
+          vehicleId:   veh.id,
+          date:        $("svcDate").value,
+          mileage:     $("svcMileage").value ? parseInt($("svcMileage").value) : null,
+          serviceTypes: types,
+          oilBrand:    $("svcOilBrand").value,
+          oilType:     $("svcOilType").value,
+          oilQty:      $("svcOilQty").value ? parseFloat($("svcOilQty").value) : null,
+          cost:        $("svcCost").value ? parseFloat($("svcCost").value) : null,
+          tireBrand:   $("svcTireBrand").value,
+          tireSize:    $("svcTireSize").value,
+          performedBy: $("svcPerformedBy").value,
+          shop:        $("svcShop").value,
+          notes:       $("svcNotes").value
+        });
+        // Reset form
+        ["svcDate","svcMileage","svcOilBrand","svcOilType","svcOilQty","svcCost","svcTireBrand","svcTireSize","svcPerformedBy","svcShop","svcNotes"].forEach(id => $(id).value = "");
+        document.querySelectorAll(".svc-type-chk").forEach(c => c.checked = false);
+        $("fleetAddForm").style.display = "none";
+        msg.style.display = "inline";
+        setTimeout(() => { msg.style.display = "none"; }, 2500);
+        await loadFleetServiceHistory(veh.id);
+      } catch(e) {
+        err.textContent = "Error: " + e.message; err.style.display = "inline";
+      } finally { btn.disabled = false; btn.textContent = "Save Service Record"; }
+    };
+
+    await loadFleetServiceHistory(veh.id);
+  }
+
+  async function loadFleetServiceHistory(vehicleId) {
+    const list = $("fleetServiceList");
+    list.innerHTML = `<div class="loading-msg">Loading service history...</div>`;
+    try {
+      const d = await apiGet("fleetServiceHistory", { vehicleId });
+      const records = d.records || [];
+      if (!records.length) { list.innerHTML = `<div class="empty-msg">No service records yet.</div>`; return; }
+      list.innerHTML = records.map(r => `
+        <div class="fleet-service-row">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px;">
+            <span style="font-weight:700; font-size:14px; color:var(--text);">${esc(fmtDate(r.date))}</span>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:var(--muted);">
+              ${r.mileage ? `<span>📍 ${r.mileage.toLocaleString()} mi</span>` : ""}
+              ${r.cost ? `<span>💵 ${fmtCurrency(r.cost)}</span>` : ""}
+              ${r.performedBy ? `<span>👤 ${esc(r.performedBy)}</span>` : ""}
+              ${r.shop ? `<span>🏪 ${esc(r.shop)}</span>` : ""}
+            </div>
+          </div>
+          <div class="fleet-service-chips">
+            ${(r.serviceTypes||[]).map(t => `<span class="fleet-service-chip">${esc(t)}</span>`).join("")}
+          </div>
+          ${r.oilBrand||r.oilType||r.oilQty ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">🛢 ${[r.oilBrand, r.oilType, r.oilQty ? r.oilQty+"qts" : ""].filter(Boolean).join(" · ")}</div>` : ""}
+          ${r.tireBrand||r.tireSize ? `<div style="font-size:12px; color:var(--muted); margin-top:2px;">🔄 Tires: ${[r.tireBrand, r.tireSize].filter(Boolean).join(" ")}</div>` : ""}
+          ${r.notes ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">📝 ${esc(r.notes)}</div>` : ""}
+        </div>`).join("");
+    } catch(e) {
+      list.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  window.openFleetDetail = openFleetDetail;
+  window.fleetShowList   = fleetShowList;
+
   // ── SCISSOR LIFTS AT JOB (all users) ──
   async function loadJobLifts(jobName) {
     const section = $("jobLiftsSection");
@@ -2802,6 +3045,8 @@
     });
     const slBtn = $("btnScissorLifts");
     if (slBtn) slBtn.addEventListener("click", openScissorLifts);
+    const fleetBtn = $("btnFleet");
+    if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
     const addInspBtn = $("btnAddInspection");
     if (addInspBtn) addInspBtn.addEventListener("click", () => {
       const form = $("addInspectionForm");
@@ -2825,7 +3070,123 @@
 
   init();
 </script>
-<!-- SCISSOR LIFT MODAL -->
+<!-- FLEET MODAL -->
+<div id="fleetModal" class="fleet-modal-backdrop" style="display:none;">
+  <div class="fleet-modal">
+    <div class="fleet-modal-header">
+      <h2>🚗 Fleet Maintenance</h2>
+      <button onclick="document.getElementById('fleetModal').style.display='none'" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="fleet-modal-body">
+
+      <!-- Vehicle List View -->
+      <div id="fleetListView">
+        <div id="fleetVehiclesGrid" class="fleet-vehicles-grid">
+          <div class="loading-msg">Loading fleet...</div>
+        </div>
+      </div>
+
+      <!-- Vehicle Detail View -->
+      <div id="fleetDetailView" class="fleet-detail">
+        <div class="fleet-detail-header">
+          <button class="fleet-back-btn" onclick="fleetShowList()">← Back to Fleet</button>
+          <span id="fleetDetailTitle" style="font-weight:700; font-size:18px; color:var(--text);"></span>
+        </div>
+
+        <!-- Vehicle info cards -->
+        <div class="info-grid" id="fleetVehicleInfo" style="margin-bottom:16px;"></div>
+
+        <!-- Update mileage -->
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
+          <span style="font-size:13px; font-weight:600; color:var(--muted);">Update Mileage:</span>
+          <input type="number" id="fleetMileageInput" class="edit-input" style="width:130px; font-size:13px;" placeholder="Current miles" />
+          <button id="fleetMileageSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save Mileage</button>
+          <span id="fleetMileageMsg" style="font-size:12px; color:var(--green); display:none;">✓ Updated</span>
+        </div>
+
+        <!-- Service History -->
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <div class="section-header" style="margin:0;">🔧 Service History</div>
+          <button id="btnAddService" class="btn btn-primary btn-sm" style="font-size:12px;">+ Log Service</button>
+        </div>
+
+        <!-- Add Service Form -->
+        <div id="fleetAddForm" class="fleet-add-form">
+          <div style="font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:12px;">New Service Record</div>
+          <div class="fleet-form-grid">
+            <div>
+              <label class="edit-label">Date</label>
+              <input type="date" id="svcDate" class="edit-input" />
+            </div>
+            <div>
+              <label class="edit-label">Mileage at Service</label>
+              <input type="number" id="svcMileage" class="edit-input" placeholder="Miles" />
+            </div>
+            <div class="full">
+              <label class="edit-label">Service Types (check all that apply)</label>
+              <div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:4px;" id="svcTypeChecks">
+                ${["Oil Change","Air Filter","Fuel Filter","Tire Rotation","Tires Replaced","Inspection","Brakes","Battery","Other"].map(t =>
+                  `<label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;">
+                    <input type="checkbox" value="${t}" class="svc-type-chk" /> ${t}
+                  </label>`).join("")}
+              </div>
+            </div>
+            <div>
+              <label class="edit-label">Oil Brand</label>
+              <input type="text" id="svcOilBrand" class="edit-input" placeholder="e.g. Mobil 1" />
+            </div>
+            <div>
+              <label class="edit-label">Oil Type</label>
+              <input type="text" id="svcOilType" class="edit-input" placeholder="e.g. 5W-30" />
+            </div>
+            <div>
+              <label class="edit-label">Oil Qty (qts)</label>
+              <input type="number" id="svcOilQty" class="edit-input" placeholder="0.0" step="0.5" />
+            </div>
+            <div>
+              <label class="edit-label">Cost ($)</label>
+              <input type="number" id="svcCost" class="edit-input" placeholder="0.00" step="0.01" />
+            </div>
+            <div>
+              <label class="edit-label">Tire Brand Installed</label>
+              <input type="text" id="svcTireBrand" class="edit-input" placeholder="e.g. Michelin" />
+            </div>
+            <div>
+              <label class="edit-label">Tire Size Installed</label>
+              <input type="text" id="svcTireSize" class="edit-input" placeholder="e.g. LT275/70R18" />
+            </div>
+            <div>
+              <label class="edit-label">Performed By</label>
+              <input type="text" id="svcPerformedBy" class="edit-input" placeholder="Name or shop" />
+            </div>
+            <div>
+              <label class="edit-label">Shop / Location</label>
+              <input type="text" id="svcShop" class="edit-input" placeholder="e.g. Jiffy Lube" />
+            </div>
+            <div class="full">
+              <label class="edit-label">Notes</label>
+              <input type="text" id="svcNotes" class="edit-input" placeholder="Any notes..." />
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <button id="svcSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save Service Record</button>
+            <button onclick="document.getElementById('fleetAddForm').style.display='none'" class="btn btn-sm" style="font-size:12px;">Cancel</button>
+            <span id="svcSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+            <span id="svcSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
+          </div>
+        </div>
+
+        <!-- Service Records List -->
+        <div id="fleetServiceList" style="margin-top:12px;">
+          <div class="loading-msg">Loading service history...</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+</body>
 <div id="slModal" class="sl-modal-backdrop" style="display:none;">
   <div class="sl-modal">
     <div class="sl-modal-header">

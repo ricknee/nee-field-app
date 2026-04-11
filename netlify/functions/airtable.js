@@ -798,6 +798,38 @@ async function handleAddFleetService(body) {
   return resp(200, { ok: true, id: data.id, vehicleId, vehicleName, linked: fields["fld12gpaArqYw7BWU"] });
 }
 
+async function handleUpdateFleetService(body) {
+  const { serviceRecordId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
+  if (!serviceRecordId) return resp(400, { ok: false, error: "Missing serviceRecordId." });
+
+  const fields = {};
+  if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
+  if (mileage)      fields["fldE7SlKw7n85bZWD"] = Number(mileage);
+  if (serviceTypes) fields["fldCiHkwHtsOZmkWk"] = serviceTypes;
+  if (oilBrand !== undefined) fields["fldO7RALeUnXSgC6J"] = oilBrand;
+  if (oilType  !== undefined) fields["fldcgXpATus1HqW81"] = oilType;
+  if (oilQty)       fields["fldwaUKNsJQvjwlK1"] = Number(oilQty);
+  if (cost)         fields["fldwYmFTQLvOuDKIE"] = Number(cost);
+  if (tireBrand !== undefined) fields["fldSw3UKcWky8bQlA"] = tireBrand;
+  if (tireSize  !== undefined) fields["fldVEwTlmNaWmRUiJ"] = tireSize;
+  if (performedBy !== undefined) fields["fld4mHAqeBjCqSjkB"] = performedBy;
+  if (shop  !== undefined) fields["fldZddoeHsPrxapz1"] = shop;
+  if (notes !== undefined) fields["fldwNDO1V7E26vql1"] = notes;
+
+  const data = await atFetch(`${encodeURIComponent("Fleet Maintenance")}/${serviceRecordId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
+async function handleDeleteFleetService(body) {
+  const { serviceRecordId } = body || {};
+  if (!serviceRecordId) return resp(400, { ok: false, error: "Missing serviceRecordId." });
+  await atFetch(`${encodeURIComponent("Fleet Maintenance")}/${serviceRecordId}`, { method: "DELETE" });
+  return resp(200, { ok: true, deleted: serviceRecordId });
+}
+
 async function handleScissorLifts() {
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => {
@@ -996,6 +1028,8 @@ export async function handler(event) {
       if (body.action === "updateEstimate")      return await handleUpdateEstimate(body);
       if (body.action === "updateFleetVehicle")  return await handleUpdateFleetVehicle(body);
       if (body.action === "addFleetService")     return await handleAddFleetService(body);
+      if (body.action === "updateFleetService")  return await handleUpdateFleetService(body);
+      if (body.action === "deleteFleetService")  return await handleDeleteFleetService(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

@@ -642,8 +642,8 @@ async function handleUpdateEstimate(body) {
 
 // ── FLEET ──
 const FLEET_TABLES = {
-  vehicles:    "tblB0n6BUbvP217Qh",
-  maintenance: "tbltt7ygP4hLE1ac8"
+  vehicles:    "Fleet Vehicles",
+  maintenance: "Fleet Maintenance"
 };
 const FV = { // Fleet Vehicle field IDs
   name:           "fldBcqDl6ez0GZz9n",
@@ -714,8 +714,13 @@ async function handleFleetServiceHistory(params) {
   const { vehicleId } = params || {};
   if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
 
+  // Get vehicle name first to filter by name (more reliable than ID in ARRAYJOIN)
+  const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
+  if (!vehRecords.length) return resp(200, { ok: true, records: [] });
+  const vehName = vehRecords[0].fields[FV.name] || "";
+
   const records = await fetchAll(FLEET_TABLES.maintenance, {
-    filter: `FIND("${vehicleId}", ARRAYJOIN({Vehicle}))`,
+    filter: `FIND("${vehName}", ARRAYJOIN({Vehicle}))`,
     sortField: "Date",
     sortDir:   "desc"
   });

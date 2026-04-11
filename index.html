@@ -1515,6 +1515,13 @@
     return (state.user?.role||"").toLowerCase() === "admin";
   }
 
+  function isViewer() {
+    return (state.user?.role||"").toLowerCase() === "viewer";
+  }
+
+  // Viewer sees admin layout minus financial tabs
+  const VIEWER_HIDDEN_TABS = ["live-perf", "closeout", "est-gp", "expenses", "time-entries"];
+
   function renderAuth() {
     if (state.user) {
       $("loginPage").classList.add("hidden");
@@ -1522,10 +1529,26 @@
       const badge = $("userBadge");
       badge.textContent = `${state.user.name} (${state.user.role})`;
       badge.className = "user-badge" + (isAdmin() ? " admin" : "");
-      // Show/hide admin-only elements
+
+      const adminOrViewer = isAdmin() || isViewer();
+
+      // Show/hide admin-only elements (viewers also see these)
       document.querySelectorAll(".admin-only").forEach(el => {
-        el.classList.toggle("hidden", !isAdmin());
+        el.classList.toggle("hidden", !adminOrViewer);
       });
+
+      // Hide financial tabs from viewers
+      if (isViewer()) {
+        VIEWER_HIDDEN_TABS.forEach(tab => {
+          const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
+          if (btn) btn.classList.add("hidden");
+        });
+        // Viewers can see but not edit — hide edit-only controls
+        ["statusChangeRow", "pcEditForm", "btnNewJobEstimate", "btnAddInspection", "saveInspectionBtn"].forEach(id => {
+          const el = $(id);
+          if (el) el.classList.add("hidden");
+        });
+      }
     } else {
       $("loginPage").classList.remove("hidden");
       $("appPage").classList.add("hidden");
@@ -1723,7 +1746,7 @@
     $("piJobPo").textContent = val(job.po);
     $("piJobStatus").innerHTML = atPill(job.status, STATUS_COLORS);
     $("piJobType").innerHTML = atPill(job.type, TYPE_COLORS);
-    if (isAdmin()) $("piTaxStatus").innerHTML = atPill(job.taxStatus, TAX_COLORS);
+    if (isAdmin() || isViewer()) $("piTaxStatus").innerHTML = atPill(job.taxStatus, TAX_COLORS);
     $("piContractor").textContent = val(job.contractor);
     $("piGenerator").textContent = job.generatorInstalled ? "✅ Yes" : "No";
 
@@ -1809,13 +1832,15 @@
       $("pcSaveErr").style.display = "none";
     }
 
-    // Admin tabs
-    if (isAdmin()) {
-      try { renderLivePerf(job); }         catch(e) { console.error("renderLivePerf:", e); }
-      try { renderCloseout(job); }         catch(e) { console.error("renderCloseout:", e); }
-      try { renderEstGp(job); }            catch(e) { console.error("renderEstGp:", e); }
-      try { loadExpenses(job.id); }        catch(e) { console.error("loadExpenses:", e); }
-      try { loadTimeEntries(job.id); }     catch(e) { console.error("loadTimeEntries:", e); }
+    // Admin tabs — viewers skip financial tabs
+    if (isAdmin() || isViewer()) {
+      if (isAdmin()) {
+        try { renderLivePerf(job); }     catch(e) { console.error("renderLivePerf:", e); }
+        try { renderCloseout(job); }     catch(e) { console.error("renderCloseout:", e); }
+        try { renderEstGp(job); }        catch(e) { console.error("renderEstGp:", e); }
+        try { loadExpenses(job.id); }    catch(e) { console.error("loadExpenses:", e); }
+        try { loadTimeEntries(job.id); } catch(e) { console.error("loadTimeEntries:", e); }
+      }
     }
 
     // Reset to project tab on new job selection

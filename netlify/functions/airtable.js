@@ -704,7 +704,8 @@ async function handleFleetVehicles() {
         tireBrand:      f["Tire Brand"]         || "",
         tireSize:       f["Tire Size"]          || "",
         tireInstallDate: f["Tire Install Date"] || "",
-        notes:          f["Notes"]              || ""
+        notes:          f["Notes"]              || "",
+        photoUrl:       (f["Photo"] || [])[0]?.url || ""
       };
     });
   return resp(200, { ok: true, vehicles });

@@ -640,6 +640,149 @@ async function handleUpdateEstimate(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// ── FLEET ──
+const FLEET_TABLES = {
+  vehicles:    "tblB0n6BUbvP217Qh",
+  maintenance: "tbltt7ygP4hLE1ac8"
+};
+const FV = { // Fleet Vehicle field IDs
+  name:           "fldBcqDl6ez0GZz9n",
+  year:           "fld7E7ubdLAnlbplu",
+  make:           "fldiPxOpsxiO3JbqQ",
+  model:          "fldXFQ1u0BKpd94Fa",
+  color:          "fldR9UNl5MD8QRelB",
+  vin:            "fldMCiACFqTxA87Ay",
+  plate:          "fldX23ZlkmGHTx52S",
+  type:           "flduEmTHcrv24SlJT",
+  mileage:        "fldcRmbsqWDMyfzuF",
+  mileageDate:    "fldwIxFsMRrZsAAEy",
+  oilType:        "fldgT7qDyTXa1SeUC",
+  oilCapacity:    "fldgjlvQVc4kOEkqY",
+  tireBrand:      "fldkBVEAr6qCkTAZS",
+  tireSize:       "fldCC7EoiTXi7BxMR",
+  tireInstall:    "fldn7QbuEneDRgJ76",
+  notes:          "fldx4pEJ5JS0DFLyh",
+  active:         "fldapfWYijFLo7n1P",
+  vehicle:        "fldK1hwGh51FgcgN8"  // reverse link in Fleet Vehicles
+};
+const FM = { // Fleet Maintenance field IDs
+  vehicle:        "fld12gpaArqYw7BWU",
+  date:           "fldwEhvgTGGEy9E3g",
+  mileage:        "fldE7SlKw7n85bZWD",
+  serviceTypes:   "fldCiHkwHtsOZmkWk",
+  oilBrand:       "fldO7RALeUnXSgC6J",
+  oilType:        "fldcgXpATus1HqW81",
+  oilQty:         "fldwaUKNsJQvjwlK1",
+  tireBrand:      "fldSw3UKcWky8bQlA",
+  tireSize:       "fldVEwTlmNaWmRUiJ",
+  cost:           "fldwYmFTQLvOuDKIE",
+  performedBy:    "fld4mHAqeBjCqSjkB",
+  shop:           "fldZddoeHsPrxapz1",
+  notes:          "fldwNDO1V7E26vql1"
+};
+
+async function handleFleetVehicles() {
+  const records = await fetchAll(FLEET_TABLES.vehicles, { sortField: "Vehicle Name", sortDir: "asc" });
+  const vehicles = records
+    .filter(r => r.fields[FV.active] === true)
+    .map(r => {
+      const f = r.fields || {};
+      return {
+        id:             r.id,
+        name:           f[FV.name]    || "",
+        year:           f[FV.year]    || null,
+        make:           f[FV.make]    || "",
+        model:          f[FV.model]   || "",
+        color:          f[FV.color]   || "",
+        vin:            f[FV.vin]     || "",
+        plate:          f[FV.plate]   || "",
+        type:           f[FV.type]?.name || f[FV.type] || "",
+        currentMileage: f[FV.mileage] ?? null,
+        mileageDate:    f[FV.mileageDate] || "",
+        oilType:        f[FV.oilType] || "",
+        oilCapacity:    f[FV.oilCapacity] ?? null,
+        tireBrand:      f[FV.tireBrand] || "",
+        tireSize:       f[FV.tireSize]  || "",
+        tireInstallDate: f[FV.tireInstall] || "",
+        notes:          f[FV.notes]   || ""
+      };
+    });
+  return resp(200, { ok: true, vehicles });
+}
+
+async function handleFleetServiceHistory(params) {
+  const { vehicleId } = params || {};
+  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+
+  const records = await fetchAll(FLEET_TABLES.maintenance, {
+    filter: `FIND("${vehicleId}", ARRAYJOIN({Vehicle}))`,
+    sortField: "Date",
+    sortDir:   "desc"
+  });
+
+  const serviceRecords = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:           r.id,
+      date:         f[FM.date]         || "",
+      mileage:      f[FM.mileage]      ?? null,
+      serviceTypes: (f[FM.serviceTypes] || []).map(s => s.name || s),
+      oilBrand:     f[FM.oilBrand]     || "",
+      oilType:      f[FM.oilType]      || "",
+      oilQty:       f[FM.oilQty]       ?? null,
+      tireBrand:    f[FM.tireBrand]    || "",
+      tireSize:     f[FM.tireSize]     || "",
+      cost:         f[FM.cost]         ?? null,
+      performedBy:  f[FM.performedBy]  || "",
+      shop:         f[FM.shop]         || "",
+      notes:        f[FM.notes]        || ""
+    };
+  });
+  return resp(200, { ok: true, records: serviceRecords });
+}
+
+async function handleUpdateFleetVehicle(body) {
+  const { vehicleId, currentMileage, oilType, oilCapacity, tireBrand, tireSize, tireInstallDate, vin, plate, notes } = body || {};
+  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+  const fields = {};
+  if (currentMileage !== undefined) { fields[FV.mileage] = Number(currentMileage); fields[FV.mileageDate] = new Date().toISOString().slice(0,10); }
+  if (oilType        !== undefined) fields[FV.oilType]    = oilType;
+  if (oilCapacity    !== undefined) fields[FV.oilCapacity] = Number(oilCapacity);
+  if (tireBrand      !== undefined) fields[FV.tireBrand]  = tireBrand;
+  if (tireSize       !== undefined) fields[FV.tireSize]   = tireSize;
+  if (tireInstallDate!== undefined) fields[FV.tireInstall]= tireInstallDate;
+  if (vin            !== undefined) fields[FV.vin]        = vin;
+  if (plate          !== undefined) fields[FV.plate]      = plate;
+  if (notes          !== undefined) fields[FV.notes]      = notes;
+  const data = await atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${vehicleId}`, {
+    method: "PATCH", body: JSON.stringify({ fields })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
+async function handleAddFleetService(body) {
+  const { vehicleId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
+  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+  const fields = {};
+  fields[FM.vehicle] = [{ id: String(vehicleId) }];
+  if (date)         fields[FM.date]        = date;
+  if (mileage)      fields[FM.mileage]     = Number(mileage);
+  if (serviceTypes && serviceTypes.length) fields[FM.serviceTypes] = serviceTypes;
+  if (oilBrand)     fields[FM.oilBrand]    = oilBrand;
+  if (oilType)      fields[FM.oilType]     = oilType;
+  if (oilQty)       fields[FM.oilQty]      = Number(oilQty);
+  if (cost)         fields[FM.cost]        = Number(cost);
+  if (tireBrand)    fields[FM.tireBrand]   = tireBrand;
+  if (tireSize)     fields[FM.tireSize]    = tireSize;
+  if (performedBy)  fields[FM.performedBy] = performedBy;
+  if (shop)         fields[FM.shop]        = shop;
+  if (notes)        fields[FM.notes]       = notes;
+  const data = await atFetch(`${encodeURIComponent(FLEET_TABLES.maintenance)}`, {
+    method: "POST", body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, id: data.id });
+}
+
 async function handleScissorLifts() {
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => {
@@ -819,6 +962,8 @@ export async function handler(event) {
       if (action === "scissorLiftsByJob") return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")    return await handleJobInspections(params);
       if (action === "jobEstimates")      return await handleJobEstimates(params);
+      if (action === "fleetVehicles")     return await handleFleetVehicles();
+      if (action === "fleetServiceHistory") return await handleFleetServiceHistory(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -834,6 +979,8 @@ export async function handler(event) {
       if (body.action === "updateScissorLift")  return await handleUpdateScissorLift(body);
       if (body.action === "createInspection")   return await handleCreateInspection(body);
       if (body.action === "updateEstimate")      return await handleUpdateEstimate(body);
+      if (body.action === "updateFleetVehicle")  return await handleUpdateFleetVehicle(body);
+      if (body.action === "addFleetService")     return await handleAddFleetService(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

@@ -770,12 +770,10 @@ async function handleUpdateFleetVehicle(body) {
 
 async function handleAddFleetService(body) {
   const { vehicleId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
-  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+  if (!vehicleId) return resp(400, { ok: false, error: `Missing vehicleId. Body keys: ${Object.keys(body||{}).join(",")}` });
 
-  // Use field IDs with table ID in URL — this is the only reliable way to write linked records
-  const TABLE_ID = "tbltt7ygP4hLE1ac8";
   const fields = {};
-  fields["fld12gpaArqYw7BWU"] = [{ id: String(vehicleId) }];  // Vehicle linked field
+  fields["fld12gpaArqYw7BWU"] = [{ id: String(vehicleId) }];
   if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
   if (mileage)      fields["fldE7SlKw7n85bZWD"] = Number(mileage);
   if (serviceTypes && serviceTypes.length) fields["fldCiHkwHtsOZmkWk"] = serviceTypes;
@@ -789,10 +787,11 @@ async function handleAddFleetService(body) {
   if (shop)         fields["fldZddoeHsPrxapz1"] = shop;
   if (notes)        fields["fldwNDO1V7E26vql1"] = notes;
 
-  const data = await atFetch(`${encodeURIComponent(TABLE_ID)}`, {
-    method: "POST", body: JSON.stringify({ fields, typecast: true })
+  const data = await atFetch(`${encodeURIComponent("Fleet Maintenance")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
   });
-  return resp(200, { ok: true, id: data.id });
+  return resp(200, { ok: true, id: data.id, vehicleId, linkedField: fields["fld12gpaArqYw7BWU"] });
 }
 
 async function handleScissorLifts() {

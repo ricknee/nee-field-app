@@ -715,33 +715,31 @@ async function handleFleetServiceHistory(params) {
   const { vehicleId } = params || {};
   if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
 
-  // Get vehicle name first to filter by name (more reliable than ID in ARRAYJOIN)
-  const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
-  if (!vehRecords.length) return resp(200, { ok: true, records: [] });
-  const vehName = vehRecords[0].fields[FV.name] || "";
-
+  // Filter using RECORD_ID match on the linked Vehicle field
   const records = await fetchAll(FLEET_TABLES.maintenance, {
-    filter: `FIND("${vehName}", ARRAYJOIN({Vehicle}))`,
+    filter: `FIND("${vehicleId}", ARRAYJOIN(RECORD_ID({Vehicle})))`,
     sortField: "Date",
     sortDir:   "desc"
   });
 
   const serviceRecords = records.map(r => {
     const f = r.fields || {};
+    // Fields returned by name when querying by table name
+    const types = (f["Service Types"] || []).map(s => (typeof s === "object" ? s.name : s));
     return {
       id:           r.id,
-      date:         f[FM.date]         || "",
-      mileage:      f[FM.mileage]      ?? null,
-      serviceTypes: (f[FM.serviceTypes] || []).map(s => s.name || s),
-      oilBrand:     f[FM.oilBrand]     || "",
-      oilType:      f[FM.oilType]      || "",
-      oilQty:       f[FM.oilQty]       ?? null,
-      tireBrand:    f[FM.tireBrand]    || "",
-      tireSize:     f[FM.tireSize]     || "",
-      cost:         f[FM.cost]         ?? null,
-      performedBy:  f[FM.performedBy]  || "",
-      shop:         f[FM.shop]         || "",
-      notes:        f[FM.notes]        || ""
+      date:         f["Date"]                 || "",
+      mileage:      f["Mileage at Service"]   ?? null,
+      serviceTypes: types,
+      oilBrand:     f["Filter #"]             || "",
+      oilType:      f["Oil Type Used"]        || "",
+      oilQty:       f["Oil Qty (qts)"]        ?? null,
+      tireBrand:    f["Tire Brand Installed"] || "",
+      tireSize:     f["Tire Size Installed"]  || "",
+      cost:         f["Cost"]                 ?? null,
+      performedBy:  f["Performed By"]         || "",
+      shop:         f["Shop / Location"]      || "",
+      notes:        f["Notes"]               || ""
     };
   });
   return resp(200, { ok: true, records: serviceRecords });
@@ -770,19 +768,19 @@ async function handleAddFleetService(body) {
   const { vehicleId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
   if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
   const fields = {};
-  fields[FM.vehicle] = [{ id: String(vehicleId) }];
-  if (date)         fields[FM.date]        = date;
-  if (mileage)      fields[FM.mileage]     = Number(mileage);
-  if (serviceTypes && serviceTypes.length) fields[FM.serviceTypes] = serviceTypes;
-  if (oilBrand)     fields[FM.oilBrand]    = oilBrand;
-  if (oilType)      fields[FM.oilType]     = oilType;
-  if (oilQty)       fields[FM.oilQty]      = Number(oilQty);
-  if (cost)         fields[FM.cost]        = Number(cost);
-  if (tireBrand)    fields[FM.tireBrand]   = tireBrand;
-  if (tireSize)     fields[FM.tireSize]    = tireSize;
-  if (performedBy)  fields[FM.performedBy] = performedBy;
-  if (shop)         fields[FM.shop]        = shop;
-  if (notes)        fields[FM.notes]       = notes;
+  fields["Vehicle"]              = [{ id: String(vehicleId) }];
+  if (date)         fields["Date"]                 = date;
+  if (mileage)      fields["Mileage at Service"]   = Number(mileage);
+  if (serviceTypes && serviceTypes.length) fields["Service Types"] = serviceTypes;
+  if (oilBrand)     fields["Filter #"]             = oilBrand;
+  if (oilType)      fields["Oil Type Used"]        = oilType;
+  if (oilQty)       fields["Oil Qty (qts)"]        = Number(oilQty);
+  if (cost)         fields["Cost"]                 = Number(cost);
+  if (tireBrand)    fields["Tire Brand Installed"] = tireBrand;
+  if (tireSize)     fields["Tire Size Installed"]  = tireSize;
+  if (performedBy)  fields["Performed By"]         = performedBy;
+  if (shop)         fields["Shop / Location"]      = shop;
+  if (notes)        fields["Notes"]                = notes;
   const data = await atFetch(`${encodeURIComponent(FLEET_TABLES.maintenance)}`, {
     method: "POST", body: JSON.stringify({ fields, typecast: true })
   });

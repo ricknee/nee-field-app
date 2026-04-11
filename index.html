@@ -2731,6 +2731,8 @@
       infoBox("Current Mileage", veh.currentMileage ? veh.currentMileage.toLocaleString()+" mi" : "—"),
       infoBox("Oil Type", veh.oilType||"—"),
       infoBox("Oil Capacity", veh.oilCapacity ? veh.oilCapacity+" qts" : "—"),
+      infoBox("Oil Drain Wrench", veh.wrenchSize||"—"),
+      infoBox("Lug Torque", veh.lugTorque ? veh.lugTorque+" ft-lbs" : "—"),
       infoBox("Tire Brand", veh.tireBrand||"—"),
       infoBox("Tire Size", veh.tireSize||"—"),
       infoBox("Tire Install Date", veh.tireInstallDate ? fmtDate(veh.tireInstallDate) : "—"),

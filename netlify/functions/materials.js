@@ -2,11 +2,9 @@
 // NEE Materials App — Netlify Proxy
 // Uses env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main), INVENTORY_BASE_ID
 
-const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
-const MAIN_BASE_ID     = process.env.AIRTABLE_BASE_ID;
-const INV_BASE_ID      = process.env.INVENTORY_BASE_ID;
-const API_ROOT_MAIN    = `https://api.airtable.com/v0/${MAIN_BASE_ID}`;
-const API_ROOT_INV     = `https://api.airtable.com/v0/${INV_BASE_ID}`;
+const AIRTABLE_API_KEY  = process.env.AIRTABLE_API_KEY;
+const MAIN_BASE_ID      = process.env.AIRTABLE_BASE_ID;
+const INV_BASE_ID       = process.env.INVENTORY_BASE_ID;
 
 function resp(code, body) {
   return {
@@ -27,18 +25,8 @@ function ensureEnv() {
   if (!INV_BASE_ID)      throw new Error("Missing env var INVENTORY_BASE_ID");
 }
 
-function normalize(v) { return String(v || "").trim().toLowerCase(); }
-
-function gBool(fields, fieldName) {
-  const v = fields[fieldName];
-  if (typeof v === "boolean") return v;
-  if (typeof v === "number")  return v !== 0;
-  if (typeof v === "string")  return ["true","yes","1"].includes(v.trim().toLowerCase());
-  return false;
-}
-
-async function atFetch(apiRoot, path, options = {}) {
-  const res = await fetch(`${apiRoot}/${path}`, {
+async function atFetch(baseId, path, options = {}) {
+  const res = await fetch(`https://api.airtable.com/v0/${baseId}/${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${AIRTABLE_API_KEY}`,
@@ -53,129 +41,126 @@ async function atFetch(apiRoot, path, options = {}) {
   return json;
 }
 
-async function fetchAll(apiRoot, tableName, opts = {}) {
+async function fetchAll(baseId, tableName, opts = {}) {
   const params = new URLSearchParams();
-  if (opts.filter)     params.set("filterByFormula", opts.filter);
-  if (opts.sortField)  params.set("sort[0][field]", opts.sortField);
-  if (opts.sortDir)    params.set("sort[0][direction]", opts.sortDir);
-  if (opts.maxRecords) params.set("maxRecords", String(opts.maxRecords));
+  if (opts.filter)    params.set("filterByFormula", opts.filter);
+  if (opts.sortField) params.set("sort[0][field]", opts.sortField);
+  if (opts.sortDir)   params.set("sort[0][direction]", opts.sortDir);
+  if (opts.maxRecords) params.set("maxRecords", opts.maxRecords);
 
   const records = [];
   let offset = null;
   do {
     const qs = new URLSearchParams(params);
     if (offset) qs.set("offset", offset);
-    const data = await atFetch(apiRoot, `${encodeURIComponent(tableName)}?${qs}`, { method: "GET" });
+    const data = await atFetch(baseId, `${encodeURIComponent(tableName)}?${qs}`, { method: "GET" });
     records.push(...(data.records || []));
     offset = data.offset || null;
   } while (offset);
   return records;
 }
 
-// ── LOGIN — same pattern as main app ──────────────────────
+// ── LOGIN ─────────────────────────────────────────────────
 async function handleLogin(body) {
-  const { identifier, pin } = body || {};
-  if (!identifier || !pin) return resp(400, { ok: false, error: "Missing identifier or PIN." });
+  const { pin } = body || {};
+  if (!pin) return resp(400, { ok: false, error: "Missing PIN." });
 
-  const records = await fetchAll(API_ROOT_MAIN, "Employees");
-  const match = records.find(r => {
-    const f        = r.fields || {};
-    const name     = normalize(f["Employee Name"]);
-    const username = normalize(f["Username"]);
-    const email    = normalize(f["Email"]);
-    const savedPin = String(f["PIN"] || "").trim();
-    const active   = gBool(f, "Active");
-    const id       = normalize(identifier);
-    return [name, username, email].includes(id)
-      && savedPin !== ""
-      && savedPin === String(pin).trim()
-      && active;
+  const records = await fetchAll(MAIN_BASE_ID, "Employees", {
+    filter: `AND({PIN}='${pin}', {Active}=1)`
   });
 
-  if (!match) return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
+  if (!records.length) return resp(401, { ok: false, error: "Invalid PIN." });
 
-  const f    = match.fields || {};
-  const role = normalize(f["Role New"] || f["Role"] || "");
+  const f = records[0].fields || {};
   return resp(200, {
     ok: true,
     user: {
-      id:   match.id,
+      id:   records[0].id,
       name: f["Employee Name"] || "Unknown",
-      role: role === "admin" ? "admin" : "employee"
+      role: (f["Role New"] || f["Role"] || "").toLowerCase() === "admin" ? "admin" : "employee"
     }
   });
 }
 
-// ── JOBS (active only, from main base) ────────────────────
-const ACTIVE_STATUSES = ["Awarded","In Progress","Service Call Scheduled","Ready to Invoice"];
+// ── JOBS (from main base, active only) ───────────────────
+const ACTIVE_STATUSES = ["Awarded", "In Progress", "Service Call Scheduled", "Ready to Invoice"];
 
 async function handleJobs() {
   const filter = `OR(${ACTIVE_STATUSES.map(s => `{Job Status}='${s}'`).join(",")})`;
-  const records = await fetchAll(API_ROOT_MAIN, "Jobs", { filter, sortField: "Job PO", sortDir: "asc" });
+  const records = await fetchAll(MAIN_BASE_ID, "Jobs", { filter, sortField: "Job PO", sortDir: "asc" });
+
   const jobs = records.map(r => ({
     id:     r.id,
     name:   r.fields["Job PO"] || r.fields["Job Name"] || "",
     status: r.fields["Job Status"] || ""
   }));
+
   return resp(200, { ok: true, jobs });
 }
 
 // ── LOCATIONS (from inventory base) ──────────────────────
 async function handleLocations() {
-  const records = await fetchAll(API_ROOT_INV, "Locations", {
+  const records = await fetchAll(INV_BASE_ID, "Locations", {
     filter: "{Active Location}=1",
     sortField: "Location Name",
     sortDir: "asc"
   });
+
   const locations = records.map(r => ({
     id:   r.id,
     name: r.fields["Location Name"] || ""
   }));
+
   return resp(200, { ok: true, locations });
 }
 
-// ── ITEMS (from inventory base) ──────────────────────────
+// ── ITEMS (from inventory base) ───────────────────────────
 async function handleItems() {
-  const records = await fetchAll(API_ROOT_INV, "Inventory Items", {
+  const records = await fetchAll(INV_BASE_ID, "Inventory Items", {
     filter: "{Active Item}=1",
     sortField: "Item Name",
     sortDir: "asc"
   });
+
   const items = records.map(r => {
     const f = r.fields || {};
     return {
       id:   r.id,
       name: f["Item Name"] || "",
-      cat:  f["Category"]?.name  || f["Category"]  || "",
+      cat:  f["Category"]?.name || f["Category"] || "",
       uom:  f["Unit of Measure"]?.name || f["Unit of Measure"] || "",
       cost: f["Default Unit Cost"] || 0
     };
   });
+
   return resp(200, { ok: true, items });
 }
 
 // ── LOG TRANSACTION ───────────────────────────────────────
 async function handleLogTransaction(body) {
   const { itemId, locationId, quantity, enteredBy, notes } = body || {};
-  if (!itemId)     return resp(400, { ok: false, error: "Missing itemId." });
+  if (!itemId)    return resp(400, { ok: false, error: "Missing itemId." });
   if (!locationId) return resp(400, { ok: false, error: "Missing locationId." });
   if (!quantity)   return resp(400, { ok: false, error: "Missing quantity." });
 
-  const today  = new Date().toISOString().split("T")[0];
+  const now = new Date().toISOString();
+
   const fields = {
-    "fldGq37LD9YuyCf5e": today,
-    "fldmookC8mdyXxVuw": [{ id: String(itemId) }],
-    "fldFQlArrzUnjCTxr": Number(quantity),
-    "fldjvIy3X1DJowGsd": "Used on Job",
-    "fldpyLadbcc9NHO6c": [{ id: String(locationId) }],
-    "fldIFffLxtcQTbExd": enteredBy || ""
+    "fldGq37LD9YuyCf5e": now,                            // Transaction Date (dateTime)
+    "fldmookC8mdyXxVuw": [{ id: String(itemId) }],       // Inventory Item (linked)
+    "fldFQlArrzUnjCTxr": Number(quantity),               // Quantity
+    "fldjvIy3X1DJowGsd": "Use",                          // Transaction Type
+    "fldpyLadbcc9NHO6c": [{ id: String(locationId) }],   // From Location (linked)
+    "fldIFffLxtcQTbExd": enteredBy || ""                 // Entered By
   };
+
   if (notes) fields["fldrcq8wSyfz8O3UB"] = notes;
 
-  const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
+  const data = await atFetch(INV_BASE_ID, encodeURIComponent("Inventory Transactions"), {
     method: "POST",
     body: JSON.stringify({ records: [{ fields }] })
   });
+
   return resp(200, { ok: true, id: data.records?.[0]?.id });
 }
 
@@ -184,7 +169,7 @@ async function handleHistory(params) {
   const { enteredBy } = params || {};
   if (!enteredBy) return resp(400, { ok: false, error: "Missing enteredBy." });
 
-  const records = await fetchAll(API_ROOT_INV, "Inventory Transactions", {
+  const records = await fetchAll(INV_BASE_ID, "Inventory Transactions", {
     filter: `{Entered By}='${enteredBy}'`,
     sortField: "Transaction Date",
     sortDir: "desc",
@@ -192,9 +177,9 @@ async function handleHistory(params) {
   });
 
   const transactions = records.map(r => {
-    const f       = r.fields || {};
+    const f = r.fields || {};
     const itemArr = f["Inventory Item"] || [];
-    const locArr  = f["From Location"]  || [];
+    const locArr  = f["From Location"] || [];
     return {
       id:       r.id,
       date:     f["Transaction Date"] || "",
@@ -205,6 +190,7 @@ async function handleHistory(params) {
       notes:    f["Notes"] || ""
     };
   });
+
   return resp(200, { ok: true, transactions });
 }
 
@@ -233,7 +219,7 @@ export async function handler(event) {
 
     return resp(405, { ok: false, error: "Method not allowed." });
   } catch (err) {
-    console.error("NEE Materials Error:", err);
+    console.error("NEE Materials Proxy Error:", err);
     return resp(500, { ok: false, error: err.message || "Server error." });
   }
 }

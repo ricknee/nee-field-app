@@ -138,7 +138,7 @@ async function handleItems() {
 
 // ── LOG TRANSACTION ───────────────────────────────────────
 async function handleLogTransaction(body) {
-  const { itemId, locationId, jobId, quantity, enteredBy, notes } = body || {};
+  const { itemId, locationId, jobName, quantity, enteredBy, notes } = body || {};
   if (!itemId)    return resp(400, { ok: false, error: "Missing itemId." });
   if (!locationId) return resp(400, { ok: false, error: "Missing locationId." });
   if (!quantity)   return resp(400, { ok: false, error: "Missing quantity." });
@@ -146,16 +146,14 @@ async function handleLogTransaction(body) {
   const now = new Date().toISOString();
 
   const fields = {
-    "fldGq37LD9YuyCf5e": now,                            // Transaction Date (dateTime)
-    "fldmookC8mdyXxVuw": [String(itemId)],       // Inventory Item (linked)
-    "fldFQlArrzUnjCTxr": Number(quantity),               // Quantity
-    "fldjvIy3X1DJowGsd": "Use",                          // Transaction Type
-    "fldpyLadbcc9NHO6c": [String(locationId)],   // From Location (linked)
-    "fldIFffLxtcQTbExd": enteredBy || ""                 // Entered By
+    "fldGq37LD9YuyCf5e": now,                                          // Transaction Date
+    "fldmookC8mdyXxVuw": [String(itemId)],                             // Inventory Item
+    "fldFQlArrzUnjCTxr": Number(quantity),                             // Quantity
+    "fldjvIy3X1DJowGsd": "Use",                                        // Transaction Type
+    "fldpyLadbcc9NHO6c": [String(locationId)],                         // From Location
+    "fldIFffLxtcQTbExd": enteredBy || "",                              // Entered By
+    "fldrcq8wSyfz8O3UB": [jobName, notes].filter(Boolean).join(" | ") // Notes: job | user notes
   };
-
-  if (jobId) fields["fld7OG04Sgkp88JsU"] = [String(jobId)];
-  if (notes) fields["fldrcq8wSyfz8O3UB"] = notes;
 
   const data = await atFetch(INV_BASE_ID, encodeURIComponent("Inventory Transactions"), {
     method: "POST",
@@ -171,24 +169,41 @@ async function handleHistory(params) {
   if (!enteredBy) return resp(400, { ok: false, error: "Missing enteredBy." });
 
   const records = await fetchAll(INV_BASE_ID, "Inventory Transactions", {
-    filter: `{Entered By}='${enteredBy}'`,
-    sortField: "Transaction Date",
-    sortDir: "desc",
+    filter:     `{Entered By}='${enteredBy}'`,
+    sortField:  "Transaction Date",
+    sortDir:    "desc",
     maxRecords: 30
   });
 
   const transactions = records.map(r => {
     const f = r.fields || {};
+
     const itemArr = f["Inventory Item"] || [];
-    const locArr  = f["From Location"] || [];
+    const locArr  = f["From Location"]  || [];
+
+    let dateStr = "";
+    const rawDate = f["Transaction Date"];
+    if (rawDate) {
+      try {
+        const d = new Date(rawDate);
+        dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      } catch(e) { dateStr = rawDate; }
+    }
+
+    const notesRaw = f["Notes"] || "";
+    const notesParts = notesRaw.split(" | ");
+    const jobName  = notesParts[0] || "";
+    const userNotes = notesParts.slice(1).join(" | ");
+
     return {
       id:       r.id,
-      date:     f["Transaction Date"] || "",
-      item:     Array.isArray(itemArr) ? itemArr.map(i => i.name || i).join(", ") : "",
-      location: Array.isArray(locArr)  ? locArr.map(l => l.name || l).join(", ")  : "",
+      date:     dateStr,
+      item:     Array.isArray(itemArr) ? itemArr.map(i => (typeof i === "object" ? i.name : i) || "").filter(Boolean).join(", ") : String(itemArr || ""),
+      location: Array.isArray(locArr)  ? locArr.map(l => (typeof l === "object" ? l.name : l) || "").filter(Boolean).join(", ") : String(locArr  || ""),
       qty:      f["Quantity"] ?? "",
       type:     f["Transaction Type"]?.name || f["Transaction Type"] || "",
-      notes:    f["Notes"] || ""
+      job:      jobName,
+      notes:    userNotes
     };
   });
 

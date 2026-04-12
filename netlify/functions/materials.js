@@ -168,26 +168,37 @@ async function handleHistory(params) {
   const { enteredBy } = params || {};
   if (!enteredBy) return resp(400, { ok: false, error: "Missing enteredBy." });
 
-  const records = await fetchAll(INV_BASE_ID, "Inventory Transactions", {
-    filter:     `{Entered By}='${enteredBy}'`,
-    sortField:  "Transaction Date",
-    sortDir:    "desc",
-    maxRecords: 30
-  });
+  // Build lookup maps for items and locations so we can resolve IDs to names
+  const [txRecords, itemRecords, locRecords] = await Promise.all([
+    fetchAll(INV_BASE_ID, "Inventory Transactions", {
+      filter:     `{Entered By}='${enteredBy}'`,
+      sortField:  "Transaction Date",
+      sortDir:    "desc",
+      maxRecords: 30
+    }),
+    fetchAll(INV_BASE_ID, "Inventory Items", {}),
+    fetchAll(INV_BASE_ID, "Locations", {})
+  ]);
 
-  const transactions = records.map(r => {
+  const itemMap = {};
+  itemRecords.forEach(r => { itemMap[r.id] = r.fields["Item Name"] || r.id; });
+
+  const locMap = {};
+  locRecords.forEach(r => { locMap[r.id] = r.fields["Location Name"] || r.id; });
+
+  const resolveName = (arr, map) => {
+    if (!Array.isArray(arr) || !arr.length) return "";
+    return arr.map(i => {
+      if (typeof i === "object" && i !== null) return i.name || map[i.id] || i.id || "";
+      return map[String(i)] || String(i);
+    }).filter(Boolean).join(", ");
+  };
+
+  const transactions = txRecords.map(r => {
     const f = r.fields || {};
 
-    // Linked records return as [{id, name}] arrays — extract the name
     const itemArr = f["Inventory Item"] || [];
     const locArr  = f["From Location"]  || [];
-
-    const itemName = Array.isArray(itemArr)
-      ? itemArr.map(i => typeof i === "object" ? (i.name || i.id || "") : String(i)).filter(Boolean).join(", ")
-      : "";
-    const locName = Array.isArray(locArr)
-      ? locArr.map(l => typeof l === "object" ? (l.name || l.id || "") : String(l)).filter(Boolean).join(", ")
-      : "";
 
     let dateStr = "";
     const rawDate = f["Transaction Date"];
@@ -206,8 +217,8 @@ async function handleHistory(params) {
     return {
       id:       r.id,
       date:     dateStr,
-      item:     itemName,
-      location: locName,
+      item:     resolveName(itemArr, itemMap),
+      location: resolveName(locArr, locMap),
       qty:      f["Quantity"] ?? "",
       type:     typeof f["Transaction Type"] === "object" ? (f["Transaction Type"]?.name || "") : (f["Transaction Type"] || ""),
       job:      jobName,

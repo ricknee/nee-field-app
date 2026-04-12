@@ -269,7 +269,7 @@ function renderLogForm() {
     return;
   }
   var jobOpts = allJobs.map(function(j) {
-    return '<option value="' + j.id + '">' + j.name + '</option>';
+    return '<option value="' + j.name + '">' + j.name + '</option>';
   }).join("");
   var locOpts = allLocations.map(function(l) {
     return '<option value="' + l.id + '">' + l.name + '</option>';
@@ -349,12 +349,12 @@ function adjQty(delta) {
 }
 
 async function submitLog() {
-  var jobId  = document.getElementById("sel-job").value;
+  var jobName = document.getElementById("sel-job").value;
   var locId  = document.getElementById("sel-loc").value;
   var qty    = parseFloat(document.getElementById("qty-input").value);
   var notes  = document.getElementById("tx-notes").value.trim();
 
-  if (!jobId)                  { showToast("Please select a job", true); return; }
+  if (!jobName)                { showToast("Please select a job", true); return; }
   if (!locId)                  { showToast("Please select a location", true); return; }
   if (selectedItemIndex < 0)   { showToast("Please select an item", true); return; }
   if (!qty || qty <= 0)        { showToast("Quantity must be greater than 0", true); return; }
@@ -371,7 +371,7 @@ async function submitLog() {
       action:     "logTransaction",
       itemId:     itemId,
       locationId: locId,
-      jobId:      jobId,
+      jobName:    jobName,
       quantity:   qty,
       enteredBy:  currentUser.name,
       notes:      notes || undefined
@@ -398,9 +398,24 @@ async function goHistory() {
     }
     var html = "";
     d.transactions.forEach(function(tx) {
-      var date = tx.date ? new Date(tx.date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
-      html += '<div class="tx-card"><div class="tx-top"><div class="tx-item-name">' + (tx.item || "—") + '</div><div class="tx-qty">×' + tx.qty + '</div></div>';
-      html += '<div class="tx-tags"><span class="tag gold">' + (tx.type || "—") + '</span><span class="tag">' + (tx.location || "—") + '</span><span class="tag">' + date + '</span>';
+      // Date already formatted by server, just use it directly
+      var date = tx.date || "—";
+      var job  = tx.job  || "—";
+      var item = tx.item || "—";
+      var loc  = tx.location || "—";
+      var qty  = tx.qty !== "" ? tx.qty : "—";
+      var type = tx.type || "Use";
+
+      html += '<div class="tx-card">';
+      // Top row: item name + qty
+      html += '<div class="tx-top"><div class="tx-item-name">' + item + '</div><div class="tx-qty">×' + qty + '</div></div>';
+      // Job name prominent
+      html += '<div style="font-size:13px;color:var(--gold);margin:4px 0 6px;font-weight:600;">' + job + '</div>';
+      // Tags row
+      html += '<div class="tx-tags">';
+      html += '<span class="tag gold">' + type + '</span>';
+      html += '<span class="tag">' + loc + '</span>';
+      html += '<span class="tag">' + date + '</span>';
       if (tx.notes) html += '<span class="tag">' + tx.notes + '</span>';
       html += '</div></div>';
     });

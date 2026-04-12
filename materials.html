@@ -284,7 +284,7 @@ function renderLogForm() {
     '<button class="search-clear" onclick="clearItem()">×</button></div><div id="search-drop"></div></div></div>' +
     '<div class="field-group" id="qty-group" style="display:none"><div class="field-label">Quantity</div>' +
     '<div class="qty-row"><button class="qty-btn" onclick="adjQty(-1)">−</button>' +
-    '<input class="field-input qty-input" id="qty-input" type="number" value="1" min="0.01" step="0.01" />' +
+    '<input class="field-input qty-input" id="qty-input" type="number" value="1" min="0.01" step="0.01" onfocus="this.select()" /' +
     '<button class="qty-btn" onclick="adjQty(1)">+</button></div></div>' +
     '<div class="field-group"><div class="field-label">Notes (optional)</div>' +
     '<input class="field-input" id="tx-notes" type="text" placeholder="e.g. 2nd floor panel" /></div>' +
@@ -371,6 +371,7 @@ async function submitLog() {
       action:     "logTransaction",
       itemId:     itemId,
       locationId: locId,
+      jobId:      jobId,
       quantity:   qty,
       enteredBy:  currentUser.name,
       notes:      notes || undefined

@@ -398,7 +398,6 @@ async function goHistory() {
     }
     var html = "";
     d.transactions.forEach(function(tx) {
-      // Date already formatted by server, just use it directly
       var date = tx.date || "—";
       var job  = tx.job  || "—";
       var item = tx.item || "—";
@@ -406,12 +405,10 @@ async function goHistory() {
       var qty  = tx.qty !== "" ? tx.qty : "—";
       var type = tx.type || "Use";
 
-      html += '<div class="tx-card">';
-      // Top row: item name + qty
-      html += '<div class="tx-top"><div class="tx-item-name">' + item + '</div><div class="tx-qty">×' + qty + '</div></div>';
-      // Job name prominent
+      html += '<div class="tx-card" id="tx-' + tx.id + '">';
+      html += '<div class="tx-top"><div class="tx-item-name">' + item + '</div><div style="display:flex;align-items:center;gap:10px;"><div class="tx-qty">×' + qty + '</div>';
+      html += '<button onclick="deleteTx(\'' + tx.id + '\')" style="background:none;border:1px solid rgba(231,76,60,0.4);border-radius:6px;color:var(--red);font-size:11px;padding:4px 8px;cursor:pointer;">Delete</button></div></div>';
       html += '<div style="font-size:13px;color:var(--gold);margin:4px 0 6px;font-weight:600;">' + job + '</div>';
-      // Tags row
       html += '<div class="tx-tags">';
       html += '<span class="tag gold">' + type + '</span>';
       html += '<span class="tag">' + loc + '</span>';
@@ -422,6 +419,18 @@ async function goHistory() {
     body.innerHTML = html;
   } catch(e) {
     body.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
+  }
+}
+
+async function deleteTx(txId) {
+  if (!confirm("Delete this transaction?")) return;
+  try {
+    await apiPost({ action: "deleteTransaction", txId: txId });
+    var el = document.getElementById("tx-" + txId);
+    if (el) el.remove();
+    showToast("Transaction deleted");
+  } catch(e) {
+    showToast("Error: " + e.message, true);
   }
 }
 

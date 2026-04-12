@@ -147,10 +147,10 @@ async function handleLogTransaction(body) {
 
   const fields = {
     "fldGq37LD9YuyCf5e": now,                            // Transaction Date (dateTime)
-    "fldmookC8mdyXxVuw": [{ id: String(itemId) }],       // Inventory Item (linked)
+    "fldmookC8mdyXxVuw": [String(itemId)],       // Inventory Item (linked)
     "fldFQlArrzUnjCTxr": Number(quantity),               // Quantity
     "fldjvIy3X1DJowGsd": "Use",                          // Transaction Type
-    "fldpyLadbcc9NHO6c": [{ id: String(locationId) }],   // From Location (linked)
+    "fldpyLadbcc9NHO6c": [String(locationId)],   // From Location (linked)
     "fldIFffLxtcQTbExd": enteredBy || ""                 // Entered By
   };
 
@@ -158,7 +158,7 @@ async function handleLogTransaction(body) {
 
   const data = await atFetch(INV_BASE_ID, encodeURIComponent("Inventory Transactions"), {
     method: "POST",
-    body: JSON.stringify({ records: [{ fields }] })
+    body: JSON.stringify({ records: [{ fields }], typecast: true })
   });
 
   return resp(200, { ok: true, id: data.records?.[0]?.id });

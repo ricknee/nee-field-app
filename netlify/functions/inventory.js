@@ -263,15 +263,14 @@ async function handleTransfer(body) {
 
 // ── HISTORY ────────────────────────────────────────────────
 async function handleHistory(params) {
-  const { enteredBy } = params || {};
-  if (!enteredBy) return resp(400, { ok: false, error: "Missing enteredBy." });
+  const { enteredBy, all } = params || {};
 
   const [txRecords, itemRecords, locRecords] = await Promise.all([
     fetchAll(API_ROOT_INV, "Inventory Transactions", {
-      filter: `{Entered By}='${enteredBy}'`,
+      filter: all === "1" ? undefined : (enteredBy ? `{Entered By}='${enteredBy}'` : undefined),
       sortField: "Transaction Date",
       sortDir: "desc",
-      maxRecords: 50
+      maxRecords: 200
     }),
     fetchAll(API_ROOT_INV, "Inventory Items", {}),
     fetchAll(API_ROOT_INV, "Locations", {})
@@ -288,11 +287,11 @@ async function handleHistory(params) {
   const locMap = {};
   locRecords.forEach(r => { locMap[r.id] = r.fields["Location Name"] || r.id; });
 
-  const resolve = (arr, map, key) => {
-    if (!Array.isArray(arr) || !arr.length) return key === "name" ? "" : null;
+  const resolveArr = (arr, map) => {
+    if (!Array.isArray(arr) || !arr.length) return "";
     const first = arr[0];
     const id = typeof first === "object" ? first.id : String(first);
-    return map[id]?.[key] ?? map[id] ?? id;
+    return map[id] || id;
   };
 
   const transactions = txRecords.map(r => {
@@ -301,7 +300,7 @@ async function handleHistory(params) {
     const fromArr = f["From Location"]  || [];
     const toArr   = f["To Location"]    || [];
 
-    const itemId = typeof itemArr[0] === "object" ? itemArr[0]?.id : String(itemArr[0] || "");
+    const itemId   = typeof itemArr[0] === "object" ? itemArr[0]?.id : String(itemArr[0] || "");
     const itemData = itemMap[itemId] || {};
 
     let dateStr = "";
@@ -317,18 +316,19 @@ async function handleHistory(params) {
     const qty        = f["Quantity"] ?? 0;
 
     return {
-      id:       r.id,
-      date:     dateStr,
-      item:     itemData.name || itemId,
-      uom:      itemData.uom  || "",
-      cost:     itemData.cost || 0,
-      total:    Math.round((itemData.cost || 0) * qty * 100) / 100,
-      from:     resolve(fromArr, locMap, "name"),
-      to:       resolve(toArr,   locMap, "name"),
+      id:         r.id,
+      date:       dateStr,
+      item:       itemData.name || itemId,
+      uom:        itemData.uom  || "",
+      cost:       itemData.cost || 0,
+      total:      Math.round((itemData.cost || 0) * qty * 100) / 100,
+      from:       resolveArr(fromArr, locMap),
+      to:         resolveArr(toArr,   locMap),
       qty,
-      type:     f["Transaction Type"]?.name || f["Transaction Type"] || "",
-      job:      jobName,
-      notes:    userNotes
+      type:       f["Transaction Type"]?.name || f["Transaction Type"] || "",
+      job:        jobName,
+      notes:      userNotes,
+      enteredBy:  f["Entered By"] || ""
     };
   });
 

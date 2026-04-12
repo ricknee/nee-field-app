@@ -62,20 +62,34 @@ async function fetchAll(baseId, tableName, opts = {}) {
 
 // ── LOGIN ─────────────────────────────────────────────────
 async function handleLogin(body) {
-  const { pin } = body || {};
-  if (!pin) return resp(400, { ok: false, error: "Missing PIN." });
+  const { identifier, pin } = body || {};
+  if (!identifier || !pin) return resp(400, { ok: false, error: "Missing name or PIN." });
 
   const records = await fetchAll(MAIN_BASE_ID, "Employees", {
-    filter: `AND({PIN}='${pin}', {Active}=1)`
+    filter: `AND({Active}=1)`
   });
 
-  if (!records.length) return resp(401, { ok: false, error: "Invalid PIN." });
+  function normalize(v) { return String(v || "").trim().toLowerCase(); }
+  const id = normalize(identifier);
 
-  const f = records[0].fields || {};
+  const match = records.find(r => {
+    const f = r.fields || {};
+    const fullName  = normalize(f["Employee Name"] || "");
+    const firstName = fullName.split(" ")[0];
+    const username  = normalize(f["Username"] || "");
+    const savedPin  = String(f["PIN"] || "").trim();
+    return (fullName === id || firstName === id || username === id)
+      && savedPin !== ""
+      && savedPin === String(pin).trim();
+  });
+
+  if (!match) return resp(401, { ok: false, error: "Invalid name or PIN." });
+
+  const f = match.fields || {};
   return resp(200, {
     ok: true,
     user: {
-      id:   records[0].id,
+      id:   match.id,
       name: f["Employee Name"] || "Unknown",
       role: (f["Role New"] || f["Role"] || "").toLowerCase() === "admin" ? "admin" : "employee"
     }

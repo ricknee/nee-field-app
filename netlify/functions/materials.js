@@ -138,7 +138,7 @@ async function handleItems() {
 
 // ── LOG TRANSACTION ───────────────────────────────────────
 async function handleLogTransaction(body) {
-  const { itemId, locationId, quantity, enteredBy, notes } = body || {};
+  const { itemId, locationId, jobId, quantity, enteredBy, notes } = body || {};
   if (!itemId)    return resp(400, { ok: false, error: "Missing itemId." });
   if (!locationId) return resp(400, { ok: false, error: "Missing locationId." });
   if (!quantity)   return resp(400, { ok: false, error: "Missing quantity." });
@@ -154,6 +154,7 @@ async function handleLogTransaction(body) {
     "fldIFffLxtcQTbExd": enteredBy || ""                 // Entered By
   };
 
+  if (jobId) fields["fld7OG04Sgkp88JsU"] = [String(jobId)];
   if (notes) fields["fldrcq8wSyfz8O3UB"] = notes;
 
   const data = await atFetch(INV_BASE_ID, encodeURIComponent("Inventory Transactions"), {

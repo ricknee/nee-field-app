@@ -111,8 +111,12 @@
   </div>
   <div class="login-form">
     <div>
+      <label class="login-label" for="inp-name">Your Name</label>
+      <input class="login-input" id="inp-name" type="text" placeholder="e.g. Jeff" autocomplete="off" autocapitalize="words" />
+    </div>
+    <div>
       <label class="login-label" for="inp-pin">PIN</label>
-      <input class="login-input" id="inp-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" autofocus />
+      <input class="login-input" id="inp-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" />
     </div>
     <div class="login-error" id="login-error"></div>
     <button class="login-btn" id="login-btn" onclick="doLogin()">Sign In</button>
@@ -192,6 +196,37 @@ var allItems     = [];
 var selectedItemIndex = -1;
 var searchTimer  = null;
 var dataReady    = false;
+var SESSION_KEY  = "nee_materials_session";
+var SESSION_DAYS = 30;
+
+// ── SESSION PERSISTENCE ────────────────────────────────────
+function saveSession(user) {
+  var expiry = Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000;
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ user: user, expiry: expiry })); } catch(e) {}
+}
+function loadSession() {
+  try {
+    var raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    var s = JSON.parse(raw);
+    if (Date.now() > s.expiry) { localStorage.removeItem(SESSION_KEY); return null; }
+    return s.user;
+  } catch(e) { return null; }
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
+}
+
+// Check for saved session on page load
+(function() {
+  var saved = loadSession();
+  if (saved) {
+    currentUser = saved;
+    document.getElementById("user-badge").textContent = currentUser.name;
+    showScreen("home");
+    preload();
+  }
+})();
 
 // LOGIN
 async function doLogin() {
@@ -207,6 +242,7 @@ async function doLogin() {
   try {
     var d = await apiPost({ action: "login", identifier: identifier, pin: pin });
     currentUser = d.user;
+    saveSession(currentUser);
     document.getElementById("user-badge").textContent = currentUser.name;
     showScreen("home");
     preload();
@@ -223,6 +259,7 @@ document.addEventListener("keydown", function(e) {
 
 function logout() {
   currentUser = null;
+  clearSession();
   document.getElementById("inp-name").value = "";
   document.getElementById("inp-pin").value = "";
   document.getElementById("login-error").textContent = "";

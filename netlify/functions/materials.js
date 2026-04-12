@@ -47,7 +47,6 @@ async function fetchAll(baseId, tableName, opts = {}) {
   if (opts.sortField)   params.set("sort[0][field]", opts.sortField);
   if (opts.sortDir)     params.set("sort[0][direction]", opts.sortDir);
   if (opts.maxRecords)  params.set("maxRecords", opts.maxRecords);
-  if (opts.useFieldIds) params.set("returnFieldsByFieldId", "true");
 
   const records = [];
   let offset = null;
@@ -169,24 +168,29 @@ async function handleHistory(params) {
   const { enteredBy } = params || {};
   if (!enteredBy) return resp(400, { ok: false, error: "Missing enteredBy." });
 
-  // Use field IDs so linked record names are returned correctly
   const records = await fetchAll(INV_BASE_ID, "Inventory Transactions", {
     filter:     `{Entered By}='${enteredBy}'`,
-    sortField:  "fldGq37LD9YuyCf5e",
+    sortField:  "Transaction Date",
     sortDir:    "desc",
-    maxRecords: 30,
-    useFieldIds: true
+    maxRecords: 30
   });
 
   const transactions = records.map(r => {
-    const f = r.cellValuesByFieldId || r.fields || {};
+    const f = r.fields || {};
 
-    // Linked record arrays — each item is {id, name}
-    const itemArr = f["fldmookC8mdyXxVuw"] || [];
-    const locArr  = f["fldpyLadbcc9NHO6c"] || [];
+    // Linked records return as [{id, name}] arrays — extract the name
+    const itemArr = f["Inventory Item"] || [];
+    const locArr  = f["From Location"]  || [];
+
+    const itemName = Array.isArray(itemArr)
+      ? itemArr.map(i => typeof i === "object" ? (i.name || i.id || "") : String(i)).filter(Boolean).join(", ")
+      : "";
+    const locName = Array.isArray(locArr)
+      ? locArr.map(l => typeof l === "object" ? (l.name || l.id || "") : String(l)).filter(Boolean).join(", ")
+      : "";
 
     let dateStr = "";
-    const rawDate = f["fldGq37LD9YuyCf5e"];
+    const rawDate = f["Transaction Date"];
     if (rawDate) {
       try {
         const d = new Date(rawDate);
@@ -194,7 +198,7 @@ async function handleHistory(params) {
       } catch(e) { dateStr = rawDate; }
     }
 
-    const notesRaw = f["fldrcq8wSyfz8O3UB"] || "";
+    const notesRaw = f["Notes"] || "";
     const notesParts = notesRaw.split(" | ");
     const jobName   = notesParts[0] || "";
     const userNotes = notesParts.slice(1).join(" | ");
@@ -202,10 +206,10 @@ async function handleHistory(params) {
     return {
       id:       r.id,
       date:     dateStr,
-      item:     Array.isArray(itemArr) ? itemArr.map(i => (typeof i === "object" ? i.name : i) || "").filter(Boolean).join(", ") : "",
-      location: Array.isArray(locArr)  ? locArr.map(l => (typeof l === "object" ? l.name : l) || "").filter(Boolean).join(", ") : "",
-      qty:      f["fldFQlArrzUnjCTxr"] ?? "",
-      type:     f["fldjvIy3X1DJowGsd"]?.name || f["fldjvIy3X1DJowGsd"] || "",
+      item:     itemName,
+      location: locName,
+      qty:      f["Quantity"] ?? "",
+      type:     typeof f["Transaction Type"] === "object" ? (f["Transaction Type"]?.name || "") : (f["Transaction Type"] || ""),
       job:      jobName,
       notes:    userNotes
     };

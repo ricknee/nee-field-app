@@ -266,9 +266,9 @@ async function preload() {
       apiGet("locations"),
       apiGet("items")
     ]);
-    allJobs      = jd.jobs;
-    allLocations = ld.locations;
-    allItems     = id.items;
+    allJobs      = jd.jobs.map(j => ({ ...j, id: String(j.id) }));
+    allLocations = ld.locations.map(l => ({ ...l, id: String(l.id) }));
+    allItems     = id.items.map(i => ({ ...i, id: String(i.id) }));
     dataReady    = true;
   } catch (e) {
     console.error("Preload failed:", e);
@@ -409,8 +409,8 @@ async function submitLog() {
   try {
     await apiPost({
       action:     "logTransaction",
-      itemId:     selectedItem.id,
-      locationId: locId,
+      itemId:     String(selectedItem.id),
+      locationId: String(locId),
       quantity:   qty,
       enteredBy:  currentUser.name,
       notes:      notes || undefined

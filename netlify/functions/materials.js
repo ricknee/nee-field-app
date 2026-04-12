@@ -43,10 +43,11 @@ async function atFetch(baseId, path, options = {}) {
 
 async function fetchAll(baseId, tableName, opts = {}) {
   const params = new URLSearchParams();
-  if (opts.filter)    params.set("filterByFormula", opts.filter);
-  if (opts.sortField) params.set("sort[0][field]", opts.sortField);
-  if (opts.sortDir)   params.set("sort[0][direction]", opts.sortDir);
-  if (opts.maxRecords) params.set("maxRecords", opts.maxRecords);
+  if (opts.filter)      params.set("filterByFormula", opts.filter);
+  if (opts.sortField)   params.set("sort[0][field]", opts.sortField);
+  if (opts.sortDir)     params.set("sort[0][direction]", opts.sortDir);
+  if (opts.maxRecords)  params.set("maxRecords", opts.maxRecords);
+  if (opts.useFieldIds) params.set("returnFieldsByFieldId", "true");
 
   const records = [];
   let offset = null;
@@ -168,21 +169,24 @@ async function handleHistory(params) {
   const { enteredBy } = params || {};
   if (!enteredBy) return resp(400, { ok: false, error: "Missing enteredBy." });
 
+  // Use field IDs so linked record names are returned correctly
   const records = await fetchAll(INV_BASE_ID, "Inventory Transactions", {
     filter:     `{Entered By}='${enteredBy}'`,
-    sortField:  "Transaction Date",
+    sortField:  "fldGq37LD9YuyCf5e",
     sortDir:    "desc",
-    maxRecords: 30
+    maxRecords: 30,
+    useFieldIds: true
   });
 
   const transactions = records.map(r => {
-    const f = r.fields || {};
+    const f = r.cellValuesByFieldId || r.fields || {};
 
-    const itemArr = f["Inventory Item"] || [];
-    const locArr  = f["From Location"]  || [];
+    // Linked record arrays — each item is {id, name}
+    const itemArr = f["fldmookC8mdyXxVuw"] || [];
+    const locArr  = f["fldpyLadbcc9NHO6c"] || [];
 
     let dateStr = "";
-    const rawDate = f["Transaction Date"];
+    const rawDate = f["fldGq37LD9YuyCf5e"];
     if (rawDate) {
       try {
         const d = new Date(rawDate);
@@ -190,24 +194,32 @@ async function handleHistory(params) {
       } catch(e) { dateStr = rawDate; }
     }
 
-    const notesRaw = f["Notes"] || "";
+    const notesRaw = f["fldrcq8wSyfz8O3UB"] || "";
     const notesParts = notesRaw.split(" | ");
-    const jobName  = notesParts[0] || "";
+    const jobName   = notesParts[0] || "";
     const userNotes = notesParts.slice(1).join(" | ");
 
     return {
       id:       r.id,
       date:     dateStr,
-      item:     Array.isArray(itemArr) ? itemArr.map(i => (typeof i === "object" ? i.name : i) || "").filter(Boolean).join(", ") : String(itemArr || ""),
-      location: Array.isArray(locArr)  ? locArr.map(l => (typeof l === "object" ? l.name : l) || "").filter(Boolean).join(", ") : String(locArr  || ""),
-      qty:      f["Quantity"] ?? "",
-      type:     f["Transaction Type"]?.name || f["Transaction Type"] || "",
+      item:     Array.isArray(itemArr) ? itemArr.map(i => (typeof i === "object" ? i.name : i) || "").filter(Boolean).join(", ") : "",
+      location: Array.isArray(locArr)  ? locArr.map(l => (typeof l === "object" ? l.name : l) || "").filter(Boolean).join(", ") : "",
+      qty:      f["fldFQlArrzUnjCTxr"] ?? "",
+      type:     f["fldjvIy3X1DJowGsd"]?.name || f["fldjvIy3X1DJowGsd"] || "",
       job:      jobName,
       notes:    userNotes
     };
   });
 
   return resp(200, { ok: true, transactions });
+}
+
+// ── DELETE TRANSACTION ────────────────────────────────────
+async function handleDeleteTransaction(body) {
+  const { txId } = body || {};
+  if (!txId) return resp(400, { ok: false, error: "Missing txId." });
+  await atFetch(INV_BASE_ID, `${encodeURIComponent("Inventory Transactions")}/${txId}`, { method: "DELETE" });
+  return resp(200, { ok: true, deleted: txId });
 }
 
 // ── ROUTER ────────────────────────────────────────────────
@@ -228,8 +240,9 @@ export async function handler(event) {
 
     if (event.httpMethod === "POST") {
       const body = event.body ? JSON.parse(event.body) : {};
-      if (body.action === "login")          return await handleLogin(body);
-      if (body.action === "logTransaction") return await handleLogTransaction(body);
+      if (body.action === "login")             return await handleLogin(body);
+      if (body.action === "logTransaction")    return await handleLogTransaction(body);
+      if (body.action === "deleteTransaction") return await handleDeleteTransaction(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

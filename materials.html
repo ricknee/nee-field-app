@@ -111,12 +111,8 @@
   </div>
   <div class="login-form">
     <div>
-      <label class="login-label" for="inp-name">Your Name</label>
-      <input class="login-input" id="inp-name" type="text" placeholder="e.g. Jeff" autocomplete="off" />
-    </div>
-    <div>
       <label class="login-label" for="inp-pin">PIN</label>
-      <input class="login-input" id="inp-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" />
+      <input class="login-input" id="inp-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" autofocus />
     </div>
     <div class="login-error" id="login-error"></div>
     <button class="login-btn" id="login-btn" onclick="doLogin()">Sign In</button>
@@ -396,25 +392,33 @@ async function goHistory() {
       body.innerHTML = '<div class="empty">No transactions logged yet.</div>';
       return;
     }
-    var html = "";
+    // Group by job
+    var groups = {}, groupOrder = [];
     d.transactions.forEach(function(tx) {
-      var date = tx.date || "—";
-      var job  = tx.job  || "—";
-      var item = tx.item || "—";
-      var loc  = tx.location || "—";
-      var qty  = tx.qty !== "" ? tx.qty : "—";
-      var type = tx.type || "Use";
-
-      html += '<div class="tx-card" id="tx-' + tx.id + '">';
-      html += '<div class="tx-top"><div class="tx-item-name">' + item + '</div><div style="display:flex;align-items:center;gap:10px;"><div class="tx-qty">×' + qty + '</div>';
-      html += '<button onclick="deleteTx(\'' + tx.id + '\')" style="background:none;border:1px solid rgba(231,76,60,0.4);border-radius:6px;color:var(--red);font-size:11px;padding:4px 8px;cursor:pointer;">Delete</button></div></div>';
-      html += '<div style="font-size:13px;color:var(--gold);margin:4px 0 6px;font-weight:600;">' + job + '</div>';
-      html += '<div class="tx-tags">';
-      html += '<span class="tag gold">' + type + '</span>';
-      html += '<span class="tag">' + loc + '</span>';
-      html += '<span class="tag">' + date + '</span>';
-      if (tx.notes) html += '<span class="tag">' + tx.notes + '</span>';
-      html += '</div></div>';
+      var key = tx.job || "No Job";
+      if (!groups[key]) { groups[key] = []; groupOrder.push(key); }
+      groups[key].push(tx);
+    });
+    var html = "";
+    groupOrder.forEach(function(jobName) {
+      html += '<div style="margin-bottom:20px;">';
+      html += '<div style="font-size:12px;font-weight:700;color:var(--gold);letter-spacing:0.08em;text-transform:uppercase;padding:0 4px 8px;border-bottom:1px solid var(--border);margin-bottom:10px;">' + jobName + '</div>';
+      groups[jobName].forEach(function(tx) {
+        html += '<div class="tx-card" id="tx-' + tx.id + '" style="margin-bottom:8px;">';
+        html += '<div class="tx-top">';
+        html += '<div class="tx-item-name">' + (tx.item || "—") + '</div>';
+        html += '<div style="display:flex;align-items:center;gap:10px;">';
+        html += '<div class="tx-qty">×' + (tx.qty !== "" ? tx.qty : "—") + '</div>';
+        html += '<button onclick="deleteTx(\'' + tx.id + '\')" style="background:none;border:1px solid rgba(231,76,60,0.4);border-radius:6px;color:var(--red);font-size:11px;padding:4px 8px;cursor:pointer;">Delete</button>';
+        html += '</div></div>';
+        html += '<div class="tx-tags" style="margin-top:6px;">';
+        html += '<span class="tag gold">' + (tx.type || "Use") + '</span>';
+        html += '<span class="tag">' + (tx.location || "—") + '</span>';
+        html += '<span class="tag">' + (tx.date || "—") + '</span>';
+        if (tx.notes) html += '<span class="tag">' + tx.notes + '</span>';
+        html += '</div></div>';
+      });
+      html += '</div>';
     });
     body.innerHTML = html;
   } catch(e) {

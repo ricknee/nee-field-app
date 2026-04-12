@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>NEE Inventory</title>
+<style>
+:root {
+  --gold:#E8A020; --gold-dk:#B87D10; --navy:#0D1B2A; --navy-mid:#162436;
+  --navy-lt:#1E3048; --slate:#2A4060; --text:#F0F4F8; --dim:#8BA0B8;
+  --muted:#4A6480; --green:#2ECC71; --red:#E74C3C; --blue:#3498DB;
+  --border:rgba(255,255,255,0.08); --r:12px;
+}
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM Sans',system-ui,sans-serif;overscroll-behavior:none;}
+.screen{display:none;flex-direction:column;height:100vh;height:100dvh;}
+.screen.active{display:flex;}
+
+/* LOGIN */
+#s-login{align-items:center;justify-content:center;gap:20px;padding:24px;}
+.logo-brand{font-size:12px;letter-spacing:.2em;color:var(--gold);font-weight:600;text-transform:uppercase;text-align:center;}
+.logo-h1{font-size:26px;font-weight:700;text-align:center;}
+.logo-h1 span{color:var(--gold);}
+.login-form{width:100%;max-width:320px;display:flex;flex-direction:column;gap:10px;}
+.field-lbl{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:3px;display:block;}
+.field-inp{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:16px;padding:14px 16px;width:100%;outline:none;transition:border-color .15s;}
+.field-inp:focus{border-color:var(--gold);}
+
+/* Name picker */
+.name-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.name-btn{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;font-weight:500;padding:12px 8px;cursor:pointer;transition:all .15s;text-align:center;}
+.name-btn:active,.name-btn.sel{background:var(--gold);border-color:var(--gold);color:var(--navy);}
+.pin-row{display:flex;gap:8px;align-items:center;}
+.pin-inp{flex:1;}
+.err-txt{color:var(--red);font-size:13px;text-align:center;min-height:18px;}
+.primary-btn{background:var(--gold);border:none;border-radius:var(--r);color:var(--navy);font-family:'DM Sans',sans-serif;font-size:16px;font-weight:700;padding:16px;width:100%;cursor:pointer;transition:all .15s;}
+.primary-btn:active{background:var(--gold-dk);transform:scale(.98);}
+.primary-btn:disabled{opacity:.4;cursor:not-allowed;transform:none;}
+
+/* HEADER */
+.hdr{background:var(--navy-mid);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;gap:10px;flex-shrink:0;}
+.hdr-back{background:none;border:none;color:var(--gold);font-size:24px;cursor:pointer;padding:2px 6px;line-height:1;}
+.hdr h2{font-size:16px;font-weight:600;flex:1;}
+.hdr-badge{font-size:11px;color:var(--dim);background:var(--slate);padding:3px 10px;border-radius:20px;white-space:nowrap;}
+.hdr-out{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:4px 8px;}
+
+/* HOME */
+.home-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
+.sec-lbl{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:-4px;}
+.big-btn{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:var(--r);padding:18px 16px;cursor:pointer;display:flex;align-items:center;gap:14px;transition:all .15s;text-align:left;width:100%;}
+.big-btn:active{background:var(--slate);transform:scale(.98);}
+.big-btn .ico{font-size:26px;width:44px;text-align:center;flex-shrink:0;}
+.big-btn .lbl{font-size:16px;font-weight:600;color:var(--text);}
+.big-btn .sub{font-size:12px;color:var(--dim);margin-top:2px;}
+.big-btn.gold{background:var(--gold);border-color:var(--gold);}
+.big-btn.gold .lbl{color:var(--navy);}
+.big-btn.gold .sub{color:rgba(13,27,42,.7);}
+.big-btn.gold:active{background:var(--gold-dk);}
+.loc-pill{display:inline-flex;align-items:center;gap:6px;background:var(--slate);border-radius:20px;padding:5px 12px;font-size:12px;color:var(--dim);cursor:pointer;border:none;}
+.loc-pill span{color:var(--gold);font-weight:600;}
+
+/* LOCATION PICKER */
+.loc-grid{display:flex;flex-direction:column;gap:8px;padding:16px;}
+.loc-item{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:14px 16px;cursor:pointer;transition:all .15s;}
+.loc-item:active,.loc-item.sel{border-color:var(--gold);background:rgba(232,160,32,.1);}
+.loc-item .loc-name{font-size:15px;font-weight:600;}
+.loc-item .loc-type{font-size:12px;color:var(--dim);margin-top:2px;}
+
+/* LOG SCREEN */
+.log-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
+.field-group{display:flex;flex-direction:column;gap:5px;}
+.field-sel{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:15px;padding:13px 16px;width:100%;appearance:none;outline:none;transition:border-color .15s;}
+.field-sel:focus{border-color:var(--gold);}
+.field-sel option{background:var(--navy-mid);}
+
+/* Search / scan */
+.scan-row{display:flex;gap:8px;}
+.scan-btn{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;color:var(--gold);font-size:20px;width:50px;height:50px;cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+.scan-btn:active{background:var(--slate);}
+.search-drop{background:var(--navy-lt);border:1.5px solid var(--gold);border-radius:10px;overflow:hidden;margin-top:4px;max-height:220px;overflow-y:auto;}
+.drop-item{padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer;}
+.drop-item:last-child{border-bottom:none;}
+.drop-item:active{background:var(--slate);}
+.drop-name{font-size:14px;font-weight:600;}
+.drop-meta{font-size:11px;color:var(--dim);margin-top:1px;}
+.sel-item-box{background:rgba(232,160,32,.1);border:1.5px solid var(--gold);border-radius:10px;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.sel-item-name{font-size:14px;font-weight:600;color:var(--gold);}
+.sel-item-meta{font-size:11px;color:var(--dim);margin-top:1px;}
+.chg-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--dim);font-size:11px;padding:5px 8px;cursor:pointer;flex-shrink:0;}
+
+/* Qty */
+.qty-row{display:flex;align-items:center;gap:10px;}
+.qty-pm{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:22px;width:50px;height:50px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.qty-pm:active{background:var(--slate);}
+.qty-inp{flex:1;text-align:center;font-size:26px;font-weight:700;background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;color:var(--text);font-family:'DM Sans',sans-serif;padding:10px;outline:none;}
+.qty-inp:focus{border-color:var(--gold);}
+
+/* Cart */
+.cart-section{background:var(--navy-mid);border-radius:var(--r);overflow:hidden;}
+.cart-hdr{padding:10px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);}
+.cart-hdr-lbl{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);}
+.cart-count{font-size:12px;color:var(--gold);font-weight:600;}
+.cart-item{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+.cart-item:last-child{border-bottom:none;}
+.cart-item-name{flex:1;font-size:14px;font-weight:500;}
+.cart-item-qty{font-size:14px;font-weight:700;color:var(--gold);white-space:nowrap;}
+.cart-item-del{background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:2px 6px;line-height:1;}
+.cart-item-del:active{color:var(--red);}
+.cart-total{padding:10px 14px;display:flex;justify-content:space-between;align-items:center;background:rgba(232,160,32,.08);}
+.cart-total-lbl{font-size:12px;color:var(--dim);}
+.cart-total-val{font-size:16px;font-weight:700;color:var(--gold);}
+
+/* Add to cart btn */
+.add-cart-btn{background:var(--navy-lt);border:1.5px solid var(--gold);border-radius:var(--r);color:var(--gold);font-family:'DM Sans',sans-serif;font-size:15px;font-weight:600;padding:14px;width:100%;cursor:pointer;transition:all .15s;}
+.add-cart-btn:active{background:rgba(232,160,32,.15);}
+.add-cart-btn:disabled{opacity:.4;cursor:not-allowed;}
+
+/* TYPE TABS */
+.type-tabs{display:flex;gap:6px;flex-wrap:wrap;}
+.type-tab{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:20px;color:var(--dim);font-family:'DM Sans',sans-serif;font-size:12px;font-weight:600;padding:6px 14px;cursor:pointer;transition:all .15s;}
+.type-tab.sel{background:var(--gold);border-color:var(--gold);color:var(--navy);}
+
+/* HISTORY */
+.hist-body{flex:1;overflow-y:auto;padding:16px;}
+.job-group{margin-bottom:20px;}
+.job-group-hdr{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);padding:0 4px 8px;border-bottom:1px solid var(--border);margin-bottom:8px;display:flex;justify-content:space-between;align-items:baseline;}
+.job-total{font-size:12px;color:var(--dim);}
+.tx-card{background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:6px;}
+.tx-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
+.tx-name{font-size:14px;font-weight:600;flex:1;}
+.tx-right{display:flex;align-items:center;gap:8px;flex-shrink:0;}
+.tx-qty{font-size:14px;font-weight:700;color:var(--gold);}
+.tx-price{font-size:12px;color:var(--dim);}
+.tx-del{background:none;border:1px solid rgba(231,76,60,.35);border-radius:5px;color:var(--red);font-size:11px;padding:3px 7px;cursor:pointer;}
+.tx-tags{display:flex;gap:5px;flex-wrap:wrap;margin-top:6px;}
+.tag{font-size:10px;background:var(--slate);color:var(--dim);padding:3px 8px;border-radius:20px;}
+.tag.gold{background:rgba(232,160,32,.15);color:var(--gold);}
+
+/* Camera scanner overlay */
+.scan-overlay{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;}
+.scan-overlay video{width:100%;max-width:360px;border-radius:12px;}
+.scan-frame{width:260px;height:180px;border:2px solid var(--gold);border-radius:12px;position:relative;}
+.scan-frame::before,.scan-frame::after{content:'';position:absolute;width:24px;height:24px;border-color:var(--gold);border-style:solid;}
+.scan-frame::before{top:-2px;left:-2px;border-width:3px 0 0 3px;border-radius:4px 0 0 0;}
+.scan-frame::after{bottom:-2px;right:-2px;border-width:0 3px 3px 0;border-radius:0 0 4px 0;}
+.scan-cancel{background:var(--navy-lt);border:1px solid var(--border);border-radius:20px;color:var(--text);font-family:'DM Sans',sans-serif;font-size:14px;padding:10px 24px;cursor:pointer;}
+.scan-hint{font-size:13px;color:var(--dim);text-align:center;}
+
+/* Misc */
+.loading{text-align:center;padding:40px 20px;color:var(--dim);font-size:13px;}
+.spinner{display:inline-block;width:22px;height:22px;border:2px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin .7s linear infinite;margin-bottom:10px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.empty{text-align:center;padding:40px 20px;color:var(--muted);font-size:13px;}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--green);color:#fff;font-weight:600;font-size:13px;padding:11px 22px;border-radius:30px;transition:transform .3s ease;z-index:200;white-space:nowrap;pointer-events:none;}
+.toast.err{background:var(--red);}
+.toast.show{transform:translateX(-50%) translateY(0);}
+::-webkit-scrollbar{width:3px;}
+::-webkit-scrollbar-thumb{background:var(--slate);border-radius:2px;}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="s-login" class="screen active">
+  <div><div class="logo-brand">Northeastern Electric</div><h1 class="logo-h1">NEE <span>Inventory</span></h1></div>
+  <div class="login-form">
+    <div>
+      <label class="field-lbl">Who are you?</label>
+      <div class="name-grid" id="name-grid"><div class="loading"><div class="spinner"></div></div></div>
+    </div>
+    <div>
+      <label class="field-lbl">PIN</label>
+      <input class="field-inp" id="inp-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" />
+    </div>
+    <div class="err-txt" id="login-err"></div>
+    <button class="primary-btn" id="login-btn" onclick="doLogin()">Sign In</button>
+  </div>
+</div>
+
+<!-- HOME -->
+<div id="s-home" class="screen">
+  <div class="hdr">
+    <h2>NEE Inventory</h2>
+    <div>
+      <button class="loc-pill" onclick="goPickLocation()" id="loc-pill">📍 <span id="loc-pill-name">Set location</span></button>
+    </div>
+    <div class="hdr-badge" id="hdr-user">—</div>
+    <button class="hdr-out" onclick="logout()">Out</button>
+  </div>
+  <div class="home-body">
+    <div class="sec-lbl">Log materials</div>
+    <button class="big-btn gold" onclick="goLog('Use')">
+      <div class="ico">📦</div><div><div class="lbl">Use on Job</div><div class="sub">Log items pulled for a job</div></div>
+    </button>
+    <button class="big-btn" onclick="goLog('Return')">
+      <div class="ico">↩️</div><div><div class="lbl">Return Items</div><div class="sub">Put items back</div></div>
+    </button>
+    <div class="sec-lbl">Stock & transfers</div>
+    <button class="big-btn" onclick="goReceive()">
+      <div class="ico">🚚</div><div><div class="lbl">Receive Stock</div><div class="sub">Add items from vendor</div></div>
+    </button>
+    <button class="big-btn" onclick="goTransfer()">
+      <div class="ico">🔄</div><div><div class="lbl">Transfer</div><div class="sub">Move items between locations</div></div>
+    </button>
+    <div class="sec-lbl">View</div>
+    <button class="big-btn" onclick="goHistory()">
+      <div class="ico">📋</div><div><div class="lbl">Recent Logs</div><div class="sub">Your last 50 transactions</div></div>
+    </button>
+  </div>
+</div>
+
+<!-- LOCATION PICKER -->
+<div id="s-location" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Your Location</h2></div>
+  <div id="loc-list" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;">
+    <div class="loading"><div class="spinner"></div><br>Loading…</div>
+  </div>
+</div>
+
+<!-- LOG (Use / Return) -->
+<div id="s-log" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2 id="log-title">Use on Job</h2></div>
+  <div class="log-body" id="log-body"></div>
+</div>
+
+<!-- RECEIVE -->
+<div id="s-receive" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Receive Stock</h2></div>
+  <div class="log-body" id="recv-body"></div>
+</div>
+
+<!-- TRANSFER -->
+<div id="s-transfer" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Transfer Items</h2></div>
+  <div class="log-body" id="xfr-body"></div>
+</div>
+
+<!-- HISTORY -->
+<div id="s-history" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Recent Logs</h2></div>
+  <div class="hist-body" id="hist-body"><div class="loading"><div class="spinner"></div><br>Loading…</div></div>
+</div>
+
+<!-- CAMERA SCANNER -->
+<div id="scan-overlay" class="scan-overlay" style="display:none;">
+  <div class="scan-frame"></div>
+  <video id="scan-video" autoplay playsinline muted></video>
+  <div class="scan-hint">Point camera at barcode or QR code</div>
+  <button class="scan-cancel" onclick="stopScan()">Cancel</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// API
+// ═══════════════════════════════════════════════════════════
+const API = "/.netlify/functions/inventory";
+
+async function apiGet(action, params) {
+  const qs = new URLSearchParams({ action, ...(params || {}) });
+  const r  = await fetch(`${API}?${qs}`);
+  const d  = await r.json();
+  if (!d.ok) throw new Error(d.error || "API error");
+  return d;
+}
+async function apiPost(body) {
+  const r = await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+  const d = await r.json();
+  if (!d.ok) throw new Error(d.error || "API error");
+  return d;
+}
+
+// ═══════════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════════
+var currentUser     = null;
+var currentLocation = null; // {id, name, type}
+var allJobs         = [];
+var allLocations    = [];
+var allItems        = [];
+var dataReady       = false;
+var logMode         = "Use"; // Use | Return
+var cart            = [];    // [{itemId, itemName, uom, cost, qty, notes}]
+var selectedItem    = null;
+var searchTimer     = null;
+var scanCallback    = null;
+var scanStream      = null;
+var barcodeDetector = null;
+
+const SESSION_KEY  = "nee_inv_v2";
+const SESSION_DAYS = 30;
+const LOC_KEY      = "nee_inv_loc";
+
+// ═══════════════════════════════════════════════════════════
+// SESSION
+// ═══════════════════════════════════════════════════════════
+function saveSession(user) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify({ user, expiry: Date.now() + SESSION_DAYS*86400000 })); } catch(e){}
+}
+function loadSession() {
+  try {
+    var s = JSON.parse(localStorage.getItem(SESSION_KEY) || "null");
+    if (!s || Date.now() > s.expiry) { localStorage.removeItem(SESSION_KEY); return null; }
+    return s.user;
+  } catch(e) { return null; }
+}
+function clearSession() { try { localStorage.removeItem(SESSION_KEY); } catch(e){} }
+function saveLocation(loc) { try { localStorage.setItem(LOC_KEY, JSON.stringify(loc)); } catch(e){} }
+function loadLocation() { try { return JSON.parse(localStorage.getItem(LOC_KEY) || "null"); } catch(e){ return null; } }
+
+// ═══════════════════════════════════════════════════════════
+// STARTUP
+// ═══════════════════════════════════════════════════════════
+(async function init() {
+  // Load employees for name picker
+  try {
+    var d = await apiGet("employees");
+    var grid = document.getElementById("name-grid");
+    grid.innerHTML = d.employees.map(function(e) {
+      var firstName = e.name.split(" ")[0];
+      return '<button class="name-btn" onclick="pickName(this,\'' + e.name.replace(/'/g,"\\'") + '\')">' + firstName + '</button>';
+    }).join("");
+  } catch(ex) {
+    document.getElementById("name-grid").innerHTML = '<input class="field-inp" id="inp-name" type="text" placeholder="Your name" autocomplete="off" />';
+  }
+
+  // Check saved session
+  var saved = loadSession();
+  if (saved) {
+    currentUser     = saved;
+    currentLocation = loadLocation();
+    applyUser();
+    showScreen("home");
+    preload();
+  }
+})();
+
+function pickName(btn, name) {
+  document.querySelectorAll(".name-btn").forEach(function(b){ b.classList.remove("sel"); });
+  btn.classList.add("sel");
+  btn.dataset.name = name;
+}
+function getSelectedName() {
+  var sel = document.querySelector(".name-btn.sel");
+  if (sel) return sel.dataset.name;
+  var inp = document.getElementById("inp-name");
+  return inp ? inp.value.trim() : "";
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════
+async function doLogin() {
+  var identifier = getSelectedName();
+  var pin        = document.getElementById("inp-pin").value.trim();
+  var errEl      = document.getElementById("login-err");
+  var btn        = document.getElementById("login-btn");
+  errEl.textContent = "";
+  if (!identifier) { errEl.textContent = "Please select your name."; return; }
+  if (!pin)        { errEl.textContent = "Please enter your PIN."; return; }
+  btn.disabled = true; btn.textContent = "Signing in…";
+  try {
+    var d = await apiPost({ action:"login", identifier, pin });
+    currentUser = d.user;
+    currentLocation = loadLocation();
+    saveSession(currentUser);
+    applyUser();
+    showScreen("home");
+    preload();
+  } catch(ex) {
+    errEl.textContent = ex.message || "Invalid name or PIN.";
+    btn.disabled = false; btn.textContent = "Sign In";
+  }
+}
+
+function applyUser() {
+  document.getElementById("hdr-user").textContent = currentUser.name.split(" ")[0];
+  updateLocPill();
+}
+
+function updateLocPill() {
+  var nameEl = document.getElementById("loc-pill-name");
+  if (nameEl) nameEl.textContent = currentLocation ? currentLocation.name : "Set location";
+}
+
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Enter" && document.getElementById("s-login").classList.contains("active")) doLogin();
+});
+
+function logout() {
+  currentUser = null; currentLocation = null;
+  clearSession();
+  allJobs = []; allLocations = []; allItems = []; dataReady = false; cart = [];
+  document.getElementById("inp-pin").value = "";
+  document.querySelectorAll(".name-btn").forEach(function(b){ b.classList.remove("sel"); });
+  document.getElementById("login-err").textContent = "";
+  document.getElementById("login-btn").disabled = false;
+  document.getElementById("login-btn").textContent = "Sign In";
+  showScreen("login");
+}
+
+// ═══════════════════════════════════════════════════════════
+// PRELOAD
+// ═══════════════════════════════════════════════════════════
+async function preload() {
+  try {
+    var results = await Promise.all([apiGet("jobs"), apiGet("locations"), apiGet("items")]);
+    allJobs      = results[0].jobs;
+    allLocations = results[1].locations;
+    allItems     = results[2].items;
+    dataReady    = true;
+  } catch(ex) { console.error("Preload failed:", ex); }
+}
+
+// ═══════════════════════════════════════════════════════════
+// SCREENS
+// ═══════════════════════════════════════════════════════════
+function showScreen(id) {
+  document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
+  document.getElementById("s-" + id).classList.add("active");
+}
+function goHome() { showScreen("home"); }
+
+// ═══════════════════════════════════════════════════════════
+// LOCATION PICKER
+// ═══════════════════════════════════════════════════════════
+function goPickLocation() {
+  showScreen("location");
+  var list = document.getElementById("loc-list");
+  if (!dataReady) {
+    list.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    var t = setInterval(function(){ if (dataReady) { clearInterval(t); renderLocList(); } }, 300);
+    return;
+  }
+  renderLocList();
+}
+function renderLocList() {
+  var list = document.getElementById("loc-list");
+  list.innerHTML = allLocations.map(function(l) {
+    var sel = currentLocation && currentLocation.id === l.id ? " sel" : "";
+    return '<div class="loc-item' + sel + '" onclick="pickLocation(\'' + l.id + '\',\'' + l.name.replace(/'/g,"\\'") + '\',\'' + l.type + '\')">' +
+           '<div class="loc-name">' + l.name + '</div><div class="loc-type">' + l.type + '</div></div>';
+  }).join("");
+}
+function pickLocation(id, name, type) {
+  currentLocation = { id, name, type };
+  saveLocation(currentLocation);
+  updateLocPill();
+  goHome();
+  showToast("Location set: " + name);
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOG (Use / Return)
+// ═══════════════════════════════════════════════════════════
+function goLog(mode) {
+  logMode = mode || "Use";
+  cart = [];
+  selectedItem = null;
+  document.getElementById("log-title").textContent = mode === "Return" ? "Return Items" : "Use on Job";
+  showScreen("log");
+  renderLogForm();
+}
+
+function renderLogForm() {
+  var body = document.getElementById("log-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    var t = setInterval(function(){ if(dataReady){ clearInterval(t); renderLogForm(); } }, 300);
+    return;
+  }
+
+  var jobOpts = allJobs.map(function(j){ return '<option value="'+j.name+'">'+j.name+'</option>'; }).join("");
+  var fromLoc = currentLocation ? currentLocation.name : "—";
+
+  body.innerHTML =
+    '<div class="field-group"><div class="field-lbl">Job</div>' +
+    '<select class="field-sel" id="log-job"><option value="">— Select job —</option>' + jobOpts + '</select></div>' +
+
+    '<div class="field-group"><div class="field-lbl">From Location</div>' +
+    '<div style="background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:13px 16px;font-size:14px;color:var(--gold);font-weight:600;">' + fromLoc + '</div></div>' +
+
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+    '<div id="item-area">' + renderItemSearch() + '</div></div>' +
+
+    '<div class="field-group" id="qty-area" style="display:none"><div class="field-lbl">Quantity</div>' +
+    '<div class="qty-row">' +
+    '<button class="qty-pm" onclick="adjQty(-1)">−</button>' +
+    '<input class="qty-inp" id="log-qty" type="number" value="1" min="0.01" step="1" onfocus="this.select()" />' +
+    '<button class="qty-pm" onclick="adjQty(1)">+</button>' +
+    '</div></div>' +
+
+    '<button class="add-cart-btn" id="add-cart-btn" onclick="addToCart()" disabled>+ Add to Cart</button>' +
+
+    '<div id="cart-area"></div>' +
+
+    '<button class="primary-btn" id="submit-btn" onclick="submitCart()" style="display:none">Submit ' + (logMode === "Return" ? "Return" : "All Items") + '</button>' +
+    '<div style="height:24px"></div>';
+}
+
+function renderItemSearch() {
+  return '<div class="scan-row">' +
+    '<input class="field-inp" id="item-search" type="text" placeholder="Search items…" autocomplete="off" oninput="onItemSearch()" style="flex:1;" />' +
+    '<button class="scan-btn" onclick="startScan(\'item\')" title="Scan barcode">⬛</button>' +
+    '</div><div id="search-drop"></div>';
+}
+
+function onItemSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function() {
+    var q = (document.getElementById("item-search")?.value || "").trim().toLowerCase();
+    var drop = document.getElementById("search-drop");
+    if (!drop) return;
+    if (!q) { drop.innerHTML = ""; return; }
+    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toLowerCase().includes(q); }).slice(0,8);
+    if (!hits.length) { drop.innerHTML = '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>'; return; }
+    drop.innerHTML = '<div class="search-drop">' + hits.map(function(i){
+      return '<div class="drop-item" onclick="pickItem(\'' + i.id + '\')">' +
+        '<div class="drop-name">' + i.name + '</div>' +
+        '<div class="drop-meta">' + [i.cat, i.uom].filter(Boolean).join(" · ") + '</div></div>';
+    }).join("") + '</div>';
+  }, 120);
+}
+
+function pickItem(id) {
+  selectedItem = allItems.find(function(i){ return i.id === id; });
+  if (!selectedItem) return;
+  var area = document.getElementById("item-area");
+  area.innerHTML = '<div class="sel-item-box">' +
+    '<div><div class="sel-item-name">' + selectedItem.name + '</div>' +
+    '<div class="sel-item-meta">' + [selectedItem.cat, selectedItem.uom].filter(Boolean).join(" · ") + '</div></div>' +
+    '<button class="chg-btn" onclick="clearItem()">Change</button></div>';
+  document.getElementById("qty-area").style.display = "block";
+  document.getElementById("add-cart-btn").disabled = false;
+  setTimeout(function(){ document.getElementById("log-qty")?.focus(); }, 50);
+}
+
+function clearItem() {
+  selectedItem = null;
+  document.getElementById("item-area").innerHTML = renderItemSearch();
+  document.getElementById("qty-area").style.display = "none";
+  document.getElementById("add-cart-btn").disabled = true;
+}
+
+function adjQty(d) {
+  var el = document.getElementById("log-qty");
+  if (!el) return;
+  el.value = Math.max(0.01, +(parseFloat(el.value || 1) + d).toFixed(2));
+}
+
+function addToCart() {
+  if (!selectedItem) return;
+  var qty = parseFloat(document.getElementById("log-qty")?.value || 1);
+  if (!qty || qty <= 0) { showToast("Quantity must be > 0", true); return; }
+
+  // Check if item already in cart — if so add qty
+  var existing = cart.find(function(c){ return c.itemId === selectedItem.id; });
+  if (existing) {
+    existing.qty += qty;
+  } else {
+    cart.push({ itemId: selectedItem.id, itemName: selectedItem.name, uom: selectedItem.uom, cost: selectedItem.cost, qty: qty });
+  }
+
+  renderCart();
+  clearItem();
+  // Reset qty
+  var qtyEl = document.getElementById("log-qty");
+  if (qtyEl) qtyEl.value = 1;
+}
+
+function removeFromCart(idx) {
+  cart.splice(idx, 1);
+  renderCart();
+}
+
+function renderCart() {
+  var area = document.getElementById("cart-area");
+  var submitBtn = document.getElementById("submit-btn");
+  if (!area) return;
+  if (!cart.length) { area.innerHTML = ""; if(submitBtn) submitBtn.style.display = "none"; return; }
+
+  var isAdmin = currentUser && currentUser.role === "admin";
+  var totalCost = cart.reduce(function(s,c){ return s + (c.cost||0)*c.qty; }, 0);
+
+  var html = '<div class="cart-section" style="margin-top:4px;">' +
+    '<div class="cart-hdr"><span class="cart-hdr-lbl">Cart</span><span class="cart-count">' + cart.length + ' item' + (cart.length>1?'s':'') + '</span></div>';
+
+  cart.forEach(function(c, i) {
+    html += '<div class="cart-item">' +
+      '<div class="cart-item-name">' + c.itemName + (c.uom ? ' <span style="color:var(--muted);font-size:11px;">(' + c.uom + ')</span>' : '') + '</div>' +
+      '<div class="cart-item-qty">×' + c.qty + '</div>' +
+      (isAdmin ? '<div style="font-size:11px;color:var(--muted);">$' + ((c.cost||0)*c.qty).toFixed(2) + '</div>' : '') +
+      '<button class="cart-item-del" onclick="removeFromCart(' + i + ')">×</button>' +
+      '</div>';
+  });
+
+  if (isAdmin && totalCost > 0) {
+    html += '<div class="cart-total"><span class="cart-total-lbl">Total cost</span><span class="cart-total-val">$' + totalCost.toFixed(2) + '</span></div>';
+  }
+  html += '</div>';
+  area.innerHTML = html;
+  if (submitBtn) submitBtn.style.display = "block";
+}
+
+async function submitCart() {
+  if (!cart.length) { showToast("Cart is empty", true); return; }
+  if (!currentLocation) { showToast("Please set your location first", true); goPickLocation(); return; }
+
+  var jobName = document.getElementById("log-job")?.value || "";
+  var btn = document.getElementById("submit-btn");
+  btn.disabled = true; btn.textContent = "Submitting…";
+
+  var lines = cart.map(function(c){ return { itemId: c.itemId, qty: logMode==="Return" ? -Math.abs(c.qty) : c.qty, type: logMode }; });
+
+  try {
+    await apiPost({ action:"submitCart", lines, jobName, locationId: currentLocation.id, enteredBy: currentUser.name });
+    showToast("✓ " + cart.length + " item" + (cart.length>1?"s":"") + " logged!");
+    cart = [];
+    goHome();
+  } catch(ex) {
+    showToast("Error: " + ex.message, true);
+    btn.disabled = false; btn.textContent = "Submit";
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// RECEIVE
+// ═══════════════════════════════════════════════════════════
+function goReceive() {
+  showScreen("receive");
+  renderReceiveForm();
+}
+
+function renderReceiveForm() {
+  var body = document.getElementById("recv-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    var t = setInterval(function(){ if(dataReady){ clearInterval(t); renderReceiveForm(); } }, 300);
+    return;
+  }
+  var locOpts = allLocations.map(function(l){ return '<option value="'+l.id+'">'+l.name+'</option>'; }).join("");
+  var defLoc  = currentLocation ? ' <option value="'+currentLocation.id+'" selected>'+currentLocation.name+'</option>' : "";
+
+  body.innerHTML =
+    '<div class="field-group"><div class="field-lbl">Receiving Into Location</div>' +
+    '<select class="field-sel" id="recv-loc"><option value="">— Select location —</option>' + defLoc + locOpts + '</select></div>' +
+
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+    '<div id="recv-item-area">' + renderItemSearchFor("recv") + '</div></div>' +
+
+    '<div id="recv-qty-price" style="display:none">' +
+    '<div class="field-group"><div class="field-lbl">Quantity Received</div>' +
+    '<div class="qty-row"><button class="qty-pm" onclick="adjRecvQty(-1)">−</button>' +
+    '<input class="qty-inp" id="recv-qty" type="number" value="1" min="1" step="1" onfocus="this.select()" />' +
+    '<button class="qty-pm" onclick="adjRecvQty(1)">+</button></div></div>' +
+
+    '<div class="field-group"><div class="field-lbl">Unit Cost (optional — updates item price)</div>' +
+    '<input class="field-inp" id="recv-cost" type="number" step="0.01" placeholder="e.g. 1.25" /></div>' +
+    '</div>' +
+
+    '<div class="field-group"><div class="field-lbl">Notes (optional)</div>' +
+    '<input class="field-inp" id="recv-notes" type="text" placeholder="e.g. CED order April 12" /></div>' +
+
+    '<button class="primary-btn" id="recv-btn" onclick="submitReceive()" style="margin-top:4px;">Receive Stock</button>' +
+    '<div style="height:24px"></div>';
+}
+
+function renderItemSearchFor(prefix) {
+  return '<div class="scan-row">' +
+    '<input class="field-inp" id="' + prefix + '-search" type="text" placeholder="Search items…" autocomplete="off" oninput="onItemSearchFor(\'' + prefix + '\')" style="flex:1;" />' +
+    '<button class="scan-btn" onclick="startScan(\'' + prefix + '\')" title="Scan barcode">⬛</button>' +
+    '</div><div id="' + prefix + '-drop"></div>';
+}
+
+var recvItem = null;
+function onItemSearchFor(prefix) {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function() {
+    var q = (document.getElementById(prefix + "-search")?.value || "").trim().toLowerCase();
+    var drop = document.getElementById(prefix + "-drop");
+    if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
+    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toLowerCase().includes(q); }).slice(0,8);
+    drop.innerHTML = hits.length ? '<div class="search-drop">' + hits.map(function(i){
+      return '<div class="drop-item" onclick="pickItemFor(\'' + prefix + '\',\'' + i.id + '\')">' +
+        '<div class="drop-name">' + i.name + '</div>' +
+        '<div class="drop-meta">' + [i.cat,i.uom].filter(Boolean).join(" · ") + (i.cost ? " · $" + i.cost.toFixed(2) : "") + '</div></div>';
+    }).join("") + '</div>' : '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>';
+  }, 120);
+}
+
+function pickItemFor(prefix, id) {
+  var item = allItems.find(function(i){ return i.id===id; });
+  if (!item) return;
+  if (prefix === "recv") {
+    recvItem = item;
+    document.getElementById("recv-item-area").innerHTML =
+      '<div class="sel-item-box"><div><div class="sel-item-name">' + item.name + '</div>' +
+      '<div class="sel-item-meta">' + [item.cat,item.uom].filter(Boolean).join(" · ") + '</div></div>' +
+      '<button class="chg-btn" onclick="document.getElementById(\'recv-item-area\').innerHTML=renderItemSearchFor(\'recv\');recvItem=null;document.getElementById(\'recv-qty-price\').style.display=\'none\';">Change</button></div>';
+    document.getElementById("recv-qty-price").style.display = "block";
+    if (item.cost) document.getElementById("recv-cost").value = item.cost.toFixed(2);
+    document.getElementById("recv-qty").focus();
+  } else if (prefix === "xfr") {
+    xfrItem = item;
+    document.getElementById("xfr-item-area").innerHTML =
+      '<div class="sel-item-box"><div><div class="sel-item-name">' + item.name + '</div>' +
+      '<div class="sel-item-meta">' + [item.cat,item.uom].filter(Boolean).join(" · ") + '</div></div>' +
+      '<button class="chg-btn" onclick="document.getElementById(\'xfr-item-area\').innerHTML=renderItemSearchFor(\'xfr\');xfrItem=null;">Change</button></div>';
+    document.getElementById("xfr-qty-area").style.display = "block";
+    document.getElementById("xfr-qty").focus();
+  }
+}
+
+function adjRecvQty(d) {
+  var el = document.getElementById("recv-qty");
+  if (el) el.value = Math.max(1, parseInt(el.value||1) + d);
+}
+
+async function submitReceive() {
+  if (!recvItem) { showToast("Please select an item", true); return; }
+  var locId = document.getElementById("recv-loc")?.value;
+  if (!locId) { showToast("Please select a location", true); return; }
+  var qty     = parseFloat(document.getElementById("recv-qty")?.value || 1);
+  var cost    = parseFloat(document.getElementById("recv-cost")?.value || 0);
+  var notes   = document.getElementById("recv-notes")?.value.trim();
+  var btn     = document.getElementById("recv-btn");
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    await apiPost({ action:"receive", itemId:recvItem.id, locationId:locId, qty, unitCost:cost||undefined, enteredBy:currentUser.name, notes:notes||undefined });
+    showToast("✓ Stock received!");
+    recvItem = null;
+    goHome();
+  } catch(ex) {
+    showToast("Error: " + ex.message, true);
+    btn.disabled = false; btn.textContent = "Receive Stock";
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// TRANSFER
+// ═══════════════════════════════════════════════════════════
+var xfrItem = null;
+function goTransfer() {
+  xfrItem = null;
+  showScreen("transfer");
+  renderTransferForm();
+}
+function renderTransferForm() {
+  var body = document.getElementById("xfr-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    var t = setInterval(function(){ if(dataReady){ clearInterval(t); renderTransferForm(); } }, 300);
+    return;
+  }
+  var locOpts = allLocations.map(function(l){ return '<option value="'+l.id+'">'+l.name+'</option>'; }).join("");
+  var defFrom = currentLocation ? '<option value="'+currentLocation.id+'" selected>'+currentLocation.name+'</option>' : "";
+
+  body.innerHTML =
+    '<div class="field-group"><div class="field-lbl">From Location</div>' +
+    '<select class="field-sel" id="xfr-from"><option value="">— Select —</option>' + defFrom + locOpts + '</select></div>' +
+
+    '<div class="field-group"><div class="field-lbl">To Location</div>' +
+    '<select class="field-sel" id="xfr-to"><option value="">— Select —</option>' + locOpts + '</select></div>' +
+
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+    '<div id="xfr-item-area">' + renderItemSearchFor("xfr") + '</div></div>' +
+
+    '<div class="field-group" id="xfr-qty-area" style="display:none"><div class="field-lbl">Quantity</div>' +
+    '<div class="qty-row"><button class="qty-pm" onclick="adjXfrQty(-1)">−</button>' +
+    '<input class="qty-inp" id="xfr-qty" type="number" value="1" min="1" step="1" onfocus="this.select()" />' +
+    '<button class="qty-pm" onclick="adjXfrQty(1)">+</button></div></div>' +
+
+    '<div class="field-group"><div class="field-lbl">Notes (optional)</div>' +
+    '<input class="field-inp" id="xfr-notes" type="text" placeholder="" /></div>' +
+
+    '<button class="primary-btn" id="xfr-btn" onclick="submitTransfer()" style="margin-top:4px;">Transfer Items</button>' +
+    '<div style="height:24px"></div>';
+}
+function adjXfrQty(d) {
+  var el = document.getElementById("xfr-qty");
+  if (el) el.value = Math.max(1, parseInt(el.value||1) + d);
+}
+async function submitTransfer() {
+  if (!xfrItem) { showToast("Please select an item", true); return; }
+  var fromId = document.getElementById("xfr-from")?.value;
+  var toId   = document.getElementById("xfr-to")?.value;
+  if (!fromId) { showToast("Please select From location", true); return; }
+  if (!toId)   { showToast("Please select To location", true); return; }
+  if (fromId === toId) { showToast("From and To must be different", true); return; }
+  var qty   = parseFloat(document.getElementById("xfr-qty")?.value || 1);
+  var notes = document.getElementById("xfr-notes")?.value.trim();
+  var btn   = document.getElementById("xfr-btn");
+  btn.disabled = true; btn.textContent = "Transferring…";
+  try {
+    await apiPost({ action:"transfer", itemId:xfrItem.id, fromLocationId:fromId, toLocationId:toId, qty, enteredBy:currentUser.name, notes:notes||undefined });
+    showToast("✓ Transfer complete!");
+    xfrItem = null;
+    goHome();
+  } catch(ex) {
+    showToast("Error: " + ex.message, true);
+    btn.disabled = false; btn.textContent = "Transfer Items";
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// HISTORY
+// ═══════════════════════════════════════════════════════════
+async function goHistory() {
+  showScreen("history");
+  var body = document.getElementById("hist-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+  try {
+    var d = await apiGet("history", { enteredBy: currentUser.name });
+    if (!d.transactions.length) { body.innerHTML = '<div class="empty">No transactions yet.</div>'; return; }
+
+    var isAdmin = currentUser.role === "admin";
+    var groups = {}, order = [];
+    d.transactions.forEach(function(tx) {
+      var k = tx.job || "No Job";
+      if (!groups[k]) { groups[k] = []; order.push(k); }
+      groups[k].push(tx);
+    });
+
+    var html = "";
+    order.forEach(function(job) {
+      var txs = groups[job];
+      var jobTotal = txs.reduce(function(s,t){ return s + (t.total||0); }, 0);
+      html += '<div class="job-group">';
+      html += '<div class="job-group-hdr"><span>' + job + '</span>' +
+        (isAdmin && jobTotal > 0 ? '<span class="job-total">$' + jobTotal.toFixed(2) + '</span>' : '') + '</div>';
+      txs.forEach(function(tx) {
+        html += '<div class="tx-card" id="tx-' + tx.id + '">';
+        html += '<div class="tx-top"><div class="tx-name">' + tx.item + (tx.uom ? ' <span style="color:var(--muted);font-size:11px;">('+tx.uom+')</span>' : '') + '</div>';
+        html += '<div class="tx-right"><div class="tx-qty">×' + Math.abs(tx.qty) + '</div>';
+        if (isAdmin && tx.cost > 0) html += '<div class="tx-price">$' + tx.total.toFixed(2) + '</div>';
+        html += '<button class="tx-del" onclick="deleteTx(\'' + tx.id + '\')">Del</button></div></div>';
+        html += '<div class="tx-tags">';
+        html += '<span class="tag gold">' + tx.type + '</span>';
+        if (tx.from) html += '<span class="tag">' + tx.from + '</span>';
+        if (tx.to)   html += '<span class="tag">→ ' + tx.to + '</span>';
+        html += '<span class="tag">' + tx.date + '</span>';
+        if (tx.notes) html += '<span class="tag">' + tx.notes + '</span>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+    });
+    body.innerHTML = html;
+  } catch(ex) {
+    body.innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
+  }
+}
+
+async function deleteTx(id) {
+  if (!confirm("Delete this transaction?")) return;
+  try {
+    await apiPost({ action:"delete", txId:id });
+    var el = document.getElementById("tx-" + id);
+    if (el) el.remove();
+    showToast("Deleted");
+  } catch(ex) { showToast("Error: " + ex.message, true); }
+}
+
+// ═══════════════════════════════════════════════════════════
+// CAMERA SCANNER
+// ═══════════════════════════════════════════════════════════
+var scanTarget = null; // "item" | "recv" | "xfr"
+
+async function startScan(target) {
+  scanTarget = target;
+  if (!("BarcodeDetector" in window)) {
+    showToast("Camera scanning not supported on this browser", true);
+    return;
+  }
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    var video = document.getElementById("scan-video");
+    video.srcObject = scanStream;
+    document.getElementById("scan-overlay").style.display = "flex";
+    barcodeDetector = new BarcodeDetector({ formats: ["code_128","code_39","ean_13","ean_8","upc_a","upc_e","qr_code","data_matrix"] });
+    scanLoop();
+  } catch(ex) {
+    showToast("Camera error: " + ex.message, true);
+  }
+}
+
+function scanLoop() {
+  if (!scanStream) return;
+  var video = document.getElementById("scan-video");
+  barcodeDetector.detect(video).then(function(codes) {
+    if (codes.length > 0) {
+      var val = codes[0].rawValue;
+      stopScan();
+      handleScanResult(val);
+    } else {
+      requestAnimationFrame(scanLoop);
+    }
+  }).catch(function() { requestAnimationFrame(scanLoop); });
+}
+
+function stopScan() {
+  if (scanStream) { scanStream.getTracks().forEach(function(t){ t.stop(); }); scanStream = null; }
+  document.getElementById("scan-overlay").style.display = "none";
+}
+
+function handleScanResult(val) {
+  // Find item by barcode
+  var item = allItems.find(function(i){ return i.barcode && i.barcode.toString() === val.toString(); });
+  if (item) {
+    if (scanTarget === "item")  pickItem(item.id);
+    else if (scanTarget === "recv") pickItemFor("recv", item.id);
+    else if (scanTarget === "xfr")  pickItemFor("xfr", item.id);
+    showToast("✓ Scanned: " + item.name);
+  } else {
+    // Try as job QR
+    if (scanTarget === "item") {
+      var jobSel = document.getElementById("log-job");
+      if (jobSel) {
+        for (var i=0; i<jobSel.options.length; i++) {
+          if (jobSel.options[i].value.includes(val)) { jobSel.value = jobSel.options[i].value; showToast("✓ Job set"); return; }
+        }
+      }
+    }
+    showToast("Barcode not found: " + val, true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// TOAST
+// ═══════════════════════════════════════════════════════════
+var toastTimer;
+function showToast(msg, isErr) {
+  var t = document.getElementById("toast");
+  t.textContent = msg;
+  t.className = "toast" + (isErr ? " err" : "");
+  clearTimeout(toastTimer);
+  requestAnimationFrame(function(){ t.classList.add("show"); });
+  toastTimer = setTimeout(function(){ t.classList.remove("show"); }, 2800);
+}
+</script>
+</body>
+</html>

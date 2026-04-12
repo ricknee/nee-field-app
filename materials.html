@@ -6,28 +6,18 @@
 <title>NEE Materials</title>
 <style>
   :root {
-    --gold: #E8A020;
-    --gold-dark: #B87D10;
-    --navy: #0D1B2A;
-    --navy-mid: #162436;
-    --navy-light: #1E3048;
-    --slate: #2A4060;
-    --text: #F0F4F8;
-    --text-dim: #8BA0B8;
-    --text-muted: #4A6480;
-    --green: #2ECC71;
-    --red: #E74C3C;
-    --border: rgba(255,255,255,0.08);
-    --radius: 12px;
+    --gold: #E8A020; --gold-dark: #B87D10; --navy: #0D1B2A; --navy-mid: #162436;
+    --navy-light: #1E3048; --slate: #2A4060; --text: #F0F4F8; --text-dim: #8BA0B8;
+    --text-muted: #4A6480; --green: #2ECC71; --red: #E74C3C;
+    --border: rgba(255,255,255,0.08); --radius: 12px;
   }
-  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   html, body { height: 100%; background: var(--navy); color: var(--text); font-family: 'DM Sans', system-ui, sans-serif; overscroll-behavior: none; }
-
   .screen { display: none; flex-direction: column; height: 100vh; height: 100dvh; }
   .screen.active { display: flex; }
 
-  /* ── LOGIN ── */
+  /* LOGIN */
   #screen-login { align-items: center; justify-content: center; gap: 24px; padding: 24px; }
   .login-logo { text-align: center; }
   .login-logo .brand { font-size: 13px; letter-spacing: 0.2em; color: var(--gold); font-weight: 600; text-transform: uppercase; }
@@ -37,20 +27,19 @@
   .login-label { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 4px; display: block; }
   .login-input { background: var(--navy-light); border: 1.5px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 16px; padding: 14px 16px; width: 100%; outline: none; transition: border-color 0.15s; }
   .login-input:focus { border-color: var(--gold); }
-  .login-input.error { border-color: var(--red); }
   .login-btn { background: var(--gold); border: none; border-radius: var(--radius); color: var(--navy); font-family: 'DM Sans', sans-serif; font-size: 17px; font-weight: 700; padding: 16px; width: 100%; cursor: pointer; margin-top: 4px; transition: all 0.15s; }
   .login-btn:active { background: var(--gold-dark); transform: scale(0.98); }
   .login-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
   .login-error { color: var(--red); font-size: 14px; text-align: center; min-height: 20px; }
 
-  /* ── HEADER ── */
+  /* HEADER */
   .app-header { background: var(--navy-mid); border-bottom: 1px solid var(--border); padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
   .back-btn { background: none; border: none; color: var(--gold); font-size: 22px; cursor: pointer; padding: 4px; line-height: 1; }
   .app-header h2 { font-size: 17px; font-weight: 600; flex: 1; }
   .user-badge { font-size: 12px; color: var(--text-dim); background: var(--slate); padding: 4px 10px; border-radius: 20px; }
   .logout-btn { background: none; border: none; color: var(--text-muted); font-size: 13px; cursor: pointer; padding: 4px 8px; }
 
-  /* ── HOME ── */
+  /* HOME */
   .home-body { flex: 1; overflow-y: auto; padding: 20px 16px; display: flex; flex-direction: column; gap: 16px; }
   .section-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-muted); margin-bottom: -8px; }
   .big-btn { background: var(--navy-light); border: 1.5px solid var(--border); border-radius: var(--radius); padding: 20px; cursor: pointer; display: flex; align-items: center; gap: 16px; transition: all 0.15s; text-align: left; width: 100%; }
@@ -63,7 +52,7 @@
   .big-btn.primary .sub { color: var(--navy-mid); opacity: 0.75; }
   .big-btn.primary:active { background: var(--gold-dark); }
 
-  /* ── LOG FORM ── */
+  /* LOG FORM */
   .log-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
   .field-group { display: flex; flex-direction: column; gap: 6px; }
   .field-label { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted); }
@@ -72,15 +61,15 @@
   .field-select option { background: var(--navy-mid); }
   .search-wrap { position: relative; }
   .search-clear { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; padding: 4px; line-height: 1; }
-  .search-results { background: var(--navy-light); border: 1.5px solid var(--gold); border-radius: 10px; overflow: hidden; margin-top: 4px; max-height: 260px; overflow-y: auto; }
+  .search-results-box { background: var(--navy-light); border: 1.5px solid var(--gold); border-radius: 10px; overflow: hidden; margin-top: 4px; max-height: 260px; overflow-y: auto; }
   .result-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
   .result-item:last-child { border-bottom: none; }
   .result-item:active { background: var(--slate); }
-  .result-item .r-name { font-size: 15px; font-weight: 600; }
-  .result-item .r-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .r-name { font-size: 15px; font-weight: 600; }
+  .r-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
   .selected-item-box { background: rgba(232,160,32,0.1); border: 1.5px solid var(--gold); border-radius: 10px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .selected-item-box .s-name { font-size: 15px; font-weight: 600; color: var(--gold); }
-  .selected-item-box .s-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .s-name { font-size: 15px; font-weight: 600; color: var(--gold); }
+  .s-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
   .change-btn { background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text-dim); font-size: 12px; padding: 6px 10px; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
   .qty-row { display: flex; align-items: center; gap: 12px; }
   .qty-btn { background: var(--navy-light); border: 1.5px solid var(--border); border-radius: 8px; color: var(--text); font-size: 22px; width: 52px; height: 52px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
@@ -90,7 +79,7 @@
   .submit-btn:active { background: var(--gold-dark); transform: scale(0.98); }
   .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
-  /* ── HISTORY ── */
+  /* HISTORY */
   .history-body { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   .tx-card { background: var(--navy-light); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
   .tx-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
@@ -100,7 +89,7 @@
   .tag { font-size: 11px; background: var(--slate); color: var(--text-dim); padding: 3px 8px; border-radius: 20px; }
   .tag.gold { background: rgba(232,160,32,0.15); color: var(--gold); }
 
-  /* ── UTILS ── */
+  /* UTILS */
   .loading { text-align: center; padding: 40px 20px; color: var(--text-dim); font-size: 14px; }
   .spinner { display: inline-block; width: 24px; height: 24px; border: 2px solid var(--border); border-top-color: var(--gold); border-radius: 50%; animation: spin 0.7s linear infinite; margin-bottom: 12px; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -114,7 +103,7 @@
 </head>
 <body>
 
-<!-- ── LOGIN ────────────────────────────────────────────── -->
+<!-- LOGIN -->
 <div id="screen-login" class="screen active">
   <div class="login-logo">
     <div class="brand">Northeastern Electric</div>
@@ -134,7 +123,7 @@
   </div>
 </div>
 
-<!-- ── HOME ─────────────────────────────────────────────── -->
+<!-- HOME -->
 <div id="screen-home" class="screen">
   <div class="app-header">
     <h2>NEE Materials</h2>
@@ -145,22 +134,16 @@
     <div class="section-label">Actions</div>
     <button class="big-btn primary" onclick="goLog()">
       <div class="icon">📦</div>
-      <div>
-        <div class="label">Log Material Use</div>
-        <div class="sub">Record items used on a job</div>
-      </div>
+      <div><div class="label">Log Material Use</div><div class="sub">Record items used on a job</div></div>
     </button>
     <button class="big-btn" onclick="goHistory()">
       <div class="icon">📋</div>
-      <div>
-        <div class="label">My Recent Logs</div>
-        <div class="sub">View your last 30 transactions</div>
-      </div>
+      <div><div class="label">My Recent Logs</div><div class="sub">View your last 30 transactions</div></div>
     </button>
   </div>
 </div>
 
-<!-- ── LOG ──────────────────────────────────────────────── -->
+<!-- LOG -->
 <div id="screen-log" class="screen">
   <div class="app-header">
     <button class="back-btn" onclick="goHome()">‹</button>
@@ -171,7 +154,7 @@
   </div>
 </div>
 
-<!-- ── HISTORY ───────────────────────────────────────────── -->
+<!-- HISTORY -->
 <div id="screen-history" class="screen">
   <div class="app-header">
     <button class="back-btn" onclick="goHome()">‹</button>
@@ -187,10 +170,10 @@
 <script>
 const API = "/.netlify/functions/materials";
 
-async function apiGet(action, params = {}) {
-  const qs = new URLSearchParams({ action, ...params });
-  const r  = await fetch(`${API}?${qs}`);
-  const d  = await r.json();
+async function apiGet(action, params) {
+  const qs = new URLSearchParams(Object.assign({ action }, params || {}));
+  const r = await fetch(API + "?" + qs);
+  const d = await r.json();
   if (!d.ok) throw new Error(d.error || "API error");
   return d;
 }
@@ -206,51 +189,46 @@ async function apiPost(body) {
   return d;
 }
 
-// ── STATE ──────────────────────────────────────────────────
-let currentUser  = null;
-let allJobs      = [], allLocations = [], allItems = [];
-let selectedItem = null;
-let searchTimer  = null;
-let dataReady    = false;
+var currentUser  = null;
+var allJobs      = [];
+var allLocations = [];
+var allItems     = [];
+var selectedItemIndex = -1;
+var searchTimer  = null;
+var dataReady    = false;
 
-// ── LOGIN ──────────────────────────────────────────────────
+// LOGIN
 async function doLogin() {
-  const identifier = document.getElementById("inp-name").value.trim();
-  const pin        = document.getElementById("inp-pin").value.trim();
-  const errEl      = document.getElementById("login-error");
-  const btn        = document.getElementById("login-btn");
-
+  var identifier = document.getElementById("inp-name").value.trim();
+  var pin        = document.getElementById("inp-pin").value.trim();
+  var errEl      = document.getElementById("login-error");
+  var btn        = document.getElementById("login-btn");
   errEl.textContent = "";
   if (!identifier) { errEl.textContent = "Please enter your name."; return; }
   if (!pin)        { errEl.textContent = "Please enter your PIN.";  return; }
-
-  btn.disabled    = true;
+  btn.disabled = true;
   btn.textContent = "Signing in…";
-
   try {
-    const d = await apiPost({ action: "login", identifier, pin });
+    var d = await apiPost({ action: "login", identifier: identifier, pin: pin });
     currentUser = d.user;
     document.getElementById("user-badge").textContent = currentUser.name;
     showScreen("home");
     preload();
-  } catch (e) {
-    errEl.textContent   = e.message || "Invalid name or PIN.";
-    btn.disabled        = false;
-    btn.textContent     = "Sign In";
+  } catch(e) {
+    errEl.textContent = e.message || "Invalid name or PIN.";
+    btn.disabled = false;
+    btn.textContent = "Sign In";
   }
 }
 
-// Allow Enter key to submit
-document.addEventListener("keydown", e => {
-  if (e.key === "Enter" && document.getElementById("screen-login").classList.contains("active")) {
-    doLogin();
-  }
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Enter" && document.getElementById("screen-login").classList.contains("active")) doLogin();
 });
 
 function logout() {
   currentUser = null;
   document.getElementById("inp-name").value = "";
-  document.getElementById("inp-pin").value  = "";
+  document.getElementById("inp-pin").value = "";
   document.getElementById("login-error").textContent = "";
   document.getElementById("login-btn").disabled = false;
   document.getElementById("login-btn").textContent = "Sign In";
@@ -258,215 +236,188 @@ function logout() {
   showScreen("login");
 }
 
-// ── PRELOAD ────────────────────────────────────────────────
+// PRELOAD
 async function preload() {
   try {
-    const [jd, ld, id] = await Promise.all([
-      apiGet("jobs"),
-      apiGet("locations"),
-      apiGet("items")
-    ]);
-    allJobs      = jd.jobs.map(j => ({ ...j, id: String(j.id) }));
-    allLocations = ld.locations.map(l => ({ ...l, id: String(l.id) }));
-    allItems     = id.items.map(i => ({ ...i, id: String(i.id) }));
+    var results = await Promise.all([apiGet("jobs"), apiGet("locations"), apiGet("items")]);
+    allJobs      = results[0].jobs;
+    allLocations = results[1].locations;
+    allItems     = results[2].items;
     dataReady    = true;
-  } catch (e) {
-    console.error("Preload failed:", e);
-  }
+  } catch(e) { console.error("Preload failed:", e); }
 }
 
-// ── SCREENS ────────────────────────────────────────────────
+// SCREENS
 function showScreen(id) {
-  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.querySelectorAll(".screen").forEach(function(s) { s.classList.remove("active"); });
   document.getElementById("screen-" + id).classList.add("active");
 }
 function goHome() { showScreen("home"); }
 
-// ── LOG SCREEN ─────────────────────────────────────────────
+// LOG SCREEN
 function goLog() {
-  selectedItem = null;
+  selectedItemIndex = -1;
   showScreen("log");
   renderLogForm();
 }
 
 function renderLogForm() {
-  const body = document.getElementById("log-body");
+  var body = document.getElementById("log-body");
   if (!dataReady) {
     body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading data…</div>';
     setTimeout(renderLogForm, 600);
     return;
   }
-  body.innerHTML = `
-    <div class="field-group">
-      <div class="field-label">Job</div>
-      <select class="field-select" id="sel-job">
-        <option value="">— Select a job —</option>
-        ${allJobs.map(j => `<option value="${j.id}">${j.name}</option>`).join("")}
-      </select>
-    </div>
-    <div class="field-group">
-      <div class="field-label">From Location</div>
-      <select class="field-select" id="sel-loc">
-        <option value="">— Select location —</option>
-        ${allLocations.map(l => `<option value="${l.id}">${l.name}</option>`).join("")}
-      </select>
-    </div>
-    <div class="field-group">
-      <div class="field-label">Item</div>
-      <div id="item-area">
-        <div class="search-wrap">
-          <input class="field-input" id="item-search" type="text" placeholder="Type to search items…" autocomplete="off" oninput="onSearch()" />
-          <button class="search-clear" onclick="clearItem()">×</button>
-        </div>
-        <div id="search-drop"></div>
-      </div>
-    </div>
-    <div class="field-group" id="qty-group" style="display:none">
-      <div class="field-label">Quantity</div>
-      <div class="qty-row">
-        <button class="qty-btn" onclick="adjQty(-1)">−</button>
-        <input class="field-input qty-input" id="qty-input" type="number" value="1" min="0.01" step="0.01" />
-        <button class="qty-btn" onclick="adjQty(1)">+</button>
-      </div>
-    </div>
-    <div class="field-group">
-      <div class="field-label">Notes (optional)</div>
-      <input class="field-input" id="tx-notes" type="text" placeholder="e.g. 2nd floor panel" />
-    </div>
-    <button class="submit-btn" id="submit-btn" onclick="submitLog()" disabled>Log Material</button>
-    <div style="height:24px"></div>
-  `;
+  var jobOpts = allJobs.map(function(j) {
+    return '<option value="' + j.id + '">' + j.name + '</option>';
+  }).join("");
+  var locOpts = allLocations.map(function(l) {
+    return '<option value="' + l.id + '">' + l.name + '</option>';
+  }).join("");
+  body.innerHTML =
+    '<div class="field-group"><div class="field-label">Job</div>' +
+    '<select class="field-select" id="sel-job"><option value="">— Select a job —</option>' + jobOpts + '</select></div>' +
+    '<div class="field-group"><div class="field-label">From Location</div>' +
+    '<select class="field-select" id="sel-loc"><option value="">— Select location —</option>' + locOpts + '</select></div>' +
+    '<div class="field-group"><div class="field-label">Item</div><div id="item-area">' +
+    '<div class="search-wrap"><input class="field-input" id="item-search" type="text" placeholder="Type to search items…" autocomplete="off" oninput="onSearch()" />' +
+    '<button class="search-clear" onclick="clearItem()">×</button></div><div id="search-drop"></div></div></div>' +
+    '<div class="field-group" id="qty-group" style="display:none"><div class="field-label">Quantity</div>' +
+    '<div class="qty-row"><button class="qty-btn" onclick="adjQty(-1)">−</button>' +
+    '<input class="field-input qty-input" id="qty-input" type="number" value="1" min="0.01" step="0.01" />' +
+    '<button class="qty-btn" onclick="adjQty(1)">+</button></div></div>' +
+    '<div class="field-group"><div class="field-label">Notes (optional)</div>' +
+    '<input class="field-input" id="tx-notes" type="text" placeholder="e.g. 2nd floor panel" /></div>' +
+    '<button class="submit-btn" id="submit-btn" onclick="submitLog()" disabled>Log Material</button>' +
+    '<div style="height:24px"></div>';
 }
 
 function onSearch() {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    const q    = (document.getElementById("item-search")?.value || "").trim().toLowerCase();
-    const drop = document.getElementById("search-drop");
-    if (!drop) return;
+  searchTimer = setTimeout(function() {
+    var searchEl = document.getElementById("item-search");
+    var drop = document.getElementById("search-drop");
+    if (!searchEl || !drop) return;
+    var q = searchEl.value.trim().toLowerCase();
     if (!q) { drop.innerHTML = ""; return; }
-    const hits = allItems.filter(i => i.name.toLowerCase().includes(q)).slice(0, 8);
+    var hits = allItems.filter(function(i) { return i.name.toLowerCase().indexOf(q) !== -1; }).slice(0, 8);
     if (!hits.length) {
-      drop.innerHTML = '<div class="search-results"><div class="empty" style="padding:12px">No items found</div></div>';
+      drop.innerHTML = '<div class="search-results-box"><div class="empty" style="padding:12px">No items found</div></div>';
       return;
     }
-    drop.innerHTML = `<div class="search-results">${hits.map(i =>
-      `<div class="result-item" onclick="pickItem('${i.id}')">
-        <div class="r-name">${i.name}</div>
-        <div class="r-meta">${[i.cat, i.uom, i.cost ? "$" + i.cost.toFixed(2) : ""].filter(Boolean).join(" · ")}</div>
-      </div>`).join("")}</div>`;
+    var html = '<div class="search-results-box">';
+    hits.forEach(function(item) {
+      var idx = allItems.indexOf(item);
+      var meta = [item.cat, item.uom].filter(Boolean).join(" · ");
+      html += '<div class="result-item" onclick="pickItemByIndex(' + idx + ')">';
+      html += '<div class="r-name">' + item.name + '</div>';
+      if (meta) html += '<div class="r-meta">' + meta + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    drop.innerHTML = html;
   }, 150);
 }
 
-function pickItem(id) {
-  selectedItem = allItems.find(i => i.id === id);
-  if (!selectedItem) return;
-  document.getElementById("item-area").innerHTML = `
-    <div class="selected-item-box">
-      <div>
-        <div class="s-name">${selectedItem.name}</div>
-        <div class="s-meta">${[selectedItem.cat, selectedItem.uom].filter(Boolean).join(" · ")}</div>
-      </div>
-      <button class="change-btn" onclick="clearItem()">Change</button>
-    </div>`;
+function pickItemByIndex(idx) {
+  if (idx < 0 || idx >= allItems.length) return;
+  selectedItemIndex = idx;
+  var item = allItems[idx];
+  var meta = [item.cat, item.uom].filter(Boolean).join(" · ");
+  document.getElementById("item-area").innerHTML =
+    '<div class="selected-item-box"><div>' +
+    '<div class="s-name">' + item.name + '</div>' +
+    (meta ? '<div class="s-meta">' + meta + '</div>' : '') +
+    '</div><button class="change-btn" onclick="clearItem()">Change</button></div>';
   document.getElementById("qty-group").style.display = "block";
   document.getElementById("submit-btn").disabled = false;
 }
 
 function clearItem() {
-  selectedItem = null;
-  document.getElementById("item-area").innerHTML = `
-    <div class="search-wrap">
-      <input class="field-input" id="item-search" type="text" placeholder="Type to search items…" autocomplete="off" oninput="onSearch()" />
-      <button class="search-clear" onclick="clearItem()">×</button>
-    </div>
-    <div id="search-drop"></div>`;
+  selectedItemIndex = -1;
+  document.getElementById("item-area").innerHTML =
+    '<div class="search-wrap"><input class="field-input" id="item-search" type="text" placeholder="Type to search items…" autocomplete="off" oninput="onSearch()" />' +
+    '<button class="search-clear" onclick="clearItem()">×</button></div><div id="search-drop"></div>';
   document.getElementById("qty-group").style.display = "none";
   document.getElementById("submit-btn").disabled = true;
-  setTimeout(() => document.getElementById("item-search")?.focus(), 50);
+  setTimeout(function() { var el = document.getElementById("item-search"); if (el) el.focus(); }, 50);
 }
 
 function adjQty(delta) {
-  const el = document.getElementById("qty-input");
+  var el = document.getElementById("qty-input");
   el.value = Math.max(0.01, +(parseFloat(el.value || 1) + delta).toFixed(2));
 }
 
 async function submitLog() {
-  const jobId  = document.getElementById("sel-job")?.value;
-  const locId  = document.getElementById("sel-loc")?.value;
-  const qty    = parseFloat(document.getElementById("qty-input")?.value);
-  const notes  = document.getElementById("tx-notes")?.value.trim();
+  var jobId  = document.getElementById("sel-job").value;
+  var locId  = document.getElementById("sel-loc").value;
+  var qty    = parseFloat(document.getElementById("qty-input").value);
+  var notes  = document.getElementById("tx-notes").value.trim();
 
-  if (!jobId)        { showToast("Please select a job", true); return; }
-  if (!locId)        { showToast("Please select a location", true); return; }
-  if (!selectedItem) { showToast("Please select an item", true); return; }
-  if (!qty || qty <= 0) { showToast("Quantity must be greater than 0", true); return; }
+  if (!jobId)                  { showToast("Please select a job", true); return; }
+  if (!locId)                  { showToast("Please select a location", true); return; }
+  if (selectedItemIndex < 0)   { showToast("Please select an item", true); return; }
+  if (!qty || qty <= 0)        { showToast("Quantity must be greater than 0", true); return; }
 
-  const btn = document.getElementById("submit-btn");
-  btn.disabled    = true;
+  var item = allItems[selectedItemIndex];
+  var itemId = item.id;
+
+  var btn = document.getElementById("submit-btn");
+  btn.disabled = true;
   btn.textContent = "Saving…";
 
   try {
     await apiPost({
       action:     "logTransaction",
-      itemId:     String(selectedItem.id),
-      locationId: String(locId),
+      itemId:     itemId,
+      locationId: locId,
       quantity:   qty,
       enteredBy:  currentUser.name,
       notes:      notes || undefined
     });
     showToast("✓ Material logged!");
     goHome();
-  } catch (e) {
+  } catch(e) {
     showToast("Error: " + e.message, true);
-    btn.disabled    = false;
+    btn.disabled = false;
     btn.textContent = "Log Material";
   }
 }
 
-// ── HISTORY ────────────────────────────────────────────────
+// HISTORY
 async function goHistory() {
   showScreen("history");
-  const body = document.getElementById("history-body");
+  var body = document.getElementById("history-body");
   body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
   try {
-    const d = await apiGet("history", { enteredBy: currentUser.name });
+    var d = await apiGet("history", { enteredBy: currentUser.name });
     if (!d.transactions.length) {
       body.innerHTML = '<div class="empty">No transactions logged yet.</div>';
       return;
     }
-    body.innerHTML = d.transactions.map(tx => {
-      const date = tx.date
-        ? new Date(tx.date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })
-        : "—";
-      return `
-        <div class="tx-card">
-          <div class="tx-top">
-            <div class="tx-item-name">${tx.item || "—"}</div>
-            <div class="tx-qty">×${tx.qty}</div>
-          </div>
-          <div class="tx-tags">
-            <span class="tag gold">${tx.type || "—"}</span>
-            <span class="tag">${tx.location || "—"}</span>
-            <span class="tag">${date}</span>
-            ${tx.notes ? `<span class="tag">${tx.notes}</span>` : ""}
-          </div>
-        </div>`;
-    }).join("");
-  } catch (e) {
-    body.innerHTML = `<div class="empty">Error: ${e.message}</div>`;
+    var html = "";
+    d.transactions.forEach(function(tx) {
+      var date = tx.date ? new Date(tx.date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—";
+      html += '<div class="tx-card"><div class="tx-top"><div class="tx-item-name">' + (tx.item || "—") + '</div><div class="tx-qty">×' + tx.qty + '</div></div>';
+      html += '<div class="tx-tags"><span class="tag gold">' + (tx.type || "—") + '</span><span class="tag">' + (tx.location || "—") + '</span><span class="tag">' + date + '</span>';
+      if (tx.notes) html += '<span class="tag">' + tx.notes + '</span>';
+      html += '</div></div>';
+    });
+    body.innerHTML = html;
+  } catch(e) {
+    body.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
   }
 }
 
-// ── TOAST ──────────────────────────────────────────────────
-let toastTimer;
-function showToast(msg, isError = false) {
-  const t = document.getElementById("toast");
+// TOAST
+var toastTimer;
+function showToast(msg, isError) {
+  var t = document.getElementById("toast");
   t.textContent = msg;
-  t.className   = "toast" + (isError ? " error" : "");
+  t.className = "toast" + (isError ? " error" : "");
   clearTimeout(toastTimer);
-  requestAnimationFrame(() => t.classList.add("show"));
-  toastTimer = setTimeout(() => t.classList.remove("show"), 2800);
+  requestAnimationFrame(function() { t.classList.add("show"); });
+  toastTimer = setTimeout(function() { t.classList.remove("show"); }, 2800);
 }
 </script>
 </body>

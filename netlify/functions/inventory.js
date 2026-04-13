@@ -121,18 +121,16 @@ async function handleEmployees() {
 
 // ── JOBS (from inventory base synced Jobs table) ──────────
 async function handleJobs() {
-  // Load from inventory base — these are synced from main NEE base
-  // and have the correct record IDs to link to Inventory Transactions
-  const records = await fetchAll(API_ROOT_INV, "Jobs", {
-    sortField: "Job PO",
-    sortDir: "asc"
-  });
+  const records = await fetchAll(API_ROOT_INV, "Jobs", {});
   return resp(200, {
     ok: true,
-    jobs: records.map(r => ({
-      id:   r.id,
-      name: r.fields["Job PO"] || r.fields["Job Name"] || ""
-    }))
+    jobs: records
+      .map(r => ({
+        id:   r.id,
+        name: r.fields["Job PO"] || r.fields["Job Name"] || ""
+      }))
+      .filter(j => j.name)
+      .sort((a, b) => a.name.localeCompare(b.name))
   });
 }
 
@@ -181,6 +179,8 @@ async function handleSubmitCart(body) {
   const { lines, jobName, jobId, locationId, enteredBy } = body || {};
   if (!lines || !lines.length) return resp(400, { ok: false, error: "No items in cart." });
   if (!locationId) return resp(400, { ok: false, error: "Missing location." });
+
+  console.log(`submitCart: jobName="${jobName}" jobId="${jobId}" location="${locationId}" lines=${lines.length}`);
 
   const now = new Date().toISOString();
   const results = [];

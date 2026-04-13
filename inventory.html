@@ -721,7 +721,13 @@ function renderReceiveForm() {
     return;
   }
   var locOpts = allLocations.map(function(l){ return '<option value="'+l.id+'">'+l.name+'</option>'; }).join("");
-  var defLoc  = currentLocation ? ' <option value="'+currentLocation.id+'" selected>'+currentLocation.name+'</option>' : "";
+
+  // Restore last receive location, fall back to current session location
+  var lastRecvLocId = "";
+  try { lastRecvLocId = localStorage.getItem("nee_last_recv_loc") || ""; } catch(e) {}
+  var restoreId = lastRecvLocId || (currentLocation ? currentLocation.id : "");
+  var restoreLoc = allLocations.find(function(l){ return l.id === restoreId; });
+  var defLoc = restoreLoc ? '<option value="'+restoreLoc.id+'" selected>'+restoreLoc.name+'</option>' : "";
 
   body.innerHTML =
     '<div class="field-group"><div class="field-lbl">Receiving Into Location</div>' +
@@ -809,6 +815,8 @@ async function submitReceive() {
   btn.disabled = true; btn.textContent = "Saving…";
   try {
     await apiPost({ action:"receive", itemId:recvItem.id, locationId:locId, qty, unitCost:cost||undefined, enteredBy:currentUser.name, notes:notes||undefined });
+    // Remember last receive location
+    try { localStorage.setItem("nee_last_recv_loc", locId); } catch(e) {}
     showToast("✓ Stock received!");
     recvItem = null;
     goHome();

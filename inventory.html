@@ -504,6 +504,7 @@ function renderLogForm() {
     '<input class="field-inp" id="log-job-search" type="text" placeholder="Search or type job name…" autocomplete="off" oninput="onJobSearch()" onfocus="onJobSearch()" />' +
     '<div id="job-drop" style="display:none;position:absolute;z-index:50;width:100%;background:var(--navy-lt);border:1.5px solid var(--gold);border-radius:10px;margin-top:4px;max-height:200px;overflow-y:auto;"></div>' +
     '<input type="hidden" id="log-job" value="" />' +
+    '<input type="hidden" id="log-job-id" value="" />' +
     '</div></div>' +
 
     '<div class="field-group"><div class="field-lbl">From Location</div>' +
@@ -528,12 +529,15 @@ function renderLogForm() {
 
   // Restore last used job
   try {
-    var lastJob = localStorage.getItem("nee_last_job");
+    var lastJob   = localStorage.getItem("nee_last_job");
+    var lastJobId = localStorage.getItem("nee_last_job_id");
     if (lastJob && allJobs.find(function(j){ return j.name === lastJob; })) {
-      var inp    = document.getElementById("log-job-search");
-      var hidden = document.getElementById("log-job");
-      if (inp)    inp.value    = lastJob;
-      if (hidden) hidden.value = lastJob;
+      var inp      = document.getElementById("log-job-search");
+      var hidden   = document.getElementById("log-job");
+      var hiddenId = document.getElementById("log-job-id");
+      if (inp)      inp.value      = lastJob;
+      if (hidden)   hidden.value   = lastJob;
+      if (hiddenId) hiddenId.value = lastJobId || "";
     }
   } catch(e) {}
 }
@@ -557,21 +561,26 @@ function onJobSearch() {
   if (!hits.length) { drop.style.display = "none"; return; }
   drop.innerHTML = hits.map(function(j){
     return '<div style="padding:11px 14px;border-bottom:1px solid var(--border);cursor:pointer;font-size:14px;" ' +
-      'onclick="selectJob(\'' + j.name.replace(/'/g,"\\'") + '\')" ' +
+      'onclick="selectJob(\'' + j.id + '\',\'' + j.name.replace(/'/g,"\\'") + '\')" ' +
       'onmousedown="event.preventDefault()">' + j.name + '</div>';
   }).join("");
   drop.style.display = "block";
 }
 
-function selectJob(name) {
-  var inp = document.getElementById("log-job-search");
+function selectJob(id, name) {
+  var inp    = document.getElementById("log-job-search");
   var hidden = document.getElementById("log-job");
-  var drop = document.getElementById("job-drop");
-  if (inp) inp.value = name;
-  if (hidden) hidden.value = name;
-  if (drop) drop.style.display = "none";
-  // Remember last job
-  try { localStorage.setItem("nee_last_job", name); } catch(e) {}
+  var hiddenId = document.getElementById("log-job-id");
+  var drop   = document.getElementById("job-drop");
+  if (inp)      inp.value      = name;
+  if (hidden)   hidden.value   = name;
+  if (hiddenId) hiddenId.value = id;
+  if (drop)     drop.style.display = "none";
+  // Remember last job name and id
+  try {
+    localStorage.setItem("nee_last_job",    name);
+    localStorage.setItem("nee_last_job_id", id);
+  } catch(e) {}
 }
 
 // Hide job dropdown when clicking elsewhere
@@ -689,13 +698,14 @@ async function submitCart() {
   if (!currentLocation) { showToast("Please set your location first", true); goPickLocation(); return; }
 
   var jobName = document.getElementById("log-job")?.value || "";
+  var jobId   = document.getElementById("log-job-id")?.value || "";
   var btn = document.getElementById("submit-btn");
   btn.disabled = true; btn.textContent = "Submitting…";
 
   var lines = cart.map(function(c){ return { itemId: c.itemId, qty: logMode==="Return" ? -Math.abs(c.qty) : c.qty, type: logMode }; });
 
   try {
-    await apiPost({ action:"submitCart", lines, jobName, locationId: currentLocation.id, enteredBy: currentUser.name });
+    await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: currentLocation.id, enteredBy: currentUser.name });
     showToast("✓ " + cart.length + " item" + (cart.length>1?"s":"") + " logged!");
     cart = [];
     goHome();

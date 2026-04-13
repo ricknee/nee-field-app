@@ -119,17 +119,19 @@ async function handleEmployees() {
   return resp(200, { ok: true, employees });
 }
 
-// ── JOBS (active, from main base) ─────────────────────────
-const ACTIVE_STATUSES = ["Awarded","In Progress","Service Call Scheduled","Ready to Invoice"];
+// ── JOBS (from inventory base synced Jobs table) ──────────
 async function handleJobs() {
-  const filter = `OR(${ACTIVE_STATUSES.map(s => `{Job Status}='${s}'`).join(",")})`;
-  const records = await fetchAll(API_ROOT_MAIN, "Jobs", { filter, sortField: "Job PO", sortDir: "asc" });
+  // Load from inventory base — these are synced from main NEE base
+  // and have the correct record IDs to link to Inventory Transactions
+  const records = await fetchAll(API_ROOT_INV, "Jobs", {
+    sortField: "Job PO",
+    sortDir: "asc"
+  });
   return resp(200, {
     ok: true,
     jobs: records.map(r => ({
-      id:     r.id,
-      name:   r.fields["Job PO"] || r.fields["Job Name"] || "",
-      status: r.fields["Job Status"] || ""
+      id:   r.id,
+      name: r.fields["Job PO"] || r.fields["Job Name"] || ""
     }))
   });
 }
@@ -176,7 +178,7 @@ async function handleItems() {
 
 // ── SUBMIT CART (multiple transactions at once) ────────────
 async function handleSubmitCart(body) {
-  const { lines, jobName, locationId, enteredBy } = body || {};
+  const { lines, jobName, jobId, locationId, enteredBy } = body || {};
   if (!lines || !lines.length) return resp(400, { ok: false, error: "No items in cart." });
   if (!locationId) return resp(400, { ok: false, error: "Missing location." });
 
@@ -191,8 +193,12 @@ async function handleSubmitCart(body) {
       "fldjvIy3X1DJowGsd": line.type || "Use",
       "fldpyLadbcc9NHO6c": [String(locationId)],
       "fldIFffLxtcQTbExd": enteredBy || "",
-      "fldrcq8wSyfz8O3UB": [jobName, line.notes].filter(Boolean).join(" | ")
+      "fldrcq8wSyfz8O3UB": line.notes || ""
     };
+    // Link to job record if we have the inventory base job ID
+    if (jobId) {
+      fields["fld7OG04Sgkp88JsU"] = [{ id: String(jobId) }];
+    }
     const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
       method: "POST",
       body: JSON.stringify({ records: [{ fields }], typecast: true })

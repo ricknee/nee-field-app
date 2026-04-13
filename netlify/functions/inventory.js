@@ -197,7 +197,7 @@ async function handleSubmitCart(body) {
     };
     // Link to job record if we have the inventory base job ID
     if (jobId) {
-      fields["fld7OG04Sgkp88JsU"] = [{ id: String(jobId) }];
+      fields["fld7OG04Sgkp88JsU"] = [String(jobId)];
     }
     const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
       method: "POST",

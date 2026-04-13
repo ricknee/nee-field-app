@@ -210,6 +210,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goHistory()">
       <div class="ico">📋</div><div><div class="lbl">Recent Logs</div><div class="sub">Your last 50 transactions</div></div>
     </button>
+    <button class="big-btn" onclick="goCheckStock()">
+      <div class="ico">🔍</div><div><div class="lbl">Check Stock</div><div class="sub">See qty on hand at all locations</div></div>
+    </button>
   </div>
 </div>
 
@@ -243,6 +246,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-history" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Recent Logs</h2></div>
   <div class="hist-body" id="hist-body"><div class="loading"><div class="spinner"></div><br>Loading…</div></div>
+</div>
+
+<!-- CHECK STOCK -->
+<div id="s-stock" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Check Stock</h2></div>
+  <div class="log-body" id="stock-body"></div>
 </div>
 
 <!-- CAMERA SCANNER -->
@@ -984,6 +993,139 @@ async function deleteTx(id) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// CHECK STOCK
+// ═══════════════════════════════════════════════════════════
+var stockItem = null;
+
+function goCheckStock() {
+  stockItem = null;
+  showScreen("stock");
+  var body = document.getElementById("stock-body");
+  body.innerHTML =
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+    '<div class="scan-row">' +
+    '<input class="field-inp" id="stock-search" type="text" placeholder="Search or scan item…" autocomplete="off" oninput="onStockSearch()" style="flex:1;" />' +
+    '<button class="scan-btn" onclick="startScan(\'stock\')" title="Scan barcode">⬛</button>' +
+    '</div><div id="stock-drop"></div></div>' +
+    '<div id="stock-result"></div>';
+}
+
+function onStockSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function() {
+    var q    = (document.getElementById("stock-search")?.value || "").trim().toLowerCase();
+    var drop = document.getElementById("stock-drop");
+    if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
+    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toString().toLowerCase().includes(q); }).slice(0,8);
+    drop.innerHTML = hits.length
+      ? '<div class="search-drop">' + hits.map(function(i){
+          return '<div class="drop-item" onclick="lookupStock(\'' + i.id + '\')">' +
+            '<div class="drop-name">' + i.name + '</div>' +
+            '<div class="drop-meta">' + [i.cat, i.uom].filter(Boolean).join(" · ") + '</div></div>';
+        }).join("") + '</div>'
+      : '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>';
+  }, 120);
+}
+
+async function lookupStock(itemId) {
+  stockItem = allItems.find(function(i){ return i.id === itemId; });
+  if (!stockItem) return;
+
+  // Clear search drop, update search field
+  var drop = document.getElementById("stock-drop");
+  var inp  = document.getElementById("stock-search");
+  if (drop) drop.innerHTML = "";
+  if (inp)  inp.value = stockItem.name;
+
+  var result = document.getElementById("stock-result");
+  result.innerHTML = '<div class="loading"><div class="spinner"></div><br>Calculating stock…</div>';
+
+  var isAdmin = currentUser && currentUser.role === "admin";
+
+  try {
+    // Fetch all transactions for this item
+    var d = await apiGet("history", { all: "1" });
+    var txs = (d.transactions || []).filter(function(t){ return t.item === stockItem.name; });
+
+    // Calculate qty per location
+    var locQty = {};
+    txs.forEach(function(t) {
+      var qty = Number(t.qty) || 0;
+      var type = (t.type || "").toLowerCase();
+
+      // From location (Use, Transfer out, Return out)
+      if (t.from) {
+        if (!locQty[t.from]) locQty[t.from] = 0;
+        if (type === "use" || type === "transfer") locQty[t.from] -= Math.abs(qty);
+        if (type === "return") locQty[t.from] += Math.abs(qty);
+      }
+      // To location (Receive, Transfer in, Return in)
+      if (t.to) {
+        if (!locQty[t.to]) locQty[t.to] = 0;
+        if (type === "receive" || type === "transfer") locQty[t.to] += Math.abs(qty);
+      }
+      // Use with from location = subtract from that location
+      if (!t.from && !t.to && t.from === "" && type === "use") {
+        // fallback — skip
+      }
+    });
+
+    // Also count Receive transactions that only have a from (older records)
+    // Build total across all locations
+    var totalQty = Object.values(locQty).reduce(function(s,v){ return s+v; }, 0);
+    var totalVal = isAdmin ? totalQty * (stockItem.cost || 0) : 0;
+
+    var html = '<div style="margin-top:4px;">';
+
+    // Item header
+    html += '<div style="background:var(--navy-mid);border-radius:var(--r);padding:14px 16px;margin-bottom:12px;">';
+    html += '<div style="font-size:17px;font-weight:700;color:var(--gold);">' + stockItem.name + '</div>';
+    html += '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + [stockItem.cat, stockItem.uom].filter(Boolean).join(" · ") + '</div>';
+    if (isAdmin && stockItem.cost > 0) {
+      html += '<div style="font-size:12px;color:var(--dim);margin-top:2px;">Unit cost: <span style="color:var(--text);">$' + stockItem.cost.toFixed(2) + '</span></div>';
+    }
+    html += '</div>';
+
+    // Per-location breakdown
+    html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Stock by Location</div>';
+
+    var hasAny = false;
+    allLocations.forEach(function(loc) {
+      var qty = locQty[loc.name] || 0;
+      hasAny = true;
+      html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:13px 16px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">';
+      html += '<div>';
+      html += '<div style="font-size:15px;font-weight:600;">' + loc.name + '</div>';
+      html += '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + loc.type + '</div>';
+      html += '</div>';
+      html += '<div style="text-align:right;">';
+      html += '<div style="font-size:22px;font-weight:700;color:' + (qty > 0 ? 'var(--gold)' : 'var(--muted)') + ';">' + Math.max(0, qty) + '</div>';
+      html += '<div style="font-size:11px;color:var(--dim);">' + (stockItem.uom || 'units') + '</div>';
+      if (isAdmin && stockItem.cost > 0 && qty > 0) {
+        html += '<div style="font-size:11px;color:var(--dim);">$' + (qty * stockItem.cost).toFixed(2) + '</div>';
+      }
+      html += '</div></div>';
+    });
+
+    if (!hasAny) html += '<div class="empty">No location data found.</div>';
+
+    // Total row (admin only)
+    if (isAdmin && stockItem.cost > 0) {
+      html += '<div style="background:rgba(232,101,26,.1);border:1.5px solid var(--gold);border-radius:10px;padding:13px 16px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;">';
+      html += '<div style="font-size:13px;font-weight:600;color:var(--gold);">Total Value</div>';
+      html += '<div style="font-size:18px;font-weight:700;color:var(--gold);">$' + totalVal.toFixed(2) + '</div>';
+      html += '</div>';
+    }
+
+    html += '</div>';
+    result.innerHTML = html;
+
+  } catch(ex) {
+    result.innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // CAMERA SCANNER
 // ═══════════════════════════════════════════════════════════
 var scanTarget = null; // "item" | "recv" | "xfr"
@@ -1030,8 +1172,9 @@ function handleScanResult(val) {
   var item = allItems.find(function(i){ return i.barcode && i.barcode.toString() === val.toString(); });
   if (item) {
     if (scanTarget === "item")  pickItem(item.id);
-    else if (scanTarget === "recv") pickItemFor("recv", item.id);
-    else if (scanTarget === "xfr")  pickItemFor("xfr", item.id);
+    else if (scanTarget === "recv")  pickItemFor("recv", item.id);
+    else if (scanTarget === "xfr")   pickItemFor("xfr", item.id);
+    else if (scanTarget === "stock") lookupStock(item.id);
     showToast("✓ Scanned: " + item.name);
   } else {
     // Try as job QR

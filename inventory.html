@@ -485,21 +485,6 @@ function renderLogForm() {
     '<div id="job-drop" style="display:none;position:absolute;z-index:50;width:100%;background:var(--navy-lt);border:1.5px solid var(--gold);border-radius:10px;margin-top:4px;max-height:200px;overflow-y:auto;"></div>' +
     '<input type="hidden" id="log-job" value="" />' +
     '</div></div>' +
-    // Restore last used job
-    (function(){ try { return ''; } catch(e){ return ''; } }());</
-
-  // Restore last job after render
-  setTimeout(function() {
-    try {
-      var lastJob = localStorage.getItem("nee_last_job");
-      if (lastJob && allJobs.find(function(j){ return j.name === lastJob; })) {
-        var inp    = document.getElementById("log-job-search");
-        var hidden = document.getElementById("log-job");
-        if (inp)    inp.value    = lastJob;
-        if (hidden) hidden.value = lastJob;
-      }
-    } catch(e) {}
-  }, 50); +
 
     '<div class="field-group"><div class="field-lbl">From Location</div>' +
     '<div style="background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:13px 16px;font-size:14px;color:var(--gold);font-weight:600;">' + fromLoc + '</div></div>' +
@@ -520,6 +505,17 @@ function renderLogForm() {
 
     '<button class="primary-btn" id="submit-btn" onclick="submitCart()" style="display:none">Submit ' + (logMode === "Return" ? "Return" : "All Items") + '</button>' +
     '<div style="height:24px"></div>';
+
+  // Restore last used job
+  try {
+    var lastJob = localStorage.getItem("nee_last_job");
+    if (lastJob && allJobs.find(function(j){ return j.name === lastJob; })) {
+      var inp    = document.getElementById("log-job-search");
+      var hidden = document.getElementById("log-job");
+      if (inp)    inp.value    = lastJob;
+      if (hidden) hidden.value = lastJob;
+    }
+  } catch(e) {}
 }
 
 function renderItemSearch() {

@@ -250,7 +250,7 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 
 <!-- CHECK STOCK -->
 <div id="s-stock" class="screen">
-  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Check Stock</h2></div>
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Check Stock</h2><button onclick="refreshItems()" style="background:none;border:1px solid var(--border);border-radius:20px;color:var(--dim);font-size:12px;padding:5px 12px;cursor:pointer;" id="refresh-btn">↻ Refresh</button></div>
   <div class="log-body" id="stock-body"></div>
 </div>
 
@@ -282,6 +282,17 @@ async function apiPost(body) {
   const d = await r.json();
   if (!d.ok) throw new Error(d.error || "API error");
   return d;
+}
+
+
+// ═══════════════════════════════════════════════════════════
+// FORMATTERS
+// ═══════════════════════════════════════════════════════════
+function fmtQty(n) {
+  return Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+function fmtCurrency(n) {
+  return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -660,13 +671,13 @@ function renderCart() {
     html += '<div class="cart-item">' +
       '<div class="cart-item-name">' + c.itemName + (c.uom ? ' <span style="color:var(--muted);font-size:11px;">(' + c.uom + ')</span>' : '') + '</div>' +
       '<div class="cart-item-qty">×' + c.qty + '</div>' +
-      (isAdmin ? '<div style="font-size:11px;color:var(--muted);">$' + ((c.cost||0)*c.qty).toFixed(2) + '</div>' : '') +
+      (isAdmin ? '<div style="font-size:11px;color:var(--muted);">$' + fmtCurrency((c.cost||0)*c.qty) + '</div>' : '') +
       '<button class="cart-item-del" onclick="removeFromCart(' + i + ')">×</button>' +
       '</div>';
   });
 
   if (isAdmin && totalCost > 0) {
-    html += '<div class="cart-total"><span class="cart-total-lbl">Total cost</span><span class="cart-total-val">$' + totalCost.toFixed(2) + '</span></div>';
+    html += '<div class="cart-total"><span class="cart-total-lbl">Total cost</span><span class="cart-total-val">' + fmtCurrency(totalCost) + '</span></div>';
   }
   html += '</div>';
   area.innerHTML = html;
@@ -754,7 +765,7 @@ function onItemSearchFor(prefix) {
     drop.innerHTML = hits.length ? '<div class="search-drop">' + hits.map(function(i){
       return '<div class="drop-item" onclick="pickItemFor(\'' + prefix + '\',\'' + i.id + '\')">' +
         '<div class="drop-name">' + i.name + '</div>' +
-        '<div class="drop-meta">' + [i.cat,i.uom].filter(Boolean).join(" · ") + (i.cost ? " · $" + i.cost.toFixed(2) : "") + '</div></div>';
+        '<div class="drop-meta">' + [i.cat,i.uom].filter(Boolean).join(" · ") + (i.cost ? " · " + fmtCurrency(i.cost) : "") + '</div></div>';
     }).join("") + '</div>' : '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>';
   }, 120);
 }
@@ -948,7 +959,7 @@ function renderHistory() {
     html += '<div class="job-group">';
     html += '<div class="job-group-hdr">';
     html += '<span>' + job + (isActive===false?' <span style="font-size:10px;color:var(--muted);background:var(--slate);padding:2px 6px;border-radius:10px;margin-left:6px;">closed</span>':'') + '</span>';
-    if (isAdmin && jobTotal > 0) html += '<span class="job-total">$' + jobTotal.toFixed(2) + '</span>';
+    if (isAdmin && jobTotal > 0) html += '<span class="job-total">' + fmtCurrency(jobTotal) + '</span>';
     html += '</div>';
 
     txs.forEach(function(tx) {
@@ -959,7 +970,7 @@ function renderHistory() {
       if (tx.enteredBy) html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;">by ' + tx.enteredBy + '</div>';
       html += '</div>';
       html += '<div class="tx-right"><div class="tx-qty">×' + Math.abs(tx.qty) + '</div>';
-      if (isAdmin && tx.cost > 0) html += '<div class="tx-price">$' + tx.total.toFixed(2) + '</div>';
+      if (isAdmin && tx.cost > 0) html += '<div class="tx-price">' + fmtCurrency(tx.total) + '</div>';
       html += '<button class="tx-del" onclick="deleteTx(\'' + tx.id + '\')">Del</button>';
       html += '</div></div>';
       html += '<div class="tx-tags">';
@@ -996,6 +1007,22 @@ async function deleteTx(id) {
 // CHECK STOCK
 // ═══════════════════════════════════════════════════════════
 var stockItem = null;
+
+async function refreshItems() {
+  var btn = document.getElementById("refresh-btn");
+  if (btn) { btn.textContent = "↻ Refreshing…"; btn.disabled = true; }
+  try {
+    var d = await apiGet("items");
+    allItems = d.items;
+    showToast("✓ Prices updated!");
+    // Re-run lookup if an item was already selected
+    if (stockItem) lookupStock(stockItem.id);
+  } catch(ex) {
+    showToast("Refresh failed", true);
+  } finally {
+    if (btn) { btn.textContent = "↻ Refresh"; btn.disabled = false; }
+  }
+}
 
 function goCheckStock() {
   stockItem = null;
@@ -1082,7 +1109,7 @@ async function lookupStock(itemId) {
     html += '<div style="font-size:17px;font-weight:700;color:var(--gold);">' + stockItem.name + '</div>';
     html += '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + [stockItem.cat, stockItem.uom].filter(Boolean).join(" · ") + '</div>';
     if (isAdmin && stockItem.cost > 0) {
-      html += '<div style="font-size:12px;color:var(--dim);margin-top:2px;">Unit cost: <span style="color:var(--text);">$' + stockItem.cost.toFixed(2) + '</span></div>';
+      html += '<div style="font-size:12px;color:var(--dim);margin-top:2px;">Unit cost: <span style="color:var(--text);">' + fmtCurrency(stockItem.cost) + '</span></div>';
     }
     html += '</div>';
 
@@ -1099,10 +1126,10 @@ async function lookupStock(itemId) {
       html += '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + loc.type + '</div>';
       html += '</div>';
       html += '<div style="text-align:right;">';
-      html += '<div style="font-size:22px;font-weight:700;color:' + (qty > 0 ? 'var(--gold)' : 'var(--muted)') + ';">' + Math.max(0, qty) + '</div>';
+      html += '<div style="font-size:22px;font-weight:700;color:' + (qty > 0 ? 'var(--gold)' : 'var(--muted)') + ';">' + fmtQty(Math.max(0, qty)) + '</div>';
       html += '<div style="font-size:11px;color:var(--dim);">' + (stockItem.uom || 'units') + '</div>';
       if (isAdmin && stockItem.cost > 0 && qty > 0) {
-        html += '<div style="font-size:11px;color:var(--dim);">$' + (qty * stockItem.cost).toFixed(2) + '</div>';
+        html += '<div style="font-size:11px;color:var(--dim);">' + fmtCurrency(qty * stockItem.cost) + '</div>';
       }
       html += '</div></div>';
     });
@@ -1113,7 +1140,7 @@ async function lookupStock(itemId) {
     if (isAdmin && stockItem.cost > 0) {
       html += '<div style="background:rgba(232,101,26,.1);border:1.5px solid var(--gold);border-radius:10px;padding:13px 16px;margin-top:4px;display:flex;justify-content:space-between;align-items:center;">';
       html += '<div style="font-size:13px;font-weight:600;color:var(--gold);">Total Value</div>';
-      html += '<div style="font-size:18px;font-weight:700;color:var(--gold);">$' + totalVal.toFixed(2) + '</div>';
+      html += '<div style="font-size:18px;font-weight:700;color:var(--gold);">' + fmtCurrency(totalVal) + '</div>';
       html += '</div>';
     }
 

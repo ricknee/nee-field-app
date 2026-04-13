@@ -531,13 +531,19 @@ function renderLogForm() {
   try {
     var lastJob   = localStorage.getItem("nee_last_job");
     var lastJobId = localStorage.getItem("nee_last_job_id");
-    if (lastJob && allJobs.find(function(j){ return j.name === lastJob; })) {
-      var inp      = document.getElementById("log-job-search");
-      var hidden   = document.getElementById("log-job");
-      var hiddenId = document.getElementById("log-job-id");
-      if (inp)      inp.value      = lastJob;
-      if (hidden)   hidden.value   = lastJob;
-      if (hiddenId) hiddenId.value = lastJobId || "";
+    if (lastJob) {
+      var matchedJob = allJobs.find(function(j){ return j.name === lastJob; });
+      if (matchedJob) {
+        var inp      = document.getElementById("log-job-search");
+        var hidden   = document.getElementById("log-job");
+        var hiddenId = document.getElementById("log-job-id");
+        if (inp)      inp.value      = lastJob;
+        if (hidden)   hidden.value   = lastJob;
+        // Use saved ID or fall back to looking it up from allJobs
+        if (hiddenId) hiddenId.value = lastJobId || matchedJob.id;
+        // Always save the correct ID
+        try { localStorage.setItem("nee_last_job_id", matchedJob.id); } catch(e) {}
+      }
     }
   } catch(e) {}
 }
@@ -699,6 +705,13 @@ async function submitCart() {
 
   var jobName = document.getElementById("log-job")?.value || "";
   var jobId   = document.getElementById("log-job-id")?.value || "";
+
+  // Fallback: look up job ID from allJobs by name if ID is missing
+  if (jobName && !jobId) {
+    var matchedJob = allJobs.find(function(j){ return j.name === jobName; });
+    if (matchedJob) jobId = matchedJob.id;
+  }
+
   var btn = document.getElementById("submit-btn");
   btn.disabled = true; btn.textContent = "Submitting…";
 

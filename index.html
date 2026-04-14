@@ -1445,6 +1445,10 @@
                 <input type="number" id="genExpAmount" class="edit-input" style="font-size:13px; width:100%;" placeholder="0.00" min="0" step="0.01" />
               </div>
               <div>
+                <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Credit ($) <span style="font-weight:400; text-transform:none;">(optional)</span></label>
+                <input type="number" id="genExpCredit" class="edit-input" style="font-size:13px; width:100%;" placeholder="0.00" min="0" step="0.01" />
+              </div>
+              <div>
                 <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Vendor</label>
                 <input type="text" id="genExpVendor" class="edit-input" style="font-size:13px; width:100%;" placeholder="e.g. CED, Menards..." />
               </div>
@@ -3433,6 +3437,7 @@
     const date     = $("genExpDate").value;
     const type     = $("genExpType").value;
     const amount   = parseFloat($("genExpAmount").value);
+    const credit   = parseFloat($("genExpCredit").value) || 0;
     const vendor   = ($("genExpVendor").value || "").trim();
     const desc     = ($("genExpDesc").value || "").trim();
     const billable = $("genExpBillable").checked;
@@ -3447,9 +3452,10 @@
 
     saveBtn.disabled = true; saveBtn.textContent = "Saving...";
     try {
-      await apiPost("addGeneralExpense", { jobId, date, type, amount, vendor, description: desc, billable });
+      await apiPost("addGeneralExpense", { jobId, date, type, amount, credit, vendor, description: desc, billable });
       msgEl.style.display = "";
       $("genExpAmount").value = "";
+      $("genExpCredit").value = "";
       $("genExpDesc").value = "";
       $("genExpVendor").value = "";
       setTimeout(() => {

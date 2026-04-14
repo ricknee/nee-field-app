@@ -484,8 +484,8 @@ async function handlePushExpenses(body) {
 
     // Create materials expense
     const matFields = {
-      "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],
-      "fldlTUL8hsPkReBAB": [{ id: NEE_VENDOR_ID }],
+      "fldPNFIzq1grsdxYi": [String(jobId)],
+      "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
       "fldwbLPIafVtmaSeb": Math.round(jobTotal * 100) / 100,
       "fldX2x2J0xkRyMY3y": "Materials",
       "fldCCPYdyWAOGchWb": today,
@@ -504,8 +504,8 @@ async function handlePushExpenses(body) {
     if (taxable) {
       const taxAmt = Math.round(jobTotal * TAX_RATE * 100) / 100;
       const taxFields = {
-        "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],
-        "fldlTUL8hsPkReBAB": [{ id: NEE_VENDOR_ID }],
+        "fldPNFIzq1grsdxYi": [String(jobId)],
+        "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
         "fldwbLPIafVtmaSeb": taxAmt,
         "fldX2x2J0xkRyMY3y": "Materials",
         "fldCCPYdyWAOGchWb": today,

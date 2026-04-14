@@ -47,70 +47,99 @@
     .topbar {
       background: var(--panel);
       border-bottom: 1px solid var(--line);
-      padding: 12px 20px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
+      padding: 6px 14px 6px;
       position: sticky;
       top: 0;
       z-index: 100;
     }
 
+    .topbar-row1 {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 5px;
+    }
+
+    .topbar-row2 {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      padding-bottom: 2px;
+    }
+
+    .topbar-row2::-webkit-scrollbar { display: none; }
+
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
-    }
-
-    .brand-icon {
-      width: 36px;
-      height: 36px;
-      background: var(--accent);
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
+      gap: 8px;
     }
 
     .brand-text h1 {
       font-family: 'Rajdhani', sans-serif;
-      font-size: 20px;
+      font-size: 15px;
       font-weight: 700;
       color: var(--text);
-      letter-spacing: 0.5px;
+      letter-spacing: 0.3px;
       line-height: 1;
+      white-space: nowrap;
     }
 
     .brand-text .sub {
-      font-size: 11px;
+      font-size: 9px;
       color: var(--muted);
       letter-spacing: 0.5px;
-    }
-
-    .topbar-right {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
     }
 
     .user-badge {
       background: var(--panel-2);
       border: 1px solid var(--line-2);
       border-radius: 999px;
-      padding: 5px 12px;
-      font-size: 12px;
+      padding: 3px 10px;
+      font-size: 11px;
       color: var(--text);
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
+      white-space: nowrap;
     }
 
     .user-badge.admin { border-color: var(--accent); color: var(--accent); }
 
+    /* Compact topbar buttons */
+    .topbar-row2 .btn, .topbar-row2 .btn-danger-sm {
+      font-size: 11px !important;
+      padding: 4px 10px !important;
+      border-radius: 999px !important;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
     #statusChangeRow:not(.hidden) { display: flex; }
+
+    /* ── SERVICE CALL ACTION BUTTONS ── */
+    .svc-action-section { margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; }
+    .btn-svc-start {
+      background:var(--accent); color:white; border:none; border-radius:10px;
+      padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer;
+      font-family:'Inter',sans-serif; display:flex; align-items:center; gap:8px;
+    }
+    .btn-svc-start:hover { background:var(--accent-2); }
+    .btn-svc-complete {
+      background:var(--green); color:white; border:none; border-radius:10px;
+      padding:10px 18px; font-size:14px; font-weight:600; cursor:pointer;
+      font-family:'Inter',sans-serif; display:flex; align-items:center; gap:8px;
+    }
+    .btn-svc-complete:hover { background:#1b5e20; }
+    .svc-status-badge {
+      display:inline-flex; align-items:center; gap:6px;
+      padding:8px 14px; border-radius:10px; font-size:13px; font-weight:600;
+    }
+    .svc-status-badge.started { background:var(--blue-dim); color:var(--blue); border:1px solid var(--blue); }
+    .svc-status-badge.complete { background:var(--green-dim); color:var(--green); border:1px solid var(--green); }
 
     /* ── FLEET MODAL ── */
     .fleet-modal-backdrop {
@@ -958,18 +987,20 @@
 
   <!-- TOPBAR -->
   <div class="topbar">
-    <div class="brand">
-      <img src="data:image/png;base64,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" alt="NEE Logo" style="height:44px; width:auto; display:block;" />
-      <div class="brand-text">
-        <h1>Northeastern Electric</h1>
-        <div class="sub">FIELD APP</div>
+    <div class="topbar-row1">
+      <div class="brand">
+        <img src="data:image/png;base64,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" alt="NEE Logo" style="height:26px; width:auto; display:block;" />
+        <div class="brand-text">
+          <h1>Northeastern Electric</h1>
+          <div class="sub">FIELD APP</div>
+        </div>
       </div>
-    </div>
-    <div class="topbar-right">
       <span id="userBadge" class="user-badge">—</span>
-      <a id="btnNewJobIntake" href="https://form.jotform.com/260972873590065" target="_blank" class="btn btn-primary btn-sm admin-only hidden" style="text-decoration:none; font-size:13px;">+ New Project</a>
-      <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button" style="font-size:13px;">🏗 Scissor Lifts</button>
-      <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button" style="font-size:13px;">🚗 Fleet</button>
+    </div>
+    <div class="topbar-row2">
+      <a id="btnNewJobIntake" href="https://form.jotform.com/260972873590065" target="_blank" class="btn btn-primary btn-sm admin-only hidden" style="text-decoration:none;">+ New Project</a>
+      <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
+      <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
@@ -989,7 +1020,7 @@
           <select id="statusFilter">
             <option value="">All Statuses</option>
             <option value="Service Call Scheduled">Service Call Scheduled</option>
-            <option value="Awarded">Awarded</option>
+            <option value="Awarded" selected>Awarded</option>
             <option value="Estimating">Estimating</option>
             <option value="New Lead">New Lead</option>
             <option value="Ready to Invoice">Ready to Invoice</option>
@@ -1111,7 +1142,10 @@
             </div>
           </div>
 
-          <!-- Scissor Lifts at this job (visible to all) -->
+            <!-- Service Call Actions (visible when job type is Service Calls) -->
+          <div id="svcActionSection" class="svc-action-section" style="display:none;"></div>
+
+        <!-- Scissor Lifts at this job (visible to all) -->
           <div id="jobLiftsSection" style="margin-top:16px; display:none;">
             <div class="section-header" style="display:flex; justify-content:space-between; align-items:center;">
               <span>🏗 Scissor Lifts at this Job</span>
@@ -1752,6 +1786,69 @@
 
     // Load scissor lifts at this job
     try { loadJobLifts(job.name); } catch(e) { console.error("loadJobLifts:", e); }
+
+    // ── SERVICE CALL ACTION SECTION ──
+    const svcSection = $("svcActionSection");
+    if (svcSection) {
+      svcSection.innerHTML = "";
+      svcSection.style.display = "none";
+      if ((job.type || "").toLowerCase().includes("service call")) {
+        svcSection.style.display = "flex";
+        const isCreated = job.serviceCallCreated;
+        const isComplete = job.projectComplete;
+
+        if (isAdmin() && !isCreated && !job.startServiceCall) {
+          // Admin only: Start Service Call button
+          const startBtn = document.createElement("button");
+          startBtn.className = "btn-svc-start";
+          startBtn.innerHTML = "▶ Start Service Call";
+          startBtn.onclick = async () => {
+            startBtn.disabled = true;
+            startBtn.textContent = "Starting...";
+            try {
+              await apiPost("startServiceCall", { jobId: job.id });
+              startBtn.textContent = "✓ Service Call Started";
+              setTimeout(() => { startBtn.innerHTML = "▶ Start Service Call"; startBtn.disabled = false; }, 3000);
+            } catch(e) {
+              alert("Error: " + e.message);
+              startBtn.disabled = false;
+              startBtn.innerHTML = "▶ Start Service Call";
+            }
+          };
+          svcSection.appendChild(startBtn);
+        } else if (isCreated && !isComplete) {
+          // All users: Complete button
+          const doneBtn = document.createElement("button");
+          doneBtn.className = "btn-svc-complete";
+          doneBtn.innerHTML = "✅ Service Call Complete";
+          doneBtn.onclick = async () => {
+            if (!confirm("Mark this service call as complete and ready to invoice?")) return;
+            doneBtn.disabled = true;
+            doneBtn.textContent = "Saving...";
+            try {
+              await apiPost("completeServiceCall", { jobId: job.id });
+              doneBtn.textContent = "✓ Marked Complete";
+              setTimeout(() => { doneBtn.innerHTML = "✅ Service Call Complete"; doneBtn.disabled = false; }, 3000);
+            } catch(e) {
+              alert("Error: " + e.message);
+              doneBtn.disabled = false;
+              doneBtn.innerHTML = "✅ Service Call Complete";
+            }
+          };
+          svcSection.appendChild(doneBtn);
+        } else if (isCreated && isComplete) {
+          const badge = document.createElement("span");
+          badge.className = "svc-status-badge complete";
+          badge.textContent = "✓ Ready to Invoice";
+          svcSection.appendChild(badge);
+        } else if (job.startServiceCall && !isCreated) {
+          const badge = document.createElement("span");
+          badge.className = "svc-status-badge started";
+          badge.textContent = "⏳ Service Call Being Created...";
+          svcSection.appendChild(badge);
+        }
+      }
+    }
 
     // Load inspection records
     try { loadInspections(job.id); } catch(e) { console.error("loadInspections:", e); }
@@ -2990,8 +3087,19 @@
               </select>
             </div>
             <div style="margin-bottom:6px;">
+              <label style="font-size:10px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:3px;">Left at Job</label>
+              <div style="display:flex; gap:10px;">
+                <label style="display:flex; align-items:center; gap:4px; font-size:12px; cursor:pointer;">
+                  <input type="checkbox" class="job-lift-hooks" ${l.hooksLeft ? "checked" : ""} style="accent-color:var(--yellow); width:15px; height:15px;" /> Hooks
+                </label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:12px; cursor:pointer;">
+                  <input type="checkbox" class="job-lift-box" ${l.boxLeft ? "checked" : ""} style="accent-color:var(--accent); width:15px; height:15px;" /> Box
+                </label>
+              </div>
+            </div>
+            <div style="margin-bottom:6px;">
               <label style="font-size:10px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:3px;">Notes</label>
-              <input type="text" class="job-lift-notes edit-input" style="font-size:12px; padding:5px 8px;" placeholder="e.g. needs service, bringing back..." value="${esc(l.notes || "")}" />
+              <input type="text" class="job-lift-notes edit-input" style="font-size:12px; padding:5px 8px;" placeholder="e.g. needs service..." value="${esc(l.notes || "")}" />
             </div>
             <button data-lift-id="${esc(l.id)}" data-job="${esc(jobName)}" class="job-lift-save btn btn-primary btn-sm" style="width:100%; font-size:12px; margin-top:4px;">Save</button>
             <span class="job-lift-msg" style="font-size:11px; color:var(--green); display:none; margin-top:4px;">✓ Updated</span>
@@ -3005,10 +3113,12 @@
             const card   = btn.parentElement;
             const status = card.querySelector(".job-lift-status").value;
             const notes  = card.querySelector(".job-lift-notes").value;
+            const hooksLeft = card.querySelector(".job-lift-hooks").checked;
+            const boxLeft   = card.querySelector(".job-lift-box").checked;
             btn.disabled = true; btn.textContent = "...";
             try {
               const newJob = status === "On Job" ? jobN : "";
-              await apiPost("updateScissorLift", { liftId, status, currentJob: newJob, notes });
+              await apiPost("updateScissorLift", { liftId, status, currentJob: newJob, notes, hooksLeft, boxLeft });
               await loadJobLifts(jobN);
             } catch(e) {
               alert("Error: " + e.message);
@@ -3119,6 +3229,17 @@
               <label>Notes</label>
               <input type="text" data-lift-id="${esc(lift.id)}" class="sl-notes-input" value="${esc(lift.notes || "")}" placeholder="Notes..." />
             </div>
+            <div class="sl-field" style="gap:12px;">
+              <label>Left at Job</label>
+              <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:400; cursor:pointer;">
+                <input type="checkbox" class="sl-hooks-chk" ${lift.hooksLeft?"checked":""} style="accent-color:var(--yellow); width:16px; height:16px;" />
+                <span>🪝 Hooks</span>
+              </label>
+              <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:400; cursor:pointer;">
+                <input type="checkbox" class="sl-box-chk" ${lift.boxLeft?"checked":""} style="accent-color:var(--accent); width:16px; height:16px;" />
+                <span>📦 Box</span>
+              </label>
+            </div>
             <div class="sl-save-row">
               <button data-lift-id="${esc(lift.id)}" class="sl-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save</button>
               <span data-lift-id="${esc(lift.id)}" class="sl-save-msg">✓ Saved</span>
@@ -3136,17 +3257,17 @@
           const assignedTo = card.querySelector(".sl-emp-sel").value;
           const date       = card.querySelector(".sl-date-input").value;
           const notes      = card.querySelector(".sl-notes-input").value;
+          const hooksLeft  = card.querySelector(".sl-hooks-chk").checked;
+          const boxLeft    = card.querySelector(".sl-box-chk").checked;
           btn.disabled = true; btn.textContent = "...";
           try {
-            await apiPost("updateScissorLift", { liftId: id, status, currentJob, assignedTo, dateDeployed: date, notes });
+            await apiPost("updateScissorLift", { liftId: id, status, currentJob, assignedTo, dateDeployed: date, notes, hooksLeft, boxLeft });
             const msg = card.querySelector(".sl-save-msg");
             msg.style.display = "inline";
             setTimeout(() => { msg.style.display = "none"; }, 2000);
-            // Update status pill
             const pill = card.querySelector(".sl-status-pill");
             pill.textContent = status;
             pill.className = "sl-status-pill " + (status==="Available"?"available":status==="On Job"?"on-job":"needs-service");
-            // Refresh summary
             await loadScissorLifts();
           } catch(e) {
             alert("Error: " + e.message);
@@ -3343,6 +3464,13 @@
     </div>
   </div>
 </div>
+
+<script>
+  // ── SERVICE WORKER (offline support) ──
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+</script>
 
 </body>
 </html>

@@ -1020,7 +1020,7 @@ async function handleAddLiftExpense(body) {
 
 // ── ADD GENERAL EXPENSE ──
 async function handleAddGeneralExpense(body) {
-  const { jobId, date, type, amount, vendor, description, billable } = body || {};
+  const { jobId, date, type, amount, credit, vendor, description, billable } = body || {};
   if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
 
   const idStr = String(jobId).trim();
@@ -1029,14 +1029,15 @@ async function handleAddGeneralExpense(body) {
   }
 
   const fields = {
-    "fldPNFIzq1grsdxYi": [idStr],           // Job
-    "fldwbLPIafVtmaSeb": Number(amount),     // Manual Material Cost
-    "fldX2x2J0xkRyMY3y": type || "Materials", // Expense Type
-    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",    // Expense Status
+    "fldPNFIzq1grsdxYi": [idStr],
+    "fldwbLPIafVtmaSeb": Number(amount),
+    "fldX2x2J0xkRyMY3y": type || "Materials",
+    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
     "fld9Afieu4ofjvhSb": billable === true || billable === "true"
   };
   if (date)        fields["fldCCPYdyWAOGchWb"] = date;
   if (description) fields["fldelsB2jH2tvt1Cj"] = description;
+  if (credit && Number(credit) > 0) fields["fldcld418pREq2bGq"] = Number(credit); // Material Credit
 
   // Vendor — look up by name if provided
   if (vendor && vendor.trim()) {

@@ -460,10 +460,11 @@ async function handlePushExpenses(body) {
   const { pending } = body || {};
   if (!pending || !pending.length) return resp(400, { ok: false, error: "Nothing to push." });
 
-  const TAX_RATE   = 0.075;
-  const today      = new Date().toISOString().split("T")[0];
-  const expenseIds = [];
-  const allTxIds   = [];
+  const TAX_RATE      = 0.075;
+  const today         = new Date().toISOString().split("T")[0];
+  const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO"; // NEE Inventory vendor in main base
+  const expenseIds    = [];
+  const allTxIds      = [];
 
   for (const g of pending) {
     const { jobId, jobName, taxable, lines, txIds } = g;
@@ -481,6 +482,7 @@ async function handlePushExpenses(body) {
     // Create materials expense
     const matFields = {
       "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],
+      "fldlTUL8hsPkReBAB": [{ id: NEE_VENDOR_ID }],
       "fldwbLPIafVtmaSeb": Math.round(jobTotal * 100) / 100,
       "fldX2x2J0xkRyMY3y": "Materials",
       "fldCCPYdyWAOGchWb": today,
@@ -500,6 +502,7 @@ async function handlePushExpenses(body) {
       const taxAmt = Math.round(jobTotal * TAX_RATE * 100) / 100;
       const taxFields = {
         "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],
+        "fldlTUL8hsPkReBAB": [{ id: NEE_VENDOR_ID }],
         "fldwbLPIafVtmaSeb": taxAmt,
         "fldX2x2J0xkRyMY3y": "Materials",
         "fldCCPYdyWAOGchWb": today,

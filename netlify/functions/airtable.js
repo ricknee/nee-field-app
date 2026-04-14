@@ -995,19 +995,24 @@ async function handleAddLiftExpense(body) {
   const { jobId, date, amount, description, billable } = body || {};
   if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
 
+  const idStr = String(jobId).trim();
+  if (!idStr.startsWith("rec")) {
+    return resp(400, { ok: false, error: `Invalid jobId received: ${idStr}` });
+  }
+
   const fields = {
-    "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],   // Job (linked record)
+    "fldPNFIzq1grsdxYi": [idStr],                    // Job (linked record — plain ID array)
     "fldwbLPIafVtmaSeb": Number(amount),              // Manual Material Cost
-    "fldX2x2J0xkRyMY3y": "Scissor Lift",             // Expense Type
+    "fldX2x2J0xkRyMY3y": "Scissor Lift",             // Expense Type (singleSelect name)
     "fldelsB2jH2tvt1Cj": description || "Scissor Lift Expense", // Description
-    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",              // Expense Status
-    "fld9Afieu4ofjvhSb": billable === true || billable === "true" // Billable
+    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",              // Expense Status (singleSelect name)
+    "fld9Afieu4ofjvhSb": billable === true || billable === "true" // Billable (checkbox)
   };
   if (date) fields["fldCCPYdyWAOGchWb"] = date;
 
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, {
     method: "POST",
-    body: JSON.stringify({ fields })   // No typecast — linked record needs exact ID format
+    body: JSON.stringify({ fields, typecast: true })  // typecast for singleSelect names
   });
   return resp(200, { ok: true, id: data.id });
 }

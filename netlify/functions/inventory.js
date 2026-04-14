@@ -361,11 +361,11 @@ async function handlePendingExpenses() {
     itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0 };
   });
 
-  // Match inv base jobs to main base jobs by Job PO name
-  const mainJobByPO = {};
+  // Match inv base jobs to main base jobs by Job Name (more reliable than formula field)
+  const mainJobByName = {};
   mainJobRecords.forEach(r => {
-    const po = r.fields["Job PO"] || "";
-    if (po) mainJobByPO[po] = {
+    const name = (r.fields["Job Name"] || "").trim();
+    if (name) mainJobByName[name] = {
       id:      r.id,
       taxable: (r.fields["Tax Status"]?.name || r.fields["Tax Status"] || "") === "Taxable"
     };
@@ -373,10 +373,11 @@ async function handlePendingExpenses() {
 
   const invJobMap = {};
   invJobRecords.forEach(r => {
-    const jobPO  = r.fields["Job PO"] || r.fields["Job Name"] || "";
-    const mainJob = mainJobByPO[jobPO] || null;
+    const jobName = (r.fields["Job Name"] || "").trim();
+    const jobPO   = (r.fields["Job PO"]   || r.fields["Job Name"] || "").trim();
+    const mainJob = mainJobByName[jobName] || null;
     invJobMap[r.id] = {
-      name:      jobPO,
+      name:      jobPO || jobName,
       mainJobId: mainJob?.id   || null,
       taxable:   mainJob?.taxable || false
     };

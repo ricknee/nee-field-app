@@ -1140,6 +1140,7 @@
             <div class="info-box full">
               <div class="info-label">Job Address — Tap to Open in Maps</div>
               <div class="info-value" id="piAddress">—</div>
+              <div id="piMiles" style="font-size:12px; color:var(--muted); margin-top:5px; display:none;"></div>
             </div>
           </div>
 
@@ -1862,6 +1863,32 @@
       addrEl.innerHTML = `<a href="${esc(mlink)}" target="_blank" rel="noopener">📍 ${esc(job.address)}</a>`;
     } else {
       addrEl.textContent = val(job.address);
+    }
+
+    // ── MILEAGE FROM SHOP ──
+    const milesEl = $("piMiles");
+    if (milesEl) {
+      if (job.milesFromShop != null) {
+        // Already cached in Airtable — just show it
+        milesEl.innerHTML = `🚗 <strong>${job.milesFromShop}</strong> miles from shop`;
+        milesEl.style.display = "";
+      } else if (job.address && job.address.trim()) {
+        // Calculate in background, cache to Airtable
+        milesEl.textContent = "🚗 Calculating distance...";
+        milesEl.style.display = "";
+        apiPost("calculateMileage", { jobId: job.id, address: job.address })
+          .then(d => {
+            if (d.ok) {
+              milesEl.innerHTML = `🚗 <strong>${d.miles}</strong> miles from shop`;
+              job.milesFromShop = d.miles; // cache in local state too
+            } else {
+              milesEl.style.display = "none";
+            }
+          })
+          .catch(() => { milesEl.style.display = "none"; });
+      } else {
+        milesEl.style.display = "none";
+      }
     }
 
     // Power Co Tab

@@ -1191,43 +1191,6 @@
           </div>
         </div>
 
-        <!-- SCISSOR LIFT EXPENSE PANEL (admin only) -->
-        <div id="liftExpenseSection" class="admin-only hidden" style="margin-top:4px;">
-          <button id="btnToggleLiftExpense" class="btn btn-sm" type="button" style="font-size:12px; width:100%; margin-top:8px;">
-            💰 Add Scissor Lift Expense
-          </button>
-          <div id="liftExpensePanel" class="sl-expense-panel" style="display:none;">
-            <h4>🏗 Scissor Lift Expenses</h4>
-            <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Check each charge to include. Edit amounts as needed.</div>
-
-            <!-- Lift rows — populated by JS -->
-            <div id="liftExpenseRows"></div>
-
-            <hr class="sl-expense-divider" />
-
-            <!-- Delivery fee -->
-            <div class="sl-expense-row">
-              <label><input type="checkbox" id="slExpDeliveryChk" checked style="accent-color:var(--accent); width:15px; height:15px;" /> Delivery / Pickup</label>
-              <input type="number" id="slExpDeliveryAmt" value="300" min="0" step="0.01" />
-              <div class="sl-expense-billable"><input type="checkbox" id="slExpDeliveryBill" checked style="accent-color:var(--green); width:14px; height:14px;" /> Bill</div>
-            </div>
-
-            <!-- Date -->
-            <div class="sl-expense-date-row">
-              <label style="color:var(--muted);">Date:</label>
-              <input type="date" id="slExpDate" />
-            </div>
-
-            <!-- Save -->
-            <div style="display:flex; gap:8px; margin-top:12px; align-items:center;">
-              <button id="slExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Expenses</button>
-              <button id="slExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
-            </div>
-            <div id="slExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expenses saved!</div>
-            <div id="slExpErr" style="display:none; margin-top:8px; font-size:12px; color:var(--red);"></div>
-          </div>
-        </div>
-
         <!-- TAB: POWER CO -->
         <div class="tab-content" id="tab-powerco">
           <div class="info-grid">
@@ -1450,6 +1413,81 @@
 
         <!-- TAB: EXPENSES (admin only) -->
         <div class="tab-content" id="tab-expenses">
+          <!-- Admin action buttons -->
+          <div class="admin-only hidden" id="expenseActionBtns" style="display:none; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+            <button id="btnAddGeneralExpense" class="btn btn-sm" type="button" style="font-size:12px;">➕ Add Expense</button>
+            <button id="btnAddLiftExpense" class="btn btn-sm" type="button" style="font-size:12px;">🏗 Add Lift Expense</button>
+          </div>
+
+          <!-- General Expense Form -->
+          <div id="generalExpensePanel" class="sl-expense-panel" style="display:none; margin-bottom:14px;">
+            <h4>➕ New Expense</h4>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+              <div>
+                <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Date</label>
+                <input type="date" id="genExpDate" class="edit-input" style="font-size:13px; width:100%;" />
+              </div>
+              <div>
+                <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Expense Type</label>
+                <select id="genExpType" class="edit-input" style="font-size:13px; width:100%;">
+                  <option value="Materials" selected>Materials</option>
+                  <option value="Scissor Lift">Scissor Lift</option>
+                  <option value="Rental Equipment">Rental Equipment</option>
+                  <option value="Fuel">Fuel</option>
+                  <option value="Permit">Permit</option>
+                  <option value="Misc">Misc</option>
+                  <option value="Subcontract">Subcontract</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Amount ($)</label>
+                <input type="number" id="genExpAmount" class="edit-input" style="font-size:13px; width:100%;" placeholder="0.00" min="0" step="0.01" />
+              </div>
+              <div>
+                <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Vendor</label>
+                <input type="text" id="genExpVendor" class="edit-input" style="font-size:13px; width:100%;" placeholder="e.g. CED, Menards..." />
+              </div>
+            </div>
+            <div style="margin-bottom:10px;">
+              <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Description</label>
+              <input type="text" id="genExpDesc" class="edit-input" style="font-size:13px; width:100%;" placeholder="What was this expense for?" />
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+              <input type="checkbox" id="genExpBillable" checked style="accent-color:var(--green); width:16px; height:16px; cursor:pointer;" />
+              <label for="genExpBillable" style="font-size:13px; cursor:pointer;">Billable to customer</label>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button id="genExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Expense</button>
+              <button id="genExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+            </div>
+            <div id="genExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expense saved!</div>
+            <div id="genExpErr" style="display:none; margin-top:8px; font-size:12px; color:var(--red);"></div>
+          </div>
+
+          <!-- Scissor Lift Expense Form -->
+          <div id="liftExpensePanel" class="sl-expense-panel" style="display:none; margin-bottom:14px;">
+            <h4>🏗 Scissor Lift Expenses</h4>
+            <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Check each charge to include. Edit amounts as needed.</div>
+            <div id="liftExpenseRows"></div>
+            <hr class="sl-expense-divider" />
+            <div class="sl-expense-row">
+              <label><input type="checkbox" id="slExpDeliveryChk" checked style="accent-color:var(--accent); width:15px; height:15px;" /> Delivery / Pickup</label>
+              <input type="number" id="slExpDeliveryAmt" value="300" min="0" step="0.01" />
+              <div class="sl-expense-billable"><input type="checkbox" id="slExpDeliveryBill" checked style="accent-color:var(--green); width:14px; height:14px;" /> Bill</div>
+            </div>
+            <div class="sl-expense-date-row">
+              <label style="color:var(--muted);">Date:</label>
+              <input type="date" id="slExpDate" />
+            </div>
+            <div style="display:flex; gap:8px; margin-top:12px; align-items:center;">
+              <button id="slExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Lift Expenses</button>
+              <button id="slExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+            </div>
+            <div id="slExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expenses saved!</div>
+            <div id="slExpErr" style="display:none; margin-top:8px; font-size:12px; color:var(--red);"></div>
+          </div>
+
           <div class="section-header">Expenses</div>
           <div id="expensesList" style="overflow-x:auto;">
             <div class="loading-msg">Select a job to view expenses.</div>
@@ -1829,16 +1867,16 @@
       const estBtn = $("btnNewJobEstimate");
       estBtn.onclick = () => window.open("https://airtable.com/appiqWg6SvKcGfMAu/pagREqiZh84BGivDO/form", "_blank");
 
-      // Show scissor lift expense section for admin
-      const liftExpSec = $("liftExpenseSection");
-      if (liftExpSec) {
-        liftExpSec.classList.remove("hidden");
-        // Reset panel on job change
-        const panel = $("liftExpensePanel");
-        if (panel) panel.style.display = "none";
-        const toggleBtn = $("btnToggleLiftExpense");
-        if (toggleBtn) toggleBtn.textContent = "💰 Add Scissor Lift Expense";
+      // Show expense action buttons and reset panels on job change
+      const expBtns = $("expenseActionBtns");
+      if (expBtns) {
+        expBtns.classList.remove("hidden");
+        expBtns.style.display = "flex";
       }
+      const genPanel = $("generalExpensePanel");
+      if (genPanel) genPanel.style.display = "none";
+      const liftPanel = $("liftExpensePanel");
+      if (liftPanel) liftPanel.style.display = "none";
     }
 
     // Trello card - build URL from card ID
@@ -3385,7 +3423,50 @@
   }
 
   // ── EVENTS ──
-  // ── SCISSOR LIFT EXPENSE PANEL ──
+  // ── GENERAL EXPENSE ──
+  async function saveGeneralExpense() {
+    const job = state.selected;
+    if (!job) return;
+    const jobId = String(job.id || '');
+    if (!jobId.startsWith('rec')) { alert("No valid job selected."); return; }
+
+    const date     = $("genExpDate").value;
+    const type     = $("genExpType").value;
+    const amount   = parseFloat($("genExpAmount").value);
+    const vendor   = ($("genExpVendor").value || "").trim();
+    const desc     = ($("genExpDesc").value || "").trim();
+    const billable = $("genExpBillable").checked;
+    const saveBtn  = $("genExpSaveBtn");
+    const msgEl    = $("genExpMsg");
+    const errEl    = $("genExpErr");
+
+    msgEl.style.display = "none";
+    errEl.style.display = "none";
+
+    if (!amount || amount <= 0) { errEl.textContent = "Please enter an amount."; errEl.style.display = ""; return; }
+
+    saveBtn.disabled = true; saveBtn.textContent = "Saving...";
+    try {
+      await apiPost("addGeneralExpense", { jobId, date, type, amount, vendor, description: desc, billable });
+      msgEl.style.display = "";
+      $("genExpAmount").value = "";
+      $("genExpDesc").value = "";
+      $("genExpVendor").value = "";
+      setTimeout(() => {
+        msgEl.style.display = "none";
+        $("generalExpensePanel").style.display = "none";
+        $("expenseActionBtns").style.display = "flex";
+        loadExpenses(job.id);
+      }, 1500);
+    } catch(e) {
+      errEl.textContent = "Error: " + e.message;
+      errEl.style.display = "";
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = "Save Expense";
+    }
+  }
+
+  // ── SCISSOR LIFT EXPENSE ──
   const LIFT_RATES = {
     "Lift #1":1,"Lift #2":1,"Lift #3":1,"Lift #4":1,"Lift #5":1,
     "Lift #6":2,"Lift #7":2,
@@ -3520,27 +3601,43 @@
     const fleetBtn = $("btnFleet");
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
 
-    // Scissor Lift Expense Panel
-    const toggleLiftExp = $("btnToggleLiftExpense");
-    if (toggleLiftExp) toggleLiftExp.addEventListener("click", () => {
-      const panel = $("liftExpensePanel");
-      const open = panel.style.display === "none";
-      panel.style.display = open ? "" : "none";
-      toggleLiftExp.textContent = open ? "✕ Cancel" : "💰 Add Scissor Lift Expense";
-      if (open) {
-        // Get lifts currently on this job and init the form
-        const jobName = state.selected?.name || "";
-        apiGet("scissorLiftsByJob", { jobName }).then(d => {
-          initLiftExpensePanel(d.lifts || []);
-        }).catch(() => initLiftExpensePanel([]));
-      }
+    // General Expense
+    const btnAddGen = $("btnAddGeneralExpense");
+    if (btnAddGen) btnAddGen.addEventListener("click", () => {
+      $("generalExpensePanel").style.display = "";
+      $("liftExpensePanel").style.display = "none";
+      $("expenseActionBtns").style.display = "none";
+      // Set today's date
+      $("genExpDate").value = new Date().toISOString().slice(0,10);
+    });
+    const genExpCancel = $("genExpCancelBtn");
+    if (genExpCancel) genExpCancel.addEventListener("click", () => {
+      $("generalExpensePanel").style.display = "none";
+      $("expenseActionBtns").style.display = "flex";
+    });
+    const genExpSave = $("genExpSaveBtn");
+    if (genExpSave) genExpSave.addEventListener("click", saveGeneralExpense);
+
+    // Scissor Lift Expense
+    const btnAddLift = $("btnAddLiftExpense");
+    if (btnAddLift) btnAddLift.addEventListener("click", () => {
+      $("liftExpensePanel").style.display = "";
+      $("generalExpensePanel").style.display = "none";
+      $("expenseActionBtns").style.display = "none";
+      // Set today's date
+      $("slExpDate").value = new Date().toISOString().slice(0,10);
+      // Load lifts at this job
+      const jobName = state.selected?.name || "";
+      apiGet("scissorLiftsByJob", { jobName }).then(d => {
+        initLiftExpensePanel(d.lifts || []);
+      }).catch(() => initLiftExpensePanel([]));
     });
     const slExpSave = $("slExpSaveBtn");
     if (slExpSave) slExpSave.addEventListener("click", saveLiftExpenses);
     const slExpCancel = $("slExpCancelBtn");
     if (slExpCancel) slExpCancel.addEventListener("click", () => {
       $("liftExpensePanel").style.display = "none";
-      $("btnToggleLiftExpense").textContent = "💰 Add Scissor Lift Expense";
+      $("expenseActionBtns").style.display = "flex";
     });
     const addInspBtn = $("btnAddInspection");
     if (addInspBtn) addInspBtn.addEventListener("click", () => {

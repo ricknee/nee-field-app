@@ -341,6 +341,30 @@ async function handleHistory(params) {
   return resp(200, { ok: true, transactions });
 }
 
+// ── ADJUSTMENT ─────────────────────────────────────────────
+async function handleAdjustment(body) {
+  const { itemId, locationId, qty, enteredBy, notes } = body || {};
+  if (!itemId || !locationId || qty === undefined) return resp(400, { ok: false, error: "Missing required fields." });
+
+  const now = new Date().toISOString();
+  const fields = {
+    "fldGq37LD9YuyCf5e": now,
+    "fldmookC8mdyXxVuw": [String(itemId)],
+    "fldFQlArrzUnjCTxr": Number(qty),
+    "fldjvIy3X1DJowGsd": "Adjustment",
+    "fldpyLadbcc9NHO6c": [String(locationId)],
+    "fldIFffLxtcQTbExd": enteredBy || "",
+    "fldrcq8wSyfz8O3UB": notes || ""
+  };
+
+  const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields }], typecast: true })
+  });
+
+  return resp(200, { ok: true, id: data.records?.[0]?.id });
+}
+
 // ── DELETE ─────────────────────────────────────────────────
 async function handleDelete(body) {
   const { txId } = body || {};
@@ -372,6 +396,7 @@ export async function handler(event) {
       if (body.action === "submitCart") return await handleSubmitCart(body);
       if (body.action === "receive")    return await handleReceive(body);
       if (body.action === "transfer")   return await handleTransfer(body);
+      if (body.action === "adjustment") return await handleAdjustment(body);
       if (body.action === "delete")     return await handleDelete(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }

@@ -990,6 +990,28 @@ async function handleCalculateMileage(body) {
   return resp(200, { ok: true, miles });
 }
 
+// ── ADD SCISSOR LIFT EXPENSE ──
+async function handleAddLiftExpense(body) {
+  const { jobId, date, amount, description, billable } = body || {};
+  if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
+
+  const fields = {
+    "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],   // Job (linked record)
+    "fldwbLPIafVtmaSeb": Number(amount),              // Manual Material Cost
+    "fldX2x2J0xkRyMY3y": "Scissor Lift",             // Expense Type
+    "fldelsB2jH2tvt1Cj": description || "Scissor Lift Expense", // Description
+    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",              // Expense Status
+    "fld9Afieu4ofjvhSb": billable === true || billable === "true" // Billable
+  };
+  if (date) fields["fldCCPYdyWAOGchWb"] = date;
+
+  const data = await atFetch(`${encodeURIComponent("Expenses")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, id: data.id });
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -1032,6 +1054,7 @@ export async function handler(event) {
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       // ── Mileage ──
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
+      if (body.action === "addLiftExpense")        return await handleAddLiftExpense(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

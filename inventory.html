@@ -206,6 +206,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goTransfer()">
       <div class="ico">🔄</div><div><div class="lbl">Transfer</div><div class="sub">Move items between locations</div></div>
     </button>
+    <button class="big-btn" id="adj-btn" onclick="goAdjustment()" style="display:none">
+      <div class="ico">✏️</div><div><div class="lbl">Adjust Stock</div><div class="sub">Correct a count at a location</div></div>
+    </button>
     <div class="sec-lbl">View</div>
     <button class="big-btn" onclick="goHistory()">
       <div class="ico">📋</div><div><div class="lbl">Recent Logs</div><div class="sub">Your last 50 transactions</div></div>
@@ -246,6 +249,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-history" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Recent Logs</h2></div>
   <div class="hist-body" id="hist-body"><div class="loading"><div class="spinner"></div><br>Loading…</div></div>
+</div>
+
+<!-- ADJUSTMENT -->
+<div id="s-adjust" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Adjust Stock</h2></div>
+  <div class="log-body" id="adj-body"></div>
 </div>
 
 <!-- CHECK STOCK -->
@@ -401,6 +410,9 @@ async function doLogin() {
 function applyUser() {
   document.getElementById("hdr-user").textContent = currentUser.name.split(" ")[0];
   updateLocPill();
+  // Show adjustment button for admins only
+  var adjBtn = document.getElementById("adj-btn");
+  if (adjBtn) adjBtn.style.display = currentUser.role === "admin" ? "flex" : "none";
 }
 
 function updateLocPill() {
@@ -819,6 +831,8 @@ function pickItemFor(prefix, id) {
       '<button class="chg-btn" onclick="document.getElementById(\'xfr-item-area\').innerHTML=renderItemSearchFor(\'xfr\');xfrItem=null;">Change</button></div>';
     document.getElementById("xfr-qty-area").style.display = "block";
     document.getElementById("xfr-qty").focus();
+  } else if (prefix === "adj") {
+    pickItemFor_adj_override(id);
   }
 }
 
@@ -1035,6 +1049,106 @@ async function deleteTx(id) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// INVENTORY ADJUSTMENT
+// ═══════════════════════════════════════════════════════════
+var adjItem = null;
+
+function goAdjustment() {
+  adjItem = null;
+  showScreen("adjust");
+  renderAdjustForm();
+}
+
+function renderAdjustForm() {
+  var body = document.getElementById("adj-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    var t = setInterval(function(){ if(dataReady){ clearInterval(t); renderAdjustForm(); } }, 300);
+    return;
+  }
+
+  var locOpts = allLocations.map(function(l){
+    var sel = currentLocation && currentLocation.id === l.id ? " selected" : "";
+    return '<option value="' + l.id + '"' + sel + '>' + l.name + '</option>';
+  }).join("");
+
+  body.innerHTML =
+    '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:12px;font-size:13px;color:var(--dim);">' +
+    '⚠️ Adjustment sets the stock level to the exact count you enter. Use for physical counts and corrections.' +
+    '</div>' +
+
+    '<div class="field-group"><div class="field-lbl">Location</div>' +
+    '<select class="field-sel" id="adj-loc"><option value="">— Select location —</option>' + locOpts + '</select></div>' +
+
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+    '<div id="adj-item-area">' + renderItemSearchFor("adj") + '</div></div>' +
+
+    '<div class="field-group" id="adj-count-area" style="display:none">' +
+    '<div class="field-lbl">Actual Count (what you physically counted)</div>' +
+    '<div class="qty-row">' +
+    '<button class="qty-pm" onclick="adjAdjQty(-1)">−</button>' +
+    '<input class="qty-inp" id="adj-qty" type="number" value="0" min="0" step="1" onfocus="this.select()" />' +
+    '<button class="qty-pm" onclick="adjAdjQty(1)">+</button>' +
+    '</div></div>' +
+
+    '<div class="field-group"><div class="field-lbl">Notes (optional)</div>' +
+    '<input class="field-inp" id="adj-notes" type="text" placeholder="e.g. Year-end count, recount after audit" /></div>' +
+
+    '<button class="primary-btn" id="adj-submit-btn" onclick="submitAdjustment()" style="margin-top:4px;">Set Stock Level</button>' +
+    '<div style="height:24px"></div>';
+}
+
+var adjItemData = null;
+function pickItemFor_adj_override(id) {
+  adjItemData = allItems.find(function(i){ return i.id === id; });
+  if (!adjItemData) return;
+  document.getElementById("adj-item-area").innerHTML =
+    '<div class="sel-item-box"><div>' +
+    '<div class="sel-item-name">' + adjItemData.name + '</div>' +
+    '<div class="sel-item-meta">' + [adjItemData.cat, adjItemData.uom].filter(Boolean).join(" · ") + '</div>' +
+    '</div><button class="chg-btn" onclick="document.getElementById(\'adj-item-area\').innerHTML=renderItemSearchFor(\'adj\');adjItemData=null;document.getElementById(\'adj-count-area\').style.display=\'none\';">Change</button></div>';
+  document.getElementById("adj-count-area").style.display = "block";
+  document.getElementById("adj-qty").focus();
+}
+
+function adjAdjQty(d) {
+  var el = document.getElementById("adj-qty");
+  if (el) el.value = Math.max(0, parseInt(el.value || 0) + d);
+}
+
+async function submitAdjustment() {
+  if (!adjItemData) { showToast("Please select an item", true); return; }
+  var locId = document.getElementById("adj-loc")?.value;
+  if (!locId) { showToast("Please select a location", true); return; }
+  var qty   = parseFloat(document.getElementById("adj-qty")?.value ?? 0);
+  var notes = document.getElementById("adj-notes")?.value.trim();
+  var locName = allLocations.find(function(l){ return l.id === locId; })?.name || locId;
+
+  // Confirm before setting
+  if (!confirm("Set " + adjItemData.name + " at " + locName + " to " + qty + " " + (adjItemData.uom || "units") + "?")) return;
+
+  var btn = document.getElementById("adj-submit-btn");
+  btn.disabled = true; btn.textContent = "Saving…";
+
+  try {
+    await apiPost({
+      action: "adjustment",
+      itemId: adjItemData.id,
+      locationId: locId,
+      qty: qty,
+      enteredBy: currentUser.name,
+      notes: notes || undefined
+    });
+    showToast("✓ Stock adjusted to " + qty);
+    adjItemData = null;
+    goHome();
+  } catch(ex) {
+    showToast("Error: " + ex.message, true);
+    btn.disabled = false; btn.textContent = "Set Stock Level";
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // CHECK STOCK
 // ═══════════════════════════════════════════════════════════
 var stockItem = null;
@@ -1233,6 +1347,7 @@ function handleScanResult(val) {
     else if (scanTarget === "recv")  pickItemFor("recv", item.id);
     else if (scanTarget === "xfr")   pickItemFor("xfr", item.id);
     else if (scanTarget === "stock") lookupStock(item.id);
+    else if (scanTarget === "adj")   pickItemFor("adj", item.id);
     showToast("✓ Scanned: " + item.name);
   } else {
     // Try as job QR

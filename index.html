@@ -142,6 +142,32 @@
     .svc-status-badge.started { background:var(--blue-dim); color:var(--blue); border:1px solid var(--blue); }
     .svc-status-badge.complete { background:var(--green-dim); color:var(--green); border:1px solid var(--green); }
 
+    /* ── SCISSOR LIFT EXPENSE PANEL ── */
+    .sl-expense-panel {
+      margin-top:14px; background:var(--panel-2); border:1px solid var(--line);
+      border-radius:12px; padding:14px 16px;
+    }
+    .sl-expense-panel h4 {
+      font-size:13px; font-weight:700; color:var(--accent); text-transform:uppercase;
+      letter-spacing:0.5px; margin-bottom:12px; display:flex; align-items:center; gap:6px;
+    }
+    .sl-expense-row {
+      display:grid; grid-template-columns:auto 1fr 90px 70px;
+      align-items:center; gap:8px; margin-bottom:8px; font-size:13px;
+    }
+    .sl-expense-row label { display:flex; align-items:center; gap:5px; cursor:pointer; white-space:nowrap; }
+    .sl-expense-row input[type="number"] {
+      padding:5px 8px; border:1px solid var(--line-2); border-radius:6px;
+      background:var(--panel); color:var(--text); font-size:13px; width:100%;
+    }
+    .sl-expense-billable { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); }
+    .sl-expense-divider { border:none; border-top:1px solid var(--line); margin:10px 0; }
+    .sl-expense-date-row { display:flex; align-items:center; gap:10px; margin-top:10px; font-size:13px; }
+    .sl-expense-date-row input[type="date"] {
+      padding:5px 8px; border:1px solid var(--line-2); border-radius:6px;
+      background:var(--panel); color:var(--text); font-size:13px;
+    }
+
     /* ── FLEET MODAL ── */
     .fleet-modal-backdrop {
       position:fixed; inset:0; background:rgba(0,0,0,0.5);
@@ -1165,6 +1191,43 @@
           </div>
         </div>
 
+        <!-- SCISSOR LIFT EXPENSE PANEL (admin only) -->
+        <div id="liftExpenseSection" class="admin-only hidden" style="margin-top:4px;">
+          <button id="btnToggleLiftExpense" class="btn btn-sm" type="button" style="font-size:12px; width:100%; margin-top:8px;">
+            💰 Add Scissor Lift Expense
+          </button>
+          <div id="liftExpensePanel" class="sl-expense-panel" style="display:none;">
+            <h4>🏗 Scissor Lift Expenses</h4>
+            <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Check each charge to include. Edit amounts as needed.</div>
+
+            <!-- Lift rows — populated by JS -->
+            <div id="liftExpenseRows"></div>
+
+            <hr class="sl-expense-divider" />
+
+            <!-- Delivery fee -->
+            <div class="sl-expense-row">
+              <label><input type="checkbox" id="slExpDeliveryChk" checked style="accent-color:var(--accent); width:15px; height:15px;" /> Delivery / Pickup</label>
+              <input type="number" id="slExpDeliveryAmt" value="300" min="0" step="0.01" />
+              <div class="sl-expense-billable"><input type="checkbox" id="slExpDeliveryBill" checked style="accent-color:var(--green); width:14px; height:14px;" /> Bill</div>
+            </div>
+
+            <!-- Date -->
+            <div class="sl-expense-date-row">
+              <label style="color:var(--muted);">Date:</label>
+              <input type="date" id="slExpDate" />
+            </div>
+
+            <!-- Save -->
+            <div style="display:flex; gap:8px; margin-top:12px; align-items:center;">
+              <button id="slExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Expenses</button>
+              <button id="slExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+            </div>
+            <div id="slExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expenses saved!</div>
+            <div id="slExpErr" style="display:none; margin-top:8px; font-size:12px; color:var(--red);"></div>
+          </div>
+        </div>
+
         <!-- TAB: POWER CO -->
         <div class="tab-content" id="tab-powerco">
           <div class="info-grid">
@@ -1765,6 +1828,17 @@
     if (isAdmin()) {
       const estBtn = $("btnNewJobEstimate");
       estBtn.onclick = () => window.open("https://airtable.com/appiqWg6SvKcGfMAu/pagREqiZh84BGivDO/form", "_blank");
+
+      // Show scissor lift expense section for admin
+      const liftExpSec = $("liftExpenseSection");
+      if (liftExpSec) {
+        liftExpSec.classList.remove("hidden");
+        // Reset panel on job change
+        const panel = $("liftExpensePanel");
+        if (panel) panel.style.display = "none";
+        const toggleBtn = $("btnToggleLiftExpense");
+        if (toggleBtn) toggleBtn.textContent = "💰 Add Scissor Lift Expense";
+      }
     }
 
     // Trello card - build URL from card ID
@@ -3311,6 +3385,116 @@
   }
 
   // ── EVENTS ──
+  // ── SCISSOR LIFT EXPENSE PANEL ──
+  const LIFT_RATES = {
+    "Lift #1":1,"Lift #2":1,"Lift #3":1,"Lift #4":1,"Lift #5":1,
+    "Lift #6":2,"Lift #7":2,
+    "Lift #8":1,"Lift #9":1,"Lift #10":1
+  }; // 1=$150, 2=$175
+
+  function liftRate(name) {
+    const key = Object.keys(LIFT_RATES).find(k => name && name.includes(k.replace("Lift ","").trim()) ||
+      name === k);
+    // Match by lift number in name
+    const m = name && name.match(/#(\d+)/);
+    if (m) {
+      const n = parseInt(m[1]);
+      return (n === 6 || n === 7) ? 175 : 150;
+    }
+    return 150;
+  }
+
+  function initLiftExpensePanel(liftsOnJob) {
+    // Set today's date
+    const dateEl = $("slExpDate");
+    if (dateEl) dateEl.value = new Date().toISOString().slice(0,10);
+
+    // Build lift rows
+    const rows = $("liftExpenseRows");
+    if (!rows) return;
+    if (!liftsOnJob || !liftsOnJob.length) {
+      rows.innerHTML = `<div style="font-size:12px; color:var(--muted); margin-bottom:8px;">No lifts currently deployed to this job.</div>`;
+      return;
+    }
+    rows.innerHTML = liftsOnJob.map((l, i) => {
+      const rate = liftRate(l.name);
+      return `
+        <div class="sl-expense-row">
+          <label>
+            <input type="checkbox" class="sl-lift-chk" data-lift-name="${esc(l.name)}" checked
+              style="accent-color:var(--accent); width:15px; height:15px;" />
+            ${esc(l.name)}
+          </label>
+          <input type="number" class="sl-lift-amt" value="${rate}" min="0" step="0.01" />
+          <div class="sl-expense-billable">
+            <input type="checkbox" class="sl-lift-bill" checked style="accent-color:var(--green); width:14px; height:14px;" /> Bill
+          </div>
+        </div>`;
+    }).join("");
+  }
+
+  async function saveLiftExpenses() {
+    const job = state.selected;
+    if (!job) return;
+    const date = $("slExpDate").value;
+    const saveBtn = $("slExpSaveBtn");
+    const msgEl = $("slExpMsg");
+    const errEl = $("slExpErr");
+    msgEl.style.display = "none";
+    errEl.style.display = "none";
+    saveBtn.disabled = true; saveBtn.textContent = "Saving...";
+
+    // Collect all checked items
+    const expenses = [];
+
+    // Lift rental rows
+    document.querySelectorAll(".sl-lift-chk").forEach((chk, i) => {
+      if (!chk.checked) return;
+      const row = chk.closest(".sl-expense-row");
+      const amt  = parseFloat(row.querySelector(".sl-lift-amt").value) || 0;
+      const bill = row.querySelector(".sl-lift-bill").checked;
+      const name = chk.dataset.liftName;
+      if (amt > 0) expenses.push({ description: `${name} Rental`, amount: amt, billable: bill });
+    });
+
+    // Delivery fee
+    if ($("slExpDeliveryChk").checked) {
+      const amt  = parseFloat($("slExpDeliveryAmt").value) || 0;
+      const bill = $("slExpDeliveryBill").checked;
+      if (amt > 0) expenses.push({ description: "Scissor Lift Delivery / Pickup", amount: amt, billable: bill });
+    }
+
+    if (!expenses.length) {
+      errEl.textContent = "No expenses selected.";
+      errEl.style.display = "";
+      saveBtn.disabled = false; saveBtn.textContent = "Save Expenses";
+      return;
+    }
+
+    try {
+      for (const exp of expenses) {
+        await apiPost("addLiftExpense", {
+          jobId:       job.id,
+          date,
+          amount:      exp.amount,
+          description: exp.description,
+          billable:    exp.billable
+        });
+      }
+      msgEl.style.display = "";
+      setTimeout(() => {
+        msgEl.style.display = "none";
+        $("liftExpensePanel").style.display = "none";
+        $("btnToggleLiftExpense").textContent = "💰 Add Scissor Lift Expense";
+      }, 2000);
+    } catch(e) {
+      errEl.textContent = "Error: " + e.message;
+      errEl.style.display = "";
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = "Save Expenses";
+    }
+  }
+
   function wireEvents() {
     $("loginBtn").addEventListener("click", handleLogin);
     [$("loginId"), $("loginPin")].forEach(el => {
@@ -3333,6 +3517,29 @@
     if (slBtn) slBtn.addEventListener("click", openScissorLifts);
     const fleetBtn = $("btnFleet");
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
+
+    // Scissor Lift Expense Panel
+    const toggleLiftExp = $("btnToggleLiftExpense");
+    if (toggleLiftExp) toggleLiftExp.addEventListener("click", () => {
+      const panel = $("liftExpensePanel");
+      const open = panel.style.display === "none";
+      panel.style.display = open ? "" : "none";
+      toggleLiftExp.textContent = open ? "✕ Cancel" : "💰 Add Scissor Lift Expense";
+      if (open) {
+        // Get lifts currently on this job and init the form
+        const jobName = state.selected?.name || "";
+        apiGet("scissorLiftsByJob", { jobName }).then(d => {
+          initLiftExpensePanel(d.lifts || []);
+        }).catch(() => initLiftExpensePanel([]));
+      }
+    });
+    const slExpSave = $("slExpSaveBtn");
+    if (slExpSave) slExpSave.addEventListener("click", saveLiftExpenses);
+    const slExpCancel = $("slExpCancelBtn");
+    if (slExpCancel) slExpCancel.addEventListener("click", () => {
+      $("liftExpensePanel").style.display = "none";
+      $("btnToggleLiftExpense").textContent = "💰 Add Scissor Lift Expense";
+    });
     const addInspBtn = $("btnAddInspection");
     if (addInspBtn) addInspBtn.addEventListener("click", () => {
       const form = $("addInspectionForm");

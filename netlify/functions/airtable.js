@@ -1007,7 +1007,7 @@ async function handleAddLiftExpense(body) {
 
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, {
     method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
+    body: JSON.stringify({ fields })   // No typecast — linked record needs exact ID format
   });
   return resp(200, { ok: true, id: data.id });
 }

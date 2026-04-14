@@ -648,14 +648,41 @@ function onItemSearch() {
 function pickItem(id) {
   selectedItem = allItems.find(function(i){ return i.id === id; });
   if (!selectedItem) return;
-  var area = document.getElementById("item-area");
+  var isAdmin  = currentUser && currentUser.role === "admin";
+  var area     = document.getElementById("item-area");
+  var priceHtml = "";
+  if (isAdmin) {
+    priceHtml = '<div style="display:flex;align-items:center;gap:6px;margin-top:5px;">' +
+      '<span style="font-size:11px;color:var(--muted);">Unit cost:</span>' +
+      '<input id="item-price-edit" type="number" step="0.01" value="' + (selectedItem.cost || 0).toFixed(2) + '" ' +
+      'style="width:80px;background:var(--navy-mid);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:3px 6px;outline:none;" ' +
+      'onfocus="this.select()" onchange="updateItemPrice(this.value)" />' +
+      '<span style="font-size:11px;color:var(--muted);">/ ' + (selectedItem.uom || 'ea') + '</span>' +
+      '</div>';
+  }
   area.innerHTML = '<div class="sel-item-box">' +
-    '<div><div class="sel-item-name">' + selectedItem.name + '</div>' +
-    '<div class="sel-item-meta">' + [selectedItem.cat, selectedItem.uom].filter(Boolean).join(" · ") + '</div></div>' +
+    '<div style="flex:1;"><div class="sel-item-name">' + selectedItem.name + '</div>' +
+    '<div class="sel-item-meta">' + [selectedItem.cat, selectedItem.uom].filter(Boolean).join(" · ") + '</div>' +
+    priceHtml + '</div>' +
     '<button class="chg-btn" onclick="clearItem()">Change</button></div>';
   document.getElementById("qty-area").style.display = "block";
   document.getElementById("add-cart-btn").disabled = false;
   setTimeout(function(){ document.getElementById("log-qty")?.focus(); }, 50);
+}
+
+function updateItemPrice(val) {
+  var newCost = parseFloat(val);
+  if (isNaN(newCost) || newCost < 0) return;
+  if (!selectedItem) return;
+  // Update in memory immediately so cart uses new price
+  selectedItem.cost = newCost;
+  // Also update in allItems array
+  var item = allItems.find(function(i){ return i.id === selectedItem.id; });
+  if (item) item.cost = newCost;
+  // Save to Airtable in background
+  apiPost({ action: "updateItemCost", itemId: selectedItem.id, cost: newCost })
+    .then(function(){ showToast("✓ Price updated to $" + newCost.toFixed(2)); })
+    .catch(function(ex){ showToast("Price update failed: " + ex.message, true); });
 }
 
 function clearItem() {

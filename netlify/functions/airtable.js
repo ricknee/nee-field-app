@@ -62,6 +62,9 @@ const F = {
     serviceCallCreated:  "Service Call Created",
     projectComplete:     "Project Complete (Ready to Invoice)",
 
+    // ── Mileage ──
+    milesFromShop:       "Miles from Shop",
+
     // ── ADMIN: Live Performance ──
     totalRevenueLive:          "Total Revenue (Live)",
     totalMaterialsLive:        "Total Materials (Live)",
@@ -320,6 +323,9 @@ async function handleJobs() {
       startServiceCall:   gBool(f, F.job.startServiceCall),
       serviceCallCreated: gBool(f, F.job.serviceCallCreated),
       projectComplete:    gBool(f, F.job.projectComplete),
+
+      // ── Mileage ──
+      milesFromShop:      gNum(f, F.job.milesFromShop),
 
       // ── ADMIN: Live Performance ──
       totalRevenueLive:          gNum(f, F.job.totalRevenueLive),
@@ -946,6 +952,44 @@ async function handleExpenses(params) {
   return resp(200, { ok: true, expenses });
 }
 
+// ── MILEAGE FROM SHOP ──
+const SHOP_ADDRESS = "5909 Bandy Rd Homeworth OH 44634";
+
+async function handleCalculateMileage(body) {
+  const { jobId, address } = body || {};
+  if (!jobId || !address) return resp(400, { ok: false, error: "Missing jobId or address." });
+
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY;
+  if (!apiKey) return resp(500, { ok: false, error: "GOOGLE_MAPS_API_KEY env var not set." });
+
+  const origin = encodeURIComponent(SHOP_ADDRESS);
+  const dest   = encodeURIComponent(address);
+  const url    = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${dest}&units=imperial&key=${apiKey}`;
+
+  const res  = await fetch(url);
+  const data = await res.json();
+
+  if (data.status !== "OK") {
+    return resp(400, { ok: false, error: `Google API error: ${data.status}` });
+  }
+
+  const element = data.rows?.[0]?.elements?.[0];
+  if (!element || element.status !== "OK") {
+    return resp(400, { ok: false, error: "Could not calculate distance for this address." });
+  }
+
+  // Convert meters → miles, 1 decimal
+  const miles = Math.round(element.distance.value * 0.000621371 * 10) / 10;
+
+  // Cache in Airtable — field fldMy1yR7aHtVko9F = "Miles from Shop"
+  await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fldMy1yR7aHtVko9F": miles } })
+  });
+
+  return resp(200, { ok: true, miles });
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -986,6 +1030,8 @@ export async function handler(event) {
       // ── NEW: Service Call actions ──
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
+      // ── Mileage ──
+      if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

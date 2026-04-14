@@ -343,12 +343,11 @@ async function handleHistory(params) {
 
 // ── PENDING EXPENSES ───────────────────────────────────────
 async function handlePendingExpenses() {
-  const TAX_RATE = 0.075;
 
-  // Fetch all Use transactions that haven't been pushed yet
+  // Fetch all Use AND Return transactions not yet pushed
   const [txRecords, itemRecords, invJobRecords, mainJobRecords] = await Promise.all([
     fetchAll(API_ROOT_INV, "Inventory Transactions", {
-      filter: `AND({Transaction Type}='Use', NOT({Expense Created?}=1))`,
+      filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`,
       sortField: "Transaction Date",
       sortDir: "asc"
     }),
@@ -362,91 +361,138 @@ async function handlePendingExpenses() {
     itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0 };
   });
 
-  // Build inv job map: invJobId -> { name, taxable, mainJobId }
-  // Match main base jobs by Job PO name
+  // Match inv base jobs to main base jobs by Job PO name
   const mainJobByPO = {};
   mainJobRecords.forEach(r => {
     const po = r.fields["Job PO"] || "";
-    if (po) mainJobByPO[po] = { id: r.id, taxable: (r.fields["Tax Status"]?.name || r.fields["Tax Status"] || "") === "Taxable" };
+    if (po) mainJobByPO[po] = {
+      id:      r.id,
+      taxable: (r.fields["Tax Status"]?.name || r.fields["Tax Status"] || "") === "Taxable"
+    };
   });
 
   const invJobMap = {};
   invJobRecords.forEach(r => {
-    const jobPO = r.fields["Job PO"] || r.fields["Job Name"] || "";
+    const jobPO  = r.fields["Job PO"] || r.fields["Job Name"] || "";
     const mainJob = mainJobByPO[jobPO] || null;
     invJobMap[r.id] = {
       name:      jobPO,
-      mainJobId: mainJob?.id || null,
+      mainJobId: mainJob?.id   || null,
       taxable:   mainJob?.taxable || false
     };
   });
 
-  const pending = txRecords.map(r => {
-    const f       = r.fields || {};
-    const itemArr = f["Inventory Item"] || [];
-    const jobArr  = f["Job"] || [];
-    const itemId  = typeof itemArr[0] === "object" ? itemArr[0]?.id : String(itemArr[0] || "");
-    const invJobId = typeof jobArr[0] === "object" ? jobArr[0]?.id : String(jobArr[0] || "");
-    const itemData = itemMap[itemId] || {};
-    const jobData  = invJobMap[invJobId] || {};
-    const qty      = f["Quantity"] ?? 0;
-    const total    = Math.round((itemData.cost || 0) * Math.abs(qty) * 100) / 100;
+  // Build per-job, per-item net quantities and collect all tx IDs
+  // Structure: jobKey -> { jobData, items: { itemId -> { name, cost, netQty } }, txIds: [] }
+  const jobGroups = {};
+
+  txRecords.forEach(r => {
+    const f        = r.fields || {};
+    const itemArr  = f["Inventory Item"] || [];
+    const jobArr   = f["Job"] || [];
+    const txType   = f["Transaction Type"]?.name || f["Transaction Type"] || "";
+    const itemId   = typeof itemArr[0] === "object" ? itemArr[0]?.id : String(itemArr[0] || "");
+    const invJobId = typeof jobArr[0]  === "object" ? jobArr[0]?.id  : String(jobArr[0]  || "");
+    const qty      = Math.abs(f["Quantity"] ?? 0);
     const notesRaw = f["Notes"] || "";
-    const jobName  = jobData.name || notesRaw.split(" | ")[0] || "";
+
+    if (!itemId || !invJobId) return;
+
+    const jobData  = invJobMap[invJobId] || {};
+    if (!jobData.mainJobId) return; // skip if no matching main base job
+
+    const jobKey = invJobId;
+    if (!jobGroups[jobKey]) {
+      jobGroups[jobKey] = {
+        jobName:   jobData.name || notesRaw.split(" | ")[0] || "",
+        mainJobId: jobData.mainJobId,
+        taxable:   jobData.taxable,
+        items:     {},
+        txIds:     []
+      };
+    }
+
+    // Accumulate tx IDs (all get marked as pushed regardless)
+    jobGroups[jobKey].txIds.push(r.id);
+
+    // Net qty: Use = positive, Return = negative
+    const delta = txType === "Return" ? -qty : qty;
+    if (!jobGroups[jobKey].items[itemId]) {
+      const itemData = itemMap[itemId] || {};
+      jobGroups[jobKey].items[itemId] = {
+        name:   itemData.name || itemId,
+        cost:   itemData.cost || 0,
+        netQty: 0
+      };
+    }
+    jobGroups[jobKey].items[itemId].netQty += delta;
+  });
+
+  // Build the pending array for the UI — one entry per job
+  const pending = Object.values(jobGroups).map(g => {
+    const lines = Object.values(g.items)
+      .filter(i => i.netQty !== 0)
+      .map(i => ({
+        item:  i.name,
+        qty:   i.netQty,
+        cost:  i.cost,
+        total: Math.round(i.cost * i.netQty * 100) / 100
+      }));
+
+    const jobTotal = lines.reduce((s, l) => s + l.total, 0);
 
     return {
-      txId:      r.id,
-      item:      itemData.name || itemId,
-      qty:       Math.abs(qty),
-      cost:      itemData.cost || 0,
-      total,
-      invJobId,
-      jobId:     jobData.mainJobId || null,
-      jobName,
-      taxable:   jobData.taxable || false
+      jobName:   g.jobName,
+      jobId:     g.mainJobId,
+      taxable:   g.taxable,
+      txIds:     g.txIds,
+      lines,
+      jobTotal
     };
-  }).filter(t => t.total > 0 && t.jobId);
+  }).filter(g => g.jobTotal > 0); // skip jobs where returns cancel out all uses
 
   return resp(200, { ok: true, pending });
 }
 
 // ── PUSH EXPENSES TO MAIN BASE ─────────────────────────────
 async function handlePushExpenses(body) {
-  const { groups, order } = body || {};
-  if (!groups || !order) return resp(400, { ok: false, error: "Missing expense data." });
+  const { pending } = body || {};
+  if (!pending || !pending.length) return resp(400, { ok: false, error: "Nothing to push." });
 
   const TAX_RATE   = 0.075;
   const today      = new Date().toISOString().split("T")[0];
   const expenseIds = [];
-  const txIds      = [];
+  const allTxIds   = [];
 
-  for (const jobName of order) {
-    const g       = groups[jobName];
-    const txs     = g.txs || [];
-    const jobId   = g.jobId;
-    const taxable = g.taxable;
+  for (const g of pending) {
+    const { jobId, jobName, taxable, lines, txIds } = g;
+    if (!jobId || !lines?.length) continue;
 
-    if (!jobId || !txs.length) continue;
-
-    const jobTotal = txs.reduce((s, t) => s + (t.total || 0), 0);
+    const jobTotal = lines.reduce((s, l) => s + (l.total || 0), 0);
     if (jobTotal <= 0) continue;
 
-    // Create materials expense in main NEE base
+    // Build description from lines
+    const desc = lines.map(l => {
+      const sign = l.qty < 0 ? "−" : "";
+      return `${l.item} ×${sign}${Math.abs(l.qty)}`;
+    }).join(", ");
+
+    // Create materials expense
     const matFields = {
-      "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],  // Job
-      "fldwbLPIafVtmaSeb": jobTotal,                   // Manual Material Cost
-      "fldX2x2J0xkRyMY3y": "Materials",               // Expense Type
-      "fldCCPYdyWAOGchWb": today,                      // Expense Date
-      "fldJTg0ekrdZ4Jqr6": "Not Reviewed",             // Expense Status
-      "fld9Afieu4ofjvhSb": true,                       // Billable?
-      "fldnSQEOnyq3sho5g": "Inventory materials — " + txs.map(t => t.item + " ×" + t.qty).join(", ")
+      "fldPNFIzq1grsdxYi": [{ id: String(jobId) }],
+      "fldwbLPIafVtmaSeb": Math.round(jobTotal * 100) / 100,
+      "fldX2x2J0xkRyMY3y": "Materials",
+      "fldCCPYdyWAOGchWb": today,
+      "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
+      "fld9Afieu4ofjvhSb": true,
+      "fldnSQEOnyq3sho5g": "Inventory materials — " + desc
     };
 
     const matResp = await atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
       method: "POST",
       body: JSON.stringify({ records: [{ fields: matFields }], typecast: true })
     });
-    expenseIds.push(matResp.records?.[0]?.id);
+    if (matResp.records?.[0]?.id) expenseIds.push(matResp.records[0].id);
 
     // Create sales tax expense if taxable
     if (taxable) {
@@ -458,25 +504,24 @@ async function handlePushExpenses(body) {
         "fldCCPYdyWAOGchWb": today,
         "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
         "fld9Afieu4ofjvhSb": true,
-        "fldnSQEOnyq3sho5g": "Sales tax (7.5%) on inventory materials"
+        "fldnSQEOnyq3sho5g": "Sales tax (7.5%) on inventory materials — " + jobName
       };
       const taxResp = await atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
         method: "POST",
         body: JSON.stringify({ records: [{ fields: taxFields }], typecast: true })
       });
-      expenseIds.push(taxResp.records?.[0]?.id);
+      if (taxResp.records?.[0]?.id) expenseIds.push(taxResp.records[0].id);
     }
 
-    // Mark all transactions as pushed
-    txs.forEach(t => txIds.push(t.txId));
+    // Collect all tx IDs to mark as pushed (both Uses and Returns)
+    if (txIds?.length) allTxIds.push(...txIds);
   }
 
-  // Mark all transactions as Expense Created in inventory base
-  // Airtable allows max 10 per PATCH request
-  for (let i = 0; i < txIds.length; i += 10) {
-    const batch = txIds.slice(i, i + 10).map(id => ({
+  // Mark all transactions as Expense Created in inventory base (max 10 per request)
+  for (let i = 0; i < allTxIds.length; i += 10) {
+    const batch = allTxIds.slice(i, i + 10).map(id => ({
       id,
-      fields: { "fldO7Z0L7tpAvrgtH": true }  // Expense Created? checkbox
+      fields: { "fldO7Z0L7tpAvrgtH": true }
     }));
     await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
       method: "PATCH",
@@ -484,7 +529,7 @@ async function handlePushExpenses(body) {
     });
   }
 
-  return resp(200, { ok: true, count: expenseIds.length, txCount: txIds.length });
+  return resp(200, { ok: true, count: expenseIds.length, txCount: allTxIds.length });
 }
 
 // ── ADJUSTMENT ─────────────────────────────────────────────

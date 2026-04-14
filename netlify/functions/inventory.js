@@ -346,14 +346,15 @@ async function handlePendingExpenses() {
   const TAX_RATE = 0.075;
 
   // Fetch all Use transactions that haven't been pushed yet
-  const [txRecords, itemRecords, jobRecords] = await Promise.all([
+  const [txRecords, itemRecords, invJobRecords, mainJobRecords] = await Promise.all([
     fetchAll(API_ROOT_INV, "Inventory Transactions", {
       filter: `AND({Transaction Type}='Use', NOT({Expense Created?}=1))`,
       sortField: "Transaction Date",
       sortDir: "asc"
     }),
     fetchAll(API_ROOT_INV, "Inventory Items", {}),
-    fetchAll(API_ROOT_INV, "Jobs", {})
+    fetchAll(API_ROOT_INV, "Jobs", {}),
+    fetchAll(API_ROOT_MAIN, "Jobs", {})
   ]);
 
   const itemMap = {};
@@ -361,51 +362,48 @@ async function handlePendingExpenses() {
     itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0 };
   });
 
-  // Build job map with tax status from main base
-  const jobMap = {};
-  for (const r of jobRecords) {
-    const invJobId  = r.id;
-    const jobPO     = r.fields["Job PO"] || r.fields["Job Name"] || "";
-    // Fetch tax status from main base using same record ID (synced tables share IDs)
-    jobMap[invJobId] = { name: jobPO, taxable: false, mainJobId: invJobId };
-  }
+  // Build inv job map: invJobId -> { name, taxable, mainJobId }
+  // Match main base jobs by Job PO name
+  const mainJobByPO = {};
+  mainJobRecords.forEach(r => {
+    const po = r.fields["Job PO"] || "";
+    if (po) mainJobByPO[po] = { id: r.id, taxable: (r.fields["Tax Status"]?.name || r.fields["Tax Status"] || "") === "Taxable" };
+  });
 
-  // Fetch tax status from main base for all jobs
-  const mainJobIds = Object.keys(jobMap);
-  if (mainJobIds.length) {
-    try {
-      const mainJobs = await fetchAll(API_ROOT_MAIN, "Jobs", {});
-      mainJobs.forEach(r => {
-        if (jobMap[r.id]) {
-          const taxStatus = r.fields["Tax Status"]?.name || r.fields["Tax Status"] || "";
-          jobMap[r.id].taxable = taxStatus === "Taxable";
-        }
-      });
-    } catch(e) { console.log("Could not fetch tax status:", e.message); }
-  }
+  const invJobMap = {};
+  invJobRecords.forEach(r => {
+    const jobPO = r.fields["Job PO"] || r.fields["Job Name"] || "";
+    const mainJob = mainJobByPO[jobPO] || null;
+    invJobMap[r.id] = {
+      name:      jobPO,
+      mainJobId: mainJob?.id || null,
+      taxable:   mainJob?.taxable || false
+    };
+  });
 
   const pending = txRecords.map(r => {
     const f       = r.fields || {};
     const itemArr = f["Inventory Item"] || [];
     const jobArr  = f["Job"] || [];
     const itemId  = typeof itemArr[0] === "object" ? itemArr[0]?.id : String(itemArr[0] || "");
-    const jobId   = typeof jobArr[0]  === "object" ? jobArr[0]?.id  : String(jobArr[0]  || "");
+    const invJobId = typeof jobArr[0] === "object" ? jobArr[0]?.id : String(jobArr[0] || "");
     const itemData = itemMap[itemId] || {};
-    const jobData  = jobMap[jobId]   || {};
+    const jobData  = invJobMap[invJobId] || {};
     const qty      = f["Quantity"] ?? 0;
     const total    = Math.round((itemData.cost || 0) * Math.abs(qty) * 100) / 100;
     const notesRaw = f["Notes"] || "";
     const jobName  = jobData.name || notesRaw.split(" | ")[0] || "";
 
     return {
-      txId:    r.id,
-      item:    itemData.name || itemId,
-      qty:     Math.abs(qty),
-      cost:    itemData.cost || 0,
+      txId:      r.id,
+      item:      itemData.name || itemId,
+      qty:       Math.abs(qty),
+      cost:      itemData.cost || 0,
       total,
-      jobId,
+      invJobId,
+      jobId:     jobData.mainJobId || null,
       jobName,
-      taxable: jobData.taxable || false
+      taxable:   jobData.taxable || false
     };
   }).filter(t => t.total > 0 && t.jobId);
 

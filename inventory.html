@@ -703,17 +703,24 @@ function addToCart() {
   var qty = parseFloat(document.getElementById("log-qty")?.value || 1);
   if (!qty || qty <= 0) { showToast("Quantity must be > 0", true); return; }
 
-  // Check if item already in cart — if so add qty
-  var existing = cart.find(function(c){ return c.itemId === selectedItem.id; });
+  // Misc items always get a new line — never merge
+  var isMisc = selectedItem.name.toLowerCase().indexOf("misc") !== -1;
+  var existing = isMisc ? null : cart.find(function(c){ return c.itemId === selectedItem.id; });
   if (existing) {
     existing.qty += qty;
   } else {
-    cart.push({ itemId: selectedItem.id, itemName: selectedItem.name, uom: selectedItem.uom, cost: selectedItem.cost, qty: qty });
+    cart.push({
+      itemId:   selectedItem.id,
+      itemName: selectedItem.name,
+      uom:      selectedItem.uom,
+      cost:     selectedItem.cost,
+      qty:      qty,
+      cartKey:  Date.now() + Math.random() // unique key for removal
+    });
   }
 
   renderCart();
   clearItem();
-  // Reset qty
   var qtyEl = document.getElementById("log-qty");
   if (qtyEl) qtyEl.value = 1;
 }
@@ -739,7 +746,7 @@ function renderCart() {
     html += '<div class="cart-item">' +
       '<div class="cart-item-name">' + c.itemName + (c.uom ? ' <span style="color:var(--muted);font-size:11px;">(' + c.uom + ')</span>' : '') + '</div>' +
       '<div class="cart-item-qty">×' + c.qty + '</div>' +
-      (isAdmin ? '<div style="font-size:11px;color:var(--muted);">$' + fmtCurrency((c.cost||0)*c.qty) + '</div>' : '') +
+      (isAdmin ? '<div style="font-size:11px;color:var(--muted);">' + fmtCurrency((c.cost||0)*c.qty) + '</div>' : '') +
       '<button class="cart-item-del" onclick="removeFromCart(' + i + ')">×</button>' +
       '</div>';
   });
@@ -1013,10 +1020,10 @@ function renderHistory() {
     return;
   }
 
-  // Group by job
+  // Group by job — use location as key for transactions with no job
   var groups = {}, order = [];
   tx.forEach(function(t) {
-    var k = t.job || "No Job";
+    var k = t.job || (t.from ? "📍 " + t.from : "No Job");
     if (!groups[k]) { groups[k] = []; order.push(k); }
     groups[k].push(t);
   });
@@ -1041,10 +1048,13 @@ function renderHistory() {
     var txs      = groups[job];
     var isActive = histActiveJobs[job];
     var jobTotal = txs.reduce(function(s,t){ return s+(t.total||0); }, 0);
+    var isNoJob  = job.indexOf("📍") === 0 || job === "No Job";
 
     html += '<div class="job-group">';
     html += '<div class="job-group-hdr">';
-    html += '<span>' + job + (isActive===false?' <span style="font-size:10px;color:var(--muted);background:var(--slate);padding:2px 6px;border-radius:10px;margin-left:6px;">closed</span>':'') + '</span>';
+    html += '<span style="' + (isNoJob ? 'color:var(--dim);' : '') + '">' + job +
+      (!isNoJob && isActive===false ? ' <span style="font-size:10px;color:var(--muted);background:var(--slate);padding:2px 6px;border-radius:10px;margin-left:6px;">closed</span>' : '') +
+      '</span>';
     if (isAdmin && jobTotal > 0) html += '<span class="job-total">' + fmtCurrency(jobTotal) + '</span>';
     html += '</div>';
 
@@ -1054,6 +1064,16 @@ function renderHistory() {
       html += '<div style="flex:1;">';
       html += '<div class="tx-name">' + tx.item + (tx.uom?' <span style="color:var(--muted);font-size:11px;">('+tx.uom+')</span>':'') + '</div>';
       if (tx.enteredBy) html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;">by ' + tx.enteredBy + '</div>';
+      // Admin price edit inline
+      if (isAdmin) {
+        html += '<div style="display:flex;align-items:center;gap:5px;margin-top:4px;">';
+        html += '<span style="font-size:11px;color:var(--muted);">Cost/unit:</span>';
+        html += '<input type="number" step="0.01" value="' + (tx.cost||0).toFixed(2) + '" ' +
+          'data-txid="' + tx.id + '" data-itemid="' + (tx.itemId||'') + '" ' +
+          'onchange="editHistoryPrice(this)" ' +
+          'style="width:70px;background:var(--navy-mid);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:11px;padding:2px 5px;outline:none;" />';
+        html += '</div>';
+      }
       html += '</div>';
       html += '<div class="tx-right"><div class="tx-qty">×' + Math.abs(tx.qty) + '</div>';
       if (isAdmin && tx.cost > 0) html += '<div class="tx-price">' + fmtCurrency(tx.total) + '</div>';
@@ -1071,6 +1091,20 @@ function renderHistory() {
   });
 
   body.innerHTML = html;
+}
+
+function editHistoryPrice(input) {
+  var newCost = parseFloat(input.value);
+  if (isNaN(newCost) || newCost < 0) return;
+  var itemId = input.dataset.itemid;
+  if (!itemId) return;
+  // Update in allItems cache
+  var item = allItems.find(function(i){ return i.id === itemId; });
+  if (item) item.cost = newCost;
+  // Save to Airtable
+  apiPost({ action: "updateItemCost", itemId: itemId, cost: newCost })
+    .then(function(){ showToast("✓ Price updated to $" + newCost.toFixed(2)); })
+    .catch(function(ex){ showToast("Price update failed", true); });
 }
 
 function togglePast() {
@@ -1100,6 +1134,7 @@ async function goPushExpenses() {
   try {
     var d = await apiGet("pendingExpenses");
     var pending = d.pending || [];
+    window._pendingExpenses = pending;
 
     if (!pending.length) {
       body.innerHTML =
@@ -1111,72 +1146,95 @@ async function goPushExpenses() {
       return;
     }
 
-    var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
-      '📋 Uses minus Returns are netted per item. Tax (7.5%) added for taxable jobs. Tap <strong>Push All</strong> to create expense records.' +
-      '</div>';
-
-    var grandTotal = 0;
-    pending.forEach(function(g) {
-      var taxAmt   = g.taxable ? g.jobTotal * 0.075 : 0;
-      var jobGrand = g.jobTotal + taxAmt;
-      grandTotal  += jobGrand;
-
-      html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:12px;">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">';
-      html += '<div style="font-size:15px;font-weight:700;">' + g.jobName + '</div>';
-      html += '<div style="font-size:11px;padding:2px 8px;border-radius:10px;background:' + (g.taxable ? 'rgba(52,152,219,.2)' : 'rgba(46,204,113,.2)') + ';color:' + (g.taxable ? 'var(--blue)' : 'var(--green)') + ';">' + (g.taxable ? 'Taxable' : 'Tax Exempt') + '</div>';
-      html += '</div>';
-
-      g.lines.forEach(function(l) {
-        var isReturn = l.qty < 0;
-        html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:3px 0;border-bottom:1px solid var(--border);">';
-        html += '<span>' + l.item + (isReturn ? ' (return)' : '') + ' ×' + Math.abs(l.qty) + '</span>';
-        html += '<span>' + (isReturn ? '−' : '') + '$' + Math.abs(l.total).toFixed(2) + '</span></div>';
-      });
-
-      html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:6px 0 2px;">';
-      html += '<span>Materials subtotal</span><span>$' + g.jobTotal.toFixed(2) + '</span></div>';
-      if (g.taxable) {
-        html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:2px 0;">';
-        html += '<span>Sales tax (7.5%)</span><span>$' + taxAmt.toFixed(2) + '</span></div>';
-      }
-      html += '<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:var(--gold);padding:6px 0 0;border-top:1px solid var(--border);margin-top:4px;">';
-      html += '<span>Total</span><span>$' + jobGrand.toFixed(2) + '</span></div>';
-      html += '</div>';
-    });
-
-    html += '<div style="background:var(--navy-mid);border-radius:var(--r);padding:14px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;">';
-    html += '<div style="font-size:14px;font-weight:600;">Grand Total</div>';
-    html += '<div style="font-size:20px;font-weight:700;color:var(--gold);">$' + grandTotal.toFixed(2) + '</div>';
-    html += '</div>';
-
-    html += '<button class="primary-btn" id="push-submit-btn" onclick="submitPushExpenses()">Push All to Job Expenses</button>';
-    html += '<div style="height:24px"></div>';
-
-    body.innerHTML = html;
-    window._pendingExpenses = pending;
-
+    renderPushExpenses();
   } catch(ex) {
-    body.innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
+    document.getElementById("push-body").innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
   }
 }
 
-async function submitPushExpenses() {
-  var btn = document.getElementById("push-submit-btn");
-  if (!btn) return;
-  var pending = window._pendingExpenses;
-  if (!pending) return;
+function renderPushExpenses() {
+  var body    = document.getElementById("push-body");
+  var pending = window._pendingExpenses || [];
 
-  btn.disabled = true; btn.textContent = "Pushing…";
+  var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
+    '📋 Uses minus Returns are netted per item. Tax (7.5%) added for taxable jobs. Push one job or all at once.' +
+    '</div>';
+
+  var grandTotal = 0;
+  pending.forEach(function(g, idx) {
+    var taxAmt   = g.taxable ? g.jobTotal * 0.075 : 0;
+    var jobGrand = g.jobTotal + taxAmt;
+    grandTotal  += jobGrand;
+
+    html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:12px;">';
+    // Job header row
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">';
+    html += '<div style="font-size:15px;font-weight:700;flex:1;">' + g.jobName + '</div>';
+    html += '<div style="font-size:11px;padding:2px 8px;border-radius:10px;background:' + (g.taxable ? 'rgba(52,152,219,.2)' : 'rgba(46,204,113,.2)') + ';color:' + (g.taxable ? 'var(--blue)' : 'var(--green)') + ';flex-shrink:0;">' + (g.taxable ? 'Taxable' : 'Tax Exempt') + '</div>';
+    html += '<button onclick="pushOneJob(' + idx + ')" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-size:12px;font-weight:700;padding:6px 12px;cursor:pointer;flex-shrink:0;">Push</button>';
+    html += '</div>';
+
+    g.lines.forEach(function(l) {
+      var isReturn = l.qty < 0;
+      html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:3px 0;border-bottom:1px solid var(--border);">';
+      html += '<span>' + l.item + (isReturn ? ' (return)' : '') + ' ×' + Math.abs(l.qty) + '</span>';
+      html += '<span>' + (isReturn ? '−' : '') + '$' + Math.abs(l.total).toFixed(2) + '</span></div>';
+    });
+
+    html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:6px 0 2px;">';
+    html += '<span>Materials subtotal</span><span>$' + g.jobTotal.toFixed(2) + '</span></div>';
+    if (g.taxable) {
+      html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:2px 0;">';
+      html += '<span>Sales tax (7.5%)</span><span>$' + taxAmt.toFixed(2) + '</span></div>';
+    }
+    html += '<div style="display:flex;justify-content:space-between;font-size:15px;font-weight:700;color:var(--gold);padding:6px 0 0;border-top:1px solid var(--border);margin-top:4px;">';
+    html += '<span>Total</span><span>$' + jobGrand.toFixed(2) + '</span></div>';
+    html += '</div>';
+  });
+
+  // Grand total + Push All
+  html += '<div style="background:var(--navy-mid);border-radius:var(--r);padding:14px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">';
+  html += '<div style="font-size:14px;font-weight:600;">Grand Total</div>';
+  html += '<div style="font-size:20px;font-weight:700;color:var(--gold);">$' + grandTotal.toFixed(2) + '</div>';
+  html += '</div>';
+  html += '<button class="primary-btn" onclick="submitPushExpenses(null)">Push All to Job Expenses</button>';
+  html += '<div style="height:24px"></div>';
+
+  body.innerHTML = html;
+}
+
+async function pushOneJob(idx) {
+  var pending = window._pendingExpenses;
+  if (!pending || !pending[idx]) return;
+  var g = pending[idx];
+  if (!confirm("Push expenses for " + g.jobName + "?")) return;
+  try {
+    var result = await apiPost({ action: "pushExpenses", pending: [g] });
+    showToast("✓ Pushed " + g.jobName);
+    // Remove from pending and re-render
+    window._pendingExpenses.splice(idx, 1);
+    if (window._pendingExpenses.length) {
+      renderPushExpenses();
+    } else {
+      document.getElementById("push-body").innerHTML =
+        '<div style="text-align:center;padding:40px 20px;"><div style="font-size:40px;margin-bottom:12px;">✅</div>' +
+        '<div style="font-size:16px;font-weight:600;">All done!</div></div>';
+    }
+  } catch(ex) { showToast("Error: " + ex.message, true); }
+}
+
+async function submitPushExpenses(idxOnly) {
+  var pending = window._pendingExpenses;
+  if (!pending || !pending.length) return;
+  var toPush = idxOnly !== null ? [pending[idxOnly]] : pending;
 
   try {
-    var result = await apiPost({ action: "pushExpenses", pending: pending });
+    var result = await apiPost({ action: "pushExpenses", pending: toPush });
     showToast("✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!");
     window._pendingExpenses = null;
     goHome();
   } catch(ex) {
     showToast("Error: " + ex.message, true);
-    btn.disabled = false; btn.textContent = "Push All to Job Expenses";
   }
 }
 

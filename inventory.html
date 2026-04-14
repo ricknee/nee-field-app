@@ -1084,39 +1084,31 @@ async function goPushExpenses() {
       return;
     }
 
-    // Group by job
-    var groups = {}, order = [];
-    pending.forEach(function(tx) {
-      var k = tx.jobName || "No Job";
-      if (!groups[k]) { groups[k] = { txs: [], jobId: tx.jobId, taxable: tx.taxable }; order.push(k); }
-      groups[k].txs.push(tx);
-    });
-
     var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
-      '📋 Review material costs below. Tax (7.5%) will be added for taxable jobs. Tap <strong>Push All</strong> to create expense records in your main base.' +
+      '📋 Uses minus Returns are netted per item. Tax (7.5%) added for taxable jobs. Tap <strong>Push All</strong> to create expense records.' +
       '</div>';
 
     var grandTotal = 0;
-    order.forEach(function(jobName) {
-      var g = groups[jobName];
-      var jobTotal = g.txs.reduce(function(s,t){ return s + (t.total||0); }, 0);
-      var taxAmt   = g.taxable ? jobTotal * 0.075 : 0;
-      var jobGrand = jobTotal + taxAmt;
+    pending.forEach(function(g) {
+      var taxAmt   = g.taxable ? g.jobTotal * 0.075 : 0;
+      var jobGrand = g.jobTotal + taxAmt;
       grandTotal  += jobGrand;
 
       html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:12px;">';
       html += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">';
-      html += '<div style="font-size:15px;font-weight:700;">' + jobName + '</div>';
+      html += '<div style="font-size:15px;font-weight:700;">' + g.jobName + '</div>';
       html += '<div style="font-size:11px;padding:2px 8px;border-radius:10px;background:' + (g.taxable ? 'rgba(52,152,219,.2)' : 'rgba(46,204,113,.2)') + ';color:' + (g.taxable ? 'var(--blue)' : 'var(--green)') + ';">' + (g.taxable ? 'Taxable' : 'Tax Exempt') + '</div>';
       html += '</div>';
 
-      g.txs.forEach(function(tx) {
-        html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:3px 0;border-bottom:1px solid var(--border);">';
-        html += '<span>' + tx.item + ' ×' + Math.abs(tx.qty) + '</span><span>$' + (tx.total||0).toFixed(2) + '</span></div>';
+      g.lines.forEach(function(l) {
+        var isReturn = l.qty < 0;
+        html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:3px 0;border-bottom:1px solid var(--border);">';
+        html += '<span>' + l.item + (isReturn ? ' (return)' : '') + ' ×' + Math.abs(l.qty) + '</span>';
+        html += '<span>' + (isReturn ? '−' : '') + '$' + Math.abs(l.total).toFixed(2) + '</span></div>';
       });
 
       html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:6px 0 2px;">';
-      html += '<span>Materials subtotal</span><span>$' + jobTotal.toFixed(2) + '</span></div>';
+      html += '<span>Materials subtotal</span><span>$' + g.jobTotal.toFixed(2) + '</span></div>';
       if (g.taxable) {
         html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:2px 0;">';
         html += '<span>Sales tax (7.5%)</span><span>$' + taxAmt.toFixed(2) + '</span></div>';
@@ -1135,9 +1127,7 @@ async function goPushExpenses() {
     html += '<div style="height:24px"></div>';
 
     body.innerHTML = html;
-    // Store pending data for submit
-    window._pendingExpenseGroups = groups;
-    window._pendingExpenseOrder  = order;
+    window._pendingExpenses = pending;
 
   } catch(ex) {
     body.innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
@@ -1147,17 +1137,15 @@ async function goPushExpenses() {
 async function submitPushExpenses() {
   var btn = document.getElementById("push-submit-btn");
   if (!btn) return;
-  var groups = window._pendingExpenseGroups;
-  var order  = window._pendingExpenseOrder;
-  if (!groups || !order) return;
+  var pending = window._pendingExpenses;
+  if (!pending) return;
 
   btn.disabled = true; btn.textContent = "Pushing…";
 
   try {
-    var result = await apiPost({ action: "pushExpenses", groups: groups, order: order });
+    var result = await apiPost({ action: "pushExpenses", pending: pending });
     showToast("✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!");
-    window._pendingExpenseGroups = null;
-    window._pendingExpenseOrder  = null;
+    window._pendingExpenses = null;
     goHome();
   } catch(ex) {
     showToast("Error: " + ex.message, true);

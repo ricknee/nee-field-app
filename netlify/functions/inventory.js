@@ -563,6 +563,17 @@ async function handleAdjustment(body) {
   return resp(200, { ok: true, id: data.records?.[0]?.id });
 }
 
+// ── UPDATE ITEM COST ───────────────────────────────────────
+async function handleUpdateItemCost(body) {
+  const { itemId, cost } = body || {};
+  if (!itemId || cost === undefined) return resp(400, { ok: false, error: "Missing itemId or cost." });
+  await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": Number(cost) } })
+  });
+  return resp(200, { ok: true });
+}
+
 // ── DELETE ─────────────────────────────────────────────────
 async function handleDelete(body) {
   const { txId } = body || {};
@@ -591,13 +602,14 @@ export async function handler(event) {
 
     if (event.httpMethod === "POST") {
       const body = event.body ? JSON.parse(event.body) : {};
-      if (body.action === "login")        return await handleLogin(body);
-      if (body.action === "submitCart")   return await handleSubmitCart(body);
-      if (body.action === "receive")      return await handleReceive(body);
-      if (body.action === "transfer")     return await handleTransfer(body);
-      if (body.action === "adjustment")   return await handleAdjustment(body);
-      if (body.action === "pushExpenses") return await handlePushExpenses(body);
-      if (body.action === "delete")       return await handleDelete(body);
+      if (body.action === "login")           return await handleLogin(body);
+      if (body.action === "submitCart")      return await handleSubmitCart(body);
+      if (body.action === "receive")         return await handleReceive(body);
+      if (body.action === "transfer")        return await handleTransfer(body);
+      if (body.action === "adjustment")      return await handleAdjustment(body);
+      if (body.action === "pushExpenses")    return await handlePushExpenses(body);
+      if (body.action === "updateItemCost")  return await handleUpdateItemCost(body);
+      if (body.action === "delete")          return await handleDelete(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

@@ -1001,18 +1001,61 @@ async function handleAddLiftExpense(body) {
   }
 
   const fields = {
-    "fldPNFIzq1grsdxYi": [idStr],                    // Job (linked record — plain ID array)
+    "fldPNFIzq1grsdxYi": [idStr],                    // Job
+    "fldlTUL8hsPkReBAB": [{ id: "recU56ncurkFrM2Nx" }], // Vendor = Northeastern Electric
     "fldwbLPIafVtmaSeb": Number(amount),              // Manual Material Cost
-    "fldX2x2J0xkRyMY3y": "Scissor Lift",             // Expense Type (singleSelect name)
-    "fldelsB2jH2tvt1Cj": description || "Scissor Lift Expense", // Description
-    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",              // Expense Status (singleSelect name)
-    "fld9Afieu4ofjvhSb": billable === true || billable === "true" // Billable (checkbox)
+    "fldX2x2J0xkRyMY3y": "Scissor Lift",             // Expense Type
+    "fldelsB2jH2tvt1Cj": description || "Scissor Lift Expense",
+    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
+    "fld9Afieu4ofjvhSb": billable === true || billable === "true"
   };
   if (date) fields["fldCCPYdyWAOGchWb"] = date;
 
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, {
     method: "POST",
-    body: JSON.stringify({ fields, typecast: true })  // typecast for singleSelect names
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, id: data.id });
+}
+
+// ── ADD GENERAL EXPENSE ──
+async function handleAddGeneralExpense(body) {
+  const { jobId, date, type, amount, vendor, description, billable } = body || {};
+  if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
+
+  const idStr = String(jobId).trim();
+  if (!idStr.startsWith("rec")) {
+    return resp(400, { ok: false, error: `Invalid jobId: ${idStr}` });
+  }
+
+  const fields = {
+    "fldPNFIzq1grsdxYi": [idStr],           // Job
+    "fldwbLPIafVtmaSeb": Number(amount),     // Manual Material Cost
+    "fldX2x2J0xkRyMY3y": type || "Materials", // Expense Type
+    "fldJTg0ekrdZ4Jqr6": "Not Reviewed",    // Expense Status
+    "fld9Afieu4ofjvhSb": billable === true || billable === "true"
+  };
+  if (date)        fields["fldCCPYdyWAOGchWb"] = date;
+  if (description) fields["fldelsB2jH2tvt1Cj"] = description;
+
+  // Vendor — look up by name if provided
+  if (vendor && vendor.trim()) {
+    // Try to find vendor record by name
+    const vendorRecords = await fetchAll("Vendors", {
+      filter: `LOWER({Vendor Name}) = LOWER("${vendor.trim().replace(/"/g, '')}")`
+    });
+    if (vendorRecords.length) {
+      fields["fldlTUL8hsPkReBAB"] = [{ id: vendorRecords[0].id }];
+    } else {
+      // Store as description note if vendor not found
+      const existingDesc = fields["fldelsB2jH2tvt1Cj"] || description || "";
+      fields["fldelsB2jH2tvt1Cj"] = existingDesc ? `${existingDesc} [Vendor: ${vendor}]` : `Vendor: ${vendor}`;
+    }
+  }
+
+  const data = await atFetch(`${encodeURIComponent("Expenses")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
   });
   return resp(200, { ok: true, id: data.id });
 }
@@ -1060,6 +1103,7 @@ export async function handler(event) {
       // ── Mileage ──
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")        return await handleAddLiftExpense(body);
+      if (body.action === "addGeneralExpense")     return await handleAddGeneralExpense(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

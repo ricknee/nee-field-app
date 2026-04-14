@@ -371,11 +371,14 @@ async function handlePendingExpenses() {
     };
   });
 
+  console.log("Main base job names sample:", Object.keys(mainJobByName).slice(0,5));
+
   const invJobMap = {};
   invJobRecords.forEach(r => {
     const jobName = (r.fields["Job Name"] || "").trim();
     const jobPO   = (r.fields["Job PO"]   || r.fields["Job Name"] || "").trim();
     const mainJob = mainJobByName[jobName] || null;
+    console.log(`Inv job: "${jobName}" -> mainJobId: ${mainJob?.id || "NO MATCH"}`);
     invJobMap[r.id] = {
       name:      jobPO || jobName,
       mainJobId: mainJob?.id   || null,

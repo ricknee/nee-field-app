@@ -3436,6 +3436,8 @@
   async function saveLiftExpenses() {
     const job = state.selected;
     if (!job) return;
+    const jobId = String(job.id || '');
+    if (!jobId.startsWith('rec')) { alert("No valid job selected."); return; }
     const date = $("slExpDate").value;
     const saveBtn = $("slExpSaveBtn");
     const msgEl = $("slExpMsg");
@@ -3474,7 +3476,7 @@
     try {
       for (const exp of expenses) {
         await apiPost("addLiftExpense", {
-          jobId:       job.id,
+          jobId:       jobId,
           date,
           amount:      exp.amount,
           description: exp.description,

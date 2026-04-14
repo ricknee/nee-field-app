@@ -325,6 +325,7 @@ async function handleHistory(params) {
       id:         r.id,
       date:       dateStr,
       item:       itemData.name || itemId,
+      itemId:     itemId,
       uom:        itemData.uom  || "",
       cost:       itemData.cost || 0,
       total:      Math.round((itemData.cost || 0) * qty * 100) / 100,

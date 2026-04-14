@@ -57,6 +57,11 @@ const F = {
     taxStatus:                  "Tax Status",
     powerCompanyIntake:         "Power Company (Intake)",
 
+    // ── Service Call checkboxes ──
+    startServiceCall:    "Start Service Call",
+    serviceCallCreated:  "Service Call Created",
+    projectComplete:     "Project Complete (Ready to Invoice)",
+
     // ── ADMIN: Live Performance ──
     totalRevenueLive:          "Total Revenue (Live)",
     totalMaterialsLive:        "Total Materials (Live)",
@@ -182,7 +187,6 @@ function gBool(fields, fieldName) {
 }
 
 function gFormulaBool(fields, fieldName) {
-  // Formula fields that return 1/0 or "yes"/"no" or true/false
   const v = fields[fieldName];
   if (typeof v === "boolean") return v;
   if (typeof v === "number") return v !== 0;
@@ -312,6 +316,11 @@ async function handleJobs() {
       taxStatus:                  g(f, F.job.taxStatus) || "",
       powerCompanyIntake:         g(f, F.job.powerCompanyIntake) || "",
 
+      // ── Service Call checkboxes ──
+      startServiceCall:   gBool(f, F.job.startServiceCall),
+      serviceCallCreated: gBool(f, F.job.serviceCallCreated),
+      projectComplete:    gBool(f, F.job.projectComplete),
+
       // ── ADMIN: Live Performance ──
       totalRevenueLive:          gNum(f, F.job.totalRevenueLive),
       totalMaterialsLive:        gNum(f, F.job.totalMaterialsLive),
@@ -356,9 +365,7 @@ async function handleGenerator(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  const jobRecords = await fetchAll(TABLES.jobs, {
-    filter: `RECORD_ID()="${jobId}"`
-  });
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, generator: null, serviceRecords: [] });
   const jobName = jobRecords[0].fields[F.job.name] || "";
 
@@ -433,7 +440,6 @@ async function handleUpdateJobStatus(body) {
   const VALID = ["New Lead","Estimating","Awarded","Service Call Scheduled","Ready to Invoice","Completed","Not Awarded"];
   if (!VALID.includes(status)) return resp(400, { ok: false, error: "Invalid status value." });
 
-  // Job Status field ID: fld2FBMjvkOsy9Puu (singleSelect — must use field ID for writes)
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
     method: "PATCH",
     body: JSON.stringify({ fields: { "fld2FBMjvkOsy9Puu": status } })
@@ -446,7 +452,6 @@ async function handleUpdatePowerCo(body) {
   const { jobId, powerCompany, powerContact, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // Contact name → record ID map
   const CONTACT_IDS = {
     "Dave Baker":    "rec0Pmo9JBNVSdJ23",
     "Dan Shaeffer":  "recejs6S1LHK4rbNN",
@@ -458,15 +463,8 @@ async function handleUpdatePowerCo(body) {
   };
 
   const fields = {};
-  // Power Company (Intake) — singleSelect
-  if (powerCompany && powerCompany.trim() !== "") {
-    fields["fldURTQ0ygHMMIbTU"] = powerCompany.trim();
-  }
-  // Power Company Contact — linked record, write using record ID
-  if (powerContact && CONTACT_IDS[powerContact]) {
-    fields["fldhKlMCFsnmHo5PH"] = [{ id: CONTACT_IDS[powerContact] }];
-  }
-  // Plain text fields
+  if (powerCompany && powerCompany.trim() !== "") fields["fldURTQ0ygHMMIbTU"] = powerCompany.trim();
+  if (powerContact && CONTACT_IDS[powerContact]) fields["fldhKlMCFsnmHo5PH"] = [{ id: CONTACT_IDS[powerContact] }];
   if (aicNumber     !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
   if (tempWorkOrder !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
   if (permWorkOrder !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;
@@ -480,6 +478,29 @@ async function handleUpdatePowerCo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// ── SERVICE CALL ACTIONS ──
+async function handleStartServiceCall(body) {
+  const { jobId } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Checks "Start Service Call" checkbox (fldgar4OL6AL5k1S6) — triggers Make automation
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fldgar4OL6AL5k1S6": true } })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
+async function handleCompleteServiceCall(body) {
+  const { jobId } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Checks "Project Complete (Ready to Invoice)" checkbox (fldZ4tEiYt6Ke8IlK)
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fldZ4tEiYt6Ke8IlK": true } })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 async function handleDeleteExpense(body) {
   const { expenseId } = body || {};
   if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
@@ -490,7 +511,6 @@ async function handleDeleteExpense(body) {
 async function handleApproveExpense(body) {
   const { expenseId } = body || {};
   if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
-  // Reviewed checkbox field ID: fldwSsga6eashzJsw
   const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, {
     method: "PATCH",
     body: JSON.stringify({ fields: { "fldwSsga6eashzJsw": true } })
@@ -508,14 +528,16 @@ async function handleScissorLiftsByJob(params) {
       const f = r.fields || {};
       const photos = (f["Photo"] || []).map(a => a.url);
       return {
-        id:          r.id,
-        name:        f["Lift Name"] || "",
-        status:      f["Status"] || "Available",
-        currentJob:  f["Current Job"] || "",
-        assignedTo:  f["Assigned To"] || "",
-        dateDeployed: f["Date Deployed"] || "",
-        notes:       f["Notes"] || "",
-        photoUrl:    photos[0] || ""
+        id:            r.id,
+        name:          f["Lift Name"] || "",
+        status:        f["Status"] || "Available",
+        currentJob:    f["Current Job"] || "",
+        assignedTo:    f["Assigned To"] || "",
+        dateDeployed:  f["Date Deployed"] || "",
+        notes:         f["Notes"] || "",
+        photoUrl:      photos[0] || "",
+        hooksLeft:     f["Lift Hooks Left at Job"] === true,
+        boxLeft:       f["Lift Box Left at Job"] === true
       };
     })
     .filter(l => l.currentJob === jobName && l.status === "On Job");
@@ -527,12 +549,10 @@ async function handleJobInspections(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // First get the job name from the job ID
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, inspections: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
 
-  // Filter inspections by job name via the linked record's display name
   const records = await fetchAll("Job Inspections", {
     filter: `FIND("${jobName}", ARRAYJOIN({Job}))`,
     sortField: "Inspection Date",
@@ -541,10 +561,8 @@ async function handleJobInspections(params) {
 
   const inspections = records.map(r => {
     const f = r.fields || {};
-    // Permit number is a lookup
     const permitRaw = f["Permit Number"];
     const permit = Array.isArray(permitRaw) ? permitRaw[0] : (permitRaw || "");
-    // Agency phone is a lookup
     const phoneRaw = f["Inspections Agency Phone #"];
     const agencyPhone = Array.isArray(phoneRaw) ? phoneRaw[0] : (phoneRaw || "");
 
@@ -567,7 +585,6 @@ async function handleCreateInspection(body) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
-  // Job is a linked record — use record ID
   fields["fldqk2pA5w3TSN3q8"] = [{ id: String(jobId) }];
   if (inspectionType) fields["fldR2IQkaeRHXytsR"] = inspectionType;
   if (date)           fields["fldPblyNOIryMLFB6"] = date;
@@ -586,7 +603,6 @@ async function handleJobEstimates(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // Get job name first to filter estimates
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, estimates: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
@@ -641,44 +657,14 @@ async function handleUpdateEstimate(body) {
 }
 
 // ── FLEET ──
-const FLEET_TABLES = {
-  vehicles:    "Fleet Vehicles",
-  maintenance: "Fleet Maintenance"
-};
-const FV = { // Fleet Vehicle field IDs
-  name:           "fldBcqDl6ez0GZz9n",
-  year:           "fld7E7ubdLAnlbplu",
-  make:           "fldiPxOpsxiO3JbqQ",
-  model:          "fldXFQ1u0BKpd94Fa",
-  color:          "fldR9UNl5MD8QRelB",
-  vin:            "fldMCiACFqTxA87Ay",
-  plate:          "fldX23ZlkmGHTx52S",
-  type:           "flduEmTHcrv24SlJT",
-  mileage:        "fldcRmbsqWDMyfzuF",
-  mileageDate:    "fldwIxFsMRrZsAAEy",
-  oilType:        "fldgT7qDyTXa1SeUC",
-  oilCapacity:    "fldgjlvQVc4kOEkqY",
-  tireBrand:      "fldkBVEAr6qCkTAZS",
-  tireSize:       "fldCC7EoiTXi7BxMR",
-  tireInstall:    "fldn7QbuEneDRgJ76",
-  notes:          "fldx4pEJ5JS0DFLyh",
-  active:         "fldapfWYijFLo7n1P",
-  vehicle:        "fldK1hwGh51FgcgN8"  // reverse link in Fleet Vehicles
-};
-const FM = { // Fleet Maintenance field IDs
-  vehicle:        "fld12gpaArqYw7BWU",
-  date:           "fldwEhvgTGGEy9E3g",
-  mileage:        "fldE7SlKw7n85bZWD",
-  serviceTypes:   "fldCiHkwHtsOZmkWk",
-  oilBrand:       "fldO7RALeUnXSgC6J",
-  oilType:        "fldcgXpATus1HqW81",
-  oilQty:         "fldwaUKNsJQvjwlK1",
-  tireBrand:      "fldSw3UKcWky8bQlA",
-  tireSize:       "fldVEwTlmNaWmRUiJ",
-  cost:           "fldwYmFTQLvOuDKIE",
-  performedBy:    "fld4mHAqeBjCqSjkB",
-  shop:           "fldZddoeHsPrxapz1",
-  notes:          "fldwNDO1V7E26vql1"
+const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance" };
+const FV = {
+  name: "fldBcqDl6ez0GZz9n", year: "fld7E7ubdLAnlbplu", make: "fldiPxOpsxiO3JbqQ",
+  model: "fldXFQ1u0BKpd94Fa", color: "fldR9UNl5MD8QRelB", vin: "fldMCiACFqTxA87Ay",
+  plate: "fldX23ZlkmGHTx52S", type: "flduEmTHcrv24SlJT", mileage: "fldcRmbsqWDMyfzuF",
+  mileageDate: "fldwIxFsMRrZsAAEy", oilType: "fldgT7qDyTXa1SeUC", oilCapacity: "fldgjlvQVc4kOEkqY",
+  tireBrand: "fldkBVEAr6qCkTAZS", tireSize: "fldCC7EoiTXi7BxMR", tireInstall: "fldn7QbuEneDRgJ76",
+  notes: "fldx4pEJ5JS0DFLyh", active: "fldapfWYijFLo7n1P"
 };
 
 async function handleFleetVehicles() {
@@ -688,26 +674,16 @@ async function handleFleetVehicles() {
     .map(r => {
       const f = r.fields || {};
       return {
-        id:             r.id,
-        name:           f["Vehicle Name"]       || "",
-        year:           f["Year"]               || null,
-        make:           f["Make"]               || "",
-        model:          f["Model"]              || "",
-        color:          f["Color"]              || "",
-        vin:            f["VIN"]                || "",
-        plate:          f["License Plate"]      || "",
-        type:           f["Vehicle Type"]?.name || f["Vehicle Type"] || "",
-        currentMileage: f["Current Mileage"]    ?? null,
-        mileageDate:    f["Mileage Date"]       || "",
-        oilType:        f["Oil Type"]           || "",
-        oilCapacity:    f["Oil Capacity (qts)"] ?? null,
-        tireBrand:      f["Tire Brand"]         || "",
-        tireSize:       f["Tire Size"]          || "",
-        tireInstallDate: f["Tire Install Date"] || "",
-        notes:          f["Notes"]              || "",
-        photoUrl:       (f["Photo"] || [])[0]?.url || "",
-        wrenchSize:     f["Oil Drain Wrench Size"] || "",
-        lugTorque:      f["Lug Torque (ft-lbs)"] ?? null
+        id: r.id, name: f["Vehicle Name"] || "", year: f["Year"] || null,
+        make: f["Make"] || "", model: f["Model"] || "", color: f["Color"] || "",
+        vin: f["VIN"] || "", plate: f["License Plate"] || "",
+        type: f["Vehicle Type"]?.name || f["Vehicle Type"] || "",
+        currentMileage: f["Current Mileage"] ?? null, mileageDate: f["Mileage Date"] || "",
+        oilType: f["Oil Type"] || "", oilCapacity: f["Oil Capacity (qts)"] ?? null,
+        tireBrand: f["Tire Brand"] || "", tireSize: f["Tire Size"] || "",
+        tireInstallDate: f["Tire Install Date"] || "", notes: f["Notes"] || "",
+        photoUrl: (f["Photo"] || [])[0]?.url || "",
+        wrenchSize: f["Oil Drain Wrench Size"] || "", lugTorque: f["Lug Torque (ft-lbs)"] ?? null
       };
     });
   return resp(200, { ok: true, vehicles });
@@ -717,35 +693,23 @@ async function handleFleetServiceHistory(params) {
   const { vehicleId } = params || {};
   if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
 
-  // Get vehicle name to use in filter (linked field filters by name in Airtable formula)
   const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
   if (!vehRecords.length) return resp(200, { ok: true, records: [] });
   const vehName = vehRecords[0].fields["Vehicle Name"] || "";
 
-  // Filter by vehicle name — linked record fields in filterByFormula match on display name
   const records = await fetchAll(FLEET_TABLES.maintenance, {
-    filter: `{Vehicle}="${vehName}"`,
-    sortField: "Date",
-    sortDir:   "desc"
+    filter: `{Vehicle}="${vehName}"`, sortField: "Date", sortDir: "desc"
   });
 
   const serviceRecords = records.map(r => {
     const f = r.fields || {};
     const types = (f["Service Types"] || []).map(s => (typeof s === "object" ? s.name : s));
     return {
-      id:           r.id,
-      date:         f["Date"]                 || "",
-      mileage:      f["Mileage at Service"]   ?? null,
-      serviceTypes: types,
-      oilBrand:     f["Filter #"]             || "",
-      oilType:      f["Oil Type Used"]        || "",
-      oilQty:       f["Oil Qty (qts)"]        ?? null,
-      tireBrand:    f["Tire Brand Installed"] || "",
-      tireSize:     f["Tire Size Installed"]  || "",
-      cost:         f["Cost"]                 ?? null,
-      performedBy:  f["Performed By"]         || "",
-      shop:         f["Shop / Location"]      || "",
-      notes:        f["Notes"]               || ""
+      id: r.id, date: f["Date"] || "", mileage: f["Mileage at Service"] ?? null,
+      serviceTypes: types, oilBrand: f["Filter #"] || "", oilType: f["Oil Type Used"] || "",
+      oilQty: f["Oil Qty (qts)"] ?? null, tireBrand: f["Tire Brand Installed"] || "",
+      tireSize: f["Tire Size Installed"] || "", cost: f["Cost"] ?? null,
+      performedBy: f["Performed By"] || "", shop: f["Shop / Location"] || "", notes: f["Notes"] || ""
     };
   });
   return resp(200, { ok: true, records: serviceRecords });
@@ -775,11 +739,7 @@ async function handleAddFleetService(body) {
   if (!vehicleId) return resp(400, { ok: false, error: `Missing vehicleId. Keys: ${Object.keys(body||{}).join(",")}` });
 
   const fields = {};
-  // Try both approaches: ID-based and name-based (typecast resolves names)
-  fields["fld12gpaArqYw7BWU"] = vehicleName
-    ? [vehicleName]           // typecast: true will resolve name to record ID
-    : [{ id: String(vehicleId) }];
-
+  fields["fld12gpaArqYw7BWU"] = vehicleName ? [vehicleName] : [{ id: String(vehicleId) }];
   if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
   if (mileage)      fields["fldE7SlKw7n85bZWD"] = Number(mileage);
   if (serviceTypes && serviceTypes.length) fields["fldCiHkwHtsOZmkWk"] = serviceTypes;
@@ -794,10 +754,9 @@ async function handleAddFleetService(body) {
   if (notes)        fields["fldwNDO1V7E26vql1"] = notes;
 
   const data = await atFetch(`${encodeURIComponent("Fleet Maintenance")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
+    method: "POST", body: JSON.stringify({ fields, typecast: true })
   });
-  return resp(200, { ok: true, id: data.id, vehicleId, vehicleName, linked: fields["fld12gpaArqYw7BWU"] });
+  return resp(200, { ok: true, id: data.id });
 }
 
 async function handleUpdateFleetService(body) {
@@ -819,8 +778,7 @@ async function handleUpdateFleetService(body) {
   if (notes !== undefined) fields["fldwNDO1V7E26vql1"] = notes;
 
   const data = await atFetch(`${encodeURIComponent("Fleet Maintenance")}/${serviceRecordId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
+    method: "PATCH", body: JSON.stringify({ fields, typecast: true })
   });
   return resp(200, { ok: true, updatedId: data.id });
 }
@@ -845,27 +803,30 @@ async function handleScissorLifts() {
       assignedTo:   f["Assigned To"] || "",
       dateDeployed: f["Date Deployed"] || "",
       notes:        f["Notes"] || "",
-      photoUrl:     photos[0] || ""
+      photoUrl:     photos[0] || "",
+      hooksLeft:    f["Lift Hooks Left at Job"] === true,
+      boxLeft:      f["Lift Box Left at Job"] === true
     };
   });
   return resp(200, { ok: true, lifts });
 }
 
 async function handleUpdateScissorLift(body) {
-  const { liftId, status, currentJob, assignedTo, dateDeployed, notes } = body || {};
+  const { liftId, status, currentJob, assignedTo, dateDeployed, notes, hooksLeft, boxLeft } = body || {};
   if (!liftId) return resp(400, { ok: false, error: "Missing liftId." });
 
   const fields = {};
-  // All plain text/singleSelect — no linked records!
-  if (status)       fields["fldB9Kwqm0NS3RFFP"] = status;
+  if (status)                   fields["fldB9Kwqm0NS3RFFP"] = status;
   if (currentJob !== undefined) fields["fldZpCcD52inR2PGm"] = currentJob;
   if (assignedTo !== undefined) fields["fldkjsgzYiedjTaJ5"] = assignedTo || null;
-  if (dateDeployed) fields["fldqRXHkwiFQdjqor"] = dateDeployed;
-  if (notes !== undefined) fields["fldG5MLCzQbyClax0"] = notes;
+  if (dateDeployed)             fields["fldqRXHkwiFQdjqor"] = dateDeployed;
+  if (notes !== undefined)      fields["fldG5MLCzQbyClax0"] = notes;
+  // Hooks and box checkboxes — fldlpqrIcnTH8R7Yw and fldm5zfYDcw0oQHX4
+  if (hooksLeft !== undefined)  fields["fldlpqrIcnTH8R7Yw"] = hooksLeft === true;
+  if (boxLeft   !== undefined)  fields["fldm5zfYDcw0oQHX4"] = boxLeft === true;
 
   const data = await atFetch(`${encodeURIComponent(TABLES.scissorLifts)}/${liftId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields })
+    method: "PATCH", body: JSON.stringify({ fields })
   });
   return resp(200, { ok: true, updatedId: data.id });
 }
@@ -873,11 +834,7 @@ async function handleUpdateScissorLift(body) {
 async function handleDeleteTimeEntry(body) {
   const { entryId } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
-
-  await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, {
-    method: "DELETE"
-  });
-
+  await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, { method: "DELETE" });
   return resp(200, { ok: true, deleted: entryId });
 }
 
@@ -888,14 +845,11 @@ async function handleUpdateTimeEntry(body) {
   const fields = {};
   if (reviewed !== undefined) fields["fldQn7d06doEkrGBv"] = reviewed === true;
   if (duration !== undefined && duration !== null) fields["fld9mz6As3099VPVp"] = Number(duration);
-
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
 
   const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields })
+    method: "PATCH", body: JSON.stringify({ fields })
   });
-
   return resp(200, { ok: true, updatedId: data.id });
 }
 
@@ -916,15 +870,15 @@ async function handleTimeEntries(params) {
   const entries = records.map(r => {
     const f = r.fields || {};
     return {
-      id:          r.id,
-      workDate:    f["Work Date"] || "",
-      employee:    f["Employee"] || "",
-      class:       f["Class"] || "",
-      cityTaxes:   f["City Taxes"] || "",
-      hours:       f["Hours"] ?? null,
-      reviewed:    f["Labor Reviewed"] === true,
-      notes:       f["Notes"] || "",
-      duration:    f["Duration (Seconds)"] ?? null
+      id:       r.id,
+      workDate: f["Work Date"] || "",
+      employee: f["Employee"] || "",
+      class:    f["Class"] || "",
+      cityTaxes:f["City Taxes"] || "",
+      hours:    f["Hours"] ?? null,
+      reviewed: f["Labor Reviewed"] === true,
+      notes:    f["Notes"] || "",
+      duration: f["Duration (Seconds)"] ?? null
     };
   });
 
@@ -948,7 +902,6 @@ async function handleExpenses(params) {
   const expenses = records.map(r => {
     const f = r.fields || {};
 
-    // Vendor — use "Vendor Name (from Vendor)" lookup which returns plain strings
     const vendorLookup = f["Vendor Name (from Vendor)"];
     let vendor = "";
     if (Array.isArray(vendorLookup)) {
@@ -958,7 +911,6 @@ async function handleExpenses(params) {
     } else if (typeof vendorLookup === "string") {
       vendor = vendorLookup;
     }
-    // Fallback to linked record name property
     if (!vendor) {
       const vendorArr = f["Vendor"];
       vendor = Array.isArray(vendorArr)
@@ -966,7 +918,6 @@ async function handleExpenses(params) {
         : "";
     }
 
-    // Job Markup % is a lookup — extract value
     const markupRaw = f["Job Markup %"];
     let markup = null;
     if (markupRaw?.valuesByLinkedRecordId) {
@@ -1003,35 +954,38 @@ export async function handler(event) {
     if (event.httpMethod === "GET") {
       const action = event.queryStringParameters?.action;
       const params = event.queryStringParameters || {};
-      if (action === "jobs")          return await handleJobs();
-      if (action === "generator")     return await handleGenerator(params);
-      if (action === "expenses")      return await handleExpenses(params);
-      if (action === "timeEntries")   return await handleTimeEntries(params);
-      if (action === "scissorLifts")      return await handleScissorLifts();
-      if (action === "scissorLiftsByJob") return await handleScissorLiftsByJob(params);
-      if (action === "jobInspections")    return await handleJobInspections(params);
-      if (action === "jobEstimates")      return await handleJobEstimates(params);
-      if (action === "fleetVehicles")     return await handleFleetVehicles();
-      if (action === "fleetServiceHistory") return await handleFleetServiceHistory(params);
+      if (action === "jobs")               return await handleJobs();
+      if (action === "generator")          return await handleGenerator(params);
+      if (action === "expenses")           return await handleExpenses(params);
+      if (action === "timeEntries")        return await handleTimeEntries(params);
+      if (action === "scissorLifts")       return await handleScissorLifts();
+      if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
+      if (action === "jobInspections")     return await handleJobInspections(params);
+      if (action === "jobEstimates")       return await handleJobEstimates(params);
+      if (action === "fleetVehicles")      return await handleFleetVehicles();
+      if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
     if (event.httpMethod === "POST") {
       const body = event.body ? JSON.parse(event.body) : {};
-      if (body.action === "login") return await handleLogin(body);
-      if (body.action === "updateJobStatus") return await handleUpdateJobStatus(body);
-      if (body.action === "updatePowerCo") return await handleUpdatePowerCo(body);
-      if (body.action === "updateTimeEntry") return await handleUpdateTimeEntry(body);
-      if (body.action === "deleteTimeEntry") return await handleDeleteTimeEntry(body);
-      if (body.action === "deleteExpense")   return await handleDeleteExpense(body);
-      if (body.action === "approveExpense")  return await handleApproveExpense(body);
-      if (body.action === "updateScissorLift")  return await handleUpdateScissorLift(body);
-      if (body.action === "createInspection")   return await handleCreateInspection(body);
-      if (body.action === "updateEstimate")      return await handleUpdateEstimate(body);
-      if (body.action === "updateFleetVehicle")  return await handleUpdateFleetVehicle(body);
-      if (body.action === "addFleetService")     return await handleAddFleetService(body);
-      if (body.action === "updateFleetService")  return await handleUpdateFleetService(body);
-      if (body.action === "deleteFleetService")  return await handleDeleteFleetService(body);
+      if (body.action === "login")                return await handleLogin(body);
+      if (body.action === "updateJobStatus")      return await handleUpdateJobStatus(body);
+      if (body.action === "updatePowerCo")        return await handleUpdatePowerCo(body);
+      if (body.action === "updateTimeEntry")      return await handleUpdateTimeEntry(body);
+      if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
+      if (body.action === "deleteExpense")        return await handleDeleteExpense(body);
+      if (body.action === "approveExpense")       return await handleApproveExpense(body);
+      if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body);
+      if (body.action === "createInspection")     return await handleCreateInspection(body);
+      if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);
+      if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
+      if (body.action === "addFleetService")      return await handleAddFleetService(body);
+      if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
+      if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);
+      // ── NEW: Service Call actions ──
+      if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
+      if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

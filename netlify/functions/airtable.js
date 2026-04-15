@@ -65,6 +65,9 @@ const F = {
     // ── Mileage ──
     milesFromShop:       "Miles from Shop",
 
+    // ── Notes ──
+    notes:               "Notes",
+
     // ── ADMIN: Live Performance ──
     totalRevenueLive:          "Total Revenue (Live)",
     totalMaterialsLive:        "Total Materials (Live)",
@@ -326,6 +329,9 @@ async function handleJobs() {
 
       // ── Mileage ──
       milesFromShop:      gNum(f, F.job.milesFromShop),
+
+      // ── Notes ──
+      notes:              g(f, F.job.notes) || "",
 
       // ── ADMIN: Live Performance ──
       totalRevenueLive:          gNum(f, F.job.totalRevenueLive),
@@ -591,7 +597,7 @@ async function handleCreateInspection(body) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
-  fields["fldqk2pA5w3TSN3q8"] = [{ id: String(jobId) }];
+  fields["fldqk2pA5w3TSN3q8"] = [String(jobId)];  // Job — plain ID array
   if (inspectionType) fields["fldR2IQkaeRHXytsR"] = inspectionType;
   if (date)           fields["fldPblyNOIryMLFB6"] = date;
   if (status)         fields["fld7kH2SEHsxaS9vz"] = status;
@@ -1020,7 +1026,7 @@ async function handleAddLiftExpense(body) {
 
 // ── ADD GENERAL EXPENSE ──
 async function handleAddGeneralExpense(body) {
-  const { jobId, date, type, amount, credit, vendor, description, billable } = body || {};
+  const { jobId, date, type, amount, credit, vendorId, description, billable } = body || {};
   if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
 
   const idStr = String(jobId).trim();
@@ -1037,21 +1043,10 @@ async function handleAddGeneralExpense(body) {
   };
   if (date)        fields["fldCCPYdyWAOGchWb"] = date;
   if (description) fields["fldelsB2jH2tvt1Cj"] = description;
-  if (credit && Number(credit) > 0) fields["fldcld418pREq2bGq"] = Number(credit); // Material Credit
-
-  // Vendor — look up by name if provided
-  if (vendor && vendor.trim()) {
-    // Try to find vendor record by name
-    const vendorRecords = await fetchAll("Vendors", {
-      filter: `LOWER({Vendor Name}) = LOWER("${vendor.trim().replace(/"/g, '')}")`
-    });
-    if (vendorRecords.length) {
-      fields["fldlTUL8hsPkReBAB"] = [{ id: vendorRecords[0].id }];
-    } else {
-      // Store as description note if vendor not found
-      const existingDesc = fields["fldelsB2jH2tvt1Cj"] || description || "";
-      fields["fldelsB2jH2tvt1Cj"] = existingDesc ? `${existingDesc} [Vendor: ${vendor}]` : `Vendor: ${vendor}`;
-    }
+  if (credit && Number(credit) > 0) fields["fldcld418pREq2bGq"] = Number(credit);
+  // Vendor — direct record ID from dropdown
+  if (vendorId && String(vendorId).startsWith("rec")) {
+    fields["fldlTUL8hsPkReBAB"] = [{ id: String(vendorId) }];
   }
 
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, {
@@ -1059,6 +1054,31 @@ async function handleAddGeneralExpense(body) {
     body: JSON.stringify({ fields, typecast: true })
   });
   return resp(200, { ok: true, id: data.id });
+}
+
+// ── VENDORS LIST ──
+async function handleVendors() {
+  const records = await fetchAll("Vendors", { sortField: "Vendor Name", sortDir: "asc" });
+  const vendors = records
+    .filter(r => r.fields["Active"] !== false)
+    .map(r => ({
+      id:   r.id,
+      name: r.fields["Vendor Name"] || ""
+    }))
+    .filter(v => v.name);
+  return resp(200, { ok: true, vendors });
+}
+
+// ── UPDATE JOB NOTES ──
+async function handleUpdateJobNotes(body) {
+  const { jobId, notes } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Notes field: fldAuZAW19iYPBPxP
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fldAuZAW19iYPBPxP": notes || "" } })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
 }
 
 export async function handler(event) {
@@ -1079,6 +1099,7 @@ export async function handler(event) {
       if (action === "jobEstimates")       return await handleJobEstimates(params);
       if (action === "fleetVehicles")      return await handleFleetVehicles();
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
+      if (action === "vendors")            return await handleVendors();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -1101,6 +1122,7 @@ export async function handler(event) {
       // ── NEW: Service Call actions ──
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
+      if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       // ── Mileage ──
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")        return await handleAddLiftExpense(body);

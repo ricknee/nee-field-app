@@ -163,12 +163,13 @@ async function handleItems() {
     items: records.map(r => {
       const f = r.fields || {};
       return {
-        id:      r.id,
-        name:    f["Item Name"] || "",
-        cat:     f["Category"]?.name || f["Category"] || "",
-        uom:     f["Unit of Measure"]?.name || f["Unit of Measure"] || "",
-        barcode: f["Barcode Value"] || "",
-        cost:    f["Default Unit Cost"] || 0
+        id:          r.id,
+        name:        f["Item Name"] || "",
+        cat:         f["Category"]?.name || f["Category"] || "",
+        uom:         f["Unit of Measure"]?.name || f["Unit of Measure"] || "",
+        barcode:     f["Barcode Value"] || "",
+        cost:        f["Default Unit Cost"] || 0,
+        wireFtPerLb: f["Wire ft/lb"] || 0
       };
     })
   });
@@ -359,7 +360,7 @@ async function handlePendingExpenses() {
 
   const itemMap = {};
   itemRecords.forEach(r => {
-    itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0 };
+    itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0, wireFtPerLb: r.fields["Wire ft/lb"] || 0 };
   });
 
   // Match inv base jobs to main base jobs by Job Name (more reliable than formula field)
@@ -425,9 +426,10 @@ async function handlePendingExpenses() {
     if (!jobGroups[jobKey].items[itemId]) {
       const itemData = itemMap[itemId] || {};
       jobGroups[jobKey].items[itemId] = {
-        name:   itemData.name || itemId,
-        cost:   itemData.cost || 0,
-        netQty: 0
+        name:        itemData.name || itemId,
+        cost:        itemData.cost || 0,
+        wireFtPerLb: itemData.wireFtPerLb || 0,
+        netQty:      0
       };
     }
     jobGroups[jobKey].items[itemId].netQty += delta;
@@ -441,7 +443,8 @@ async function handlePendingExpenses() {
         item:  i.name,
         qty:   i.netQty,
         cost:  i.cost,
-        total: Math.round(i.cost * i.netQty * 100) / 100
+        total: Math.round(i.cost * i.netQty * 100) / 100,
+        wireFt: i.wireFtPerLb > 0 ? Math.round(Math.abs(i.netQty) * i.wireFtPerLb) : 0
       }));
 
     const jobTotal = lines.reduce((s, l) => s + l.total, 0);
@@ -598,6 +601,12 @@ async function handleStockLevels(params) {
     const stockId = f["Stock ID"] || "";
     const parts   = stockId.split(" | ");
     const locName = parts[parts.length - 1] || "";
+    // "Wire ft/lb" on Stock Levels is a Lookup field → Airtable returns it as an array
+    const wireFtLbRaw = f["Wire ft/lb"];
+    const wireFtLb    = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
+    // "Wire (Ft.)" is a formula field → plain number
+    const wireFtRaw   = f["Wire (Ft.)"];
+    const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
     return {
       id:           r.id,
       locationName: locName,
@@ -605,8 +614,8 @@ async function handleStockLevels(params) {
       unitCost:     f["Unit Cost (from Item)"] || 0,
       totalValue:   f["Total Value"]           || 0,
       reorderPoint: f["Reorder Point"]         || 0,
-      wireWeight:   f["Wire Weight"]           || 0,  // ft-per-lb factor
-      wireFt:       f["Wire (Ft.)"]            || 0   // formula: qty × wireWeight
+      wireWeight:   wireFtLb,
+      wireFt:       wireFt
     };
   });
 
@@ -630,6 +639,11 @@ async function handleReorderAlerts() {
     const itemName = parts.slice(0, -1).join(" | ") || stockId;
     const qty      = f["Quantity On Hand"] || 0;
     const reorder  = f["Reorder Point"]    || 0;
+    // Handle lookup field returning array
+    const wireFtLbRaw = f["Wire ft/lb"];
+    const wireWeight  = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
+    const wireFtRaw   = f["Wire (Ft.)"];
+    const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
 
     if (!groups[locName]) groups[locName] = [];
     groups[locName].push({
@@ -637,8 +651,8 @@ async function handleReorderAlerts() {
       qtyOnHand:    qty,
       reorderPoint: reorder,
       shortBy:      reorder - qty,
-      wireWeight:   f["Wire Weight"] || 0,
-      wireFt:       f["Wire (Ft.)"]  || 0
+      wireWeight,
+      wireFt
     });
   });
 

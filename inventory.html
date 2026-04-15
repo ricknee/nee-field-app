@@ -1247,10 +1247,13 @@ async function pushOneJob(idx) {
   if (!pending || !pending[idx]) return;
   var g = pending[idx];
   if (!confirm("Push expenses for " + g.jobName + "?")) return;
+
+  // Generate PDF receipt
+  var pdfBase64 = generateReceiptPDF(g);
+
   try {
-    var result = await apiPost({ action: "pushExpenses", pending: [g] });
-    showToast("✓ Pushed " + g.jobName);
-    // Remove from pending and re-render
+    var result = await apiPost({ action: "pushExpenses", pending: [g], pdfs: [pdfBase64] });
+    showToast("✓ Pushed " + g.jobName + (pdfBase64 ? " + receipt attached" : ""));
     window._pendingExpenses.splice(idx, 1);
     if (window._pendingExpenses.length) {
       renderPushExpenses();
@@ -1267,13 +1270,188 @@ async function submitPushExpenses(idxOnly) {
   if (!pending || !pending.length) return;
   var toPush = idxOnly !== null ? [pending[idxOnly]] : pending;
 
+  // Generate one PDF per job
+  var pdfs = toPush.map(function(g) { return generateReceiptPDF(g); });
+  var pdfCount = pdfs.filter(Boolean).length;
+
   try {
-    var result = await apiPost({ action: "pushExpenses", pending: toPush });
-    showToast("✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!");
+    var result = await apiPost({ action: "pushExpenses", pending: toPush, pdfs: pdfs });
+    var msg = "✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!";
+    if (pdfCount > 0) msg += " " + pdfCount + " receipt" + (pdfCount > 1 ? "s" : "") + " attached.";
+    showToast(msg);
     window._pendingExpenses = null;
     goHome();
   } catch(ex) {
     showToast("Error: " + ex.message, true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// PDF RECEIPT GENERATOR
+// ═══════════════════════════════════════════════════════════
+function generateReceiptPDF(g) {
+  if (typeof window.jspdf === "undefined") {
+    console.warn("jsPDF not loaded");
+    return null;
+  }
+  try {
+    var jsPDF  = window.jspdf.jsPDF;
+    var doc    = new jsPDF({ unit: "mm", format: "letter", orientation: "portrait" });
+    var pW     = 215.9;
+    var pH     = 279.4;
+    var mg     = 15;
+    var cW     = pW - mg * 2;
+    var today  = new Date();
+    var dateStr = today.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+    // ── HEADER ────────────────────────────────────────────
+    doc.setFillColor(13, 27, 42);
+    doc.rect(0, 0, pW, 38, "F");
+    // Gold accent bar
+    doc.setFillColor(232, 101, 26);
+    doc.rect(0, 38, pW, 2.5, "F");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(15);
+    doc.setTextColor(240, 244, 248);
+    doc.text("NORTHEASTERN ELECTRIC, INC.", mg, 16);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(232, 101, 26);
+    doc.text("MATERIALS RECEIPT", mg, 26);
+
+    doc.setTextColor(138, 160, 184);
+    doc.setFontSize(8);
+    doc.text(dateStr, pW - mg, 26, { align: "right" });
+
+    // ── JOB INFO ──────────────────────────────────────────
+    var y = 52;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(13, 27, 42);
+    doc.text(g.jobName, mg, y);
+
+    y += 6;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(74, 100, 128);
+    doc.text(g.taxable ? "Taxable Job" : "Tax Exempt", mg, y);
+
+    // ── TABLE HEADER ──────────────────────────────────────
+    y += 10;
+    doc.setFillColor(232, 240, 248);
+    doc.rect(mg, y - 5, cW, 8, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(74, 100, 128);
+
+    var c1 = mg + 2;            // item name
+    var c2 = mg + cW * 0.60;   // qty (right-align)
+    var c3 = mg + cW * 0.78;   // unit cost (right-align)
+    var c4 = pW - mg - 2;      // total (right-align)
+
+    doc.text("ITEM",      c1, y);
+    doc.text("QTY",       c2, y, { align: "right" });
+    doc.text("UNIT COST", c3, y, { align: "right" });
+    doc.text("TOTAL",     c4, y, { align: "right" });
+
+    // ── TABLE ROWS ────────────────────────────────────────
+    y += 4;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+
+    g.lines.forEach(function(l, idx) {
+      var isReturn = l.qty < 0;
+      var isWire   = l.wireFt > 0;
+      var rowH     = isWire ? 11 : 7;
+      y += rowH;
+
+      // Zebra stripe
+      if (idx % 2 === 0) {
+        doc.setFillColor(249, 251, 253);
+        doc.rect(mg, y - rowH + 1, cW, rowH, "F");
+      }
+
+      // Item name
+      doc.setTextColor(isReturn ? 180 : 13, isReturn ? 30 : 27, isReturn ? 30 : 42);
+      var itemText = l.item.length > 42 ? l.item.substring(0, 40) + "…" : l.item;
+      doc.text(itemText, c1, y);
+
+      // Qty
+      if (isWire) {
+        doc.text(Math.abs(l.qty) + " lbs", c2, y - 3, { align: "right" });
+        doc.setFontSize(8);
+        doc.setTextColor(52, 152, 219);
+        doc.text("(" + l.wireFt.toLocaleString() + " ft)", c2, y + 2, { align: "right" });
+        doc.setFontSize(9);
+        doc.setTextColor(isReturn ? 180 : 13, isReturn ? 30 : 27, isReturn ? 30 : 42);
+      } else {
+        doc.text((isReturn ? "−" : "") + Math.abs(l.qty), c2, y, { align: "right" });
+      }
+
+      // Unit cost
+      if (l.cost > 0) {
+        doc.setTextColor(74, 100, 128);
+        doc.text("$" + l.cost.toFixed(2), c3, y, { align: "right" });
+        doc.setTextColor(isReturn ? 180 : 13, isReturn ? 30 : 27, isReturn ? 30 : 42);
+      }
+
+      // Line total
+      var totalStr = (isReturn ? "−$" : "$") + Math.abs(l.total).toFixed(2);
+      doc.text(totalStr, c4, y, { align: "right" });
+    });
+
+    // ── TOTALS ────────────────────────────────────────────
+    y += 10;
+    doc.setDrawColor(200, 215, 230);
+    doc.setLineWidth(0.3);
+    doc.line(mg, y, pW - mg, y);
+
+    var taxAmt   = g.taxable ? g.jobTotal * 0.075 : 0;
+    var grandTot = g.jobTotal + taxAmt;
+
+    y += 7;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(74, 100, 128);
+    doc.text("Materials Subtotal", c3 - 5, y, { align: "right" });
+    doc.setTextColor(13, 27, 42);
+    doc.text("$" + g.jobTotal.toFixed(2), c4, y, { align: "right" });
+
+    if (g.taxable) {
+      y += 6;
+      doc.setTextColor(74, 100, 128);
+      doc.text("Sales Tax (7.5%)", c3 - 5, y, { align: "right" });
+      doc.setTextColor(13, 27, 42);
+      doc.text("$" + taxAmt.toFixed(2), c4, y, { align: "right" });
+    }
+
+    // Grand total box (orange)
+    y += 5;
+    doc.setFillColor(232, 101, 26);
+    doc.rect(pW - mg - 65, y, 65, 11, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(255, 255, 255);
+    doc.text("GRAND TOTAL", c3 - 2, y + 7.5, { align: "right" });
+    doc.text("$" + grandTot.toFixed(2), c4, y + 7.5, { align: "right" });
+
+    // ── FOOTER ────────────────────────────────────────────
+    doc.setFillColor(13, 27, 42);
+    doc.rect(0, pH - 16, pW, 16, "F");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(138, 160, 184);
+    doc.text("Generated by NEE Inventory  ·  " + dateStr, mg, pH - 6);
+    doc.text("Northeastern Electric, Inc.", pW - mg, pH - 6, { align: "right" });
+
+    // Return base64 only (strip data URI prefix)
+    return doc.output("datauristring").split(",")[1];
+
+  } catch(e) {
+    console.error("PDF generation failed:", e);
+    return null;
   }
 }
 
@@ -1675,5 +1853,6 @@ function showToast(msg, isErr) {
   toastTimer = setTimeout(function(){ t.classList.remove("show"); }, 2800);
 }
 </script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 </body>
 </html>

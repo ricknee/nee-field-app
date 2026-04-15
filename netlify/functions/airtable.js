@@ -1056,6 +1056,22 @@ async function handleAddGeneralExpense(body) {
   return resp(200, { ok: true, id: data.id });
 }
 
+// ── UPDATE INSPECTION ──
+async function handleUpdateInspection(body) {
+  const { inspectionId, status, notes } = body || {};
+  if (!inspectionId) return resp(400, { ok: false, error: "Missing inspectionId." });
+
+  const fields = {};
+  if (status) fields["fld7kH2SEHsxaS9vz"] = status;
+  if (notes !== undefined) fields["fldmz5dOw6In5OkU7"] = notes;
+
+  const data = await atFetch(`${encodeURIComponent("Job Inspections")}/${inspectionId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 // ── VENDORS LIST ──
 async function handleVendors() {
   const records = await fetchAll("Vendors", { sortField: "Vendor Name", sortDir: "asc" });
@@ -1123,6 +1139,7 @@ export async function handler(event) {
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
+      if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       // ── Mileage ──
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")        return await handleAddLiftExpense(body);

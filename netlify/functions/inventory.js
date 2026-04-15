@@ -462,28 +462,80 @@ async function handlePendingExpenses() {
   return resp(200, { ok: true, pending });
 }
 
+// ── RECEIPT FIELD LOOKUP ──────────────────────────────────
+async function getReceiptFieldId() {
+  try {
+    const res  = await fetch(`https://api.airtable.com/v0/meta/bases/${MAIN_BASE_ID}/tables`, {
+      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` }
+    });
+    const data = await res.json();
+    const exp  = (data.tables || []).find(t => t.name === "Expenses");
+    if (!exp) return null;
+    const field = exp.fields.find(f => f.name === "Receipt / Document");
+    return field?.id || null;
+  } catch(e) {
+    console.error("getReceiptFieldId failed:", e.message);
+    return null;
+  }
+}
+
+// ── PDF ATTACHMENT UPLOAD ─────────────────────────────────
+async function uploadPdfToExpense(recordId, fieldId, pdfBase64, filename) {
+  const pdfBuffer = Buffer.from(pdfBase64, "base64");
+  const formData  = new FormData();
+  const blob      = new Blob([pdfBuffer], { type: "application/pdf" });
+  formData.append("file",        blob, filename);
+  formData.append("filename",    filename);
+  formData.append("contentType", "application/pdf");
+  const res = await fetch(
+    `https://content.airtable.com/v0/${MAIN_BASE_ID}/${recordId}/uploadAttachment/${fieldId}`,
+    {
+      method:  "POST",
+      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` },
+      body:    formData
+    }
+  );
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Attachment upload ${res.status}: ${errText.substring(0, 200)}`);
+  }
+  return await res.json();
+}
+
 // ── PUSH EXPENSES TO MAIN BASE ─────────────────────────────
 async function handlePushExpenses(body) {
-  const { pending } = body || {};
+  const { pending, pdfs } = body || {};
   if (!pending || !pending.length) return resp(400, { ok: false, error: "Nothing to push." });
 
   const TAX_RATE      = 0.075;
   const today         = new Date().toISOString().split("T")[0];
-  const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO"; // NEE Inventory vendor in main base
+  const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO";
   const expenseIds    = [];
   const allTxIds      = [];
+  let   pdfUploads    = 0;
 
-  for (const g of pending) {
+  // Look up the "Receipt / Document" field ID once if PDFs are provided
+  let receiptFieldId = null;
+  if (pdfs && pdfs.some(p => p)) {
+    receiptFieldId = await getReceiptFieldId();
+    console.log("Receipt field ID:", receiptFieldId);
+  }
+
+  for (let i = 0; i < pending.length; i++) {
+    const g = pending[i];
     const { jobId, jobName, taxable, lines, txIds } = g;
     if (!jobId || !lines?.length) continue;
 
     const jobTotal = lines.reduce((s, l) => s + (l.total || 0), 0);
     if (jobTotal <= 0) continue;
 
-    // Build description from lines
+    // Build description — show footage for wire items
     const desc = lines.map(l => {
       const sign = l.qty < 0 ? "−" : "";
-      return `${l.item} ×${sign}${Math.abs(l.qty)}`;
+      const qtyStr = l.wireFt > 0
+        ? `${Math.abs(l.qty)}lbs (${l.wireFt.toLocaleString()}ft)`
+        : `${sign}${Math.abs(l.qty)}`;
+      return `${l.item} ×${qtyStr}`;
     }).join(", ");
 
     // Create materials expense
@@ -502,7 +554,24 @@ async function handlePushExpenses(body) {
       method: "POST",
       body: JSON.stringify({ records: [{ fields: matFields }], typecast: true })
     });
-    if (matResp.records?.[0]?.id) expenseIds.push(matResp.records[0].id);
+    const matExpenseId = matResp.records?.[0]?.id;
+    if (matExpenseId) {
+      expenseIds.push(matExpenseId);
+
+      // Upload PDF receipt if provided
+      const pdfBase64 = pdfs?.[i];
+      if (pdfBase64 && receiptFieldId) {
+        try {
+          const safeName = (jobName || "job").replace(/[^a-z0-9]/gi, "_").substring(0, 30);
+          const filename = `NEE_Materials_${safeName}_${today}.pdf`;
+          await uploadPdfToExpense(matExpenseId, receiptFieldId, pdfBase64, filename);
+          pdfUploads++;
+          console.log(`PDF uploaded for job: ${jobName}`);
+        } catch(uploadErr) {
+          console.error("PDF upload failed (non-fatal):", uploadErr.message);
+        }
+      }
+    }
 
     // Create sales tax expense if taxable
     if (taxable) {
@@ -524,11 +593,10 @@ async function handlePushExpenses(body) {
       if (taxResp.records?.[0]?.id) expenseIds.push(taxResp.records[0].id);
     }
 
-    // Collect all tx IDs to mark as pushed (both Uses and Returns)
     if (txIds?.length) allTxIds.push(...txIds);
   }
 
-  // Mark all transactions as Expense Created in inventory base (max 10 per request)
+  // Mark all transactions as Expense Created
   for (let i = 0; i < allTxIds.length; i += 10) {
     const batch = allTxIds.slice(i, i + 10).map(id => ({
       id,
@@ -540,7 +608,7 @@ async function handlePushExpenses(body) {
     });
   }
 
-  return resp(200, { ok: true, count: expenseIds.length, txCount: allTxIds.length });
+  return resp(200, { ok: true, count: expenseIds.length, txCount: allTxIds.length, pdfUploads });
 }
 
 // ── ADJUSTMENT ─────────────────────────────────────────────

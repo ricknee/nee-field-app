@@ -583,6 +583,72 @@ async function handleDelete(body) {
   return resp(200, { ok: true, deleted: txId });
 }
 
+// ── STOCK LEVELS BY ITEM ──────────────────────────────────
+async function handleStockLevels(params) {
+  const { itemId } = params || {};
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+
+  const records = await fetchAll(API_ROOT_INV, "Stock Levels", {
+    filter: `SEARCH("${itemId}", ARRAYJOIN({Item}))`
+  });
+
+  const levels = records.map(r => {
+    const f = r.fields || {};
+    // Stock ID format: "Item Name | Location Name"
+    const stockId = f["Stock ID"] || "";
+    const parts   = stockId.split(" | ");
+    const locName = parts[parts.length - 1] || "";
+    return {
+      id:           r.id,
+      locationName: locName,
+      qtyOnHand:    f["Quantity On Hand"]      || 0,
+      unitCost:     f["Unit Cost (from Item)"] || 0,
+      totalValue:   f["Total Value"]           || 0,
+      reorderPoint: f["Reorder Point"]         || 0,
+      wireWeight:   f["Wire Weight"]           || 0,  // ft-per-lb factor
+      wireFt:       f["Wire (Ft.)"]            || 0   // formula: qty × wireWeight
+    };
+  });
+
+  levels.sort((a, b) => a.locationName.localeCompare(b.locationName));
+  return resp(200, { ok: true, levels });
+}
+
+// ── REORDER ALERTS ────────────────────────────────────────
+async function handleReorderAlerts() {
+  const records = await fetchAll(API_ROOT_INV, "Stock Levels", {
+    filter: `AND({Reorder Point} > 0, {Quantity On Hand} <= {Reorder Point})`
+  });
+
+  const groups = {};
+
+  records.forEach(r => {
+    const f       = r.fields || {};
+    const stockId = f["Stock ID"] || "";
+    const parts   = stockId.split(" | ");
+    const locName  = parts[parts.length - 1] || "Unknown";
+    const itemName = parts.slice(0, -1).join(" | ") || stockId;
+    const qty      = f["Quantity On Hand"] || 0;
+    const reorder  = f["Reorder Point"]    || 0;
+
+    if (!groups[locName]) groups[locName] = [];
+    groups[locName].push({
+      itemName,
+      qtyOnHand:    qty,
+      reorderPoint: reorder,
+      shortBy:      reorder - qty,
+      wireWeight:   f["Wire Weight"] || 0,
+      wireFt:       f["Wire (Ft.)"]  || 0
+    });
+  });
+
+  Object.keys(groups).forEach(loc => {
+    groups[loc].sort((a, b) => a.itemName.localeCompare(b.itemName));
+  });
+
+  return resp(200, { ok: true, groups });
+}
+
 // ── ROUTER ─────────────────────────────────────────────────
 export async function handler(event) {
   try {
@@ -598,6 +664,8 @@ export async function handler(event) {
       if (action === "items")           return await handleItems();
       if (action === "history")         return await handleHistory(params);
       if (action === "pendingExpenses") return await handlePendingExpenses();
+      if (action === "stockLevels")     return await handleStockLevels(params);
+      if (action === "reorderAlerts")   return await handleReorderAlerts();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 

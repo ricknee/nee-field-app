@@ -3433,12 +3433,15 @@ function renderOrderBuild() {
       '<div style="font-size:12px;color:var(--dim);margin-top:3px;">Adjust qtys and check the items you want to order, then generate PDF.</div>' +
     '</div>';
 
-  // Vendor field
+  // Vendor field — highlighted so it doesn't get skipped
   var vendorField =
-    '<label class="field-lbl">Vendor / Notes (optional, prints on PDF)</label>' +
-    '<input type="text" class="field-inp" id="order-vendor" placeholder="e.g. Border States — pickup Friday" ' +
-      'value="' + (orderState.buildVendor || "").replace(/"/g, "&quot;") + '" ' +
-      'oninput="orderState.buildVendor=this.value;" style="margin-bottom:14px;" />';
+    '<div style="background:var(--navy-mid);border:1px solid var(--gold);border-radius:8px;padding:10px 12px;margin-bottom:14px;">' +
+      '<label class="field-lbl" style="color:var(--gold);">📝 Vendor / Notes (optional)</label>' +
+      '<input type="text" class="field-inp" id="order-vendor" placeholder="e.g. Border States — pickup Friday" ' +
+        'value="' + (orderState.buildVendor || "").replace(/"/g, "&quot;") + '" ' +
+        'oninput="orderState.buildVendor=this.value;" style="margin-top:4px;" />' +
+      '<div style="font-size:11px;color:var(--dim);margin-top:6px;">This prints on the PDF at the top. You can also add/edit it later on the order detail screen.</div>' +
+    '</div>';
 
   // Build sections
   var content = header + vendorField;
@@ -3541,7 +3544,7 @@ async function saveOrderAndGeneratePDF() {
     showToast("Order saved");
     // Generate PDF immediately using the working list (no refetch needed)
     generateOrderPDF({
-      orderId:   d.id,
+      orderId:   d.orderId || "",   // autonumber from server, falls back to blank if unavailable
       jobName:   e.jobName,
       vendor:    orderState.buildVendor || "",
       createdBy: currentUser ? currentUser.name : "",
@@ -3646,6 +3649,7 @@ function renderOrderDetail() {
 
   var statusColor = o.status === "Complete" ? "#88A088" : "#3498DB";
   var dateStr     = formatEstDate(o.dateCreated);
+  var orderIdStr  = o.orderId ? 'Order #' + o.orderId : '';
 
   var header =
     '<div style="background:var(--navy-lt);padding:14px;border-radius:10px;border:1px solid var(--border);margin-bottom:14px;">' +
@@ -3653,12 +3657,21 @@ function renderOrderDetail() {
         '<div style="flex:1;min-width:0;">' +
           '<div style="font-weight:700;font-size:16px;color:var(--text);">' + (o.jobName || "Order") + '</div>' +
           '<div style="font-size:12px;color:var(--dim);margin-top:4px;">' + dateStr +
+            (orderIdStr ? ' · ' + orderIdStr : '') +
             (o.createdBy ? ' · ' + o.createdBy : '') + '</div>' +
-          (o.vendor ? '<div style="font-size:13px;color:var(--gold);margin-top:6px;font-style:italic;">' + o.vendor + '</div>' : '') +
         '</div>' +
         '<span style="display:inline-block;background:' + statusColor + ';color:#fff;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;text-transform:uppercase;letter-spacing:0.5px;">' +
           o.status + '</span>' +
       '</div>' +
+    '</div>';
+
+  // Editable vendor field — always visible so user can add/change it
+  var vendorSection =
+    '<label class="field-lbl">📝 Vendor / Notes (prints on PDF)</label>' +
+    '<div style="display:flex;gap:8px;margin-bottom:14px;">' +
+      '<input type="text" class="field-inp" id="order-detail-vendor" placeholder="e.g. Border States — pickup Friday" ' +
+        'value="' + (o.vendor || "").replace(/"/g, "&quot;") + '" style="flex:1;" />' +
+      '<button onclick="saveOrderVendor()" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:0 16px;cursor:pointer;font-size:13px;">Save</button>' +
     '</div>';
 
   // Lines list (read-only)
@@ -3695,16 +3708,37 @@ function renderOrderDetail() {
     '<div style="display:flex;gap:8px;margin-top:18px;">' + pdfBtn + statusBtn + '</div>' +
     '<div style="display:flex;gap:8px;margin-top:8px;">' + deleteBtn + '</div>';
 
-  document.getElementById("order-body").innerHTML = header + linesSection + actions;
+  document.getElementById("order-body").innerHTML = header + vendorSection + linesSection + actions;
+}
+
+async function saveOrderVendor() {
+  var o = orderState.current;
+  if (!o || !o.id) return;
+  var inp = document.getElementById("order-detail-vendor");
+  if (!inp) return;
+  var newVendor = inp.value.trim();
+  try {
+    await apiPost({ action: "orderUpdate", id: o.id, vendor: newVendor });
+    o.vendor = newVendor;
+    showToast("Vendor saved");
+  } catch(ex) {
+    showToast("Save failed: " + (ex.message || ex), true);
+  }
 }
 
 function redownloadOrderPDF() {
   var o = orderState.current;
   if (!o) return;
+  // Use the current value from the vendor input box (in case user typed but didn't save)
+  var currentVendor = o.vendor || "";
+  var inp = document.getElementById("order-detail-vendor");
+  if (inp && inp.value.trim() !== currentVendor) {
+    currentVendor = inp.value.trim();
+  }
   generateOrderPDF({
-    orderId:   o.orderId || o.id,
+    orderId:   o.orderId || "",   // autonumber only — never the record ID
     jobName:   o.jobName,
-    vendor:    o.vendor,
+    vendor:    currentVendor,
     createdBy: o.createdBy,
     lines:     (o.lines || []).map(function(l) {
       return { itemName: l.itemName || l.description || "Item", qty: l.qty };

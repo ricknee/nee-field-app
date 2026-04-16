@@ -232,6 +232,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
     </button>
+    <button class="big-btn" id="orders-btn" onclick="goOrders()" style="display:none">
+      <div class="ico">📦</div><div><div class="lbl" id="orders-btn-lbl">Active Orders</div><div class="sub">Materials to order for jobs</div></div>
+    </button>
   </div>
 </div>
 
@@ -320,6 +323,34 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <h2 id="estimate-title">Estimate</h2>
   </div>
   <div class="log-body" id="estimate-body"></div>
+</div>
+
+<!-- ORDER BUILDER (from estimate) -->
+<div id="s-order-build" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="cancelOrderBuild()">‹</button>
+    <h2>Create Order List</h2>
+  </div>
+  <div class="log-body" id="order-build-body"></div>
+</div>
+
+<!-- ACTIVE ORDERS LIST -->
+<div id="s-orders" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goHome()">‹</button>
+    <h2 id="orders-screen-title">Active Orders</h2>
+    <button id="orders-toggle" onclick="toggleOrdersComplete()" style="background:none;border:1px solid var(--border);border-radius:20px;color:var(--dim);font-size:12px;padding:5px 12px;cursor:pointer;">Show Completed</button>
+  </div>
+  <div class="log-body" id="orders-body"><div class="loading"><div class="spinner"></div><br>Loading…</div></div>
+</div>
+
+<!-- ORDER DETAIL -->
+<div id="s-order" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goOrders()">‹</button>
+    <h2 id="order-title">Order</h2>
+  </div>
+  <div class="log-body" id="order-body"></div>
 </div>
 
 <!-- CAMERA SCANNER -->
@@ -481,9 +512,14 @@ function applyUser() {
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
   if (reorderBtn)  reorderBtn.style.display  = isAdmin ? "flex" : "none";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
+  var ordersBtn = document.getElementById("orders-btn");
+  if (ordersBtn) ordersBtn.style.display = isAdmin ? "flex" : "none";
   if (adminLbl)    adminLbl.style.display    = isAdmin ? "block" : "none";
   // Load reorder count badge for admin
-  if (isAdmin) loadReorderCount();
+  if (isAdmin) {
+    loadReorderCount();
+    loadOrdersCount();
+  }
 }
 
 function updateLocPill() {
@@ -2394,6 +2430,11 @@ function handleScanResult(val) {
     else if (scanTarget === "xfr")     pickItemFor("xfr", item.id);
     else if (scanTarget === "stock")   lookupStock(item.id);
     else if (scanTarget === "adj")     pickItemFor("adj", item.id);
+    else if (scanTarget === "estitem") {
+      // Estimate item picker — add directly to estimate, close modal
+      addItemToEstimate(item.id);
+      return;
+    }
     else if (scanTarget === "newitem") {
       // Barcode already used — show the existing item instead
       var barcodeInp = document.getElementById("ni-barcode");
@@ -2678,12 +2719,15 @@ function renderEstimateForm() {
     '<button onclick="confirmDeleteEstimate()" style="background:var(--red);border:none;border-radius:8px;color:#fff;font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">🗑 Delete</button>';
   var pdfBtn = isNew ? "" :
     '<button onclick="downloadEstimatePDF()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">📄 Download PDF</button>';
+  var orderBtn = isNew ? "" :
+    '<button onclick="goOrderBuild()" style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">📦 Create Order List</button>';
 
   var actionsSection =
     '<div style="display:flex;gap:8px;margin-top:18px;">' +
       '<button onclick="saveEstimate()" id="est-save-btn" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:2;">' + saveLabel + '</button>' +
       pdfBtn +
     '</div>' +
+    (orderBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + orderBtn + '</div>' : '') +
     (deleteBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + deleteBtn + '</div>' : '');
 
   document.getElementById("estimate-body").innerHTML =
@@ -2817,8 +2861,9 @@ function openEstimateItemPicker() {
         '<h3 style="margin:0;font-size:15px;color:var(--text);">Add Inventory Item</h3>' +
         '<button onclick="closeEstimateItemPicker()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
       '</div>' +
-      '<div style="padding:12px 14px;border-bottom:1px solid var(--border);">' +
-        '<input type="text" id="est-item-search-inp" class="field-inp" placeholder="Search items…" autocomplete="off" oninput="onEstimateItemSearch()" />' +
+      '<div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;">' +
+        '<input type="text" id="est-item-search-inp" class="field-inp" placeholder="Search items…" autocomplete="off" oninput="onEstimateItemSearch()" style="flex:1;" />' +
+        '<button onclick="startScan(\'estitem\')" title="Scan barcode" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:18px;padding:0 12px;cursor:pointer;">⬛</button>' +
       '</div>' +
       '<div id="est-item-results" style="flex:1;overflow-y:auto;padding:8px;"></div>' +
     '</div>';
@@ -3241,6 +3286,630 @@ function downloadEstimatePDF() {
     showToast("PDF downloaded");
   } catch(err) {
     console.error("PDF generation error:", err);
+    showToast("PDF failed: " + (err.message || err), true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// MATERIAL ORDERS
+// ═══════════════════════════════════════════════════════════
+
+var orderState = {
+  orders:           [],     // active orders list cache
+  current:          null,   // currently open order (with lines)
+  buildItems:       [],     // working list during order build
+  showComplete:     false   // toggle for active vs completed view
+};
+
+// ── ACTIVE ORDERS COUNT BADGE ─────────────────────────────
+async function loadOrdersCount() {
+  try {
+    var d = await apiGet("ordersCount");
+    var lbl = document.getElementById("orders-btn-lbl");
+    if (lbl) {
+      if (d.count > 0) {
+        lbl.innerHTML = 'Active Orders <span style="background:var(--gold);color:var(--navy);padding:2px 8px;border-radius:10px;font-size:11px;margin-left:6px;">' + d.count + '</span>';
+      } else {
+        lbl.textContent = "Active Orders";
+      }
+    }
+  } catch(ex) {
+    console.warn("Failed to load orders count:", ex);
+  }
+}
+
+// ── CREATE ORDER BUILD (from estimate) ─────────────────────
+function goOrderBuild() {
+  var e = estimateState.current;
+  if (!e || !e.id) {
+    showToast("Save the estimate first", true);
+    return;
+  }
+  if (!e.lines || !e.lines.length) {
+    showToast("Estimate has no line items", true);
+    return;
+  }
+
+  // Build the working list from estimate lines + current shop stock
+  // For each inventory-item line, look up current stock at Shop #1 + Shop #2
+  // (We pull all stock levels up front rather than per-line for efficiency.)
+  showScreen("order-build");
+  var body = document.getElementById("order-build-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Calculating shortfall…</div>';
+
+  // Fetch stock levels for the items in this estimate
+  buildOrderWorkingList(e);
+}
+
+async function buildOrderWorkingList(estimate) {
+  try {
+    // Get unique inventory item IDs from the estimate
+    var itemIds = estimate.lines
+      .filter(function(l) { return l.itemId; })
+      .map(function(l) { return l.itemId; });
+
+    // Fetch stock for each item — could be optimized to one bulk call, but
+    // stockLevels endpoint is per-item. Run in parallel.
+    var stockByItem = {};
+    if (itemIds.length) {
+      var promises = itemIds.map(function(itemId) {
+        return apiGet("stockLevels", { itemId: itemId })
+          .then(function(d) { stockByItem[itemId] = d.levels || []; })
+          .catch(function() { stockByItem[itemId] = []; });
+      });
+      await Promise.all(promises);
+    }
+
+    // Build the working list
+    // Each item: { itemId, itemName, isMisc, description, estQty, shop1, shop2, available, shortfall, orderQty, include }
+    var working = estimate.lines.map(function(l) {
+      if (l.isMisc || !l.itemId) {
+        return {
+          itemId:      "",
+          itemName:    l.description || "Misc",
+          isMisc:      true,
+          description: l.description || "",
+          estQty:      Number(l.qty) || 0,
+          shop1:       0,
+          shop2:       0,
+          available:   0,
+          shortfall:   Number(l.qty) || 0,
+          orderQty:    Number(l.qty) || 0,
+          include:     false  // unchecked by default
+        };
+      }
+      var levels = stockByItem[l.itemId] || [];
+      var shop1Level = levels.find(function(s) { return s.locationName.toLowerCase().indexOf("shop #1") >= 0 || s.locationName.toLowerCase() === "shop 1"; });
+      var shop2Level = levels.find(function(s) { return s.locationName.toLowerCase().indexOf("shop #2") >= 0 || s.locationName.toLowerCase() === "shop 2"; });
+      var shop1 = shop1Level ? Number(shop1Level.qtyOnHand) || 0 : 0;
+      var shop2 = shop2Level ? Number(shop2Level.qtyOnHand) || 0 : 0;
+      var available = shop1 + shop2;
+      var estQty = Number(l.qty) || 0;
+      var shortfall = Math.max(0, estQty - available);
+      return {
+        itemId:      l.itemId,
+        itemName:    l.itemName || "Item",
+        isMisc:      false,
+        description: "",
+        estQty:      estQty,
+        shop1:       shop1,
+        shop2:       shop2,
+        available:   available,
+        shortfall:   shortfall,
+        orderQty:    shortfall,           // pre-fill with shortfall
+        include:     shortfall > 0        // pre-check items needing order
+      };
+    });
+
+    orderState.buildItems = working;
+    orderState.buildVendor = "";
+    renderOrderBuild();
+  } catch(ex) {
+    document.getElementById("order-build-body").innerHTML =
+      '<div style="padding:20px;color:var(--red);text-align:center;">' +
+      'Error building order list: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+function renderOrderBuild() {
+  var items = orderState.buildItems || [];
+  var e = estimateState.current;
+
+  // Group items into 3 sections
+  var needsOrder = [];
+  var inStock = [];
+  var miscItems = [];
+
+  items.forEach(function(it, idx) {
+    if (it.isMisc) miscItems.push({ it: it, idx: idx });
+    else if (it.shortfall > 0) needsOrder.push({ it: it, idx: idx });
+    else inStock.push({ it: it, idx: idx });
+  });
+
+  // Header info
+  var header =
+    '<div style="background:var(--navy-lt);padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:14px;">' +
+      '<div style="font-weight:700;font-size:15px;color:var(--text);">' + (e.jobName || "Order") + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px;">Adjust qtys and check the items you want to order, then generate PDF.</div>' +
+    '</div>';
+
+  // Vendor field
+  var vendorField =
+    '<label class="field-lbl">Vendor / Notes (optional, prints on PDF)</label>' +
+    '<input type="text" class="field-inp" id="order-vendor" placeholder="e.g. Border States — pickup Friday" ' +
+      'value="' + (orderState.buildVendor || "").replace(/"/g, "&quot;") + '" ' +
+      'oninput="orderState.buildVendor=this.value;" style="margin-bottom:14px;" />';
+
+  // Build sections
+  var content = header + vendorField;
+
+  if (needsOrder.length) {
+    content += sectionHtml("Items needing order", "var(--gold)", needsOrder, true);
+  }
+  if (inStock.length) {
+    content += sectionHtml("Already in stock", "var(--dim)", inStock, false);
+  }
+  if (miscItems.length) {
+    content += sectionHtml("Misc / Other (no inventory match)", "var(--dim)", miscItems, false);
+  }
+
+  // Action buttons
+  content +=
+    '<div style="display:flex;gap:8px;margin-top:18px;">' +
+      '<button onclick="cancelOrderBuild()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">Cancel</button>' +
+      '<button onclick="saveOrderAndGeneratePDF()" id="order-save-btn" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:2;">Save & Generate PDF</button>' +
+    '</div>';
+
+  document.getElementById("order-build-body").innerHTML = content;
+}
+
+function sectionHtml(title, color, group, defaultExpanded) {
+  var rows = group.map(function(g) {
+    var it = g.it;
+    var idx = g.idx;
+    var checkedAttr = it.include ? "checked" : "";
+    var stockInfo = it.isMisc
+      ? '<span style="color:var(--dim);font-style:italic;">(no inventory match)</span>'
+      : 'Need: ' + fmtQty(it.estQty) + ' · In stock: ' + fmtQty(it.available) +
+        (it.shortfall > 0 ? ' · <span style="color:var(--gold);font-weight:600;">Short ' + fmtQty(it.shortfall) + '</span>' : ' · <span style="color:var(--green);">In stock</span>');
+
+    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:24px 1fr 90px;gap:10px;align-items:center;">' +
+      '<input type="checkbox" id="ord-chk-' + idx + '" ' + checkedAttr + ' onchange="orderState.buildItems[' + idx + '].include=this.checked;" style="width:18px;height:18px;cursor:pointer;" />' +
+      '<div style="min-width:0;">' +
+        '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + it.itemName + '</div>' +
+        '<div style="font-size:11px;color:var(--dim);margin-top:3px;">' + stockInfo + '</div>' +
+      '</div>' +
+      '<input type="number" step="0.01" min="0" class="field-inp" value="' + (it.orderQty || 0) +
+        '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
+        'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
+    '</div>';
+  }).join("");
+
+  return '<div style="margin-bottom:16px;">' +
+    '<div style="font-weight:700;font-size:13px;color:' + color + ';margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">' + title + ' <span style="color:var(--dim);font-weight:400;">(' + group.length + ')</span></div>' +
+    '<div style="display:flex;flex-direction:column;gap:6px;">' + rows + '</div>' +
+  '</div>';
+}
+
+function cancelOrderBuild() {
+  orderState.buildItems = [];
+  orderState.buildVendor = "";
+  // Go back to the estimate
+  if (estimateState.current && estimateState.current.id) {
+    showScreen("estimate");
+  } else {
+    showScreen("estimates");
+  }
+}
+
+async function saveOrderAndGeneratePDF() {
+  var items = orderState.buildItems || [];
+  var included = items.filter(function(it) { return it.include && it.orderQty > 0; });
+
+  if (!included.length) {
+    showToast("Check at least one item with qty > 0", true);
+    return;
+  }
+
+  var e = estimateState.current;
+  if (!e || !e.id) {
+    showToast("Estimate context lost", true);
+    return;
+  }
+
+  var btn = document.getElementById("order-save-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+
+  try {
+    var lines = included.map(function(it) {
+      return {
+        itemId:      it.itemId,
+        description: it.itemName,    // store name at order time for traceability
+        qty:         Number(it.orderQty) || 0
+      };
+    });
+
+    var d = await apiPost({
+      action:     "orderCreate",
+      estimateId: e.id,
+      jobName:    e.jobName,
+      vendor:     orderState.buildVendor || "",
+      createdBy:  currentUser ? currentUser.name : "",
+      lines:      lines
+    });
+
+    showToast("Order saved");
+    // Generate PDF immediately using the working list (no refetch needed)
+    generateOrderPDF({
+      orderId:   d.id,
+      jobName:   e.jobName,
+      vendor:    orderState.buildVendor || "",
+      createdBy: currentUser ? currentUser.name : "",
+      lines:     included.map(function(it) {
+        return { itemName: it.itemName, qty: it.orderQty };
+      })
+    });
+
+    // Refresh count badge
+    loadOrdersCount();
+
+    // Open the saved order detail
+    setTimeout(function() { openOrder(d.id); }, 800);
+  } catch(ex) {
+    showToast("Save failed: " + (ex.message || ex), true);
+    if (btn) { btn.disabled = false; btn.textContent = "Save & Generate PDF"; }
+  }
+}
+
+// ── ORDERS LIST ───────────────────────────────────────────
+async function goOrders() {
+  showScreen("orders");
+  var body = document.getElementById("orders-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading orders…</div>';
+
+  try {
+    var params = orderState.showComplete ? { includeComplete: "1" } : {};
+    var d = await apiGet("ordersList", params);
+    orderState.orders = d.orders || [];
+    renderOrdersList();
+  } catch(ex) {
+    body.innerHTML = '<div style="padding:20px;color:var(--red);text-align:center;">' +
+      'Error loading orders: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+function toggleOrdersComplete() {
+  orderState.showComplete = !orderState.showComplete;
+  var btn = document.getElementById("orders-toggle");
+  if (btn) btn.textContent = orderState.showComplete ? "Show Active Only" : "Show Completed";
+  var title = document.getElementById("orders-screen-title");
+  if (title) title.textContent = orderState.showComplete ? "All Orders" : "Active Orders";
+  goOrders();
+}
+
+function renderOrdersList() {
+  var body = document.getElementById("orders-body");
+  var orders = orderState.orders || [];
+
+  if (!orders.length) {
+    body.innerHTML = '<div style="padding:30px;text-align:center;color:var(--dim);">' +
+      (orderState.showComplete ? 'No orders yet.' : 'No active orders.<br><br>Open an estimate and tap <b>Create Order List</b> to start.') +
+      '</div>';
+    return;
+  }
+
+  var rows = orders.map(function(o) {
+    var statusColor = o.status === "Complete" ? "#88A088" : "#3498DB";
+    var dateStr     = formatEstDate(o.dateCreated);
+    return '<div onclick="openOrder(\'' + o.id + '\')" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;cursor:pointer;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-weight:600;font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + (o.jobName || "Untitled") + '</div>' +
+          '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + dateStr +
+            (o.createdBy ? ' · ' + o.createdBy : '') +
+            ' · ' + (o.lineCount || 0) + ' item' + (o.lineCount === 1 ? '' : 's') +
+          '</div>' +
+          (o.vendor ? '<div style="font-size:12px;color:var(--gold);margin-top:3px;font-style:italic;">' + o.vendor + '</div>' : '') +
+        '</div>' +
+        '<div style="text-align:right;">' +
+          '<span style="display:inline-block;background:' + statusColor + ';color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.5px;">' +
+            o.status + '</span>' +
+        '</div>' +
+      '</div></div>';
+  }).join("");
+
+  body.innerHTML = '<div style="display:flex;flex-direction:column;gap:8px;">' + rows + '</div>';
+}
+
+// ── ORDER DETAIL ──────────────────────────────────────────
+async function openOrder(id) {
+  showScreen("order");
+  document.getElementById("order-title").textContent = "Order";
+  var body = document.getElementById("order-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+
+  try {
+    var d = await apiGet("orderGet", { id: id });
+    orderState.current = d.order;
+    document.getElementById("order-title").textContent = d.order.jobName || "Order";
+    renderOrderDetail();
+  } catch(ex) {
+    body.innerHTML = '<div style="padding:20px;color:var(--red);text-align:center;">' +
+      'Error loading order: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+function renderOrderDetail() {
+  var o = orderState.current;
+  if (!o) return;
+
+  var statusColor = o.status === "Complete" ? "#88A088" : "#3498DB";
+  var dateStr     = formatEstDate(o.dateCreated);
+
+  var header =
+    '<div style="background:var(--navy-lt);padding:14px;border-radius:10px;border:1px solid var(--border);margin-bottom:14px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-weight:700;font-size:16px;color:var(--text);">' + (o.jobName || "Order") + '</div>' +
+          '<div style="font-size:12px;color:var(--dim);margin-top:4px;">' + dateStr +
+            (o.createdBy ? ' · ' + o.createdBy : '') + '</div>' +
+          (o.vendor ? '<div style="font-size:13px;color:var(--gold);margin-top:6px;font-style:italic;">' + o.vendor + '</div>' : '') +
+        '</div>' +
+        '<span style="display:inline-block;background:' + statusColor + ';color:#fff;font-size:10px;font-weight:700;padding:3px 9px;border-radius:10px;text-transform:uppercase;letter-spacing:0.5px;">' +
+          o.status + '</span>' +
+      '</div>' +
+    '</div>';
+
+  // Lines list (read-only)
+  var lines = o.lines || [];
+  var linesHtml = lines.length
+    ? '<div style="display:flex;flex-direction:column;gap:6px;">' +
+        lines.map(function(l) {
+          var isMisc = l.isMisc;
+          return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px;">' +
+            '<div style="flex:1;min-width:0;">' +
+              '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + (l.itemName || l.description || "Item") + '</div>' +
+              (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') +
+            '</div>' +
+            '<div style="font-weight:700;font-size:14px;color:var(--text);">' + fmtQty(l.qty) + '</div>' +
+          '</div>';
+        }).join("") +
+      '</div>'
+    : '<div style="padding:14px;text-align:center;color:var(--dim);">No items</div>';
+
+  var linesSection =
+    '<label class="field-lbl">Items to Order (' + lines.length + ')</label>' +
+    linesHtml;
+
+  // Action buttons
+  var pdfBtn = '<button onclick="redownloadOrderPDF()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">📄 Download PDF</button>';
+
+  var statusBtn = o.status === "Active"
+    ? '<button onclick="confirmCompleteOrder()" style="background:var(--green);border:none;border-radius:8px;color:#fff;font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:1;">✓ Mark Complete</button>'
+    : '<button onclick="reactivateOrder()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">↺ Reactivate</button>';
+
+  var deleteBtn = '<button onclick="confirmDeleteOrder()" style="background:var(--red);border:none;border-radius:8px;color:#fff;font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">🗑 Delete</button>';
+
+  var actions =
+    '<div style="display:flex;gap:8px;margin-top:18px;">' + pdfBtn + statusBtn + '</div>' +
+    '<div style="display:flex;gap:8px;margin-top:8px;">' + deleteBtn + '</div>';
+
+  document.getElementById("order-body").innerHTML = header + linesSection + actions;
+}
+
+function redownloadOrderPDF() {
+  var o = orderState.current;
+  if (!o) return;
+  generateOrderPDF({
+    orderId:   o.orderId || o.id,
+    jobName:   o.jobName,
+    vendor:    o.vendor,
+    createdBy: o.createdBy,
+    lines:     (o.lines || []).map(function(l) {
+      return { itemName: l.itemName || l.description || "Item", qty: l.qty };
+    })
+  });
+}
+
+function confirmCompleteOrder() {
+  var o = orderState.current;
+  if (!o || !o.id) return;
+  if (!confirm("Mark this order complete? It will move out of the active list.")) return;
+  doUpdateOrderStatus(o.id, "Complete");
+}
+
+function reactivateOrder() {
+  var o = orderState.current;
+  if (!o || !o.id) return;
+  doUpdateOrderStatus(o.id, "Active");
+}
+
+async function doUpdateOrderStatus(id, status) {
+  try {
+    await apiPost({ action: "orderUpdate", id: id, status: status });
+    showToast(status === "Complete" ? "Order marked complete" : "Order reactivated");
+    loadOrdersCount();
+    // Reload detail
+    await openOrder(id);
+  } catch(ex) {
+    showToast("Update failed: " + (ex.message || ex), true);
+  }
+}
+
+function confirmDeleteOrder() {
+  var o = orderState.current;
+  if (!o || !o.id) return;
+  if (!confirm("Delete this order? This cannot be undone.")) return;
+  doDeleteOrder(o.id);
+}
+
+async function doDeleteOrder(id) {
+  try {
+    await apiPost({ action: "orderDelete", id: id });
+    showToast("Order deleted");
+    orderState.current = null;
+    loadOrdersCount();
+    await goOrders();
+  } catch(ex) {
+    showToast("Delete failed: " + (ex.message || ex), true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// ORDER PDF GENERATOR (gray logo, no prices, vendor-friendly)
+// ═══════════════════════════════════════════════════════════
+function generateOrderPDF(order) {
+  if (typeof window.jspdf === "undefined" || typeof window.jspdf.jsPDF === "undefined") {
+    showToast("PDF library not loaded", true);
+    return;
+  }
+  if (!order || !order.lines || !order.lines.length) {
+    showToast("No items to print", true);
+    return;
+  }
+
+  try {
+    var jsPDF   = window.jspdf.jsPDF;
+    var doc     = new jsPDF({ unit: "mm", format: "letter", orientation: "portrait" });
+    var pW      = 215.9;
+    var pH      = 279.4;
+    var mg      = 15;
+    var cW      = pW - mg * 2;
+    var today   = new Date();
+    var dateStr = today.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+    // Header — gray logo + company name
+    try {
+      doc.addImage("data:image/png;base64," + ESTIMATE_LOGO_GRAY_B64, "PNG", mg, 6, 22, 22);
+    } catch(err) { console.warn("Logo embed failed:", err); }
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(14);
+    doc.setTextColor(40, 40, 40);
+    doc.text("NORTHEASTERN ELECTRIC, INC.", mg + 26, 14);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(80, 80, 80);
+    doc.text("MATERIALS ORDER", mg + 26, 21);
+
+    doc.setTextColor(120, 120, 120);
+    doc.setFontSize(8);
+    doc.text(dateStr, pW - mg, 21, { align: "right" });
+
+    doc.setDrawColor(120, 120, 120);
+    doc.setLineWidth(0.6);
+    doc.line(mg, 32, pW - mg, 32);
+
+    // Job info
+    var y = 42;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(30, 30, 30);
+    doc.text(order.jobName || "Order", mg, y);
+
+    y += 6;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    var info = [];
+    if (order.orderId) info.push("Order #" + order.orderId);
+    if (order.createdBy) info.push("Prepared by " + order.createdBy);
+    if (info.length) doc.text(info.join("  ·  "), mg, y);
+
+    if (order.vendor) {
+      y += 7;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(60, 60, 60);
+      doc.text("Vendor / Notes:", mg, y);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(40, 40, 40);
+      doc.text(order.vendor, mg + 32, y);
+    }
+
+    // Table header
+    y += 14;
+    doc.setFillColor(240, 240, 240);
+    doc.rect(mg, y - 5, cW, 8, "F");
+    doc.setDrawColor(180, 180, 180);
+    doc.setLineWidth(0.2);
+    doc.rect(mg, y - 5, cW, 8, "S");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(80, 80, 80);
+
+    var c1 = mg + 2;
+    var c2 = pW - mg - 2;
+
+    doc.text("ITEM", c1, y);
+    doc.text("QTY",  c2, y, { align: "right" });
+
+    // Rows
+    y += 4;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+
+    order.lines.forEach(function(l, idx) {
+      var rowH = 8;
+      y += rowH;
+
+      if (y > pH - 35) {
+        doc.addPage();
+        y = mg + 10;
+      }
+
+      if (idx % 2 === 0) {
+        doc.setFillColor(250, 250, 250);
+        doc.rect(mg, y - rowH + 1, cW, rowH, "F");
+      }
+      doc.setDrawColor(225, 225, 225);
+      doc.setLineWidth(0.1);
+      doc.line(mg, y + 2, pW - mg, y + 2);
+
+      doc.setTextColor(40, 40, 40);
+      var name = l.itemName || "Item";
+      var displayName = name.length > 60 ? name.substring(0, 58) + "..." : name;
+      doc.text(displayName, c1, y);
+
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(30, 30, 30);
+      doc.text(fmtQty(l.qty), c2, y, { align: "right" });
+      doc.setFont("helvetica", "normal");
+    });
+
+    // Footer with item count
+    y += 14;
+    if (y > pH - 25) { doc.addPage(); y = pH - 25; }
+    doc.setDrawColor(150, 150, 150);
+    doc.setLineWidth(0.3);
+    doc.line(mg, y, pW - mg, y);
+    y += 6;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(40, 40, 40);
+    doc.text("Total items: " + order.lines.length, pW - mg, y, { align: "right" });
+
+    // Page footer
+    var footY = pH - 12;
+    doc.setDrawColor(200, 200, 200);
+    doc.setLineWidth(0.2);
+    doc.line(mg, footY - 4, pW - mg, footY - 4);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(140, 140, 140);
+    doc.text("Generated by NEE Inventory  ·  " + dateStr, mg, footY);
+    doc.text("Northeastern Electric, Inc.", pW - mg, footY, { align: "right" });
+
+    var safeJob  = (order.jobName || "Order").replace(/[^a-z0-9]/gi, "_").substring(0, 40);
+    var datePart = today.toISOString().split("T")[0];
+    doc.save("NEE_Order_" + safeJob + "_" + datePart + ".pdf");
+
+    showToast("PDF downloaded");
+  } catch(err) {
+    console.error("Order PDF error:", err);
     showToast("PDF failed: " + (err.message || err), true);
   }
 }

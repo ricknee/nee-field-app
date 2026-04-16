@@ -482,24 +482,39 @@ async function getReceiptFieldId() {
 // ── PDF ATTACHMENT UPLOAD ─────────────────────────────────
 async function uploadPdfToExpense(recordId, fieldId, pdfBase64, filename) {
   const pdfBuffer = Buffer.from(pdfBase64, "base64");
-  const formData  = new FormData();
-  const blob      = new Blob([pdfBuffer], { type: "application/pdf" });
-  formData.append("file",        blob, filename);
-  formData.append("filename",    filename);
-  formData.append("contentType", "application/pdf");
+  const boundary  = "NEEBoundary" + Date.now().toString(36);
+  const CRLF      = "\r\n";
+
+  // Manually construct multipart/form-data body (more reliable than FormData in Node.js)
+  const pre = Buffer.from([
+    `--${boundary}${CRLF}`,
+    `Content-Disposition: form-data; name="contentType"${CRLF}${CRLF}`,
+    `application/pdf${CRLF}`,
+    `--${boundary}${CRLF}`,
+    `Content-Disposition: form-data; name="filename"${CRLF}${CRLF}`,
+    `${filename}${CRLF}`,
+    `--${boundary}${CRLF}`,
+    `Content-Disposition: form-data; name="file"; filename="${filename}"${CRLF}`,
+    `Content-Type: application/pdf${CRLF}${CRLF}`
+  ].join(""));
+  const post = Buffer.from(`${CRLF}--${boundary}--${CRLF}`);
+  const body  = Buffer.concat([pre, pdfBuffer, post]);
+
   const res = await fetch(
     `https://content.airtable.com/v0/${MAIN_BASE_ID}/${recordId}/uploadAttachment/${fieldId}`,
     {
       method:  "POST",
-      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` },
-      body:    formData
+      headers: {
+        Authorization:  `Bearer ${AIRTABLE_API_KEY}`,
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": body.length.toString()
+      },
+      body
     }
   );
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Attachment upload ${res.status}: ${errText.substring(0, 200)}`);
-  }
-  return await res.json();
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Attachment upload ${res.status}: ${text.substring(0, 300)}`);
+  try { return JSON.parse(text); } catch(e) { return { ok: true }; }
 }
 
 // ── PUSH EXPENSES TO MAIN BASE ─────────────────────────────
@@ -656,23 +671,24 @@ async function handleDelete(body) {
 
 // ── STOCK LEVELS BY ITEM ──────────────────────────────────
 async function handleStockLevels(params) {
-  const { itemId } = params || {};
-  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+  const { itemId, itemName } = params || {};
+  if (!itemName) return resp(400, { ok: false, error: "Missing itemName." });
 
-  const records = await fetchAll(API_ROOT_INV, "Stock Levels", {
-    filter: `SEARCH("${itemId}", ARRAYJOIN({Item}))`
-  });
+  // Stock ID field format: "Item Name | Location Name"
+  // Filter for records where Stock ID starts with the item name + " | "
+  const safeItemName = itemName.replace(/"/g, '\\"');
+  const filter = `FIND("${safeItemName} | ", {Stock ID}) = 1`;
+
+  const records = await fetchAll(API_ROOT_INV, "Stock Levels", { filter });
 
   const levels = records.map(r => {
     const f = r.fields || {};
-    // Stock ID format: "Item Name | Location Name"
     const stockId = f["Stock ID"] || "";
     const parts   = stockId.split(" | ");
     const locName = parts[parts.length - 1] || "";
     // "Wire ft/lb" on Stock Levels is a Lookup field → Airtable returns it as an array
     const wireFtLbRaw = f["Wire ft/lb"];
     const wireFtLb    = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
-    // "Wire (Ft.)" is a formula field → plain number
     const wireFtRaw   = f["Wire (Ft.)"];
     const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
     return {
@@ -731,6 +747,18 @@ async function handleReorderAlerts() {
   return resp(200, { ok: true, groups });
 }
 
+// ── UPDATE REORDER POINT ──────────────────────────────────
+async function handleUpdateReorderPoint(body) {
+  const { stockLevelId, reorderPoint } = body || {};
+  if (!stockLevelId) return resp(400, { ok: false, error: "Missing stockLevelId." });
+  if (reorderPoint === undefined) return resp(400, { ok: false, error: "Missing reorderPoint." });
+  await atFetch(API_ROOT_INV, `${encodeURIComponent("Stock Levels")}/${stockLevelId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fldYS6soPXlHkxI1V": Number(reorderPoint) } })
+  });
+  return resp(200, { ok: true });
+}
+
 // ── ROUTER ─────────────────────────────────────────────────
 export async function handler(event) {
   try {
@@ -759,8 +787,9 @@ export async function handler(event) {
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);
       if (body.action === "pushExpenses")    return await handlePushExpenses(body);
-      if (body.action === "updateItemCost")  return await handleUpdateItemCost(body);
-      if (body.action === "delete")          return await handleDelete(body);
+      if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
+      if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);
+      if (body.action === "delete")             return await handleDelete(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

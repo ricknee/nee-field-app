@@ -225,6 +225,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goMyOrders()">
       <div class="ico">📋</div><div><div class="lbl">My Orders</div><div class="sub">View orders you've created</div></div>
     </button>
+    <button class="big-btn" onclick="goOrders()">
+      <div class="ico">📦</div><div><div class="lbl" id="orders-btn-lbl">Active Orders</div><div class="sub">All open material orders</div></div>
+    </button>
     <div class="sec-lbl" id="admin-lbl" style="display:none">Admin</div>
     <button class="big-btn" id="push-btn" onclick="goPushExpenses()" style="display:none">
       <div class="ico">💰</div><div><div class="lbl">Push Expenses</div><div class="sub">Send material costs to job expenses</div></div>
@@ -237,9 +240,6 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     </button>
     <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
-    </button>
-    <button class="big-btn" id="orders-btn" onclick="goOrders()" style="display:none">
-      <div class="ico">📦</div><div><div class="lbl" id="orders-btn-lbl">Active Orders</div><div class="sub">Materials to order for jobs</div></div>
     </button>
   </div>
 </div>
@@ -362,7 +362,7 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <!-- ORDER DETAIL -->
 <div id="s-order" class="screen">
   <div class="hdr">
-    <button class="hdr-back" onclick="goOrders()">‹</button>
+    <button class="hdr-back" onclick="backFromOrderDetail()">‹</button>
     <h2 id="order-title">Order</h2>
   </div>
   <div class="log-body" id="order-body"></div>
@@ -527,14 +527,13 @@ function applyUser() {
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
   if (reorderBtn)  reorderBtn.style.display  = isAdmin ? "flex" : "none";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
-  var ordersBtn = document.getElementById("orders-btn");
-  if (ordersBtn) ordersBtn.style.display = isAdmin ? "flex" : "none";
   if (adminLbl)    adminLbl.style.display    = isAdmin ? "block" : "none";
   // Load reorder count badge for admin
   if (isAdmin) {
     loadReorderCount();
-    loadOrdersCount();
   }
+  // Orders count badge loads for everyone (button is visible to all)
+  loadOrdersCount();
 }
 
 function updateLocPill() {
@@ -3627,12 +3626,28 @@ async function saveOrderAndGeneratePDF() {
 
 // ── ORDERS LIST ───────────────────────────────────────────
 async function goOrders() {
+  var isAdmin = currentUser && currentUser.role === "admin";
+  // Fully reset state on every entry — avoids leftover state from previous views
+  orderState.myOrdersMode = false;
+
   showScreen("orders");
+
+  // Title and toggle visibility based on role
+  var title = document.getElementById("orders-screen-title");
+  if (title) title.textContent = orderState.showComplete ? "All Orders" : "Active Orders";
+
+  var toggleBtn = document.getElementById("orders-toggle");
+  if (toggleBtn) {
+    // Show toggle only for admins — employees never see completed orders
+    toggleBtn.style.display = isAdmin ? "" : "none";
+    toggleBtn.textContent = orderState.showComplete ? "Show Active Only" : "Show Completed";
+  }
+
   var body = document.getElementById("orders-body");
   body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading orders…</div>';
 
   try {
-    var params = orderState.showComplete ? { includeComplete: "1" } : {};
+    var params = (isAdmin && orderState.showComplete) ? { includeComplete: "1" } : {};
     var d = await apiGet("ordersList", params);
     orderState.orders = d.orders || [];
     renderOrdersList();
@@ -3643,12 +3658,26 @@ async function goOrders() {
 }
 
 function toggleOrdersComplete() {
+  // Admin-only — but guard anyway in case the button was somehow visible
+  var isAdmin = currentUser && currentUser.role === "admin";
+  if (!isAdmin) return;
+
   orderState.showComplete = !orderState.showComplete;
-  var btn = document.getElementById("orders-toggle");
-  if (btn) btn.textContent = orderState.showComplete ? "Show Active Only" : "Show Completed";
-  var title = document.getElementById("orders-screen-title");
-  if (title) title.textContent = orderState.showComplete ? "All Orders" : "Active Orders";
-  goOrders();
+  // Re-route to the correct list view the user was on
+  if (orderState.myOrdersMode) {
+    goMyOrders();
+  } else {
+    goOrders();
+  }
+}
+
+// Back button from order detail — route to whichever list the user came from
+function backFromOrderDetail() {
+  if (orderState.myOrdersMode) {
+    goMyOrders();
+  } else {
+    goOrders();
+  }
 }
 
 function renderOrdersList() {
@@ -3877,7 +3906,12 @@ async function doDeleteOrder(id) {
     showToast("Order deleted");
     orderState.current = null;
     loadOrdersCount();
-    await goOrders();
+    // Return to whichever list view the user came from
+    if (orderState.myOrdersMode) {
+      await goMyOrders();
+    } else {
+      await goOrders();
+    }
   } catch(ex) {
     showToast("Delete failed: " + (ex.message || ex), true);
   }
@@ -4135,21 +4169,31 @@ function addItemToOrderBuild(itemId) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// MY ORDERS (employee view — filtered to their own orders)
+// MY ORDERS (filtered to the current user's own orders)
 // ═══════════════════════════════════════════════════════════
 async function goMyOrders() {
+  var isAdmin = currentUser && currentUser.role === "admin";
   orderState.myOrdersMode = true;
+
   showScreen("orders");
-  document.getElementById("orders-screen-title").textContent = "My Orders";
-  // Hide the show-completed toggle for employees
+
+  // Title
+  var title = document.getElementById("orders-screen-title");
+  if (title) title.textContent = "My Orders";
+
+  // Toggle: admins can still switch between active/completed of their own orders
   var toggleBtn = document.getElementById("orders-toggle");
-  if (toggleBtn) toggleBtn.style.display = "none";
+  if (toggleBtn) {
+    toggleBtn.style.display = isAdmin ? "" : "none";
+    toggleBtn.textContent = orderState.showComplete ? "Show Active Only" : "Show Completed";
+  }
 
   var body = document.getElementById("orders-body");
   body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading your orders…</div>';
 
   try {
     var params = { createdBy: currentUser ? currentUser.name : "" };
+    if (isAdmin && orderState.showComplete) params.includeComplete = "1";
     var d = await apiGet("ordersList", params);
     orderState.orders = d.orders || [];
     renderOrdersList();
@@ -4158,18 +4202,6 @@ async function goMyOrders() {
       'Error loading orders: ' + (ex.message || ex) + '</div>';
   }
 }
-
-// Reset myOrdersMode when admin opens the full orders view
-var _origGoOrders = goOrders;
-goOrders = async function() {
-  orderState.myOrdersMode = false;
-  // Restore the toggle button for admins
-  var toggleBtn = document.getElementById("orders-toggle");
-  if (toggleBtn) toggleBtn.style.display = "";
-  var title = document.getElementById("orders-screen-title");
-  if (title) title.textContent = orderState.showComplete ? "All Orders" : "Active Orders";
-  await _origGoOrders();
-};
 
 // ═══════════════════════════════════════════════════════════
 // ADMIN ORDER EDIT MODE (edit lines on a saved order)

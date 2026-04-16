@@ -219,6 +219,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goMaterialReport()">
       <div class="ico">📄</div><div><div class="lbl">Material Report</div><div class="sub">By job — download a PDF for yourself</div></div>
     </button>
+    <button class="big-btn" onclick="goEmployeeOrderJob()">
+      <div class="ico">📦</div><div><div class="lbl">Order Materials</div><div class="sub">Request materials for an active job</div></div>
+    </button>
+    <button class="big-btn" onclick="goMyOrders()">
+      <div class="ico">📋</div><div><div class="lbl">My Orders</div><div class="sub">View orders you've created</div></div>
+    </button>
     <div class="sec-lbl" id="admin-lbl" style="display:none">Admin</div>
     <button class="big-btn" id="push-btn" onclick="goPushExpenses()" style="display:none">
       <div class="ico">💰</div><div><div class="lbl">Push Expenses</div><div class="sub">Send material costs to job expenses</div></div>
@@ -323,6 +329,15 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <h2 id="estimate-title">Estimate</h2>
   </div>
   <div class="log-body" id="estimate-body"></div>
+</div>
+
+<!-- EMPLOYEE ORDER JOB PICKER -->
+<div id="s-order-job" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goHome()">‹</button>
+    <h2>Order Materials</h2>
+  </div>
+  <div class="log-body" id="order-job-body"></div>
 </div>
 
 <!-- ORDER BUILDER (from estimate) -->
@@ -2435,6 +2450,11 @@ function handleScanResult(val) {
       addItemToEstimate(item.id);
       return;
     }
+    else if (scanTarget === "orderitem") {
+      // Order item picker — add to order build, close modal
+      addItemToOrderBuild(item.id);
+      return;
+    }
     else if (scanTarget === "newitem") {
       // Barcode already used — show the existing item instead
       var barcodeInp = document.getElementById("ni-barcode");
@@ -3330,6 +3350,10 @@ function goOrderBuild() {
     return;
   }
 
+  // Set context so saveOrderAndGeneratePDF knows this is estimate-based
+  orderState.buildContext = "estimate";
+  orderState.buildJob = null;
+
   // Build the working list from estimate lines + current shop stock
   // For each inventory-item line, look up current stock at Shop #1 + Shop #2
   // (We pull all stock levels up front rather than per-line for efficiency.)
@@ -3413,24 +3437,21 @@ async function buildOrderWorkingList(estimate) {
 
 function renderOrderBuild() {
   var items = orderState.buildItems || [];
-  var e = estimateState.current;
+  var isJobContext = orderState.buildContext === "job";
 
-  // Group items into 3 sections
-  var needsOrder = [];
-  var inStock = [];
-  var miscItems = [];
+  // Header varies by context
+  var headerJobName = isJobContext
+    ? (orderState.buildJob ? orderState.buildJob.name : "Order")
+    : (estimateState.current ? estimateState.current.jobName : "Order");
 
-  items.forEach(function(it, idx) {
-    if (it.isMisc) miscItems.push({ it: it, idx: idx });
-    else if (it.shortfall > 0) needsOrder.push({ it: it, idx: idx });
-    else inStock.push({ it: it, idx: idx });
-  });
+  var headerHint = isJobContext
+    ? "Add items for this job and enter qtys, then generate PDF."
+    : "Adjust qtys and check the items you want to order, then generate PDF.";
 
-  // Header info
   var header =
     '<div style="background:var(--navy-lt);padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:14px;">' +
-      '<div style="font-weight:700;font-size:15px;color:var(--text);">' + (e.jobName || "Order") + '</div>' +
-      '<div style="font-size:12px;color:var(--dim);margin-top:3px;">Adjust qtys and check the items you want to order, then generate PDF.</div>' +
+      '<div style="font-weight:700;font-size:15px;color:var(--text);">' + headerJobName + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + headerHint + '</div>' +
     '</div>';
 
   // Vendor field — highlighted so it doesn't get skipped
@@ -3440,20 +3461,35 @@ function renderOrderBuild() {
       '<input type="text" class="field-inp" id="order-vendor" placeholder="e.g. Border States — pickup Friday" ' +
         'value="' + (orderState.buildVendor || "").replace(/"/g, "&quot;") + '" ' +
         'oninput="orderState.buildVendor=this.value;" style="margin-top:4px;" />' +
-      '<div style="font-size:11px;color:var(--dim);margin-top:6px;">This prints on the PDF at the top. You can also add/edit it later on the order detail screen.</div>' +
+      '<div style="font-size:11px;color:var(--dim);margin-top:6px;">This prints on the PDF at the top.</div>' +
     '</div>';
 
-  // Build sections
   var content = header + vendorField;
 
-  if (needsOrder.length) {
-    content += sectionHtml("Items needing order", "var(--gold)", needsOrder, true);
-  }
-  if (inStock.length) {
-    content += sectionHtml("Already in stock", "var(--dim)", inStock, false);
-  }
-  if (miscItems.length) {
-    content += sectionHtml("Misc / Other (no inventory match)", "var(--dim)", miscItems, false);
+  if (isJobContext) {
+    // Job-based (employee) order — blank slate, add items one by one
+    content += renderJobOrderItems();
+  } else {
+    // Estimate-based order — three sections with pre-populated list
+    var needsOrder = [];
+    var inStock    = [];
+    var miscItems  = [];
+
+    items.forEach(function(it, idx) {
+      if (it.isMisc) miscItems.push({ it: it, idx: idx });
+      else if (it.shortfall > 0) needsOrder.push({ it: it, idx: idx });
+      else inStock.push({ it: it, idx: idx });
+    });
+
+    if (needsOrder.length) {
+      content += sectionHtml("Items needing order", "var(--gold)", needsOrder, true);
+    }
+    if (inStock.length) {
+      content += sectionHtml("Already in stock", "var(--dim)", inStock, false);
+    }
+    if (miscItems.length) {
+      content += sectionHtml("Misc / Other (no inventory match)", "var(--dim)", miscItems, false);
+    }
   }
 
   // Action buttons
@@ -3495,10 +3531,17 @@ function sectionHtml(title, color, group, defaultExpanded) {
 }
 
 function cancelOrderBuild() {
+  var context = orderState.buildContext;
   orderState.buildItems = [];
   orderState.buildVendor = "";
-  // Go back to the estimate
-  if (estimateState.current && estimateState.current.id) {
+  orderState.buildContext = null;
+  orderState.buildJob = null;
+
+  // Route back to the correct previous screen based on context
+  if (context === "job") {
+    // Employee job-based order — go back to the job picker
+    showScreen("order-job");
+  } else if (estimateState.current && estimateState.current.id) {
     showScreen("estimate");
   } else {
     showScreen("estimates");
@@ -3514,9 +3557,25 @@ async function saveOrderAndGeneratePDF() {
     return;
   }
 
-  var e = estimateState.current;
-  if (!e || !e.id) {
-    showToast("Estimate context lost", true);
+  // Determine context — estimate-based (admin) vs job-based (employee)
+  var contextJobName = "";
+  var contextEstimateId = "";
+  if (orderState.buildContext === "job" && orderState.buildJob) {
+    contextJobName = orderState.buildJob.name;
+    // No estimateId for job-based orders
+  } else {
+    // Default: estimate-based
+    var e = estimateState.current;
+    if (!e || !e.id) {
+      showToast("Context lost", true);
+      return;
+    }
+    contextJobName = e.jobName;
+    contextEstimateId = e.id;
+  }
+
+  if (!contextJobName) {
+    showToast("No job selected", true);
     return;
   }
 
@@ -3532,20 +3591,22 @@ async function saveOrderAndGeneratePDF() {
       };
     });
 
-    var d = await apiPost({
-      action:     "orderCreate",
-      estimateId: e.id,
-      jobName:    e.jobName,
-      vendor:     orderState.buildVendor || "",
-      createdBy:  currentUser ? currentUser.name : "",
-      lines:      lines
-    });
+    var payload = {
+      action:    "orderCreate",
+      jobName:   contextJobName,
+      vendor:    orderState.buildVendor || "",
+      createdBy: currentUser ? currentUser.name : "",
+      lines:     lines
+    };
+    if (contextEstimateId) payload.estimateId = contextEstimateId;
+
+    var d = await apiPost(payload);
 
     showToast("Order saved");
     // Generate PDF immediately using the working list (no refetch needed)
     generateOrderPDF({
       orderId:   d.orderId || "",   // autonumber from server, falls back to blank if unavailable
-      jobName:   e.jobName,
+      jobName:   contextJobName,
       vendor:    orderState.buildVendor || "",
       createdBy: currentUser ? currentUser.name : "",
       lines:     included.map(function(it) {
@@ -3553,8 +3614,8 @@ async function saveOrderAndGeneratePDF() {
       })
     });
 
-    // Refresh count badge
-    loadOrdersCount();
+    // Refresh count badge (admin only)
+    if (currentUser && currentUser.role === "admin") loadOrdersCount();
 
     // Open the saved order detail
     setTimeout(function() { openOrder(d.id); }, 800);
@@ -3595,9 +3656,15 @@ function renderOrdersList() {
   var orders = orderState.orders || [];
 
   if (!orders.length) {
-    body.innerHTML = '<div style="padding:30px;text-align:center;color:var(--dim);">' +
-      (orderState.showComplete ? 'No orders yet.' : 'No active orders.<br><br>Open an estimate and tap <b>Create Order List</b> to start.') +
-      '</div>';
+    var emptyMsg;
+    if (orderState.myOrdersMode) {
+      emptyMsg = 'No orders yet.<br><br>Tap <b>Order Materials</b> on the home screen to create one.';
+    } else if (orderState.showComplete) {
+      emptyMsg = 'No orders yet.';
+    } else {
+      emptyMsg = 'No active orders.<br><br>Open an estimate and tap <b>Create Order List</b> to start.';
+    }
+    body.innerHTML = '<div style="padding:30px;text-align:center;color:var(--dim);">' + emptyMsg + '</div>';
     return;
   }
 
@@ -3695,20 +3762,46 @@ function renderOrderDetail() {
     '<label class="field-lbl">Items to Order (' + lines.length + ')</label>' +
     linesHtml;
 
-  // Action buttons
+  // Action buttons — permissions based on role and ownership
+  var isAdmin = currentUser && currentUser.role === "admin";
+  var isOwner = o.createdBy && currentUser && o.createdBy === currentUser.name;
+
+  // Everyone who can see the order can download the PDF
   var pdfBtn = '<button onclick="redownloadOrderPDF()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">📄 Download PDF</button>';
 
-  var statusBtn = o.status === "Active"
-    ? '<button onclick="confirmCompleteOrder()" style="background:var(--green);border:none;border-radius:8px;color:#fff;font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:1;">✓ Mark Complete</button>'
-    : '<button onclick="reactivateOrder()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">↺ Reactivate</button>';
+  // Edit is available to: admins always, or employee if they own the active order
+  var canEdit = (isAdmin || (isOwner && o.status === "Active"));
+  var editBtn = canEdit
+    ? '<button onclick="startEditOrder()" style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">✎ Edit Items</button>'
+    : "";
 
-  var deleteBtn = '<button onclick="confirmDeleteOrder()" style="background:var(--red);border:none;border-radius:8px;color:#fff;font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">🗑 Delete</button>';
+  // Mark Complete / Reactivate — admin only
+  var statusBtn = "";
+  if (isAdmin) {
+    statusBtn = o.status === "Active"
+      ? '<button onclick="confirmCompleteOrder()" style="background:var(--green);border:none;border-radius:8px;color:#fff;font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:1;">✓ Mark Complete</button>'
+      : '<button onclick="reactivateOrder()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">↺ Reactivate</button>';
+  }
 
-  var actions =
-    '<div style="display:flex;gap:8px;margin-top:18px;">' + pdfBtn + statusBtn + '</div>' +
-    '<div style="display:flex;gap:8px;margin-top:8px;">' + deleteBtn + '</div>';
+  // Delete — admin only
+  var deleteBtn = isAdmin
+    ? '<button onclick="confirmDeleteOrder()" style="background:var(--red);border:none;border-radius:8px;color:#fff;font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">🗑 Delete</button>'
+    : "";
 
-  document.getElementById("order-body").innerHTML = header + vendorSection + linesSection + actions;
+  // Assemble rows — put PDF+Edit together, then Status on its own row if admin, then Delete
+  var row1 = '<div style="display:flex;gap:8px;margin-top:18px;">' + pdfBtn + editBtn + '</div>';
+  var row2 = statusBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + statusBtn + '</div>' : "";
+  var row3 = deleteBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + deleteBtn + '</div>' : "";
+  var actions = row1 + row2 + row3;
+
+  // Vendor edit — admin always; employee only if they own an active order
+  var canEditVendor = (isAdmin || (isOwner && o.status === "Active"));
+  var vendorDisplay = canEditVendor ? vendorSection :
+    (o.vendor
+      ? '<div style="font-size:13px;color:var(--gold);margin-bottom:14px;font-style:italic;">' + o.vendor + '</div>'
+      : "");
+
+  document.getElementById("order-body").innerHTML = header + vendorDisplay + linesSection + actions;
 }
 
 async function saveOrderVendor() {
@@ -3787,6 +3880,414 @@ async function doDeleteOrder(id) {
     await goOrders();
   } catch(ex) {
     showToast("Delete failed: " + (ex.message || ex), true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// EMPLOYEE / JOB-BASED ORDER FLOW
+// ═══════════════════════════════════════════════════════════
+
+var awardedJobsCache = [];
+
+async function goEmployeeOrderJob() {
+  showScreen("order-job");
+  var body = document.getElementById("order-job-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading awarded jobs…</div>';
+
+  // Wait for items data to be ready (needed for the order item picker later)
+  if (!dataReady) {
+    var t = setInterval(function() {
+      if (dataReady) { clearInterval(t); goEmployeeOrderJob(); }
+    }, 300);
+    return;
+  }
+
+  try {
+    if (!awardedJobsCache.length) {
+      var d = await apiGet("awardedJobs");
+      awardedJobsCache = d.jobs || [];
+    }
+    renderEmployeeJobPicker();
+  } catch(ex) {
+    body.innerHTML = '<div style="padding:20px;color:var(--red);text-align:center;">' +
+      'Error loading jobs: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+function renderEmployeeJobPicker() {
+  var body = document.getElementById("order-job-body");
+  var jobs = awardedJobsCache || [];
+
+  if (!jobs.length) {
+    body.innerHTML = '<div style="padding:30px;text-align:center;color:var(--dim);">' +
+      'No awarded jobs found.</div>';
+    return;
+  }
+
+  var searchBox =
+    '<div style="margin-bottom:12px;">' +
+      '<input type="text" class="field-inp" id="ejob-search" placeholder="Search jobs…" autocomplete="off" ' +
+        'oninput="filterEmployeeJobs(this.value)" />' +
+    '</div>';
+
+  var hint =
+    '<div style="background:var(--navy-lt);padding:10px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;font-size:12px;color:var(--dim);">' +
+      'Pick the job you need materials for, then add items to the order list.' +
+    '</div>';
+
+  var rows = jobs.map(function(j) {
+    return '<div onclick="selectEmployeeOrderJob(\'' + j.id + '\',\'' + (j.name || "").replace(/'/g, "\\'") + '\')" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
+      '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
+    '</div>';
+  }).join("");
+
+  body.innerHTML = hint + searchBox +
+    '<div id="ejob-rows" style="display:flex;flex-direction:column;gap:6px;">' + rows + '</div>';
+}
+
+function filterEmployeeJobs(q) {
+  q = (q || "").trim().toLowerCase();
+  var filtered = q
+    ? awardedJobsCache.filter(function(j) { return (j.name || "").toLowerCase().includes(q); })
+    : awardedJobsCache;
+  var container = document.getElementById("ejob-rows");
+  if (!container) return;
+  container.innerHTML = filtered.map(function(j) {
+    return '<div onclick="selectEmployeeOrderJob(\'' + j.id + '\',\'' + (j.name || "").replace(/'/g, "\\'") + '\')" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
+      '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
+    '</div>';
+  }).join("") || '<div style="padding:20px;text-align:center;color:var(--dim);">No jobs match</div>';
+}
+
+function selectEmployeeOrderJob(id, name) {
+  // Set context for saveOrderAndGeneratePDF
+  orderState.buildContext = "job";
+  orderState.buildJob = { id: id, name: name };
+  orderState.buildItems = [];
+  orderState.buildVendor = "";
+  estimateState.current = null;  // clear any lingering estimate context
+
+  showScreen("order-build");
+  renderOrderBuild();
+}
+
+// ── JOB-BASED ORDER ITEM LIST (no stock comparison, no checkboxes) ─
+function renderJobOrderItems() {
+  var items = orderState.buildItems || [];
+
+  var rowsHtml = items.length ? items.map(function(it, idx) {
+    var isMisc = it.isMisc;
+    var nameHtml = isMisc
+      ? '<input type="text" class="field-inp" id="jol-desc-' + idx + '" value="' + (it.itemName || "").replace(/"/g, "&quot;") +
+          '" placeholder="Misc description" oninput="orderState.buildItems[' + idx + '].itemName=this.value;" ' +
+          'style="font-size:13px;padding:7px 9px;" />'
+      : '<div style="font-weight:600;font-size:13px;padding:7px 0;overflow:hidden;text-overflow:ellipsis;">' + (it.itemName || "Item") + '</div>';
+
+    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 90px 28px;gap:8px;align-items:center;">' +
+      '<div style="min-width:0;">' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
+      '<input type="number" step="0.01" min="0" class="field-inp" id="jol-qty-' + idx + '" value="' + (it.orderQty || 0) +
+        '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
+        'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
+      '<button onclick="removeJobOrderItem(' + idx + ')" ' +
+        'style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>' +
+    '</div>';
+  }).join("") : '<div style="padding:14px;text-align:center;color:var(--dim);background:var(--navy-lt);border-radius:8px;border:1px dashed var(--border);">No items yet — add items below</div>';
+
+  var addButtons =
+    '<div style="display:flex;gap:8px;margin-top:8px;">' +
+      '<button onclick="openOrderItemPicker()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">+ Add Item</button>' +
+      '<button onclick="addMiscJobOrderItem()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">+ Misc Line</button>' +
+    '</div>';
+
+  return '<div id="job-order-items-block">' +
+    '<label class="field-lbl">Items to Order (' + items.length + ')</label>' +
+    '<div id="job-order-rows" style="display:flex;flex-direction:column;gap:6px;">' + rowsHtml + '</div>' +
+    addButtons +
+  '</div>';
+}
+
+function refreshJobOrderItems() {
+  var block = document.getElementById("job-order-items-block");
+  if (!block) return;
+  block.outerHTML = renderJobOrderItems();
+}
+
+function removeJobOrderItem(idx) {
+  orderState.buildItems.splice(idx, 1);
+  refreshJobOrderItems();
+}
+
+function addMiscJobOrderItem() {
+  if (!orderState.buildItems) orderState.buildItems = [];
+  orderState.buildItems.push({
+    isMisc:   true,
+    itemId:   "",
+    itemName: "",
+    orderQty: 1,
+    include:  true         // always "included" for job orders
+  });
+  refreshJobOrderItems();
+}
+
+// ── ITEM PICKER MODAL (for job-based order builds) ────────
+function openOrderItemPicker() {
+  var existing = document.getElementById("order-item-picker");
+  if (existing) existing.remove();
+
+  var overlay = document.createElement("div");
+  overlay.id = "order-item-picker";
+  overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);" +
+    "z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;";
+
+  overlay.innerHTML =
+    '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:480px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);">' +
+        '<h3 style="margin:0;font-size:15px;color:var(--text);">Add Inventory Item</h3>' +
+        '<button onclick="closeOrderItemPicker()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
+      '</div>' +
+      '<div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;">' +
+        '<input type="text" id="order-item-search-inp" class="field-inp" placeholder="Search items…" autocomplete="off" oninput="onOrderItemSearch()" style="flex:1;" />' +
+        '<button onclick="startScan(\'orderitem\')" title="Scan barcode" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:18px;padding:0 12px;cursor:pointer;">⬛</button>' +
+      '</div>' +
+      '<div id="order-item-results" style="flex:1;overflow-y:auto;padding:8px;"></div>' +
+    '</div>';
+
+  document.body.appendChild(overlay);
+  setTimeout(function() {
+    var inp = document.getElementById("order-item-search-inp");
+    if (inp) inp.focus();
+    renderOrderItemResults("");
+  }, 50);
+}
+
+function closeOrderItemPicker() {
+  var ov = document.getElementById("order-item-picker");
+  if (ov) ov.remove();
+}
+
+function onOrderItemSearch() {
+  var q = (document.getElementById("order-item-search-inp")?.value || "").trim().toLowerCase();
+  renderOrderItemResults(q);
+}
+
+function renderOrderItemResults(q) {
+  var results = document.getElementById("order-item-results");
+  if (!results) return;
+  var items = q
+    ? allItems.filter(function(i) { return (i.name || "").toLowerCase().includes(q) || (i.barcode || "").toLowerCase().includes(q); })
+    : allItems.slice(0);
+  items = items.slice(0, 50);
+
+  if (!items.length) {
+    results.innerHTML = '<div style="padding:20px;text-align:center;color:var(--dim);">No items found</div>';
+    return;
+  }
+
+  var isAdmin = currentUser && currentUser.role === "admin";
+  results.innerHTML = items.map(function(i) {
+    // Hide prices from non-admin users (employees)
+    var rightSide = isAdmin && i.cost > 0
+      ? '<div style="font-size:13px;color:var(--text);font-weight:600;text-align:right;">' + fmtCurrency(i.cost) + '</div>'
+      : '<div style="font-size:11px;color:var(--dim);text-align:right;">' + (i.uom || "") + '</div>';
+    return '<div onclick="addItemToOrderBuild(\'' + i.id + '\')" ' +
+      'style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;" ' +
+      'onmouseover="this.style.background=\'var(--navy-lt)\';" onmouseout="this.style.background=\'transparent\';">' +
+      '<div style="flex:1;min-width:0;">' +
+        '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + i.name + '</div>' +
+        '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + [i.cat, i.uom].filter(Boolean).join(" · ") + '</div>' +
+      '</div>' +
+      rightSide +
+    '</div>';
+  }).join("");
+}
+
+function addItemToOrderBuild(itemId) {
+  var item = allItems.find(function(i) { return i.id === itemId; });
+  if (!item) return;
+  if (!orderState.buildItems) orderState.buildItems = [];
+
+  // Check if item is already in the order — bump qty instead of duplicating
+  var existing = orderState.buildItems.find(function(it) { return it.itemId === itemId; });
+  if (existing) {
+    existing.orderQty = (Number(existing.orderQty) || 0) + 1;
+    existing.include = true;
+  } else {
+    orderState.buildItems.push({
+      isMisc:   false,
+      itemId:   item.id,
+      itemName: item.name,
+      orderQty: 1,
+      include:  true
+    });
+  }
+
+  closeOrderItemPicker();
+
+  // Determine which list renderer to refresh based on context
+  if (orderState.buildContext === "job" || orderState.editingOrder) {
+    refreshJobOrderItems();
+  } else {
+    // Estimate-based build uses its own render path — update the items array and re-render
+    renderOrderBuild();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// MY ORDERS (employee view — filtered to their own orders)
+// ═══════════════════════════════════════════════════════════
+async function goMyOrders() {
+  orderState.myOrdersMode = true;
+  showScreen("orders");
+  document.getElementById("orders-screen-title").textContent = "My Orders";
+  // Hide the show-completed toggle for employees
+  var toggleBtn = document.getElementById("orders-toggle");
+  if (toggleBtn) toggleBtn.style.display = "none";
+
+  var body = document.getElementById("orders-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading your orders…</div>';
+
+  try {
+    var params = { createdBy: currentUser ? currentUser.name : "" };
+    var d = await apiGet("ordersList", params);
+    orderState.orders = d.orders || [];
+    renderOrdersList();
+  } catch(ex) {
+    body.innerHTML = '<div style="padding:20px;color:var(--red);text-align:center;">' +
+      'Error loading orders: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+// Reset myOrdersMode when admin opens the full orders view
+var _origGoOrders = goOrders;
+goOrders = async function() {
+  orderState.myOrdersMode = false;
+  // Restore the toggle button for admins
+  var toggleBtn = document.getElementById("orders-toggle");
+  if (toggleBtn) toggleBtn.style.display = "";
+  var title = document.getElementById("orders-screen-title");
+  if (title) title.textContent = orderState.showComplete ? "All Orders" : "Active Orders";
+  await _origGoOrders();
+};
+
+// ═══════════════════════════════════════════════════════════
+// ADMIN ORDER EDIT MODE (edit lines on a saved order)
+// ═══════════════════════════════════════════════════════════
+function startEditOrder() {
+  var o = orderState.current;
+  if (!o) return;
+
+  // Copy order lines into buildItems format for the editor
+  orderState.editingOrder = true;
+  orderState.buildItems = (o.lines || []).map(function(l) {
+    return {
+      isMisc:   !!l.isMisc,
+      itemId:   l.itemId || "",
+      itemName: l.itemName || l.description || "",
+      orderQty: Number(l.qty) || 0,
+      include:  true
+    };
+  });
+  orderState.buildVendor = o.vendor || "";
+  orderState.buildContext = "edit";  // distinct from "job" and "estimate"
+  orderState.editingOrderId = o.id;
+
+  renderOrderEditMode();
+}
+
+function renderOrderEditMode() {
+  var o = orderState.current;
+  if (!o) return;
+
+  var body = document.getElementById("order-body");
+
+  var orderIdStr = o.orderId ? 'Order #' + o.orderId : '';
+  var dateStr    = formatEstDate(o.dateCreated);
+
+  var header =
+    '<div style="background:var(--navy-lt);padding:14px;border-radius:10px;border:1px solid var(--border);margin-bottom:14px;">' +
+      '<div style="font-weight:700;font-size:16px;color:var(--text);">' + (o.jobName || "Order") + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:4px;">' + dateStr +
+        (orderIdStr ? ' · ' + orderIdStr : '') +
+        (o.createdBy ? ' · ' + o.createdBy : '') + '</div>' +
+      '<div style="font-size:11px;color:var(--gold);margin-top:6px;font-weight:600;">EDITING — add, remove, or change qtys below</div>' +
+    '</div>';
+
+  var vendorField =
+    '<div style="background:var(--navy-mid);border:1px solid var(--gold);border-radius:8px;padding:10px 12px;margin-bottom:14px;">' +
+      '<label class="field-lbl" style="color:var(--gold);">📝 Vendor / Notes (optional)</label>' +
+      '<input type="text" class="field-inp" id="order-vendor-edit" placeholder="e.g. Border States — pickup Friday" ' +
+        'value="' + (orderState.buildVendor || "").replace(/"/g, "&quot;") + '" ' +
+        'oninput="orderState.buildVendor=this.value;" style="margin-top:4px;" />' +
+    '</div>';
+
+  var itemsHtml = renderJobOrderItems();  // reuse job-based item list renderer
+
+  var actions =
+    '<div style="display:flex;gap:8px;margin-top:18px;">' +
+      '<button onclick="cancelEditOrder()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">Cancel</button>' +
+      '<button onclick="saveEditOrder()" id="edit-save-btn" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:2;">Save Changes</button>' +
+    '</div>';
+
+  body.innerHTML = header + vendorField + itemsHtml + actions;
+}
+
+function cancelEditOrder() {
+  orderState.editingOrder = false;
+  orderState.buildItems = [];
+  orderState.buildVendor = "";
+  orderState.buildContext = null;
+  orderState.editingOrderId = null;
+  renderOrderDetail();
+}
+
+async function saveEditOrder() {
+  var items = orderState.buildItems || [];
+  var included = items.filter(function(it) { return it.orderQty > 0; });
+
+  if (!included.length) {
+    if (!confirm("This order has no items. Save anyway?")) return;
+  }
+
+  // Validate Misc lines have a description
+  var badMisc = included.find(function(it) { return it.isMisc && !(it.itemName || "").trim(); });
+  if (badMisc) {
+    showToast("Misc lines need a description", true);
+    return;
+  }
+
+  var btn = document.getElementById("edit-save-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+
+  try {
+    var lines = included.map(function(it) {
+      return {
+        itemId:      it.itemId || "",
+        description: it.itemName || "",
+        qty:         Number(it.orderQty) || 0
+      };
+    });
+
+    await apiPost({
+      action:       "orderUpdate",
+      id:           orderState.editingOrderId,
+      vendor:       orderState.buildVendor || "",
+      lines:        lines,
+      replaceLines: true
+    });
+
+    showToast("Order updated");
+    orderState.editingOrder = false;
+    orderState.buildItems = [];
+    orderState.buildContext = null;
+    var idToReload = orderState.editingOrderId;
+    orderState.editingOrderId = null;
+    // Reload the order detail
+    await openOrder(idToReload);
+  } catch(ex) {
+    showToast("Save failed: " + (ex.message || ex), true);
+    if (btn) { btn.disabled = false; btn.textContent = "Save Changes"; }
   }
 }
 

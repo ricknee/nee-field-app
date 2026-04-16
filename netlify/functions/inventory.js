@@ -1374,7 +1374,20 @@ async function handleOrderCreate(body) {
     });
   }
 
-  return resp(200, { ok: true, id: newId });
+  // Re-fetch the created order to get the autonumber Order ID
+  let orderId = null;
+  try {
+    const refreshed = await atFetch(
+      API_ROOT_INV,
+      `${encodeURIComponent("Material Orders")}/${newId}`,
+      { method: "GET" }
+    );
+    orderId = refreshed.fields?.["Order ID"] || null;
+  } catch(e) {
+    console.warn("Failed to fetch new order autonumber:", e.message);
+  }
+
+  return resp(200, { ok: true, id: newId, orderId });
 }
 
 // ── UPDATE ORDER (status / vendor / notes) ────────────────

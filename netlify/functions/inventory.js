@@ -158,6 +158,27 @@ async function handleEstimatingJobs() {
   });
 }
 
+// ── AWARDED JOBS ONLY (for employee-side material ordering) ──
+async function handleAwardedJobs() {
+  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
+    filter: `{Job Status}='Awarded'`,
+    sortField: "Job Name",
+    sortDir: "asc"
+  });
+  return resp(200, {
+    ok: true,
+    jobs: records
+      .map(r => {
+        const f = r.fields || {};
+        return {
+          id:   r.id,
+          name: f["Job Name"] || ""
+        };
+      })
+      .filter(j => j.name)
+  });
+}
+
 // ── LOCATIONS ──────────────────────────────────────────────
 async function handleLocations() {
   const records = await fetchAll(API_ROOT_INV, "Locations", {
@@ -1231,7 +1252,19 @@ const F_OL_QTY         = "fldI8RfBvcD8oGpcg";
 // ── ACTIVE ORDERS LIST ────────────────────────────────────
 async function handleOrdersList(params) {
   const showComplete = params?.includeComplete === "1";
-  const filter = showComplete ? undefined : `{Status}='Active'`;
+  const createdBy    = params?.createdBy;   // optional filter by user
+
+  // Build filter formula
+  const filters = [];
+  if (!showComplete) filters.push(`{Status}='Active'`);
+  if (createdBy) {
+    // Escape single quotes in name
+    const safeName = String(createdBy).replace(/'/g, "\\'");
+    filters.push(`{Created By}='${safeName}'`);
+  }
+  const filter = filters.length === 0 ? undefined
+               : filters.length === 1 ? filters[0]
+               : `AND(${filters.join(",")})`;
 
   const records = await fetchAll(API_ROOT_INV, "Material Orders", {
     filter,
@@ -1351,27 +1384,8 @@ async function handleOrderCreate(body) {
   if (!newId) return resp(500, { ok: false, error: "Failed to create order." });
 
   // Create order lines in batches of 10
-  for (let i = 0; i < lines.length; i += 10) {
-    const batch = lines.slice(i, i + 10).map(l => {
-      const fields = {
-        [F_OL_ORDER]: [String(newId)],
-        [F_OL_QTY]:   Number(l.qty || 0)
-      };
-      if (l.itemId) {
-        fields[F_OL_ITEM] = [String(l.itemId)];
-      }
-      // Always store description for traceability — for inventory items this
-      // captures the name at order time so historical orders survive renames.
-      if (l.description) {
-        fields[F_OL_DESCRIPTION] = String(l.description).trim();
-      }
-      return { fields };
-    });
-
-    await atFetch(API_ROOT_INV, encodeURIComponent("Material Order Lines"), {
-      method: "POST",
-      body: JSON.stringify({ records: batch, typecast: true })
-    });
+  if (lines && lines.length) {
+    await createOrderLinesHelper(newId, lines);
   }
 
   // Re-fetch the created order to get the autonumber Order ID
@@ -1390,21 +1404,79 @@ async function handleOrderCreate(body) {
   return resp(200, { ok: true, id: newId, orderId });
 }
 
-// ── UPDATE ORDER (status / vendor / notes) ────────────────
+// ── HELPER: Create order lines in batches of 10 ──────────
+async function createOrderLinesHelper(orderId, lines) {
+  for (let i = 0; i < lines.length; i += 10) {
+    const batch = lines.slice(i, i + 10).map(l => {
+      const fields = {
+        [F_OL_ORDER]: [String(orderId)],
+        [F_OL_QTY]:   Number(l.qty || 0)
+      };
+      if (l.itemId) {
+        fields[F_OL_ITEM] = [String(l.itemId)];
+      }
+      // Always store description for traceability — for inventory items this
+      // captures the name at order time so historical orders survive renames.
+      if (l.description) {
+        fields[F_OL_DESCRIPTION] = String(l.description).trim();
+      }
+      return { fields };
+    });
+
+    await atFetch(API_ROOT_INV, encodeURIComponent("Material Order Lines"), {
+      method: "POST",
+      body: JSON.stringify({ records: batch, typecast: true })
+    });
+  }
+}
+
+// ── HELPER: Delete all lines for an order ────────────────
+async function deleteOrderLines(orderId) {
+  const orderData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Material Orders")}/${orderId}`,
+    { method: "GET" }
+  );
+  const lineIds = (orderData.fields["Material Order Lines"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  for (let i = 0; i < lineIds.length; i += 10) {
+    const batch = lineIds.slice(i, i + 10);
+    const qs = batch.map(rid => `records[]=${rid}`).join("&");
+    await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Order Lines")}?${qs}`, {
+      method: "DELETE"
+    });
+  }
+}
+
+// ── UPDATE ORDER (status / vendor / notes / lines) ────────────────
 async function handleOrderUpdate(body) {
-  const { id, status, vendor } = body || {};
+  const { id, status, vendor, lines, replaceLines } = body || {};
   if (!id) return resp(400, { ok: false, error: "Missing order id." });
 
   const fields = {};
   if (status !== undefined) fields[F_ORD_STATUS] = status;
   if (vendor !== undefined) fields[F_ORD_VENDOR] = String(vendor || "");
 
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+  // Header fields — only patch if we have any
+  if (Object.keys(fields).length) {
+    await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ fields, typecast: true })
+    });
+  }
 
-  await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
-  });
+  // Line editing
+  if (replaceLines && lines !== undefined) {
+    await deleteOrderLines(id);
+    if (lines.length) {
+      await createOrderLinesHelper(id, lines);
+    }
+  }
+
+  if (!Object.keys(fields).length && !replaceLines) {
+    return resp(400, { ok: false, error: "Nothing to update." });
+  }
 
   return resp(200, { ok: true, id });
 }
@@ -1460,6 +1532,7 @@ export async function handler(event) {
       if (action === "employees")         return await handleEmployees();
       if (action === "jobs")              return await handleJobs();
       if (action === "estimatingJobs")    return await handleEstimatingJobs();
+      if (action === "awardedJobs")       return await handleAwardedJobs();
       if (action === "locations")         return await handleLocations();
       if (action === "items")             return await handleItems();
       if (action === "history")           return await handleHistory(params);

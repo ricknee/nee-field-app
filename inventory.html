@@ -1195,8 +1195,8 @@ function renderPushExpenses() {
   var pdfReady = typeof window.jspdf !== "undefined" && typeof window.jspdf.jsPDF !== "undefined";
   var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
     '📋 Uses minus Returns are netted per item. Tax (7.5%) added for taxable jobs. Push one job or all at once.' +
-    '<div style="margin-top:6px;font-size:11px;color:' + (pdfReady ? 'var(--green)' : 'var(--red)') + ';">' +
-    (pdfReady ? '✓ PDF receipts ready — will attach to each expense' : '⚠️ PDF library not loaded — receipts will not be attached (refresh and try again)') +
+    '<div style="margin-top:6px;font-size:11px;color:' + (pdfReady ? 'var(--green)' : 'var(--muted)') + ';">' +
+    (pdfReady ? '📄 PDF receipts will auto-download when you push' : '📄 PDF receipts unavailable — reload page to enable') +
     '</div></div>';
 
   var grandTotal = 0;
@@ -1251,12 +1251,11 @@ async function pushOneJob(idx) {
   var g = pending[idx];
   if (!confirm("Push expenses for " + g.jobName + "?")) return;
 
-  // Generate PDF receipt
-  var pdfBase64 = generateReceiptPDF(g);
-
   try {
-    var result = await apiPost({ action: "pushExpenses", pending: [g], pdfs: [pdfBase64] });
-    showToast("✓ Pushed " + g.jobName + (pdfBase64 ? " + receipt attached" : ""));
+    var result = await apiPost({ action: "pushExpenses", pending: [g] });
+    showToast("✓ Pushed " + g.jobName);
+    // Generate and download PDF receipt
+    downloadReceiptPDF(g);
     window._pendingExpenses.splice(idx, 1);
     if (window._pendingExpenses.length) {
       renderPushExpenses();
@@ -1273,19 +1272,37 @@ async function submitPushExpenses(idxOnly) {
   if (!pending || !pending.length) return;
   var toPush = idxOnly !== null ? [pending[idxOnly]] : pending;
 
-  // Generate one PDF per job
-  var pdfs = toPush.map(function(g) { return generateReceiptPDF(g); });
-  var pdfCount = pdfs.filter(Boolean).length;
-
   try {
-    var result = await apiPost({ action: "pushExpenses", pending: toPush, pdfs: pdfs });
-    var msg = "✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!";
-    if (pdfCount > 0) msg += " " + pdfCount + " receipt" + (pdfCount > 1 ? "s" : "") + " attached.";
-    showToast(msg);
+    var result = await apiPost({ action: "pushExpenses", pending: toPush });
+    showToast("✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!");
+    // Download one PDF per job
+    toPush.forEach(function(g){ downloadReceiptPDF(g); });
     window._pendingExpenses = null;
     goHome();
   } catch(ex) {
     showToast("Error: " + ex.message, true);
+  }
+}
+
+function downloadReceiptPDF(g) {
+  var pdfBase64 = generateReceiptPDF(g);
+  if (!pdfBase64) return;
+  try {
+    var binary = atob(pdfBase64);
+    var bytes  = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var blob = new Blob([bytes], { type: "application/pdf" });
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement("a");
+    var safe = (g.jobName || "job").replace(/[^a-z0-9]/gi, "_").substring(0, 30);
+    var date = new Date().toISOString().split("T")[0];
+    a.href     = url;
+    a.download = "NEE_Materials_" + safe + "_" + date + ".pdf";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+  } catch(e) {
+    console.error("PDF download failed:", e);
   }
 }
 
@@ -1620,13 +1637,45 @@ async function lookupStock(itemId) {
   if (inp)  inp.value = stockItem.name;
 
   var result  = document.getElementById("stock-result");
-  result.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading stock levels…</div>';
+  result.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
 
   var isAdmin = currentUser && currentUser.role === "admin";
 
   try {
-    var d      = await apiGet("stockLevels", { itemId: itemId, itemName: stockItem.name });
-    var levels = d.levels || [];
+    // Fetch transaction history AND stock levels in parallel
+    var [histData, levelsData] = await Promise.all([
+      apiGet("history", { all: "1" }),
+      apiGet("stockLevels", { itemId: itemId, itemName: stockItem.name }).catch(function(){ return { levels: [] }; })
+    ]);
+
+    // Build stock-level lookup map (keyed by location name)
+    var slMap = {};
+    (levelsData.levels || []).forEach(function(lv) {
+      slMap[lv.locationName] = lv;
+    });
+
+    // Calculate qty per location from transaction history (reliable for all items)
+    var locQty = {};
+    var txs = (histData.transactions || []).filter(function(t){ return t.item === stockItem.name; });
+    txs.forEach(function(t) {
+      var qty  = Number(t.qty) || 0;
+      var type = (t.type || "").toLowerCase();
+      if (t.from) {
+        if (!locQty[t.from]) locQty[t.from] = 0;
+        if (type === "use" || type === "transfer") locQty[t.from] -= Math.abs(qty);
+        if (type === "return")                     locQty[t.from] += Math.abs(qty);
+      }
+      if (t.to) {
+        if (!locQty[t.to]) locQty[t.to] = 0;
+        if (type === "receive" || type === "transfer" || type === "adjustment") locQty[t.to] += Math.abs(qty);
+      }
+    });
+
+    // Build full location list — use all known locations
+    var locNames = {};
+    allLocations.forEach(function(l){ locNames[l.name] = true; });
+    Object.keys(locQty).forEach(function(n){ locNames[n] = true; });
+    Object.keys(slMap).forEach(function(n){ locNames[n] = true; });
 
     var html = '<div style="margin-top:4px;">';
 
@@ -1641,59 +1690,67 @@ async function lookupStock(itemId) {
 
     html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;">Stock by Location</div>';
 
-    if (!levels.length) {
-      html += '<div class="empty" style="padding:24px 0;">No stock records found.<br><span style="font-size:12px;color:var(--muted);">Receive this item to create stock records.</span></div>';
-    } else {
-      levels.forEach(function(lv) {
-        var isLow    = lv.reorderPoint > 0 && lv.qtyOnHand <= lv.reorderPoint;
-        var isWire   = lv.wireWeight > 0;
-        var borderC  = isLow ? 'var(--red)' : 'var(--border)';
-        var qtyColor = lv.qtyOnHand > 0 ? (isLow ? 'var(--red)' : 'var(--gold)') : 'var(--muted)';
+    var sortedLocs = allLocations.map(function(l){ return l.name; });
 
-        html += '<div style="background:var(--navy-lt);border:1.5px solid ' + borderC + ';border-radius:10px;padding:13px 16px;margin-bottom:8px;">';
-        html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">';
+    sortedLocs.forEach(function(locName) {
+      // Use Stock Level qty if available (authoritative), otherwise transaction calc
+      var lv      = slMap[locName];
+      var qty     = lv ? lv.qtyOnHand : (locQty[locName] || 0);
+      var reorder = lv ? lv.reorderPoint : 0;
+      var slId    = lv ? lv.id : null;
+      var isLow   = reorder > 0 && qty <= reorder;
+      var isWire  = lv ? lv.wireWeight > 0 : (stockItem.uom && stockItem.uom.toLowerCase() === "lb");
+      var wireFt  = lv ? lv.wireFt : 0;
+      var totalVal = lv ? lv.totalValue : (qty * (stockItem.cost || 0));
 
-        // Left: location + reorder info
-        html += '<div style="flex:1;">';
-        html += '<div style="font-size:15px;font-weight:600;">' + lv.locationName;
-        if (isLow) html += ' <span style="color:var(--red);font-size:12px;">⚠️ Low</span>';
-        html += '</div>';
+      var borderC  = isLow ? 'var(--red)' : 'var(--border)';
+      var qtyColor = qty > 0 ? (isLow ? 'var(--red)' : 'var(--gold)') : 'var(--muted)';
 
-        if (isAdmin) {
-          // Editable reorder point
-          var uomLabel = isWire ? 'lbs' : (stockItem.uom || 'units');
-          html += '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">';
-          html += '<span style="font-size:11px;color:var(--muted);">Min:</span>';
-          html += '<input type="number" min="0" step="1" value="' + lv.reorderPoint + '" ';
-          html += 'data-slid="' + lv.id + '" ';
-          html += 'onchange="saveReorderPoint(this)" ';
+      html += '<div style="background:var(--navy-lt);border:1.5px solid ' + borderC + ';border-radius:10px;padding:13px 16px;margin-bottom:8px;">';
+      html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">';
+
+      // Left: location + reorder
+      html += '<div style="flex:1;">';
+      html += '<div style="font-size:15px;font-weight:600;">' + locName;
+      if (isLow) html += ' <span style="color:var(--red);font-size:12px;">⚠️ Low</span>';
+      if (!lv)   html += ' <span style="font-size:10px;color:var(--muted);background:var(--slate);padding:1px 6px;border-radius:8px;margin-left:4px;">calc</span>';
+      html += '</div>';
+
+      if (isAdmin) {
+        var uomLabel = isWire ? 'lbs' : (stockItem.uom || 'units');
+        html += '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">';
+        html += '<span style="font-size:11px;color:var(--muted);">Min:</span>';
+        if (slId) {
+          html += '<input type="number" min="0" step="1" value="' + reorder + '" ';
+          html += 'data-slid="' + slId + '" onchange="saveReorderPoint(this)" ';
           html += 'style="width:64px;background:var(--navy-mid);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:3px 7px;outline:none;" />';
           html += '<span style="font-size:11px;color:var(--muted);">' + uomLabel + '</span>';
-          html += '<span style="font-size:10px;color:var(--muted);font-style:italic;">(0 = none)</span>';
-          html += '</div>';
-        } else if (lv.reorderPoint > 0) {
-          html += '<div style="font-size:11px;color:var(--muted);margin-top:3px;">Min: ' + fmtQty(lv.reorderPoint) + ' ' + (stockItem.uom || 'units') + '</div>';
-        }
-
-        if (isAdmin && lv.totalValue > 0) {
-          html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Value: ' + fmtCurrency(lv.totalValue) + '</div>';
-        }
-        html += '</div>';
-
-        // Right: quantities
-        html += '<div style="text-align:right;flex-shrink:0;">';
-        html += '<div style="font-size:24px;font-weight:700;line-height:1;color:' + qtyColor + ';">' + fmtQty(Math.max(0, lv.qtyOnHand)) + '</div>';
-        if (isWire) {
-          html += '<div style="font-size:11px;color:var(--dim);">lbs</div>';
-          html += '<div style="font-size:15px;font-weight:700;color:var(--blue);margin-top:4px;">' + fmtQty(Math.round(lv.wireFt)) + ' ft</div>';
+          html += '<span style="font-size:10px;color:var(--muted);font-style:italic;">(0=none)</span>';
         } else {
-          html += '<div style="font-size:11px;color:var(--dim);">' + (stockItem.uom || 'units') + '</div>';
+          html += '<span style="font-size:11px;color:var(--muted);font-style:italic;">Receive item to enable</span>';
         }
         html += '</div>';
+      } else if (reorder > 0) {
+        html += '<div style="font-size:11px;color:var(--muted);margin-top:3px;">Min: ' + fmtQty(reorder) + '</div>';
+      }
 
-        html += '</div></div>';
-      });
-    }
+      if (isAdmin && totalVal > 0) {
+        html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Value: ' + fmtCurrency(totalVal) + '</div>';
+      }
+      html += '</div>';
+
+      // Right: qty
+      html += '<div style="text-align:right;flex-shrink:0;">';
+      html += '<div style="font-size:24px;font-weight:700;line-height:1;color:' + qtyColor + ';">' + fmtQty(Math.max(0, qty)) + '</div>';
+      if (isWire && wireFt > 0) {
+        html += '<div style="font-size:11px;color:var(--dim);">lbs</div>';
+        html += '<div style="font-size:15px;font-weight:700;color:var(--blue);margin-top:4px;">' + fmtQty(Math.round(wireFt)) + ' ft</div>';
+      } else {
+        html += '<div style="font-size:11px;color:var(--dim);">' + (stockItem.uom || 'units') + '</div>';
+      }
+      html += '</div>';
+      html += '</div></div>';
+    });
 
     html += '</div>';
     result.innerHTML = html;
@@ -1702,6 +1759,7 @@ async function lookupStock(itemId) {
     result.innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
   }
 }
+
 
 // ═══════════════════════════════════════════════════════════
 // REORDER ALERTS

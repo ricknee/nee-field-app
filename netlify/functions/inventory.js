@@ -463,19 +463,44 @@ async function handlePendingExpenses() {
 }
 
 // ── RECEIPT FIELD LOOKUP ──────────────────────────────────
+// Returns field ID for "Receipt / Document" on the Expenses table
+// Uses the Airtable meta API — requires schema:read scope on the token
 async function getReceiptFieldId() {
   try {
     const res  = await fetch(`https://api.airtable.com/v0/meta/bases/${MAIN_BASE_ID}/tables`, {
       headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` }
     });
-    const data = await res.json();
-    const exp  = (data.tables || []).find(t => t.name === "Expenses");
-    if (!exp) return null;
+    if (!res.ok) {
+      console.error(`Meta API ${res.status} — token may lack schema:read scope`);
+      return null;
+    }
+    const data  = await res.json();
+    const exp   = (data.tables || []).find(t => t.name === "Expenses");
+    if (!exp) { console.error("Expenses table not found in meta"); return null; }
     const field = exp.fields.find(f => f.name === "Receipt / Document");
-    return field?.id || null;
+    const id    = field?.id || null;
+    console.log("Receipt/Document field ID:", id);
+    return id;
   } catch(e) {
     console.error("getReceiptFieldId failed:", e.message);
     return null;
+  }
+}
+
+// ── DEBUG: GET EXPENSE FIELD IDS ──────────────────────────
+async function handleGetExpenseFields() {
+  try {
+    const res  = await fetch(`https://api.airtable.com/v0/meta/bases/${MAIN_BASE_ID}/tables`, {
+      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` }
+    });
+    if (!res.ok) return resp(res.status, { ok: false, error: `Meta API error ${res.status} — token needs schema:read scope` });
+    const data  = await res.json();
+    const exp   = (data.tables || []).find(t => t.name === "Expenses");
+    if (!exp) return resp(404, { ok: false, error: "Expenses table not found" });
+    const fields = exp.fields.map(f => ({ id: f.id, name: f.name, type: f.type }));
+    return resp(200, { ok: true, fields });
+  } catch(e) {
+    return resp(500, { ok: false, error: e.message });
   }
 }
 
@@ -532,8 +557,11 @@ async function handlePushExpenses(body) {
   // Look up the "Receipt / Document" field ID once if PDFs are provided
   let receiptFieldId = null;
   if (pdfs && pdfs.some(p => p)) {
+    console.log(`PDF array received: ${pdfs.length} entries, non-null: ${pdfs.filter(Boolean).length}`);
     receiptFieldId = await getReceiptFieldId();
-    console.log("Receipt field ID:", receiptFieldId);
+    console.log("Using receipt field ID:", receiptFieldId || "NOT FOUND — PDF upload will be skipped");
+  } else {
+    console.log("No PDFs in payload — skipping attachment upload");
   }
 
   for (let i = 0; i < pending.length; i++) {
@@ -674,10 +702,9 @@ async function handleStockLevels(params) {
   const { itemId, itemName } = params || {};
   if (!itemName) return resp(400, { ok: false, error: "Missing itemName." });
 
-  // Stock ID field format: "Item Name | Location Name"
-  // Filter for records where Stock ID starts with the item name + " | "
-  const safeItemName = itemName.replace(/"/g, '\\"');
-  const filter = `FIND("${safeItemName} | ", {Stock ID}) = 1`;
+  // Use single-quoted FIND so item names with inch marks (") don't break the formula
+  const safeItemName = itemName.replace(/'/g, "\\'");
+  const filter = `FIND('${safeItemName} | ', {Stock ID}) = 1`;
 
   const records = await fetchAll(API_ROOT_INV, "Stock Levels", { filter });
 
@@ -768,14 +795,15 @@ export async function handler(event) {
     if (event.httpMethod === "GET") {
       const action = event.queryStringParameters?.action;
       const params = event.queryStringParameters || {};
-      if (action === "employees")       return await handleEmployees();
-      if (action === "jobs")            return await handleJobs();
-      if (action === "locations")       return await handleLocations();
-      if (action === "items")           return await handleItems();
-      if (action === "history")         return await handleHistory(params);
-      if (action === "pendingExpenses") return await handlePendingExpenses();
-      if (action === "stockLevels")     return await handleStockLevels(params);
-      if (action === "reorderAlerts")   return await handleReorderAlerts();
+      if (action === "employees")         return await handleEmployees();
+      if (action === "jobs")              return await handleJobs();
+      if (action === "locations")         return await handleLocations();
+      if (action === "items")             return await handleItems();
+      if (action === "history")           return await handleHistory(params);
+      if (action === "pendingExpenses")   return await handlePendingExpenses();
+      if (action === "stockLevels")       return await handleStockLevels(params);
+      if (action === "reorderAlerts")     return await handleReorderAlerts();
+      if (action === "getExpenseFields")  return await handleGetExpenseFields();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 

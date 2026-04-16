@@ -680,7 +680,7 @@ async function handleAdjustment(body) {
 
 // ── CREATE NEW ITEM ───────────────────────────────────────
 async function handleCreateItem(body) {
-  const { name, category, uom, barcode, cost, wireFtPerLb } = body || {};
+  const { name, category, uom, barcode, cost, wireFtPerLb, active } = body || {};
   if (!name || !name.trim()) return resp(400, { ok: false, error: "Item name is required." });
 
   // Check for duplicate barcode
@@ -695,8 +695,8 @@ async function handleCreateItem(body) {
 
   // Use field NAMES with typecast:true — works for all field types including singleSelect
   const fields = {
-    "Item Name":          name.trim(),
-    "Active Item":        true
+    "Item Name":   name.trim(),
+    "Active Item": active === false ? false : true   // default true when not specified
   };
   if (category && category.trim())   fields["Category"]          = category.trim();
   if (uom && uom.trim())             fields["Unit of Measure"]   = uom.trim();

@@ -1904,17 +1904,35 @@ function saveReorderPoint(input) {
 // ═══════════════════════════════════════════════════════════
 function goNewItem() {
   showScreen("newitem");
+  var body = document.getElementById("newitem-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading items…</div>';
+    var t = setInterval(function(){ if(dataReady){ clearInterval(t); renderNewItemForm(); } }, 300);
+    return;
+  }
   renderNewItemForm();
 }
 
 function renderNewItemForm(prefillBarcode) {
-  // Collect unique categories and UOMs from existing items
+  // Collect unique categories from existing items
   var cats = [];
   var catSeen = {};
   allItems.forEach(function(i) {
     if (i.cat && !catSeen[i.cat]) { catSeen[i.cat] = true; cats.push(i.cat); }
   });
   cats.sort();
+
+  // If still no categories (items not loaded), try a fresh fetch
+  if (!cats.length && allItems.length === 0) {
+    apiGet("items").then(function(d) {
+      allItems = d.items || [];
+      dataReady = true;
+      renderNewItemForm(prefillBarcode);
+    }).catch(function(){});
+    var body = document.getElementById("newitem-body");
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    return;
+  }
 
   var uoms = ["ea", "lb", "ft", "roll", "box", "bag", "pr", "100ft", "500ft"];
 
@@ -1935,16 +1953,14 @@ function renderNewItemForm(prefillBarcode) {
     '<div class="field-group"><div class="field-lbl">Item Name <span style="color:var(--red);">*</span></div>' +
     '<input class="field-inp" id="ni-name" type="text" placeholder="e.g. 3/4&quot; EMT CONNECTOR - SET SCREW" autocomplete="off" /></div>' +
 
-    // Category
+    // Category — existing categories + new option
     '<div class="field-group"><div class="field-lbl">Category</div>' +
-    '<div style="display:flex;gap:8px;">' +
-    '<select class="field-sel" id="ni-cat" onchange="onNewItemCatChange()" style="flex:1;">' +
-    '<option value="">— Select or type new —</option>' +
-    cats.map(function(c){ return '<option value="' + c + '">' + c + '</option>'; }).join('') +
+    '<select class="field-sel" id="ni-cat" onchange="onNewItemCatChange()">' +
+    '<option value="">— Select category —</option>' +
+    cats.map(function(c){ return '<option value="' + c.replace(/"/g,"&quot;") + '">' + c + '</option>'; }).join('') +
     '<option value="__new__">+ Add new category…</option>' +
     '</select>' +
-    '</div>' +
-    '<input class="field-inp" id="ni-cat-new" type="text" placeholder="New category name" style="display:none;margin-top:6px;" /></div>' +
+    '<input class="field-inp" id="ni-cat-new" type="text" placeholder="Type new category name" style="display:none;margin-top:6px;" onchange="onNewItemCatNewChange()" oninput="onNewItemCatNewChange()" /></div>' +
 
     // Unit of Measure
     '<div class="field-group"><div class="field-lbl">Unit of Measure</div>' +
@@ -1956,28 +1972,33 @@ function renderNewItemForm(prefillBarcode) {
     '<div class="field-group"><div class="field-lbl">Default Unit Cost</div>' +
     '<input class="field-inp" id="ni-cost" type="number" step="0.01" min="0" placeholder="e.g. 0.28" /></div>' +
 
-    // Wire ft/lb — shown when Wire category
+    // Wire ft/lb — shown when Wire category is selected
     '<div class="field-group" id="ni-wire-row" style="display:none;"><div class="field-lbl">Wire ft/lb (feet per pound)</div>' +
     '<input class="field-inp" id="ni-wire" type="number" step="0.001" min="0" placeholder="e.g. 41.670 for 12 THHN" /></div>' +
 
     '<button class="primary-btn" id="ni-save-btn" onclick="submitNewItem()" style="margin-top:4px;">Save Item</button>' +
     '<div style="height:24px;"></div>';
 
-  // Focus name if barcode already filled
-  if (prefillBarcode) {
-    setTimeout(function(){ document.getElementById("ni-name")?.focus(); }, 100);
-  }
+  if (prefillBarcode) setTimeout(function(){ document.getElementById("ni-name")?.focus(); }, 100);
 }
 
 function onNewItemCatChange() {
-  var sel    = document.getElementById("ni-cat");
-  var newInp = document.getElementById("ni-cat-new");
+  var sel     = document.getElementById("ni-cat");
+  var newInp  = document.getElementById("ni-cat-new");
   var wireRow = document.getElementById("ni-wire-row");
-  if (!sel) return;
-  if (newInp) newInp.style.display = sel.value === "__new__" ? "block" : "none";
-  // Show wire field for Wire categories
-  var catVal = sel.value === "__new__" ? (newInp?.value || "") : sel.value;
+  if (!sel || !newInp) return;
+  var isNew = sel.value === "__new__";
+  newInp.style.display = isNew ? "block" : "none";
+  if (isNew) { newInp.focus(); }
+  var catVal = isNew ? (newInp.value || "") : sel.value;
   if (wireRow) wireRow.style.display = catVal.toLowerCase().includes("wire") ? "block" : "none";
+}
+
+function onNewItemCatNewChange() {
+  var newInp  = document.getElementById("ni-cat-new");
+  var wireRow = document.getElementById("ni-wire-row");
+  if (!newInp || !wireRow) return;
+  wireRow.style.display = newInp.value.toLowerCase().includes("wire") ? "block" : "none";
 }
 
 async function submitNewItem() {

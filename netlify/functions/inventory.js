@@ -699,21 +699,26 @@ async function handleDelete(body) {
 
 // ── STOCK LEVELS BY ITEM ──────────────────────────────────
 async function handleStockLevels(params) {
-  const { itemId, itemName } = params || {};
+  const { itemName } = params || {};
   if (!itemName) return resp(400, { ok: false, error: "Missing itemName." });
 
-  // Use single-quoted FIND so item names with inch marks (") don't break the formula
-  const safeItemName = itemName.replace(/'/g, "\\'");
-  const filter = `FIND('${safeItemName} | ', {Stock ID}) = 1`;
+  // Fetch ALL stock level records and filter in JavaScript.
+  // This avoids Airtable formula quoting issues with item names containing inch marks (")
+  const allRecords = await fetchAll(API_ROOT_INV, "Stock Levels", {});
 
-  const records = await fetchAll(API_ROOT_INV, "Stock Levels", { filter });
+  // Match records where Stock ID starts with "itemName | " (case-insensitive)
+  const search  = (itemName + " | ").toLowerCase();
+  const records = allRecords.filter(r => {
+    const stockId = (r.fields?.["Stock ID"] || "").toLowerCase();
+    return stockId.startsWith(search);
+  });
 
   const levels = records.map(r => {
     const f = r.fields || {};
     const stockId = f["Stock ID"] || "";
     const parts   = stockId.split(" | ");
     const locName = parts[parts.length - 1] || "";
-    // "Wire ft/lb" on Stock Levels is a Lookup field → Airtable returns it as an array
+    // "Wire ft/lb" is a Lookup field → Airtable returns it as an array
     const wireFtLbRaw = f["Wire ft/lb"];
     const wireFtLb    = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
     const wireFtRaw   = f["Wire (Ft.)"];
@@ -732,7 +737,6 @@ async function handleStockLevels(params) {
 
   levels.sort((a, b) => a.locationName.localeCompare(b.locationName));
   return resp(200, { ok: true, levels });
-}
 
 // ── REORDER ALERTS ────────────────────────────────────────
 async function handleReorderAlerts() {

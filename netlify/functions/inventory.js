@@ -134,6 +134,30 @@ async function handleJobs() {
   });
 }
 
+// ── ESTIMATING JOBS (from main NEE base, filtered by status) ──
+// For the Estimates feature — pulls jobs in New Lead, Estimating, or Awarded
+async function handleEstimatingJobs() {
+  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
+    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded')`,
+    sortField: "Job Name",
+    sortDir: "asc"
+  });
+  return resp(200, {
+    ok: true,
+    jobs: records
+      .map(r => {
+        const f = r.fields || {};
+        return {
+          id:     r.id,
+          name:   f["Job Name"] || "",
+          status: f["Job Status"]?.name || f["Job Status"] || "",
+          taxable: (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable"
+        };
+      })
+      .filter(j => j.name)
+  });
+}
+
 // ── LOCATIONS ──────────────────────────────────────────────
 async function handleLocations() {
   const records = await fetchAll(API_ROOT_INV, "Locations", {
@@ -839,6 +863,335 @@ async function handleUpdateReorderPoint(body) {
   return resp(200, { ok: true });
 }
 
+// ═══════════════════════════════════════════════════════════
+// ESTIMATES — list, get, create, update, delete
+// ═══════════════════════════════════════════════════════════
+
+// Estimates table:        tblULCJaVsLXk4Af0
+//   Job Name   fld5QDgzSOXNAZdOc  (primary, single line text)
+//   Job ID     fldId8eR0C8TeSfy4  (single line text)
+//   Date Created fldQPgpJedOl0sFqj (createdTime — auto)
+//   Created By fldl0xEYcPvNbs69U  (single line text)
+//   Status     fldAu3oNbywGe8vBh  (singleSelect)
+//   Notes      fld7sOLbNZxEqP0zs  (multilineText)
+//   Estimate Line Items fld0iwv87YGSNj6Se (multipleRecordLinks)
+//   Total      flddlh18SWp8ZpEtF  (rollup — read only)
+//
+// Estimate Line Items table: tblhRadsyvlLw5Lp5
+//   Line ID                       fldueClxCFxL3IJUE (autoNumber — auto)
+//   Estimate                      fldCXpRJt9g3yCB9r (link)
+//   Inventory Item                fld50ttitFcM2uPap (link, optional for Misc)
+//   Quantity                      fld9mDWjvdd4AfXnn (number)
+//   Unit Cost at Time of Estimate fldkTzFNJydVX1iK3 (currency)
+//   Line Total                    fldB17lKMj66jhgT9 (formula — read only)
+//
+// For Misc lines we store a description in a separate way: since the table
+// doesn't have a description field, Misc lines also need a name. We piggyback
+// by NOT linking an Inventory Item and storing the description in a separate
+// field. To keep the schema minimal we use a convention: Misc lines have NO
+// Inventory Item link and we represent them via a fake inventory item link to
+// a placeholder "Misc" item — BUT that requires a placeholder item. Instead,
+// for Misc lines we leave Inventory Item empty and store the description in
+// the Line ID field's display via a separate Description. Since we don't have
+// a Description field, we'll add one by convention: Misc descriptions are
+// stored in the Estimate's Notes field as "[Misc] desc".
+//
+// Simpler: we add a single line text "Description" to Estimate Line Items.
+// That requires a schema change. To keep this change minimal and stay within
+// what's already built in Airtable, we will use the following convention:
+//   - For inventory-item lines, Inventory Item is set, no description needed
+//   - For Misc lines, we set Inventory Item to NOTHING and store the
+//     description in the Quantity field's row context — but Quantity is a
+//     number. So Misc line description has to live somewhere.
+//
+// The cleanest approach without requiring a new field is: for Misc lines, we
+// require the user to add a description that we put in the Estimate Notes
+// or in a "dummy" inventory item called "MISC" with the description in cost.
+//
+// For this build we will require an "Estimate Line Description" single line
+// text field in Estimate Line Items. We'll detect its absence and return a
+// helpful error if missing, asking the user to add it.
+
+const EST_TABLE_ID  = "tblULCJaVsLXk4Af0";
+const LINE_TABLE_ID = "tblhRadsyvlLw5Lp5";
+
+// Estimates table fields
+const F_EST_JOB_NAME    = "fld5QDgzSOXNAZdOc";
+const F_EST_JOB_ID      = "fldId8eR0C8TeSfy4";
+const F_EST_CREATED_BY  = "fldl0xEYcPvNbs69U";
+const F_EST_STATUS      = "fldAu3oNbywGe8vBh";
+const F_EST_NOTES       = "fld7sOLbNZxEqP0zs";
+
+// Estimate Line Items table fields
+const F_LINE_ESTIMATE   = "fldCXpRJt9g3yCB9r";
+const F_LINE_ITEM       = "fld50ttitFcM2uPap";
+const F_LINE_QTY        = "fld9mDWjvdd4AfXnn";
+const F_LINE_UNIT_COST  = "fldkTzFNJydVX1iK3";
+// Optional: Description field for Misc lines — looked up by name at runtime.
+// If you add a "Description" single line text field to Estimate Line Items,
+// Misc lines will store their text there. Otherwise Misc descriptions appear
+// as part of the line via the Estimate's Notes.
+
+// ── ESTIMATES LIST ─────────────────────────────────────────
+async function handleEstimatesList(params) {
+  const records = await fetchAll(API_ROOT_INV, "Estimates", {
+    sortField: "Date Created",
+    sortDir: "desc"
+  });
+
+  const estimates = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:        r.id,
+      jobName:   f["Job Name"] || "",
+      jobId:     f["Job ID"] || "",
+      dateCreated: f["Date Created"] || "",
+      createdBy: f["Created By"] || "",
+      status:    f["Status"]?.name || f["Status"] || "Draft",
+      notes:     f["Notes"] || "",
+      total:     f["Total"] || 0,
+      lineCount: (f["Estimate Line Items"] || []).length
+    };
+  });
+
+  return resp(200, { ok: true, estimates });
+}
+
+// ── GET ONE ESTIMATE WITH LINES ────────────────────────────
+async function handleEstimateGet(params) {
+  const { id } = params || {};
+  if (!id) return resp(400, { ok: false, error: "Missing estimate id." });
+
+  // Fetch estimate
+  const estData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimates")}/${id}`,
+    { method: "GET" }
+  );
+  if (!estData?.id) return resp(404, { ok: false, error: "Estimate not found." });
+
+  const ef = estData.fields || {};
+  const lineIds = (ef["Estimate Line Items"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  // Fetch all line items belonging to this estimate
+  // Use filterByFormula to pull just the linked lines
+  let lines = [];
+  if (lineIds.length) {
+    // Fetch line items + items map for displaying inventory item names
+    const [lineRecords, itemRecords] = await Promise.all([
+      fetchAll(API_ROOT_INV, "Estimate Line Items", {}),
+      fetchAll(API_ROOT_INV, "Inventory Items", {})
+    ]);
+
+    const itemMap = {};
+    itemRecords.forEach(r => {
+      itemMap[r.id] = {
+        name: r.fields["Item Name"] || r.id,
+        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || "",
+        cost: r.fields["Default Unit Cost"] || 0
+      };
+    });
+
+    lines = lineRecords
+      .filter(r => lineIds.includes(r.id))
+      .map(r => {
+        const f = r.fields || {};
+        const itemArr = f["Inventory Item"] || [];
+        const itemId = itemArr.length
+          ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
+          : "";
+        const itemData = itemMap[itemId] || {};
+        return {
+          id:       r.id,
+          lineNum:  f["Line ID"] || 0,
+          itemId:   itemId,
+          itemName: itemData.name || (f["Description"] || ""),
+          uom:      itemData.uom || "",
+          isMisc:   !itemId,
+          // Description field for Misc lines (only present if user added it to schema)
+          description: f["Description"] || "",
+          qty:      f["Quantity"] || 0,
+          unitCost: f["Unit Cost at Time of Estimate"] || 0,
+          lineTotal: f["Line Total"] || 0
+        };
+      })
+      .sort((a, b) => (a.lineNum || 0) - (b.lineNum || 0));
+  }
+
+  return resp(200, {
+    ok: true,
+    estimate: {
+      id:        estData.id,
+      jobName:   ef["Job Name"] || "",
+      jobId:     ef["Job ID"] || "",
+      dateCreated: ef["Date Created"] || "",
+      createdBy: ef["Created By"] || "",
+      status:    ef["Status"]?.name || ef["Status"] || "Draft",
+      notes:     ef["Notes"] || "",
+      total:     ef["Total"] || 0,
+      lines
+    }
+  });
+}
+
+// ── CREATE ESTIMATE ────────────────────────────────────────
+async function handleEstimateCreate(body) {
+  const { jobName, jobId, status, notes, createdBy, lines } = body || {};
+  if (!jobName || !jobName.trim()) return resp(400, { ok: false, error: "Job name is required." });
+
+  const estFields = {
+    [F_EST_JOB_NAME]:   String(jobName).trim(),
+    [F_EST_JOB_ID]:     String(jobId || "").trim(),
+    [F_EST_STATUS]:     status || "Estimating",
+    [F_EST_NOTES]:      String(notes || "").trim(),
+    [F_EST_CREATED_BY]: String(createdBy || "").trim()
+  };
+
+  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimates"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields: estFields }], typecast: true })
+  });
+
+  const newId = created.records?.[0]?.id;
+  if (!newId) return resp(500, { ok: false, error: "Failed to create estimate." });
+
+  // Create line items if provided (in batches of 10)
+  if (lines && lines.length) {
+    await createLineItems(newId, lines);
+  }
+
+  return resp(200, { ok: true, id: newId });
+}
+
+// ── UPDATE ESTIMATE ────────────────────────────────────────
+async function handleEstimateUpdate(body) {
+  const { id, status, notes, jobName, jobId, lines, replaceLines } = body || {};
+  if (!id) return resp(400, { ok: false, error: "Missing estimate id." });
+
+  // Update header fields if provided
+  const headerFields = {};
+  if (status !== undefined)  headerFields[F_EST_STATUS]   = status;
+  if (notes  !== undefined)  headerFields[F_EST_NOTES]    = String(notes || "");
+  if (jobName !== undefined) headerFields[F_EST_JOB_NAME] = String(jobName || "");
+  if (jobId   !== undefined) headerFields[F_EST_JOB_ID]   = String(jobId || "");
+
+  if (Object.keys(headerFields).length) {
+    await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimates")}/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ fields: headerFields, typecast: true })
+    });
+  }
+
+  // If replaceLines is true, delete existing lines and add new ones.
+  // Otherwise, just append the new lines if provided.
+  if (replaceLines && lines !== undefined) {
+    // Get existing line IDs for this estimate
+    const estData = await atFetch(
+      API_ROOT_INV,
+      `${encodeURIComponent("Estimates")}/${id}`,
+      { method: "GET" }
+    );
+    const existingIds = (estData.fields["Estimate Line Items"] || [])
+      .map(l => typeof l === "object" ? l.id : String(l));
+
+    // Delete existing lines in batches of 10
+    for (let i = 0; i < existingIds.length; i += 10) {
+      const batch = existingIds.slice(i, i + 10);
+      const qs = batch.map(rid => `records[]=${rid}`).join("&");
+      await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Line Items")}?${qs}`, {
+        method: "DELETE"
+      });
+    }
+
+    // Create new lines
+    if (lines.length) await createLineItems(id, lines);
+  } else if (lines && lines.length) {
+    // Just append
+    await createLineItems(id, lines);
+  }
+
+  return resp(200, { ok: true, id });
+}
+
+// ── DELETE ESTIMATE ────────────────────────────────────────
+async function handleEstimateDelete(body) {
+  const { id } = body || {};
+  if (!id) return resp(400, { ok: false, error: "Missing estimate id." });
+
+  // Get linked line items first
+  const estData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimates")}/${id}`,
+    { method: "GET" }
+  );
+  const lineIds = (estData.fields["Estimate Line Items"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  // Delete lines in batches of 10
+  for (let i = 0; i < lineIds.length; i += 10) {
+    const batch = lineIds.slice(i, i + 10);
+    const qs = batch.map(rid => `records[]=${rid}`).join("&");
+    await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Line Items")}?${qs}`, {
+      method: "DELETE"
+    });
+  }
+
+  // Delete the estimate
+  await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimates")}/${id}`, {
+    method: "DELETE"
+  });
+
+  return resp(200, { ok: true, deleted: id });
+}
+
+// ── HELPER: Create line items in batches of 10 ─────────────
+async function createLineItems(estimateId, lines) {
+  for (let i = 0; i < lines.length; i += 10) {
+    const batch = lines.slice(i, i + 10).map(l => {
+      const fields = {
+        [F_LINE_ESTIMATE]:  [String(estimateId)],
+        [F_LINE_QTY]:       Number(l.qty || 0),
+        [F_LINE_UNIT_COST]: Number(l.unitCost || 0)
+      };
+      // Inventory item link — only for non-Misc lines
+      if (l.itemId) {
+        fields[F_LINE_ITEM] = [String(l.itemId)];
+      }
+      // Description — only attempt to set if it's a Misc line.
+      // Use field NAME so this works whether or not "Description" exists.
+      // Airtable will return 422 if the field doesn't exist; we let typecast
+      // handle that gracefully by using field name + try/catch fallback.
+      if (l.isMisc && l.description) {
+        fields["Description"] = String(l.description).trim();
+      }
+      return { fields };
+    });
+
+    try {
+      await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+        method: "POST",
+        body: JSON.stringify({ records: batch, typecast: true })
+      });
+    } catch (err) {
+      // If failure is due to missing Description field, retry without it
+      if (err.message && err.message.toLowerCase().includes("description")) {
+        const retryBatch = batch.map(b => {
+          const f = { ...b.fields };
+          delete f.Description;
+          return { fields: f };
+        });
+        await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+          method: "POST",
+          body: JSON.stringify({ records: retryBatch, typecast: true })
+        });
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 // ── ROUTER ─────────────────────────────────────────────────
 export async function handler(event) {
   try {
@@ -850,6 +1203,7 @@ export async function handler(event) {
       const params = event.queryStringParameters || {};
       if (action === "employees")         return await handleEmployees();
       if (action === "jobs")              return await handleJobs();
+      if (action === "estimatingJobs")    return await handleEstimatingJobs();
       if (action === "locations")         return await handleLocations();
       if (action === "items")             return await handleItems();
       if (action === "history")           return await handleHistory(params);
@@ -857,6 +1211,8 @@ export async function handler(event) {
       if (action === "stockLevels")       return await handleStockLevels(params);
       if (action === "reorderAlerts")     return await handleReorderAlerts();
       if (action === "getExpenseFields")  return await handleGetExpenseFields();
+      if (action === "estimatesList")     return await handleEstimatesList(params);
+      if (action === "estimateGet")       return await handleEstimateGet(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -872,6 +1228,9 @@ export async function handler(event) {
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);
       if (body.action === "delete")             return await handleDelete(body);
+      if (body.action === "estimateCreate")     return await handleEstimateCreate(body);
+      if (body.action === "estimateUpdate")     return await handleEstimateUpdate(body);
+      if (body.action === "estimateDelete")     return await handleEstimateDelete(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

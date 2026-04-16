@@ -1192,9 +1192,12 @@ function renderPushExpenses() {
   var body    = document.getElementById("push-body");
   var pending = window._pendingExpenses || [];
 
+  var pdfReady = typeof window.jspdf !== "undefined" && typeof window.jspdf.jsPDF !== "undefined";
   var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
     '📋 Uses minus Returns are netted per item. Tax (7.5%) added for taxable jobs. Push one job or all at once.' +
-    '</div>';
+    '<div style="margin-top:6px;font-size:11px;color:' + (pdfReady ? 'var(--green)' : 'var(--red)') + ';">' +
+    (pdfReady ? '✓ PDF receipts ready — will attach to each expense' : '⚠️ PDF library not loaded — receipts will not be attached (refresh and try again)') +
+    '</div></div>';
 
   var grandTotal = 0;
   pending.forEach(function(g, idx) {
@@ -1290,8 +1293,9 @@ async function submitPushExpenses(idxOnly) {
 // PDF RECEIPT GENERATOR
 // ═══════════════════════════════════════════════════════════
 function generateReceiptPDF(g) {
-  if (typeof window.jspdf === "undefined") {
-    console.warn("jsPDF not loaded");
+  if (typeof window.jspdf === "undefined" || typeof window.jspdf.jsPDF === "undefined") {
+    console.warn("jsPDF not loaded — PDF skipped");
+    showToast("Note: PDF library not loaded — receipt will not be attached", false);
     return null;
   }
   try {

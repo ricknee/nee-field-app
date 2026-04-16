@@ -737,6 +737,7 @@ async function handleStockLevels(params) {
 
   levels.sort((a, b) => a.locationName.localeCompare(b.locationName));
   return resp(200, { ok: true, levels });
+}
 
 // ── REORDER ALERTS ────────────────────────────────────────
 async function handleReorderAlerts() {

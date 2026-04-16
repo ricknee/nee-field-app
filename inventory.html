@@ -1621,7 +1621,7 @@ async function lookupStock(itemId) {
   var isAdmin = currentUser && currentUser.role === "admin";
 
   try {
-    var d      = await apiGet("stockLevels", { itemId: itemId });
+    var d      = await apiGet("stockLevels", { itemId: itemId, itemName: stockItem.name });
     var levels = d.levels || [];
 
     var html = '<div style="margin-top:4px;">';
@@ -1654,9 +1654,23 @@ async function lookupStock(itemId) {
         html += '<div style="font-size:15px;font-weight:600;">' + lv.locationName;
         if (isLow) html += ' <span style="color:var(--red);font-size:12px;">⚠️ Low</span>';
         html += '</div>';
-        if (lv.reorderPoint > 0) {
+
+        if (isAdmin) {
+          // Editable reorder point
+          var uomLabel = isWire ? 'lbs' : (stockItem.uom || 'units');
+          html += '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">';
+          html += '<span style="font-size:11px;color:var(--muted);">Min:</span>';
+          html += '<input type="number" min="0" step="1" value="' + lv.reorderPoint + '" ';
+          html += 'data-slid="' + lv.id + '" ';
+          html += 'onchange="saveReorderPoint(this)" ';
+          html += 'style="width:64px;background:var(--navy-mid);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:3px 7px;outline:none;" />';
+          html += '<span style="font-size:11px;color:var(--muted);">' + uomLabel + '</span>';
+          html += '<span style="font-size:10px;color:var(--muted);font-style:italic;">(0 = none)</span>';
+          html += '</div>';
+        } else if (lv.reorderPoint > 0) {
           html += '<div style="font-size:11px;color:var(--muted);margin-top:3px;">Min: ' + fmtQty(lv.reorderPoint) + ' ' + (stockItem.uom || 'units') + '</div>';
         }
+
         if (isAdmin && lv.totalValue > 0) {
           html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Value: ' + fmtCurrency(lv.totalValue) + '</div>';
         }
@@ -1773,6 +1787,26 @@ async function loadReorderAlerts() {
   }
 }
 
+
+function saveReorderPoint(input) {
+  var val  = parseInt(input.value);
+  if (isNaN(val) || val < 0) { showToast("Invalid minimum — use 0 or higher", true); return; }
+  var slid = input.dataset.slid;
+  if (!slid) return;
+  input.style.borderColor = "var(--gold)";
+  apiPost({ action: "updateReorderPoint", stockLevelId: slid, reorderPoint: val })
+    .then(function() {
+      input.style.borderColor = "var(--green)";
+      showToast("✓ Minimum updated to " + val);
+      setTimeout(function(){ input.style.borderColor = "var(--border)"; }, 1500);
+      // Refresh reorder count badge in background
+      loadReorderCount();
+    })
+    .catch(function(ex) {
+      input.style.borderColor = "var(--red)";
+      showToast("Save failed: " + ex.message, true);
+    });
+}
 
 // ═══════════════════════════════════════════════════════════
 // CAMERA SCANNER

@@ -1192,6 +1192,249 @@ async function createLineItems(estimateId, lines) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════
+// MATERIAL ORDERS — list, get, create, mark complete, delete
+// ═══════════════════════════════════════════════════════════
+//
+// Material Orders table:        tblLMunp1fSrZV4mH
+//   Order ID         fldTY2ACBpvCt7Ydf  (autonumber, primary)
+//   Estimate         fld446AqUqFbATskC  (link)
+//   Job Name         fldst9PryHJTJYWeC  (text)
+//   Date Created     fldWWgI0dhgoiGcXH  (createdTime)
+//   Created By       fldeRDqMUpfIQF36D  (text)
+//   Vendor / Notes   fldgXcZ2EMNR5nfTG  (text)
+//   Status           fldshk9Rek2BnVAxc  (singleSelect: Active / Complete)
+//   Material Order Lines fldtq07BLgsJnMKs3 (link)
+//   Total Items      fldCK7WWvqjcoJPbQ  (count, read-only)
+//
+// Material Order Lines table:   tblERYikTOpPhklPw
+//   Line Item ID     fldzFAkbhT6Bm4qN9  (autonumber, primary)
+//   Material Order   fldkAHSFDQwsQqCyd  (link)
+//   Inventory Item   fldlNL42Hj9fEKNVR  (link, optional for Misc/manual)
+//   Description      fldoDLObzUjkHyhcA  (multiline text)
+//   Quantity Ordered fldI8RfBvcD8oGpcg  (number)
+
+const ORDER_TABLE_ID      = "tblLMunp1fSrZV4mH";
+const ORDER_LINE_TABLE_ID = "tblERYikTOpPhklPw";
+
+const F_ORD_ESTIMATE   = "fld446AqUqFbATskC";
+const F_ORD_JOB_NAME   = "fldst9PryHJTJYWeC";
+const F_ORD_CREATED_BY = "fldeRDqMUpfIQF36D";
+const F_ORD_VENDOR     = "fldgXcZ2EMNR5nfTG";
+const F_ORD_STATUS     = "fldshk9Rek2BnVAxc";
+
+const F_OL_ORDER       = "fldkAHSFDQwsQqCyd";
+const F_OL_ITEM        = "fldlNL42Hj9fEKNVR";
+const F_OL_DESCRIPTION = "fldoDLObzUjkHyhcA";
+const F_OL_QTY         = "fldI8RfBvcD8oGpcg";
+
+// ── ACTIVE ORDERS LIST ────────────────────────────────────
+async function handleOrdersList(params) {
+  const showComplete = params?.includeComplete === "1";
+  const filter = showComplete ? undefined : `{Status}='Active'`;
+
+  const records = await fetchAll(API_ROOT_INV, "Material Orders", {
+    filter,
+    sortField: "Date Created",
+    sortDir: "desc"
+  });
+
+  const orders = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:          r.id,
+      orderId:     f["Order ID"] || 0,
+      jobName:     f["Job Name"] || "",
+      vendor:      f["Vendor / Notes"] || "",
+      status:      f["Status"]?.name || f["Status"] || "Active",
+      dateCreated: f["Date Created"] || "",
+      createdBy:   f["Created By"] || "",
+      lineCount:   (f["Material Order Lines"] || []).length,
+      totalItems:  f["Total Items"] || 0
+    };
+  });
+
+  return resp(200, { ok: true, orders });
+}
+
+// ── GET ONE ORDER WITH LINES ──────────────────────────────
+async function handleOrderGet(params) {
+  const { id } = params || {};
+  if (!id) return resp(400, { ok: false, error: "Missing order id." });
+
+  const orderData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Material Orders")}/${id}`,
+    { method: "GET" }
+  );
+  if (!orderData?.id) return resp(404, { ok: false, error: "Order not found." });
+
+  const of = orderData.fields || {};
+  const lineIds = (of["Material Order Lines"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  let lines = [];
+  if (lineIds.length) {
+    const [lineRecords, itemRecords] = await Promise.all([
+      fetchAll(API_ROOT_INV, "Material Order Lines", {}),
+      fetchAll(API_ROOT_INV, "Inventory Items", {})
+    ]);
+
+    const itemMap = {};
+    itemRecords.forEach(r => {
+      itemMap[r.id] = {
+        name: r.fields["Item Name"] || r.id,
+        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || ""
+      };
+    });
+
+    lines = lineRecords
+      .filter(r => lineIds.includes(r.id))
+      .map(r => {
+        const f = r.fields || {};
+        const itemArr = f["Inventory Item"] || [];
+        const itemId = itemArr.length
+          ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
+          : "";
+        const itemData = itemMap[itemId] || {};
+        return {
+          id:          r.id,
+          lineNum:     f["Line Item ID"] || 0,
+          itemId:      itemId,
+          itemName:    itemData.name || f["Description"] || "",
+          uom:         itemData.uom || "",
+          description: f["Description"] || "",
+          qty:         f["Quantity Ordered"] || 0,
+          isMisc:      !itemId
+        };
+      })
+      .sort((a, b) => (a.lineNum || 0) - (b.lineNum || 0));
+  }
+
+  return resp(200, {
+    ok: true,
+    order: {
+      id:          orderData.id,
+      orderId:     of["Order ID"] || 0,
+      jobName:     of["Job Name"] || "",
+      vendor:      of["Vendor / Notes"] || "",
+      status:      of["Status"]?.name || of["Status"] || "Active",
+      dateCreated: of["Date Created"] || "",
+      createdBy:   of["Created By"] || "",
+      lines
+    }
+  });
+}
+
+// ── CREATE ORDER ──────────────────────────────────────────
+async function handleOrderCreate(body) {
+  const { estimateId, jobName, vendor, createdBy, lines } = body || {};
+  if (!jobName || !jobName.trim()) return resp(400, { ok: false, error: "Job name is required." });
+  if (!lines || !lines.length) return resp(400, { ok: false, error: "Order has no items." });
+
+  const orderFields = {
+    [F_ORD_JOB_NAME]:   String(jobName).trim(),
+    [F_ORD_VENDOR]:     String(vendor || "").trim(),
+    [F_ORD_CREATED_BY]: String(createdBy || "").trim(),
+    [F_ORD_STATUS]:     "Active"
+  };
+  if (estimateId) {
+    orderFields[F_ORD_ESTIMATE] = [String(estimateId)];
+  }
+
+  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Material Orders"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields: orderFields }], typecast: true })
+  });
+
+  const newId = created.records?.[0]?.id;
+  if (!newId) return resp(500, { ok: false, error: "Failed to create order." });
+
+  // Create order lines in batches of 10
+  for (let i = 0; i < lines.length; i += 10) {
+    const batch = lines.slice(i, i + 10).map(l => {
+      const fields = {
+        [F_OL_ORDER]: [String(newId)],
+        [F_OL_QTY]:   Number(l.qty || 0)
+      };
+      if (l.itemId) {
+        fields[F_OL_ITEM] = [String(l.itemId)];
+      }
+      // Always store description for traceability — for inventory items this
+      // captures the name at order time so historical orders survive renames.
+      if (l.description) {
+        fields[F_OL_DESCRIPTION] = String(l.description).trim();
+      }
+      return { fields };
+    });
+
+    await atFetch(API_ROOT_INV, encodeURIComponent("Material Order Lines"), {
+      method: "POST",
+      body: JSON.stringify({ records: batch, typecast: true })
+    });
+  }
+
+  return resp(200, { ok: true, id: newId });
+}
+
+// ── UPDATE ORDER (status / vendor / notes) ────────────────
+async function handleOrderUpdate(body) {
+  const { id, status, vendor } = body || {};
+  if (!id) return resp(400, { ok: false, error: "Missing order id." });
+
+  const fields = {};
+  if (status !== undefined) fields[F_ORD_STATUS] = status;
+  if (vendor !== undefined) fields[F_ORD_VENDOR] = String(vendor || "");
+
+  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+
+  return resp(200, { ok: true, id });
+}
+
+// ── DELETE ORDER ──────────────────────────────────────────
+async function handleOrderDelete(body) {
+  const { id } = body || {};
+  if (!id) return resp(400, { ok: false, error: "Missing order id." });
+
+  // Get linked line ids
+  const orderData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Material Orders")}/${id}`,
+    { method: "GET" }
+  );
+  const lineIds = (orderData.fields["Material Order Lines"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  // Delete lines in batches of 10
+  for (let i = 0; i < lineIds.length; i += 10) {
+    const batch = lineIds.slice(i, i + 10);
+    const qs = batch.map(rid => `records[]=${rid}`).join("&");
+    await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Order Lines")}?${qs}`, {
+      method: "DELETE"
+    });
+  }
+
+  // Delete the order
+  await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
+    method: "DELETE"
+  });
+
+  return resp(200, { ok: true, deleted: id });
+}
+
+// ── ACTIVE ORDERS COUNT (for badge on home button) ────────
+async function handleOrdersCount() {
+  const records = await fetchAll(API_ROOT_INV, "Material Orders", {
+    filter: `{Status}='Active'`
+  });
+  return resp(200, { ok: true, count: records.length });
+}
+
 // ── ROUTER ─────────────────────────────────────────────────
 export async function handler(event) {
   try {
@@ -1213,6 +1456,9 @@ export async function handler(event) {
       if (action === "getExpenseFields")  return await handleGetExpenseFields();
       if (action === "estimatesList")     return await handleEstimatesList(params);
       if (action === "estimateGet")       return await handleEstimateGet(params);
+      if (action === "ordersList")        return await handleOrdersList(params);
+      if (action === "orderGet")          return await handleOrderGet(params);
+      if (action === "ordersCount")       return await handleOrdersCount();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -1231,6 +1477,9 @@ export async function handler(event) {
       if (body.action === "estimateCreate")     return await handleEstimateCreate(body);
       if (body.action === "estimateUpdate")     return await handleEstimateUpdate(body);
       if (body.action === "estimateDelete")     return await handleEstimateDelete(body);
+      if (body.action === "orderCreate")        return await handleOrderCreate(body);
+      if (body.action === "orderUpdate")        return await handleOrderUpdate(body);
+      if (body.action === "orderDelete")        return await handleOrderDelete(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

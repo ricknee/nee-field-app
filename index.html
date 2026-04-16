@@ -1417,6 +1417,7 @@
           <div class="admin-only hidden" id="expenseActionBtns" style="display:none; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
             <button id="btnAddGeneralExpense" class="btn btn-sm" type="button" style="font-size:12px;">➕ Add Expense</button>
             <button id="btnAddLiftExpense" class="btn btn-sm" type="button" style="font-size:12px;">🏗 Add Lift Expense</button>
+            <button id="btnAddBucketExpense" class="btn btn-sm" type="button" style="font-size:12px;">🚛 Add Bucket Truck Expense</button>
           </div>
 
           <!-- General Expense Form -->
@@ -1490,6 +1491,66 @@
             </div>
             <div id="slExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expenses saved!</div>
             <div id="slExpErr" style="display:none; margin-top:8px; font-size:12px; color:var(--red);"></div>
+          </div>
+
+          <!-- Bucket Truck Expense Form -->
+          <div id="bucketExpensePanel" class="sl-expense-panel" style="display:none; margin-bottom:14px;">
+            <h4>🚛 Bucket Truck Expenses</h4>
+            <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Round-trip mileage auto-calculated from job's miles from shop. Edit amounts as needed.</div>
+            <div id="bucketMileageInfo" style="font-size:12px; color:var(--muted); margin-bottom:10px; padding:8px; background:rgba(59,142,234,0.08); border-radius:6px; border:1px solid rgba(59,142,234,0.2);"></div>
+
+            <!-- Rental Fee -->
+            <div class="sl-expense-row">
+              <label>
+                <input type="checkbox" id="btExpRentalChk" checked style="accent-color:var(--accent); width:15px; height:15px;" />
+                Rental Fee (per trip)
+              </label>
+              <input type="number" id="btExpRentalAmt" value="150" min="0" step="0.01" />
+              <div class="sl-expense-billable">
+                <input type="checkbox" id="btExpRentalBill" checked style="accent-color:var(--green); width:14px; height:14px;" /> Bill
+              </div>
+            </div>
+
+            <!-- Mileage -->
+            <div class="sl-expense-row">
+              <label>
+                <input type="checkbox" id="btExpMileageChk" checked style="accent-color:var(--accent); width:15px; height:15px;" />
+                Mileage (round trip)
+              </label>
+              <input type="number" id="btExpMileageAmt" value="0" min="0" step="0.01" readonly style="background:#f3f4f6;" />
+              <div class="sl-expense-billable">
+                <input type="checkbox" id="btExpMileageBill" checked style="accent-color:var(--green); width:14px; height:14px;" /> Bill
+              </div>
+            </div>
+
+            <!-- Miles / Rate editable row -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:8px; padding:8px; background:#f9fafb; border-radius:6px;">
+              <div>
+                <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Round Trip Miles</label>
+                <input type="number" id="btExpMiles" class="edit-input" style="font-size:13px; width:100%;" min="0" step="0.1" />
+              </div>
+              <div>
+                <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Rate per Mile ($)</label>
+                <input type="number" id="btExpRate" class="edit-input" value="2.50" style="font-size:13px; width:100%;" min="0" step="0.01" />
+              </div>
+            </div>
+
+            <!-- Live total -->
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px; padding:10px 12px; background:var(--blue-dim); border-radius:6px; border:1px solid rgba(59,142,234,0.3);">
+              <span style="font-size:13px; font-weight:700; color:var(--text);">Total</span>
+              <span id="btExpTotal" style="font-size:16px; font-weight:800; color:#7db8f5;">$0.00</span>
+            </div>
+
+            <div class="sl-expense-date-row">
+              <label style="color:var(--muted);">Date:</label>
+              <input type="date" id="btExpDate" />
+            </div>
+            <div style="display:flex; gap:8px; margin-top:12px; align-items:center;">
+              <button id="btExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Bucket Truck Expenses</button>
+              <button id="btExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+            </div>
+            <div id="btExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expenses saved!</div>
+            <div id="btExpErr" style="display:none; margin-top:8px; font-size:12px; color:var(--red);"></div>
           </div>
 
           <div class="section-header">Expenses</div>
@@ -3584,6 +3645,131 @@
     }
   }
 
+  // ── BUCKET TRUCK EXPENSES ──
+  function initBucketExpensePanel() {
+    const job = state.selected;
+    if (!job) return;
+
+    // Set today's date
+    const dateEl = $("btExpDate");
+    if (dateEl) dateEl.value = new Date().toISOString().slice(0,10);
+
+    // Pull miles from shop on the job; if missing, prompt user to calculate first
+    const oneWay = (job.milesFromShop != null) ? Number(job.milesFromShop) : null;
+    const infoEl = $("bucketMileageInfo");
+
+    if (oneWay == null || isNaN(oneWay)) {
+      if (infoEl) infoEl.innerHTML = `⚠️ No miles from shop on file for this job. Use the 🚗 mileage button on the Job tab to calculate first, then come back.`;
+      $("btExpMiles").value = 0;
+      $("btExpMileageAmt").value = 0;
+    } else {
+      const roundTrip = +(oneWay * 2).toFixed(1);
+      if (infoEl) infoEl.innerHTML = `🚗 Job is <strong>${oneWay}</strong> miles from shop → <strong>${roundTrip}</strong> mile round trip`;
+      $("btExpMiles").value = roundTrip;
+    }
+
+    // Reset to defaults
+    $("btExpRentalChk").checked = true;
+    $("btExpRentalAmt").value = 150;
+    $("btExpRentalBill").checked = true;
+    $("btExpMileageChk").checked = true;
+    $("btExpMileageBill").checked = true;
+    $("btExpRate").value = 2.50;
+
+    // Clear any stale messages
+    $("btExpMsg").style.display = "none";
+    $("btExpErr").style.display = "none";
+
+    recalcBucketTotals();
+  }
+
+  function recalcBucketTotals() {
+    const miles = parseFloat($("btExpMiles").value) || 0;
+    const rate  = parseFloat($("btExpRate").value) || 0;
+    const mileageAmt = +(miles * rate).toFixed(2);
+    $("btExpMileageAmt").value = mileageAmt.toFixed(2);
+
+    let total = 0;
+    if ($("btExpRentalChk").checked)  total += parseFloat($("btExpRentalAmt").value) || 0;
+    if ($("btExpMileageChk").checked) total += mileageAmt;
+    $("btExpTotal").textContent = "$" + total.toFixed(2);
+  }
+
+  async function saveBucketExpenses() {
+    const job = state.selected;
+    if (!job) return;
+    const jobId = String(job.id || '');
+    if (!jobId.startsWith('rec')) { alert("No valid job selected."); return; }
+
+    const date    = $("btExpDate").value;
+    const saveBtn = $("btExpSaveBtn");
+    const msgEl   = $("btExpMsg");
+    const errEl   = $("btExpErr");
+    msgEl.style.display = "none";
+    errEl.style.display = "none";
+    saveBtn.disabled = true; saveBtn.textContent = "Saving...";
+
+    const expenses = [];
+
+    // Rental fee
+    if ($("btExpRentalChk").checked) {
+      const amt  = parseFloat($("btExpRentalAmt").value) || 0;
+      const bill = $("btExpRentalBill").checked;
+      if (amt > 0) expenses.push({
+        description: "Bucket Truck Rental",
+        amount: amt,
+        billable: bill
+      });
+    }
+
+    // Mileage
+    if ($("btExpMileageChk").checked) {
+      const miles = parseFloat($("btExpMiles").value) || 0;
+      const rate  = parseFloat($("btExpRate").value) || 0;
+      const amt   = +(miles * rate).toFixed(2);
+      const bill  = $("btExpMileageBill").checked;
+      if (amt > 0) expenses.push({
+        description: `Bucket Truck Mileage (${miles} mi @ $${rate.toFixed(2)}/mi)`,
+        amount: amt,
+        billable: bill
+      });
+    }
+
+    if (!expenses.length) {
+      errEl.textContent = "No expenses selected (or amounts are zero).";
+      errEl.style.display = "";
+      saveBtn.disabled = false; saveBtn.textContent = "Save Bucket Truck Expenses";
+      return;
+    }
+
+    try {
+      for (const exp of expenses) {
+        await apiPost("addGeneralExpense", {
+          jobId,
+          date,
+          type:        "Rental Equipment",
+          amount:      exp.amount,
+          description: exp.description,
+          billable:    exp.billable
+        });
+      }
+      msgEl.textContent = `✓ Saved ${expenses.length} bucket truck expense${expenses.length>1?'s':''}!`;
+      msgEl.style.display = "";
+      // Reload expenses list in background so new items show up
+      if (typeof loadExpenses === "function") { try { loadExpenses(job.id); } catch(_){} }
+      setTimeout(() => {
+        msgEl.style.display = "none";
+        $("bucketExpensePanel").style.display = "none";
+        $("expenseActionBtns").style.display = "flex";
+      }, 2000);
+    } catch(e) {
+      errEl.textContent = "Error: " + e.message;
+      errEl.style.display = "";
+    } finally {
+      saveBtn.disabled = false; saveBtn.textContent = "Save Bucket Truck Expenses";
+    }
+  }
+
   function wireEvents() {
     $("loginBtn").addEventListener("click", handleLogin);
     [$("loginId"), $("loginPin")].forEach(el => {
@@ -3612,6 +3798,7 @@
     if (btnAddGen) btnAddGen.addEventListener("click", () => {
       $("generalExpensePanel").style.display = "";
       $("liftExpensePanel").style.display = "none";
+      const bp = $("bucketExpensePanel"); if (bp) bp.style.display = "none";
       $("expenseActionBtns").style.display = "none";
       // Set today's date
       $("genExpDate").value = new Date().toISOString().slice(0,10);
@@ -3629,6 +3816,7 @@
     if (btnAddLift) btnAddLift.addEventListener("click", () => {
       $("liftExpensePanel").style.display = "";
       $("generalExpensePanel").style.display = "none";
+      const bp = $("bucketExpensePanel"); if (bp) bp.style.display = "none";
       $("expenseActionBtns").style.display = "none";
       // Set today's date
       $("slExpDate").value = new Date().toISOString().slice(0,10);
@@ -3644,6 +3832,32 @@
     if (slExpCancel) slExpCancel.addEventListener("click", () => {
       $("liftExpensePanel").style.display = "none";
       $("expenseActionBtns").style.display = "flex";
+    });
+
+    // Bucket Truck Expense
+    const btnAddBucket = $("btnAddBucketExpense");
+    if (btnAddBucket) btnAddBucket.addEventListener("click", () => {
+      $("bucketExpensePanel").style.display = "";
+      $("liftExpensePanel").style.display = "none";
+      $("generalExpensePanel").style.display = "none";
+      $("expenseActionBtns").style.display = "none";
+      initBucketExpensePanel();
+    });
+    const btExpSave = $("btExpSaveBtn");
+    if (btExpSave) btExpSave.addEventListener("click", saveBucketExpenses);
+    const btExpCancel = $("btExpCancelBtn");
+    if (btExpCancel) btExpCancel.addEventListener("click", () => {
+      $("bucketExpensePanel").style.display = "none";
+      $("expenseActionBtns").style.display = "flex";
+    });
+    // Live recalc when user edits miles, rate, or toggles checkboxes
+    ["btExpMiles","btExpRate","btExpRentalAmt"].forEach(id => {
+      const el = $(id);
+      if (el) el.addEventListener("input", recalcBucketTotals);
+    });
+    ["btExpRentalChk","btExpMileageChk"].forEach(id => {
+      const el = $(id);
+      if (el) el.addEventListener("change", recalcBucketTotals);
     });
     const addInspBtn = $("btnAddInspection");
     if (addInspBtn) addInspBtn.addEventListener("click", () => {

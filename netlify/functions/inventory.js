@@ -678,6 +678,54 @@ async function handleAdjustment(body) {
   return resp(200, { ok: true, id: data.records?.[0]?.id });
 }
 
+// ── CREATE NEW ITEM ───────────────────────────────────────
+async function handleCreateItem(body) {
+  const { name, category, uom, barcode, cost, wireFtPerLb } = body || {};
+  if (!name || !name.trim()) return resp(400, { ok: false, error: "Item name is required." });
+
+  // Check for duplicate barcode
+  if (barcode && barcode.trim()) {
+    const existing = await fetchAll(API_ROOT_INV, "Inventory Items", {
+      filter: `{Barcode Value}='${barcode.trim()}'`
+    });
+    if (existing.length > 0) {
+      return resp(409, { ok: false, error: `Barcode already used by: ${existing[0].fields["Item Name"] || "another item"}` });
+    }
+  }
+
+  // Use field NAMES with typecast:true — works for all field types including singleSelect
+  const fields = {
+    "Item Name":          name.trim(),
+    "Active Item":        true
+  };
+  if (category && category.trim())   fields["Category"]          = category.trim();
+  if (uom && uom.trim())             fields["Unit of Measure"]   = uom.trim();
+  if (barcode && barcode.trim())     fields["Barcode Value"]     = barcode.trim();
+  if (cost && Number(cost) > 0)      fields["Default Unit Cost"] = Number(cost);
+  if (wireFtPerLb && Number(wireFtPerLb) > 0) fields["Wire ft/lb"] = Number(wireFtPerLb);
+
+  const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Items"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields }], typecast: true })
+  });
+
+  const newRecord = data.records?.[0];
+  if (!newRecord) throw new Error("No record returned from Airtable");
+
+  return resp(200, {
+    ok:   true,
+    item: {
+      id:      newRecord.id,
+      name:    newRecord.fields["Item Name"] || name.trim(),
+      cat:     newRecord.fields["Category"]?.name || newRecord.fields["Category"] || category || "",
+      uom:     newRecord.fields["Unit of Measure"]?.name || newRecord.fields["Unit of Measure"] || uom || "",
+      barcode: newRecord.fields["Barcode Value"] || barcode || "",
+      cost:    newRecord.fields["Default Unit Cost"] || cost || 0,
+      wireFtPerLb: newRecord.fields["Wire ft/lb"] || wireFtPerLb || 0
+    }
+  });
+}
+
 // ── UPDATE ITEM COST ───────────────────────────────────────
 async function handleUpdateItemCost(body) {
   const { itemId, cost } = body || {};
@@ -820,6 +868,7 @@ export async function handler(event) {
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);
       if (body.action === "pushExpenses")    return await handlePushExpenses(body);
+      if (body.action === "createItem")        return await handleCreateItem(body);
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);
       if (body.action === "delete")             return await handleDelete(body);

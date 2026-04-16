@@ -216,6 +216,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goCheckStock()">
       <div class="ico">🔍</div><div><div class="lbl">Check Stock</div><div class="sub">See qty on hand at all locations</div></div>
     </button>
+    <button class="big-btn" onclick="goMaterialReport()">
+      <div class="ico">📄</div><div><div class="lbl">Material Report</div><div class="sub">By job — download a PDF for yourself</div></div>
+    </button>
     <div class="sec-lbl" id="admin-lbl" style="display:none">Admin</div>
     <button class="big-btn" id="push-btn" onclick="goPushExpenses()" style="display:none">
       <div class="ico">💰</div><div><div class="lbl">Push Expenses</div><div class="sub">Send material costs to job expenses</div></div>
@@ -289,6 +292,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-newitem" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Add New Item</h2></div>
   <div class="log-body" id="newitem-body"></div>
+</div>
+
+<!-- MATERIAL REPORT -->
+<div id="s-material" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Material Report</h2></div>
+  <div class="log-body" id="material-body"></div>
 </div>
 
 <!-- CAMERA SCANNER -->
@@ -1506,6 +1515,251 @@ function generateReceiptPDF(g) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// MATERIAL REPORT (employee view — no prices)
+// ═══════════════════════════════════════════════════════════
+async function goMaterialReport() {
+  showScreen("material");
+  var body = document.getElementById("material-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading materials…</div>';
+
+  try {
+    var d = await apiGet("pendingExpenses");
+    var pending = d.pending || [];
+    window._materialReport = pending;
+
+    if (!pending.length) {
+      body.innerHTML =
+        '<div style="text-align:center;padding:40px 20px;">' +
+        '<div style="font-size:40px;margin-bottom:12px;">📭</div>' +
+        '<div style="font-size:16px;font-weight:600;color:var(--text);">No materials to report</div>' +
+        '<div style="font-size:13px;color:var(--dim);margin-top:6px;">Nothing has been used on jobs since the last push.</div>' +
+        '</div>';
+      return;
+    }
+
+    renderMaterialReport();
+  } catch(ex) {
+    document.getElementById("material-body").innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
+  }
+}
+
+function renderMaterialReport() {
+  var body    = document.getElementById("material-body");
+  var pending = window._materialReport || [];
+
+  var pdfReady = typeof window.jspdf !== "undefined" && typeof window.jspdf.jsPDF !== "undefined";
+  var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
+    '📄 Materials used per job since the last push. Tap Download to save a PDF to your device.' +
+    (pdfReady ? '' : '<div style="margin-top:6px;font-size:11px;color:var(--muted);">PDF library still loading — try again in a moment.</div>') +
+    '</div>';
+
+  pending.forEach(function(g, idx) {
+    html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:12px;">';
+    // Job header row
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">';
+    html += '<div style="font-size:15px;font-weight:700;flex:1;">' + escapeHtml(g.jobName || "") + '</div>';
+    html += '<button onclick="downloadMaterialReportPDF(' + idx + ')" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-size:12px;font-weight:700;padding:6px 12px;cursor:pointer;flex-shrink:0;">📥 Download</button>';
+    html += '</div>';
+
+    // Line items — no prices, just item + qty (with ft for wire)
+    g.lines.forEach(function(l) {
+      var isReturn = l.qty < 0;
+      var qtyLabel = l.wireFt > 0
+        ? (Math.abs(l.qty) + ' lbs (' + l.wireFt.toLocaleString() + ' ft)')
+        : ('×' + Math.abs(l.qty));
+      html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:4px 0;border-bottom:1px solid var(--border);">';
+      html += '<span style="flex:1;">' + escapeHtml(l.item) + (isReturn ? ' (return)' : '') + '</span>';
+      html += '<span style="flex-shrink:0;">' + qtyLabel + '</span></div>';
+    });
+
+    html += '</div>';
+  });
+
+  html += '<div style="height:24px"></div>';
+  body.innerHTML = html;
+}
+
+// Small helper — escape user-provided strings for HTML insertion
+function escapeHtml(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function downloadMaterialReportPDF(idx) {
+  var pending = window._materialReport;
+  if (!pending || !pending[idx]) return;
+  var g = pending[idx];
+
+  var pdfBase64 = generateMaterialReportPDF(g);
+  if (!pdfBase64) { showToast("PDF library not ready — please try again", true); return; }
+
+  try {
+    var binary = atob(pdfBase64);
+    var bytes  = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    var blob = new Blob([bytes], { type: "application/pdf" });
+    var url  = URL.createObjectURL(blob);
+    var a    = document.createElement("a");
+    var safe = (g.jobName || "job").replace(/[^a-z0-9]/gi, "_").substring(0, 30);
+    var date = new Date().toISOString().split("T")[0];
+    a.href     = url;
+    a.download = "NEE_Materials_" + safe + "_" + date + ".pdf";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+    showToast("✓ PDF downloaded");
+  } catch(e) {
+    console.error("PDF download failed:", e);
+    showToast("Download failed", true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// MATERIAL REPORT PDF (no prices, no tax — employee-safe)
+// ═══════════════════════════════════════════════════════════
+function generateMaterialReportPDF(g) {
+  if (typeof window.jspdf === "undefined" || typeof window.jspdf.jsPDF === "undefined") {
+    console.warn("jsPDF not loaded — PDF skipped");
+    return null;
+  }
+  try {
+    // Reuse the same logo embedded in generateReceiptPDF by pulling from its source.
+    // We can't easily share it, so embed again here (same base64).
+    var LOGO_B64 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAyMklEQVR4nO1dd3xUxfY/M7fs3Z5NpybUH0pHiqKAShekirEg1gf6LM/eEMtTBER9FlQUfQrCQ0QBaQqCgIgQUUQgCNITSsqmbG/3zvn9MZvNJiR0zEL2+8mHD3v37twzc7/3zJkz55xLEBHiiKM60NoWII7YRZwccdSIODniqBFxcsRRI+LkiKNGxMkRR42IkyOOGhEnRxw1Ik6OOGpEnBxx1Ig4OeKoEXFyxFEj4uSIo0bEyRFHjYiTI44aESdHHDUiTo44akScHHHUiLpNjoAXPaUAABCPlawGdZUciACA7hJWcCDyMY4qqKvkAAQA9DoxTo6aUWfJAQCAPicrPFjbUsQu6io5uKbwubHoUC1LEsOoq+Tg04rfxex5tS1J7KLOkgMAAP0eLDsGAEDq9DjUhLo6KNwC9bnQUQRMA0Liq9njUVfJAQAA6HOhpwy9DoA4N6pB3SaH34V+N7pK+Kdalib2UFfJQQgAoMcJoSA6iwDiro5qUKfJwQMAaKNLQZBPem7dxEWbDhnH2aMOa444ToY4OeKoEXFyxFEj4uSIo0bEyRFHjYiTI44aESdHHDUiTo44akScHHHUiDg54qgRcXLEUSPi5IijRsTJEUeNiJMjjhoRJ0ccNSJOjjhqRJwccdSIODniqBFxcsRRI+LkiKNG/D+Cdg0ryOR6egAAAABJRU5ErkJggg==";
+
+    var jsPDF   = window.jspdf.jsPDF;
+    var doc     = new jsPDF({ unit: "mm", format: "letter", orientation: "portrait" });
+    var pW      = 215.9;
+    var pH      = 279.4;
+    var mg      = 15;
+    var cW      = pW - mg * 2;
+    var today   = new Date();
+    var dateStr = today.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+
+    // ── HEADER ─────────────────────────────────────────────
+    try {
+      doc.addImage("data:image/png;base64," + LOGO_B64, "PNG", mg, 6, 22, 22);
+    } catch(e) { console.warn("Logo embed failed:", e); }
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(14);
+    doc.setTextColor(30, 30, 30);
+    doc.text("NORTHEASTERN ELECTRIC, INC.", mg + 26, 14);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(232, 101, 26);
+    doc.text("MATERIAL REPORT", mg + 26, 21);
+
+    doc.setTextColor(120, 120, 120);
+    doc.setFontSize(8);
+    doc.text(dateStr, pW - mg, 21, { align: "right" });
+
+    // Orange rule under header
+    doc.setDrawColor(232, 101, 26);
+    doc.setLineWidth(0.8);
+    doc.line(mg, 32, pW - mg, 32);
+
+    // ── JOB INFO ──────────────────────────────────────────
+    var y = 42;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.setTextColor(30, 30, 30);
+    doc.text(g.jobName || "", mg, y);
+
+    y += 6;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(120, 120, 120);
+    doc.text("Materials used (Uses minus Returns)", mg, y);
+
+    // ── TABLE HEADER ──────────────────────────────────────
+    y += 10;
+    doc.setFillColor(245, 245, 245);
+    doc.rect(mg, y - 5, cW, 8, "F");
+    doc.setDrawColor(210, 210, 210);
+    doc.setLineWidth(0.2);
+    doc.rect(mg, y - 5, cW, 8, "S");
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 100, 100);
+
+    var c1 = mg + 2;
+    var c2 = pW - mg - 2; // QTY column right-aligned to right margin
+
+    doc.text("ITEM",      c1, y);
+    doc.text("QTY",       c2, y, { align: "right" });
+
+    // ── TABLE ROWS ────────────────────────────────────────
+    y += 4;
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+
+    g.lines.forEach(function(l, idx) {
+      var isReturn = l.qty < 0;
+      var isWire   = l.wireFt > 0;
+      var rowH     = isWire ? 11 : 7;
+
+      // Page break if we're running out of room
+      if (y + rowH > pH - 25) {
+        doc.addPage();
+        y = 20;
+      }
+
+      y += rowH;
+
+      // Light alternating stripe
+      if (idx % 2 === 0) {
+        doc.setFillColor(252, 252, 252);
+        doc.rect(mg, y - rowH + 1, cW, rowH, "F");
+      }
+
+      // Bottom border
+      doc.setDrawColor(230, 230, 230);
+      doc.setLineWidth(0.1);
+      doc.line(mg, y + 2, pW - mg, y + 2);
+
+      // Item name
+      doc.setTextColor(isReturn ? 180 : 30, 30, 30);
+      var itemLabel = (l.item || "") + (isReturn ? " (return)" : "");
+      var itemText = itemLabel.length > 60 ? itemLabel.substring(0, 58) + "..." : itemLabel;
+      doc.text(itemText, c1, y);
+
+      // Qty
+      if (isWire) {
+        doc.setTextColor(50, 50, 50);
+        doc.text(Math.abs(l.qty) + " lbs", c2, y - 3, { align: "right" });
+        doc.setFontSize(8);
+        doc.setTextColor(52, 120, 190);
+        doc.text("(" + l.wireFt.toLocaleString() + " ft)", c2, y + 2, { align: "right" });
+        doc.setFontSize(9);
+      } else {
+        doc.setTextColor(50, 50, 50);
+        doc.text((isReturn ? "-" : "") + Math.abs(l.qty), c2, y, { align: "right" });
+      }
+    });
+
+    // ── FOOTER ────────────────────────────────────────────
+    doc.setDrawColor(232, 101, 26);
+    doc.setLineWidth(0.5);
+    doc.line(mg, pH - 16, pW - mg, pH - 16);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(140, 140, 140);
+    doc.text("Generated by NEE Inventory  ·  " + dateStr, mg, pH - 10);
+    doc.text("Northeastern Electric, Inc.", pW - mg, pH - 10, { align: "right" });
+
+    return doc.output("datauristring").split(",")[1];
+
+  } catch(e) {
+    console.error("Material Report PDF generation failed:", e);
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // INVENTORY ADJUSTMENT
 // ═══════════════════════════════════════════════════════════
 var adjItem = null;
@@ -1972,9 +2226,18 @@ function renderNewItemForm(prefillBarcode) {
     '<div class="field-group"><div class="field-lbl">Default Unit Cost</div>' +
     '<input class="field-inp" id="ni-cost" type="number" step="0.01" min="0" placeholder="e.g. 0.28" /></div>' +
 
-    // Wire ft/lb — shown when Wire category is selected
-    '<div class="field-group" id="ni-wire-row" style="display:none;"><div class="field-lbl">Wire ft/lb (feet per pound)</div>' +
-    '<input class="field-inp" id="ni-wire" type="number" step="0.001" min="0" placeholder="e.g. 41.670 for 12 THHN" /></div>' +
+    // Wire ft/lb — always visible (used for wire items; leave blank for non-wire)
+    '<div class="field-group" id="ni-wire-row"><div class="field-lbl">Wire ft/lb <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;">(feet per pound — only for wire)</span></div>' +
+    '<input class="field-inp" id="ni-wire" type="number" step="0.001" min="0" placeholder="e.g. 41.670 for 12 THHN (leave blank if not wire)" /></div>' +
+
+    // Active checkbox
+    '<div class="field-group" style="margin-top:4px;">' +
+    '<label style="display:flex;align-items:center;gap:10px;background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:14px 16px;cursor:pointer;">' +
+    '<input type="checkbox" id="ni-active" checked style="width:20px;height:20px;accent-color:var(--gold);cursor:pointer;flex-shrink:0;" />' +
+    '<div style="flex:1;">' +
+    '<div style="font-size:15px;font-weight:600;color:var(--text);">Active</div>' +
+    '<div style="font-size:12px;color:var(--dim);margin-top:2px;">Uncheck to create as inactive (hidden from pickers)</div>' +
+    '</div></label></div>' +
 
     '<button class="primary-btn" id="ni-save-btn" onclick="submitNewItem()" style="margin-top:4px;">Save Item</button>' +
     '<div style="height:24px;"></div>';
@@ -1985,20 +2248,14 @@ function renderNewItemForm(prefillBarcode) {
 function onNewItemCatChange() {
   var sel     = document.getElementById("ni-cat");
   var newInp  = document.getElementById("ni-cat-new");
-  var wireRow = document.getElementById("ni-wire-row");
   if (!sel || !newInp) return;
   var isNew = sel.value === "__new__";
   newInp.style.display = isNew ? "block" : "none";
   if (isNew) { newInp.focus(); }
-  var catVal = isNew ? (newInp.value || "") : sel.value;
-  if (wireRow) wireRow.style.display = catVal.toLowerCase().includes("wire") ? "block" : "none";
 }
 
 function onNewItemCatNewChange() {
-  var newInp  = document.getElementById("ni-cat-new");
-  var wireRow = document.getElementById("ni-wire-row");
-  if (!newInp || !wireRow) return;
-  wireRow.style.display = newInp.value.toLowerCase().includes("wire") ? "block" : "none";
+  // No-op placeholder kept for existing oninput binding. Wire row is always visible.
 }
 
 async function submitNewItem() {
@@ -2009,6 +2266,7 @@ async function submitNewItem() {
   var costInp   = document.getElementById("ni-cost");
   var wireInp   = document.getElementById("ni-wire");
   var barcodeInp = document.getElementById("ni-barcode");
+  var activeInp = document.getElementById("ni-active");
   var btn       = document.getElementById("ni-save-btn");
 
   var name    = nameEl?.value.trim().toUpperCase();
@@ -2017,22 +2275,25 @@ async function submitNewItem() {
   var cost    = parseFloat(costInp?.value || 0);
   var wire    = parseFloat(wireInp?.value || 0);
   var barcode = barcodeInp?.value.trim() || "";
+  var active  = activeInp ? !!activeInp.checked : true;
 
   if (!name) { showToast("Item name is required", true); nameEl?.focus(); return; }
 
   btn.disabled = true; btn.textContent = "Saving…";
 
   try {
-    var d = await apiPost({ action: "createItem", name, category: cat || undefined, uom, barcode: barcode || undefined, cost: cost || undefined, wireFtPerLb: wire || undefined });
+    var d = await apiPost({ action: "createItem", name, category: cat || undefined, uom, barcode: barcode || undefined, cost: cost || undefined, wireFtPerLb: wire || undefined, active: active });
 
-    // Add to local items cache immediately
-    allItems.push(d.item);
-    allItems.sort(function(a, b){ return a.name.localeCompare(b.name); });
+    // Add to local items cache immediately (only if active — inactive items won't show in pickers)
+    if (active) {
+      allItems.push(d.item);
+      allItems.sort(function(a, b){ return a.name.localeCompare(b.name); });
+    }
 
     showToast("✓ " + d.item.name + " created!");
 
-    // Offer to receive stock right away
-    if (confirm("Item saved! Receive stock now?")) {
+    // Offer to receive stock right away (only if active)
+    if (active && confirm("Item saved! Receive stock now?")) {
       recvItem = d.item;
       goReceive();
       // Pre-fill the receive form with this item

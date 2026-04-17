@@ -2781,8 +2781,8 @@ function renderEstimateLines() {
 
     return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 80px 80px 28px;gap:8px;align-items:center;">' +
       '<div>' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
-      '<input type="number" step="1" min="0" class="field-inp" id="estl-qty-' + idx + '" value="' + (l.qty || 0) +
-        '" oninput="updateLineField(' + idx + ', \'qty\', parseFloat(this.value) || 0);" onfocus="this.select()" ' +
+      '<input type="number" step="0.01" class="field-inp" id="estl-qty-' + idx + '" value="' + (l.qty || 0) +
+        '" oninput="updateLineField(' + idx + ', \'qty\', parseFloat(this.value) || 0);" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" placeholder="Qty" />' +
       '<input type="number" step="0.01" class="field-inp" id="estl-cost-' + idx + '" value="' + (l.unitCost || 0) +
         '" oninput="updateLineField(' + idx + ', \'unitCost\', parseFloat(this.value) || 0);" ' +
@@ -2861,13 +2861,6 @@ function addMiscLine() {
     unitCost:    0
   });
   refreshLines();
-
-  // Auto-focus the new description field
-  var newIdx = estimateState.current.lines.length - 1;
-  setTimeout(function() {
-    var descInp = document.getElementById("estl-desc-" + newIdx);
-    if (descInp) descInp.focus();
-  }, 50);
 }
 
 // ── ITEM PICKER MODAL (overlay over the form) ─────────────
@@ -2956,13 +2949,6 @@ function addItemToEstimate(itemId) {
 
   closeEstimateItemPicker();
   refreshLines();
-
-  // Auto-focus the new qty field with text selected
-  var newIdx = estimateState.current.lines.length - 1;
-  setTimeout(function() {
-    var qtyInp = document.getElementById("estl-qty-" + newIdx);
-    if (qtyInp) { qtyInp.focus(); qtyInp.select(); }
-  }, 50);
 }
 
 // ── JOB SEARCH (for new estimate) ─────────────────────────
@@ -3451,31 +3437,19 @@ async function buildOrderWorkingList(estimate) {
 function renderOrderBuild() {
   var items = orderState.buildItems || [];
   var isJobContext = orderState.buildContext === "job";
-  var isLocationContext = orderState.buildContext === "location";
-  var isBlankSlate = isJobContext || isLocationContext;
 
   // Header varies by context
-  var headerJobName;
-  if (isJobContext)            headerJobName = orderState.buildJob ? orderState.buildJob.name : "Order";
-  else if (isLocationContext)  headerJobName = orderState.buildLocation ? orderState.buildLocation.name : "Order";
-  else                         headerJobName = estimateState.current ? estimateState.current.jobName : "Order";
+  var headerJobName = isJobContext
+    ? (orderState.buildJob ? orderState.buildJob.name : "Order")
+    : (estimateState.current ? estimateState.current.jobName : "Order");
 
-  var headerHint;
-  if (isJobContext)            headerHint = "Add items for this job and enter qtys, then generate PDF.";
-  else if (isLocationContext)  headerHint = "Add items to restock this location, then generate PDF.";
-  else                         headerHint = "Adjust qtys and check the items you want to order, then generate PDF.";
-
-  // Show a small "Location" or "Job" badge in the header so context is obvious
-  var contextBadge = "";
-  if (isLocationContext) {
-    contextBadge = '<span style="display:inline-block;background:var(--navy-mid);color:var(--gold);font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;text-transform:uppercase;letter-spacing:0.5px;margin-left:8px;vertical-align:middle;">📍 Location</span>';
-  } else if (isJobContext) {
-    contextBadge = '<span style="display:inline-block;background:var(--navy-mid);color:var(--blue,#3498DB);font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;text-transform:uppercase;letter-spacing:0.5px;margin-left:8px;vertical-align:middle;">📋 Job</span>';
-  }
+  var headerHint = isJobContext
+    ? "Add items for this job and enter qtys, then generate PDF."
+    : "Adjust qtys and check the items you want to order, then generate PDF.";
 
   var header =
     '<div style="background:var(--navy-lt);padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:14px;">' +
-      '<div style="font-weight:700;font-size:15px;color:var(--text);">' + headerJobName + contextBadge + '</div>' +
+      '<div style="font-weight:700;font-size:15px;color:var(--text);">' + headerJobName + '</div>' +
       '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + headerHint + '</div>' +
     '</div>';
 
@@ -3491,8 +3465,8 @@ function renderOrderBuild() {
 
   var content = header + vendorField;
 
-  if (isBlankSlate) {
-    // Job-based or Location-based order — blank slate, add items one by one
+  if (isJobContext) {
+    // Job-based (employee) order — blank slate, add items one by one
     content += renderJobOrderItems();
   } else {
     // Estimate-based order — three sections with pre-populated list
@@ -3543,8 +3517,8 @@ function sectionHtml(title, color, group, defaultExpanded) {
         '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + it.itemName + '</div>' +
         '<div style="font-size:11px;color:var(--dim);margin-top:3px;">' + stockInfo + '</div>' +
       '</div>' +
-      '<input type="number" step="1" min="0" class="field-inp" value="' + (it.orderQty || 0) +
-        '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" onfocus="this.select()" ' +
+      '<input type="number" step="0.01" min="0" class="field-inp" value="' + (it.orderQty || 0) +
+        '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
     '</div>';
   }).join("");
@@ -3561,11 +3535,10 @@ function cancelOrderBuild() {
   orderState.buildVendor = "";
   orderState.buildContext = null;
   orderState.buildJob = null;
-  orderState.buildLocation = null;
 
   // Route back to the correct previous screen based on context
-  if (context === "job" || context === "location") {
-    // Employee picker — go back to the picker tabs
+  if (context === "job") {
+    // Employee job-based order — go back to the job picker
     showScreen("order-job");
   } else if (estimateState.current && estimateState.current.id) {
     showScreen("estimate");
@@ -3583,19 +3556,14 @@ async function saveOrderAndGeneratePDF() {
     return;
   }
 
-  // Determine context — estimate / job / location
+  // Determine context — estimate-based (admin) vs job-based (employee)
   var contextJobName = "";
   var contextEstimateId = "";
-  var contextOrderType = "Job";   // default
-
   if (orderState.buildContext === "job" && orderState.buildJob) {
     contextJobName = orderState.buildJob.name;
-    contextOrderType = "Job";
-  } else if (orderState.buildContext === "location" && orderState.buildLocation) {
-    contextJobName = orderState.buildLocation.name;  // location name goes in Job Name field
-    contextOrderType = "Location";
+    // No estimateId for job-based orders
   } else {
-    // Default: estimate-based (admin)
+    // Default: estimate-based
     var e = estimateState.current;
     if (!e || !e.id) {
       showToast("Context lost", true);
@@ -3603,11 +3571,10 @@ async function saveOrderAndGeneratePDF() {
     }
     contextJobName = e.jobName;
     contextEstimateId = e.id;
-    contextOrderType = "Job";   // estimate-based orders are always Job-type
   }
 
   if (!contextJobName) {
-    showToast("No job or location selected", true);
+    showToast("No job selected", true);
     return;
   }
 
@@ -3626,7 +3593,6 @@ async function saveOrderAndGeneratePDF() {
     var payload = {
       action:    "orderCreate",
       jobName:   contextJobName,
-      orderType: contextOrderType,
       vendor:    orderState.buildVendor || "",
       createdBy: currentUser ? currentUser.name : "",
       lines:     lines
@@ -3734,14 +3700,11 @@ function renderOrdersList() {
   var rows = orders.map(function(o) {
     var statusColor = o.status === "Complete" ? "#88A088" : "#3498DB";
     var dateStr     = formatEstDate(o.dateCreated);
-    var typeIcon    = (o.orderType === "Location") ? "📍" : "📋";
     return '<div onclick="openOrder(\'' + o.id + '\')" ' +
       'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;cursor:pointer;">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">' +
         '<div style="flex:1;min-width:0;">' +
-          '<div style="font-weight:600;font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' +
-            '<span style="margin-right:6px;">' + typeIcon + '</span>' + (o.jobName || "Untitled") +
-          '</div>' +
+          '<div style="font-weight:600;font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + (o.jobName || "Untitled") + '</div>' +
           '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + dateStr +
             (o.createdBy ? ' · ' + o.createdBy : '') +
             ' · ' + (o.lineCount || 0) + ' item' + (o.lineCount === 1 ? '' : 's') +
@@ -3784,17 +3747,11 @@ function renderOrderDetail() {
   var dateStr     = formatEstDate(o.dateCreated);
   var orderIdStr  = o.orderId ? 'Order #' + o.orderId : '';
 
-  // Order type badge — Job (blue) vs Location (gold)
-  var isLocation = (o.orderType === "Location");
-  var typeBadge = isLocation
-    ? '<span style="display:inline-block;background:var(--navy-mid);color:var(--gold);font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;text-transform:uppercase;letter-spacing:0.5px;margin-left:8px;vertical-align:middle;">📍 Location</span>'
-    : '<span style="display:inline-block;background:var(--navy-mid);color:#3498DB;font-size:10px;font-weight:700;padding:2px 7px;border-radius:8px;text-transform:uppercase;letter-spacing:0.5px;margin-left:8px;vertical-align:middle;">📋 Job</span>';
-
   var header =
     '<div style="background:var(--navy-lt);padding:14px;border-radius:10px;border:1px solid var(--border);margin-bottom:14px;">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">' +
         '<div style="flex:1;min-width:0;">' +
-          '<div style="font-weight:700;font-size:16px;color:var(--text);">' + (o.jobName || "Order") + typeBadge + '</div>' +
+          '<div style="font-weight:700;font-size:16px;color:var(--text);">' + (o.jobName || "Order") + '</div>' +
           '<div style="font-size:12px;color:var(--dim);margin-top:4px;">' + dateStr +
             (orderIdStr ? ' · ' + orderIdStr : '') +
             (o.createdBy ? ' · ' + o.createdBy : '') + '</div>' +
@@ -3966,14 +3923,10 @@ async function doDeleteOrder(id) {
 
 var awardedJobsCache = [];
 
-// Picker state — which tab is active
-var pickerTab = "job";    // "job" | "location"
-var locationsCache = [];
-
 async function goEmployeeOrderJob() {
   showScreen("order-job");
   var body = document.getElementById("order-job-body");
-  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading awarded jobs…</div>';
 
   // Wait for items data to be ready (needed for the order item picker later)
   if (!dataReady) {
@@ -3984,137 +3937,71 @@ async function goEmployeeOrderJob() {
   }
 
   try {
-    // Fetch both jobs and locations in parallel (cached after first load)
-    var promises = [];
     if (!awardedJobsCache.length) {
-      promises.push(apiGet("awardedJobs").then(function(d) { awardedJobsCache = d.jobs || []; }));
+      var d = await apiGet("awardedJobs");
+      awardedJobsCache = d.jobs || [];
     }
-    if (!locationsCache.length) {
-      promises.push(apiGet("locations").then(function(d) { locationsCache = d.locations || []; }));
-    }
-    if (promises.length) await Promise.all(promises);
-
-    pickerTab = "job";   // default to Job tab on entry
-    renderEmployeePicker();
+    renderEmployeeJobPicker();
   } catch(ex) {
     body.innerHTML = '<div style="padding:20px;color:var(--red);text-align:center;">' +
-      'Error loading: ' + (ex.message || ex) + '</div>';
+      'Error loading jobs: ' + (ex.message || ex) + '</div>';
   }
 }
 
-function renderEmployeePicker() {
+function renderEmployeeJobPicker() {
   var body = document.getElementById("order-job-body");
+  var jobs = awardedJobsCache || [];
 
-  // Tabs
-  var jobActive = pickerTab === "job";
-  var tabs =
-    '<div style="display:flex;gap:0;margin-bottom:14px;border-radius:8px;overflow:hidden;border:1px solid var(--border);">' +
-      '<button onclick="switchPickerTab(\'job\')" style="flex:1;padding:11px;font-size:14px;font-weight:600;cursor:pointer;border:none;' +
-        (jobActive
-          ? 'background:var(--gold);color:var(--navy);'
-          : 'background:var(--navy-lt);color:var(--dim);') +
-        '">📋 Job</button>' +
-      '<button onclick="switchPickerTab(\'location\')" style="flex:1;padding:11px;font-size:14px;font-weight:600;cursor:pointer;border:none;' +
-        (!jobActive
-          ? 'background:var(--gold);color:var(--navy);'
-          : 'background:var(--navy-lt);color:var(--dim);') +
-        '">📍 Location</button>' +
-    '</div>';
+  if (!jobs.length) {
+    body.innerHTML = '<div style="padding:30px;text-align:center;color:var(--dim);">' +
+      'No awarded jobs found.</div>';
+    return;
+  }
 
-  // Hint
-  var hint =
-    '<div style="background:var(--navy-lt);padding:10px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;font-size:12px;color:var(--dim);">' +
-      (jobActive
-        ? 'Pick the job you need materials for.'
-        : 'Pick a location to restock (shop, truck, trailer).') +
-    '</div>';
-
-  // Search box
-  var searchPlaceholder = jobActive ? "Search jobs…" : "Search locations…";
   var searchBox =
     '<div style="margin-bottom:12px;">' +
-      '<input type="text" class="field-inp" id="ejob-search" placeholder="' + searchPlaceholder + '" autocomplete="off" ' +
-        'oninput="filterEmployeePicker(this.value)" />' +
+      '<input type="text" class="field-inp" id="ejob-search" placeholder="Search jobs…" autocomplete="off" ' +
+        'oninput="filterEmployeeJobs(this.value)" />' +
     '</div>';
 
-  body.innerHTML = tabs + hint + searchBox +
-    '<div id="ejob-rows" style="display:flex;flex-direction:column;gap:6px;"></div>';
+  var hint =
+    '<div style="background:var(--navy-lt);padding:10px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;font-size:12px;color:var(--dim);">' +
+      'Pick the job you need materials for, then add items to the order list.' +
+    '</div>';
 
-  // Populate rows
-  filterEmployeePicker("");
+  var rows = jobs.map(function(j) {
+    return '<div onclick="selectEmployeeOrderJob(\'' + j.id + '\',\'' + (j.name || "").replace(/'/g, "\\'") + '\')" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
+      '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
+    '</div>';
+  }).join("");
+
+  body.innerHTML = hint + searchBox +
+    '<div id="ejob-rows" style="display:flex;flex-direction:column;gap:6px;">' + rows + '</div>';
 }
 
-function switchPickerTab(tab) {
-  if (tab !== "job" && tab !== "location") return;
-  pickerTab = tab;
-  renderEmployeePicker();
-}
-
-function filterEmployeePicker(q) {
+function filterEmployeeJobs(q) {
   q = (q || "").trim().toLowerCase();
+  var filtered = q
+    ? awardedJobsCache.filter(function(j) { return (j.name || "").toLowerCase().includes(q); })
+    : awardedJobsCache;
   var container = document.getElementById("ejob-rows");
   if (!container) return;
-
-  if (pickerTab === "job") {
-    var jobs = q
-      ? awardedJobsCache.filter(function(j) { return (j.name || "").toLowerCase().includes(q); })
-      : awardedJobsCache;
-    if (!jobs.length) {
-      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--dim);">' +
-        (awardedJobsCache.length ? 'No jobs match' : 'No awarded jobs found') + '</div>';
-      return;
-    }
-    container.innerHTML = jobs.map(function(j) {
-      return '<div onclick="selectEmployeeOrderJob(\'' + j.id + '\',\'' + (j.name || "").replace(/'/g, "\\'") + '\')" ' +
-        'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
-        '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
-      '</div>';
-    }).join("");
-  } else {
-    // location tab
-    var locs = q
-      ? locationsCache.filter(function(l) { return (l.name || "").toLowerCase().includes(q); })
-      : locationsCache;
-    if (!locs.length) {
-      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--dim);">' +
-        (locationsCache.length ? 'No locations match' : 'No active locations found') + '</div>';
-      return;
-    }
-    container.innerHTML = locs.map(function(l) {
-      var typeLbl = l.type ? '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + l.type + '</div>' : '';
-      return '<div onclick="selectEmployeeOrderLocation(\'' + l.id + '\',\'' + (l.name || "").replace(/'/g, "\\'") + '\')" ' +
-        'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
-        '<div style="font-weight:600;font-size:14px;color:var(--text);">' + l.name + '</div>' +
-        typeLbl +
-      '</div>';
-    }).join("");
-  }
+  container.innerHTML = filtered.map(function(j) {
+    return '<div onclick="selectEmployeeOrderJob(\'' + j.id + '\',\'' + (j.name || "").replace(/'/g, "\\'") + '\')" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
+      '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
+    '</div>';
+  }).join("") || '<div style="padding:20px;text-align:center;color:var(--dim);">No jobs match</div>';
 }
-
-// Kept for backwards compat — the old function name. Just delegates to the new filter.
-function filterEmployeeJobs(q) { filterEmployeePicker(q); }
 
 function selectEmployeeOrderJob(id, name) {
   // Set context for saveOrderAndGeneratePDF
   orderState.buildContext = "job";
   orderState.buildJob = { id: id, name: name };
-  orderState.buildLocation = null;
   orderState.buildItems = [];
   orderState.buildVendor = "";
   estimateState.current = null;  // clear any lingering estimate context
-
-  showScreen("order-build");
-  renderOrderBuild();
-}
-
-function selectEmployeeOrderLocation(id, name) {
-  // Location-based order — same flow but distinct context
-  orderState.buildContext = "location";
-  orderState.buildLocation = { id: id, name: name };
-  orderState.buildJob = null;
-  orderState.buildItems = [];
-  orderState.buildVendor = "";
-  estimateState.current = null;
 
   showScreen("order-build");
   renderOrderBuild();
@@ -4134,8 +4021,8 @@ function renderJobOrderItems() {
 
     return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 90px 28px;gap:8px;align-items:center;">' +
       '<div style="min-width:0;">' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
-      '<input type="number" step="1" min="0" class="field-inp" id="jol-qty-' + idx + '" value="' + (it.orderQty || 0) +
-        '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" onfocus="this.select()" ' +
+      '<input type="number" step="0.01" min="0" class="field-inp" id="jol-qty-' + idx + '" value="' + (it.orderQty || 0) +
+        '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
       '<button onclick="removeJobOrderItem(' + idx + ')" ' +
         'style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>' +
@@ -4273,8 +4160,7 @@ function addItemToOrderBuild(itemId) {
   closeOrderItemPicker();
 
   // Determine which list renderer to refresh based on context
-  var ctx = orderState.buildContext;
-  if (ctx === "job" || ctx === "location" || orderState.editingOrder) {
+  if (orderState.buildContext === "job" || orderState.editingOrder) {
     refreshJobOrderItems();
   } else {
     // Estimate-based build uses its own render path — update the items array and re-render

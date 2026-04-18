@@ -89,6 +89,18 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .sel-item-meta{font-size:11px;color:var(--dim);margin-top:1px;}
 .chg-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--dim);font-size:11px;padding:5px 8px;cursor:pointer;flex-shrink:0;}
 
+/* Searchable combo (typeable dropdown) */
+.combo{position:relative;display:block;}
+.combo-inp{padding-right:64px !important;}
+.combo-arrow{position:absolute;right:8px;top:50%;transform:translateY(-50%);color:var(--dim);font-size:14px;pointer-events:none;}
+.combo-clear{position:absolute;right:30px;top:50%;transform:translateY(-50%);background:transparent;border:none;color:var(--dim);font-size:22px;line-height:1;cursor:pointer;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;padding:0;}
+.combo-clear:hover{background:var(--navy-lt);color:var(--text);}
+.combo-list{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--navy-lt);border:1.5px solid var(--gold);border-radius:10px;max-height:260px;overflow-y:auto;z-index:100;display:none;box-shadow:0 8px 24px rgba(0,0,0,.5);}
+.combo-opt{padding:11px 14px;cursor:pointer;font-size:14px;color:var(--text);border-bottom:1px solid var(--border);}
+.combo-opt:last-child{border-bottom:none;}
+.combo-opt:hover,.combo-opt.active{background:var(--slate);}
+.combo-empty{padding:12px 14px;color:var(--dim);font-size:13px;font-style:italic;}
+
 /* Qty */
 .qty-row{display:flex;align-items:center;gap:8px;}
 .qty-pm{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:8px;color:var(--text);font-size:20px;width:44px;height:44px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
@@ -407,6 +419,167 @@ function fmtQty(n) {
 }
 function fmtCurrency(n) {
   return "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ═══════════════════════════════════════════════════════════
+// SEARCHABLE COMBO (typeable dropdown)
+// ═══════════════════════════════════════════════════════════
+// Usage:
+//   initCombo('my-id', ['opt1','opt2'], 'opt1' /*initial*/, function(val){ /*onChange*/ });
+//   // then in HTML:
+//   comboHTML('my-id', 'Placeholder text…');
+//   // and later:
+//   var chosen = comboGetValue('my-id');
+var _combos = {};  // id -> { options, selected, onChange, _filtered }
+
+function initCombo(id, options, selectedValue, onChange) {
+  _combos[id] = {
+    options:  options || [],
+    selected: selectedValue || "",
+    onChange: onChange || function(){},
+    _filtered: []
+  };
+}
+
+function escapeAttr(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function comboHTML(id, placeholder) {
+  var c = _combos[id] || { selected: "" };
+  var sel = c.selected || "";
+  return '<div class="combo">' +
+    '<input class="field-inp combo-inp" id="ci-' + id + '" type="text" ' +
+    'placeholder="' + escapeAttr(placeholder || "Select or type…") + '" ' +
+    'autocomplete="off" value="' + escapeAttr(sel) + '" ' +
+    'oninput="comboOnInput(\'' + id + '\')" ' +
+    'onfocus="comboOnFocus(\'' + id + '\')" ' +
+    'onblur="comboOnBlur(\'' + id + '\')" ' +
+    'onkeydown="comboOnKey(\'' + id + '\',event)" />' +
+    '<span class="combo-arrow">▾</span>' +
+    '<button type="button" class="combo-clear" id="cc-' + id + '" ' +
+    'onmousedown="event.preventDefault()" ' +
+    'onclick="comboClear(\'' + id + '\')" ' +
+    'style="' + (sel ? "" : "display:none;") + '" title="Clear">×</button>' +
+    '<div class="combo-list" id="cl-' + id + '"></div>' +
+    '</div>';
+}
+
+function comboOnFocus(id) {
+  var inp = document.getElementById("ci-" + id);
+  // Show all options when opened (regardless of current value)
+  comboRenderList(id, "");
+}
+
+function comboOnInput(id) {
+  var inp = document.getElementById("ci-" + id);
+  if (!inp) return;
+  comboRenderList(id, inp.value);
+  var cc = document.getElementById("cc-" + id);
+  if (cc) cc.style.display = inp.value ? "" : "none";
+}
+
+function comboRenderList(id, query) {
+  var list = document.getElementById("cl-" + id);
+  var c    = _combos[id];
+  if (!list || !c) return;
+  var q = (query || "").toLowerCase().trim();
+  var filtered = q
+    ? c.options.filter(function(o){ return String(o).toLowerCase().includes(q); })
+    : c.options.slice();
+  filtered = filtered.slice(0, 200);
+  c._filtered = filtered;
+  if (!filtered.length) {
+    list.innerHTML = '<div class="combo-empty">No matches</div>';
+  } else {
+    list.innerHTML = filtered.map(function(o, i) {
+      return '<div class="combo-opt" ' +
+        'onmousedown="event.preventDefault()" ' +
+        'onclick="comboPick(\'' + id + '\',' + i + ')">' + escapeAttr(o) + '</div>';
+    }).join("");
+  }
+  list.style.display = "block";
+}
+
+function comboPick(id, idx) {
+  var c = _combos[id];
+  if (!c || !c._filtered) return;
+  var val = c._filtered[idx];
+  if (val === undefined) return;
+  comboCommit(id, val);
+}
+
+function comboCommit(id, val) {
+  var c = _combos[id];
+  if (!c) return;
+  val = (val == null) ? "" : String(val);
+  var prev = c.selected;
+  c.selected = val;
+  var inp  = document.getElementById("ci-" + id);
+  var list = document.getElementById("cl-" + id);
+  var cc   = document.getElementById("cc-" + id);
+  if (inp)  inp.value = val;
+  if (list) list.style.display = "none";
+  if (cc)   cc.style.display   = val ? "" : "none";
+  if (val !== prev) c.onChange(val);
+}
+
+function comboClear(id) {
+  comboCommit(id, "");
+  var inp = document.getElementById("ci-" + id);
+  if (inp) { inp.focus(); }
+  // Show all options again after clearing
+  comboRenderList(id, "");
+}
+
+function comboOnBlur(id) {
+  // Delay so mousedown/click on list options can fire first
+  setTimeout(function() {
+    var c    = _combos[id];
+    var inp  = document.getElementById("ci-" + id);
+    var list = document.getElementById("cl-" + id);
+    if (list) list.style.display = "none";
+    if (!c || !inp) return;
+    var typed = inp.value.trim();
+    // Commit whatever was typed — supports both "pick existing" and "type new"
+    if (typed !== c.selected) comboCommit(id, typed);
+  }, 180);
+}
+
+function comboOnKey(id, e) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    var inp = document.getElementById("ci-" + id);
+    if (inp) inp.blur();
+  } else if (e.key === "Escape") {
+    var c = _combos[id];
+    var inp = document.getElementById("ci-" + id);
+    if (c && inp) inp.value = c.selected;
+    var list = document.getElementById("cl-" + id);
+    if (list) list.style.display = "none";
+    if (inp) inp.blur();
+  }
+}
+
+function comboGetValue(id) {
+  return _combos[id] ? _combos[id].selected : "";
+}
+
+// Natural sort for sizes (wire gauges, pipe sizes, etc.) — numbers first by value
+function naturalSort(a, b) {
+  var sa = String(a), sb = String(b);
+  var na = parseFloat(sa), nb = parseFloat(sb);
+  var aIsNum = !isNaN(na);
+  var bIsNum = !isNaN(nb);
+  if (aIsNum && bIsNum) {
+    if (na !== nb) return na - nb;
+    return sa.localeCompare(sb);
+  }
+  if (aIsNum) return -1;
+  if (bIsNum) return 1;
+  return sa.localeCompare(sb);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1949,9 +2122,10 @@ async function refreshItems() {
     if (stockItem) {
       lookupStock(stockItem.id);
     } else {
-      // If a category is currently selected, refresh the browse view
-      var catSel = document.getElementById("stock-cat");
-      if (catSel && catSel.value) onCategoryChange();
+      // If either filter is set, refresh the browse view
+      var cat  = comboGetValue("stock-cat");
+      var size = comboGetValue("stock-size");
+      if (cat || size) onStockFilterChange();
     }
   } catch(ex) {
     showToast("Refresh failed", true);
@@ -1967,10 +2141,18 @@ function goCheckStock() {
   stockItem = null;
   showScreen("stock");
 
-  // Build unique sorted category list from allItems
-  var catSet = {};
-  allItems.forEach(function(i){ if (i.cat) catSet[i.cat] = true; });
-  var cats = Object.keys(catSet).sort();
+  // Build unique sorted category + size lists from allItems
+  var catSet = {}, sizeSet = {};
+  allItems.forEach(function(i) {
+    if (i.cat)  catSet[i.cat]   = true;
+    if (i.size) sizeSet[i.size] = true;
+  });
+  var cats  = Object.keys(catSet).sort();
+  var sizes = Object.keys(sizeSet).sort(naturalSort);
+
+  // Init both combos
+  initCombo("stock-cat",  cats,  "", onStockFilterChange);
+  initCombo("stock-size", sizes, "", onStockFilterChange);
 
   var body = document.getElementById("stock-body");
   body.innerHTML =
@@ -1984,84 +2166,80 @@ function goCheckStock() {
     // Divider
     '<div style="text-align:center;color:var(--muted);font-size:11px;letter-spacing:.1em;margin:4px 0 12px;">— OR —</div>' +
 
-    // Category browse
-    '<div class="field-group"><div class="field-lbl">Browse by Category</div>' +
-    '<select class="field-inp" id="stock-cat" onchange="onCategoryChange()">' +
-    '<option value="">— Select category —</option>' +
-    cats.map(function(c){ return '<option value="' + c.replace(/"/g,'&quot;') + '">' + c + '</option>'; }).join("") +
-    '</select></div>' +
-
-    // Category filter (hidden until category picked)
-    '<div class="field-group" id="stock-cat-filter-wrap" style="display:none;">' +
-    '<div class="field-lbl">Filter within category (optional)</div>' +
-    '<input class="field-inp" id="stock-cat-filter" type="text" placeholder="e.g. 12, THHN, red…" autocomplete="off" oninput="renderCategoryBrowse()" />' +
+    // Two side-by-side filters (stack on narrow screens via flex-wrap)
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;">' +
+      '<div class="field-group" style="flex:1;min-width:200px;margin-bottom:10px;">' +
+      '<div class="field-lbl">Category</div>' +
+      comboHTML("stock-cat", "Type or pick a category…") +
+      '</div>' +
+      '<div class="field-group" style="flex:1;min-width:200px;margin-bottom:10px;">' +
+      '<div class="field-lbl">Product Size</div>' +
+      comboHTML("stock-size", "Type or pick a size…") +
+      '</div>' +
     '</div>' +
 
     '<div id="stock-result"></div>';
 }
 
-// Called when category dropdown changes — renders the browse view
-async function onCategoryChange() {
-  var cat = document.getElementById("stock-cat")?.value || "";
-  var filterWrap = document.getElementById("stock-cat-filter-wrap");
-  var result     = document.getElementById("stock-result");
-  var filterInp  = document.getElementById("stock-cat-filter");
+// Called whenever either combo changes value
+async function onStockFilterChange() {
+  var cat    = comboGetValue("stock-cat");
+  var size   = comboGetValue("stock-size");
+  var result = document.getElementById("stock-result");
+  if (!result) return;
 
-  // Reset single-item selection so both views don't collide
+  // Clear single-item view when using filters
   stockItem = null;
   var drop = document.getElementById("stock-drop");
   var searchInp = document.getElementById("stock-search");
-  if (drop)      drop.innerHTML = "";
+  if (drop) drop.innerHTML = "";
   if (searchInp) searchInp.value = "";
 
-  if (!cat) {
-    if (filterWrap) filterWrap.style.display = "none";
-    if (filterInp)  filterInp.value = "";
-    if (result)     result.innerHTML = "";
+  // Neither filter set — clear result area
+  if (!cat && !size) {
+    result.innerHTML = "";
     return;
   }
 
-  if (filterWrap) filterWrap.style.display = "";
   result.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading stock…</div>';
 
-  // Load stock levels once and cache for this session
   try {
     if (!stockLevelsAllCache) {
       var d = await apiGet("stockLevelsAll");
       stockLevelsAllCache = d.levels || [];
     }
-    renderCategoryBrowse();
+    renderFilteredBrowse(cat, size);
   } catch(ex) {
     result.innerHTML = '<div class="empty">Error loading stock: ' + ex.message + '</div>';
   }
 }
 
-// Renders the list of items in the selected category with per-location breakdown
-function renderCategoryBrowse() {
-  var cat     = document.getElementById("stock-cat")?.value || "";
-  var filter  = (document.getElementById("stock-cat-filter")?.value || "").trim().toLowerCase();
+// Renders the list of items matching (cat ∧ size) filters with per-location breakdown
+function renderFilteredBrowse(cat, size) {
+  cat  = cat  || comboGetValue("stock-cat");
+  size = size || comboGetValue("stock-size");
   var result  = document.getElementById("stock-result");
-  if (!cat || !result) return;
+  if (!result) return;
 
   var isAdmin = currentUser && currentUser.role === "admin";
 
-  // Filter items: category match + optional text filter on name/barcode
+  // Filter items by category AND size (either one optional)
   var items = allItems.filter(function(i) {
-    if (i.cat !== cat) return false;
-    if (!filter) return true;
-    var hay = (i.name + " " + (i.barcode || "")).toLowerCase();
-    // Support multi-word filter: all tokens must match
-    return filter.split(/\s+/).every(function(tok){ return hay.includes(tok); });
+    if (cat  && i.cat  !== cat)  return false;
+    if (size && i.size !== size) return false;
+    return true;
   });
 
   items.sort(function(a, b){ return a.name.localeCompare(b.name); });
 
   if (!items.length) {
+    var crumbs = [];
+    if (cat)  crumbs.push('<b>' + cat  + '</b>');
+    if (size) crumbs.push('size <b>' + size + '</b>');
     result.innerHTML =
       '<div style="text-align:center;padding:30px 20px;color:var(--dim);">' +
       '<div style="font-size:32px;margin-bottom:8px;">🔍</div>' +
-      'No items match in <b>' + cat + '</b>' +
-      (filter ? ' for "' + filter + '"' : '') +
+      'No items match ' + crumbs.join(' with ') +
       '</div>';
     return;
   }
@@ -2074,14 +2252,16 @@ function renderCategoryBrowse() {
     slByItem[lv.itemId].push(lv);
   });
 
-  // Preserve the admin's preferred location order
   var locOrder = allLocations.map(function(l){ return l.name; });
 
   var html = '';
 
   // Header summary
+  var headBits = [];
+  if (cat)  headBits.push(cat);
+  if (size) headBits.push('size ' + size);
   html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:4px 0 10px;">' +
-          cat + ' · ' + items.length + ' item' + (items.length === 1 ? '' : 's') +
+          headBits.join(' · ') + ' · ' + items.length + ' item' + (items.length === 1 ? '' : 's') +
           '</div>';
 
   items.forEach(function(item) {
@@ -2110,6 +2290,10 @@ function renderCategoryBrowse() {
     html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px;">';
     html += '<div style="flex:1;min-width:0;">';
     html += '<div style="font-size:15px;font-weight:700;color:var(--gold);overflow-wrap:anywhere;">' + item.name + '</div>';
+    var meta = [item.cat, item.size && ('size ' + item.size), item.uom].filter(Boolean).join(' · ');
+    if (meta) {
+      html += '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + meta + '</div>';
+    }
     if (isAdmin && item.cost > 0) {
       html += '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' +
               fmtCurrency(item.cost) + ' / ' + (item.uom || 'unit') +
@@ -2195,11 +2379,9 @@ async function lookupStock(itemId) {
   if (drop) drop.innerHTML = "";
   if (inp)  inp.value = stockItem.name;
 
-  // Clear category browse so single-item view replaces it cleanly
-  var catSel = document.getElementById("stock-cat");
-  var catFilterWrap = document.getElementById("stock-cat-filter-wrap");
-  if (catSel) catSel.value = "";
-  if (catFilterWrap) catFilterWrap.style.display = "none";
+  // Clear category/size combos so single-item view replaces them cleanly
+  if (_combos["stock-cat"])  comboCommit("stock-cat", "");
+  if (_combos["stock-size"]) comboCommit("stock-size", "");
 
   var result  = document.getElementById("stock-result");
   result.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
@@ -2247,7 +2429,7 @@ async function lookupStock(itemId) {
     // Item header
     html += '<div style="background:var(--navy-mid);border-radius:var(--r);padding:14px 16px;margin-bottom:12px;">';
     html += '<div style="font-size:17px;font-weight:700;color:var(--gold);">' + stockItem.name + '</div>';
-    html += '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + [stockItem.cat, stockItem.uom].filter(Boolean).join(" · ") + '</div>';
+    html += '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + [stockItem.cat, stockItem.size && ('size ' + stockItem.size), stockItem.uom].filter(Boolean).join(" · ") + '</div>';
     if (isAdmin && stockItem.cost > 0) {
       html += '<div style="font-size:12px;color:var(--dim);margin-top:2px;">Unit cost: <span style="color:var(--text);">' + fmtCurrency(stockItem.cost) + '</span></div>';
     }
@@ -2450,15 +2632,17 @@ function goNewItem() {
 }
 
 function renderNewItemForm(prefillBarcode) {
-  // Collect unique categories from existing items
-  var cats = [];
-  var catSeen = {};
+  // Collect unique categories and sizes from existing items
+  var cats = [], sizes = [];
+  var catSeen = {}, sizeSeen = {};
   allItems.forEach(function(i) {
-    if (i.cat && !catSeen[i.cat]) { catSeen[i.cat] = true; cats.push(i.cat); }
+    if (i.cat  && !catSeen[i.cat])   { catSeen[i.cat]   = true; cats.push(i.cat); }
+    if (i.size && !sizeSeen[i.size]) { sizeSeen[i.size] = true; sizes.push(i.size); }
   });
   cats.sort();
+  sizes.sort(naturalSort);
 
-  // If still no categories (items not loaded), try a fresh fetch
+  // If still no items (not loaded yet), try a fresh fetch
   if (!cats.length && allItems.length === 0) {
     apiGet("items").then(function(d) {
       allItems = d.items || [];
@@ -2469,6 +2653,10 @@ function renderNewItemForm(prefillBarcode) {
     body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
     return;
   }
+
+  // Initialize combos
+  initCombo("ni-cat",  cats,  "", function(){});
+  initCombo("ni-size", sizes, "", function(){});
 
   var uoms = ["ea", "lb", "ft", "roll", "box", "bag", "pr", "100ft", "500ft"];
 
@@ -2489,14 +2677,15 @@ function renderNewItemForm(prefillBarcode) {
     '<div class="field-group"><div class="field-lbl">Item Name <span style="color:var(--red);">*</span></div>' +
     '<input class="field-inp" id="ni-name" type="text" placeholder="e.g. 3/4&quot; EMT CONNECTOR - SET SCREW" autocomplete="off" /></div>' +
 
-    // Category — existing categories + new option
-    '<div class="field-group"><div class="field-lbl">Category</div>' +
-    '<select class="field-sel" id="ni-cat" onchange="onNewItemCatChange()">' +
-    '<option value="">— Select category —</option>' +
-    cats.map(function(c){ return '<option value="' + c.replace(/"/g,"&quot;") + '">' + c + '</option>'; }).join('') +
-    '<option value="__new__">+ Add new category…</option>' +
-    '</select>' +
-    '<input class="field-inp" id="ni-cat-new" type="text" placeholder="Type new category name" style="display:none;margin-top:6px;" onchange="onNewItemCatNewChange()" oninput="onNewItemCatNewChange()" /></div>' +
+    // Category — searchable combo (type to filter or add new)
+    '<div class="field-group"><div class="field-lbl">Category <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;">(type to search or add new)</span></div>' +
+    comboHTML("ni-cat", "Type or pick a category…") +
+    '</div>' +
+
+    // Product Size — searchable combo
+    '<div class="field-group"><div class="field-lbl">Product Size <span style="color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;">(type to search or add new)</span></div>' +
+    comboHTML("ni-size", "e.g. 12, 3/4\", 100A…") +
+    '</div>' +
 
     // Unit of Measure
     '<div class="field-group"><div class="field-lbl">Unit of Measure</div>' +
@@ -2527,23 +2716,12 @@ function renderNewItemForm(prefillBarcode) {
   if (prefillBarcode) setTimeout(function(){ document.getElementById("ni-name")?.focus(); }, 100);
 }
 
-function onNewItemCatChange() {
-  var sel     = document.getElementById("ni-cat");
-  var newInp  = document.getElementById("ni-cat-new");
-  if (!sel || !newInp) return;
-  var isNew = sel.value === "__new__";
-  newInp.style.display = isNew ? "block" : "none";
-  if (isNew) { newInp.focus(); }
-}
-
-function onNewItemCatNewChange() {
-  // No-op placeholder kept for existing oninput binding. Wire row is always visible.
-}
+// Kept as no-ops for compatibility with any stale event bindings
+function onNewItemCatChange() {}
+function onNewItemCatNewChange() {}
 
 async function submitNewItem() {
   var nameEl    = document.getElementById("ni-name");
-  var catSel    = document.getElementById("ni-cat");
-  var catNewInp = document.getElementById("ni-cat-new");
   var uomSel    = document.getElementById("ni-uom");
   var costInp   = document.getElementById("ni-cost");
   var wireInp   = document.getElementById("ni-wire");
@@ -2552,7 +2730,8 @@ async function submitNewItem() {
   var btn       = document.getElementById("ni-save-btn");
 
   var name    = nameEl?.value.trim().toUpperCase();
-  var cat     = catSel?.value === "__new__" ? (catNewInp?.value.trim() || "") : (catSel?.value || "");
+  var cat     = comboGetValue("ni-cat").trim();
+  var size    = comboGetValue("ni-size").trim();
   var uom     = uomSel?.value || "ea";
   var cost    = parseFloat(costInp?.value || 0);
   var wire    = parseFloat(wireInp?.value || 0);
@@ -2564,7 +2743,17 @@ async function submitNewItem() {
   btn.disabled = true; btn.textContent = "Saving…";
 
   try {
-    var d = await apiPost({ action: "createItem", name, category: cat || undefined, uom, barcode: barcode || undefined, cost: cost || undefined, wireFtPerLb: wire || undefined, active: active });
+    var d = await apiPost({
+      action: "createItem",
+      name,
+      category:    cat  || undefined,
+      productSize: size || undefined,
+      uom,
+      barcode:     barcode || undefined,
+      cost:        cost || undefined,
+      wireFtPerLb: wire || undefined,
+      active:      active
+    });
 
     // Add to local items cache immediately (only if active — inactive items won't show in pickers)
     if (active) {

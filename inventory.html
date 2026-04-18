@@ -3796,6 +3796,7 @@ async function buildOrderWorkingList(estimate) {
           available:   0,
           shortfall:   Number(l.qty) || 0,
           orderQty:    Number(l.qty) || 0,
+          isBox:       false,
           include:     false  // unchecked by default
         };
       }
@@ -3818,6 +3819,7 @@ async function buildOrderWorkingList(estimate) {
         available:   available,
         shortfall:   shortfall,
         orderQty:    shortfall,           // pre-fill with shortfall
+        isBox:       false,
         include:     shortfall > 0        // pre-check items needing order
       };
     });
@@ -3909,7 +3911,16 @@ function sectionHtml(title, color, group, defaultExpanded) {
       : 'Need: ' + fmtQty(it.estQty) + ' · In stock: ' + fmtQty(it.available) +
         (it.shortfall > 0 ? ' · <span style="color:var(--gold);font-weight:600;">Short ' + fmtQty(it.shortfall) + '</span>' : ' · <span style="color:var(--green);">In stock</span>');
 
-    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:24px 1fr 90px;gap:10px;align-items:center;">' +
+    var isBox = !!it.isBox;
+    var boxBtnStyle = isBox
+      ? 'background:var(--gold);color:var(--navy);border:1px solid var(--gold);'
+      : 'background:var(--navy-mid);color:var(--dim);border:1px solid var(--border);';
+    var boxBtn = '<button type="button" onclick="toggleOrderBox(' + idx + ')" ' +
+      'title="Toggle box quantity" ' +
+      'style="' + boxBtnStyle + 'border-radius:6px;font-size:10px;font-weight:700;letter-spacing:0.05em;padding:0;cursor:pointer;height:34px;">' +
+      (isBox ? 'BOX' : 'ea') + '</button>';
+
+    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:24px 1fr 70px 46px;gap:8px;align-items:center;">' +
       '<input type="checkbox" id="ord-chk-' + idx + '" ' + checkedAttr + ' onchange="orderState.buildItems[' + idx + '].include=this.checked;" style="width:18px;height:18px;cursor:pointer;" />' +
       '<div style="min-width:0;">' +
         '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + it.itemName + '</div>' +
@@ -3918,6 +3929,7 @@ function sectionHtml(title, color, group, defaultExpanded) {
       '<input type="number" step="0.01" min="0" class="field-inp" value="' + (it.orderQty || 0) +
         '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
+      boxBtn +
     '</div>';
   }).join("");
 
@@ -3984,7 +3996,8 @@ async function saveOrderAndGeneratePDF() {
       return {
         itemId:      it.itemId,
         description: it.itemName,    // store name at order time for traceability
-        qty:         Number(it.orderQty) || 0
+        qty:         Number(it.orderQty) || 0,
+        isBox:       !!it.isBox
       };
     });
 
@@ -4007,7 +4020,7 @@ async function saveOrderAndGeneratePDF() {
       vendor:    orderState.buildVendor || "",
       createdBy: currentUser ? currentUser.name : "",
       lines:     included.map(function(it) {
-        return { itemName: it.itemName, qty: it.orderQty };
+        return { itemName: it.itemName, qty: it.orderQty, isBox: !!it.isBox };
       })
     });
 
@@ -4174,12 +4187,17 @@ function renderOrderDetail() {
     ? '<div style="display:flex;flex-direction:column;gap:6px;">' +
         lines.map(function(l) {
           var isMisc = l.isMisc;
+          var isBox  = !!l.isBox;
+          var qtyDisplay = isBox
+            ? '<span style="font-weight:700;font-size:14px;color:var(--text);">' + fmtQty(l.qty) + '</span>' +
+              '<span style="background:var(--gold);color:var(--navy);font-size:9px;font-weight:700;letter-spacing:0.05em;padding:2px 6px;border-radius:4px;margin-left:6px;">BOX</span>'
+            : '<span style="font-weight:700;font-size:14px;color:var(--text);">' + fmtQty(l.qty) + '</span>';
           return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px;">' +
             '<div style="flex:1;min-width:0;">' +
               '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + (l.itemName || l.description || "Item") + '</div>' +
               (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') +
             '</div>' +
-            '<div style="font-weight:700;font-size:14px;color:var(--text);">' + fmtQty(l.qty) + '</div>' +
+            '<div style="display:flex;align-items:center;flex-shrink:0;">' + qtyDisplay + '</div>' +
           '</div>';
         }).join("") +
       '</div>'
@@ -4261,7 +4279,7 @@ function redownloadOrderPDF() {
     vendor:    currentVendor,
     createdBy: o.createdBy,
     lines:     (o.lines || []).map(function(l) {
-      return { itemName: l.itemName || l.description || "Item", qty: l.qty };
+      return { itemName: l.itemName || l.description || "Item", qty: l.qty, isBox: !!l.isBox };
     })
   });
 }
@@ -4468,11 +4486,21 @@ function renderJobOrderItems() {
           'style="font-size:13px;padding:7px 9px;" />'
       : '<div style="font-weight:600;font-size:13px;padding:7px 0;overflow:hidden;text-overflow:ellipsis;">' + (it.itemName || "Item") + '</div>';
 
-    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 90px 28px;gap:8px;align-items:center;">' +
+    var isBox = !!it.isBox;
+    var boxBtnStyle = isBox
+      ? 'background:var(--gold);color:var(--navy);border:1px solid var(--gold);'
+      : 'background:var(--navy-mid);color:var(--dim);border:1px solid var(--border);';
+    var boxBtn = '<button type="button" onclick="toggleOrderBox(' + idx + ')" ' +
+      'title="Toggle box quantity" ' +
+      'style="' + boxBtnStyle + 'border-radius:6px;font-size:10px;font-weight:700;letter-spacing:0.05em;padding:0;cursor:pointer;height:36px;">' +
+      (isBox ? 'BOX' : 'ea') + '</button>';
+
+    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 46px 24px;gap:6px;align-items:center;">' +
       '<div style="min-width:0;">' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
       '<input type="number" step="0.01" min="0" class="field-inp" id="jol-qty-' + idx + '" value="' + (it.orderQty || 0) +
         '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
+      boxBtn +
       '<button onclick="removeJobOrderItem(' + idx + ')" ' +
         'style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>' +
     '</div>';
@@ -4489,6 +4517,17 @@ function renderJobOrderItems() {
     '<div id="job-order-rows" style="display:flex;flex-direction:column;gap:6px;">' + rowsHtml + '</div>' +
     addButtons +
   '</div>';
+}
+
+function toggleOrderBox(idx) {
+  if (!orderState.buildItems || !orderState.buildItems[idx]) return;
+  orderState.buildItems[idx].isBox = !orderState.buildItems[idx].isBox;
+  // Refresh the right view based on build context
+  if (orderState.buildContext === "job" || orderState.editingOrder) {
+    refreshJobOrderItems();
+  } else {
+    renderOrderBuild();
+  }
 }
 
 function refreshJobOrderItems() {
@@ -4509,6 +4548,7 @@ function addMiscJobOrderItem() {
     itemId:   "",
     itemName: "",
     orderQty: 1,
+    isBox:    false,
     include:  true         // always "included" for job orders
   });
   refreshJobOrderItems();
@@ -4602,6 +4642,7 @@ function addItemToOrderBuild(itemId) {
       itemId:   item.id,
       itemName: item.name,
       orderQty: 1,
+      isBox:    false,
       include:  true
     });
   }
@@ -4667,6 +4708,7 @@ function startEditOrder() {
       itemId:   l.itemId || "",
       itemName: l.itemName || l.description || "",
       orderQty: Number(l.qty) || 0,
+      isBox:    !!l.isBox,
       include:  true
     };
   });
@@ -4746,7 +4788,8 @@ async function saveEditOrder() {
       return {
         itemId:      it.itemId || "",
         description: it.itemName || "",
-        qty:         Number(it.orderQty) || 0
+        qty:         Number(it.orderQty) || 0,
+        isBox:       !!it.isBox
       };
     });
 
@@ -4892,7 +4935,8 @@ function generateOrderPDF(order) {
 
       doc.setFont("helvetica", "bold");
       doc.setTextColor(30, 30, 30);
-      doc.text(fmtQty(l.qty), c2, y, { align: "right" });
+      var qtyText = l.isBox ? (fmtQty(l.qty) + " box") : fmtQty(l.qty);
+      doc.text(qtyText, c2, y, { align: "right" });
       doc.setFont("helvetica", "normal");
     });
 

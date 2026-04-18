@@ -229,6 +229,19 @@ async function handleSubmitCart(body) {
 
   console.log(`submitCart: jobName="${jobName}" jobId="${jobId}" location="${locationId}" lines=${lines.length}`);
 
+  // Fetch current item costs as a fallback safety net for snapshot capture.
+  // If the frontend forgets to send unitCost, we look it up here so snapshots
+  // never end up as $0 unless the item itself has no cost set.
+  let itemCostMap = {};
+  try {
+    const itemRecords = await fetchAll(API_ROOT_INV, "Inventory Items", {});
+    itemRecords.forEach(r => {
+      itemCostMap[r.id] = Number(r.fields["Default Unit Cost"] || 0);
+    });
+  } catch(e) {
+    console.warn("Could not fetch item costs for snapshot fallback:", e.message);
+  }
+
   const now = new Date().toISOString();
   const results = [];
 
@@ -242,6 +255,20 @@ async function handleSubmitCart(body) {
       "fldIFffLxtcQTbExd": enteredBy || "",
       "fldrcq8wSyfz8O3UB": line.notes || ""
     };
+
+    // Snapshot the unit cost at transaction time. This freezes the cost
+    // for billing so retroactive price changes do not alter historical job costs.
+    // Priority: explicit unitCost from cart > current Default Unit Cost lookup.
+    let snapshotCost = 0;
+    if (line.unitCost !== undefined && line.unitCost !== null && Number(line.unitCost) > 0) {
+      snapshotCost = Number(line.unitCost);
+    } else if (itemCostMap[line.itemId] > 0) {
+      snapshotCost = itemCostMap[line.itemId];
+    }
+    if (snapshotCost > 0) {
+      fields["fldUStmydYotYBFoE"] = snapshotCost;
+    }
+
     // Link to job record if we have the inventory base job ID
     if (jobId) {
       fields["fld7OG04Sgkp88JsU"] = [String(jobId)];
@@ -271,6 +298,12 @@ async function handleReceive(body) {
     "fldIFffLxtcQTbExd": enteredBy || "",
     "fldrcq8wSyfz8O3UB": notes || ""
   };
+
+  // Snapshot the cost on receive transactions too — lets the receive history
+  // show what was actually paid even if Default Unit Cost is updated later.
+  if (unitCost && Number(unitCost) > 0) {
+    fields["fldUStmydYotYBFoE"] = Number(unitCost);
+  }
 
   const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
     method: "POST",
@@ -368,14 +401,18 @@ async function handleHistory(params) {
     const userNotes  = notesParts.slice(1).join(" | ");
     const qty        = f["Quantity"] ?? 0;
 
+    // Prefer snapshot cost from the transaction; fall back to current item cost
+    const snapshotCost = Number(f["Unit Cost (Snapshot)"] || 0);
+    const lineCost = snapshotCost > 0 ? snapshotCost : (itemData.cost || 0);
+
     return {
       id:         r.id,
       date:       dateStr,
       item:       itemData.name || itemId,
       itemId:     itemId,
       uom:        itemData.uom  || "",
-      cost:       itemData.cost || 0,
-      total:      Math.round((itemData.cost || 0) * qty * 100) / 100,
+      cost:       lineCost,
+      total:      Math.round(lineCost * qty * 100) / 100,
       from:       resolveArr(fromArr, locMap),
       to:         resolveArr(toArr,   locMap),
       qty,
@@ -434,8 +471,9 @@ async function handlePendingExpenses() {
     };
   });
 
-  // Build per-job, per-item net quantities and collect all tx IDs
-  // Structure: jobKey -> { jobData, items: { itemId -> { name, cost, netQty } }, txIds: [] }
+  // Build per-job, per-item accumulations using cost-per-transaction so that
+  // multiple transactions at different snapshot prices are weighted correctly.
+  // Structure: jobKey -> { jobData, items: { itemId -> { name, wireFtPerLb, netQty, totalCost } }, txIds: [] }
   const jobGroups = {};
 
   txRecords.forEach(r => {
@@ -447,6 +485,7 @@ async function handlePendingExpenses() {
     const invJobId = typeof jobArr[0]  === "object" ? jobArr[0]?.id  : String(jobArr[0]  || "");
     const qty      = Math.abs(f["Quantity"] ?? 0);
     const notesRaw = f["Notes"] || "";
+    const snapshotCost = Number(f["Unit Cost (Snapshot)"] || 0);
 
     if (!itemId || !invJobId) return;
 
@@ -469,29 +508,41 @@ async function handlePendingExpenses() {
 
     // Net qty: Use = positive, Return = negative
     const delta = txType === "Return" ? -qty : qty;
+
+    // Per-transaction cost: prefer snapshot, fall back to current item cost
+    // for legacy transactions created before the snapshot field existed.
+    const itemData = itemMap[itemId] || {};
+    const txCost = snapshotCost > 0 ? snapshotCost : (itemData.cost || 0);
+    const lineValue = txCost * delta; // signed: negative for returns
+
     if (!jobGroups[jobKey].items[itemId]) {
-      const itemData = itemMap[itemId] || {};
       jobGroups[jobKey].items[itemId] = {
         name:        itemData.name || itemId,
-        cost:        itemData.cost || 0,
         wireFtPerLb: itemData.wireFtPerLb || 0,
-        netQty:      0
+        netQty:      0,
+        totalCost:   0
       };
     }
-    jobGroups[jobKey].items[itemId].netQty += delta;
+    jobGroups[jobKey].items[itemId].netQty    += delta;
+    jobGroups[jobKey].items[itemId].totalCost += lineValue;
   });
 
   // Build the pending array for the UI — one entry per job
   const pending = Object.values(jobGroups).map(g => {
     const lines = Object.values(g.items)
       .filter(i => i.netQty !== 0)
-      .map(i => ({
-        item:  i.name,
-        qty:   i.netQty,
-        cost:  i.cost,
-        total: Math.round(i.cost * i.netQty * 100) / 100,
-        wireFt: i.wireFtPerLb > 0 ? Math.round(Math.abs(i.netQty) * i.wireFtPerLb) : 0
-      }));
+      .map(i => {
+        // Effective per-unit cost for display = totalCost / netQty
+        // (handles mixed-snapshot case correctly)
+        const effectiveCost = i.netQty !== 0 ? i.totalCost / i.netQty : 0;
+        return {
+          item:   i.name,
+          qty:    i.netQty,
+          cost:   Math.round(effectiveCost * 100) / 100,
+          total:  Math.round(i.totalCost * 100) / 100,
+          wireFt: i.wireFtPerLb > 0 ? Math.round(Math.abs(i.netQty) * i.wireFtPerLb) : 0
+        };
+      });
 
     const jobTotal = lines.reduce((s, l) => s + l.total, 0);
 
@@ -933,51 +984,6 @@ async function handleUpdateReorderPoint(body) {
 // ESTIMATES — list, get, create, update, delete
 // ═══════════════════════════════════════════════════════════
 
-// Estimates table:        tblULCJaVsLXk4Af0
-//   Job Name   fld5QDgzSOXNAZdOc  (primary, single line text)
-//   Job ID     fldId8eR0C8TeSfy4  (single line text)
-//   Date Created fldQPgpJedOl0sFqj (createdTime — auto)
-//   Created By fldl0xEYcPvNbs69U  (single line text)
-//   Status     fldAu3oNbywGe8vBh  (singleSelect)
-//   Notes      fld7sOLbNZxEqP0zs  (multilineText)
-//   Estimate Line Items fld0iwv87YGSNj6Se (multipleRecordLinks)
-//   Total      flddlh18SWp8ZpEtF  (rollup — read only)
-//
-// Estimate Line Items table: tblhRadsyvlLw5Lp5
-//   Line ID                       fldueClxCFxL3IJUE (autoNumber — auto)
-//   Estimate                      fldCXpRJt9g3yCB9r (link)
-//   Inventory Item                fld50ttitFcM2uPap (link, optional for Misc)
-//   Quantity                      fld9mDWjvdd4AfXnn (number)
-//   Unit Cost at Time of Estimate fldkTzFNJydVX1iK3 (currency)
-//   Line Total                    fldB17lKMj66jhgT9 (formula — read only)
-//
-// For Misc lines we store a description in a separate way: since the table
-// doesn't have a description field, Misc lines also need a name. We piggyback
-// by NOT linking an Inventory Item and storing the description in a separate
-// field. To keep the schema minimal we use a convention: Misc lines have NO
-// Inventory Item link and we represent them via a fake inventory item link to
-// a placeholder "Misc" item — BUT that requires a placeholder item. Instead,
-// for Misc lines we leave Inventory Item empty and store the description in
-// the Line ID field's display via a separate Description. Since we don't have
-// a Description field, we'll add one by convention: Misc descriptions are
-// stored in the Estimate's Notes field as "[Misc] desc".
-//
-// Simpler: we add a single line text "Description" to Estimate Line Items.
-// That requires a schema change. To keep this change minimal and stay within
-// what's already built in Airtable, we will use the following convention:
-//   - For inventory-item lines, Inventory Item is set, no description needed
-//   - For Misc lines, we set Inventory Item to NOTHING and store the
-//     description in the Quantity field's row context — but Quantity is a
-//     number. So Misc line description has to live somewhere.
-//
-// The cleanest approach without requiring a new field is: for Misc lines, we
-// require the user to add a description that we put in the Estimate Notes
-// or in a "dummy" inventory item called "MISC" with the description in cost.
-//
-// For this build we will require an "Estimate Line Description" single line
-// text field in Estimate Line Items. We'll detect its absence and return a
-// helpful error if missing, asking the user to add it.
-
 const EST_TABLE_ID  = "tblULCJaVsLXk4Af0";
 const LINE_TABLE_ID = "tblhRadsyvlLw5Lp5";
 
@@ -993,10 +999,6 @@ const F_LINE_ESTIMATE   = "fldCXpRJt9g3yCB9r";
 const F_LINE_ITEM       = "fld50ttitFcM2uPap";
 const F_LINE_QTY        = "fld9mDWjvdd4AfXnn";
 const F_LINE_UNIT_COST  = "fldkTzFNJydVX1iK3";
-// Optional: Description field for Misc lines — looked up by name at runtime.
-// If you add a "Description" single line text field to Estimate Line Items,
-// Misc lines will store their text there. Otherwise Misc descriptions appear
-// as part of the line via the Estimate's Notes.
 
 // ── ESTIMATES LIST ─────────────────────────────────────────
 async function handleEstimatesList(params) {
@@ -1041,10 +1043,8 @@ async function handleEstimateGet(params) {
     .map(l => typeof l === "object" ? l.id : String(l));
 
   // Fetch all line items belonging to this estimate
-  // Use filterByFormula to pull just the linked lines
   let lines = [];
   if (lineIds.length) {
-    // Fetch line items + items map for displaying inventory item names
     const [lineRecords, itemRecords] = await Promise.all([
       fetchAll(API_ROOT_INV, "Estimate Line Items", {}),
       fetchAll(API_ROOT_INV, "Inventory Items", {})
@@ -1075,7 +1075,6 @@ async function handleEstimateGet(params) {
           itemName: itemData.name || (f["Description"] || ""),
           uom:      itemData.uom || "",
           isMisc:   !itemId,
-          // Description field for Misc lines (only present if user added it to schema)
           description: f["Description"] || "",
           qty:      f["Quantity"] || 0,
           unitCost: f["Unit Cost at Time of Estimate"] || 0,
@@ -1225,9 +1224,6 @@ async function createLineItems(estimateId, lines) {
         fields[F_LINE_ITEM] = [String(l.itemId)];
       }
       // Description — only attempt to set if it's a Misc line.
-      // Use field NAME so this works whether or not "Description" exists.
-      // Airtable will return 422 if the field doesn't exist; we let typecast
-      // handle that gracefully by using field name + try/catch fallback.
       if (l.isMisc && l.description) {
         fields["Description"] = String(l.description).trim();
       }
@@ -1261,24 +1257,6 @@ async function createLineItems(estimateId, lines) {
 // ═══════════════════════════════════════════════════════════
 // MATERIAL ORDERS — list, get, create, mark complete, delete
 // ═══════════════════════════════════════════════════════════
-//
-// Material Orders table:        tblLMunp1fSrZV4mH
-//   Order ID         fldTY2ACBpvCt7Ydf  (autonumber, primary)
-//   Estimate         fld446AqUqFbATskC  (link)
-//   Job Name         fldst9PryHJTJYWeC  (text)
-//   Date Created     fldWWgI0dhgoiGcXH  (createdTime)
-//   Created By       fldeRDqMUpfIQF36D  (text)
-//   Vendor / Notes   fldgXcZ2EMNR5nfTG  (text)
-//   Status           fldshk9Rek2BnVAxc  (singleSelect: Active / Complete)
-//   Material Order Lines fldtq07BLgsJnMKs3 (link)
-//   Total Items      fldCK7WWvqjcoJPbQ  (count, read-only)
-//
-// Material Order Lines table:   tblERYikTOpPhklPw
-//   Line Item ID     fldzFAkbhT6Bm4qN9  (autonumber, primary)
-//   Material Order   fldkAHSFDQwsQqCyd  (link)
-//   Inventory Item   fldlNL42Hj9fEKNVR  (link, optional for Misc/manual)
-//   Description      fldoDLObzUjkHyhcA  (multiline text)
-//   Quantity Ordered fldI8RfBvcD8oGpcg  (number)
 
 const ORDER_TABLE_ID      = "tblLMunp1fSrZV4mH";
 const ORDER_LINE_TABLE_ID = "tblERYikTOpPhklPw";

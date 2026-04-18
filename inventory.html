@@ -4346,60 +4346,111 @@ async function goEmployeeOrderJob() {
   }
 }
 
+// Escape single quotes for inline onclick attributes
+function _escApos(s) { return String(s || "").replace(/'/g, "\\'"); }
+
+function _locIcon(type) {
+  var t = String(type || "").toLowerCase();
+  if (t.indexOf("truck") >= 0)   return "🚚";
+  if (t.indexOf("trailer") >= 0) return "📦";
+  return "🏢";   // shop / default
+}
+
 function renderEmployeeJobPicker() {
   var body = document.getElementById("order-job-body");
   var jobs = awardedJobsCache || [];
+  var locs = allLocations || [];
 
-  if (!jobs.length) {
+  if (!jobs.length && !locs.length) {
     body.innerHTML = '<div style="padding:30px;text-align:center;color:var(--dim);">' +
-      'No awarded jobs found.</div>';
+      'No jobs or locations available.</div>';
     return;
   }
 
   var searchBox =
     '<div style="margin-bottom:12px;">' +
-      '<input type="text" class="field-inp" id="ejob-search" placeholder="Search jobs…" autocomplete="off" ' +
+      '<input type="text" class="field-inp" id="ejob-search" placeholder="Search jobs or locations…" autocomplete="off" ' +
         'oninput="filterEmployeeJobs(this.value)" />' +
     '</div>';
 
   var hint =
     '<div style="background:var(--navy-lt);padding:10px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:12px;font-size:12px;color:var(--dim);">' +
-      'Pick the job you need materials for, then add items to the order list.' +
+      'Pick the job or a location (for restock), then add items to the order list.' +
     '</div>';
-
-  var rows = jobs.map(function(j) {
-    return '<div onclick="selectEmployeeOrderJob(\'' + j.id + '\',\'' + (j.name || "").replace(/'/g, "\\'") + '\')" ' +
-      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
-      '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
-    '</div>';
-  }).join("");
 
   body.innerHTML = hint + searchBox +
-    '<div id="ejob-rows" style="display:flex;flex-direction:column;gap:6px;">' + rows + '</div>';
+    '<div id="ejob-rows">' + buildPickerRowsHTML(locs, jobs) + '</div>';
+}
+
+// Builds the combined Locations + Jobs list HTML
+function buildPickerRowsHTML(locs, jobs) {
+  var html = '';
+
+  if (locs && locs.length) {
+    html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:4px 0 8px;">Restock Locations</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px;">';
+    locs.forEach(function(l) {
+      var icon = _locIcon(l.type);
+      html += '<div onclick="selectEmployeeOrderLocation(\'' + _escApos(l.id) + '\',\'' + _escApos(l.name) + '\')" ' +
+        'style="background:var(--navy-lt);border:1px solid var(--border);border-left:3px solid var(--gold);border-radius:8px;padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:10px;">' +
+        '<span style="font-size:18px;flex-shrink:0;">' + icon + '</span>' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-weight:600;font-size:14px;color:var(--text);">' + l.name + '</div>' +
+          '<div style="font-size:11px;color:var(--dim);margin-top:1px;">Restock &middot; ' + (l.type || 'Location') + '</div>' +
+        '</div></div>';
+    });
+    html += '</div>';
+  }
+
+  if (jobs && jobs.length) {
+    html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:4px 0 8px;">Jobs</div>';
+    html += '<div style="display:flex;flex-direction:column;gap:6px;">';
+    jobs.forEach(function(j) {
+      html += '<div onclick="selectEmployeeOrderJob(\'' + _escApos(j.id) + '\',\'' + _escApos(j.name) + '\')" ' +
+        'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
+        '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
+        '</div>';
+    });
+    html += '</div>';
+  }
+
+  return html;
 }
 
 function filterEmployeeJobs(q) {
   q = (q || "").trim().toLowerCase();
-  var filtered = q
+  var fjobs = q
     ? awardedJobsCache.filter(function(j) { return (j.name || "").toLowerCase().includes(q); })
     : awardedJobsCache;
+  var flocs = q
+    ? (allLocations || []).filter(function(l) { return (l.name || "").toLowerCase().includes(q); })
+    : (allLocations || []);
   var container = document.getElementById("ejob-rows");
   if (!container) return;
-  container.innerHTML = filtered.map(function(j) {
-    return '<div onclick="selectEmployeeOrderJob(\'' + j.id + '\',\'' + (j.name || "").replace(/'/g, "\\'") + '\')" ' +
-      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:12px 14px;cursor:pointer;">' +
-      '<div style="font-weight:600;font-size:14px;color:var(--text);">' + j.name + '</div>' +
-    '</div>';
-  }).join("") || '<div style="padding:20px;text-align:center;color:var(--dim);">No jobs match</div>';
+  var rowsHtml = buildPickerRowsHTML(flocs, fjobs);
+  container.innerHTML = rowsHtml || '<div style="padding:20px;text-align:center;color:var(--dim);">No matches</div>';
 }
 
 function selectEmployeeOrderJob(id, name) {
   // Set context for saveOrderAndGeneratePDF
   orderState.buildContext = "job";
-  orderState.buildJob = { id: id, name: name };
+  orderState.buildJob = { id: id, name: name, isLocation: false };
   orderState.buildItems = [];
   orderState.buildVendor = "";
   estimateState.current = null;  // clear any lingering estimate context
+
+  showScreen("order-build");
+  renderOrderBuild();
+}
+
+// Select a location for a restock order — stored as Job Name "Restock: <loc>"
+function selectEmployeeOrderLocation(id, name) {
+  var displayName = "Restock: " + name;
+  orderState.buildContext = "job";   // reuses the same save path as job orders
+  orderState.buildJob = { id: id, name: displayName, isLocation: true, locationName: name };
+  orderState.buildItems = [];
+  orderState.buildVendor = "";
+  estimateState.current = null;
 
   showScreen("order-build");
   renderOrderBuild();

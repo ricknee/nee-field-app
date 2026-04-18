@@ -1375,15 +1375,26 @@ async function handleOrderGet(params) {
           ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
           : "";
         const itemData = itemMap[itemId] || {};
+
+        // Detect " [BOX]" suffix marker on description — strip it, set isBox
+        const BOX_MARKER = " [BOX]";
+        let rawDesc = f["Description"] || "";
+        let isBox = false;
+        if (typeof rawDesc === "string" && rawDesc.endsWith(BOX_MARKER)) {
+          isBox = true;
+          rawDesc = rawDesc.slice(0, -BOX_MARKER.length);
+        }
+
         return {
           id:          r.id,
           lineNum:     f["Line Item ID"] || 0,
           itemId:      itemId,
-          itemName:    itemData.name || f["Description"] || "",
+          itemName:    itemData.name || rawDesc || "",
           uom:         itemData.uom || "",
-          description: f["Description"] || "",
+          description: rawDesc,
           qty:         f["Quantity Ordered"] || 0,
-          isMisc:      !itemId
+          isMisc:      !itemId,
+          isBox:       isBox
         };
       })
       .sort((a, b) => (a.lineNum || 0) - (b.lineNum || 0));
@@ -1462,8 +1473,15 @@ async function createOrderLinesHelper(orderId, lines) {
       }
       // Always store description for traceability — for inventory items this
       // captures the name at order time so historical orders survive renames.
-      if (l.description) {
-        fields[F_OL_DESCRIPTION] = String(l.description).trim();
+      // Also append " [BOX]" marker so isBox persists without a schema change.
+      let desc = String(l.description || "").trim();
+      if (l.isBox) {
+        // Ensure we have something in description so the BOX marker isn't orphaned
+        if (!desc) desc = "Box order";
+        desc = desc + " [BOX]";
+      }
+      if (desc) {
+        fields[F_OL_DESCRIPTION] = desc;
       }
       return { fields };
     });

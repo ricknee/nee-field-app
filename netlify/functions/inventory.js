@@ -832,6 +832,48 @@ async function handleStockLevels(params) {
   return resp(200, { ok: true, levels });
 }
 
+// ── STOCK LEVELS ALL (for Category Browse in Check Stock) ─
+// Returns every stock level record with its linked item ID so the
+// client can group by item and show per-location breakdowns.
+async function handleStockLevelsAll() {
+  const allRecords = await fetchAll(API_ROOT_INV, "Stock Levels", {});
+
+  const levels = allRecords.map(r => {
+    const f = r.fields || {};
+
+    // Extract the linked item record ID
+    const itemLinks = f["Item"] || [];
+    const itemId = itemLinks.length
+      ? (typeof itemLinks[0] === "object" ? itemLinks[0].id : String(itemLinks[0]))
+      : "";
+
+    // Location name is the last segment of the Stock ID formula field
+    const stockId = f["Stock ID"] || "";
+    const parts   = stockId.split(" | ");
+    const locName = parts[parts.length - 1] || "";
+
+    // Wire fields — lookup fields return arrays, normalize to number
+    const wireFtLbRaw = f["Wire ft/lb"];
+    const wireFtLb    = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
+    const wireFtRaw   = f["Wire (Ft.)"];
+    const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
+
+    return {
+      id:           r.id,
+      itemId:       itemId,
+      locationName: locName,
+      qtyOnHand:    f["Quantity On Hand"]      || 0,
+      unitCost:     f["Unit Cost (from Item)"] || 0,
+      totalValue:   f["Total Value"]           || 0,
+      reorderPoint: f["Reorder Point"]         || 0,
+      wireWeight:   wireFtLb,
+      wireFt:       wireFt
+    };
+  });
+
+  return resp(200, { ok: true, levels });
+}
+
 // ── REORDER ALERTS ────────────────────────────────────────
 async function handleReorderAlerts() {
   const records = await fetchAll(API_ROOT_INV, "Stock Levels", {
@@ -1538,6 +1580,7 @@ export async function handler(event) {
       if (action === "history")           return await handleHistory(params);
       if (action === "pendingExpenses")   return await handlePendingExpenses();
       if (action === "stockLevels")       return await handleStockLevels(params);
+      if (action === "stockLevelsAll")    return await handleStockLevelsAll();
       if (action === "reorderAlerts")     return await handleReorderAlerts();
       if (action === "getExpenseFields")  return await handleGetExpenseFields();
       if (action === "estimatesList")     return await handleEstimatesList(params);

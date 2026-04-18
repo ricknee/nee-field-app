@@ -1943,9 +1943,16 @@ async function refreshItems() {
   try {
     var d = await apiGet("items");
     allItems = d.items;
+    stockLevelsAllCache = null;   // force reload of stock levels on next category browse
     showToast("✓ Prices updated!");
     // Re-run lookup if an item was already selected
-    if (stockItem) lookupStock(stockItem.id);
+    if (stockItem) {
+      lookupStock(stockItem.id);
+    } else {
+      // If a category is currently selected, refresh the browse view
+      var catSel = document.getElementById("stock-cat");
+      if (catSel && catSel.value) onCategoryChange();
+    }
   } catch(ex) {
     showToast("Refresh failed", true);
   } finally {
@@ -1953,17 +1960,213 @@ async function refreshItems() {
   }
 }
 
+// Cache of all stock levels (loaded once per session for Browse Category mode)
+var stockLevelsAllCache = null;
+
 function goCheckStock() {
   stockItem = null;
   showScreen("stock");
+
+  // Build unique sorted category list from allItems
+  var catSet = {};
+  allItems.forEach(function(i){ if (i.cat) catSet[i.cat] = true; });
+  var cats = Object.keys(catSet).sort();
+
   var body = document.getElementById("stock-body");
   body.innerHTML =
-    '<div class="field-group"><div class="field-lbl">Item</div>' +
+    // Search + scan (single-item lookup — existing behavior)
+    '<div class="field-group"><div class="field-lbl">Search by Item</div>' +
     '<div class="scan-row">' +
     '<input class="field-inp" id="stock-search" type="text" placeholder="Search or scan item…" autocomplete="off" oninput="onStockSearch()" style="flex:1;" />' +
     '<button class="scan-btn" onclick="startScan(\'stock\')" title="Scan barcode">⬛</button>' +
     '</div><div id="stock-drop"></div></div>' +
+
+    // Divider
+    '<div style="text-align:center;color:var(--muted);font-size:11px;letter-spacing:.1em;margin:4px 0 12px;">— OR —</div>' +
+
+    // Category browse
+    '<div class="field-group"><div class="field-lbl">Browse by Category</div>' +
+    '<select class="field-inp" id="stock-cat" onchange="onCategoryChange()">' +
+    '<option value="">— Select category —</option>' +
+    cats.map(function(c){ return '<option value="' + c.replace(/"/g,'&quot;') + '">' + c + '</option>'; }).join("") +
+    '</select></div>' +
+
+    // Category filter (hidden until category picked)
+    '<div class="field-group" id="stock-cat-filter-wrap" style="display:none;">' +
+    '<div class="field-lbl">Filter within category (optional)</div>' +
+    '<input class="field-inp" id="stock-cat-filter" type="text" placeholder="e.g. 12, THHN, red…" autocomplete="off" oninput="renderCategoryBrowse()" />' +
+    '</div>' +
+
     '<div id="stock-result"></div>';
+}
+
+// Called when category dropdown changes — renders the browse view
+async function onCategoryChange() {
+  var cat = document.getElementById("stock-cat")?.value || "";
+  var filterWrap = document.getElementById("stock-cat-filter-wrap");
+  var result     = document.getElementById("stock-result");
+  var filterInp  = document.getElementById("stock-cat-filter");
+
+  // Reset single-item selection so both views don't collide
+  stockItem = null;
+  var drop = document.getElementById("stock-drop");
+  var searchInp = document.getElementById("stock-search");
+  if (drop)      drop.innerHTML = "";
+  if (searchInp) searchInp.value = "";
+
+  if (!cat) {
+    if (filterWrap) filterWrap.style.display = "none";
+    if (filterInp)  filterInp.value = "";
+    if (result)     result.innerHTML = "";
+    return;
+  }
+
+  if (filterWrap) filterWrap.style.display = "";
+  result.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading stock…</div>';
+
+  // Load stock levels once and cache for this session
+  try {
+    if (!stockLevelsAllCache) {
+      var d = await apiGet("stockLevelsAll");
+      stockLevelsAllCache = d.levels || [];
+    }
+    renderCategoryBrowse();
+  } catch(ex) {
+    result.innerHTML = '<div class="empty">Error loading stock: ' + ex.message + '</div>';
+  }
+}
+
+// Renders the list of items in the selected category with per-location breakdown
+function renderCategoryBrowse() {
+  var cat     = document.getElementById("stock-cat")?.value || "";
+  var filter  = (document.getElementById("stock-cat-filter")?.value || "").trim().toLowerCase();
+  var result  = document.getElementById("stock-result");
+  if (!cat || !result) return;
+
+  var isAdmin = currentUser && currentUser.role === "admin";
+
+  // Filter items: category match + optional text filter on name/barcode
+  var items = allItems.filter(function(i) {
+    if (i.cat !== cat) return false;
+    if (!filter) return true;
+    var hay = (i.name + " " + (i.barcode || "")).toLowerCase();
+    // Support multi-word filter: all tokens must match
+    return filter.split(/\s+/).every(function(tok){ return hay.includes(tok); });
+  });
+
+  items.sort(function(a, b){ return a.name.localeCompare(b.name); });
+
+  if (!items.length) {
+    result.innerHTML =
+      '<div style="text-align:center;padding:30px 20px;color:var(--dim);">' +
+      '<div style="font-size:32px;margin-bottom:8px;">🔍</div>' +
+      'No items match in <b>' + cat + '</b>' +
+      (filter ? ' for "' + filter + '"' : '') +
+      '</div>';
+    return;
+  }
+
+  // Build stock-level lookup: itemId -> array of levels
+  var slByItem = {};
+  (stockLevelsAllCache || []).forEach(function(lv) {
+    if (!lv.itemId) return;
+    if (!slByItem[lv.itemId]) slByItem[lv.itemId] = [];
+    slByItem[lv.itemId].push(lv);
+  });
+
+  // Preserve the admin's preferred location order
+  var locOrder = allLocations.map(function(l){ return l.name; });
+
+  var html = '';
+
+  // Header summary
+  html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:4px 0 10px;">' +
+          cat + ' · ' + items.length + ' item' + (items.length === 1 ? '' : 's') +
+          '</div>';
+
+  items.forEach(function(item) {
+    var levels = slByItem[item.id] || [];
+
+    // Index levels by location name
+    var slByLoc = {};
+    levels.forEach(function(lv){ slByLoc[lv.locationName] = lv; });
+
+    // Totals across all locations
+    var totalQty = 0, totalFt = 0, totalVal = 0;
+    var hasWire = false;
+    levels.forEach(function(lv) {
+      totalQty += (lv.qtyOnHand || 0);
+      totalFt  += (lv.wireFt    || 0);
+      totalVal += (lv.totalValue|| 0);
+      if (lv.wireWeight > 0) hasWire = true;
+    });
+
+    var uomLabel = hasWire ? 'lbs' : (item.uom || 'units');
+
+    // Item card
+    html += '<div style="background:var(--navy-mid);border-radius:var(--r);padding:12px 14px;margin-bottom:10px;">';
+
+    // Item header row: name on left, totals on right
+    html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px;">';
+    html += '<div style="flex:1;min-width:0;">';
+    html += '<div style="font-size:15px;font-weight:700;color:var(--gold);overflow-wrap:anywhere;">' + item.name + '</div>';
+    if (isAdmin && item.cost > 0) {
+      html += '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' +
+              fmtCurrency(item.cost) + ' / ' + (item.uom || 'unit') +
+              (totalVal > 0 ? ' · Value: ' + fmtCurrency(totalVal) : '') +
+              '</div>';
+    }
+    html += '</div>';
+
+    // Totals block (right-aligned)
+    html += '<div style="text-align:right;flex-shrink:0;">';
+    html += '<div style="font-size:20px;font-weight:700;line-height:1;color:' +
+            (totalQty > 0 ? 'var(--gold)' : 'var(--muted)') + ';">' +
+            fmtQty(Math.max(0, totalQty)) + '</div>';
+    html += '<div style="font-size:10px;color:var(--dim);">total ' + uomLabel + '</div>';
+    if (hasWire && totalFt > 0) {
+      html += '<div style="font-size:14px;font-weight:700;color:var(--blue);margin-top:3px;">' +
+              fmtQty(Math.round(totalFt)) + ' ft</div>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    // Per-location rows (compact)
+    if (levels.length) {
+      html += '<div style="border-top:1px solid var(--border);padding-top:8px;">';
+      locOrder.forEach(function(locName) {
+        var lv = slByLoc[locName];
+        if (!lv) return;   // skip locations with no stock level record
+        var qty     = lv.qtyOnHand || 0;
+        var reorder = lv.reorderPoint || 0;
+        var isLow   = reorder > 0 && qty <= reorder;
+        var wireFt  = lv.wireFt || 0;
+        var isWireRow = lv.wireWeight > 0;
+
+        html += '<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;font-size:13px;">';
+        html += '<div style="color:var(--text);">' + locName;
+        if (isLow) html += ' <span style="color:var(--red);font-size:11px;">⚠️</span>';
+        html += '</div>';
+
+        html += '<div style="text-align:right;">';
+        html += '<span style="color:' + (qty > 0 ? (isLow ? 'var(--red)' : 'var(--text)') : 'var(--muted)') +
+                ';font-weight:600;">' + fmtQty(qty) + ' ' + (isWireRow ? 'lbs' : (item.uom || '')) + '</span>';
+        if (isWireRow && wireFt > 0) {
+          html += '<span style="color:var(--blue);font-weight:600;margin-left:8px;">' +
+                  fmtQty(Math.round(wireFt)) + ' ft</span>';
+        }
+        html += '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    } else {
+      html += '<div style="font-size:12px;color:var(--muted);font-style:italic;border-top:1px solid var(--border);padding-top:8px;">No stock records yet — receive this item to start tracking.</div>';
+    }
+
+    html += '</div>';
+  });
+
+  result.innerHTML = html;
 }
 
 function onStockSearch() {
@@ -1991,6 +2194,12 @@ async function lookupStock(itemId) {
   var inp  = document.getElementById("stock-search");
   if (drop) drop.innerHTML = "";
   if (inp)  inp.value = stockItem.name;
+
+  // Clear category browse so single-item view replaces it cleanly
+  var catSel = document.getElementById("stock-cat");
+  var catFilterWrap = document.getElementById("stock-cat-filter-wrap");
+  if (catSel) catSel.value = "";
+  if (catFilterWrap) catFilterWrap.style.display = "none";
 
   var result  = document.getElementById("stock-result");
   result.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';

@@ -211,6 +211,7 @@ async function handleItems() {
         id:          r.id,
         name:        f["Item Name"] || "",
         cat:         f["Category"]?.name || f["Category"] || "",
+        size:        f["Product Size"]?.name || f["Product Size"] || "",
         uom:         f["Unit of Measure"]?.name || f["Unit of Measure"] || "",
         barcode:     f["Barcode Value"] || "",
         cost:        f["Default Unit Cost"] || 0,
@@ -725,7 +726,7 @@ async function handleAdjustment(body) {
 
 // ── CREATE NEW ITEM ───────────────────────────────────────
 async function handleCreateItem(body) {
-  const { name, category, uom, barcode, cost, wireFtPerLb, active } = body || {};
+  const { name, category, productSize, uom, barcode, cost, wireFtPerLb, active } = body || {};
   if (!name || !name.trim()) return resp(400, { ok: false, error: "Item name is required." });
 
   // Check for duplicate barcode
@@ -743,11 +744,12 @@ async function handleCreateItem(body) {
     "Item Name":   name.trim(),
     "Active Item": active === false ? false : true   // default true when not specified
   };
-  if (category && category.trim())   fields["Category"]          = category.trim();
-  if (uom && uom.trim())             fields["Unit of Measure"]   = uom.trim();
-  if (barcode && barcode.trim())     fields["Barcode Value"]     = barcode.trim();
-  if (cost && Number(cost) > 0)      fields["Default Unit Cost"] = Number(cost);
-  if (wireFtPerLb && Number(wireFtPerLb) > 0) fields["Wire ft/lb"] = Number(wireFtPerLb);
+  if (category && category.trim())       fields["Category"]          = category.trim();
+  if (productSize && productSize.trim()) fields["Product Size"]      = productSize.trim();
+  if (uom && uom.trim())                 fields["Unit of Measure"]   = uom.trim();
+  if (barcode && barcode.trim())         fields["Barcode Value"]     = barcode.trim();
+  if (cost && Number(cost) > 0)          fields["Default Unit Cost"] = Number(cost);
+  if (wireFtPerLb && Number(wireFtPerLb) > 0) fields["Wire ft/lb"]   = Number(wireFtPerLb);
 
   const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Items"), {
     method: "POST",
@@ -763,6 +765,7 @@ async function handleCreateItem(body) {
       id:      newRecord.id,
       name:    newRecord.fields["Item Name"] || name.trim(),
       cat:     newRecord.fields["Category"]?.name || newRecord.fields["Category"] || category || "",
+      size:    newRecord.fields["Product Size"]?.name || newRecord.fields["Product Size"] || productSize || "",
       uom:     newRecord.fields["Unit of Measure"]?.name || newRecord.fields["Unit of Measure"] || uom || "",
       barcode: newRecord.fields["Barcode Value"] || barcode || "",
       cost:    newRecord.fields["Default Unit Cost"] || cost || 0,

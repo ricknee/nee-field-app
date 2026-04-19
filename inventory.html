@@ -221,6 +221,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="adj-btn" onclick="goAdjustment()" style="display:none">
       <div class="ico">✏️</div><div><div class="lbl">Adjust Stock</div><div class="sub">Correct a count at a location</div></div>
     </button>
+    <button class="big-btn" onclick="goAddScrap()">
+      <div class="ico">🪢</div><div><div class="lbl">Add Wire Scrap</div><div class="sub">Tag and hang a scrap coil</div></div>
+    </button>
     <div class="sec-lbl">View</div>
     <button class="big-btn" onclick="goHistory()">
       <div class="ico">📋</div><div><div class="lbl">Recent Logs</div><div class="sub">Your last 50 transactions</div></div>
@@ -240,15 +243,15 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goOrders()">
       <div class="ico">📦</div><div><div class="lbl" id="orders-btn-lbl">Active Orders</div><div class="sub">All open material orders</div></div>
     </button>
+    <button class="big-btn" id="reorder-btn" onclick="goReorderAlerts()">
+      <div class="ico">🔴</div><div><div class="lbl" id="reorder-btn-lbl">Reorder Alerts</div><div class="sub">Items below minimum stock level</div></div>
+    </button>
     <div class="sec-lbl" id="admin-lbl" style="display:none">Admin</div>
     <button class="big-btn" id="push-btn" onclick="goPushExpenses()" style="display:none">
       <div class="ico">💰</div><div><div class="lbl">Push Expenses</div><div class="sub">Send material costs to job expenses</div></div>
     </button>
     <button class="big-btn" id="newitem-btn" onclick="goNewItem()" style="display:none">
       <div class="ico">➕</div><div><div class="lbl">Add New Item</div><div class="sub">Create a new inventory item</div></div>
-    </button>
-    <button class="big-btn" id="reorder-btn" onclick="goReorderAlerts()" style="display:none">
-      <div class="ico">🔴</div><div><div class="lbl" id="reorder-btn-lbl">Reorder Alerts</div><div class="sub">Items below minimum stock level</div></div>
     </button>
     <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
@@ -316,6 +319,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-newitem" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Add New Item</h2></div>
   <div class="log-body" id="newitem-body"></div>
+</div>
+
+<!-- ADD WIRE SCRAP -->
+<div id="s-scrap" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Add Wire Scrap</h2></div>
+  <div class="log-body" id="scrap-body"></div>
 </div>
 
 <!-- MATERIAL REPORT -->
@@ -698,13 +707,12 @@ function applyUser() {
   if (adjBtn)      adjBtn.style.display      = isAdmin ? "flex" : "none";
   if (pushBtn)     pushBtn.style.display     = isAdmin ? "flex" : "none";
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
-  if (reorderBtn)  reorderBtn.style.display  = isAdmin ? "flex" : "none";
+  // Reorder alerts are visible to everyone — field guys need to know what's low too
+  if (reorderBtn)  reorderBtn.style.display  = "flex";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
   if (adminLbl)    adminLbl.style.display    = isAdmin ? "block" : "none";
-  // Load reorder count badge for admin
-  if (isAdmin) {
-    loadReorderCount();
-  }
+  // Load reorder count badge for everyone (button now visible to all)
+  loadReorderCount();
   // Orders count badge loads for everyone (button is visible to all)
   loadOrdersCount();
 }
@@ -2792,6 +2800,163 @@ async function submitNewItem() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// ADD WIRE SCRAP — tag and log a scrap wire coil
+// Creates a new inventory item in the Wire-Scrap category with
+// a custom barcode, then receives qty 1 to the chosen location
+// so it's immediately findable on the wall.
+// ═══════════════════════════════════════════════════════════
+function goAddScrap() {
+  if (!currentLocation) {
+    showToast("Set your location first", true);
+    goPickLocation();
+    return;
+  }
+  showScreen("scrap");
+  var body = document.getElementById("scrap-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    var t = setInterval(function(){ if (dataReady){ clearInterval(t); renderScrapForm(); } }, 300);
+    return;
+  }
+  renderScrapForm();
+}
+
+function renderScrapForm(prefillBarcode) {
+  var body = document.getElementById("scrap-body");
+
+  // Location dropdown — preselect the user's current location
+  var locOpts = (allLocations || []).map(function(l) {
+    var sel = (currentLocation && l.id === currentLocation.id) ? ' selected' : '';
+    return '<option value="' + l.id + '"' + sel + '>' + escapeAttr(l.name) + '</option>';
+  }).join('');
+
+  body.innerHTML =
+    '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);line-height:1.45;">' +
+      '🪢 Measure the scrap, coil it, slap a barcode sticker on it, and log it here. Anyone can scan or search for it later.' +
+      '<div style="margin-top:8px;font-size:12px;color:var(--muted);">If you only use <b>part</b> of a scrap, take the whole coil off the wall (Use on Job), then log the leftover as a new scrap with a new barcode.</div>' +
+    '</div>' +
+
+    // Wire Type
+    '<div class="field-group"><div class="field-lbl">Wire Type <span style="color:var(--red);">*</span></div>' +
+    '<input class="field-inp" id="sc-wire" type="text" placeholder="e.g. 12 THHN BLK, #6 THHN, 14/2 MC" autocomplete="off" /></div>' +
+
+    // Length
+    '<div class="field-group"><div class="field-lbl">Length (ft) <span style="color:var(--red);">*</span></div>' +
+    '<input class="field-inp" id="sc-length" type="number" step="1" min="1" placeholder="e.g. 30" inputmode="numeric" /></div>' +
+
+    // Barcode
+    '<div class="field-group"><div class="field-lbl">Barcode <span style="color:var(--red);">*</span></div>' +
+    '<div class="scan-row">' +
+    '<input class="field-inp" id="sc-barcode" type="text" placeholder="Scan or type a custom barcode" value="' + escapeAttr(prefillBarcode || '') + '" autocomplete="off" style="flex:1;" />' +
+    '<button class="scan-btn" onclick="startScan(\'scrap\')" title="Scan">⬛</button>' +
+    '</div></div>' +
+
+    // Location
+    '<div class="field-group"><div class="field-lbl">Hang Location <span style="color:var(--red);">*</span></div>' +
+    '<select class="field-sel" id="sc-loc">' + locOpts + '</select></div>' +
+
+    // Notes
+    '<div class="field-group"><div class="field-lbl">Notes (optional)</div>' +
+    '<input class="field-inp" id="sc-notes" type="text" placeholder="e.g. leftover from Jones job" autocomplete="off" /></div>' +
+
+    // Live preview of item name
+    '<div id="sc-preview" style="background:var(--navy-lt);border:1px dashed var(--border);border-radius:10px;padding:12px 14px;margin-top:4px;display:none;">' +
+      '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:4px;">Will be saved as</div>' +
+      '<div id="sc-preview-name" style="font-size:15px;font-weight:700;color:var(--gold);"></div>' +
+    '</div>' +
+
+    '<button class="primary-btn" id="sc-save-btn" onclick="submitScrap()" style="margin-top:12px;">Save Scrap</button>' +
+    '<div style="height:24px;"></div>';
+
+  // Wire up the live preview
+  var wireEl = document.getElementById("sc-wire");
+  var lenEl  = document.getElementById("sc-length");
+  function updatePreview() {
+    var wire = (wireEl.value || "").trim().toUpperCase();
+    var len  = (lenEl.value  || "").trim();
+    var prev = document.getElementById("sc-preview");
+    var nameEl = document.getElementById("sc-preview-name");
+    if (wire && len && Number(len) > 0) {
+      nameEl.textContent = "SCRAP " + wire + " " + len + "FT";
+      prev.style.display = "block";
+    } else {
+      prev.style.display = "none";
+    }
+  }
+  if (wireEl) wireEl.addEventListener("input", updatePreview);
+  if (lenEl)  lenEl.addEventListener("input",  updatePreview);
+
+  if (prefillBarcode) setTimeout(function(){ wireEl?.focus(); }, 100);
+}
+
+async function submitScrap() {
+  var wireEl    = document.getElementById("sc-wire");
+  var lenEl     = document.getElementById("sc-length");
+  var barcodeEl = document.getElementById("sc-barcode");
+  var locEl     = document.getElementById("sc-loc");
+  var notesEl   = document.getElementById("sc-notes");
+  var btn       = document.getElementById("sc-save-btn");
+
+  var wire    = (wireEl?.value    || "").trim().toUpperCase();
+  var length  = parseFloat(lenEl?.value || 0);
+  var barcode = (barcodeEl?.value || "").trim();
+  var locId   = locEl?.value;
+  var notes   = (notesEl?.value   || "").trim();
+
+  if (!wire)                    { showToast("Wire type is required", true); wireEl?.focus();    return; }
+  if (!length || length <= 0)   { showToast("Length must be greater than 0", true); lenEl?.focus(); return; }
+  if (!barcode)                 { showToast("Barcode is required — scan or type one", true); barcodeEl?.focus(); return; }
+  if (!locId)                   { showToast("Pick a location", true); return; }
+
+  // Build the item name — keeps length visible in every list and search result
+  var itemName = "SCRAP " + wire + " " + length + "FT";
+
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+
+  try {
+    // Step 1 — create the item (category locked to Wire-Scrap, UOM=ea, cost=0)
+    var d = await apiPost({
+      action:      "createItem",
+      name:        itemName,
+      category:    "Wire-Scrap",
+      uom:         "ea",
+      barcode:     barcode,
+      cost:        0,
+      active:      true
+    });
+
+    // Step 2 — receive 1 unit at the chosen location so it's on the wall
+    try {
+      await apiPost({
+        action:     "receive",
+        itemId:     d.item.id,
+        locationId: locId,
+        qty:        1,
+        enteredBy:  (currentUser && currentUser.name) || "",
+        notes:      notes ? ("Scrap logged — " + notes) : "Scrap logged"
+      });
+    } catch(recvErr) {
+      // Item was created but receive failed — warn but don't block
+      console.error("Scrap receive failed:", recvErr);
+      showToast("Item saved but stock didn't post — try Receive manually", true);
+    }
+
+    // Add to local items cache so it shows up in search/scan immediately
+    if (d.item) {
+      allItems.push(d.item);
+      allItems.sort(function(a, b){ return a.name.localeCompare(b.name); });
+    }
+
+    showToast("✓ " + itemName + " tagged and hung");
+    goHome();
+  } catch(ex) {
+    var msg = ex.message || "Error";
+    showToast(msg, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Save Scrap"; }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // CAMERA SCANNER
 // ═══════════════════════════════════════════════════════════
 var scanTarget = null; // "item" | "recv" | "xfr"
@@ -2859,6 +3024,13 @@ function handleScanResult(val) {
       showToast("⚠️ Barcode matches existing item: " + item.name, true);
       return;
     }
+    else if (scanTarget === "scrap") {
+      // Barcode already in use — warn but keep it in the field so user can edit
+      var scBarcode = document.getElementById("sc-barcode");
+      if (scBarcode) scBarcode.value = val;
+      showToast("⚠️ Barcode already used by: " + item.name + " — pick a different one", true);
+      return;
+    }
     showToast("✓ Scanned: " + item.name);
   } else {
     // Barcode not found — if on new item screen, fill it in
@@ -2867,6 +3039,14 @@ function handleScanResult(val) {
       if (barcodeInp) barcodeInp.value = val;
       document.getElementById("ni-name")?.focus();
       showToast("✓ Barcode scanned — fill in item details");
+      return;
+    }
+    // Wire scrap — fill the barcode field so user can finish the form
+    if (scanTarget === "scrap") {
+      var scBarcode = document.getElementById("sc-barcode");
+      if (scBarcode) scBarcode.value = val;
+      document.getElementById("sc-wire")?.focus();
+      showToast("✓ Barcode captured — now fill in wire type and length");
       return;
     }
     // Try as job QR
@@ -4220,12 +4400,13 @@ function renderOrderDetail() {
     ? '<button onclick="startEditOrder()" style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">✎ Edit Items</button>'
     : "";
 
-  // Mark Complete / Reactivate — admin only
+  // Mark Complete — anyone (the person who picks up/receives the order marks it)
+  // Reactivate — admin only (so someone can't un-complete a closed order)
   var statusBtn = "";
-  if (isAdmin) {
-    statusBtn = o.status === "Active"
-      ? '<button onclick="confirmCompleteOrder()" style="background:var(--green);border:none;border-radius:8px;color:#fff;font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:1;">✓ Mark Complete</button>'
-      : '<button onclick="reactivateOrder()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">↺ Reactivate</button>';
+  if (o.status === "Active") {
+    statusBtn = '<button onclick="confirmCompleteOrder()" style="background:var(--green);border:none;border-radius:8px;color:#fff;font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:1;">✓ Mark Complete</button>';
+  } else if (isAdmin) {
+    statusBtn = '<button onclick="reactivateOrder()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">↺ Reactivate</button>';
   }
 
   // Delete — admin only
@@ -4287,7 +4468,7 @@ function redownloadOrderPDF() {
 function confirmCompleteOrder() {
   var o = orderState.current;
   if (!o || !o.id) return;
-  if (!confirm("Mark this order complete? It will move out of the active list.")) return;
+  if (!confirm("Mark this order complete? Use this when the materials have been picked up or delivered. It will move out of the active list.")) return;
   doUpdateOrderStatus(o.id, "Complete");
 }
 

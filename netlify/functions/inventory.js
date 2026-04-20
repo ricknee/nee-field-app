@@ -149,7 +149,9 @@ async function handleEstimatingJobs() {
         const f = r.fields || {};
         return {
           id:     r.id,
-          name:   f["Job Name"] || "",
+          // Use the formatted "Name (PO)" field when available so the user picks
+          // a job that's already disambiguated by its PO (e.g. "Blue Ridge Poultry (GRB 126)")
+          name:   f["Job PO"] || f["Job Name"] || "",
           status: f["Job Status"]?.name || f["Job Status"] || "",
           taxable: (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable"
         };
@@ -172,7 +174,10 @@ async function handleAwardedJobs() {
         const f = r.fields || {};
         return {
           id:   r.id,
-          name: f["Job Name"] || ""
+          // Prefer the formula field that combines Job Name + PO ("Blue Ridge Poultry (GRB 126)")
+          // so material order PDFs and order lists show the PO right alongside the name.
+          // Falls back to Job Name if PO is missing on a particular job.
+          name: f["Job PO"] || f["Job Name"] || ""
         };
       })
       .filter(j => j.name)
@@ -639,9 +644,207 @@ async function uploadPdfToExpense(recordId, fieldId, pdfBase64, filename) {
   try { return JSON.parse(text); } catch(e) { return { ok: true }; }
 }
 
+// ═══════════════════════════════════════════════════════════
+// PUSH HISTORY — table IDs and field IDs (in inventory base)
+// ═══════════════════════════════════════════════════════════
+const PUSH_TABLE_ID       = "tbl4txpj2l3pGk5E1";  // Expense Pushes
+const PUSH_LINES_TABLE_ID = "tblloWlcSE7aXAX1o";  // Expense Push Lines
+
+// Expense Pushes fields
+const F_PUSH_TITLE       = "fldtLnuQkc2DOjuLf";
+const F_PUSH_DATE        = "fldpCqWwprRsFLlWZ";
+const F_PUSH_BY          = "fld94yrSbW5Pgy3R7";
+const F_PUSH_JOB_NAME    = "flduHf59GYpd2BpY4";
+const F_PUSH_JOB_ID_MAIN = "fldEKePmtgCIbBuQi";
+const F_PUSH_MAT_TOTAL   = "fldX3sYU1i6c0nk9I";
+const F_PUSH_TAX_TOTAL   = "fldKPeCOawEogqZ0B";
+const F_PUSH_TOTAL       = "fldMmYbl7vDtcRDTc";
+const F_PUSH_TX_COUNT    = "fldorTygoGLOB0Kkv";
+const F_PUSH_ITEM_COUNT  = "fldPvphfqpuYQZhgd";
+const F_PUSH_TAXABLE     = "fldX5Drh72lqcEUvR";
+const F_PUSH_EXP_IDS     = "fldZNQLIlZbQPMF9B";
+const F_PUSH_DESCRIPTION = "fldswL4blm5aFx14G";
+
+// Expense Push Lines fields
+const F_PL_TITLE     = "fld7XZyGWzWKC2H1O";
+const F_PL_PUSH      = "fldXIWYGSqLvcs2tJ";
+const F_PL_ITEM_NAME = "fldz2kyBPufNRUzuj";
+const F_PL_QTY       = "fldhzxPwqz9OPRT1i";
+const F_PL_UNIT_COST = "fldIAkYTpZFnoYIY7";
+const F_PL_LINE_TOT  = "fldzwMnfOwszQ6ozH";
+const F_PL_WIRE_FT   = "fldvpWg3Ky74GiE7q";
+
+// ── Write a Push History header + lines to the inventory base.
+// Best-effort: if either write fails we log and continue so the main
+// expense push still appears as success to the user. The Push ID is
+// returned so the caller can include it in the response.
+async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal, taxable, txCount, lines, expenseIds, description, pushedBy }) {
+  try {
+    const now = new Date();
+    const iso = now.toISOString();
+    const dateOnly = iso.split("T")[0];
+    const titleSafe = String(jobName || "Unknown").substring(0, 80);
+    const title = `${dateOnly} — ${titleSafe}`;
+
+    const headerFields = {};
+    headerFields[F_PUSH_TITLE]       = title;
+    headerFields[F_PUSH_DATE]        = iso;
+    headerFields[F_PUSH_BY]          = String(pushedBy || "");
+    headerFields[F_PUSH_JOB_NAME]    = String(jobName || "");
+    headerFields[F_PUSH_JOB_ID_MAIN] = String(mainJobId || "");
+    headerFields[F_PUSH_MAT_TOTAL]   = Math.round(Number(materialsTotal || 0) * 100) / 100;
+    headerFields[F_PUSH_TAX_TOTAL]   = Math.round(Number(taxTotal || 0) * 100) / 100;
+    headerFields[F_PUSH_TOTAL]       = Math.round((Number(materialsTotal || 0) + Number(taxTotal || 0)) * 100) / 100;
+    headerFields[F_PUSH_TX_COUNT]    = Number(txCount || 0);
+    headerFields[F_PUSH_ITEM_COUNT]  = (lines || []).length;
+    headerFields[F_PUSH_TAXABLE]     = !!taxable;
+    headerFields[F_PUSH_EXP_IDS]     = (expenseIds || []).join(", ");
+    headerFields[F_PUSH_DESCRIPTION] = String(description || "");
+
+    const created = await atFetch(API_ROOT_INV, encodeURIComponent("Expense Pushes"), {
+      method: "POST",
+      body: JSON.stringify({ records: [{ fields: headerFields }], typecast: true })
+    });
+    const pushId = created.records?.[0]?.id;
+    if (!pushId) {
+      console.warn("Push History: header create returned no ID");
+      return null;
+    }
+
+    // Write line snapshots in batches of 10 — pure best-effort, errors are non-fatal
+    const lineRecords = (lines || []).map(l => {
+      const itemName = String(l.item || "Item").substring(0, 100);
+      const qty      = Number(l.qty || 0);
+      const cost     = Number(l.cost || 0);
+      const total    = Number(l.total || 0);
+      const wireFt   = Number(l.wireFt || 0);
+      const lineTitle = `${itemName} × ${qty}`.substring(0, 100);
+
+      const f = {};
+      f[F_PL_TITLE]     = lineTitle;
+      f[F_PL_PUSH]      = [String(pushId)];
+      f[F_PL_ITEM_NAME] = itemName;
+      f[F_PL_QTY]       = qty;
+      f[F_PL_UNIT_COST] = cost;
+      f[F_PL_LINE_TOT]  = total;
+      if (wireFt > 0) f[F_PL_WIRE_FT] = wireFt;
+      return { fields: f };
+    });
+
+    for (let i = 0; i < lineRecords.length; i += 10) {
+      const batch = lineRecords.slice(i, i + 10);
+      try {
+        await atFetch(API_ROOT_INV, encodeURIComponent("Expense Push Lines"), {
+          method: "POST",
+          body: JSON.stringify({ records: batch, typecast: true })
+        });
+      } catch(lineErr) {
+        console.warn("Push History: line batch write failed (non-fatal):", lineErr.message);
+      }
+    }
+
+    return pushId;
+  } catch(e) {
+    console.warn("Push History: header write failed (non-fatal):", e.message);
+    return null;
+  }
+}
+
+// ── PUSH HISTORY LIST (most recent first) ─────────────────
+async function handlePushHistory(params) {
+  const limit = Math.min(Number(params?.limit || 100), 500);
+  const records = await fetchAll(API_ROOT_INV, "Expense Pushes", {
+    sortField: "Date Pushed",
+    sortDir: "desc",
+    maxRecords: limit
+  });
+
+  const pushes = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:            r.id,
+      title:         f["Push Title"] || "",
+      datePushed:    f["Date Pushed"] || "",
+      pushedBy:      f["Pushed By"] || "",
+      jobName:       f["Job Name"] || "",
+      jobIdMain:     f["Job ID (Main)"] || "",
+      materialsTotal: Number(f["Materials Total"] || 0),
+      taxTotal:      Number(f["Tax Total"] || 0),
+      total:         Number(f["Total Pushed"] || 0),
+      txCount:       Number(f["Tx Count"] || 0),
+      itemCount:     Number(f["Item Count"] || 0),
+      taxable:       !!f["Taxable"],
+      expenseIds:    f["Expense Record IDs"] || "",
+      description:   f["Description"] || ""
+    };
+  });
+
+  return resp(200, { ok: true, pushes });
+}
+
+// ── PUSH HISTORY DETAIL (one push with its line snapshots) ───
+async function handlePushHistoryDetail(params) {
+  const { id } = params || {};
+  if (!id) return resp(400, { ok: false, error: "Missing push id." });
+
+  // Fetch header
+  const headerData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Expense Pushes")}/${id}`,
+    { method: "GET" }
+  );
+  if (!headerData?.id) return resp(404, { ok: false, error: "Push not found." });
+  const f = headerData.fields || {};
+
+  // Fetch lines linked to this push — pull all lines and filter client-side
+  // (small table, simpler than building a complex formula filter)
+  const allLines = await fetchAll(API_ROOT_INV, "Expense Push Lines", {});
+  const lines = allLines
+    .filter(r => {
+      const linkArr = r.fields?.["Push"] || [];
+      return linkArr.some(link => {
+        const linkId = typeof link === "object" ? link.id : String(link);
+        return linkId === id;
+      });
+    })
+    .map(r => {
+      const lf = r.fields || {};
+      return {
+        id:        r.id,
+        itemName:  lf["Item Name"] || lf["Line Title"] || "Item",
+        qty:       Number(lf["Quantity"] || 0),
+        unitCost:  Number(lf["Unit Cost"] || 0),
+        lineTotal: Number(lf["Line Total"] || 0),
+        wireFt:    Number(lf["Wire Ft"] || 0)
+      };
+    })
+    .sort((a, b) => b.lineTotal - a.lineTotal);  // biggest dollars first
+
+  return resp(200, {
+    ok: true,
+    push: {
+      id:            headerData.id,
+      title:         f["Push Title"] || "",
+      datePushed:    f["Date Pushed"] || "",
+      pushedBy:      f["Pushed By"] || "",
+      jobName:       f["Job Name"] || "",
+      jobIdMain:     f["Job ID (Main)"] || "",
+      materialsTotal: Number(f["Materials Total"] || 0),
+      taxTotal:      Number(f["Tax Total"] || 0),
+      total:         Number(f["Total Pushed"] || 0),
+      txCount:       Number(f["Tx Count"] || 0),
+      itemCount:     Number(f["Item Count"] || 0),
+      taxable:       !!f["Taxable"],
+      expenseIds:    f["Expense Record IDs"] || "",
+      description:   f["Description"] || "",
+      lines
+    }
+  });
+}
+
 // ── PUSH EXPENSES TO MAIN BASE ─────────────────────────────
 async function handlePushExpenses(body) {
-  const { pending, pdfs } = body || {};
+  const { pending, pdfs, pushedBy } = body || {};
   if (!pending || !pending.length) return resp(400, { ok: false, error: "Nothing to push." });
 
   const TAX_RATE      = 0.075;
@@ -649,6 +852,7 @@ async function handlePushExpenses(body) {
   const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO";
   const expenseIds    = [];
   const allTxIds      = [];
+  const pushHistoryIds = [];
   let   pdfUploads    = 0;
 
   // Look up the "Receipt / Document" field ID once if PDFs are provided
@@ -678,6 +882,10 @@ async function handlePushExpenses(body) {
       return `${l.item} ×${qtyStr}`;
     }).join(", ");
 
+    // Track expense IDs created for this single job, for the history record
+    const jobExpenseIds = [];
+    let   jobTaxAmount  = 0;
+
     // Create materials expense
     const matFields = {
       "fldPNFIzq1grsdxYi": [String(jobId)],
@@ -697,6 +905,7 @@ async function handlePushExpenses(body) {
     const matExpenseId = matResp.records?.[0]?.id;
     if (matExpenseId) {
       expenseIds.push(matExpenseId);
+      jobExpenseIds.push(matExpenseId);
 
       // Upload PDF receipt if provided
       const pdfBase64 = pdfs?.[i];
@@ -715,11 +924,11 @@ async function handlePushExpenses(body) {
 
     // Create sales tax expense if taxable
     if (taxable) {
-      const taxAmt = Math.round(jobTotal * TAX_RATE * 100) / 100;
+      jobTaxAmount = Math.round(jobTotal * TAX_RATE * 100) / 100;
       const taxFields = {
         "fldPNFIzq1grsdxYi": [String(jobId)],
         "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
-        "fldwbLPIafVtmaSeb": taxAmt,
+        "fldwbLPIafVtmaSeb": jobTaxAmount,
         "fldX2x2J0xkRyMY3y": "Materials",
         "fldCCPYdyWAOGchWb": today,
         "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
@@ -730,10 +939,29 @@ async function handlePushExpenses(body) {
         method: "POST",
         body: JSON.stringify({ records: [{ fields: taxFields }], typecast: true })
       });
-      if (taxResp.records?.[0]?.id) expenseIds.push(taxResp.records[0].id);
+      const taxExpenseId = taxResp.records?.[0]?.id;
+      if (taxExpenseId) {
+        expenseIds.push(taxExpenseId);
+        jobExpenseIds.push(taxExpenseId);
+      }
     }
 
     if (txIds?.length) allTxIds.push(...txIds);
+
+    // Write Push History snapshot for this job — best-effort, non-fatal
+    const historyId = await recordPushHistory({
+      jobName,
+      mainJobId:      jobId,
+      materialsTotal: jobTotal,
+      taxTotal:       jobTaxAmount,
+      taxable:        !!taxable,
+      txCount:        (txIds || []).length,
+      lines,                 // [{item, qty, cost, total, wireFt}, ...]
+      expenseIds:     jobExpenseIds,
+      description:    desc,
+      pushedBy:       pushedBy || ""
+    });
+    if (historyId) pushHistoryIds.push(historyId);
   }
 
   // Mark all transactions as Expense Created
@@ -748,7 +976,13 @@ async function handlePushExpenses(body) {
     });
   }
 
-  return resp(200, { ok: true, count: expenseIds.length, txCount: allTxIds.length, pdfUploads });
+  return resp(200, {
+    ok: true,
+    count:           expenseIds.length,
+    txCount:         allTxIds.length,
+    pdfUploads,
+    pushHistoryIds
+  });
 }
 
 // ── ADJUSTMENT ─────────────────────────────────────────────
@@ -1578,6 +1812,8 @@ export async function handler(event) {
       if (action === "items")             return await handleItems();
       if (action === "history")           return await handleHistory(params);
       if (action === "pendingExpenses")   return await handlePendingExpenses();
+      if (action === "pushHistory")       return await handlePushHistory(params);
+      if (action === "pushHistoryDetail") return await handlePushHistoryDetail(params);
       if (action === "stockLevels")       return await handleStockLevels(params);
       if (action === "stockLevelsAll")    return await handleStockLevelsAll();
       if (action === "reorderAlerts")     return await handleReorderAlerts();

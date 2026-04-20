@@ -215,17 +215,22 @@ async function handlePayrollEntries(params) {
   const { startDate, endDate } = params || {};
   if (!startDate || !endDate) return resp(400, { ok: false, error: "Missing startDate or endDate." });
 
-  // Compute Week 1 Monday (= startDate) and Week 2 Monday (= startDate + 7 days)
-  // Then filter by Week Start Date field — much faster than a date range scan
+  // Build the 14 individual work dates (Mon-Sat x2) and filter by exact Work Date
+  // This avoids formula field filtering which Airtable does not support
   function addDays(ds, n) {
     const [y,m,d] = ds.split("-").map(Number);
     const dt = new Date(y, m-1, d);
     dt.setDate(dt.getDate() + n);
     return dt.toISOString().slice(0,10);
   }
-  const wk1Mon = startDate;
-  const wk2Mon = addDays(startDate, 7);
-  const filter = `OR({Week Start Date}="${wk1Mon}",{Week Start Date}="${wk2Mon}")`;
+  // Generate all dates from startDate through endDate (14 days inclusive)
+  const allDates = [];
+  for (let i = 0; i <= 13; i++) {
+    allDates.push(addDays(startDate, i));
+  }
+  // Build OR filter across all 14 dates using Work Date field (stored date field, fast)
+  const dateClauses = allDates.map(d => `{Work Date}="${d}"`).join(",");
+  const filter = `OR(${dateClauses})`;
   const records = await fetchAll(TABLES.timeEntries, {
     filter,
     sortField: "Work Date",

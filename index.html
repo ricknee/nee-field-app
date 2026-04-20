@@ -1046,6 +1046,76 @@
     .pr-no-entries { font-size: 12px; color: var(--muted); padding: 10px; font-style: italic; }
     .pr-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
 
+
+    /* ── INVOICE BUILDER ── */
+    .inv-wrap { max-width: 860px; margin: 0 auto; }
+    .inv-toolbar {
+      display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+      margin-bottom: 18px; padding: 14px 16px;
+      background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+    }
+    .inv-toolbar-title { font-family: 'Rajdhani', sans-serif; font-size: 15px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; flex: 1; }
+    .inv-btn { background: var(--accent); color: white; border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: 'Inter', sans-serif; white-space: nowrap; }
+    .inv-btn:hover { background: var(--accent-2); }
+    .inv-btn.secondary { background: var(--panel); border: 1px solid var(--line-2); color: var(--text); }
+    .inv-btn.secondary:hover { border-color: var(--accent); color: var(--accent); }
+    .inv-btn.green { background: var(--green); }
+    .inv-btn.green:hover { background: #1b5e20; }
+    .inv-preview {
+      background: white; border: 1px solid var(--line-2); border-radius: 12px;
+      padding: 40px 48px; box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+      color: #111;
+    }
+    .inv-header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 28px; }
+    .inv-logo-section { display: flex; align-items: center; gap: 14px; }
+    .inv-logo-img { height: 60px; width: auto; }
+    .inv-company-name { font-size: 18px; font-weight: 700; color: #1a1a1a; line-height: 1.2; }
+    .inv-company-addr { font-size: 12px; color: #555; margin-top: 3px; line-height: 1.5; }
+    .inv-title-section { text-align: right; }
+    .inv-title { font-size: 32px; font-weight: 700; color: #1a1a1a; letter-spacing: 1px; }
+    .inv-meta-table { border-collapse: collapse; margin-top: 6px; }
+    .inv-meta-table td { padding: 3px 8px; font-size: 12px; border: 1px solid #ccc; }
+    .inv-meta-table td:first-child { background: #f0f0f0; font-weight: 600; }
+    .inv-billto-row { display: flex; justify-content: space-between; margin-bottom: 28px; gap: 20px; }
+    .inv-billto-box { border: 1px solid #ccc; border-radius: 4px; padding: 12px 16px; min-width: 220px; min-height: 100px; flex: 1; }
+    .inv-billto-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #888; margin-bottom: 6px; }
+    .inv-billto-name { font-size: 14px; font-weight: 600; color: #111; line-height: 1.5; }
+    .inv-field-input {
+      width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 5px 8px;
+      font-size: 13px; font-family: inherit; color: #111; background: white;
+    }
+    .inv-field-input:focus { outline: none; border-color: #1565c0; }
+    .inv-po-box { border: 1px solid #ccc; border-radius: 4px; padding: 12px 16px; min-width: 120px; }
+    .inv-lines-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+    .inv-lines-table th { background: #1a1a1a; color: white; padding: 9px 12px; font-size: 12px; font-weight: 600; text-align: left; }
+    .inv-lines-table th:last-child { text-align: right; }
+    .inv-lines-table td { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: middle; }
+    .inv-lines-table tr:nth-child(even) td { background: #fafafa; }
+    .inv-line-desc { width: 60%; }
+    .inv-line-qty { width: 10%; text-align: center; }
+    .inv-line-rate { width: 14%; text-align: right; }
+    .inv-line-amt { width: 14%; text-align: right; font-weight: 600; }
+    .inv-line-del { width: 5%; text-align: center; }
+    .inv-inline-input { border: 1px solid transparent; border-radius: 3px; padding: 3px 6px; font-size: 13px; font-family: inherit; width: 100%; background: transparent; }
+    .inv-inline-input:hover { border-color: #ccc; }
+    .inv-inline-input:focus { outline: none; border-color: #1565c0; background: white; }
+    .inv-inline-input.right { text-align: right; }
+    .inv-line-del-btn { background: none; border: none; cursor: pointer; color: #cc3333; font-size: 14px; opacity: 0.6; padding: 2px 6px; }
+    .inv-line-del-btn:hover { opacity: 1; }
+    .inv-add-line-btn { background: none; border: 1px dashed #aaa; border-radius: 4px; padding: 6px 14px; font-size: 12px; color: #666; cursor: pointer; margin-bottom: 16px; }
+    .inv-add-line-btn:hover { border-color: #1565c0; color: #1565c0; }
+    .inv-totals { display: flex; justify-content: flex-end; margin-bottom: 24px; }
+    .inv-totals-table { border-collapse: collapse; min-width: 260px; }
+    .inv-totals-table td { padding: 5px 12px; font-size: 13px; }
+    .inv-totals-table .total-row td { background: #1a1a1a; color: white; font-weight: 700; font-size: 15px; padding: 9px 12px; }
+    .inv-totals-table td:last-child { text-align: right; font-weight: 600; }
+    .inv-notes-section { margin-bottom: 20px; }
+    .inv-notes-label { font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+    .inv-notes-area { width: 100%; border: 1px solid #ddd; border-radius: 4px; padding: 8px 10px; font-size: 12px; font-family: inherit; color: #333; resize: vertical; min-height: 60px; }
+    .inv-footer-bar { display: flex; gap: 20px; flex-wrap: wrap; padding: 10px 12px; background: #f0f0f0; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; color: #444; align-items: center; }
+    .inv-footer-bar strong { color: #111; }
+    .inv-section-divider { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px; color: #999; padding: 4px 0; border-bottom: 1px solid #eee; margin: 4px 0 2px; }
+    .inv-saved-banner { background: var(--green-dim); border: 1px solid rgba(46,125,50,0.3); color: var(--green); border-radius: 8px; padding: 10px 16px; font-size: 13px; font-weight: 600; margin-bottom: 14px; display: none; }
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
       .app-wrap { flex-direction: column; height: auto; }
@@ -1209,6 +1279,7 @@
           <button class="tab-btn admin-only hidden" data-tab="est-gp">📈 Est. GP</button>
           <button class="tab-btn admin-only hidden" data-tab="expenses">🧾 Expenses</button>
           <button class="tab-btn admin-only hidden" data-tab="time-entries">⏱ Time Entries</button>
+          <button class="tab-btn admin-only hidden" data-tab="invoice">🧾 Invoice</button>
         </div>
 
         <!-- TAB: PROJECT INFO -->
@@ -1646,6 +1717,13 @@
           </div>
         </div>
 
+        <!-- TAB: INVOICE (admin only) -->
+        <div class="tab-content" id="tab-invoice">
+          <div id="invoiceBuilder">
+            <div class="loading-msg">Select a job to build an invoice.</div>
+          </div>
+        </div>
+
       </div><!-- /jobDetail -->
     </div><!-- /detailPanel -->
 
@@ -1801,7 +1879,7 @@
   }
 
   // Viewer sees admin layout minus financial tabs
-  const VIEWER_HIDDEN_TABS = ["live-perf", "closeout", "est-gp", "expenses", "time-entries"];
+  const VIEWER_HIDDEN_TABS = ["live-perf", "closeout", "est-gp", "expenses", "time-entries", "invoice"];
 
   function renderAuth() {
     if (state.user) {
@@ -2540,6 +2618,10 @@
   function switchTab(tabId) {
     document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b.dataset.tab === tabId));
     document.querySelectorAll(".tab-content").forEach(c => c.classList.toggle("active", c.id === `tab-${tabId}`));
+    // Load invoice tab on demand
+    if (tabId === "invoice" && state.selected) {
+      loadInvoiceTab(state.selected);
+    }
   }
 
   // ── TIME ENTRIES (admin) ──
@@ -4030,8 +4112,496 @@
 
   init();
 
+
   // ═══════════════════════════════════════════════════════════════
-  // ── PAYROLL MODULE ──────────────────────────────────────────────
+  // ── INVOICE MODULE ──────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════
+
+  let invLines = [];      // current editable line items
+  let invJobRef = null;   // current job
+
+  const NEE_LOGO_B64 = document.querySelector('.login-logo img')?.src || "";
+
+  async function loadInvoiceTab(job) {
+    invJobRef = job;
+    const el = $("invoiceBuilder");
+    el.innerHTML = `<div class="loading-msg">Building invoice...</div>`;
+
+    try {
+      // Fetch time entries and expenses in parallel
+      const [teData, expData] = await Promise.all([
+        apiGet("timeEntries", { jobId: job.id }),
+        apiGet("expenses", { jobId: job.id })
+      ]);
+
+      const entries  = (teData.entries  || []).filter(e => e.reviewed);
+      const expenses = (expData.expenses || []).filter(e => e.reviewed);
+
+      // Build default line items
+      invLines = [];
+
+      // Labor line — total reviewed hours × billable rate
+      const totalHrs = entries.reduce((s, e) => s + (e.hours || 0), 0);
+      const rate = job.billableHourlyRate || 0;
+      if (totalHrs > 0) {
+        invLines.push({
+          id: "labor",
+          section: "Labor",
+          description: `Electrical Labor — ${totalHrs.toFixed(2)} hrs @ $${rate}/hr`,
+          qty: totalHrs,
+          rate: rate,
+          amount: +(totalHrs * rate).toFixed(2),
+          editable: true
+        });
+      }
+
+      // Materials — group by type
+      const matExp = expenses.filter(e => !["Scissor Lift","Rental Equipment"].includes(e.expenseType));
+      if (matExp.length) {
+        const matTotal = matExp.reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0);
+        invLines.push({
+          id: "materials",
+          section: "Materials",
+          description: "Materials & Supplies",
+          qty: 1,
+          rate: +matTotal.toFixed(2),
+          amount: +matTotal.toFixed(2),
+          editable: true
+        });
+      }
+
+      // Equipment
+      const eqExp = expenses.filter(e => ["Scissor Lift","Rental Equipment"].includes(e.expenseType));
+      eqExp.forEach((e, i) => {
+        invLines.push({
+          id: "equip_" + i,
+          section: "Equipment",
+          description: e.description || e.expenseType,
+          qty: 1,
+          rate: +(e.billableMaterial || e.totalCost || 0).toFixed(2),
+          amount: +(e.billableMaterial || e.totalCost || 0).toFixed(2),
+          editable: true
+        });
+      });
+
+      renderInvoiceBuilder(job, entries, expenses);
+
+    } catch(err) {
+      el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
+    }
+  }
+
+  function calcInvTotal() {
+    return invLines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+  }
+
+  function renderInvoiceBuilder(job, entries, expenses) {
+    const today = new Date().toISOString().slice(0,10);
+    const el = $("invoiceBuilder");
+
+    // Build bill-to from contractor or job name
+    const billToDefault = job.contractor || job.name || "";
+
+    el.innerHTML = `
+      <div class="inv-wrap">
+        <div id="inv-saved-banner" class="inv-saved-banner">✓ Invoice saved to Airtable!</div>
+
+        <!-- Toolbar -->
+        <div class="inv-toolbar">
+          <span class="inv-toolbar-title">🧾 Invoice Builder</span>
+          <button class="inv-btn secondary" onclick="invResetLines()">↺ Reset Lines</button>
+          <button class="inv-btn secondary" onclick="invAddLine()">+ Add Line</button>
+          <button class="inv-btn green" onclick="invSave()">💾 Save to Airtable</button>
+          <button class="inv-btn" onclick="invGeneratePDF()">⬇ Download PDF</button>
+          <button class="inv-btn secondary" onclick="invEmail()">✉ Email</button>
+        </div>
+
+        <!-- Invoice Preview (editable) -->
+        <div class="inv-preview" id="invPreview">
+
+          <!-- Header -->
+          <div class="inv-header-row">
+            <div class="inv-logo-section">
+              <img class="inv-logo-img" src="${NEE_LOGO_B64}" alt="NEE" onerror="this.style.display='none'" />
+              <div>
+                <div class="inv-company-name">Northeastern Electric, Inc.</div>
+                <div class="inv-company-addr">5909 Bandy Rd<br>Homeworth OH 44634<br>330-257-0447 · rick@northeasternelec.com</div>
+              </div>
+            </div>
+            <div class="inv-title-section">
+              <div class="inv-title">INVOICE</div>
+              <table class="inv-meta-table">
+                <tr><td>Date</td><td><input id="invDate" class="inv-field-input" type="date" value="${today}" style="width:130px;" /></td></tr>
+                <tr><td>Invoice #</td><td><input id="invNum" class="inv-field-input" type="text" placeholder="e.g. 1631" style="width:130px;" /></td></tr>
+              </table>
+            </div>
+          </div>
+
+          <!-- Bill To + P.O. -->
+          <div class="inv-billto-row">
+            <div class="inv-billto-box">
+              <div class="inv-billto-label">Bill To</div>
+              <textarea id="invBillTo" class="inv-notes-area" style="min-height:80px; border:none; padding:0; font-size:13px; resize:none;" placeholder="Customer or contractor name and address...">${esc(billToDefault)}</textarea>
+            </div>
+            <div class="inv-po-box">
+              <div class="inv-billto-label">P.O. No.</div>
+              <input id="invPO" class="inv-field-input" type="text" placeholder="${esc(job.po || "")}" value="${esc(job.po || "")}" style="margin-top:8px;" />
+            </div>
+          </div>
+
+          <!-- Line Items Table -->
+          <table class="inv-lines-table" id="invLinesTable">
+            <thead>
+              <tr>
+                <th class="inv-line-desc">Description</th>
+                <th class="inv-line-qty" style="text-align:center;">Qty/Hrs</th>
+                <th class="inv-line-rate" style="text-align:right;">Rate</th>
+                <th class="inv-line-amt" style="text-align:right;">Amount</th>
+                <th class="inv-line-del"></th>
+              </tr>
+            </thead>
+            <tbody id="invLinesBody">
+              ${renderInvLines()}
+            </tbody>
+          </table>
+          <button class="inv-add-line-btn" onclick="invAddLine()">+ Add Line Item</button>
+
+          <!-- Totals -->
+          <div class="inv-totals">
+            <table class="inv-totals-table">
+              <tr><td>Subtotal</td><td id="invSubtotal">${fmtCurrency(calcInvTotal())}</td></tr>
+              <tr class="total-row"><td>Total</td><td id="invTotal">${fmtCurrency(calcInvTotal())}</td></tr>
+            </table>
+          </div>
+
+          <!-- Notes -->
+          <div class="inv-notes-section">
+            <div class="inv-notes-label">Notes / Terms</div>
+            <textarea id="invNotes" class="inv-notes-area" placeholder="Payment terms, disclaimers, notes to customer..."></textarea>
+          </div>
+
+          <!-- Footer -->
+          <div class="inv-footer-bar">
+            <span>Phone # <strong>330-257-0447</strong></span>
+            <span>E-mail <strong>rick@northeasternelec.com</strong></span>
+            <span style="margin-left:auto;">Total <strong id="invFooterTotal">${fmtCurrency(calcInvTotal())}</strong></span>
+          </div>
+
+        </div><!-- /inv-preview -->
+      </div><!-- /inv-wrap -->`;
+
+    wireInvEvents();
+  }
+
+  function renderInvLines() {
+    if (!invLines.length) return `<tr><td colspan="5" style="text-align:center; color:#aaa; padding:16px; font-style:italic;">No line items — add labor, materials, or custom lines above.</td></tr>`;
+    let html = "";
+    let lastSection = null;
+    invLines.forEach((line, idx) => {
+      if (line.section && line.section !== lastSection) {
+        html += `<tr><td colspan="5" class="inv-section-divider">${esc(line.section)}</td></tr>`;
+        lastSection = line.section;
+      }
+      html += `
+        <tr data-idx="${idx}">
+          <td class="inv-line-desc">
+            <input class="inv-inline-input inv-desc" data-idx="${idx}" value="${esc(line.description || "")}" placeholder="Description..." />
+          </td>
+          <td class="inv-line-qty">
+            <input class="inv-inline-input right inv-qty" data-idx="${idx}" type="number" value="${line.qty}" min="0" step="0.25" style="width:70px;" />
+          </td>
+          <td class="inv-line-rate">
+            <input class="inv-inline-input right inv-rate" data-idx="${idx}" type="number" value="${line.rate}" min="0" step="0.01" style="width:80px;" />
+          </td>
+          <td class="inv-line-amt" id="inv-amt-${idx}">${fmtCurrency(line.amount)}</td>
+          <td class="inv-line-del">
+            <button class="inv-line-del-btn" data-idx="${idx}" title="Remove line">✕</button>
+          </td>
+        </tr>`;
+    });
+    return html;
+  }
+
+  function wireInvEvents() {
+    const body = $("invLinesBody");
+    if (!body) return;
+
+    // Qty/Rate changes → recalc amount
+    body.addEventListener("input", e => {
+      const t = e.target;
+      const idx = parseInt(t.dataset.idx);
+      if (isNaN(idx)) return;
+      const line = invLines[idx];
+      if (!line) return;
+
+      if (t.classList.contains("inv-desc"))  line.description = t.value;
+      if (t.classList.contains("inv-qty"))   { line.qty = parseFloat(t.value) || 0; line.amount = +(line.qty * line.rate).toFixed(2); }
+      if (t.classList.contains("inv-rate"))  { line.rate = parseFloat(t.value) || 0; line.amount = +(line.qty * line.rate).toFixed(2); }
+
+      const amtEl = $(`inv-amt-${idx}`);
+      if (amtEl) amtEl.textContent = fmtCurrency(line.amount);
+      updateInvTotals();
+    });
+
+    // Delete line
+    body.addEventListener("click", e => {
+      const btn = e.target.closest(".inv-line-del-btn");
+      if (!btn) return;
+      const idx = parseInt(btn.dataset.idx);
+      invLines.splice(idx, 1);
+      refreshInvLines();
+    });
+  }
+
+  function refreshInvLines() {
+    const body = $("invLinesBody");
+    if (body) { body.innerHTML = renderInvLines(); wireInvEvents(); }
+    updateInvTotals();
+  }
+
+  function updateInvTotals() {
+    const t = calcInvTotal();
+    const fmt = fmtCurrency(t);
+    if ($("invSubtotal")) $("invSubtotal").textContent = fmt;
+    if ($("invTotal"))    $("invTotal").textContent = fmt;
+    if ($("invFooterTotal")) $("invFooterTotal").textContent = fmt;
+  }
+
+  window.invAddLine = function() {
+    invLines.push({ id: "custom_" + Date.now(), section: "Other", description: "", qty: 1, rate: 0, amount: 0, editable: true });
+    refreshInvLines();
+  };
+
+  window.invResetLines = async function() {
+    if (!invJobRef) return;
+    if (!confirm("Reset all line items back to the defaults from Airtable?")) return;
+    await loadInvoiceTab(invJobRef);
+  };
+
+  window.invSave = async function() {
+    if (!invJobRef) return;
+    const btn = document.querySelector(".inv-btn.green");
+    if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+    try {
+      await apiPost("saveInvoice", {
+        jobId:         invJobRef.id,
+        invoiceNumber: $("invNum")?.value || "",
+        invoiceDate:   $("invDate")?.value || "",
+        billTo:        $("invBillTo")?.value || "",
+        amount:        calcInvTotal(),
+        notes:         $("invNotes")?.value || "",
+        lineItems:     invLines
+      });
+      const banner = $("inv-saved-banner");
+      if (banner) { banner.style.display = "block"; setTimeout(() => banner.style.display = "none", 3000); }
+    } catch(err) {
+      alert("Error saving: " + err.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "💾 Save to Airtable"; }
+    }
+  };
+
+  window.invEmail = function() {
+    const invNum  = $("invNum")?.value || "";
+    const billTo  = $("invBillTo")?.value || "";
+    const total   = fmtCurrency(calcInvTotal());
+    const jobName = invJobRef?.name || "";
+    const subject = encodeURIComponent(`Invoice ${invNum ? "#" + invNum : ""} — ${jobName} — Northeastern Electric, Inc.`);
+    const body    = encodeURIComponent(
+      `Please find attached Invoice ${invNum ? "#" + invNum : ""} for ${jobName}.
+
+Total: ${total}
+
+Thank you,
+Rick Unruh
+Northeastern Electric, Inc.
+330-257-0447
+rick@northeasternelec.com`
+    );
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  };
+
+  // ── INVOICE PDF GENERATION ──
+  window.invGeneratePDF = function() {
+    if (!invJobRef) return;
+    if (!invLines.length) { alert("No line items to print."); return; }
+
+    function tryBuildInv(attempts) {
+      if (window.jspdf) { buildInvoicePDF(); }
+      else if (attempts > 0) { setTimeout(() => tryBuildInv(attempts - 1), 300); }
+      else { alert("PDF library failed to load. Check your connection."); }
+    }
+
+    if (!window.jspdf) {
+      if (!document.getElementById("jspdf-script")) {
+        const s = document.createElement("script");
+        s.id = "jspdf-script";
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+        document.head.appendChild(s);
+      }
+      tryBuildInv(15);
+    } else {
+      buildInvoicePDF();
+    }
+  };
+
+  function buildInvoicePDF() {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "pt", format: "letter" });
+    const W = 612, M = 48;
+    let y = 48;
+
+    const invNum    = $("invNum")?.value || "";
+    const invDate   = $("invDate")?.value || new Date().toISOString().slice(0,10);
+    const billTo    = $("invBillTo")?.value || "";
+    const po        = $("invPO")?.value || "";
+    const notes     = $("invNotes")?.value || "";
+    const total     = calcInvTotal();
+    const jobName   = invJobRef?.name || "";
+
+    // ── Company header ──
+    doc.setFont("helvetica","bold"); doc.setFontSize(16);
+    doc.setTextColor(26,26,26);
+    doc.text("Northeastern Electric, Inc.", M, y); y += 16;
+    doc.setFont("helvetica","normal"); doc.setFontSize(9);
+    doc.setTextColor(80,80,80);
+    doc.text("5909 Bandy Rd", M, y); y += 11;
+    doc.text("Homeworth OH 44634", M, y); y += 20;
+
+    // ── INVOICE title (top right) ──
+    doc.setFont("helvetica","bold"); doc.setFontSize(28);
+    doc.setTextColor(26,26,26);
+    doc.text("INVOICE", W-M, 60, { align: "right" });
+
+    // Meta box (Date / Invoice #)
+    const metaX = W - M - 160;
+    let metaY = 72;
+    doc.setFontSize(9); doc.setFont("helvetica","normal");
+    // header row
+    doc.setFillColor(230,230,230); doc.rect(metaX, metaY, 80, 14, "F");
+    doc.setFillColor(230,230,230); doc.rect(metaX+80, metaY, 80, 14, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(50,50,50);
+    doc.text("Date", metaX+4, metaY+10);
+    doc.text("Invoice #", metaX+84, metaY+10);
+    metaY += 14;
+    // value row
+    doc.setFillColor(255,255,255); doc.rect(metaX, metaY, 160, 16, "F");
+    doc.setDrawColor(180,180,180); doc.setLineWidth(0.5);
+    doc.rect(metaX, metaY-14, 160, 30);
+    doc.line(metaX+80, metaY-14, metaX+80, metaY+16);
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(30,30,30);
+    doc.text(invDate, metaX+4, metaY+11);
+    doc.text(invNum, metaX+84, metaY+11);
+    metaY += 16;
+
+    y = Math.max(y, metaY + 12);
+
+    // ── Bill To box ──
+    doc.setDrawColor(180,180,180); doc.setLineWidth(0.5);
+    doc.rect(M, y, 230, 90);
+    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(120,120,120);
+    doc.text("Bill To", M+6, y+12);
+    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(20,20,20);
+    const billLines = doc.splitTextToSize(billTo, 218);
+    doc.text(billLines, M+6, y+24);
+
+    // P.O. box
+    doc.rect(W-M-120, y, 120, 90);
+    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(120,120,120);
+    doc.text("P.O. No.", W-M-114, y+12);
+    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(20,20,20);
+    doc.text(po, W-M-114, y+28);
+
+    y += 104;
+
+    // ── Line items table ──
+    // Header
+    doc.setFillColor(26,26,26);
+    doc.rect(M, y, W-M*2, 20, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(255,255,255);
+    doc.text("Description", M+6, y+14);
+    doc.text("Qty/Hrs", W-M-200, y+14, { align: "right" });
+    doc.text("Rate", W-M-120, y+14, { align: "right" });
+    doc.text("Amount", W-M-4, y+14, { align: "right" });
+    y += 20;
+
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(30,30,30);
+    let lastSec = null;
+    invLines.forEach((line, i) => {
+      // Section divider
+      if (line.section && line.section !== lastSec) {
+        doc.setFillColor(245,245,245);
+        doc.rect(M, y, W-M*2, 14, "F");
+        doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.setTextColor(130,130,130);
+        doc.text(line.section.toUpperCase(), M+6, y+10);
+        y += 14;
+        lastSec = line.section;
+        doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(30,30,30);
+      }
+
+      // Check page space
+      if (y > 700) { doc.addPage(); y = 48; }
+
+      if (i % 2 === 0) { doc.setFillColor(250,250,250); doc.rect(M, y, W-M*2, 20, "F"); }
+      doc.setDrawColor(230,230,230); doc.setLineWidth(0.3);
+      doc.line(M, y+20, W-M, y+20);
+
+      const descLines = doc.splitTextToSize(line.description || "", W-M*2-210);
+      const rowH = Math.max(20, descLines.length * 12);
+      if (i % 2 === 0) { doc.setFillColor(250,250,250); doc.rect(M, y, W-M*2, rowH, "F"); }
+      doc.setTextColor(20,20,20);
+      doc.text(descLines, M+6, y+13);
+      if (line.qty !== 1 || line.section === "Labor") doc.text(String(line.qty), W-M-200, y+13, { align: "right" });
+      if (line.rate > 0 && (line.qty !== 1 || line.section === "Labor")) doc.text(fmtCurrency(line.rate), W-M-120, y+13, { align: "right" });
+      doc.setFont("helvetica","bold");
+      doc.text(fmtCurrency(line.amount), W-M-4, y+13, { align: "right" });
+      doc.setFont("helvetica","normal");
+      y += rowH;
+    });
+
+    y += 12;
+
+    // ── Totals ──
+    const totX = W-M-200;
+    doc.setDrawColor(200,200,200); doc.setLineWidth(0.5);
+    doc.line(totX, y, W-M, y); y += 14;
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(60,60,60);
+    doc.text("Subtotal", totX+4, y); doc.text(fmtCurrency(total), W-M-4, y, { align: "right" }); y += 14;
+    // Total box
+    doc.setFillColor(26,26,26); doc.rect(totX, y, 200, 20, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(255,255,255);
+    doc.text("Total", totX+8, y+14);
+    doc.text(fmtCurrency(total), W-M-4, y+14, { align: "right" });
+    y += 32;
+
+    // ── Notes ──
+    if (notes) {
+      if (y > 650) { doc.addPage(); y = 48; }
+      doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(80,80,80);
+      const noteLines = doc.splitTextToSize(notes, W-M*2);
+      doc.text(noteLines, M, y);
+      y += noteLines.length * 12 + 10;
+    }
+
+    // ── Footer bar ──
+    const footY = 750;
+    doc.setFillColor(240,240,240); doc.rect(M, footY, W-M*2, 22, "F");
+    doc.setDrawColor(180,180,180); doc.rect(M, footY, W-M*2, 22);
+    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(60,60,60);
+    doc.text("Phone #", M+4, footY+15);
+    doc.setFont("helvetica","bold"); doc.text("330-257-0447", M+38, footY+15);
+    doc.setFont("helvetica","normal"); doc.text("E-mail", M+120, footY+15);
+    doc.setFont("helvetica","bold"); doc.text("rick@northeasternelec.com", M+146, footY+15);
+    doc.setFont("helvetica","bold"); doc.setFontSize(10);
+    doc.text("Total", W-M-80, footY+15);
+    doc.text(fmtCurrency(total), W-M-4, footY+15, { align: "right" });
+
+    const filename = `NEE_Invoice_${invNum || jobName.replace(/\s+/g,"_")}_${invDate}.pdf`;
+    doc.save(filename);
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── PAYROLL MODULE ──────────────────────────────────────════════
   // ═══════════════════════════════════════════════════════════════
 
   // Per-employee color config

@@ -4059,6 +4059,7 @@
 
   function openPayroll() {
     $("payrollModal").style.display = "flex";
+    preloadJsPDF(); // start loading jsPDF in background
     // Default dates: last Mon and coming Sat based on today
     const today = new Date();
     const dayOfWeek = today.getDay(); // 0=Sun,1=Mon...
@@ -4402,16 +4403,38 @@
   }
 
   // ── PDF GENERATION (client-side via jsPDF) ──────────────────────
+  // Pre-load jsPDF when payroll modal opens so it is ready when needed
+  function preloadJsPDF() {
+    if (window.jspdf || document.getElementById("jspdf-script")) return;
+    const script = document.createElement("script");
+    script.id = "jspdf-script";
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    document.head.appendChild(script);
+  }
+
   function generatePayrollPDF() {
     const empMap = groupEntries();
     const empNames = Object.keys(empMap).sort();
+    if (!empNames.length) { alert("No entries loaded — load a pay period first."); return; }
 
-    // Load jsPDF from CDN
+    function tryBuild(attempts) {
+      if (window.jspdf) {
+        buildPDF(empMap, empNames);
+      } else if (attempts > 0) {
+        setTimeout(() => tryBuild(attempts - 1), 300);
+      } else {
+        alert("PDF library failed to load. Check your internet connection and try again.");
+      }
+    }
+
     if (!window.jspdf) {
-      const script = document.createElement("script");
-      script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-      script.onload = () => buildPDF(empMap, empNames);
-      document.head.appendChild(script);
+      if (!document.getElementById("jspdf-script")) {
+        const script = document.createElement("script");
+        script.id = "jspdf-script";
+        script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+        document.head.appendChild(script);
+      }
+      tryBuild(15); // retry up to 15x × 300ms = 4.5s
     } else {
       buildPDF(empMap, empNames);
     }

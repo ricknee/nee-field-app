@@ -741,20 +741,22 @@ async function handleSaveInvoice(body) {
 
   // Map to existing Invoices table fields — matches your manual invoice pattern
   const fields = {};
-  fields["fld1fmEklDw6y9hS2"] = [{ id: String(jobId) }];          // Job (linked)
-  fields["fldXcHqj8xqmOWeLH"] = "Sent";                            // Invoice Status = Sent
+  // Linked record must be array of record ID objects — REST API format
+  fields["fld1fmEklDw6y9hS2"] = [{ id: jobId }];                   // Job (linked)
+  fields["fldXcHqj8xqmOWeLH"] = "Sent";                            // Invoice Status
   fields["fldljpi4PpNPIfI27"] = "T&M Final";                       // Billing Mode
   fields["fldC4loXTBzC2UKGt"] = "Time & Material";                 // Invoice Type
   fields["fldejNlo5R194TGMs"] = true;                               // Auto Allocate
-  if (invoiceDate)       fields["fldAEjySdXkUke1Cv"] = invoiceDate;
-  if (notes)             fields["fldLQrPKHWLrHLOA2"] = notes;
-  if (laborAmount > 0)   fields["fldRcvTVQ7naHG19t"] = Number(laborAmount);   // Manual Labor $
-  if (materialsAmount > 0) fields["fldcbhc1z8nEftVeY"] = Number(materialsAmount); // Manual Material $
+  if (invoiceDate)         fields["fldAEjySdXkUke1Cv"] = invoiceDate;
+  if (notes)               fields["fldLQrPKHWLrHLOA2"] = notes;
+  if (laborAmount > 0)     fields["fldRcvTVQ7naHG19t"] = Number(laborAmount);
+  if (materialsAmount > 0) fields["fldcbhc1z8nEftVeY"] = Number(materialsAmount);
 
   const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
     method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
+    body: JSON.stringify({ fields })   // no typecast — linked records need exact format
   });
+  if (data.error) return resp(400, { ok: false, error: data.error });
   return resp(200, { ok: true, id: data.id });
 }
 

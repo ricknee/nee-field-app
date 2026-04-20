@@ -742,7 +742,8 @@ async function handleSaveInvoice(body) {
   // Map to existing Invoices table fields — matches your manual invoice pattern
   const fields = {};
   // Linked record must be array of record ID objects — REST API format
-  fields["fld1fmEklDw6y9hS2"] = [{ id: jobId }];                   // Job (linked)
+  // Linked record field: array of record ID strings
+  fields["fld1fmEklDw6y9hS2"] = [jobId];                            // Job (linked)
   fields["fldXcHqj8xqmOWeLH"] = "Sent";                            // Invoice Status
   fields["fldljpi4PpNPIfI27"] = "T&M Final";                       // Billing Mode
   fields["fldC4loXTBzC2UKGt"] = "Time & Material";                 // Invoice Type

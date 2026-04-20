@@ -4219,7 +4219,7 @@
           <span class="inv-toolbar-title">🧾 Invoice Builder</span>
           <button class="inv-btn secondary" onclick="invResetLines()">↺ Reset Lines</button>
           <button class="inv-btn secondary" onclick="invAddLine()">+ Add Line</button>
-          <button class="inv-btn green" onclick="invSave()">💾 Save to Airtable</button>
+          <button class="inv-btn green" onclick="invSave()">💾 Save & Upload</button>
           <button class="inv-btn" onclick="invGeneratePDF()">⬇ Download PDF</button>
           <button class="inv-btn secondary" onclick="invEmail()">✉ Email</button>
         </div>
@@ -4381,29 +4381,70 @@
     if (!invJobRef) return;
     const btn = document.querySelector(".inv-btn.green");
     if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+
     try {
-      // Split line items into labor vs materials for Airtable Manual Labor/Material fields
-      const laborLine = invLines.find(l => l.id === "labor");
-      const matLine   = invLines.find(l => l.id === "materials");
-      // Any custom lines go to materials
+      // Split line items into labor vs materials
+      const laborLine   = invLines.find(l => l.id === "labor");
+      const matLine     = invLines.find(l => l.id === "materials");
       const customTotal = invLines
         .filter(l => l.id !== "labor" && l.id !== "materials")
         .reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
 
+      const invDate = $("invDate")?.value || "";
+      const invNum  = $("invNum")?.value || "";
+
+      // Step 1 — Save to Airtable
+      if (btn) btn.textContent = "Saving to Airtable...";
       await apiPost("saveInvoice", {
-        jobId:          invJobRef.id,
-        invoiceDate:    $("invDate")?.value || "",
-        billTo:         $("invBillTo")?.value || "",
-        laborAmount:    laborLine ? parseFloat(laborLine.amount) || 0 : 0,
+        jobId:           invJobRef.id,
+        invoiceDate:     invDate,
+        billTo:          $("invBillTo")?.value || "",
+        laborAmount:     laborLine ? parseFloat(laborLine.amount) || 0 : 0,
         materialsAmount: (matLine ? parseFloat(matLine.amount) || 0 : 0) + customTotal,
-        notes:          $("invNotes")?.value || ""
+        notes:           $("invNotes")?.value || ""
       });
+
+      // Step 2 — Upload PDF to pCloud if job has an Invoices Sent folder ID
+      const pCloudFolderId = invJobRef.pCloudInvoicesSentId;
+      if (pCloudFolderId) {
+        if (btn) btn.textContent = "Uploading to pCloud...";
+        try {
+          // Generate the PDF as base64
+          const pdfBase64 = await generateInvoicePDFBase64();
+          const jobSlug   = (invJobRef.name || "Invoice").replace(/[^a-zA-Z0-9]/g, "_");
+          const filename  = `NEE_Invoice_${invNum ? invNum + "_" : ""}${jobSlug}_${invDate}.pdf`;
+          const result    = await apiPost("uploadToPCloud", {
+            folderId:  pCloudFolderId,
+            filename,
+            pdfBase64
+          });
+          if (!result.ok) throw new Error(result.error);
+        } catch(pErr) {
+          // pCloud upload failed — still show success for Airtable, warn about pCloud
+          console.warn("pCloud upload failed:", pErr.message);
+          const banner = $("inv-saved-banner");
+          if (banner) {
+            banner.style.background = "rgba(255,165,0,0.15)";
+            banner.style.color      = "#b45309";
+            banner.textContent      = `⚠ Saved to Airtable but pCloud upload failed: ${pErr.message}`;
+            banner.style.display    = "block";
+            setTimeout(() => { banner.style.display = "none"; banner.style.background = ""; banner.style.color = ""; banner.textContent = "✓ Invoice saved to Airtable!"; }, 6000);
+          }
+          return;
+        }
+      }
+
+      // Success
       const banner = $("inv-saved-banner");
-      if (banner) { banner.style.display = "block"; setTimeout(() => banner.style.display = "none", 3000); }
+      if (banner) {
+        banner.textContent   = pCloudFolderId ? "✓ Saved to Airtable & uploaded to pCloud!" : "✓ Invoice saved to Airtable!";
+        banner.style.display = "block";
+        setTimeout(() => { banner.style.display = "none"; banner.textContent = "✓ Invoice saved to Airtable!"; }, 4000);
+      }
     } catch(err) {
       alert("Error saving: " + err.message);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "💾 Save to Airtable"; }
+      if (btn) { btn.disabled = false; btn.textContent = "💾 Save & Upload"; }
     }
   };
 
@@ -4428,6 +4469,37 @@ rick@northeasternelec.com`
   };
 
   // ── INVOICE PDF GENERATION ──
+  // Returns PDF as base64 string (for pCloud upload)
+  async function generateInvoicePDFBase64() {
+    return new Promise((resolve, reject) => {
+      function tryBuild(attempts) {
+        if (window.jspdf) {
+          try {
+            const b64 = buildInvoicePDFBase64();
+            resolve(b64);
+          } catch(e) { reject(e); }
+        } else if (attempts > 0) {
+          setTimeout(() => tryBuild(attempts - 1), 300);
+        } else {
+          reject(new Error("PDF library not loaded"));
+        }
+      }
+      if (!window.jspdf && !document.getElementById("jspdf-script")) {
+        const s = document.createElement("script");
+        s.id = "jspdf-script";
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+        document.head.appendChild(s);
+      }
+      tryBuild(15);
+    });
+  }
+
+  // Build PDF and return base64 string (shared by download and upload)
+  function buildInvoicePDFBase64() {
+    const doc = buildInvoicePDFDoc();
+    return doc.output("datauristring").split(",")[1]; // strip data:application/pdf;base64,
+  }
+
   window.invGeneratePDF = function() {
     if (!invJobRef) return;
     if (!invLines.length) { alert("No line items to print."); return; }
@@ -4451,7 +4523,7 @@ rick@northeasternelec.com`
     }
   };
 
-  function buildInvoicePDF() {
+  function buildInvoicePDFDoc() {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "pt", format: "letter" });
     const W = 612, M = 40;
@@ -4646,7 +4718,15 @@ rick@northeasternelec.com`
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(1.2);
     doc.rect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD*2, PAGE_H - BORDER_PAD*2);
 
-    const filename = `NEE_Invoice_${invNum || jobName.replace(/\s+/g,"_")}_${invDate}.pdf`;
+    return doc;
+  }
+
+  function buildInvoicePDF() {
+    const doc      = buildInvoicePDFDoc();
+    const invNum   = $("invNum")?.value || "";
+    const invDate  = $("invDate")?.value || new Date().toISOString().slice(0,10);
+    const jobName  = invJobRef?.name || "";
+    const filename = `NEE_Invoice_${invNum || jobName.replace(/[^a-zA-Z0-9]/g,"_")}_${invDate}.pdf`;
     doc.save(filename);
   }
 

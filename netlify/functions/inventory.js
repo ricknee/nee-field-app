@@ -1795,6 +1795,125 @@ async function handleOrdersCount() {
   return resp(200, { ok: true, count: records.length });
 }
 
+// ═══════════════════════════════════════════════════════════
+// VENDOR PRICING — per-item lookup + sync to Default Unit Cost
+// ═══════════════════════════════════════════════════════════
+
+// ── GET VENDOR PRICING FOR ONE ITEM ───────────────────────
+// Returns the list of Vendor Pricing records for a single item plus a summary
+// block with Default Unit Cost, the live rollup, and the variance between them.
+// Rollup field name must match exactly what's on the Inventory Items table.
+async function handleItemVendorPricing(params) {
+  const { itemId } = params || {};
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+
+  // Fetch the item record AND all Vendor Pricing records in parallel. Filtering
+  // Vendor Pricing by linked record on the API side requires FIND() against an
+  // ARRAYJOIN, which is brittle across renames — simpler and safer to pull all
+  // (vendor pricing is a small table) and filter in JS.
+  const [itemData, allPricing] = await Promise.all([
+    atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, { method: "GET" }),
+    fetchAll(API_ROOT_INV, "Vendor Pricing", {})
+  ]);
+
+  const f           = itemData?.fields || {};
+  const defaultCost = Number(f["Default Unit Cost"] || 0);
+  // Rollup returns a number if a preferred record has Unit Cost set, else empty
+  const liveCost    = Number(f["Unit Cost Rollup (Live)"] || 0);
+
+  // Filter Vendor Pricing to this item only
+  const pricing = allPricing.filter(r => {
+    const links = r.fields?.["Inventory Item"] || [];
+    return links.some(l => {
+      const lid = typeof l === "object" ? l.id : String(l);
+      return lid === itemId;
+    });
+  });
+
+  const vendors = pricing.map(r => {
+    const pf        = r.fields || {};
+    const vendorArr = pf["Vendor"] || [];
+    const vendor    = vendorArr[0] || {};
+    return {
+      id:          r.id,
+      vendorId:    typeof vendor === "object" ? vendor.id   : String(vendor || ""),
+      vendorName:  typeof vendor === "object" ? vendor.name : "",
+      unitCost:    Number(pf["Unit Cost"] || 0),
+      uom:         pf["Unit of Measure"]?.name || pf["Unit of Measure"] || "",
+      partNumber:  pf["Vendor Part Number"] || "",
+      minOrderQty: Number(pf["Min Order Qty"] || 0),
+      leadTime:    Number(pf["Lead Time (days)"] || 0),
+      lastUpdate:  pf["Last Price Update"] || "",
+      validUntil:  pf["Price Valid Until"] || "",
+      preferred:   !!pf["Preferred for This Item"],
+      active:      !!pf["Active"],
+      notes:       pf["Notes"] || ""
+    };
+  });
+
+  // Display order: preferred first, then ascending by unit cost, then by name
+  vendors.sort((a, b) => {
+    if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+    if (a.unitCost  !== b.unitCost)  return a.unitCost - b.unitCost;
+    return (a.vendorName || "").localeCompare(b.vendorName || "");
+  });
+
+  // Variance only meaningful when we have both a live price and a default cost
+  const variance = (liveCost > 0 && defaultCost > 0)
+    ? {
+        dollar: Math.round((liveCost - defaultCost) * 10000) / 10000,
+        pct:    (liveCost - defaultCost) / defaultCost
+      }
+    : null;
+
+  const preferredVendor = vendors.find(v => v.preferred);
+
+  return resp(200, {
+    ok: true,
+    summary: {
+      defaultCost,
+      liveCost,
+      variance,
+      preferredVendor: preferredVendor?.vendorName || "",
+      preferredUpdated: preferredVendor?.lastUpdate || ""
+    },
+    vendors
+  });
+}
+
+// ── SYNC DEFAULT UNIT COST TO LIVE VENDOR PRICE ───────────
+// Copies the Unit Cost Rollup (Live) value onto Default Unit Cost for this item.
+// Admin-convenience button — doesn't touch any Vendor Pricing records.
+async function handleSyncItemCostToVendor(body) {
+  const { itemId } = body || {};
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+
+  const itemData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Inventory Items")}/${itemId}`,
+    { method: "GET" }
+  );
+  const f        = itemData?.fields || {};
+  const liveCost = Number(f["Unit Cost Rollup (Live)"] || 0);
+
+  if (!liveCost || liveCost <= 0) {
+    return resp(400, { ok: false, error: "No live vendor price for this item — set a Preferred vendor with Unit Cost first." });
+  }
+
+  // Default Unit Cost field ID on Inventory Items — same one used by the receive
+  // flow to write back updated costs. Using the ID (not name) for writes.
+  await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": liveCost } })
+  });
+
+  return resp(200, {
+    ok: true,
+    newDefaultCost: liveCost,
+    oldDefaultCost: Number(f["Default Unit Cost"] || 0)
+  });
+}
+
 // ── ROUTER ─────────────────────────────────────────────────
 export async function handler(event) {
   try {
@@ -1823,6 +1942,7 @@ export async function handler(event) {
       if (action === "ordersList")        return await handleOrdersList(params);
       if (action === "orderGet")          return await handleOrderGet(params);
       if (action === "ordersCount")       return await handleOrdersCount();
+      if (action === "itemVendorPricing") return await handleItemVendorPricing(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -1844,6 +1964,7 @@ export async function handler(event) {
       if (body.action === "orderCreate")        return await handleOrderCreate(body);
       if (body.action === "orderUpdate")        return await handleOrderUpdate(body);
       if (body.action === "orderDelete")        return await handleOrderDelete(body);
+      if (body.action === "syncItemCostToVendor") return await handleSyncItemCostToVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

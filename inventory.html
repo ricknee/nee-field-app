@@ -923,7 +923,7 @@ function onItemSearch() {
     var drop = document.getElementById("search-drop");
     if (!drop) return;
     if (!q) { drop.innerHTML = ""; return; }
-    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toLowerCase().includes(q); }).slice(0,8);
+    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); }).slice(0,50);
     if (!hits.length) { drop.innerHTML = '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>'; return; }
     drop.innerHTML = '<div class="search-drop">' + hits.map(function(i){
       return '<div class="drop-item" onclick="pickItem(\'' + i.id + '\')">' +
@@ -1159,7 +1159,7 @@ function onItemSearchFor(prefix) {
     var q = (document.getElementById(prefix + "-search")?.value || "").trim().toLowerCase();
     var drop = document.getElementById(prefix + "-drop");
     if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
-    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toLowerCase().includes(q); }).slice(0,8);
+    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); }).slice(0,50);
     drop.innerHTML = hits.length ? '<div class="search-drop">' + hits.map(function(i){
       return '<div class="drop-item" onclick="pickItemFor(\'' + prefix + '\',\'' + i.id + '\')">' +
         '<div class="drop-name">' + i.name + '</div>' +
@@ -2578,7 +2578,7 @@ function onStockSearch() {
     var q    = (document.getElementById("stock-search")?.value || "").trim().toLowerCase();
     var drop = document.getElementById("stock-drop");
     if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
-    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toString().toLowerCase().includes(q); }).slice(0,8);
+    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toString().toLowerCase().includes(q); }).slice(0,50);
     drop.innerHTML = hits.length
       ? '<div class="search-drop">' + hits.map(function(i){
           return '<div class="drop-item" onclick="lookupStock(\'' + i.id + '\')">' +
@@ -3364,24 +3364,59 @@ async function submitScrap() {
 
 // ═══════════════════════════════════════════════════════════
 // CAMERA SCANNER
+// Native BarcodeDetector is used when available (Android Chrome,
+// desktop Chrome/Edge) — it's fast and has no library overhead.
+// For iOS Safari (iPhone/iPad) the BarcodeDetector API isn't
+// shipped, so we fall back to ZXing-js which is loaded from CDN
+// at the bottom of the page.
 // ═══════════════════════════════════════════════════════════
-var scanTarget = null; // "item" | "recv" | "xfr"
+var scanTarget = null;  // "item" | "recv" | "xfr" | etc.
+var zxingReader = null; // ZXing fallback reader instance (iOS)
 
 async function startScan(target) {
   scanTarget = target;
-  if (!("BarcodeDetector" in window)) {
-    showToast("Camera scanning not supported on this browser", true);
+  var video   = document.getElementById("scan-video");
+  var overlay = document.getElementById("scan-overlay");
+
+  // Path 1: native BarcodeDetector (Android + desktop Chrome)
+  if ("BarcodeDetector" in window) {
+    try {
+      scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      video.srcObject = scanStream;
+      overlay.style.display = "flex";
+      barcodeDetector = new BarcodeDetector({ formats: ["code_128","code_39","ean_13","ean_8","upc_a","upc_e","qr_code","data_matrix"] });
+      scanLoop();
+    } catch(ex) {
+      showToast("Camera error: " + ex.message, true);
+    }
+    return;
+  }
+
+  // Path 2: ZXing fallback (iOS Safari)
+  if (typeof ZXing === "undefined") {
+    showToast("Scanner library didn't load — check internet connection", true);
     return;
   }
   try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-    var video = document.getElementById("scan-video");
-    video.srcObject = scanStream;
-    document.getElementById("scan-overlay").style.display = "flex";
-    barcodeDetector = new BarcodeDetector({ formats: ["code_128","code_39","ean_13","ean_8","upc_a","upc_e","qr_code","data_matrix"] });
-    scanLoop();
+    overlay.style.display = "flex";
+    zxingReader = new ZXing.BrowserMultiFormatReader();
+    // decodeFromConstraints handles getUserMedia + attaches to <video> itself.
+    // Callback fires per frame; result is null when no barcode is seen (ignore
+    // the err param — ZXing throws NotFoundException on every empty frame).
+    await zxingReader.decodeFromConstraints(
+      { video: { facingMode: { ideal: "environment" } } },
+      video,
+      function(result /*, err */) {
+        if (result) {
+          var val = result.getText();
+          stopScan();
+          handleScanResult(val);
+        }
+      }
+    );
   } catch(ex) {
-    showToast("Camera error: " + ex.message, true);
+    overlay.style.display = "none";
+    showToast("Camera error: " + (ex.message || ex), true);
   }
 }
 
@@ -3400,7 +3435,18 @@ function scanLoop() {
 }
 
 function stopScan() {
-  if (scanStream) { scanStream.getTracks().forEach(function(t){ t.stop(); }); scanStream = null; }
+  // Native path cleanup
+  if (scanStream) {
+    scanStream.getTracks().forEach(function(t){ t.stop(); });
+    scanStream = null;
+  }
+  // ZXing path cleanup — reset() stops ZXing's internal stream and decoder loop
+  if (zxingReader) {
+    try { zxingReader.reset(); } catch(e) {}
+    zxingReader = null;
+  }
+  var video = document.getElementById("scan-video");
+  if (video) video.srcObject = null;
   document.getElementById("scan-overlay").style.display = "none";
 }
 
@@ -3893,7 +3939,7 @@ function renderEstimateItemResults(q) {
   var results = document.getElementById("est-item-results");
   if (!results) return;
   var items = q
-    ? allItems.filter(function(i) { return (i.name || "").toLowerCase().includes(q) || (i.barcode || "").toLowerCase().includes(q); })
+    ? allItems.filter(function(i) { return (i.name || "").toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); })
     : allItems.slice(0);
   items = items.slice(0, 50);
 
@@ -5186,7 +5232,7 @@ function renderOrderItemResults(q) {
   var results = document.getElementById("order-item-results");
   if (!results) return;
   var items = q
-    ? allItems.filter(function(i) { return (i.name || "").toLowerCase().includes(q) || (i.barcode || "").toLowerCase().includes(q); })
+    ? allItems.filter(function(i) { return (i.name || "").toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); })
     : allItems.slice(0);
   items = items.slice(0, 50);
 
@@ -5568,5 +5614,7 @@ var ESTIMATE_LOGO_GRAY_B64 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAs1U
 
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- ZXing: barcode scanner fallback for iOS Safari (native BarcodeDetector API not supported on iPhone/iPad) -->
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 </body>
 </html>

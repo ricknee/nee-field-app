@@ -4462,114 +4462,130 @@
     function newPage() {
       if (!firstPage) doc.addPage();
       firstPage = false;
+      y = 40;
       // Page header
       doc.setFont("helvetica","bold"); doc.setFontSize(15);
       doc.setTextColor(26,26,26);
       doc.text("Northeastern Electric, Inc.", M, y);
+      y += 16;
       doc.setFont("helvetica","normal"); doc.setFontSize(10);
       doc.setTextColor(100,100,100);
-      doc.text(`Bi-Weekly Payroll Report     Pay Date: ${payDate}`, M, y+17);
+      doc.text(`Bi-Weekly Payroll Report     Pay Date: ${payDate}`, M, y);
+      y += 10;
       doc.setDrawColor(51,51,51); doc.setLineWidth(1.5);
-      doc.line(M, y+24, W-M, y+24);
+      doc.line(M, y, W-M, y);
       doc.setLineWidth(0.5);
-      y += 42;
+      y += 14;
     }
 
     function checkSpace(needed) {
-      if (y + needed > 750) { y = 40; newPage(); }
+      if (y + needed > 740) { newPage(); }
     }
 
+    // Clean y-system: y is always the TOP of the next element to draw.
+    // Each function draws at y, then advances y by its own height.
+    const ROW_H = 16;   // standard data row height
+    const WK_H  = 18;   // week label row height
+    const NAME_H = 24;  // name bar height
+    const RULE_H = 8;   // bottom rule height
+    const GAP    = 6;   // gap between employee blocks
+
     function nameBar(name, col) {
-      checkSpace(22);
+      checkSpace(NAME_H);
       const [r,g,b] = hexToRgb(col.hdr);
       doc.setFillColor(r,g,b);
-      doc.rect(M, y-20, W-M*2, 22, "F");
+      doc.rect(M, y, W-M*2, NAME_H, "F");
       doc.setFont("helvetica","bold"); doc.setFontSize(11);
       doc.setTextColor(255,255,255);
-      doc.text(name, M+8, y-5);
+      doc.text(name, M+8, y + NAME_H - 7);
       doc.setTextColor(0,0,0);
-      y += 2;
+      y += NAME_H;
     }
 
     function wkLabel(label, dates, col) {
-      checkSpace(17);
+      checkSpace(WK_H);
       const [r,g,b] = hexToRgb(col.light);
       doc.setFillColor(r,g,b);
-      doc.rect(M, y-15, W-M*2, 17, "F");
+      doc.rect(M, y, W-M*2, WK_H, "F");
       doc.setFont("helvetica","bold"); doc.setFontSize(9);
       doc.setTextColor(51,51,51);
-      doc.text(label, M+8, y-3);
+      doc.text(label, M+8, y + WK_H - 5);
       doc.setFont("helvetica","normal");
-      doc.text(dates, M+200, y-3);
+      doc.text(dates, M+200, y + WK_H - 5);
       doc.setTextColor(0,0,0);
-      y += 2;
+      y += WK_H;
     }
 
     function dataRow(label, value, shade) {
-      checkSpace(15);
-      if (shade) { doc.setFillColor(247,247,247); doc.rect(M, y-13, W-M*2, 15, "F"); }
-      doc.setDrawColor(200,200,200); doc.setLineWidth(0.3);
-      doc.line(M, y-13, W-M, y-13);
+      checkSpace(ROW_H);
+      if (shade) {
+        doc.setFillColor(247,247,247);
+        doc.rect(M, y, W-M*2, ROW_H, "F");
+      }
+      doc.setDrawColor(220,220,220); doc.setLineWidth(0.3);
+      doc.line(M, y, W-M, y);
       doc.setLineWidth(0.5); doc.setDrawColor(0,0,0);
       doc.setFont("helvetica","normal"); doc.setFontSize(9);
       doc.setTextColor(30,30,30);
-      if (label) doc.text(label, M+18, y-2);
-      if (value) doc.text(String(value), W-M-4, y-2, { align: "right" });
-      y += 15;
+      if (label) doc.text(label, M+18, y + ROW_H - 4);
+      if (value) doc.text(String(value), W-M-4, y + ROW_H - 4, { align: "right" });
+      y += ROW_H;
     }
 
     function sumRow(label) {
-      checkSpace(15);
-      doc.setDrawColor(150,150,150); doc.setLineWidth(0.5);
-      doc.line(M, y-13, W-M, y-13);
+      checkSpace(ROW_H);
+      doc.setDrawColor(170,170,170); doc.setLineWidth(0.5);
+      doc.line(M, y, W-M, y);
       doc.setFont("helvetica","bold"); doc.setFontSize(9);
       doc.setTextColor(30,30,30);
-      doc.text(label, M+18, y-2);
+      doc.text(label, M+18, y + ROW_H - 4);
       doc.setTextColor(0,0,0);
-      y += 15;
+      y += ROW_H;
     }
 
     function cityTaxSection(taxes, col) {
-      const hasCity = taxes.some(([t]) => t !== "A No Tax");
-      if (!hasCity && taxes.every(([t]) => t === "A No Tax")) {
-        // All A No Tax — just show total
+      const allNoTax = taxes.every(([t]) => t === "A No Tax");
+      if (allNoTax) {
         const total = taxes.reduce((a,[,h]) => a+h, 0);
         dataRow("A No Tax", fmtHrs(total), false);
         return;
       }
-      // Show breakdown per tax
+      // Mixed city taxes — show header then one row per tax type
+      checkSpace(ROW_H);
+      doc.setFillColor(240,240,240);
+      doc.rect(M, y, W-M*2, ROW_H, "F");
       doc.setFont("helvetica","bold"); doc.setFontSize(8);
       doc.setTextColor(80,80,80);
-      doc.text("City Tax Hours:", M+18, y-2);
+      doc.text("City Tax Hours:", M+18, y + ROW_H - 4);
       doc.setTextColor(0,0,0);
-      y += 13;
+      y += ROW_H;
       taxes.forEach(([t,h], i) => {
-        if (h > 0) dataRow(t, fmtHrs(h), i%2===1);
+        if (h > 0) dataRow(t, fmtHrs(h), i%2===0);
       });
     }
 
     function bonusRow(amt, col) {
-      checkSpace(15);
-      doc.setDrawColor(180,180,180); doc.setLineWidth(0.3);
-      doc.line(M, y-13, W-M, y-13);
+      checkSpace(ROW_H);
+      doc.setDrawColor(190,190,190); doc.setLineWidth(0.3);
+      doc.line(M, y, W-M, y);
       doc.setFont("helvetica","normal"); doc.setFontSize(9);
       doc.setTextColor(30,30,30);
-      doc.text("Bonus$", M+18, y-2);
+      doc.text("Bonus$", M+18, y + ROW_H - 4);
       const [r,g,b] = hexToRgb(col.hdr);
       doc.setTextColor(r,g,b);
       doc.setFont("helvetica","bold");
-      doc.text(amt > 0 ? `$ ${amt.toFixed(2)}` : "$ -", W-M-4, y-2, { align: "right" });
+      doc.text(amt > 0 ? `$ ${amt.toFixed(2)}` : "$ -", W-M-4, y + ROW_H - 4, { align: "right" });
       doc.setTextColor(0,0,0);
-      y += 15;
+      y += ROW_H;
     }
 
     function bottomRule(col) {
-      checkSpace(10);
+      checkSpace(RULE_H + GAP);
       const [r,g,b] = hexToRgb(col.hdr);
-      doc.setDrawColor(r,g,b); doc.setLineWidth(1.2);
-      doc.line(M, y-8, W-M, y-8);
+      doc.setDrawColor(r,g,b); doc.setLineWidth(1.5);
+      doc.line(M, y + 2, W-M, y + 2);
       doc.setLineWidth(0.5); doc.setDrawColor(0,0,0);
-      y += 10;
+      y += RULE_H + GAP;
     }
 
     // Compute tax breakdown for a set of entries

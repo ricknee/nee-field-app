@@ -1437,10 +1437,42 @@ async function deleteTx(id) {
 // ═══════════════════════════════════════════════════════════
 // PUSH EXPENSES TO MAIN BASE
 // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// PUSH EXPENSES — tabbed view with Pending + History
+// ═══════════════════════════════════════════════════════════
+var pushTab = "pending";   // "pending" | "history"
+
 async function goPushExpenses() {
+  pushTab = "pending";
   showScreen("push");
+  await loadPushPending();
+}
+
+async function goPushHistoryTab() {
+  pushTab = "history";
+  // showScreen no-op if we're already on push, but harmless
+  showScreen("push");
+  await loadPushHistory();
+}
+
+// Reusable tab bar shown above whichever tab content is active
+function renderPushTabBar(activeTab) {
+  return '<div style="display:flex;gap:6px;margin-bottom:14px;background:var(--navy-mid);padding:4px;border-radius:10px;">' +
+    '<button onclick="goPushExpenses()" style="' +
+      'flex:1;background:' + (activeTab === "pending" ? "var(--gold)" : "transparent") + ';' +
+      'border:none;border-radius:8px;color:' + (activeTab === "pending" ? "var(--navy)" : "var(--dim)") + ';' +
+      'font-size:13px;font-weight:700;padding:10px 8px;cursor:pointer;">Pending</button>' +
+    '<button onclick="goPushHistoryTab()" style="' +
+      'flex:1;background:' + (activeTab === "history" ? "var(--gold)" : "transparent") + ';' +
+      'border:none;border-radius:8px;color:' + (activeTab === "history" ? "var(--navy)" : "var(--dim)") + ';' +
+      'font-size:13px;font-weight:700;padding:10px 8px;cursor:pointer;">History</button>' +
+    '</div>';
+}
+
+async function loadPushPending() {
   var body = document.getElementById("push-body");
-  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading unpushed transactions…</div>';
+  body.innerHTML = renderPushTabBar("pending") +
+    '<div class="loading"><div class="spinner"></div><br>Loading unpushed transactions…</div>';
 
   try {
     var d = await apiGet("pendingExpenses");
@@ -1448,7 +1480,7 @@ async function goPushExpenses() {
     window._pendingExpenses = pending;
 
     if (!pending.length) {
-      body.innerHTML =
+      body.innerHTML = renderPushTabBar("pending") +
         '<div style="text-align:center;padding:40px 20px;">' +
         '<div style="font-size:40px;margin-bottom:12px;">✅</div>' +
         '<div style="font-size:16px;font-weight:600;color:var(--text);">All caught up!</div>' +
@@ -1459,7 +1491,8 @@ async function goPushExpenses() {
 
     renderPushExpenses();
   } catch(ex) {
-    document.getElementById("push-body").innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
+    document.getElementById("push-body").innerHTML = renderPushTabBar("pending") +
+      '<div class="empty">Error: ' + ex.message + '</div>';
   }
 }
 
@@ -1468,7 +1501,8 @@ function renderPushExpenses() {
   var pending = window._pendingExpenses || [];
 
   var pdfReady = typeof window.jspdf !== "undefined" && typeof window.jspdf.jsPDF !== "undefined";
-  var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
+  var html = renderPushTabBar("pending") +
+    '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
     '📋 Uses minus Returns are netted per item. Tax (7.5%) added for taxable jobs. Push one job or all at once.' +
     '<div style="margin-top:6px;font-size:11px;color:' + (pdfReady ? 'var(--green)' : 'var(--muted)') + ';">' +
     (pdfReady ? '📄 PDF receipts will auto-download when you push' : '📄 PDF receipts unavailable — reload page to enable') +
@@ -1527,7 +1561,11 @@ async function pushOneJob(idx) {
   if (!confirm("Push expenses for " + g.jobName + "?")) return;
 
   try {
-    var result = await apiPost({ action: "pushExpenses", pending: [g] });
+    var result = await apiPost({
+      action:   "pushExpenses",
+      pending:  [g],
+      pushedBy: (currentUser && currentUser.name) || ""
+    });
     showToast("✓ Pushed " + g.jobName);
     // Generate and download PDF receipt
     downloadReceiptPDF(g);
@@ -1535,9 +1573,12 @@ async function pushOneJob(idx) {
     if (window._pendingExpenses.length) {
       renderPushExpenses();
     } else {
-      document.getElementById("push-body").innerHTML =
+      document.getElementById("push-body").innerHTML = renderPushTabBar("pending") +
         '<div style="text-align:center;padding:40px 20px;"><div style="font-size:40px;margin-bottom:12px;">✅</div>' +
-        '<div style="font-size:16px;font-weight:600;">All done!</div></div>';
+        '<div style="font-size:16px;font-weight:600;">All done!</div>' +
+        '<div style="font-size:13px;color:var(--dim);margin-top:6px;">' +
+        '<a href="javascript:goPushHistoryTab()" style="color:var(--gold);text-decoration:underline;">View Push History →</a>' +
+        '</div></div>';
     }
   } catch(ex) { showToast("Error: " + ex.message, true); }
 }
@@ -1548,7 +1589,11 @@ async function submitPushExpenses(idxOnly) {
   var toPush = idxOnly !== null ? [pending[idxOnly]] : pending;
 
   try {
-    var result = await apiPost({ action: "pushExpenses", pending: toPush });
+    var result = await apiPost({
+      action:   "pushExpenses",
+      pending:  toPush,
+      pushedBy: (currentUser && currentUser.name) || ""
+    });
     showToast("✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!");
     // Download one PDF per job
     toPush.forEach(function(g){ downloadReceiptPDF(g); });
@@ -1556,6 +1601,172 @@ async function submitPushExpenses(idxOnly) {
     goHome();
   } catch(ex) {
     showToast("Error: " + ex.message, true);
+  }
+}
+
+// ── PUSH HISTORY ──────────────────────────────────────────
+async function loadPushHistory() {
+  var body = document.getElementById("push-body");
+  body.innerHTML = renderPushTabBar("history") +
+    '<div class="loading"><div class="spinner"></div><br>Loading push history…</div>';
+
+  try {
+    var d = await apiGet("pushHistory", { limit: "100" });
+    var pushes = d.pushes || [];
+
+    if (!pushes.length) {
+      body.innerHTML = renderPushTabBar("history") +
+        '<div style="text-align:center;padding:40px 20px;">' +
+        '<div style="font-size:40px;margin-bottom:12px;">📭</div>' +
+        '<div style="font-size:16px;font-weight:600;color:var(--text);">No pushes yet</div>' +
+        '<div style="font-size:13px;color:var(--dim);margin-top:6px;">' +
+        'Push history starts recording the next time you push expenses.' +
+        '</div></div>';
+      return;
+    }
+
+    // Group by month for easier scanning
+    var byMonth = {};
+    pushes.forEach(function(p) {
+      var d = p.datePushed ? new Date(p.datePushed) : null;
+      var monthKey = d ? d.toLocaleString("en-US", { month: "long", year: "numeric" }) : "Undated";
+      if (!byMonth[monthKey]) byMonth[monthKey] = { total: 0, items: [] };
+      byMonth[monthKey].items.push(p);
+      byMonth[monthKey].total += Number(p.total || 0);
+    });
+
+    var html = renderPushTabBar("history");
+
+    // Summary banner — overall total across what's loaded
+    var grandTotal = pushes.reduce(function(s, p){ return s + Number(p.total || 0); }, 0);
+    html += '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;color:var(--dim);">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+        '<span>📋 Last ' + pushes.length + ' push' + (pushes.length === 1 ? '' : 'es') + '</span>' +
+        '<span style="color:var(--gold);font-weight:700;">' + fmtCurrency(grandTotal) + '</span>' +
+      '</div></div>';
+
+    Object.keys(byMonth).forEach(function(monthKey) {
+      var grp = byMonth[monthKey];
+      html += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin:14px 0 6px;">' +
+        '<div style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--gold);">' + monthKey + '</div>' +
+        '<div style="font-size:11px;color:var(--muted);">' + grp.items.length + ' · ' + fmtCurrency(grp.total) + '</div>' +
+        '</div>';
+
+      grp.items.forEach(function(p) {
+        var d  = p.datePushed ? new Date(p.datePushed) : null;
+        var dateStr = d
+          ? d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + ' · ' +
+            d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+          : "—";
+
+        html += '<div onclick="openPushHistoryDetail(\'' + p.id + '\')" ' +
+          'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:6px;cursor:pointer;">' +
+          '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">' +
+            '<div style="flex:1;min-width:0;">' +
+              '<div style="font-weight:600;font-size:14px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + (p.jobName || "Unknown job") + '</div>' +
+              '<div style="font-size:11px;color:var(--dim);margin-top:3px;">' + dateStr +
+                (p.pushedBy ? ' · ' + p.pushedBy : '') +
+                ' · ' + p.itemCount + ' item' + (p.itemCount === 1 ? '' : 's') +
+                (p.taxable ? ' · taxable' : '') +
+              '</div>' +
+            '</div>' +
+            '<div style="text-align:right;flex-shrink:0;">' +
+              '<div style="font-size:15px;font-weight:700;color:var(--gold);">' + fmtCurrency(p.total) + '</div>' +
+            '</div>' +
+          '</div></div>';
+      });
+    });
+
+    body.innerHTML = html;
+  } catch(ex) {
+    body.innerHTML = renderPushTabBar("history") +
+      '<div class="empty">Error: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+async function openPushHistoryDetail(id) {
+  var body = document.getElementById("push-body");
+  body.innerHTML = renderPushTabBar("history") +
+    '<div class="loading"><div class="spinner"></div><br>Loading push…</div>';
+
+  try {
+    var d = await apiGet("pushHistoryDetail", { id: id });
+    var p = d.push;
+    if (!p) throw new Error("Push not found");
+
+    var dt = p.datePushed ? new Date(p.datePushed) : null;
+    var dtStr = dt
+      ? dt.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric", year: "numeric" }) +
+        ' at ' + dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+      : "—";
+
+    var html = '<button onclick="loadPushHistory()" style="background:none;border:none;color:var(--gold);font-size:13px;font-weight:600;padding:0 0 12px;cursor:pointer;">‹ Back to history</button>';
+
+    // Header card
+    html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:14px;">';
+    html += '<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:4px;">' + (p.jobName || "Unknown job") + '</div>';
+    html += '<div style="font-size:12px;color:var(--dim);margin-bottom:10px;">' + dtStr + (p.pushedBy ? ' · pushed by ' + p.pushedBy : '') + '</div>';
+
+    // Totals row
+    html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:4px 0;">' +
+      '<span>Materials</span><span>' + fmtCurrency(p.materialsTotal) + '</span></div>';
+    if (p.taxable) {
+      html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:4px 0;">' +
+        '<span>Sales tax (7.5%)</span><span>' + fmtCurrency(p.taxTotal) + '</span></div>';
+    }
+    html += '<div style="display:flex;justify-content:space-between;font-size:16px;font-weight:700;color:var(--gold);padding:6px 0 0;border-top:1px solid var(--border);margin-top:4px;">' +
+      '<span>Total pushed</span><span>' + fmtCurrency(p.total) + '</span></div>';
+
+    // Tags
+    html += '<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;">';
+    html += '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:' + (p.taxable ? 'rgba(52,152,219,.2)' : 'rgba(46,204,113,.2)') + ';color:' + (p.taxable ? 'var(--blue)' : 'var(--green)') + ';">' + (p.taxable ? 'Taxable' : 'Tax Exempt') + '</span>';
+    html += '<span style="font-size:10px;padding:2px 8px;border-radius:10px;background:var(--slate);color:var(--dim);">' + p.txCount + ' tx → ' + p.itemCount + ' line' + (p.itemCount === 1 ? '' : 's') + '</span>';
+    html += '</div>';
+
+    html += '</div>';
+
+    // Lines (snapshot at push time)
+    html += '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">What was billed (snapshot)</div>';
+
+    if (p.lines && p.lines.length) {
+      html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;overflow:hidden;">';
+      p.lines.forEach(function(l, idx) {
+        var isLast   = idx === p.lines.length - 1;
+        var isReturn = l.qty < 0;
+        var qtyText  = l.wireFt > 0
+          ? (Math.abs(l.qty) + ' lbs (' + l.wireFt.toLocaleString() + ' ft)')
+          : ('×' + Math.abs(l.qty));
+        html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:10px 14px;' + (isLast ? '' : 'border-bottom:1px solid var(--border);') + '">';
+        html += '<div style="flex:1;min-width:0;">';
+        html += '<div style="font-size:13px;font-weight:600;color:' + (isReturn ? 'var(--red)' : 'var(--text)') + ';overflow:hidden;text-overflow:ellipsis;">' + l.itemName + (isReturn ? ' (return)' : '') + '</div>';
+        html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' + qtyText + ' @ ' + fmtCurrency(l.unitCost) + '</div>';
+        html += '</div>';
+        html += '<div style="font-size:13px;font-weight:700;color:' + (isReturn ? 'var(--red)' : 'var(--gold)') + ';flex-shrink:0;">' + (isReturn ? '−' : '') + fmtCurrency(Math.abs(l.lineTotal)) + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+    } else {
+      html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center;color:var(--dim);font-size:13px;">No line snapshot was captured for this push.</div>';
+    }
+
+    // Description (the same string sent to the main base)
+    if (p.description) {
+      html += '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;">Description sent to Airtable</div>';
+      html += '<div style="background:var(--navy-mid);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:12px;color:var(--dim);line-height:1.5;word-break:break-word;">' +
+        p.description.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;") +
+        '</div>';
+    }
+
+    // Expense IDs (small print, useful for debugging)
+    if (p.expenseIds) {
+      html += '<div style="margin-top:14px;font-size:10px;color:var(--muted);">Expense record IDs: ' + p.expenseIds + '</div>';
+    }
+
+    html += '<div style="height:24px;"></div>';
+    body.innerHTML = html;
+  } catch(ex) {
+    body.innerHTML = renderPushTabBar("history") +
+      '<div class="empty">Error: ' + (ex.message || ex) + '</div>';
   }
 }
 

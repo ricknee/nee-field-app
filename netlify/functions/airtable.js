@@ -360,6 +360,7 @@ async function handleJobs() {
         if (Array.isArray(v)) return v[0] ?? null;
         return v ?? null;
       })(),
+      pCloudInvoicesSentId: f["pCloud Invoices Sent ID"] || null,
       expectedRevenue:gNum(f,F.job.expectedRevenue),
       actualJobCostCogs:gNum(f,F.job.actualJobCostCogs),totalReviewedCosts:gNum(f,F.job.totalReviewedCosts),
       totalLaborCostFinal:gNum(f,F.job.totalLaborCostFinal),grossProfitFinalDollar:gNum(f,F.job.grossProfitFinalDollar),
@@ -758,64 +759,63 @@ async function handleSaveInvoice(body) {
 }
 
 // ── PCLOUD UPLOAD ─────────────────────────────────────────────────────────────
+async function getPCloudToken() {
+  const email    = process.env.PCLOUD_EMAIL;
+  const password = process.env.PCLOUD_PASSWORD;
+  if (!email || !password) throw new Error("PCLOUD_EMAIL or PCLOUD_PASSWORD env vars not set.");
+  const url = `https://api.pcloud.com/userinfo?getauth=1&logout=1&username=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`;
+  const res = await fetch(url);
+  const json = await res.json();
+  if (json.result !== 0) throw new Error(`pCloud auth error: ${json.error || JSON.stringify(json)}`);
+  return json.token;
+}
+
 async function handleUploadToPCloud(body) {
   const { folderId, filename, pdfBase64 } = body || {};
   if (!folderId || !filename || !pdfBase64) {
     return resp(400, { ok: false, error: "Missing folderId, filename, or pdfBase64." });
   }
+  try {
+    const token     = await getPCloudToken();
+    const pdfBuffer = Buffer.from(pdfBase64, "base64");
+    const boundary  = "----NEEBoundary" + Date.now();
+    const CRLF      = "\r\n";
 
-  const PCLOUD_TOKEN = process.env.PCLOUD_TOKEN;
-  if (!PCLOUD_TOKEN) {
-    return resp(500, { ok: false, error: "PCLOUD_TOKEN env var not set." });
+    const headerParts = [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="folderid"`,
+      "", String(folderId),
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="filename"`,
+      "", filename,
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="file"; filename="${filename}"`,
+      "Content-Type: application/pdf",
+      "", ""
+    ].join(CRLF);
+
+    const footer    = CRLF + `--${boundary}--` + CRLF;
+    const headerBuf = Buffer.from(headerParts, "utf8");
+    const footerBuf = Buffer.from(footer, "utf8");
+    const multipart = Buffer.concat([headerBuf, pdfBuffer, footerBuf]);
+
+    const res = await fetch(`https://api.pcloud.com/uploadfile?auth=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": String(multipart.length)
+      },
+      body: multipart
+    });
+
+    const json = await res.json().catch(() => ({}));
+    if (json.result !== 0) {
+      return resp(400, { ok: false, error: `pCloud upload error: ${json.error || JSON.stringify(json)}` });
+    }
+    return resp(200, { ok: true, fileId: json.fileids?.[0] });
+  } catch(err) {
+    return resp(500, { ok: false, error: err.message });
   }
-
-  // Convert base64 to binary buffer
-  const pdfBuffer = Buffer.from(pdfBase64, "base64");
-
-  // pCloud uploadfile endpoint — multipart form
-  const boundary = "----NEEBoundary" + Date.now();
-  const CRLF = "
-";
-
-  // Build multipart body manually
-  const header = [
-    `--${boundary}`,
-    `Content-Disposition: form-data; name="filename"`,
-    "",
-    filename,
-    `--${boundary}`,
-    `Content-Disposition: form-data; name="folderid"`,
-    "",
-    String(folderId),
-    `--${boundary}`,
-    `Content-Disposition: form-data; name="file"; filename="${filename}"`,
-    "Content-Type: application/pdf",
-    "",
-    ""
-  ].join(CRLF);
-
-  const footer = CRLF + `--${boundary}--` + CRLF;
-
-  const headerBuf  = Buffer.from(header, "utf8");
-  const footerBuf  = Buffer.from(footer, "utf8");
-  const multipart  = Buffer.concat([headerBuf, pdfBuffer, footerBuf]);
-
-  const res = await fetch("https://api.pcloud.com/uploadfile", {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${PCLOUD_TOKEN}`,
-      "Content-Type": `multipart/form-data; boundary=${boundary}`,
-      "Content-Length": String(multipart.length)
-    },
-    body: multipart
-  });
-
-  const json = await res.json().catch(() => ({}));
-  if (json.result !== 0) {
-    return resp(400, { ok: false, error: `pCloud error: ${json.error || JSON.stringify(json)}` });
-  }
-
-  return resp(200, { ok: true, fileId: json.fileids?.[0] });
 }
 
 async function handleUpdateJobNotes(body) {

@@ -4447,148 +4447,197 @@ rick@northeasternelec.com`
   function buildInvoicePDF() {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "pt", format: "letter" });
-    const W = 612, M = 48;
-    let y = 48;
+    const W = 612, M = 40;
+    const INNER_W = W - M*2;  // content width
+    let y = 36;
 
-    const invNum    = $("invNum")?.value || "";
-    const invDate   = $("invDate")?.value || new Date().toISOString().slice(0,10);
-    const billTo    = $("invBillTo")?.value || "";
-    const po        = $("invPO")?.value || "";
-    const notes     = $("invNotes")?.value || "";
-    const total     = calcInvTotal();
-    const jobName   = invJobRef?.name || "";
+    // Colors — printer friendly
+    const C_BORDER  = [180,180,180];   // outer border & box borders
+    const C_HDR_BG  = [21,101,192];    // table header — NEE blue (prints light)
+    const C_HDR_TXT = [255,255,255];
+    const C_ROW_ALT = [245,248,252];   // very light blue-gray alternating row
+    const C_TOTAL_BG = [21,101,192];   // total bar — matches header
+    const C_TEXT    = [30,30,30];
+    const C_MUTED   = [100,100,100];
+    const C_FOOTER  = [240,242,245];
+
+    const invNum  = $("invNum")?.value || "";
+    const invDate = $("invDate")?.value || new Date().toISOString().slice(0,10);
+    const billTo  = $("invBillTo")?.value || "";
+    const po      = $("invPO")?.value || "";
+    const notes   = $("invNotes")?.value || "";
+    const total   = calcInvTotal();
+    const jobName = invJobRef?.name || "";
+
+    // ── Outer border (drawn last so nothing overlaps it) ──
+    // We'll draw it at the end; store page height
+    const PAGE_H = 792;
+    const BORDER_PAD = 20;
 
     // ── Company header with logo ──
-    const logoSize = 50; // square logo
+    const logoSize = 52;
     try {
       doc.addImage(NEE_LOGO_B64, "PNG", M, y, logoSize, logoSize);
-    } catch(e) {
-      // Fallback: just text
-    }
-    const textX = M + logoSize + 10;
+    } catch(e) {}
+    const textX = M + logoSize + 12;
     doc.setFont("helvetica","bold"); doc.setFontSize(14);
-    doc.setTextColor(26,26,26);
+    doc.setTextColor(...C_TEXT);
     doc.text("Northeastern Electric, Inc.", textX, y + 16);
     doc.setFont("helvetica","normal"); doc.setFontSize(9);
-    doc.setTextColor(80,80,80);
-    doc.text("5909 Bandy Rd", textX, y + 28);
-    doc.text("Homeworth OH 44634", textX, y + 39);
-    y += logoSize + 8;
+    doc.setTextColor(...C_MUTED);
+    doc.text("5909 Bandy Rd", textX, y + 29);
+    doc.text("Homeworth OH 44634", textX, y + 40);
+    y += logoSize + 10;
 
-    // ── INVOICE title (top right) ──
-    doc.setFont("helvetica","bold"); doc.setFontSize(28);
-    doc.setTextColor(26,26,26);
-    doc.text("INVOICE", W-M, 60, { align: "right" });
+    // ── INVOICE title top right ──
+    doc.setFont("helvetica","bold"); doc.setFontSize(30);
+    doc.setTextColor(...C_TEXT);
+    doc.text("INVOICE", W-M, 52, { align: "right" });
 
-    // Meta box (Date / Invoice #)
-    const metaX = W - M - 160;
-    let metaY = 72;
-    doc.setFontSize(9); doc.setFont("helvetica","normal");
-    // header row
-    doc.setFillColor(230,230,230); doc.rect(metaX, metaY, 80, 14, "F");
-    doc.setFillColor(230,230,230); doc.rect(metaX+80, metaY, 80, 14, "F");
-    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(50,50,50);
-    doc.text("Date", metaX+4, metaY+10);
-    doc.text("Invoice #", metaX+84, metaY+10);
+    // ── Meta table (Date / Invoice #) ──
+    const metaX = W - M - 168;
+    let metaY = 64;
+    const metaW = 84;
+    // Header cells
+    doc.setFillColor(235,235,235);
+    doc.rect(metaX, metaY, metaW, 14, "F");
+    doc.rect(metaX+metaW, metaY, metaW, 14, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(60,60,60);
+    doc.text("Date", metaX+5, metaY+10);
+    doc.text("Invoice #", metaX+metaW+5, metaY+10);
     metaY += 14;
-    // value row
-    doc.setFillColor(255,255,255); doc.rect(metaX, metaY, 160, 16, "F");
-    doc.setDrawColor(180,180,180); doc.setLineWidth(0.5);
-    doc.rect(metaX, metaY-14, 160, 30);
-    doc.line(metaX+80, metaY-14, metaX+80, metaY+16);
-    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(30,30,30);
-    doc.text(invDate, metaX+4, metaY+11);
-    doc.text(invNum, metaX+84, metaY+11);
+    // Value cells
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+    doc.rect(metaX, metaY-14, metaW*2, 30);
+    doc.line(metaX+metaW, metaY-14, metaX+metaW, metaY+16);
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...C_TEXT);
+    doc.text(invDate, metaX+5, metaY+11);
+    doc.text(invNum, metaX+metaW+5, metaY+11);
     metaY += 16;
 
-    y = Math.max(y, metaY + 12);
+    y = Math.max(y, metaY + 14);
 
-    // ── Bill To box ──
-    doc.setDrawColor(180,180,180); doc.setLineWidth(0.5);
-    doc.rect(M, y, 230, 90);
-    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(120,120,120);
-    doc.text("Bill To", M+6, y+12);
-    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(20,20,20);
-    const billLines = doc.splitTextToSize(billTo, 218);
-    doc.text(billLines, M+6, y+24);
+    // ── Horizontal divider ──
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.8);
+    doc.line(M, y, W-M, y);
+    y += 12;
+
+    // ── Bill To + P.O. row ──
+    const billH = 80;
+    const billW = INNER_W * 0.6;
+    const poW   = INNER_W * 0.36;
+    const poX   = W - M - poW;
+
+    // Bill To box
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+    doc.rect(M, y, billW, billH);
+    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...C_MUTED);
+    doc.text("BILL TO", M+7, y+12);
+    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(...C_TEXT);
+    const billLines = doc.splitTextToSize(billTo, billW - 14);
+    doc.text(billLines, M+7, y+24);
 
     // P.O. box
-    doc.rect(W-M-120, y, 120, 90);
-    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(120,120,120);
-    doc.text("P.O. No.", W-M-114, y+12);
-    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(20,20,20);
-    const poLines = doc.splitTextToSize(po, 108);
-    doc.text(poLines, W-M-114, y+24);
+    doc.rect(poX, y, poW, billH);
+    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...C_MUTED);
+    doc.text("P.O. NO.", poX+7, y+12);
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...C_TEXT);
+    const poLines = doc.splitTextToSize(po, poW - 14);
+    doc.text(poLines, poX+7, y+24);
 
-    y += 104;
+    y += billH + 16;
 
     // ── Line items table ──
-    // Header
-    doc.setFillColor(26,26,26);
-    doc.rect(M, y, W-M*2, 20, "F");
-    doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(255,255,255);
-    doc.text("Description", M+6, y+14);
-    doc.text("Amount", W-M-4, y+14, { align: "right" });
+    // Header row — blue, printer friendly
+    doc.setFillColor(...C_HDR_BG);
+    doc.rect(M, y, INNER_W, 20, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...C_HDR_TXT);
+    doc.text("Description", M+10, y+14);
+    doc.text("Amount", W-M-6, y+14, { align: "right" });
     y += 20;
 
-    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(30,30,30);
+    // Border around entire table (drawn after rows)
+    const tableStartY = y;
+
+    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(...C_TEXT);
     invLines.forEach((line, i) => {
-      // Check page space
-      if (y > 700) { doc.addPage(); y = 48; }
+      if (y > 660) { doc.addPage(); y = 36; }
+      const descLines = doc.splitTextToSize(line.description || "", INNER_W - 90);
+      const rowH = Math.max(24, descLines.length * 13 + 10);
 
-      if (i % 2 === 0) { doc.setFillColor(250,250,250); doc.rect(M, y, W-M*2, 20, "F"); }
-      doc.setDrawColor(230,230,230); doc.setLineWidth(0.3);
-      doc.line(M, y+20, W-M, y+20);
-
-      const descLines = doc.splitTextToSize(line.description || "", W-M*2-80);
-      const rowH = Math.max(22, descLines.length * 13 + 8);
-      if (i % 2 === 0) { doc.setFillColor(250,250,250); doc.rect(M, y, W-M*2, rowH, "F"); }
-      doc.setDrawColor(235,235,235); doc.setLineWidth(0.3);
+      // Alternating row background
+      if (i % 2 === 1) {
+        doc.setFillColor(...C_ROW_ALT);
+        doc.rect(M, y, INNER_W, rowH, "F");
+      }
+      // Bottom border per row
+      doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.3);
       doc.line(M, y+rowH, W-M, y+rowH);
-      doc.setTextColor(20,20,20); doc.setFont("helvetica","normal"); doc.setFontSize(10);
-      doc.text(descLines, M+10, y+15);
-      doc.setFont("helvetica","bold"); doc.setFontSize(10);
-      doc.text(fmtCurrency(line.amount), W-M-6, y+15, { align: "right" });
-      doc.setFont("helvetica","normal"); doc.setFontSize(9);
+
+      doc.setTextColor(...C_TEXT);
+      doc.setFont("helvetica","normal"); doc.setFontSize(10);
+      doc.text(descLines, M+10, y+16);
+      doc.setFont("helvetica","bold");
+      doc.text(fmtCurrency(line.amount), W-M-6, y+16, { align: "right" });
+      doc.setFont("helvetica","normal");
       y += rowH;
     });
 
-    y += 12;
+    // Table outer border
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+    doc.rect(M, tableStartY, INNER_W, y - tableStartY);
+
+    y += 10;
 
     // ── Totals ──
-    const totX = W-M-200;
-    doc.setDrawColor(200,200,200); doc.setLineWidth(0.5);
+    const totW = 200;
+    const totX = W - M - totW;
+
+    // Subtotal line
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.4);
     doc.line(totX, y, W-M, y); y += 14;
-    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(60,60,60);
-    doc.text("Subtotal", totX+4, y); doc.text(fmtCurrency(total), W-M-4, y, { align: "right" }); y += 14;
-    // Total box
-    doc.setFillColor(26,26,26); doc.rect(totX, y, 200, 20, "F");
-    doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(255,255,255);
-    doc.text("Total", totX+8, y+14);
-    doc.text(fmtCurrency(total), W-M-4, y+14, { align: "right" });
-    y += 32;
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...C_MUTED);
+    doc.text("Subtotal", totX+6, y);
+    doc.setTextColor(...C_TEXT); doc.setFont("helvetica","bold");
+    doc.text(fmtCurrency(total), W-M-6, y, { align: "right" });
+    y += 6;
+
+    // Total bar — blue to match header
+    doc.setFillColor(...C_TOTAL_BG);
+    doc.rect(totX, y, totW, 22, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(...C_HDR_TXT);
+    doc.text("Total", totX+8, y+15);
+    doc.text(fmtCurrency(total), W-M-6, y+15, { align: "right" });
+    y += 30;
 
     // ── Notes ──
     if (notes) {
-      if (y > 650) { doc.addPage(); y = 48; }
-      doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(80,80,80);
-      const noteLines = doc.splitTextToSize(notes, W-M*2);
+      if (y > 660) { doc.addPage(); y = 36; }
+      y += 6;
+      doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(...C_MUTED);
+      const noteLines = doc.splitTextToSize(notes, INNER_W);
       doc.text(noteLines, M, y);
-      y += noteLines.length * 12 + 10;
+      y += noteLines.length * 12 + 8;
     }
 
     // ── Footer bar ──
-    const footY = 750;
-    doc.setFillColor(240,240,240); doc.rect(M, footY, W-M*2, 22, "F");
-    doc.setDrawColor(180,180,180); doc.rect(M, footY, W-M*2, 22);
-    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(60,60,60);
-    doc.text("Phone #", M+4, footY+15);
-    doc.setFont("helvetica","bold"); doc.text("330-257-0447", M+38, footY+15);
-    doc.setFont("helvetica","normal"); doc.text("E-mail", M+120, footY+15);
-    doc.setFont("helvetica","bold"); doc.text("rick@northeasternelec.com", M+146, footY+15);
-    doc.setFont("helvetica","bold"); doc.setFontSize(10);
-    doc.text("Total", W-M-80, footY+15);
-    doc.text(fmtCurrency(total), W-M-4, footY+15, { align: "right" });
+    const footY = PAGE_H - BORDER_PAD - 28;
+    doc.setFillColor(...C_FOOTER);
+    doc.rect(M, footY, INNER_W, 22, "F");
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+    doc.rect(M, footY, INNER_W, 22);
+    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(70,70,70);
+    doc.text("Phone #", M+5, footY+15);
+    doc.setFont("helvetica","bold"); doc.text("330-257-0447", M+40, footY+15);
+    doc.setFont("helvetica","normal"); doc.text("E-mail", M+124, footY+15);
+    doc.setFont("helvetica","bold"); doc.text("rick@northeasternelec.com", M+150, footY+15);
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_TEXT);
+    doc.text("Total", W-M-90, footY+15);
+    doc.text(fmtCurrency(total), W-M-6, footY+15, { align: "right" });
+
+    // ── Outer border (drawn last, on top) ──
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(1.2);
+    doc.rect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD*2, PAGE_H - BORDER_PAD*2);
 
     const filename = `NEE_Invoice_${invNum || jobName.replace(/\s+/g,"_")}_${invDate}.pdf`;
     doc.save(filename);

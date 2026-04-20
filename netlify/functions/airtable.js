@@ -236,22 +236,24 @@ async function handlePayrollEntries(params) {
     sortDir: "asc"
   });
 
+  // GET responses return fields by NAME not ID — use plain field names here
   const entries = records.map(r => {
     const f = r.fields || {};
-    // Get linked job id if available
-    const jobLinks = f[TE.jobLink];
-    const jobId = Array.isArray(jobLinks) && jobLinks.length ? (typeof jobLinks[0] === "string" ? jobLinks[0] : jobLinks[0]?.id || null) : null;
+    const jobLinks = f["Job"];
+    const jobId = Array.isArray(jobLinks) && jobLinks.length
+      ? (typeof jobLinks[0] === "string" ? jobLinks[0] : jobLinks[0]?.id || null)
+      : null;
     return {
       id:        r.id,
-      employee:  f[TE.employee] || "",
-      workDate:  f[TE.workDate] || "",
-      duration:  f[TE.duration] ?? 0,
-      hours:     f[TE.hours] ?? 0,
-      cityTaxes: f[TE.cityTaxes] || "A No Tax",
-      class:     f[TE.class] || "",
+      employee:  f["Employee"] || "",
+      workDate:  f["Work Date"] || "",
+      duration:  f["Duration (Seconds)"] ?? 0,
+      hours:     f["Hours"] ?? 0,
+      cityTaxes: f["City Taxes"] || "A No Tax",
+      class:     f["Class"] || "",
       jobId:     jobId,
-      jobName:   f[TE.jobNameText] || "",
-      reviewed:  f[TE.reviewed] === true
+      jobName:   f["Job Name (Text)"] || "",
+      reviewed:  f["Labor Reviewed"] === true
     };
   });
 

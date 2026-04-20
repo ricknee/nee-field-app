@@ -253,6 +253,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="newitem-btn" onclick="goNewItem()" style="display:none">
       <div class="ico">➕</div><div><div class="lbl">Add New Item</div><div class="sub">Create a new inventory item</div></div>
     </button>
+    <button class="big-btn" id="wirecost-btn" onclick="goWireCostCalc()" style="display:none">
+      <div class="ico">🧮</div><div><div class="lbl">Wire Cost Calculator</div><div class="sub">Convert $/ft invoice prices to $/lb</div></div>
+    </button>
     <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
     </button>
@@ -319,6 +322,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-newitem" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Add New Item</h2></div>
   <div class="log-body" id="newitem-body"></div>
+</div>
+
+<!-- WIRE COST CALCULATOR (admin) -->
+<div id="s-wirecost" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Wire Cost Calculator</h2></div>
+  <div class="log-body" id="wirecost-body"></div>
 </div>
 
 <!-- ADD WIRE SCRAP -->
@@ -834,6 +843,8 @@ function applyUser() {
   if (adjBtn)      adjBtn.style.display      = isAdmin ? "flex" : "none";
   if (pushBtn)     pushBtn.style.display     = isAdmin ? "flex" : "none";
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
+  var wirecostBtn = document.getElementById("wirecost-btn");
+  if (wirecostBtn) wirecostBtn.style.display = isAdmin ? "flex" : "none";
   // Reorder alerts are visible to everyone — field guys need to know what's low too
   if (reorderBtn)  reorderBtn.style.display  = "flex";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
@@ -3381,6 +3392,176 @@ function goNewItem() {
     return;
   }
   renderNewItemForm();
+}
+
+// ═══════════════════════════════════════════════════════════
+// WIRE COST CALCULATOR (admin only)
+// Converts a $/ft price from a vendor invoice into $/lb and writes
+// it to the item's Default Unit Cost. Lets Rick process a whole
+// invoice without leaving the app or doing the ft/lb mental math.
+// Uses the existing updateItemCost POST endpoint — no new backend.
+// ═══════════════════════════════════════════════════════════
+var wireCalcItem = null;
+
+function goWireCostCalc() {
+  showScreen("wirecost");
+  wireCalcItem = null;
+  var body = document.getElementById("wirecost-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading items…</div>';
+    var t = setInterval(function(){ if(dataReady){ clearInterval(t); renderWireCostCalc(); } }, 300);
+    return;
+  }
+  renderWireCostCalc();
+}
+
+function renderWireCostCalc() {
+  // Only wire items (those with a ft/lb conversion factor) — pipe, fittings,
+  // devices etc. don't need this screen.
+  var wireItems = allItems
+    .filter(function(i){ return i.wireFtPerLb > 0; })
+    .sort(function(a, b){ return a.name.localeCompare(b.name); });
+
+  if (!wireItems.length) {
+    document.getElementById("wirecost-body").innerHTML =
+      '<div class="empty" style="padding:30px;text-align:center;color:var(--dim);">' +
+        'No wire items found.<br>Set a <b>Wire ft/lb</b> value on any item to see it here.' +
+      '</div>';
+    return;
+  }
+
+  var names = wireItems.map(function(i){ return i.name; });
+  initCombo("wc-item", names, "", onWireCalcItemPicked);
+
+  document.getElementById("wirecost-body").innerHTML =
+    '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);line-height:1.45;">' +
+      '🧮 Enter the <b>price per foot</b> from your vendor invoice — this will calculate the per-pound cost and update the item\'s Default Unit Cost.' +
+    '</div>' +
+
+    '<div class="field-group"><div class="field-lbl">Wire Item</div>' +
+      comboHTML("wc-item", "Search or pick a wire item…") +
+    '</div>' +
+
+    '<div id="wc-details"></div>';
+}
+
+function onWireCalcItemPicked(name) {
+  var details = document.getElementById("wc-details");
+  if (!details) return;
+  if (!name) { wireCalcItem = null; details.innerHTML = ""; return; }
+
+  wireCalcItem = allItems.find(function(i){ return i.name === name && i.wireFtPerLb > 0; });
+  if (!wireCalcItem) { details.innerHTML = ""; return; }
+
+  var ftPerLb      = wireCalcItem.wireFtPerLb;
+  var currentCost  = Number(wireCalcItem.cost) || 0;
+  var currentPerFt = ftPerLb > 0 ? currentCost / ftPerLb : 0;
+
+  details.innerHTML =
+    // Current price card
+    '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-top:6px;">' +
+      '<div style="font-size:15px;font-weight:700;color:var(--gold);">' + wireCalcItem.name + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + ftPerLb + ' ft / lb</div>' +
+      '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">' +
+        '<div style="font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px;">Current Price</div>' +
+        '<div style="font-size:14px;color:var(--text);">' +
+          (currentCost > 0
+            ? fmtCurrency(currentCost) + ' / lb  =  $' + currentPerFt.toFixed(4) + ' / ft'
+            : '<span style="color:var(--dim);">No price set yet</span>'
+          ) +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // New price input
+    '<div class="field-group" style="margin-top:14px;"><div class="field-lbl">New Price per Foot ($)</div>' +
+      '<div style="display:flex;align-items:center;gap:10px;">' +
+        '<input class="field-inp" id="wc-perft" type="number" step="0.0001" placeholder="e.g. 0.2353" oninput="updateWireCalcPreview()" onfocus="this.select()" style="flex:1;" />' +
+        '<span style="color:var(--dim);font-size:13px;">/ ft</span>' +
+      '</div>' +
+    '</div>' +
+
+    // Live preview — hidden until user types something valid
+    '<div id="wc-preview" style="display:none;"></div>' +
+
+    // Update button — disabled until preview is valid
+    '<button class="primary-btn" id="wc-update-btn" onclick="submitWireCostUpdate()" disabled style="margin-top:4px;opacity:.5;">Update Item Price</button>' +
+    '<div style="height:24px"></div>';
+
+  // Focus the price field after the dropdown closes
+  setTimeout(function(){ document.getElementById("wc-perft")?.focus(); }, 150);
+}
+
+function updateWireCalcPreview() {
+  if (!wireCalcItem) return;
+  var perFt    = parseFloat(document.getElementById("wc-perft")?.value);
+  var preview  = document.getElementById("wc-preview");
+  var btn      = document.getElementById("wc-update-btn");
+
+  if (isNaN(perFt) || perFt <= 0) {
+    if (preview) preview.style.display = "none";
+    if (btn)     { btn.disabled = true; btn.style.opacity = ".5"; }
+    return;
+  }
+
+  var newPerLb    = perFt * wireCalcItem.wireFtPerLb;
+  var currentCost = Number(wireCalcItem.cost) || 0;
+  var delta       = newPerLb - currentCost;
+  var pct         = currentCost > 0 ? (delta / currentCost * 100) : 0;
+  var arrow       = delta > 0.0001 ? "▲" : delta < -0.0001 ? "▼" : "—";
+  // Green for decrease (good for us), red for increase (paying more).
+  // Uses inline colors since the app doesn't have a --green variable defined.
+  var color       = delta > 0.0001 ? "var(--red)" : delta < -0.0001 ? "#4ade80" : "var(--dim)";
+
+  preview.style.display = "block";
+  preview.innerHTML =
+    '<div style="background:var(--navy-mid);border:1.5px solid var(--gold);border-radius:10px;padding:14px;margin-top:10px;">' +
+      '<div style="font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px;">New Default Unit Cost</div>' +
+      '<div style="font-size:22px;font-weight:700;color:var(--gold);">$' + newPerLb.toFixed(4) + ' / lb</div>' +
+      (currentCost > 0
+        ? '<div style="font-size:12px;margin-top:6px;color:' + color + ';">' + arrow + ' ' +
+            (delta >= 0 ? '+' : '') + '$' + delta.toFixed(4) + ' / lb  (' +
+            (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%)</div>'
+        : '<div style="font-size:12px;margin-top:6px;color:var(--dim);">No previous price to compare</div>'
+      ) +
+    '</div>';
+
+  btn.disabled = false;
+  btn.style.opacity = "1";
+}
+
+async function submitWireCostUpdate() {
+  if (!wireCalcItem) return;
+  var perFt = parseFloat(document.getElementById("wc-perft")?.value);
+  if (isNaN(perFt) || perFt <= 0) { showToast("Enter a valid price per foot", true); return; }
+
+  // Round to 4 decimals — matches the precision you'd get off a vendor invoice
+  var newPerLb = +(perFt * wireCalcItem.wireFtPerLb).toFixed(4);
+
+  if (!confirm("Update " + wireCalcItem.name + "\nDefault Unit Cost → $" + newPerLb.toFixed(4) + " / lb\n\nProceed?")) return;
+
+  var btn = document.getElementById("wc-update-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Updating…"; }
+
+  try {
+    await apiPost({ action: "updateItemCost", itemId: wireCalcItem.id, cost: newPerLb });
+
+    // Keep the in-memory cache in sync so if Rick picks this same item again
+    // a minute later the "Current Price" card shows the value he just set.
+    wireCalcItem.cost = newPerLb;
+    var itemInCache = allItems.find(function(i){ return i.id === wireCalcItem.id; });
+    if (itemInCache) itemInCache.cost = newPerLb;
+
+    showToast("✓ " + wireCalcItem.name + " → $" + newPerLb.toFixed(4) + "/lb");
+
+    // Reset the form so Rick can bang through multiple items on the same invoice.
+    wireCalcItem = null;
+    comboClear("wc-item");
+    document.getElementById("wc-details").innerHTML = "";
+  } catch(ex) {
+    showToast("Error: " + (ex.message || ex), true);
+    if (btn) { btn.disabled = false; btn.textContent = "Update Item Price"; }
+  }
 }
 
 function renderNewItemForm(prefillBarcode) {

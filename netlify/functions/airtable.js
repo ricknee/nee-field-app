@@ -735,20 +735,87 @@ async function handleVendors() {
 
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
 async function handleSaveInvoice(body) {
-  const { jobId, invoiceNumber, invoiceDate, billTo, amount, notes, lineItems } = body || {};
+  const { jobId, invoiceDate, billTo, laborAmount, materialsAmount, notes } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // Store in Invoices table — using existing fields
+  // Map to existing Invoices table fields — matches your manual invoice pattern
   const fields = {};
-  fields["fld1fmEklDw6y9hS2"] = [{ id: String(jobId) }];  // Job linked record
-  if (invoiceDate)   fields["fldAEjySdXkUke1Cv"] = invoiceDate;
-  if (notes)         fields["fldLQrPKHWLrHLOA2"] = notes;
+  fields["fld1fmEklDw6y9hS2"] = [{ id: String(jobId) }];          // Job (linked)
+  fields["fldXcHqj8xqmOWeLH"] = "Sent";                            // Invoice Status = Sent
+  fields["fldljpi4PpNPIfI27"] = "T&M Final";                       // Billing Mode
+  fields["fldC4loXTBzC2UKGt"] = "Time & Material";                 // Invoice Type
+  fields["fldejNlo5R194TGMs"] = true;                               // Auto Allocate
+  if (invoiceDate)       fields["fldAEjySdXkUke1Cv"] = invoiceDate;
+  if (notes)             fields["fldLQrPKHWLrHLOA2"] = notes;
+  if (laborAmount > 0)   fields["fldRcvTVQ7naHG19t"] = Number(laborAmount);   // Manual Labor $
+  if (materialsAmount > 0) fields["fldcbhc1z8nEftVeY"] = Number(materialsAmount); // Manual Material $
 
   const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
     method: "POST",
     body: JSON.stringify({ fields, typecast: true })
   });
   return resp(200, { ok: true, id: data.id });
+}
+
+// ── PCLOUD UPLOAD ─────────────────────────────────────────────────────────────
+async function handleUploadToPCloud(body) {
+  const { folderId, filename, pdfBase64 } = body || {};
+  if (!folderId || !filename || !pdfBase64) {
+    return resp(400, { ok: false, error: "Missing folderId, filename, or pdfBase64." });
+  }
+
+  const PCLOUD_TOKEN = process.env.PCLOUD_TOKEN;
+  if (!PCLOUD_TOKEN) {
+    return resp(500, { ok: false, error: "PCLOUD_TOKEN env var not set." });
+  }
+
+  // Convert base64 to binary buffer
+  const pdfBuffer = Buffer.from(pdfBase64, "base64");
+
+  // pCloud uploadfile endpoint — multipart form
+  const boundary = "----NEEBoundary" + Date.now();
+  const CRLF = "
+";
+
+  // Build multipart body manually
+  const header = [
+    `--${boundary}`,
+    `Content-Disposition: form-data; name="filename"`,
+    "",
+    filename,
+    `--${boundary}`,
+    `Content-Disposition: form-data; name="folderid"`,
+    "",
+    String(folderId),
+    `--${boundary}`,
+    `Content-Disposition: form-data; name="file"; filename="${filename}"`,
+    "Content-Type: application/pdf",
+    "",
+    ""
+  ].join(CRLF);
+
+  const footer = CRLF + `--${boundary}--` + CRLF;
+
+  const headerBuf  = Buffer.from(header, "utf8");
+  const footerBuf  = Buffer.from(footer, "utf8");
+  const multipart  = Buffer.concat([headerBuf, pdfBuffer, footerBuf]);
+
+  const res = await fetch("https://api.pcloud.com/uploadfile", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${PCLOUD_TOKEN}`,
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": String(multipart.length)
+    },
+    body: multipart
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (json.result !== 0) {
+    return resp(400, { ok: false, error: `pCloud error: ${json.error || JSON.stringify(json)}` });
+  }
+
+  return resp(200, { ok: true, fileId: json.fileids?.[0] });
 }
 
 async function handleUpdateJobNotes(body) {
@@ -803,6 +870,7 @@ export async function handler(event) {
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       if (body.action === "saveInvoice")          return await handleSaveInvoice(body);
+      if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);

@@ -2721,8 +2721,203 @@ async function lookupStock(itemId) {
     html += '</div>';
     result.innerHTML = html;
 
+    // Admin-only: load and render the Vendor Pricing section after stock is showing.
+    // Kept out of the initial Promise.all so the stock levels render fast; vendor
+    // pricing then streams in underneath with its own loading state.
+    if (isAdmin) {
+      renderVendorPricingSection(stockItem.id, stockItem.name);
+    }
+
   } catch(ex) {
     result.innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// VENDOR PRICING SECTION (inside Check Stock, admin only)
+// ═══════════════════════════════════════════════════════════
+async function renderVendorPricingSection(itemId, itemName) {
+  var result = document.getElementById("stock-result");
+  if (!result) return;
+
+  // Placeholder so the section shows up before the API call returns
+  var placeholder = document.createElement("div");
+  placeholder.id = "vendor-pricing-section";
+  placeholder.innerHTML =
+    '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px;">Vendor Pricing</div>' +
+    '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--dim);font-size:13px;">' +
+      '<div class="spinner" style="display:inline-block;width:14px;height:14px;border-width:2px;vertical-align:middle;"></div> Loading vendor pricing…' +
+    '</div>';
+  result.appendChild(placeholder);
+
+  try {
+    var d = await apiGet("itemVendorPricing", { itemId: itemId });
+    // Check that the stock view is still showing the same item — if the user
+    // clicked a different item while we were loading, just drop this result.
+    if (!stockItem || stockItem.id !== itemId) return;
+    renderVendorPricingContent(d.summary || {}, d.vendors || [], itemId);
+  } catch(ex) {
+    var el = document.getElementById("vendor-pricing-section");
+    if (el) {
+      el.innerHTML =
+        '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px;">Vendor Pricing</div>' +
+        '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--red);font-size:12px;">Couldn\'t load: ' + (ex.message || ex) + '</div>';
+    }
+  }
+}
+
+function renderVendorPricingContent(summary, vendors, itemId) {
+  var el = document.getElementById("vendor-pricing-section");
+  if (!el) return;
+
+  var html = '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px;">Vendor Pricing</div>';
+
+  // Empty state — no vendor pricing records for this item at all
+  if (!vendors.length) {
+    html +=
+      '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--dim);font-size:13px;">' +
+        '<div style="margin-bottom:4px;">No vendor pricing yet for this item.</div>' +
+        '<div style="font-size:11px;color:var(--muted);">Add a Vendor Pricing record in Airtable to track what your suppliers charge.</div>' +
+      '</div>';
+    el.innerHTML = html;
+    return;
+  }
+
+  // ── Summary card: Default vs Live, with Variance and Sync button ──
+  var defaultCost = Number(summary.defaultCost || 0);
+  var liveCost    = Number(summary.liveCost    || 0);
+  var variance    = summary.variance;
+
+  html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:10px;">';
+
+  // Row 1: Default Unit Cost
+  html += '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:2px 0;">' +
+    '<span style="font-size:12px;color:var(--dim);">Default Unit Cost</span>' +
+    '<span style="font-size:14px;font-weight:600;color:var(--text);">' + (defaultCost > 0 ? fmtCurrency(defaultCost) : '—') + '</span>' +
+    '</div>';
+
+  // Row 2: Live preferred vendor price
+  var liveLabel = summary.preferredVendor
+    ? 'Live · ' + summary.preferredVendor
+    : 'Live (no preferred vendor)';
+  html += '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:2px 0;">' +
+    '<span style="font-size:12px;color:var(--dim);">' + liveLabel + '</span>' +
+    '<span style="font-size:14px;font-weight:600;color:var(--gold);">' + (liveCost > 0 ? fmtCurrency(liveCost) : '—') + '</span>' +
+    '</div>';
+
+  // Row 3: Variance — colored by magnitude. 10% or more = red warning.
+  if (variance) {
+    var absPct     = Math.abs(variance.pct);
+    var isWarning  = absPct >= 0.10;
+    var varColor   = isWarning ? 'var(--red)' : 'var(--dim)';
+    var sign       = variance.dollar > 0 ? '+' : (variance.dollar < 0 ? '−' : '');
+    var absDollar  = Math.abs(variance.dollar);
+    var pctStr     = (variance.pct * 100).toFixed(1).replace(/-/, '−') + '%';
+    // Strip auto-minus from toFixed; we format sign manually for consistency
+    if (pctStr.charAt(0) !== '−' && variance.pct < 0) pctStr = '−' + pctStr;
+
+    html += '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:6px 0 2px;border-top:1px solid var(--border);margin-top:6px;">' +
+      '<span style="font-size:12px;color:var(--dim);">Variance</span>' +
+      '<span style="font-size:14px;font-weight:700;color:' + varColor + ';">' + sign + fmtCurrency(absDollar) + '  <span style="font-size:11px;font-weight:600;opacity:.85;">(' + pctStr + ')</span></span>' +
+      '</div>';
+
+    // Sync button — only show when there's a real gap to close
+    if (absPct >= 0.005) {
+      html += '<button onclick="syncItemCostToVendor(\'' + itemId + '\')" ' +
+        'style="margin-top:10px;width:100%;background:var(--navy-mid);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-size:12px;font-weight:700;padding:10px;cursor:pointer;">' +
+        '↻ Sync Default → ' + fmtCurrency(liveCost) +
+        '</button>';
+    }
+  } else if (liveCost > 0 && defaultCost === 0) {
+    // No default cost but we do have a live price — offer to set it
+    html += '<button onclick="syncItemCostToVendor(\'' + itemId + '\')" ' +
+      'style="margin-top:10px;width:100%;background:var(--navy-mid);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-size:12px;font-weight:700;padding:10px;cursor:pointer;">' +
+      '↻ Set Default Cost = ' + fmtCurrency(liveCost) +
+      '</button>';
+  }
+
+  html += '</div>';
+
+  // ── Per-vendor list ──
+  vendors.forEach(function(v) {
+    var borderColor = v.preferred ? 'var(--gold)' : 'var(--border)';
+    var bgColor     = v.preferred ? 'rgba(232,101,26,.06)' : 'var(--navy-lt)';
+    var inactiveStyle = v.active ? '' : 'opacity:.55;';
+
+    html += '<div style="background:' + bgColor + ';border:1.5px solid ' + borderColor + ';border-radius:10px;padding:12px 14px;margin-bottom:8px;' + inactiveStyle + '">';
+
+    // Top row: vendor name + preferred badge + unit cost
+    html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">';
+    html += '<div style="flex:1;min-width:0;">';
+    html += '<div style="font-size:14px;font-weight:700;color:var(--text);">' + (v.vendorName || 'Unknown vendor');
+    if (v.preferred) html += ' <span style="font-size:10px;font-weight:700;color:var(--navy);background:var(--gold);padding:2px 7px;border-radius:8px;margin-left:4px;vertical-align:2px;">👍 PREFERRED</span>';
+    if (!v.active)   html += ' <span style="font-size:10px;color:var(--muted);margin-left:4px;">(inactive)</span>';
+    html += '</div>';
+    if (v.partNumber) {
+      html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;font-family:ui-monospace,monospace;">Part# ' + v.partNumber + '</div>';
+    }
+    html += '</div>';
+    html += '<div style="text-align:right;flex-shrink:0;">';
+    html += '<div style="font-size:16px;font-weight:700;color:' + (v.preferred ? 'var(--gold)' : 'var(--text)') + ';">' + (v.unitCost > 0 ? fmtCurrency(v.unitCost) : '—') + '</div>';
+    if (v.uom) html += '<div style="font-size:10px;color:var(--muted);margin-top:1px;">per ' + v.uom + '</div>';
+    html += '</div>';
+    html += '</div>';
+
+    // Meta row: lead time, min order qty, last updated
+    var metaParts = [];
+    if (v.leadTime > 0)    metaParts.push('🚚 ' + v.leadTime + 'd lead');
+    if (v.minOrderQty > 0) metaParts.push('📦 Min ' + fmtQty(v.minOrderQty));
+    if (v.lastUpdate) {
+      try {
+        var d = new Date(v.lastUpdate);
+        metaParts.push('Updated ' + d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }));
+      } catch(e) {}
+    }
+    if (v.validUntil) {
+      try {
+        var vd = new Date(v.validUntil);
+        var now = new Date();
+        var expired = vd < now;
+        metaParts.push((expired ? '⚠️ Expired ' : '✓ Valid through ') + vd.toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+      } catch(e) {}
+    }
+    if (metaParts.length) {
+      html += '<div style="font-size:11px;color:var(--muted);margin-top:8px;display:flex;flex-wrap:wrap;gap:10px;">';
+      metaParts.forEach(function(m){ html += '<span>' + m + '</span>'; });
+      html += '</div>';
+    }
+
+    if (v.notes) {
+      html += '<div style="font-size:11px;color:var(--dim);margin-top:6px;font-style:italic;">' + v.notes + '</div>';
+    }
+
+    html += '</div>';
+  });
+
+  el.innerHTML = html;
+}
+
+// ── SYNC DEFAULT UNIT COST TO LIVE VENDOR PRICE ──────────
+async function syncItemCostToVendor(itemId) {
+  if (!currentUser || currentUser.role !== "admin") {
+    showToast("Admin only", true);
+    return;
+  }
+  if (!confirm("Copy the preferred vendor's price onto Default Unit Cost?\n\nThis updates how this item is costed on all future transactions.")) return;
+
+  try {
+    var d = await apiPost({ action: "syncItemCostToVendor", itemId: itemId });
+    showToast("✓ Default updated to " + fmtCurrency(d.newDefaultCost));
+
+    // Refresh local cache so pricing flows that read from allItems pick up the change
+    var cached = allItems.find(function(i){ return i.id === itemId; });
+    if (cached) cached.cost = d.newDefaultCost;
+    if (stockItem && stockItem.id === itemId) stockItem.cost = d.newDefaultCost;
+
+    // Refresh the stock view so the summary shows zero variance
+    if (stockItem && stockItem.id === itemId) lookupStock(itemId);
+  } catch(ex) {
+    showToast("Sync failed: " + (ex.message || ex), true);
   }
 }
 

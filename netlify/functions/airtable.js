@@ -354,7 +354,13 @@ async function handleJobs() {
       pipeCost:gNum(f,F.job.pipeCost),materialsInProgress:gNum(f,F.job.materialsInProgress),
       grossProfitLiveDollar:gNum(f,F.job.grossProfitLiveDollar),grossProfitLivePct:gNum(f,F.job.grossProfitLivePct),
       workflowStatus:g(f,F.job.workflowStatus),estimatedLaborHoursRollup:gNum(f,F.job.estimatedLaborHoursRollup),
-      hoursRollup:gNum(f,F.job.hoursRollup),expectedRevenue:gNum(f,F.job.expectedRevenue),
+      hoursRollup:gNum(f,F.job.hoursRollup),
+      billableHourlyRate: (() => {
+        const v = f["Billable Hourly Rate (from Labor Billable Rates)"];
+        if (Array.isArray(v)) return v[0] ?? null;
+        return v ?? null;
+      })(),
+      expectedRevenue:gNum(f,F.job.expectedRevenue),
       actualJobCostCogs:gNum(f,F.job.actualJobCostCogs),totalReviewedCosts:gNum(f,F.job.totalReviewedCosts),
       totalLaborCostFinal:gNum(f,F.job.totalLaborCostFinal),grossProfitFinalDollar:gNum(f,F.job.grossProfitFinalDollar),
       grossProfitFinalPct:gNum(f,F.job.grossProfitFinalPct),allMaterialsReviewed:gFormulaBool(f,F.job.allMaterialsReviewed),
@@ -713,6 +719,24 @@ async function handleVendors() {
   return resp(200, { ok: true, vendors });
 }
 
+// ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
+async function handleSaveInvoice(body) {
+  const { jobId, invoiceNumber, invoiceDate, billTo, amount, notes, lineItems } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // Store in Invoices table — using existing fields
+  const fields = {};
+  fields["fld1fmEklDw6y9hS2"] = [{ id: String(jobId) }];  // Job linked record
+  if (invoiceDate)   fields["fldAEjySdXkUke1Cv"] = invoiceDate;
+  if (notes)         fields["fldLQrPKHWLrHLOA2"] = notes;
+
+  const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, id: data.id });
+}
+
 async function handleUpdateJobNotes(body) {
   const { jobId, notes } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -763,6 +787,7 @@ export async function handler(event) {
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
+      if (body.action === "saveInvoice")          return await handleSaveInvoice(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);

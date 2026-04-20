@@ -713,6 +713,20 @@ async function handleUpdateInspection(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+async function handleCompanies() {
+  const records = await fetchAll("Companies", { sortField: "Company Name", sortDir: "asc" });
+  const companies = records
+    .filter(r => r.fields["Company Name"])
+    .map(r => ({
+      id:             r.id,
+      name:           r.fields["Company Name"] || "",
+      billingAddress: r.fields["Billing Address"] || "",
+      primaryPhone:   r.fields["Primary Phone"] || "",
+      primaryEmail:   r.fields["Primary Email"] || ""
+    }));
+  return resp(200, { ok: true, companies });
+}
+
 async function handleVendors() {
   const records = await fetchAll("Vendors", { sortField: "Vendor Name", sortDir: "asc" });
   const vendors = records.filter(r => r.fields["Active"] !== false).map(r => ({ id:r.id, name:r.fields["Vendor Name"]||"" })).filter(v => v.name);
@@ -764,6 +778,7 @@ export async function handler(event) {
       if (action === "fleetVehicles")      return await handleFleetVehicles();
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();
+      if (action === "companies")          return await handleCompanies();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 

@@ -2602,11 +2602,15 @@
         Object.entries(groups).forEach(([emp, empEntries]) => {
           const colors = EMP_COLORS[emp] || { bg:"#f4f6f9", border:"#dde1e8", text:"#1a2233" };
           const empTotal = empEntries.reduce((s, e) => s + (e.hours || 0), 0);
+          const empIds = empEntries.map(e => e.id).join(",");
           html += `
             <div style="margin-bottom:18px; border-radius:10px; overflow:hidden; border:1px solid ${colors.border};">
-              <div style="background:${colors.bg}; padding:10px 14px; display:flex; justify-content:space-between; align-items:center;">
+              <div style="background:${colors.bg}; padding:10px 14px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
                 <span style="font-weight:700; font-size:14px; color:${colors.text};">${esc(emp)}</span>
-                <span style="font-size:13px; font-weight:600; color:${colors.text};">${empTotal.toFixed(2)} hrs</span>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <span style="font-size:13px; font-weight:600; color:${colors.text};">${empTotal.toFixed(2)} hrs</span>
+                  <button class="te-approve-emp-btn btn btn-sm" data-emp-ids="${empIds}" style="background:var(--green); color:white; border:none; font-size:11px; padding:4px 10px; white-space:nowrap;">✅ Approve All</button>
+                </div>
               </div>
               <table class="expense-table" style="margin:0; border-radius:0;">
                 <thead><tr>
@@ -2641,12 +2645,16 @@
         return html;
       }
 
+      // Collect pending IDs for bulk approve
+      const allPendingIds = pending.map(e => e.id);
+
       el.innerHTML = `
         <!-- Grand Total Banner -->
         <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; align-items:center;">
           <span style="font-size:13px; font-weight:700; color:var(--text);">Total Hours: <span style="color:var(--accent);">${grandTotal.toFixed(2)}</span></span>
           <span style="font-size:13px; color:var(--green); font-weight:600;">✅ Reviewed: ${totalRev.toFixed(2)}</span>
           <span style="font-size:13px; color:var(--red); font-weight:600;">⬜ Pending: ${totalPend.toFixed(2)}</span>
+          ${allPendingIds.length ? `<button id="te-approve-all-btn" class="btn btn-sm" style="margin-left:auto; background:var(--green); color:white; border:none; font-size:12px; padding:6px 14px;">✅ Approve All (${allPendingIds.length})</button>` : ""}
         </div>
         <!-- Sub-tabs -->
         <div style="display:flex; gap:0; margin-bottom:14px; border-bottom:2px solid var(--line);">
@@ -2655,6 +2663,43 @@
         </div>
         <div id="te-pending-content">${renderPendingTab(pending)}</div>
         <div id="te-reviewed-content" style="display:none;">${renderReviewedTab(reviewed)}</div>`;
+
+      // Wire Approve All (global)
+      const approveAllBtn = $("te-approve-all-btn");
+      if (approveAllBtn) {
+        approveAllBtn.addEventListener("click", async () => {
+          if (!allPendingIds.length) return;
+          if (!confirm(`Approve all ${allPendingIds.length} pending time entries for this job?`)) return;
+          approveAllBtn.disabled = true; approveAllBtn.textContent = "Approving...";
+          try {
+            for (const entryId of allPendingIds) {
+              await apiPost("updateTimeEntry", { entryId, reviewed: true });
+            }
+            await loadTimeEntries(jobId);
+          } catch(err) {
+            alert("Error: " + err.message);
+            approveAllBtn.disabled = false; approveAllBtn.textContent = "✅ Approve All";
+          }
+        });
+      }
+
+      // Wire Approve All per employee
+      el.querySelectorAll(".te-approve-emp-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const ids = btn.dataset.empIds.split(",").filter(Boolean);
+          if (!ids.length) return;
+          btn.disabled = true; btn.textContent = "...";
+          try {
+            for (const entryId of ids) {
+              await apiPost("updateTimeEntry", { entryId, reviewed: true });
+            }
+            await loadTimeEntries(jobId);
+          } catch(err) {
+            alert("Error: " + err.message);
+            btn.disabled = false; btn.textContent = "✅ Approve All";
+          }
+        });
+      });
 
       // Wire approve checkboxes
       el.querySelectorAll(".te-review-chk").forEach(chk => {
@@ -2803,12 +2848,15 @@
         </table>`;
       }
 
+      const allPendingExpIds = pending.map(e => e.id);
+
       el.innerHTML = `
         <!-- Grand Total Banner -->
         <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; align-items:center;">
           <span style="font-size:13px; font-weight:700; color:var(--text);">Total: <span style="color:var(--accent);">${fmtCurrency(grandTotal)}</span></span>
           <span style="font-size:13px; color:var(--green); font-weight:600;">✅ Reviewed: ${fmtCurrency(totalRev)}</span>
           <span style="font-size:13px; color:var(--red); font-weight:600;">⬜ Pending: ${fmtCurrency(totalPend)}</span>
+          ${allPendingExpIds.length ? `<button id="exp-approve-all-btn" class="btn btn-sm" style="margin-left:auto; background:var(--green); color:white; border:none; font-size:12px; padding:6px 14px;">✅ Approve All (${allPendingExpIds.length})</button>` : ""}
         </div>
         <!-- Sub-tabs -->
         <div style="display:flex; gap:0; margin-bottom:14px; border-bottom:2px solid var(--line);">
@@ -2817,6 +2865,25 @@
         </div>
         <div id="exp-pending-content" style="overflow-x:auto;">${renderPendingTab(pending)}</div>
         <div id="exp-reviewed-content" style="overflow-x:auto; display:none;">${renderReviewedTab(reviewed)}</div>`;
+
+      // Wire Approve All expenses (global)
+      const expApproveAllBtn = $("exp-approve-all-btn");
+      if (expApproveAllBtn) {
+        expApproveAllBtn.addEventListener("click", async () => {
+          if (!allPendingExpIds.length) return;
+          if (!confirm(`Approve all ${allPendingExpIds.length} pending expenses for this job?`)) return;
+          expApproveAllBtn.disabled = true; expApproveAllBtn.textContent = "Approving...";
+          try {
+            for (const expenseId of allPendingExpIds) {
+              await apiPost("approveExpense", { expenseId });
+            }
+            await loadExpenses(jobId);
+          } catch(err) {
+            alert("Error: " + err.message);
+            expApproveAllBtn.disabled = false; expApproveAllBtn.textContent = "✅ Approve All";
+          }
+        });
+      }
 
       // Wire approve checkboxes
       el.querySelectorAll(".exp-review-chk").forEach(chk => {

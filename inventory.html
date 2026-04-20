@@ -456,6 +456,19 @@ function escapeAttr(s) {
     .replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+// Normalize text for searching — fixes the iOS Safari smart-quotes bug where
+// typing 3" gets auto-converted to 3" (curly quote) and won't match the straight
+// quote stored in item names like "3\" PVC COUPLING". Also handles smart
+// apostrophes and the en/em dashes iOS sometimes inserts. Always pass BOTH the
+// query and the haystack through this before .includes().
+function searchNorm(s) {
+  return String(s == null ? "" : s)
+    .toLowerCase()
+    .replace(/[\u201C\u201D\u201E\u201F\u2033\u2036]/g, '"')  // " " „ ‟ ″ ‶ -> "
+    .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'")  // ' ' ‚ ‛ ′ ‵ -> '
+    .replace(/[\u2013\u2014\u2212]/g, "-");                    // – — − -> -
+}
+
 function comboHTML(id, placeholder) {
   var c = _combos[id] || { selected: "" };
   var sel = c.selected || "";
@@ -919,11 +932,11 @@ document.addEventListener("click", function(e) {
 function onItemSearch() {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(function() {
-    var q = (document.getElementById("item-search")?.value || "").trim().toLowerCase();
+    var q = searchNorm(document.getElementById("item-search")?.value || "").trim();
     var drop = document.getElementById("search-drop");
     if (!drop) return;
     if (!q) { drop.innerHTML = ""; return; }
-    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); }).slice(0,50);
+    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); }).slice(0,50);
     if (!hits.length) { drop.innerHTML = '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>'; return; }
     drop.innerHTML = '<div class="search-drop">' + hits.map(function(i){
       return '<div class="drop-item" onclick="pickItem(\'' + i.id + '\')">' +
@@ -1156,10 +1169,10 @@ var recvItem = null;
 function onItemSearchFor(prefix) {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(function() {
-    var q = (document.getElementById(prefix + "-search")?.value || "").trim().toLowerCase();
+    var q = searchNorm(document.getElementById(prefix + "-search")?.value || "").trim();
     var drop = document.getElementById(prefix + "-drop");
     if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
-    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); }).slice(0,50);
+    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); }).slice(0,50);
     drop.innerHTML = hits.length ? '<div class="search-drop">' + hits.map(function(i){
       return '<div class="drop-item" onclick="pickItemFor(\'' + prefix + '\',\'' + i.id + '\')">' +
         '<div class="drop-name">' + i.name + '</div>' +
@@ -2575,10 +2588,10 @@ function renderFilteredBrowse(cat, size) {
 function onStockSearch() {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(function() {
-    var q    = (document.getElementById("stock-search")?.value || "").trim().toLowerCase();
+    var q    = searchNorm(document.getElementById("stock-search")?.value || "").trim();
     var drop = document.getElementById("stock-drop");
     if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
-    var hits = allItems.filter(function(i){ return i.name.toLowerCase().includes(q) || i.barcode.toString().toLowerCase().includes(q); }).slice(0,50);
+    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); }).slice(0,50);
     drop.innerHTML = hits.length
       ? '<div class="search-drop">' + hits.map(function(i){
           return '<div class="drop-item" onclick="lookupStock(\'' + i.id + '\')">' +
@@ -3931,7 +3944,7 @@ function closeEstimateItemPicker() {
 }
 
 function onEstimateItemSearch() {
-  var q = (document.getElementById("est-item-search-inp")?.value || "").trim().toLowerCase();
+  var q = searchNorm(document.getElementById("est-item-search-inp")?.value || "").trim();
   renderEstimateItemResults(q);
 }
 
@@ -3939,7 +3952,7 @@ function renderEstimateItemResults(q) {
   var results = document.getElementById("est-item-results");
   if (!results) return;
   var items = q
-    ? allItems.filter(function(i) { return (i.name || "").toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); })
+    ? allItems.filter(function(i) { return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); })
     : allItems.slice(0);
   items = items.slice(0, 50);
 
@@ -5224,7 +5237,7 @@ function closeOrderItemPicker() {
 }
 
 function onOrderItemSearch() {
-  var q = (document.getElementById("order-item-search-inp")?.value || "").trim().toLowerCase();
+  var q = searchNorm(document.getElementById("order-item-search-inp")?.value || "").trim();
   renderOrderItemResults(q);
 }
 
@@ -5232,7 +5245,7 @@ function renderOrderItemResults(q) {
   var results = document.getElementById("order-item-results");
   if (!results) return;
   var items = q
-    ? allItems.filter(function(i) { return (i.name || "").toLowerCase().includes(q) || String(i.barcode||"").toLowerCase().includes(q); })
+    ? allItems.filter(function(i) { return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); })
     : allItems.slice(0);
   items = items.slice(0, 50);
 

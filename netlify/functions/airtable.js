@@ -747,11 +747,13 @@ async function handleSaveInvoice(body) {
   fields["fldXcHqj8xqmOWeLH"] = "Sent";                            // Invoice Status
   fields["fldljpi4PpNPIfI27"] = "T&M Final";                       // Billing Mode
   fields["fldC4loXTBzC2UKGt"] = "Time & Material";                 // Invoice Type
-  fields["fldejNlo5R194TGMs"] = true;                               // Auto Allocate
-  if (invoiceDate)         fields["fldAEjySdXkUke1Cv"] = invoiceDate;
-  if (notes)               fields["fldLQrPKHWLrHLOA2"] = notes;
-  if (laborAmount > 0)     fields["fldRcvTVQ7naHG19t"] = Number(laborAmount);
-  if (materialsAmount > 0) fields["fldcbhc1z8nEftVeY"] = Number(materialsAmount);
+  // Auto Allocate = true: lets Airtable rollup labor/material from linked time entries & expenses
+  // Do NOT write Manual Labor/Material — that would double-count with the rollups
+  fields["fldejNlo5R194TGMs"] = true;
+  fields["fldRcvTVQ7naHG19t"] = 0;   // zero out manual labor
+  fields["fldcbhc1z8nEftVeY"] = 0;   // zero out manual material
+  if (invoiceDate) fields["fldAEjySdXkUke1Cv"] = invoiceDate;
+  if (notes)       fields["fldLQrPKHWLrHLOA2"] = notes;
 
   const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
     method: "POST",

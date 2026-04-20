@@ -2387,7 +2387,18 @@ function goCheckStock() {
   initCombo("stock-size", sizes, "", onStockFilterChange);
 
   var body = document.getElementById("stock-body");
+  var isAdmin = currentUser && currentUser.role === "admin";
   body.innerHTML =
+    // Tab strip — Inventory Value tab is admin-only. When not admin the
+    // strip doesn't render at all, so the screen looks identical to before.
+    (isAdmin
+      ? '<div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--border);">' +
+          '<button id="stock-tab-lookup" onclick="switchStockTab(\'lookup\')" style="background:transparent;border:none;border-bottom:2px solid var(--gold);color:var(--gold);font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer;">Lookup</button>' +
+          '<button id="stock-tab-value" onclick="switchStockTab(\'value\')" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer;">💰 Inventory Value</button>' +
+        '</div>'
+      : '') +
+
+    '<div id="stock-lookup-pane">' +
     // Search + scan (single-item lookup — existing behavior)
     '<div class="field-group"><div class="field-lbl">Search by Item</div>' +
     '<div class="scan-row">' +
@@ -2410,7 +2421,185 @@ function goCheckStock() {
       '</div>' +
     '</div>' +
 
-    '<div id="stock-result"></div>';
+    '<div id="stock-result"></div>' +
+    '</div>' + // end stock-lookup-pane
+
+    // Value pane — lazy-rendered on first tab switch
+    '<div id="stock-value-pane" style="display:none;"></div>';
+}
+
+// ═══════════════════════════════════════════════════════════
+// INVENTORY VALUE TAB (admin-only, inside Check Stock)
+// Shows grand total $ of all inventory on hand, plus a searchable
+// per-category drill-down. Data source is stockLevelsAll which is
+// already cached in stockLevelsAllCache for the Browse Category mode.
+// ═══════════════════════════════════════════════════════════
+
+function switchStockTab(tab) {
+  var lp = document.getElementById("stock-lookup-pane");
+  var vp = document.getElementById("stock-value-pane");
+  var lb = document.getElementById("stock-tab-lookup");
+  var vb = document.getElementById("stock-tab-value");
+  if (!lp || !vp || !lb || !vb) return;
+  if (tab === "value") {
+    lp.style.display = "none";
+    vp.style.display = "";
+    lb.style.borderBottomColor = "transparent"; lb.style.color = "var(--dim)";
+    vb.style.borderBottomColor = "var(--gold)";  vb.style.color = "var(--gold)";
+    renderInventoryValueTab();
+  } else {
+    lp.style.display = "";
+    vp.style.display = "none";
+    vb.style.borderBottomColor = "transparent"; vb.style.color = "var(--dim)";
+    lb.style.borderBottomColor = "var(--gold)";  lb.style.color = "var(--gold)";
+  }
+}
+
+async function renderInventoryValueTab() {
+  var pane = document.getElementById("stock-value-pane");
+  if (!pane) return;
+
+  // Show loading state only if we need to fetch — otherwise render synchronously
+  if (!stockLevelsAllCache) {
+    pane.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--dim);">Loading inventory…</div>';
+    try {
+      var d = await apiGet("stockLevelsAll");
+      stockLevelsAllCache = d.levels || [];
+    } catch(ex) {
+      pane.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--red);">Failed to load: ' + (ex.message || ex) + '</div>';
+      return;
+    }
+  }
+
+  // Build itemId -> category map from allItems (single pass)
+  var itemCatMap = {};
+  allItems.forEach(function(i){ itemCatMap[i.id] = i.cat || "Uncategorized"; });
+
+  // Aggregate totals by category. For the item count we track unique items
+  // per category (a single item spread across 3 locations shouldn't count 3x).
+  var catTotals = {};  // cat -> { total, items: {itemId: true} }
+  var seenItemsOverall = {};
+  var grandTotal = 0;
+
+  stockLevelsAllCache.forEach(function(lv){
+    var cat = itemCatMap[lv.itemId] || "Uncategorized";
+    if (!catTotals[cat]) catTotals[cat] = { total: 0, items: {} };
+    var v = Number(lv.totalValue) || 0;
+    catTotals[cat].total += v;
+    grandTotal += v;
+    // Only count items that actually have stock or value
+    if ((lv.qtyOnHand || 0) > 0 || v > 0) {
+      catTotals[cat].items[lv.itemId] = true;
+      seenItemsOverall[lv.itemId] = true;
+    }
+  });
+
+  var grandItemCount = Object.keys(seenItemsOverall).length;
+  // Sort categories by total value descending so biggest buckets show first
+  var cats = Object.keys(catTotals).sort(function(a, b){ return catTotals[b].total - catTotals[a].total; });
+
+  pane.innerHTML =
+    // Grand total hero card
+    '<div style="background:linear-gradient(135deg,var(--navy-lt) 0%,var(--navy-mid) 100%);border:1.5px solid var(--gold);border-radius:12px;padding:18px;margin-bottom:16px;text-align:center;">' +
+      '<div style="font-size:11px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px;">Total Inventory Value</div>' +
+      '<div style="font-size:30px;font-weight:700;color:var(--gold);line-height:1.1;">' + fmtCurrency(grandTotal) + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:6px;">' + grandItemCount + ' items across ' + cats.length + ' categor' + (cats.length === 1 ? 'y' : 'ies') + '</div>' +
+    '</div>' +
+
+    // Searchable category picker
+    '<div class="field-group">' +
+      '<div class="field-lbl">View a Category</div>' +
+      comboHTML("val-cat", "Type or pick a category…") +
+    '</div>' +
+
+    // Drill-down result area
+    '<div id="val-drill"></div>' +
+
+    // Full list of all categories with their totals
+    '<div style="margin-top:18px;">' +
+      '<div style="font-size:11px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;">All Categories</div>' +
+      (cats.length === 0
+        ? '<div class="empty" style="padding:20px;text-align:center;">No inventory on hand</div>'
+        : cats.map(function(c){
+            var itemCount = Object.keys(catTotals[c].items).length;
+            var pct = grandTotal > 0 ? Math.round((catTotals[c].total / grandTotal) * 100) : 0;
+            return '<div onclick="viewCategoryValue(' + JSON.stringify(c).replace(/"/g, '&quot;') + ')" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;gap:10px;">' +
+              '<div style="flex:1;min-width:0;">' +
+                '<div style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + c + '</div>' +
+                '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + itemCount + ' item' + (itemCount===1?'':'s') + ' · ' + pct + '% of total</div>' +
+              '</div>' +
+              '<div style="font-size:14px;color:var(--gold);font-weight:700;white-space:nowrap;">' + fmtCurrency(catTotals[c].total) + '</div>' +
+            '</div>';
+          }).join("")
+      ) +
+    '</div>';
+
+  // Wire up the searchable category combo — tapping a result calls
+  // viewCategoryValue, which renders the drill-down card above this list.
+  initCombo("val-cat", cats, "", function(val){ viewCategoryValue(val); });
+}
+
+function viewCategoryValue(catName) {
+  var drill = document.getElementById("val-drill");
+  if (!drill) return;
+  if (!catName) { drill.innerHTML = ""; return; }
+
+  // Item metadata lookup
+  var itemMap    = {};
+  var itemCatMap = {};
+  allItems.forEach(function(i){
+    itemMap[i.id]    = i;
+    itemCatMap[i.id] = i.cat || "Uncategorized";
+  });
+
+  // Aggregate qty and $ per item within this category (collapse locations)
+  var byItem = {};
+  var catTotal = 0;
+  (stockLevelsAllCache || []).forEach(function(lv){
+    if ((itemCatMap[lv.itemId] || "Uncategorized") !== catName) return;
+    if (!byItem[lv.itemId]) byItem[lv.itemId] = { totalQty: 0, totalValue: 0 };
+    byItem[lv.itemId].totalQty   += Number(lv.qtyOnHand)  || 0;
+    byItem[lv.itemId].totalValue += Number(lv.totalValue) || 0;
+    catTotal += Number(lv.totalValue) || 0;
+  });
+
+  var rows = Object.keys(byItem)
+    .map(function(iid){
+      var item = itemMap[iid] || {};
+      return {
+        id:    iid,
+        name:  item.name || iid,
+        uom:   item.uom  || "",
+        qty:   byItem[iid].totalQty,
+        value: byItem[iid].totalValue
+      };
+    })
+    // Hide items with no stock — showing $0 rows is just noise for this view
+    .filter(function(r){ return r.qty > 0 || r.value > 0; })
+    .sort(function(a, b){ return b.value - a.value; });
+
+  drill.innerHTML =
+    '<div style="background:var(--navy-mid);border:1.5px solid var(--gold);border-radius:10px;padding:14px;margin:12px 0 6px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;gap:10px;">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:15px;font-weight:700;color:var(--gold);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + catName + '</div>' +
+          '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + ' with stock</div>' +
+        '</div>' +
+        '<div style="font-size:20px;font-weight:700;color:var(--gold);white-space:nowrap;">' + fmtCurrency(catTotal) + '</div>' +
+      '</div>' +
+      (rows.length === 0
+        ? '<div class="empty" style="padding:10px;text-align:center;">No items with stock in this category</div>'
+        : rows.map(function(r){
+            return '<div onclick="lookupStock(\'' + r.id + '\');switchStockTab(\'lookup\');" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-top:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;gap:10px;" title="Tap for per-location breakdown">' +
+              '<div style="flex:1;min-width:0;">' +
+                '<div style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + r.name + '</div>' +
+                '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + Number(r.qty).toLocaleString() + ' ' + (r.uom || "ea") + '</div>' +
+              '</div>' +
+              '<div style="font-size:13px;color:var(--text);font-weight:700;text-align:right;white-space:nowrap;">' + fmtCurrency(r.value) + '</div>' +
+            '</div>';
+          }).join("")
+      ) +
+    '</div>';
 }
 
 // Called whenever either combo changes value

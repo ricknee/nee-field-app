@@ -4128,24 +4128,28 @@
     el.innerHTML = `<div class="loading-msg">Building invoice...</div>`;
 
     try {
-      // Fetch time entries, expenses, and companies in parallel
-      const [teData, expData, compData] = await Promise.all([
+      // Fetch time entries and expenses
+      const [teData, expData] = await Promise.all([
         apiGet("timeEntries", { jobId: job.id }),
-        apiGet("expenses", { jobId: job.id }),
-        apiGet("companies")
+        apiGet("expenses", { jobId: job.id })
       ]);
-
-      // Build billing address from contractor name + companies table
-      const companies = compData.companies || [];
-      const contractorName = job.contractor || "";
-      const contractorCo = companies.find(c => c.name === contractorName);
-      const billToAddress = contractorCo?.billingAddress
-        ? `${contractorName}
-${contractorCo.billingAddress}`
-        : contractorName;
 
       const entries  = (teData.entries  || []).filter(e => e.reviewed);
       const expenses = (expData.expenses || []).filter(e => e.reviewed);
+
+      // Try to get contractor billing address — fail gracefully
+      let billToAddress = job.contractor || "";
+      try {
+        const compData = await apiGet("companies");
+        const companies = compData.companies || [];
+        const contractorName = job.contractor || "";
+        const contractorCo = companies.find(c => c.name === contractorName);
+        if (contractorCo?.billingAddress) {
+          billToAddress = contractorName + "\n" + contractorCo.billingAddress;
+        }
+      } catch(e) {
+        // silently fall back to contractor name only
+      }
 
       // Build default line items — clean two-line format
       invLines = [];
@@ -4182,7 +4186,7 @@ ${contractorCo.billingAddress}`
         });
       }
 
-      renderInvoiceBuilder(job, entries, expenses);
+      renderInvoiceBuilder(job, entries, expenses, billToAddress);
 
     } catch(err) {
       el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
@@ -4193,7 +4197,7 @@ ${contractorCo.billingAddress}`
     return invLines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
   }
 
-  function renderInvoiceBuilder(job, entries, expenses) {
+  function renderInvoiceBuilder(job, entries, expenses, billToAddress) {
     const today = new Date().toISOString().slice(0,10);
     const el = $("invoiceBuilder");
 

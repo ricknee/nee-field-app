@@ -4159,36 +4159,56 @@
         // silently fall back to contractor name only
       }
 
-      // Build default line items — clean two-line format
+      // Build default line items — use UNBILLED amounts only (avoids double-billing on ongoing jobs)
       invLines = [];
 
-      // Cost of Labor — total reviewed hours × billable rate, lump sum (no rate/hrs shown)
-      const totalHrs = entries.reduce((s, e) => s + (e.hours || 0), 0);
-      const rate = job.billableHourlyRate || 0;
-      const laborTotal = +(totalHrs * rate).toFixed(2);
-      if (laborTotal > 0) {
+      // Cost of Labor — sum of Unbilled Labor Revenue $ across all reviewed entries
+      const laborTotal = +entries
+        .filter(e => e.reviewed)
+        .reduce((s, e) => s + (e.unbilledRevenue || 0), 0)
+        .toFixed(2);
+
+      // Fallback: if all entries are fully billed (unbilledRevenue = 0), use reviewed hours × rate
+      // This handles jobs where billing allocations haven't been set up yet
+      const fallbackRate = job.billableHourlyRate || 0;
+      const reviewedHrs  = entries.filter(e => e.reviewed).reduce((s, e) => s + (e.hours || 0), 0);
+      const laborFallback = +(reviewedHrs * fallbackRate).toFixed(2);
+      const laborAmount   = laborTotal > 0 ? laborTotal : laborFallback;
+
+      if (laborAmount > 0) {
         invLines.push({
           id: "labor",
           section: "",
           description: "Cost of Labor",
           qty: 1,
-          rate: laborTotal,
-          amount: laborTotal,
+          rate: laborAmount,
+          amount: laborAmount,
           editable: true,
-          hideQtyRate: true   // don't show qty/rate columns — just the amount
+          hideQtyRate: true
         });
       }
 
-      // Cost of Materials — everything else rolled into one lump sum
-      const matTotal = expenses.reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0);
-      if (matTotal > 0) {
+      // Cost of Materials — sum of Unbilled Material Amount $ across reviewed expenses
+      const matTotal = +expenses
+        .filter(e => e.reviewed)
+        .reduce((s, e) => s + (e.unbilledMaterial || 0), 0)
+        .toFixed(2);
+
+      // Fallback: if no unbilled material amounts, use billableMaterial totals
+      const matFallback = +expenses
+        .filter(e => e.reviewed)
+        .reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0)
+        .toFixed(2);
+      const matAmount = matTotal > 0 ? matTotal : matFallback;
+
+      if (matAmount > 0) {
         invLines.push({
           id: "materials",
           section: "",
           description: "Cost of Materials",
           qty: 1,
-          rate: +matTotal.toFixed(2),
-          amount: +matTotal.toFixed(2),
+          rate: matAmount,
+          amount: matAmount,
           editable: true,
           hideQtyRate: true
         });
@@ -4219,8 +4239,8 @@
           <span class="inv-toolbar-title">🧾 Invoice Builder</span>
           <button class="inv-btn secondary" onclick="invResetLines()">↺ Reset Lines</button>
           <button class="inv-btn secondary" onclick="invAddLine()">+ Add Line</button>
-          <button class="inv-btn green" onclick="invSave()">💾 Save to Airtable</button>
           <button class="inv-btn" onclick="invGeneratePDF()">⬇ Download PDF</button>
+          <button class="inv-btn green" onclick="invUploadToPCloud()">☁ Upload to pCloud</button>
           <button class="inv-btn secondary" onclick="invEmail()">✉ Email</button>
         </div>
 
@@ -4377,38 +4397,44 @@
     await loadInvoiceTab(invJobRef);
   };
 
-  window.invSave = async function() {
+  window.invUploadToPCloud = async function() {
     if (!invJobRef) return;
+    const pCloudFolderId = invJobRef.pCloudInvoicesSentId;
+    if (!pCloudFolderId) {
+      alert("This job does not have a pCloud Invoices Sent folder ID set in Airtable.");
+      return;
+    }
     const btn = document.querySelector(".inv-btn.green");
-    if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+    if (btn) { btn.disabled = true; btn.textContent = "Uploading..."; }
     try {
-      const laborLine   = invLines.find(l => l.id === "labor");
-      const matLine     = invLines.find(l => l.id === "materials");
-      const customTotal = invLines
-        .filter(l => l.id !== "labor" && l.id !== "materials")
-        .reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+      const invNum  = $("invNum")?.value || "";
+      const invDate = $("invDate")?.value || new Date().toISOString().slice(0,10);
+      const jobSlug = (invJobRef.name || "Invoice").replace(/[^a-zA-Z0-9]/g, "_");
+      const filename = `NEE_Invoice_${invNum ? invNum + "_" : ""}${jobSlug}_${invDate}.pdf`;
 
-      await apiPost("saveInvoice", {
-        jobId:           invJobRef.id,
-        invoiceDate:     $("invDate")?.value || "",
-        billTo:          $("invBillTo")?.value || "",
-        laborAmount:     laborLine ? parseFloat(laborLine.amount) || 0 : 0,
-        materialsAmount: (matLine ? parseFloat(matLine.amount) || 0 : 0) + customTotal,
-        notes:           $("invNotes")?.value || ""
+      // Generate PDF as base64
+      const pdfBase64 = await generateInvoicePDFBase64();
+
+      // Upload to pCloud
+      const result = await apiPost("uploadToPCloud", {
+        folderId:  pCloudFolderId,
+        filename,
+        pdfBase64
       });
+      if (!result.ok) throw new Error(result.error);
 
       const banner = $("inv-saved-banner");
       if (banner) {
         banner.style.background = "";
         banner.style.color      = "";
-        banner.textContent      = "✓ Invoice saved to Airtable!";
+        banner.textContent      = `✓ Uploaded to pCloud: ${filename}`;
         banner.style.display    = "block";
-        setTimeout(() => { banner.style.display = "none"; }, 4000);
+        setTimeout(() => { banner.style.display = "none"; }, 5000);
       }
     } catch(err) {
-      alert("Error saving: " + err.message);
+      alert("pCloud upload failed: " + err.message);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "💾 Save to Airtable"; }
+      if (btn) { btn.disabled = false; btn.textContent = "☁ Upload to pCloud"; }
     }
   };
 

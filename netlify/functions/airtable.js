@@ -763,11 +763,27 @@ async function getPCloudToken() {
   const email    = process.env.PCLOUD_EMAIL;
   const password = process.env.PCLOUD_PASSWORD;
   if (!email || !password) throw new Error("PCLOUD_EMAIL or PCLOUD_PASSWORD env vars not set.");
-  const url = `https://api.pcloud.com/userinfo?getauth=1&logout=1&username=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`;
-  const res = await fetch(url);
-  const json = await res.json();
-  if (json.result !== 0) throw new Error(`pCloud auth error: ${json.error || JSON.stringify(json)}`);
-  return json.token;
+
+  // pCloud direct auth via POST with digest/username+password
+  // Try eapi (US region) first, fall back to api (EU)
+  const endpoints = ["https://eapi.pcloud.com/userinfo", "https://api.pcloud.com/userinfo"];
+  
+  for (const endpoint of endpoints) {
+    const params = new URLSearchParams({
+      getauth: "1",
+      logout: "1", 
+      username: email,
+      password: password,
+      authexpire: "0"  // permanent token
+    });
+    const res  = await fetch(`${endpoint}?${params.toString()}`);
+    const json = await res.json();
+    if (json.result === 0 && json.token) return json.token;
+    if (json.result === 0 && json.auth) return json.auth;
+    // If result 2000 = invalid credentials, throw immediately
+    if (json.result === 2000) throw new Error("pCloud: Invalid email or password.");
+  }
+  throw new Error("pCloud auth failed on all endpoints.");
 }
 
 async function handleUploadToPCloud(body) {

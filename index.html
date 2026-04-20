@@ -4382,14 +4382,21 @@
     const btn = document.querySelector(".inv-btn.green");
     if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
     try {
+      // Split line items into labor vs materials for Airtable Manual Labor/Material fields
+      const laborLine = invLines.find(l => l.id === "labor");
+      const matLine   = invLines.find(l => l.id === "materials");
+      // Any custom lines go to materials
+      const customTotal = invLines
+        .filter(l => l.id !== "labor" && l.id !== "materials")
+        .reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+
       await apiPost("saveInvoice", {
-        jobId:         invJobRef.id,
-        invoiceNumber: $("invNum")?.value || "",
-        invoiceDate:   $("invDate")?.value || "",
-        billTo:        $("invBillTo")?.value || "",
-        amount:        calcInvTotal(),
-        notes:         $("invNotes")?.value || "",
-        lineItems:     invLines
+        jobId:          invJobRef.id,
+        invoiceDate:    $("invDate")?.value || "",
+        billTo:         $("invBillTo")?.value || "",
+        laborAmount:    laborLine ? parseFloat(laborLine.amount) || 0 : 0,
+        materialsAmount: (matLine ? parseFloat(matLine.amount) || 0 : 0) + customTotal,
+        notes:          $("invNotes")?.value || ""
       });
       const banner = $("inv-saved-banner");
       if (banner) { banner.style.display = "block"; setTimeout(() => banner.style.display = "none", 3000); }

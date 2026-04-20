@@ -1807,14 +1807,23 @@ async function handleItemVendorPricing(params) {
   const { itemId } = params || {};
   if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
 
-  // Fetch the item record AND all Vendor Pricing records in parallel. Filtering
-  // Vendor Pricing by linked record on the API side requires FIND() against an
-  // ARRAYJOIN, which is brittle across renames — simpler and safer to pull all
-  // (vendor pricing is a small table) and filter in JS.
-  const [itemData, allPricing] = await Promise.all([
+  // Fetch the item record AND all Vendor Pricing records AND all Vendors in parallel.
+  // Filtering Vendor Pricing by linked record on the API side requires FIND()
+  // against an ARRAYJOIN, which is brittle across renames — simpler and safer to
+  // pull all (vendor pricing is a small table) and filter in JS.
+  // Vendors are pulled to build an ID -> name map because the REST API returns
+  // linked records as plain record IDs, not hydrated {id, name} objects.
+  const [itemData, allPricing, allVendors] = await Promise.all([
     atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, { method: "GET" }),
-    fetchAll(API_ROOT_INV, "Vendor Pricing", {})
+    fetchAll(API_ROOT_INV, "Vendor Pricing", {}),
+    fetchAll(API_ROOT_INV, "Vendors", {})
   ]);
+
+  // ID -> Vendor Name
+  const vendorNameById = {};
+  allVendors.forEach(v => {
+    vendorNameById[v.id] = v.fields?.["Vendor Name"] || "";
+  });
 
   const f           = itemData?.fields || {};
   const defaultCost = Number(f["Default Unit Cost"] || 0);
@@ -1833,11 +1842,19 @@ async function handleItemVendorPricing(params) {
   const vendors = pricing.map(r => {
     const pf        = r.fields || {};
     const vendorArr = pf["Vendor"] || [];
-    const vendor    = vendorArr[0] || {};
+    const first     = vendorArr[0];
+    // Link fields come back as either plain IDs (REST API default) or {id, name}
+    // objects — handle both so this works regardless of Airtable response shape.
+    const vendorId  = first
+      ? (typeof first === "object" ? first.id : String(first))
+      : "";
+    const vendorName = vendorNameById[vendorId]
+      || (typeof first === "object" && first.name ? first.name : "")
+      || "";
     return {
       id:          r.id,
-      vendorId:    typeof vendor === "object" ? vendor.id   : String(vendor || ""),
-      vendorName:  typeof vendor === "object" ? vendor.name : "",
+      vendorId,
+      vendorName,
       unitCost:    Number(pf["Unit Cost"] || 0),
       uom:         pf["Unit of Measure"]?.name || pf["Unit of Measure"] || "",
       partNumber:  pf["Vendor Part Number"] || "",

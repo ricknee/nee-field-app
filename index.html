@@ -4137,52 +4137,40 @@
       const entries  = (teData.entries  || []).filter(e => e.reviewed);
       const expenses = (expData.expenses || []).filter(e => e.reviewed);
 
-      // Build default line items
+      // Build default line items — clean two-line format
       invLines = [];
 
-      // Labor line — total reviewed hours × billable rate
+      // Cost of Labor — total reviewed hours × billable rate, lump sum (no rate/hrs shown)
       const totalHrs = entries.reduce((s, e) => s + (e.hours || 0), 0);
       const rate = job.billableHourlyRate || 0;
-      if (totalHrs > 0) {
+      const laborTotal = +(totalHrs * rate).toFixed(2);
+      if (laborTotal > 0) {
         invLines.push({
           id: "labor",
-          section: "Labor",
-          description: `Electrical Labor — ${totalHrs.toFixed(2)} hrs @ $${rate}/hr`,
-          qty: totalHrs,
-          rate: rate,
-          amount: +(totalHrs * rate).toFixed(2),
-          editable: true
+          section: "",
+          description: "Cost of Labor",
+          qty: 1,
+          rate: laborTotal,
+          amount: laborTotal,
+          editable: true,
+          hideQtyRate: true   // don't show qty/rate columns — just the amount
         });
       }
 
-      // Materials — group by type
-      const matExp = expenses.filter(e => !["Scissor Lift","Rental Equipment"].includes(e.expenseType));
-      if (matExp.length) {
-        const matTotal = matExp.reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0);
+      // Cost of Materials — everything else rolled into one lump sum
+      const matTotal = expenses.reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0);
+      if (matTotal > 0) {
         invLines.push({
           id: "materials",
-          section: "Materials",
-          description: "Materials & Supplies",
+          section: "",
+          description: "Cost of Materials",
           qty: 1,
           rate: +matTotal.toFixed(2),
           amount: +matTotal.toFixed(2),
-          editable: true
+          editable: true,
+          hideQtyRate: true
         });
       }
-
-      // Equipment
-      const eqExp = expenses.filter(e => ["Scissor Lift","Rental Equipment"].includes(e.expenseType));
-      eqExp.forEach((e, i) => {
-        invLines.push({
-          id: "equip_" + i,
-          section: "Equipment",
-          description: e.description || e.expenseType,
-          qty: 1,
-          rate: +(e.billableMaterial || e.totalCost || 0).toFixed(2),
-          amount: +(e.billableMaterial || e.totalCost || 0).toFixed(2),
-          editable: true
-        });
-      });
 
       renderInvoiceBuilder(job, entries, expenses);
 
@@ -4254,8 +4242,6 @@
             <thead>
               <tr>
                 <th class="inv-line-desc">Description</th>
-                <th class="inv-line-qty" style="text-align:center;">Qty/Hrs</th>
-                <th class="inv-line-rate" style="text-align:right;">Rate</th>
                 <th class="inv-line-amt" style="text-align:right;">Amount</th>
                 <th class="inv-line-del"></th>
               </tr>
@@ -4277,7 +4263,7 @@
           <!-- Notes -->
           <div class="inv-notes-section">
             <div class="inv-notes-label">Notes / Terms</div>
-            <textarea id="invNotes" class="inv-notes-area" placeholder="Payment terms, disclaimers, notes to customer..."></textarea>
+            <textarea id="invNotes" class="inv-notes-area">Payment due within 30 days of invoice date.</textarea>
           </div>
 
           <!-- Footer -->
@@ -4307,13 +4293,9 @@
           <td class="inv-line-desc">
             <input class="inv-inline-input inv-desc" data-idx="${idx}" value="${esc(line.description || "")}" placeholder="Description..." />
           </td>
-          <td class="inv-line-qty">
-            <input class="inv-inline-input right inv-qty" data-idx="${idx}" type="number" value="${line.qty}" min="0" step="0.25" style="width:70px;" />
+          <td class="inv-line-amt" style="text-align:right; min-width:110px;">
+            <input class="inv-inline-input right inv-amount" data-idx="${idx}" type="number" value="${line.amount}" min="0" step="0.01" style="width:110px; text-align:right;" />
           </td>
-          <td class="inv-line-rate">
-            <input class="inv-inline-input right inv-rate" data-idx="${idx}" type="number" value="${line.rate}" min="0" step="0.01" style="width:80px;" />
-          </td>
-          <td class="inv-line-amt" id="inv-amt-${idx}">${fmtCurrency(line.amount)}</td>
           <td class="inv-line-del">
             <button class="inv-line-del-btn" data-idx="${idx}" title="Remove line">✕</button>
           </td>
@@ -4334,12 +4316,9 @@
       const line = invLines[idx];
       if (!line) return;
 
-      if (t.classList.contains("inv-desc"))  line.description = t.value;
-      if (t.classList.contains("inv-qty"))   { line.qty = parseFloat(t.value) || 0; line.amount = +(line.qty * line.rate).toFixed(2); }
-      if (t.classList.contains("inv-rate"))  { line.rate = parseFloat(t.value) || 0; line.amount = +(line.qty * line.rate).toFixed(2); }
+      if (t.classList.contains("inv-desc"))   line.description = t.value;
+      if (t.classList.contains("inv-amount")) line.amount = parseFloat(t.value) || 0;
 
-      const amtEl = $(`inv-amt-${idx}`);
-      if (amtEl) amtEl.textContent = fmtCurrency(line.amount);
       updateInvTotals();
     });
 
@@ -4520,25 +4499,11 @@ rick@northeasternelec.com`
     doc.rect(M, y, W-M*2, 20, "F");
     doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(255,255,255);
     doc.text("Description", M+6, y+14);
-    doc.text("Qty/Hrs", W-M-200, y+14, { align: "right" });
-    doc.text("Rate", W-M-120, y+14, { align: "right" });
     doc.text("Amount", W-M-4, y+14, { align: "right" });
     y += 20;
 
     doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(30,30,30);
-    let lastSec = null;
     invLines.forEach((line, i) => {
-      // Section divider
-      if (line.section && line.section !== lastSec) {
-        doc.setFillColor(245,245,245);
-        doc.rect(M, y, W-M*2, 14, "F");
-        doc.setFont("helvetica","bold"); doc.setFontSize(7.5); doc.setTextColor(130,130,130);
-        doc.text(line.section.toUpperCase(), M+6, y+10);
-        y += 14;
-        lastSec = line.section;
-        doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(30,30,30);
-      }
-
       // Check page space
       if (y > 700) { doc.addPage(); y = 48; }
 
@@ -4546,16 +4511,16 @@ rick@northeasternelec.com`
       doc.setDrawColor(230,230,230); doc.setLineWidth(0.3);
       doc.line(M, y+20, W-M, y+20);
 
-      const descLines = doc.splitTextToSize(line.description || "", W-M*2-210);
-      const rowH = Math.max(20, descLines.length * 12);
+      const descLines = doc.splitTextToSize(line.description || "", W-M*2-80);
+      const rowH = Math.max(22, descLines.length * 13 + 8);
       if (i % 2 === 0) { doc.setFillColor(250,250,250); doc.rect(M, y, W-M*2, rowH, "F"); }
-      doc.setTextColor(20,20,20);
-      doc.text(descLines, M+6, y+13);
-      if (line.qty !== 1 || line.section === "Labor") doc.text(String(line.qty), W-M-200, y+13, { align: "right" });
-      if (line.rate > 0 && (line.qty !== 1 || line.section === "Labor")) doc.text(fmtCurrency(line.rate), W-M-120, y+13, { align: "right" });
-      doc.setFont("helvetica","bold");
-      doc.text(fmtCurrency(line.amount), W-M-4, y+13, { align: "right" });
-      doc.setFont("helvetica","normal");
+      doc.setDrawColor(235,235,235); doc.setLineWidth(0.3);
+      doc.line(M, y+rowH, W-M, y+rowH);
+      doc.setTextColor(20,20,20); doc.setFont("helvetica","normal"); doc.setFontSize(10);
+      doc.text(descLines, M+10, y+15);
+      doc.setFont("helvetica","bold"); doc.setFontSize(10);
+      doc.text(fmtCurrency(line.amount), W-M-6, y+15, { align: "right" });
+      doc.setFont("helvetica","normal"); doc.setFontSize(9);
       y += rowH;
     });
 

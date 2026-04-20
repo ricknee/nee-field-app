@@ -215,7 +215,17 @@ async function handlePayrollEntries(params) {
   const { startDate, endDate } = params || {};
   if (!startDate || !endDate) return resp(400, { ok: false, error: "Missing startDate or endDate." });
 
-  const filter = `AND({Work Date} >= "${startDate}", {Work Date} <= "${endDate}")`;
+  // Compute Week 1 Monday (= startDate) and Week 2 Monday (= startDate + 7 days)
+  // Then filter by Week Start Date field — much faster than a date range scan
+  function addDays(ds, n) {
+    const [y,m,d] = ds.split("-").map(Number);
+    const dt = new Date(y, m-1, d);
+    dt.setDate(dt.getDate() + n);
+    return dt.toISOString().slice(0,10);
+  }
+  const wk1Mon = startDate;
+  const wk2Mon = addDays(startDate, 7);
+  const filter = `OR({Week Start Date}="${wk1Mon}",{Week Start Date}="${wk2Mon}")`;
   const records = await fetchAll(TABLES.timeEntries, {
     filter,
     sortField: "Work Date",

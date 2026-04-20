@@ -431,6 +431,120 @@ function fmtCurrency(n) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// WIRE UNIT TOGGLE (lbs ↔ ft)
+// Forms store qty in lbs internally (system of record), but users
+// often have feet in front of them (spool labels, vendor invoices).
+// This toggle lets them enter either. Applied to all 4 transaction
+// forms: Use on Jobs, Receive, Transfer, Adjustment. Only shown when
+// the selected item has wireFtPerLb > 0.
+// ═══════════════════════════════════════════════════════════
+var wireUnitMode = {};  // prefix -> "lbs" | "ft" (default "lbs")
+
+// Returns currently-selected item for a form prefix.
+function getWireItem(prefix) {
+  if (prefix === "log")  return typeof selectedItem !== "undefined" ? selectedItem : null;
+  if (prefix === "recv") return typeof recvItem    !== "undefined" ? recvItem    : null;
+  if (prefix === "xfr")  return typeof xfrItem     !== "undefined" ? xfrItem     : null;
+  if (prefix === "adj")  return typeof adjItemData !== "undefined" ? adjItemData : null;
+  return null;
+}
+
+// HTML for the toggle + live conversion line. Inject into form templates.
+function wireUnitToggleHTML(prefix) {
+  return '<div id="' + prefix + '-wire-unit" style="display:none;align-items:center;gap:10px;margin-top:8px;flex-wrap:wrap;">' +
+    '<div style="display:flex;background:var(--navy-mid);border:1px solid var(--border);border-radius:8px;overflow:hidden;">' +
+      '<button type="button" id="' + prefix + '-unit-lbs" onclick="setWireUnit(\'' + prefix + '\',\'lbs\')" style="background:var(--gold);color:var(--navy-dk);border:none;font-family:inherit;font-size:12px;font-weight:700;padding:6px 16px;cursor:pointer;">lbs</button>' +
+      '<button type="button" id="' + prefix + '-unit-ft" onclick="setWireUnit(\'' + prefix + '\',\'ft\')" style="background:transparent;color:var(--dim);border:none;font-family:inherit;font-size:12px;font-weight:700;padding:6px 16px;cursor:pointer;">ft</button>' +
+    '</div>' +
+    '<div id="' + prefix + '-conv" style="font-size:13px;color:var(--dim);font-weight:500;">= 0.00 ft</div>' +
+    '</div>';
+}
+
+// Call after an item is picked. Shows the toggle if wire, hides otherwise.
+// Resets mode to lbs (user-requested default — matches what the system stores).
+function configureWireToggle(prefix) {
+  var item = getWireItem(prefix);
+  var box  = document.getElementById(prefix + "-wire-unit");
+  if (!box) return;
+  if (!item || !(item.wireFtPerLb > 0)) {
+    box.style.display = "none";
+    wireUnitMode[prefix] = "lbs";
+    return;
+  }
+  wireUnitMode[prefix] = "lbs";
+  box.style.display = "flex";
+  // Ensure lbs button is highlighted
+  var lbsBtn = document.getElementById(prefix + "-unit-lbs");
+  var ftBtn  = document.getElementById(prefix + "-unit-ft");
+  if (lbsBtn) { lbsBtn.style.background = "var(--gold)";     lbsBtn.style.color = "var(--navy-dk)"; }
+  if (ftBtn)  { ftBtn.style.background  = "transparent";      ftBtn.style.color  = "var(--dim)";     }
+  updateWireConversion(prefix);
+}
+
+function hideWireToggle(prefix) {
+  var box = document.getElementById(prefix + "-wire-unit");
+  if (box) box.style.display = "none";
+  wireUnitMode[prefix] = "lbs";
+}
+
+// Called on toggle button tap.
+function setWireUnit(prefix, unit) {
+  if (unit !== "ft" && unit !== "lbs") return;
+  wireUnitMode[prefix] = unit;
+  var lbsBtn = document.getElementById(prefix + "-unit-lbs");
+  var ftBtn  = document.getElementById(prefix + "-unit-ft");
+  if (lbsBtn) {
+    lbsBtn.style.background = (unit === "lbs") ? "var(--gold)"     : "transparent";
+    lbsBtn.style.color      = (unit === "lbs") ? "var(--navy-dk)"  : "var(--dim)";
+  }
+  if (ftBtn) {
+    ftBtn.style.background  = (unit === "ft")  ? "var(--gold)"     : "transparent";
+    ftBtn.style.color       = (unit === "ft")  ? "var(--navy-dk)"  : "var(--dim)";
+  }
+  updateWireConversion(prefix);
+  // Re-focus qty input so user can keep typing
+  var inp = document.getElementById(prefix + "-qty");
+  if (inp) { inp.focus(); inp.select(); }
+}
+
+// Called on every keystroke in the qty input.
+// Cheap to call for non-wire items (early-returns on no wireFtPerLb).
+function updateWireConversion(prefix) {
+  var item = getWireItem(prefix);
+  var inp  = document.getElementById(prefix + "-qty");
+  var conv = document.getElementById(prefix + "-conv");
+  if (!inp || !conv) return;
+  if (!item || !(item.wireFtPerLb > 0)) return;
+  var raw  = parseFloat(inp.value || 0);
+  var unit = wireUnitMode[prefix] || "lbs";
+  if (isNaN(raw) || raw <= 0) {
+    conv.textContent = (unit === "lbs") ? "= 0.00 ft" : "= 0.00 lbs";
+    return;
+  }
+  if (unit === "lbs") {
+    var ft = raw * item.wireFtPerLb;
+    conv.textContent = "= " + ft.toLocaleString("en-US", { maximumFractionDigits: 2 }) + " ft";
+  } else {
+    var lbs = raw / item.wireFtPerLb;
+    conv.textContent = "= " + lbs.toFixed(2) + " lbs";
+  }
+}
+
+// Returns the qty in lbs (system storage unit), regardless of what
+// unit the user typed in. For non-wire items returns the raw value.
+// Always call this when building the API payload.
+function getQtyInLbs(prefix) {
+  var item = getWireItem(prefix);
+  var inp  = document.getElementById(prefix + "-qty");
+  var raw  = parseFloat(inp && inp.value != null && inp.value !== "" ? inp.value : 0);
+  if (isNaN(raw)) raw = 0;
+  if (!item || !(item.wireFtPerLb > 0)) return raw;
+  var unit = wireUnitMode[prefix] || "lbs";
+  if (unit === "ft") return +(raw / item.wireFtPerLb).toFixed(4);  // convert ft → lbs
+  return raw;
+}
+
+// ═══════════════════════════════════════════════════════════
 // SEARCHABLE COMBO (typeable dropdown)
 // ═══════════════════════════════════════════════════════════
 // Usage:
@@ -843,9 +957,11 @@ function renderLogForm() {
     '<div class="field-group" id="qty-area" style="display:none"><div class="field-lbl">Quantity</div>' +
     '<div class="qty-row">' +
     '<button class="qty-pm" onclick="adjQty(-1)">−</button>' +
-    '<input class="qty-inp" id="log-qty" type="number" value="1" min="0.01" step="1" onfocus="this.select()" />' +
+    '<input class="qty-inp" id="log-qty" type="number" value="1" min="0.01" step="1" onfocus="this.select()" oninput="updateWireConversion(\'log\')" />' +
     '<button class="qty-pm" onclick="adjQty(1)">+</button>' +
-    '</div></div>' +
+    '</div>' +
+    wireUnitToggleHTML("log") +
+    '</div>' +
 
     '<button class="add-cart-btn" id="add-cart-btn" onclick="addToCart()" disabled>+ Add to Cart</button>' +
 
@@ -984,6 +1100,7 @@ function pickItem(id) {
 
   document.getElementById("qty-area").style.display = "block";
   document.getElementById("add-cart-btn").disabled = false;
+  configureWireToggle("log");
   if (isMisc) {
     setTimeout(function(){ document.getElementById("item-desc")?.focus(); }, 50);
   } else {
@@ -1011,17 +1128,20 @@ function clearItem() {
   document.getElementById("item-area").innerHTML = renderItemSearch();
   document.getElementById("qty-area").style.display = "none";
   document.getElementById("add-cart-btn").disabled = true;
+  hideWireToggle("log");
 }
 
 function adjQty(d) {
   var el = document.getElementById("log-qty");
   if (!el) return;
   el.value = Math.max(0.01, +(parseFloat(el.value || 1) + d).toFixed(2));
+  updateWireConversion("log");
 }
 
 function addToCart() {
   if (!selectedItem) return;
-  var qty = parseFloat(document.getElementById("log-qty")?.value || 1);
+  // getQtyInLbs handles wire conversion when in ft mode; returns raw qty for non-wire items
+  var qty = getQtyInLbs("log");
   if (!qty || qty <= 0) { showToast("Quantity must be > 0", true); return; }
 
   var isMisc = selectedItem.name.toLowerCase().indexOf("misc") !== -1;
@@ -1144,8 +1264,10 @@ function renderReceiveForm() {
     '<div id="recv-qty-price" style="display:none">' +
     '<div class="field-group"><div class="field-lbl">Quantity Received</div>' +
     '<div class="qty-row"><button class="qty-pm" onclick="adjRecvQty(-1)">−</button>' +
-    '<input class="qty-inp" id="recv-qty" type="number" value="1" min="1" step="1" onfocus="this.select()" />' +
-    '<button class="qty-pm" onclick="adjRecvQty(1)">+</button></div></div>' +
+    '<input class="qty-inp" id="recv-qty" type="number" value="1" min="1" step="1" onfocus="this.select()" oninput="updateWireConversion(\'recv\')" />' +
+    '<button class="qty-pm" onclick="adjRecvQty(1)">+</button></div>' +
+    wireUnitToggleHTML("recv") +
+    '</div>' +
 
     '<div class="field-group"><div class="field-lbl">Unit Cost (optional — updates item price)</div>' +
     '<input class="field-inp" id="recv-cost" type="number" step="0.01" placeholder="e.g. 1.25" /></div>' +
@@ -1189,17 +1311,19 @@ function pickItemFor(prefix, id) {
     document.getElementById("recv-item-area").innerHTML =
       '<div class="sel-item-box"><div><div class="sel-item-name">' + item.name + '</div>' +
       '<div class="sel-item-meta">' + [item.cat,item.uom].filter(Boolean).join(" · ") + '</div></div>' +
-      '<button class="chg-btn" onclick="document.getElementById(\'recv-item-area\').innerHTML=renderItemSearchFor(\'recv\');recvItem=null;document.getElementById(\'recv-qty-price\').style.display=\'none\';">Change</button></div>';
+      '<button class="chg-btn" onclick="document.getElementById(\'recv-item-area\').innerHTML=renderItemSearchFor(\'recv\');recvItem=null;document.getElementById(\'recv-qty-price\').style.display=\'none\';hideWireToggle(\'recv\');">Change</button></div>';
     document.getElementById("recv-qty-price").style.display = "block";
     if (item.cost) document.getElementById("recv-cost").value = item.cost.toFixed(2);
+    configureWireToggle("recv");
     document.getElementById("recv-qty").focus();
   } else if (prefix === "xfr") {
     xfrItem = item;
     document.getElementById("xfr-item-area").innerHTML =
       '<div class="sel-item-box"><div><div class="sel-item-name">' + item.name + '</div>' +
       '<div class="sel-item-meta">' + [item.cat,item.uom].filter(Boolean).join(" · ") + '</div></div>' +
-      '<button class="chg-btn" onclick="document.getElementById(\'xfr-item-area\').innerHTML=renderItemSearchFor(\'xfr\');xfrItem=null;">Change</button></div>';
+      '<button class="chg-btn" onclick="document.getElementById(\'xfr-item-area\').innerHTML=renderItemSearchFor(\'xfr\');xfrItem=null;hideWireToggle(\'xfr\');">Change</button></div>';
     document.getElementById("xfr-qty-area").style.display = "block";
+    configureWireToggle("xfr");
     document.getElementById("xfr-qty").focus();
   } else if (prefix === "adj") {
     pickItemFor_adj_override(id);
@@ -1209,13 +1333,15 @@ function pickItemFor(prefix, id) {
 function adjRecvQty(d) {
   var el = document.getElementById("recv-qty");
   if (el) el.value = Math.max(1, parseInt(el.value||1) + d);
+  updateWireConversion("recv");
 }
 
 async function submitReceive() {
   if (!recvItem) { showToast("Please select an item", true); return; }
   var locId = document.getElementById("recv-loc")?.value;
   if (!locId) { showToast("Please select a location", true); return; }
-  var qty     = parseFloat(document.getElementById("recv-qty")?.value || 1);
+  // Converts to lbs if in ft mode (wire items only); raw value for non-wire
+  var qty     = getQtyInLbs("recv");
   var cost    = parseFloat(document.getElementById("recv-cost")?.value || 0);
   var notes   = document.getElementById("recv-notes")?.value.trim();
   var btn     = document.getElementById("recv-btn");
@@ -1264,8 +1390,10 @@ function renderTransferForm() {
 
     '<div class="field-group" id="xfr-qty-area" style="display:none"><div class="field-lbl">Quantity</div>' +
     '<div class="qty-row"><button class="qty-pm" onclick="adjXfrQty(-1)">−</button>' +
-    '<input class="qty-inp" id="xfr-qty" type="number" value="1" min="1" step="1" onfocus="this.select()" />' +
-    '<button class="qty-pm" onclick="adjXfrQty(1)">+</button></div></div>' +
+    '<input class="qty-inp" id="xfr-qty" type="number" value="1" min="1" step="1" onfocus="this.select()" oninput="updateWireConversion(\'xfr\')" />' +
+    '<button class="qty-pm" onclick="adjXfrQty(1)">+</button></div>' +
+    wireUnitToggleHTML("xfr") +
+    '</div>' +
 
     '<div class="field-group"><div class="field-lbl">Notes (optional)</div>' +
     '<input class="field-inp" id="xfr-notes" type="text" placeholder="" /></div>' +
@@ -1276,6 +1404,7 @@ function renderTransferForm() {
 function adjXfrQty(d) {
   var el = document.getElementById("xfr-qty");
   if (el) el.value = Math.max(1, parseInt(el.value||1) + d);
+  updateWireConversion("xfr");
 }
 async function submitTransfer() {
   if (!xfrItem) { showToast("Please select an item", true); return; }
@@ -1284,7 +1413,8 @@ async function submitTransfer() {
   if (!fromId) { showToast("Please select From location", true); return; }
   if (!toId)   { showToast("Please select To location", true); return; }
   if (fromId === toId) { showToast("From and To must be different", true); return; }
-  var qty   = parseFloat(document.getElementById("xfr-qty")?.value || 1);
+  // Converts to lbs if in ft mode (wire items only); raw value for non-wire
+  var qty   = getQtyInLbs("xfr");
   var notes = document.getElementById("xfr-notes")?.value.trim();
   var btn   = document.getElementById("xfr-btn");
   btn.disabled = true; btn.textContent = "Transferring…";
@@ -2276,9 +2406,11 @@ function renderAdjustForm() {
     '<div class="field-lbl">Actual Count (what you physically counted)</div>' +
     '<div class="qty-row">' +
     '<button class="qty-pm" onclick="adjAdjQty(-1)">−</button>' +
-    '<input class="qty-inp" id="adj-qty" type="number" value="0" min="0" step="1" onfocus="this.select()" />' +
+    '<input class="qty-inp" id="adj-qty" type="number" value="0" min="0" step="1" onfocus="this.select()" oninput="updateWireConversion(\'adj\')" />' +
     '<button class="qty-pm" onclick="adjAdjQty(1)">+</button>' +
-    '</div></div>' +
+    '</div>' +
+    wireUnitToggleHTML("adj") +
+    '</div>' +
 
     '<div class="field-group"><div class="field-lbl">Notes (optional)</div>' +
     '<input class="field-inp" id="adj-notes" type="text" placeholder="e.g. Year-end count, recount after audit" /></div>' +
@@ -2295,25 +2427,29 @@ function pickItemFor_adj_override(id) {
     '<div class="sel-item-box"><div>' +
     '<div class="sel-item-name">' + adjItemData.name + '</div>' +
     '<div class="sel-item-meta">' + [adjItemData.cat, adjItemData.uom].filter(Boolean).join(" · ") + '</div>' +
-    '</div><button class="chg-btn" onclick="document.getElementById(\'adj-item-area\').innerHTML=renderItemSearchFor(\'adj\');adjItemData=null;document.getElementById(\'adj-count-area\').style.display=\'none\';">Change</button></div>';
+    '</div><button class="chg-btn" onclick="document.getElementById(\'adj-item-area\').innerHTML=renderItemSearchFor(\'adj\');adjItemData=null;document.getElementById(\'adj-count-area\').style.display=\'none\';hideWireToggle(\'adj\');">Change</button></div>';
   document.getElementById("adj-count-area").style.display = "block";
+  configureWireToggle("adj");
   document.getElementById("adj-qty").focus();
 }
 
 function adjAdjQty(d) {
   var el = document.getElementById("adj-qty");
   if (el) el.value = Math.max(0, parseInt(el.value || 0) + d);
+  updateWireConversion("adj");
 }
 
 async function submitAdjustment() {
   if (!adjItemData) { showToast("Please select an item", true); return; }
   var locId = document.getElementById("adj-loc")?.value;
   if (!locId) { showToast("Please select a location", true); return; }
-  var qty   = parseFloat(document.getElementById("adj-qty")?.value ?? 0);
+  // Converts ft → lbs for wire items when toggle is in ft mode; raw value for non-wire
+  var qty   = getQtyInLbs("adj");
   var notes = document.getElementById("adj-notes")?.value.trim();
   var locName = allLocations.find(function(l){ return l.id === locId; })?.name || locId;
 
-  // Confirm before setting
+  // Confirm before setting — show qty in the item's storage unit (lbs for wire)
+  // so what Rick sees in the dialog matches what actually gets written.
   if (!confirm("Set " + adjItemData.name + " at " + locName + " to " + qty + " " + (adjItemData.uom || "units") + "?")) return;
 
   var btn = document.getElementById("adj-submit-btn");

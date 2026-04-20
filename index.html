@@ -968,6 +968,84 @@
 
     .hidden { display: none !important; }
 
+    /* ── PAYROLL MODAL ── */
+    .payroll-modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+      z-index: 700; display: flex; align-items: flex-start; justify-content: center;
+      padding-top: 20px;
+    }
+    .payroll-modal {
+      background: var(--panel); border-radius: 16px; width: 96%; max-width: 1100px;
+      max-height: 92vh; overflow-y: auto; box-shadow: 0 8px 48px rgba(0,0,0,0.32);
+      display: flex; flex-direction: column;
+    }
+    .payroll-modal-header {
+      padding: 16px 22px 12px; border-bottom: 1px solid var(--line);
+      display: flex; justify-content: space-between; align-items: center;
+      position: sticky; top: 0; background: var(--panel); z-index: 1;
+    }
+    .payroll-modal-header h2 {
+      font-family: 'Rajdhani', sans-serif; font-size: 20px; font-weight: 700;
+      color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .payroll-modal-body { padding: 18px 22px; }
+    .pr-period-bar {
+      display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px;
+      align-items: end; margin-bottom: 18px; padding: 14px 16px;
+      background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+    }
+    .pr-period-bar label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); display: block; margin-bottom: 5px; }
+    .pr-period-bar input[type="date"] { width: 100%; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); color: var(--text); font-size: 13px; }
+    .pr-load-btn { background: var(--accent); color: white; border: none; border-radius: 8px; padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; font-family: 'Inter', sans-serif; }
+    .pr-load-btn:hover { background: var(--accent-2); }
+    .pr-emp-block { margin-bottom: 22px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .pr-emp-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 14px; font-weight: 700; font-size: 14px; color: white;
+    }
+    .pr-emp-header .pr-emp-right { display: flex; align-items: center; gap: 10px; }
+    .pr-bonus-wrap { display: flex; align-items: center; gap: 6px; }
+    .pr-bonus-wrap label { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.8); }
+    .pr-bonus-input {
+      width: 80px; padding: 4px 7px; border: 1px solid rgba(255,255,255,0.4);
+      border-radius: 6px; background: rgba(255,255,255,0.15); color: white;
+      font-size: 12px; font-weight: 600; text-align: right;
+    }
+    .pr-table-wrap { overflow-x: auto; }
+    .pr-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .pr-table th { background: var(--panel-2); padding: 7px 10px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .pr-table td { padding: 6px 10px; border-bottom: 1px solid var(--line); color: var(--text); vertical-align: middle; }
+    .pr-table tr:last-child td { border-bottom: none; }
+    .pr-table tr:hover td { background: var(--panel-2); }
+    .pr-input { width: 100%; padding: 4px 6px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; font-family: 'Inter', sans-serif; }
+    .pr-input:focus { outline: none; border-color: var(--accent); }
+    .pr-select { width: 100%; padding: 4px 6px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; }
+    .pr-del-btn { background: var(--red-dim); border: 1px solid rgba(198,40,40,0.3); color: #ff8b7e; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+    .pr-del-btn:hover { background: rgba(198,40,40,0.25); }
+    .pr-add-btn { background: var(--accent-glow); border: 1px solid rgba(21,101,192,0.3); color: var(--accent); border-radius: 6px; padding: 5px 12px; font-size: 11px; font-weight: 600; cursor: pointer; margin: 8px 10px; display: inline-block; }
+    .pr-add-btn:hover { background: rgba(21,101,192,0.18); }
+    .pr-save-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px 8px; }
+    .pr-save-btn { background: var(--green); color: white; border: none; border-radius: 6px; padding: 5px 14px; font-size: 11px; font-weight: 600; cursor: pointer; }
+    .pr-save-btn:hover { background: #1b5e20; }
+    .pr-save-msg { font-size: 11px; color: var(--green); display: none; }
+    .pr-summary-bar {
+      display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px;
+      background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+      margin-bottom: 18px; align-items: center;
+    }
+    .pr-summary-chip { font-size: 12px; font-weight: 600; color: var(--text); }
+    .pr-summary-chip span { color: var(--muted); font-weight: 400; font-size: 11px; }
+    .pr-pdf-btn {
+      background: var(--accent); color: white; border: none; border-radius: 9px;
+      padding: 10px 22px; font-size: 13px; font-weight: 700; cursor: pointer;
+      margin-left: auto; font-family: 'Inter', sans-serif; display: flex; align-items: center; gap: 7px;
+    }
+    .pr-pdf-btn:hover { background: var(--accent-2); }
+    .pr-week-label { font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); padding: 6px 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+    .pr-week-total { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .pr-no-entries { font-size: 12px; color: var(--muted); padding: 10px; font-style: italic; }
+    .pr-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
+
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
       .app-wrap { flex-direction: column; height: auto; }
@@ -1028,6 +1106,7 @@
       <a id="btnNewJobIntake" href="https://form.jotform.com/260972873590065" target="_blank" class="btn btn-primary btn-sm admin-only hidden" style="text-decoration:none;">+ New Project</a>
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
       <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
+      <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
@@ -3792,6 +3871,8 @@
     if (slBtn) slBtn.addEventListener("click", openScissorLifts);
     const fleetBtn = $("btnFleet");
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
+    const payrollBtn = $("btnPayroll");
+    if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
 
     // General Expense
     const btnAddGen = $("btnAddGeneralExpense");
@@ -3881,7 +3962,627 @@
   }
 
   init();
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── PAYROLL MODULE ──────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════
+
+  // Per-employee color config
+  const PR_COLORS = {
+    "Jeff Koehn":          { hdr: "#E8650A", light: "#FAD9C0" },
+    "Larry Unruh":         { hdr: "#6B3FA0", light: "#DDD0F0" },
+    "Miles Unruh":         { hdr: "#C8A800", light: "#FFF3A0" },
+    "Nicholas Stoltzfus":  { hdr: "#1565C0", light: "#BBDEFB" },
+    "Patrick Gingerich":   { hdr: "#6B7280", light: "#D8DADF" },
+    "Rick Unruh":          { hdr: "#C0281C", light: "#F5C5C2" },
+    "Scott Koehn":         { hdr: "#2E7D32", light: "#C8E6C9" },
+  };
+  const SALARIED = ["Larry Unruh", "Miles Unruh", "Rick Unruh"];
+  const PR_CLASSES = ["Contract","Extra's","Rough & Service","Travel","Shop Work","Business Development","Admin/Office","Vehicle and Equipment Maintenance"];
+  const PR_CITY_TAXES = ["A No Tax","Columbiana Tax","Canton Tax","Akron Tax","Other"];
+
+  // State
+  let prEntries   = [];    // [{id, employee, workDate, hours, duration, cityTaxes, class, jobName, jobId, isNew}]
+  let prJobs      = [];    // jobs list for dropdown
+  let prBonuses   = {};    // { empName: dollarAmount }
+  let prWk1Start  = null;
+  let prWk1End    = null;
+  let prWk2Start  = null;
+  let prWk2End    = null;
+
+  function openPayroll() {
+    $("payrollModal").style.display = "flex";
+    // Default dates: last Mon and coming Sat based on today
+    const today = new Date();
+    const dayOfWeek = today.getDay(); // 0=Sun,1=Mon...
+    const diffToMon = (dayOfWeek === 0) ? -6 : 1 - dayOfWeek;
+    const wk2Mon = new Date(today); wk2Mon.setDate(today.getDate() + diffToMon - 7);
+    const wk2Sat = new Date(wk2Mon); wk2Sat.setDate(wk2Mon.getDate() + 12); // Mon + 12 = Sat of next week
+
+    $("prWk1Start").value = wk2Mon.toISOString().slice(0,10);
+    $("prWk2End").value   = wk2Sat.toISOString().slice(0,10);
+
+    // Load jobs for dropdowns if not loaded
+    prJobs = state.jobs || [];
+  }
+
+  function closePayroll() {
+    $("payrollModal").style.display = "none";
+  }
+  window.closePayroll = closePayroll;
+
+  // Parse YYYY-MM-DD in local time
+  function localDate(s) {
+    const [y,m,d] = s.split("-").map(Number);
+    return new Date(y, m-1, d);
+  }
+
+  // Given wk1Start (Mon), compute the 4 boundary dates
+  function computeWeekBounds(wk1StartStr, wk2EndStr) {
+    const wk1S = localDate(wk1StartStr);
+    const wk1E = new Date(wk1S); wk1E.setDate(wk1S.getDate() + 5); // Sat
+    const wk2S = new Date(wk1S); wk2S.setDate(wk1S.getDate() + 7); // Mon
+    const wk2E = localDate(wk2EndStr);
+    return { wk1S, wk1E, wk2S, wk2E };
+  }
+
+  function dateStr(d) { return d.toISOString().slice(0,10); }
+
+  function whichWeek(dateStr2, wk1S, wk1E, wk2S, wk2E) {
+    const d = localDate(dateStr2);
+    if (d >= wk1S && d <= wk1E) return 1;
+    if (d >= wk2S && d <= wk2E) return 2;
+    return 0;
+  }
+
+  // Hours → seconds
+  function hrsToSec(h) { return Math.round(parseFloat(h) * 3600); }
+  // Seconds → hours (nearest 0.25)
+  function secToHrs(s) { return Math.round((s / 3600) * 4) / 4; }
+
+  async function loadPayrollEntries() {
+    const wk1StartStr = $("prWk1Start").value;
+    const wk2EndStr   = $("prWk2End").value;
+    if (!wk1StartStr || !wk2EndStr) { alert("Please set both Week 1 Start and Week 2 End dates."); return; }
+
+    const bounds = computeWeekBounds(wk1StartStr, wk2EndStr);
+    prWk1Start = bounds.wk1S; prWk1End = bounds.wk1E;
+    prWk2Start = bounds.wk2S; prWk2End = bounds.wk2E;
+
+    const statusEl = $("prStatus");
+    statusEl.textContent = "Loading entries from Airtable...";
+    statusEl.style.display = "";
+    $("prBlocks").innerHTML = "";
+    $("prSummaryBar").style.display = "none";
+    $("prLoadBtn").disabled = true;
+
+    try {
+      const d = await apiGet("payrollEntries", { startDate: dateStr(prWk1Start), endDate: dateStr(prWk2End) });
+      prEntries = (d.entries || []).map(e => ({ ...e, isNew: false, _dirty: false }));
+      prBonuses = {};
+      statusEl.style.display = "none";
+      renderPayroll();
+    } catch(e) {
+      statusEl.textContent = "Error: " + e.message;
+    } finally {
+      $("prLoadBtn").disabled = false;
+    }
+  }
+  window.loadPayrollEntries = loadPayrollEntries;
+
+  function groupEntries() {
+    // Group by employee then by week
+    const empMap = {};
+    prEntries.forEach(e => {
+      if (!empMap[e.employee]) empMap[e.employee] = { wk1: [], wk2: [] };
+      const wk = whichWeek(e.workDate, prWk1Start, prWk1End, prWk2Start, prWk2End);
+      if (wk === 1) empMap[e.employee].wk1.push(e);
+      else if (wk === 2) empMap[e.employee].wk2.push(e);
+    });
+    return empMap;
+  }
+
+  function fmtHrs(h) { return (h % 1 === 0) ? h.toFixed(0) : h.toFixed(2); }
+
+  function renderPayroll() {
+    const empMap = groupEntries();
+    const empNames = Object.keys(empMap).sort();
+    if (!empNames.length) {
+      $("prBlocks").innerHTML = `<div class="pr-empty">No time entries found for this period.</div>`;
+      return;
+    }
+
+    // Summary bar
+    let totalHrs = 0;
+    prEntries.forEach(e => { totalHrs += secToHrs(e.duration || 0); });
+    const summaryBar = $("prSummaryBar");
+    summaryBar.style.display = "flex";
+    summaryBar.innerHTML = `
+      <div class="pr-summary-chip">${empNames.length} <span>employees</span></div>
+      <div class="pr-summary-chip">${fmtHrs(totalHrs)} <span>total hrs</span></div>
+      <div class="pr-summary-chip">${dateStr(prWk1Start)} → ${dateStr(prWk2End)}</div>
+      <button class="pr-pdf-btn" onclick="generatePayrollPDF()">⬇ Download PDF</button>`;
+
+    // Render each employee block
+    $("prBlocks").innerHTML = empMap ? empNames.map(emp => renderEmpBlock(emp, empMap[emp])).join("") : "";
+
+    // Wire all events
+    wirePayrollEvents();
+  }
+
+  function renderEmpBlock(emp, weeks) {
+    const col = PR_COLORS[emp] || { hdr: "#444", light: "#eee" };
+    const isSalaried = SALARIED.includes(emp);
+    const bonus = prBonuses[emp] || 0;
+
+    const wk1Html = renderWeekTable(emp, weeks.wk1, 1);
+    const wk2Html = renderWeekTable(emp, weeks.wk2, 2);
+    const wk1Total = weeks.wk1.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
+    const wk2Total = weeks.wk2.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
+
+    return `
+    <div class="pr-emp-block" data-emp="${esc(emp)}">
+      <div class="pr-emp-header" style="background:${col.hdr};">
+        <span>${esc(emp)}${isSalaried ? ' <span style="font-size:10px; font-weight:400; opacity:0.8;">(Salaried)</span>' : ''}</span>
+        <div class="pr-emp-right">
+          <div class="pr-bonus-wrap">
+            <label>Bonus $</label>
+            <input type="number" class="pr-bonus-input" data-emp="${esc(emp)}" value="${bonus}" min="0" step="0.01" placeholder="0.00" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Week 1 -->
+      <div class="pr-week-label" style="background:${col.light}; color:#333;">
+        <span>Week 1 — ${dateStr(prWk1Start)} to ${dateStr(prWk1End)}</span>
+        <span class="pr-week-total">${fmtHrs(wk1Total)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}</span>
+      </div>
+      ${wk1Html}
+      <button class="pr-add-btn" data-emp="${esc(emp)}" data-week="1">+ Add Entry</button>
+
+      <!-- Week 2 -->
+      <div class="pr-week-label" style="background:${col.light}; color:#333;">
+        <span>Week 2 — ${dateStr(prWk2Start)} to ${dateStr(prWk2End)}</span>
+        <span class="pr-week-total">${fmtHrs(wk2Total)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}</span>
+      </div>
+      ${wk2Html}
+      <button class="pr-add-btn" data-emp="${esc(emp)}" data-week="2">+ Add Entry</button>
+
+      <!-- Save row -->
+      <div class="pr-save-row">
+        <button class="pr-save-btn" data-emp="${esc(emp)}">💾 Save Changes</button>
+        <span class="pr-save-msg" data-emp="${esc(emp)}">✓ Saved</span>
+      </div>
+    </div>`;
+  }
+
+  function renderWeekTable(emp, entries, wkNum) {
+    if (!entries.length) return `<div class="pr-no-entries">No entries — use + Add Entry below.</div>`;
+    const jobOptions = prJobs
+      .filter(j => ["awarded","service call scheduled","ready to invoice"].includes((j.status||"").toLowerCase()))
+      .sort((a,b) => (a.name||"").localeCompare(b.name||""))
+      .map(j => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join("");
+    const classOptions = PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+    const taxOptions   = PR_CITY_TAXES.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+
+    const rows = entries.map(e => {
+      const hrs = secToHrs(e.duration || 0);
+      return `
+      <tr data-entry-id="${esc(e.id || e._tmpId || "")}">
+        <td><input type="date" class="pr-input pr-date" value="${esc(e.workDate || "")}" /></td>
+        <td>
+          <select class="pr-select pr-job">
+            <option value="">— No Job —</option>
+            ${prJobs.filter(j => ["awarded","service call scheduled","ready to invoice"].includes((j.status||"").toLowerCase()))
+              .sort((a,b)=>(a.name||"").localeCompare(b.name||""))
+              .map(j => `<option value="${esc(j.id)}" ${e.jobId === j.id ? "selected" : ""}>${esc(j.name)}</option>`).join("")}
+          </select>
+        </td>
+        <td><input type="number" class="pr-input pr-hours" value="${fmtHrs(hrs)}" min="0" max="24" step="0.25" style="width:72px;" /></td>
+        <td>
+          <select class="pr-select pr-class">
+            ${PR_CLASSES.map(c => `<option value="${esc(c)}" ${e.class === c ? "selected" : ""}>${esc(c)}</option>`).join("")}
+          </select>
+        </td>
+        <td>
+          <select class="pr-select pr-citytax">
+            ${PR_CITY_TAXES.map(t => `<option value="${esc(t)}" ${e.cityTaxes === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
+          </select>
+        </td>
+        <td><button class="pr-del-btn" data-entry-id="${esc(e.id || e._tmpId || "")}">🗑 Delete</button></td>
+      </tr>`;
+    }).join("");
+
+    return `
+    <div class="pr-table-wrap">
+      <table class="pr-table">
+        <thead><tr><th>Date</th><th>Job</th><th>Hours</th><th>Class</th><th>City Tax</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  }
+
+  let _tmpIdCounter = 0;
+
+  function wirePayrollEvents() {
+    // Bonus inputs
+    document.querySelectorAll(".pr-bonus-input").forEach(inp => {
+      inp.addEventListener("change", () => {
+        prBonuses[inp.dataset.emp] = parseFloat(inp.value) || 0;
+      });
+    });
+
+    // Add Entry buttons
+    document.querySelectorAll(".pr-add-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const emp  = btn.dataset.emp;
+        const wk   = parseInt(btn.dataset.week);
+        const defaultDate = wk === 1 ? dateStr(prWk1Start) : dateStr(prWk2Start);
+        const tmpId = `_new_${++_tmpIdCounter}`;
+        prEntries.push({
+          id: null, _tmpId: tmpId, employee: emp,
+          workDate: defaultDate, duration: 0, hours: 0,
+          cityTaxes: "A No Tax", class: "Contract",
+          jobId: null, jobName: "", isNew: true, _dirty: true
+        });
+        renderPayroll();
+        // Scroll to new row
+        setTimeout(() => {
+          const row = document.querySelector(`[data-entry-id="${tmpId}"]`);
+          if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 100);
+      });
+    });
+
+    // Delete buttons
+    document.querySelectorAll(".pr-del-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const eid = btn.dataset.entryId;
+        if (!confirm("Delete this time entry?")) return;
+        // If it has a real Airtable id, delete via API
+        const entry = prEntries.find(e => (e.id || e._tmpId) === eid);
+        if (entry && entry.id) {
+          btn.disabled = true; btn.textContent = "...";
+          try {
+            await apiPost("deleteTimeEntry", { entryId: entry.id });
+          } catch(e) { alert("Error deleting: " + e.message); btn.disabled = false; btn.textContent = "🗑 Delete"; return; }
+        }
+        prEntries = prEntries.filter(e => (e.id || e._tmpId) !== eid);
+        renderPayroll();
+      });
+    });
+
+    // Save buttons per employee
+    document.querySelectorAll(".pr-save-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const emp = btn.dataset.emp;
+        const msgEl = document.querySelector(`.pr-save-msg[data-emp="${emp}"]`);
+        btn.disabled = true; btn.textContent = "Saving...";
+        msgEl.style.display = "none";
+
+        // Collect all rows for this employee from the DOM
+        const block = btn.closest(".pr-emp-block");
+        const rows  = block.querySelectorAll("tr[data-entry-id]");
+        let errors  = [];
+
+        for (const row of rows) {
+          const eid      = row.dataset.entryId;
+          const entry    = prEntries.find(e => (e.id || e._tmpId) === eid);
+          if (!entry) continue;
+
+          const newDate  = row.querySelector(".pr-date").value;
+          const newHrs   = parseFloat(row.querySelector(".pr-hours").value) || 0;
+          const newDur   = hrsToSec(newHrs);
+          const newClass = row.querySelector(".pr-class").value;
+          const newTax   = row.querySelector(".pr-citytax").value;
+          const newJobEl = row.querySelector(".pr-job");
+          const newJobId = newJobEl ? newJobEl.value : null;
+          const newJobName = newJobEl ? (newJobEl.options[newJobEl.selectedIndex]?.text || "") : "";
+
+          if (entry.isNew) {
+            // Create new record
+            try {
+              const result = await apiPost("createTimeEntry", {
+                employee: emp,
+                workDate: newDate,
+                duration: newDur,
+                class:    newClass,
+                cityTaxes: newTax,
+                jobId:    newJobId || null,
+                jobName:  newJobName || null
+              });
+              entry.id      = result.id;
+              entry.isNew   = false;
+              entry._dirty  = false;
+              entry.workDate = newDate;
+              entry.duration = newDur;
+              entry.class   = newClass;
+              entry.cityTaxes = newTax;
+              entry.jobId   = newJobId;
+              entry.jobName = newJobName;
+            } catch(e) { errors.push(e.message); }
+          } else {
+            // Update existing
+            try {
+              await apiPost("updateTimeEntry", {
+                entryId:  entry.id,
+                duration: newDur,
+                workDate: newDate,
+                class:    newClass,
+                cityTaxes: newTax,
+                jobId:    newJobId || null
+              });
+              entry.duration  = newDur;
+              entry.workDate  = newDate;
+              entry.class     = newClass;
+              entry.cityTaxes = newTax;
+              entry.jobId     = newJobId;
+              entry.jobName   = newJobName;
+              entry._dirty    = false;
+            } catch(e) { errors.push(e.message); }
+          }
+        }
+
+        btn.disabled = false; btn.textContent = "💾 Save Changes";
+        if (errors.length) { alert("Some saves failed:\n" + errors.join("\n")); }
+        else {
+          msgEl.style.display = "inline";
+          setTimeout(() => { msgEl.style.display = "none"; }, 2500);
+        }
+        renderPayroll();
+      });
+    });
+  }
+
+  // ── PDF GENERATION (client-side via jsPDF) ──────────────────────
+  function generatePayrollPDF() {
+    const empMap = groupEntries();
+    const empNames = Object.keys(empMap).sort();
+
+    // Load jsPDF from CDN
+    if (!window.jspdf) {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      script.onload = () => buildPDF(empMap, empNames);
+      document.head.appendChild(script);
+    } else {
+      buildPDF(empMap, empNames);
+    }
+  }
+  window.generatePayrollPDF = generatePayrollPDF;
+
+  function hexToRgb(hex) {
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    return [r,g,b];
+  }
+
+  function buildPDF(empMap, empNames) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "pt", format: "letter" });
+    const W = 612, M = 40;
+    const payDate = dateStr(prWk2End);
+    const wk1Label = `${dateStr(prWk1Start)} – ${dateStr(prWk1End)}`;
+    const wk2Label = `${dateStr(prWk2Start)} – ${dateStr(prWk2End)}`;
+
+    let y = 40;
+    let firstPage = true;
+
+    function newPage() {
+      if (!firstPage) doc.addPage();
+      firstPage = false;
+      // Page header
+      doc.setFont("helvetica","bold"); doc.setFontSize(15);
+      doc.setTextColor(26,26,26);
+      doc.text("Northeastern Electric, Inc.", M, y);
+      doc.setFont("helvetica","normal"); doc.setFontSize(10);
+      doc.setTextColor(100,100,100);
+      doc.text(`Bi-Weekly Payroll Report     Pay Date: ${payDate}`, M, y+17);
+      doc.setDrawColor(51,51,51); doc.setLineWidth(1.5);
+      doc.line(M, y+24, W-M, y+24);
+      doc.setLineWidth(0.5);
+      y += 42;
+    }
+
+    function checkSpace(needed) {
+      if (y + needed > 750) { y = 40; newPage(); }
+    }
+
+    function nameBar(name, col) {
+      checkSpace(22);
+      const [r,g,b] = hexToRgb(col.hdr);
+      doc.setFillColor(r,g,b);
+      doc.rect(M, y-20, W-M*2, 22, "F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(11);
+      doc.setTextColor(255,255,255);
+      doc.text(name, M+8, y-5);
+      doc.setTextColor(0,0,0);
+      y += 2;
+    }
+
+    function wkLabel(label, dates, col) {
+      checkSpace(17);
+      const [r,g,b] = hexToRgb(col.light);
+      doc.setFillColor(r,g,b);
+      doc.rect(M, y-15, W-M*2, 17, "F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(9);
+      doc.setTextColor(51,51,51);
+      doc.text(label, M+8, y-3);
+      doc.setFont("helvetica","normal");
+      doc.text(dates, M+200, y-3);
+      doc.setTextColor(0,0,0);
+      y += 2;
+    }
+
+    function dataRow(label, value, shade) {
+      checkSpace(15);
+      if (shade) { doc.setFillColor(247,247,247); doc.rect(M, y-13, W-M*2, 15, "F"); }
+      doc.setDrawColor(200,200,200); doc.setLineWidth(0.3);
+      doc.line(M, y-13, W-M, y-13);
+      doc.setLineWidth(0.5); doc.setDrawColor(0,0,0);
+      doc.setFont("helvetica","normal"); doc.setFontSize(9);
+      doc.setTextColor(30,30,30);
+      if (label) doc.text(label, M+18, y-2);
+      if (value) doc.text(String(value), W-M-4, y-2, { align: "right" });
+      y += 15;
+    }
+
+    function sumRow(label) {
+      checkSpace(15);
+      doc.setDrawColor(150,150,150); doc.setLineWidth(0.5);
+      doc.line(M, y-13, W-M, y-13);
+      doc.setFont("helvetica","bold"); doc.setFontSize(9);
+      doc.setTextColor(30,30,30);
+      doc.text(label, M+18, y-2);
+      doc.setTextColor(0,0,0);
+      y += 15;
+    }
+
+    function cityTaxSection(taxes, col) {
+      const hasCity = taxes.some(([t]) => t !== "A No Tax");
+      if (!hasCity && taxes.every(([t]) => t === "A No Tax")) {
+        // All A No Tax — just show total
+        const total = taxes.reduce((a,[,h]) => a+h, 0);
+        dataRow("A No Tax", fmtHrs(total), false);
+        return;
+      }
+      // Show breakdown per tax
+      doc.setFont("helvetica","bold"); doc.setFontSize(8);
+      doc.setTextColor(80,80,80);
+      doc.text("City Tax Hours:", M+18, y-2);
+      doc.setTextColor(0,0,0);
+      y += 13;
+      taxes.forEach(([t,h], i) => {
+        if (h > 0) dataRow(t, fmtHrs(h), i%2===1);
+      });
+    }
+
+    function bonusRow(amt, col) {
+      checkSpace(15);
+      doc.setDrawColor(180,180,180); doc.setLineWidth(0.3);
+      doc.line(M, y-13, W-M, y-13);
+      doc.setFont("helvetica","normal"); doc.setFontSize(9);
+      doc.setTextColor(30,30,30);
+      doc.text("Bonus$", M+18, y-2);
+      const [r,g,b] = hexToRgb(col.hdr);
+      doc.setTextColor(r,g,b);
+      doc.setFont("helvetica","bold");
+      doc.text(amt > 0 ? `$ ${amt.toFixed(2)}` : "$ -", W-M-4, y-2, { align: "right" });
+      doc.setTextColor(0,0,0);
+      y += 15;
+    }
+
+    function bottomRule(col) {
+      checkSpace(10);
+      const [r,g,b] = hexToRgb(col.hdr);
+      doc.setDrawColor(r,g,b); doc.setLineWidth(1.2);
+      doc.line(M, y-8, W-M, y-8);
+      doc.setLineWidth(0.5); doc.setDrawColor(0,0,0);
+      y += 10;
+    }
+
+    // Compute tax breakdown for a set of entries
+    function taxBreakdown(entries) {
+      const map = {};
+      entries.forEach(e => {
+        const t = e.cityTaxes || "A No Tax";
+        const h = secToHrs(e.duration || 0);
+        map[t] = (map[t] || 0) + h;
+      });
+      return Object.entries(map);
+    }
+
+    newPage();
+
+    empNames.forEach(emp => {
+      const col = PR_COLORS[emp] || { hdr: "#444", light: "#ddd" };
+      const isSalaried = SALARIED.includes(emp);
+      const wk1 = empMap[emp]?.wk1 || [];
+      const wk2 = empMap[emp]?.wk2 || [];
+      const bonus = prBonuses[emp] || 0;
+      const wk1Total = wk1.reduce((a,e) => a + secToHrs(e.duration||0), 0);
+      const wk2Total = wk2.reduce((a,e) => a + secToHrs(e.duration||0), 0);
+      const wk1Reg = Math.min(wk1Total, 40);
+      const wk1OT  = Math.max(0, wk1Total - 40);
+      const wk2Reg = Math.min(wk2Total, 40);
+      const wk2OT  = Math.max(0, wk2Total - 40);
+
+      checkSpace(200);
+      nameBar(emp + (isSalaried ? "  (Salaried)" : ""), col);
+
+      if (!isSalaried) {
+        // Week 1
+        wkLabel("Week #1", wk1Label, col);
+        dataRow("Weekly Hours", fmtHrs(wk1Total), false);
+        sumRow(`Reg Hrs  ${fmtHrs(wk1Reg)}${wk1OT > 0 ? `     OT Hrs  ${fmtHrs(wk1OT)}` : ""}`);
+        sumRow(`Total Hrs  ${fmtHrs(wk1Total)}`);
+        cityTaxSection(taxBreakdown(wk1), col);
+
+        // Week 2
+        wkLabel("Week #2", wk2Label, col);
+        dataRow("Weekly Hours", fmtHrs(wk2Total), false);
+        sumRow(`Reg Hrs  ${fmtHrs(wk2Reg)}${wk2OT > 0 ? `     OT Hrs  ${fmtHrs(wk2OT)}` : ""}`);
+        sumRow(`Total Hrs  ${fmtHrs(wk2Total)}`);
+        cityTaxSection(taxBreakdown(wk2), col);
+      } else {
+        // Salaried — show city tax hrs only if non-A-No-Tax exists
+        wkLabel("Week #1  —  Bi-weekly Salary", wk1Label, col);
+        const city1 = taxBreakdown(wk1).filter(([t]) => t !== "A No Tax");
+        if (city1.length) { city1.forEach(([t,h],i) => dataRow(t, fmtHrs(h), i%2===1)); }
+        else dataRow("No City Taxes", "", false);
+
+        wkLabel("Week #2  —  Bi-weekly Salary", wk2Label, col);
+        const city2 = taxBreakdown(wk2).filter(([t]) => t !== "A No Tax");
+        if (city2.length) { city2.forEach(([t,h],i) => dataRow(t, fmtHrs(h), i%2===1)); }
+        else if (!wk2.length) dataRow("No hours this week", "", false);
+        else dataRow("No City Taxes", "", false);
+      }
+
+      bonusRow(bonus, col);
+      bottomRule(col);
+      y += 8;
+    });
+
+    doc.save(`NEE_Payroll_${payDate}.pdf`);
+  }
+
 </script>
+<!-- PAYROLL MODAL -->
+<div id="payrollModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal">
+    <div class="payroll-modal-header">
+      <h2>💵 Payroll Manager</h2>
+      <button onclick="closePayroll()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+
+      <!-- Period picker -->
+      <div class="pr-period-bar">
+        <div>
+          <label>Week 1 Start (Mon)</label>
+          <input type="date" id="prWk1Start" />
+        </div>
+        <div>
+          <label>Week 2 End (Sat)</label>
+          <input type="date" id="prWk2End" />
+        </div>
+        <button class="pr-load-btn" id="prLoadBtn" onclick="loadPayrollEntries()">Load Entries</button>
+      </div>
+
+      <!-- Status message -->
+      <div id="prStatus" style="font-size:13px; color:var(--muted); margin-bottom:12px; display:none;"></div>
+
+      <!-- Summary bar + PDF button -->
+      <div id="prSummaryBar" class="pr-summary-bar" style="display:none;"></div>
+
+      <!-- Employee blocks rendered here -->
+      <div id="prBlocks"></div>
+
+    </div>
+  </div>
+</div>
+
 <!-- FLEET MODAL -->
 <div id="fleetModal" class="fleet-modal-backdrop" style="display:none;">
   <div class="fleet-modal">

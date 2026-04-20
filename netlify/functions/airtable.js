@@ -215,21 +215,20 @@ async function handlePayrollEntries(params) {
   const { startDate, endDate } = params || {};
   if (!startDate || !endDate) return resp(400, { ok: false, error: "Missing startDate or endDate." });
 
-  // Build the 14 individual work dates (Mon-Sat x2) and filter by exact Work Date
-  // This avoids formula field filtering which Airtable does not support
+  // Use IS_SAME() for date comparison — required for Airtable date fields in filterByFormula
+  // Build OR across all 14 days in the pay period
   function addDays(ds, n) {
     const [y,m,d] = ds.split("-").map(Number);
     const dt = new Date(y, m-1, d);
     dt.setDate(dt.getDate() + n);
     return dt.toISOString().slice(0,10);
   }
-  // Generate all dates from startDate through endDate (14 days inclusive)
   const allDates = [];
   for (let i = 0; i <= 13; i++) {
     allDates.push(addDays(startDate, i));
   }
-  // Build OR filter across all 14 dates using Work Date field (stored date field, fast)
-  const dateClauses = allDates.map(d => `{Work Date}="${d}"`).join(",");
+  // IS_SAME({Work Date}, "YYYY-MM-DD", "day") is the correct Airtable date equality check
+  const dateClauses = allDates.map(d => `IS_SAME({Work Date},"${d}","day")`).join(",");
   const filter = `OR(${dateClauses})`;
   const records = await fetchAll(TABLES.timeEntries, {
     filter,

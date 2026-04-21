@@ -860,7 +860,7 @@ async function handleSaveInvoice(body) {
 
   if (String(billingMode).toLowerCase() === "contract") {
     // Contract invoice — bill by percentage of Expected Revenue
-    fields["fldljpi4PpNPIfI27"] = "Contract %";                     // Billing Mode
+    fields["fldljpi4PpNPIfI27"] = "Contract % Progress";             // Billing Mode (matches Airtable option)
     fields["fldC4loXTBzC2UKGt"] = "Contract";                       // Invoice Type
     fields["fldejNlo5R194TGMs"] = false;                            // Auto Allocate OFF
     fields["fldRcvTVQ7naHG19t"] = 0;                                // zero manual labor

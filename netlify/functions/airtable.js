@@ -543,53 +543,141 @@ async function handleUpdateEstimateStatus(body) {
 }
 
 // ── GET NEXT ESTIMATE NUMBER ─────────────────────────────────────────────
+// Queries the "Sent Estimate PDFs" table (not Job Estimates) so snapshot-only
+// records don't commingle with the source-of-truth Job Estimates.
 async function handleGetNextEstimateNumber() {
   const START_AT = 2187;
   let max = 0;
   let offset = undefined;
-  do {
-    const qs = "?fields%5B%5D=" + encodeURIComponent("Estimate Display #")
-             + (offset ? "&offset=" + encodeURIComponent(offset) : "");
-    const page = await atFetch(`${encodeURIComponent("Job Estimates")}${qs}`);
-    if (page.error) return resp(400, { ok: false, error: page.error });
-    (page.records || []).forEach(r => {
-      const n = Number(r?.fields?.["Estimate Display #"]);
-      if (!isNaN(n) && n > max) max = n;
-    });
-    offset = page.offset;
-  } while (offset);
+  try {
+    do {
+      const qs = "?fields%5B%5D=" + encodeURIComponent("Estimate Display #")
+               + (offset ? "&offset=" + encodeURIComponent(offset) : "");
+      const page = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}${qs}`);
+      if (page.error) return resp(400, { ok: false, error: page.error });
+      (page.records || []).forEach(r => {
+        const n = Number(r?.fields?.["Estimate Display #"]);
+        if (!isNaN(n) && n > max) max = n;
+      });
+      offset = page.offset;
+    } while (offset);
+  } catch (e) {
+    // Friendly fallback: if the new table hasn't been created yet, start at 2187
+    // so the app still works. The save path will surface a clearer error.
+    const msg = String(e?.message || e || "");
+    if (/NOT_FOUND|not.*found|could not.*find.*table/i.test(msg)) {
+      return resp(200, { ok: true, nextNumber: START_AT, warning: "Sent Estimate PDFs table not found — starting at " + START_AT });
+    }
+    throw e;
+  }
   const next = Math.max(max + 1, START_AT);
   return resp(200, { ok: true, nextNumber: next });
 }
 
 // ── SAVE ESTIMATE RECORD ─────────────────────────────────────────────────
+// Writes to the "Sent Estimate PDFs" snapshots table (NOT Job Estimates).
+// Job Estimates remains the source-of-truth table for Expected Revenue rollups
+// and is only populated via the "New Job Estimate" Airtable form.
 async function handleSaveEstimate(body) {
   const { jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
   fields["Job"] = [jobId];
-  // Note: "Estimate Name" is a computed/formula field — don't write it, Airtable handles it
   if (estimateDate) fields["Estimate Date"] = estimateDate;
-  if (notes)        fields["Notes"] = notes;
   if (totalAmount !== undefined && totalAmount !== null && totalAmount !== "") {
-    fields["fldJTAPtFpXH2vRwF"] = Number(totalAmount);       // Actual Estimate Sent
+    fields["Total"] = Number(totalAmount);
   }
   if (estimateNumber !== undefined && estimateNumber !== null && estimateNumber !== "") {
     const n = Number(estimateNumber);
-    if (!isNaN(n)) fields["fldLDXWW1Ai26YAr9"] = n;          // Estimate Display #
+    if (!isNaN(n)) fields["Estimate Display #"] = n;
   }
   if (snapshot) {
-    fields["fldP8pMlPZ0osDhtM"] = typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot); // Estimate Snapshot
+    fields["Snapshot"] = typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot);
   }
-  fields["fld9GsGvxaNPuCnjo"] = "Sent";                      // Status
+  // Note: "notes" from the caller is embedded in the Snapshot JSON; no separate column.
 
-  const data = await atFetch(`${encodeURIComponent("Job Estimates")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
+  try {
+    const data = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}`, {
+      method: "POST",
+      body: JSON.stringify({ fields, typecast: true })
+    });
+    if (data.error) return resp(400, { ok: false, error: data.error });
+    return resp(200, { ok: true, id: data.id });
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    if (/NOT_FOUND|could not.*find.*table/i.test(msg)) {
+      return resp(400, { ok: false, error: "The 'Sent Estimate PDFs' table doesn't exist yet. Create it in Airtable with fields: Job (link to Jobs), Estimate Display # (number), Estimate Date (date), Snapshot (long text), Total (currency). Then try Save again." });
+    }
+    throw e;
+  }
+}
+
+// ── LIST SAVED ESTIMATE PDF SNAPSHOTS FOR A JOB ──────────────────────────
+// Backs the Estimate History panel. Reads from Sent Estimate PDFs only.
+async function handleSentEstimatePDFs(params) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  let records = [];
+  try {
+    // Fetch all rows and filter in-memory by the Job link (same pattern as
+    // handleGetJobInvoices — filterByFormula on linked records is unreliable).
+    const all = [];
+    let offset = undefined;
+    do {
+      const qs = (offset ? "?offset=" + encodeURIComponent(offset) : "");
+      const page = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}${qs}`);
+      if (page.error) return resp(400, { ok: false, error: page.error });
+      all.push(...(page.records || []));
+      offset = page.offset;
+    } while (offset);
+    records = all.filter(r => {
+      const jobArr = r.fields?.["Job"];
+      return Array.isArray(jobArr) && jobArr.indexOf(jobId) !== -1;
+    });
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    if (/NOT_FOUND|could not.*find.*table/i.test(msg)) {
+      // Table not created yet — return empty list so the UI just says "none yet"
+      return resp(200, { ok: true, estimates: [] });
+    }
+    throw e;
+  }
+
+  // Sort newest-first by date, falling back to display number
+  records.sort((a, b) => {
+    const da = a.fields?.["Estimate Date"] || "";
+    const db = b.fields?.["Estimate Date"] || "";
+    if (db !== da) return db.localeCompare(da);
+    return Number(b.fields?.["Estimate Display #"] || 0) - Number(a.fields?.["Estimate Display #"] || 0);
   });
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  return resp(200, { ok: true, id: data.id });
+
+  const estimates = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:             r.id,
+      displayNumber:  f["Estimate Display #"] || null,
+      date:           f["Estimate Date"] || "",
+      total:          Number(f["Total"] || 0),
+      snapshot:       f["Snapshot"] || "",
+      // Derive a friendly name from the snapshot JSON if available
+      name:           (() => {
+        try {
+          const s = JSON.parse(f["Snapshot"] || "{}");
+          const first = (s.lines || [])[0]?.description || "";
+          const head  = first ? first.split(/\r?\n/)[0].trim().slice(0, 80) : (s.jobName || "");
+          const num   = f["Estimate Display #"] ? `#${f["Estimate Display #"]} — ` : "";
+          return `${num}${head}`.trim() || "Estimate";
+        } catch { return `#${f["Estimate Display #"] || ""}`.trim() || "Estimate"; }
+      })(),
+      // Status is implicit for saved PDFs; surface "Sent" for the history UI
+      status:         "Sent",
+      actualEstimate: Number(f["Total"] || 0),
+      calculatedTotal:Number(f["Total"] || 0)
+    };
+  });
+  return resp(200, { ok: true, estimates });
 }
 
 const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance", mileageLog: "Fleet Mileage Log" };
@@ -911,8 +999,25 @@ async function handleUpdateJobBillableRate(body) {
 }
 
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
+// Path B semantics:
+//   - `totalAmount` (from the frontend's calcInvTotal / sum of invLines) is
+//     the authoritative dollar figure. It is written to the new
+//     "Snapshot Total" field (fldFyaBpK8nlnUbvf).
+//   - For Contract invoices, `percentToBill` is DERIVED server-side from
+//     totalAmount / expectedRevenue — the stale user-input percent is ignored
+//     when totalAmount is present.
+//   - After deploy, change the "Total Contract Billed" rollup on Jobs to sum
+//     "Snapshot Total" (instead of "Contract Invoice Amount") so the
+//     Previously-Billed / Contract-Remaining figures are based on real saved
+//     dollars, not the percent-times-expected-revenue formula.
 async function handleSaveInvoice(body) {
-  const { jobId, invoiceDate, billingMode, percentToBill, notes, invoiceNumber, snapshot, invoiceStage } = body || {};
+  const {
+    jobId, invoiceDate, billingMode,
+    percentToBill,        // legacy — only used if totalAmount not provided
+    totalAmount,          // NEW: authoritative amount from the line-item sum
+    expectedRevenue,      // NEW: the frontend's view of expected rev for percent derivation
+    notes, invoiceNumber, snapshot, invoiceStage
+  } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -932,24 +1037,44 @@ async function handleSaveInvoice(body) {
     fields["fldzvSMeApOZs75Pa"] = String(invoiceStage);              // Invoice Stage
   }
 
+  // Snapshot Total — authoritative dollar figure written from line-item sum.
+  const totalNum = (totalAmount !== undefined && totalAmount !== null && totalAmount !== "")
+    ? Number(totalAmount)
+    : null;
+  if (totalNum !== null && !isNaN(totalNum)) {
+    fields["fldFyaBpK8nlnUbvf"] = totalNum;                          // Snapshot Total
+  }
+
   if (String(billingMode).toLowerCase() === "contract") {
-    // Contract invoice — bill by percentage of Expected Revenue
-    fields["fldljpi4PpNPIfI27"] = "Contract % Progress";             // Billing Mode (matches Airtable option)
-    fields["fldC4loXTBzC2UKGt"] = "Contract";                       // Invoice Type
-    fields["fldejNlo5R194TGMs"] = false;                            // Auto Allocate OFF
-    fields["fldRcvTVQ7naHG19t"] = 0;                                // zero manual labor
-    fields["fldcbhc1z8nEftVeY"] = 0;                                // zero manual material
-    if (percentToBill !== undefined && percentToBill !== null && percentToBill !== "") {
-      // Airtable stores percent as a decimal fraction (e.g. 100% → 1)
-      fields["fldiaGIu4ZzKLz6ra"] = Number(percentToBill) / 100;
+    // Contract invoice — bill by percentage of Expected Revenue.
+    fields["fldljpi4PpNPIfI27"] = "Contract % Progress";             // Billing Mode
+    fields["fldC4loXTBzC2UKGt"] = "Contract";                        // Invoice Type
+    fields["fldejNlo5R194TGMs"] = false;                             // Auto Allocate OFF
+    fields["fldRcvTVQ7naHG19t"] = 0;                                 // zero manual labor
+    fields["fldcbhc1z8nEftVeY"] = 0;                                 // zero manual material
+
+    // Derive percentToBill from the authoritative totalAmount when both
+    // totalAmount and expectedRevenue are known. This keeps the existing
+    // "Contract Invoice Amount" formula consistent with Snapshot Total.
+    let derivedPct = null; // as a 0..1 fraction for Airtable's percent field
+    const erNum = (expectedRevenue !== undefined && expectedRevenue !== null && expectedRevenue !== "")
+      ? Number(expectedRevenue) : null;
+    if (totalNum !== null && erNum !== null && erNum > 0 && !isNaN(totalNum)) {
+      derivedPct = Math.round((totalNum / erNum) * 1e6) / 1e6; // clamp precision
+    } else if (percentToBill !== undefined && percentToBill !== null && percentToBill !== "") {
+      // Fall back to caller-provided percent (legacy path)
+      derivedPct = Number(percentToBill) / 100;
+    }
+    if (derivedPct !== null && !isNaN(derivedPct)) {
+      fields["fldiaGIu4ZzKLz6ra"] = derivedPct;                      // Percent to Bill
     }
   } else {
-    // T&M invoice — existing behavior, lets Airtable rollup labor & material
-    fields["fldljpi4PpNPIfI27"] = "T&M Final";                      // Billing Mode
-    fields["fldC4loXTBzC2UKGt"] = "Time & Material";                // Invoice Type
-    fields["fldejNlo5R194TGMs"] = true;                             // Auto Allocate ON
-    fields["fldRcvTVQ7naHG19t"] = 0;                                // zero manual labor
-    fields["fldcbhc1z8nEftVeY"] = 0;                                // zero manual material
+    // T&M invoice — existing behavior, lets Airtable rollup labor & material.
+    fields["fldljpi4PpNPIfI27"] = "T&M Final";                       // Billing Mode
+    fields["fldC4loXTBzC2UKGt"] = "Time & Material";                 // Invoice Type
+    fields["fldejNlo5R194TGMs"] = true;                              // Auto Allocate ON
+    fields["fldRcvTVQ7naHG19t"] = 0;                                 // zero manual labor
+    fields["fldcbhc1z8nEftVeY"] = 0;                                 // zero manual material
   }
 
   const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
@@ -1039,6 +1164,7 @@ async function handleGetJobInvoices(body) {
       billingMode:     f["Billing Mode"]      || "",
       invoiceType:     f["Invoice Type"]      || "",
       total:           Number(f["Invoice Total"] || 0),
+      snapshotTotal:   Number(f["Snapshot Total"] || 0),   // authoritative saved total (Path B)
       percentToBill:   f["Percent to Bill"]   || null,
       contractAmount:  Number(f["Contract Invoice Amount"] || 0),
       notes:           f["Invoice Notes"]     || "",
@@ -1149,6 +1275,7 @@ export async function handler(event) {
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);
       if (action === "jobEstimates")       return await handleJobEstimates(params);
+      if (action === "sentEstimatePDFs")   return await handleSentEstimatePDFs(params);
       if (action === "fleetVehicles")      return await handleFleetVehicles();
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();

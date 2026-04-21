@@ -4363,9 +4363,10 @@
 
       const entries  = (teData.entries  || []).filter(e => e.reviewed);
       const expenses = (expData.expenses || []).filter(e => e.reviewed);
-      // Only estimates that count toward the Contract Amount rollup (not saved invoices or rejected ones)
+      // Source-of-truth estimates only. Since snapshot records now live in the
+      // separate "Sent Estimate PDFs" table, Job Estimates no longer contains
+      // per-save duplicates — so we just filter on Status + positive amount.
       const estimates = (estData.estimates || []).filter(e => {
-        if (e.displayNumber != null) return false;                // skip saved-via-app records
         const st = (e.status || "").toLowerCase();
         if (st !== "approved" && st !== "archived/completed") return false;
         return Number(e.actualEstimate) > 0;
@@ -4822,7 +4823,9 @@
               const type = inv.invoiceType || "—";
               const status = inv.status || "—";
               const stage = inv.stage || "—";
-              const total = inv.total ? fmtCurrency(inv.total) : (inv.contractAmount ? fmtCurrency(inv.contractAmount) : "—");
+              const total = inv.snapshotTotal
+                ? fmtCurrency(inv.snapshotTotal)
+                : (inv.total ? fmtCurrency(inv.total) : (inv.contractAmount ? fmtCurrency(inv.contractAmount) : "—"));
               const pctStr = inv.percentToBill ? ` (${Math.round(inv.percentToBill * 100)}%)` : "";
               const hasSnap = inv.snapshot && inv.snapshot.length > 10;
               const reprintBtn = hasSnap
@@ -5084,17 +5087,27 @@
     const invoiceNumber = $("invNum")?.value || "";
     const invoiceStage  = $("invStage")?.value || "Full";
 
+    // AUTHORITATIVE total comes from the line items — NOT the "% of total" input.
+    // This is the bug 2 fix: previously we sent percentToBill from a stale
+    // #invContractPct input that never got updated when lines were added via
+    // "+ Add as Line" on the per-estimate breakdown. Now we trust the lines.
+    const totalAmount     = +calcInvTotal().toFixed(2);
+    const expectedRevenue = Number(invJobRef.expectedRevenue || 0);
+
     const body = {
       jobId:       invJobRef.id,
       invoiceDate,
       notes,
       invoiceNumber,
       invoiceStage,
-      billingMode: isContract ? "contract" : "tm"
+      billingMode: isContract ? "contract" : "tm",
+      totalAmount,             // ← line-item sum, always sent
+      expectedRevenue          // ← so the backend can derive percent = total/ER
     };
-    if (isContract) {
-      const pct = Number($("invContractPct")?.value) || 0;
-      body.percentToBill = pct;
+    // Legacy percent still sent for Contract saves so older rollup paths keep
+    // working until the "Total Contract Billed" rollup is moved to Snapshot Total.
+    if (isContract && expectedRevenue > 0) {
+      body.percentToBill = +((totalAmount / expectedRevenue) * 100).toFixed(4);
     }
 
     // Snapshot of the invoice's rendered state so we can reprint an identical PDF later
@@ -5111,6 +5124,7 @@
         description: l.description || "",
         amount: Number(l.amount) || 0
       })),
+      total:   totalAmount,    // ← persist authoritative total inside the snapshot too
       jobName: invJobRef?.name || "",
       savedAt: new Date().toISOString()
     });
@@ -5607,7 +5621,12 @@ rick@northeasternelec.com`
 
     try {
       const d = await apiGet("jobEstimates", { jobId: job.id });
-      const estimates = d.estimates || [];
+      // Transitional defense: skip any old per-save snapshot records that
+      // might still exist in Job Estimates (identifiable by a populated
+      // "Estimate Display #"). New snapshots go to the "Sent Estimate PDFs"
+      // table instead, so this filter becomes a no-op after the old records
+      // are cleaned up.
+      const estimates = (d.estimates || []).filter(e => e.displayNumber == null);
       estEstimatesCache.length = 0;
       estEstimatesCache.push(...estimates);
 
@@ -5921,9 +5940,13 @@ rick@northeasternelec.com`
     const countEl = $("estHistoryCount");
     if (!listEl) return;
     try {
-      const res = await apiGet("jobEstimates", { jobId, onlySaved: 1 });
+      // Read from the new "Sent Estimate PDFs" table (not Job Estimates).
+      // These are snapshot-only records produced by the "Save Estimate" button,
+      // completely separate from the source-of-truth estimates that feed
+      // Expected Revenue / Contract Amount rollups on Jobs.
+      const res = await apiGet("sentEstimatePDFs", { jobId });
       if (!res?.ok) throw new Error(res?.error || "Fetch failed");
-      const estimates = (res.estimates || []).filter(e => e.displayNumber != null);
+      const estimates = res.estimates || [];
       // Stash full list (including snapshot) so reprint buttons can access it
       window._estHistoryCache = estimates;
       if (countEl) countEl.textContent = estimates.length === 0 ? "(none yet)" : `(${estimates.length})`;
@@ -5949,7 +5972,7 @@ rick@northeasternelec.com`
               const date   = est.date || "—";
               const name   = est.name || "—";
               const status = est.status || "—";
-              const total  = est.actualEstimate ? fmtCurrency(est.actualEstimate) : (est.calculatedTotal ? fmtCurrency(est.calculatedTotal) : "—");
+              const total  = est.total ? fmtCurrency(est.total) : (est.actualEstimate ? fmtCurrency(est.actualEstimate) : "—");
               const hasSnap = est.snapshot && est.snapshot.length > 10;
               const reprintBtn = hasSnap
                 ? `<button data-est-id="${esc(est.id)}" class="est-reprint-btn" style="font-size:11px; padding:4px 10px; border:1px solid #ea580c; border-radius:5px; background:white; color:#ea580c; cursor:pointer; font-weight:600;">📄 Reprint Estimate</button>`

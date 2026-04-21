@@ -478,6 +478,7 @@ function configureWireToggle(prefix) {
   if (!item || !(item.wireFtPerLb > 0)) {
     box.style.display = "none";
     wireUnitMode[prefix] = "lbs";
+    if (prefix === "log") updateWireWeighInVisibility();
     return;
   }
   wireUnitMode[prefix] = "lbs";
@@ -488,12 +489,22 @@ function configureWireToggle(prefix) {
   if (lbsBtn) { lbsBtn.style.background = "var(--gold)";     lbsBtn.style.color = "var(--navy-dk)"; }
   if (ftBtn)  { ftBtn.style.background  = "transparent";      ftBtn.style.color  = "var(--dim)";     }
   updateWireConversion(prefix);
+  if (prefix === "log") updateWireWeighInVisibility();
 }
 
 function hideWireToggle(prefix) {
   var box = document.getElementById(prefix + "-wire-unit");
   if (box) box.style.display = "none";
   wireUnitMode[prefix] = "lbs";
+  if (prefix === "log") {
+    // Also clear the weigh-in calc so stale inputs don't bleed into the next item
+    var before = document.getElementById("log-wi-before");
+    var after  = document.getElementById("log-wi-after");
+    if (before) before.value = "";
+    if (after)  after.value  = "";
+    updateWeighIn();
+    updateWireWeighInVisibility();
+  }
 }
 
 // Called on toggle button tap.
@@ -511,6 +522,7 @@ function setWireUnit(prefix, unit) {
     ftBtn.style.color       = (unit === "ft")  ? "var(--navy-dk)"  : "var(--dim)";
   }
   updateWireConversion(prefix);
+  if (prefix === "log") updateWireWeighInVisibility();
   // Re-focus qty input so user can keep typing
   var inp = document.getElementById(prefix + "-qty");
   if (inp) { inp.focus(); inp.select(); }
@@ -551,6 +563,95 @@ function getQtyInLbs(prefix) {
   var unit = wireUnitMode[prefix] || "lbs";
   if (unit === "ft") return +(raw / item.wireFtPerLb).toFixed(4);  // convert ft → lbs
   return raw;
+}
+
+// ═══════════════════════════════════════════════════════════
+// WIRE WEIGH-IN CALCULATOR (Use on Job screen only)
+// Rick writes the starting weight on the spool, pulls wire to the
+// job, weighs again, subtracts to find usage. This saves him from
+// doing that subtraction on his phone calculator. Only shown when
+// the toggle is on lbs (weighing is inherently a lbs-domain task).
+// ═══════════════════════════════════════════════════════════
+
+function wireWeighInCalcHTML() {
+  // Renders empty/hidden — populated + shown by updateWireWeighInVisibility
+  // which gets called from configureWireToggle + setWireUnit.
+  return '<div id="log-weighin" style="display:none;margin-top:10px;padding:10px;background:var(--navy-mid);border:1px solid var(--border);border-radius:8px;">' +
+    '<div style="font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px;">⚖️ Weigh-In Calculator</div>' +
+    '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">' +
+      '<input type="number" step="0.01" id="log-wi-before" placeholder="Before (lbs)" oninput="updateWeighIn()" onfocus="this.select()" ' +
+        'style="flex:1;min-width:100px;background:var(--navy-lt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;padding:7px 9px;outline:none;" />' +
+      '<span style="color:var(--dim);font-weight:700;">−</span>' +
+      '<input type="number" step="0.01" id="log-wi-after"  placeholder="After (lbs)"  oninput="updateWeighIn()" onfocus="this.select()" ' +
+        'style="flex:1;min-width:100px;background:var(--navy-lt);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;padding:7px 9px;outline:none;" />' +
+    '</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;gap:8px;">' +
+      '<div id="log-wi-result" style="font-size:13px;color:var(--dim);">Used: — lbs</div>' +
+      '<button type="button" id="log-wi-apply" onclick="applyWeighInToQty()" disabled ' +
+        'style="background:var(--gold);border:none;border-radius:6px;color:var(--navy);font-family:inherit;font-size:12px;font-weight:700;padding:6px 12px;cursor:pointer;opacity:.5;">Use in Qty</button>' +
+    '</div>' +
+  '</div>';
+}
+
+// Show weigh-in calc only when a wire item is picked AND toggle is on lbs.
+// Switching toggle to ft hides it — you don't weigh wire in feet.
+function updateWireWeighInVisibility() {
+  var box = document.getElementById("log-weighin");
+  if (!box) return;
+  var item = getWireItem("log");
+  var mode = wireUnitMode["log"] || "lbs";
+  box.style.display = (item && item.wireFtPerLb > 0 && mode === "lbs") ? "block" : "none";
+}
+
+function updateWeighIn() {
+  var before = parseFloat(document.getElementById("log-wi-before")?.value);
+  var after  = parseFloat(document.getElementById("log-wi-after")?.value);
+  var result = document.getElementById("log-wi-result");
+  var applyBtn = document.getElementById("log-wi-apply");
+  if (!result) return;
+
+  if (isNaN(before) || isNaN(after)) {
+    result.textContent = "Used: — lbs";
+    result.style.color = "var(--dim)";
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.style.opacity = ".5"; }
+    return;
+  }
+
+  var diff = +(before - after).toFixed(2);
+  // Negative diff = weighed more AFTER than before (would mean putting wire back,
+  // which isn't what this calc is for — highlight so Rick notices the typo).
+  if (diff <= 0) {
+    result.textContent = "After must be less than Before";
+    result.style.color = "var(--red)";
+    if (applyBtn) { applyBtn.disabled = true; applyBtn.style.opacity = ".5"; }
+    return;
+  }
+
+  // Show the diff plus its feet equivalent if we have a ft/lb ratio
+  var item = getWireItem("log");
+  var ftTxt = (item && item.wireFtPerLb > 0)
+    ? "  (" + (diff * item.wireFtPerLb).toLocaleString("en-US", { maximumFractionDigits: 1 }) + " ft)"
+    : "";
+  result.textContent = "Used: " + diff + " lbs" + ftTxt;
+  result.style.color = "#4ade80";  // green — matches the positive-delta color elsewhere
+  if (applyBtn) { applyBtn.disabled = false; applyBtn.style.opacity = "1"; }
+}
+
+// Button action — drops the computed diff into the Quantity input and
+// triggers the existing conversion preview. Saves a tap for Rick.
+function applyWeighInToQty() {
+  var before = parseFloat(document.getElementById("log-wi-before")?.value);
+  var after  = parseFloat(document.getElementById("log-wi-after")?.value);
+  if (isNaN(before) || isNaN(after) || before - after <= 0) return;
+  var diff = +(before - after).toFixed(2);
+  var qtyInp = document.getElementById("log-qty");
+  if (!qtyInp) return;
+  // Weigh-in is always in lbs, so flip the toggle back to lbs first to avoid
+  // the number being misinterpreted as feet.
+  setWireUnit("log", "lbs");
+  qtyInp.value = diff;
+  updateWireConversion("log");
+  showToast("✓ Qty set to " + diff + " lbs");
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -972,6 +1073,7 @@ function renderLogForm() {
     '<button class="qty-pm" onclick="adjQty(1)">+</button>' +
     '</div>' +
     wireUnitToggleHTML("log") +
+    wireWeighInCalcHTML() +
     '</div>' +
 
     '<button class="add-cart-btn" id="add-cart-btn" onclick="addToCart()" disabled>+ Add to Cart</button>' +
@@ -4674,6 +4776,12 @@ function renderEstimateLines() {
   var e = estimateState.current;
   var lines = e.lines || [];
 
+  // For each line, look up its Inventory Item to learn wireFtPerLb + uom.
+  // The estimate API loads itemId onto the line; we marry it up with the
+  // in-memory allItems cache to enrich display without a second API call.
+  var itemMap = {};
+  allItems.forEach(function(i){ itemMap[i.id] = i; });
+
   var rowsHtml = lines.length ? lines.map(function(l, idx) {
     var isMisc = l.isMisc || !l.itemId;
     var nameHtml = isMisc
@@ -4682,24 +4790,91 @@ function renderEstimateLines() {
           'style="font-size:13px;padding:7px 9px;" />'
       : '<div style="font-weight:600;font-size:13px;padding:7px 0;">' + (l.itemName || "Item") + '</div>';
 
+    // Wire lines get special treatment: ft/lbs toggle + price-per-ft display.
+    // Storage is always lbs (line.qty in lbs), but Rick can ENTER in feet.
+    // _displayQty / _displayUnit are transient UI state — not persisted.
+    var item       = l.itemId ? itemMap[l.itemId] : null;
+    var isWire     = !!(item && item.wireFtPerLb > 0);
+    var lbs        = Number(l.qty) || 0;
+    var ftPerLb    = isWire ? item.wireFtPerLb : 0;
+    var cost       = Number(l.unitCost) || 0;
+
+    // Default to ft for estimating — Rick explicitly said he thinks in feet
+    // when estimating. But if the line was previously edited in lbs, respect that.
+    if (isWire && !l._displayUnit) l._displayUnit = "ft";
+    var displayUnit = isWire ? l._displayUnit : "lbs";
+
+    // The visible qty: either lbs (as stored) or converted to ft
+    var visibleQty;
+    if (isWire && displayUnit === "ft") {
+      // If user has an in-progress value, preserve the raw input number they typed
+      visibleQty = (l._displayQty !== undefined && l._displayQty !== null)
+        ? l._displayQty
+        : +(lbs * ftPerLb).toFixed(2);
+    } else {
+      visibleQty = lbs;
+    }
+
+    // Toggle buttons (only for wire items)
+    var unitToggleHtml = "";
+    if (isWire) {
+      var ftActive  = displayUnit === "ft";
+      var lbsActive = displayUnit === "lbs";
+      unitToggleHtml =
+        '<div style="display:flex;gap:0;margin-top:4px;">' +
+          '<button type="button" onclick="setEstLineUnit(' + idx + ',\'ft\')" ' +
+            'style="flex:1;background:' + (ftActive ? 'var(--gold)' : 'transparent') + ';' +
+            'color:' + (ftActive ? 'var(--navy-dk)' : 'var(--dim)') + ';' +
+            'border:1px solid var(--border);border-right:none;border-radius:4px 0 0 4px;' +
+            'font-family:inherit;font-size:10px;font-weight:700;padding:3px 0;cursor:pointer;">ft</button>' +
+          '<button type="button" onclick="setEstLineUnit(' + idx + ',\'lbs\')" ' +
+            'style="flex:1;background:' + (lbsActive ? 'var(--gold)' : 'transparent') + ';' +
+            'color:' + (lbsActive ? 'var(--navy-dk)' : 'var(--dim)') + ';' +
+            'border:1px solid var(--border);border-radius:0 4px 4px 0;' +
+            'font-family:inherit;font-size:10px;font-weight:700;padding:3px 0;cursor:pointer;">lb</button>' +
+        '</div>';
+    }
+
+    // Below the row: conversion hint for wire items — shows the equivalent unit
+    // plus $/ft when cost is known. Only rendered for wire lines.
+    var wireHint = "";
+    if (isWire) {
+      var pricePerFt = ftPerLb > 0 ? (cost / ftPerLb) : 0;
+      var altUnit    = displayUnit === "ft" ? "lbs" : "ft";
+      var altVal     = displayUnit === "ft" ? lbs : (lbs * ftPerLb);
+      var altTxt     = altUnit === "lbs"
+        ? altVal.toFixed(2) + " lbs"
+        : altVal.toLocaleString("en-US", { maximumFractionDigits: 1 }) + " ft";
+      wireHint =
+        '<div id="estl-hint-' + idx + '" style="grid-column:1 / -1;font-size:10px;color:var(--dim);padding:0 2px;margin-top:-2px;">' +
+          '= ' + altTxt + (pricePerFt > 0 ? '  ·  $' + pricePerFt.toFixed(4) + ' / ft' : '') +
+        '</div>';
+    }
+
+    var qtyStep = isWire && displayUnit === "ft" ? "1" : "0.01";
+
     return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 80px 80px 28px;gap:8px;align-items:center;">' +
       '<div>' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
-      '<input type="number" step="0.01" class="field-inp" id="estl-qty-' + idx + '" value="' + (l.qty || 0) +
-        '" oninput="updateLineField(' + idx + ', \'qty\', parseFloat(this.value) || 0);" ' +
-        'style="font-size:13px;padding:7px 6px;text-align:right;" placeholder="Qty" />' +
-      '<input type="number" step="0.01" class="field-inp" id="estl-cost-' + idx + '" value="' + (l.unitCost || 0) +
+      '<div>' +
+        '<input type="number" step="' + qtyStep + '" class="field-inp" id="estl-qty-' + idx + '" value="' + visibleQty +
+          '" oninput="updateLineField(' + idx + ', \'qty\', this.value);" ' +
+          'style="font-size:13px;padding:7px 6px;text-align:right;width:100%;box-sizing:border-box;" placeholder="Qty" />' +
+        unitToggleHtml +
+      '</div>' +
+      '<input type="number" step="0.0001" class="field-inp" id="estl-cost-' + idx + '" value="' + cost +
         '" oninput="updateLineField(' + idx + ', \'unitCost\', parseFloat(this.value) || 0);" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" placeholder="Cost" />' +
       '<div id="estl-total-' + idx + '" style="text-align:right;font-weight:600;font-size:13px;color:var(--text);">' +
-        fmtCurrency((l.qty || 0) * (l.unitCost || 0)) +
+        fmtCurrency(lbs * cost) +
       '</div>' +
       '<button onclick="removeEstimateLine(' + idx + ')" ' +
         'style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>' +
+      wireHint +
     '</div>';
   }).join("") : '<div style="padding:14px;text-align:center;color:var(--dim);background:var(--navy-lt);border-radius:8px;border:1px dashed var(--border);">No line items yet</div>';
 
-  // Running total
-  var total = lines.reduce(function(s, l) { return s + (l.qty || 0) * (l.unitCost || 0); }, 0);
+  // Running total — use stored lbs qty (which is what actually gets saved)
+  var total = lines.reduce(function(s, l) { return s + (Number(l.qty) || 0) * (Number(l.unitCost) || 0); }, 0);
 
   // Add buttons
   var addButtons =
@@ -4719,16 +4894,52 @@ function renderEstimateLines() {
   '</div>';
 }
 
+// Toggle a specific estimate line's display unit. Preserves stored lbs value,
+// just flips how it's shown. Requires a full re-render because the qty input
+// value + step attribute change.
+function setEstLineUnit(idx, unit) {
+  if (!estimateState.current || !estimateState.current.lines) return;
+  var line = estimateState.current.lines[idx];
+  if (!line) return;
+  line._displayUnit = unit;
+  // Clear any in-progress display value so the input re-derives from stored lbs
+  line._displayQty = null;
+  refreshLines();
+}
+
 function updateLineField(idx, field, value) {
   if (!estimateState.current || !estimateState.current.lines) return;
   var line = estimateState.current.lines[idx];
   if (!line) return;
-  line[field] = value;
+
+  // Qty requires unit-aware handling for wire items. The DOM input is in the
+  // user's display unit (ft or lbs), but we persist line.qty in lbs always.
+  if (field === "qty") {
+    var itemMap = {};
+    allItems.forEach(function(i){ itemMap[i.id] = i; });
+    var item    = line.itemId ? itemMap[line.itemId] : null;
+    var isWire  = !!(item && item.wireFtPerLb > 0);
+    var raw     = parseFloat(value);
+    if (isNaN(raw)) raw = 0;
+
+    if (isWire && line._displayUnit === "ft") {
+      // Store lbs, but remember the raw ft number so we don't round-trip
+      // (e.g. 500 ft → 11.999 lbs → 499.958 ft — annoying to watch)
+      line._displayQty = raw;
+      line.qty = +(raw / item.wireFtPerLb).toFixed(4);
+    } else {
+      line._displayQty = raw;
+      line.qty = raw;
+    }
+  } else {
+    line[field] = value;
+  }
+
   // Update only the total cells in-place — don't touch the inputs to preserve focus/cursor
   if (field === "qty" || field === "unitCost") {
     var lineTotalEl = document.getElementById("estl-total-" + idx);
     if (lineTotalEl) {
-      lineTotalEl.textContent = fmtCurrency((line.qty || 0) * (line.unitCost || 0));
+      lineTotalEl.textContent = fmtCurrency((Number(line.qty) || 0) * (Number(line.unitCost) || 0));
     }
     var subEl = document.getElementById("est-subtotal");
     if (subEl) {
@@ -4736,6 +4947,25 @@ function updateLineField(idx, field, value) {
         return s + (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
       }, 0);
       subEl.textContent = fmtCurrency(sub);
+    }
+
+    // Refresh the wire hint line (alt-unit + $/ft) without re-rendering the row
+    var hintEl = document.getElementById("estl-hint-" + idx);
+    if (hintEl) {
+      var itemMap2 = {};
+      allItems.forEach(function(i){ itemMap2[i.id] = i; });
+      var item2 = line.itemId ? itemMap2[line.itemId] : null;
+      if (item2 && item2.wireFtPerLb > 0) {
+        var lbs2       = Number(line.qty) || 0;
+        var cost2      = Number(line.unitCost) || 0;
+        var pricePerFt = cost2 / item2.wireFtPerLb;
+        var altUnit    = line._displayUnit === "ft" ? "lbs" : "ft";
+        var altVal     = line._displayUnit === "ft" ? lbs2 : (lbs2 * item2.wireFtPerLb);
+        var altTxt     = altUnit === "lbs"
+          ? altVal.toFixed(2) + " lbs"
+          : altVal.toLocaleString("en-US", { maximumFractionDigits: 1 }) + " ft";
+        hintEl.textContent = "= " + altTxt + (pricePerFt > 0 ? "  ·  $" + pricePerFt.toFixed(4) + " / ft" : "");
+      }
     }
   }
 }
@@ -4840,6 +5070,9 @@ function addItemToEstimate(itemId) {
   if (!item) return;
   if (!estimateState.current.lines) estimateState.current.lines = [];
 
+  // For wire items, default to ft display since that's how estimates are scoped
+  // ("I need 500 ft of #12 red"). The qty stored is still in lbs for system consistency.
+  var isWire = item.wireFtPerLb > 0;
   estimateState.current.lines.push({
     isMisc:      false,
     itemId:      item.id,
@@ -4847,7 +5080,9 @@ function addItemToEstimate(itemId) {
     uom:         item.uom,
     description: "",
     qty:         1,
-    unitCost:    item.cost || 0
+    unitCost:    item.cost || 0,
+    _displayUnit: isWire ? "ft" : "lbs",
+    _displayQty:  null
   });
 
   closeEstimateItemPicker();
@@ -4973,9 +5208,13 @@ async function saveEstimate() {
         lines:        lines,
         replaceLines: true
       });
-      showToast("Estimate saved");
-      // Reload to refresh totals from Airtable rollup
-      await openEstimate(e.id);
+      showToast("✓ Estimate saved");
+      // Close the editor and return to the estimates list — gives Rick a
+      // clear visual confirmation that Save went through (he specifically
+      // asked for this after confusion about whether the save happened).
+      // List reload brings back fresh totals from the Airtable rollup too.
+      estimateState.current = null;
+      await goEstimates();
     }
   } catch(ex) {
     showToast("Save failed: " + (ex.message || ex), true);

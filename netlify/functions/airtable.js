@@ -564,12 +564,12 @@ async function handleGetNextEstimateNumber() {
 
 // ── SAVE ESTIMATE RECORD ─────────────────────────────────────────────────
 async function handleSaveEstimate(body) {
-  const { jobId, estimateDate, estimateNumber, estimateName, notes, totalAmount, snapshot } = body || {};
+  const { jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
   fields["Job"] = [jobId];
-  if (estimateName) fields["Estimate Name"] = estimateName;
+  // Note: "Estimate Name" is a computed/formula field — don't write it, Airtable handles it
   if (estimateDate) fields["Estimate Date"] = estimateDate;
   if (notes)        fields["Notes"] = notes;
   if (totalAmount !== undefined && totalAmount !== null && totalAmount !== "") {

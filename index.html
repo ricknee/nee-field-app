@@ -4380,25 +4380,32 @@
         job.customerZip || ""
       ].filter(Boolean).join(" ").trim();
 
+      // Always look up the contractor in Companies — we need the primary email
+      // for the Email button regardless of whether customer intake fields are set.
+      let contractorEmail = "";
+      let contractorCo    = null;
+      try {
+        const compData = await apiGet("companies");
+        const companies = compData.companies || [];
+        const contractorName = job.contractor || "";
+        contractorCo = companies.find(c => c.name === contractorName) || null;
+        if (contractorCo?.primaryEmail) contractorEmail = contractorCo.primaryEmail;
+      } catch(e) { /* silently fall back */ }
+      window._invContractorEmail = contractorEmail;
+
       if (custName || job.customerStreet || cityStateZip) {
         billToAddress = [custName, job.customerStreet, cityStateZip].filter(Boolean).join("\n");
       } else {
         // Fall back to contractor billing address (previous behavior)
         billToAddress = job.contractor || "";
-        try {
-          const compData = await apiGet("companies");
-          const companies = compData.companies || [];
-          const contractorName = job.contractor || "";
-          const contractorCo = companies.find(c => c.name === contractorName);
-          if (contractorCo?.billingAddress) {
-            const addr = contractorCo.billingAddress.trim();
-            const lastCommaIdx = addr.lastIndexOf(", ", addr.lastIndexOf(",") - 1);
-            const formatted = lastCommaIdx > 0
-              ? addr.slice(0, lastCommaIdx + 1) + "\n" + addr.slice(lastCommaIdx + 2)
-              : addr;
-            billToAddress = contractorName + "\n" + formatted;
-          }
-        } catch(e) { /* silently fall back */ }
+        if (contractorCo?.billingAddress) {
+          const addr = contractorCo.billingAddress.trim();
+          const lastCommaIdx = addr.lastIndexOf(", ", addr.lastIndexOf(",") - 1);
+          const formatted = lastCommaIdx > 0
+            ? addr.slice(0, lastCommaIdx + 1) + "\n" + addr.slice(lastCommaIdx + 2)
+            : addr;
+          billToAddress = (job.contractor || "") + "\n" + formatted;
+        }
       }
 
       // Detect Contract vs T&M billing — match either Job Type or Billing Method
@@ -5154,12 +5161,19 @@
 
   window.invEmail = function() {
     const invNum  = $("invNum")?.value || "";
-    const billTo  = $("invBillTo")?.value || "";
     const total   = fmtCurrency(calcInvTotal());
     const jobName = invJobRef?.name || "";
+    const to      = window._invContractorEmail || "";
+
+    // Trigger the PDF download first so the file is waiting in the user's
+    // Downloads folder when Gmail opens. The user then drags/attaches it
+    // manually — browsers don't allow cross-origin file injection into Gmail.
+    try { if (typeof window.invGeneratePDF === "function") window.invGeneratePDF(); }
+    catch (e) { /* non-fatal — user can still click Download PDF manually */ }
+
     const subject = encodeURIComponent(`Invoice ${invNum ? "#" + invNum : ""} — ${jobName} — Northeastern Electric, Inc.`);
     const body    = encodeURIComponent(
-      `Please find attached Invoice ${invNum ? "#" + invNum : ""} for ${jobName}.
+      `Invoice ${invNum ? "#" + invNum : ""} for ${jobName} attached.
 
 Total: ${total}
 
@@ -5169,7 +5183,16 @@ Northeastern Electric, Inc.
 330-257-0447
 rick@northeasternelec.com`
     );
-    window.open(`https://mail.google.com/mail/?view=cm&fs=1&su=${subject}&body=${body}`, "_blank");
+    const toParam = to ? `&to=${encodeURIComponent(to)}` : "";
+    window.open(`https://mail.google.com/mail/?view=cm${toParam}&su=${subject}&body=${body}`, "_blank");
+
+    // Brief on-page reminder so the user knows the PDF is ready to attach
+    const banner = $("inv-saved-banner");
+    if (banner) {
+      banner.textContent   = "📄 PDF downloaded — drag it into the Gmail window to attach.";
+      banner.style.display = "block";
+      setTimeout(() => { banner.style.display = "none"; }, 6000);
+    }
   };
 
   // ── REPRINT PDF FROM SAVED SNAPSHOT ──
@@ -5637,6 +5660,18 @@ rick@northeasternelec.com`
         [job.customerCity || "", job.customerState || ""].filter(Boolean).join(", "),
         job.customerZip || ""
       ].filter(Boolean).join(" ").trim();
+
+      // Look up contractor in Companies so we can stash the primary email
+      // for the Email button, regardless of which Bill To path is used.
+      let contractorEmail = "";
+      try {
+        const compData = await apiGet("companies");
+        const companies = compData.companies || [];
+        const contractorCo = companies.find(c => c.name === (job.contractor || "")) || null;
+        if (contractorCo?.primaryEmail) contractorEmail = contractorCo.primaryEmail;
+      } catch(e) { /* silently fall back */ }
+      window._estContractorEmail = contractorEmail;
+
       if (custName || job.customerStreet || cityStateZip) {
         billToAddress = [custName, job.customerStreet, cityStateZip].filter(Boolean).join("\n");
       } else {
@@ -5911,9 +5946,15 @@ rick@northeasternelec.com`
     const estNum  = $("estNum")?.value || "";
     const total   = fmtCurrency(calcEstTotal());
     const jobName = estJobRef?.name || "";
+    const to      = window._estContractorEmail || "";
+
+    // Trigger the PDF download first so the file is ready to drag into Gmail.
+    try { if (typeof window.estGeneratePDF === "function") window.estGeneratePDF(); }
+    catch (e) { /* non-fatal */ }
+
     const subject = encodeURIComponent(`Estimate ${estNum ? "#" + estNum : ""} — ${jobName} — Northeastern Electric, Inc.`);
     const body    = encodeURIComponent(
-      `Please find attached Estimate ${estNum ? "#" + estNum : ""} for ${jobName}.
+      `Estimate ${estNum ? "#" + estNum : ""} for ${jobName} attached.
 
 Total: ${total}
 
@@ -5923,7 +5964,16 @@ Northeastern Electric, Inc.
 330-257-0447
 rick@northeasternelec.com`
     );
-    window.open(`https://mail.google.com/mail/?view=cm&fs=1&su=${subject}&body=${body}`, "_blank");
+    const toParam = to ? `&to=${encodeURIComponent(to)}` : "";
+    window.open(`https://mail.google.com/mail/?view=cm${toParam}&su=${subject}&body=${body}`, "_blank");
+
+    // Brief on-page reminder so the user knows the PDF is ready to attach
+    const banner = $("est-saved-banner") || $("est-saved-msg");
+    if (banner) {
+      banner.textContent   = "📄 PDF downloaded — drag it into the Gmail window to attach.";
+      banner.style.display = "block";
+      setTimeout(() => { banner.style.display = "none"; }, 6000);
+    }
   };
 
   async function autoFillEstimateNumber() {

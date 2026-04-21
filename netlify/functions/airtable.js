@@ -861,7 +861,7 @@ async function handleUpdateJobBillableRate(body) {
 
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
 async function handleSaveInvoice(body) {
-  const { jobId, invoiceDate, billingMode, percentToBill, notes, invoiceNumber } = body || {};
+  const { jobId, invoiceDate, billingMode, percentToBill, notes, invoiceNumber, snapshot } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -872,6 +872,10 @@ async function handleSaveInvoice(body) {
   if (invoiceNumber !== undefined && invoiceNumber !== null && invoiceNumber !== "") {
     const n = Number(invoiceNumber);
     if (!isNaN(n)) fields["fld7FxS299iYDzMa8"] = n;                 // Invoice Display #
+  }
+  if (snapshot) {
+    // Store as JSON string — used by reprint to rebuild identical PDF
+    fields["fldJT0EqxsYPUQOg1"] = typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot);
   }
 
   if (String(billingMode).toLowerCase() === "contract") {
@@ -969,7 +973,8 @@ async function handleGetJobInvoices(body) {
       total:           Number(f["Invoice Total"] || 0),
       percentToBill:   f["Percent to Bill"]   || null,
       contractAmount:  Number(f["Contract Invoice Amount"] || 0),
-      notes:           f["Invoice Notes"]     || ""
+      notes:           f["Invoice Notes"]     || "",
+      snapshot:        f["Invoice Snapshot"]  || ""
     };
   });
   return resp(200, { ok: true, invoices });

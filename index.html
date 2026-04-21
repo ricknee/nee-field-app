@@ -4728,6 +4728,7 @@
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Type</th>
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Status</th>
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase; text-align:right;">Total</th>
+              <th style="padding:6px 8px;"></th>
             </tr>
           </thead>
           <tbody>
@@ -4738,6 +4739,10 @@
               const status = inv.status || "—";
               const total = inv.total ? fmtCurrency(inv.total) : (inv.contractAmount ? fmtCurrency(inv.contractAmount) : "—");
               const pctStr = inv.percentToBill ? ` (${Math.round(inv.percentToBill * 100)}%)` : "";
+              const hasSnap = inv.snapshot && inv.snapshot.length > 10;
+              const reprintBtn = hasSnap
+                ? `<button data-inv-id="${esc(inv.id)}" class="inv-reprint-btn" style="font-size:11px; padding:4px 10px; border:1px solid var(--line); border-radius:5px; background:white; cursor:pointer;">📄 Reprint PDF</button>`
+                : `<span style="font-size:11px; color:var(--muted); font-style:italic;">no snapshot</span>`;
               return `
                 <tr style="border-bottom:1px solid var(--line);">
                   <td style="padding:8px;">${esc(String(num))}</td>
@@ -4745,12 +4750,27 @@
                   <td style="padding:8px;">${esc(type)}${pctStr}</td>
                   <td style="padding:8px;">${esc(status)}</td>
                   <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
+                  <td style="padding:8px; text-align:right;">${reprintBtn}</td>
                 </tr>
               `;
             }).join("")}
           </tbody>
         </table>
       `;
+      // Wire reprint buttons — click to rebuild PDF from stored snapshot
+      listEl.querySelectorAll(".inv-reprint-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const invId = btn.dataset.invId;
+          const inv = invoices.find(i => i.id === invId);
+          if (!inv || !inv.snapshot) { alert("No snapshot available for this invoice."); return; }
+          try {
+            const snap = typeof inv.snapshot === "string" ? JSON.parse(inv.snapshot) : inv.snapshot;
+            reprintInvoicePDF(snap);
+          } catch(e) {
+            alert("Couldn't read saved invoice snapshot: " + e.message);
+          }
+        });
+      });
     } catch(e) {
       listEl.innerHTML = `<div style="color:var(--red);">Couldn't load invoice history: ${esc(e.message)}</div>`;
     }
@@ -4883,6 +4903,23 @@
       body.percentToBill = pct;
     }
 
+    // Snapshot of the invoice's rendered state so we can reprint an identical PDF later
+    body.snapshot = JSON.stringify({
+      invNum:  $("invNum")?.value || "",
+      invDate: invoiceDate,
+      billTo:  $("invBillTo")?.value || "",
+      po:      $("invPO")?.value || "",
+      notes:   notes,
+      lines:   invLines.map(l => ({
+        id: l.id,
+        section: l.section || "",
+        description: l.description || "",
+        amount: Number(l.amount) || 0
+      })),
+      jobName: invJobRef?.name || "",
+      savedAt: new Date().toISOString()
+    });
+
     try {
       const result = await apiPost("saveInvoice", body);
       if (!result.ok) throw new Error(result.error || "Save failed");
@@ -4925,6 +4962,39 @@ rick@northeasternelec.com`
     );
     window.location.href = `mailto:?subject=${subject}&body=${body}`;
   };
+
+  // ── REPRINT PDF FROM SAVED SNAPSHOT ──
+  // Called from Invoice History "Reprint PDF" buttons. Rebuilds the exact same PDF.
+  window.reprintInvoicePDF = function(snap) {
+    if (!snap) return;
+
+    function doBuild() {
+      try {
+        const doc = buildInvoicePDFDoc(snap);
+        const jobSlug = (snap.jobName || "Invoice").replace(/[^a-zA-Z0-9]/g, "_");
+        const filename = `NEE_Invoice_${snap.invNum ? snap.invNum + "_" : ""}${jobSlug}_${snap.invDate || ""}.pdf`;
+        doc.save(filename);
+      } catch(e) {
+        alert("Reprint failed: " + e.message);
+      }
+    }
+
+    if (window.jspdf) { doBuild(); return; }
+    if (!document.getElementById("jspdf-script")) {
+      const s = document.createElement("script");
+      s.id = "jspdf-script";
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      document.head.appendChild(s);
+    }
+    let tries = 15;
+    (function waitForLib() {
+      if (window.jspdf) doBuild();
+      else if (--tries > 0) setTimeout(waitForLib, 300);
+      else alert("PDF library failed to load. Check your connection.");
+    })();
+  };
+
+  function reprintInvoicePDF(snap) { return window.reprintInvoicePDF(snap); }
 
   // ── INVOICE PDF GENERATION ──
   // Returns PDF as base64 string (for pCloud upload)
@@ -4981,7 +5051,7 @@ rick@northeasternelec.com`
     }
   };
 
-  function buildInvoicePDFDoc() {
+  function buildInvoicePDFDoc(snapData) {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "pt", format: "letter" });
     const W = 612, M = 40;
@@ -4998,13 +5068,15 @@ rick@northeasternelec.com`
     const C_MUTED   = [100,100,100];
     const C_FOOTER  = [240,242,245];
 
-    const invNum  = $("invNum")?.value || "";
-    const invDate = $("invDate")?.value || new Date().toISOString().slice(0,10);
-    const billTo  = $("invBillTo")?.value || "";
-    const po      = $("invPO")?.value || "";
-    const notes   = $("invNotes")?.value || "";
-    const total   = calcInvTotal();
-    const jobName = invJobRef?.name || "";
+    // Pull values from provided snapshot, or fall back to current DOM state
+    const invNum  = snapData ? (snapData.invNum  || "") : ($("invNum")?.value || "");
+    const invDate = snapData ? (snapData.invDate || "") : ($("invDate")?.value || new Date().toISOString().slice(0,10));
+    const billTo  = snapData ? (snapData.billTo  || "") : ($("invBillTo")?.value || "");
+    const po      = snapData ? (snapData.po      || "") : ($("invPO")?.value || "");
+    const notes   = snapData ? (snapData.notes   || "") : ($("invNotes")?.value || "");
+    const lines   = snapData ? (snapData.lines   || []) : invLines;
+    const jobName = snapData ? (snapData.jobName || "") : (invJobRef?.name || "");
+    const total   = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
 
     // ── Outer border (drawn last so nothing overlaps it) ──
     // We'll draw it at the end; store page height
@@ -5127,7 +5199,7 @@ rick@northeasternelec.com`
     const BLANK_H   = 8;    // vertical gap for empty lines
     const ROW_PAD_Y = 11;   // padding top+bottom inside row
 
-    invLines.forEach((line, i) => {
+    lines.forEach((line, i) => {
       const segments = processDescription(line.description || "");
 
       // Calculate row height from content

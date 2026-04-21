@@ -507,13 +507,14 @@ async function handleCreateInspection(body) {
 }
 
 async function handleJobEstimates(params) {
-  const { jobId } = params || {};
+  const { jobId, onlySaved } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, estimates: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
   const records = await fetchAll("Job Estimates", { filter: `FIND("${jobName}", ARRAYJOIN({Job}))`, sortField: "Estimate Date", sortDir: "desc" });
-  const estimates = records.map(r => { const f=r.fields||{}; const pdfs=(f["Estimate PDF"]||[]).map(att=>({url:att.url,filename:att.filename,size:att.size})); return { id:r.id,name:f["Estimate Name"]||"",estimateType:f["Estimate Type"]?.name||f["Estimate Type"]||"",status:f["Status"]?.name||f["Status"]||"",date:f["Estimate Date"]||"",actualEstimate:f["Actual Estimate Sent"]??null,laborHours:f["Estimated Labor Hours"]??null,materialCost:f["Estimated Material Cost"]??null,calculatedTotal:f["Calculated Estimated Total"]??null,notes:f["Notes"]||"",pdfs }; });
+  let estimates = records.map(r => { const f=r.fields||{}; const pdfs=(f["Estimate PDF"]||[]).map(att=>({url:att.url,filename:att.filename,size:att.size})); return { id:r.id,name:f["Estimate Name"]||"",estimateType:f["Estimate Type"]?.name||f["Estimate Type"]||"",status:f["Status"]?.name||f["Status"]||"",date:f["Estimate Date"]||"",actualEstimate:f["Actual Estimate Sent"]??null,laborHours:f["Estimated Labor Hours"]??null,materialCost:f["Estimated Material Cost"]??null,calculatedTotal:f["Calculated Estimated Total"]??null,notes:f["Notes"]||"",displayNumber:f["Estimate Display #"]||null,snapshot:f["Estimate Snapshot"]||"",pdfs }; });
+  if (onlySaved) estimates = estimates.filter(e => e.displayNumber != null);
   return resp(200, { ok: true, estimates });
 }
 
@@ -539,6 +540,56 @@ async function handleUpdateEstimateStatus(body) {
     body: JSON.stringify({ fields, typecast: true })
   });
   return resp(200, { ok: true, updatedId: data.id });
+}
+
+// ── GET NEXT ESTIMATE NUMBER ─────────────────────────────────────────────
+async function handleGetNextEstimateNumber() {
+  const START_AT = 2187;
+  let max = 0;
+  let offset = undefined;
+  do {
+    const qs = "?fields%5B%5D=" + encodeURIComponent("Estimate Display #")
+             + (offset ? "&offset=" + encodeURIComponent(offset) : "");
+    const page = await atFetch(`${encodeURIComponent("Job Estimates")}${qs}`);
+    if (page.error) return resp(400, { ok: false, error: page.error });
+    (page.records || []).forEach(r => {
+      const n = Number(r?.fields?.["Estimate Display #"]);
+      if (!isNaN(n) && n > max) max = n;
+    });
+    offset = page.offset;
+  } while (offset);
+  const next = Math.max(max + 1, START_AT);
+  return resp(200, { ok: true, nextNumber: next });
+}
+
+// ── SAVE ESTIMATE RECORD ─────────────────────────────────────────────────
+async function handleSaveEstimate(body) {
+  const { jobId, estimateDate, estimateNumber, estimateName, notes, totalAmount, snapshot } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const fields = {};
+  fields["Job"] = [jobId];
+  if (estimateName) fields["Estimate Name"] = estimateName;
+  if (estimateDate) fields["Estimate Date"] = estimateDate;
+  if (notes)        fields["Notes"] = notes;
+  if (totalAmount !== undefined && totalAmount !== null && totalAmount !== "") {
+    fields["fldJTAPtFpXH2vRwF"] = Number(totalAmount);       // Actual Estimate Sent
+  }
+  if (estimateNumber !== undefined && estimateNumber !== null && estimateNumber !== "") {
+    const n = Number(estimateNumber);
+    if (!isNaN(n)) fields["fldLDXWW1Ai26YAr9"] = n;          // Estimate Display #
+  }
+  if (snapshot) {
+    fields["fldP8pMlPZ0osDhtM"] = typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot); // Estimate Snapshot
+  }
+  fields["fld9GsGvxaNPuCnjo"] = "Sent";                      // Status
+
+  const data = await atFetch(`${encodeURIComponent("Job Estimates")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  if (data.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, id: data.id });
 }
 
 const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance", mileageLog: "Fleet Mileage Log" };
@@ -1103,6 +1154,8 @@ export async function handler(event) {
       if (body.action === "createInspection")     return await handleCreateInspection(body);
       if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);
       if (body.action === "updateEstimateStatus") return await handleUpdateEstimateStatus(body);
+      if (body.action === "getNextEstimateNumber") return await handleGetNextEstimateNumber();
+      if (body.action === "saveEstimate")         return await handleSaveEstimate(body);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);

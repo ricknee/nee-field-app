@@ -55,6 +55,9 @@ const F = {
     generatorCommissioningForm: "Generator Startup / Commissioning Form",
     newGeneratorServiceForm:    "New Generator Service",
     taxStatus:                  "Tax Status",
+    billingMethod:              "Billing Method",
+    baseContractAmount:         "Base Contract Amount",
+    totalContractBilled:        "Total Contract Billed",
     powerCompanyIntake:         "Power Company (Intake)",
     startServiceCall:    "Start Service Call",
     serviceCallCreated:  "Service Call Created",
@@ -346,6 +349,9 @@ async function handleJobs() {
       generatorCommissioningForm:g(f,F.job.generatorCommissioningForm)||"",
       newGeneratorServiceForm:g(f,F.job.newGeneratorServiceForm)||"",
       taxStatus:g(f,F.job.taxStatus)||"",powerCompanyIntake:g(f,F.job.powerCompanyIntake)||"",
+      billingMethod:g(f,F.job.billingMethod)||"",
+      baseContractAmount:gNum(f,F.job.baseContractAmount),
+      totalContractBilled:gNum(f,F.job.totalContractBilled),
       startServiceCall:gBool(f,F.job.startServiceCall),serviceCallCreated:gBool(f,F.job.serviceCallCreated),
       projectComplete:gBool(f,F.job.projectComplete),milesFromShop:gNum(f,F.job.milesFromShop),
       notes:g(f,F.job.notes)||"",
@@ -508,6 +514,18 @@ async function handleUpdateEstimate(body) {
   if (materialCost   !== undefined && materialCost   !== null) fields["fldDEUGzVrfA56aBq"] = Number(materialCost);
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
   const data = await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, { method: "PATCH", body: JSON.stringify({ fields }) });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
+async function handleUpdateEstimateStatus(body) {
+  const { estimateId, status } = body || {};
+  if (!estimateId || !status) return resp(400, { ok: false, error: "Missing estimateId or status." });
+  // Job Estimates — Status field ID = fld9GsGvxaNPuCnjo (singleSelect)
+  const fields = { "fld9GsGvxaNPuCnjo": status };
+  const data = await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields, typecast: true })
+  });
   return resp(200, { ok: true, updatedId: data.id });
 }
 
@@ -831,28 +849,38 @@ async function handleUpdateJobBillableRate(body) {
 
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
 async function handleSaveInvoice(body) {
-  const { jobId, invoiceDate, billTo, laborAmount, materialsAmount, notes } = body || {};
+  const { jobId, invoiceDate, billingMode, percentToBill, notes } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // Map to existing Invoices table fields — matches your manual invoice pattern
   const fields = {};
-  // Linked record must be array of record ID objects — REST API format
-  // Linked record field: array of record ID strings
   fields["fld1fmEklDw6y9hS2"] = [jobId];                            // Job (linked)
-  fields["fldXcHqj8xqmOWeLH"] = "Sent";                            // Invoice Status
-  fields["fldljpi4PpNPIfI27"] = "T&M Final";                       // Billing Mode
-  fields["fldC4loXTBzC2UKGt"] = "Time & Material";                 // Invoice Type
-  // Auto Allocate = true: lets Airtable rollup labor/material from linked time entries & expenses
-  // Do NOT write Manual Labor/Material — that would double-count with the rollups
-  fields["fldejNlo5R194TGMs"] = true;
-  fields["fldRcvTVQ7naHG19t"] = 0;   // zero out manual labor
-  fields["fldcbhc1z8nEftVeY"] = 0;   // zero out manual material
-  if (invoiceDate) fields["fldAEjySdXkUke1Cv"] = invoiceDate;
-  if (notes)       fields["fldLQrPKHWLrHLOA2"] = notes;
+  fields["fldXcHqj8xqmOWeLH"] = "Sent";                             // Invoice Status
+  if (invoiceDate) fields["fldAEjySdXkUke1Cv"] = invoiceDate;       // Invoice Date
+  if (notes)       fields["fldLQrPKHWLrHLOA2"] = notes;             // Invoice Notes
+
+  if (String(billingMode).toLowerCase() === "contract") {
+    // Contract invoice — bill by percentage of Expected Revenue
+    fields["fldljpi4PpNPIfI27"] = "Contract %";                     // Billing Mode
+    fields["fldC4loXTBzC2UKGt"] = "Contract";                       // Invoice Type
+    fields["fldejNlo5R194TGMs"] = false;                            // Auto Allocate OFF
+    fields["fldRcvTVQ7naHG19t"] = 0;                                // zero manual labor
+    fields["fldcbhc1z8nEftVeY"] = 0;                                // zero manual material
+    if (percentToBill !== undefined && percentToBill !== null && percentToBill !== "") {
+      // Airtable stores percent as a decimal fraction (e.g. 100% → 1)
+      fields["fldiaGIu4ZzKLz6ra"] = Number(percentToBill) / 100;
+    }
+  } else {
+    // T&M invoice — existing behavior, lets Airtable rollup labor & material
+    fields["fldljpi4PpNPIfI27"] = "T&M Final";                      // Billing Mode
+    fields["fldC4loXTBzC2UKGt"] = "Time & Material";                // Invoice Type
+    fields["fldejNlo5R194TGMs"] = true;                             // Auto Allocate ON
+    fields["fldRcvTVQ7naHG19t"] = 0;                                // zero manual labor
+    fields["fldcbhc1z8nEftVeY"] = 0;                                // zero manual material
+  }
 
   const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
     method: "POST",
-    body: JSON.stringify({ fields })   // no typecast — linked records need exact format
+    body: JSON.stringify({ fields, typecast: true })
   });
   if (data.error) return resp(400, { ok: false, error: data.error });
   return resp(200, { ok: true, id: data.id });
@@ -980,6 +1008,7 @@ export async function handler(event) {
       if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body);
       if (body.action === "createInspection")     return await handleCreateInspection(body);
       if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);
+      if (body.action === "updateEstimateStatus") return await handleUpdateEstimateStatus(body);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);

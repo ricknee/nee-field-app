@@ -504,8 +504,17 @@ async function handleUpdateEstimate(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
-const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance" };
+const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance", mileageLog: "Fleet Mileage Log" };
 const FV = { name:"fldBcqDl6ez0GZz9n",year:"fld7E7ubdLAnlbplu",make:"fldiPxOpsxiO3JbqQ",model:"fldXFQ1u0BKpd94Fa",color:"fldR9UNl5MD8QRelB",vin:"fldMCiACFqTxA87Ay",plate:"fldX23ZlkmGHTx52S",type:"flduEmTHcrv24SlJT",mileage:"fldcRmbsqWDMyfzuF",mileageDate:"fldwIxFsMRrZsAAEy",oilType:"fldgT7qDyTXa1SeUC",oilCapacity:"fldgjlvQVc4kOEkqY",tireBrand:"fldkBVEAr6qCkTAZS",tireSize:"fldCC7EoiTXi7BxMR",tireInstall:"fldn7QbuEneDRgJ76",notes:"fldx4pEJ5JS0DFLyh",active:"fldapfWYijFLo7n1P" };
+
+// Fleet Mileage Log field IDs
+const ML = {
+  date:       "fldpocv4rD2tnP4mI",
+  vehicle:    "fldj5TbPqXRgjmujf",
+  mileage:    "fldvU5jCOJLnRdxA8",
+  recordedBy: "fldD65Hu9x322XfMe",
+  notes:      "fldHyERXXifvzyebA"
+};
 
 async function handleFleetVehicles() {
   const records = await fetchAll(FLEET_TABLES.vehicles, { sortField: "Vehicle Name", sortDir: "asc" });
@@ -539,6 +548,48 @@ async function handleUpdateFleetVehicle(body) {
   if (notes          !== undefined) fields[FV.notes]=notes;
   const data = await atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${vehicleId}`, { method: "PATCH", body: JSON.stringify({ fields }) });
   return resp(200, { ok: true, updatedId: data.id });
+}
+
+// ── LOG MILEAGE: creates entry in Fleet Mileage Log AND updates Fleet Vehicles ──
+async function handleLogMileage(body) {
+  const { vehicleId, mileage, date, recordedBy, notes } = body || {};
+  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+  if (mileage === undefined || mileage === null || mileage === "") {
+    return resp(400, { ok: false, error: "Missing mileage." });
+  }
+  const idStr = String(vehicleId).trim();
+  if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid vehicleId: ${idStr}` });
+
+  const effectiveDate = date || new Date().toISOString().slice(0,10);
+  const mileageNum = Number(mileage);
+  if (isNaN(mileageNum) || mileageNum < 0) {
+    return resp(400, { ok: false, error: "Invalid mileage value." });
+  }
+
+  // 1. Create log entry in Fleet Mileage Log table
+  const logFields = {};
+  logFields[ML.date]    = effectiveDate;
+  logFields[ML.vehicle] = [idStr];
+  logFields[ML.mileage] = mileageNum;
+  if (recordedBy) logFields[ML.recordedBy] = recordedBy;
+  if (notes)      logFields[ML.notes]      = notes;
+
+  const logData = await atFetch(`${encodeURIComponent(FLEET_TABLES.mileageLog)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields: logFields, typecast: true })
+  });
+
+  // 2. Update Fleet Vehicles record with new Current Mileage and Mileage Date
+  const vehFields = {};
+  vehFields[FV.mileage]     = mileageNum;
+  vehFields[FV.mileageDate] = effectiveDate;
+
+  const vehData = await atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${idStr}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: vehFields })
+  });
+
+  return resp(200, { ok: true, logId: logData.id, vehicleId: vehData.id });
 }
 
 async function handleAddFleetService(body) {
@@ -858,7 +909,7 @@ export async function handler(event) {
       if (action === "generator")          return await handleGenerator(params);
       if (action === "expenses")           return await handleExpenses(params);
       if (action === "timeEntries")        return await handleTimeEntries(params);
-      if (action === "payrollEntries")     return await handlePayrollEntries(params);   // ← NEW
+      if (action === "payrollEntries")     return await handlePayrollEntries(params);
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);
@@ -876,8 +927,8 @@ export async function handler(event) {
       if (body.action === "updateJobStatus")      return await handleUpdateJobStatus(body);
       if (body.action === "updatePowerCo")        return await handleUpdatePowerCo(body);
       if (body.action === "updateTimeEntry")      return await handleUpdateTimeEntry(body);
-      if (body.action === "updateTimeEntryPayroll") return await handleUpdateTimeEntryPayroll(body); // ← NEW
-      if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);           // ← NEW
+      if (body.action === "updateTimeEntryPayroll") return await handleUpdateTimeEntryPayroll(body);
+      if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body);
       if (body.action === "approveExpense")       return await handleApproveExpense(body);
@@ -885,6 +936,7 @@ export async function handler(event) {
       if (body.action === "createInspection")     return await handleCreateInspection(body);
       if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
+      if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "addFleetService")      return await handleAddFleetService(body);
       if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);

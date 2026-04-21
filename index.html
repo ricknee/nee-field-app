@@ -5490,6 +5490,7 @@ rick@northeasternelec.com`
           <button class="inv-btn secondary" onclick="estResetLines()">↺ Reload from Est. GP</button>
           <button class="inv-btn secondary" onclick="estAddLine()">+ Add Line</button>
           <button class="inv-btn" onclick="estGeneratePDF()" style="background:#ea580c; border-color:#ea580c;">⬇ Download PDF</button>
+          <button class="inv-btn green" onclick="estSaveToAirtable()">💾 Save Estimate</button>
           <button class="inv-btn secondary" onclick="estEmail()">✉ Email</button>
         </div>
 
@@ -5579,13 +5580,27 @@ rick@northeasternelec.com`
         </div><!-- /preview -->
       </div><!-- /wrap -->
 
+      <div id="est-saved-msg" class="inv-saved-banner" style="display:none; margin-top:12px;">✓ Estimate saved to Airtable!</div>
+
       ${estimates && estimates.length > 1 ? `
         <div style="margin-top:14px; padding:10px 14px; background:#fff7ed; border:1px dashed #fdba74; border-radius:8px; font-size:12px; color:#9a3412;">
           ℹ Loaded ${estimates.length} estimate(s) from Est. GP as separate line items. Delete or edit any you don't want on the printed estimate.
         </div>` : ""}
+
+      <!-- Estimate History -->
+      <div id="estHistorySection" style="margin-top:20px; background:white; border:1px solid var(--line); border-radius:10px; padding:16px 20px;">
+        <div style="font-weight:700; font-size:14px; color:var(--text); margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+          📜 Estimate History for this Job
+          <span id="estHistoryCount" style="font-size:11px; color:var(--muted); font-weight:500;"></span>
+        </div>
+        <div id="estHistoryList" style="font-size:13px; color:var(--muted);">Loading…</div>
+      </div>
     `;
 
     wireEstEvents();
+    // Auto-fill next estimate number and load history
+    autoFillEstimateNumber();
+    loadEstimateHistory(job.id);
   }
 
   function renderEstLines() {
@@ -5708,6 +5723,177 @@ Northeastern Electric, Inc.
 rick@northeasternelec.com`
     );
     window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  };
+
+  async function autoFillEstimateNumber() {
+    const inp = $("estNum");
+    if (!inp || inp.value) return;  // don't clobber manual entry
+    try {
+      const res = await apiPost("getNextEstimateNumber", {});
+      if (res?.ok && res.nextNumber) inp.value = res.nextNumber;
+    } catch(e) { /* leave blank on failure */ }
+  }
+
+  async function loadEstimateHistory(jobId) {
+    const listEl  = $("estHistoryList");
+    const countEl = $("estHistoryCount");
+    if (!listEl) return;
+    try {
+      const res = await apiGet("jobEstimates", { jobId, onlySaved: 1 });
+      if (!res?.ok) throw new Error(res?.error || "Fetch failed");
+      const estimates = (res.estimates || []).filter(e => e.displayNumber != null);
+      // Stash full list (including snapshot) so reprint buttons can access it
+      window._estHistoryCache = estimates;
+      if (countEl) countEl.textContent = estimates.length === 0 ? "(none yet)" : `(${estimates.length})`;
+      if (!estimates.length) {
+        listEl.innerHTML = `<div style="font-style:italic; color:var(--muted);">No previous estimates saved for this job.</div>`;
+        return;
+      }
+      listEl.innerHTML = `
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead>
+            <tr style="text-align:left; border-bottom:2px solid var(--line);">
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Estimate #</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Date</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Name</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Status</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase; text-align:right;">Total</th>
+              <th style="padding:6px 8px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${estimates.map(est => {
+              const num    = est.displayNumber || "—";
+              const date   = est.date || "—";
+              const name   = est.name || "—";
+              const status = est.status || "—";
+              const total  = est.actualEstimate ? fmtCurrency(est.actualEstimate) : (est.calculatedTotal ? fmtCurrency(est.calculatedTotal) : "—");
+              const hasSnap = est.snapshot && est.snapshot.length > 10;
+              const reprintBtn = hasSnap
+                ? `<button data-est-id="${esc(est.id)}" class="est-reprint-btn" style="font-size:11px; padding:4px 10px; border:1px solid #ea580c; border-radius:5px; background:white; color:#ea580c; cursor:pointer; font-weight:600;">📄 Reprint Estimate</button>`
+                : `<span style="font-size:11px; color:var(--muted); font-style:italic;">no snapshot</span>`;
+              return `
+                <tr style="border-bottom:1px solid var(--line);">
+                  <td style="padding:8px;">${esc(String(num))}</td>
+                  <td style="padding:8px;">${esc(date)}</td>
+                  <td style="padding:8px;">${esc(name)}</td>
+                  <td style="padding:8px;">${esc(status)}</td>
+                  <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
+                  <td style="padding:8px; text-align:right;">${reprintBtn}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+      // Wire reprint buttons
+      listEl.querySelectorAll(".est-reprint-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const estId = btn.dataset.estId;
+          const est   = (window._estHistoryCache || []).find(e => e.id === estId);
+          if (!est || !est.snapshot) { alert("No snapshot available for this estimate."); return; }
+          try {
+            const snap = typeof est.snapshot === "string" ? JSON.parse(est.snapshot) : est.snapshot;
+            reprintEstimatePDF(snap);
+          } catch(e) {
+            alert("Couldn't read saved estimate snapshot: " + e.message);
+          }
+        });
+      });
+    } catch(e) {
+      listEl.innerHTML = `<div style="color:var(--red);">Couldn't load estimate history: ${esc(e.message)}</div>`;
+    }
+  }
+
+  window.reprintEstimatePDF = function(snap) {
+    if (!snap) return;
+    function doBuild() {
+      try {
+        const doc = buildInvoicePDFDoc(snap, ESTIMATE_THEME);
+        const jobSlug = (snap.jobName || "Estimate").replace(/[^a-zA-Z0-9]/g, "_");
+        const filename = `NEE_Estimate_${snap.invNum ? snap.invNum + "_" : ""}${jobSlug}_${snap.invDate || ""}.pdf`;
+        doc.save(filename);
+      } catch(e) {
+        alert("Reprint failed: " + e.message);
+      }
+    }
+    if (window.jspdf) { doBuild(); return; }
+    if (!document.getElementById("jspdf-script")) {
+      const s = document.createElement("script");
+      s.id = "jspdf-script";
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      document.head.appendChild(s);
+    }
+    let tries = 15;
+    (function waitForLib() {
+      if (window.jspdf) doBuild();
+      else if (--tries > 0) setTimeout(waitForLib, 300);
+      else alert("PDF library failed to load. Check your connection.");
+    })();
+  };
+
+  window.estSaveToAirtable = async function() {
+    if (!estJobRef) return;
+    const btn = event?.target;
+    if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+
+    const estimateDate   = $("estDate")?.value || new Date().toISOString().slice(0,10);
+    const notes          = $("estNotes")?.value || "";
+    const estimateNumber = $("estNum")?.value || "";
+    const total          = calcEstTotal();
+    // Use first line's first line of description (or job name) as a readable Estimate Name
+    const firstLineDesc  = (estLines[0]?.description || "").split(/\r?\n/)[0].trim();
+    const estimateName   = firstLineDesc
+      ? `${estimateNumber ? "#" + estimateNumber + " — " : ""}${firstLineDesc.slice(0, 80)}`
+      : `${estimateNumber ? "#" + estimateNumber + " — " : ""}${estJobRef.name || "Estimate"}`;
+
+    // Build snapshot in the same shape buildInvoicePDFDoc expects
+    const snapshot = JSON.stringify({
+      invNum:  estimateNumber,
+      invDate: estimateDate,
+      billTo:  $("estBillTo")?.value || "",
+      po:      $("estJobLabel")?.value || "",
+      notes:   notes,
+      lines:   estLines.map(l => ({
+        id: l.id,
+        section: l.section || "",
+        description: l.description || "",
+        amount: Number(l.amount) || 0
+      })),
+      jobName: estJobRef?.name || "",
+      goodThrough: $("estGoodThrough")?.value || "",
+      savedAt: new Date().toISOString()
+    });
+
+    const body = {
+      jobId:          estJobRef.id,
+      estimateDate,
+      estimateNumber,
+      estimateName,
+      notes,
+      totalAmount:    total,
+      snapshot
+    };
+
+    try {
+      const result = await apiPost("saveEstimate", body);
+      if (!result.ok) throw new Error(result.error || "Save failed");
+      const banner = $("est-saved-msg");
+      if (banner) {
+        banner.textContent   = `✓ Estimate #${estimateNumber || ""} saved to Airtable`;
+        banner.style.display = "block";
+        setTimeout(() => { banner.style.display = "none"; }, 4000);
+      }
+      // Refresh history + bump to next number
+      if (estJobRef?.id) loadEstimateHistory(estJobRef.id);
+      const inp = $("estNum");
+      if (inp) inp.value = "";
+      autoFillEstimateNumber();
+    } catch(err) {
+      alert("Error saving estimate: " + err.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "💾 Save Estimate"; }
+    }
   };
 
   // Build estimate PDF using the shared PDF builder with orange theme

@@ -2539,9 +2539,10 @@ function goCheckStock() {
     // Tab strip — Inventory Value tab is admin-only. When not admin the
     // strip doesn't render at all, so the screen looks identical to before.
     (isAdmin
-      ? '<div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--border);">' +
-          '<button id="stock-tab-lookup" onclick="switchStockTab(\'lookup\')" style="background:transparent;border:none;border-bottom:2px solid var(--gold);color:var(--gold);font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer;">Lookup</button>' +
-          '<button id="stock-tab-value" onclick="switchStockTab(\'value\')" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer;">💰 Inventory Value</button>' +
+      ? '<div style="display:flex;gap:4px;margin-bottom:14px;border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch;">' +
+          '<button id="stock-tab-lookup" onclick="switchStockTab(\'lookup\')" style="background:transparent;border:none;border-bottom:2px solid var(--gold);color:var(--gold);font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer;white-space:nowrap;">Lookup</button>' +
+          '<button id="stock-tab-value" onclick="switchStockTab(\'value\')" style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer;white-space:nowrap;">💰 Inventory Value</button>' +
+          '<button id="stock-tab-loc"   onclick="switchStockTab(\'loc\')"   style="background:transparent;border:none;border-bottom:2px solid transparent;color:var(--dim);font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;cursor:pointer;white-space:nowrap;">📍 By Location</button>' +
         '</div>'
       : '') +
 
@@ -2572,7 +2573,10 @@ function goCheckStock() {
     '</div>' + // end stock-lookup-pane
 
     // Value pane — lazy-rendered on first tab switch
-    '<div id="stock-value-pane" style="display:none;"></div>';
+    '<div id="stock-value-pane" style="display:none;"></div>' +
+
+    // Location pane — lazy-rendered on first tab switch
+    '<div id="stock-loc-pane" style="display:none;"></div>';
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2583,23 +2587,34 @@ function goCheckStock() {
 // ═══════════════════════════════════════════════════════════
 
 function switchStockTab(tab) {
-  var lp = document.getElementById("stock-lookup-pane");
-  var vp = document.getElementById("stock-value-pane");
-  var lb = document.getElementById("stock-tab-lookup");
-  var vb = document.getElementById("stock-tab-value");
-  if (!lp || !vp || !lb || !vb) return;
-  if (tab === "value") {
-    lp.style.display = "none";
-    vp.style.display = "";
-    lb.style.borderBottomColor = "transparent"; lb.style.color = "var(--dim)";
-    vb.style.borderBottomColor = "var(--gold)";  vb.style.color = "var(--gold)";
-    renderInventoryValueTab();
-  } else {
-    lp.style.display = "";
-    vp.style.display = "none";
-    vb.style.borderBottomColor = "transparent"; vb.style.color = "var(--dim)";
-    lb.style.borderBottomColor = "var(--gold)";  lb.style.color = "var(--gold)";
-  }
+  // Map of tab keys to pane + button IDs. Centralizing this means adding
+  // a 4th tab in future is just one new entry instead of branching everywhere.
+  var tabs = {
+    lookup: { pane: "stock-lookup-pane", btn: "stock-tab-lookup" },
+    value:  { pane: "stock-value-pane",  btn: "stock-tab-value"  },
+    loc:    { pane: "stock-loc-pane",    btn: "stock-tab-loc"    }
+  };
+  if (!tabs[tab]) return;
+
+  // Show only the active pane, hide the rest. Highlight only the active button.
+  Object.keys(tabs).forEach(function(key){
+    var pane = document.getElementById(tabs[key].pane);
+    var btn  = document.getElementById(tabs[key].btn);
+    if (!pane || !btn) return;
+    if (key === tab) {
+      pane.style.display = "";
+      btn.style.borderBottomColor = "var(--gold)";
+      btn.style.color = "var(--gold)";
+    } else {
+      pane.style.display = "none";
+      btn.style.borderBottomColor = "transparent";
+      btn.style.color = "var(--dim)";
+    }
+  });
+
+  // Lazy-render the heavy panes only when activated
+  if (tab === "value") renderInventoryValueTab();
+  if (tab === "loc")   renderLocationValueTab();
 }
 
 async function renderInventoryValueTab() {
@@ -2743,6 +2758,165 @@ function viewCategoryValue(catName) {
                 '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + Number(r.qty).toLocaleString() + ' ' + (r.uom || "ea") + '</div>' +
               '</div>' +
               '<div style="font-size:13px;color:var(--text);font-weight:700;text-align:right;white-space:nowrap;">' + fmtCurrency(r.value) + '</div>' +
+            '</div>';
+          }).join("")
+      ) +
+    '</div>';
+}
+
+// ═══════════════════════════════════════════════════════════
+// BY LOCATION TAB (admin-only, inside Check Stock)
+// Same data as Inventory Value but grouped by location instead of
+// by category. Lets Rick see how much $ is sitting at Shop #1 vs
+// Shop #2 vs trucks etc. — useful for insurance, year-end counts,
+// and spotting locations that have drifted from expected stocking.
+// ═══════════════════════════════════════════════════════════
+
+async function renderLocationValueTab() {
+  var pane = document.getElementById("stock-loc-pane");
+  if (!pane) return;
+
+  // Reuse the same cache as the Inventory Value tab so we only fetch once
+  // per session. Refresh button on the screen busts this.
+  if (!stockLevelsAllCache) {
+    pane.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--dim);">Loading inventory…</div>';
+    try {
+      var d = await apiGet("stockLevelsAll");
+      stockLevelsAllCache = d.levels || [];
+    } catch(ex) {
+      pane.innerHTML = '<div class="empty" style="padding:30px;text-align:center;color:var(--red);">Failed to load: ' + (ex.message || ex) + '</div>';
+      return;
+    }
+  }
+
+  // Aggregate by location name. stockLevelsAll already includes locationName
+  // from the Stock ID formula field, so no separate lookup table needed.
+  var locTotals = {};   // locName -> { total, items: {itemId:true} }
+  var grandTotal = 0;
+  var seenItemsOverall = {};
+
+  stockLevelsAllCache.forEach(function(lv){
+    var loc = lv.locationName || "Unknown";
+    if (!locTotals[loc]) locTotals[loc] = { total: 0, items: {} };
+    var v = Number(lv.totalValue) || 0;
+    locTotals[loc].total += v;
+    grandTotal += v;
+    if ((lv.qtyOnHand || 0) > 0 || v > 0) {
+      locTotals[loc].items[lv.itemId] = true;
+      seenItemsOverall[lv.itemId] = true;
+    }
+  });
+
+  var grandItemCount = Object.keys(seenItemsOverall).length;
+  var locs = Object.keys(locTotals).sort(function(a, b){ return locTotals[b].total - locTotals[a].total; });
+
+  pane.innerHTML =
+    // Grand total hero card — same value as Inventory Value tab (just grouped differently)
+    '<div style="background:linear-gradient(135deg,var(--navy-lt) 0%,var(--navy-mid) 100%);border:1.5px solid var(--gold);border-radius:12px;padding:18px;margin-bottom:16px;text-align:center;">' +
+      '<div style="font-size:11px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:4px;">Total Inventory Value</div>' +
+      '<div style="font-size:30px;font-weight:700;color:var(--gold);line-height:1.1;">' + fmtCurrency(grandTotal) + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:6px;">' + grandItemCount + ' items across ' + locs.length + ' location' + (locs.length === 1 ? '' : 's') + '</div>' +
+    '</div>' +
+
+    // Searchable location picker — useful when you have lots of locations (trucks, jobs, sub-shops)
+    '<div class="field-group">' +
+      '<div class="field-lbl">View a Location</div>' +
+      comboHTML("loc-pick", "Type or pick a location…") +
+    '</div>' +
+
+    '<div id="loc-drill"></div>' +
+
+    // Full list of all locations sorted by $ desc
+    '<div style="margin-top:18px;">' +
+      '<div style="font-size:11px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;">All Locations</div>' +
+      (locs.length === 0
+        ? '<div class="empty" style="padding:20px;text-align:center;">No inventory on hand</div>'
+        : locs.map(function(L){
+            var itemCount = Object.keys(locTotals[L].items).length;
+            var pct = grandTotal > 0 ? Math.round((locTotals[L].total / grandTotal) * 100) : 0;
+            return '<div onclick="viewLocationDetail(' + JSON.stringify(L).replace(/"/g, '&quot;') + ')" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;gap:10px;">' +
+              '<div style="flex:1;min-width:0;">' +
+                '<div style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📍 ' + L + '</div>' +
+                '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + itemCount + ' item' + (itemCount===1?'':'s') + ' · ' + pct + '% of total</div>' +
+              '</div>' +
+              '<div style="font-size:14px;color:var(--gold);font-weight:700;white-space:nowrap;">' + fmtCurrency(locTotals[L].total) + '</div>' +
+            '</div>';
+          }).join("")
+      ) +
+    '</div>';
+
+  // Wire up the location picker
+  initCombo("loc-pick", locs, "", function(val){ viewLocationDetail(val); });
+}
+
+function viewLocationDetail(locName) {
+  var drill = document.getElementById("loc-drill");
+  if (!drill) return;
+  if (!locName) { drill.innerHTML = ""; return; }
+
+  // Build itemId -> meta map for names/UOMs/categories
+  var itemMap = {};
+  allItems.forEach(function(i){ itemMap[i.id] = i; });
+
+  // Pull all stock records at this location, summarize per item
+  var rows = [];
+  var locTotal = 0;
+  (stockLevelsAllCache || []).forEach(function(lv){
+    if (lv.locationName !== locName) return;
+    var item = itemMap[lv.itemId] || {};
+    var qty  = Number(lv.qtyOnHand)  || 0;
+    var val  = Number(lv.totalValue) || 0;
+    locTotal += val;
+    if (qty > 0 || val > 0) {
+      rows.push({
+        id:    lv.itemId,
+        name:  item.name || lv.itemId,
+        uom:   item.uom  || "",
+        cat:   item.cat  || "Uncategorized",
+        qty:   qty,
+        value: val
+      });
+    }
+  });
+
+  rows.sort(function(a, b){ return b.value - a.value; });
+
+  // Group by category for readability — at a busy shop you'll have a lot of items
+  var byCat = {};
+  rows.forEach(function(r){
+    if (!byCat[r.cat]) byCat[r.cat] = { total: 0, rows: [] };
+    byCat[r.cat].total += r.value;
+    byCat[r.cat].rows.push(r);
+  });
+  var catKeys = Object.keys(byCat).sort(function(a, b){ return byCat[b].total - byCat[a].total; });
+
+  drill.innerHTML =
+    '<div style="background:var(--navy-mid);border:1.5px solid var(--gold);border-radius:10px;padding:14px;margin:12px 0 6px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;gap:10px;">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="font-size:15px;font-weight:700;color:var(--gold);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">📍 ' + locName + '</div>' +
+          '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + rows.length + ' item' + (rows.length === 1 ? '' : 's') + ' with stock</div>' +
+        '</div>' +
+        '<div style="font-size:20px;font-weight:700;color:var(--gold);white-space:nowrap;">' + fmtCurrency(locTotal) + '</div>' +
+      '</div>' +
+      (rows.length === 0
+        ? '<div class="empty" style="padding:10px;text-align:center;">No items with stock at this location</div>'
+        : catKeys.map(function(catName){
+            var grp = byCat[catName];
+            return '<div style="margin-top:10px;">' +
+              '<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;padding:4px 2px;border-bottom:1px solid var(--border);margin-bottom:6px;">' +
+                '<span>' + catName + '</span>' +
+                '<span style="color:var(--gold);">' + fmtCurrency(grp.total) + '</span>' +
+              '</div>' +
+              grp.rows.map(function(r){
+                return '<div onclick="lookupStock(\'' + r.id + '\');switchStockTab(\'lookup\');" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;gap:10px;" title="Tap for full per-location breakdown">' +
+                  '<div style="flex:1;min-width:0;">' +
+                    '<div style="font-size:13px;color:var(--text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + r.name + '</div>' +
+                    '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + Number(r.qty).toLocaleString() + ' ' + (r.uom || "ea") + '</div>' +
+                  '</div>' +
+                  '<div style="font-size:13px;color:var(--text);font-weight:700;text-align:right;white-space:nowrap;">' + fmtCurrency(r.value) + '</div>' +
+                '</div>';
+              }).join("") +
             '</div>';
           }).join("")
       ) +

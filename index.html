@@ -4369,8 +4369,9 @@
         // silently fall back to contractor name only
       }
 
-      // Detect Contract vs T&M billing
-      const isContract = (job.billingMethod || "").toLowerCase() === "contract";
+      // Detect Contract vs T&M billing — match either Job Type or Billing Method
+      const isContract = (job.type || "").toLowerCase() === "contract"
+                      || (job.billingMethod || "").toLowerCase() === "contract";
 
       // Build default line items
       invLines = [];
@@ -4460,7 +4461,8 @@
   function renderInvoiceBuilder(job, entries, expenses, billToAddress) {
     const today = new Date().toISOString().slice(0,10);
     const el = $("invoiceBuilder");
-    const isContract = (job.billingMethod || "").toLowerCase() === "contract";
+    const isContract = (job.type || "").toLowerCase() === "contract"
+                    || (job.billingMethod || "").toLowerCase() === "contract";
     const expectedRev = Number(job.expectedRevenue || 0);
     const prevBilled  = Number(job.totalContractBilled || 0);
     const remaining   = Math.max(0, expectedRev - prevBilled);
@@ -4733,7 +4735,8 @@
     const btn = event?.target;
     if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
 
-    const isContract = (invJobRef.billingMethod || "").toLowerCase() === "contract";
+    const isContract = (invJobRef.type || "").toLowerCase() === "contract"
+                    || (invJobRef.billingMethod || "").toLowerCase() === "contract";
     const invoiceDate = $("invDate")?.value || new Date().toISOString().slice(0,10);
     const notes = $("invNotes")?.value || "";
 

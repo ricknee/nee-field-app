@@ -4350,26 +4350,33 @@
       const entries  = (teData.entries  || []).filter(e => e.reviewed);
       const expenses = (expData.expenses || []).filter(e => e.reviewed);
 
-      // Try to get contractor billing address — fail gracefully
-      let billToAddress = job.contractor || "";
-      try {
-        const compData = await apiGet("companies");
-        const companies = compData.companies || [];
-        const contractorName = job.contractor || "";
-        const contractorCo = companies.find(c => c.name === contractorName);
-        if (contractorCo?.billingAddress) {
-          // Format address on 2 lines: street / city, state zip
-          const addr = contractorCo.billingAddress.trim();
-          // Split at last comma before state (e.g. "8205 Secrest Rd, Apple Creek, OH 44606")
-          // → "8205 Secrest Rd," + "\nApple Creek, OH 44606"
-          const lastCommaIdx = addr.lastIndexOf(", ", addr.lastIndexOf(",") - 1);
-          const formatted = lastCommaIdx > 0
-            ? addr.slice(0, lastCommaIdx + 1) + "\n" + addr.slice(lastCommaIdx + 2)
-            : addr;
-          billToAddress = contractorName + "\n" + formatted;
-        }
-      } catch(e) {
-        // silently fall back to contractor name only
+      // Build Bill To — prefer customer intake fields; fall back to contractor billing address
+      let billToAddress = "";
+      const custName = [job.customerFirstName || "", job.customerLastName || ""].filter(Boolean).join(" ").trim();
+      const cityStateZip = [
+        [job.customerCity || "", job.customerState || ""].filter(Boolean).join(", "),
+        job.customerZip || ""
+      ].filter(Boolean).join(" ").trim();
+
+      if (custName || job.customerStreet || cityStateZip) {
+        billToAddress = [custName, job.customerStreet, cityStateZip].filter(Boolean).join("\n");
+      } else {
+        // Fall back to contractor billing address (previous behavior)
+        billToAddress = job.contractor || "";
+        try {
+          const compData = await apiGet("companies");
+          const companies = compData.companies || [];
+          const contractorName = job.contractor || "";
+          const contractorCo = companies.find(c => c.name === contractorName);
+          if (contractorCo?.billingAddress) {
+            const addr = contractorCo.billingAddress.trim();
+            const lastCommaIdx = addr.lastIndexOf(", ", addr.lastIndexOf(",") - 1);
+            const formatted = lastCommaIdx > 0
+              ? addr.slice(0, lastCommaIdx + 1) + "\n" + addr.slice(lastCommaIdx + 2)
+              : addr;
+            billToAddress = contractorName + "\n" + formatted;
+          }
+        } catch(e) { /* silently fall back */ }
       }
 
       // Detect Contract vs T&M billing — match either Job Type or Billing Method
@@ -4543,7 +4550,8 @@
             </div>
             <div class="inv-po-box">
               <div class="inv-billto-label">P.O. No.</div>
-              <input id="invPO" class="inv-field-input" type="text" placeholder="${esc(job.po || "")}" value="${esc(job.po || "")}" style="margin-top:8px;" />
+              <input id="invPO" type="hidden" value="${esc(job.po || "")}" />
+              <textarea id="invPOTextarea" class="inv-notes-area" style="margin-top:8px; min-height:40px; font-size:12px; resize:vertical; white-space:pre-wrap; word-wrap:break-word;" oninput="document.getElementById('invPO').value=this.value;" placeholder="P.O. Number">${esc(job.po || "")}</textarea>
             </div>
           </div>
 
@@ -4570,9 +4578,22 @@
             </table>
           </div>
 
-          <!-- Notes -->
+          <!-- Payment Terms + Notes -->
           <div class="inv-notes-section">
-            <div class="inv-notes-label">Notes / Terms</div>
+            <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:10px; align-items:flex-end;">
+              <div style="min-width:220px;">
+                <div class="inv-notes-label">Payment Terms</div>
+                <select id="invTermsPicker" onchange="invApplyTerms()" style="width:100%; padding:7px 10px; border:1px solid #ddd; border-radius:4px; font-size:12px; font-family:inherit; background:white;">
+                  <option value="Due on Receipt">Due on Receipt</option>
+                  <option value="Net 15">Net 15 — Due within 15 days</option>
+                  <option value="Net 30" selected>Net 30 — Due within 30 days</option>
+                  <option value="Net 45">Net 45 — Due within 45 days</option>
+                  <option value="Net 60">Net 60 — Due within 60 days</option>
+                  <option value="custom">Custom...</option>
+                </select>
+              </div>
+            </div>
+            <div class="inv-notes-label">Notes / Terms (printed on invoice)</div>
             <textarea id="invNotes" class="inv-notes-area">Payment due within 30 days of invoice date.</textarea>
           </div>
 
@@ -4584,9 +4605,21 @@
           </div>
 
         </div><!-- /inv-preview -->
-      </div><!-- /inv-wrap -->`;
+      </div><!-- /inv-wrap -->
+
+      <!-- Invoice History -->
+      <div id="invHistorySection" style="margin-top:20px; background:white; border:1px solid var(--line); border-radius:10px; padding:16px 20px;">
+        <div style="font-weight:700; font-size:14px; color:var(--text); margin-bottom:12px; display:flex; align-items:center; gap:8px;">
+          📜 Invoice History for this Job
+          <span id="invHistoryCount" style="font-size:11px; color:var(--muted); font-weight:500;"></span>
+        </div>
+        <div id="invHistoryList" style="font-size:13px; color:var(--muted);">Loading…</div>
+      </div>`;
 
     wireInvEvents();
+    // After render: auto-fill next invoice # and load history
+    autoFillInvoiceNumber();
+    loadInvoiceHistory(job.id);
   }
 
   function renderInvLines() {
@@ -4664,6 +4697,65 @@
     updateInvTotals();
   }
 
+  async function autoFillInvoiceNumber() {
+    const inp = $("invNum");
+    if (!inp || inp.value) return;  // don't clobber manual entry
+    try {
+      const res = await apiPost("getNextInvoiceNumber", {});
+      if (res?.ok && res.nextNumber) inp.value = res.nextNumber;
+    } catch(e) { /* leave blank on failure */ }
+  }
+
+  async function loadInvoiceHistory(jobId) {
+    const listEl  = $("invHistoryList");
+    const countEl = $("invHistoryCount");
+    if (!listEl) return;
+    try {
+      const res = await apiPost("getJobInvoices", { jobId });
+      if (!res?.ok) throw new Error(res?.error || "Fetch failed");
+      const invoices = res.invoices || [];
+      if (countEl) countEl.textContent = invoices.length === 0 ? "(none yet)" : `(${invoices.length})`;
+      if (!invoices.length) {
+        listEl.innerHTML = `<div style="font-style:italic; color:var(--muted);">No previous invoices for this job.</div>`;
+        return;
+      }
+      listEl.innerHTML = `
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead>
+            <tr style="text-align:left; border-bottom:2px solid var(--line);">
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Invoice #</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Date</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Type</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Status</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase; text-align:right;">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${invoices.map(inv => {
+              const num = inv.displayNumber || inv.invoiceNumber || "—";
+              const date = inv.date || "—";
+              const type = inv.invoiceType || "—";
+              const status = inv.status || "—";
+              const total = inv.total ? fmtCurrency(inv.total) : (inv.contractAmount ? fmtCurrency(inv.contractAmount) : "—");
+              const pctStr = inv.percentToBill ? ` (${Math.round(inv.percentToBill * 100)}%)` : "";
+              return `
+                <tr style="border-bottom:1px solid var(--line);">
+                  <td style="padding:8px;">${esc(String(num))}</td>
+                  <td style="padding:8px;">${esc(date)}</td>
+                  <td style="padding:8px;">${esc(type)}${pctStr}</td>
+                  <td style="padding:8px;">${esc(status)}</td>
+                  <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      `;
+    } catch(e) {
+      listEl.innerHTML = `<div style="color:var(--red);">Couldn't load invoice history: ${esc(e.message)}</div>`;
+    }
+  }
+
   function updateInvTotals() {
     const t = calcInvTotal();
     const fmt = fmtCurrency(t);
@@ -4724,6 +4816,25 @@
     }
   };
 
+  window.invApplyTerms = function() {
+    const pick = $("invTermsPicker")?.value;
+    const notes = $("invNotes");
+    if (!pick || !notes) return;
+    const templates = {
+      "Due on Receipt": "Payment due upon receipt of invoice.",
+      "Net 15":         "Payment due within 15 days of invoice date.",
+      "Net 30":         "Payment due within 30 days of invoice date.",
+      "Net 45":         "Payment due within 45 days of invoice date.",
+      "Net 60":         "Payment due within 60 days of invoice date."
+    };
+    if (pick === "custom") {
+      notes.focus();
+      notes.select();
+      return;
+    }
+    if (templates[pick]) notes.value = templates[pick];
+  };
+
   window.invApplyContractPct = function() {
     const pctEl = $("invContractPct");
     if (!pctEl) return;
@@ -4756,13 +4867,15 @@
 
     const isContract = (invJobRef.type || "").toLowerCase() === "contract"
                     || (invJobRef.billingMethod || "").toLowerCase() === "contract";
-    const invoiceDate = $("invDate")?.value || new Date().toISOString().slice(0,10);
-    const notes = $("invNotes")?.value || "";
+    const invoiceDate   = $("invDate")?.value || new Date().toISOString().slice(0,10);
+    const notes         = $("invNotes")?.value || "";
+    const invoiceNumber = $("invNum")?.value || "";
 
     const body = {
       jobId:       invJobRef.id,
       invoiceDate,
       notes,
+      invoiceNumber,
       billingMode: isContract ? "contract" : "tm"
     };
     if (isContract) {
@@ -4779,6 +4892,11 @@
         banner.style.display = "block";
         setTimeout(() => { banner.style.display = "none"; }, 4000);
       }
+      // Refresh invoice history + bump to next number for the next invoice
+      if (invJobRef?.id) loadInvoiceHistory(invJobRef.id);
+      const inp = $("invNum");
+      if (inp) inp.value = "";
+      autoFillInvoiceNumber();
       // Refresh jobs so the Contract Billed rollup updates in the sidebar
       setTimeout(() => { if (window.loadJobs) loadJobs(); }, 800);
     } catch(err) {

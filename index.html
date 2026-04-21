@@ -2639,14 +2639,95 @@
     "Rick Unruh":        { bg: "#ffebee", border: "#ef9a9a", text: "#b71c1c" }
   };
 
+  // Cache billable rates so we don't re-fetch on every job selection
+  let laborBillableRatesCache = null;
+  async function ensureLaborBillableRates() {
+    if (laborBillableRatesCache) return laborBillableRatesCache;
+    try {
+      const d = await apiGet("laborBillableRates");
+      laborBillableRatesCache = d.rates || [];
+    } catch(e) {
+      console.error("Load rates error:", e);
+      laborBillableRatesCache = [];
+    }
+    return laborBillableRatesCache;
+  }
+
+  function renderBillableRateBar(job) {
+    const curLabel = job.billableHourlyRate != null
+      ? `$${Number(job.billableHourlyRate).toFixed(2)}/hr`
+      : "no rate set";
+    return `
+      <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
+        <span style="font-size:13px; font-weight:700; color:var(--text);">💰 Billable Rate:</span>
+        <span style="font-size:12px; color:var(--muted);">Current:</span>
+        <span id="jobRateCurrent" style="font-size:13px; font-weight:600; color:var(--accent);">${esc(curLabel)}</span>
+        <select id="jobRateSelect" class="edit-input" style="min-width:260px; font-size:13px; margin-left:8px;">
+          <option value="">Loading rates...</option>
+        </select>
+        <button id="jobRateSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save Rate</button>
+        <span id="jobRateSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+        <span id="jobRateSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
+      </div>
+    `;
+  }
+
+  async function wireBillableRateBar(job) {
+    const sel = $("jobRateSelect");
+    if (!sel) return;
+    const rates = await ensureLaborBillableRates();
+    const currentId = job.laborBillableRateId || "";
+
+    sel.innerHTML = `<option value="">— No rate —</option>` +
+      rates.map(r => {
+        const lbl = `${r.laborType || "Rate"} — $${Number(r.rate||0).toFixed(2)}/hr`;
+        return `<option value="${esc(r.id)}" ${r.id === currentId ? "selected" : ""}>${esc(lbl)}</option>`;
+      }).join("");
+
+    $("jobRateSaveBtn").onclick = async () => {
+      const btn = $("jobRateSaveBtn");
+      const msg = $("jobRateSaveMsg");
+      const err = $("jobRateSaveErr");
+      msg.style.display = "none";
+      err.style.display = "none";
+      const newRateId = sel.value || null;
+      btn.disabled = true;
+      try {
+        await apiPost("updateJobBillableRate", { jobId: job.id, rateId: newRateId });
+        // Update local job so the display stays in sync
+        job.laborBillableRateId = newRateId;
+        const picked = rates.find(r => r.id === newRateId);
+        job.billableHourlyRate = picked ? picked.rate : null;
+        const curEl = $("jobRateCurrent");
+        if (curEl) {
+          curEl.textContent = job.billableHourlyRate != null
+            ? `$${Number(job.billableHourlyRate).toFixed(2)}/hr`
+            : "no rate set";
+        }
+        msg.style.display = "inline";
+        setTimeout(() => { msg.style.display = "none"; }, 2500);
+      } catch(e) {
+        err.textContent = "Error: " + e.message;
+        err.style.display = "inline";
+      }
+      finally { btn.disabled = false; }
+    };
+  }
+
   async function loadTimeEntries(jobId) {
     const el = $("timeEntriesList");
+    const job = state.selected;
     el.innerHTML = `<div class="loading-msg">Loading time entries...</div>`;
     try {
       const d = await apiGet("timeEntries", { jobId });
       const entries = d.entries || [];
+
+      // Rate selector is always shown at the top, even with no entries
+      const rateBarHtml = job ? renderBillableRateBar(job) : "";
+
       if (!entries.length) {
-        el.innerHTML = `<div class="empty-msg">No time entries found for this job.</div>`;
+        el.innerHTML = rateBarHtml + `<div class="empty-msg">No time entries found for this job.</div>`;
+        if (job) await wireBillableRateBar(job);
         return;
       }
 
@@ -2736,6 +2817,7 @@
       const allPendingIds = pending.map(e => e.id);
 
       el.innerHTML = `
+        ${rateBarHtml}
         <!-- Grand Total Banner -->
         <div style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:14px; padding:12px 16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; align-items:center;">
           <span style="font-size:13px; font-weight:700; color:var(--text);">Total Hours: <span style="color:var(--accent);">${grandTotal.toFixed(2)}</span></span>
@@ -2750,6 +2832,9 @@
         </div>
         <div id="te-pending-content">${renderPendingTab(pending)}</div>
         <div id="te-reviewed-content" style="display:none;">${renderReviewedTab(reviewed)}</div>`;
+
+      // Wire the billable rate bar
+      if (job) await wireBillableRateBar(job);
 
       // Wire Approve All (global)
       const approveAllBtn = $("te-approve-all-btn");
@@ -3562,14 +3647,10 @@
     btn.disabled = true;
     try {
       await apiPost("logMileage", { vehicleId, mileage, date, recordedBy, notes });
-      msg.style.display = "inline";
-      // Update local cache so "Current" shows the new value immediately
+      // Update local cache so next open shows the new value immediately
       if (veh) { veh.currentMileage = mileage; veh.mileageDate = date; }
-      onMileageVehicleChange();
-      // Clear inputs for quick next entry
-      $("mileageNew").value = "";
-      $("mileageNotes").value = "";
-      setTimeout(() => { msg.style.display = "none"; }, 2500);
+      // Auto-close the modal on success
+      $("mileageModal").style.display = "none";
     } catch(e) {
       err.textContent = "Error: " + e.message;
       err.style.display = "inline";

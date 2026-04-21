@@ -3520,6 +3520,9 @@
     sel.innerHTML = `<option value="">Select vehicle...</option>` +
       mileageState.vehicles.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
     sel.onchange = onMileageVehicleChange;
+
+    // Wire up save button here (runs after DOM is ready, which the init() couldn't guarantee)
+    $("mileageSaveBtn").onclick = submitMileageUpdate;
   }
 
   function onMileageVehicleChange() {
@@ -4117,8 +4120,6 @@
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
     const mileageBtn = $("btnMileage");
     if (mileageBtn) mileageBtn.addEventListener("click", openMileageModal);
-    const mileageSave = $("mileageSaveBtn");
-    if (mileageSave) mileageSave.addEventListener("click", submitMileageUpdate);
 
     // General Expense
     const btnAddGen = $("btnAddGeneralExpense");

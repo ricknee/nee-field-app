@@ -930,15 +930,33 @@ async function handleGetJobInvoices(body) {
   const { jobId } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
-  // filterByFormula — match any invoice whose Job link contains this record ID
-  const formula = `FIND("${jobId}",ARRAYJOIN({Job}))`;
-  const qs = "?filterByFormula=" + encodeURIComponent(formula)
-           + "&sort%5B0%5D%5Bfield%5D=" + encodeURIComponent("Invoice Date")
-           + "&sort%5B0%5D%5Bdirection%5D=desc";
-  const data = await atFetch(`${encodeURIComponent("Invoices")}${qs}`);
-  if (data.error) return resp(400, { ok: false, error: data.error });
+  // Fetch all invoices, paginated, and filter client-side by job link.
+  // filterByFormula on linked records is unreliable (ARRAYJOIN returns primary
+  // field values, not record IDs), so we filter in-memory instead.
+  const all = [];
+  let offset = undefined;
+  do {
+    const qs = (offset ? "?offset=" + encodeURIComponent(offset) : "");
+    const page = await atFetch(`${encodeURIComponent("Invoices")}${qs}`);
+    if (page.error) return resp(400, { ok: false, error: page.error });
+    all.push(...(page.records || []));
+    offset = page.offset;
+  } while (offset);
 
-  const invoices = (data.records || []).map(r => {
+  // Keep only invoices whose Job link array contains this jobId
+  const filtered = all.filter(r => {
+    const jobArr = r.fields?.["Job"];
+    return Array.isArray(jobArr) && jobArr.indexOf(jobId) !== -1;
+  });
+
+  // Sort by Invoice Date descending (newest first)
+  filtered.sort((a, b) => {
+    const da = a.fields?.["Invoice Date"] || "";
+    const db = b.fields?.["Invoice Date"] || "";
+    return db.localeCompare(da);
+  });
+
+  const invoices = filtered.map(r => {
     const f = r.fields || {};
     return {
       id:              r.id,

@@ -58,6 +58,12 @@ const F = {
     billingMethod:              "Billing Method",
     baseContractAmount:         "Base Contract Amount",
     totalContractBilled:        "Total Contract Billed",
+    customerFirstName:          "Customer 1st Name (Intake)",
+    customerLastName:           "Customer Last Name (Intake)",
+    customerStreet:             "Job Site Street Address (Intake)",
+    customerCity:               "Job Site City (Intake)",
+    customerState:              "Job Site State (Intake)",
+    customerZip:                "Job Site Zip Code (Intake)",
     powerCompanyIntake:         "Power Company (Intake)",
     startServiceCall:    "Start Service Call",
     serviceCallCreated:  "Service Call Created",
@@ -352,6 +358,12 @@ async function handleJobs() {
       billingMethod:g(f,F.job.billingMethod)||"",
       baseContractAmount:gNum(f,F.job.baseContractAmount),
       totalContractBilled:gNum(f,F.job.totalContractBilled),
+      customerFirstName:g(f,F.job.customerFirstName)||"",
+      customerLastName:g(f,F.job.customerLastName)||"",
+      customerStreet:g(f,F.job.customerStreet)||"",
+      customerCity:g(f,F.job.customerCity)||"",
+      customerState:g(f,F.job.customerState)||"",
+      customerZip:g(f,F.job.customerZip)||"",
       startServiceCall:gBool(f,F.job.startServiceCall),serviceCallCreated:gBool(f,F.job.serviceCallCreated),
       projectComplete:gBool(f,F.job.projectComplete),milesFromShop:gNum(f,F.job.milesFromShop),
       notes:g(f,F.job.notes)||"",
@@ -849,7 +861,7 @@ async function handleUpdateJobBillableRate(body) {
 
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
 async function handleSaveInvoice(body) {
-  const { jobId, invoiceDate, billingMode, percentToBill, notes } = body || {};
+  const { jobId, invoiceDate, billingMode, percentToBill, notes, invoiceNumber } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -857,6 +869,10 @@ async function handleSaveInvoice(body) {
   fields["fldXcHqj8xqmOWeLH"] = "Sent";                             // Invoice Status
   if (invoiceDate) fields["fldAEjySdXkUke1Cv"] = invoiceDate;       // Invoice Date
   if (notes)       fields["fldLQrPKHWLrHLOA2"] = notes;             // Invoice Notes
+  if (invoiceNumber !== undefined && invoiceNumber !== null && invoiceNumber !== "") {
+    const n = Number(invoiceNumber);
+    if (!isNaN(n)) fields["fld7FxS299iYDzMa8"] = n;                 // Invoice Display #
+  }
 
   if (String(billingMode).toLowerCase() === "contract") {
     // Contract invoice — bill by percentage of Expected Revenue
@@ -884,6 +900,61 @@ async function handleSaveInvoice(body) {
   });
   if (data.error) return resp(400, { ok: false, error: data.error });
   return resp(200, { ok: true, id: data.id });
+}
+
+// ── GET NEXT INVOICE NUMBER ──────────────────────────────────────────────
+async function handleGetNextInvoiceNumber() {
+  // Find max "Invoice Display #" across Invoices; start at 1633 if none exist
+  const START_AT = 1633;
+  let max = 0;
+  let offset = undefined;
+  // Paginate to cover all records (defensive for large tables)
+  do {
+    const qs = "?fields%5B%5D=" + encodeURIComponent("Invoice Display #")
+             + (offset ? "&offset=" + encodeURIComponent(offset) : "");
+    const page = await atFetch(`${encodeURIComponent("Invoices")}${qs}`);
+    if (page.error) return resp(400, { ok: false, error: page.error });
+    (page.records || []).forEach(r => {
+      const n = Number(r?.fields?.["Invoice Display #"]);
+      if (!isNaN(n) && n > max) max = n;
+    });
+    offset = page.offset;
+  } while (offset);
+
+  const next = Math.max(max + 1, START_AT);
+  return resp(200, { ok: true, nextNumber: next });
+}
+
+// ── LIST PAST INVOICES FOR A JOB ─────────────────────────────────────────
+async function handleGetJobInvoices(body) {
+  const { jobId } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // filterByFormula — match any invoice whose Job link contains this record ID
+  const formula = `FIND("${jobId}",ARRAYJOIN({Job}))`;
+  const qs = "?filterByFormula=" + encodeURIComponent(formula)
+           + "&sort%5B0%5D%5Bfield%5D=" + encodeURIComponent("Invoice Date")
+           + "&sort%5B0%5D%5Bdirection%5D=desc";
+  const data = await atFetch(`${encodeURIComponent("Invoices")}${qs}`);
+  if (data.error) return resp(400, { ok: false, error: data.error });
+
+  const invoices = (data.records || []).map(r => {
+    const f = r.fields || {};
+    return {
+      id:              r.id,
+      displayNumber:   f["Invoice Display #"] || null,
+      invoiceNumber:   f["Invoice Number"]    || "",
+      date:            f["Invoice Date"]      || "",
+      status:          f["Invoice Status"]    || "",
+      billingMode:     f["Billing Mode"]      || "",
+      invoiceType:     f["Invoice Type"]      || "",
+      total:           Number(f["Invoice Total"] || 0),
+      percentToBill:   f["Percent to Bill"]   || null,
+      contractAmount:  Number(f["Contract Invoice Amount"] || 0),
+      notes:           f["Invoice Notes"]     || ""
+    };
+  });
+  return resp(200, { ok: true, invoices });
 }
 
 // ── PCLOUD UPLOAD ─────────────────────────────────────────────────────────────
@@ -1018,6 +1089,8 @@ export async function handler(event) {
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       if (body.action === "saveInvoice")          return await handleSaveInvoice(body);
+      if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
+      if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);

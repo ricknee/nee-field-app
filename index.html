@@ -4508,11 +4508,17 @@
           </div>
         </div>
         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-          <label style="font-size:13px; font-weight:600; color:var(--text);">Percent to Bill:</label>
-          <input type="number" id="invContractPct" value="100" min="0" step="0.01" style="width:90px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; text-align:right;" />
+          <label style="font-size:13px; font-weight:600; color:var(--text);">Bill:</label>
+          <span style="font-size:13px; color:var(--muted);">$</span>
+          <input type="number" id="invContractAmt" value="${expectedRev.toFixed(2)}" min="0" step="0.01" oninput="invSyncContractFromAmt()" style="width:120px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; text-align:right;" />
+          <span style="font-size:13px; color:var(--muted);">or</span>
+          <input type="number" id="invContractPct" value="100" min="0" step="0.01" oninput="invSyncContractFromPct()" style="width:80px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; text-align:right;" />
           <span style="font-size:13px; color:var(--text);">%</span>
-          <button class="inv-btn" onclick="invApplyContractPct()">Apply</button>
-          <span id="invContractCalc" style="font-size:13px; color:var(--muted); margin-left:4px;"></span>
+          <button class="inv-btn" onclick="invApplyContractPct()">Apply to Line</button>
+          <span id="invContractCalc" style="font-size:12px; color:var(--muted); margin-left:4px;"></span>
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-top:8px; font-style:italic;">
+          💡 Tip: type either a dollar amount or a percent — they sync automatically. For a rough-in, enter the rough amount (or % of contract); description will default to your Stage picker above.
         </div>
       </div>
     ` : "";
@@ -4924,12 +4930,40 @@
     if (templates[pick]) notes.value = templates[pick];
   };
 
+  // Bidirectional sync between Bill $ and Bill % inputs in the Contract Billing panel
+  window.invSyncContractFromPct = function() {
+    const pct = Math.max(0, Number($("invContractPct")?.value) || 0);
+    const rev = Number(invJobRef?.expectedRevenue || 0);
+    const amt = +((rev * pct) / 100).toFixed(2);
+    const amtEl = $("invContractAmt");
+    if (amtEl) amtEl.value = amt.toFixed(2);
+  };
+  window.invSyncContractFromAmt = function() {
+    const amt = Math.max(0, Number($("invContractAmt")?.value) || 0);
+    const rev = Number(invJobRef?.expectedRevenue || 0);
+    const pct = rev > 0 ? +((amt / rev) * 100).toFixed(2) : 0;
+    const pctEl = $("invContractPct");
+    if (pctEl) pctEl.value = pct;
+  };
+
   window.invApplyContractPct = function() {
     const pctEl = $("invContractPct");
-    if (!pctEl) return;
-    const pct = Math.max(0, Number(pctEl.value) || 0);
+    const amtEl = $("invContractAmt");
+    if (!pctEl && !amtEl) return;
+
+    const pct = Math.max(0, Number(pctEl?.value) || 0);
+    const amount = Math.max(0, Number(amtEl?.value) || 0);
     const expectedRev = Number(invJobRef?.expectedRevenue || 0);
-    const amount = +((expectedRev * pct) / 100).toFixed(2);
+
+    // Stage-aware default description. User can edit after Apply.
+    const stage   = $("invStage")?.value || "";
+    const jobName = invJobRef?.name || "";
+    let desc;
+    if (stage === "Rough In")           desc = `Rough In — ${jobName}`;
+    else if (stage === "Final")         desc = `Final Invoice — ${jobName}`;
+    else if (stage === "Progress")      desc = `Progress Billing — ${jobName} (${pct}%)`;
+    else if (stage === "Change Order")  desc = `Change Order — ${jobName}`;
+    else                                desc = `Invoice for ${pct}% of Contract Amount (${fmtCurrency(expectedRev)})`;
 
     // Find or create the contract line
     let line = invLines.find(l => l.id === "contract");
@@ -4937,7 +4971,7 @@
       line = { id: "contract", section: "", editable: true, hideQtyRate: true, qty: 1 };
       invLines.unshift(line);
     }
-    line.description = `Invoice for ${pct}% of Contract Amount (${fmtCurrency(expectedRev)})`;
+    line.description = desc;
     line.rate   = amount;
     line.amount = amount;
 
@@ -4946,7 +4980,7 @@
 
     // Show a quick calc readout next to the Apply button
     const calc = $("invContractCalc");
-    if (calc) calc.textContent = `= ${fmtCurrency(amount)}`;
+    if (calc) calc.textContent = `= ${fmtCurrency(amount)} (${pct}% of contract)`;
   };
 
   window.invSaveToAirtable = async function() {

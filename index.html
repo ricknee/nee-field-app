@@ -4551,6 +4551,13 @@
               <table class="inv-meta-table">
                 <tr><td>Date</td><td><input id="invDate" class="inv-field-input" type="date" value="${today}" style="width:130px;" /></td></tr>
                 <tr><td>Invoice #</td><td><input id="invNum" class="inv-field-input" type="text" placeholder="e.g. 1631" style="width:130px;" /></td></tr>
+                <tr><td>Stage</td><td><select id="invStage" class="inv-field-input" style="width:130px;">
+                  <option value="Rough In">Rough In</option>
+                  <option value="Final">Final</option>
+                  <option value="Progress">Progress</option>
+                  <option value="Change Order">Change Order</option>
+                  <option value="Full" selected>Full</option>
+                </select></td></tr>
               </table>
             </div>
           </div>
@@ -4728,6 +4735,23 @@
       if (!res?.ok) throw new Error(res?.error || "Fetch failed");
       const invoices = res.invoices || [];
       if (countEl) countEl.textContent = invoices.length === 0 ? "(none yet)" : `(${invoices.length})`;
+
+      // Smart default for Stage picker — based on what's already been sent for this job
+      const stagePicker = $("invStage");
+      if (stagePicker) {
+        const isContract = (invJobRef?.type || "").toLowerCase() === "contract"
+                        || (invJobRef?.billingMethod || "").toLowerCase() === "contract";
+        const hasRough = invoices.some(i => i.stage === "Rough In");
+        const hasFinal = invoices.some(i => i.stage === "Final");
+        if (isContract) {
+          if (!hasRough && !hasFinal)     stagePicker.value = "Rough In";
+          else if (hasRough && !hasFinal) stagePicker.value = "Final";
+          else                            stagePicker.value = "Progress";
+        } else {
+          stagePicker.value = "Full";
+        }
+      }
+
       if (!invoices.length) {
         listEl.innerHTML = `<div style="font-style:italic; color:var(--muted);">No previous invoices for this job.</div>`;
         return;
@@ -4738,9 +4762,11 @@
             <tr style="text-align:left; border-bottom:2px solid var(--line);">
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Invoice #</th>
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Date</th>
+              <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Stage</th>
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Type</th>
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase;">Status</th>
               <th style="padding:6px 8px; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase; text-align:right;">Total</th>
+              <th style="padding:6px 8px;"></th>
               <th style="padding:6px 8px;"></th>
             </tr>
           </thead>
@@ -4750,19 +4776,32 @@
               const date = inv.date || "—";
               const type = inv.invoiceType || "—";
               const status = inv.status || "—";
+              const stage = inv.stage || "—";
               const total = inv.total ? fmtCurrency(inv.total) : (inv.contractAmount ? fmtCurrency(inv.contractAmount) : "—");
               const pctStr = inv.percentToBill ? ` (${Math.round(inv.percentToBill * 100)}%)` : "";
               const hasSnap = inv.snapshot && inv.snapshot.length > 10;
               const reprintBtn = hasSnap
                 ? `<button data-inv-id="${esc(inv.id)}" class="inv-reprint-btn" style="font-size:11px; padding:4px 10px; border:1px solid var(--line); border-radius:5px; background:white; cursor:pointer;">📄 Reprint PDF</button>`
                 : `<span style="font-size:11px; color:var(--muted); font-style:italic;">no snapshot</span>`;
+              const isPaid = (status || "").toLowerCase() === "paid";
+              const paidBtn = isPaid
+                ? `<span style="font-size:11px; padding:4px 10px; color:var(--green); font-weight:700;">✓ Paid</span>`
+                : `<button data-inv-id="${esc(inv.id)}" class="inv-paid-btn" style="font-size:11px; padding:4px 10px; border:1px solid var(--green); border-radius:5px; background:white; color:var(--green); cursor:pointer; font-weight:600;">💵 Mark Paid</button>`;
+              // Stage chip styling
+              const stageColors = { "Rough In":"#f59e0b", "Final":"#16a34a", "Progress":"#0ea5e9", "Change Order":"#ea580c", "Full":"#7c3aed" };
+              const stageColor  = stageColors[stage] || "#6b7280";
+              const stageChip   = stage !== "—"
+                ? `<span style="display:inline-block; font-size:11px; font-weight:600; color:white; background:${stageColor}; padding:2px 8px; border-radius:5px;">${esc(stage)}</span>`
+                : `<span style="color:var(--muted);">—</span>`;
               return `
                 <tr style="border-bottom:1px solid var(--line);">
                   <td style="padding:8px;">${esc(String(num))}</td>
                   <td style="padding:8px;">${esc(date)}</td>
+                  <td style="padding:8px;">${stageChip}</td>
                   <td style="padding:8px;">${esc(type)}${pctStr}</td>
                   <td style="padding:8px;">${esc(status)}</td>
                   <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
+                  <td style="padding:8px; text-align:right;">${paidBtn}</td>
                   <td style="padding:8px; text-align:right;">${reprintBtn}</td>
                 </tr>
               `;
@@ -4781,6 +4820,23 @@
             reprintInvoicePDF(snap);
           } catch(e) {
             alert("Couldn't read saved invoice snapshot: " + e.message);
+          }
+        });
+      });
+      // Wire Mark Paid buttons
+      listEl.querySelectorAll(".inv-paid-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const invId = btn.dataset.invId;
+          if (!confirm("Mark this invoice as Paid?")) return;
+          btn.disabled = true; btn.textContent = "Saving...";
+          try {
+            const r = await apiPost("markInvoicePaid", { invoiceId: invId, status: "Paid" });
+            if (!r?.ok) throw new Error(r?.error || "Update failed");
+            // Refresh history
+            if (invJobRef?.id) loadInvoiceHistory(invJobRef.id);
+          } catch(e) {
+            alert("Error marking paid: " + e.message);
+            btn.disabled = false; btn.textContent = "💵 Mark Paid";
           }
         });
       });
@@ -4903,12 +4959,14 @@
     const invoiceDate   = $("invDate")?.value || new Date().toISOString().slice(0,10);
     const notes         = $("invNotes")?.value || "";
     const invoiceNumber = $("invNum")?.value || "";
+    const invoiceStage  = $("invStage")?.value || "Full";
 
     const body = {
       jobId:       invJobRef.id,
       invoiceDate,
       notes,
       invoiceNumber,
+      invoiceStage,
       billingMode: isContract ? "contract" : "tm"
     };
     if (isContract) {
@@ -4923,6 +4981,7 @@
       billTo:  $("invBillTo")?.value || "",
       po:      $("invPO")?.value || "",
       notes:   notes,
+      stage:   invoiceStage,
       lines:   invLines.map(l => ({
         id: l.id,
         section: l.section || "",
@@ -4973,7 +5032,7 @@ Northeastern Electric, Inc.
 330-257-0447
 rick@northeasternelec.com`
     );
-    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    window.open(`https://mail.google.com/mail/?view=cm&fs=1&su=${subject}&body=${body}`, "_blank");
   };
 
   // ── REPRINT PDF FROM SAVED SNAPSHOT ──
@@ -5722,7 +5781,7 @@ Northeastern Electric, Inc.
 330-257-0447
 rick@northeasternelec.com`
     );
-    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+    window.open(`https://mail.google.com/mail/?view=cm&fs=1&su=${subject}&body=${body}`, "_blank");
   };
 
   async function autoFillEstimateNumber() {

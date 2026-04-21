@@ -3486,6 +3486,14 @@ function onWireCalcItemPicked(name) {
 
     // Update button — disabled until preview is valid
     '<button class="primary-btn" id="wc-update-btn" onclick="submitWireCostUpdate()" disabled style="margin-top:4px;opacity:.5;">Update Item Price</button>' +
+
+    // "Apply to multiple" button — only shown when there are siblings to apply to.
+    // Clicking expands the wc-multi-area below with a per-item checklist.
+    '<button id="wc-multi-btn" onclick="showWireMultiChecklist()" style="display:none;width:100%;margin-top:8px;background:transparent;border:1px solid var(--gold);border-radius:10px;color:var(--gold);font-family:inherit;font-size:13px;font-weight:600;padding:11px;cursor:pointer;">Apply to similar items</button>' +
+
+    // Multi-item checklist target — populated by showWireMultiChecklist()
+    '<div id="wc-multi-area" style="display:none;"></div>' +
+
     '<div style="height:24px"></div>';
 
   // Focus the price field after the dropdown closes
@@ -3501,6 +3509,10 @@ function updateWireCalcPreview() {
   if (isNaN(perFt) || perFt <= 0) {
     if (preview) preview.style.display = "none";
     if (btn)     { btn.disabled = true; btn.style.opacity = ".5"; }
+    var multiBtn = document.getElementById("wc-multi-btn");
+    if (multiBtn) multiBtn.style.display = "none";
+    var multiArea = document.getElementById("wc-multi-area");
+    if (multiArea) { multiArea.style.display = "none"; multiArea.innerHTML = ""; }
     return;
   }
 
@@ -3528,6 +3540,174 @@ function updateWireCalcPreview() {
 
   btn.disabled = false;
   btn.style.opacity = "1";
+
+  // Show "Apply to multiple" button if there are similar items in the same
+  // category + size. Counts items minus the one we already have selected.
+  var siblingCount = countWireSiblings(wireCalcItem);
+  var multiBtnEl   = document.getElementById("wc-multi-btn");
+  if (multiBtnEl) {
+    if (siblingCount > 0) {
+      multiBtnEl.style.display = "block";
+      multiBtnEl.textContent = "Apply to similar items (" + siblingCount + " other" + (siblingCount === 1 ? "" : "s") + ")";
+    } else {
+      multiBtnEl.style.display = "none";
+    }
+  }
+}
+
+// Returns count of OTHER wire items sharing this item's category + size.
+// Used to gate the "Apply to multiple" UI — no point showing it for a wire
+// gauge that has no siblings (e.g. a one-off custom wire).
+function countWireSiblings(item) {
+  if (!item) return 0;
+  return allItems.filter(function(i){
+    return i.id !== item.id
+      && i.wireFtPerLb > 0
+      && i.cat === item.cat
+      && i.size === item.size;
+  }).length;
+}
+
+// Build the multi-item checklist. Each row has a checkbox (default checked)
+// and an editable $/lb field pre-filled with the calculator's new price.
+// User can uncheck rows or tweak prices per item before submitting.
+function showWireMultiChecklist() {
+  if (!wireCalcItem) return;
+  var perFt = parseFloat(document.getElementById("wc-perft")?.value);
+  if (isNaN(perFt) || perFt <= 0) { showToast("Enter a valid price per foot first", true); return; }
+
+  var area = document.getElementById("wc-multi-area");
+  if (!area) return;
+
+  // Find siblings — same category + size, but not the picked item itself
+  var siblings = allItems.filter(function(i){
+    return i.id !== wireCalcItem.id
+      && i.wireFtPerLb > 0
+      && i.cat === wireCalcItem.cat
+      && i.size === wireCalcItem.size;
+  }).sort(function(a, b){ return a.name.localeCompare(b.name); });
+
+  // For each sibling, pre-compute its proposed new $/lb. Each item gets its
+  // OWN ft/lb conversion — even within the same gauge, different colors can
+  // theoretically have slightly different ft/lb (manufacturers vary). So we
+  // calculate $/lb individually rather than copying the picked item's $/lb.
+  var rowsHtml = siblings.map(function(s, idx){
+    var newCostForS = +(perFt * s.wireFtPerLb).toFixed(4);
+    var oldCost     = Number(s.cost) || 0;
+    var delta       = newCostForS - oldCost;
+    var pct         = oldCost > 0 ? (delta / oldCost * 100) : 0;
+    var arrow       = delta > 0.0001 ? "▲" : delta < -0.0001 ? "▼" : "—";
+    var color       = delta > 0.0001 ? "var(--red)" : delta < -0.0001 ? "#4ade80" : "var(--dim)";
+    var deltaTxt    = oldCost > 0
+      ? arrow + ' ' + (delta >= 0 ? '+' : '') + '$' + delta.toFixed(4) + ' (' + (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%)'
+      : 'No prior price';
+
+    return '<div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;margin-bottom:6px;">' +
+      '<input type="checkbox" id="wcm-chk-' + idx + '" data-itemid="' + s.id + '" data-ftlb="' + s.wireFtPerLb + '" checked ' +
+        'style="width:18px;height:18px;accent-color:var(--gold);cursor:pointer;flex-shrink:0;" />' +
+      '<div style="flex:1;min-width:0;">' +
+        '<div style="font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + s.name + '</div>' +
+        '<div style="font-size:11px;color:' + color + ';margin-top:2px;">' + deltaTxt + '</div>' +
+      '</div>' +
+      '<div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">' +
+        '<span style="color:var(--dim);font-size:12px;">$</span>' +
+        '<input type="number" step="0.0001" id="wcm-cost-' + idx + '" value="' + newCostForS.toFixed(4) + '" ' +
+          'style="width:80px;background:var(--navy-mid);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:5px 6px;outline:none;text-align:right;" ' +
+          'onfocus="this.select()" />' +
+        '<span style="color:var(--dim);font-size:11px;">/lb</span>' +
+      '</div>' +
+    '</div>';
+  }).join("");
+
+  area.style.display = "block";
+  area.innerHTML =
+    '<div style="margin-top:14px;padding:12px;background:var(--navy-mid);border:1.5px solid var(--gold);border-radius:10px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:10px;">' +
+        '<div style="font-size:13px;font-weight:700;color:var(--gold);">Apply to ' + wireCalcItem.cat + ' · ' + wireCalcItem.size + '</div>' +
+        '<button onclick="hideWireMultiChecklist()" style="background:transparent;border:none;color:var(--dim);font-size:18px;cursor:pointer;padding:0 6px;line-height:1;" title="Cancel">×</button>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--dim);margin-bottom:10px;line-height:1.4;">' +
+        'Uncheck any item to skip it, or edit individual prices (e.g. colored wires often cost more than black/white).' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;margin-bottom:10px;">' +
+        '<button onclick="toggleAllWireMulti(true)"  style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:6px;color:var(--dim);font-family:inherit;font-size:11px;padding:6px;cursor:pointer;">Select all</button>' +
+        '<button onclick="toggleAllWireMulti(false)" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:6px;color:var(--dim);font-family:inherit;font-size:11px;padding:6px;cursor:pointer;">Clear all</button>' +
+      '</div>' +
+      rowsHtml +
+      '<button class="primary-btn" id="wc-multi-submit" onclick="submitWireMulti()" style="margin-top:10px;">Update Selected Items</button>' +
+    '</div>';
+}
+
+function hideWireMultiChecklist() {
+  var area = document.getElementById("wc-multi-area");
+  if (area) { area.style.display = "none"; area.innerHTML = ""; }
+}
+
+function toggleAllWireMulti(state) {
+  var checks = document.querySelectorAll('#wc-multi-area input[type="checkbox"]');
+  checks.forEach(function(c){ c.checked = !!state; });
+}
+
+// Submits all checked items' price updates. Loops sequentially rather than
+// parallel because Airtable rate-limits at 5 req/sec — sequential is safer
+// for an arbitrary checklist size, and the UX cost is minimal (a handful of
+// items per invoice). Still updates the picked item too if present.
+async function submitWireMulti() {
+  var rows = Array.prototype.slice.call(document.querySelectorAll('#wc-multi-area input[type="checkbox"]'));
+  var picks = rows
+    .map(function(chk, idx){
+      if (!chk.checked) return null;
+      var itemId = chk.getAttribute("data-itemid");
+      var costEl = document.getElementById("wcm-cost-" + idx);
+      var cost   = parseFloat(costEl ? costEl.value : 0);
+      if (!itemId || isNaN(cost) || cost <= 0) return null;
+      var item = allItems.find(function(i){ return i.id === itemId; });
+      return { itemId: itemId, cost: +cost.toFixed(4), name: item ? item.name : itemId };
+    })
+    .filter(Boolean);
+
+  // Also update the originally-picked item with its calculator value
+  var perFt = parseFloat(document.getElementById("wc-perft")?.value);
+  if (wireCalcItem && !isNaN(perFt) && perFt > 0) {
+    var primaryCost = +(perFt * wireCalcItem.wireFtPerLb).toFixed(4);
+    picks.unshift({ itemId: wireCalcItem.id, cost: primaryCost, name: wireCalcItem.name });
+  }
+
+  if (!picks.length) { showToast("No items selected", true); return; }
+
+  if (!confirm("Update " + picks.length + " item" + (picks.length === 1 ? "" : "s") + "?\n\n" +
+    picks.slice(0, 8).map(function(p){ return "• " + p.name + " → $" + p.cost.toFixed(4) + "/lb"; }).join("\n") +
+    (picks.length > 8 ? "\n…and " + (picks.length - 8) + " more" : ""))) return;
+
+  var btn = document.getElementById("wc-multi-submit");
+  if (btn) { btn.disabled = true; btn.textContent = "Updating 0/" + picks.length + "…"; }
+
+  var ok = 0, fail = 0;
+  for (var i = 0; i < picks.length; i++) {
+    var p = picks[i];
+    if (btn) btn.textContent = "Updating " + (i+1) + "/" + picks.length + "…";
+    try {
+      await apiPost({ action: "updateItemCost", itemId: p.itemId, cost: p.cost });
+      ok++;
+      // Update in-memory cache so the screen reflects new prices on next pick
+      var cached = allItems.find(function(it){ return it.id === p.itemId; });
+      if (cached) cached.cost = p.cost;
+    } catch(ex) {
+      fail++;
+      console.warn("Wire bulk update failed for " + p.name + ":", ex.message);
+    }
+  }
+
+  if (fail === 0) {
+    showToast("✓ Updated " + ok + " item" + (ok === 1 ? "" : "s"));
+  } else {
+    showToast("Updated " + ok + ", " + fail + " failed — see console", true);
+  }
+
+  // Reset the screen so Rick can move to the next gauge
+  wireCalcItem = null;
+  comboClear("wc-item");
+  document.getElementById("wc-details").innerHTML = "";
 }
 
 async function submitWireCostUpdate() {

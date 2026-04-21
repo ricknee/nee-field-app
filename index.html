@@ -2446,7 +2446,15 @@
         return;
       }
       estimatesSection.innerHTML = estimates.map(est => {
-        const statusColor = est.status === "Approved" ? "var(--green)" : est.status === "Sent" ? "var(--accent)" : "var(--muted)";
+        const statusColor = est.status === "Approved" ? "var(--green)" : est.status === "Sent" ? "var(--accent)" : est.status === "Rejected" ? "var(--red)" : "var(--muted)";
+        // Helper: render a status button — highlighted if it's the current status
+        const statusBtn = (label, target, icon, color) => {
+          const isActive = est.status === target;
+          const bg   = isActive ? color : "transparent";
+          const fg   = isActive ? "white" : color;
+          const bd   = color;
+          return `<button data-est-id="${esc(est.id)}" data-est-status="${esc(target)}" class="est-status-btn" style="border:1px solid ${bd}; background:${bg}; color:${fg}; font-size:11px; font-weight:600; padding:3px 10px; border-radius:6px; cursor:pointer;">${icon} ${esc(label)}</button>`;
+        };
         return `
           <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
@@ -2454,7 +2462,13 @@
                 <span style="font-weight:700; font-size:14px; color:var(--text);">${esc(est.name)}</span>
                 ${est.estimateType ? `<span style="font-size:11px; background:var(--panel-3); color:var(--accent); padding:2px 8px; border-radius:6px; margin-left:8px;">${esc(est.estimateType)}</span>` : ""}
               </div>
-              <span style="font-size:12px; font-weight:700; color:${statusColor};">${esc(est.status)}</span>
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span style="font-size:11px; color:var(--muted); margin-right:4px;">Status:</span>
+                ${statusBtn("Approve", "Approved", "✓", "#16a34a")}
+                ${statusBtn("Reject",  "Rejected", "✗", "#dc2626")}
+                ${statusBtn("Archive", "Archived/Completed", "📦", "#6b7280")}
+                <span data-est-id="${esc(est.id)}" class="est-status-msg" style="font-size:11px; color:var(--green); display:none; margin-left:4px;">✓ Updated</span>
+              </div>
             </div>
 
             <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:12px;">
@@ -2502,6 +2516,23 @@
             alert("Error: " + e.message);
           } finally {
             btn.disabled = false; btn.textContent = "Save Changes";
+          }
+        });
+      });
+
+      // Wire status buttons (Approve / Reject / Archive)
+      estimatesSection.querySelectorAll(".est-status-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const estId     = btn.dataset.estId;
+          const newStatus = btn.dataset.estStatus;
+          btn.disabled = true;
+          try {
+            await apiPost("updateEstimateStatus", { estimateId: estId, status: newStatus });
+            // Reload the GP tab so Expected Revenue rollup refreshes and buttons restyle
+            await renderEstGp(job);
+          } catch(e) {
+            alert("Error updating status: " + e.message);
+            btn.disabled = false;
           }
         });
       });
@@ -4338,59 +4369,81 @@
         // silently fall back to contractor name only
       }
 
-      // Build default line items — use UNBILLED amounts only (avoids double-billing on ongoing jobs)
+      // Detect Contract vs T&M billing
+      const isContract = (job.billingMethod || "").toLowerCase() === "contract";
+
+      // Build default line items
       invLines = [];
 
-      // Cost of Labor — sum of Unbilled Labor Revenue $ across all reviewed entries
-      const laborTotal = +entries
-        .filter(e => e.reviewed)
-        .reduce((s, e) => s + (e.unbilledRevenue || 0), 0)
-        .toFixed(2);
-
-      // Fallback: if all entries are fully billed (unbilledRevenue = 0), use reviewed hours × rate
-      // This handles jobs where billing allocations haven't been set up yet
-      const fallbackRate = job.billableHourlyRate || 0;
-      const reviewedHrs  = entries.filter(e => e.reviewed).reduce((s, e) => s + (e.hours || 0), 0);
-      const laborFallback = +(reviewedHrs * fallbackRate).toFixed(2);
-      const laborAmount   = laborTotal > 0 ? laborTotal : laborFallback;
-
-      if (laborAmount > 0) {
+      if (isContract) {
+        // CONTRACT MODE — single line item based on % of Expected Revenue (already rolls up approved estimates)
+        const expectedRev = Number(job.expectedRevenue || 0);
+        const defaultPct = 100;
+        const amount = +((expectedRev * defaultPct) / 100).toFixed(2);
         invLines.push({
-          id: "labor",
+          id: "contract",
           section: "",
-          description: "Cost of Labor",
+          description: `Invoice for ${defaultPct}% of Contract Amount (${fmtCurrency(expectedRev)})`,
           qty: 1,
-          rate: laborAmount,
-          amount: laborAmount,
+          rate: amount,
+          amount: amount,
           editable: true,
           hideQtyRate: true
         });
-      }
+      } else {
+        // T&M MODE — existing logic: labor from time entries, materials from expenses
 
-      // Cost of Materials — sum of Unbilled Material Amount $ across reviewed expenses
-      const matTotal = +expenses
-        .filter(e => e.reviewed)
-        .reduce((s, e) => s + (e.unbilledMaterial || 0), 0)
-        .toFixed(2);
+        // Cost of Labor — sum of Unbilled Labor Revenue $ across all reviewed entries
+        const laborTotal = +entries
+          .filter(e => e.reviewed)
+          .reduce((s, e) => s + (e.unbilledRevenue || 0), 0)
+          .toFixed(2);
 
-      // Fallback: if no unbilled material amounts, use billableMaterial totals
-      const matFallback = +expenses
-        .filter(e => e.reviewed)
-        .reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0)
-        .toFixed(2);
-      const matAmount = matTotal > 0 ? matTotal : matFallback;
+        // Fallback: if all entries are fully billed (unbilledRevenue = 0), use reviewed hours × rate
+        // This handles jobs where billing allocations haven't been set up yet
+        const fallbackRate = job.billableHourlyRate || 0;
+        const reviewedHrs  = entries.filter(e => e.reviewed).reduce((s, e) => s + (e.hours || 0), 0);
+        const laborFallback = +(reviewedHrs * fallbackRate).toFixed(2);
+        const laborAmount   = laborTotal > 0 ? laborTotal : laborFallback;
 
-      if (matAmount > 0) {
-        invLines.push({
-          id: "materials",
-          section: "",
-          description: "Cost of Materials",
-          qty: 1,
-          rate: matAmount,
-          amount: matAmount,
-          editable: true,
-          hideQtyRate: true
-        });
+        if (laborAmount > 0) {
+          invLines.push({
+            id: "labor",
+            section: "",
+            description: "Cost of Labor",
+            qty: 1,
+            rate: laborAmount,
+            amount: laborAmount,
+            editable: true,
+            hideQtyRate: true
+          });
+        }
+
+        // Cost of Materials — sum of Unbilled Material Amount $ across reviewed expenses
+        const matTotal = +expenses
+          .filter(e => e.reviewed)
+          .reduce((s, e) => s + (e.unbilledMaterial || 0), 0)
+          .toFixed(2);
+
+        // Fallback: if no unbilled material amounts, use billableMaterial totals
+        const matFallback = +expenses
+          .filter(e => e.reviewed)
+          .reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0)
+          .toFixed(2);
+        const matAmount = matTotal > 0 ? matTotal : matFallback;
+
+        if (matAmount > 0) {
+          invLines.push({
+            id: "materials",
+            section: "",
+            description: "Cost of Materials",
+            qty: 1,
+            rate: matAmount,
+            amount: matAmount,
+            editable: true,
+            hideQtyRate: true
+          });
+        }
       }
 
       renderInvoiceBuilder(job, entries, expenses, billToAddress);
@@ -4407,7 +4460,37 @@
   function renderInvoiceBuilder(job, entries, expenses, billToAddress) {
     const today = new Date().toISOString().slice(0,10);
     const el = $("invoiceBuilder");
+    const isContract = (job.billingMethod || "").toLowerCase() === "contract";
+    const expectedRev = Number(job.expectedRevenue || 0);
+    const prevBilled  = Number(job.totalContractBilled || 0);
+    const remaining   = Math.max(0, expectedRev - prevBilled);
 
+    const contractPanelHtml = isContract ? `
+      <div style="background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin-bottom:14px;">
+        <div style="font-weight:700; font-size:14px; color:var(--text); margin-bottom:12px;">📋 Contract Billing</div>
+        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; margin-bottom:14px;">
+          <div>
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Contract Amount</div>
+            <div style="font-size:16px; font-weight:700; color:var(--text); margin-top:3px;">${fmtCurrency(expectedRev)}</div>
+          </div>
+          <div>
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Previously Billed</div>
+            <div style="font-size:16px; font-weight:700; color:var(--muted); margin-top:3px;">${fmtCurrency(prevBilled)}</div>
+          </div>
+          <div>
+            <div style="font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Remaining</div>
+            <div style="font-size:16px; font-weight:700; color:var(--green); margin-top:3px;">${fmtCurrency(remaining)}</div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <label style="font-size:13px; font-weight:600; color:var(--text);">Percent to Bill:</label>
+          <input type="number" id="invContractPct" value="100" min="0" step="0.01" style="width:90px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; text-align:right;" />
+          <span style="font-size:13px; color:var(--text);">%</span>
+          <button class="inv-btn" onclick="invApplyContractPct()">Apply</button>
+          <span id="invContractCalc" style="font-size:13px; color:var(--muted); margin-left:4px;"></span>
+        </div>
+      </div>
+    ` : "";
 
     el.innerHTML = `
       <div class="inv-wrap">
@@ -4420,8 +4503,11 @@
           <button class="inv-btn secondary" onclick="invAddLine()">+ Add Line</button>
           <button class="inv-btn" onclick="invGeneratePDF()">⬇ Download PDF</button>
           <button class="inv-btn green" onclick="invUploadToPCloud()">☁ Upload to pCloud</button>
+          <button class="inv-btn green" onclick="invSaveToAirtable()">💾 Save Invoice</button>
           <button class="inv-btn secondary" onclick="invEmail()">✉ Email</button>
         </div>
+
+        ${contractPanelHtml}
 
         <!-- Invoice Preview (editable) -->
         <div class="inv-preview" id="invPreview">
@@ -4614,6 +4700,69 @@
       alert("pCloud upload failed: " + err.message);
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = "☁ Upload to pCloud"; }
+    }
+  };
+
+  window.invApplyContractPct = function() {
+    const pctEl = $("invContractPct");
+    if (!pctEl) return;
+    const pct = Math.max(0, Number(pctEl.value) || 0);
+    const expectedRev = Number(invJobRef?.expectedRevenue || 0);
+    const amount = +((expectedRev * pct) / 100).toFixed(2);
+
+    // Find or create the contract line
+    let line = invLines.find(l => l.id === "contract");
+    if (!line) {
+      line = { id: "contract", section: "", editable: true, hideQtyRate: true, qty: 1 };
+      invLines.unshift(line);
+    }
+    line.description = `Invoice for ${pct}% of Contract Amount (${fmtCurrency(expectedRev)})`;
+    line.rate   = amount;
+    line.amount = amount;
+
+    // Re-render lines + totals using the existing helper
+    refreshInvLines();
+
+    // Show a quick calc readout next to the Apply button
+    const calc = $("invContractCalc");
+    if (calc) calc.textContent = `= ${fmtCurrency(amount)}`;
+  };
+
+  window.invSaveToAirtable = async function() {
+    if (!invJobRef) return;
+    const btn = event?.target;
+    if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+
+    const isContract = (invJobRef.billingMethod || "").toLowerCase() === "contract";
+    const invoiceDate = $("invDate")?.value || new Date().toISOString().slice(0,10);
+    const notes = $("invNotes")?.value || "";
+
+    const body = {
+      jobId:       invJobRef.id,
+      invoiceDate,
+      notes,
+      billingMode: isContract ? "contract" : "tm"
+    };
+    if (isContract) {
+      const pct = Number($("invContractPct")?.value) || 0;
+      body.percentToBill = pct;
+    }
+
+    try {
+      const result = await apiPost("saveInvoice", body);
+      if (!result.ok) throw new Error(result.error || "Save failed");
+      const banner = $("inv-saved-banner");
+      if (banner) {
+        banner.textContent   = "✓ Invoice saved to Airtable";
+        banner.style.display = "block";
+        setTimeout(() => { banner.style.display = "none"; }, 4000);
+      }
+      // Refresh jobs so the Contract Billed rollup updates in the sidebar
+      setTimeout(() => { if (window.loadJobs) loadJobs(); }, 800);
+    } catch(err) {
+      alert("Error saving invoice: " + err.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "💾 Save Invoice"; }
     }
   };
 

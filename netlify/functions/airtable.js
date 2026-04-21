@@ -912,7 +912,7 @@ async function handleUpdateJobBillableRate(body) {
 
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
 async function handleSaveInvoice(body) {
-  const { jobId, invoiceDate, billingMode, percentToBill, notes, invoiceNumber, snapshot } = body || {};
+  const { jobId, invoiceDate, billingMode, percentToBill, notes, invoiceNumber, snapshot, invoiceStage } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -927,6 +927,9 @@ async function handleSaveInvoice(body) {
   if (snapshot) {
     // Store as JSON string — used by reprint to rebuild identical PDF
     fields["fldJT0EqxsYPUQOg1"] = typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot);
+  }
+  if (invoiceStage) {
+    fields["fldzvSMeApOZs75Pa"] = String(invoiceStage);              // Invoice Stage
   }
 
   if (String(billingMode).toLowerCase() === "contract") {
@@ -951,6 +954,20 @@ async function handleSaveInvoice(body) {
 
   const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
     method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  if (data.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, id: data.id });
+}
+
+// ── MARK INVOICE PAID ────────────────────────────────────────────────────
+async function handleMarkInvoicePaid(body) {
+  const { invoiceId, status } = body || {};
+  if (!invoiceId) return resp(400, { ok: false, error: "Missing invoiceId." });
+  const newStatus = status || "Paid";  // default to Paid if not specified
+  const fields = { "fldXcHqj8xqmOWeLH": newStatus };  // Invoice Status
+  const data = await atFetch(`${encodeURIComponent("Invoices")}/${invoiceId}`, {
+    method: "PATCH",
     body: JSON.stringify({ fields, typecast: true })
   });
   if (data.error) return resp(400, { ok: false, error: data.error });
@@ -1025,7 +1042,8 @@ async function handleGetJobInvoices(body) {
       percentToBill:   f["Percent to Bill"]   || null,
       contractAmount:  Number(f["Contract Invoice Amount"] || 0),
       notes:           f["Invoice Notes"]     || "",
-      snapshot:        f["Invoice Snapshot"]  || ""
+      snapshot:        f["Invoice Snapshot"]  || "",
+      stage:           f["Invoice Stage"]     || ""
     };
   });
   return resp(200, { ok: true, invoices });
@@ -1165,6 +1183,7 @@ export async function handler(event) {
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       if (body.action === "saveInvoice")          return await handleSaveInvoice(body);
+      if (body.action === "markInvoicePaid")      return await handleMarkInvoicePaid(body);
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);

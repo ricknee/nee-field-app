@@ -1181,6 +1181,7 @@
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
       <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
+      <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
@@ -3491,6 +3492,88 @@
   window.openFleetDetail = openFleetDetail;
   window.fleetShowList   = fleetShowList;
 
+  // ── QUICK MILEAGE UPDATE (all users) ──
+  let mileageState = { vehicles: [] };
+
+  async function openMileageModal() {
+    $("mileageModal").style.display = "flex";
+    // Reset form
+    $("mileageDate").value = new Date().toISOString().slice(0,10);
+    $("mileageNew").value = "";
+    $("mileageNotes").value = "";
+    $("mileageSaveMsg").style.display = "none";
+    $("mileageSaveErr").style.display = "none";
+    $("mileageCurrentBox").style.display = "none";
+
+    // Load vehicles (cache after first load)
+    const sel = $("mileageVehicle");
+    if (!mileageState.vehicles.length) {
+      sel.innerHTML = `<option value="">Loading vehicles...</option>`;
+      try {
+        const d = await apiGet("fleetVehicles");
+        mileageState.vehicles = d.vehicles || [];
+      } catch(e) {
+        sel.innerHTML = `<option value="">Error loading vehicles</option>`;
+        return;
+      }
+    }
+    sel.innerHTML = `<option value="">Select vehicle...</option>` +
+      mileageState.vehicles.map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    sel.onchange = onMileageVehicleChange;
+  }
+
+  function onMileageVehicleChange() {
+    const id = $("mileageVehicle").value;
+    const v = mileageState.vehicles.find(x => x.id === id);
+    if (!v) {
+      $("mileageCurrentBox").style.display = "none";
+      return;
+    }
+    $("mileageCurrentBox").style.display = "";
+    const curMi   = v.currentMileage ? v.currentMileage.toLocaleString() + " mi" : "Not recorded yet";
+    const curDate = v.mileageDate ? " (as of " + fmtDate(v.mileageDate) + ")" : "";
+    $("mileageCurrentDisplay").textContent = curMi + curDate;
+  }
+
+  async function submitMileageUpdate() {
+    const vehicleId  = $("mileageVehicle").value;
+    const mileage    = parseInt($("mileageNew").value, 10);
+    const date       = $("mileageDate").value;
+    const notes      = $("mileageNotes").value.trim();
+    const recordedBy = state.user?.name || "";
+
+    const msg = $("mileageSaveMsg"), err = $("mileageSaveErr");
+    msg.style.display = "none";
+    err.style.display = "none";
+
+    if (!vehicleId) { err.textContent = "Pick a vehicle first."; err.style.display = "inline"; return; }
+    if (!mileage || mileage < 0) { err.textContent = "Enter a valid mileage."; err.style.display = "inline"; return; }
+
+    // Warn if new mileage is lower than current (odometer shouldn't go backward)
+    const veh = mileageState.vehicles.find(v => v.id === vehicleId);
+    if (veh && veh.currentMileage && mileage < veh.currentMileage) {
+      if (!confirm(`New mileage (${mileage.toLocaleString()}) is less than current (${veh.currentMileage.toLocaleString()}). Save anyway?`)) return;
+    }
+
+    const btn = $("mileageSaveBtn");
+    btn.disabled = true;
+    try {
+      await apiPost("logMileage", { vehicleId, mileage, date, recordedBy, notes });
+      msg.style.display = "inline";
+      // Update local cache so "Current" shows the new value immediately
+      if (veh) { veh.currentMileage = mileage; veh.mileageDate = date; }
+      onMileageVehicleChange();
+      // Clear inputs for quick next entry
+      $("mileageNew").value = "";
+      $("mileageNotes").value = "";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+    } catch(e) {
+      err.textContent = "Error: " + e.message;
+      err.style.display = "inline";
+    }
+    finally { btn.disabled = false; }
+  }
+
   // ── SCISSOR LIFTS AT JOB (all users) ──
   async function loadJobLifts(jobName) {
     const section = $("jobLiftsSection");
@@ -4032,6 +4115,10 @@
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
     const payrollBtn = $("btnPayroll");
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
+    const mileageBtn = $("btnMileage");
+    if (mileageBtn) mileageBtn.addEventListener("click", openMileageModal);
+    const mileageSave = $("mileageSaveBtn");
+    if (mileageSave) mileageSave.addEventListener("click", submitMileageUpdate);
 
     // General Expense
     const btnAddGen = $("btnAddGeneralExpense");
@@ -5506,6 +5593,45 @@ rick@northeasternelec.com`
         </div>
       </div>
 
+    </div>
+  </div>
+</div>
+
+<!-- MILEAGE UPDATE MODAL -->
+<div id="mileageModal" class="fleet-modal-backdrop" style="display:none;">
+  <div class="fleet-modal" style="max-width:500px;">
+    <div class="fleet-modal-header">
+      <h2>⛽ Update Vehicle Mileage</h2>
+      <button onclick="document.getElementById('mileageModal').style.display='none'" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="fleet-modal-body">
+      <div style="margin-bottom:12px;">
+        <label class="edit-label">Date</label>
+        <input type="date" id="mileageDate" class="edit-input" />
+      </div>
+      <div style="margin-bottom:12px;">
+        <label class="edit-label">Vehicle</label>
+        <select id="mileageVehicle" class="edit-input">
+          <option value="">Loading vehicles...</option>
+        </select>
+      </div>
+      <div id="mileageCurrentBox" style="display:none; margin-bottom:12px; padding:10px 14px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; font-size:13px; color:var(--muted);">
+        Current: <span id="mileageCurrentDisplay" style="color:var(--text); font-weight:600;">—</span>
+      </div>
+      <div style="margin-bottom:12px;">
+        <label class="edit-label">New Mileage</label>
+        <input type="number" id="mileageNew" class="edit-input" placeholder="Miles" min="0" step="1" />
+      </div>
+      <div style="margin-bottom:14px;">
+        <label class="edit-label">Notes (optional)</label>
+        <input type="text" id="mileageNotes" class="edit-input" placeholder="e.g. After fill-up, service prep..." />
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="mileageSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
+        <button onclick="document.getElementById('mileageModal').style.display='none'" class="btn btn-sm" style="font-size:12px;">Cancel</button>
+        <span id="mileageSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+        <span id="mileageSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
+      </div>
     </div>
   </div>
 </div>

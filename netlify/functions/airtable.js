@@ -360,6 +360,13 @@ async function handleJobs() {
         if (Array.isArray(v)) return v[0] ?? null;
         return v ?? null;
       })(),
+      laborBillableRateId: (() => {
+        const v = f["Labor Billable Rates"];
+        if (Array.isArray(v) && v.length > 0) {
+          return typeof v[0] === "string" ? v[0] : v[0]?.id || null;
+        }
+        return null;
+      })(),
       pCloudInvoicesSentId: f["pCloud Invoices Sent ID"] || null,
       expectedRevenue:gNum(f,F.job.expectedRevenue),
       actualJobCostCogs:gNum(f,F.job.actualJobCostCogs),totalReviewedCosts:gNum(f,F.job.totalReviewedCosts),
@@ -785,6 +792,43 @@ async function handleVendors() {
   return resp(200, { ok: true, vendors });
 }
 
+// ── LABOR BILLABLE RATES (for per-job rate selector) ──────────────────────
+async function handleLaborBillableRates() {
+  const records = await fetchAll("Labor Billable Rates", { sortField: "Billable Hourly Rate", sortDir: "asc" });
+  const today = new Date().toISOString().slice(0,10);
+  const rates = records
+    .filter(r => {
+      // Only show rates that are still active (no end date, or end date in future)
+      const endDate = r.fields["Effective End Date"];
+      return !endDate || endDate >= today;
+    })
+    .map(r => {
+      const f = r.fields || {};
+      return {
+        id:        r.id,
+        label:     f["Billable Rate ID"] || "",
+        laborType: (f["Labor Type"] && typeof f["Labor Type"] === "object") ? f["Labor Type"].name : (f["Labor Type"] || ""),
+        rate:      f["Billable Hourly Rate"] ?? null,
+        startDate: f["Effective Start Date"] || "",
+        endDate:   f["Effective End Date"] || ""
+      };
+    });
+  return resp(200, { ok: true, rates });
+}
+
+async function handleUpdateJobBillableRate(body) {
+  const { jobId, rateId } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Jobs."Labor Billable Rates" field ID = fldcCGetfLtQW2nhm (multipleRecordLinks)
+  const fields = {};
+  fields["fldcCGetfLtQW2nhm"] = rateId ? [String(rateId)] : [];
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
 async function handleSaveInvoice(body) {
   const { jobId, invoiceDate, billTo, laborAmount, materialsAmount, notes } = body || {};
@@ -918,6 +962,7 @@ export async function handler(event) {
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();
       if (action === "companies")          return await handleCompanies();
+      if (action === "laborBillableRates") return await handleLaborBillableRates();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -937,6 +982,7 @@ export async function handler(event) {
       if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
+      if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);
       if (body.action === "addFleetService")      return await handleAddFleetService(body);
       if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);

@@ -5187,13 +5187,16 @@ rick@northeasternelec.com`
     y += billH + 16;
 
     // ── Line items table ──
-    // Header row — blue, printer friendly; rounded to match outer border
-    doc.setFillColor(...C_HDR_BG);
-    doc.roundedRect(M, y, INNER_W, 20, 4, 4, "F");
-    doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...C_HDR_TXT);
-    doc.text("Description", M+10, y+14);
-    doc.text("Amount", W-M-6, y+14, { align: "right" });
-    y += 20;
+    // Helper: draw the table header (can be called again on new pages if content continues)
+    function drawTableHeader() {
+      doc.setFillColor(...C_HDR_BG);
+      doc.roundedRect(M, y, INNER_W, 20, 4, 4, "F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...C_HDR_TXT);
+      doc.text("Description", M+10, y+14);
+      doc.text("Amount", W-M-6, y+14, { align: "right" });
+      y += 20;
+    }
+    drawTableHeader();
 
     // Border around entire table (drawn after rows)
     const tableStartY = y;
@@ -5226,65 +5229,113 @@ rick@northeasternelec.com`
     const LINE_H    = 15;   // text line height (larger for 11.5pt font)
     const BLANK_H   = 8;    // vertical gap for empty lines
     const ROW_PAD_Y = 11;   // padding top+bottom inside row
+    const BOTTOM_LIMIT = 700;  // y coordinate we won't draw past (leaves room for footer)
+
+    function segHeight(seg) {
+      return seg.type === "blank" ? BLANK_H : seg.lines.length * LINE_H;
+    }
 
     lines.forEach((line, i) => {
       const segments = processDescription(line.description || "");
 
-      // Calculate row height from content
-      let contentH = 0;
-      segments.forEach(seg => {
-        if (seg.type === "blank") contentH += BLANK_H;
-        else contentH += seg.lines.length * LINE_H;
-      });
-      const rowH = Math.max(28, contentH + ROW_PAD_Y * 2 - (LINE_H - ROW_PAD_Y));
-      // (Small adjustment so single-line rows don't look huge)
+      // Split the line's segments into page-sized chunks.
+      // A "chunk" is what fits from y to BOTTOM_LIMIT; if everything fits, there's just one.
+      let remaining = segments.slice();
+      let isFirstChunk = true;
 
-      // Page break if needed
-      if (y + rowH > 660) { doc.addPage(); y = 36; }
-
-      // Alternating row background
-      if (i % 2 === 1) {
-        doc.setFillColor(...C_ROW_ALT);
-        doc.rect(M, y, INNER_W, rowH, "F");
-      }
-      // Bottom border
-      doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.3);
-      doc.line(M, y + rowH, W - M, y + rowH);
-
-      // Render description segments
-      doc.setTextColor(...C_TEXT);
-      doc.setFont("helvetica", "normal"); doc.setFontSize(11.5);
-      let textY = y + ROW_PAD_Y + 4;  // baseline offset for first line
-      segments.forEach(seg => {
-        if (seg.type === "blank") { textY += BLANK_H; return; }
-        if (seg.type === "bullet") {
-          // Draw bullet dot at fixed position, wrapped text indented
-          doc.text("•", M + 12, textY);
-          doc.text(seg.lines, M + 22, textY);
-          textY += seg.lines.length * LINE_H;
-        } else {
-          doc.text(seg.lines, M + 10, textY);
-          textY += seg.lines.length * LINE_H;
+      while (remaining.length > 0) {
+        // If we're already too close to the bottom, page break before trying to fit anything
+        if (y + ROW_PAD_Y * 2 + LINE_H > BOTTOM_LIMIT) {
+          doc.addPage();
+          y = 36;
+          drawTableHeader();
         }
-      });
 
-      // Amount — right side, aligned to top of row (matches first line of description)
-      doc.setFont("helvetica", "bold");
-      doc.text(fmtCurrency(line.amount), W - M - 6, y + ROW_PAD_Y + 4, { align: "right" });
-      doc.setFont("helvetica", "normal");
+        // How many segments fit on this page (inside the row)?
+        const availH = BOTTOM_LIMIT - y - ROW_PAD_Y * 2;
+        let usedH = 0;
+        let fitCount = 0;
+        for (let s = 0; s < remaining.length; s++) {
+          const sh = segHeight(remaining[s]);
+          if (usedH + sh <= availH) {
+            usedH += sh;
+            fitCount++;
+          } else {
+            break;
+          }
+        }
 
-      y += rowH;
+        // Edge case: not even one segment fits on this page — force page break and retry
+        if (fitCount === 0) {
+          doc.addPage();
+          y = 36;
+          drawTableHeader();
+          continue;
+        }
+
+        const chunk  = remaining.slice(0, fitCount);
+        const isLast = fitCount === remaining.length;
+        const chunkH = Math.max(28, usedH + ROW_PAD_Y * 2 - (LINE_H - ROW_PAD_Y));
+
+        // Alternating row background (whole-row alternation — each chunk gets same bg)
+        if (i % 2 === 1) {
+          doc.setFillColor(...C_ROW_ALT);
+          doc.rect(M, y, INNER_W, chunkH, "F");
+        }
+        // Bottom border only at the end of the row (last chunk)
+        if (isLast) {
+          doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.3);
+          doc.line(M, y + chunkH, W - M, y + chunkH);
+        }
+
+        // Render the chunk's segments
+        doc.setTextColor(...C_TEXT);
+        doc.setFont("helvetica", "normal"); doc.setFontSize(11.5);
+        let textY = y + ROW_PAD_Y + 4;
+        chunk.forEach(seg => {
+          if (seg.type === "blank") { textY += BLANK_H; return; }
+          if (seg.type === "bullet") {
+            doc.text("•", M + 12, textY);
+            doc.text(seg.lines, M + 22, textY);
+            textY += seg.lines.length * LINE_H;
+          } else {
+            doc.text(seg.lines, M + 10, textY);
+            textY += seg.lines.length * LINE_H;
+          }
+        });
+
+        // Amount only shown on the first chunk of the row (beside description's first line)
+        if (isFirstChunk) {
+          doc.setFont("helvetica", "bold");
+          doc.text(fmtCurrency(line.amount), W - M - 6, y + ROW_PAD_Y + 4, { align: "right" });
+          doc.setFont("helvetica", "normal");
+        }
+
+        y += chunkH;
+        remaining = remaining.slice(fitCount);
+        isFirstChunk = false;
+
+        // If content still remains, page-break and redraw the table header
+        if (remaining.length > 0) {
+          doc.addPage();
+          y = 36;
+          drawTableHeader();
+        }
+      }
     });
 
-    // Table outer border
-    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.6);
-    doc.roundedRect(M, tableStartY - 20, INNER_W, y - tableStartY + 20, 4, 4);
+    // (Skipping the table outer border — with multi-page row splitting, a bounding
+    //  rectangle can't span pages cleanly. The rounded header + per-row bottom
+    //  borders provide enough visual structure.)
 
     y += 10;
 
     // ── Totals ──
     const totW = 200;
     const totX = W - M - totW;
+
+    // Page-break if the totals block won't fit (needs ~60pt: subtotal line + total bar + padding)
+    if (y + 60 > BOTTOM_LIMIT) { doc.addPage(); y = 36; }
 
     // Subtotal line
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.4);
@@ -5305,10 +5356,13 @@ rick@northeasternelec.com`
 
     // ── Notes ──
     if (notes) {
-      if (y > 660) { doc.addPage(); y = 36; }
-      y += 6;
-      doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(...C_MUTED);
+      // Measure notes first so we can decide whether to page-break
+      doc.setFont("helvetica","normal"); doc.setFontSize(8.5);
       const noteLines = doc.splitTextToSize(notes, INNER_W);
+      const notesH    = noteLines.length * 12 + 14;
+      if (y + notesH > BOTTOM_LIMIT) { doc.addPage(); y = 36; }
+      y += 6;
+      doc.setTextColor(...C_MUTED);
       doc.text(noteLines, M, y);
       y += noteLines.length * 12 + 8;
     }
@@ -5328,9 +5382,15 @@ rick@northeasternelec.com`
     doc.text("Total", W-M-90, footY+15);
     doc.text(fmtCurrency(total), W-M-6, footY+15, { align: "right" });
 
-    // ── Outer border (drawn last, on top) — darker + thicker + rounded ──
-    doc.setDrawColor(70, 70, 70); doc.setLineWidth(2.2);
-    doc.roundedRect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD*2, PAGE_H - BORDER_PAD*2, 8, 8);
+    // ── Outer border — drawn on every page — darker + thicker + rounded ──
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      doc.setDrawColor(70, 70, 70); doc.setLineWidth(2.2);
+      doc.roundedRect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD*2, PAGE_H - BORDER_PAD*2, 8, 8);
+    }
+    // Leave the cursor on the last page so callers see the correct page count
+    doc.setPage(totalPages);
 
     return doc;
   }

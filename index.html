@@ -1093,8 +1093,11 @@
     .inv-lines-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
     .inv-lines-table th { background: #1a1a1a; color: white; padding: 9px 12px; font-size: 12px; font-weight: 600; text-align: left; }
     .inv-lines-table th:last-child { text-align: right; }
-    .inv-lines-table td { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: middle; }
+    .inv-lines-table td { padding: 10px 12px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: top; }
     .inv-lines-table tr:nth-child(even) td { background: #fafafa; }
+    .inv-desc-textarea { border: 1px solid transparent; border-radius: 3px; padding: 6px 8px; font-size: 13px; font-family: inherit; width: 100%; background: transparent; resize: vertical; min-height: 32px; line-height: 1.55; white-space: pre-wrap; }
+    .inv-desc-textarea:hover { border-color: #ccc; }
+    .inv-desc-textarea:focus { outline: none; border-color: #1565c0; background: white; }
     .inv-line-desc { width: 60%; }
     .inv-line-qty { width: 10%; text-align: center; }
     .inv-line-rate { width: 14%; text-align: right; }
@@ -4595,10 +4598,12 @@
         html += `<tr><td colspan="5" class="inv-section-divider">${esc(line.section)}</td></tr>`;
         lastSection = line.section;
       }
+      // Auto-size textarea rows to content (min 2)
+      const rowCount = Math.max(2, (line.description || "").split("\n").length);
       html += `
         <tr data-idx="${idx}">
           <td class="inv-line-desc">
-            <input class="inv-inline-input inv-desc" data-idx="${idx}" value="${esc(line.description || "")}" placeholder="Description..." />
+            <textarea class="inv-desc-textarea inv-desc" data-idx="${idx}" rows="${rowCount}" placeholder="Description — press Enter for new lines; start a line with '- ' for a bullet">${esc(line.description || "")}</textarea>
           </td>
           <td class="inv-line-amt" style="text-align:right; min-width:110px;">
             <input class="inv-inline-input right inv-amount" data-idx="${idx}" type="number" value="${line.amount}" min="0" step="0.01" style="width:110px; text-align:right;" />
@@ -4626,7 +4631,21 @@
       if (t.classList.contains("inv-desc"))   line.description = t.value;
       if (t.classList.contains("inv-amount")) line.amount = parseFloat(t.value) || 0;
 
+      // Auto-grow the description textarea as user types
+      if (t.classList.contains("inv-desc") && t.tagName === "TEXTAREA") {
+        t.style.height = "auto";
+        t.style.height = (t.scrollHeight + 2) + "px";
+      }
+
       updateInvTotals();
+    });
+
+    // Size existing textareas on first render
+    body.querySelectorAll(".inv-desc").forEach(t => {
+      if (t.tagName === "TEXTAREA") {
+        t.style.height = "auto";
+        t.style.height = (t.scrollHeight + 2) + "px";
+      }
     });
 
     // Delete line
@@ -4960,26 +4979,80 @@ rick@northeasternelec.com`
     const tableStartY = y;
 
     doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(...C_TEXT);
+
+    // Helper: break a line's description into rendered segments with support for newlines + bullets.
+    // Returns an array of { type: 'bullet'|'paragraph'|'blank', lines: [wrappedText] }
+    function processDescription(desc) {
+      const raw = (desc || "").split(/\r?\n/);
+      const out = [];
+      const paraWidth   = INNER_W - 90;  // normal lines
+      const bulletWidth = INNER_W - 110; // indented bullet content
+
+      raw.forEach(rawLine => {
+        if (!rawLine.trim()) { out.push({ type: "blank" }); return; }
+        // Detect bullet prefix: "- ", "* ", "• "
+        const m = rawLine.match(/^\s*[-*•]\s+(.+)$/);
+        if (m) {
+          const wrapped = doc.splitTextToSize(m[1], bulletWidth);
+          out.push({ type: "bullet", lines: wrapped });
+        } else {
+          const wrapped = doc.splitTextToSize(rawLine, paraWidth);
+          out.push({ type: "paragraph", lines: wrapped });
+        }
+      });
+      return out;
+    }
+
+    const LINE_H    = 13;   // text line height
+    const BLANK_H   = 7;    // vertical gap for empty lines
+    const ROW_PAD_Y = 10;   // padding top+bottom inside row
+
     invLines.forEach((line, i) => {
-      if (y > 660) { doc.addPage(); y = 36; }
-      const descLines = doc.splitTextToSize(line.description || "", INNER_W - 90);
-      const rowH = Math.max(24, descLines.length * 13 + 10);
+      const segments = processDescription(line.description || "");
+
+      // Calculate row height from content
+      let contentH = 0;
+      segments.forEach(seg => {
+        if (seg.type === "blank") contentH += BLANK_H;
+        else contentH += seg.lines.length * LINE_H;
+      });
+      const rowH = Math.max(28, contentH + ROW_PAD_Y * 2 - (LINE_H - ROW_PAD_Y));
+      // (Small adjustment so single-line rows don't look huge)
+
+      // Page break if needed
+      if (y + rowH > 660) { doc.addPage(); y = 36; }
 
       // Alternating row background
       if (i % 2 === 1) {
         doc.setFillColor(...C_ROW_ALT);
         doc.rect(M, y, INNER_W, rowH, "F");
       }
-      // Bottom border per row
+      // Bottom border
       doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.3);
-      doc.line(M, y+rowH, W-M, y+rowH);
+      doc.line(M, y + rowH, W - M, y + rowH);
 
+      // Render description segments
       doc.setTextColor(...C_TEXT);
-      doc.setFont("helvetica","normal"); doc.setFontSize(10);
-      doc.text(descLines, M+10, y+16);
-      doc.setFont("helvetica","bold");
-      doc.text(fmtCurrency(line.amount), W-M-6, y+16, { align: "right" });
-      doc.setFont("helvetica","normal");
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+      let textY = y + ROW_PAD_Y + 4;  // baseline offset for first line
+      segments.forEach(seg => {
+        if (seg.type === "blank") { textY += BLANK_H; return; }
+        if (seg.type === "bullet") {
+          // Draw bullet dot at fixed position, wrapped text indented
+          doc.text("•", M + 12, textY);
+          doc.text(seg.lines, M + 22, textY);
+          textY += seg.lines.length * LINE_H;
+        } else {
+          doc.text(seg.lines, M + 10, textY);
+          textY += seg.lines.length * LINE_H;
+        }
+      });
+
+      // Amount — right side, aligned to top of row (matches first line of description)
+      doc.setFont("helvetica", "bold");
+      doc.text(fmtCurrency(line.amount), W - M - 6, y + ROW_PAD_Y + 4, { align: "right" });
+      doc.setFont("helvetica", "normal");
+
       y += rowH;
     });
 

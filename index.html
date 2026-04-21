@@ -5012,19 +5012,19 @@ rick@northeasternelec.com`
     const BORDER_PAD = 20;
 
     // ── Company header with logo ──
-    const logoSize = 52;
+    const logoSize = 72;
     try {
       doc.addImage(NEE_LOGO_B64, "PNG", M, y, logoSize, logoSize);
     } catch(e) {}
-    const textX = M + logoSize + 12;
-    doc.setFont("helvetica","bold"); doc.setFontSize(14);
+    const textX = M + logoSize + 14;
+    doc.setFont("helvetica","bold"); doc.setFontSize(18);
     doc.setTextColor(...C_TEXT);
-    doc.text("Northeastern Electric, Inc.", textX, y + 16);
-    doc.setFont("helvetica","normal"); doc.setFontSize(9);
+    doc.text("Northeastern Electric, Inc.", textX, y + 22);
+    doc.setFont("helvetica","normal"); doc.setFontSize(11);
     doc.setTextColor(...C_MUTED);
-    doc.text("5909 Bandy Rd", textX, y + 29);
-    doc.text("Homeworth OH 44634", textX, y + 40);
-    y += logoSize + 10;
+    doc.text("5909 Bandy Rd", textX, y + 40);
+    doc.text("Homeworth OH 44634", textX, y + 54);
+    y += logoSize + 12;
 
     // ── INVOICE title top right ──
     doc.setFont("helvetica","bold"); doc.setFontSize(30);
@@ -5045,7 +5045,7 @@ rick@northeasternelec.com`
     metaY += 14;
     // Value cells
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
-    doc.rect(metaX, metaY-14, metaW*2, 30);
+    doc.roundedRect(metaX, metaY-14, metaW*2, 30, 3, 3);
     doc.line(metaX+metaW, metaY-14, metaX+metaW, metaY+16);
     doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...C_TEXT);
     doc.text(invDate, metaX+5, metaY+11);
@@ -5060,27 +5060,27 @@ rick@northeasternelec.com`
     y += 12;
 
     // ── Bill To + P.O. row ──
-    const billH = 80;
+    const billH = 92;
     const billW = INNER_W * 0.6;
     const poW   = INNER_W * 0.36;
     const poX   = W - M - poW;
 
     // Bill To box
-    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
-    doc.rect(M, y, billW, billH);
-    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...C_MUTED);
-    doc.text("BILL TO", M+7, y+12);
-    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(...C_TEXT);
-    const billLines = doc.splitTextToSize(billTo, billW - 14);
-    doc.text(billLines, M+7, y+24);
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.6);
+    doc.roundedRect(M, y, billW, billH, 4, 4);
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
+    doc.text("BILL TO", M+9, y+15);
+    doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
+    const billLines = doc.splitTextToSize(billTo, billW - 16);
+    doc.text(billLines, M+9, y+30);
 
     // P.O. box
-    doc.rect(poX, y, poW, billH);
-    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...C_MUTED);
-    doc.text("P.O. NO.", poX+7, y+12);
-    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...C_TEXT);
-    const poLines = doc.splitTextToSize(po, poW - 14);
-    doc.text(poLines, poX+7, y+24);
+    doc.roundedRect(poX, y, poW, billH, 4, 4);
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
+    doc.text("P.O. NO.", poX+9, y+15);
+    doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
+    const poLines = doc.splitTextToSize(po, poW - 16);
+    doc.text(poLines, poX+9, y+30);
 
     y += billH + 16;
 
@@ -5096,15 +5096,15 @@ rick@northeasternelec.com`
     // Border around entire table (drawn after rows)
     const tableStartY = y;
 
-    doc.setFont("helvetica","normal"); doc.setFontSize(10); doc.setTextColor(...C_TEXT);
+    doc.setFont("helvetica","normal"); doc.setFontSize(11.5); doc.setTextColor(...C_TEXT);
 
     // Helper: break a line's description into rendered segments with support for newlines + bullets.
     // Returns an array of { type: 'bullet'|'paragraph'|'blank', lines: [wrappedText] }
     function processDescription(desc) {
       const raw = (desc || "").split(/\r?\n/);
       const out = [];
-      const paraWidth   = INNER_W - 90;  // normal lines
-      const bulletWidth = INNER_W - 110; // indented bullet content
+      const paraWidth   = INNER_W - 100;  // normal lines
+      const bulletWidth = INNER_W - 120;  // indented bullet content
 
       raw.forEach(rawLine => {
         if (!rawLine.trim()) { out.push({ type: "blank" }); return; }
@@ -5121,9 +5121,9 @@ rick@northeasternelec.com`
       return out;
     }
 
-    const LINE_H    = 13;   // text line height
-    const BLANK_H   = 7;    // vertical gap for empty lines
-    const ROW_PAD_Y = 10;   // padding top+bottom inside row
+    const LINE_H    = 15;   // text line height (larger for 11.5pt font)
+    const BLANK_H   = 8;    // vertical gap for empty lines
+    const ROW_PAD_Y = 11;   // padding top+bottom inside row
 
     invLines.forEach((line, i) => {
       const segments = processDescription(line.description || "");
@@ -5151,7 +5151,7 @@ rick@northeasternelec.com`
 
       // Render description segments
       doc.setTextColor(...C_TEXT);
-      doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(11.5);
       let textY = y + ROW_PAD_Y + 4;  // baseline offset for first line
       segments.forEach(seg => {
         if (seg.type === "blank") { textY += BLANK_H; return; }
@@ -5175,8 +5175,8 @@ rick@northeasternelec.com`
     });
 
     // Table outer border
-    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
-    doc.rect(M, tableStartY, INNER_W, y - tableStartY);
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.6);
+    doc.roundedRect(M, tableStartY - 20, INNER_W, y - tableStartY + 20, 4, 4);
 
     y += 10;
 
@@ -5195,7 +5195,7 @@ rick@northeasternelec.com`
 
     // Total bar — blue to match header
     doc.setFillColor(...C_TOTAL_BG);
-    doc.rect(totX, y, totW, 22, "F");
+    doc.roundedRect(totX, y, totW, 22, 4, 4, "F");
     doc.setFont("helvetica","bold"); doc.setFontSize(11); doc.setTextColor(...C_HDR_TXT);
     doc.text("Total", totX+8, y+15);
     doc.text(fmtCurrency(total), W-M-6, y+15, { align: "right" });
@@ -5214,9 +5214,9 @@ rick@northeasternelec.com`
     // ── Footer bar ──
     const footY = PAGE_H - BORDER_PAD - 28;
     doc.setFillColor(...C_FOOTER);
-    doc.rect(M, footY, INNER_W, 22, "F");
+    doc.roundedRect(M, footY, INNER_W, 22, 4, 4, "F");
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
-    doc.rect(M, footY, INNER_W, 22);
+    doc.roundedRect(M, footY, INNER_W, 22, 4, 4);
     doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(70,70,70);
     doc.text("Phone #", M+5, footY+15);
     doc.setFont("helvetica","bold"); doc.text("330-257-0447", M+40, footY+15);
@@ -5226,9 +5226,9 @@ rick@northeasternelec.com`
     doc.text("Total", W-M-90, footY+15);
     doc.text(fmtCurrency(total), W-M-6, footY+15, { align: "right" });
 
-    // ── Outer border (drawn last, on top) ──
-    doc.setDrawColor(...C_BORDER); doc.setLineWidth(1.2);
-    doc.rect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD*2, PAGE_H - BORDER_PAD*2);
+    // ── Outer border (drawn last, on top) — darker + thicker + rounded ──
+    doc.setDrawColor(70, 70, 70); doc.setLineWidth(2.2);
+    doc.roundedRect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD*2, PAGE_H - BORDER_PAD*2, 8, 8);
 
     return doc;
   }

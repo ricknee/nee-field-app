@@ -4354,14 +4354,22 @@
     el.innerHTML = `<div class="loading-msg">Building invoice...</div>`;
 
     try {
-      // Fetch time entries and expenses
-      const [teData, expData] = await Promise.all([
+      // Fetch time entries, expenses, and (for Contract jobs) approved estimates
+      const [teData, expData, estData] = await Promise.all([
         apiGet("timeEntries", { jobId: job.id }),
-        apiGet("expenses", { jobId: job.id })
+        apiGet("expenses",    { jobId: job.id }),
+        apiGet("jobEstimates", { jobId: job.id })
       ]);
 
       const entries  = (teData.entries  || []).filter(e => e.reviewed);
       const expenses = (expData.expenses || []).filter(e => e.reviewed);
+      // Only estimates that count toward the Contract Amount rollup (not saved invoices or rejected ones)
+      const estimates = (estData.estimates || []).filter(e => {
+        if (e.displayNumber != null) return false;                // skip saved-via-app records
+        const st = (e.status || "").toLowerCase();
+        if (st !== "approved" && st !== "archived/completed") return false;
+        return Number(e.actualEstimate) > 0;
+      });
 
       // Build Bill To — prefer customer intake fields; fall back to contractor billing address
       let billToAddress = "";
@@ -4470,7 +4478,7 @@
         }
       }
 
-      renderInvoiceBuilder(job, entries, expenses, billToAddress);
+      renderInvoiceBuilder(job, entries, expenses, billToAddress, estimates);
 
     } catch(err) {
       el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
@@ -4481,7 +4489,7 @@
     return invLines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
   }
 
-  function renderInvoiceBuilder(job, entries, expenses, billToAddress) {
+  function renderInvoiceBuilder(job, entries, expenses, billToAddress, estimates) {
     const today = new Date().toISOString().slice(0,10);
     const el = $("invoiceBuilder");
     const isContract = (job.type || "").toLowerCase() === "contract"
@@ -4489,6 +4497,36 @@
     const expectedRev = Number(job.expectedRevenue || 0);
     const prevBilled  = Number(job.totalContractBilled || 0);
     const remaining   = Math.max(0, expectedRev - prevBilled);
+    // Stash estimates so per-row Apply buttons can look up name/amount
+    window._invEstimates = estimates || [];
+
+    // Per-estimate breakdown rows — each approved estimate becomes a separate quick-bill row
+    const estBreakdownRows = (estimates || []).map(e => {
+      const amt  = Number(e.actualEstimate || 0);
+      const name = e.name || "Estimate";
+      const eid  = e.id;
+      return `
+        <div class="inv-est-row" data-est-id="${esc(eid)}" style="display:flex; align-items:center; gap:8px; padding:8px 10px; background:white; border:1px solid var(--line); border-radius:6px; margin-bottom:6px; flex-wrap:wrap;">
+          <div style="flex:1; min-width:180px;">
+            <div style="font-size:13px; font-weight:600; color:var(--text);">${esc(name)}</div>
+            <div style="font-size:11px; color:var(--muted);">Estimate total: ${fmtCurrency(amt)}</div>
+          </div>
+          <span style="font-size:12px; color:var(--muted);">Bill: $</span>
+          <input type="number" class="inv-est-amt" data-est-id="${esc(eid)}" data-est-total="${amt}" value="${amt.toFixed(2)}" min="0" step="0.01" oninput="invSyncEstRow('${esc(eid)}','amt')" style="width:110px; padding:4px 8px; border:1px solid var(--line); border-radius:5px; font-size:12px; text-align:right;" />
+          <span style="font-size:12px; color:var(--muted);">or</span>
+          <input type="number" class="inv-est-pct" data-est-id="${esc(eid)}" data-est-total="${amt}" value="100" min="0" step="0.01" oninput="invSyncEstRow('${esc(eid)}','pct')" style="width:60px; padding:4px 8px; border:1px solid var(--line); border-radius:5px; font-size:12px; text-align:right;" />
+          <span style="font-size:12px; color:var(--muted);">%</span>
+          <button class="inv-btn" style="font-size:12px; padding:5px 10px;" onclick="invAddEstimateAsLine('${esc(eid)}')">+ Add as Line</button>
+        </div>
+      `;
+    }).join("");
+
+    const estBreakdownHtml = (estimates && estimates.length)
+      ? `<div style="margin-top:12px; padding-top:12px; border-top:1px dashed var(--line);">
+           <div style="font-size:12px; font-weight:600; color:var(--text); margin-bottom:8px;">Estimate Breakdown — click "+ Add as Line" to bill an estimate individually:</div>
+           ${estBreakdownRows}
+         </div>`
+      : "";
 
     const contractPanelHtml = isContract ? `
       <div style="background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin-bottom:14px;">
@@ -4507,8 +4545,9 @@
             <div style="font-size:16px; font-weight:700; color:var(--green); margin-top:3px;">${fmtCurrency(remaining)}</div>
           </div>
         </div>
-        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-          <label style="font-size:13px; font-weight:600; color:var(--text);">Bill:</label>
+        ${estBreakdownHtml}
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px; padding-top:12px; border-top:1px dashed var(--line);">
+          <label style="font-size:13px; font-weight:600; color:var(--text);">Or bill % of total contract:</label>
           <span style="font-size:13px; color:var(--muted);">$</span>
           <input type="number" id="invContractAmt" value="${expectedRev.toFixed(2)}" min="0" step="0.01" oninput="invSyncContractFromAmt()" style="width:120px; padding:5px 8px; border:1px solid var(--line); border-radius:6px; font-size:13px; text-align:right;" />
           <span style="font-size:13px; color:var(--muted);">or</span>
@@ -4518,7 +4557,7 @@
           <span id="invContractCalc" style="font-size:12px; color:var(--muted); margin-left:4px;"></span>
         </div>
         <div style="font-size:11px; color:var(--muted); margin-top:8px; font-style:italic;">
-          💡 Tip: type either a dollar amount or a percent — they sync automatically. For a rough-in, enter the rough amount (or % of contract); description will default to your Stage picker above.
+          💡 Tip: for a rough with extras, set the $ on each estimate above and click "+ Add as Line" for each — two separate lines, no math.
         </div>
       </div>
     ` : "";
@@ -4928,6 +4967,56 @@
       return;
     }
     if (templates[pick]) notes.value = templates[pick];
+  };
+
+  // Per-estimate row helpers — bidirectional $/% sync within a single estimate row
+  window.invSyncEstRow = function(estId, source) {
+    const row = document.querySelector(`.inv-est-row[data-est-id="${estId}"]`);
+    if (!row) return;
+    const amtEl = row.querySelector(".inv-est-amt");
+    const pctEl = row.querySelector(".inv-est-pct");
+    if (!amtEl || !pctEl) return;
+    const total = Number(amtEl.dataset.estTotal) || 0;
+    if (source === "amt") {
+      const amt = Number(amtEl.value) || 0;
+      pctEl.value = total > 0 ? +((amt / total) * 100).toFixed(2) : 0;
+    } else {
+      const pct = Number(pctEl.value) || 0;
+      amtEl.value = (+((total * pct) / 100).toFixed(2)).toFixed(2);
+    }
+  };
+
+  window.invAddEstimateAsLine = function(estId) {
+    const est = (window._invEstimates || []).find(e => e.id === estId);
+    if (!est) return;
+    const row = document.querySelector(`.inv-est-row[data-est-id="${estId}"]`);
+    const amtEl = row?.querySelector(".inv-est-amt");
+    const pctEl = row?.querySelector(".inv-est-pct");
+    const amt = Math.max(0, Number(amtEl?.value) || 0);
+    const pct = Math.max(0, Number(pctEl?.value) || 0);
+    if (amt <= 0) { alert("Enter a dollar amount or percent first."); return; }
+
+    const stage   = $("invStage")?.value || "";
+    const estName = est.name || "Estimate";
+    let desc;
+    if (stage === "Rough In")           desc = `Rough In — ${estName}`;
+    else if (stage === "Final")         desc = `Final — ${estName}`;
+    else if (stage === "Progress")      desc = `Progress (${pct}%) — ${estName}`;
+    else if (stage === "Change Order")  desc = `Change Order — ${estName}`;
+    else                                desc = estName;
+
+    // One line per estimate — re-clicking Add updates in place instead of duplicating
+    const lineId = `contract_${estId}`;
+    let line = invLines.find(l => l.id === lineId);
+    if (!line) {
+      line = { id: lineId, section: "", editable: true, hideQtyRate: true, qty: 1 };
+      invLines.push(line);
+    }
+    line.description = desc;
+    line.rate   = amt;
+    line.amount = amt;
+
+    refreshInvLines();
   };
 
   // Bidirectional sync between Bill $ and Bill % inputs in the Contract Billing panel

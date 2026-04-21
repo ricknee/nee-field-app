@@ -5024,7 +5024,8 @@ rick@northeasternelec.com`
     doc.setTextColor(...C_MUTED);
     doc.text("5909 Bandy Rd", textX, y + 40);
     doc.text("Homeworth OH 44634", textX, y + 54);
-    y += logoSize + 12;
+    doc.text("Ohio License #22855", textX, y + 68);
+    y += logoSize + 14;
 
     // ── INVOICE title top right ──
     doc.setFont("helvetica","bold"); doc.setFontSize(30);
@@ -5035,11 +5036,12 @@ rick@northeasternelec.com`
     const metaX = W - M - 168;
     let metaY = 64;
     const metaW = 84;
-    // Header cells
-    doc.setFillColor(235,235,235);
-    doc.rect(metaX, metaY, metaW, 14, "F");
-    doc.rect(metaX+metaW, metaY, metaW, 14, "F");
-    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(60,60,60);
+    // Header cells — single rounded blue bar spanning both columns, with white separator
+    doc.setFillColor(...C_HDR_BG);
+    doc.roundedRect(metaX, metaY, metaW*2, 14, 3, 3, "F");
+    doc.setDrawColor(255,255,255); doc.setLineWidth(0.5);
+    doc.line(metaX+metaW, metaY+2, metaX+metaW, metaY+12);
+    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...C_HDR_TXT);
     doc.text("Date", metaX+5, metaY+10);
     doc.text("Invoice #", metaX+metaW+5, metaY+10);
     metaY += 14;
@@ -5085,9 +5087,9 @@ rick@northeasternelec.com`
     y += billH + 16;
 
     // ── Line items table ──
-    // Header row — blue, printer friendly
+    // Header row — blue, printer friendly; rounded to match outer border
     doc.setFillColor(...C_HDR_BG);
-    doc.rect(M, y, INNER_W, 20, "F");
+    doc.roundedRect(M, y, INNER_W, 20, 4, 4, "F");
     doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...C_HDR_TXT);
     doc.text("Description", M+10, y+14);
     doc.text("Amount", W-M-6, y+14, { align: "right" });

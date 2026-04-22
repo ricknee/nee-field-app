@@ -5348,6 +5348,20 @@ function downloadEstimatePDF() {
       var total = qty * cost;
       subtotal += total;
 
+      // For wire items, look up the ft/lb conversion from allItems so we can
+      // display QTY in feet and UNIT PRICE in $/ft instead of lbs and $/lb.
+      // It reads more naturally on a job-site estimate ("3,000 ft at $0.5400/ft"
+      // vs "260.98 lbs at $6.207/lb"). Line total is unchanged — same dollars
+      // either way. Non-wire items render exactly as before.
+      var wireFtPerLb = 0;
+      if (!l.isMisc && l.itemId) {
+        var itemMatch = allItems.find(function(i){ return i.id === l.itemId; });
+        if (itemMatch && itemMatch.wireFtPerLb > 0) {
+          wireFtPerLb = itemMatch.wireFtPerLb;
+        }
+      }
+      var isWire = wireFtPerLb > 0;
+
       var rowH = 7;
       y += rowH;
 
@@ -5374,15 +5388,22 @@ function downloadEstimatePDF() {
       var displayName = name.length > 50 ? name.substring(0, 48) + "..." : name;
       doc.text(displayName, c1, y);
 
-      // Qty
+      // Qty — total feet for wire, raw qty otherwise
       doc.setTextColor(60, 60, 60);
-      doc.text(fmtQty(qty), c2, y, { align: "right" });
+      var qtyDisplay = isWire
+        ? Math.round(qty * wireFtPerLb).toLocaleString("en-US") + " ft"
+        : fmtQty(qty);
+      doc.text(qtyDisplay, c2, y, { align: "right" });
 
-      // Unit price
+      // Unit price — $/ft (4 decimals to preserve fractions of a cent) for
+      // wire, $/unit for everything else.
       doc.setTextColor(80, 80, 80);
-      doc.text(fmtCurrency(cost), c3, y, { align: "right" });
+      var priceDisplay = isWire
+        ? "$" + (cost / wireFtPerLb).toFixed(4) + "/ft"
+        : fmtCurrency(cost);
+      doc.text(priceDisplay, c3, y, { align: "right" });
 
-      // Line total
+      // Line total — same either way (dollars are dollars)
       doc.setTextColor(40, 40, 40);
       doc.text(fmtCurrency(total), c4, y, { align: "right" });
     });

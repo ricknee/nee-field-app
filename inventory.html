@@ -259,6 +259,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="wirecost-btn" onclick="goWireCostCalc()" style="display:none">
       <div class="ico">🧮</div><div><div class="lbl">Wire Cost Calculator</div><div class="sub">Convert $/ft invoice prices to $/lb</div></div>
     </button>
+    <button class="big-btn" id="updprice-btn" onclick="goUpdatePrice()" style="display:none">
+      <div class="ico">💲</div><div><div class="lbl">Update Item Price</div><div class="sub">Edit default price on any non-wire-by-lb item</div></div>
+    </button>
     <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
     </button>
@@ -331,6 +334,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-wirecost" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Wire Cost Calculator</h2></div>
   <div class="log-body" id="wirecost-body"></div>
+</div>
+
+<!-- UPDATE ITEM PRICE (admin — non-weighed items) -->
+<div id="s-updprice" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Update Item Price</h2></div>
+  <div class="log-body" id="updprice-body"></div>
 </div>
 
 <!-- ADD WIRE SCRAP -->
@@ -949,6 +958,8 @@ function applyUser() {
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
   var wirecostBtn = document.getElementById("wirecost-btn");
   if (wirecostBtn) wirecostBtn.style.display = isAdmin ? "flex" : "none";
+  var updpriceBtn = document.getElementById("updprice-btn");
+  if (updpriceBtn) updpriceBtn.style.display = isAdmin ? "flex" : "none";
   // Reorder alerts are visible to everyone — field guys need to know what's low too
   if (reorderBtn)  reorderBtn.style.display  = "flex";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
@@ -1059,26 +1070,44 @@ function renderLogForm() {
   }
 
   var jobOpts = allJobs.map(function(j){ return '<option value="'+j.name+'">'+j.name+'</option>'; }).join("");
-  var fromLoc = currentLocation ? currentLocation.name : "—";
 
-  // ReturnToShop mode needs an editable destination picker instead of the
-  // static "From Location" display, because the user is moving leftover
-  // vendor materials to a specific shop — not pulling from wherever they
-  // happen to be logged in. Also show a banner explaining the use case so
-  // there's no confusion with the plain Return Items button.
+  // For Use / Return modes the From Location used to be a read-only display of
+  // currentLocation. Making it editable with a last-used default lets the user
+  // bounce between shops/trucks without going back to the header location
+  // picker every time — which was clunky. We persist the choice in
+  // localStorage under a per-mode key so Use and Return remember separately.
   var locationBlockHtml;
   if (logMode === "ReturnToShop") {
-    var locOpts = allLocations.map(function(l){ return '<option value="'+l.id+'">'+l.name+'</option>'; }).join("");
+    var rtsLocOpts = allLocations.map(function(l){ return '<option value="'+l.id+'">'+l.name+'</option>'; }).join("");
     locationBlockHtml =
       '<div style="background:rgba(212,175,55,0.08);border:1px solid rgba(212,175,55,0.3);border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px;color:var(--dim);line-height:1.5;">' +
       '💡 Use this when materials purchased from a vendor (CED, etc.) for a specific job aren\'t all used — the leftover goes into shop stock and the job gets a credit equal to the value returned.' +
       '</div>' +
       '<div class="field-group"><div class="field-lbl">Return to (Shop Location)</div>' +
-      '<select class="field-sel" id="log-dest-loc"><option value="">— Select destination —</option>' + locOpts + '</select></div>';
+      '<select class="field-sel" id="log-dest-loc"><option value="">— Select destination —</option>' + rtsLocOpts + '</select></div>';
   } else {
+    // Resolve the preferred default location for this mode in priority order:
+    //   1. localStorage "nee_last_log_loc_{mode}" (last one picked here)
+    //   2. currentLocation (the header pill)
+    //   3. nothing (placeholder shown)
+    var lastLogLocKey = "nee_last_log_loc_" + logMode;
+    var preferredLocId = "";
+    try { preferredLocId = localStorage.getItem(lastLogLocKey) || ""; } catch(e) {}
+    if (!preferredLocId && currentLocation) preferredLocId = currentLocation.id;
+    // Make sure the saved id still exists in the current location list (could
+    // have been deactivated in Airtable since last use) — otherwise fall back.
+    if (preferredLocId && !allLocations.some(function(l){ return l.id === preferredLocId; })) {
+      preferredLocId = currentLocation ? currentLocation.id : "";
+    }
+
+    var logLocOpts = allLocations.map(function(l){
+      var sel = l.id === preferredLocId ? " selected" : "";
+      return '<option value="'+l.id+'"'+sel+'>'+l.name+'</option>';
+    }).join("");
+
     locationBlockHtml =
       '<div class="field-group"><div class="field-lbl">From Location</div>' +
-      '<div style="background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:13px 16px;font-size:14px;color:var(--gold);font-weight:600;">' + fromLoc + '</div></div>';
+      '<select class="field-sel" id="log-from-loc"><option value="">— Select —</option>' + logLocOpts + '</select></div>';
   }
 
   body.innerHTML =
@@ -1347,15 +1376,22 @@ async function submitCart() {
   if (!cart.length) { showToast("Cart is empty", true); return; }
 
   // Location source depends on mode:
-  //   Use / Return   → use currentLocation (where the user is logged in)
+  //   Use / Return   → use the From Location dropdown (defaults to last-used)
   //   ReturnToShop   → use the destination picked in the dropdown (shop stock increases here)
   var submitLocationId;
   if (logMode === "ReturnToShop") {
     submitLocationId = document.getElementById("log-dest-loc")?.value || "";
     if (!submitLocationId) { showToast("Please pick a destination shop", true); return; }
   } else {
-    if (!currentLocation) { showToast("Please set your location first", true); goPickLocation(); return; }
-    submitLocationId = currentLocation.id;
+    submitLocationId = document.getElementById("log-from-loc")?.value || "";
+    if (!submitLocationId) {
+      // Fall back to currentLocation if the user never opened the dropdown
+      // and there was nothing pre-selected (shouldn't happen, but safe).
+      if (currentLocation) submitLocationId = currentLocation.id;
+    }
+    if (!submitLocationId) { showToast("Please pick a From Location", true); return; }
+    // Remember this mode's choice for next time.
+    try { localStorage.setItem("nee_last_log_loc_" + logMode, submitLocationId); } catch(e) {}
   }
 
   var jobName = document.getElementById("log-job")?.value || "";
@@ -4233,6 +4269,171 @@ async function submitNewItem() {
   } catch(ex) {
     showToast("Error: " + ex.message, true);
     btn.disabled = false; btn.textContent = "Save Item";
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// UPDATE ITEM PRICE (admin only, non-weighed items)
+// Standalone price edit that doesn't require a receive transaction.
+// Deliberately blocks "Wire | THHN" and "Romex" because those are
+// the weighed categories — the Wire Cost Calculator handles those
+// properly with ft/lb conversion and sibling propagation. All other
+// items (ft-tracked wire like AL MCM, boxes, devices, wire nuts,
+// etc.) let the admin punch in a new $/unit directly.
+// Uses the existing updateItemCost POST endpoint — no new backend.
+// ═══════════════════════════════════════════════════════════
+
+// Categories that are priced per-lb and handled by the Wire Cost Calc.
+// If either name changes in Airtable, mirror the change here.
+var WEIGHED_WIRE_CATEGORIES = ["Wire | THHN", "Romex"];
+
+var updatePriceItem = null;
+
+function goUpdatePrice() {
+  showScreen("updprice");
+  updatePriceItem = null;
+  var body = document.getElementById("updprice-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading items…</div>';
+    var t = setInterval(function(){ if(dataReady){ clearInterval(t); renderUpdatePrice(); } }, 300);
+    return;
+  }
+  renderUpdatePrice();
+}
+
+function renderUpdatePrice() {
+  // Filter out weighed wire — user should use Wire Cost Calculator for those.
+  // Everything else is fair game: ft-tracked wire (AL MCM etc.), boxes,
+  // devices, wire nuts, misc supplies, etc.
+  var eligibleItems = allItems
+    .filter(function(i){
+      return WEIGHED_WIRE_CATEGORIES.indexOf(i.cat) === -1;
+    })
+    .sort(function(a, b){ return a.name.localeCompare(b.name); });
+
+  if (!eligibleItems.length) {
+    document.getElementById("updprice-body").innerHTML =
+      '<div class="empty" style="padding:30px;text-align:center;color:var(--dim);">No eligible items.</div>';
+    return;
+  }
+
+  var names = eligibleItems.map(function(i){ return i.name; });
+  initCombo("upd-item", names, "", onUpdatePriceItemPicked);
+
+  document.getElementById("updprice-body").innerHTML =
+    '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);line-height:1.45;">' +
+      '💲 Update an item\'s <b>Default Unit Cost</b> without creating a receive transaction. ' +
+      'For <b>' + WEIGHED_WIRE_CATEGORIES.join('</b> and <b>') + '</b> wire, use the Wire Cost Calculator instead — it handles the ft/lb conversion.' +
+    '</div>' +
+
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+      comboHTML("upd-item", "Search or pick an item…") +
+    '</div>' +
+
+    '<div id="upd-details"></div>';
+}
+
+function onUpdatePriceItemPicked(name) {
+  var details = document.getElementById("upd-details");
+  if (!details) return;
+  if (!name) { updatePriceItem = null; details.innerHTML = ""; return; }
+
+  updatePriceItem = allItems.find(function(i){
+    return i.name === name && WEIGHED_WIRE_CATEGORIES.indexOf(i.cat) === -1;
+  });
+  if (!updatePriceItem) { details.innerHTML = ""; return; }
+
+  var currentCost = Number(updatePriceItem.cost) || 0;
+  var uom         = updatePriceItem.uom || "unit";
+
+  details.innerHTML =
+    // Current price card
+    '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-top:6px;">' +
+      '<div style="font-size:15px;font-weight:700;color:var(--gold);">' + escapeHtml(updatePriceItem.name) + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' +
+        (updatePriceItem.cat || '—') + (updatePriceItem.size ? '  ·  ' + updatePriceItem.size : '') +
+      '</div>' +
+      '<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">' +
+        '<div style="font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px;">Current Price</div>' +
+        '<div style="font-size:14px;color:var(--text);">' +
+          (currentCost > 0
+            ? fmtCurrency(currentCost) + ' / ' + uom
+            : '<span style="color:var(--dim);">No price set yet</span>'
+          ) +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // New price entry
+    '<div class="field-group" style="margin-top:14px;">' +
+      '<div class="field-lbl">New Price ($ per ' + uom + ')</div>' +
+      '<input class="field-inp" id="upd-new-cost" type="number" step="0.0001" min="0" ' +
+        'placeholder="0.0000" onfocus="this.select()" oninput="onUpdatePriceInput()" />' +
+    '</div>' +
+
+    '<div id="upd-preview" style="display:none;background:rgba(0,180,120,0.08);border:1px solid rgba(0,180,120,0.3);border-radius:10px;padding:10px 14px;font-size:13px;color:var(--text);margin-bottom:14px;"></div>' +
+
+    '<button class="primary-btn" id="upd-save-btn" onclick="saveUpdatePrice()" disabled>Save New Price</button>' +
+    '<div style="height:24px"></div>';
+}
+
+// Live preview of the old→new price change. Also drives the Save button's
+// enabled state — no point letting the user submit an unchanged or blank value.
+function onUpdatePriceInput() {
+  if (!updatePriceItem) return;
+  var inp     = document.getElementById("upd-new-cost");
+  var preview = document.getElementById("upd-preview");
+  var btn     = document.getElementById("upd-save-btn");
+  var newCost = parseFloat(inp.value);
+  var oldCost = Number(updatePriceItem.cost) || 0;
+  var uom     = updatePriceItem.uom || "unit";
+
+  var valid = !isNaN(newCost) && newCost > 0 && newCost !== oldCost;
+  if (btn) btn.disabled = !valid;
+
+  if (!valid) {
+    preview.style.display = "none";
+    return;
+  }
+
+  // Show direction + dollar delta + percent change when we have both numbers
+  var deltaHtml = "";
+  if (oldCost > 0) {
+    var diff = newCost - oldCost;
+    var pct  = (diff / oldCost) * 100;
+    var arrow = diff > 0 ? "▲" : "▼";
+    var color = diff > 0 ? "var(--gold)" : "var(--green, #00b478)";
+    deltaHtml =
+      '<span style="color:' + color + ';font-weight:700;margin-left:8px;">' +
+        arrow + ' ' + (diff > 0 ? '+' : '') + fmtCurrency(diff) +
+        ' (' + (pct > 0 ? '+' : '') + pct.toFixed(1) + '%)' +
+      '</span>';
+  }
+
+  preview.style.display = "block";
+  preview.innerHTML =
+    '<b>' + fmtCurrency(oldCost) + '</b> → <b>' + fmtCurrency(newCost) + '</b> per ' + uom + deltaHtml;
+}
+
+async function saveUpdatePrice() {
+  if (!updatePriceItem) { showToast("Pick an item first", true); return; }
+  var newCost = parseFloat(document.getElementById("upd-new-cost")?.value || 0);
+  if (!newCost || newCost <= 0) { showToast("Enter a valid price", true); return; }
+
+  var btn = document.getElementById("upd-save-btn");
+  btn.disabled = true; btn.textContent = "Saving…";
+
+  try {
+    await apiPost({ action: "updateItemCost", itemId: updatePriceItem.id, cost: newCost });
+    // Update the in-memory cache so the user can keep editing without a reload
+    var cached = allItems.find(function(i){ return i.id === updatePriceItem.id; });
+    if (cached) cached.cost = newCost;
+    updatePriceItem.cost = newCost;
+    showToast("✓ Price updated");
+    goHome();
+  } catch(ex) {
+    showToast("Error: " + (ex.message || ex), true);
+    btn.disabled = false; btn.textContent = "Save New Price";
   }
 }
 

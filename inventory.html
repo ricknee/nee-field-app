@@ -211,6 +211,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goLog('Return')">
       <div class="ico">↩️</div><div><div class="lbl">Return Items</div><div class="sub">Put items back</div></div>
     </button>
+    <button class="big-btn" onclick="goLog('ReturnToShop')">
+      <div class="ico">📦↩️</div><div><div class="lbl">Return to Shop</div><div class="sub">Leftover vendor materials → shop stock + job credit</div></div>
+    </button>
     <div class="sec-lbl">Stock & transfers</div>
     <button class="big-btn" onclick="goReceive()">
       <div class="ico">🚚</div><div><div class="lbl">Receive Stock</div><div class="sub">Add items from vendor</div></div>
@@ -1035,7 +1038,14 @@ function goLog(mode) {
   logMode = mode || "Use";
   cart = [];
   selectedItem = null;
-  document.getElementById("log-title").textContent = mode === "Return" ? "Return Items" : "Use on Job";
+  // Title varies by mode:
+  //   Use            → "Use on Job"
+  //   Return         → "Return Items" (original flow — uses currentLocation)
+  //   ReturnToShop   → "Return to Shop" (leftover-from-vendor flow, user picks destination)
+  var title = "Use on Job";
+  if (mode === "Return")        title = "Return Items";
+  if (mode === "ReturnToShop")  title = "Return to Shop";
+  document.getElementById("log-title").textContent = title;
   showScreen("log");
   renderLogForm();
 }
@@ -1051,6 +1061,26 @@ function renderLogForm() {
   var jobOpts = allJobs.map(function(j){ return '<option value="'+j.name+'">'+j.name+'</option>'; }).join("");
   var fromLoc = currentLocation ? currentLocation.name : "—";
 
+  // ReturnToShop mode needs an editable destination picker instead of the
+  // static "From Location" display, because the user is moving leftover
+  // vendor materials to a specific shop — not pulling from wherever they
+  // happen to be logged in. Also show a banner explaining the use case so
+  // there's no confusion with the plain Return Items button.
+  var locationBlockHtml;
+  if (logMode === "ReturnToShop") {
+    var locOpts = allLocations.map(function(l){ return '<option value="'+l.id+'">'+l.name+'</option>'; }).join("");
+    locationBlockHtml =
+      '<div style="background:rgba(212,175,55,0.08);border:1px solid rgba(212,175,55,0.3);border-radius:10px;padding:12px;margin-bottom:14px;font-size:12px;color:var(--dim);line-height:1.5;">' +
+      '💡 Use this when materials purchased from a vendor (CED, etc.) for a specific job aren\'t all used — the leftover goes into shop stock and the job gets a credit equal to the value returned.' +
+      '</div>' +
+      '<div class="field-group"><div class="field-lbl">Return to (Shop Location)</div>' +
+      '<select class="field-sel" id="log-dest-loc"><option value="">— Select destination —</option>' + locOpts + '</select></div>';
+  } else {
+    locationBlockHtml =
+      '<div class="field-group"><div class="field-lbl">From Location</div>' +
+      '<div style="background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:13px 16px;font-size:14px;color:var(--gold);font-weight:600;">' + fromLoc + '</div></div>';
+  }
+
   body.innerHTML =
     '<div class="field-group"><div class="field-lbl">Job</div>' +
     '<div style="position:relative;">' +
@@ -1060,8 +1090,7 @@ function renderLogForm() {
     '<input type="hidden" id="log-job-id" value="" />' +
     '</div></div>' +
 
-    '<div class="field-group"><div class="field-lbl">From Location</div>' +
-    '<div style="background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:13px 16px;font-size:14px;color:var(--gold);font-weight:600;">' + fromLoc + '</div></div>' +
+    locationBlockHtml +
 
     '<div class="field-group"><div class="field-lbl">Item</div>' +
     '<div id="item-area">' + renderItemSearch() + '</div></div>' +
@@ -1080,7 +1109,7 @@ function renderLogForm() {
 
     '<div id="cart-area"></div>' +
 
-    '<button class="primary-btn" id="submit-btn" onclick="submitCart()" style="display:none">Submit ' + (logMode === "Return" ? "Return" : "All Items") + '</button>' +
+    '<button class="primary-btn" id="submit-btn" onclick="submitCart()" style="display:none">Submit ' + (logMode === "Return" ? "Return" : (logMode === "ReturnToShop" ? "Return to Shop" : "All Items")) + '</button>' +
     '<div style="height:24px"></div>';
 
   // Restore last used job
@@ -1316,7 +1345,18 @@ function renderCart() {
 
 async function submitCart() {
   if (!cart.length) { showToast("Cart is empty", true); return; }
-  if (!currentLocation) { showToast("Please set your location first", true); goPickLocation(); return; }
+
+  // Location source depends on mode:
+  //   Use / Return   → use currentLocation (where the user is logged in)
+  //   ReturnToShop   → use the destination picked in the dropdown (shop stock increases here)
+  var submitLocationId;
+  if (logMode === "ReturnToShop") {
+    submitLocationId = document.getElementById("log-dest-loc")?.value || "";
+    if (!submitLocationId) { showToast("Please pick a destination shop", true); return; }
+  } else {
+    if (!currentLocation) { showToast("Please set your location first", true); goPickLocation(); return; }
+    submitLocationId = currentLocation.id;
+  }
 
   var jobName = document.getElementById("log-job")?.value || "";
   var jobId   = document.getElementById("log-job-id")?.value || "";
@@ -1327,13 +1367,29 @@ async function submitCart() {
     if (matchedJob) jobId = matchedJob.id;
   }
 
+  // ReturnToShop requires a job (it's the whole point — credit goes to the job).
+  // Enforce it here rather than letting it silently submit without a link.
+  if (logMode === "ReturnToShop" && !jobId) {
+    showToast("Please pick a job (the credit goes to this job)", true);
+    return;
+  }
+
   var btn = document.getElementById("submit-btn");
   btn.disabled = true; btn.textContent = "Submitting…";
 
-  var lines = cart.map(function(c){ return { itemId: c.itemId, qty: logMode==="Return" ? -Math.abs(c.qty) : c.qty, type: logMode }; });
+  // Both Return and ReturnToShop submit as Return type with negated qty.
+  // The mechanical difference is only the locationId (handled above).
+  var isReturnLike = (logMode === "Return" || logMode === "ReturnToShop");
+  var lines = cart.map(function(c){
+    return {
+      itemId: c.itemId,
+      qty:    isReturnLike ? -Math.abs(c.qty) : c.qty,
+      type:   isReturnLike ? "Return" : logMode
+    };
+  });
 
   try {
-    await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: currentLocation.id, enteredBy: currentUser.name });
+    await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: submitLocationId, enteredBy: currentUser.name });
     showToast("✓ " + cart.length + " item" + (cart.length>1?"s":"") + " logged!");
     cart = [];
     goHome();
@@ -5348,20 +5404,6 @@ function downloadEstimatePDF() {
       var total = qty * cost;
       subtotal += total;
 
-      // For wire items, look up the ft/lb conversion from allItems so we can
-      // display QTY in feet and UNIT PRICE in $/ft instead of lbs and $/lb.
-      // It reads more naturally on a job-site estimate ("3,000 ft at $0.5400/ft"
-      // vs "260.98 lbs at $6.207/lb"). Line total is unchanged — same dollars
-      // either way. Non-wire items render exactly as before.
-      var wireFtPerLb = 0;
-      if (!l.isMisc && l.itemId) {
-        var itemMatch = allItems.find(function(i){ return i.id === l.itemId; });
-        if (itemMatch && itemMatch.wireFtPerLb > 0) {
-          wireFtPerLb = itemMatch.wireFtPerLb;
-        }
-      }
-      var isWire = wireFtPerLb > 0;
-
       var rowH = 7;
       y += rowH;
 
@@ -5388,22 +5430,15 @@ function downloadEstimatePDF() {
       var displayName = name.length > 50 ? name.substring(0, 48) + "..." : name;
       doc.text(displayName, c1, y);
 
-      // Qty — total feet for wire, raw qty otherwise
+      // Qty
       doc.setTextColor(60, 60, 60);
-      var qtyDisplay = isWire
-        ? Math.round(qty * wireFtPerLb).toLocaleString("en-US") + " ft"
-        : fmtQty(qty);
-      doc.text(qtyDisplay, c2, y, { align: "right" });
+      doc.text(fmtQty(qty), c2, y, { align: "right" });
 
-      // Unit price — $/ft (4 decimals to preserve fractions of a cent) for
-      // wire, $/unit for everything else.
+      // Unit price
       doc.setTextColor(80, 80, 80);
-      var priceDisplay = isWire
-        ? "$" + (cost / wireFtPerLb).toFixed(4) + "/ft"
-        : fmtCurrency(cost);
-      doc.text(priceDisplay, c3, y, { align: "right" });
+      doc.text(fmtCurrency(cost), c3, y, { align: "right" });
 
-      // Line total — same either way (dollars are dollars)
+      // Line total
       doc.setTextColor(40, 40, 40);
       doc.text(fmtCurrency(total), c4, y, { align: "right" });
     });

@@ -1132,6 +1132,65 @@
       .action-buttons { padding: 10px 14px; }
       .tab-content { padding: 14px; }
       .job-header { padding: 14px 14px 0; }
+
+      /* ─── Invoice / Estimate Builder — mobile polish ─── */
+      /* Reduce page-like padding on the "paper" so actual content has room */
+      .inv-preview { padding: 20px 14px; }
+
+      /* Header stacks vertically instead of logo-left / title-right */
+      .inv-header-row { flex-direction: column; gap: 14px; align-items: stretch; }
+      .inv-logo-section { width: 100%; gap: 10px; }
+      .inv-logo-img { height: 48px; }
+      .inv-company-name { font-size: 16px; }
+      .inv-company-addr { font-size: 11px; }
+      .inv-title-section { text-align: left; width: 100%; }
+      .inv-title { font-size: 24px; letter-spacing: 0.5px; }
+      .inv-meta-table { width: 100%; }
+      .inv-meta-table td { font-size: 12px; padding: 4px 8px; }
+      .inv-meta-table .inv-field-input { width: 100% !important; box-sizing: border-box; }
+
+      /* Bill To + Job/PO stack vertically */
+      .inv-billto-row { flex-direction: column; gap: 12px; margin-bottom: 20px; }
+      .inv-billto-box, .inv-po-box { min-width: 0; width: 100%; box-sizing: border-box; }
+
+      /* Line items: turn table rows into stacked cards */
+      .inv-lines-table thead { display: none; }
+      .inv-lines-table, .inv-lines-table tbody { display: block; width: 100%; }
+      .inv-lines-table tr {
+        display: block; width: 100%;
+        border: 1px solid var(--line); border-radius: 8px;
+        margin-bottom: 10px; padding: 8px 10px; background: white;
+      }
+      .inv-lines-table tr:nth-child(even) td { background: transparent; }
+      .inv-lines-table td { display: block; width: 100%; padding: 4px 0; border-bottom: none; }
+      .inv-line-desc { width: 100%; }
+      .inv-desc-textarea { font-size: 14px; padding: 6px 0; }
+      .inv-line-amt {
+        text-align: right;
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center;
+        padding-top: 8px !important;
+        border-top: 1px dashed #eee !important;
+        min-width: 0 !important;
+      }
+      .inv-line-amt::before {
+        content: "Amount";
+        font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.4px;
+      }
+      .inv-line-amt input { width: 130px !important; }
+      .inv-line-del { text-align: right; padding-top: 4px !important; }
+      .inv-lines-table td.inv-section-divider {
+        display: block; padding: 8px 0 4px;
+        font-weight: 600; color: #666; margin: 0;
+      }
+
+      /* Totals: full-width so the total bar doesn't cling to the right edge */
+      .inv-totals { display: block; }
+      .inv-totals-table { width: 100%; min-width: 0; }
+
+      /* Footer bar wraps cleanly on narrow screens */
+      .inv-footer-bar { gap: 8px; font-size: 11px; padding: 8px 10px; }
     }
   </style>
 </head>

@@ -559,7 +559,11 @@ async function handlePendingExpenses() {
       lines,
       jobTotal
     };
-  }).filter(g => g.jobTotal > 0); // skip jobs where returns cancel out all uses
+  }).filter(g => g.jobTotal !== 0);
+  // ^ Was `> 0` — now `!== 0` so jobs with a *negative* net (credit-only, e.g.
+  // leftover vendor materials returned to shop after the job was already
+  // pushed) still show up in pending and can be pushed as a credit memo.
+  // Zero-dollar groups (returns exactly cancel uses) are still skipped.
 
   return resp(200, { ok: true, pending });
 }
@@ -871,7 +875,10 @@ async function handlePushExpenses(body) {
     if (!jobId || !lines?.length) continue;
 
     const jobTotal = lines.reduce((s, l) => s + (l.total || 0), 0);
-    if (jobTotal <= 0) continue;
+    // Skip exactly-zero groups (uses and returns cancelled out — nothing to
+    // record). Negative totals are allowed and produce a credit-memo expense
+    // on the job (e.g. leftover vendor materials returned to shop post-push).
+    if (jobTotal === 0) continue;
 
     // Build description — show footage for wire items
     const desc = lines.map(l => {
@@ -886,7 +893,9 @@ async function handlePushExpenses(body) {
     const jobExpenseIds = [];
     let   jobTaxAmount  = 0;
 
-    // Create materials expense
+    // Create materials expense. Amount can be negative when the push is a
+    // net credit (returns > uses) — Airtable accepts negative numbers fine,
+    // and it appears in the job's expenses as a credit line item.
     const matFields = {
       "fldPNFIzq1grsdxYi": [String(jobId)],
       "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
@@ -895,7 +904,7 @@ async function handlePushExpenses(body) {
       "fldCCPYdyWAOGchWb": today,
       "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
       "fld9Afieu4ofjvhSb": true,
-      "fldnSQEOnyq3sho5g": "Inventory materials — " + desc
+      "fldnSQEOnyq3sho5g": (jobTotal < 0 ? "Inventory credit (materials returned to shop) — " : "Inventory materials — ") + desc
     };
 
     const matResp = await atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
@@ -922,7 +931,9 @@ async function handlePushExpenses(body) {
       }
     }
 
-    // Create sales tax expense if taxable
+    // Create sales tax expense if taxable. Tax is the same sign as the
+    // materials total — a negative materials push yields a negative tax
+    // credit, which is correct accounting.
     if (taxable) {
       jobTaxAmount = Math.round(jobTotal * TAX_RATE * 100) / 100;
       const taxFields = {
@@ -933,7 +944,7 @@ async function handlePushExpenses(body) {
         "fldCCPYdyWAOGchWb": today,
         "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
         "fld9Afieu4ofjvhSb": true,
-        "fldnSQEOnyq3sho5g": "Sales tax (7.5%) on inventory materials — " + jobName
+        "fldnSQEOnyq3sho5g": (jobTotal < 0 ? "Sales tax credit (7.5%) on returned materials — " : "Sales tax (7.5%) on inventory materials — ") + jobName
       };
       const taxResp = await atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
         method: "POST",

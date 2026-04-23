@@ -845,13 +845,14 @@ async function handleDeleteTimeEntry(body) {
 }
 
 async function handleUpdateTimeEntry(body) {
-  const { entryId, reviewed, duration } = body || {};
+  const { entryId, reviewed, duration, notes } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
   const fields = {};
   if (reviewed !== undefined) fields["fldQn7d06doEkrGBv"] = reviewed === true;
   if (duration !== undefined && duration !== null) fields["fld9mz6As3099VPVp"] = Number(duration);
+  if (notes    !== undefined) fields["Notes"]            = String(notes || "");
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
-  const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, { method: "PATCH", body: JSON.stringify({ fields }) });
+  const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
   return resp(200, { ok: true, updatedId: data.id });
 }
 
@@ -1085,18 +1086,81 @@ async function handleSaveInvoice(body) {
   return resp(200, { ok: true, id: data.id });
 }
 
-// ── MARK INVOICE PAID ────────────────────────────────────────────────────
-async function handleMarkInvoicePaid(body) {
+// ── ADD GENERATOR SERVICE RECORD (quick-log from Generator tab) ─────────
+// Keep it lightweight: no truck/parts inventory, no labor billing, just the
+// observable facts a tech in the field would log on a service stop.
+async function handleAddGeneratorService(body) {
+  const {
+    generatorId, jobId,
+    serviceDate, serviceType, technician,
+    servicePlanVisit,
+    oilChanged, oilFilterChanged, airFilterChanged, sparkPlugsChanged,
+    batteryTested, batteryReplaced, loadTestPerformed,
+    firmwareChecked, exerciseChecked,
+    troubleCodesFound, workNotes, partsUsed,
+    laborHours, generatorHours
+  } = body || {};
+
+  if (!generatorId) return resp(400, { ok: false, error: "Missing generatorId." });
+  if (!serviceDate) return resp(400, { ok: false, error: "Missing serviceDate." });
+
+  // Build by name — typecast: true handles single-select option creation.
+  const fields = {};
+  fields["Generator"]   = [generatorId];
+  if (jobId)            fields["Job"] = [jobId];
+  fields["Service Date"] = serviceDate;
+  if (serviceType)      fields["Service Type"] = serviceType;
+  if (technician)       fields["Technician"]   = technician;
+
+  // Bools — only write if explicitly passed
+  const setBool = (key, v) => { if (v !== undefined) fields[key] = v === true; };
+  setBool("Service Plan Visit", servicePlanVisit);
+  setBool("Oil Changed",         oilChanged);
+  setBool("Oil Filter Changed",  oilFilterChanged);
+  setBool("Air Filter Changed",  airFilterChanged);
+  setBool("Spark Plugs Changed", sparkPlugsChanged);
+  setBool("Battery Tested",      batteryTested);
+  setBool("Battery Replaced",    batteryReplaced);
+  setBool("Load Test Performed", loadTestPerformed);
+  setBool("Firmware / Settings Checked", firmwareChecked);
+  setBool("Exercise Checked",    exerciseChecked);
+
+  if (troubleCodesFound) fields["Trouble Codes Found"] = String(troubleCodesFound);
+  if (workNotes)         fields["Work Performed Notes"] = String(workNotes);
+  if (partsUsed)         fields["Parts Used"]           = String(partsUsed);
+  if (laborHours !== undefined && laborHours !== null && laborHours !== "")
+    fields["Labor Hours"] = Number(laborHours);
+  if (generatorHours !== undefined && generatorHours !== null && generatorHours !== "")
+    fields["Generator Hours @ Service"] = Number(generatorHours);
+
+  const data = await atFetch(`${encodeURIComponent("Generator Service")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  if (data.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, id: data.id });
+}
+
+// ── SET INVOICE STATUS ───────────────────────────────────────────────────
+// Generalized status setter (replaces the old markInvoicePaid). Accepts any
+// option name; thanks to typecast: true, new options like "Disputed" get
+// auto-added to the singleSelect on first use.
+async function handleSetInvoiceStatus(body) {
   const { invoiceId, status } = body || {};
   if (!invoiceId) return resp(400, { ok: false, error: "Missing invoiceId." });
-  const newStatus = status || "Paid";  // default to Paid if not specified
-  const fields = { "fldXcHqj8xqmOWeLH": newStatus };  // Invoice Status
+  if (!status)    return resp(400, { ok: false, error: "Missing status." });
+  const fields = { "fldXcHqj8xqmOWeLH": status };  // Invoice Status
   const data = await atFetch(`${encodeURIComponent("Invoices")}/${invoiceId}`, {
     method: "PATCH",
     body: JSON.stringify({ fields, typecast: true })
   });
   if (data.error) return resp(400, { ok: false, error: data.error });
   return resp(200, { ok: true, id: data.id });
+}
+
+// Backward-compat alias — old "markInvoicePaid" callers still work.
+async function handleMarkInvoicePaid(body) {
+  return handleSetInvoiceStatus({ invoiceId: body?.invoiceId, status: body?.status || "Paid" });
 }
 
 // ── GET NEXT INVOICE NUMBER ──────────────────────────────────────────────
@@ -1311,6 +1375,8 @@ export async function handler(event) {
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       if (body.action === "saveInvoice")          return await handleSaveInvoice(body);
       if (body.action === "markInvoicePaid")      return await handleMarkInvoicePaid(body);
+      if (body.action === "setInvoiceStatus")     return await handleSetInvoiceStatus(body);
+      if (body.action === "addGeneratorService")  return await handleAddGeneratorService(body);
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);

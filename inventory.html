@@ -44,6 +44,8 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .hdr h2{font-size:16px;font-weight:600;flex:1;}
 .hdr-badge{font-size:11px;color:var(--dim);background:var(--slate);padding:3px 10px;border-radius:20px;white-space:nowrap;}
 .hdr-out{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:4px 8px;}
+.hdr-fa{background:rgba(245,166,35,0.12);border:1px solid rgba(245,166,35,0.45);color:var(--gold);font-size:11px;font-weight:600;cursor:pointer;padding:5px 10px;border-radius:18px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;}
+.hdr-fa:active{background:rgba(245,166,35,0.25);}
 
 /* HOME */
 .home-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
@@ -200,6 +202,7 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <div>
       <button class="loc-pill" onclick="goPickLocation()" id="loc-pill">📍 <span id="loc-pill-name">Set location</span></button>
     </div>
+    <a href="/" id="hdr-fa-link" class="hdr-fa" title="Back to Field App">← 🔧 Field App</a>
     <div class="hdr-badge" id="hdr-user">—</div>
     <button class="hdr-out" onclick="logout()">Out</button>
   </div>
@@ -857,6 +860,72 @@ var scanCallback    = null;
 var scanStream      = null;
 var barcodeDetector = null;
 
+// ── FIELD APP HAND-OFF ─────────────────────────────────────
+// When the user arrives from hub.northeasternelec.com with ?jobId=... in the
+// URL, pre-populate the "Use on Job" / "Return Items" job dropdown by writing
+// to the same localStorage keys the existing "restore last job" logic reads.
+// Also keep the header's "← Field App" link in sync so going back carries the
+// currently active job along.
+(function neeHubHandoff() {
+  try {
+    var params      = new URLSearchParams(window.location.search);
+    var incomingId  = params.get("jobId")   || "";
+    var incomingNm  = params.get("jobName") || "";
+    if (incomingId && incomingNm) {
+      // Stash globally for the back-link refresher below.
+      window.NEE_INCOMING_JOB = { id: incomingId, name: incomingNm };
+      // Use the same keys the existing log-form pre-fill already reads.
+      try {
+        localStorage.setItem("nee_last_job",    incomingNm);
+        localStorage.setItem("nee_last_job_id", incomingId);
+      } catch(e) {}
+      // Strip the params from the address bar so a refresh doesn't keep
+      // re-applying after the user has moved on to a different job.
+      var cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, "", cleanUrl);
+    }
+  } catch(e) { /* non-fatal */ }
+})();
+
+// Recompute the back-link href so it carries whichever job is currently the
+// "active" one. Called whenever job selection might have changed (after
+// rendering the log form, after submitting a cart, etc.).
+function refreshFieldAppBackLink() {
+  var link = document.getElementById("hdr-fa-link");
+  if (!link) return;
+  var jobName = "";
+  var jobId   = "";
+  // Prefer whatever's currently selected in the log form, else fall back to
+  // the last-used job in localStorage, else the original hand-off.
+  try {
+    var hiddenName = document.getElementById("log-job");
+    var hiddenId   = document.getElementById("log-job-id");
+    if (hiddenName && hiddenName.value) jobName = hiddenName.value;
+    if (hiddenId   && hiddenId.value)   jobId   = hiddenId.value;
+  } catch(e) {}
+  if (!jobId) {
+    try {
+      jobName = jobName || localStorage.getItem("nee_last_job")    || "";
+      jobId   = jobId   || localStorage.getItem("nee_last_job_id") || "";
+    } catch(e) {}
+  }
+  if (!jobId && window.NEE_INCOMING_JOB) {
+    jobName = window.NEE_INCOMING_JOB.name;
+    jobId   = window.NEE_INCOMING_JOB.id;
+  }
+  if (jobId) {
+    var qs = new URLSearchParams();
+    qs.set("jobId", jobId);
+    if (jobName) qs.set("jobName", jobName);
+    link.href = "/?" + qs.toString();
+  } else {
+    link.href = "/";
+  }
+}
+// Refresh on first load and again when the page gets focus back from another tab.
+window.addEventListener("load",  refreshFieldAppBackLink);
+window.addEventListener("focus", refreshFieldAppBackLink);
+
 const SESSION_KEY  = "nee_inv_v2";
 const SESSION_DAYS = 30;
 const LOC_KEY      = "nee_inv_loc";
@@ -1160,6 +1229,8 @@ function renderLogForm() {
       }
     }
   } catch(e) {}
+  // Keep the "← Field App" header link pointing at whatever job is now active
+  try { refreshFieldAppBackLink(); } catch(e) {}
 }
 
 function renderItemSearch() {
@@ -1201,6 +1272,8 @@ function selectJob(id, name) {
     localStorage.setItem("nee_last_job",    name);
     localStorage.setItem("nee_last_job_id", id);
   } catch(e) {}
+  // Keep the "← Field App" header link in sync with the new selection
+  try { refreshFieldAppBackLink(); } catch(e) {}
 }
 
 // Hide job dropdown when clicking elsewhere

@@ -135,10 +135,11 @@ async function handleJobs() {
 }
 
 // ── ESTIMATING JOBS (from main NEE base, filtered by status) ──
-// For the Estimates feature — pulls jobs in New Lead, Estimating, or Awarded
+// For the Estimates feature — pulls jobs in New Lead, Estimating, Awarded,
+// or Service Call Scheduled so estimates can be built for any of them.
 async function handleEstimatingJobs() {
   const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded')`,
+    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled')`,
     sortField: "Job Name",
     sortDir: "asc"
   });
@@ -161,9 +162,12 @@ async function handleEstimatingJobs() {
 }
 
 // ── AWARDED JOBS ONLY (for employee-side material ordering) ──
+// Despite the name, this also includes Service Call Scheduled jobs so
+// guys in the field can order materials for service calls too. If more
+// statuses ever need to be orderable, add them to the OR() below.
 async function handleAwardedJobs() {
   const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `{Job Status}='Awarded'`,
+    filter: `OR({Job Status}='Awarded',{Job Status}='Service Call Scheduled')`,
     sortField: "Job Name",
     sortDir: "asc"
   });

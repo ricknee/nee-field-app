@@ -3130,7 +3130,7 @@
                   <th>Work Date</th><th>Class</th><th>City Taxes</th>
                   <th style="text-align:right;">Hours</th>
                   <th>Approve</th><th>Notes</th>
-                  <th style="text-align:right;">Duration (sec)</th>
+                  <th style="text-align:right;">Hours (editable)</th>
                   <th></th>
                 </tr></thead>
                 <tbody>
@@ -3147,7 +3147,7 @@
                       <textarea class="te-notes-input" data-entry-id="${esc(e.id)}" data-orig="${esc(e.notes || "")}" rows="2" style="display:none; width:100%; min-width:140px; border:1px solid var(--line-2); border-radius:6px; padding:4px 6px; font-size:12px; font-family:inherit; resize:vertical;">${esc(e.notes || "")}</textarea>
                     </td>
                     <td style="text-align:right;">
-                      <input type="number" value="${e.duration != null ? e.duration : ""}" data-entry-id="${esc(e.id)}" class="te-duration-input" style="width:80px; border:1px solid var(--line-2); border-radius:6px; padding:3px 6px; font-size:12px; text-align:right; background:var(--panel);" />
+                      <input type="number" value="${e.duration != null ? (Math.round((e.duration / 3600) * 4) / 4).toFixed(2) : ""}" data-entry-id="${esc(e.id)}" data-orig-sec="${e.duration != null ? e.duration : ""}" class="te-duration-input" step="0.25" min="0" max="24" style="width:80px; border:1px solid var(--line-2); border-radius:6px; padding:3px 6px; font-size:12px; text-align:right; background:var(--panel);" />
                       <button data-entry-id="${esc(e.id)}" class="te-duration-save btn btn-sm" style="font-size:11px; padding:3px 8px; margin-left:4px;">Save</button>
                     </td>
                     <td style="text-align:center;">
@@ -3243,12 +3243,38 @@
         btn.addEventListener("click", async () => {
           const entryId = btn.dataset.entryId;
           const input = el.querySelector(`.te-duration-input[data-entry-id="${entryId}"]`);
-          const duration = parseInt(input.value);
-          if (isNaN(duration)) return;
+          const hoursTyped = parseFloat(input.value);
+          if (isNaN(hoursTyped) || hoursTyped < 0) return;
+          // Snap to nearest 0.25 hour and convert to seconds for Airtable.
+          // The QB time-app field stores everything in seconds, but typing
+          // "2.25" is much friendlier than "8100" for an admin doing edits.
+          const hoursRounded = Math.round(hoursTyped * 4) / 4;
+          const duration = Math.round(hoursRounded * 3600);
+          // Reflect the rounded value back into the input so the user sees
+          // exactly what was sent (e.g. typing 2.27 → input snaps to 2.25)
+          input.value = hoursRounded.toFixed(2);
           btn.disabled = true;
           btn.textContent = "...";
           try {
             await apiPost("updateTimeEntry", { entryId, duration });
+            // Update the readonly Hours column in the same row so the user
+            // doesn't have to refresh to see the new value.
+            const row = btn.closest("tr");
+            if (row) {
+              // The Hours cell is the 4th <td> in pending-tab rows and the
+              // 3rd in reviewed-tab rows. Find by position relative to the
+              // duration cell instead — it's always one cell to the left of
+              // the notes cell, two left of the duration input.
+              const tds = row.querySelectorAll("td");
+              tds.forEach(td => {
+                // Match the Hours display cell: numeric, bold, right-aligned, no input inside
+                if (td.style.fontWeight === "600" && td.style.textAlign === "right" && !td.querySelector("input,textarea,button")) {
+                  td.textContent = hoursRounded.toString();
+                }
+              });
+            }
+            // Update the data-orig-sec so a re-save without changes is a no-op
+            input.dataset.origSec = String(duration);
             btn.textContent = "✓";
             setTimeout(() => { btn.textContent = "Save"; btn.disabled = false; }, 1500);
           } catch(err) {

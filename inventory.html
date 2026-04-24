@@ -3689,13 +3689,24 @@ async function loadReorderAlerts() {
 
       items.forEach(function(item) {
         var isWire = item.wireWeight > 0;
-        html += '<div style="background:var(--navy-lt);border:1px solid rgba(231,76,60,.4);border-radius:10px;padding:12px 14px;margin-bottom:6px;">';
+        // Use a real click handler when we have the item's record ID — that
+        // lets us deep-link into the Receive screen with item + location
+        // already filled in. Falls back to a non-clickable row only if the
+        // backend didn't return an itemId for some reason (legacy data).
+        var clickAttr = item.itemId
+          ? ' onclick="goReceiveFromAlert(\'' + item.itemId + '\', ' + (item.locationId ? "'" + item.locationId + "'" : "null") + ')" style="cursor:pointer;"'
+          : '';
+        html += '<div' + clickAttr + ' style="background:var(--navy-lt);border:1px solid rgba(231,76,60,.4);border-radius:10px;padding:12px 14px;margin-bottom:6px;' + (item.itemId ? 'cursor:pointer;' : '') + '">';
         html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">';
         html += '<div style="flex:1;">';
         html += '<div style="font-size:14px;font-weight:600;">' + item.itemName + '</div>';
         html += '<div style="font-size:11px;color:var(--muted);margin-top:3px;">Minimum: ' + fmtQty(item.reorderPoint);
         if (isWire) html += ' lbs (' + fmtQty(Math.round(item.reorderPoint * item.wireWeight)) + ' ft)';
         html += '</div>';
+        // Tap-to-receive hint — only show when the deep-link will actually work
+        if (item.itemId) {
+          html += '<div style="font-size:10px;color:var(--gold);margin-top:4px;letter-spacing:.04em;">📥 Tap to receive stock</div>';
+        }
         html += '</div>';
         html += '<div style="text-align:right;flex-shrink:0;">';
         html += '<div style="font-size:18px;font-weight:700;color:var(--red);">' + fmtQty(Math.max(0, item.qtyOnHand));
@@ -3725,6 +3736,50 @@ async function loadReorderAlerts() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+
+// Tap-handler for a reorder-alert row. Drops the user straight into the
+// Receive screen with the item pre-selected and the location set to the
+// shop/truck the alert was raised against. Quantity and cost are left
+// blank — they fill cost from the item's default automatically when the
+// item is picked, and the user always knows the qty when they're holding
+// the new stock in their hands.
+function goReceiveFromAlert(itemId, locationId) {
+  if (!itemId) return;
+  goReceive();
+  // The receive form re-renders asynchronously when data isn't ready yet.
+  // Poll briefly until the item search input exists, then drive the same
+  // pickItemFor() path the user would take manually — that way wire toggle,
+  // cost autofill, and the qty/cost block all initialize identically to a
+  // hand-driven flow.
+  var tries = 0;
+  var iv = setInterval(function() {
+    tries++;
+    var ready = !!document.getElementById("recv-item-area")
+             && !!document.getElementById("recv-loc");
+    if (!ready) {
+      if (tries > 40) clearInterval(iv);  // ~6s safety bail
+      return;
+    }
+    clearInterval(iv);
+
+    // Prefill location if we got one from the alert
+    if (locationId) {
+      var locSel = document.getElementById("recv-loc");
+      // Make sure the option exists in the dropdown (it should — Receive uses
+      // the full allLocations list — but guard just in case)
+      var hasOpt = Array.prototype.some.call(locSel.options, function(o){ return o.value === locationId; });
+      if (hasOpt) locSel.value = locationId;
+    }
+
+    // Prefill item via the same path as a manual pick
+    pickItemFor("recv", itemId);
+
+    // Focus the qty field — that's the next thing the user needs to type
+    var qtyInp = document.getElementById("recv-qty");
+    if (qtyInp) { qtyInp.focus(); qtyInp.select(); }
+  }, 150);
 }
 
 

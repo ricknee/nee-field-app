@@ -1056,6 +1056,63 @@
     .pr-no-entries { font-size: 12px; color: var(--muted); padding: 10px; font-style: italic; }
     .pr-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
 
+    /* ── ALL INVOICES (AR) modal ── reuses .payroll-modal-* layout ── */
+    .ar-summary-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .ar-stat { padding: 12px 14px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+    .ar-stat-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 4px; }
+    .ar-stat-value { font-size: 18px; font-weight: 700; color: var(--text); font-family: 'Inter', sans-serif; }
+    .ar-stat.outstanding .ar-stat-value { color: #dc2626; }
+    .ar-stat.paid .ar-stat-value { color: #16a34a; }
+
+    .ar-aging-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; }
+    .ar-aging-cell { text-align: center; padding: 4px; }
+    .ar-aging-cell .age-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+    .ar-aging-cell .age-value { font-size: 14px; font-weight: 700; margin-top: 2px; font-family: 'Inter', sans-serif; }
+    .ar-aging-cell.cur  .age-value { color: #16a34a; }
+    .ar-aging-cell.b30  .age-value { color: #ca8a04; }
+    .ar-aging-cell.b60  .age-value { color: #ea580c; }
+    .ar-aging-cell.b90  .age-value { color: #dc2626; }
+
+    .ar-quick-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .ar-qf-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-2); border-radius: 16px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+    .ar-qf-btn:hover { background: var(--accent-glow); border-color: var(--accent); }
+    .ar-qf-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+
+    .ar-filter-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; margin-bottom: 14px; align-items: end; }
+    .ar-filter-row label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); display: block; margin-bottom: 4px; }
+    .ar-filter-row input, .ar-filter-row select { width: 100%; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 13px; font-family: inherit; }
+    .ar-filter-row input:focus, .ar-filter-row select:focus { outline: none; border-color: var(--accent); }
+    .ar-clear-btn { background: var(--panel); color: var(--muted); border: 1px solid var(--line-2); border-radius: 7px; padding: 7px 12px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+    .ar-clear-btn:hover { background: var(--panel-2); color: var(--text); }
+
+    .ar-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    .ar-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 900px; }
+    .ar-table th { background: var(--panel-2); padding: 8px 10px; text-align: left; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); border-bottom: 1px solid var(--line); white-space: nowrap; cursor: pointer; user-select: none; position: sticky; top: 0; z-index: 1; }
+    .ar-table th.sortable:hover { background: var(--accent-glow); color: var(--accent); }
+    .ar-table th .sort-arrow { display: inline-block; margin-left: 3px; opacity: 0.5; font-size: 9px; }
+    .ar-table th.sort-active .sort-arrow { opacity: 1; color: var(--accent); }
+    .ar-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); color: var(--text); vertical-align: middle; white-space: nowrap; }
+    .ar-table tr:last-child td { border-bottom: none; }
+    .ar-table tr:hover td { background: var(--panel-2); }
+    .ar-table .ar-amount { text-align: right; font-weight: 600; font-family: 'Inter', sans-serif; }
+    .ar-stage-chip { display: inline-block; font-size: 10px; font-weight: 600; color: white; padding: 2px 7px; border-radius: 4px; }
+    .ar-row-actions { display: flex; gap: 4px; justify-content: flex-end; }
+    .ar-row-actions button { font-size: 11px; padding: 3px 8px; border-radius: 5px; cursor: pointer; }
+    .ar-jump-btn { background: var(--accent-glow); color: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
+    .ar-reprint-btn { background: white; color: var(--text); border: 1px solid var(--line); }
+    .ar-status-select { font-size: 11px; padding: 3px 6px; border-radius: 5px; font-weight: 600; cursor: pointer; min-width: 88px; }
+
+    .ar-totals-row { padding: 10px 14px; background: var(--panel-2); border-top: 2px solid var(--accent); font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .ar-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
+
+    @media (max-width: 768px) {
+      .ar-summary-bar { grid-template-columns: 1fr 1fr; }
+      .ar-aging-bar { grid-template-columns: 1fr 1fr; }
+      .ar-filter-row { grid-template-columns: 1fr; }
+      .ar-table { min-width: 720px; font-size: 12px; }
+      .ar-table th, .ar-table td { padding: 6px 8px; }
+    }
+
 
     /* ── INVOICE BUILDER ── */
     .inv-wrap { max-width: 860px; margin: 0 auto; }
@@ -1281,6 +1338,7 @@
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
       <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
+      <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
@@ -4621,6 +4679,8 @@
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
     const payrollBtn = $("btnPayroll");
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
+    const allInvBtn = $("btnAllInvoices");
+    if (allInvBtn) allInvBtn.addEventListener("click", openAllInvoices);
     const mileageBtn = $("btnMileage");
     if (mileageBtn) mileageBtn.addEventListener("click", openMileageModal);
 
@@ -6886,6 +6946,307 @@ rick@northeasternelec.com`
   }
   window.closePayroll = closePayroll;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // ALL INVOICES (AR) MODAL
+  // ═══════════════════════════════════════════════════════════════════════
+  // Module-level state for the AR view. Held outside the open function so
+  // sort/filter handlers can reach it across renders.
+  let arAllInvoices = [];          // raw invoice list from backend
+  let arSortKey     = "date";      // current sort column
+  let arSortDir     = "desc";      // "asc" or "desc"
+  let arQuickFilter = "unpaid";    // active quick-filter pill
+
+  function openAllInvoices() {
+    $("allInvoicesModal").style.display = "flex";
+    $("arStatus").textContent = "Loading invoices...";
+    $("arTableWrap").style.display = "none";
+    $("arTotalsRow").style.display = "none";
+    loadAllInvoices();
+  }
+  window.openAllInvoices = openAllInvoices;
+
+  function closeAllInvoices() {
+    $("allInvoicesModal").style.display = "none";
+  }
+  window.closeAllInvoices = closeAllInvoices;
+
+  async function loadAllInvoices() {
+    try {
+      const res = await apiGet("allInvoices");
+      if (!res?.ok) throw new Error(res?.error || "Fetch failed");
+      arAllInvoices = res.invoices || [];
+
+      // Populate the contractor dropdown with unique values from the data
+      const contractors = [...new Set(arAllInvoices.map(i => i.contractor).filter(Boolean))].sort();
+      const sel = $("arFilterContractor");
+      sel.innerHTML = `<option value="">All Contractors</option>` +
+        contractors.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+
+      // Wire filter inputs (idempotent — replacing handlers each load is fine)
+      $("arFilterContractor").onchange = renderAllInvoices;
+      $("arFilterCustomer").oninput   = debounce(renderAllInvoices, 200);
+      $("arFilterSince").onchange     = renderAllInvoices;
+
+      // Wire quick-filter buttons
+      document.querySelectorAll(".ar-qf-btn").forEach(btn => {
+        btn.onclick = () => {
+          arQuickFilter = btn.dataset.qf;
+          document.querySelectorAll(".ar-qf-btn").forEach(b => b.classList.toggle("active", b === btn));
+          renderAllInvoices();
+        };
+      });
+
+      // Wire sortable headers
+      document.querySelectorAll(".ar-table th.sortable").forEach(th => {
+        th.onclick = () => {
+          const key = th.dataset.sort;
+          if (arSortKey === key) {
+            arSortDir = arSortDir === "asc" ? "desc" : "asc";
+          } else {
+            arSortKey = key;
+            arSortDir = key === "date" || key === "total" ? "desc" : "asc";
+          }
+          renderAllInvoices();
+        };
+      });
+
+      $("arStatus").style.display = "none";
+      $("arTableWrap").style.display = "";
+      $("arTotalsRow").style.display = "";
+      renderSummaryStats();
+      renderAllInvoices();
+    } catch(e) {
+      $("arStatus").textContent = "Couldn't load invoices: " + e.message;
+      $("arStatus").style.color = "var(--red, #dc2626)";
+    }
+  }
+
+  // Tiny debounce so the customer-search input doesn't re-render on every keystroke
+  function debounce(fn, ms) {
+    let t;
+    return function(...args) { clearTimeout(t); t = setTimeout(() => fn.apply(this, args), ms); };
+  }
+
+  function renderSummaryStats() {
+    const today = new Date();
+    const ymStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    const yStart  = new Date(today.getFullYear(), 0, 1);
+
+    let outstanding = 0, paidMonth = 0, paidYTD = 0;
+    const aging = { cur: 0, b30: 0, b60: 0, b90: 0 };
+
+    arAllInvoices.forEach(inv => {
+      const status = (inv.status || "").toLowerCase();
+      const amt    = Number(inv.snapshotTotal || inv.total || 0);
+      const dt     = inv.date ? new Date(inv.date + "T00:00:00") : null;
+
+      if (status === "sent" || status === "disputed") {
+        outstanding += amt;
+        if (dt) {
+          const days = Math.floor((today - dt) / (1000 * 60 * 60 * 24));
+          if      (days <= 30) aging.cur += amt;
+          else if (days <= 60) aging.b30 += amt;
+          else if (days <= 90) aging.b60 += amt;
+          else                 aging.b90 += amt;
+        }
+      }
+      if (status === "paid" && dt) {
+        if (dt >= ymStart) paidMonth += amt;
+        if (dt >= yStart)  paidYTD   += amt;
+      }
+    });
+
+    $("arOutstanding").textContent = fmtCurrency(outstanding);
+    $("arPaidMonth").textContent   = fmtCurrency(paidMonth);
+    $("arPaidYTD").textContent     = fmtCurrency(paidYTD);
+    $("arAgeCur").textContent      = fmtCurrency(aging.cur);
+    $("arAge30").textContent       = fmtCurrency(aging.b30);
+    $("arAge60").textContent       = fmtCurrency(aging.b60);
+    $("arAge90").textContent       = fmtCurrency(aging.b90);
+  }
+
+  function renderAllInvoices() {
+    const today = new Date();
+    const contractor = $("arFilterContractor").value || "";
+    const customerQ  = ($("arFilterCustomer").value || "").trim().toLowerCase();
+    const sinceStr   = $("arFilterSince").value || "";
+    const sinceDt    = sinceStr ? new Date(sinceStr + "T00:00:00") : null;
+
+    // Quick-filter date bounds
+    let qfSince = null;
+    if (arQuickFilter === "month") {
+      qfSince = new Date(today.getFullYear(), today.getMonth(), 1);
+    } else if (arQuickFilter === "quarter") {
+      const qStart = Math.floor(today.getMonth() / 3) * 3;
+      qfSince = new Date(today.getFullYear(), qStart, 1);
+    } else if (arQuickFilter === "ytd") {
+      qfSince = new Date(today.getFullYear(), 0, 1);
+    }
+
+    // Apply all filters
+    const filtered = arAllInvoices.filter(inv => {
+      const status = (inv.status || "").toLowerCase();
+      if (arQuickFilter === "unpaid") {
+        if (status !== "sent" && status !== "disputed") return false;
+      }
+      if (contractor && inv.contractor !== contractor) return false;
+      if (customerQ && !(inv.customer || "").toLowerCase().includes(customerQ) &&
+                       !(inv.jobName  || "").toLowerCase().includes(customerQ)) return false;
+      const dt = inv.date ? new Date(inv.date + "T00:00:00") : null;
+      if (sinceDt && (!dt || dt < sinceDt)) return false;
+      if (qfSince  && (!dt || dt < qfSince)) return false;
+      return true;
+    });
+
+    // Sort
+    filtered.sort((a, b) => {
+      let va = a[arSortKey], vb = b[arSortKey];
+      if (arSortKey === "total") {
+        va = Number(a.snapshotTotal || a.total || 0);
+        vb = Number(b.snapshotTotal || b.total || 0);
+      } else if (arSortKey === "displayNumber") {
+        va = Number(va) || 0;
+        vb = Number(vb) || 0;
+      } else {
+        va = String(va || "").toLowerCase();
+        vb = String(vb || "").toLowerCase();
+      }
+      if (va < vb) return arSortDir === "asc" ? -1 : 1;
+      if (va > vb) return arSortDir === "asc" ?  1 : -1;
+      return 0;
+    });
+
+    // Update sort arrow indicators
+    document.querySelectorAll(".ar-table th.sortable").forEach(th => {
+      const isActive = th.dataset.sort === arSortKey;
+      th.classList.toggle("sort-active", isActive);
+      const arrow = th.querySelector(".sort-arrow");
+      if (arrow) arrow.textContent = isActive ? (arSortDir === "asc" ? "▲" : "▼") : "↕";
+    });
+
+    // Status colors (matches per-job invoice history)
+    const statusColors = {
+      "draft":"#6b7280", "sent":"#0ea5e9", "paid":"#16a34a",
+      "voided":"#9ca3af", "disputed":"#dc2626"
+    };
+    const stageColors = { "Rough In":"#f59e0b", "Final":"#16a34a", "Progress":"#0ea5e9", "Change Order":"#ea580c", "Full":"#7c3aed" };
+
+    const tbody = $("arTableBody");
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr><td colspan="9" class="ar-empty">No invoices match the current filters.</td></tr>`;
+      $("arRowCount").textContent = "0";
+      $("arFilteredTotal").textContent = fmtCurrency(0);
+      return;
+    }
+
+    let totalSum = 0;
+    tbody.innerHTML = filtered.map(inv => {
+      const amt = Number(inv.snapshotTotal || inv.total || 0);
+      totalSum += amt;
+      const statusKey = (inv.status || "").toLowerCase();
+      const statusColor = statusColors[statusKey] || "#6b7280";
+      const stage     = inv.stage || "—";
+      const stageColor = stageColors[stage] || "#6b7280";
+      const stageChip  = stage !== "—"
+        ? `<span class="ar-stage-chip" style="background:${stageColor};">${esc(stage)}</span>`
+        : `<span style="color:var(--muted);">—</span>`;
+      const hasSnap = inv.snapshot && inv.snapshot.length > 10;
+      const statusOpts = ["Draft","Sent","Paid","Voided","Disputed"];
+      const statusDropdown = `
+        <select class="ar-status-select" data-inv-id="${esc(inv.id)}"
+                style="border:1px solid ${statusColor}; color:${statusColor}; background:white;">
+          ${statusOpts.map(o => `<option value="${esc(o)}"${statusKey === o.toLowerCase() ? " selected" : ""}>${esc(o)}</option>`).join("")}
+        </select>`;
+
+      return `
+        <tr>
+          <td>${esc(String(inv.displayNumber || "—"))}</td>
+          <td>${esc(inv.date || "—")}</td>
+          <td>${esc(inv.jobName || "—")}</td>
+          <td>${esc(inv.contractor || "—")}</td>
+          <td>${esc(inv.customer || "—")}</td>
+          <td>${stageChip}</td>
+          <td>${statusDropdown}</td>
+          <td class="ar-amount">${fmtCurrency(amt)}</td>
+          <td>
+            <div class="ar-row-actions">
+              ${hasSnap ? `<button class="ar-reprint-btn" data-inv-id="${esc(inv.id)}" title="Reprint PDF">📄</button>` : ""}
+              ${inv.jobId ? `<button class="ar-jump-btn" data-job-id="${esc(inv.jobId)}" title="Open this job">→</button>` : ""}
+            </div>
+          </td>
+        </tr>`;
+    }).join("");
+
+    $("arRowCount").textContent      = String(filtered.length);
+    $("arFilteredTotal").textContent = fmtCurrency(totalSum);
+
+    // Wire row-action buttons (re-bound each render since rows are rebuilt)
+    tbody.querySelectorAll(".ar-status-select").forEach(sel => {
+      sel.dataset.prev = sel.value;
+      sel.onchange = async () => {
+        const invId = sel.dataset.invId;
+        const newStatus = sel.value;
+        const prev = sel.dataset.prev || "";
+        if ((newStatus === "Voided" || newStatus === "Disputed") &&
+            !confirm(`Mark this invoice as ${newStatus}?`)) {
+          sel.value = prev; return;
+        }
+        sel.disabled = true;
+        try {
+          const r = await apiPost("setInvoiceStatus", { invoiceId: invId, status: newStatus });
+          if (!r?.ok) throw new Error(r?.error || "Update failed");
+          // Update local state and re-render so summary + colors refresh
+          const inv = arAllInvoices.find(i => i.id === invId);
+          if (inv) inv.status = newStatus;
+          renderSummaryStats();
+          renderAllInvoices();
+        } catch(e) {
+          alert("Error updating status: " + e.message);
+          sel.value = prev;
+          sel.disabled = false;
+        }
+      };
+    });
+
+    tbody.querySelectorAll(".ar-reprint-btn").forEach(btn => {
+      btn.onclick = () => {
+        const invId = btn.dataset.invId;
+        const inv = arAllInvoices.find(i => i.id === invId);
+        if (!inv?.snapshot) { alert("No snapshot available for this invoice."); return; }
+        try {
+          const snap = typeof inv.snapshot === "string" ? JSON.parse(inv.snapshot) : inv.snapshot;
+          if (typeof window.reprintInvoicePDF === "function") {
+            window.reprintInvoicePDF(snap);
+          } else {
+            alert("PDF reprint not available — open the job tab to reprint.");
+          }
+        } catch(e) {
+          alert("Couldn't read saved invoice snapshot: " + e.message);
+        }
+      };
+    });
+
+    tbody.querySelectorAll(".ar-jump-btn").forEach(btn => {
+      btn.onclick = () => {
+        const jobId = btn.dataset.jobId;
+        // Open the job in a new tab using the same URL-param hand-off the
+        // Inventory link uses. The main app reads ?jobId on load and
+        // auto-selects the job.
+        window.open("/?jobId=" + encodeURIComponent(jobId), "_blank");
+      };
+    });
+  }
+
+  // Reset all filters back to "Unpaid Only"
+  window.arClearFilters = function() {
+    $("arFilterContractor").value = "";
+    $("arFilterCustomer").value   = "";
+    $("arFilterSince").value      = "";
+    arQuickFilter = "unpaid";
+    document.querySelectorAll(".ar-qf-btn").forEach(b => b.classList.toggle("active", b.dataset.qf === "unpaid"));
+    renderAllInvoices();
+  };
+
   // Parse YYYY-MM-DD in local time
   function localDate(s) {
     const [y,m,d] = s.split("-").map(Number);
@@ -7492,6 +7853,93 @@ rick@northeasternelec.com`
       <!-- Employee blocks rendered here -->
       <div id="prBlocks"></div>
 
+    </div>
+  </div>
+</div>
+
+<!-- ALL INVOICES (AR) MODAL -->
+<div id="allInvoicesModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width: 1400px;">
+    <div class="payroll-modal-header">
+      <h2>💰 All Invoices</h2>
+      <button onclick="closeAllInvoices()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <!-- Summary stats -->
+      <div class="ar-summary-bar" id="arSummaryBar">
+        <div class="ar-stat outstanding">
+          <div class="ar-stat-label">Outstanding (Sent + Disputed)</div>
+          <div class="ar-stat-value" id="arOutstanding">—</div>
+        </div>
+        <div class="ar-stat paid">
+          <div class="ar-stat-label">Paid This Month</div>
+          <div class="ar-stat-value" id="arPaidMonth">—</div>
+        </div>
+        <div class="ar-stat paid">
+          <div class="ar-stat-label">Paid Year to Date</div>
+          <div class="ar-stat-value" id="arPaidYTD">—</div>
+        </div>
+      </div>
+
+      <!-- Aging buckets — only outstanding (Sent + Disputed) counted -->
+      <div class="ar-aging-bar" id="arAgingBar">
+        <div class="ar-aging-cell cur"><div class="age-label">Current 0-30d</div><div class="age-value" id="arAgeCur">—</div></div>
+        <div class="ar-aging-cell b30"><div class="age-label">31-60 days</div><div class="age-value" id="arAge30">—</div></div>
+        <div class="ar-aging-cell b60"><div class="age-label">61-90 days</div><div class="age-value" id="arAge60">—</div></div>
+        <div class="ar-aging-cell b90"><div class="age-label">90+ days</div><div class="age-value" id="arAge90">—</div></div>
+      </div>
+
+      <!-- Quick filter buttons -->
+      <div class="ar-quick-filters">
+        <button class="ar-qf-btn" data-qf="all">All</button>
+        <button class="ar-qf-btn active" data-qf="unpaid">Unpaid Only</button>
+        <button class="ar-qf-btn" data-qf="month">This Month</button>
+        <button class="ar-qf-btn" data-qf="quarter">This Quarter</button>
+        <button class="ar-qf-btn" data-qf="ytd">YTD</button>
+      </div>
+
+      <!-- Detailed filter row -->
+      <div class="ar-filter-row">
+        <div>
+          <label>Contractor</label>
+          <select id="arFilterContractor"><option value="">All Contractors</option></select>
+        </div>
+        <div>
+          <label>Customer (search name)</label>
+          <input type="text" id="arFilterCustomer" placeholder="Smith, Quintrel..." />
+        </div>
+        <div>
+          <label>Invoiced Since</label>
+          <input type="date" id="arFilterSince" />
+        </div>
+        <button class="ar-clear-btn" onclick="arClearFilters()">Clear</button>
+      </div>
+
+      <!-- Table -->
+      <div id="arStatus" style="font-size:13px; color:var(--muted); padding:6px 0;">Loading invoices...</div>
+      <div class="ar-table-wrap" id="arTableWrap" style="display:none;">
+        <table class="ar-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="displayNumber">#<span class="sort-arrow">↕</span></th>
+              <th class="sortable" data-sort="date">Date<span class="sort-arrow">↕</span></th>
+              <th class="sortable" data-sort="jobName">Job<span class="sort-arrow">↕</span></th>
+              <th class="sortable" data-sort="contractor">Contractor<span class="sort-arrow">↕</span></th>
+              <th class="sortable" data-sort="customer">Customer<span class="sort-arrow">↕</span></th>
+              <th>Stage</th>
+              <th>Status</th>
+              <th class="sortable ar-amount" data-sort="total">Total<span class="sort-arrow">↕</span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="arTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="ar-totals-row" id="arTotalsRow" style="display:none;">
+        <span><span id="arRowCount">0</span> invoice(s)</span>
+        <span>Filtered total: <span id="arFilteredTotal">$0.00</span></span>
+      </div>
     </div>
   </div>
 </div>

@@ -7089,6 +7089,9 @@ rick@northeasternelec.com`
       if (arQuickFilter === "unpaid") {
         if (status !== "sent" && status !== "disputed") return false;
       }
+      if (arQuickFilter === "paid") {
+        if (status !== "paid") return false;
+      }
       if (contractor && inv.contractor !== contractor) return false;
       if (customerQ && !(inv.customer || "").toLowerCase().includes(customerQ) &&
                        !(inv.jobName  || "").toLowerCase().includes(customerQ)) return false;
@@ -7893,6 +7896,7 @@ rick@northeasternelec.com`
       <div class="ar-quick-filters">
         <button class="ar-qf-btn" data-qf="all">All</button>
         <button class="ar-qf-btn active" data-qf="unpaid">Unpaid Only</button>
+        <button class="ar-qf-btn" data-qf="paid">Paid Only</button>
         <button class="ar-qf-btn" data-qf="month">This Month</button>
         <button class="ar-qf-btn" data-qf="quarter">This Quarter</button>
         <button class="ar-qf-btn" data-qf="ytd">YTD</button>

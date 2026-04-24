@@ -1013,6 +1013,7 @@ async function handleUpdateJobBillableRate(body) {
 //     dollars, not the percent-times-expected-revenue formula.
 async function handleSaveInvoice(body) {
   const {
+    invoiceId,            // NEW: if present, PATCH existing record instead of POSTing a new one
     jobId, invoiceDate, billingMode,
     percentToBill,        // legacy — only used if totalAmount not provided
     totalAmount,          // NEW: authoritative amount from the line-item sum
@@ -1023,7 +1024,10 @@ async function handleSaveInvoice(body) {
 
   const fields = {};
   fields["fld1fmEklDw6y9hS2"] = [jobId];                            // Job (linked)
-  fields["fldXcHqj8xqmOWeLH"] = "Sent";                             // Invoice Status
+  // Only force "Sent" status on the initial create. When editing an existing
+  // invoice we leave the status alone — the user might be tweaking a Paid or
+  // Disputed invoice and we don't want to silently flip it back to Sent.
+  if (!invoiceId) fields["fldXcHqj8xqmOWeLH"] = "Sent";              // Invoice Status (create only)
   if (invoiceDate) fields["fldAEjySdXkUke1Cv"] = invoiceDate;       // Invoice Date
   if (notes)       fields["fldLQrPKHWLrHLOA2"] = notes;             // Invoice Notes
   if (invoiceNumber !== undefined && invoiceNumber !== null && invoiceNumber !== "") {
@@ -1078,12 +1082,23 @@ async function handleSaveInvoice(body) {
     fields["fldcbhc1z8nEftVeY"] = 0;                                 // zero manual material
   }
 
-  const data = await atFetch(`${encodeURIComponent("Invoices")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
-  });
+  // PATCH the existing invoice when invoiceId is provided (edit mode); else
+  // POST a new record (create mode). Both paths use typecast for new option
+  // values that might appear on stage/status singleSelects.
+  let data;
+  if (invoiceId) {
+    data = await atFetch(`${encodeURIComponent("Invoices")}/${invoiceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ fields, typecast: true })
+    });
+  } else {
+    data = await atFetch(`${encodeURIComponent("Invoices")}`, {
+      method: "POST",
+      body: JSON.stringify({ fields, typecast: true })
+    });
+  }
   if (data.error) return resp(400, { ok: false, error: data.error });
-  return resp(200, { ok: true, id: data.id });
+  return resp(200, { ok: true, id: data.id, updated: !!invoiceId });
 }
 
 // ── ADD GENERATOR SERVICE RECORD (quick-log from Generator tab) ─────────

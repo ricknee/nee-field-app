@@ -4950,6 +4950,12 @@
       <div class="inv-wrap">
         <div id="inv-saved-banner" class="inv-saved-banner">✓ Invoice saved to Airtable!</div>
 
+        <!-- Editing-mode banner (only visible when an invoice was loaded for edit) -->
+        <div id="inv-editing-banner" style="display:none; margin: 8px 0; padding: 10px 14px; border-radius: 9px; background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.45); color: #b45309; font-size: 13px; font-weight: 600; display: none; align-items: center; justify-content: space-between; gap: 10px;">
+          <span id="inv-editing-banner-text">✏ Editing existing invoice — Save will UPDATE it (no duplicate created)</span>
+          <button onclick="cancelInvoiceEdit()" style="font-size:12px; padding:4px 10px; border:1px solid #b45309; border-radius:5px; background:white; color:#b45309; cursor:pointer; font-weight:600; white-space:nowrap;">✕ Cancel Edit</button>
+        </div>
+
         <!-- Toolbar -->
         <div class="inv-toolbar">
           <span class="inv-toolbar-title">🧾 Invoice Builder</span>
@@ -4957,7 +4963,7 @@
           <button class="inv-btn secondary" onclick="invAddLine()">+ Add Line</button>
           <button class="inv-btn" onclick="invGeneratePDF()">⬇ Download PDF</button>
           <button class="inv-btn green" onclick="invUploadToPCloud()">☁ Upload to pCloud</button>
-          <button class="inv-btn green" onclick="invSaveToAirtable()">💾 Save Invoice</button>
+          <button class="inv-btn green" onclick="invSaveToAirtable()" id="invSaveBtn">💾 Save Invoice</button>
           <button class="inv-btn secondary" onclick="invEmail()">✉ Email</button>
         </div>
 
@@ -5213,6 +5219,9 @@
               const reprintBtn = hasSnap
                 ? `<button data-inv-id="${esc(inv.id)}" class="inv-reprint-btn" style="font-size:11px; padding:4px 10px; border:1px solid var(--line); border-radius:5px; background:white; cursor:pointer;">📄 Reprint PDF</button>`
                 : `<span style="font-size:11px; color:var(--muted); font-style:italic;">no snapshot</span>`;
+              const editBtn = hasSnap
+                ? `<button data-inv-id="${esc(inv.id)}" class="inv-edit-btn" style="font-size:11px; padding:4px 10px; border:1px solid var(--accent); border-radius:5px; background:var(--accent-glow); color:var(--accent); cursor:pointer; font-weight:600; margin-right:4px;" title="Load this invoice into the builder so you can edit and re-save it">✏ Edit</button>`
+                : "";
               // Status dropdown — small, inline. Color-codes the current value.
               const statusColors = {
                 "draft":"#6b7280", "sent":"#0ea5e9", "paid":"#16a34a",
@@ -5244,7 +5253,7 @@
                   <td style="padding:8px;">${esc(type)}${pctStr}</td>
                   <td style="padding:8px;">${statusDropdown}</td>
                   <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
-                  <td style="padding:8px; text-align:right;">${reprintBtn}</td>
+                  <td style="padding:8px; text-align:right;">${editBtn}${reprintBtn}</td>
                 </tr>
               `;
             }).join("")}
@@ -5260,6 +5269,32 @@
           try {
             const snap = typeof inv.snapshot === "string" ? JSON.parse(inv.snapshot) : inv.snapshot;
             reprintInvoicePDF(snap);
+          } catch(e) {
+            alert("Couldn't read saved invoice snapshot: " + e.message);
+          }
+        });
+      });
+      // Wire Edit buttons — load the saved invoice back into the builder so
+      // the user can correct typos / amounts / etc. and re-save WITHOUT
+      // creating a duplicate Airtable record. The save handler reads
+      // window._invEditingId and PATCHes instead of POSTs.
+      listEl.querySelectorAll(".inv-edit-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const invId = btn.dataset.invId;
+          const inv = invoices.find(i => i.id === invId);
+          if (!inv || !inv.snapshot) { alert("No snapshot available — can't edit this invoice."); return; }
+          // Soft-confirm if the invoice is in a state where edits could
+          // create accounting confusion. "Sent" doesn't need a prompt — the
+          // user expects to fix typos on a sent invoice and re-send.
+          const status = (inv.status || "").toLowerCase();
+          if (status === "paid" || status === "voided" || status === "disputed") {
+            const human = status.charAt(0).toUpperCase() + status.slice(1);
+            const msg = `This invoice is marked ${human}. Editing will overwrite the original.\n\nContinue?`;
+            if (!confirm(msg)) return;
+          }
+          try {
+            const snap = typeof inv.snapshot === "string" ? JSON.parse(inv.snapshot) : inv.snapshot;
+            loadInvoiceForEdit(invId, inv, snap);
           } catch(e) {
             alert("Couldn't read saved invoice snapshot: " + e.message);
           }
@@ -5515,6 +5550,12 @@
       totalAmount,             // ← line-item sum, always sent
       expectedRevenue          // ← so the backend can derive percent = total/ER
     };
+    // If we're in edit mode (loaded an existing invoice via the Edit button
+    // in History), send the invoice ID so the backend PATCHes instead of
+    // POSTing a duplicate record.
+    if (window._invEditingId) {
+      body.invoiceId = window._invEditingId;
+    }
     // Legacy percent still sent for Contract saves so older rollup paths keep
     // working until the "Total Contract Billed" rollup is moved to Snapshot Total.
     if (isContract && expectedRevenue > 0) {
@@ -5541,25 +5582,48 @@
     });
 
     try {
+      const wasEditing = !!window._invEditingId;
       const result = await apiPost("saveInvoice", body);
       if (!result.ok) throw new Error(result.error || "Save failed");
       const banner = $("inv-saved-banner");
       if (banner) {
-        banner.textContent   = "✓ Invoice saved to Airtable";
+        banner.textContent   = wasEditing
+          ? `✓ Invoice #${invoiceNumber} updated in Airtable`
+          : "✓ Invoice saved to Airtable";
         banner.style.display = "block";
         setTimeout(() => { banner.style.display = "none"; }, 4000);
       }
-      // Refresh invoice history + bump to next number for the next invoice
+      // Refresh invoice history so the row reflects the new amount/lines
       if (invJobRef?.id) loadInvoiceHistory(invJobRef.id);
-      const inp = $("invNum");
-      if (inp) inp.value = "";
-      autoFillInvoiceNumber();
       // Refresh jobs so the Contract Billed rollup updates in the sidebar
       setTimeout(() => { if (window.loadJobs) loadJobs(); }, 800);
+
+      if (wasEditing) {
+        // Exit edit mode — banner off, save button label back to default,
+        // but DO NOT bump the invoice number (that's create-new behavior).
+        // The user can leave the tab now or hit "Cancel Edit" to start fresh.
+        window._invEditingId = null;
+        const editBanner = $("inv-editing-banner");
+        if (editBanner) editBanner.style.display = "none";
+        const saveBtnEl = $("invSaveBtn");
+        if (saveBtnEl) saveBtnEl.textContent = "💾 Save Invoice";
+      } else {
+        // Fresh invoice flow: clear the # input and auto-fill the next number
+        const inp = $("invNum");
+        if (inp) inp.value = "";
+        autoFillInvoiceNumber();
+      }
     } catch(err) {
       alert("Error saving invoice: " + err.message);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "💾 Save Invoice"; }
+      // Restore the button label only if we're not still in edit mode
+      // (edit-mode kept its own "Update Invoice" label before this save call;
+      // on success above we cleared edit mode already, so this just resets
+      // to the default state).
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = window._invEditingId ? "💾 Update Invoice" : "💾 Save Invoice";
+      }
     }
   };
 
@@ -5631,6 +5695,66 @@ rick@northeasternelec.com`
   };
 
   function reprintInvoicePDF(snap) { return window.reprintInvoicePDF(snap); }
+
+  // ── EDIT EXISTING INVOICE ────────────────────────────────────────────────
+  // Pull a saved invoice's snapshot back into the builder so the user can
+  // tweak it and re-save WITHOUT creating a duplicate Airtable record.
+  // The save handler reads window._invEditingId — when set, the backend
+  // PATCHes the existing record instead of POSTing a new one.
+  window.loadInvoiceForEdit = function(invoiceId, invMeta, snap) {
+    if (!snap) { alert("No snapshot to edit."); return; }
+    // Re-hydrate the form fields from the snapshot
+    if ($("invNum"))    $("invNum").value    = snap.invNum    || "";
+    if ($("invDate"))   $("invDate").value   = snap.invDate   || "";
+    if ($("invBillTo")) $("invBillTo").value = snap.billTo    || "";
+    if ($("invPO"))     $("invPO").value     = snap.po        || "";
+    if ($("invNotes"))  $("invNotes").value  = snap.notes     || "";
+    if ($("invStage"))  $("invStage").value  = snap.stage     || "Full";
+    // Re-hydrate line items
+    invLines = (snap.lines || []).map(l => ({
+      id: l.id || `line_${Math.random().toString(36).slice(2)}`,
+      section: l.section || "",
+      description: l.description || "",
+      amount: Number(l.amount) || 0,
+      rate:   Number(l.amount) || 0,
+      qty: 1,
+      editable: true,
+      hideQtyRate: true
+    }));
+    refreshInvLines();
+
+    // Flag that subsequent Save = update (not create).
+    window._invEditingId = invoiceId;
+
+    // Show the editing banner with the invoice number
+    const banner = $("inv-editing-banner");
+    const bannerText = $("inv-editing-banner-text");
+    if (banner) {
+      banner.style.display = "flex";
+      if (bannerText) {
+        bannerText.textContent = `✏ Editing Invoice #${snap.invNum || invMeta?.displayNumber || "—"} — Save will UPDATE it (no duplicate created)`;
+      }
+    }
+    // Change the save button label too so it's unmistakable
+    const saveBtn = $("invSaveBtn");
+    if (saveBtn) saveBtn.textContent = "💾 Update Invoice";
+
+    // Scroll up to the builder so the user sees what they're editing
+    const builder = document.querySelector(".inv-toolbar");
+    if (builder) builder.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Cancel out of edit mode — clears the form and the editing flag so the
+  // next Save creates a fresh invoice.
+  window.cancelInvoiceEdit = function() {
+    window._invEditingId = null;
+    const banner = $("inv-editing-banner");
+    if (banner) banner.style.display = "none";
+    const saveBtn = $("invSaveBtn");
+    if (saveBtn) saveBtn.textContent = "💾 Save Invoice";
+    // Reload the tab from scratch so the form returns to "fresh new invoice"
+    if (invJobRef?.id) loadInvoiceTab(invJobRef.id);
+  };
 
   // ── INVOICE PDF GENERATION ──
   // Returns PDF as base64 string (for pCloud upload)

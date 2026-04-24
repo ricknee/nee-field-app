@@ -136,10 +136,13 @@ async function handleJobs() {
 
 // ── ESTIMATING JOBS (from main NEE base, filtered by status) ──
 // For the Estimates feature — pulls jobs in New Lead, Estimating, Awarded,
-// or Service Call Scheduled so estimates can be built for any of them.
+// Service Call Scheduled, or Ready to Invoice so estimates can be built
+// or revised for any of them (Ready to Invoice covers cases where a late
+// change-order or correction needs to go on a job that's already been
+// flagged complete).
 async function handleEstimatingJobs() {
   const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled')`,
+    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
     sortField: "Job Name",
     sortDir: "asc"
   });
@@ -162,12 +165,13 @@ async function handleEstimatingJobs() {
 }
 
 // ── AWARDED JOBS ONLY (for employee-side material ordering) ──
-// Despite the name, this also includes Service Call Scheduled jobs so
-// guys in the field can order materials for service calls too. If more
-// statuses ever need to be orderable, add them to the OR() below.
+// Despite the name, this also includes Service Call Scheduled and
+// Ready to Invoice jobs so guys in the field can order materials for
+// service calls AND can still order last-minute supplies for jobs that
+// have been flagged ready-to-invoice but aren't fully wrapped yet.
 async function handleAwardedJobs() {
   const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `OR({Job Status}='Awarded',{Job Status}='Service Call Scheduled')`,
+    filter: `OR({Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
     sortField: "Job Name",
     sortDir: "asc"
   });
@@ -1199,9 +1203,24 @@ async function handleReorderAlerts() {
     const wireFtRaw   = f["Wire (Ft.)"];
     const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
 
+    // Pull the linked record IDs so the frontend can deep-link this alert
+    // straight into the Receive screen with item + location prefilled. Names
+    // alone aren't safe for lookup (two items could share part of a name),
+    // so we always pass IDs when they're available.
+    const itemLinks = f["Item"] || [];
+    const itemId = itemLinks.length
+      ? (typeof itemLinks[0] === "object" ? itemLinks[0].id : String(itemLinks[0]))
+      : "";
+    const locLinks = f["Location"] || [];
+    const locationId = locLinks.length
+      ? (typeof locLinks[0] === "object" ? locLinks[0].id : String(locLinks[0]))
+      : "";
+
     if (!groups[locName]) groups[locName] = [];
     groups[locName].push({
+      itemId,
       itemName,
+      locationId,
       qtyOnHand:    qty,
       reorderPoint: reorder,
       shortBy:      reorder - qty,

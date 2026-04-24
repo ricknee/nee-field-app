@@ -44,6 +44,8 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .hdr h2{font-size:16px;font-weight:600;flex:1;}
 .hdr-badge{font-size:11px;color:var(--dim);background:var(--slate);padding:3px 10px;border-radius:20px;white-space:nowrap;}
 .hdr-out{background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:4px 8px;}
+.hdr-fa{background:rgba(245,166,35,0.12);border:1px solid rgba(245,166,35,0.45);color:var(--gold);font-size:11px;font-weight:600;cursor:pointer;padding:5px 10px;border-radius:18px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;}
+.hdr-fa:active{background:rgba(245,166,35,0.25);}
 
 /* HOME */
 .home-body{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;}
@@ -200,6 +202,7 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <div>
       <button class="loc-pill" onclick="goPickLocation()" id="loc-pill">📍 <span id="loc-pill-name">Set location</span></button>
     </div>
+    <a href="/" id="hdr-fa-link" class="hdr-fa" title="Back to Field App">← 🔧 Field App</a>
     <div class="hdr-badge" id="hdr-user">—</div>
     <button class="hdr-out" onclick="logout()">Out</button>
   </div>
@@ -857,6 +860,72 @@ var scanCallback    = null;
 var scanStream      = null;
 var barcodeDetector = null;
 
+// ── FIELD APP HAND-OFF ─────────────────────────────────────
+// When the user arrives from hub.northeasternelec.com with ?jobId=... in the
+// URL, pre-populate the "Use on Job" / "Return Items" job dropdown by writing
+// to the same localStorage keys the existing "restore last job" logic reads.
+// Also keep the header's "← Field App" link in sync so going back carries the
+// currently active job along.
+(function neeHubHandoff() {
+  try {
+    var params      = new URLSearchParams(window.location.search);
+    var incomingId  = params.get("jobId")   || "";
+    var incomingNm  = params.get("jobName") || "";
+    if (incomingId && incomingNm) {
+      // Stash globally for the back-link refresher below.
+      window.NEE_INCOMING_JOB = { id: incomingId, name: incomingNm };
+      // Use the same keys the existing log-form pre-fill already reads.
+      try {
+        localStorage.setItem("nee_last_job",    incomingNm);
+        localStorage.setItem("nee_last_job_id", incomingId);
+      } catch(e) {}
+      // Strip the params from the address bar so a refresh doesn't keep
+      // re-applying after the user has moved on to a different job.
+      var cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, "", cleanUrl);
+    }
+  } catch(e) { /* non-fatal */ }
+})();
+
+// Recompute the back-link href so it carries whichever job is currently the
+// "active" one. Called whenever job selection might have changed (after
+// rendering the log form, after submitting a cart, etc.).
+function refreshFieldAppBackLink() {
+  var link = document.getElementById("hdr-fa-link");
+  if (!link) return;
+  var jobName = "";
+  var jobId   = "";
+  // Prefer whatever's currently selected in the log form, else fall back to
+  // the last-used job in localStorage, else the original hand-off.
+  try {
+    var hiddenName = document.getElementById("log-job");
+    var hiddenId   = document.getElementById("log-job-id");
+    if (hiddenName && hiddenName.value) jobName = hiddenName.value;
+    if (hiddenId   && hiddenId.value)   jobId   = hiddenId.value;
+  } catch(e) {}
+  if (!jobId) {
+    try {
+      jobName = jobName || localStorage.getItem("nee_last_job")    || "";
+      jobId   = jobId   || localStorage.getItem("nee_last_job_id") || "";
+    } catch(e) {}
+  }
+  if (!jobId && window.NEE_INCOMING_JOB) {
+    jobName = window.NEE_INCOMING_JOB.name;
+    jobId   = window.NEE_INCOMING_JOB.id;
+  }
+  if (jobId) {
+    var qs = new URLSearchParams();
+    qs.set("jobId", jobId);
+    if (jobName) qs.set("jobName", jobName);
+    link.href = "/?" + qs.toString();
+  } else {
+    link.href = "/";
+  }
+}
+// Refresh on first load and again when the page gets focus back from another tab.
+window.addEventListener("load",  refreshFieldAppBackLink);
+window.addEventListener("focus", refreshFieldAppBackLink);
+
 const SESSION_KEY  = "nee_inv_v2";
 const SESSION_DAYS = 30;
 const LOC_KEY      = "nee_inv_loc";
@@ -885,8 +954,17 @@ function loadLocation() { try { return JSON.parse(localStorage.getItem(LOC_KEY) 
   // Load employees for name picker
   try {
     var d = await apiGet("employees");
+    // Office staff don't need access to the inventory app — hide their names
+    // from the picker grid. (Backend still recognizes them as valid users on
+    // any other endpoints, this is purely a UI hide.) Match on first name,
+    // case-insensitive, so "Tisha Smith" and "tisha" both filter out.
+    var INVENTORY_HIDE = ["tisha", "arlene"];
+    var visibleEmployees = (d.employees || []).filter(function(e) {
+      var first = (e.name || "").split(" ")[0].toLowerCase();
+      return INVENTORY_HIDE.indexOf(first) === -1;
+    });
     var grid = document.getElementById("name-grid");
-    grid.innerHTML = d.employees.map(function(e) {
+    grid.innerHTML = visibleEmployees.map(function(e) {
       var firstName = e.name.split(" ")[0];
       return '<button class="name-btn" onclick="pickName(this,\'' + e.name.replace(/'/g,"\\'") + '\')">' + firstName + '</button>';
     }).join("");
@@ -1160,6 +1238,8 @@ function renderLogForm() {
       }
     }
   } catch(e) {}
+  // Keep the "← Field App" header link pointing at whatever job is now active
+  try { refreshFieldAppBackLink(); } catch(e) {}
 }
 
 function renderItemSearch() {
@@ -1201,6 +1281,8 @@ function selectJob(id, name) {
     localStorage.setItem("nee_last_job",    name);
     localStorage.setItem("nee_last_job_id", id);
   } catch(e) {}
+  // Keep the "← Field App" header link in sync with the new selection
+  try { refreshFieldAppBackLink(); } catch(e) {}
 }
 
 // Hide job dropdown when clicking elsewhere
@@ -2246,11 +2328,7 @@ function generateReceiptPDF(g) {
 
       // Item name
       doc.setTextColor(isReturn ? 180 : 30, isReturn ? 30 : 30, isReturn ? 30 : 30);
-      // Collapse any newlines / extra whitespace before rendering — jsPDF will
-      // treat an embedded \n as a hard line break, which produces ugly wrap
-      // (e.g. "1/2\" PVC (SCH" + "40)" split across two lines).
-      var cleanItem = String(l.item || "").replace(/\s+/g, " ").trim();
-      var itemText = cleanItem.length > 42 ? cleanItem.substring(0, 40) + "..." : cleanItem;
+      var itemText = l.item.length > 42 ? l.item.substring(0, 40) + "..." : l.item;
       doc.text(itemText, c1, y);
 
       // Qty
@@ -2304,13 +2382,10 @@ function generateReceiptPDF(g) {
       doc.text("$" + taxAmt.toFixed(2), c4, y, { align: "right" });
     }
 
-    // Grand total — orange box, right side only.
-    // Box width bumped from 65 → 78mm so "GRAND TOTAL" (font size 10 bold)
-    // has a few mm of left-padding instead of being flush to the edge —
-    // previously the "G" was being clipped by the box's left border.
+    // Grand total — orange box, right side only
     y += 5;
     doc.setFillColor(232, 101, 26);
-    doc.rect(pW - mg - 78, y, 78, 11, "F");
+    doc.rect(pW - mg - 65, y, 65, 11, "F");
     doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
     doc.setTextColor(255, 255, 255);
@@ -3696,24 +3771,13 @@ async function loadReorderAlerts() {
 
       items.forEach(function(item) {
         var isWire = item.wireWeight > 0;
-        // Use a real click handler when we have the item's record ID — that
-        // lets us deep-link into the Receive screen with item + location
-        // already filled in. Falls back to a non-clickable row only if the
-        // backend didn't return an itemId for some reason (legacy data).
-        var clickAttr = item.itemId
-          ? ' onclick="goReceiveFromAlert(\'' + item.itemId + '\', ' + (item.locationId ? "'" + item.locationId + "'" : "null") + ')" style="cursor:pointer;"'
-          : '';
-        html += '<div' + clickAttr + ' style="background:var(--navy-lt);border:1px solid rgba(231,76,60,.4);border-radius:10px;padding:12px 14px;margin-bottom:6px;' + (item.itemId ? 'cursor:pointer;' : '') + '">';
+        html += '<div style="background:var(--navy-lt);border:1px solid rgba(231,76,60,.4);border-radius:10px;padding:12px 14px;margin-bottom:6px;">';
         html += '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">';
         html += '<div style="flex:1;">';
         html += '<div style="font-size:14px;font-weight:600;">' + item.itemName + '</div>';
         html += '<div style="font-size:11px;color:var(--muted);margin-top:3px;">Minimum: ' + fmtQty(item.reorderPoint);
         if (isWire) html += ' lbs (' + fmtQty(Math.round(item.reorderPoint * item.wireWeight)) + ' ft)';
         html += '</div>';
-        // Tap-to-receive hint — only show when the deep-link will actually work
-        if (item.itemId) {
-          html += '<div style="font-size:10px;color:var(--gold);margin-top:4px;letter-spacing:.04em;">📥 Tap to receive stock</div>';
-        }
         html += '</div>';
         html += '<div style="text-align:right;flex-shrink:0;">';
         html += '<div style="font-size:18px;font-weight:700;color:var(--red);">' + fmtQty(Math.max(0, item.qtyOnHand));
@@ -3743,50 +3807,6 @@ async function loadReorderAlerts() {
   } finally {
     if (btn) btn.disabled = false;
   }
-}
-
-
-// Tap-handler for a reorder-alert row. Drops the user straight into the
-// Receive screen with the item pre-selected and the location set to the
-// shop/truck the alert was raised against. Quantity and cost are left
-// blank — they fill cost from the item's default automatically when the
-// item is picked, and the user always knows the qty when they're holding
-// the new stock in their hands.
-function goReceiveFromAlert(itemId, locationId) {
-  if (!itemId) return;
-  goReceive();
-  // The receive form re-renders asynchronously when data isn't ready yet.
-  // Poll briefly until the item search input exists, then drive the same
-  // pickItemFor() path the user would take manually — that way wire toggle,
-  // cost autofill, and the qty/cost block all initialize identically to a
-  // hand-driven flow.
-  var tries = 0;
-  var iv = setInterval(function() {
-    tries++;
-    var ready = !!document.getElementById("recv-item-area")
-             && !!document.getElementById("recv-loc");
-    if (!ready) {
-      if (tries > 40) clearInterval(iv);  // ~6s safety bail
-      return;
-    }
-    clearInterval(iv);
-
-    // Prefill location if we got one from the alert
-    if (locationId) {
-      var locSel = document.getElementById("recv-loc");
-      // Make sure the option exists in the dropdown (it should — Receive uses
-      // the full allLocations list — but guard just in case)
-      var hasOpt = Array.prototype.some.call(locSel.options, function(o){ return o.value === locationId; });
-      if (hasOpt) locSel.value = locationId;
-    }
-
-    // Prefill item via the same path as a manual pick
-    pickItemFor("recv", itemId);
-
-    // Focus the qty field — that's the next thing the user needs to type
-    var qtyInp = document.getElementById("recv-qty");
-    if (qtyInp) { qtyInp.focus(); qtyInp.select(); }
-  }, 150);
 }
 
 

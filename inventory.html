@@ -2246,7 +2246,11 @@ function generateReceiptPDF(g) {
 
       // Item name
       doc.setTextColor(isReturn ? 180 : 30, isReturn ? 30 : 30, isReturn ? 30 : 30);
-      var itemText = l.item.length > 42 ? l.item.substring(0, 40) + "..." : l.item;
+      // Collapse any newlines / extra whitespace before rendering — jsPDF will
+      // treat an embedded \n as a hard line break, which produces ugly wrap
+      // (e.g. "1/2\" PVC (SCH" + "40)" split across two lines).
+      var cleanItem = String(l.item || "").replace(/\s+/g, " ").trim();
+      var itemText = cleanItem.length > 42 ? cleanItem.substring(0, 40) + "..." : cleanItem;
       doc.text(itemText, c1, y);
 
       // Qty
@@ -2300,10 +2304,13 @@ function generateReceiptPDF(g) {
       doc.text("$" + taxAmt.toFixed(2), c4, y, { align: "right" });
     }
 
-    // Grand total — orange box, right side only
+    // Grand total — orange box, right side only.
+    // Box width bumped from 65 → 78mm so "GRAND TOTAL" (font size 10 bold)
+    // has a few mm of left-padding instead of being flush to the edge —
+    // previously the "G" was being clipped by the box's left border.
     y += 5;
     doc.setFillColor(232, 101, 26);
-    doc.rect(pW - mg - 65, y, 65, 11, "F");
+    doc.rect(pW - mg - 78, y, 78, 11, "F");
     doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
     doc.setTextColor(255, 255, 255);

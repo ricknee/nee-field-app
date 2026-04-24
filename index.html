@@ -6254,8 +6254,15 @@ rick@northeasternelec.com`
           <button class="inv-btn secondary" onclick="estResetLines()">↺ Reload from Est. GP</button>
           <button class="inv-btn secondary" onclick="estAddLine()">+ Add Line</button>
           <button class="inv-btn" onclick="estGeneratePDF()" style="background:#ea580c; border-color:#ea580c;">⬇ Download PDF</button>
-          <button class="inv-btn green" onclick="estSaveToAirtable()">💾 Save Estimate</button>
+          <button class="inv-btn green" onclick="estSaveToAirtable()" id="estSaveBtn">💾 Save Estimate</button>
           <button class="inv-btn secondary" onclick="estEmail()">✉ Email</button>
+        </div>
+
+        <!-- Edit-mode banner — shown when an existing estimate snapshot has
+             been loaded back into the builder for in-place editing. -->
+        <div id="est-editing-banner" style="display:none; margin: 8px 0; padding: 10px 14px; border-radius: 9px; background: rgba(234,88,12,0.1); border: 1px solid rgba(234,88,12,0.45); color: #c2410c; font-size: 13px; font-weight: 600; align-items: center; justify-content: space-between; gap: 10px;">
+          <span id="est-editing-banner-text">✏ Editing existing estimate — Save will UPDATE it (no duplicate created)</span>
+          <button onclick="cancelEstimateEdit()" style="font-size:12px; padding:4px 10px; border:1px solid #c2410c; border-radius:5px; background:white; color:#c2410c; cursor:pointer; font-weight:600; white-space:nowrap;">✕ Cancel Edit</button>
         </div>
 
         <!-- Preview -->
@@ -6555,6 +6562,11 @@ rick@northeasternelec.com`
               const reprintBtn = hasSnap
                 ? `<button data-est-id="${esc(est.id)}" class="est-reprint-btn" style="font-size:11px; padding:4px 10px; border:1px solid #ea580c; border-radius:5px; background:white; color:#ea580c; cursor:pointer; font-weight:600;">📄 Reprint Estimate</button>`
                 : `<span style="font-size:11px; color:var(--muted); font-style:italic;">no snapshot</span>`;
+              // Edit button — loads this estimate's snapshot back into the builder
+              // so the user can correct it and re-save WITHOUT creating a duplicate.
+              const editBtn = hasSnap
+                ? `<button data-est-id="${esc(est.id)}" class="est-edit-btn" style="font-size:11px; padding:4px 10px; border:1px solid #ea580c; border-radius:5px; background:rgba(234,88,12,0.1); color:#c2410c; cursor:pointer; font-weight:600; margin-right:4px;" title="Load this estimate into the builder so you can edit and re-save it">✏ Edit</button>`
+                : "";
               return `
                 <tr style="border-bottom:1px solid var(--line);">
                   <td style="padding:8px;">${esc(String(num))}</td>
@@ -6562,7 +6574,7 @@ rick@northeasternelec.com`
                   <td style="padding:8px;">${esc(name)}</td>
                   <td style="padding:8px;">${esc(status)}</td>
                   <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
-                  <td style="padding:8px; text-align:right;">${reprintBtn}</td>
+                  <td style="padding:8px; text-align:right;">${editBtn}${reprintBtn}</td>
                 </tr>
               `;
             }).join("")}
@@ -6578,6 +6590,23 @@ rick@northeasternelec.com`
           try {
             const snap = typeof est.snapshot === "string" ? JSON.parse(est.snapshot) : est.snapshot;
             reprintEstimatePDF(snap);
+          } catch(e) {
+            alert("Couldn't read saved estimate snapshot: " + e.message);
+          }
+        });
+      });
+      // Wire edit buttons — pull the snapshot back into the builder so the
+      // user can tweak the estimate and re-save WITHOUT creating a duplicate
+      // Airtable record. The save handler reads window._estEditingId and
+      // PATCHes instead of POSTs.
+      listEl.querySelectorAll(".est-edit-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const estId = btn.dataset.estId;
+          const est = (window._estHistoryCache || []).find(e => e.id === estId);
+          if (!est || !est.snapshot) { alert("No snapshot available — can't edit this estimate."); return; }
+          try {
+            const snap = typeof est.snapshot === "string" ? JSON.parse(est.snapshot) : est.snapshot;
+            loadEstimateForEdit(estId, est, snap);
           } catch(e) {
             alert("Couldn't read saved estimate snapshot: " + e.message);
           }
@@ -6657,26 +6686,111 @@ rick@northeasternelec.com`
       totalAmount:    total,
       snapshot
     };
+    // If we're in edit mode (loaded an existing estimate via the Edit button
+    // in History), send the estimate ID so the backend PATCHes instead of
+    // POSTing a duplicate snapshot.
+    if (window._estEditingId) {
+      body.estimateId = window._estEditingId;
+    }
 
     try {
+      const wasEditing = !!window._estEditingId;
       const result = await apiPost("saveEstimate", body);
       if (!result.ok) throw new Error(result.error || "Save failed");
       const banner = $("est-saved-msg");
       if (banner) {
-        banner.textContent   = `✓ Estimate #${estimateNumber || ""} saved to Airtable`;
+        banner.textContent   = wasEditing
+          ? `✓ Estimate #${estimateNumber || ""} updated in Airtable`
+          : `✓ Estimate #${estimateNumber || ""} saved to Airtable`;
         banner.style.display = "block";
         setTimeout(() => { banner.style.display = "none"; }, 4000);
       }
-      // Refresh history + bump to next number
+      // Refresh history so the row reflects the new amount/lines
       if (estJobRef?.id) loadEstimateHistory(estJobRef.id);
-      const inp = $("estNum");
-      if (inp) inp.value = "";
-      autoFillEstimateNumber();
+
+      if (wasEditing) {
+        // Exit edit mode — banner off, save button label back to default,
+        // but DO NOT bump the estimate number (that's create-new behavior).
+        window._estEditingId = null;
+        const editBanner = $("est-editing-banner");
+        if (editBanner) editBanner.style.display = "none";
+        const saveBtnEl = $("estSaveBtn");
+        if (saveBtnEl) saveBtnEl.textContent = "💾 Save Estimate";
+      } else {
+        // Fresh estimate flow: clear the # input and auto-fill the next number
+        const inp = $("estNum");
+        if (inp) inp.value = "";
+        autoFillEstimateNumber();
+      }
     } catch(err) {
       alert("Error saving estimate: " + err.message);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "💾 Save Estimate"; }
+      // Restore button label only if we're not still in edit mode
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = window._estEditingId ? "💾 Update Estimate" : "💾 Save Estimate";
+      }
     }
+  };
+
+  // ── EDIT EXISTING ESTIMATE ─────────────────────────────────────────────
+  // Pull a saved estimate snapshot back into the builder so the user can
+  // tweak it and re-save WITHOUT creating a duplicate Airtable record.
+  // The save handler reads window._estEditingId — when set, the backend
+  // PATCHes the existing record instead of POSTing a new one.
+  window.loadEstimateForEdit = function(estimateId, estMeta, snap) {
+    if (!snap) { alert("No snapshot to edit."); return; }
+    // Re-hydrate the form fields from the snapshot
+    if ($("estNum"))         $("estNum").value         = snap.invNum      || "";
+    if ($("estDate"))        $("estDate").value        = snap.invDate     || "";
+    if ($("estBillTo"))      $("estBillTo").value      = snap.billTo      || "";
+    if ($("estJobLabel"))    $("estJobLabel").value    = snap.po          || "";
+    if ($("estNotes"))       $("estNotes").value       = snap.notes       || "";
+    if ($("estGoodThrough")) $("estGoodThrough").value = snap.goodThrough || "";
+    // Re-hydrate line items
+    estLines = (snap.lines || []).map(l => ({
+      id: l.id || `line_${Math.random().toString(36).slice(2)}`,
+      section: l.section || "",
+      description: l.description || "",
+      amount: Number(l.amount) || 0,
+      rate:   Number(l.amount) || 0,
+      qty: 1,
+      editable: true,
+      hideQtyRate: true
+    }));
+    refreshEstLines();
+
+    // Flag that subsequent Save = update (not create).
+    window._estEditingId = estimateId;
+
+    // Show the editing banner
+    const banner = $("est-editing-banner");
+    const bannerText = $("est-editing-banner-text");
+    if (banner) {
+      banner.style.display = "flex";
+      if (bannerText) {
+        bannerText.textContent = `✏ Editing Estimate #${snap.invNum || estMeta?.displayNumber || "—"} — Save will UPDATE it (no duplicate created)`;
+      }
+    }
+    // Change the save button label so it's unmistakable
+    const saveBtn = $("estSaveBtn");
+    if (saveBtn) saveBtn.textContent = "💾 Update Estimate";
+
+    // Scroll up to the builder so the user sees what they're editing
+    const builder = document.querySelector("#tab-estimate .inv-toolbar");
+    if (builder) builder.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Cancel out of edit mode — clears the form and the editing flag so the
+  // next Save creates a fresh estimate.
+  window.cancelEstimateEdit = function() {
+    window._estEditingId = null;
+    const banner = $("est-editing-banner");
+    if (banner) banner.style.display = "none";
+    const saveBtn = $("estSaveBtn");
+    if (saveBtn) saveBtn.textContent = "💾 Save Estimate";
+    // Reload the tab from scratch so the form returns to "fresh new estimate"
+    if (estJobRef?.id) loadEstimateTab(estJobRef.id);
   };
 
   // Build estimate PDF using the shared PDF builder with orange theme

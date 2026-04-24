@@ -5507,21 +5507,77 @@
 
     const stage   = $("invStage")?.value || "";
     const estName = est.name || "Estimate";
-    let desc;
-    if (stage === "Rough In")           desc = `Rough In — ${estName}`;
-    else if (stage === "Final")         desc = `Final — ${estName}`;
-    else if (stage === "Progress")      desc = `Progress (${pct}%) — ${estName}`;
-    else if (stage === "Change Order")  desc = `Change Order — ${estName}`;
-    else                                desc = estName;
+    let header;
+    if (stage === "Rough In")           header = `Rough In — ${estName}`;
+    else if (stage === "Final")         header = `Final — ${estName}`;
+    else if (stage === "Progress")      header = `Progress (${pct}%) — ${estName}`;
+    else if (stage === "Change Order")  header = `Change Order — ${estName}`;
+    else                                header = estName;
 
-    // One line per estimate — re-clicking Add updates in place instead of duplicating
+    // Build the full description — header line + scope text pulled from the
+    // estimate. Preferred scope source is the saved Estimate Snapshot (lines
+    // with descriptions), falling back to the Notes field on the estimate.
+    // Skip scope when a Progress (partial %) bill is being added — at less
+    // than 100% the scope text doesn't really apply uniformly across all line
+    // items, so the header alone keeps things honest.
+    function buildScopeDescription() {
+      let scopeBlock = "";
+      try {
+        if (est.snapshot) {
+          const snap = typeof est.snapshot === "string" ? JSON.parse(est.snapshot) : est.snapshot;
+          const lines = (snap.lines || [])
+            .map(l => (l.description || "").trim())
+            .filter(Boolean);
+          if (lines.length) {
+            scopeBlock = "\n\nScope:\n" + lines.map(d => "• " + d).join("\n");
+          }
+        }
+      } catch(e) { /* malformed snapshot — fall through to notes */ }
+      if (!scopeBlock && est.notes) {
+        scopeBlock = "\n\nScope:\n" + String(est.notes).trim();
+      }
+      return header + scopeBlock;
+    }
+
+    // One line per estimate — re-clicking Add updates the dollar amount but
+    // PRESERVES any manual edits the user made to the description. Only the
+    // very first add (or a fresh add after the line was deleted) builds a
+    // new description with the full scope text.
     const lineId = `contract_${estId}`;
     let line = invLines.find(l => l.id === lineId);
-    if (!line) {
-      line = { id: lineId, section: "", editable: true, hideQtyRate: true, qty: 1 };
+    const isNewLine = !line;
+    if (isNewLine) {
+      line = {
+        id: lineId, section: "",
+        editable: true, hideQtyRate: true, qty: 1,
+        // Mark which estimate this line was sourced from so future "carry-over"
+        // logic could re-derive scope on demand if we ever add that.
+        _fromEstimateId: estId
+      };
       invLines.push(line);
+      // Fresh line → seed with header + scope. User can edit/trim afterward.
+      line.description = buildScopeDescription();
+    } else {
+      // Re-click on existing line → only refresh the header portion of the
+      // description (so stage / percent updates flow through), but keep the
+      // scope block (and any user edits) intact.
+      const cur = String(line.description || "");
+      const scopeIdx = cur.indexOf("\n\nScope:");
+      if (scopeIdx !== -1) {
+        line.description = header + cur.slice(scopeIdx);
+      } else {
+        // No scope block found (user must have stripped it) — leave the
+        // whole description alone except for replacing the very first line
+        // if it looks like an old header.
+        const firstNl = cur.indexOf("\n");
+        const firstLine = firstNl === -1 ? cur : cur.slice(0, firstNl);
+        // Replace if the existing first line looks like a header we wrote
+        if (/^(Rough In|Final|Progress|Change Order) — /.test(firstLine) || firstLine === estName) {
+          line.description = header + (firstNl === -1 ? "" : cur.slice(firstNl));
+        }
+        // Otherwise the user has fully customized — don't touch description
+      }
     }
-    line.description = desc;
     line.rate   = amt;
     line.amount = amt;
 

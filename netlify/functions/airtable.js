@@ -579,7 +579,7 @@ async function handleGetNextEstimateNumber() {
 // Job Estimates remains the source-of-truth table for Expected Revenue rollups
 // and is only populated via the "New Job Estimate" Airtable form.
 async function handleSaveEstimate(body) {
-  const { jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot } = body || {};
+  const { estimateId, jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -598,12 +598,23 @@ async function handleSaveEstimate(body) {
   // Note: "notes" from the caller is embedded in the Snapshot JSON; no separate column.
 
   try {
-    const data = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}`, {
-      method: "POST",
-      body: JSON.stringify({ fields, typecast: true })
-    });
+    // PATCH the existing estimate snapshot when estimateId is provided (edit
+    // mode); else POST a new record (create mode). Both paths use typecast
+    // so any new singleSelect option values get auto-created.
+    let data;
+    if (estimateId) {
+      data = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}/${estimateId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields, typecast: true })
+      });
+    } else {
+      data = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}`, {
+        method: "POST",
+        body: JSON.stringify({ fields, typecast: true })
+      });
+    }
     if (data.error) return resp(400, { ok: false, error: data.error });
-    return resp(200, { ok: true, id: data.id });
+    return resp(200, { ok: true, id: data.id, updated: !!estimateId });
   } catch (e) {
     const msg = String(e?.message || e || "");
     if (/NOT_FOUND|could not.*find.*table/i.test(msg)) {
@@ -1202,6 +1213,79 @@ async function handleGetNextInvoiceNumber() {
 }
 
 // ── LIST PAST INVOICES FOR A JOB ─────────────────────────────────────────
+// ── ALL INVOICES (cross-job) — backs the global "💰 Invoices" modal ─────
+// Same data shape as handleGetJobInvoices but enriched with job name +
+// contractor + customer info pulled from the Jobs table. Client filters
+// (date range, contractor, customer search) happen in the browser since the
+// dataset is small (a few hundred invoices at most).
+async function handleGetAllInvoices() {
+  // 1. Pull all invoices, paginated
+  const allInvoices = [];
+  let offset = undefined;
+  do {
+    const qs = (offset ? "?offset=" + encodeURIComponent(offset) : "");
+    const page = await atFetch(`${encodeURIComponent("Invoices")}${qs}`);
+    if (page.error) return resp(400, { ok: false, error: page.error });
+    allInvoices.push(...(page.records || []));
+    offset = page.offset;
+  } while (offset);
+
+  // 2. Pull all jobs once and build a fast lookup by id. Re-using fetchAll
+  // here so we get the same archived-status filter behavior, but we don't
+  // actually filter by status here — the user might want to see invoices
+  // from a now-archived job. So fetch raw.
+  const jobRecs = await fetchAll(TABLES.jobs);
+  const jobById = {};
+  jobRecs.forEach(r => {
+    const f = r.fields || {};
+    const customerName = [g(f, F.job.customerFirstName) || "", g(f, F.job.customerLastName) || ""]
+      .filter(Boolean).join(" ").trim();
+    jobById[r.id] = {
+      id:         r.id,
+      name:       g(f, F.job.name)       || "",
+      contractor: g(f, F.job.contractor) || "",
+      customer:   customerName,
+      address:    g(f, F.job.address)    || "",
+      status:     g(f, F.job.status)     || ""
+    };
+  });
+
+  // 3. Map invoices into the same shape as handleGetJobInvoices, plus
+  // job/contractor/customer fields for filtering & display.
+  const invoices = allInvoices.map(r => {
+    const f = r.fields || {};
+    const jobLink = Array.isArray(f["Job"]) ? f["Job"][0] : null;
+    const job = jobLink ? jobById[jobLink] : null;
+    return {
+      id:              r.id,
+      displayNumber:   f["Invoice Display #"] || null,
+      invoiceNumber:   f["Invoice Number"]    || "",
+      date:            f["Invoice Date"]      || "",
+      status:          f["Invoice Status"]    || "",
+      billingMode:     f["Billing Mode"]      || "",
+      invoiceType:     f["Invoice Type"]      || "",
+      total:           Number(f["Invoice Total"] || 0),
+      snapshotTotal:   Number(f["Snapshot Total"] || 0),
+      contractAmount:  Number(f["Contract Invoice Amount"] || 0),
+      notes:           f["Invoice Notes"]     || "",
+      snapshot:        f["Invoice Snapshot"]  || "",
+      stage:           f["Invoice Stage"]     || "",
+      // Joined from job
+      jobId:           job?.id         || jobLink || "",
+      jobName:         job?.name       || "",
+      contractor:      job?.contractor || "",
+      customer:        job?.customer   || "",
+      address:         job?.address    || "",
+      jobStatus:       job?.status     || ""
+    };
+  });
+
+  // 4. Sort by Invoice Date descending (newest first) — frontend can re-sort
+  invoices.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+
+  return resp(200, { ok: true, invoices });
+}
+
 async function handleGetJobInvoices(body) {
   const { jobId } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -1355,6 +1439,7 @@ export async function handler(event) {
       if (action === "jobInspections")     return await handleJobInspections(params);
       if (action === "jobEstimates")       return await handleJobEstimates(params);
       if (action === "sentEstimatePDFs")   return await handleSentEstimatePDFs(params);
+      if (action === "allInvoices")        return await handleGetAllInvoices();
       if (action === "fleetVehicles")      return await handleFleetVehicles();
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();

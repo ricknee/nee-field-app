@@ -2008,6 +2008,55 @@
   // ── DOM ──
   const $ = id => document.getElementById(id);
 
+  // ── BACK-BUTTON STACK ──────────────────────────────────────────────
+  // Mobile users expect Android's hardware/software back button to "undo"
+  // the last navigation step inside the app rather than closing the
+  // browser tab. Single-page apps don't get this for free — every time
+  // the user opens a modal or selects a job, we push a synthetic history
+  // entry. When they hit back, we pop the stack and close whatever was
+  // most recently opened. URL never actually changes.
+  //
+  // Stack entries: { kind, close } — close() is called when popstate fires.
+  const backStack = [];
+  let suppressPopstate = false;
+
+  function pushBackEntry(kind, closeFn) {
+    backStack.push({ kind, close: closeFn });
+    history.pushState({ neeKind: kind, depth: backStack.length }, "");
+  }
+
+  // Programmatically close the topmost entry (e.g., when user clicks an X
+  // button instead of pressing back). This pops both our stack and the
+  // browser's history without firing the close logic twice.
+  function popBackEntry(kind) {
+    // Find the most-recent entry with this kind (or just the top if no kind)
+    const idx = kind
+      ? [...backStack].reverse().findIndex(e => e.kind === kind)
+      : 0;
+    if (idx === -1 || !backStack.length) return;
+    // We're popping our own state — don't re-trigger close from popstate
+    suppressPopstate = true;
+    history.back();
+  }
+
+  window.addEventListener("popstate", (e) => {
+    if (suppressPopstate) {
+      suppressPopstate = false;
+      // Still need to drop our top entry since the browser already moved
+      backStack.pop();
+      return;
+    }
+    // User hit back — close whatever's on top
+    const top = backStack.pop();
+    if (top && typeof top.close === "function") {
+      try { top.close(); } catch(err) { console.warn("back close failed:", err); }
+    }
+    // If the stack is empty AND the user keeps pressing back, the next
+    // popstate will be a real navigation away from the page (or close tab).
+  });
+  // Expose for use by selectJob / openPayroll / etc.
+  window._neeBack = { push: pushBackEntry, pop: popBackEntry };
+
   // ── UTILS ──
   function esc(v) {
     return String(v ?? "")
@@ -2332,6 +2381,22 @@
   }
 
   // ── SELECT JOB ──
+  // Return to the job list view (used by the back button on mobile).
+  // Mirror selectJob but in reverse: hide the detail panel, show the
+  // placeholder, drop the body class, scroll back up to the list.
+  function deselectJob() {
+    state.selected = null;
+    renderJobList();
+    $("noSelection").classList.remove("hidden");
+    $("jobDetail").classList.add("hidden");
+    document.body.classList.remove("has-selection");
+    if (window.matchMedia("(max-width: 768px)").matches) {
+      // Scroll the job list to the top so the user sees something useful
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+  window.deselectJob = deselectJob;
+
   function selectJob(job) {
     state.selected = job;
     renderJobList(); // re-render to update active state
@@ -2341,6 +2406,14 @@
     // On mobile, this class flips the layout from "full-screen job list +
     // bottom hint pill" to the normal split (50vh sidebar + detail panel).
     document.body.classList.add("has-selection");
+
+    // Push a back-button entry so the phone's back button deselects this
+    // job instead of closing the tab. Only push if we don't already have
+    // a "job" entry on top — otherwise rapid switching between jobs would
+    // pile up dozens of entries.
+    if (!backStack.length || backStack[backStack.length - 1].kind !== "job") {
+      pushBackEntry("job", deselectJob);
+    }
 
     // On mobile, scroll up so the job header is visible immediately —
     // otherwise the user is left looking at the same job list and has to
@@ -3827,9 +3900,16 @@
 
   async function openFleet() {
     $("fleetModal").style.display = "flex";
+    pushBackEntry("fleet", () => { $("fleetModal").style.display = "none"; });
     fleetShowList();
     await loadFleetVehicles();
   }
+
+  function closeFleet() {
+    popBackEntry("fleet");
+    $("fleetModal").style.display = "none";
+  }
+  window.closeFleet = closeFleet;
 
   function fleetShowList() {
     $("fleetListView").style.display = "";
@@ -4109,6 +4189,7 @@
 
   async function openMileageModal() {
     $("mileageModal").style.display = "flex";
+    pushBackEntry("mileage", () => { $("mileageModal").style.display = "none"; });
     // Reset form
     $("mileageDate").value = new Date().toISOString().slice(0,10);
     $("mileageNew").value = "";
@@ -4177,13 +4258,19 @@
       // Update local cache so next open shows the new value immediately
       if (veh) { veh.currentMileage = mileage; veh.mileageDate = date; }
       // Auto-close the modal on success
-      $("mileageModal").style.display = "none";
+      closeMileage();
     } catch(e) {
       err.textContent = "Error: " + e.message;
       err.style.display = "inline";
     }
     finally { btn.disabled = false; }
   }
+
+  function closeMileage() {
+    popBackEntry("mileage");
+    $("mileageModal").style.display = "none";
+  }
+  window.closeMileage = closeMileage;
 
   // ── SCISSOR LIFTS AT JOB (all users) ──
   async function loadJobLifts(jobName) {
@@ -4303,8 +4390,15 @@
 
   async function openScissorLifts() {
     $("slModal").style.display = "flex";
+    pushBackEntry("scissorLifts", () => { $("slModal").style.display = "none"; });
     await loadScissorLifts();
   }
+
+  function closeScissorLifts() {
+    popBackEntry("scissorLifts");
+    $("slModal").style.display = "none";
+  }
+  window.closeScissorLifts = closeScissorLifts;
 
   async function loadScissorLifts() {
     $("slGrid").innerHTML = `<div class="loading-msg">Loading lifts...</div>`;
@@ -7029,6 +7123,7 @@ rick@northeasternelec.com`
 
   function openPayroll() {
     $("payrollModal").style.display = "flex";
+    pushBackEntry("payroll", () => { $("payrollModal").style.display = "none"; });
     preloadJsPDF(); // start loading jsPDF in background
     // Default dates: last Mon and coming Sat based on today
     const today = new Date();
@@ -7045,6 +7140,7 @@ rick@northeasternelec.com`
   }
 
   function closePayroll() {
+    popBackEntry("payroll");
     $("payrollModal").style.display = "none";
   }
   window.closePayroll = closePayroll;
@@ -7061,6 +7157,7 @@ rick@northeasternelec.com`
 
   function openAllInvoices() {
     $("allInvoicesModal").style.display = "flex";
+    pushBackEntry("allInvoices", () => { $("allInvoicesModal").style.display = "none"; });
     $("arStatus").textContent = "Loading invoices...";
     $("arTableWrap").style.display = "none";
     $("arTotalsRow").style.display = "none";
@@ -7069,6 +7166,7 @@ rick@northeasternelec.com`
   window.openAllInvoices = openAllInvoices;
 
   function closeAllInvoices() {
+    popBackEntry("allInvoices");
     $("allInvoicesModal").style.display = "none";
   }
   window.closeAllInvoices = closeAllInvoices;
@@ -8056,7 +8154,7 @@ rick@northeasternelec.com`
   <div class="fleet-modal">
     <div class="fleet-modal-header">
       <h2>🚗 Fleet Maintenance</h2>
-      <button onclick="document.getElementById('fleetModal').style.display='none'" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+      <button onclick="closeFleet()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
     </div>
     <div class="fleet-modal-body">
 
@@ -8177,7 +8275,7 @@ rick@northeasternelec.com`
   <div class="fleet-modal" style="max-width:500px;">
     <div class="fleet-modal-header">
       <h2>⛽ Update Vehicle Mileage</h2>
-      <button onclick="document.getElementById('mileageModal').style.display='none'" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+      <button onclick="closeMileage()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
     </div>
     <div class="fleet-modal-body">
       <div style="margin-bottom:12px;">
@@ -8203,7 +8301,7 @@ rick@northeasternelec.com`
       </div>
       <div style="display:flex; gap:8px; align-items:center;">
         <button id="mileageSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
-        <button onclick="document.getElementById('mileageModal').style.display='none'" class="btn btn-sm" style="font-size:12px;">Cancel</button>
+        <button onclick="closeMileage()" class="btn btn-sm" style="font-size:12px;">Cancel</button>
         <span id="mileageSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
         <span id="mileageSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
       </div>
@@ -8216,7 +8314,7 @@ rick@northeasternelec.com`
   <div class="sl-modal">
     <div class="sl-modal-header">
       <h2>🏗 Scissor Lift Tracker</h2>
-      <button onclick="document.getElementById('slModal').style.display='none'" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+      <button onclick="closeScissorLifts()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
     </div>
     <div class="sl-modal-body">
       <div id="slSummaryBar" style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding:10px 14px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; font-size:13px; font-weight:600;"></div>

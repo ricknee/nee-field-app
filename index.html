@@ -1114,6 +1114,108 @@
     }
 
 
+    /* ── SCHEDULE (calendar) modal ──────────────────────────── */
+    .sch-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+    .sch-nav-btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .sch-nav-btn:hover { background: var(--accent-glow); border-color: var(--accent); }
+    .sch-range-label { font-weight: 600; color: var(--text); font-size: 14px; flex: 1; text-align: center; min-width: 200px; }
+    .sch-add-btn { background: var(--accent); color: white; border: none; border-radius: 7px; padding: 7px 14px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    .sch-add-btn:hover { filter: brightness(1.1); }
+
+    /* Calendar grid: desktop = 7 days across, mobile = stacked */
+    .sch-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+    .sch-day {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 6px 8px;
+      min-height: 110px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      cursor: pointer;
+      transition: border-color 0.1s;
+    }
+    .sch-day:hover { border-color: var(--accent); }
+    .sch-day.today { border-color: var(--accent); background: var(--accent-glow); }
+    .sch-day.weekend { background: rgba(0,0,0,0.02); }
+    .sch-day-header { display: flex; justify-content: space-between; align-items: baseline; }
+    .sch-day-name { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.4px; }
+    .sch-day-num { font-size: 16px; font-weight: 700; color: var(--text); }
+    .sch-day.today .sch-day-num { color: var(--accent); }
+    .sch-day-blocks { display: flex; flex-direction: column; gap: 3px; }
+    .sch-block {
+      font-size: 10px;
+      padding: 3px 6px;
+      border-radius: 4px;
+      color: white;
+      font-weight: 600;
+      cursor: pointer;
+      line-height: 1.25;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sch-block .crew { font-size: 9px; opacity: 0.85; font-weight: 500; }
+    .sch-block.past { opacity: 0.55; }
+
+    /* Edit panel — inline drawer below the calendar */
+    .sch-edit-panel {
+      background: var(--panel-2);
+      border: 1px solid var(--accent);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+    }
+    .sch-edit-panel h3 { margin: 0 0 10px; font-size: 14px; color: var(--accent); }
+    .sch-edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+    .sch-edit-grid label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); display: block; margin-bottom: 3px; }
+    .sch-edit-grid input, .sch-edit-grid select, .sch-edit-grid textarea {
+      width: 100%; padding: 6px 8px; background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 6px; color: var(--text); font-size: 13px; font-family: inherit; box-sizing: border-box;
+    }
+    .sch-edit-grid input:focus, .sch-edit-grid select:focus, .sch-edit-grid textarea:focus { outline: none; border-color: var(--accent); }
+    .sch-crew-pills { display: flex; flex-wrap: wrap; gap: 5px; padding: 6px; background: var(--panel); border: 1px solid var(--line-2); border-radius: 6px; min-height: 36px; }
+    .sch-crew-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      background: var(--panel-2); border: 1px solid var(--line-2);
+      padding: 3px 9px; border-radius: 14px; font-size: 12px; cursor: pointer;
+      user-select: none;
+    }
+    .sch-crew-pill.sel { background: var(--accent); color: white; border-color: var(--accent); }
+    .sch-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
+    .sch-edit-actions .danger { background: white; color: #dc2626; border: 1px solid #dc2626; }
+    .sch-edit-actions .danger:hover { background: #fee2e2; }
+
+    /* Day-detail panel: shown when a day is tapped */
+    .sch-day-detail {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+    }
+    .sch-day-detail h3 { margin: 0 0 8px; font-size: 14px; color: var(--text); }
+    .sch-day-detail-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; cursor: pointer; }
+    .sch-day-detail-row:hover { color: var(--accent); }
+    .sch-day-detail-row:last-child { border-bottom: none; }
+    .sch-free { font-size: 12px; color: var(--muted); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+    .sch-free strong { color: var(--green, #16a34a); }
+
+    @media (max-width: 768px) {
+      .sch-grid { grid-template-columns: 1fr; gap: 4px; }
+      .sch-day { min-height: 60px; flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px; }
+      .sch-day-header { flex-direction: row; min-width: 70px; gap: 6px; }
+      .sch-day-blocks { flex: 1; }
+      .sch-edit-grid { grid-template-columns: 1fr; }
+    }
+
+
     /* ── INVOICE BUILDER ── */
     .inv-wrap { max-width: 860px; margin: 0 auto; }
     .inv-toolbar {
@@ -1364,6 +1466,7 @@
       <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
       <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
+      <button id="btnSchedule" class="btn btn-sm admin-only hidden" type="button">📅 Schedule</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
@@ -2185,7 +2288,12 @@
   }
 
   function isAdmin() {
-    return (state.user?.role||"").toLowerCase() === "admin";
+    // 'office' role gets the same rights as 'admin' — the distinction
+    // exists so we can keep office staff out of the inventory app and
+    // out of crew-scheduling pickers without limiting their ability to
+    // edit anything else in the field app.
+    const r = (state.user?.role || "").toLowerCase();
+    return r === "admin" || r === "office";
   }
 
   function isViewer() {
@@ -4822,6 +4930,8 @@
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
     const allInvBtn = $("btnAllInvoices");
     if (allInvBtn) allInvBtn.addEventListener("click", openAllInvoices);
+    const schBtn = $("btnSchedule");
+    if (schBtn) schBtn.addEventListener("click", openSchedule);
     const mileageBtn = $("btnMileage");
     if (mileageBtn) mileageBtn.addEventListener("click", openMileageModal);
 
@@ -7171,6 +7281,337 @@ rick@northeasternelec.com`
   }
   window.closeAllInvoices = closeAllInvoices;
 
+  // ═══════════════════════════════════════════════════════════════════════
+  // SCHEDULE (CREW CALENDAR) MODAL
+  // ═══════════════════════════════════════════════════════════════════════
+  // Module state
+  let schEntries        = [];     // entries from backend
+  let schCrew           = [];     // active employees, role-filtered (for crew picker)
+  let schJobs           = [];     // jobs for the dropdown
+  let schRangeStart     = null;   // first day shown in calendar (Date)
+  let schDayCount       = 14;     // days shown
+  let schEditingId      = null;   // null = creating, otherwise editing this entry
+  let schSelectedCrew   = new Set();
+  let schSelectedDate   = null;   // for the day-detail panel
+
+  function openSchedule() {
+    $("scheduleModal").style.display = "flex";
+    pushBackEntry("schedule", () => { $("scheduleModal").style.display = "none"; });
+    // Default range: today + next 13 days
+    const t = new Date();
+    schRangeStart = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+    schEditingId = null;
+    schSelectedCrew = new Set();
+    schSelectedDate = null;
+    $("schEditPanel").style.display = "none";
+    $("schDayDetail").style.display = "none";
+    loadScheduleData();
+  }
+  window.openSchedule = openSchedule;
+
+  function closeSchedule() {
+    popBackEntry("schedule");
+    $("scheduleModal").style.display = "none";
+  }
+  window.closeSchedule = closeSchedule;
+
+  // Format Date → YYYY-MM-DD (local time, not UTC)
+  function schYMD(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+  // Parse YYYY-MM-DD as local Date (not UTC)
+  function schParseYMD(s) {
+    if (!s) return null;
+    const [y, m, d] = s.split("-").map(Number);
+    return new Date(y, m - 1, d);
+  }
+
+  async function loadScheduleData() {
+    $("schStatus").textContent = "Loading schedule...";
+    $("schStatus").style.display = "";
+    $("schGrid").style.display = "none";
+    try {
+      // Pull entries for the visible window plus a buffer (so quick scrolls
+      // don't cause refetches), the crew picker list, and jobs (for the
+      // dropdown). Jobs may already be loaded — reuse if so.
+      const since = schYMD(new Date(schRangeStart.getTime() - 14 * 86400000));
+      const until = schYMD(new Date(schRangeStart.getTime() + (schDayCount + 14) * 86400000));
+      const [entriesRes, crewRes] = await Promise.all([
+        apiGet("scheduleEntries", { since, until }),
+        apiGet("schedulingCrew")
+      ]);
+      if (!entriesRes?.ok) throw new Error(entriesRes?.error || "Failed to load entries");
+      if (!crewRes?.ok)    throw new Error(crewRes?.error    || "Failed to load crew");
+      schEntries = entriesRes.entries || [];
+      // Filter crew: only employee role (exclude office, viewer, admin too —
+      // admin = owner/foreman who'd typically be assigned but we'll include
+      // them since they often pull on jobs themselves).
+      schCrew = (crewRes.employees || []).filter(e => {
+        const r = (e.role || "").toLowerCase();
+        return r === "employee" || r === "admin";
+      });
+      // Use already-loaded jobs from the field-app sidebar if available
+      schJobs = state.jobs || [];
+
+      $("schStatus").style.display = "none";
+      $("schGrid").style.display = "";
+      renderScheduleGrid();
+    } catch(e) {
+      $("schStatus").textContent = "Couldn't load schedule: " + e.message;
+      $("schStatus").style.color = "var(--red, #dc2626)";
+    }
+  }
+
+  // Color hash for contractor — same contractor → same color across renders.
+  const SCH_COLOR_PALETTE = [
+    "#0ea5e9", "#16a34a", "#ea580c", "#7c3aed", "#dc2626",
+    "#0891b2", "#65a30d", "#c2410c", "#9333ea", "#be123c",
+    "#0369a1", "#15803d"
+  ];
+  function schColorFor(contractor) {
+    if (!contractor) return "#6b7280";
+    let h = 0;
+    for (let i = 0; i < contractor.length; i++) h = (h * 31 + contractor.charCodeAt(i)) | 0;
+    return SCH_COLOR_PALETTE[Math.abs(h) % SCH_COLOR_PALETTE.length];
+  }
+
+  function renderScheduleGrid() {
+    const days = [];
+    for (let i = 0; i < schDayCount; i++) {
+      const d = new Date(schRangeStart);
+      d.setDate(d.getDate() + i);
+      days.push(d);
+    }
+    // Range label
+    const fmt = d => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    $("schRangeLabel").textContent = `${fmt(days[0])} – ${fmt(days[days.length - 1])}, ${days[days.length - 1].getFullYear()}`;
+
+    const today = schYMD(new Date());
+    const todayDt = schParseYMD(today);
+
+    const grid = $("schGrid");
+    grid.innerHTML = days.map(d => {
+      const ymd = schYMD(d);
+      const isToday   = ymd === today;
+      const dow       = d.getDay();
+      const weekend   = (dow === 0 || dow === 6);
+      const isPast    = d < todayDt;
+      // Find entries whose [start, end] range covers this day
+      const todayEntries = schEntries.filter(e => {
+        if (!e.startDate || !e.endDate) return false;
+        return e.startDate <= ymd && e.endDate >= ymd;
+      });
+      const blocks = todayEntries.map(e => {
+        const color = schColorFor(e.contractor);
+        const crewLabel = e.crew?.length
+          ? e.crew.map(n => n.split(" ")[0]).join(", ")
+          : "—";
+        return `<div class="sch-block ${isPast ? "past" : ""}" style="background:${color};"
+                     onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
+                     title="${esc(e.jobName)} — ${esc(crewLabel)}${e.notes ? " — " + esc(e.notes) : ""}">
+                  ${esc(e.jobName || "—")}<br>
+                  <span class="crew">${esc(crewLabel)}</span>
+                </div>`;
+      }).join("");
+      const dowName = ["SUN","MON","TUE","WED","THU","FRI","SAT"][dow];
+      return `
+        <div class="sch-day ${isToday ? "today" : ""} ${weekend ? "weekend" : ""}"
+             onclick="schShowDayDetail('${ymd}')" data-ymd="${ymd}">
+          <div class="sch-day-header">
+            <span class="sch-day-name">${dowName}</span>
+            <span class="sch-day-num">${d.getDate()}</span>
+          </div>
+          <div class="sch-day-blocks">${blocks}</div>
+        </div>`;
+    }).join("");
+  }
+
+  window.schShiftRange = function(deltaDays) {
+    schRangeStart = new Date(schRangeStart);
+    schRangeStart.setDate(schRangeStart.getDate() + deltaDays);
+    $("schEditPanel").style.display = "none";
+    $("schDayDetail").style.display = "none";
+    schEditingId = null;
+    loadScheduleData();
+  };
+  window.schGoToday = function() {
+    const t = new Date();
+    schRangeStart = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+    $("schEditPanel").style.display = "none";
+    $("schDayDetail").style.display = "none";
+    loadScheduleData();
+  };
+
+  // Tap a day → show that day's entries + free crew
+  window.schShowDayDetail = function(ymd) {
+    schSelectedDate = ymd;
+    const dt = schParseYMD(ymd);
+    const dowName = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][dt.getDay()];
+    const niceDate = dt.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    $("schDayDetailTitle").textContent = niceDate;
+
+    const todayEntries = schEntries.filter(e => {
+      if (!e.startDate || !e.endDate) return false;
+      return e.startDate <= ymd && e.endDate >= ymd;
+    });
+    if (!todayEntries.length) {
+      $("schDayDetailRows").innerHTML = `<div style="font-size:13px; color:var(--muted); padding:8px 0;">No jobs scheduled.</div>`;
+    } else {
+      $("schDayDetailRows").innerHTML = todayEntries.map(e => {
+        const crewLabel = e.crew?.length ? e.crew.join(", ") : "—";
+        const color = schColorFor(e.contractor);
+        return `<div class="sch-day-detail-row" onclick="schEditEntry('${esc(e.id)}')">
+                  <span><span style="display:inline-block; width:10px; height:10px; background:${color}; border-radius:2px; margin-right:6px;"></span>
+                        <strong>${esc(e.jobName || "—")}</strong>${e.notes ? ` <span style="color:var(--muted); font-size:12px;">— ${esc(e.notes)}</span>` : ""}</span>
+                  <span style="font-size:12px; color:var(--muted);">${esc(crewLabel)}</span>
+                </div>`;
+      }).join("");
+    }
+    // Compute free crew = total crew - assigned today
+    const assignedIds = new Set();
+    todayEntries.forEach(e => (e.crewIds || []).forEach(id => assignedIds.add(id)));
+    const freeCrew = schCrew.filter(c => !assignedIds.has(c.id));
+    if (freeCrew.length) {
+      $("schDayDetailFree").innerHTML = `Free this day: <strong>${freeCrew.map(c => esc(c.name.split(" ")[0])).join(", ")}</strong>`;
+    } else if (schCrew.length) {
+      $("schDayDetailFree").innerHTML = `<span style="color:var(--red);">All crew assigned</span>`;
+    } else {
+      $("schDayDetailFree").innerHTML = "";
+    }
+    $("schDayDetail").style.display = "";
+    // Scroll the panel into view
+    setTimeout(() => $("schDayDetail").scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
+  };
+
+  // Open edit panel — either for a new entry or an existing one
+  window.schOpenNew = function() {
+    schEditingId = null;
+    schSelectedCrew = new Set();
+    $("schEditTitle").textContent = "New Entry";
+    $("schDeleteBtn").style.display = "none";
+    // Pre-fill defaults
+    populateJobDropdown(null);
+    const today = new Date();
+    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
+    $("schEditStart").value = schYMD(today);
+    $("schEditEnd").value   = schYMD(tomorrow);
+    $("schEditNotes").value = "";
+    renderCrewPills();
+    $("schEditPanel").style.display = "";
+    setTimeout(() => $("schEditPanel").scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
+  };
+
+  window.schEditEntry = function(entryId) {
+    const e = schEntries.find(x => x.id === entryId);
+    if (!e) return;
+    schEditingId = entryId;
+    schSelectedCrew = new Set(e.crewIds || []);
+    $("schEditTitle").textContent = `Editing: ${e.jobName || "—"}`;
+    $("schDeleteBtn").style.display = "";
+    populateJobDropdown(e.jobId);
+    $("schEditStart").value = e.startDate || "";
+    $("schEditEnd").value   = e.endDate   || "";
+    $("schEditNotes").value = e.notes     || "";
+    renderCrewPills();
+    $("schEditPanel").style.display = "";
+    setTimeout(() => $("schEditPanel").scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
+  };
+
+  function populateJobDropdown(selectedId) {
+    const sel = $("schEditJob");
+    // Show only Awarded + In Progress jobs in the dropdown to keep it short.
+    // If currently-selected entry's job isn't in that list (e.g. completed),
+    // we add it back so it's not lost.
+    const eligibleStatuses = new Set(["Awarded", "Project is Awarded", "In Progress", "Project In Progress", "Project is Complete (Ready to Invoice)"]);
+    let list = (schJobs || []).filter(j => eligibleStatuses.has(j.status));
+    if (selectedId && !list.find(j => j.id === selectedId)) {
+      const j = (schJobs || []).find(jj => jj.id === selectedId);
+      if (j) list = [j, ...list];
+    }
+    list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    sel.innerHTML = `<option value="">— pick a job —</option>` +
+      list.map(j => `<option value="${esc(j.id)}"${j.id === selectedId ? " selected" : ""}>${esc(j.name)}${j.contractor ? " (" + esc(j.contractor) + ")" : ""}</option>`).join("");
+  }
+
+  function renderCrewPills() {
+    const wrap = $("schCrewPills");
+    if (!schCrew.length) {
+      wrap.innerHTML = `<span style="font-size:12px; color:var(--muted);">No crew loaded.</span>`;
+      return;
+    }
+    wrap.innerHTML = schCrew.map(c => {
+      const sel = schSelectedCrew.has(c.id) ? " sel" : "";
+      const first = (c.name || "").split(" ")[0];
+      return `<span class="sch-crew-pill${sel}" data-id="${esc(c.id)}">${esc(first)}</span>`;
+    }).join("");
+    wrap.querySelectorAll(".sch-crew-pill").forEach(p => {
+      p.onclick = () => {
+        const id = p.dataset.id;
+        if (schSelectedCrew.has(id)) schSelectedCrew.delete(id);
+        else schSelectedCrew.add(id);
+        p.classList.toggle("sel");
+      };
+    });
+  }
+
+  window.schCloseEdit = function() {
+    $("schEditPanel").style.display = "none";
+    schEditingId = null;
+  };
+
+  window.schSaveEntry = async function() {
+    const jobId     = $("schEditJob").value;
+    const startDate = $("schEditStart").value;
+    const endDate   = $("schEditEnd").value;
+    const notes     = $("schEditNotes").value || "";
+    const crewIds   = [...schSelectedCrew];
+
+    if (!jobId)     { alert("Pick a job."); return; }
+    if (!startDate) { alert("Set a start date."); return; }
+    if (!endDate)   { alert("Set an end date."); return; }
+    if (endDate < startDate) { alert("End date must be on or after start date."); return; }
+
+    // Build a friendly title for the Airtable primary field
+    const job = schJobs.find(j => j.id === jobId);
+    const jobName = job?.name || "Job";
+    const title = `${jobName} — ${startDate}`;
+
+    try {
+      if (schEditingId) {
+        const r = await apiPost("updateScheduleEntry", { entryId: schEditingId, jobId, startDate, endDate, crewIds, notes, title });
+        if (!r?.ok) throw new Error(r?.error || "Save failed");
+      } else {
+        const r = await apiPost("addScheduleEntry", { jobId, startDate, endDate, crewIds, notes, title });
+        if (!r?.ok) throw new Error(r?.error || "Save failed");
+      }
+      $("schEditPanel").style.display = "none";
+      schEditingId = null;
+      await loadScheduleData();
+      // Reopen day detail if it was open
+      if (schSelectedDate) schShowDayDetail(schSelectedDate);
+    } catch(e) {
+      alert("Couldn't save: " + e.message);
+    }
+  };
+
+  window.schDeleteEntry = async function() {
+    if (!schEditingId) return;
+    if (!confirm("Delete this schedule entry? This can't be undone.")) return;
+    try {
+      const r = await apiPost("deleteScheduleEntry", { entryId: schEditingId });
+      if (!r?.ok) throw new Error(r?.error || "Delete failed");
+      $("schEditPanel").style.display = "none";
+      schEditingId = null;
+      await loadScheduleData();
+      if (schSelectedDate) schShowDayDetail(schSelectedDate);
+    } catch(e) {
+      alert("Couldn't delete: " + e.message);
+    }
+  };
+
   async function loadAllInvoices() {
     try {
       const res = await apiGet("allInvoices");
@@ -8145,6 +8586,66 @@ rick@northeasternelec.com`
         <span><span id="arRowCount">0</span> invoice(s)</span>
         <span>Filtered total: <span id="arFilteredTotal">$0.00</span></span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- SCHEDULE (CALENDAR) MODAL -->
+<div id="scheduleModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width: 1200px;">
+    <div class="payroll-modal-header">
+      <h2>📅 Crew Schedule</h2>
+      <button onclick="closeSchedule()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div class="sch-toolbar">
+        <button class="sch-nav-btn" onclick="schShiftRange(-14)">← Prev 2 wks</button>
+        <button class="sch-nav-btn" onclick="schGoToday()">Today</button>
+        <span class="sch-range-label" id="schRangeLabel">—</span>
+        <button class="sch-nav-btn" onclick="schShiftRange(14)">Next 2 wks →</button>
+        <button class="sch-add-btn" onclick="schOpenNew()">+ New Entry</button>
+      </div>
+
+      <!-- Edit / new-entry panel (shown when an entry is being added or edited) -->
+      <div id="schEditPanel" class="sch-edit-panel" style="display:none;">
+        <h3 id="schEditTitle">New Entry</h3>
+        <div class="sch-edit-grid">
+          <div>
+            <label>Job</label>
+            <select id="schEditJob"></select>
+          </div>
+          <div>
+            <label>Notes (optional)</label>
+            <input type="text" id="schEditNotes" placeholder="rough-in, trim out, service..." />
+          </div>
+          <div>
+            <label>Start Date</label>
+            <input type="date" id="schEditStart" />
+          </div>
+          <div>
+            <label>End Date</label>
+            <input type="date" id="schEditEnd" />
+          </div>
+        </div>
+        <label style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.4px; color:var(--muted); display:block; margin-bottom:5px;">Crew (tap to toggle)</label>
+        <div class="sch-crew-pills" id="schCrewPills"></div>
+        <div class="sch-edit-actions">
+          <button class="btn btn-sm danger" id="schDeleteBtn" onclick="schDeleteEntry()" style="display:none;">🗑 Delete</button>
+          <button class="btn btn-sm" onclick="schCloseEdit()" style="background:var(--panel); border:1px solid var(--line-2); color:var(--text);">Cancel</button>
+          <button class="btn btn-sm btn-primary" onclick="schSaveEntry()">💾 Save</button>
+        </div>
+      </div>
+
+      <!-- Day-detail panel (shown when a day is tapped) -->
+      <div id="schDayDetail" class="sch-day-detail" style="display:none;">
+        <h3 id="schDayDetailTitle">—</h3>
+        <div id="schDayDetailRows"></div>
+        <div class="sch-free" id="schDayDetailFree"></div>
+      </div>
+
+      <!-- The grid -->
+      <div id="schStatus" style="font-size:13px; color:var(--muted); padding:6px 0;">Loading schedule...</div>
+      <div class="sch-grid" id="schGrid" style="display:none;"></div>
     </div>
   </div>
 </div>

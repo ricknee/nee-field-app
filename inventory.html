@@ -1085,11 +1085,64 @@ async function preload() {
 // ═══════════════════════════════════════════════════════════
 // SCREENS
 // ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// BACK-BUTTON STACK
+// ═══════════════════════════════════════════════════════════
+// Make Android's hardware/software back button "undo" the last screen
+// transition instead of closing the browser tab. Each non-home screen
+// transition pushes a synthetic history entry; popstate pops the stack
+// and returns to whatever was previously shown.
+var navBackStack = [];          // entries: { screen }
+var navSuppressPopstate = false;
+
+function navPushScreen(prevScreen) {
+  navBackStack.push({ screen: prevScreen });
+  history.pushState({ neeInvDepth: navBackStack.length }, "");
+}
+
+window.addEventListener("popstate", function() {
+  if (navSuppressPopstate) {
+    navSuppressPopstate = false;
+    navBackStack.pop();
+    return;
+  }
+  // User hit back — return to whatever was on top of the stack
+  var prev = navBackStack.pop();
+  if (prev && prev.screen) {
+    // Swap screens directly without re-pushing history (we're handling
+    // the popstate event, not navigating forward)
+    document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
+    var el = document.getElementById("s-" + prev.screen);
+    if (el) el.classList.add("active");
+  }
+});
+
 function showScreen(id) {
+  // Track the screen we're leaving so back can return to it.
+  var current = null;
+  document.querySelectorAll(".screen.active").forEach(function(s) {
+    current = (s.id || "").replace(/^s-/, "");
+  });
+  // Push a back-stack entry only if we're navigating forward into a NEW
+  // screen and there's a meaningful "previous" to return to. Skip when
+  // we're already on the same screen (no-op transitions) or when leaving
+  // the home screen — going home is the natural "exit" point.
+  if (current && current !== id) {
+    navPushScreen(current);
+  }
   document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
   document.getElementById("s-" + id).classList.add("active");
 }
-function goHome() { showScreen("home"); }
+function goHome() {
+  // Reset the back stack — user explicitly went home, so the next back
+  // press should exit the tab rather than walking through prior screens.
+  navBackStack = [];
+  navSuppressPopstate = true;
+  // Replace current state so we don't accumulate cruft in history
+  try { history.replaceState({ neeInvHome: true }, ""); } catch(e) {}
+  document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
+  document.getElementById("s-home").classList.add("active");
+}
 
 // ═══════════════════════════════════════════════════════════
 // LOCATION PICKER

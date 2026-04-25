@@ -1161,6 +1161,20 @@
     .sch-block strong { display: block; font-size: 11px; line-height: 1.2; }
     .sch-block .crew { display: block; font-size: 9px; opacity: 0.85; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sch-block.past { opacity: 0.55; }
+    /* Time-off pills: same employee color but with a diagonal-stripe overlay,
+       so you can see at a glance who's off and which color they are without
+       confusing it for a real job assignment. The 🏖 emoji on the second
+       line replaces the job name. */
+    .sch-block.timeoff {
+      background-image: repeating-linear-gradient(
+        45deg,
+        rgba(255,255,255,0.55) 0px,
+        rgba(255,255,255,0.55) 4px,
+        transparent 4px,
+        transparent 8px
+      );
+    }
+    .sch-block.timeoff strong { font-style: italic; }
 
     /* Edit panel — inline drawer below the calendar */
     .sch-edit-panel {
@@ -1189,6 +1203,24 @@
     .sch-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
     .sch-edit-actions .danger { background: white; color: #dc2626; border: 1px solid #dc2626; }
     .sch-edit-actions .danger:hover { background: #fee2e2; }
+
+    /* Type toggle (Job / Time Off) at top of edit panel */
+    .sch-type-tab {
+      flex: 1;
+      background: var(--panel);
+      color: var(--muted);
+      border: 1px solid var(--line-2);
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .sch-type-tab.active {
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
 
     /* Day-detail panel: shown when a day is tapped */
     .sch-day-detail {
@@ -1465,6 +1497,7 @@
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
       <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
       <button id="btnSchedule" class="btn btn-sm admin-only hidden" type="button">📅 Schedule</button>
+      <button id="btnMySchedule" class="btn btn-sm" type="button">📅 My Schedule</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
@@ -4931,6 +4964,8 @@
     if (allInvBtn) allInvBtn.addEventListener("click", openAllInvoices);
     const schBtn = $("btnSchedule");
     if (schBtn) schBtn.addEventListener("click", openSchedule);
+    const mySchBtn = $("btnMySchedule");
+    if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
     const mileageBtn = $("btnMileage");
     if (mileageBtn) mileageBtn.addEventListener("click", openMileageModal);
 
@@ -7290,12 +7325,36 @@ rick@northeasternelec.com`
   let schRangeStart     = null;   // first day shown in calendar (Date)
   let schDayCount       = 14;     // days shown
   let schEditingId      = null;   // null = creating, otherwise editing this entry
+  let schEditingType    = "Job";  // "Job" or "Time Off"
   let schSelectedCrew   = new Set();
+  let schReadOnly       = false;  // when true, hide admin affordances (used for "My Schedule")
   let schSelectedDate   = null;   // for the day-detail panel
 
   function openSchedule() {
+    schReadOnly = false;
+    schDoOpen("📅 Crew Schedule");
+  }
+  window.openSchedule = openSchedule;
+
+  // Read-only schedule view for employees. Same calendar, same data, but
+  // no edit/add/delete affordances. Employees see the whole crew so they
+  // can plan around their teammates. Admin can also use this view if they
+  // just want a quick read-only glance.
+  function openMySchedule() {
+    schReadOnly = true;
+    schDoOpen("📅 Crew Schedule (View Only)");
+  }
+  window.openMySchedule = openMySchedule;
+
+  function schDoOpen(headerText) {
     $("scheduleModal").style.display = "flex";
     pushBackEntry("schedule", () => { $("scheduleModal").style.display = "none"; });
+    // Update the modal header to reflect the mode
+    const headerEl = document.querySelector("#scheduleModal .payroll-modal-header h2");
+    if (headerEl) headerEl.textContent = headerText;
+    // Hide admin affordances in read-only mode
+    const addBtn = $("schAddBtn");
+    if (addBtn) addBtn.style.display = schReadOnly ? "none" : "";
     // On desktop the calendar lays out as a 7-column grid, so we anchor the
     // start to Sunday for a clean Sun-Sat layout. On mobile (where the grid
     // collapses to one day per row), there's no visual benefit to leading
@@ -7311,7 +7370,6 @@ rick@northeasternelec.com`
     $("schDayDetail").style.display = "none";
     loadScheduleData();
   }
-  window.openSchedule = openSchedule;
 
   // Snap a date to the most-recent Sunday (or the date itself if already Sunday)
   function schSundayOf(d) {
@@ -7418,24 +7476,29 @@ rick@northeasternelec.com`
       // Build pills: one per (employee, entry) pair. Show employee first
       // name, color-coded to match Payroll. Click hits the entry's edit panel.
       const blocks = todayEntries.flatMap(e => {
+        const isTimeOff = e.type === "Time Off";
         if (!e.crew?.length) {
           // No crew assigned — show one neutral pill with the job name so
           // the user can still see + click the entry to assign crew
-          return [`<div class="sch-block past-or-now" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
+          return [`<div class="sch-block past-or-now${isTimeOff ? " timeoff" : ""}" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
                         onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
-                        title="${esc(e.jobName)} — no crew assigned${e.notes ? " — " + esc(e.notes) : ""}">
-                    ${esc(e.jobName || "—")}<br>
-                    <span class="crew">no crew</span>
+                        title="${isTimeOff ? "🏖 Time Off — no one assigned" : esc(e.jobName) + " — no crew assigned"}${e.notes ? " — " + esc(e.notes) : ""}">
+                    ${isTimeOff ? "🏖 Time Off" : esc(e.jobName || "—")}<br>
+                    <span class="crew">${isTimeOff ? "no one" : "no crew"}</span>
                   </div>`];
         }
         return e.crew.map(empName => {
           const c = schPillColors(empName);
           const first = (empName || "").split(" ")[0];
-          return `<div class="sch-block ${isPast ? "past" : ""}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+          const subtitle = isTimeOff ? "🏖 Off" : (e.jobName || "—");
+          const tooltip  = isTimeOff
+            ? `${empName} — Time Off${e.notes ? " — " + e.notes : ""}`
+            : `${empName} — ${e.jobName}${e.notes ? " — " + e.notes : ""}`;
+          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
-                       title="${esc(empName)} — ${esc(e.jobName)}${e.notes ? " — " + esc(e.notes) : ""}">
+                       title="${esc(tooltip)}">
                     <strong>${esc(first)}</strong>
-                    <span class="crew">${esc(e.jobName || "—")}</span>
+                    <span class="crew">${esc(subtitle)}</span>
                   </div>`;
         });
       }).join("");
@@ -7496,17 +7559,32 @@ rick@northeasternelec.com`
                 </div>`;
       }).join("");
     }
-    // Compute free crew = total crew - assigned today
-    const assignedIds = new Set();
-    todayEntries.forEach(e => (e.crewIds || []).forEach(id => assignedIds.add(id)));
-    const freeCrew = schCrew.filter(c => !assignedIds.has(c.id));
-    if (freeCrew.length) {
-      $("schDayDetailFree").innerHTML = `Free this day: <strong>${freeCrew.map(c => esc(c.name.split(" ")[0])).join(", ")}</strong>`;
-    } else if (schCrew.length) {
-      $("schDayDetailFree").innerHTML = `<span style="color:var(--red);">All crew assigned</span>`;
-    } else {
-      $("schDayDetailFree").innerHTML = "";
+    // Compute "off" (Time Off entries) and "free" (everyone else) for this day.
+    // People scheduled on a Job are considered busy. People on Time Off go in
+    // a red "Off:" line, separate from the green "Free:" line.
+    const offIds = new Set();
+    const busyIds = new Set();
+    todayEntries.forEach(e => {
+      const target = e.type === "Time Off" ? offIds : busyIds;
+      (e.crewIds || []).forEach(id => target.add(id));
+    });
+    // Treat off as also-not-free
+    offIds.forEach(id => busyIds.add(id));
+    const freeCrew = schCrew.filter(c => !busyIds.has(c.id));
+    const offCrew  = schCrew.filter(c => offIds.has(c.id));
+
+    let summary = "";
+    if (offCrew.length) {
+      summary += `<div style="color:#dc2626;">🏖 Off: <strong>${offCrew.map(c => esc(c.name.split(" ")[0])).join(", ")}</strong></div>`;
     }
+    if (freeCrew.length) {
+      summary += `<div>Free this day: <strong style="color:var(--green, #16a34a);">${freeCrew.map(c => esc(c.name.split(" ")[0])).join(", ")}</strong></div>`;
+    } else if (schCrew.length && !offCrew.length) {
+      summary += `<span style="color:var(--red);">All crew assigned</span>`;
+    } else if (!schCrew.length) {
+      summary = "";
+    }
+    $("schDayDetailFree").innerHTML = summary;
     $("schDayDetail").style.display = "";
     // Scroll the panel into view
     setTimeout(() => $("schDayDetail").scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
@@ -7515,9 +7593,11 @@ rick@northeasternelec.com`
   // Open edit panel — either for a new entry or an existing one
   window.schOpenNew = function() {
     schEditingId = null;
+    schEditingType = "Job";
     schSelectedCrew = new Set();
     $("schEditTitle").textContent = "New Entry";
     $("schDeleteBtn").style.display = "none";
+    schApplyType();
     // Pre-fill defaults
     populateJobDropdown(null);
     const today = new Date();
@@ -7530,13 +7610,44 @@ rick@northeasternelec.com`
     setTimeout(() => $("schEditPanel").scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
   };
 
+  // Toggle between Job and Time Off entry types. Time Off hides the Job
+  // dropdown and changes the crew label so it's clear who's being marked off.
+  window.schSetType = function(type) {
+    schEditingType = type;
+    schApplyType();
+  };
+
+  function schApplyType() {
+    document.querySelectorAll(".sch-type-tab").forEach(t => {
+      t.classList.toggle("active", t.dataset.type === schEditingType);
+    });
+    const isTimeOff = schEditingType === "Time Off";
+    const jobWrap = $("schEditJobWrap");
+    if (jobWrap) jobWrap.style.display = isTimeOff ? "none" : "";
+    const crewLabel = $("schCrewLabel");
+    if (crewLabel) crewLabel.textContent = isTimeOff ? "Who's off (tap to toggle)" : "Crew (tap to toggle)";
+    const notesInp = $("schEditNotes");
+    if (notesInp) notesInp.placeholder = isTimeOff ? "vacation, sick, personal..." : "rough-in, trim out, service...";
+  }
+
   window.schEditEntry = function(entryId) {
     const e = schEntries.find(x => x.id === entryId);
     if (!e) return;
+    // In read-only mode, don't open the edit panel — just show the
+    // day-detail panel for the entry's start date so the user can see
+    // who else is on it. (Tap-on-pill is otherwise the gateway to the
+    // edit form, which we want hidden from non-admins.)
+    if (schReadOnly) {
+      const targetDate = e.startDate || schSelectedDate;
+      if (targetDate) schShowDayDetail(targetDate);
+      return;
+    }
     schEditingId = entryId;
+    schEditingType = e.type || "Job";
     schSelectedCrew = new Set(e.crewIds || []);
-    $("schEditTitle").textContent = `Editing: ${e.jobName || "—"}`;
+    $("schEditTitle").textContent = `Editing: ${e.type === "Time Off" ? "🏖 Time Off" : (e.jobName || "—")}`;
     $("schDeleteBtn").style.display = "";
+    schApplyType();
     populateJobDropdown(e.jobId);
     $("schEditStart").value = e.startDate || "";
     $("schEditEnd").value   = e.endDate   || "";
@@ -7591,28 +7702,42 @@ rick@northeasternelec.com`
   };
 
   window.schSaveEntry = async function() {
-    const jobId     = $("schEditJob").value;
+    const isTimeOff = schEditingType === "Time Off";
+    const jobId     = isTimeOff ? "" : $("schEditJob").value;
     const startDate = $("schEditStart").value;
     const endDate   = $("schEditEnd").value;
     const notes     = $("schEditNotes").value || "";
     const crewIds   = [...schSelectedCrew];
 
-    if (!jobId)     { alert("Pick a job."); return; }
-    if (!startDate) { alert("Set a start date."); return; }
-    if (!endDate)   { alert("Set an end date."); return; }
-    if (endDate < startDate) { alert("End date must be on or after start date."); return; }
+    if (!isTimeOff && !jobId) { alert("Pick a job."); return; }
+    if (!startDate)            { alert("Set a start date."); return; }
+    if (!endDate)              { alert("Set an end date."); return; }
+    if (endDate < startDate)   { alert("End date must be on or after start date."); return; }
+    if (isTimeOff && !crewIds.length) { alert("Pick at least one person."); return; }
 
     // Build a friendly title for the Airtable primary field
-    const job = schJobs.find(j => j.id === jobId);
-    const jobName = job?.name || "Job";
-    const title = `${jobName} — ${startDate}`;
+    let title;
+    if (isTimeOff) {
+      const names = crewIds
+        .map(id => schCrew.find(c => c.id === id)?.name?.split(" ")[0] || "")
+        .filter(Boolean)
+        .join(", ");
+      title = `🏖 ${names || "Time Off"} — ${startDate}`;
+    } else {
+      const job = schJobs.find(j => j.id === jobId);
+      title = `${job?.name || "Job"} — ${startDate}`;
+    }
+
+    const payload = { startDate, endDate, crewIds, notes, title, type: schEditingType };
+    if (!isTimeOff) payload.jobId = jobId;
+    else payload.jobId = "";  // explicitly clear job link for time-off
 
     try {
       if (schEditingId) {
-        const r = await apiPost("updateScheduleEntry", { entryId: schEditingId, jobId, startDate, endDate, crewIds, notes, title });
+        const r = await apiPost("updateScheduleEntry", { entryId: schEditingId, ...payload });
         if (!r?.ok) throw new Error(r?.error || "Save failed");
       } else {
-        const r = await apiPost("addScheduleEntry", { jobId, startDate, endDate, crewIds, notes, title });
+        const r = await apiPost("addScheduleEntry", payload);
         if (!r?.ok) throw new Error(r?.error || "Save failed");
       }
       $("schEditPanel").style.display = "none";
@@ -8631,20 +8756,24 @@ rick@northeasternelec.com`
         <button class="sch-nav-btn" onclick="schGoToday()">Today</button>
         <span class="sch-range-label" id="schRangeLabel">—</span>
         <button class="sch-nav-btn" onclick="schShiftRange(14)">Next 2 wks →</button>
-        <button class="sch-add-btn" onclick="schOpenNew()">+ New Entry</button>
+        <button class="sch-add-btn" onclick="schOpenNew()" id="schAddBtn">+ New Entry</button>
       </div>
 
       <!-- Edit / new-entry panel (shown when an entry is being added or edited) -->
       <div id="schEditPanel" class="sch-edit-panel" style="display:none;">
         <h3 id="schEditTitle">New Entry</h3>
+        <div style="display:flex; gap:6px; margin-bottom:10px;">
+          <button type="button" class="sch-type-tab active" data-type="Job" onclick="schSetType('Job')">📋 Job</button>
+          <button type="button" class="sch-type-tab" data-type="Time Off" onclick="schSetType('Time Off')">🏖 Time Off</button>
+        </div>
         <div class="sch-edit-grid">
-          <div>
+          <div id="schEditJobWrap">
             <label>Job</label>
             <select id="schEditJob"></select>
           </div>
           <div>
             <label>Notes (optional)</label>
-            <input type="text" id="schEditNotes" placeholder="rough-in, trim out, service..." />
+            <input type="text" id="schEditNotes" placeholder="rough-in, trim out, vacation..." />
           </div>
           <div>
             <label>Start Date</label>
@@ -8655,7 +8784,7 @@ rick@northeasternelec.com`
             <input type="date" id="schEditEnd" />
           </div>
         </div>
-        <label style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.4px; color:var(--muted); display:block; margin-bottom:5px;">Crew (tap to toggle)</label>
+        <label style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.4px; color:var(--muted); display:block; margin-bottom:5px;" id="schCrewLabel">Crew (tap to toggle)</label>
         <div class="sch-crew-pills" id="schCrewPills"></div>
         <div class="sch-edit-actions">
           <button class="btn btn-sm danger" id="schDeleteBtn" onclick="schDeleteEntry()" style="display:none;">🗑 Delete</button>

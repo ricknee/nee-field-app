@@ -2849,27 +2849,35 @@
           <div class="info-box"><div class="info-label">Battery Install Date</div><div class="info-value">${esc(fmtDate(gen.batteryInstallDate))}</div></div>
           <div class="info-box"><div class="info-label">Battery Age</div><div class="info-value">${esc(val(gen.batteryAge))} yrs</div></div>
         `;
+      } else {
+        $("genInfoGrid").innerHTML = `<div class="empty-msg">No generator record linked to this job yet.</div>`;
+      }
 
-        // Wire generator form buttons from job fields
-        const commBtn = $("btnCommissionGen");
+      // Wire the form buttons regardless of whether an asset is linked. The
+      // commissioning + service form URLs live on the JOB record, not the
+      // generator, so they should always be active when the job has them set
+      // — even if the generator asset itself hasn't been created yet.
+      const commBtn = $("btnCommissionGen");
+      if (commBtn) {
         if (commissionFormUrl) {
           commBtn.href = commissionFormUrl;
           commBtn.classList.remove("disabled");
         } else {
           commBtn.href = "#";
           commBtn.classList.add("disabled");
+          commBtn.onclick = (e) => { e.preventDefault(); alert("No commissioning form URL set on this job."); };
         }
-
-        const svcBtn = $("btnServiceGen");
+      }
+      const svcBtn = $("btnServiceGen");
+      if (svcBtn) {
         if (serviceFormUrl) {
           svcBtn.href = serviceFormUrl;
           svcBtn.classList.remove("disabled");
         } else {
           svcBtn.href = "#";
           svcBtn.classList.add("disabled");
+          svcBtn.onclick = (e) => { e.preventDefault(); alert("No service form URL set on this job."); };
         }
-      } else {
-        $("genInfoGrid").innerHTML = `<div class="empty-msg">No generator record linked to this job yet.</div>`;
       }
 
       // Service Records

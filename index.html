@@ -7346,13 +7346,19 @@ rick@northeasternelec.com`
       if (!entriesRes?.ok) throw new Error(entriesRes?.error || "Failed to load entries");
       if (!crewRes?.ok)    throw new Error(crewRes?.error    || "Failed to load crew");
       schEntries = entriesRes.entries || [];
-      // Filter crew: only employee role (exclude office, viewer, admin too —
-      // admin = owner/foreman who'd typically be assigned but we'll include
-      // them since they often pull on jobs themselves).
-      schCrew = (crewRes.employees || []).filter(e => {
+      // Filter crew: only employee or admin roles. Office + viewer get
+      // hidden from the picker. If `role` is missing for some reason
+      // (older records, backend hiccup), fall back to including the
+      // employee — better to show an extra name than leave the picker
+      // empty.
+      const allCrew = crewRes.employees || [];
+      console.log("[schedule] crew from backend:", allCrew);
+      schCrew = allCrew.filter(e => {
         const r = (e.role || "").toLowerCase();
+        if (!r) return true; // role missing — include them
         return r === "employee" || r === "admin";
       });
+      console.log("[schedule] crew after filter:", schCrew);
       // Use already-loaded jobs from the field-app sidebar if available
       schJobs = state.jobs || [];
 
@@ -7522,11 +7528,13 @@ rick@northeasternelec.com`
 
   function populateJobDropdown(selectedId) {
     const sel = $("schEditJob");
-    // Show only Awarded + In Progress jobs in the dropdown to keep it short.
-    // If currently-selected entry's job isn't in that list (e.g. completed),
-    // we add it back so it's not lost.
-    const eligibleStatuses = new Set(["Awarded", "Project is Awarded", "In Progress", "Project In Progress", "Project is Complete (Ready to Invoice)"]);
-    let list = (schJobs || []).filter(j => eligibleStatuses.has(j.status));
+    // Exclude jobs that don't make sense to schedule (cold leads, dead jobs).
+    // Anything else — Awarded, Estimating, Service Call Scheduled, Ready to
+    // Invoice, even Completed — stays available so the user has full
+    // flexibility. The currently-selected job is always preserved even if
+    // it would otherwise be excluded.
+    const SKIP_STATUSES = new Set(["New Lead", "Not Awarded"]);
+    let list = (schJobs || []).filter(j => !SKIP_STATUSES.has(j.status));
     if (selectedId && !list.find(j => j.id === selectedId)) {
       const j = (schJobs || []).find(jj => jj.id === selectedId);
       if (j) list = [j, ...list];

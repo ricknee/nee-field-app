@@ -1150,18 +1150,16 @@
     .sch-day.today .sch-day-num { color: var(--accent); }
     .sch-day-blocks { display: flex; flex-direction: column; gap: 3px; }
     .sch-block {
-      font-size: 10px;
-      padding: 3px 6px;
+      font-size: 11px;
+      padding: 3px 7px;
       border-radius: 4px;
-      color: white;
       font-weight: 600;
       cursor: pointer;
       line-height: 1.25;
       overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
-    .sch-block .crew { font-size: 9px; opacity: 0.85; font-weight: 500; }
+    .sch-block strong { display: block; font-size: 11px; line-height: 1.2; }
+    .sch-block .crew { display: block; font-size: 9px; opacity: 0.85; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sch-block.past { opacity: 0.55; }
 
     /* Edit panel — inline drawer below the calendar */
@@ -7297,9 +7295,10 @@ rick@northeasternelec.com`
   function openSchedule() {
     $("scheduleModal").style.display = "flex";
     pushBackEntry("schedule", () => { $("scheduleModal").style.display = "none"; });
-    // Default range: today + next 13 days
-    const t = new Date();
-    schRangeStart = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+    // Default range: the Sunday of "this week" + 13 days (so it's Sun-Sat,
+    // Sun-Sat). Aligning to Sundays keeps the grid stable when the user
+    // scrolls — Today button doesn't shift the column layout.
+    schRangeStart = schSundayOf(new Date());
     schEditingId = null;
     schSelectedCrew = new Set();
     schSelectedDate = null;
@@ -7308,6 +7307,13 @@ rick@northeasternelec.com`
     loadScheduleData();
   }
   window.openSchedule = openSchedule;
+
+  // Snap a date to the most-recent Sunday (or the date itself if already Sunday)
+  function schSundayOf(d) {
+    const t = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    t.setDate(t.getDate() - t.getDay());
+    return t;
+  }
 
   function closeSchedule() {
     popBackEntry("schedule");
@@ -7371,17 +7377,11 @@ rick@northeasternelec.com`
     }
   }
 
-  // Color hash for contractor — same contractor → same color across renders.
-  const SCH_COLOR_PALETTE = [
-    "#0ea5e9", "#16a34a", "#ea580c", "#7c3aed", "#dc2626",
-    "#0891b2", "#65a30d", "#c2410c", "#9333ea", "#be123c",
-    "#0369a1", "#15803d"
-  ];
-  function schColorFor(contractor) {
-    if (!contractor) return "#6b7280";
-    let h = 0;
-    for (let i = 0; i < contractor.length; i++) h = (h * 31 + contractor.charCodeAt(i)) | 0;
-    return SCH_COLOR_PALETTE[Math.abs(h) % SCH_COLOR_PALETTE.length];
+  // Employee colors come from EMP_COLORS at the top of the file (same palette
+  // as the Payroll tab). Lookup by full name; fall back to a neutral gray pill.
+  const SCH_DEFAULT_PILL = { bg: "#f4f6f9", border: "#dde1e8", text: "#1a2233" };
+  function schPillColors(empName) {
+    return EMP_COLORS[empName] || SCH_DEFAULT_PILL;
   }
 
   function renderScheduleGrid() {
@@ -7410,17 +7410,29 @@ rick@northeasternelec.com`
         if (!e.startDate || !e.endDate) return false;
         return e.startDate <= ymd && e.endDate >= ymd;
       });
-      const blocks = todayEntries.map(e => {
-        const color = schColorFor(e.contractor);
-        const crewLabel = e.crew?.length
-          ? e.crew.map(n => n.split(" ")[0]).join(", ")
-          : "—";
-        return `<div class="sch-block ${isPast ? "past" : ""}" style="background:${color};"
-                     onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
-                     title="${esc(e.jobName)} — ${esc(crewLabel)}${e.notes ? " — " + esc(e.notes) : ""}">
-                  ${esc(e.jobName || "—")}<br>
-                  <span class="crew">${esc(crewLabel)}</span>
-                </div>`;
+      // Build pills: one per (employee, entry) pair. Show employee first
+      // name, color-coded to match Payroll. Click hits the entry's edit panel.
+      const blocks = todayEntries.flatMap(e => {
+        if (!e.crew?.length) {
+          // No crew assigned — show one neutral pill with the job name so
+          // the user can still see + click the entry to assign crew
+          return [`<div class="sch-block past-or-now" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
+                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
+                        title="${esc(e.jobName)} — no crew assigned${e.notes ? " — " + esc(e.notes) : ""}">
+                    ${esc(e.jobName || "—")}<br>
+                    <span class="crew">no crew</span>
+                  </div>`];
+        }
+        return e.crew.map(empName => {
+          const c = schPillColors(empName);
+          const first = (empName || "").split(" ")[0];
+          return `<div class="sch-block ${isPast ? "past" : ""}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+                       onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
+                       title="${esc(empName)} — ${esc(e.jobName)}${e.notes ? " — " + esc(e.notes) : ""}">
+                    <strong>${esc(first)}</strong>
+                    <span class="crew">${esc(e.jobName || "—")}</span>
+                  </div>`;
+        });
       }).join("");
       const dowName = ["SUN","MON","TUE","WED","THU","FRI","SAT"][dow];
       return `
@@ -7444,8 +7456,7 @@ rick@northeasternelec.com`
     loadScheduleData();
   };
   window.schGoToday = function() {
-    const t = new Date();
-    schRangeStart = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+    schRangeStart = schSundayOf(new Date());
     $("schEditPanel").style.display = "none";
     $("schDayDetail").style.display = "none";
     loadScheduleData();
@@ -7468,9 +7479,11 @@ rick@northeasternelec.com`
     } else {
       $("schDayDetailRows").innerHTML = todayEntries.map(e => {
         const crewLabel = e.crew?.length ? e.crew.join(", ") : "—";
-        const color = schColorFor(e.contractor);
+        // Match the swatch to the first assigned crew member's color, so it
+        // looks consistent with the calendar pills above.
+        const c = e.crew?.length ? schPillColors(e.crew[0]) : SCH_DEFAULT_PILL;
         return `<div class="sch-day-detail-row" onclick="schEditEntry('${esc(e.id)}')">
-                  <span><span style="display:inline-block; width:10px; height:10px; background:${color}; border-radius:2px; margin-right:6px;"></span>
+                  <span><span style="display:inline-block; width:10px; height:10px; background:${c.border}; border-radius:2px; margin-right:6px;"></span>
                         <strong>${esc(e.jobName || "—")}</strong>${e.notes ? ` <span style="color:var(--muted); font-size:12px;">— ${esc(e.notes)}</span>` : ""}</span>
                   <span style="font-size:12px; color:var(--muted);">${esc(crewLabel)}</span>
                 </div>`;

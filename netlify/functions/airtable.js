@@ -1231,13 +1231,15 @@ async function handleGetNextInvoiceNumber() {
 // Crew scheduling. One Schedule Entry = a job + date range + assigned crew.
 // Multiple entries per job are expected (rough-in week, then trim-out week
 // after a gap). Source-of-truth for the calendar in nee-hub.
+// NOTE: We use field NAMES here, not field IDs. Airtable's REST API returns
+// records keyed by field name unless you pass returnFieldsByFieldId=true.
 const SCHED_F = {
-  title:     "fldxowynzmC2PLIfY",
-  job:       "fldpEMIaESmE3Hq4j",
-  startDate: "fldzDty0EioNFUPZE",
-  endDate:   "fldnLZXGbMkVFQKEK",
-  crew:      "flduu1eOtCpkMA5re",
-  notes:     "fldS7iHCAt0qpKCCS"
+  title:     "Title",
+  job:       "Job",
+  startDate: "Start Date",
+  endDate:   "End Date",
+  crew:      "Crew",
+  notes:     "Notes"
 };
 
 async function handleGetScheduleEntries(params) {

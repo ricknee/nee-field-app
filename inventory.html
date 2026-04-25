@@ -954,14 +954,18 @@ function loadLocation() { try { return JSON.parse(localStorage.getItem(LOC_KEY) 
   // Load employees for name picker
   try {
     var d = await apiGet("employees");
-    // Office staff don't need access to the inventory app — hide their names
-    // from the picker grid. (Backend still recognizes them as valid users on
-    // any other endpoints, this is purely a UI hide.) Match on first name,
-    // case-insensitive, so "Tisha Smith" and "tisha" both filter out.
-    var INVENTORY_HIDE = ["tisha", "arlene"];
+    // Field crew only — exclude office staff (Tisha, Arlene) and viewer accounts
+    // from the inventory app's picker. Office roles have admin rights elsewhere
+    // but don't need to log into the inventory app. We prefer matching on the
+    // backend-exposed `role` field; if the inventory function doesn't expose it
+    // yet, fall back to a name-based match so this stays robust either way.
     var visibleEmployees = (d.employees || []).filter(function(e) {
+      var role = String(e.role || "").toLowerCase();
+      if (role) return role !== "office" && role !== "viewer";
+      // No role exposed by backend — fall back to filtering by first name
+      var FALLBACK_HIDE = ["tisha", "arlene", "viewer"];
       var first = (e.name || "").split(" ")[0].toLowerCase();
-      return INVENTORY_HIDE.indexOf(first) === -1;
+      return FALLBACK_HIDE.indexOf(first) === -1;
     });
     var grid = document.getElementById("name-grid");
     grid.innerHTML = visibleEmployees.map(function(e) {

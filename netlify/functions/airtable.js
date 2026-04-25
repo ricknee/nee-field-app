@@ -12,7 +12,8 @@ const TABLES = {
   generators:       "Generators",
   generatorService: "Generator Service",
   timeEntries:      "Time Entries",
-  scissorLifts:     "Scissor Lifts"
+  scissorLifts:     "Scissor Lifts",
+  scheduleEntries:  "Schedule Entries"
 };
 
 const F = {
@@ -331,7 +332,15 @@ async function handleLogin(body) {
   });
   if (!match) return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
   const f = match.fields || {};
-  return resp(200, { ok: true, user: { id: match.id, name: f[F.emp.name]||"Unknown", role: normalize(f[F.emp.role])==="admin"?"admin":normalize(f[F.emp.role])==="viewer"?"viewer":"employee" } });
+  // Recognize four roles: admin, office, viewer, employee. Office acts like
+  // admin on the field-app side but is filtered out of inventory + crew pickers.
+  const rawRole = normalize(f[F.emp.role]);
+  let role;
+  if      (rawRole === "admin")  role = "admin";
+  else if (rawRole === "office") role = "office";
+  else if (rawRole === "viewer") role = "viewer";
+  else                            role = "employee";
+  return resp(200, { ok: true, user: { id: match.id, name: f[F.emp.name]||"Unknown", role } });
 }
 
 async function handleJobs() {
@@ -1218,6 +1227,162 @@ async function handleGetNextInvoiceNumber() {
 // contractor + customer info pulled from the Jobs table. Client filters
 // (date range, contractor, customer search) happen in the browser since the
 // dataset is small (a few hundred invoices at most).
+// ── SCHEDULE ENTRIES ────────────────────────────────────────────────────
+// Crew scheduling. One Schedule Entry = a job + date range + assigned crew.
+// Multiple entries per job are expected (rough-in week, then trim-out week
+// after a gap). Source-of-truth for the calendar in nee-hub.
+const SCHED_F = {
+  title:     "fldxowynzmC2PLIfY",
+  job:       "fldpEMIaESmE3Hq4j",
+  startDate: "fldzDty0EioNFUPZE",
+  endDate:   "fldnLZXGbMkVFQKEK",
+  crew:      "flduu1eOtCpkMA5re",
+  notes:     "fldS7iHCAt0qpKCCS"
+};
+
+async function handleGetScheduleEntries(params) {
+  // Optional date-range filter: ?since=YYYY-MM-DD & ?until=YYYY-MM-DD.
+  // Filter is "any overlap" — an entry shows if its [start, end] range
+  // overlaps the requested window. Job filter: ?jobId=recXXX.
+  const since = params?.since || "";
+  const until = params?.until || "";
+  const jobId = params?.jobId || "";
+
+  const records = await fetchAll(TABLES.scheduleEntries);
+  const jobs = await fetchAll(TABLES.jobs);
+  const employees = await fetchAll(TABLES.employees);
+  const jobById = {};
+  jobs.forEach(j => {
+    const f = j.fields || {};
+    jobById[j.id] = {
+      id: j.id,
+      name:       g(f, F.job.name)       || "",
+      contractor: g(f, F.job.contractor) || "",
+      status:     g(f, F.job.status)     || ""
+    };
+  });
+  const empById = {};
+  employees.forEach(e => {
+    const f = e.fields || {};
+    empById[e.id] = { id: e.id, name: f[F.emp.name] || "" };
+  });
+
+  const entries = records.map(r => {
+    const f = r.fields || {};
+    const jobLink = Array.isArray(f[SCHED_F.job]) ? f[SCHED_F.job][0] : null;
+    const job = jobLink ? jobById[jobLink] : null;
+    const crewIds = Array.isArray(f[SCHED_F.crew]) ? f[SCHED_F.crew] : [];
+    return {
+      id:         r.id,
+      title:      f[SCHED_F.title]     || "",
+      jobId:      jobLink              || "",
+      jobName:    job?.name            || "",
+      contractor: job?.contractor      || "",
+      jobStatus:  job?.status          || "",
+      startDate:  f[SCHED_F.startDate] || "",
+      endDate:    f[SCHED_F.endDate]   || "",
+      crewIds,
+      crew:       crewIds.map(id => empById[id]?.name || "").filter(Boolean),
+      notes:      f[SCHED_F.notes]     || ""
+    };
+  });
+
+  // Apply optional filters
+  let filtered = entries;
+  if (jobId) filtered = filtered.filter(e => e.jobId === jobId);
+  if (since || until) {
+    filtered = filtered.filter(e => {
+      // Empty entries (no dates yet) — keep
+      if (!e.startDate && !e.endDate) return true;
+      const s = e.startDate || e.endDate;
+      const ed = e.endDate || e.startDate;
+      // Overlap test: entry overlaps the window if entry.start <= until
+      // AND entry.end >= since
+      if (since && ed && ed < since) return false;
+      if (until && s  && s  > until) return false;
+      return true;
+    });
+  }
+
+  // Sort by start date ascending so the calendar renders chronologically
+  filtered.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+
+  return resp(200, { ok: true, entries: filtered });
+}
+
+async function handleAddScheduleEntry(body) {
+  const { jobId, startDate, endDate, crewIds, notes, title } = body || {};
+  if (!jobId)     return resp(400, { ok: false, error: "Missing jobId." });
+  if (!startDate) return resp(400, { ok: false, error: "Missing startDate." });
+  if (!endDate)   return resp(400, { ok: false, error: "Missing endDate." });
+
+  const fields = {};
+  fields[SCHED_F.job]       = [jobId];
+  fields[SCHED_F.startDate] = startDate;
+  fields[SCHED_F.endDate]   = endDate;
+  if (Array.isArray(crewIds) && crewIds.length) fields[SCHED_F.crew] = crewIds;
+  if (notes) fields[SCHED_F.notes] = String(notes);
+  if (title) fields[SCHED_F.title] = String(title);
+
+  const data = await atFetch(`${encodeURIComponent("Schedule Entries")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  if (data.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, id: data.id });
+}
+
+async function handleUpdateScheduleEntry(body) {
+  const { entryId, jobId, startDate, endDate, crewIds, notes, title } = body || {};
+  if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
+  const fields = {};
+  if (jobId)                fields[SCHED_F.job]       = [jobId];
+  if (startDate !== undefined) fields[SCHED_F.startDate] = startDate || null;
+  if (endDate   !== undefined) fields[SCHED_F.endDate]   = endDate   || null;
+  if (crewIds   !== undefined) fields[SCHED_F.crew]      = Array.isArray(crewIds) ? crewIds : [];
+  if (notes     !== undefined) fields[SCHED_F.notes]     = String(notes || "");
+  if (title     !== undefined) fields[SCHED_F.title]     = String(title || "");
+
+  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  const data = await atFetch(`${encodeURIComponent("Schedule Entries")}/${entryId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  if (data.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, id: data.id });
+}
+
+async function handleDeleteScheduleEntry(body) {
+  const { entryId } = body || {};
+  if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
+  const data = await atFetch(`${encodeURIComponent("Schedule Entries")}/${entryId}`, {
+    method: "DELETE"
+  });
+  if (data.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, deletedId: entryId });
+}
+
+// Helper: list active employees with role exposed, for the crew picker.
+// (Filters by Active checkbox; frontend filters further by role to exclude
+// office + viewer.) Used by the schedule modal's crew dropdown.
+async function handleListEmployeesForScheduling() {
+  const records = await fetchAll(TABLES.employees);
+  const employees = records
+    .filter(r => gBool(r.fields || {}, F.emp.active))
+    .map(r => {
+      const f = r.fields || {};
+      return {
+        id:   r.id,
+        name: f[F.emp.name] || "",
+        role: normalize(f[F.emp.role]) || "employee"
+      };
+    });
+  // Sort by name for a stable picker
+  employees.sort((a, b) => a.name.localeCompare(b.name));
+  return resp(200, { ok: true, employees });
+}
+
 async function handleGetAllInvoices() {
   // 1. Pull all invoices, paginated
   const allInvoices = [];
@@ -1440,6 +1605,8 @@ export async function handler(event) {
       if (action === "jobEstimates")       return await handleJobEstimates(params);
       if (action === "sentEstimatePDFs")   return await handleSentEstimatePDFs(params);
       if (action === "allInvoices")        return await handleGetAllInvoices();
+      if (action === "scheduleEntries")    return await handleGetScheduleEntries(params);
+      if (action === "schedulingCrew")     return await handleListEmployeesForScheduling();
       if (action === "fleetVehicles")      return await handleFleetVehicles();
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();
@@ -1477,6 +1644,9 @@ export async function handler(event) {
       if (body.action === "markInvoicePaid")      return await handleMarkInvoicePaid(body);
       if (body.action === "setInvoiceStatus")     return await handleSetInvoiceStatus(body);
       if (body.action === "addGeneratorService")  return await handleAddGeneratorService(body);
+      if (body.action === "addScheduleEntry")     return await handleAddScheduleEntry(body);
+      if (body.action === "updateScheduleEntry")  return await handleUpdateScheduleEntry(body);
+      if (body.action === "deleteScheduleEntry")  return await handleDeleteScheduleEntry(body);
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);

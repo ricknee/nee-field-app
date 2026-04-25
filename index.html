@@ -1189,8 +1189,33 @@
     /* ── RESPONSIVE ── */
     @media (max-width: 768px) {
       .app-wrap { flex-direction: column; height: auto; }
-      .sidebar { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--line); max-height: 50vh; }
+      /* When no job is selected, let the sidebar fill the screen so the
+         user can see more jobs at once instead of staring at a giant
+         "Select a job" placeholder. The .has-selection class on the
+         body switches it back to the split layout once a job is picked. */
+      .sidebar { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--line); max-height: none; }
+      body.has-selection .sidebar { max-height: 50vh; }
       .detail-panel { min-height: 60vh; }
+      /* Hide the big detail panel entirely on mobile until something is selected */
+      body:not(.has-selection) .detail-panel { display: none; }
+      /* Replace it with a small hint pill fixed to the bottom of the screen */
+      body:not(.has-selection)::after {
+        content: "👆 Tap a job to view details";
+        position: fixed;
+        left: 50%;
+        bottom: 14px;
+        transform: translateX(-50%);
+        background: var(--accent);
+        color: white;
+        padding: 8px 16px;
+        border-radius: 24px;
+        font-size: 13px;
+        font-weight: 600;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+        z-index: 20;
+        pointer-events: none;
+        white-space: nowrap;
+      }
       .info-grid { grid-template-columns: 1fr; }
       .action-buttons { padding: 10px 14px; }
       .tab-content { padding: 14px; }
@@ -2087,6 +2112,7 @@
     state.jobs = [];
     state.filtered = [];
     state.selected = null;
+    document.body.classList.remove("has-selection");
     renderAuth();
   }
 
@@ -2312,6 +2338,19 @@
 
     $("noSelection").classList.add("hidden");
     $("jobDetail").classList.remove("hidden");
+    // On mobile, this class flips the layout from "full-screen job list +
+    // bottom hint pill" to the normal split (50vh sidebar + detail panel).
+    document.body.classList.add("has-selection");
+
+    // On mobile, scroll up so the job header is visible immediately —
+    // otherwise the user is left looking at the same job list and has to
+    // hunt for where the detail panel went.
+    if (window.matchMedia("(max-width: 768px)").matches) {
+      setTimeout(() => {
+        const detail = document.getElementById("jobDetail");
+        if (detail) detail.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
+    }
 
     // Header
     $("dJobName").textContent = job.name || "—";

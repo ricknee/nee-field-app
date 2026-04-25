@@ -1239,7 +1239,8 @@ const SCHED_F = {
   startDate: "Start Date",
   endDate:   "End Date",
   crew:      "Crew",
-  notes:     "Notes"
+  notes:     "Notes",
+  type:      "Entry Type"
 };
 
 async function handleGetScheduleEntries(params) {
@@ -1277,6 +1278,7 @@ async function handleGetScheduleEntries(params) {
     return {
       id:         r.id,
       title:      f[SCHED_F.title]     || "",
+      type:       f[SCHED_F.type]      || "Job",
       jobId:      jobLink              || "",
       jobName:    job?.name            || "",
       contractor: job?.contractor      || "",
@@ -1313,13 +1315,15 @@ async function handleGetScheduleEntries(params) {
 }
 
 async function handleAddScheduleEntry(body) {
-  const { jobId, startDate, endDate, crewIds, notes, title } = body || {};
-  if (!jobId)     return resp(400, { ok: false, error: "Missing jobId." });
+  const { jobId, startDate, endDate, crewIds, notes, title, type } = body || {};
+  const entryType = type || "Job";
+  if (entryType === "Job" && !jobId) return resp(400, { ok: false, error: "Missing jobId for Job entry." });
   if (!startDate) return resp(400, { ok: false, error: "Missing startDate." });
   if (!endDate)   return resp(400, { ok: false, error: "Missing endDate." });
 
   const fields = {};
-  fields[SCHED_F.job]       = [jobId];
+  fields[SCHED_F.type] = entryType;
+  if (jobId)              fields[SCHED_F.job]       = [jobId];
   fields[SCHED_F.startDate] = startDate;
   fields[SCHED_F.endDate]   = endDate;
   if (Array.isArray(crewIds) && crewIds.length) fields[SCHED_F.crew] = crewIds;
@@ -1335,15 +1339,16 @@ async function handleAddScheduleEntry(body) {
 }
 
 async function handleUpdateScheduleEntry(body) {
-  const { entryId, jobId, startDate, endDate, crewIds, notes, title } = body || {};
+  const { entryId, jobId, startDate, endDate, crewIds, notes, title, type } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
   const fields = {};
-  if (jobId)                fields[SCHED_F.job]       = [jobId];
-  if (startDate !== undefined) fields[SCHED_F.startDate] = startDate || null;
-  if (endDate   !== undefined) fields[SCHED_F.endDate]   = endDate   || null;
-  if (crewIds   !== undefined) fields[SCHED_F.crew]      = Array.isArray(crewIds) ? crewIds : [];
-  if (notes     !== undefined) fields[SCHED_F.notes]     = String(notes || "");
-  if (title     !== undefined) fields[SCHED_F.title]     = String(title || "");
+  if (type        !== undefined) fields[SCHED_F.type]      = type || "Job";
+  if (jobId       !== undefined) fields[SCHED_F.job]       = jobId ? [jobId] : [];
+  if (startDate   !== undefined) fields[SCHED_F.startDate] = startDate || null;
+  if (endDate     !== undefined) fields[SCHED_F.endDate]   = endDate   || null;
+  if (crewIds     !== undefined) fields[SCHED_F.crew]      = Array.isArray(crewIds) ? crewIds : [];
+  if (notes       !== undefined) fields[SCHED_F.notes]     = String(notes || "");
+  if (title       !== undefined) fields[SCHED_F.title]     = String(title || "");
 
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
 

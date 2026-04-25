@@ -7296,10 +7296,14 @@ rick@northeasternelec.com`
   function openSchedule() {
     $("scheduleModal").style.display = "flex";
     pushBackEntry("schedule", () => { $("scheduleModal").style.display = "none"; });
-    // Default range: the Sunday of "this week" + 13 days (so it's Sun-Sat,
-    // Sun-Sat). Aligning to Sundays keeps the grid stable when the user
-    // scrolls — Today button doesn't shift the column layout.
-    schRangeStart = schSundayOf(new Date());
+    // On desktop the calendar lays out as a 7-column grid, so we anchor the
+    // start to Sunday for a clean Sun-Sat layout. On mobile (where the grid
+    // collapses to one day per row), there's no visual benefit to leading
+    // with past days — start with today instead so the user lands on
+    // current/upcoming days, not last weekend.
+    schRangeStart = window.matchMedia("(max-width: 768px)").matches
+      ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())
+      : schSundayOf(new Date());
     schEditingId = null;
     schSelectedCrew = new Set();
     schSelectedDate = null;
@@ -7457,7 +7461,9 @@ rick@northeasternelec.com`
     loadScheduleData();
   };
   window.schGoToday = function() {
-    schRangeStart = schSundayOf(new Date());
+    schRangeStart = window.matchMedia("(max-width: 768px)").matches
+      ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())
+      : schSundayOf(new Date());
     $("schEditPanel").style.display = "none";
     $("schDayDetail").style.display = "none";
     loadScheduleData();

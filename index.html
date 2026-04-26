@@ -1143,7 +1143,12 @@
     }
     .sch-day:hover { border-color: var(--accent); }
     .sch-day.today { border-color: var(--accent); background: var(--accent-glow); }
-    .sch-day.weekend { background: rgba(0,0,0,0.02); }
+    .sch-day.weekend {
+      background: rgba(0, 0, 0, 0.05);
+      border-color: rgba(0, 0, 0, 0.08);
+    }
+    .sch-day.weekend .sch-day-num { opacity: 0.5; }
+    .sch-day.weekend .sch-day-name { opacity: 0.6; }
     .sch-day-header { display: flex; justify-content: space-between; align-items: baseline; }
     .sch-day-name { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.4px; }
     .sch-day-num { font-size: 16px; font-weight: 700; color: var(--text); }
@@ -7528,24 +7533,31 @@ rick@northeasternelec.com`
       // name, color-coded to match Payroll. Click hits the entry's edit panel.
       const blocks = todayEntries.flatMap(e => {
         const isTimeOff = e.type === "Time Off";
-        if (!e.crew?.length) {
+        if (!e.crewIds?.length) {
           // No crew assigned — show one neutral pill with the job name so
-          // the user can still see + click the entry to assign crew
-          return [`<div class="sch-block past-or-now${isTimeOff ? " timeoff" : ""}"${dragAttr} data-entry-id="${esc(e.id)}" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
+          // the user can still see + click the entry to assign crew. Not
+          // draggable (no employee to move) — use the edit panel instead.
+          return [`<div class="sch-block past-or-now${isTimeOff ? " timeoff" : ""}" data-entry-id="${esc(e.id)}" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
                         onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                         title="${isTimeOff ? "🏖 Time Off — no one assigned" : esc(e.jobName) + " — no crew assigned"}${e.notes ? " — " + esc(e.notes) : ""}">
                     ${isTimeOff ? "🏖 Time Off" : esc(e.jobName || "—")}<br>
                     <span class="crew">${isTimeOff ? "no one" : "no crew"}</span>
                   </div>`];
         }
-        return e.crew.map(empName => {
+        // Iterate over crewIds (source of truth for the entry's crew). Names
+        // come from schCrew (the active employee list); we fall back to
+        // e.crew[i] if the lookup fails (e.g. former employee). Each pill
+        // carries data-emp-id so drag-to-move can split out just that one
+        // crew member when there are multiple on the entry.
+        return e.crewIds.map((cid, idx) => {
+          const empName = (schCrew.find(c => c.id === cid)?.name) || e.crew[idx] || "Unknown";
           const c = schPillColors(empName);
           const first = (empName || "").split(" ")[0];
           const subtitle = isTimeOff ? "🏖 Off" : (e.jobName || "—");
           const tooltip  = isTimeOff
             ? `${empName} — Time Off${e.notes ? " — " + e.notes : ""}`
             : `${empName} — ${e.jobName}${e.notes ? " — " + e.notes : ""}`;
-          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${dragAttr} data-entry-id="${esc(e.id)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${dragAttr} data-entry-id="${esc(e.id)}" data-emp-id="${esc(cid)}" data-source-ymd="${esc(ymd)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                        title="${esc(tooltip)}">
                     <strong>${esc(first)}</strong>
@@ -7572,10 +7584,13 @@ rick@northeasternelec.com`
   }
 
   // ── DRAG-TO-MOVE (desktop only) ──────────────────────────────────────
-  // Module-level state: which entry is currently being dragged. Cleared
-  // in dragend so we don't get stale state if a drop is cancelled.
-  let schDragSourceId = null;
-  let schDragWired    = false;  // ensures listeners only attach once
+  // Module-level state: which pill is currently being dragged. We track
+  // (entry, employee, source-day) so the drop handler can split a single
+  // crew member out of a multi-crew entry instead of moving the whole entry.
+  let schDragSourceId       = null;
+  let schDragSourceEmpId    = null;
+  let schDragSourceYmd      = null;
+  let schDragWired          = false;  // ensures listeners only attach once
 
   function wireDragDropHandlers() {
     if (schDragWired) return;
@@ -7583,11 +7598,13 @@ rick@northeasternelec.com`
     const grid = $("schGrid");
     if (!grid) return;
 
-    // dragstart: capture which entry is being moved.
+    // dragstart: capture which pill is being moved.
     grid.addEventListener("dragstart", (e) => {
       const pill = e.target.closest(".sch-block");
-      if (!pill || !pill.dataset.entryId) return;
-      schDragSourceId = pill.dataset.entryId;
+      if (!pill || !pill.dataset.entryId || !pill.dataset.empId) return;
+      schDragSourceId    = pill.dataset.entryId;
+      schDragSourceEmpId = pill.dataset.empId;
+      schDragSourceYmd   = pill.dataset.sourceYmd || pill.closest(".sch-day")?.dataset.ymd || null;
       e.dataTransfer.effectAllowed = "move";
       // Some browsers require a payload to actually start dragging.
       try { e.dataTransfer.setData("text/plain", schDragSourceId); } catch(_) {}
@@ -7620,55 +7637,134 @@ rick@northeasternelec.com`
       const day = e.target.closest(".sch-day");
       if (!day || !schDragSourceId) return;
       day.classList.remove("drop-target");
-      const newStartYmd = day.dataset.ymd;
+      const dstYmd  = day.dataset.ymd;
       const entryId = schDragSourceId;
+      const empId   = schDragSourceEmpId;
+      const srcYmd  = schDragSourceYmd;
       schDragSourceId = null;
-      await schMoveEntry(entryId, newStartYmd);
+      schDragSourceEmpId = null;
+      schDragSourceYmd = null;
+      await schMoveEmployeePill(entryId, empId, srcYmd, dstYmd);
     });
 
     grid.addEventListener("dragend", () => {
       schDragSourceId = null;
+      schDragSourceEmpId = null;
+      schDragSourceYmd = null;
       document.querySelectorAll(".sch-block.dragging").forEach(p => p.classList.remove("dragging"));
       document.querySelectorAll(".sch-day.drop-target").forEach(d => d.classList.remove("drop-target"));
     });
   }
 
-  // Move an entry to a new start date, preserving its duration. Used by the
-  // drag-drop handler above. Doesn't change crew, notes, type — just shifts
-  // the date window forward or backward.
-  async function schMoveEntry(entryId, newStartYmd) {
-    const e = schEntries.find(x => x.id === entryId);
-    if (!e || !e.startDate || !e.endDate) return;
-    if (newStartYmd === e.startDate) return; // no-op drop on same day
+  // Move a single employee's pill to a new day, splitting them out of a
+  // multi-crew entry if needed. Preserves the entry's duration in days.
+  // If the new start date lands on Sat/Sun, snap-forward to the following
+  // Monday so accidental weekend drops don't create weekend work blocks.
+  async function schMoveEmployeePill(entryId, empId, srcYmd, dstYmd) {
+    const entry = schEntries.find(x => x.id === entryId);
+    if (!entry || !entry.startDate || !entry.endDate) return;
+    if (!empId) return;
+    if (!srcYmd || srcYmd === dstYmd) return;  // no-op drop on same day
 
-    // Preserve duration in days
-    const oldStart = schParseYMD(e.startDate);
-    const oldEnd   = schParseYMD(e.endDate);
-    const durationDays = Math.round((oldEnd - oldStart) / (1000 * 60 * 60 * 24));
-    const newStart = schParseYMD(newStartYmd);
-    const newEnd   = new Date(newStart);
-    newEnd.setDate(newStart.getDate() + durationDays);
-    const newEndYmd = schYMD(newEnd);
+    // Compute delta in days from where the pill was, to where it dropped.
+    const srcDt = schParseYMD(srcYmd);
+    const dstDt = schParseYMD(dstYmd);
+    const deltaDays = Math.round((dstDt - srcDt) / 86400000);
 
-    // Optimistically update the local entry so the UI snaps immediately;
-    // re-render before the network round trip. If the server fails, the
-    // alert + reload puts things back.
-    e.startDate = newStartYmd;
-    e.endDate   = newEndYmd;
+    // Apply the delta to the entry's full date range — preserves duration.
+    const oldStart = schParseYMD(entry.startDate);
+    const oldEnd   = schParseYMD(entry.endDate);
+    let newStart   = new Date(oldStart); newStart.setDate(newStart.getDate() + deltaDays);
+    let newEnd     = new Date(oldEnd);   newEnd.setDate(newEnd.getDate()     + deltaDays);
+
+    // Weekend snap-forward: if the new start lands on Sat/Sun, push the
+    // whole range forward to Monday. Sat → +2 days; Sun → +1 day. The
+    // range duration stays the same. Users who actually want weekend work
+    // can still create entries via the +New Entry form (which doesn't snap).
+    const dow = newStart.getDay();
+    if (dow === 6 || dow === 0) {
+      const skipDays = (dow === 6) ? 2 : 1;
+      newStart.setDate(newStart.getDate() + skipDays);
+      newEnd.setDate(newEnd.getDate()     + skipDays);
+    }
+
+    const newStartYmd = schYMD(newStart);
+    const newEndYmd   = schYMD(newEnd);
+    if (newStartYmd === entry.startDate && newEndYmd === entry.endDate) return;
+
+    // If this is the only crew on the entry, just shift the entry's dates.
+    // No split needed.
+    const isSoleCrew = entry.crewIds.length === 1 && entry.crewIds[0] === empId;
+    if (isSoleCrew) {
+      // Optimistic local update + render
+      entry.startDate = newStartYmd;
+      entry.endDate   = newEndYmd;
+      renderScheduleGrid();
+      try {
+        const r = await apiPost("updateScheduleEntry", {
+          entryId, startDate: newStartYmd, endDate: newEndYmd
+        });
+        if (!r?.ok) throw new Error(r?.error || "Move failed");
+        if (schSelectedDate) schShowDayDetail(schSelectedDate);
+      } catch(err) {
+        alert("Couldn't move entry: " + err.message);
+        loadScheduleData();
+      }
+      return;
+    }
+
+    // SPLIT: this employee moves to a new entry, the rest stay on the
+    // original. We POST the new entry first, then PATCH the original to
+    // remove the employee. If the second call fails after the first
+    // succeeds, the alert + reload restores a consistent view from the
+    // server (the user briefly sees the duplicate but it gets resolved).
+    const empRecord = schCrew.find(c => c.id === empId);
+    const empName   = empRecord?.name?.split(" ")[0] || "Crew";
+    const newTitle  = entry.type === "Time Off"
+      ? `🏖 ${empName} — ${newStartYmd}`
+      : `${entry.jobName || "Job"} (${empName}) — ${newStartYmd}`;
+
+    // Optimistic local update so the UI snaps before the network round trip
+    const remainingCrewIds = entry.crewIds.filter(id => id !== empId);
+    const removedName = empRecord?.name || "";
+    const remainingNames = entry.crew.filter(n => n !== removedName);
+    entry.crewIds = remainingCrewIds;
+    entry.crew    = remainingNames;
+    schEntries.push({
+      ...entry,
+      id:        "tmp_" + Math.random().toString(36).slice(2),
+      startDate: newStartYmd,
+      endDate:   newEndYmd,
+      crewIds:   [empId],
+      crew:      [empRecord?.name || ""].filter(Boolean)
+    });
     renderScheduleGrid();
 
     try {
-      const r = await apiPost("updateScheduleEntry", {
-        entryId,
+      // 1. Create the new split-off entry
+      const addRes = await apiPost("addScheduleEntry", {
+        jobId:     entry.jobId || "",
         startDate: newStartYmd,
-        endDate:   newEndYmd
+        endDate:   newEndYmd,
+        crewIds:   [empId],
+        notes:     entry.notes || "",
+        title:     newTitle,
+        type:      entry.type || "Job"
       });
-      if (!r?.ok) throw new Error(r?.error || "Move failed");
-      // Refresh the day-detail panel if it was open
+      if (!addRes?.ok) throw new Error(addRes?.error || "Couldn't create split entry");
+
+      // 2. Update the original entry to drop this employee
+      const updRes = await apiPost("updateScheduleEntry", {
+        entryId, crewIds: remainingCrewIds
+      });
+      if (!updRes?.ok) throw new Error(updRes?.error || "Couldn't update original entry");
+
+      // Reload fresh from server so temp ID gets replaced and any other
+      // clients' changes show up
+      await loadScheduleData();
       if (schSelectedDate) schShowDayDetail(schSelectedDate);
     } catch(err) {
-      alert("Couldn't move entry: " + err.message);
-      // Reload from backend to undo the optimistic change
+      alert("Couldn't split entry: " + err.message);
       loadScheduleData();
     }
   }

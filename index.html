@@ -1176,6 +1176,32 @@
     }
     .sch-block.timeoff strong { font-style: italic; }
 
+    /* Drag-to-move on desktop. Pills get a grab cursor + slight transparency
+       while dragging; the day cell currently being hovered over highlights
+       with the accent color so the drop target is unambiguous. */
+    .sch-block[draggable="true"] { cursor: grab; }
+    .sch-block[draggable="true"]:active { cursor: grabbing; }
+    .sch-block.dragging { opacity: 0.35; }
+    .sch-day.drop-target {
+      border-color: var(--accent);
+      background: var(--accent-glow);
+      box-shadow: inset 0 0 0 2px var(--accent);
+    }
+    /* Conflict warning banner — sits above the calendar when any crew member
+       is double-booked or scheduled on a job AND off the same day. */
+    .sch-conflicts {
+      background: rgba(245, 158, 11, 0.1);
+      border: 1px solid rgba(245, 158, 11, 0.45);
+      border-radius: 9px;
+      padding: 10px 14px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: #b45309;
+    }
+    .sch-conflicts-header { font-weight: 700; color: #92400e; margin-bottom: 4px; }
+    .sch-conflict-row { padding: 3px 0; cursor: pointer; }
+    .sch-conflict-row:hover { color: #92400e; text-decoration: underline; }
+
     /* Edit panel — inline drawer below the calendar */
     .sch-edit-panel {
       background: var(--panel-2);
@@ -1496,8 +1522,8 @@
       <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
       <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
-      <button id="btnSchedule" class="btn btn-sm admin-only hidden" type="button">📅 Schedule</button>
-      <button id="btnMySchedule" class="btn btn-sm" type="button">📅 My Schedule</button>
+      <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
+      <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
@@ -2343,10 +2369,31 @@
       badge.className = "user-badge" + (isAdmin() ? " admin" : "");
 
       const adminOrViewer = isAdmin() || isViewer();
+      // "Strict admin" means role === "admin" only. Excludes office staff.
+      // Used for things only the field-foreman tier (Rick, Larry, Miles)
+      // should be able to do, like editing the crew schedule. Office still
+      // gets full admin rights everywhere else (Lifts, Fleet, Payroll, etc.)
+      const role = (state.user?.role || "").toLowerCase();
+      const isStrictAdmin = role === "admin";
 
-      // Show/hide admin-only elements (viewers also see these)
+      // Show/hide admin-only elements (viewers also see these).
+      // Note: admin-only INCLUDES office (since office acts as admin generally).
       document.querySelectorAll(".admin-only").forEach(el => {
         el.classList.toggle("hidden", !adminOrViewer);
+      });
+
+      // Show/hide strict-admin-only elements — admin role ONLY (no office,
+      // no viewer). Currently used for the Schedule edit button.
+      document.querySelectorAll(".strict-admin-only").forEach(el => {
+        el.classList.toggle("hidden", !isStrictAdmin);
+      });
+
+      // Show/hide non-admin-only elements — everyone except a strict admin.
+      // E.g. "My Schedule" shows for office staff + employees + viewers, so
+      // they can see the crew calendar in read-only mode without crowding
+      // the admin's view with a duplicate button.
+      document.querySelectorAll(".non-admin-only").forEach(el => {
+        el.classList.toggle("hidden", isStrictAdmin);
       });
 
       // Hide financial tabs from viewers
@@ -7460,6 +7507,10 @@ rick@northeasternelec.com`
 
     const today = schYMD(new Date());
     const todayDt = schParseYMD(today);
+    // Drag-to-move is desktop-only and disabled in read-only mode (employees
+    // viewing the calendar don't need to be able to shift entries around).
+    const canDrag = !schReadOnly && window.matchMedia("(min-width: 769px)").matches;
+    const dragAttr = canDrag ? ' draggable="true"' : '';
 
     const grid = $("schGrid");
     grid.innerHTML = days.map(d => {
@@ -7480,7 +7531,7 @@ rick@northeasternelec.com`
         if (!e.crew?.length) {
           // No crew assigned — show one neutral pill with the job name so
           // the user can still see + click the entry to assign crew
-          return [`<div class="sch-block past-or-now${isTimeOff ? " timeoff" : ""}" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
+          return [`<div class="sch-block past-or-now${isTimeOff ? " timeoff" : ""}"${dragAttr} data-entry-id="${esc(e.id)}" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
                         onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                         title="${isTimeOff ? "🏖 Time Off — no one assigned" : esc(e.jobName) + " — no crew assigned"}${e.notes ? " — " + esc(e.notes) : ""}">
                     ${isTimeOff ? "🏖 Time Off" : esc(e.jobName || "—")}<br>
@@ -7494,7 +7545,7 @@ rick@northeasternelec.com`
           const tooltip  = isTimeOff
             ? `${empName} — Time Off${e.notes ? " — " + e.notes : ""}`
             : `${empName} — ${e.jobName}${e.notes ? " — " + e.notes : ""}`;
-          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${dragAttr} data-entry-id="${esc(e.id)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                        title="${esc(tooltip)}">
                     <strong>${esc(first)}</strong>
@@ -7513,6 +7564,169 @@ rick@northeasternelec.com`
           <div class="sch-day-blocks">${blocks}</div>
         </div>`;
     }).join("");
+    // Wire drag/drop handlers (desktop, non-read-only)
+    if (canDrag) wireDragDropHandlers();
+    // Refresh conflict banner — runs after every render so dragging shows
+    // updates immediately.
+    renderConflictBanner();
+  }
+
+  // ── DRAG-TO-MOVE (desktop only) ──────────────────────────────────────
+  // Module-level state: which entry is currently being dragged. Cleared
+  // in dragend so we don't get stale state if a drop is cancelled.
+  let schDragSourceId = null;
+  let schDragWired    = false;  // ensures listeners only attach once
+
+  function wireDragDropHandlers() {
+    if (schDragWired) return;
+    schDragWired = true;
+    const grid = $("schGrid");
+    if (!grid) return;
+
+    // dragstart: capture which entry is being moved.
+    grid.addEventListener("dragstart", (e) => {
+      const pill = e.target.closest(".sch-block");
+      if (!pill || !pill.dataset.entryId) return;
+      schDragSourceId = pill.dataset.entryId;
+      e.dataTransfer.effectAllowed = "move";
+      // Some browsers require a payload to actually start dragging.
+      try { e.dataTransfer.setData("text/plain", schDragSourceId); } catch(_) {}
+      pill.classList.add("dragging");
+    });
+
+    // dragover: required for drop to fire. Highlight the day cell under cursor.
+    grid.addEventListener("dragover", (e) => {
+      if (!schDragSourceId) return;
+      const day = e.target.closest(".sch-day");
+      if (!day) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    });
+
+    grid.addEventListener("dragenter", (e) => {
+      const day = e.target.closest(".sch-day");
+      if (day && schDragSourceId) day.classList.add("drop-target");
+    });
+
+    grid.addEventListener("dragleave", (e) => {
+      const day = e.target.closest(".sch-day");
+      // dragleave fires when moving between children too — only clear
+      // when actually leaving the day cell entirely
+      if (day && !day.contains(e.relatedTarget)) day.classList.remove("drop-target");
+    });
+
+    grid.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      const day = e.target.closest(".sch-day");
+      if (!day || !schDragSourceId) return;
+      day.classList.remove("drop-target");
+      const newStartYmd = day.dataset.ymd;
+      const entryId = schDragSourceId;
+      schDragSourceId = null;
+      await schMoveEntry(entryId, newStartYmd);
+    });
+
+    grid.addEventListener("dragend", () => {
+      schDragSourceId = null;
+      document.querySelectorAll(".sch-block.dragging").forEach(p => p.classList.remove("dragging"));
+      document.querySelectorAll(".sch-day.drop-target").forEach(d => d.classList.remove("drop-target"));
+    });
+  }
+
+  // Move an entry to a new start date, preserving its duration. Used by the
+  // drag-drop handler above. Doesn't change crew, notes, type — just shifts
+  // the date window forward or backward.
+  async function schMoveEntry(entryId, newStartYmd) {
+    const e = schEntries.find(x => x.id === entryId);
+    if (!e || !e.startDate || !e.endDate) return;
+    if (newStartYmd === e.startDate) return; // no-op drop on same day
+
+    // Preserve duration in days
+    const oldStart = schParseYMD(e.startDate);
+    const oldEnd   = schParseYMD(e.endDate);
+    const durationDays = Math.round((oldEnd - oldStart) / (1000 * 60 * 60 * 24));
+    const newStart = schParseYMD(newStartYmd);
+    const newEnd   = new Date(newStart);
+    newEnd.setDate(newStart.getDate() + durationDays);
+    const newEndYmd = schYMD(newEnd);
+
+    // Optimistically update the local entry so the UI snaps immediately;
+    // re-render before the network round trip. If the server fails, the
+    // alert + reload puts things back.
+    e.startDate = newStartYmd;
+    e.endDate   = newEndYmd;
+    renderScheduleGrid();
+
+    try {
+      const r = await apiPost("updateScheduleEntry", {
+        entryId,
+        startDate: newStartYmd,
+        endDate:   newEndYmd
+      });
+      if (!r?.ok) throw new Error(r?.error || "Move failed");
+      // Refresh the day-detail panel if it was open
+      if (schSelectedDate) schShowDayDetail(schSelectedDate);
+    } catch(err) {
+      alert("Couldn't move entry: " + err.message);
+      // Reload from backend to undo the optimistic change
+      loadScheduleData();
+    }
+  }
+
+  // Detect double-bookings: any (employee, day) pair with more than one
+  // entry. Job + Job, Job + Time Off, even two overlapping Time Off entries
+  // — all count as a conflict the user probably wants to know about.
+  function detectScheduleConflicts() {
+    const byDay = new Map();   // ymd → Map(crewId → entries[])
+    schEntries.forEach(e => {
+      if (!e.startDate || !e.endDate) return;
+      const start = schParseYMD(e.startDate);
+      const end   = schParseYMD(e.endDate);
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const ymd = schYMD(d);
+        if (!byDay.has(ymd)) byDay.set(ymd, new Map());
+        const dayMap = byDay.get(ymd);
+        (e.crewIds || []).forEach(cid => {
+          if (!dayMap.has(cid)) dayMap.set(cid, []);
+          dayMap.get(cid).push(e);
+        });
+      }
+    });
+    const conflicts = [];
+    byDay.forEach((dayMap, ymd) => {
+      dayMap.forEach((entries, cid) => {
+        if (entries.length > 1) {
+          const emp = schCrew.find(c => c.id === cid);
+          const empName = emp?.name || (entries[0].crew?.find((_, i) => entries[0].crewIds?.[i] === cid)) || "Unknown";
+          conflicts.push({ ymd, empId: cid, empName, entries });
+        }
+      });
+    });
+    // Sort by date asc, then by employee name
+    conflicts.sort((a, b) => a.ymd.localeCompare(b.ymd) || a.empName.localeCompare(b.empName));
+    return conflicts;
+  }
+
+  function renderConflictBanner() {
+    const banner = $("schConflicts");
+    if (!banner) return;
+    const conflicts = detectScheduleConflicts();
+    if (!conflicts.length) {
+      banner.style.display = "none";
+      banner.innerHTML = "";
+      return;
+    }
+    banner.style.display = "";
+    const rows = conflicts.slice(0, 10).map(c => {
+      const dt = schParseYMD(c.ymd);
+      const niceDate = dt.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      const labels = c.entries.map(e => e.type === "Time Off" ? "🏖 Time Off" : (e.jobName || "—")).join(" + ");
+      return `<div class="sch-conflict-row" onclick="schShowDayDetail('${esc(c.ymd)}')">
+                ${esc(niceDate)} — <strong>${esc(c.empName.split(" ")[0])}</strong> double-booked: ${esc(labels)}
+              </div>`;
+    }).join("");
+    const more = conflicts.length > 10 ? `<div style="font-size:11px; opacity:0.7; margin-top:4px;">+ ${conflicts.length - 10} more</div>` : "";
+    banner.innerHTML = `<div class="sch-conflicts-header">⚠ ${conflicts.length} scheduling conflict${conflicts.length === 1 ? "" : "s"}</div>${rows}${more}`;
   }
 
   window.schShiftRange = function(deltaDays) {
@@ -8801,6 +9015,7 @@ rick@northeasternelec.com`
       </div>
 
       <!-- The grid -->
+      <div id="schConflicts" class="sch-conflicts" style="display:none;"></div>
       <div id="schStatus" style="font-size:13px; color:var(--muted); padding:6px 0;">Loading schedule...</div>
       <div class="sch-grid" id="schGrid" style="display:none;"></div>
     </div>

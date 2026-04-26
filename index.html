@@ -7644,7 +7644,7 @@ rick@northeasternelec.com`
       schDragSourceId = null;
       schDragSourceEmpId = null;
       schDragSourceYmd = null;
-      await schMoveEmployeePill(entryId, empId, srcYmd, dstYmd);
+      await schExtendEmployeePill(entryId, empId, srcYmd, dstYmd);
     });
 
     grid.addEventListener("dragend", () => {
@@ -7656,47 +7656,60 @@ rick@northeasternelec.com`
     });
   }
 
-  // Move a single employee's pill to a new day, splitting them out of a
-  // multi-crew entry if needed. Preserves the entry's duration in days.
-  // If the new start date lands on Sat/Sun, snap-forward to the following
-  // Monday so accidental weekend drops don't create weekend work blocks.
-  async function schMoveEmployeePill(entryId, empId, srcYmd, dstYmd) {
+  // EXTEND a single employee's date range by the dropped day. Adds days to
+  // the entry rather than shifting them. If the employee is on a multi-crew
+  // entry, splits them out into their own entry with the extended range so
+  // their teammates are not affected.
+  //
+  // Direction is inferred from the drop day relative to the current range:
+  //   drop AFTER  end   → extend forward  (drop day becomes new end)
+  //   drop BEFORE start → extend backward (drop day becomes new start)
+  //   drop INSIDE range → no-op (already working that day)
+  //
+  // Weekends snap to the nearest weekday so drag-to-extend never creates
+  // weekend work blocks. Users who want weekend work can still create
+  // entries via the +New Entry form.
+  async function schExtendEmployeePill(entryId, empId, srcYmd, dstYmd) {
     const entry = schEntries.find(x => x.id === entryId);
-    if (!entry || !entry.startDate || !entry.endDate) return;
-    if (!empId) return;
-    if (!srcYmd || srcYmd === dstYmd) return;  // no-op drop on same day
+    if (!entry || !entry.startDate || !entry.endDate || !empId) return;
+    if (!srcYmd || srcYmd === dstYmd) return;
 
-    // Compute delta in days from where the pill was, to where it dropped.
-    const srcDt = schParseYMD(srcYmd);
-    const dstDt = schParseYMD(dstYmd);
-    const deltaDays = Math.round((dstDt - srcDt) / 86400000);
-
-    // Apply the delta to the entry's full date range — preserves duration.
     const oldStart = schParseYMD(entry.startDate);
     const oldEnd   = schParseYMD(entry.endDate);
-    let newStart   = new Date(oldStart); newStart.setDate(newStart.getDate() + deltaDays);
-    let newEnd     = new Date(oldEnd);   newEnd.setDate(newEnd.getDate()     + deltaDays);
+    let dst = schParseYMD(dstYmd);
 
-    // Weekend snap-forward: if the new start lands on Sat/Sun, push the
-    // whole range forward to Monday. Sat → +2 days; Sun → +1 day. The
-    // range duration stays the same. Users who actually want weekend work
-    // can still create entries via the +New Entry form (which doesn't snap).
-    const dow = newStart.getDay();
-    if (dow === 6 || dow === 0) {
-      const skipDays = (dow === 6) ? 2 : 1;
-      newStart.setDate(newStart.getDate() + skipDays);
-      newEnd.setDate(newEnd.getDate()     + skipDays);
+    // Drop inside the current range = already working that day, do nothing.
+    if (dst >= oldStart && dst <= oldEnd) return;
+
+    let newStart = new Date(oldStart);
+    let newEnd   = new Date(oldEnd);
+
+    if (dst > oldEnd) {
+      // Extending forward — snap weekend back to the previous Friday so
+      // the new range ends on a weekday.
+      const dow = dst.getDay();
+      if (dow === 6) dst.setDate(dst.getDate() - 1);       // Sat → Fri
+      else if (dow === 0) dst.setDate(dst.getDate() - 2);  // Sun → Fri
+      // After snap, drop might fall inside or before the existing range
+      if (dst <= oldEnd) return;
+      newEnd = dst;
+    } else {
+      // Extending backward — snap weekend forward to next Monday so
+      // the new range starts on a weekday.
+      const dow = dst.getDay();
+      if (dow === 6) dst.setDate(dst.getDate() + 2);       // Sat → Mon
+      else if (dow === 0) dst.setDate(dst.getDate() + 1);  // Sun → Mon
+      if (dst >= oldStart) return;
+      newStart = dst;
     }
 
     const newStartYmd = schYMD(newStart);
     const newEndYmd   = schYMD(newEnd);
     if (newStartYmd === entry.startDate && newEndYmd === entry.endDate) return;
 
-    // If this is the only crew on the entry, just shift the entry's dates.
-    // No split needed.
+    // SOLO CREW: just extend the entry — no split needed.
     const isSoleCrew = entry.crewIds.length === 1 && entry.crewIds[0] === empId;
     if (isSoleCrew) {
-      // Optimistic local update + render
       entry.startDate = newStartYmd;
       entry.endDate   = newEndYmd;
       renderScheduleGrid();
@@ -7704,27 +7717,27 @@ rick@northeasternelec.com`
         const r = await apiPost("updateScheduleEntry", {
           entryId, startDate: newStartYmd, endDate: newEndYmd
         });
-        if (!r?.ok) throw new Error(r?.error || "Move failed");
+        if (!r?.ok) throw new Error(r?.error || "Extend failed");
         if (schSelectedDate) schShowDayDetail(schSelectedDate);
       } catch(err) {
-        alert("Couldn't move entry: " + err.message);
+        alert("Couldn't extend entry: " + err.message);
         loadScheduleData();
       }
       return;
     }
 
-    // SPLIT: this employee moves to a new entry, the rest stay on the
-    // original. We POST the new entry first, then PATCH the original to
-    // remove the employee. If the second call fails after the first
-    // succeeds, the alert + reload restores a consistent view from the
-    // server (the user briefly sees the duplicate but it gets resolved).
+    // MULTI-CREW: split this employee into a new entry with the EXTENDED
+    // range (their original days plus the added day(s)). Original entry
+    // keeps the remaining crew on the original dates. POST the new entry
+    // first; if PATCH on the original fails afterward, the alert + reload
+    // restores a consistent view from the server.
     const empRecord = schCrew.find(c => c.id === empId);
     const empName   = empRecord?.name?.split(" ")[0] || "Crew";
     const newTitle  = entry.type === "Time Off"
       ? `🏖 ${empName} — ${newStartYmd}`
       : `${entry.jobName || "Job"} (${empName}) — ${newStartYmd}`;
 
-    // Optimistic local update so the UI snaps before the network round trip
+    // Optimistic local update — UI snaps before the network round trip
     const remainingCrewIds = entry.crewIds.filter(id => id !== empId);
     const removedName = empRecord?.name || "";
     const remainingNames = entry.crew.filter(n => n !== removedName);
@@ -7741,7 +7754,7 @@ rick@northeasternelec.com`
     renderScheduleGrid();
 
     try {
-      // 1. Create the new split-off entry
+      // 1. Create the new (extended) entry just for this employee
       const addRes = await apiPost("addScheduleEntry", {
         jobId:     entry.jobId || "",
         startDate: newStartYmd,
@@ -7751,20 +7764,20 @@ rick@northeasternelec.com`
         title:     newTitle,
         type:      entry.type || "Job"
       });
-      if (!addRes?.ok) throw new Error(addRes?.error || "Couldn't create split entry");
+      if (!addRes?.ok) throw new Error(addRes?.error || "Couldn't create extended entry");
 
-      // 2. Update the original entry to drop this employee
+      // 2. Update the original to drop this employee
       const updRes = await apiPost("updateScheduleEntry", {
         entryId, crewIds: remainingCrewIds
       });
       if (!updRes?.ok) throw new Error(updRes?.error || "Couldn't update original entry");
 
-      // Reload fresh from server so temp ID gets replaced and any other
-      // clients' changes show up
+      // Reload fresh from server so the temp ID is replaced and any
+      // concurrent changes show up
       await loadScheduleData();
       if (schSelectedDate) schShowDayDetail(schSelectedDate);
     } catch(err) {
-      alert("Couldn't split entry: " + err.message);
+      alert("Couldn't extend split entry: " + err.message);
       loadScheduleData();
     }
   }

@@ -7677,7 +7677,7 @@ rick@northeasternelec.com`
       schDragSourceId = null;
       schDragSourceEmpId = null;
       schDragSourceYmd = null;
-      await schExtendEmployeePill(entryId, empId, srcYmd, dstYmd);
+      await schResizeEmployeePill(entryId, empId, srcYmd, dstYmd);
     });
 
     grid.addEventListener("dragend", () => {
@@ -7689,20 +7689,23 @@ rick@northeasternelec.com`
     });
   }
 
-  // EXTEND a single employee's date range by the dropped day. Adds days to
-  // the entry rather than shifting them. If the employee is on a multi-crew
-  // entry, splits them out into their own entry with the extended range so
-  // their teammates are not affected.
+  // RESIZE a single employee's date range by dropping their pill. The pill's
+  // source day decides which edge moves when dropping inside the range
+  // (shrink); for drops outside the range, direction is inferred from the
+  // drop position (extend). If the employee is on a multi-crew entry, splits
+  // them out into their own entry so their teammates are not affected.
   //
-  // Direction is inferred from the drop day relative to the current range:
-  //   drop AFTER  end   → extend forward  (drop day becomes new end)
-  //   drop BEFORE start → extend backward (drop day becomes new start)
-  //   drop INSIDE range → no-op (already working that day)
+  // Action by (source pill, drop position):
+  //   any pill,    drop AFTER  end    → extend end forward
+  //   any pill,    drop BEFORE start  → extend start backward
+  //   start pill,  drop INSIDE range  → shrink start inward
+  //   end pill,    drop INSIDE range  → shrink end inward
+  //   middle pill, drop INSIDE range  → no-op
   //
-  // Weekends snap to the nearest weekday so drag-to-extend never creates
-  // weekend work blocks. Users who want weekend work can still create
-  // entries via the +New Entry form.
-  async function schExtendEmployeePill(entryId, empId, srcYmd, dstYmd) {
+  // Weekends snap to the nearest weekday so drag-resize never produces
+  // weekend work blocks. Shrinking past the opposite edge collapses the
+  // range to a single day at that edge.
+  async function schResizeEmployeePill(entryId, empId, srcYmd, dstYmd) {
     const entry = schEntries.find(x => x.id === entryId);
     if (!entry || !entry.startDate || !entry.endDate || !empId) return;
     if (!srcYmd || srcYmd === dstYmd) return;
@@ -7711,36 +7714,60 @@ rick@northeasternelec.com`
     const oldEnd   = schParseYMD(entry.endDate);
     let dst = schParseYMD(dstYmd);
 
-    // Drop inside the current range = already working that day, do nothing.
-    if (dst >= oldStart && dst <= oldEnd) return;
+    const isStartPill = srcYmd === entry.startDate;
+    const isEndPill   = srcYmd === entry.endDate;
+    const dropInside  = dst >= oldStart && dst <= oldEnd;
 
     let newStart = new Date(oldStart);
     let newEnd   = new Date(oldEnd);
 
-    if (dst > oldEnd) {
-      // Extending forward — snap weekend back to the previous Friday so
-      // the new range ends on a weekday.
+    if (!dropInside) {
+      // EXTEND — drop outside the current range. Direction inferred from dst.
+      if (dst > oldEnd) {
+        // Extending forward — snap weekend back to the previous Friday so
+        // the new range ends on a weekday.
+        const dow = dst.getDay();
+        if (dow === 6) dst.setDate(dst.getDate() - 1);       // Sat → Fri
+        else if (dow === 0) dst.setDate(dst.getDate() - 2);  // Sun → Fri
+        // After snap, drop might fall inside or before the existing range
+        if (dst <= oldEnd) return;
+        newEnd = dst;
+      } else {
+        // Extending backward — snap weekend forward to next Monday so
+        // the new range starts on a weekday.
+        const dow = dst.getDay();
+        if (dow === 6) dst.setDate(dst.getDate() + 2);       // Sat → Mon
+        else if (dow === 0) dst.setDate(dst.getDate() + 1);  // Sun → Mon
+        if (dst >= oldStart) return;
+        newStart = dst;
+      }
+    } else if (isStartPill) {
+      // SHRINK start inward — snap weekend forward to next Monday
       const dow = dst.getDay();
-      if (dow === 6) dst.setDate(dst.getDate() - 1);       // Sat → Fri
-      else if (dow === 0) dst.setDate(dst.getDate() - 2);  // Sun → Fri
-      // After snap, drop might fall inside or before the existing range
-      if (dst <= oldEnd) return;
+      if (dow === 6) dst.setDate(dst.getDate() + 2);         // Sat → Mon
+      else if (dow === 0) dst.setDate(dst.getDate() + 1);    // Sun → Mon
+      // Snap may push past the opposite edge — collapse to 1-day at end
+      if (dst > oldEnd) dst = new Date(oldEnd);
+      newStart = dst;
+    } else if (isEndPill) {
+      // SHRINK end inward — snap weekend back to previous Friday
+      const dow = dst.getDay();
+      if (dow === 6) dst.setDate(dst.getDate() - 1);         // Sat → Fri
+      else if (dow === 0) dst.setDate(dst.getDate() - 2);    // Sun → Fri
+      if (dst < oldStart) dst = new Date(oldStart);
       newEnd = dst;
     } else {
-      // Extending backward — snap weekend forward to next Monday so
-      // the new range starts on a weekday.
-      const dow = dst.getDay();
-      if (dow === 6) dst.setDate(dst.getDate() + 2);       // Sat → Mon
-      else if (dow === 0) dst.setDate(dst.getDate() + 1);  // Sun → Mon
-      if (dst >= oldStart) return;
-      newStart = dst;
+      // Middle-day pill dropped inside the range — no-op.
+      return;
     }
 
     const newStartYmd = schYMD(newStart);
     const newEndYmd   = schYMD(newEnd);
     if (newStartYmd === entry.startDate && newEndYmd === entry.endDate) return;
+    // Defensive: reject any inversion that slipped through.
+    if (newEndYmd < newStartYmd) return;
 
-    // SOLO CREW: just extend the entry — no split needed.
+    // SOLO CREW: just update the entry's dates — no split needed.
     const isSoleCrew = entry.crewIds.length === 1 && entry.crewIds[0] === empId;
     if (isSoleCrew) {
       entry.startDate = newStartYmd;
@@ -7750,20 +7777,19 @@ rick@northeasternelec.com`
         const r = await apiPost("updateScheduleEntry", {
           entryId, startDate: newStartYmd, endDate: newEndYmd
         });
-        if (!r?.ok) throw new Error(r?.error || "Extend failed");
+        if (!r?.ok) throw new Error(r?.error || "Update failed");
         if (schSelectedDate) schShowDayDetail(schSelectedDate);
       } catch(err) {
-        alert("Couldn't extend entry: " + err.message);
+        alert("Couldn't update entry: " + err.message);
         loadScheduleData();
       }
       return;
     }
 
-    // MULTI-CREW: split this employee into a new entry with the EXTENDED
-    // range (their original days plus the added day(s)). Original entry
-    // keeps the remaining crew on the original dates. POST the new entry
-    // first; if PATCH on the original fails afterward, the alert + reload
-    // restores a consistent view from the server.
+    // MULTI-CREW: split this employee into a new entry with the new range.
+    // Original entry keeps the remaining crew on the original dates. POST the
+    // new entry first; if PATCH on the original fails afterward, the alert +
+    // reload restores a consistent view from the server.
     const empRecord = schCrew.find(c => c.id === empId);
     const empName   = empRecord?.name?.split(" ")[0] || "Crew";
     const newTitle  = entry.type === "Time Off"
@@ -7787,7 +7813,7 @@ rick@northeasternelec.com`
     renderScheduleGrid();
 
     try {
-      // 1. Create the new (extended) entry just for this employee
+      // 1. Create the new entry just for this employee with the new range
       const addRes = await apiPost("addScheduleEntry", {
         jobId:     entry.jobId || "",
         startDate: newStartYmd,
@@ -7797,7 +7823,7 @@ rick@northeasternelec.com`
         title:     newTitle,
         type:      entry.type || "Job"
       });
-      if (!addRes?.ok) throw new Error(addRes?.error || "Couldn't create extended entry");
+      if (!addRes?.ok) throw new Error(addRes?.error || "Couldn't create split entry");
 
       // 2. Update the original to drop this employee
       const updRes = await apiPost("updateScheduleEntry", {
@@ -7810,7 +7836,7 @@ rick@northeasternelec.com`
       await loadScheduleData();
       if (schSelectedDate) schShowDayDetail(schSelectedDate);
     } catch(err) {
-      alert("Couldn't extend split entry: " + err.message);
+      alert("Couldn't update split entry: " + err.message);
       loadScheduleData();
     }
   }

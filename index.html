@@ -1253,6 +1253,39 @@
       border-color: var(--accent);
     }
 
+    /* Job search typeahead — replaces the old <select> dropdown so the user
+       can type a few letters and filter from 50+ jobs instead of scrolling. */
+    .sch-job-search-wrap { position: relative; }
+    .sch-job-search {
+      width: 100%; padding: 6px 8px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+      font-family: inherit; box-sizing: border-box;
+    }
+    .sch-job-search:focus { outline: none; border-color: var(--accent); }
+    .sch-job-search.has-pick {
+      background: var(--accent-glow);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .sch-job-results {
+      position: absolute; left: 0; right: 0; top: 100%; margin-top: 2px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+      max-height: 240px; overflow-y: auto; z-index: 10;
+      display: none;
+    }
+    .sch-job-results.open { display: block; }
+    .sch-job-result {
+      padding: 7px 10px; font-size: 13px; cursor: pointer;
+      border-bottom: 1px solid var(--line);
+    }
+    .sch-job-result:last-child { border-bottom: none; }
+    .sch-job-result:hover, .sch-job-result.active { background: var(--accent-glow); color: var(--accent); }
+    .sch-job-result .contractor { font-size: 11px; color: var(--muted); display: block; }
+    .sch-job-result.active .contractor, .sch-job-result:hover .contractor { color: var(--accent); opacity: 0.85; }
+    .sch-job-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
+
     /* Day-detail panel: shown when a day is tapped */
     .sch-day-detail {
       background: var(--panel-2);
@@ -7980,13 +8013,11 @@ rick@northeasternelec.com`
     setTimeout(() => $("schEditPanel").scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
   };
 
-  function populateJobDropdown(selectedId) {
-    const sel = $("schEditJob");
-    // Exclude jobs that don't make sense to schedule (cold leads, dead jobs).
-    // Anything else — Awarded, Estimating, Service Call Scheduled, Ready to
-    // Invoice, even Completed — stays available so the user has full
-    // flexibility. The currently-selected job is always preserved even if
-    // it would otherwise be excluded.
+  // Build the candidate list for the job typeahead (called when the edit
+  // panel opens). Excludes statuses you'd never schedule against (cold
+  // leads, dead jobs); includes the currently-selected job even if it'd
+  // otherwise be filtered, so editing an existing entry never loses it.
+  function schJobCandidates(selectedId) {
     const SKIP_STATUSES = new Set(["New Lead", "Not Awarded"]);
     let list = (schJobs || []).filter(j => !SKIP_STATUSES.has(j.status));
     if (selectedId && !list.find(j => j.id === selectedId)) {
@@ -7994,8 +8025,123 @@ rick@northeasternelec.com`
       if (j) list = [j, ...list];
     }
     list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    sel.innerHTML = `<option value="">— pick a job —</option>` +
-      list.map(j => `<option value="${esc(j.id)}"${j.id === selectedId ? " selected" : ""}>${esc(j.name)}${j.contractor ? " (" + esc(j.contractor) + ")" : ""}</option>`).join("");
+    return list;
+  }
+
+  // Open the job picker for a new/edit form. selectedId may be empty.
+  function populateJobDropdown(selectedId) {
+    const list   = schJobCandidates(selectedId);
+    const hidden = $("schEditJob");
+    const search = $("schJobSearch");
+    const results = $("schJobResults");
+    if (!hidden || !search || !results) return;
+
+    hidden.value = selectedId || "";
+    // Cache the candidates on the input element so the keyup handler can
+    // filter without re-querying state every time.
+    search._jobs = list;
+
+    // If we're editing an entry with a job already selected, show its label
+    // in the search box; otherwise leave blank so the placeholder shows.
+    if (selectedId) {
+      const cur = list.find(j => j.id === selectedId);
+      if (cur) {
+        search.value = cur.name + (cur.contractor ? " (" + cur.contractor + ")" : "");
+        search.classList.add("has-pick");
+      } else {
+        search.value = "";
+        search.classList.remove("has-pick");
+      }
+    } else {
+      search.value = "";
+      search.classList.remove("has-pick");
+    }
+    results.classList.remove("open");
+    results.innerHTML = "";
+
+    // Idempotent wiring: only attach handlers once
+    if (!search._wired) {
+      search._wired = true;
+      let activeIdx = -1;
+
+      const renderResults = (q) => {
+        const candidates = search._jobs || [];
+        const ql = q.trim().toLowerCase();
+        // No query → show top 12 of the full list (so a click still gets a menu)
+        const filtered = ql
+          ? candidates.filter(j =>
+              (j.name       || "").toLowerCase().includes(ql) ||
+              (j.contractor || "").toLowerCase().includes(ql) ||
+              (j.po         || "").toLowerCase().includes(ql)
+            )
+          : candidates.slice();
+        activeIdx = -1;
+        if (!filtered.length) {
+          results.innerHTML = `<div class="sch-job-result-empty">No matching jobs</div>`;
+          results.classList.add("open");
+          return;
+        }
+        results.innerHTML = filtered.slice(0, 30).map((j, i) =>
+          `<div class="sch-job-result" data-id="${esc(j.id)}" data-idx="${i}">
+             ${esc(j.name)}
+             ${j.contractor ? `<span class="contractor">${esc(j.contractor)}</span>` : ""}
+           </div>`
+        ).join("");
+        results.classList.add("open");
+        // Wire row clicks
+        results.querySelectorAll(".sch-job-result").forEach(row => {
+          row.onmousedown = (ev) => { ev.preventDefault(); pick(row.dataset.id); };
+        });
+      };
+
+      const pick = (jobId) => {
+        const j = (search._jobs || []).find(x => x.id === jobId);
+        hidden.value = jobId || "";
+        if (j) {
+          search.value = j.name + (j.contractor ? " (" + j.contractor + ")" : "");
+          search.classList.add("has-pick");
+        } else {
+          search.classList.remove("has-pick");
+        }
+        results.classList.remove("open");
+      };
+
+      search.addEventListener("input", () => {
+        // Typing invalidates the previous pick — clear hidden until a
+        // new selection is made
+        hidden.value = "";
+        search.classList.remove("has-pick");
+        renderResults(search.value);
+      });
+      search.addEventListener("focus", () => {
+        renderResults(search.value);
+      });
+      search.addEventListener("blur", () => {
+        // Defer hide so a click on a result still registers
+        setTimeout(() => results.classList.remove("open"), 150);
+      });
+      search.addEventListener("keydown", (e) => {
+        const rows = results.querySelectorAll(".sch-job-result");
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          activeIdx = Math.min(activeIdx + 1, rows.length - 1);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          activeIdx = Math.max(activeIdx - 1, 0);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter") {
+          if (activeIdx >= 0 && rows[activeIdx]) {
+            e.preventDefault();
+            pick(rows[activeIdx].dataset.id);
+          }
+        } else if (e.key === "Escape") {
+          results.classList.remove("open");
+        }
+      });
+    }
   }
 
   function renderCrewPills() {
@@ -9092,7 +9238,12 @@ rick@northeasternelec.com`
         <div class="sch-edit-grid">
           <div id="schEditJobWrap">
             <label>Job</label>
-            <select id="schEditJob"></select>
+            <div class="sch-job-search-wrap">
+              <input type="text" class="sch-job-search" id="schJobSearch"
+                     placeholder="Type to search jobs..." autocomplete="off" />
+              <div class="sch-job-results" id="schJobResults"></div>
+              <input type="hidden" id="schEditJob" value="" />
+            </div>
           </div>
           <div>
             <label>Notes (optional)</label>

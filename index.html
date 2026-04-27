@@ -3029,6 +3029,25 @@
     ].join("");
   }
 
+  // Refetches the selected Job from Airtable so rollup-driven fields
+  // (Expected Revenue, Projected Estimated Total Cost, Projected Gross
+  // Profit %, etc.) are current after a Job Estimates write. Returns the
+  // fresh job object and updates state.selected in place. Falls back to
+  // the existing state.selected on error so the UI degrades gracefully.
+  async function refreshSelectedJob() {
+    if (!state.selected?.id) return null;
+    try {
+      const res = await apiGet("jobById", { jobId: state.selected.id });
+      if (res.ok && res.job) {
+        state.selected = res.job;
+        return res.job;
+      }
+    } catch (e) {
+      console.error("refreshSelectedJob:", e);
+    }
+    return state.selected;
+  }
+
   async function renderEstGp(job) {
     const grid = $("estGpGrid");
     grid.innerHTML = `
@@ -3118,6 +3137,10 @@
             const msg = row.querySelector(`.est-save-msg[data-est-id="${estId}"]`);
             msg.style.display = "inline";
             setTimeout(() => { msg.style.display = "none"; }, 2500);
+            // Refresh the GP cards above — Expected Revenue, Projected GP %, etc.
+            // are Job rollups that change when estimate dollar fields move.
+            const fresh = await refreshSelectedJob();
+            if (fresh) await renderEstGp(fresh);
           } catch(e) {
             alert("Error: " + e.message);
           } finally {
@@ -3134,8 +3157,11 @@
           btn.disabled = true;
           try {
             await apiPost("updateEstimateStatus", { estimateId: estId, status: newStatus });
-            // Reload the GP tab so Expected Revenue rollup refreshes and buttons restyle
-            await renderEstGp(job);
+            // Refetch the Job so the rollup-driven cards reflect status-based
+            // formula changes (Expected Revenue excludes Rejected/Archived
+            // estimates, etc.) before re-rendering.
+            const fresh = await refreshSelectedJob();
+            await renderEstGp(fresh || job);
           } catch(e) {
             alert("Error updating status: " + e.message);
             btn.disabled = false;
@@ -7476,12 +7502,15 @@ rick@northeasternelec.com`
       msg.style.color = "var(--green)";
       msg.style.display = "block";
 
-      // Refresh the Est. GP estimates list if the user is on that tab
-      // for this same job, so the new record appears immediately.
+      // Always refresh state.selected so the Est. GP cards are correct the
+      // next time the tab is rendered — even if the user submitted from
+      // the page header while on a different tab. Only re-render if the
+      // user is currently looking at Est. GP for this same job.
       if (state.selected && state.selected.id === _newEstJob.id) {
+        const fresh = await refreshSelectedJob();
         const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
         if (activeTab === "est-gp" && typeof renderEstGp === "function") {
-          renderEstGp(state.selected);
+          await renderEstGp(fresh || state.selected);
         }
       }
 

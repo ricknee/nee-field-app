@@ -343,13 +343,14 @@ async function handleLogin(body) {
   return resp(200, { ok: true, user: { id: match.id, name: f[F.emp.name]||"Unknown", role } });
 }
 
-async function handleJobs() {
-  const records = await fetchAll(TABLES.jobs);
-  const jobs = records.map(r => {
-    const f = r.fields || {};
-    return {
-      id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
-      type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
+// Shared mapper — used by handleJobs (list) and handleJobById (single).
+// Keeping the projection in one place ensures the single-record refresh
+// path returns the same shape the list-and-state code expects.
+function mapJob(r) {
+  const f = r.fields || {};
+  return {
+    id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
+    type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
       generatorInstalled:gBool(f,F.job.generatorInstalled),
       powerCompanyName:g(f,F.job.powerCompanyName)||"",powerCompanyContact:g(f,F.job.powerCompanyContact)||"",
       powerCompanyPhone:g(f,F.job.powerCompanyPhone)||"",powerCompanyEmail:g(f,F.job.powerCompanyEmail)||"",
@@ -408,9 +409,26 @@ async function handleJobs() {
       projectedEstimatedLaborCost:gNum(f,F.job.projectedEstimatedLaborCost),
       projectedGrossProfitDollar:gNum(f,F.job.projectedGrossProfitDollar),
       projectedGrossProfitPct:gNum(f,F.job.projectedGrossProfitPct)
-    };
-  }).filter(j => !["archived","cancelled","canceled","closed"].includes(normalize(j.status)));
+  };
+}
+
+async function handleJobs() {
+  const records = await fetchAll(TABLES.jobs);
+  const jobs = records
+    .map(mapJob)
+    .filter(j => !["archived","cancelled","canceled","closed"].includes(normalize(j.status)));
   return resp(200, { ok: true, jobs });
+}
+
+// Returns a single Job in the same shape as handleJobs. Used to refresh
+// rollup-driven fields (Expected Revenue, Projected Gross Profit, etc.)
+// after Job Estimates writes so the Est. GP cards don't show stale data.
+async function handleJobById(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  return resp(200, { ok: true, job: mapJob(records[0]) });
 }
 
 async function handleGenerator(params) {
@@ -1676,6 +1694,7 @@ export async function handler(event) {
       const action = event.queryStringParameters?.action;
       const params = event.queryStringParameters || {};
       if (action === "jobs")               return await handleJobs();
+      if (action === "jobById")            return await handleJobById(params);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "expenses")           return await handleExpenses(params);
       if (action === "timeEntries")        return await handleTimeEntries(params);

@@ -776,6 +776,16 @@ async function handleCreateJobEstimate(body) {
   // Estimated Total) are also skipped here. Only user-editable fields below.
   const fields = {};
   fields["Job"] = [jobId];
+  // Status (fld9GsGvxaNPuCnjo, singleSelect) has no schema-level default,
+  // so records created here without it land with Status=null and get
+  // filtered out of the Est. GP estimates view. Default to "Draft" — the
+  // starting state used by existing records.
+  fields["Status"] = "Draft";
+  // Estimate Type (fld8rcQ3Ni2P1AbUR, singleSelect) is currently populated
+  // by an Airtable schema-level default of "Original". Setting it
+  // explicitly here so the behavior doesn't silently change if that
+  // schema default is ever removed.
+  fields["Estimate Type"] = "Original";
   if (estimateDate) fields["Estimate Date"] = estimateDate;
   if (baseAmount   !== undefined && baseAmount   !== null && baseAmount   !== "") fields["Actual Estimate Sent"]    = Number(baseAmount);
   if (laborHours   !== undefined && laborHours   !== null && laborHours   !== "") fields["Estimated Labor Hours"]   = Number(laborHours);

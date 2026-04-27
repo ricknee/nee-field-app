@@ -120,6 +120,7 @@
     }
 
     #statusChangeRow:not(.hidden) { display: flex; }
+    #piSaveBar:not(.hidden) { display: flex; }
 
     /* ── SERVICE CALL ACTION BUTTONS ── */
     .svc-action-section { margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; }
@@ -1672,6 +1673,23 @@
 
         <!-- TAB: PROJECT INFO -->
         <div class="tab-content active" id="tab-project">
+          <!-- ADMIN: Edit toggle. Stays as "✏ Edit" in view mode and
+               flips to "✕ Cancel" in edit mode. Hidden entirely for
+               non-admin roles. -->
+          <div class="admin-only hidden" id="piEditToggleRow" style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+            <button id="piEditBtn" type="button" class="btn btn-sm" style="font-size:12px; padding:6px 12px;">✏ Edit</button>
+          </div>
+          <!-- Save bar — visible only while in edit mode. Mirrors
+               #statusChangeRow exactly so the two save bars feel like
+               one UI in two places. Not tagged admin-only because the
+               auto-toggle would un-hide it for admins on login; instead
+               only the admin-only Edit button can reveal this bar. -->
+          <div class="hidden" id="piSaveBar" style="align-items:center; gap:10px; padding: 10px 0 14px; flex-wrap:wrap;">
+            <label style="font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap;">Project Info:</label>
+            <button id="piSaveBtn" class="btn btn-primary btn-sm" type="button" style="font-size:13px;">Save</button>
+            <span id="piSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+            <span id="piSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
+          </div>
           <div class="info-grid">
             <div class="info-box">
               <div class="info-label">Job Name</div>
@@ -1701,10 +1719,59 @@
               <div class="info-label">Generator Installed</div>
               <div class="info-value" id="piGenerator">—</div>
             </div>
-            <div class="info-box full">
+            <div class="info-box" id="piPhoneCard">
+              <div class="info-label">Customer Phone</div>
+              <div class="info-value" id="piCustomerPhone">—</div>
+            </div>
+            <div class="info-box" id="piEmailCard">
+              <div class="info-label">Customer Email</div>
+              <div class="info-value" id="piCustomerEmail">—</div>
+            </div>
+            <div class="info-box full" id="piAddressCard">
               <div class="info-label">Job Address — Tap to Open in Maps</div>
               <div class="info-value" id="piAddress">—</div>
               <div id="piMiles" style="font-size:12px; color:var(--muted); margin-top:5px; display:none;"></div>
+            </div>
+          </div>
+
+          <!-- ADMIN: Notes view block. Hidden for non-admins entirely
+               and hidden during edit mode (the textarea inside the
+               Edit Panel takes over). -->
+          <div class="admin-only hidden" id="piNotesView" style="margin-top:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;">
+            <div class="info-label" style="margin-bottom:6px;">📝 Job Notes</div>
+            <div id="piNotesText" style="white-space:pre-wrap; font-size:13px; color:var(--text); line-height:1.5;">—</div>
+          </div>
+
+          <!-- Edit Panel — replaces the read-only address/phone/email
+               cards (and notes view) while in edit mode. Hidden by
+               default. Same admin-only rationale as #piSaveBar above. -->
+          <div class="hidden" id="piEditPanel" style="margin-top:8px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px;">
+            <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">✏ Edit Project Info</div>
+
+            <div style="margin-bottom:14px;">
+              <label class="edit-label">Job Address</label>
+              <div style="display:grid; grid-template-columns:2fr 1.2fr 0.6fr 0.8fr; gap:8px;">
+                <input id="piEditStreet" type="text"  class="edit-input" placeholder="Street" />
+                <input id="piEditCity"   type="text"  class="edit-input" placeholder="City" />
+                <input id="piEditState"  type="text"  class="edit-input" placeholder="State" maxlength="2" style="text-transform:uppercase;" />
+                <input id="piEditZip"    type="text"  class="edit-input" placeholder="Zip" />
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+              <div>
+                <label class="edit-label">Customer Phone</label>
+                <input id="piEditPhone" type="tel" class="edit-input" placeholder="(330) 555-0123" />
+              </div>
+              <div>
+                <label class="edit-label">Customer Email</label>
+                <input id="piEditEmail" type="email" class="edit-input" placeholder="customer@example.com" />
+              </div>
+            </div>
+
+            <div>
+              <label class="edit-label">Job Notes</label>
+              <textarea id="piEditNotes" class="edit-input" style="min-height:140px; resize:vertical; font-family:'Inter',sans-serif; line-height:1.5;" placeholder="Internal notes about this job…"></textarea>
             </div>
           </div>
 
@@ -2443,8 +2510,11 @@
           const btn = document.querySelector(`.tab-btn[data-tab="${tab}"]`);
           if (btn) btn.classList.add("hidden");
         });
-        // Viewers can see but not edit — hide edit-only controls
-        ["statusChangeRow", "pcEditForm", "btnNewJobEstimate", "btnAddInspection", "saveInspectionBtn"].forEach(id => {
+        // Viewers can see but not edit — hide edit-only controls.
+        // piEditToggleRow gates Project Info edit mode; piNotesView is
+        // admin-only per spec (notes can contain internal status that
+        // shouldn't surface to viewers).
+        ["statusChangeRow", "pcEditForm", "btnNewJobEstimate", "btnAddInspection", "saveInspectionBtn", "piEditToggleRow", "piNotesView"].forEach(id => {
           const el = $(id);
           if (el) el.classList.add("hidden");
         });
@@ -2730,6 +2800,29 @@
     if (isAdmin() || isViewer()) $("piTaxStatus").innerHTML = atPill(job.taxStatus, TAX_COLORS);
     $("piContractor").textContent = val(job.contractor);
     $("piGenerator").textContent = job.generatorInstalled ? "✅ Yes" : "No";
+
+    // Customer Phone — tel link if present, em-dash placeholder otherwise.
+    const piPhEl = $("piCustomerPhone");
+    if (job.customerPhone) {
+      piPhEl.innerHTML = `<a href="tel:${esc(job.customerPhone)}">${esc(job.customerPhone)}</a>`;
+    } else { piPhEl.textContent = "—"; }
+
+    // Customer Email — mailto link if present.
+    const piEmEl = $("piCustomerEmail");
+    if (job.customerEmail) {
+      piEmEl.innerHTML = `<a href="mailto:${esc(job.customerEmail)}">${esc(job.customerEmail)}</a>`;
+    } else { piEmEl.textContent = "—"; }
+
+    // Notes — admin-only block, populated read-only here. Edit mode swaps
+    // it out for the textarea inside the Edit Panel.
+    if (isAdmin()) {
+      const notesEl = $("piNotesText");
+      if (notesEl) notesEl.textContent = job.notes && job.notes.trim() ? job.notes : "—";
+    }
+
+    // Always exit edit mode on job switch — prevents in-progress edits
+    // from carrying over to a different job.
+    if (typeof exitEditMode === "function") exitEditMode();
 
     // Load scissor lifts at this job
     try { loadJobLifts(job.name); } catch(e) { console.error("loadJobLifts:", e); }
@@ -4068,6 +4161,167 @@
     }
   }
 
+  // ── PROJECT INFO EDIT MODE (admin) ─────────────────────────────────
+  // Edit toggle swaps the read-only address/phone/email cards (and
+  // notes view block) for a single Edit Panel containing inputs for
+  // all seven editable fields. Save commits via updateJobInfo, applies
+  // values back to state.selected and the read-only labels, then exits
+  // edit mode. Cancel discards uncommitted changes by re-running
+  // exitEditMode (which doesn't touch state.selected).
+
+  // Reconstructs the formula-computed Job Address - Full client-side
+  // so the address card label refreshes instantly after Save without
+  // waiting on Airtable's formula recompute. Mirrors the formula:
+  //   Street + ", " + City + ", " + State + " " + Zip
+  // with empty parts elided so we don't render stray separators.
+  function buildJobAddress(street, city, state, zip) {
+    const cityState = [city || "", state || ""].filter(Boolean).join(", ");
+    const tail      = [cityState, zip || ""].filter(Boolean).join(" ").trim();
+    return [street || "", tail].filter(Boolean).join(", ").trim();
+  }
+
+  function refreshAddressCard() {
+    const job = state.selected; if (!job) return;
+    const addrEl = $("piAddress");
+    const mlink  = mapsLink(job.address);
+    if (mlink && job.address) {
+      addrEl.innerHTML = `<a href="${esc(mlink)}" target="_blank" rel="noopener">📍 ${esc(job.address)}</a>`;
+    } else {
+      addrEl.textContent = val(job.address);
+    }
+  }
+
+  function enterEditMode() {
+    if (!state.selected || !isAdmin()) return;
+    const job = state.selected;
+
+    // Prefill all inputs from the current state.
+    $("piEditStreet").value = job.customerStreet || "";
+    $("piEditCity").value   = job.customerCity   || "";
+    $("piEditState").value  = job.customerState  || "";
+    $("piEditZip").value    = job.customerZip    || "";
+    $("piEditPhone").value  = job.customerPhone  || "";
+    $("piEditEmail").value  = job.customerEmail  || "";
+    $("piEditNotes").value  = job.notes          || "";
+
+    // Hide the editable read-only cards + notes view, show the panel.
+    $("piPhoneCard").style.display   = "none";
+    $("piEmailCard").style.display   = "none";
+    $("piAddressCard").style.display = "none";
+    $("piNotesView").classList.add("hidden");
+    $("piEditPanel").classList.remove("hidden");
+
+    // Reveal the Save bar; flip the Edit button label.
+    $("piSaveBar").classList.remove("hidden");
+    const editBtn = $("piEditBtn");
+    editBtn.textContent = "✕ Cancel";
+    editBtn.dataset.mode = "edit";
+
+    // Clear any stale messages from the previous save.
+    $("piSaveMsg").style.display = "none";
+    $("piSaveErr").style.display = "none";
+  }
+
+  function exitEditMode() {
+    // Show the editable read-only cards + notes view (notes only if
+    // admin); hide the edit panel + save bar; reset the Edit button.
+    const phoneCard = $("piPhoneCard");
+    if (phoneCard) phoneCard.style.display = "";
+    const emailCard = $("piEmailCard");
+    if (emailCard) emailCard.style.display = "";
+    const addressCard = $("piAddressCard");
+    if (addressCard) addressCard.style.display = "";
+    const editPanel = $("piEditPanel");
+    if (editPanel) editPanel.classList.add("hidden");
+    const saveBar = $("piSaveBar");
+    if (saveBar) saveBar.classList.add("hidden");
+    if (isAdmin()) {
+      const notesView = $("piNotesView");
+      if (notesView) notesView.classList.remove("hidden");
+    }
+    const editBtn = $("piEditBtn");
+    if (editBtn) {
+      editBtn.textContent = "✏ Edit";
+      editBtn.dataset.mode = "view";
+      editBtn.disabled = false;
+    }
+  }
+
+  function handleEditToggle() {
+    const editBtn = $("piEditBtn");
+    if (!editBtn) return;
+    if (editBtn.dataset.mode === "edit") {
+      exitEditMode();
+    } else {
+      enterEditMode();
+    }
+  }
+
+  async function saveJobInfo() {
+    if (!state.selected) return;
+    const job = state.selected;
+    const btn = $("piSaveBtn");
+    const msg = $("piSaveMsg");
+    const err = $("piSaveErr");
+
+    const customerStreet = $("piEditStreet").value.trim();
+    const customerCity   = $("piEditCity").value.trim();
+    const customerState  = $("piEditState").value.trim().toUpperCase();
+    const customerZip    = $("piEditZip").value.trim();
+    const customerPhone  = $("piEditPhone").value.trim();
+    const customerEmail  = $("piEditEmail").value.trim();
+    const notes          = $("piEditNotes").value;
+
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    msg.style.display = "none";
+    err.style.display = "none";
+
+    try {
+      await apiPost("updateJobInfo", {
+        jobId: job.id,
+        customerStreet, customerCity, customerState, customerZip,
+        customerPhone, customerEmail, notes
+      });
+
+      // Update local state so subsequent reads (and re-entering edit
+      // mode) see the saved values.
+      job.customerStreet = customerStreet;
+      job.customerCity   = customerCity;
+      job.customerState  = customerState;
+      job.customerZip    = customerZip;
+      job.customerPhone  = customerPhone;
+      job.customerEmail  = customerEmail;
+      job.notes          = notes;
+      // Reconstruct the formula-computed Job Address - Full client-side
+      // so the read-only card refreshes instantly.
+      job.address = buildJobAddress(customerStreet, customerCity, customerState, customerZip);
+
+      // Mirror the saved values back to the read-only displays.
+      const piPhEl = $("piCustomerPhone");
+      if (job.customerPhone) {
+        piPhEl.innerHTML = `<a href="tel:${esc(job.customerPhone)}">${esc(job.customerPhone)}</a>`;
+      } else { piPhEl.textContent = "—"; }
+      const piEmEl = $("piCustomerEmail");
+      if (job.customerEmail) {
+        piEmEl.innerHTML = `<a href="mailto:${esc(job.customerEmail)}">${esc(job.customerEmail)}</a>`;
+      } else { piEmEl.textContent = "—"; }
+      refreshAddressCard();
+      const notesEl = $("piNotesText");
+      if (notesEl) notesEl.textContent = job.notes && job.notes.trim() ? job.notes : "—";
+
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+      exitEditMode();
+    } catch(e) {
+      err.textContent = "✗ Error: " + (e.message || e);
+      err.style.display = "inline";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save";
+    }
+  }
+
   // ── STATUS CHANGE (admin) ──
   async function handleStatusChange() {
     if (!state.selected) return;
@@ -5094,6 +5348,10 @@
     $("typeFilter").addEventListener("change", applyFilters);
 
     $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
+    const piEditBtn = $("piEditBtn");
+    if (piEditBtn) piEditBtn.addEventListener("click", handleEditToggle);
+    const piSaveBtn = $("piSaveBtn");
+    if (piSaveBtn) piSaveBtn.addEventListener("click", saveJobInfo);
     $("pcSaveBtn").addEventListener("click", handlePowerCoSave);
     $("pcEditCompany").addEventListener("change", () => {
       updatePcContactDropdown($("pcEditCompany").value, "");

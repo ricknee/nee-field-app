@@ -1556,7 +1556,7 @@
       <span id="userBadge" class="user-badge">—</span>
     </div>
     <div class="topbar-row2">
-      <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ New Project</button>
+      <a id="btnNewJobIntake" href="https://form.jotform.com/260972873590065" target="_blank" class="btn btn-primary btn-sm admin-only hidden" style="text-decoration:none;">+ New Project</a>
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
       <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
@@ -5352,8 +5352,6 @@
     if (piEditBtn) piEditBtn.addEventListener("click", handleEditToggle);
     const piSaveBtn = $("piSaveBtn");
     if (piSaveBtn) piSaveBtn.addEventListener("click", saveJobInfo);
-    const newProjBtn = $("btnNewJobIntake");
-    if (newProjBtn) newProjBtn.addEventListener("click", openNewProjectModal);
     $("pcSaveBtn").addEventListener("click", handlePowerCoSave);
     $("pcEditCompany").addEventListener("change", () => {
       updatePcContactDropdown($("pcEditCompany").value, "");
@@ -7818,151 +7816,6 @@ rick@northeasternelec.com`
   };
 
   // ═══════════════════════════════════════════════════════════════
-  // ── NEW PROJECT MODAL ──────────────────────────────────────────
-  // ═══════════════════════════════════════════════════════════════
-  // Replaces the old btnNewJobIntake Jotform link. POSTs to createJob,
-  // splices the returned mapped record into state.jobs, and selectJob()s
-  // it so the admin lands on the new job's Project Info tab without a
-  // full jobs-list refetch.
-
-  let _npContractors = [];
-
-  function _npGetRadioValue(name) {
-    const el = document.querySelector(`input[name="${name}"]:checked`);
-    return el ? el.value : "";
-  }
-
-  function _npSetBillingMethod(method) {
-    // Toggles the Contractor dropdown's visibility based on Billing
-    // Method. When switching back to Direct Customer we also clear the
-    // selected contractor so a previously-picked value doesn't ride
-    // along in hidden form state.
-    const row = $("npContractorRow");
-    if (method === "Contractor") {
-      row.style.display = "";
-    } else {
-      row.style.display = "none";
-      const sel = $("npContractor");
-      if (sel) sel.value = "";
-    }
-  }
-
-  window.openNewProjectModal = async function() {
-    if (!isAdmin()) return;
-
-    // Reset every input to a clean baseline. Without this, the second
-    // open inherits whatever the user typed (and never saved) from the
-    // previous open.
-    $("npJobName").value   = "";
-    $("npCustFirst").value = "";
-    $("npCustLast").value  = "";
-    $("npStreet").value    = "";
-    $("npCity").value      = "";
-    $("npState").value     = "";
-    $("npZip").value       = "";
-    $("npPhone").value     = "";
-    $("npEmail").value     = "";
-    $("npNotes").value     = "";
-    document.querySelectorAll('input[name="npJobType"]').forEach(r => { r.checked = false; });
-    document.querySelector('input[name="npTaxStatus"][value="Taxable"]').checked        = true;
-    document.querySelector('input[name="npBilling"][value="Direct Customer"]').checked = true;
-    _npSetBillingMethod("Direct Customer");
-    $("npMsg").style.display = "none";
-
-    $("newProjectModal").style.display = "flex";
-    pushBackEntry("newProject", () => { $("newProjectModal").style.display = "none"; });
-
-    // Focus Job Name so the user can start typing immediately.
-    setTimeout(() => { try { $("npJobName").focus(); } catch {} }, 50);
-
-    // Load contractor options. Singleselect choices on Contractor (Intake)
-    // are mostly Companies — we accept the small risk that a name not in
-    // the singleSelect creates a new option via typecast: true.
-    const sel = $("npContractor");
-    if (!_npContractors.length) {
-      try {
-        const res = await apiGet("companies");
-        _npContractors = res.companies || [];
-      } catch (e) {
-        _npContractors = [];
-      }
-    }
-    sel.innerHTML = `<option value="">— Pick contractor —</option>` +
-      _npContractors.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
-
-    // Wire billing radios (idempotent — addEventListener stacks but the
-    // closure is small).
-    document.querySelectorAll('input[name="npBilling"]').forEach(r => {
-      r.onchange = () => _npSetBillingMethod(r.value);
-    });
-  };
-
-  window.closeNewProjectModal = function() {
-    popBackEntry("newProject");
-    $("newProjectModal").style.display = "none";
-  };
-
-  window.submitNewProject = async function() {
-    const btn = $("npSubmitBtn");
-    const msg = $("npMsg");
-
-    const jobName = $("npJobName").value.trim();
-    if (!jobName) {
-      msg.textContent = "Job Name is required.";
-      msg.style.color = "var(--red)";
-      msg.style.display = "block";
-      try { $("npJobName").focus(); } catch {}
-      return;
-    }
-
-    const billingMethod = _npGetRadioValue("npBilling")  || "Direct Customer";
-    const contractor    = (billingMethod === "Contractor") ? $("npContractor").value : "";
-
-    const body = {
-      jobName,
-      jobType:        _npGetRadioValue("npJobType"),
-      taxStatus:      _npGetRadioValue("npTaxStatus") || "Taxable",
-      billingMethod,
-      contractor,
-      customerFirstName: $("npCustFirst").value,
-      customerLastName:  $("npCustLast").value,
-      customerStreet:    $("npStreet").value,
-      customerCity:      $("npCity").value,
-      customerState:     $("npState").value,
-      customerZip:       $("npZip").value,
-      customerPhone:     $("npPhone").value,
-      customerEmail:     $("npEmail").value,
-      notes:             $("npNotes").value
-    };
-
-    btn.disabled = true;
-    btn.textContent = "Creating…";
-    msg.style.display = "none";
-
-    try {
-      const res = await apiPost("createJob", body);
-      if (!res.ok || !res.job) throw new Error(res.error || "Create failed");
-      const newJob = res.job;
-
-      // Splice the mapped record into local state. applyFilters() handles
-      // re-sorting and re-grouping the sidebar; selectJob() sets
-      // state.selected and opens the Project Info tab.
-      state.jobs = [newJob, ...state.jobs];
-      applyFilters();
-      selectJob(newJob);
-
-      closeNewProjectModal();
-    } catch (e) {
-      msg.textContent = "Error: " + (e.message || e);
-      msg.style.color = "var(--red)";
-      msg.style.display = "block";
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Create Project";
-    }
-  };
-
-  // ═══════════════════════════════════════════════════════════════
   // ── PAYROLL MODULE ──────────────────────────────────────════════
   // ═══════════════════════════════════════════════════════════════
 
@@ -10170,107 +10023,6 @@ rick@northeasternelec.com`
         <button id="newEstSubmitBtn" onclick="submitNewEstimate()" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Job Estimate</button>
       </div>
       <div id="newEstMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
-    </div>
-  </div>
-</div>
-
-<!-- ── NEW PROJECT MODAL ──────────────────────────────────────────────────
-     Replaces the old btnNewJobIntake Jotform link. Posts to the
-     createJob endpoint, splices the returned (mapJob-projected) record
-     into state.jobs, and auto-selects it so the admin lands on the new
-     job's Project Info tab. -->
-<div id="newProjectModal" class="sl-modal-backdrop" style="display:none;">
-  <div class="sl-modal">
-    <div class="sl-modal-header">
-      <h2>+ New Project</h2>
-      <button onclick="closeNewProjectModal()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
-    </div>
-    <div class="sl-modal-body">
-
-      <div class="sl-field">
-        <label>Job Name <span style="color:var(--red);">*</span></label>
-        <input id="npJobName" type="text" class="edit-input" placeholder="e.g. Smith Residence — 200A Service Upgrade" />
-      </div>
-
-      <div class="sl-field" style="margin-top:14px;">
-        <label>Job Type</label>
-        <div id="npJobType" style="display:flex; flex-wrap:wrap; gap:8px 16px; padding:6px 0;">
-          <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Contract" /> Contract</label>
-          <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Time & Material" /> Time &amp; Material</label>
-          <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Warranty" /> Warranty</label>
-          <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Service Calls" /> Service Calls</label>
-        </div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:6px;">
-        <div class="sl-field">
-          <label>Tax Status</label>
-          <div style="display:flex; gap:14px; padding:6px 0;">
-            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npTaxStatus" value="Taxable" checked /> Taxable</label>
-            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npTaxStatus" value="Tax Exempt" /> Tax Exempt</label>
-          </div>
-        </div>
-        <div class="sl-field">
-          <label>Billing Method</label>
-          <div style="display:flex; gap:14px; padding:6px 0;">
-            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npBilling" value="Direct Customer" checked /> Direct Customer</label>
-            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npBilling" value="Contractor" /> Contractor</label>
-          </div>
-        </div>
-      </div>
-
-      <!-- Contractor dropdown — hidden unless Billing Method = Contractor.
-           Cleared on toggle back to Direct Customer so we don't carry
-           hidden form state into the POST. -->
-      <div class="sl-field" id="npContractorRow" style="margin-top:6px; display:none;">
-        <label>Contractor</label>
-        <select id="npContractor" class="edit-input">
-          <option value="">— Loading contractors… —</option>
-        </select>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;">
-        <div class="sl-field">
-          <label>Customer 1st Name</label>
-          <input id="npCustFirst" type="text" class="edit-input" />
-        </div>
-        <div class="sl-field">
-          <label>Customer Last Name</label>
-          <input id="npCustLast" type="text" class="edit-input" />
-        </div>
-      </div>
-
-      <div class="sl-field" style="margin-top:6px;">
-        <label>Job Site Address</label>
-        <div style="display:grid; grid-template-columns:2fr 1.2fr 0.6fr 0.8fr; gap:8px;">
-          <input id="npStreet" type="text" class="edit-input" placeholder="Street" />
-          <input id="npCity"   type="text" class="edit-input" placeholder="City" />
-          <input id="npState"  type="text" class="edit-input" placeholder="State" maxlength="2" style="text-transform:uppercase;" />
-          <input id="npZip"    type="text" class="edit-input" placeholder="Zip" />
-        </div>
-      </div>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;">
-        <div class="sl-field">
-          <label>Customer Phone</label>
-          <input id="npPhone" type="tel" class="edit-input" placeholder="(330) 555-0123" />
-        </div>
-        <div class="sl-field">
-          <label>Customer Email</label>
-          <input id="npEmail" type="email" class="edit-input" placeholder="customer@example.com" />
-        </div>
-      </div>
-
-      <div class="sl-field" style="margin-top:14px;">
-        <label>Notes</label>
-        <textarea id="npNotes" class="edit-input" style="min-height:120px; resize:vertical; font-family:'Inter',sans-serif; line-height:1.5;" placeholder="Anything the team should know about this project…"></textarea>
-      </div>
-
-      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:14px; border-top:1px solid var(--line);">
-        <button onclick="closeNewProjectModal()" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">Cancel</button>
-        <button id="npSubmitBtn" onclick="submitNewProject()" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Project</button>
-      </div>
-      <div id="npMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
     </div>
   </div>
 </div>

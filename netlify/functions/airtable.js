@@ -1726,59 +1726,6 @@ async function handleUpdateJobInfo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
-// POSTs a new Jobs record from the in-app New Project modal. Job Name is
-// the only required field. Status defaults to "New Lead" so the new job
-// lands in the right sidebar group. Tax Status and Billing Method default
-// per spec. Optional fields are sent only when non-blank to avoid
-// stomping on Airtable defaults with empty strings. Contractor is
-// omitted entirely when Billing Method is Direct Customer.
-//
-// Returns the new record run through mapJob() so the frontend can splice
-// it into state.jobs and selectJob() it without a full list refetch.
-async function handleCreateJob(body) {
-  const {
-    jobName, jobType, taxStatus, billingMethod, contractor,
-    customerFirstName, customerLastName,
-    customerStreet, customerCity, customerState, customerZip,
-    customerPhone, customerEmail, notes
-  } = body || {};
-
-  const trimmedName = String(jobName || "").trim();
-  if (!trimmedName) return resp(400, { ok: false, error: "Job Name is required." });
-
-  const fields = {};
-  fields["Job Name"] = trimmedName;
-  // New jobs always start at "New Lead" — keeps them in the right sidebar
-  // group instead of orphaned in "Other".
-  fields["Job Status"]     = "New Lead";
-  fields["Tax Status"]     = taxStatus     || "Taxable";
-  fields["Billing Method"] = billingMethod || "Direct Customer";
-
-  if (jobType && String(jobType).trim()) fields["Job Type"] = String(jobType).trim();
-  // Only attach a contractor when the Billing Method actually involves
-  // one — otherwise we'd write a Direct Customer job tied to a contractor
-  // record, which is meaningless and noisy in reporting.
-  if ((billingMethod === "Contractor") && contractor && String(contractor).trim()) {
-    fields["Contractor (Intake)"] = String(contractor).trim();
-  }
-
-  if (customerFirstName && String(customerFirstName).trim()) fields["Customer 1st Name (Intake)"]      = String(customerFirstName).trim();
-  if (customerLastName  && String(customerLastName ).trim()) fields["Customer Last Name (Intake)"]     = String(customerLastName ).trim();
-  if (customerStreet    && String(customerStreet   ).trim()) fields["Job Site Street Address (Intake)"]= String(customerStreet   ).trim();
-  if (customerCity      && String(customerCity     ).trim()) fields["Job Site City (Intake)"]         = String(customerCity     ).trim();
-  if (customerState     && String(customerState    ).trim()) fields["Job Site State (Intake)"]        = String(customerState    ).trim().toUpperCase();
-  if (customerZip       && String(customerZip      ).trim()) fields["Job Site Zip Code (Intake)"]     = String(customerZip      ).trim();
-  if (customerPhone     && String(customerPhone    ).trim()) fields["Customer Phone (Intake)"]        = String(customerPhone    ).trim();
-  if (customerEmail     && String(customerEmail    ).trim()) fields["Customer Email (Intake)"]        = String(customerEmail    ).trim();
-  if (notes             && String(notes            ).trim()) fields["Notes"]                          = String(notes);
-
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  return resp(200, { ok: true, job: mapJob(data) });
-}
-
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -1848,7 +1795,6 @@ export async function handler(event) {
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
-      if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body);

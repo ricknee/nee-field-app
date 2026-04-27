@@ -3070,28 +3070,56 @@
         estimatesSection.innerHTML = `<div class="empty-msg">No estimates found for this job.</div>`;
         return;
       }
+      // Color convention mirrors Airtable's Status field:
+      //   Draft=purple, Sent=cyan, Approved=green, Rejected=red,
+      //   Archived/Completed=gray. Keyed by status name; null/legacy
+      //   records fall through to the gray "—" pill.
+      const STATUS_COLORS = {
+        "Draft":               "#9333ea",
+        "Sent":                "#0891b2",
+        "Approved":            "#16a34a",
+        "Rejected":            "#dc2626",
+        "Archived/Completed":  "#6b7280"
+      };
       estimatesSection.innerHTML = estimates.map(est => {
-        const statusColor = est.status === "Approved" ? "var(--green)" : est.status === "Sent" ? "var(--accent)" : est.status === "Rejected" ? "var(--red)" : "var(--muted)";
-        // Helper: render a status button — highlighted if it's the current status
+        const currentStatus = est.status || "";
+        const pillColor     = STATUS_COLORS[currentStatus] || "#6b7280";
+        const pillLabel     = currentStatus || "No Status";
+
+        // Helper: render a status-transition button. The .est-status-btn
+        // class is shared with all status transitions so one click
+        // handler covers Mark Sent / Approve / Reject / Archive.
         const statusBtn = (label, target, icon, color) => {
-          const isActive = est.status === target;
+          const isActive = currentStatus === target;
           const bg   = isActive ? color : "transparent";
           const fg   = isActive ? "white" : color;
           const bd   = color;
           return `<button data-est-id="${esc(est.id)}" data-est-status="${esc(target)}" class="est-status-btn" style="border:1px solid ${bd}; background:${bg}; color:${fg}; font-size:11px; font-weight:600; padding:3px 10px; border-radius:6px; cursor:pointer;">${icon} ${esc(label)}</button>`;
         };
+
+        // Lifecycle gating:
+        //   - Mark Sent: only available from Draft (or legacy null Status,
+        //     to give users a recovery path for pre-fix records).
+        //   - Approve: hidden while in Draft — customers shouldn't be
+        //     marked as having approved before they've even seen it sent.
+        const isDraftOrNew = !currentStatus || currentStatus === "Draft";
+        const showMarkSent = isDraftOrNew;
+        const showApprove  = !isDraftOrNew;
+
         return `
           <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-              <div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                 <span style="font-weight:700; font-size:14px; color:var(--text);">${esc(est.name)}</span>
-                ${est.estimateType ? `<span style="font-size:11px; background:var(--panel-3); color:var(--accent); padding:2px 8px; border-radius:6px; margin-left:8px;">${esc(est.estimateType)}</span>` : ""}
+                ${est.estimateType ? `<span style="font-size:11px; background:var(--panel-3); color:var(--accent); padding:2px 8px; border-radius:6px;">${esc(est.estimateType)}</span>` : ""}
+                <span style="font-size:11px; font-weight:700; background:${pillColor}; color:white; padding:2px 10px; border-radius:999px; letter-spacing:0.3px;">${esc(pillLabel)}</span>
               </div>
               <div style="display:flex; align-items:center; gap:6px;">
-                <span style="font-size:11px; color:var(--muted); margin-right:4px;">Status:</span>
-                ${statusBtn("Approve", "Approved", "✓", "#16a34a")}
-                ${statusBtn("Reject",  "Rejected", "✗", "#dc2626")}
-                ${statusBtn("Archive", "Archived/Completed", "📦", "#6b7280")}
+                <span style="font-size:11px; color:var(--muted); margin-right:4px;">Set status:</span>
+                ${showMarkSent ? statusBtn("Mark Sent", "Sent",     "✉", STATUS_COLORS.Sent)     : ""}
+                ${showApprove  ? statusBtn("Approve",   "Approved", "✓", STATUS_COLORS.Approved) : ""}
+                ${statusBtn("Reject",  "Rejected",            "✗",  STATUS_COLORS.Rejected)}
+                ${statusBtn("Archive", "Archived/Completed",  "📦", STATUS_COLORS["Archived/Completed"])}
                 <span data-est-id="${esc(est.id)}" class="est-status-msg" style="font-size:11px; color:var(--green); display:none; margin-left:4px;">✓ Updated</span>
               </div>
             </div>
@@ -3149,7 +3177,7 @@
         });
       });
 
-      // Wire status buttons (Approve / Reject / Archive)
+      // Wire status buttons (Mark Sent / Approve / Reject / Archive)
       estimatesSection.querySelectorAll(".est-status-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
           const estId     = btn.dataset.estId;

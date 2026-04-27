@@ -7871,17 +7871,27 @@ rick@northeasternelec.com`
     $("npCustLast").value  = "";
     $("npStreet").value    = "";
     $("npCity").value      = "";
-    $("npState").value     = "";
+    // State pre-fills to OH (most jobs are Ohio); user can overwrite.
+    $("npState").value     = "OH";
     $("npZip").value       = "";
     $("npPhone").value     = "";
     $("npEmail").value     = "";
     $("npNotes").value     = "";
+
+    // Job Type defaults to Contract; user can change.
     document.querySelectorAll('input[name="npJobType"]').forEach(r => { r.checked = false; });
+    const contractR = document.querySelector('input[name="npJobType"][value="Contract"]');
+    if (contractR) contractR.checked = true;
+
+    // Tax Status defaults to Taxable.
     const taxR = document.querySelector('input[name="npTaxStatus"][value="Taxable"]');
     if (taxR) taxR.checked = true;
-    const billR = document.querySelector('input[name="npBilling"][value="Direct Customer"]');
-    if (billR) billR.checked = true;
-    _npSetBillingMethod("Direct Customer");
+
+    // Billing Method intentionally has NO default — user must pick.
+    // Clear both radios so a previous-open's selection doesn't carry.
+    document.querySelectorAll('input[name="npBilling"]').forEach(r => { r.checked = false; });
+    // Hide the Contractor dropdown and clear any prior selection.
+    _npSetBillingMethod("");
     $("npMsg").style.display = "none";
 
     $("newProjectModal").style.display = "flex";
@@ -7924,8 +7934,17 @@ rick@northeasternelec.com`
       return;
     }
 
-    const billingMethod = _npGetRadioValue("npBilling")  || "Direct Customer";
-    const contractor    = (billingMethod === "Contractor") ? $("npContractor").value : "";
+    // Billing Method has no UI default — user must pick. Block submit
+    // if neither radio is selected so the new record doesn't quietly
+    // land with a backend fallback the user never confirmed.
+    const billingMethod = _npGetRadioValue("npBilling");
+    if (!billingMethod) {
+      msg.textContent = "Billing Method is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      return;
+    }
+    const contractor = (billingMethod === "Contractor") ? $("npContractor").value : "";
 
     const body = {
       jobName,
@@ -7954,6 +7973,16 @@ rick@northeasternelec.com`
       const newJob = res.job;
 
       state.jobs = [newJob, ...state.jobs];
+      // Force the sidebar status filter to "New Lead" so the freshly
+      // created job is visible — without this, anyone who had the
+      // sidebar filtered to a different status (e.g. "Awarded") would
+      // create the job, get auto-routed to its Project Info tab, and
+      // see the sidebar still showing only Awarded jobs with the new
+      // record nowhere to be found. We deliberately don't touch the
+      // type filter or search input — narrow scope to the most common
+      // "where did my new job go?" case.
+      const statusFilter = $("statusFilter");
+      if (statusFilter) statusFilter.value = "New Lead";
       applyFilters();
       selectJob(newJob);
 
@@ -10201,7 +10230,7 @@ rick@northeasternelec.com`
       <div class="sl-field" style="margin-top:14px;">
         <label>Job Type</label>
         <div id="npJobType" style="display:flex; flex-wrap:wrap; gap:8px 16px; padding:6px 0;">
-          <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Contract" /> Contract</label>
+          <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Contract" checked /> Contract</label>
           <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Time & Material" /> Time &amp; Material</label>
           <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Warranty" /> Warranty</label>
           <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Service Calls" /> Service Calls</label>
@@ -10217,9 +10246,9 @@ rick@northeasternelec.com`
           </div>
         </div>
         <div class="sl-field">
-          <label>Billing Method</label>
+          <label>Billing Method <span style="color:var(--red);">*</span></label>
           <div style="display:flex; gap:14px; padding:6px 0;">
-            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npBilling" value="Direct Customer" checked /> Direct Customer</label>
+            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npBilling" value="Direct Customer" /> Direct Customer</label>
             <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npBilling" value="Contractor" /> Contractor</label>
           </div>
         </div>
@@ -10248,7 +10277,7 @@ rick@northeasternelec.com`
         <div style="display:grid; grid-template-columns:2fr 1.2fr 0.6fr 0.8fr; gap:8px;">
           <input id="npStreet" type="text" class="edit-input" placeholder="Street" />
           <input id="npCity"   type="text" class="edit-input" placeholder="City" />
-          <input id="npState"  type="text" class="edit-input" placeholder="State" maxlength="2" style="text-transform:uppercase;" />
+          <input id="npState"  type="text" class="edit-input" placeholder="State" maxlength="2" value="OH" style="text-transform:uppercase;" />
           <input id="npZip"    type="text" class="edit-input" placeholder="Zip" />
         </div>
       </div>

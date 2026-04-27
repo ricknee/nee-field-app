@@ -6361,13 +6361,17 @@ rick@northeasternelec.com`
     title:    "INVOICE",
     docLabel: "Invoice",          // used in some places if needed
     accent:   [21, 101, 192],     // blue
-    logoB64:  () => NEE_LOGO_B64
+    logoB64:  () => NEE_LOGO_B64,
+    billToLabel: "BILL TO",
+    poLabel:     "P.O. NO."
   };
   const ESTIMATE_THEME = {
     title:    "ESTIMATE",
     docLabel: "Estimate",
     accent:   [234, 88, 12],      // orange to match NEE-Orange logo
-    logoB64:  () => NEE_LOGO_ORANGE_B64
+    logoB64:  () => NEE_LOGO_ORANGE_B64,
+    billToLabel: "ESTIMATE PREPARED FOR",
+    poLabel:     "PROJECT"
   };
 
   function buildInvoicePDFDoc(snapData, theme) {
@@ -6463,7 +6467,7 @@ rick@northeasternelec.com`
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.6);
     doc.roundedRect(M, y, billW, billH, 4, 4);
     doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
-    doc.text("BILL TO", M+9, y+15);
+    doc.text(theme.billToLabel || "BILL TO", M+9, y+15);
     doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
     const billLines = doc.splitTextToSize(billTo, billW - 16);
     doc.text(billLines, M+9, y+30);
@@ -6471,7 +6475,7 @@ rick@northeasternelec.com`
     // P.O. box
     doc.roundedRect(poX, y, poW, billH, 4, 4);
     doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
-    doc.text("P.O. NO.", poX+9, y+15);
+    doc.text(theme.poLabel || "P.O. NO.", poX+9, y+15);
     doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
     const poLines = doc.splitTextToSize(po, poW - 16);
     doc.text(poLines, poX+9, y+30);

@@ -588,7 +588,7 @@ async function handleGetNextEstimateNumber() {
 // Job Estimates remains the source-of-truth table for Expected Revenue rollups
 // and is only populated via the "New Job Estimate" Airtable form.
 async function handleSaveEstimate(body) {
-  const { estimateId, jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot } = body || {};
+  const { estimateId, jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot, jobEstimateIds } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -603,6 +603,13 @@ async function handleSaveEstimate(body) {
   }
   if (snapshot) {
     fields["Snapshot"] = typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot);
+  }
+  // Bidirectional traceability: link this snapshot to the Job Estimates
+  // record(s) whose totals seeded the builder. Field is multipleRecordLinks
+  // (fldPoz43rrlqWRnwC = "Job Estimate" on Sent Estimate PDFs).
+  if (Array.isArray(jobEstimateIds)) {
+    const cleaned = jobEstimateIds.filter(id => typeof id === "string" && id.startsWith("rec"));
+    if (cleaned.length) fields["fldPoz43rrlqWRnwC"] = cleaned;
   }
   // Note: "notes" from the caller is embedded in the Snapshot JSON; no separate column.
 
@@ -698,6 +705,70 @@ async function handleSentEstimatePDFs(params) {
     };
   });
   return resp(200, { ok: true, estimates });
+}
+
+// ── ESTIMATE TEMPLATES ───────────────────────────────────────────────────
+// Lists Active templates from the Estimate Templates table. If a contractor
+// name is supplied, only templates whose Contractor link resolves to that
+// name are returned. With no contractor, all Active templates are returned
+// (covers jobs that have no contractor set).
+async function handleEstimateTemplates(params) {
+  const { contractor } = params || {};
+  // ARRAYJOIN() on a multipleRecordLinks field expands to the primary field
+  // of the linked table; Companies' primary field is "Company Name", so a
+  // FIND on the joined string resolves the linked contractor by name.
+  const safeContractor = (contractor || "").replace(/"/g, '\\"').trim();
+  const filter = safeContractor
+    ? `AND({Active}=TRUE(), FIND("${safeContractor}", ARRAYJOIN({Contractor})))`
+    : `{Active}=TRUE()`;
+  const records = await fetchAll("Estimate Templates", { filter, sortField: "Template Name", sortDir: "asc" });
+
+  const templates = records.map(r => {
+    const f = r.fields || {};
+    const contractorIds = Array.isArray(f["Contractor"]) ? f["Contractor"] : [];
+    return {
+      id:                 r.id,
+      name:               f["Template Name"] || "",
+      contractorIds,
+      active:             f["Active"] === true,
+      scopeOfWork:        f["Scope of Work"] || "",
+      exclusions:         f["Exclusions"] || "",
+      standardTerms:      f["Standard Terms"] || "",
+      basePrice:          gNum(f, "Base Price"),
+      defaultLaborHours:  gNum(f, "Default Labor Hours"),
+      defaultMaterialCost:gNum(f, "Default Material Cost"),
+      internalNotes:      f["Internal Notes"] || ""
+    };
+  });
+  return resp(200, { ok: true, templates });
+}
+
+// ── CREATE JOB ESTIMATE ──────────────────────────────────────────────────
+// POSTs a new Job Estimates record with the four template-derived fields
+// snapshotted in. Source Template (fldrni1Lkpw7tMBq8) records which
+// template seeded the values; the values themselves are independent
+// scalars, so editing the template later does not change this estimate.
+async function handleCreateJobEstimate(body) {
+  const { jobId, name, baseAmount, laborHours, materialCost, notes, sourceTemplateId, estimateDate } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const fields = {};
+  fields["Job"] = [jobId];
+  fields["Estimate Name"] = (name && String(name).trim()) || "Estimate";
+  if (estimateDate) fields["Estimate Date"] = estimateDate;
+  if (baseAmount   !== undefined && baseAmount   !== null && baseAmount   !== "") fields["Actual Estimate Sent"]    = Number(baseAmount);
+  if (laborHours   !== undefined && laborHours   !== null && laborHours   !== "") fields["Estimated Labor Hours"]   = Number(laborHours);
+  if (materialCost !== undefined && materialCost !== null && materialCost !== "") fields["Estimated Material Cost"] = Number(materialCost);
+  if (notes && String(notes).trim()) fields["Notes"] = String(notes);
+  if (sourceTemplateId && String(sourceTemplateId).startsWith("rec")) {
+    fields["fldrni1Lkpw7tMBq8"] = [sourceTemplateId];
+  }
+
+  const data = await atFetch(`${encodeURIComponent("Job Estimates")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, id: data.id });
 }
 
 const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance", mileageLog: "Fleet Mileage Log" };
@@ -1610,6 +1681,7 @@ export async function handler(event) {
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);
       if (action === "jobEstimates")       return await handleJobEstimates(params);
+      if (action === "estimateTemplates")  return await handleEstimateTemplates(params);
       if (action === "sentEstimatePDFs")   return await handleSentEstimatePDFs(params);
       if (action === "allInvoices")        return await handleGetAllInvoices();
       if (action === "scheduleEntries")    return await handleGetScheduleEntries(params);
@@ -1639,6 +1711,7 @@ export async function handler(event) {
       if (body.action === "updateEstimateStatus") return await handleUpdateEstimateStatus(body);
       if (body.action === "getNextEstimateNumber") return await handleGetNextEstimateNumber();
       if (body.action === "saveEstimate")         return await handleSaveEstimate(body);
+      if (body.action === "createJobEstimate")    return await handleCreateJobEstimate(body);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);

@@ -65,6 +65,8 @@ const F = {
     customerCity:               "Job Site City (Intake)",
     customerState:              "Job Site State (Intake)",
     customerZip:                "Job Site Zip Code (Intake)",
+    customerPhone:              "Customer Phone (Intake)",
+    customerEmail:              "Customer Email (Intake)",
     powerCompanyIntake:         "Power Company (Intake)",
     startServiceCall:    "Start Service Call",
     serviceCallCreated:  "Service Call Created",
@@ -374,6 +376,8 @@ function mapJob(r) {
       customerCity:g(f,F.job.customerCity)||"",
       customerState:g(f,F.job.customerState)||"",
       customerZip:g(f,F.job.customerZip)||"",
+      customerPhone:g(f,F.job.customerPhone)||"",
+      customerEmail:g(f,F.job.customerEmail)||"",
       startServiceCall:gBool(f,F.job.startServiceCall),serviceCallCreated:gBool(f,F.job.serviceCallCreated),
       projectComplete:gBool(f,F.job.projectComplete),milesFromShop:gNum(f,F.job.milesFromShop),
       notes:g(f,F.job.notes)||"",
@@ -1695,6 +1699,33 @@ async function handleUpdateJobNotes(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// Single-call update for the Project Info edit form. PATCHes any subset
+// of the seven editable fields in one round-trip; missing keys are left
+// untouched server-side. Empty strings clear the field (e.g. "" on
+// customerEmail wipes the address) — that's intentional so the edit
+// form supports both updating and clearing.
+async function handleUpdateJobInfo(body) {
+  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const fields = {};
+  if (customerStreet !== undefined) fields["fldFBJrw64SYC1WdB"] = customerStreet || "";
+  if (customerCity   !== undefined) fields["fld46JMp1z6E2DhJt"] = customerCity   || "";
+  if (customerState  !== undefined) fields["fldktee97zx5QUPmd"] = customerState  || "";
+  if (customerZip    !== undefined) fields["fldMooJ88usuHF6RH"] = customerZip    || "";
+  if (customerPhone  !== undefined) fields["fldBf6EC5EQXsPFAQ"] = customerPhone  || "";
+  if (customerEmail  !== undefined) fields["fldzGgNmRlSxwpSMX"] = customerEmail  || "";
+  if (notes          !== undefined) fields["fldAuZAW19iYPBPxP"] = notes          || "";
+
+  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, updatedId: data.id });
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -1763,6 +1794,7 @@ export async function handler(event) {
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
+      if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body);

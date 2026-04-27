@@ -2010,7 +2010,10 @@
           <div class="info-grid" id="estGpGrid">
             <div class="loading-msg">Select a job to view estimated gross profit.</div>
           </div>
-          <div class="section-header" style="margin-top:18px;">📋 Job Estimates</div>
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px; gap:10px; flex-wrap:wrap;">
+            <div class="section-header" style="margin:0;">📋 Job Estimates</div>
+            <button id="estGpNewBtn" class="btn btn-primary btn-sm" type="button" style="font-size:12px; padding:6px 12px;" onclick="openNewEstModal(state.selected)">+ New From Template</button>
+          </div>
           <div id="estGpEstimates" style="margin-top:10px;">
             <div class="loading-msg">Select a job to view estimates.</div>
           </div>
@@ -2680,10 +2683,12 @@
     setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
     setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
 
-    // New Job Estimate button (admin only) - links to Airtable estimate form
+    // New Job Estimate button (admin only) — opens in-app modal that loads
+    // an Estimate Template, snapshots its values, and POSTs a Job Estimates
+    // record with Source Template set to the chosen template (or null).
     if (isAdmin()) {
       const estBtn = $("btnNewJobEstimate");
-      estBtn.onclick = () => window.open("https://airtable.com/appiqWg6SvKcGfMAu/pagREqiZh84BGivDO/form", "_blank");
+      estBtn.onclick = () => openNewEstModal(state.selected);
 
       // Show expense action buttons and reset panels on job change
       const expBtns = $("expenseActionBtns");
@@ -3024,6 +3029,25 @@
     ].join("");
   }
 
+  // Refetches the selected Job from Airtable so rollup-driven fields
+  // (Expected Revenue, Projected Estimated Total Cost, Projected Gross
+  // Profit %, etc.) are current after a Job Estimates write. Returns the
+  // fresh job object and updates state.selected in place. Falls back to
+  // the existing state.selected on error so the UI degrades gracefully.
+  async function refreshSelectedJob() {
+    if (!state.selected?.id) return null;
+    try {
+      const res = await apiGet("jobById", { jobId: state.selected.id });
+      if (res.ok && res.job) {
+        state.selected = res.job;
+        return res.job;
+      }
+    } catch (e) {
+      console.error("refreshSelectedJob:", e);
+    }
+    return state.selected;
+  }
+
   async function renderEstGp(job) {
     const grid = $("estGpGrid");
     grid.innerHTML = `
@@ -3046,28 +3070,56 @@
         estimatesSection.innerHTML = `<div class="empty-msg">No estimates found for this job.</div>`;
         return;
       }
+      // Color convention mirrors Airtable's Status field:
+      //   Draft=purple, Sent=cyan, Approved=green, Rejected=red,
+      //   Archived/Completed=gray. Keyed by status name; null/legacy
+      //   records fall through to the gray "—" pill.
+      const STATUS_COLORS = {
+        "Draft":               "#9333ea",
+        "Sent":                "#0891b2",
+        "Approved":            "#16a34a",
+        "Rejected":            "#dc2626",
+        "Archived/Completed":  "#6b7280"
+      };
       estimatesSection.innerHTML = estimates.map(est => {
-        const statusColor = est.status === "Approved" ? "var(--green)" : est.status === "Sent" ? "var(--accent)" : est.status === "Rejected" ? "var(--red)" : "var(--muted)";
-        // Helper: render a status button — highlighted if it's the current status
+        const currentStatus = est.status || "";
+        const pillColor     = STATUS_COLORS[currentStatus] || "#6b7280";
+        const pillLabel     = currentStatus || "No Status";
+
+        // Helper: render a status-transition button. The .est-status-btn
+        // class is shared with all status transitions so one click
+        // handler covers Mark Sent / Approve / Reject / Archive.
         const statusBtn = (label, target, icon, color) => {
-          const isActive = est.status === target;
+          const isActive = currentStatus === target;
           const bg   = isActive ? color : "transparent";
           const fg   = isActive ? "white" : color;
           const bd   = color;
           return `<button data-est-id="${esc(est.id)}" data-est-status="${esc(target)}" class="est-status-btn" style="border:1px solid ${bd}; background:${bg}; color:${fg}; font-size:11px; font-weight:600; padding:3px 10px; border-radius:6px; cursor:pointer;">${icon} ${esc(label)}</button>`;
         };
+
+        // Lifecycle gating:
+        //   - Mark Sent: only available from Draft (or legacy null Status,
+        //     to give users a recovery path for pre-fix records).
+        //   - Approve: hidden while in Draft — customers shouldn't be
+        //     marked as having approved before they've even seen it sent.
+        const isDraftOrNew = !currentStatus || currentStatus === "Draft";
+        const showMarkSent = isDraftOrNew;
+        const showApprove  = !isDraftOrNew;
+
         return `
           <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-              <div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                 <span style="font-weight:700; font-size:14px; color:var(--text);">${esc(est.name)}</span>
-                ${est.estimateType ? `<span style="font-size:11px; background:var(--panel-3); color:var(--accent); padding:2px 8px; border-radius:6px; margin-left:8px;">${esc(est.estimateType)}</span>` : ""}
+                ${est.estimateType ? `<span style="font-size:11px; background:var(--panel-3); color:var(--accent); padding:2px 8px; border-radius:6px;">${esc(est.estimateType)}</span>` : ""}
+                <span style="font-size:11px; font-weight:700; background:${pillColor}; color:white; padding:2px 10px; border-radius:999px; letter-spacing:0.3px;">${esc(pillLabel)}</span>
               </div>
               <div style="display:flex; align-items:center; gap:6px;">
-                <span style="font-size:11px; color:var(--muted); margin-right:4px;">Status:</span>
-                ${statusBtn("Approve", "Approved", "✓", "#16a34a")}
-                ${statusBtn("Reject",  "Rejected", "✗", "#dc2626")}
-                ${statusBtn("Archive", "Archived/Completed", "📦", "#6b7280")}
+                <span style="font-size:11px; color:var(--muted); margin-right:4px;">Set status:</span>
+                ${showMarkSent ? statusBtn("Mark Sent", "Sent",     "✉", STATUS_COLORS.Sent)     : ""}
+                ${showApprove  ? statusBtn("Approve",   "Approved", "✓", STATUS_COLORS.Approved) : ""}
+                ${statusBtn("Reject",  "Rejected",            "✗",  STATUS_COLORS.Rejected)}
+                ${statusBtn("Archive", "Archived/Completed",  "📦", STATUS_COLORS["Archived/Completed"])}
                 <span data-est-id="${esc(est.id)}" class="est-status-msg" style="font-size:11px; color:var(--green); display:none; margin-left:4px;">✓ Updated</span>
               </div>
             </div>
@@ -3113,6 +3165,10 @@
             const msg = row.querySelector(`.est-save-msg[data-est-id="${estId}"]`);
             msg.style.display = "inline";
             setTimeout(() => { msg.style.display = "none"; }, 2500);
+            // Refresh the GP cards above — Expected Revenue, Projected GP %, etc.
+            // are Job rollups that change when estimate dollar fields move.
+            const fresh = await refreshSelectedJob();
+            if (fresh) await renderEstGp(fresh);
           } catch(e) {
             alert("Error: " + e.message);
           } finally {
@@ -3121,7 +3177,7 @@
         });
       });
 
-      // Wire status buttons (Approve / Reject / Archive)
+      // Wire status buttons (Mark Sent / Approve / Reject / Archive)
       estimatesSection.querySelectorAll(".est-status-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
           const estId     = btn.dataset.estId;
@@ -3129,8 +3185,11 @@
           btn.disabled = true;
           try {
             await apiPost("updateEstimateStatus", { estimateId: estId, status: newStatus });
-            // Reload the GP tab so Expected Revenue rollup refreshes and buttons restyle
-            await renderEstGp(job);
+            // Refetch the Job so the rollup-driven cards reflect status-based
+            // formula changes (Expected Revenue excludes Rejected/Archived
+            // estimates, etc.) before re-rendering.
+            const fresh = await refreshSelectedJob();
+            await renderEstGp(fresh || job);
           } catch(e) {
             alert("Error updating status: " + e.message);
             btn.disabled = false;
@@ -7163,6 +7222,17 @@ rick@northeasternelec.com`
       savedAt: new Date().toISOString()
     });
 
+    // Bidirectional traceability: link the snapshot back to the Job Estimates
+    // record(s) whose totals seeded the builder. Lines were given ids of
+    // "est_<recordId>" when seeded from estimates in loadEstimateTab; we
+    // recover those ids here so the backend can populate the new "Job
+    // Estimate" link field on Sent Estimate PDFs.
+    const jobEstimateIds = Array.from(new Set(
+      estLines
+        .map(l => (l.id || "").startsWith("est_") ? l.id.slice(4) : null)
+        .filter(id => id && id.startsWith("rec"))
+    ));
+
     const body = {
       jobId:          estJobRef.id,
       estimateDate,
@@ -7170,7 +7240,8 @@ rick@northeasternelec.com`
       estimateName,
       notes,
       totalAmount:    total,
-      snapshot
+      snapshot,
+      jobEstimateIds
     };
     // If we're in edit mode (loaded an existing estimate via the Edit button
     // in History), send the estimate ID so the backend PATCHes instead of
@@ -7321,6 +7392,165 @@ rick@northeasternelec.com`
       document.head.appendChild(s);
     }
     tryBuild(15);
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── NEW JOB ESTIMATE MODAL ─────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════
+  // Replaces the old btnNewJobEstimate external Airtable form link.
+  // Loads Active Estimate Templates filtered to the current job's
+  // contractor (or all Active when the job has no contractor), copies
+  // the chosen template's values into the form, then POSTs a new
+  // Job Estimates record with Source Template set to the chosen
+  // template — values are snapshotted, not live-linked.
+
+  let _newEstJob = null;
+  let _newEstTemplates = [];
+
+  function _newEstFieldsAreDirty() {
+    return [
+      $("newEstBase")?.value,
+      $("newEstLabor")?.value,
+      $("newEstMaterial")?.value,
+      $("newEstNotes")?.value
+    ].some(v => v && String(v).trim());
+  }
+
+  function _newEstComposeNotes(t) {
+    // Notes block is the concatenation of Scope of Work + Exclusions +
+    // Standard Terms with section labels, separated by blank lines.
+    // Each section is omitted if its source field is empty so we don't
+    // print "EXCLUSIONS:" with nothing under it.
+    const parts = [];
+    if (t.scopeOfWork   && t.scopeOfWork.trim())   parts.push("SCOPE OF WORK:\n" + t.scopeOfWork.trim());
+    if (t.exclusions    && t.exclusions.trim())    parts.push("EXCLUSIONS:\n"    + t.exclusions.trim());
+    if (t.standardTerms && t.standardTerms.trim()) parts.push("TERMS:\n"         + t.standardTerms.trim());
+    return parts.join("\n\n");
+  }
+
+  function _newEstApplyTemplate(t) {
+    // Only triggers when picking from the dropdown. Caller has already
+    // resolved the confirm-on-overwrite dialog if needed.
+    $("newEstBase").value     = t.basePrice          != null ? t.basePrice          : "";
+    $("newEstLabor").value    = t.defaultLaborHours  != null ? t.defaultLaborHours  : "";
+    $("newEstMaterial").value = t.defaultMaterialCost!= null ? t.defaultMaterialCost: "";
+    $("newEstNotes").value    = _newEstComposeNotes(t);
+  }
+
+  window.openNewEstModal = async function(job) {
+    if (!job) { alert("Pick a job first."); return; }
+    _newEstJob = job;
+    _newEstTemplates = [];
+
+    // Reset form
+    $("newEstBase").value     = "";
+    $("newEstLabor").value    = "";
+    $("newEstMaterial").value = "";
+    $("newEstNotes").value    = "";
+    $("newEstMsg").style.display = "none";
+    const sel = $("newEstTemplate");
+    sel.innerHTML = `<option value="">— Loading templates… —</option>`;
+    sel.disabled = true;
+
+    const contractor = (job.contractor || "").trim();
+    $("newEstJobLabel").textContent = `Job: ${job.name || ""}` + (contractor ? `   ·   Contractor: ${contractor}` : "   ·   (no contractor set)");
+    $("newEstTemplateHint").textContent = contractor
+      ? `Showing Active templates for ${contractor}.`
+      : `Showing all Active templates (job has no contractor).`;
+
+    $("newEstModal").style.display = "flex";
+    pushBackEntry("newEst", () => { $("newEstModal").style.display = "none"; });
+
+    try {
+      const params = contractor ? { contractor } : {};
+      const res = await apiGet("estimateTemplates", params);
+      _newEstTemplates = res.templates || [];
+      if (!_newEstTemplates.length) {
+        sel.innerHTML = `<option value="">(no templates available — leave blank to create a custom estimate)</option>`;
+      } else {
+        sel.innerHTML =
+          `<option value="">— Blank estimate (no template) —</option>` +
+          _newEstTemplates.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
+      }
+      sel.disabled = false;
+    } catch (e) {
+      sel.innerHTML = `<option value="">(error loading templates)</option>`;
+      $("newEstTemplateHint").textContent = "Couldn't load templates: " + (e.message || e);
+    }
+
+    sel.onchange = () => {
+      const id = sel.value;
+      if (!id) return; // "Blank estimate" — leave fields untouched
+      const t = _newEstTemplates.find(x => x.id === id);
+      if (!t) return;
+      if (_newEstFieldsAreDirty()) {
+        if (!confirm("Replace existing values with template defaults?")) {
+          // Revert the dropdown selection so it doesn't show the unselected template as active
+          sel.value = "";
+          return;
+        }
+      }
+      _newEstApplyTemplate(t);
+    };
+  };
+
+  window.closeNewEstModal = function() {
+    popBackEntry("newEst");
+    $("newEstModal").style.display = "none";
+  };
+
+  window.submitNewEstimate = async function() {
+    if (!_newEstJob) return;
+    const btn = $("newEstSubmitBtn");
+    const msg = $("newEstMsg");
+
+    const baseAmount  = $("newEstBase").value;
+    const laborHours  = $("newEstLabor").value;
+    const materialCost= $("newEstMaterial").value;
+    const notes       = $("newEstNotes").value || "";
+    const sourceId    = $("newEstTemplate").value || null;
+
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    msg.style.display = "none";
+
+    try {
+      const res = await apiPost("createJobEstimate", {
+        jobId:            _newEstJob.id,
+        baseAmount,
+        laborHours,
+        materialCost,
+        notes,
+        sourceTemplateId: sourceId,
+        estimateDate:     new Date().toISOString().slice(0,10)
+      });
+      if (!res.ok) throw new Error(res.error || "Create failed");
+
+      msg.textContent = "✓ Job Estimate created.";
+      msg.style.color = "var(--green)";
+      msg.style.display = "block";
+
+      // Always refresh state.selected so the Est. GP cards are correct the
+      // next time the tab is rendered — even if the user submitted from
+      // the page header while on a different tab. Only re-render if the
+      // user is currently looking at Est. GP for this same job.
+      if (state.selected && state.selected.id === _newEstJob.id) {
+        const fresh = await refreshSelectedJob();
+        const activeTab = document.querySelector(".tab-btn.active")?.dataset.tab;
+        if (activeTab === "est-gp" && typeof renderEstGp === "function") {
+          await renderEstGp(fresh || state.selected);
+        }
+      }
+
+      setTimeout(() => { closeNewEstModal(); }, 700);
+    } catch (e) {
+      msg.textContent = "Error: " + (e.message || e);
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Create Job Estimate";
+    }
   };
 
   // ═══════════════════════════════════════════════════════════════
@@ -9480,6 +9710,57 @@ rick@northeasternelec.com`
       <div id="slGrid" class="sl-grid">
         <div class="loading-msg">Loading lifts...</div>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── NEW JOB ESTIMATE MODAL ──────────────────────────────────────────────
+     Replaces the old btnNewJobEstimate external Airtable form link. Loads
+     Active templates filtered to the current job's contractor; selecting one
+     snapshots its values into the form. Submit POSTs a Job Estimates record
+     with Source Template (fldrni1Lkpw7tMBq8) set to the chosen template. -->
+<div id="newEstModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2>📋 New Job Estimate</h2>
+      <button onclick="closeNewEstModal()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="newEstJobLabel" style="font-size:12px; color:var(--muted); margin-bottom:14px;"></div>
+
+      <div class="sl-field" style="margin-bottom:16px;">
+        <label>Load Template</label>
+        <select id="newEstTemplate" style="width:100%; background:var(--panel); border:1px solid var(--line-2); border-radius:7px; padding:8px 10px; font-size:13px; color:var(--text); outline:none; font-family:'Inter',sans-serif;">
+          <option value="">— Loading templates… —</option>
+        </select>
+        <div id="newEstTemplateHint" style="font-size:11px; color:var(--muted); margin-top:5px;"></div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:10px;">
+        <div class="sl-field">
+          <label>Base Price ($)</label>
+          <input id="newEstBase" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+        </div>
+        <div class="sl-field">
+          <label>Labor Hours</label>
+          <input id="newEstLabor" type="number" step="0.5" class="edit-input" placeholder="0" />
+        </div>
+        <div class="sl-field">
+          <label>Material Cost ($)</label>
+          <input id="newEstMaterial" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+        </div>
+      </div>
+
+      <div class="sl-field" style="margin-top:10px;">
+        <label>Notes (Scope of Work + Exclusions + Standard Terms)</label>
+        <textarea id="newEstNotes" class="edit-input" style="min-height:160px; resize:vertical; font-family:'Inter',sans-serif; line-height:1.5;" placeholder="Describe the work, exclusions, and terms..."></textarea>
+      </div>
+
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:14px; border-top:1px solid var(--line);">
+        <button onclick="closeNewEstModal()" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">Cancel</button>
+        <button id="newEstSubmitBtn" onclick="submitNewEstimate()" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Job Estimate</button>
+      </div>
+      <div id="newEstMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
     </div>
   </div>
 </div>

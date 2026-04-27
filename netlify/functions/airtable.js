@@ -343,13 +343,14 @@ async function handleLogin(body) {
   return resp(200, { ok: true, user: { id: match.id, name: f[F.emp.name]||"Unknown", role } });
 }
 
-async function handleJobs() {
-  const records = await fetchAll(TABLES.jobs);
-  const jobs = records.map(r => {
-    const f = r.fields || {};
-    return {
-      id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
-      type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
+// Shared mapper — used by handleJobs (list) and handleJobById (single).
+// Keeping the projection in one place ensures the single-record refresh
+// path returns the same shape the list-and-state code expects.
+function mapJob(r) {
+  const f = r.fields || {};
+  return {
+    id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
+    type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
       generatorInstalled:gBool(f,F.job.generatorInstalled),
       powerCompanyName:g(f,F.job.powerCompanyName)||"",powerCompanyContact:g(f,F.job.powerCompanyContact)||"",
       powerCompanyPhone:g(f,F.job.powerCompanyPhone)||"",powerCompanyEmail:g(f,F.job.powerCompanyEmail)||"",
@@ -408,9 +409,26 @@ async function handleJobs() {
       projectedEstimatedLaborCost:gNum(f,F.job.projectedEstimatedLaborCost),
       projectedGrossProfitDollar:gNum(f,F.job.projectedGrossProfitDollar),
       projectedGrossProfitPct:gNum(f,F.job.projectedGrossProfitPct)
-    };
-  }).filter(j => !["archived","cancelled","canceled","closed"].includes(normalize(j.status)));
+  };
+}
+
+async function handleJobs() {
+  const records = await fetchAll(TABLES.jobs);
+  const jobs = records
+    .map(mapJob)
+    .filter(j => !["archived","cancelled","canceled","closed"].includes(normalize(j.status)));
   return resp(200, { ok: true, jobs });
+}
+
+// Returns a single Job in the same shape as handleJobs. Used to refresh
+// rollup-driven fields (Expected Revenue, Projected Gross Profit, etc.)
+// after Job Estimates writes so the Est. GP cards don't show stale data.
+async function handleJobById(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  return resp(200, { ok: true, job: mapJob(records[0]) });
 }
 
 async function handleGenerator(params) {
@@ -588,7 +606,7 @@ async function handleGetNextEstimateNumber() {
 // Job Estimates remains the source-of-truth table for Expected Revenue rollups
 // and is only populated via the "New Job Estimate" Airtable form.
 async function handleSaveEstimate(body) {
-  const { estimateId, jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot } = body || {};
+  const { estimateId, jobId, estimateDate, estimateNumber, notes, totalAmount, snapshot, jobEstimateIds } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -603,6 +621,13 @@ async function handleSaveEstimate(body) {
   }
   if (snapshot) {
     fields["Snapshot"] = typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot);
+  }
+  // Bidirectional traceability: link this snapshot to the Job Estimates
+  // record(s) whose totals seeded the builder. Field is multipleRecordLinks
+  // (fldPoz43rrlqWRnwC = "Job Estimate" on Sent Estimate PDFs).
+  if (Array.isArray(jobEstimateIds)) {
+    const cleaned = jobEstimateIds.filter(id => typeof id === "string" && id.startsWith("rec"));
+    if (cleaned.length) fields["fldPoz43rrlqWRnwC"] = cleaned;
   }
   // Note: "notes" from the caller is embedded in the Snapshot JSON; no separate column.
 
@@ -698,6 +723,83 @@ async function handleSentEstimatePDFs(params) {
     };
   });
   return resp(200, { ok: true, estimates });
+}
+
+// ── ESTIMATE TEMPLATES ───────────────────────────────────────────────────
+// Lists Active templates from the Estimate Templates table. If a contractor
+// name is supplied, only templates whose Contractor link resolves to that
+// name are returned. With no contractor, all Active templates are returned
+// (covers jobs that have no contractor set).
+async function handleEstimateTemplates(params) {
+  const { contractor } = params || {};
+  // ARRAYJOIN() on a multipleRecordLinks field expands to the primary field
+  // of the linked table; Companies' primary field is "Company Name", so a
+  // FIND on the joined string resolves the linked contractor by name.
+  const safeContractor = (contractor || "").replace(/"/g, '\\"').trim();
+  const filter = safeContractor
+    ? `AND({Active}=TRUE(), FIND("${safeContractor}", ARRAYJOIN({Contractor})))`
+    : `{Active}=TRUE()`;
+  const records = await fetchAll("Estimate Templates", { filter, sortField: "Template Name", sortDir: "asc" });
+
+  const templates = records.map(r => {
+    const f = r.fields || {};
+    const contractorIds = Array.isArray(f["Contractor"]) ? f["Contractor"] : [];
+    return {
+      id:                 r.id,
+      name:               f["Template Name"] || "",
+      contractorIds,
+      active:             f["Active"] === true,
+      scopeOfWork:        f["Scope of Work"] || "",
+      exclusions:         f["Exclusions"] || "",
+      standardTerms:      f["Standard Terms"] || "",
+      basePrice:          gNum(f, "Base Price"),
+      defaultLaborHours:  gNum(f, "Default Labor Hours"),
+      defaultMaterialCost:gNum(f, "Default Material Cost"),
+      internalNotes:      f["Internal Notes"] || ""
+    };
+  });
+  return resp(200, { ok: true, templates });
+}
+
+// ── CREATE JOB ESTIMATE ──────────────────────────────────────────────────
+// POSTs a new Job Estimates record with the four template-derived fields
+// snapshotted in. Source Template (fldrni1Lkpw7tMBq8) records which
+// template seeded the values; the values themselves are independent
+// scalars, so editing the template later does not change this estimate.
+async function handleCreateJobEstimate(body) {
+  const { jobId, baseAmount, laborHours, materialCost, notes, sourceTemplateId, estimateDate } = body || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // NOTE: Estimate Name (fldneXJv6ia3TIPj6) is a formula field on the Job
+  // Estimates table — Airtable computes it automatically and rejects writes.
+  // The other formulas on this table (Estimated Labor Cost, Calculated
+  // Estimated Total) are also skipped here. Only user-editable fields below.
+  const fields = {};
+  fields["Job"] = [jobId];
+  // Status (fld9GsGvxaNPuCnjo, singleSelect) has no schema-level default,
+  // so records created here without it land with Status=null and get
+  // filtered out of the Est. GP estimates view. Default to "Draft" — the
+  // starting state used by existing records.
+  fields["Status"] = "Draft";
+  // Estimate Type (fld8rcQ3Ni2P1AbUR, singleSelect) is currently populated
+  // by an Airtable schema-level default of "Original". Setting it
+  // explicitly here so the behavior doesn't silently change if that
+  // schema default is ever removed.
+  fields["Estimate Type"] = "Original";
+  if (estimateDate) fields["Estimate Date"] = estimateDate;
+  if (baseAmount   !== undefined && baseAmount   !== null && baseAmount   !== "") fields["Actual Estimate Sent"]    = Number(baseAmount);
+  if (laborHours   !== undefined && laborHours   !== null && laborHours   !== "") fields["Estimated Labor Hours"]   = Number(laborHours);
+  if (materialCost !== undefined && materialCost !== null && materialCost !== "") fields["Estimated Material Cost"] = Number(materialCost);
+  if (notes && String(notes).trim()) fields["Notes"] = String(notes);
+  if (sourceTemplateId && String(sourceTemplateId).startsWith("rec")) {
+    fields["fldrni1Lkpw7tMBq8"] = [sourceTemplateId];
+  }
+
+  const data = await atFetch(`${encodeURIComponent("Job Estimates")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, id: data.id });
 }
 
 const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance", mileageLog: "Fleet Mileage Log" };
@@ -1602,6 +1704,7 @@ export async function handler(event) {
       const action = event.queryStringParameters?.action;
       const params = event.queryStringParameters || {};
       if (action === "jobs")               return await handleJobs();
+      if (action === "jobById")            return await handleJobById(params);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "expenses")           return await handleExpenses(params);
       if (action === "timeEntries")        return await handleTimeEntries(params);
@@ -1610,6 +1713,7 @@ export async function handler(event) {
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);
       if (action === "jobEstimates")       return await handleJobEstimates(params);
+      if (action === "estimateTemplates")  return await handleEstimateTemplates(params);
       if (action === "sentEstimatePDFs")   return await handleSentEstimatePDFs(params);
       if (action === "allInvoices")        return await handleGetAllInvoices();
       if (action === "scheduleEntries")    return await handleGetScheduleEntries(params);
@@ -1639,6 +1743,7 @@ export async function handler(event) {
       if (body.action === "updateEstimateStatus") return await handleUpdateEstimateStatus(body);
       if (body.action === "getNextEstimateNumber") return await handleGetNextEstimateNumber();
       if (body.action === "saveEstimate")         return await handleSaveEstimate(body);
+      if (body.action === "createJobEstimate")    return await handleCreateJobEstimate(body);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);

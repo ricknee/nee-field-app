@@ -141,27 +141,64 @@ async function handleJobs() {
 // change-order or correction needs to go on a job that's already been
 // flagged complete).
 async function handleEstimatingJobs() {
-  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
-    sortField: "Job Name",
-    sortDir: "asc"
+  // The status filter lives in the main NEE base, but Contractor (Combined) is a
+  // formula field on the synced Jobs table in the inventory base. Pull both in
+  // parallel and join on Job PO / Job Name.
+  const [mainRecs, syncedRecs] = await Promise.all([
+    fetchAll(API_ROOT_MAIN, "Jobs", {
+      filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
+      sortField: "Job Name",
+      sortDir: "asc"
+    }),
+    fetchAll(API_ROOT_INV, "Jobs", {})
+  ]);
+
+  const contractorByPo   = {};
+  const contractorByName = {};
+  syncedRecs.forEach(r => {
+    const f = r.fields || {};
+    const c = (f["Contractor (Combined)"] || "").trim();
+    if (!c) return;
+    const po = f["Job PO"] || "";
+    const nm = f["Job Name"] || "";
+    if (po) contractorByPo[po]   = c;
+    if (nm) contractorByName[nm] = c;
   });
+
   return resp(200, {
     ok: true,
-    jobs: records
+    jobs: mainRecs
       .map(r => {
-        const f = r.fields || {};
+        const f       = r.fields || {};
+        const po      = f["Job PO"] || "";
+        const nm      = f["Job Name"] || "";
+        // Use the formatted "Name (PO)" field when available so the user picks
+        // a job that's already disambiguated by its PO (e.g. "Blue Ridge Poultry (GRB 126)")
+        const display = po || nm;
         return {
-          id:     r.id,
-          // Use the formatted "Name (PO)" field when available so the user picks
-          // a job that's already disambiguated by its PO (e.g. "Blue Ridge Poultry (GRB 126)")
-          name:   f["Job PO"] || f["Job Name"] || "",
-          status: f["Job Status"]?.name || f["Job Status"] || "",
-          taxable: (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable"
+          id:         r.id,
+          name:       display,
+          status:     f["Job Status"]?.name || f["Job Status"] || "",
+          taxable:    (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable",
+          contractor: contractorByPo[display] || contractorByName[nm] || ""
         };
       })
       .filter(j => j.name)
   });
+}
+
+// ── DISTINCT CONTRACTORS (from synced Jobs) ────────────────
+// Used by the Save-as-Template modal to populate a contractor datalist and
+// by the Templates list filter pills.
+async function handleTemplateContractors() {
+  const records = await fetchAll(API_ROOT_INV, "Jobs", {});
+  const set = {};
+  records.forEach(r => {
+    const c = (r.fields?.["Contractor (Combined)"] || "").trim();
+    if (c) set[c] = true;
+  });
+  const contractors = Object.keys(set).sort((a, b) => a.localeCompare(b));
+  return resp(200, { ok: true, contractors });
 }
 
 // ── AWARDED JOBS ONLY (for employee-side material ordering) ──
@@ -1523,6 +1560,659 @@ async function createLineItems(estimateId, lines) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// ESTIMATE TEMPLATES — save an estimate as a reusable template,
+// list/edit templates, and clone a template into a fresh estimate.
+//
+// Pricing model: templates store a frozen Unit Cost at Save snapshot
+// for reference. When a template is cloned into a new estimate, the
+// backend looks up the CURRENT Default Unit Cost on each Inventory
+// Item — so the new estimate always reflects today's pricing.
+// The Refresh All Prices action re-snapshots a template against
+// current pricing in one shot for templates that have drifted.
+// ═══════════════════════════════════════════════════════════
+
+const TMPL_TABLE_ID  = "tblpGp6Dp1PE4m9MM";
+const TLINE_TABLE_ID = "tblVKHFKMuaUM5NEA";
+
+// Estimate Templates fields
+const F_TMPL_NAME         = "fldzbsFfD6ajik3dU";
+const F_TMPL_DESC         = "fld7D2v2WGISfioNL";
+const F_TMPL_ACTIVE       = "fldUTxUGOEpZRNNAR";
+const F_TMPL_CONTRACTOR   = "fldj5vseL63A9mm4k";
+const F_TMPL_SOURCE_REF   = "fldYHyEcxQC77Jrjo";
+const F_TMPL_TOTAL        = "fldvr0xvwD6C2uDTK";
+const F_TMPL_CREATED_DATE = "fldIMzA7k09aAdS3h";
+const F_TMPL_CREATED_BY   = "fldIpnqacDhxgv5Vd";
+
+// Estimate Template Lines fields
+const F_TLINE_TITLE     = "fldCDQjNS6hBgxvFJ";
+const F_TLINE_TEMPLATE  = "fldu2l87Uq8VMMXdz";
+const F_TLINE_ITEM      = "fldtFJyAMnx2rOyxo";
+const F_TLINE_QTY       = "fldOF5tMUjud0ssGT";
+const F_TLINE_UNIT_COST = "fld8NUdErnXOCj5ak";
+const F_TLINE_TOTAL     = "fldQVInVUDuULC40O";
+const F_TLINE_NOTES     = "fldFxStyLujlmuO0N";
+
+// Inventory Items: Default Unit Cost field id (used for live pricing on clone)
+const F_ITEM_DEFAULT_COST = "fld8aEhTzmEbqgIg4";
+
+// ── HELPER: build a lineTitle for template lines ───────────
+function tlineTitle(templateName, itemName) {
+  const tn = String(templateName || "").trim() || "Template";
+  const inm = String(itemName || "").trim() || "Item";
+  return tn + " — " + inm;
+}
+
+// ── HELPER: Recompute Total at Save on a template ──────────
+// Sums Line Total at Save across the template's lines and PATCHes the
+// frozen Total at Save back. Called after any line mutation.
+async function recomputeTemplateTotal(templateId, allTemplateLines) {
+  const lines = allTemplateLines !== undefined
+    ? allTemplateLines
+    : await fetchAll(API_ROOT_INV, "Estimate Template Lines", {});
+  const myLines = lines.filter(r => {
+    const links = r.fields?.["Template"] || [];
+    return links.some(l => (typeof l === "object" ? l.id : String(l)) === templateId);
+  });
+  const total = myLines.reduce(
+    (s, r) => s + (Number(r.fields?.["Line Total at Save"] || 0)),
+    0
+  );
+  await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ fields: { [F_TMPL_TOTAL]: total }, typecast: true })
+    }
+  );
+  return total;
+}
+
+// ── LIST TEMPLATES ─────────────────────────────────────────
+async function handleEstimateTemplatesList(params) {
+  const activeOnly = params?.activeOnly === "1" || params?.activeOnly === "true";
+  const contractorRaw = (params?.contractor || "").trim();
+
+  const records = await fetchAll(API_ROOT_INV, "Estimate Templates", {
+    sortField: "Created Date",
+    sortDir: "desc"
+  });
+
+  let templates = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:           r.id,
+      name:         f["Template Name"] || "",
+      description:  f["Description"] || "",
+      active:       gBool(f, "Active"),
+      contractor:   f["Contractor"] || "",
+      sourceRef:    f["Source Estimate Reference"] || "",
+      totalAtSave:  Number(f["Total at Save"] || 0),
+      createdDate:  f["Created Date"] || "",
+      createdBy:    f["Created By"] || "",
+      lineCount:    (f["Estimate Template Lines"] || []).length
+    };
+  });
+
+  if (activeOnly) {
+    templates = templates.filter(t => t.active);
+  }
+  if (contractorRaw) {
+    const cn = contractorRaw.toLowerCase();
+    templates = templates.filter(t => (t.contractor || "").toLowerCase() === cn);
+  }
+
+  return resp(200, { ok: true, templates });
+}
+
+// ── GET ONE TEMPLATE WITH LINES ────────────────────────────
+async function handleEstimateTemplateGet(params) {
+  const { templateId } = params || {};
+  if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
+
+  const tmplData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
+    { method: "GET" }
+  );
+  if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
+
+  const tf = tmplData.fields || {};
+  const lineIds = (tf["Estimate Template Lines"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  let lines = [];
+  if (lineIds.length) {
+    const [lineRecords, itemRecords] = await Promise.all([
+      fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
+      fetchAll(API_ROOT_INV, "Inventory Items", {})
+    ]);
+
+    const itemMap = {};
+    itemRecords.forEach(r => {
+      itemMap[r.id] = {
+        name: r.fields["Item Name"] || r.id,
+        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || "",
+        cost: Number(r.fields["Default Unit Cost"] || 0),
+        wireFtPerLb: Number(r.fields["Wire ft/lb"] || 0)
+      };
+    });
+
+    lines = lineRecords
+      .filter(r => lineIds.includes(r.id))
+      .map(r => {
+        const f = r.fields || {};
+        const itemArr = f["Inventory Item"] || [];
+        const itemId = itemArr.length
+          ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
+          : "";
+        const itemData = itemMap[itemId] || {};
+        return {
+          id:               r.id,
+          itemId:           itemId,
+          itemName:         itemData.name || "",
+          uom:              itemData.uom || "",
+          wireFtPerLb:      itemData.wireFtPerLb || 0,
+          quantity:         Number(f["Quantity"] || 0),
+          unitCostAtSave:   Number(f["Unit Cost at Save"] || 0),
+          lineTotalAtSave:  Number(f["Line Total at Save"] || 0),
+          notes:            f["Notes"] || ""
+        };
+      })
+      .sort((a, b) => (a.itemName || "").localeCompare(b.itemName || ""));
+  }
+
+  return resp(200, {
+    ok: true,
+    template: {
+      id:           tmplData.id,
+      name:         tf["Template Name"] || "",
+      description:  tf["Description"] || "",
+      active:       gBool(tf, "Active"),
+      contractor:   tf["Contractor"] || "",
+      sourceRef:    tf["Source Estimate Reference"] || "",
+      totalAtSave:  Number(tf["Total at Save"] || 0),
+      createdDate:  tf["Created Date"] || "",
+      createdBy:    tf["Created By"] || ""
+    },
+    lines
+  });
+}
+
+// ── SAVE ESTIMATE AS TEMPLATE ──────────────────────────────
+// Reads the source estimate's lines, snapshots their Unit Costs into
+// frozen template lines, and links the new template back to the
+// estimate by Source Estimate Reference (a label, not a link — so
+// later renames/deletes of the source estimate don't affect the
+// template). Misc lines on the source estimate are dropped because
+// templates are item-only.
+async function handleSaveEstimateAsTemplate(body) {
+  const { estimateId, templateName, description, contractor, createdBy } = body || {};
+  if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
+  const name = String(templateName || "").trim();
+  if (!name) return resp(400, { ok: false, error: "Template name is required." });
+
+  // Fetch source estimate + its lines + inventory items in parallel
+  const estData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimates")}/${estimateId}`,
+    { method: "GET" }
+  );
+  if (!estData?.id) return resp(404, { ok: false, error: "Source estimate not found." });
+  const ef = estData.fields || {};
+  const lineIds = (ef["Estimate Line Items"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  const [allLineRecords, allItemRecords] = await Promise.all([
+    lineIds.length ? fetchAll(API_ROOT_INV, "Estimate Line Items", {}) : Promise.resolve([]),
+    fetchAll(API_ROOT_INV, "Inventory Items", {})
+  ]);
+
+  const itemNameById = {};
+  allItemRecords.forEach(r => {
+    itemNameById[r.id] = r.fields?.["Item Name"] || r.id;
+  });
+
+  // Pull source lines, drop Misc lines (no Inventory Item link).
+  const sourceLines = allLineRecords
+    .filter(r => lineIds.includes(r.id))
+    .map(r => {
+      const f = r.fields || {};
+      const itemArr = f["Inventory Item"] || [];
+      const itemId = itemArr.length
+        ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
+        : "";
+      return {
+        itemId,
+        qty:        Number(f["Quantity"] || 0),
+        unitCost:   Number(f["Unit Cost at Time of Estimate"] || 0),
+        notes:      f["Description"] || ""
+      };
+    })
+    .filter(l => !!l.itemId);
+
+  const skippedMiscCount = lineIds.length - sourceLines.length;
+  const totalAtSave = sourceLines.reduce(
+    (s, l) => s + (l.qty * l.unitCost),
+    0
+  );
+
+  const sourceRef = (ef["Job Name"] || "")
+    + (ef["Job ID"] ? " (" + ef["Job ID"] + ")" : "");
+
+  // Create the template record first so we have its id for line links
+  const tmplFields = {
+    [F_TMPL_NAME]:         name,
+    [F_TMPL_DESC]:         String(description || "").trim(),
+    [F_TMPL_ACTIVE]:       true,
+    [F_TMPL_CONTRACTOR]:   String(contractor || "").trim(),
+    [F_TMPL_SOURCE_REF]:   sourceRef,
+    [F_TMPL_TOTAL]:        totalAtSave,
+    [F_TMPL_CREATED_DATE]: new Date().toISOString(),
+    [F_TMPL_CREATED_BY]:   String(createdBy || "").trim()
+  };
+
+  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Templates"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields: tmplFields }], typecast: true })
+  });
+  const templateId = created.records?.[0]?.id;
+  if (!templateId) return resp(500, { ok: false, error: "Failed to create template." });
+
+  // Create the template lines in batches of 10
+  if (sourceLines.length) {
+    for (let i = 0; i < sourceLines.length; i += 10) {
+      const batch = sourceLines.slice(i, i + 10).map(l => {
+        const lineTotal = (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
+        const fields = {
+          [F_TLINE_TITLE]:     tlineTitle(name, itemNameById[l.itemId] || ""),
+          [F_TLINE_TEMPLATE]:  [String(templateId)],
+          [F_TLINE_ITEM]:      [String(l.itemId)],
+          [F_TLINE_QTY]:       Number(l.qty || 0),
+          [F_TLINE_UNIT_COST]: Number(l.unitCost || 0),
+          [F_TLINE_TOTAL]:     lineTotal
+        };
+        if (l.notes && String(l.notes).trim()) {
+          fields[F_TLINE_NOTES] = String(l.notes).trim();
+        }
+        return { fields };
+      });
+      await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
+        method: "POST",
+        body: JSON.stringify({ records: batch, typecast: true })
+      });
+    }
+  }
+
+  return resp(200, {
+    ok: true,
+    templateId,
+    lineCount: sourceLines.length,
+    skippedMiscCount
+  });
+}
+
+// ── CREATE ESTIMATE FROM TEMPLATE ──────────────────────────
+// Clones a template into a new Estimate. Quantities come from the
+// template; Unit Costs are pulled fresh from each Inventory Item's
+// current Default Unit Cost (live pricing). Misc lines never exist
+// on templates so we don't have to worry about them here.
+async function handleCreateEstimateFromTemplate(body) {
+  const { templateId, jobId, jobName, createdBy } = body || {};
+  if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
+  if (!jobName || !String(jobName).trim()) return resp(400, { ok: false, error: "Missing jobName." });
+
+  // Fetch the template record (for description) + its line ids + all
+  // template lines + all inventory items (for live cost lookup) in parallel.
+  const [tmplData, allTemplateLines, itemRecords] = await Promise.all([
+    atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
+    fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
+    fetchAll(API_ROOT_INV, "Inventory Items", {})
+  ]);
+  if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
+
+  const tf = tmplData.fields || {};
+  const tmplLineIds = (tf["Estimate Template Lines"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  const itemCostById = {};
+  itemRecords.forEach(r => {
+    itemCostById[r.id] = Number(r.fields?.["Default Unit Cost"] || 0);
+  });
+
+  // Build the lines that will be inserted into the new estimate.
+  // Snapshot LIVE pricing here, not the template's frozen cost.
+  const cloneLines = allTemplateLines
+    .filter(r => tmplLineIds.includes(r.id))
+    .map(r => {
+      const f = r.fields || {};
+      const itemArr = f["Inventory Item"] || [];
+      const itemId = itemArr.length
+        ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
+        : "";
+      return {
+        itemId,
+        qty:         Number(f["Quantity"] || 0),
+        unitCost:    Number(itemCostById[itemId] || 0),
+        description: f["Notes"] || ""
+      };
+    })
+    .filter(l => !!l.itemId);
+
+  // Create the new estimate
+  const estFields = {
+    [F_EST_JOB_NAME]:   String(jobName).trim(),
+    [F_EST_JOB_ID]:     String(jobId || "").trim(),
+    [F_EST_STATUS]:     "Draft",
+    [F_EST_NOTES]:      String(tf["Description"] || "").trim(),
+    [F_EST_CREATED_BY]: String(createdBy || "").trim()
+  };
+  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimates"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields: estFields }], typecast: true })
+  });
+  const newId = created.records?.[0]?.id;
+  if (!newId) return resp(500, { ok: false, error: "Failed to create estimate." });
+
+  // Bulk-insert the cloned lines. We can't reuse createLineItems for these
+  // because it gates Description on isMisc — for clones we want template
+  // notes carried into the Description column on the new estimate line.
+  if (cloneLines.length) {
+    for (let i = 0; i < cloneLines.length; i += 10) {
+      const batch = cloneLines.slice(i, i + 10).map(l => {
+        const fields = {
+          [F_LINE_ESTIMATE]:  [String(newId)],
+          [F_LINE_ITEM]:      [String(l.itemId)],
+          [F_LINE_QTY]:       Number(l.qty || 0),
+          [F_LINE_UNIT_COST]: Number(l.unitCost || 0)
+        };
+        if (l.description && String(l.description).trim()) {
+          fields["Description"] = String(l.description).trim();
+        }
+        return { fields };
+      });
+      try {
+        await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+          method: "POST",
+          body: JSON.stringify({ records: batch, typecast: true })
+        });
+      } catch (err) {
+        // Same defensive retry as createLineItems — Description is optional
+        // and shouldn't sink the whole clone if Airtable rejects it.
+        if (err.message && err.message.toLowerCase().includes("description")) {
+          const retryBatch = batch.map(b => {
+            const f = { ...b.fields };
+            delete f.Description;
+            return { fields: f };
+          });
+          await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+            method: "POST",
+            body: JSON.stringify({ records: retryBatch, typecast: true })
+          });
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  return resp(200, { ok: true, estimateId: newId, lineCount: cloneLines.length });
+}
+
+// ── UPDATE TEMPLATE METADATA ───────────────────────────────
+// Header-only patch — does not touch lines.
+async function handleEstimateTemplateUpdate(body) {
+  const { templateId, templateName, description, contractor, active } = body || {};
+  if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
+
+  const fields = {};
+  if (templateName !== undefined) fields[F_TMPL_NAME]       = String(templateName || "").trim();
+  if (description  !== undefined) fields[F_TMPL_DESC]       = String(description  || "");
+  if (contractor   !== undefined) fields[F_TMPL_CONTRACTOR] = String(contractor   || "").trim();
+  if (active       !== undefined) fields[F_TMPL_ACTIVE]     = !!active;
+
+  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ fields, typecast: true })
+    }
+  );
+
+  // If the name changed, re-write Line Title on every line so the
+  // human-readable title stays in sync. Cheap (PATCH up to 10 per call).
+  if (templateName !== undefined) {
+    const newName = String(templateName || "").trim();
+    const [tmplRec, allLines, allItems] = await Promise.all([
+      atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
+      fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
+      fetchAll(API_ROOT_INV, "Inventory Items", {})
+    ]);
+    const lineIds = (tmplRec.fields?.["Estimate Template Lines"] || [])
+      .map(l => typeof l === "object" ? l.id : String(l));
+    const itemNameById = {};
+    allItems.forEach(r => { itemNameById[r.id] = r.fields?.["Item Name"] || r.id; });
+    const myLines = allLines.filter(r => lineIds.includes(r.id));
+    const updates = myLines.map(r => {
+      const f = r.fields || {};
+      const itemArr = f["Inventory Item"] || [];
+      const itemId = itemArr.length
+        ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
+        : "";
+      return {
+        id: r.id,
+        fields: { [F_TLINE_TITLE]: tlineTitle(newName, itemNameById[itemId] || "") }
+      };
+    });
+    for (let i = 0; i < updates.length; i += 10) {
+      const batch = updates.slice(i, i + 10);
+      await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
+        method: "PATCH",
+        body: JSON.stringify({ records: batch, typecast: true })
+      });
+    }
+  }
+
+  return resp(200, { ok: true });
+}
+
+// ── UPSERT TEMPLATE LINE (create or update one line) ───────
+async function handleEstimateTemplateLineUpsert(body) {
+  const { templateId, lineId, itemId, quantity, notes } = body || {};
+  if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
+
+  if (lineId) {
+    // PATCH existing line: update qty/notes, recompute Line Total at Save
+    const existing = await atFetch(
+      API_ROOT_INV,
+      `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
+      { method: "GET" }
+    );
+    const ef = existing.fields || {};
+    const newQty  = quantity !== undefined ? Number(quantity || 0) : Number(ef["Quantity"] || 0);
+    const cost    = Number(ef["Unit Cost at Save"] || 0);
+    const total   = newQty * cost;
+    const fields  = {
+      [F_TLINE_QTY]:   newQty,
+      [F_TLINE_TOTAL]: total
+    };
+    if (notes !== undefined) fields[F_TLINE_NOTES] = String(notes || "");
+
+    await atFetch(
+      API_ROOT_INV,
+      `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ fields, typecast: true })
+      }
+    );
+    await recomputeTemplateTotal(templateId);
+    return resp(200, { ok: true, lineId });
+  }
+
+  // CREATE new line — snapshot current Default Unit Cost from the item
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+
+  const [tmplRec, itemRec] = await Promise.all([
+    atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
+    atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`,        { method: "GET" })
+  ]);
+  if (!tmplRec?.id) return resp(404, { ok: false, error: "Template not found." });
+  if (!itemRec?.id) return resp(404, { ok: false, error: "Inventory item not found." });
+
+  const templateName = tmplRec.fields?.["Template Name"] || "";
+  const itemName     = itemRec.fields?.["Item Name"]     || "";
+  const unitCost     = Number(itemRec.fields?.["Default Unit Cost"] || 0);
+  const qty          = Number(quantity || 0);
+
+  const fields = {
+    [F_TLINE_TITLE]:     tlineTitle(templateName, itemName),
+    [F_TLINE_TEMPLATE]:  [String(templateId)],
+    [F_TLINE_ITEM]:      [String(itemId)],
+    [F_TLINE_QTY]:       qty,
+    [F_TLINE_UNIT_COST]: unitCost,
+    [F_TLINE_TOTAL]:     qty * unitCost
+  };
+  if (notes !== undefined && String(notes || "").trim()) {
+    fields[F_TLINE_NOTES] = String(notes).trim();
+  }
+
+  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields }], typecast: true })
+  });
+  const newLineId = created.records?.[0]?.id;
+  await recomputeTemplateTotal(templateId);
+  return resp(200, { ok: true, lineId: newLineId });
+}
+
+// ── DELETE ONE TEMPLATE LINE ───────────────────────────────
+async function handleEstimateTemplateLineDelete(body) {
+  const { lineId, templateId } = body || {};
+  if (!lineId) return resp(400, { ok: false, error: "Missing lineId." });
+
+  // Resolve the templateId from the line if the frontend didn't send it
+  let tid = templateId;
+  if (!tid) {
+    const ln = await atFetch(
+      API_ROOT_INV,
+      `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
+      { method: "GET" }
+    );
+    const links = ln.fields?.["Template"] || [];
+    tid = links.length
+      ? (typeof links[0] === "object" ? links[0].id : String(links[0]))
+      : "";
+  }
+
+  await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
+    { method: "DELETE" }
+  );
+
+  if (tid) await recomputeTemplateTotal(tid);
+  return resp(200, { ok: true, deleted: lineId });
+}
+
+// ── DELETE TEMPLATE (cascading) ────────────────────────────
+async function handleEstimateTemplateDelete(body) {
+  const { templateId } = body || {};
+  if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
+
+  const tmplData = await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
+    { method: "GET" }
+  );
+  const lineIds = (tmplData.fields?.["Estimate Template Lines"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  for (let i = 0; i < lineIds.length; i += 10) {
+    const batch = lineIds.slice(i, i + 10);
+    const qs = batch.map(rid => `records[]=${rid}`).join("&");
+    await atFetch(
+      API_ROOT_INV,
+      `${encodeURIComponent("Estimate Template Lines")}?${qs}`,
+      { method: "DELETE" }
+    );
+  }
+
+  await atFetch(
+    API_ROOT_INV,
+    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
+    { method: "DELETE" }
+  );
+
+  return resp(200, { ok: true, deleted: templateId, deletedLineCount: lineIds.length });
+}
+
+// ── REFRESH ALL PRICES ────────────────────────────────────
+// Re-snapshots every line's Unit Cost at Save (and Line Total at Save) to
+// the current Default Unit Cost on its Inventory Item, then recomputes
+// the template's Total at Save. Used when a template has been sitting
+// for a while and pricing has drifted — saves the user from manually
+// re-adding every line.
+async function handleRefreshTemplatePrices(body) {
+  const { templateId } = body || {};
+  if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
+
+  const [tmplData, allLines, allItemRecords] = await Promise.all([
+    atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
+    fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
+    fetchAll(API_ROOT_INV, "Inventory Items", {})
+  ]);
+  if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
+
+  const lineIds = (tmplData.fields?.["Estimate Template Lines"] || [])
+    .map(l => typeof l === "object" ? l.id : String(l));
+
+  const itemCostById = {};
+  allItemRecords.forEach(r => {
+    itemCostById[r.id] = Number(r.fields?.["Default Unit Cost"] || 0);
+  });
+
+  const myLines = allLines.filter(r => lineIds.includes(r.id));
+  const updates = myLines.map(r => {
+    const f = r.fields || {};
+    const qty = Number(f["Quantity"] || 0);
+    const itemArr = f["Inventory Item"] || [];
+    const itemId = itemArr.length
+      ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
+      : "";
+    const newCost = Number(itemCostById[itemId] || 0);
+    return {
+      id: r.id,
+      fields: {
+        [F_TLINE_UNIT_COST]: newCost,
+        [F_TLINE_TOTAL]:     qty * newCost
+      }
+    };
+  });
+
+  let updated = 0;
+  for (let i = 0; i < updates.length; i += 10) {
+    const batch = updates.slice(i, i + 10);
+    await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
+      method: "PATCH",
+      body: JSON.stringify({ records: batch, typecast: true })
+    });
+    updated += batch.length;
+  }
+
+  // Recompute Total at Save against the freshly-PATCHed lines (refetch so
+  // the rollup reads the new totals, not the stale cache).
+  const refreshedLines = await fetchAll(API_ROOT_INV, "Estimate Template Lines", {});
+  const newTotal = await recomputeTemplateTotal(templateId, refreshedLines);
+
+  return resp(200, { ok: true, lineCount: updated, total: newTotal });
+}
+
+// ═══════════════════════════════════════════════════════════
 // MATERIAL ORDERS — list, get, create, mark complete, delete
 // ═══════════════════════════════════════════════════════════
 
@@ -1990,6 +2680,9 @@ export async function handler(event) {
       if (action === "getExpenseFields")  return await handleGetExpenseFields();
       if (action === "estimatesList")     return await handleEstimatesList(params);
       if (action === "estimateGet")       return await handleEstimateGet(params);
+      if (action === "estimateTemplatesList") return await handleEstimateTemplatesList(params);
+      if (action === "estimateTemplateGet")   return await handleEstimateTemplateGet(params);
+      if (action === "templateContractors")   return await handleTemplateContractors();
       if (action === "ordersList")        return await handleOrdersList(params);
       if (action === "orderGet")          return await handleOrderGet(params);
       if (action === "ordersCount")       return await handleOrdersCount();
@@ -2012,6 +2705,13 @@ export async function handler(event) {
       if (body.action === "estimateCreate")     return await handleEstimateCreate(body);
       if (body.action === "estimateUpdate")     return await handleEstimateUpdate(body);
       if (body.action === "estimateDelete")     return await handleEstimateDelete(body);
+      if (body.action === "saveEstimateAsTemplate")     return await handleSaveEstimateAsTemplate(body);
+      if (body.action === "createEstimateFromTemplate") return await handleCreateEstimateFromTemplate(body);
+      if (body.action === "estimateTemplateUpdate")     return await handleEstimateTemplateUpdate(body);
+      if (body.action === "estimateTemplateLineUpsert") return await handleEstimateTemplateLineUpsert(body);
+      if (body.action === "estimateTemplateLineDelete") return await handleEstimateTemplateLineDelete(body);
+      if (body.action === "estimateTemplateDelete")     return await handleEstimateTemplateDelete(body);
+      if (body.action === "refreshTemplatePrices")      return await handleRefreshTemplatePrices(body);
       if (body.action === "orderCreate")        return await handleOrderCreate(body);
       if (body.action === "orderUpdate")        return await handleOrderUpdate(body);
       if (body.action === "orderDelete")        return await handleOrderDelete(body);

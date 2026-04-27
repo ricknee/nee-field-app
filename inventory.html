@@ -362,7 +362,10 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
   <div class="hdr">
     <button class="hdr-back" onclick="goHome()">‹</button>
     <h2>Estimates</h2>
-    <button onclick="goEstimateNew()" style="background:var(--gold);border:none;border-radius:20px;color:var(--navy);font-size:13px;font-weight:600;padding:6px 14px;cursor:pointer;">+ New</button>
+    <div style="display:flex;gap:6px;">
+      <button onclick="goEstimateTemplates()" style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:20px;color:var(--gold);font-size:13px;font-weight:600;padding:6px 12px;cursor:pointer;">📋 Templates</button>
+      <button onclick="openNewEstimateChooser()" style="background:var(--gold);border:none;border-radius:20px;color:var(--navy);font-size:13px;font-weight:600;padding:6px 14px;cursor:pointer;">+ New</button>
+    </div>
   </div>
   <div class="log-body" id="estimates-body"><div class="loading"><div class="spinner"></div><br>Loading…</div></div>
 </div>
@@ -374,6 +377,24 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <h2 id="estimate-title">Estimate</h2>
   </div>
   <div class="log-body" id="estimate-body"></div>
+</div>
+
+<!-- ESTIMATE TEMPLATES LIST -->
+<div id="s-estimate-templates" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goEstimates()">‹</button>
+    <h2>Estimate Templates</h2>
+  </div>
+  <div class="log-body" id="estimate-templates-body"><div class="loading"><div class="spinner"></div><br>Loading…</div></div>
+</div>
+
+<!-- ESTIMATE TEMPLATE DETAIL / EDIT -->
+<div id="s-estimate-template" class="screen">
+  <div class="hdr">
+    <button class="hdr-back" onclick="goEstimateTemplates()">‹</button>
+    <h2 id="estimate-template-title">Template</h2>
+  </div>
+  <div class="log-body" id="estimate-template-body"></div>
 </div>
 
 <!-- EMPLOYEE ORDER JOB PICKER -->
@@ -5133,22 +5154,30 @@ function renderEstimateForm() {
   // Lines section
   var linesSection = renderEstimateLines();
 
-  // Action buttons
-  var saveLabel = isNew ? "Create Estimate" : "Save Changes";
-  var deleteBtn = isNew ? "" :
-    '<button onclick="confirmDeleteEstimate()" style="background:var(--red);border:none;border-radius:8px;color:#fff;font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">🗑 Delete</button>';
-  var pdfBtn = isNew ? "" :
-    '<button onclick="downloadEstimatePDF()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">📄 Download PDF</button>';
-  var orderBtn = isNew ? "" :
-    '<button onclick="goOrderBuild()" style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">📦 Create Order List</button>';
+  // Action buttons — 5-across peer row when an estimate already exists.
+  // Padding/font shrunk so all 5 fit comfortably without wrapping on
+  // desktop/tablet (the primary form factor for this app).
+  var saveLabel  = isNew ? "💾 Create" : "💾 Save";
+  var btnBase    = "border-radius:8px;font-weight:700;padding:10px 6px;cursor:pointer;font-size:12px;flex:1;line-height:1.2;";
+  var saveBtn    = '<button onclick="saveEstimate()" id="est-save-btn" ' +
+    'style="background:var(--gold);border:none;color:var(--navy);' + btnBase + '">' + saveLabel + '</button>';
+  var tmplBtn    = isNew ? "" :
+    '<button onclick="openSaveAsTemplateModal()" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--gold);color:var(--gold);' + btnBase + '">📋 Template</button>';
+  var pdfBtn     = isNew ? "" :
+    '<button onclick="downloadEstimatePDF()" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--border);color:var(--text);' + btnBase + '">📄 PDF</button>';
+  var orderBtn   = isNew ? "" :
+    '<button onclick="goOrderBuild()" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--gold);color:var(--gold);' + btnBase + '">📦 Order</button>';
+  var deleteBtn  = isNew ? "" :
+    '<button onclick="confirmDeleteEstimate()" ' +
+      'style="background:var(--red);border:none;color:#fff;' + btnBase + '">🗑 Delete</button>';
 
   var actionsSection =
-    '<div style="display:flex;gap:8px;margin-top:18px;">' +
-      '<button onclick="saveEstimate()" id="est-save-btn" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:12px;cursor:pointer;font-size:14px;flex:2;">' + saveLabel + '</button>' +
-      pdfBtn +
-    '</div>' +
-    (orderBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + orderBtn + '</div>' : '') +
-    (deleteBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + deleteBtn + '</div>' : '');
+    '<div style="display:flex;gap:6px;margin-top:18px;">' +
+      saveBtn + tmplBtn + pdfBtn + orderBtn + deleteBtn +
+    '</div>';
 
   document.getElementById("estimate-body").innerHTML =
     '<div style="display:flex;flex-direction:column;gap:14px;">' +
@@ -5635,6 +5664,922 @@ async function doDeleteEstimate(id) {
     await goEstimates();
   } catch(ex) {
     showToast("Delete failed: " + (ex.message || ex), true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// ESTIMATE TEMPLATES
+// Save an existing estimate as a reusable template, manage templates,
+// clone a template into a fresh estimate at live prices.
+// ═══════════════════════════════════════════════════════════
+var templateState = {
+  templates:   [],
+  current:     null,   // {id, name, description, contractor, active, sourceRef, totalAtSave, lines: [...]}
+  searchTerm:  "",
+  activeOnly:  true,
+  contractors: []
+};
+
+// Per-line dirty cache for batched Save Changes — keyed by lineId.
+// Add/Delete go through the server immediately so the visible totals
+// stay accurate; qty/notes typing batches until Save.
+var dirtyTemplateLines = {};
+
+async function loadTemplateContractors() {
+  if (!templateState.contractors.length) {
+    try {
+      var d = await apiGet("templateContractors");
+      templateState.contractors = d.contractors || [];
+    } catch(ex) {
+      templateState.contractors = [];
+    }
+  }
+  // Populate any rendered datalists in case the modal/form opened first
+  var optsHtml = templateState.contractors.map(function(c){
+    return '<option value="' + c.replace(/"/g, "&quot;") + '"></option>';
+  }).join("");
+  ["tmpl-contractor-list", "tmpl-contractor-list-edit"].forEach(function(id) {
+    var dl = document.getElementById(id);
+    if (dl) dl.innerHTML = optsHtml;
+  });
+  return templateState.contractors;
+}
+
+// ── SAVE-AS-TEMPLATE MODAL ────────────────────────────────
+async function openSaveAsTemplateModal() {
+  var e = estimateState.current;
+  if (!e || !e.id) {
+    showToast("Save the estimate first", true);
+    return;
+  }
+  closeSaveAsTemplateModal();
+
+  // Pull contractor datalist in parallel — populates the datalist itself
+  // when it finishes, so the modal can render right away.
+  loadTemplateContractors();
+
+  var lines    = e.lines || [];
+  var nonMisc  = lines.filter(function(l){ return !l.isMisc && l.itemId; });
+  var miscCt   = lines.length - nonMisc.length;
+  var total    = nonMisc.reduce(function(s, l){
+    return s + (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
+  }, 0);
+  var sourceRef = (e.jobName || "")
+    + (e.jobId ? " (" + e.jobId + ")" : "");
+
+  var miscWarn = miscCt > 0
+    ? '<div style="background:rgba(212,175,55,0.10);border:1px solid var(--gold);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--gold);margin-bottom:12px;">' +
+        '⚠ ' + miscCt + ' misc line' + (miscCt === 1 ? '' : 's') + ' will be skipped — templates support inventory items only.' +
+      '</div>'
+    : '';
+
+  var ov = document.createElement("div");
+  ov.id = "save-as-tmpl";
+  ov.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;overflow-y:auto;";
+  ov.innerHTML =
+    '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:480px;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);">' +
+        '<h3 style="margin:0;font-size:15px;color:var(--text);">📋 Save as Template</h3>' +
+        '<button onclick="closeSaveAsTemplateModal()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
+      '</div>' +
+      '<div style="padding:14px 16px;display:flex;flex-direction:column;gap:12px;">' +
+        miscWarn +
+        '<div>' +
+          '<label class="field-lbl">Template Name</label>' +
+          '<input type="text" class="field-inp" id="sat-name" autocomplete="off" placeholder="e.g. Case Farms 2-Barn" />' +
+        '</div>' +
+        '<div>' +
+          '<label class="field-lbl">Description</label>' +
+          '<textarea class="field-inp" id="sat-desc" rows="2" placeholder="Optional notes about this template" style="resize:vertical;min-height:48px;font-family:inherit;"></textarea>' +
+        '</div>' +
+        '<div>' +
+          '<label class="field-lbl">Contractor</label>' +
+          '<input type="text" class="field-inp" id="sat-contractor" list="tmpl-contractor-list" autocomplete="off" placeholder="Optional — type or pick" />' +
+          '<datalist id="tmpl-contractor-list"></datalist>' +
+        '</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text);">' +
+          '<input type="checkbox" id="sat-active" checked style="width:16px;height:16px;cursor:pointer;" />' +
+          'Active (available in template picker)' +
+        '</label>' +
+        '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--dim);">' +
+          '<div><span style="color:var(--muted);">Source:</span> ' + (sourceRef || "—") + '</div>' +
+          '<div style="margin-top:4px;"><span style="color:var(--muted);">Total at save:</span> <span style="color:var(--text);font-weight:600;">' + fmtCurrency(total) + '</span> · ' + nonMisc.length + ' line' + (nonMisc.length === 1 ? '' : 's') + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;padding:12px 16px;border-top:1px solid var(--border);">' +
+        '<button onclick="closeSaveAsTemplateModal()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:11px;cursor:pointer;font-size:13px;">Cancel</button>' +
+        '<button id="sat-save-btn" onclick="doSaveAsTemplate()" style="flex:2;background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:11px;cursor:pointer;font-size:13px;">Save Template</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  setTimeout(function() {
+    var n = document.getElementById("sat-name");
+    if (n) n.focus();
+  }, 50);
+}
+
+function closeSaveAsTemplateModal() {
+  var ov = document.getElementById("save-as-tmpl");
+  if (ov) ov.remove();
+}
+
+async function doSaveAsTemplate() {
+  var e = estimateState.current;
+  if (!e || !e.id) return;
+  var name = (document.getElementById("sat-name")?.value || "").trim();
+  if (!name) {
+    showToast("Template name is required", true);
+    return;
+  }
+  var desc       = (document.getElementById("sat-desc")?.value || "").trim();
+  var contractor = (document.getElementById("sat-contractor")?.value || "").trim();
+  // Active is read but the backend always sets Active=true on create.
+  // We persist it via an optional follow-up update if user unchecked.
+  var active     = !!document.getElementById("sat-active")?.checked;
+
+  var btn = document.getElementById("sat-save-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+
+  try {
+    var d = await apiPost({
+      action:       "saveEstimateAsTemplate",
+      estimateId:   e.id,
+      templateName: name,
+      description:  desc,
+      contractor:   contractor,
+      createdBy:    currentUser ? currentUser.name : ""
+    });
+    if (!active) {
+      // Backend defaults to Active=true; flip it if the user opted out.
+      try {
+        await apiPost({
+          action:     "estimateTemplateUpdate",
+          templateId: d.templateId,
+          active:     false
+        });
+      } catch(_) {/* non-fatal */}
+    }
+    var msg = "✓ Template saved: " + name;
+    if (d.skippedMiscCount > 0) {
+      msg += " (" + d.skippedMiscCount + " misc skipped)";
+    }
+    showToast(msg);
+    closeSaveAsTemplateModal();
+  } catch(ex) {
+    showToast("Save failed: " + (ex.message || ex), true);
+    if (btn) { btn.disabled = false; btn.textContent = "Save Template"; }
+  }
+}
+
+// ── TEMPLATES LIST ────────────────────────────────────────
+async function goEstimateTemplates() {
+  showScreen("estimate-templates");
+  var body = document.getElementById("estimate-templates-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading templates…</div>';
+  try {
+    var d = await apiGet("estimateTemplatesList");
+    templateState.templates = d.templates || [];
+    renderEstimateTemplatesList();
+  } catch(ex) {
+    body.innerHTML = '<div style="padding:20px;color:var(--red);text-align:center;">' +
+      'Error loading templates: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+function renderEstimateTemplatesList() {
+  var body = document.getElementById("estimate-templates-body");
+  var list = (templateState.templates || []).slice();
+
+  if (templateState.activeOnly) {
+    list = list.filter(function(t){ return t.active; });
+  }
+  var q = (templateState.searchTerm || "").trim().toLowerCase();
+  if (q) {
+    list = list.filter(function(t) {
+      return (t.name || "").toLowerCase().includes(q)
+          || (t.contractor || "").toLowerCase().includes(q);
+    });
+  }
+
+  var totalCount = templateState.templates.length;
+  var activeCount = templateState.templates.filter(function(t){ return t.active; }).length;
+
+  var searchBox = '<input type="text" class="field-inp" id="tmpl-search" placeholder="Search by name or contractor…" ' +
+    'value="' + (templateState.searchTerm || "").replace(/"/g, "&quot;") + '" ' +
+    'oninput="templateState.searchTerm=this.value; renderEstimateTemplatesList();" ' +
+    'style="margin-bottom:10px;" />';
+
+  var togglePill = function(active, label, count) {
+    var bg    = active ? "var(--gold)" : "var(--navy-lt)";
+    var color = active ? "var(--navy)" : "var(--dim)";
+    return 'background:' + bg + ';border:1px solid var(--border);border-radius:14px;padding:5px 11px;' +
+      'font-size:12px;font-weight:600;color:' + color + ';cursor:pointer;';
+  };
+  var toggleRow = '<div style="display:flex;gap:6px;margin-bottom:12px;">' +
+    '<button onclick="templateState.activeOnly=true; renderEstimateTemplatesList();" style="' + togglePill(templateState.activeOnly, "Active", activeCount) + '">Active <span style="opacity:0.6;font-weight:400;">(' + activeCount + ')</span></button>' +
+    '<button onclick="templateState.activeOnly=false; renderEstimateTemplatesList();" style="' + togglePill(!templateState.activeOnly, "All", totalCount) + '">All <span style="opacity:0.6;font-weight:400;">(' + totalCount + ')</span></button>' +
+  '</div>';
+
+  var content = searchBox + toggleRow;
+
+  if (!list.length) {
+    content += '<div style="padding:30px;text-align:center;color:var(--dim);">' +
+      (totalCount === 0
+        ? 'No templates yet. Open an estimate and tap <b>📋 Template</b> to save one.'
+        : 'No templates match your filter.') +
+      '</div>';
+  } else {
+    content += '<div style="display:flex;flex-direction:column;gap:8px;">' +
+      list.map(templateRowHtml).join("") +
+      '</div>';
+  }
+
+  body.innerHTML = content;
+
+  // Restore focus to search box if user was typing
+  var s = document.getElementById("tmpl-search");
+  if (s && templateState.searchTerm) {
+    s.focus();
+    s.setSelectionRange(s.value.length, s.value.length);
+  }
+}
+
+function templateRowHtml(t) {
+  var dateStr  = formatEstDate(t.createdDate);
+  var totalStr = fmtCurrency(t.totalAtSave || 0);
+  var inactiveTag = t.active
+    ? ''
+    : '<span style="display:inline-block;background:var(--navy);color:var(--dim);font-size:10px;font-weight:600;padding:2px 7px;border-radius:8px;margin-left:6px;">INACTIVE</span>';
+  var contractorLine = t.contractor
+    ? '<div style="font-size:12px;color:var(--gold);margin-top:2px;">' + t.contractor + '</div>'
+    : '';
+  return '<div onclick="openEstimateTemplate(\'' + t.id + '\')" ' +
+    'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;cursor:pointer;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">' +
+      '<div style="flex:1;min-width:0;">' +
+        '<div style="font-weight:600;font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + (t.name || "(unnamed)") + inactiveTag + '</div>' +
+        contractorLine +
+        '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + dateStr +
+          (t.createdBy ? ' · ' + t.createdBy : '') +
+          ' · ' + (t.lineCount || 0) + ' item' + (t.lineCount === 1 ? '' : 's') +
+        '</div>' +
+      '</div>' +
+      '<div style="text-align:right;">' +
+        '<div style="font-weight:700;font-size:15px;color:var(--text);">' + totalStr + '</div>' +
+        '<div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:4px;">at save</div>' +
+      '</div>' +
+    '</div></div>';
+}
+
+// ── TEMPLATE DETAIL / EDIT ────────────────────────────────
+async function openEstimateTemplate(id) {
+  showScreen("estimate-template");
+  document.getElementById("estimate-template-title").textContent = "Template";
+  var body = document.getElementById("estimate-template-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+
+  // Make sure inventory items are loaded so we can show wire conversions etc.
+  if (!allItems || !allItems.length) {
+    try {
+      var di = await apiGet("items");
+      allItems = di.items || [];
+    } catch(_) {/* non-fatal */}
+  }
+  // Lazy-load contractor datalist for the edit form
+  loadTemplateContractors();
+
+  try {
+    var d = await apiGet("estimateTemplateGet", { templateId: id });
+    templateState.current = Object.assign({}, d.template, { lines: d.lines || [] });
+    // Snapshot the original header values so we only PATCH fields that actually changed.
+    templateState.current._origName       = d.template.name || "";
+    templateState.current._origDesc       = d.template.description || "";
+    templateState.current._origContractor = d.template.contractor || "";
+    templateState.current._origActive     = !!d.template.active;
+    dirtyTemplateLines = {};
+    document.getElementById("estimate-template-title").textContent =
+      d.template.name || "Template";
+    renderEstimateTemplateForm();
+  } catch(ex) {
+    body.innerHTML = '<div style="padding:20px;color:var(--red);text-align:center;">' +
+      'Error loading template: ' + (ex.message || ex) + '</div>';
+  }
+}
+
+function renderEstimateTemplateForm() {
+  var t = templateState.current;
+  if (!t) return;
+
+  var headerSection =
+    '<div>' +
+      '<label class="field-lbl">Template Name</label>' +
+      '<input type="text" class="field-inp" id="tmpl-name" value="' + (t.name || "").replace(/"/g, "&quot;") +
+        '" oninput="templateState.current.name=this.value;" />' +
+    '</div>' +
+    '<div>' +
+      '<label class="field-lbl">Description</label>' +
+      '<textarea class="field-inp" id="tmpl-desc" rows="2" placeholder="Optional notes" ' +
+        'oninput="templateState.current.description=this.value;" ' +
+        'style="resize:vertical;min-height:48px;font-family:inherit;">' +
+        (t.description || "").replace(/</g, "&lt;") +
+      '</textarea>' +
+    '</div>' +
+    '<div>' +
+      '<label class="field-lbl">Contractor</label>' +
+      '<input type="text" class="field-inp" id="tmpl-contractor" list="tmpl-contractor-list-edit" autocomplete="off" ' +
+        'value="' + (t.contractor || "").replace(/"/g, "&quot;") + '" ' +
+        'oninput="templateState.current.contractor=this.value;" />' +
+      '<datalist id="tmpl-contractor-list-edit">' +
+        templateState.contractors.map(function(c){ return '<option value="' + c.replace(/"/g, "&quot;") + '"></option>'; }).join("") +
+      '</datalist>' +
+    '</div>' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">' +
+      '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--text);">' +
+        '<input type="checkbox" id="tmpl-active"' + (t.active ? " checked" : "") + ' ' +
+          'onchange="templateState.current.active=this.checked;" ' +
+          'style="width:16px;height:16px;cursor:pointer;" />' +
+        'Active' +
+      '</label>' +
+      '<button onclick="confirmRefreshTemplatePrices()" ' +
+        'style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-weight:600;padding:7px 12px;cursor:pointer;font-size:12px;">' +
+        '🔄 Refresh All Prices</button>' +
+    '</div>';
+
+  var metaSection =
+    '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--dim);">' +
+      (t.sourceRef ? '<div><span style="color:var(--muted);">Source:</span> ' + t.sourceRef + '</div>' : '') +
+      '<div' + (t.sourceRef ? ' style="margin-top:4px;"' : '') + '>' +
+        '<span style="color:var(--muted);">Created:</span> ' +
+        formatEstDate(t.createdDate) + (t.createdBy ? ' by ' + t.createdBy : '') +
+      '</div>' +
+    '</div>';
+
+  var linesSection = renderTemplateLines();
+
+  var actionsSection =
+    '<div style="display:flex;gap:6px;margin-top:18px;">' +
+      '<button onclick="saveTemplateChanges()" id="tmpl-save-btn" ' +
+        'style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:10px 6px;cursor:pointer;font-size:13px;flex:2;line-height:1.2;">💾 Save Changes</button>' +
+      '<button onclick="confirmDeleteTemplate()" ' +
+        'style="background:var(--red);border:none;border-radius:8px;color:#fff;font-weight:700;padding:10px 6px;cursor:pointer;font-size:13px;flex:1;line-height:1.2;">🗑 Delete</button>' +
+    '</div>' +
+    '<div style="font-size:11px;color:var(--dim);text-align:center;margin-top:8px;">' +
+      'Estimates created from this template use <b>live prices</b> from Inventory at clone time.' +
+    '</div>';
+
+  document.getElementById("estimate-template-body").innerHTML =
+    '<div style="display:flex;flex-direction:column;gap:14px;">' +
+      headerSection +
+      metaSection +
+      linesSection +
+      actionsSection +
+    '</div>';
+}
+
+function renderTemplateLines() {
+  var t = templateState.current;
+  var lines = t.lines || [];
+
+  var rowsHtml = lines.length ? lines.map(function(l, idx) {
+    var qty   = Number(l.quantity) || 0;
+    var cost  = Number(l.unitCostAtSave) || 0;
+    var total = qty * cost;
+    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 80px 90px 90px 28px;gap:8px;align-items:center;">' +
+      '<div style="font-weight:600;font-size:13px;padding:7px 0;overflow:hidden;text-overflow:ellipsis;">' + (l.itemName || "Item") + (l.uom ? ' <span style="color:var(--muted);font-weight:400;">· ' + l.uom + '</span>' : '') + '</div>' +
+      '<input type="number" step="0.01" class="field-inp" id="tmpll-qty-' + idx + '" value="' + qty +
+        '" oninput="updateTemplateLineQty(' + idx + ', this.value);" ' +
+        'style="font-size:13px;padding:7px 6px;text-align:right;width:100%;box-sizing:border-box;" placeholder="Qty" />' +
+      '<div style="text-align:right;font-size:13px;color:var(--dim);padding:7px 0;">' + fmtCurrency(cost) + '</div>' +
+      '<div id="tmpll-total-' + idx + '" style="text-align:right;font-weight:600;font-size:13px;color:var(--text);">' +
+        fmtCurrency(total) +
+      '</div>' +
+      '<button onclick="confirmRemoveTemplateLine(' + idx + ')" ' +
+        'style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>' +
+    '</div>';
+  }).join("") : '<div style="padding:14px;text-align:center;color:var(--dim);background:var(--navy-lt);border-radius:8px;border:1px dashed var(--border);">No items yet</div>';
+
+  var total = lines.reduce(function(s, l) {
+    return s + (Number(l.quantity) || 0) * (Number(l.unitCostAtSave) || 0);
+  }, 0);
+
+  // Templates only support inventory items by design — Misc is greyed/excluded.
+  var addButtons =
+    '<div style="display:flex;gap:8px;margin-top:8px;">' +
+      '<button onclick="openTemplateItemPicker()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">+ Add Item</button>' +
+    '</div>';
+
+  return '<div id="tmpl-lines-block">' +
+    '<label class="field-lbl">Line Items</label>' +
+    '<div id="tmpl-lines-rows" style="display:flex;flex-direction:column;gap:6px;">' + rowsHtml + '</div>' +
+    addButtons +
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:10px 12px;background:var(--navy-lt);border-radius:8px;border:1px solid var(--border);">' +
+      '<span style="font-weight:600;color:var(--dim);font-size:13px;">Total at Save</span>' +
+      '<span id="tmpl-subtotal" style="font-weight:700;font-size:16px;color:var(--text);">' + fmtCurrency(total) + '</span>' +
+    '</div>' +
+  '</div>';
+}
+
+function refreshTemplateLinesBlock() {
+  var block = document.getElementById("tmpl-lines-block");
+  if (!block) return;
+  block.outerHTML = renderTemplateLines();
+}
+
+function updateTemplateLineQty(idx, raw) {
+  var t = templateState.current;
+  if (!t || !t.lines || !t.lines[idx]) return;
+  var line = t.lines[idx];
+  var qty  = parseFloat(raw);
+  if (isNaN(qty)) qty = 0;
+  line.quantity = qty;
+  // Mark dirty for batched Save Changes
+  if (line.id) {
+    dirtyTemplateLines[line.id] = dirtyTemplateLines[line.id] || {};
+    dirtyTemplateLines[line.id].qty = qty;
+  }
+  // Update the visible totals in-place to preserve the input cursor
+  var cost = Number(line.unitCostAtSave) || 0;
+  var lineTotalEl = document.getElementById("tmpll-total-" + idx);
+  if (lineTotalEl) lineTotalEl.textContent = fmtCurrency(qty * cost);
+  var subEl = document.getElementById("tmpl-subtotal");
+  if (subEl) {
+    var sub = t.lines.reduce(function(s, l) {
+      return s + (Number(l.quantity) || 0) * (Number(l.unitCostAtSave) || 0);
+    }, 0);
+    subEl.textContent = fmtCurrency(sub);
+  }
+}
+
+function confirmRemoveTemplateLine(idx) {
+  var t = templateState.current;
+  if (!t || !t.lines || !t.lines[idx]) return;
+  var line = t.lines[idx];
+  if (!confirm("Remove " + (line.itemName || "this line") + " from the template?")) return;
+  if (line.id) {
+    apiPost({
+      action:     "estimateTemplateLineDelete",
+      lineId:     line.id,
+      templateId: t.id
+    }).then(function() {
+      delete dirtyTemplateLines[line.id];
+      t.lines.splice(idx, 1);
+      refreshTemplateLinesBlock();
+      showToast("Line removed");
+    }).catch(function(ex) {
+      showToast("Remove failed: " + (ex.message || ex), true);
+    });
+  } else {
+    // Local-only line (shouldn't happen in normal flow, but safe)
+    t.lines.splice(idx, 1);
+    refreshTemplateLinesBlock();
+  }
+}
+
+// ── TEMPLATE ITEM PICKER (overlay) ────────────────────────
+function openTemplateItemPicker() {
+  var existing = document.getElementById("tmpl-item-picker");
+  if (existing) existing.remove();
+
+  var ov = document.createElement("div");
+  ov.id = "tmpl-item-picker";
+  ov.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;";
+  ov.innerHTML =
+    '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:480px;max-height:80vh;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);">' +
+        '<h3 style="margin:0;font-size:15px;color:var(--text);">Add Item to Template</h3>' +
+        '<button onclick="closeTemplateItemPicker()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
+      '</div>' +
+      '<div style="padding:12px 14px;border-bottom:1px solid var(--border);">' +
+        '<input type="text" id="tmpl-item-search-inp" class="field-inp" placeholder="Search items…" autocomplete="off" oninput="onTemplateItemSearch()" />' +
+      '</div>' +
+      '<div id="tmpl-item-results" style="flex:1;overflow-y:auto;padding:8px;"></div>' +
+    '</div>';
+  document.body.appendChild(ov);
+  setTimeout(function() {
+    var inp = document.getElementById("tmpl-item-search-inp");
+    if (inp) inp.focus();
+    renderTemplateItemResults("");
+  }, 50);
+}
+
+function closeTemplateItemPicker() {
+  var ov = document.getElementById("tmpl-item-picker");
+  if (ov) ov.remove();
+}
+
+function onTemplateItemSearch() {
+  var q = searchNorm(document.getElementById("tmpl-item-search-inp")?.value || "").trim();
+  renderTemplateItemResults(q);
+}
+
+function renderTemplateItemResults(q) {
+  var results = document.getElementById("tmpl-item-results");
+  if (!results) return;
+  var items = q
+    ? allItems.filter(function(i) { return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); })
+    : allItems.slice(0);
+  items = items.slice(0, 50);
+
+  if (!items.length) {
+    results.innerHTML = '<div style="padding:20px;text-align:center;color:var(--dim);">No items found</div>';
+    return;
+  }
+
+  results.innerHTML = items.map(function(i) {
+    var costStr = i.cost > 0 ? fmtCurrency(i.cost) : "—";
+    return '<div onclick="addItemToTemplate(\'' + i.id + '\')" ' +
+      'style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;" ' +
+      'onmouseover="this.style.background=\'var(--navy-lt)\';" onmouseout="this.style.background=\'transparent\';">' +
+      '<div style="flex:1;min-width:0;">' +
+        '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + i.name + '</div>' +
+        '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + [i.cat, i.uom].filter(Boolean).join(" · ") + '</div>' +
+      '</div>' +
+      '<div style="font-size:13px;color:var(--text);font-weight:600;text-align:right;">' + costStr + '</div>' +
+    '</div>';
+  }).join("");
+}
+
+async function addItemToTemplate(itemId) {
+  var t = templateState.current;
+  if (!t || !t.id) return;
+  closeTemplateItemPicker();
+  try {
+    var d = await apiPost({
+      action:     "estimateTemplateLineUpsert",
+      templateId: t.id,
+      itemId:     itemId,
+      quantity:   1
+    });
+    // Pull the item details from the in-memory cache for instant render;
+    // the snapshot cost is whatever the backend just locked in.
+    var item = allItems.find(function(i){ return i.id === itemId; });
+    var snap = item ? Number(item.cost || 0) : 0;
+    t.lines = t.lines || [];
+    t.lines.push({
+      id:               d.lineId,
+      itemId:           itemId,
+      itemName:         item ? item.name : "",
+      uom:              item ? item.uom : "",
+      wireFtPerLb:      item ? Number(item.wireFtPerLb || 0) : 0,
+      quantity:         1,
+      unitCostAtSave:   snap,
+      lineTotalAtSave:  snap,
+      notes:            ""
+    });
+    refreshTemplateLinesBlock();
+    showToast("Item added");
+  } catch(ex) {
+    showToast("Add failed: " + (ex.message || ex), true);
+  }
+}
+
+// ── SAVE TEMPLATE CHANGES (header + dirty line qtys) ──────
+async function saveTemplateChanges() {
+  var t = templateState.current;
+  if (!t || !t.id) return;
+  var btn = document.getElementById("tmpl-save-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+  try {
+    // Header update — only send fields that actually changed so the backend
+    // doesn't needlessly rewrite Line Title on every save.
+    var headerPayload = { action: "estimateTemplateUpdate", templateId: t.id };
+    if ((t.name || "")        !== (t._origName       || "")) headerPayload.templateName = t.name || "";
+    if ((t.description || "") !== (t._origDesc       || "")) headerPayload.description  = t.description || "";
+    if ((t.contractor || "")  !== (t._origContractor || "")) headerPayload.contractor   = t.contractor || "";
+    if (!!t.active            !== !!t._origActive)            headerPayload.active       = !!t.active;
+    var headerKeys = Object.keys(headerPayload).filter(function(k){ return k !== "action" && k !== "templateId"; });
+    if (headerKeys.length) {
+      await apiPost(headerPayload);
+    }
+    // Dirty line qtys — fire in parallel
+    var dirtyIds = Object.keys(dirtyTemplateLines);
+    if (dirtyIds.length) {
+      await Promise.all(dirtyIds.map(function(lineId) {
+        var d = dirtyTemplateLines[lineId];
+        return apiPost({
+          action:     "estimateTemplateLineUpsert",
+          templateId: t.id,
+          lineId:     lineId,
+          quantity:   d.qty !== undefined ? d.qty : undefined,
+          notes:      d.notes
+        });
+      }));
+      dirtyTemplateLines = {};
+    }
+    showToast("✓ Template saved");
+    templateState.current = null;
+    await goEstimateTemplates();
+  } catch(ex) {
+    showToast("Save failed: " + (ex.message || ex), true);
+    if (btn) { btn.disabled = false; btn.textContent = "💾 Save Changes"; }
+  }
+}
+
+function confirmDeleteTemplate() {
+  var t = templateState.current;
+  if (!t || !t.id) return;
+  if (!confirm("Delete this template? This cannot be undone.")) return;
+  doDeleteTemplate(t.id);
+}
+
+async function doDeleteTemplate(id) {
+  try {
+    await apiPost({ action: "estimateTemplateDelete", templateId: id });
+    showToast("Template deleted");
+    templateState.current = null;
+    await goEstimateTemplates();
+  } catch(ex) {
+    showToast("Delete failed: " + (ex.message || ex), true);
+  }
+}
+
+function confirmRefreshTemplatePrices() {
+  var t = templateState.current;
+  if (!t || !t.id) return;
+  if (!confirm("Refresh all line prices to current Default Unit Cost from Inventory? Existing quantities are kept.")) return;
+  doRefreshTemplatePrices();
+}
+
+async function doRefreshTemplatePrices() {
+  var t = templateState.current;
+  if (!t || !t.id) return;
+  try {
+    var d = await apiPost({ action: "refreshTemplatePrices", templateId: t.id });
+    showToast("✓ Prices refreshed (" + (d.lineCount || 0) + " line" + (d.lineCount === 1 ? "" : "s") + ")");
+    // Reload to pull fresh snapshots
+    await openEstimateTemplate(t.id);
+  } catch(ex) {
+    showToast("Refresh failed: " + (ex.message || ex), true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// NEW ESTIMATE — Blank or From Template chooser
+// ═══════════════════════════════════════════════════════════
+function openNewEstimateChooser() {
+  closeNewEstimateChooser();
+  var ov = document.createElement("div");
+  ov.id = "new-est-chooser";
+  ov.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;";
+  ov.innerHTML =
+    '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:380px;padding:18px;">' +
+      '<h3 style="margin:0 0 14px 0;font-size:16px;color:var(--text);text-align:center;">New Estimate</h3>' +
+      '<p style="margin:0 0 16px 0;font-size:13px;color:var(--dim);text-align:center;">Start blank or from a saved template?</p>' +
+      '<div style="display:flex;flex-direction:column;gap:10px;">' +
+        '<button onclick="closeNewEstimateChooser(); goEstimateNew();" ' +
+          'style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:14px;cursor:pointer;font-size:14px;">📝 Start Blank</button>' +
+        '<button onclick="closeNewEstimateChooser(); openTemplatePicker();" ' +
+          'style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-weight:700;padding:14px;cursor:pointer;font-size:14px;">📋 From Template</button>' +
+        '<button onclick="closeNewEstimateChooser();" ' +
+          'style="background:none;border:none;color:var(--dim);padding:8px;cursor:pointer;font-size:13px;">Cancel</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(ov);
+}
+
+function closeNewEstimateChooser() {
+  var ov = document.getElementById("new-est-chooser");
+  if (ov) ov.remove();
+}
+
+// ── FROM-TEMPLATE PICKER (job → template, two stages) ────
+var templatePickerState = {
+  stage:            "job",   // "job" | "template"
+  pickedJob:        null,
+  jobSearch:        "",
+  tmplSearch:       "",
+  showAllTemplates: false,
+  templates:        []       // active templates loaded once at modal open
+};
+
+async function openTemplatePicker() {
+  templatePickerState.stage            = "job";
+  templatePickerState.pickedJob        = null;
+  templatePickerState.jobSearch        = "";
+  templatePickerState.tmplSearch       = "";
+  templatePickerState.showAllTemplates = false;
+
+  // Ensure jobs (with contractor) and templates are loaded in parallel.
+  // We always pre-load active templates so step 2 is instant.
+  var p1 = (!estimateState.estimatingJobs.length)
+    ? apiGet("estimatingJobs").then(function(d){ estimateState.estimatingJobs = d.jobs || []; }).catch(function(){})
+    : Promise.resolve();
+  var p2 = apiGet("estimateTemplatesList", { activeOnly: "1" })
+    .then(function(d){ templatePickerState.templates = d.templates || []; })
+    .catch(function(){ templatePickerState.templates = []; });
+
+  // Open the modal immediately with a loading indicator on stage 1
+  renderTemplatePicker();
+  await Promise.all([p1, p2]);
+  // Re-render once data is in
+  renderTemplatePicker();
+}
+
+function closeTemplatePicker() {
+  var ov = document.getElementById("tmpl-picker");
+  if (ov) ov.remove();
+}
+
+function renderTemplatePicker() {
+  var existing = document.getElementById("tmpl-picker");
+  if (existing) existing.remove();
+
+  var ov = document.createElement("div");
+  ov.id = "tmpl-picker";
+  ov.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;";
+
+  if (templatePickerState.stage === "job") {
+    ov.innerHTML = renderTemplatePickerJobStage();
+  } else {
+    ov.innerHTML = renderTemplatePickerTemplateStage();
+  }
+  document.body.appendChild(ov);
+  setTimeout(function() {
+    var inp = document.getElementById("tmplp-search");
+    if (inp) inp.focus();
+  }, 50);
+}
+
+function renderTemplatePickerJobStage() {
+  var jobs = estimateState.estimatingJobs || [];
+  var q = (templatePickerState.jobSearch || "").trim().toLowerCase();
+  if (q) {
+    jobs = jobs.filter(function(j){ return (j.name || "").toLowerCase().includes(q); });
+  }
+  jobs = jobs.slice(0, 50);
+  var rowsHtml = jobs.length
+    ? jobs.map(function(j) {
+        var contractorLine = j.contractor
+          ? '<div style="font-size:11px;color:var(--gold);margin-top:2px;">' + j.contractor + '</div>'
+          : '';
+        var statusBadge = j.status
+          ? '<span style="display:inline-block;background:var(--navy);color:var(--dim);font-size:10px;font-weight:600;padding:2px 7px;border-radius:8px;margin-left:6px;">' + j.status + '</span>'
+          : '';
+        return '<div onclick="pickJobForTemplatePicker(\'' + j.id + '\')" ' +
+          'style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);" ' +
+          'onmouseover="this.style.background=\'var(--navy-lt)\';" onmouseout="this.style.background=\'transparent\';">' +
+          '<div style="font-size:13px;color:var(--text);">' + (j.name || "(unnamed)") + statusBadge + '</div>' +
+          contractorLine +
+        '</div>';
+      }).join("")
+    : '<div style="padding:20px;text-align:center;color:var(--dim);">' +
+        ((estimateState.estimatingJobs || []).length === 0 ? 'Loading…' : 'No jobs match.') +
+      '</div>';
+
+  return '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:480px;max-height:80vh;display:flex;flex-direction:column;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);">' +
+      '<h3 style="margin:0;font-size:15px;color:var(--text);">From Template — Step 1: Pick a Job</h3>' +
+      '<button onclick="closeTemplatePicker()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
+    '</div>' +
+    '<div style="padding:12px 14px;border-bottom:1px solid var(--border);">' +
+      '<input type="text" id="tmplp-search" class="field-inp" placeholder="Search jobs…" autocomplete="off" ' +
+        'value="' + (templatePickerState.jobSearch || "").replace(/"/g, "&quot;") + '" ' +
+        'oninput="onTmplPickerJobSearch(this.value);" />' +
+    '</div>' +
+    '<div id="tmplp-results" style="flex:1;overflow-y:auto;">' + rowsHtml + '</div>' +
+  '</div>';
+}
+
+function renderTemplatePickerTemplateStage() {
+  var job = templatePickerState.pickedJob;
+  var all = templatePickerState.templates || [];
+  var jobC = (job && job.contractor || "").trim().toLowerCase();
+  var filtered = templatePickerState.showAllTemplates || !jobC
+    ? all
+    : all.filter(function(t){ return (t.contractor || "").trim().toLowerCase() === jobC; });
+
+  var q = (templatePickerState.tmplSearch || "").trim().toLowerCase();
+  if (q) {
+    filtered = filtered.filter(function(t) {
+      return (t.name || "").toLowerCase().includes(q)
+          || (t.contractor || "").toLowerCase().includes(q);
+    });
+  }
+  filtered = filtered.slice(0, 50);
+
+  var jobLine =
+    '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--dim);margin-bottom:8px;">' +
+      '<span style="color:var(--muted);">Job:</span> ' + (job ? job.name : "—") +
+      (job && job.contractor ? ' <span style="color:var(--gold);">· ' + job.contractor + '</span>' : '') +
+    '</div>';
+
+  var toggleHtml = jobC
+    ? '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--text);">' +
+        '<input type="checkbox"' + (templatePickerState.showAllTemplates ? " checked" : "") + ' ' +
+          'onchange="templatePickerState.showAllTemplates=this.checked; renderTemplatePicker();" ' +
+          'style="cursor:pointer;" />' +
+        'Show all templates' +
+      '</label>'
+    : '';
+
+  var rowsHtml = filtered.length
+    ? filtered.map(function(t) {
+        var contractorLine = t.contractor
+          ? '<div style="font-size:11px;color:var(--gold);margin-top:2px;">' + t.contractor + '</div>'
+          : '';
+        return '<div onclick="pickTemplateForNewEstimate(\'' + t.id + '\')" ' +
+          'style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;" ' +
+          'onmouseover="this.style.background=\'var(--navy-lt)\';" onmouseout="this.style.background=\'transparent\';">' +
+          '<div style="flex:1;min-width:0;">' +
+            '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + (t.name || "(unnamed)") + '</div>' +
+            contractorLine +
+            '<div style="font-size:11px;color:var(--dim);margin-top:2px;">' + (t.lineCount || 0) + ' item' + (t.lineCount === 1 ? '' : 's') + ' · at save ' + fmtCurrency(t.totalAtSave || 0) + '</div>' +
+          '</div>' +
+        '</div>';
+      }).join("")
+    : '<div style="padding:20px;text-align:center;color:var(--dim);">' +
+        (jobC && !templatePickerState.showAllTemplates
+          ? 'No active templates for ' + (job.contractor || 'this contractor') + '. Toggle <b>Show all templates</b> to see others.'
+          : 'No active templates yet.') +
+      '</div>';
+
+  return '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:480px;max-height:80vh;display:flex;flex-direction:column;">' +
+    '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);">' +
+      '<div style="display:flex;align-items:center;gap:8px;">' +
+        '<button onclick="templatePickerState.stage=\'job\'; renderTemplatePicker();" style="background:none;border:none;color:var(--gold);font-size:18px;cursor:pointer;line-height:1;padding:0;">‹</button>' +
+        '<h3 style="margin:0;font-size:15px;color:var(--text);">Step 2: Pick a Template</h3>' +
+      '</div>' +
+      '<button onclick="closeTemplatePicker()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
+    '</div>' +
+    '<div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">' +
+      jobLine +
+      '<input type="text" id="tmplp-search" class="field-inp" placeholder="Search templates…" autocomplete="off" ' +
+        'value="' + (templatePickerState.tmplSearch || "").replace(/"/g, "&quot;") + '" ' +
+        'oninput="onTmplPickerTemplateSearch(this.value);" />' +
+      toggleHtml +
+    '</div>' +
+    '<div id="tmplp-results" style="flex:1;overflow-y:auto;">' + rowsHtml + '</div>' +
+  '</div>';
+}
+
+function onTmplPickerJobSearch(val) {
+  templatePickerState.jobSearch = val;
+  // Update results in place to preserve search input focus
+  var holder = document.getElementById("tmplp-results");
+  if (holder) {
+    var jobs = (estimateState.estimatingJobs || []).slice();
+    var q = (val || "").trim().toLowerCase();
+    if (q) jobs = jobs.filter(function(j){ return (j.name || "").toLowerCase().includes(q); });
+    jobs = jobs.slice(0, 50);
+    holder.innerHTML = jobs.length
+      ? jobs.map(function(j) {
+          var contractorLine = j.contractor
+            ? '<div style="font-size:11px;color:var(--gold);margin-top:2px;">' + j.contractor + '</div>'
+            : '';
+          var statusBadge = j.status
+            ? '<span style="display:inline-block;background:var(--navy);color:var(--dim);font-size:10px;font-weight:600;padding:2px 7px;border-radius:8px;margin-left:6px;">' + j.status + '</span>'
+            : '';
+          return '<div onclick="pickJobForTemplatePicker(\'' + j.id + '\')" ' +
+            'style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);" ' +
+            'onmouseover="this.style.background=\'var(--navy-lt)\';" onmouseout="this.style.background=\'transparent\';">' +
+            '<div style="font-size:13px;color:var(--text);">' + (j.name || "(unnamed)") + statusBadge + '</div>' +
+            contractorLine +
+          '</div>';
+        }).join("")
+      : '<div style="padding:20px;text-align:center;color:var(--dim);">No jobs match.</div>';
+  }
+}
+
+function onTmplPickerTemplateSearch(val) {
+  templatePickerState.tmplSearch = val;
+  // Re-render template stage to apply filter (cheap — list is small)
+  renderTemplatePicker();
+  // Restore the search box value + focus since renderTemplatePicker re-creates it
+  var inp = document.getElementById("tmplp-search");
+  if (inp) {
+    inp.value = val;
+    inp.focus();
+    inp.setSelectionRange(val.length, val.length);
+  }
+}
+
+function pickJobForTemplatePicker(id) {
+  var j = (estimateState.estimatingJobs || []).find(function(x){ return x.id === id; });
+  if (!j) return;
+  templatePickerState.pickedJob = j;
+  templatePickerState.stage     = "template";
+  templatePickerState.tmplSearch = "";
+  renderTemplatePicker();
+}
+
+async function pickTemplateForNewEstimate(templateId) {
+  var job = templatePickerState.pickedJob;
+  if (!job) return;
+  closeTemplatePicker();
+  // Show a loading toast since the clone may take a few seconds for large templates
+  showToast("Creating estimate…");
+  try {
+    var d = await apiPost({
+      action:     "createEstimateFromTemplate",
+      templateId: templateId,
+      jobId:      job.id,
+      jobName:    job.name,
+      createdBy:  currentUser ? currentUser.name : ""
+    });
+    showToast("✓ Estimate created from template");
+    await openEstimate(d.estimateId);
+  } catch(ex) {
+    showToast("Create failed: " + (ex.message || ex), true);
   }
 }
 

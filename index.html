@@ -7355,7 +7355,6 @@ rick@northeasternelec.com`
 
   function _newEstFieldsAreDirty() {
     return [
-      $("newEstName")?.value,
       $("newEstBase")?.value,
       $("newEstLabor")?.value,
       $("newEstMaterial")?.value,
@@ -7378,7 +7377,6 @@ rick@northeasternelec.com`
   function _newEstApplyTemplate(t) {
     // Only triggers when picking from the dropdown. Caller has already
     // resolved the confirm-on-overwrite dialog if needed.
-    $("newEstName").value     = t.name || "";
     $("newEstBase").value     = t.basePrice          != null ? t.basePrice          : "";
     $("newEstLabor").value    = t.defaultLaborHours  != null ? t.defaultLaborHours  : "";
     $("newEstMaterial").value = t.defaultMaterialCost!= null ? t.defaultMaterialCost: "";
@@ -7391,7 +7389,6 @@ rick@northeasternelec.com`
     _newEstTemplates = [];
 
     // Reset form
-    $("newEstName").value     = "";
     $("newEstBase").value     = "";
     $("newEstLabor").value    = "";
     $("newEstMaterial").value = "";
@@ -7453,19 +7450,11 @@ rick@northeasternelec.com`
     const btn = $("newEstSubmitBtn");
     const msg = $("newEstMsg");
 
-    const name        = ($("newEstName").value || "").trim();
     const baseAmount  = $("newEstBase").value;
     const laborHours  = $("newEstLabor").value;
     const materialCost= $("newEstMaterial").value;
     const notes       = $("newEstNotes").value || "";
     const sourceId    = $("newEstTemplate").value || null;
-
-    if (!name) {
-      msg.textContent = "Estimate Name is required.";
-      msg.style.color = "var(--red)";
-      msg.style.display = "block";
-      return;
-    }
 
     btn.disabled = true;
     btn.textContent = "Creating…";
@@ -7474,7 +7463,6 @@ rick@northeasternelec.com`
     try {
       const res = await apiPost("createJobEstimate", {
         jobId:            _newEstJob.id,
-        name,
         baseAmount,
         laborHours,
         materialCost,
@@ -9689,11 +9677,6 @@ rick@northeasternelec.com`
           <option value="">— Loading templates… —</option>
         </select>
         <div id="newEstTemplateHint" style="font-size:11px; color:var(--muted); margin-top:5px;"></div>
-      </div>
-
-      <div class="sl-field">
-        <label>Estimate Name</label>
-        <input id="newEstName" type="text" class="edit-input" placeholder="e.g. 2 Barn Setup" />
       </div>
 
       <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:10px;">

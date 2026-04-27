@@ -749,12 +749,15 @@ async function handleEstimateTemplates(params) {
 // template seeded the values; the values themselves are independent
 // scalars, so editing the template later does not change this estimate.
 async function handleCreateJobEstimate(body) {
-  const { jobId, name, baseAmount, laborHours, materialCost, notes, sourceTemplateId, estimateDate } = body || {};
+  const { jobId, baseAmount, laborHours, materialCost, notes, sourceTemplateId, estimateDate } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
+  // NOTE: Estimate Name (fldneXJv6ia3TIPj6) is a formula field on the Job
+  // Estimates table — Airtable computes it automatically and rejects writes.
+  // The other formulas on this table (Estimated Labor Cost, Calculated
+  // Estimated Total) are also skipped here. Only user-editable fields below.
   const fields = {};
   fields["Job"] = [jobId];
-  fields["Estimate Name"] = (name && String(name).trim()) || "Estimate";
   if (estimateDate) fields["Estimate Date"] = estimateDate;
   if (baseAmount   !== undefined && baseAmount   !== null && baseAmount   !== "") fields["Actual Estimate Sent"]    = Number(baseAmount);
   if (laborHours   !== undefined && laborHours   !== null && laborHours   !== "") fields["Estimated Labor Hours"]   = Number(laborHours);

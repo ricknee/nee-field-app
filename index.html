@@ -1079,6 +1079,10 @@
     .ar-qf-btn:hover { background: var(--accent-glow); border-color: var(--accent); }
     .ar-qf-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
 
+    .newEstTypePill { background: var(--panel-2); color: var(--text); border: 1px solid var(--line-2); border-radius: 16px; padding: 5px 12px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; }
+    .newEstTypePill:hover { background: var(--accent-glow); border-color: var(--accent); }
+    .newEstTypePill.active { background: var(--accent); color: white; border-color: var(--accent); }
+
     .ar-filter-row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 10px; margin-bottom: 14px; align-items: end; }
     .ar-filter-row label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); display: block; margin-bottom: 4px; }
     .ar-filter-row input, .ar-filter-row select { width: 100%; padding: 7px 10px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 13px; font-family: inherit; }
@@ -7676,6 +7680,7 @@ rick@northeasternelec.com`
 
   let _newEstJob = null;
   let _newEstTemplates = [];
+  let _newEstType = "Original";
 
   function _newEstFieldsAreDirty() {
     return [
@@ -7698,6 +7703,17 @@ rick@northeasternelec.com`
     return parts.join("\n\n");
   }
 
+  // Pill-group selector for the Estimate Type singleSelect on Job Estimates.
+  // Wired via inline onclick on each pill. Stores the choice in _newEstType
+  // (read by submitNewEstimate) and toggles .active so the selected pill
+  // highlights and the others mute.
+  window._newEstSetType = function(val) {
+    _newEstType = val;
+    document.querySelectorAll("#newEstTypeGroup .newEstTypePill").forEach(b => {
+      b.classList.toggle("active", b.dataset.val === val);
+    });
+  };
+
   function _newEstApplyTemplate(t) {
     // Only triggers when picking from the dropdown. Caller has already
     // resolved the confirm-on-overwrite dialog if needed.
@@ -7717,6 +7733,7 @@ rick@northeasternelec.com`
     $("newEstLabor").value    = "";
     $("newEstMaterial").value = "";
     $("newEstNotes").value    = "";
+    _newEstSetType("Original");
     $("newEstMsg").style.display = "none";
     const sel = $("newEstTemplate");
     sel.innerHTML = `<option value="">— Loading templates… —</option>`;
@@ -7791,6 +7808,7 @@ rick@northeasternelec.com`
         laborHours,
         materialCost,
         notes,
+        estimateType:     _newEstType,
         sourceTemplateId: sourceId,
         estimateDate:     new Date().toISOString().slice(0,10)
       });
@@ -10171,6 +10189,16 @@ rick@northeasternelec.com`
     </div>
     <div class="sl-modal-body">
       <div id="newEstJobLabel" style="font-size:12px; color:var(--muted); margin-bottom:14px;"></div>
+
+      <div class="sl-field" style="margin-bottom:16px;">
+        <label>Estimate Type</label>
+        <div id="newEstTypeGroup" role="group" style="display:flex; flex-wrap:wrap; gap:6px; padding:4px 0;">
+          <button type="button" class="newEstTypePill active" data-val="Original"     onclick="_newEstSetType(this.dataset.val)">Original</button>
+          <button type="button" class="newEstTypePill"        data-val="Addendum"     onclick="_newEstSetType(this.dataset.val)">Addendum</button>
+          <button type="button" class="newEstTypePill"        data-val="Change Order" onclick="_newEstSetType(this.dataset.val)">Change Order</button>
+          <button type="button" class="newEstTypePill"        data-val="Extra's"      onclick="_newEstSetType(this.dataset.val)">Extra's</button>
+        </div>
+      </div>
 
       <div class="sl-field" style="margin-bottom:16px;">
         <label>Load Template</label>

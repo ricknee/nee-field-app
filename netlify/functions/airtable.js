@@ -771,7 +771,7 @@ async function handleEstimateTemplates(params) {
 // template seeded the values; the values themselves are independent
 // scalars, so editing the template later does not change this estimate.
 async function handleCreateJobEstimate(body) {
-  const { jobId, baseAmount, laborHours, materialCost, notes, sourceTemplateId, estimateDate } = body || {};
+  const { jobId, baseAmount, laborHours, materialCost, notes, estimateType, sourceTemplateId, estimateDate } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   // NOTE: Estimate Name (fldneXJv6ia3TIPj6) is a formula field on the Job
@@ -785,11 +785,12 @@ async function handleCreateJobEstimate(body) {
   // filtered out of the Est. GP estimates view. Default to "Draft" — the
   // starting state used by existing records.
   fields["Status"] = "Draft";
-  // Estimate Type (fld8rcQ3Ni2P1AbUR, singleSelect) is currently populated
-  // by an Airtable schema-level default of "Original". Setting it
-  // explicitly here so the behavior doesn't silently change if that
-  // schema default is ever removed.
-  fields["Estimate Type"] = "Original";
+  // Estimate Type (fld8rcQ3Ni2P1AbUR, singleSelect). User-selected in the
+  // New Job Estimate modal pill group; whitelisted here against the four
+  // valid options so a stray client value can't trip Airtable's typecast,
+  // with "Original" as the fallback for missing/unrecognized input.
+  const ESTIMATE_TYPE_OPTS = ["Original", "Addendum", "Change Order", "Extra's"];
+  fields["Estimate Type"] = ESTIMATE_TYPE_OPTS.includes(estimateType) ? estimateType : "Original";
   if (estimateDate) fields["Estimate Date"] = estimateDate;
   if (baseAmount   !== undefined && baseAmount   !== null && baseAmount   !== "") fields["Actual Estimate Sent"]    = Number(baseAmount);
   if (laborHours   !== undefined && laborHours   !== null && laborHours   !== "") fields["Estimated Labor Hours"]   = Number(laborHours);

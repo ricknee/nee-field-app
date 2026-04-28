@@ -1479,20 +1479,17 @@ function addToCart() {
 
   var isMisc = selectedItem.name.toLowerCase().indexOf("misc") !== -1;
   var desc   = isMisc ? (document.getElementById("item-desc")?.value.trim() || "") : "";
-  var existing = isMisc ? null : cart.find(function(c){ return c.itemId === selectedItem.id; });
-  if (existing) {
-    existing.qty += qty;
-  } else {
-    cart.push({
-      itemId:   selectedItem.id,
-      itemName: selectedItem.name + (desc ? " — " + desc : ""),
-      uom:      selectedItem.uom,
-      cost:     selectedItem.cost,
-      qty:      qty,
-      notes:    desc,
-      cartKey:  Date.now() + Math.random()
-    });
-  }
+  // Each Add to Cart click is its own row. Same-item rows are combined on
+  // submit by (itemId, uom, notes) — see submitCart.
+  cart.push({
+    itemId:   selectedItem.id,
+    itemName: selectedItem.name + (desc ? " — " + desc : ""),
+    uom:      selectedItem.uom,
+    cost:     selectedItem.cost,
+    qty:      qty,
+    notes:    desc,
+    cartKey:  Date.now() + Math.random()
+  });
 
   renderCart();
   clearItem();
@@ -1605,10 +1602,27 @@ async function submitCart() {
   // Both Return and ReturnToShop submit as Return type with negated qty.
   // The mechanical difference is only the locationId (handled above).
   var isReturnLike = (logMode === "Return" || logMode === "ReturnToShop");
-  var lines = cart.map(function(c){
+
+  // Combine same-item rows into one Airtable record. Group key is
+  // (itemId, uom, notes) — misc items with different free-text descriptions
+  // stay as separate records. JSON.stringify avoids delimiter collisions in
+  // free-text notes.
+  var groups = {};
+  var groupOrder = [];
+  cart.forEach(function(c) {
+    var key = JSON.stringify([c.itemId, c.uom || "", c.notes || ""]);
+    if (!groups[key]) {
+      groups[key] = { itemId: c.itemId, qty: 0 };
+      groupOrder.push(key);
+    }
+    groups[key].qty += c.qty;
+  });
+
+  var lines = groupOrder.map(function(k){
+    var g = groups[k];
     return {
-      itemId: c.itemId,
-      qty:    isReturnLike ? -Math.abs(c.qty) : c.qty,
+      itemId: g.itemId,
+      qty:    isReturnLike ? -Math.abs(g.qty) : g.qty,
       type:   isReturnLike ? "Return" : logMode
     };
   });

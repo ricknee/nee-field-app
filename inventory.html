@@ -118,7 +118,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .cart-item{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;}
 .cart-item:last-child{border-bottom:none;}
 .cart-item-name{flex:1;font-size:14px;font-weight:500;}
-.cart-item-qty{font-size:14px;font-weight:700;color:var(--gold);white-space:nowrap;}
+.cart-item-qty{font-size:14px;font-weight:700;color:var(--gold);white-space:nowrap;display:inline-flex;align-items:baseline;gap:1px;}
+.cart-item-qty-inp{background:transparent;border:none;color:var(--gold);font-family:inherit;font-size:14px;font-weight:700;padding:1px 2px;text-align:right;outline:none;border-radius:3px;border-bottom:1px dashed transparent;width:5ch;-webkit-appearance:none;appearance:none;}
+.cart-item-qty-inp:focus{background:rgba(232,160,32,0.10);border-bottom:1px dashed var(--gold);}
 .cart-item-del{background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:2px 6px;line-height:1;}
 .cart-item-del:active{color:var(--red);}
 .cart-total{padding:10px 14px;display:flex;justify-content:space-between;align-items:center;background:rgba(232,160,32,.08);}
@@ -1498,8 +1500,32 @@ function addToCart() {
   if (qtyEl) qtyEl.value = 1;
 }
 
-function removeFromCart(idx) {
-  cart.splice(idx, 1);
+// Cart-row × is delegated (not inline onclick) because blur-commit on the
+// qty input fires renderCart() and destroys the original button before the
+// click would dispatch — the delegated handler picks up the click on the
+// re-rendered button by cartKey.
+document.addEventListener("click", function(e){
+  var btn = e.target.closest && e.target.closest("button.cart-item-del[data-cart-key]");
+  if (!btn) return;
+  var key = btn.dataset.cartKey;
+  var idx = cart.findIndex(function(c){ return String(c.cartKey) === key; });
+  if (idx >= 0) { cart.splice(idx, 1); renderCart(); }
+});
+
+// Cart-row qty editor: Enter blurs (which fires the commit), blur commits.
+// Validation mirrors addToCart: parseFloat, must be > 0. Invalid input
+// silently reverts — the unchanged value in the row is feedback enough.
+function onCartQtyKey(e) {
+  if (e.key === "Enter") { e.preventDefault(); e.target.blur(); }
+}
+function commitCartQty(inp) {
+  var key = inp.dataset.cartKey;
+  var row = cart.find(function(c){ return String(c.cartKey) === key; });
+  if (!row) return;
+  var raw = parseFloat(inp.value);
+  if (isNaN(raw) || raw <= 0) { inp.value = row.qty; return; }
+  if (raw === row.qty) { inp.value = row.qty; return; }
+  row.qty = raw;
   renderCart();
 }
 
@@ -1518,9 +1544,12 @@ function renderCart() {
   cart.forEach(function(c, i) {
     html += '<div class="cart-item">' +
       '<div class="cart-item-name">' + c.itemName + (c.uom ? ' <span style="color:var(--muted);font-size:11px;">(' + c.uom + ')</span>' : '') + '</div>' +
-      '<div class="cart-item-qty">×' + c.qty + '</div>' +
+      '<div class="cart-item-qty">' +
+        '<span>×</span>' +
+        '<input type="text" inputmode="decimal" class="cart-item-qty-inp" data-cart-key="' + c.cartKey + '" value="' + c.qty + '" onfocus="this.select()" onkeydown="onCartQtyKey(event)" onblur="commitCartQty(this)" />' +
+      '</div>' +
       (isAdmin ? '<div style="font-size:11px;color:var(--muted);">' + fmtCurrency((c.cost||0)*c.qty) + '</div>' : '') +
-      '<button class="cart-item-del" onclick="removeFromCart(' + i + ')">×</button>' +
+      '<button class="cart-item-del" data-cart-key="' + c.cartKey + '">×</button>' +
       '</div>';
   });
 

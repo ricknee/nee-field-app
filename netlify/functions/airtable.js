@@ -158,6 +158,12 @@ function ensureEnv() {
     throw new Error("Missing env vars AIRTABLE_API_KEY or AIRTABLE_BASE_ID");
 }
 
+// Escape a literal string for safe inclusion inside an Airtable filterByFormula
+// double-quoted string. Airtable uses backslash escaping inside string literals.
+function escapeFormulaString(s) {
+  return String(s ?? "").replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
 function g(fields, fieldName) {
   const v = fields[fieldName];
   if (Array.isArray(v)) return v.join(", ");
@@ -989,8 +995,16 @@ async function handleTimeEntries(params) {
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, entries: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
-  const records = await fetchAll(TABLES.timeEntries || "Time Entries", { filter: `FIND("${jobName}", ARRAYJOIN({Job Name (Text)}))`, sortField: "Work Date", sortDir: "desc" });
-  const entries = records.map(r => { const f=r.fields||{}; return { id:r.id,workDate:f["Work Date"]||"",employee:f["Employee"]||"",class:f["Class"]||"",cityTaxes:f["City Taxes"]||"",hours:f["Hours"]??null,reviewed:f["Labor Reviewed"]===true,notes:f["Notes"]||"",duration:f["Duration (Seconds)"]??null,unbilledHours:f["Unbilled Hours"]??0,unbilledRevenue:f["Unbilled Labor Revenue $"]??0 }; });
+  // {Job Name (Text)} is a singleLineText mirror that holds "Job Name (PO suffix)"
+  // (e.g. "Jenny Ln 1 (KDJ 358)"), not a bare Job Name. So an exact-name prefilter
+  // never matches. Use the original substring prefilter as a loose superset, then
+  // enforce exact correctness in-memory by record ID — same pattern as
+  // handleGetJobInvoices.
+  const safeName = escapeFormulaString(jobName);
+  const filter = `FIND("${safeName}", ARRAYJOIN({Job Name (Text)}))`;
+  const records = await fetchAll(TABLES.timeEntries || "Time Entries", { filter, sortField: "Work Date", sortDir: "desc" });
+  const matched = records.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
+  const entries = matched.map(r => { const f=r.fields||{}; return { id:r.id,workDate:f["Work Date"]||"",employee:f["Employee"]||"",class:f["Class"]||"",cityTaxes:f["City Taxes"]||"",hours:f["Hours"]??null,reviewed:f["Labor Reviewed"]===true,notes:f["Notes"]||"",duration:f["Duration (Seconds)"]??null,unbilledHours:f["Unbilled Hours"]??0,unbilledRevenue:f["Unbilled Labor Revenue $"]??0 }; });
   return resp(200, { ok: true, entries });
 }
 
@@ -1000,7 +1014,13 @@ async function handleExpenses(params) {
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, expenses: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
-  const records = await fetchAll("Expenses", { filter: `FIND("${jobName}", ARRAYJOIN({Job}))`, sortField: "Expense Date", sortDir: "desc" });
+  // ARRAYJOIN on a linked-record field expands to the linked record's primary
+  // field (Job Name), not record IDs. Use a newline-delimited prefilter for exact
+  // name match, then verify the linked record ID in-memory to handle duplicate names.
+  const safeName = escapeFormulaString(jobName);
+  const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`;
+  const allRecords = await fetchAll("Expenses", { filter, sortField: "Expense Date", sortDir: "desc" });
+  const records = allRecords.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
   const expenses = records.map(r => {
     const f = r.fields || {};
     const vendorLookup = f["Vendor Name (from Vendor)"]; let vendor = "";

@@ -6812,13 +6812,16 @@ rick@northeasternelec.com`
       while (remaining.length > 0) {
         // Fit-or-push gate (first chunk only): if the whole row won't fit
         // here but would fit on a fresh page, page-break before drawing so
-        // we don't split a single line item across pages. Oversize rows
-        // (taller than a fresh page) fall through to the chunk-splitter.
+        // we don't split a single line item across pages. Measurement
+        // mirrors the chunk-splitter's availH check below (raw usedH vs.
+        // BOTTOM_LIMIT - y - ROW_PAD_Y*2) — using the chunkH draw-height
+        // formula here would be 4pt looser than the splitter and let rows
+        // slip through the gate that then get split anyway.
         if (isFirstChunk) {
-          const totalUsedH = segments.reduce((acc, s) => acc + segHeight(s), 0);
-          const totalRowH  = Math.max(28, totalUsedH + ROW_PAD_Y * 2 - (LINE_H - ROW_PAD_Y));
-          const freshPageRoom = BOTTOM_LIMIT - 36 - 20; // page-top y + table header advance
-          if (y + totalRowH > BOTTOM_LIMIT && totalRowH <= freshPageRoom) {
+          const totalUsedH  = segments.reduce((acc, s) => acc + segHeight(s), 0);
+          const availHHere  = BOTTOM_LIMIT - y - ROW_PAD_Y * 2;
+          const availHFresh = BOTTOM_LIMIT - 36 - 20 - ROW_PAD_Y * 2; // page-top y + header advance + padding
+          if (totalUsedH > availHHere && totalUsedH <= availHFresh) {
             doc.addPage();
             y = 36;
             drawTableHeader();

@@ -6810,6 +6810,21 @@ rick@northeasternelec.com`
       let isFirstChunk = true;
 
       while (remaining.length > 0) {
+        // Fit-or-push gate (first chunk only): if the whole row won't fit
+        // here but would fit on a fresh page, page-break before drawing so
+        // we don't split a single line item across pages. Oversize rows
+        // (taller than a fresh page) fall through to the chunk-splitter.
+        if (isFirstChunk) {
+          const totalUsedH = segments.reduce((acc, s) => acc + segHeight(s), 0);
+          const totalRowH  = Math.max(28, totalUsedH + ROW_PAD_Y * 2 - (LINE_H - ROW_PAD_Y));
+          const freshPageRoom = BOTTOM_LIMIT - 36 - 20; // page-top y + table header advance
+          if (y + totalRowH > BOTTOM_LIMIT && totalRowH <= freshPageRoom) {
+            doc.addPage();
+            y = 36;
+            drawTableHeader();
+          }
+        }
+
         // If we're already too close to the bottom, page break before trying to fit anything
         if (y + ROW_PAD_Y * 2 + LINE_H > BOTTOM_LIMIT) {
           doc.addPage();

@@ -995,12 +995,13 @@ async function handleTimeEntries(params) {
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, entries: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
-  // Server prefilter: newline-delimited exact-name match against {Job Name (Text)}.
-  // Newline cannot appear in a single-line text field, so this avoids the substring
-  // collision (e.g. "Jenny Ln 1" vs "Jenny Ln 10"). We then verify the linked Job
-  // record ID in-memory because two jobs can share an exact name.
+  // {Job Name (Text)} is a singleLineText mirror that holds "Job Name (PO suffix)"
+  // (e.g. "Jenny Ln 1 (KDJ 358)"), not a bare Job Name. So an exact-name prefilter
+  // never matches. Use the original substring prefilter as a loose superset, then
+  // enforce exact correctness in-memory by record ID — same pattern as
+  // handleGetJobInvoices.
   const safeName = escapeFormulaString(jobName);
-  const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job Name (Text)}, "\n") & "\n")`;
+  const filter = `FIND("${safeName}", ARRAYJOIN({Job Name (Text)}))`;
   const records = await fetchAll(TABLES.timeEntries || "Time Entries", { filter, sortField: "Work Date", sortDir: "desc" });
   const matched = records.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
   const entries = matched.map(r => { const f=r.fields||{}; return { id:r.id,workDate:f["Work Date"]||"",employee:f["Employee"]||"",class:f["Class"]||"",cityTaxes:f["City Taxes"]||"",hours:f["Hours"]??null,reviewed:f["Labor Reviewed"]===true,notes:f["Notes"]||"",duration:f["Duration (Seconds)"]??null,unbilledHours:f["Unbilled Hours"]??0,unbilledRevenue:f["Unbilled Labor Revenue $"]??0 }; });

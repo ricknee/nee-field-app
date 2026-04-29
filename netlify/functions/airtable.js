@@ -140,6 +140,32 @@ const TE = {
   reviewed:   "fldQn7d06doEkrGBv"
 };
 
+// Payroll Archive — Payroll Runs table
+const PR_RUNS = {
+  table:           "tbln9nU1BtFmTYMYB",
+  payPeriodEnd:    "fldYnkxwJGqMPWDwc",
+  payPeriodStart:  "fldrtqWEOB4X5WfW5",
+  generatedAt:     "fldVTolQ5UZgOiFfs",
+  generatedBy:     "fldZhS7MJMYhL89Nx",
+  totalHours:      "fld3xckEXTufGyusi",
+  totalBonus:      "fldgtUKA2FpDIP4d8",
+  pdf:             "fldSIebm2uhLkpjqD",
+  jsonPayload:     "fldVG9Fk2vpedLNMY",
+  superseded:      "fld7wDqUZ0MXCY1wP",
+  supersedes:      "fldx0Zh3XzQkjGPSL",
+  notes:           "fldBoMa33fi9rJQZR"
+};
+
+// Payroll Archive — Bonuses table
+const PR_BONUSES = {
+  table:           "tblpE3emzU3J1P5jx",
+  amount:          "flddBFqvKVTfrA2GP",
+  employee:        "fldyQ1pxZDpXfp1LE",
+  payrollRun:      "fldCxrhDaPrm5OLHb",
+  payPeriodStart:  "fldY2cETh9OZoYTij",
+  payPeriodEnd:    "fldEOOhDf4msZlrEk"
+};
+
 function resp(code, body) {
   return {
     statusCode: code,
@@ -261,17 +287,25 @@ async function handlePayrollEntries(params) {
     const jobId = Array.isArray(jobLinks) && jobLinks.length
       ? (typeof jobLinks[0] === "string" ? jobLinks[0] : jobLinks[0]?.id || null)
       : null;
+    // Pull the linked Employee rec ID alongside the text name. Used by the
+    // Payroll Archive flow to populate Bonus.Employee links by exact ID
+    // rather than name lookup (avoids collisions on shared first names).
+    const empLinks = f["Employee (Linked)"];
+    const employeeId = Array.isArray(empLinks) && empLinks.length
+      ? (typeof empLinks[0] === "string" ? empLinks[0] : empLinks[0]?.id || null)
+      : null;
     return {
-      id:        r.id,
-      employee:  f["Employee"] || "",
-      workDate:  f["Work Date"] || "",
-      duration:  f["Duration (Seconds)"] ?? 0,
-      hours:     f["Hours"] ?? 0,
-      cityTaxes: f["City Taxes"] || "A No Tax",
-      class:     f["Class"] || "",
-      jobId:     jobId,
-      jobName:   f["Job Name (Text)"] || "",
-      reviewed:  f["Labor Reviewed"] === true
+      id:         r.id,
+      employee:   f["Employee"] || "",
+      employeeId,
+      workDate:   f["Work Date"] || "",
+      duration:   f["Duration (Seconds)"] ?? 0,
+      hours:      f["Hours"] ?? 0,
+      cityTaxes:  f["City Taxes"] || "A No Tax",
+      class:      f["Class"] || "",
+      jobId:      jobId,
+      jobName:    f["Job Name (Text)"] || "",
+      reviewed:   f["Labor Reviewed"] === true
     };
   });
 
@@ -322,6 +356,190 @@ async function handleUpdateTimeEntryPayroll(body) {
     body: JSON.stringify({ fields })
   });
   return resp(200, { ok: true, updatedId: data.id });
+}
+
+// ── PAYROLL ARCHIVE: upload an attachment to an existing record ────────────
+// Airtable's content-host endpoint accepts a base64 file payload directly,
+// no public URL hosting needed. Limit is 5 MB per file, per Airtable docs.
+// The endpoint addresses by record ID alone — no table in the path.
+async function uploadAirtableAttachment(recordId, fieldIdOrName, base64, filename, contentType) {
+  ensureEnv();
+  const url = `https://content.airtable.com/v0/${AIRTABLE_BASE_ID}/${recordId}/${encodeURIComponent(fieldIdOrName)}/uploadAttachment`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${AIRTABLE_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ contentType, filename, file: base64 })
+  });
+  const text = await res.text();
+  let json = {};
+  try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
+  if (!res.ok) {
+    throw new Error(json?.error?.message || json?.error?.type || `Attachment upload failed (${res.status})`);
+  }
+  return json;
+}
+
+// ── PAYROLL ARCHIVE: find non-superseded run for a given pay period ────────
+async function handleFindMatchingPayrollRun(params) {
+  const { payPeriodStart, payPeriodEnd } = params || {};
+  if (!payPeriodStart || !payPeriodEnd) {
+    return resp(400, { ok: false, error: "Missing payPeriodStart or payPeriodEnd." });
+  }
+  const start = escapeFormulaString(payPeriodStart);
+  const end   = escapeFormulaString(payPeriodEnd);
+  const filter = `AND(IS_SAME({Pay Period Start},"${start}","day"), IS_SAME({Pay Period End},"${end}","day"), NOT({Superseded}))`;
+  const records = await fetchAll(PR_RUNS.table, {
+    filter,
+    sortField: "Generated At",
+    sortDir: "desc"
+  });
+  if (!records.length) return resp(200, { ok: true, runId: null, generatedAt: null });
+  const r = records[0];
+  return resp(200, {
+    ok: true,
+    runId: r.id,
+    generatedAt: r.fields?.["Generated At"] || null
+  });
+}
+
+// ── PAYROLL ARCHIVE: create a new Payroll Run with PDF + JSON attachments ──
+// Sequence (order matters):
+//   1. Create the Payroll Run record bare (totals, pay-period dates, supersedes link).
+//   2. Upload PDF + JSON via content.airtable.com /uploadAttachment. On any
+//      attachment failure: DELETE the run record and return the error so
+//      the user can retry from a clean slate.
+//   3. Create Bonus records, chunked in groups of 10 (Airtable batch cap).
+//   4. PATCH the prior run's Superseded flag if supersedesId was passed.
+// Bonus + supersede failures are non-fatal — we return the error in the
+// response payload so the run + PDF (the source of truth) survive.
+async function handlePayrollRunCreate(body) {
+  const {
+    payPeriodStart, payPeriodEnd, generatedBy,
+    totalHours, totalBonus,
+    pdfBase64, pdfFilename,
+    jsonBase64, jsonFilename,
+    bonuses,
+    supersedesId
+  } = body || {};
+
+  // Required-field validation
+  const missing = [];
+  if (!payPeriodStart) missing.push("payPeriodStart");
+  if (!payPeriodEnd)   missing.push("payPeriodEnd");
+  if (!generatedBy)    missing.push("generatedBy");
+  if (totalHours == null) missing.push("totalHours");
+  if (totalBonus == null) missing.push("totalBonus");
+  if (!pdfBase64)   missing.push("pdfBase64");
+  if (!pdfFilename) missing.push("pdfFilename");
+  if (!jsonBase64)  missing.push("jsonBase64");
+  if (!jsonFilename) missing.push("jsonFilename");
+  if (missing.length) return resp(400, { ok: false, error: `Missing: ${missing.join(", ")}` });
+
+  // Log decoded PDF size; warn if approaching the 5 MB Airtable cap.
+  const pdfBytes = Math.round(pdfBase64.length * 0.75);
+  console.log(`[payrollRunCreate] PDF base64 length=${pdfBase64.length} (~${Math.round(pdfBytes / 1024)} KB decoded)`);
+  if (pdfBytes > 4.5 * 1024 * 1024) {
+    console.warn(`[payrollRunCreate] PDF approaching Airtable 5MB cap: ${pdfBytes} bytes`);
+  }
+
+  // Bonus filtering: drop zero-amount entries; split resolved vs. unresolved
+  // by employeeId (frontend supplies it from the Time Entries Employee link).
+  const bonusList = Array.isArray(bonuses) ? bonuses : [];
+  const nonZero = bonusList.filter(b => Number(b?.amount) > 0);
+  const unresolvedBonuses = [];
+  const resolvedBonuses = [];
+  nonZero.forEach(b => {
+    if (typeof b.employeeId === "string" && b.employeeId.startsWith("rec")) {
+      resolvedBonuses.push(b);
+    } else {
+      unresolvedBonuses.push({ employeeName: b.employeeName || null, amount: Number(b.amount) });
+    }
+  });
+
+  // 1. Create the Payroll Run record bare
+  const runFields = {};
+  runFields[PR_RUNS.payPeriodStart] = payPeriodStart;
+  runFields[PR_RUNS.payPeriodEnd]   = payPeriodEnd;
+  runFields[PR_RUNS.generatedAt]    = new Date().toISOString();
+  runFields[PR_RUNS.generatedBy]    = String(generatedBy);
+  runFields[PR_RUNS.totalHours]     = Number(totalHours);
+  runFields[PR_RUNS.totalBonus]     = Number(totalBonus);
+  if (supersedesId && String(supersedesId).startsWith("rec")) {
+    runFields[PR_RUNS.supersedes] = [supersedesId];
+  }
+
+  const created = await atFetch(`${encodeURIComponent(PR_RUNS.table)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields: runFields, typecast: true })
+  });
+  const runId = created.id;
+
+  // 2. Upload attachments. Rollback (DELETE the partial run) if either fails.
+  try {
+    await uploadAirtableAttachment(runId, PR_RUNS.pdf,         pdfBase64,  pdfFilename,  "application/pdf");
+    await uploadAirtableAttachment(runId, PR_RUNS.jsonPayload, jsonBase64, jsonFilename, "application/json");
+  } catch (err) {
+    try {
+      await atFetch(`${encodeURIComponent(PR_RUNS.table)}/${runId}`, { method: "DELETE" });
+    } catch (delErr) {
+      console.error("[payrollRunCreate] rollback DELETE failed:", delErr);
+    }
+    return resp(500, { ok: false, error: `Attachment upload failed: ${err.message}` });
+  }
+
+  // 3. Create Bonus records, chunked at 10 per batch (Airtable cap).
+  let bonusError = null;
+  if (resolvedBonuses.length) {
+    try {
+      for (let i = 0; i < resolvedBonuses.length; i += 10) {
+        const chunk = resolvedBonuses.slice(i, i + 10);
+        const records = chunk.map(b => {
+          const f = {};
+          f[PR_BONUSES.amount]         = Number(b.amount);
+          f[PR_BONUSES.employee]       = [b.employeeId];
+          f[PR_BONUSES.payrollRun]     = [runId];
+          f[PR_BONUSES.payPeriodStart] = payPeriodStart;
+          f[PR_BONUSES.payPeriodEnd]   = payPeriodEnd;
+          return { fields: f };
+        });
+        await atFetch(`${encodeURIComponent(PR_BONUSES.table)}`, {
+          method: "POST",
+          body: JSON.stringify({ records, typecast: true })
+        });
+      }
+    } catch (err) {
+      console.error("[payrollRunCreate] bonus create failed:", err);
+      bonusError = err.message || "Bonus create failed";
+    }
+  }
+
+  // 4. Patch supersede flag on the prior run, if any.
+  let supersedeError = null;
+  if (supersedesId && String(supersedesId).startsWith("rec")) {
+    try {
+      const patchFields = {};
+      patchFields[PR_RUNS.superseded] = true;
+      await atFetch(`${encodeURIComponent(PR_RUNS.table)}/${supersedesId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields: patchFields })
+      });
+    } catch (err) {
+      console.error("[payrollRunCreate] supersede patch failed:", err);
+      supersedeError = err.message || "Supersede patch failed";
+    }
+  }
+
+  return resp(200, {
+    ok: true,
+    runId,
+    supersededId: supersedesId || null,
+    bonusError,
+    supersedeError,
+    unresolvedBonuses
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -1809,6 +2027,7 @@ export async function handler(event) {
       if (action === "expenses")           return await handleExpenses(params);
       if (action === "timeEntries")        return await handleTimeEntries(params);
       if (action === "payrollEntries")     return await handlePayrollEntries(params);
+      if (action === "findMatchingPayrollRun") return await handleFindMatchingPayrollRun(params);
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);
@@ -1835,6 +2054,7 @@ export async function handler(event) {
       if (body.action === "updateTimeEntryPayroll") return await handleUpdateTimeEntryPayroll(body);
       if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
+      if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body);
       if (body.action === "approveExpense")       return await handleApproveExpense(body);
       if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body);

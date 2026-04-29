@@ -695,6 +695,12 @@
 
     .info-box.full { grid-column: 1 / -1; }
 
+    .info-box--green  { background: rgba(76, 175, 80, 0.12); border-color: rgba(76, 175, 80, 0.35); }
+    .info-box--red    { background: rgba(244, 67, 54, 0.12); border-color: rgba(244, 67, 54, 0.35); }
+    .info-box--orange { background: rgba(255, 152, 0, 0.18); border-color: rgba(255, 152, 0, 0.35); }
+
+    #livePerfGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
     .info-label {
       font-size: 10px;
       font-weight: 700;
@@ -1652,8 +1658,6 @@
 
         <!-- ACTION BUTTONS -->
         <div class="action-buttons">
-          <a id="btnWire" href="#" target="_blank" class="action-btn wire disabled">⚡ Add Wire / THHN</a>
-          <a id="btnPipe" href="#" target="_blank" class="action-btn pipe disabled">🔧 Add Pipe</a>
           <a id="btnAddPhotos" href="#" target="_blank" class="action-btn photo-add disabled">📷 Add Photos</a>
           <a id="btnViewPhotos" href="#" target="_blank" class="action-btn photo-view disabled">🖼 View pCloud Photos</a>
           <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled">📋 Trello Card</a>
@@ -2752,8 +2756,6 @@
     }
 
     // Action Buttons
-    setActionBtn($("btnWire"), job.wireLink, "Add Wire / THHN");
-    setActionBtn($("btnPipe"), job.pipeLink, "Add Pipe");
     setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
     setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
 
@@ -3060,8 +3062,9 @@
     return Math.round(n * 100) + "%";
   }
 
-  function infoBox(label, value, full) {
-    return `<div class="info-box${full ? " full" : ""}">
+  function infoBox(label, value, full, colorClass) {
+    const cls = `info-box${full ? " full" : ""}${colorClass ? " " + colorClass : ""}`;
+    return `<div class="${cls}">
       <div class="info-label">${esc(label)}</div>
       <div class="info-value">${esc(String(value ?? "—"))}</div>
     </div>`;
@@ -3088,17 +3091,12 @@
   function renderLivePerf(job) {
     const g = $("livePerfGrid");
     g.innerHTML = [
-      infoBox("Total Revenue (Live)", fmtCurrency(job.totalRevenueLive)),
-      infoBox("Total Materials (Live)", fmtCurrency(job.totalMaterialsLive)),
-      infoBox("Total Labor Cost (Live)", fmtCurrency(job.totalLaborCostLive)),
-      infoBox("Total Wire Cost", fmtCurrency(job.totalWireCost)),
-      infoBox("Pipe Cost", fmtCurrency(job.pipeCost)),
-      infoBox("Materials In Progress", fmtCurrency(job.materialsInProgress)),
-      infoBox("Gross Profit (Live) $", fmtCurrency(job.grossProfitLiveDollar)),
-      infoBox("Gross Profit (Live) %", job.grossProfitLivePct != null ? Math.round(job.grossProfitLivePct * 100) + "%" : "—"),
-      infoBox("Workflow Status", workflowDot(job.workflowStatus)),
-      infoBox("Est. Labor Hours (from Estimates)", job.estimatedLaborHoursRollup != null ? job.estimatedLaborHoursRollup : "—"),
-      infoBox("Hours Rollup (from Time Entries)", job.hoursRollup != null ? job.hoursRollup : "—"),
+      infoBox("Total Revenue (Live)", fmtCurrency(job.totalRevenueLive), false, "info-box--green"),
+      infoBox("Total Materials (Live)", fmtCurrency(job.totalMaterialsLive), false, "info-box--red"),
+      infoBox("Total Labor Cost (Live)", fmtCurrency(job.totalLaborCostLive), false, "info-box--red"),
+      infoBox("Hours (from Time Entries)", job.hoursRollup != null ? job.hoursRollup : "—", false, "info-box--orange"),
+      infoBox("Gross Profit (Live) $", fmtCurrency(job.grossProfitLiveDollar), false, "info-box--green"),
+      infoBox("Gross Profit (Live) %", job.grossProfitLivePct != null ? Math.round(job.grossProfitLivePct * 100) + "%" : "—", false, "info-box--green"),
     ].join("");
   }
 
@@ -3114,8 +3112,6 @@
 
     $("closeoutCheckGrid").innerHTML = [
       checkBox("All Materials Reviewed?", job.allMaterialsReviewed),
-      checkBox("All Wire Reviewed?", job.allWireReviewed),
-      checkBox("All Pipe Reviewed?", job.allPipeReviewed),
       checkBox("All Expenses Reviewed?", job.allExpensesReviewed),
       checkBox("All Labor Reviewed?", job.allLaborReviewed),
     ].join("");

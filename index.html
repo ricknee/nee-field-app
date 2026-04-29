@@ -9588,9 +9588,16 @@ rick@northeasternelec.com`
     const empNames = Object.keys(empMap).sort();
     if (!empNames.length) { alert("No entries loaded — load a pay period first."); return; }
 
+    function runBuildAndArchive() {
+      const result = buildPDF(empMap, empNames);
+      if (result && result.blob) {
+        archiveAndDownloadPayroll(result.blob, result.filename, empMap, empNames);
+      }
+    }
+
     function tryBuild(attempts) {
       if (window.jspdf) {
-        buildPDF(empMap, empNames);
+        runBuildAndArchive();
       } else if (attempts > 0) {
         setTimeout(() => tryBuild(attempts - 1), 300);
       } else {
@@ -9607,10 +9614,195 @@ rick@northeasternelec.com`
       }
       tryBuild(15); // retry up to 15x × 300ms = 4.5s
     } else {
-      buildPDF(empMap, empNames);
+      runBuildAndArchive();
     }
   }
   window.generatePayrollPDF = generatePayrollPDF;
+
+  // ── PAYROLL ARCHIVE ─────────────────────────────────────────────
+  // Chunked base64 encode — apply.spread on a multi-MB Uint8Array blows
+  // the JS call stack, so chunk into 8 KB slices and concatenate.
+  function arrayBufferToBase64(buf) {
+    let binary = "";
+    const bytes = new Uint8Array(buf);
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+  function stringToBase64Utf8(s) {
+    return arrayBufferToBase64(new TextEncoder().encode(s).buffer);
+  }
+
+  function triggerBlobDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 0);
+  }
+
+  function showPayrollToast(msg, kind) {
+    // kind: "ok" | "warn"
+    let host = document.getElementById("prToast");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "prToast";
+      host.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);"
+        + "padding:12px 18px;border-radius:8px;font-size:14px;font-weight:600;"
+        + "z-index:10000;box-shadow:0 4px 14px rgba(0,0,0,0.25);max-width:90%;text-align:center;";
+      document.body.appendChild(host);
+    }
+    host.style.background = kind === "warn" ? "#fff3cd" : "#d4edda";
+    host.style.color      = kind === "warn" ? "#664d03" : "#0f5132";
+    host.style.border     = `1px solid ${kind === "warn" ? "#ffe69c" : "#a3cfbb"}`;
+    host.textContent = msg;
+    host.style.display = "block";
+    clearTimeout(host._t);
+    host._t = setTimeout(() => { host.style.display = "none"; }, 5000);
+  }
+
+  function showArchiveErrorModal(message, retryFn, blob, filename) {
+    let modal = document.getElementById("prArchiveErrorModal");
+    if (modal) modal.remove();
+    modal = document.createElement("div");
+    modal.id = "prArchiveErrorModal";
+    modal.className = "payroll-modal-backdrop";
+    modal.style.display = "flex";
+    modal.style.zIndex = "10001";
+    modal.innerHTML = `
+      <div class="payroll-modal" style="max-width:520px;">
+        <div class="payroll-modal-header">
+          <h2>⚠️ Archive Failed</h2>
+        </div>
+        <div class="payroll-modal-body">
+          <p style="margin-top:0;">The payroll PDF was built, but archiving to Airtable failed:</p>
+          <div style="background:#f8d7da;color:#842029;border:1px solid #f1aeb5;padding:10px 12px;border-radius:6px;margin:10px 0;font-size:13px;word-break:break-word;">${esc(message)}</div>
+          <p style="font-size:13px;color:#555;">You can retry the archive, or download the PDF without archiving.</p>
+          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+            <button id="prArchiveRetryBtn" class="btn btn-sm" style="background:#0d6efd;color:#fff;">Retry archive</button>
+            <button id="prArchiveDownloadOnlyBtn" class="btn btn-sm">Download PDF without archiving</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    document.getElementById("prArchiveRetryBtn").onclick = () => {
+      modal.remove();
+      retryFn();
+    };
+    document.getElementById("prArchiveDownloadOnlyBtn").onclick = () => {
+      triggerBlobDownload(blob, filename);
+      modal.remove();
+    };
+  }
+
+  // Build the JSON payload, archive to Airtable, then download the PDF.
+  // empMap/empNames are the same structures buildPDF was given so the JSON
+  // shape matches what the PDF actually rendered.
+  async function archiveAndDownloadPayroll(blob, filename, empMap, empNames) {
+    const payPeriodStart = dateStr(prWk1Start);
+    const payPeriodEnd   = dateStr(prWk2End);
+    const generatedBy    = state.user?.name || "";
+    const generatedAt    = new Date().toISOString();
+
+    // Build per-employee summary + raw entries for the JSON payload.
+    // Resolve employeeId from prEntries (handlePayrollEntries now returns it).
+    const employees = empNames.map(emp => {
+      const wk = empMap[emp] || { wk1: [], wk2: [] };
+      const allEntries = [...wk.wk1, ...wk.wk2];
+      const employeeId = (allEntries.find(e => e && e.employeeId) || {}).employeeId || null;
+      const totalHours = allEntries.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
+      const bonus = prBonuses[emp] || 0;
+      return {
+        employeeId,
+        name: emp,
+        totalHours: Number(totalHours.toFixed(2)),
+        bonus: Number(bonus) || 0,
+        timeEntries: allEntries.map(e => ({
+          id:        e.id || null,
+          workDate:  e.workDate || "",
+          duration:  e.duration || 0,
+          hours:     secToHrs(e.duration || 0),
+          class:     e.class || "",
+          cityTaxes: e.cityTaxes || "A No Tax",
+          jobId:     e.jobId || null,
+          jobName:   e.jobName || ""
+        }))
+      };
+    });
+
+    const totalHours = Number(employees.reduce((a, e) => a + e.totalHours, 0).toFixed(2));
+    const totalBonus = Number(employees.reduce((a, e) => a + (e.bonus || 0), 0).toFixed(2));
+
+    const payload = { payPeriodStart, payPeriodEnd, generatedAt, generatedBy, employees };
+    const jsonString = JSON.stringify(payload);
+
+    // Encode PDF + JSON as base64 (chunked, UTF-8 safe).
+    const pdfBase64  = arrayBufferToBase64(await blob.arrayBuffer());
+    const jsonBase64 = stringToBase64Utf8(jsonString);
+    const pdfFilename  = filename;
+    const jsonFilename = filename.replace(/\.pdf$/i, ".json");
+
+    // Build bonus payload — only non-zero amounts; include employeeId + name.
+    const bonuses = employees
+      .filter(e => (e.bonus || 0) > 0)
+      .map(e => ({ employeeId: e.employeeId, employeeName: e.name, amount: e.bonus }));
+
+    // Find the prior non-superseded run for this period (if any).
+    // If this lookup fails we still archive (PDF is the priority), but flag
+    // it so the success toast tells the user to verify the supersede chain
+    // — silent failure here would leave duplicate active runs for the period.
+    let supersedesId = null;
+    let priorGeneratedAt = null;
+    let supersedeCheckFailed = false;
+    try {
+      const found = await apiGet("findMatchingPayrollRun", { payPeriodStart, payPeriodEnd });
+      supersedesId = found.runId || null;
+      priorGeneratedAt = found.generatedAt || null;
+    } catch (err) {
+      console.warn("findMatchingPayrollRun failed; proceeding without supersede:", err.message);
+      supersedeCheckFailed = true;
+    }
+
+    const archivePayload = {
+      payPeriodStart, payPeriodEnd, generatedBy,
+      totalHours, totalBonus,
+      pdfBase64, pdfFilename,
+      jsonBase64, jsonFilename,
+      bonuses,
+      supersedesId
+    };
+
+    const doArchive = async () => {
+      try {
+        const result = await apiPost("payrollRunCreate", archivePayload);
+        triggerBlobDownload(blob, filename);
+        // Compose toast — base success, optional supersede note, optional warnings.
+        let msg = "Payroll archived ✓";
+        if (supersedesId && priorGeneratedAt) {
+          msg += ` (replaces earlier version from ${fmtDate(priorGeneratedAt)})`;
+        }
+        const warnings = [];
+        if (supersedeCheckFailed)  warnings.push("supersede check failed — verify in Airtable");
+        if (result.bonusError)     warnings.push(`bonuses: ${result.bonusError}`);
+        if (result.supersedeError) warnings.push(`supersede: ${result.supersedeError}`);
+        if (Array.isArray(result.unresolvedBonuses) && result.unresolvedBonuses.length) {
+          const names = result.unresolvedBonuses.map(b => `${b.employeeName || "?"} ($${Number(b.amount).toFixed(2)})`).join(", ");
+          warnings.push(`unresolved bonuses: ${names}`);
+        }
+        if (warnings.length) {
+          showPayrollToast(`${msg} — warnings: ${warnings.join("; ")}`, "warn");
+        } else {
+          showPayrollToast(msg, "ok");
+        }
+      } catch (err) {
+        showArchiveErrorModal(err.message || "Unknown error", doArchive, blob, filename);
+      }
+    };
+
+    await doArchive();
+  }
 
   function hexToRgb(hex) {
     const r = parseInt(hex.slice(1,3),16);
@@ -9821,7 +10013,7 @@ rick@northeasternelec.com`
       y += 8;
     });
 
-    doc.save(`NEE_Payroll_${payDate}.pdf`);
+    return { blob: doc.output("blob"), filename: `NEE_Payroll_${payDate}.pdf` };
   }
 
 </script>

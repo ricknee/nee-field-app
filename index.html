@@ -9822,6 +9822,50 @@ rick@northeasternelec.com`
     };
   }
 
+  // Confirm dialog shown when findMatchingPayrollRun returns a hit, before
+  // we archive. Captures an optional Notes string (only persisted on the
+  // supersede path — see V1 scope). Cancel aborts both archive and download.
+  function confirmSupersedeDialog({ payPeriodStart, payPeriodEnd, priorGeneratedAt, priorGeneratedBy }) {
+    return new Promise(resolve => {
+      let modal = document.getElementById("prSupersedeModal");
+      if (modal) modal.remove();
+      modal = document.createElement("div");
+      modal.id = "prSupersedeModal";
+      modal.className = "payroll-modal-backdrop";
+      modal.style.display = "flex";
+      modal.style.zIndex = "10001";
+      const periodTxt    = `${fmtDate(payPeriodStart)} – ${fmtDate(payPeriodEnd)}`;
+      const generatedTxt = priorGeneratedAt ? fmtDate(priorGeneratedAt) : "an earlier date";
+      const byTxt        = priorGeneratedBy ? esc(priorGeneratedBy) : "someone";
+      modal.innerHTML = `
+        <div class="payroll-modal" style="max-width:520px;">
+          <div class="payroll-modal-header">
+            <h2>Replace existing payroll run?</h2>
+          </div>
+          <div class="payroll-modal-body">
+            <p style="margin-top:0;">A payroll for ${esc(periodTxt)} was saved on ${esc(generatedTxt)} by ${byTxt}. Save this as a correction? The previous run will be marked superseded but kept in the archive.</p>
+            <label style="display:block; font-size:11px; font-weight:700; margin-top:12px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Notes (optional)</label>
+            <textarea id="prSupersedeNotes" rows="3" placeholder="e.g. Reissued — corrected Patrick's hours" style="width:100%; padding:8px 10px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--text); font-size:13px; font-family:'Inter', sans-serif; margin-top:6px; box-sizing:border-box; resize:vertical;"></textarea>
+            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:16px;">
+              <button id="prSupersedeCancelBtn" class="btn btn-sm">Cancel</button>
+              <button id="prSupersedeConfirmBtn" class="btn btn-sm" style="background:#0d6efd; color:#fff;">Save as correction</button>
+            </div>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+      const cleanup = () => modal.remove();
+      document.getElementById("prSupersedeConfirmBtn").onclick = () => {
+        const notes = ($("prSupersedeNotes").value || "").trim();
+        cleanup();
+        resolve({ confirmed: true, notes });
+      };
+      document.getElementById("prSupersedeCancelBtn").onclick = () => {
+        cleanup();
+        resolve({ confirmed: false, notes: "" });
+      };
+    });
+  }
+
   // Build the JSON payload, archive to Airtable, then download the PDF.
   // empMap/empNames are the same structures buildPDF was given so the JSON
   // shape matches what the PDF actually rendered.
@@ -9880,14 +9924,30 @@ rick@northeasternelec.com`
     // — silent failure here would leave duplicate active runs for the period.
     let supersedesId = null;
     let priorGeneratedAt = null;
+    let priorGeneratedBy = null;
     let supersedeCheckFailed = false;
     try {
       const found = await apiGet("findMatchingPayrollRun", { payPeriodStart, payPeriodEnd });
       supersedesId = found.runId || null;
       priorGeneratedAt = found.generatedAt || null;
+      priorGeneratedBy = found.generatedBy || null;
     } catch (err) {
       console.warn("findMatchingPayrollRun failed; proceeding without supersede:", err.message);
       supersedeCheckFailed = true;
+    }
+
+    // If a prior non-superseded run exists for this period, gate the save
+    // behind a confirm dialog. Cancel aborts both the archive and the local
+    // download (the user can fix something and retry, or just walk away).
+    // Notes are only captured on the supersede path — V1 scope.
+    let userNotes = "";
+    if (supersedesId) {
+      const { confirmed, notes } = await confirmSupersedeDialog({
+        payPeriodStart, payPeriodEnd,
+        priorGeneratedAt, priorGeneratedBy
+      });
+      if (!confirmed) return;
+      userNotes = notes || "";
     }
 
     const archivePayload = {
@@ -9896,7 +9956,8 @@ rick@northeasternelec.com`
       pdfBase64, pdfFilename,
       jsonBase64, jsonFilename,
       bonuses,
-      supersedesId
+      supersedesId,
+      notes: userNotes
     };
 
     const doArchive = async () => {

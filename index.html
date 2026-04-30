@@ -1056,6 +1056,50 @@
     .pr-week-total { font-size: 12px; color: var(--muted); font-weight: 600; }
     .pr-no-entries { font-size: 12px; color: var(--muted); padding: 10px; font-style: italic; }
     .pr-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
+    /* ── Payroll Manager: list view ── */
+    .pr-list-toolbar {
+      display: flex; align-items: center; gap: 12px;
+      padding: 4px 4px 14px; flex-wrap: wrap;
+    }
+    .pr-list-new-btn {
+      background: var(--accent); color: white; border: none; border-radius: 8px;
+      padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer;
+      font-family: 'Inter', sans-serif;
+    }
+    .pr-list-new-btn:hover { background: var(--accent-2); }
+    .pr-list-toggle {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 12px; color: var(--text); cursor: pointer; margin-left: auto;
+    }
+    .pr-list-toggle input { cursor: pointer; }
+    .pr-list-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    .pr-list-table {
+      width: 100%; border-collapse: collapse; font-size: 13px;
+      background: var(--panel-2);
+    }
+    .pr-list-table th {
+      padding: 9px 12px; text-align: left; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+      border-bottom: 1px solid var(--line); background: var(--panel-2); white-space: nowrap;
+    }
+    .pr-list-table td {
+      padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--text);
+      vertical-align: middle; white-space: nowrap;
+    }
+    .pr-list-table tr:last-child td { border-bottom: none; }
+    .pr-list-table tr.pr-row-superseded { opacity: 0.6; }
+    .pr-list-action {
+      background: var(--accent-glow); border: 1px solid rgba(21,101,192,0.3);
+      color: var(--accent); border-radius: 6px; padding: 5px 12px;
+      font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .pr-list-action:hover:not(:disabled) { background: rgba(21,101,192,0.18); }
+    .pr-list-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pr-back-link {
+      display: inline-block; margin-bottom: 14px; font-size: 13px;
+      color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer;
+    }
+    .pr-back-link:hover { text-decoration: underline; }
 
     /* ── ALL INVOICES (AR) modal ── reuses .payroll-modal-* layout ── */
     .ar-summary-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-bottom: 14px; }
@@ -8059,23 +8103,14 @@ rick@northeasternelec.com`
   let prWk1End    = null;
   let prWk2Start  = null;
   let prWk2End    = null;
+  let prListRuns  = [];    // archived runs for the list view
+  let prShowSuperseded = false;
 
   function openPayroll() {
     $("payrollModal").style.display = "flex";
     pushBackEntry("payroll", () => { $("payrollModal").style.display = "none"; });
     preloadJsPDF(); // start loading jsPDF in background
-    // Default dates: last Mon and coming Sat based on today
-    const today = new Date();
-    const dayOfWeek = today.getDay(); // 0=Sun,1=Mon...
-    const diffToMon = (dayOfWeek === 0) ? -6 : 1 - dayOfWeek;
-    const wk2Mon = new Date(today); wk2Mon.setDate(today.getDate() + diffToMon - 7);
-    const wk2Sat = new Date(wk2Mon); wk2Sat.setDate(wk2Mon.getDate() + 12); // Mon + 12 = Sat of next week
-
-    $("prWk1Start").value = wk2Mon.toISOString().slice(0,10);
-    $("prWk2End").value   = wk2Sat.toISOString().slice(0,10);
-
-    // Load jobs for dropdowns if not loaded
-    prJobs = state.jobs || [];
+    enterListView();
   }
 
   function closePayroll() {
@@ -8083,6 +8118,96 @@ rick@northeasternelec.com`
     $("payrollModal").style.display = "none";
   }
   window.closePayroll = closePayroll;
+
+  // ─── Payroll Manager: view swap + history list ─────────────────
+  function enterListView() {
+    $("prCreateView").style.display = "none";
+    $("prListView").style.display = "";
+    fetchAndRenderRuns();
+  }
+  window.enterListView = enterListView;
+
+  function enterCreateView() {
+    $("prListView").style.display = "none";
+    $("prCreateView").style.display = "";
+
+    // Default the period to the most recent completed bi-weekly window (Mon→Sat).
+    const today = new Date();
+    const dayOfWeek = today.getDay();
+    const diffToMon = (dayOfWeek === 0) ? -6 : 1 - dayOfWeek;
+    const wk2Mon = new Date(today); wk2Mon.setDate(today.getDate() + diffToMon - 7);
+    const wk2Sat = new Date(wk2Mon); wk2Sat.setDate(wk2Mon.getDate() + 12);
+    $("prWk1Start").value = wk2Mon.toISOString().slice(0,10);
+    $("prWk2End").value   = wk2Sat.toISOString().slice(0,10);
+
+    // Reset transient state for a fresh run.
+    prJobs = state.jobs || [];
+    prEntries = [];
+    prBonuses = {};
+    $("prBlocks").innerHTML = "";
+    $("prSummaryBar").style.display = "none";
+    $("prStatus").style.display = "none";
+  }
+  window.enterCreateView = enterCreateView;
+
+  function onShowSupersededToggle() {
+    prShowSuperseded = $("prShowSupersededChk").checked;
+    fetchAndRenderRuns();
+  }
+  window.onShowSupersededToggle = onShowSupersededToggle;
+
+  async function fetchAndRenderRuns() {
+    const grid = $("prListGrid");
+    grid.innerHTML = `<div class="pr-empty">Loading…</div>`;
+    try {
+      const d = await apiGet("payrollRunsList", { showSuperseded: prShowSuperseded ? "true" : "false" });
+      prListRuns = Array.isArray(d.runs) ? d.runs : [];
+      renderRunsGrid();
+    } catch (e) {
+      grid.innerHTML = `<div class="pr-empty">Error loading payroll runs: ${esc(e.message || "Unknown error")}</div>`;
+    }
+  }
+
+  function renderRunsGrid() {
+    const grid = $("prListGrid");
+    if (!prListRuns.length) {
+      grid.innerHTML = `<div class="pr-empty">No saved payroll runs yet. Click + New Payroll to start.</div>`;
+      return;
+    }
+    const rows = prListRuns.map(r => {
+      const period     = `${fmtDate(r.payPeriodStart)} → ${fmtDate(r.payPeriodEnd)}`;
+      const generated  = fmtDate(r.generatedAt);
+      const hours      = fmtHrs(Number(r.totalHours) || 0);
+      const bonusTotal = (Number(r.totalBonus) || 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+      const bonuses    = `${bonusTotal} (${r.bonusCount || 0})`;
+      const status     = r.superseded
+        ? `Superseded by ${r.supersededByDate ? fmtDate(r.supersededByDate) : "—"}`
+        : "";
+      const action = r.pdfAvailable && r.pdfUrl
+        ? `<button class="pr-list-action" onclick="window.open('${esc(r.pdfUrl)}','_blank','noopener')">Reprint</button>`
+        : `<button class="pr-list-action" disabled title="PDF not archived (predates Phase 1)">Reprint</button>`;
+      const cls = r.superseded ? "pr-row-superseded" : "";
+      return `<tr class="${cls}">
+        <td>${esc(period)}</td>
+        <td>${esc(generated)}</td>
+        <td>${esc(r.generatedBy || "—")}</td>
+        <td>${esc(hours)}</td>
+        <td>${esc(bonuses)}</td>
+        <td>${esc(status)}</td>
+        <td>${action}</td>
+      </tr>`;
+    }).join("");
+    grid.innerHTML = `
+      <div class="pr-list-table-wrap">
+        <table class="pr-list-table">
+          <thead><tr>
+            <th>Pay Period</th><th>Generated</th><th>By</th>
+            <th>Hours</th><th>Bonuses</th><th>Status</th><th>Action</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  }
 
   // ═══════════════════════════════════════════════════════════════════════
   // ALL INVOICES (AR) MODAL
@@ -9796,6 +9921,8 @@ rick@northeasternelec.com`
         } else {
           showPayrollToast(msg, "ok");
         }
+        // Snap back to the history list — the new run will be at the top.
+        enterListView();
       } catch (err) {
         showArchiveErrorModal(err.message || "Unknown error", doArchive, blob, filename);
       }
@@ -10026,27 +10153,44 @@ rick@northeasternelec.com`
     </div>
     <div class="payroll-modal-body">
 
-      <!-- Period picker -->
-      <div class="pr-period-bar">
-        <div>
-          <label>Week 1 Start (Mon)</label>
-          <input type="date" id="prWk1Start" />
+      <!-- LIST VIEW (history grid) -->
+      <div id="prListView">
+        <div class="pr-list-toolbar">
+          <button class="pr-list-new-btn" onclick="enterCreateView()">+ New Payroll</button>
+          <label class="pr-list-toggle">
+            <input type="checkbox" id="prShowSupersededChk" onchange="onShowSupersededToggle()" />
+            <span>Show superseded</span>
+          </label>
         </div>
-        <div>
-          <label>Week 2 End (Sat)</label>
-          <input type="date" id="prWk2End" />
-        </div>
-        <button class="pr-load-btn" id="prLoadBtn" onclick="loadPayrollEntries()">Load Entries</button>
+        <div id="prListGrid"></div>
       </div>
 
-      <!-- Status message -->
-      <div id="prStatus" style="font-size:13px; color:var(--muted); margin-bottom:12px; display:none;"></div>
+      <!-- CREATE VIEW (load entries → review → save & download) -->
+      <div id="prCreateView" style="display:none;">
+        <a class="pr-back-link" onclick="enterListView()">← Back to history</a>
 
-      <!-- Summary bar + PDF button -->
-      <div id="prSummaryBar" class="pr-summary-bar" style="display:none;"></div>
+        <!-- Period picker -->
+        <div class="pr-period-bar">
+          <div>
+            <label>Week 1 Start (Mon)</label>
+            <input type="date" id="prWk1Start" />
+          </div>
+          <div>
+            <label>Week 2 End (Sat)</label>
+            <input type="date" id="prWk2End" />
+          </div>
+          <button class="pr-load-btn" id="prLoadBtn" onclick="loadPayrollEntries()">Load Entries</button>
+        </div>
 
-      <!-- Employee blocks rendered here -->
-      <div id="prBlocks"></div>
+        <!-- Status message -->
+        <div id="prStatus" style="font-size:13px; color:var(--muted); margin-bottom:12px; display:none;"></div>
+
+        <!-- Summary bar + PDF button -->
+        <div id="prSummaryBar" class="pr-summary-bar" style="display:none;"></div>
+
+        <!-- Employee blocks rendered here -->
+        <div id="prBlocks"></div>
+      </div>
 
     </div>
   </div>

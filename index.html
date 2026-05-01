@@ -1134,6 +1134,38 @@
       opacity: 0; pointer-events: none; transition: opacity 0.12s; z-index: 10;
     }
     .pr-kpi-tile[data-range]:hover::after, .pr-kpi-tile[data-range]:focus::after { opacity: 1; }
+    /* ── Payroll Manager: bonus pills (V2 YTD by employee) ── */
+    .pr-bonus-pills {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      margin-bottom: 14px; min-height: 30px;
+    }
+    .pr-bonus-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; border-radius: 999px;
+      font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
+      border: 1px solid; cursor: pointer;
+      transition: transform 0.1s ease, box-shadow 0.1s ease;
+    }
+    .pr-bonus-pill:hover { transform: translateY(-1px); box-shadow: 0 2px 6px rgba(0,0,0,0.12); }
+    .pr-bonus-pill:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .pr-bonus-pill .pr-bonus-pill-amt { font-weight: 700; }
+    .pr-bonus-pill.pr-bonus-pill-zero { opacity: 0.55; }
+    .pr-bonus-pill.pr-kpi-skeleton {
+      background: var(--panel-2); border-color: var(--line); color: var(--muted);
+      cursor: default;
+    }
+    .pr-bonus-pill.pr-kpi-skeleton:hover { transform: none; box-shadow: none; }
+    /* Drill-in modal layered above the main payroll modal. */
+    .pr-bonus-history-list { list-style: none; padding: 0; margin: 0; }
+    .pr-bonus-history-row {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 13px;
+    }
+    .pr-bonus-history-row:last-child { border-bottom: none; }
+    .pr-bonus-history-period { color: var(--text); font-weight: 600; }
+    .pr-bonus-history-meta   { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .pr-bonus-history-amt    { font-weight: 700; color: var(--text); white-space: nowrap; }
+    .pr-bonus-history-empty  { padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
     .pr-back-link {
       display: inline-block; margin-bottom: 14px; font-size: 13px;
       color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer;
@@ -8152,11 +8184,118 @@ rick@northeasternelec.com`
   function enterListView() {
     $("prCreateView").style.display = "none";
     $("prListView").style.display = "";
-    // Two independent fetches — let them race.
+    // Three independent fetches — let them race.
     fetchAndRenderRuns();
     fetchAndRenderKpiTiles();
+    fetchAndRenderBonusPills();
   }
   window.enterListView = enterListView;
+
+  const PR_BONUS_DEFAULT_PILL = { bg: "#f4f6f9", border: "#dde1e8", text: "#1a2233" };
+
+  function bonusPillSkeletonHtml() {
+    const widths = ["120px", "100px", "140px", "110px", "130px", "115px"];
+    return widths.map(w =>
+      `<div class="pr-bonus-pill pr-kpi-skeleton" style="width:${w}; justify-content:center;">&nbsp;</div>`
+    ).join("");
+  }
+
+  async function fetchAndRenderBonusPills() {
+    const host = $("prBonusPills");
+    if (!host) return;
+    // Wire a delegated click listener once. Avoids inline onclick with
+    // employee names that may contain apostrophes (O'Brien etc.).
+    if (!host._bonusClickWired) {
+      host.addEventListener("click", (ev) => {
+        const btn = ev.target.closest(".pr-bonus-pill");
+        if (!btn || btn.classList.contains("pr-kpi-skeleton")) return;
+        const id   = btn.dataset.empId;
+        const name = btn.dataset.empName || "Employee";
+        if (id) showBonusHistory(id, name);
+      });
+      host._bonusClickWired = true;
+    }
+    host.innerHTML = bonusPillSkeletonHtml();
+    try {
+      const d = await apiGet("payrollBonusesRollup");
+      const employees = Array.isArray(d.employees) ? d.employees : [];
+      if (!employees.length) {
+        host.innerHTML = `<div class="pr-empty" style="margin:0; padding:14px; flex:1;">No employees with bonuses yet.</div>`;
+        return;
+      }
+      host.innerHTML = employees.map(e => {
+        const c = EMP_COLORS[e.name] || PR_BONUS_DEFAULT_PILL;
+        const amtNum = Number(e.ytdBonus) || 0;
+        const amt = amtNum.toLocaleString("en-US", { style: "currency", currency: "USD" });
+        const zeroCls = amtNum === 0 ? " pr-bonus-pill-zero" : "";
+        return `<button type="button" class="pr-bonus-pill${zeroCls}"
+                  style="background:${c.bg};border-color:${c.border};color:${c.text};"
+                  data-emp-id="${esc(e.id)}" data-emp-name="${esc(e.name)}">
+          ${esc(e.name)}: <span class="pr-bonus-pill-amt">${esc(amt)}</span>
+        </button>`;
+      }).join("");
+    } catch (err) {
+      host.innerHTML = `<div class="pr-empty" style="margin:0; padding:14px; flex:1;">Couldn't load bonus totals: ${esc(err.message || "unknown error")}</div>`;
+    }
+  }
+
+  // Drill-in: last 5 non-superseded bonuses for one employee. Layered above
+  // the main payroll modal (z-index 10001) — same pattern as the supersede
+  // confirm dialog and archive-error modal.
+  async function showBonusHistory(employeeId, employeeName) {
+    let modal = document.getElementById("prBonusHistoryModal");
+    if (modal) modal.remove();
+    modal = document.createElement("div");
+    modal.id = "prBonusHistoryModal";
+    modal.className = "payroll-modal-backdrop";
+    modal.style.display = "flex";
+    modal.style.zIndex = "10001";
+    const c = EMP_COLORS[employeeName] || PR_BONUS_DEFAULT_PILL;
+    modal.innerHTML = `
+      <div class="payroll-modal" style="max-width:480px;">
+        <div class="payroll-modal-header">
+          <h2 style="display:flex;align-items:center;gap:10px;font-size:16px;">
+            <span style="display:inline-block;width:14px;height:14px;border-radius:50%;background:${c.bg};border:1px solid ${c.border};"></span>
+            ${esc(employeeName)} — Bonus History
+          </h2>
+          <button id="prBonusHistoryClose" class="btn btn-sm" style="font-size:18px;padding:4px 10px;">&times;</button>
+        </div>
+        <div class="payroll-modal-body" id="prBonusHistoryBody">
+          <div class="pr-bonus-history-empty">Loading…</div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const close = () => modal.remove();
+    document.getElementById("prBonusHistoryClose").onclick = close;
+    modal.addEventListener("click", (ev) => { if (ev.target === modal) close(); });
+
+    try {
+      const d = await apiGet("payrollEmployeeBonusHistory", { employeeId, limit: "5" });
+      const body = document.getElementById("prBonusHistoryBody");
+      if (!body) return; // user closed mid-flight
+      const bonuses = Array.isArray(d.bonuses) ? d.bonuses : [];
+      if (!bonuses.length) {
+        body.innerHTML = `<div class="pr-bonus-history-empty">No bonuses recorded yet.</div>`;
+        return;
+      }
+      body.innerHTML = `<ul class="pr-bonus-history-list">${bonuses.map(b => {
+        const amt = (Number(b.amount) || 0).toLocaleString("en-US", { style: "currency", currency: "USD" });
+        const period    = `${fmtDate(b.payPeriodStart)} → ${fmtDate(b.payPeriodEnd)}`;
+        const generated = b.runGeneratedAt ? `Generated ${fmtDate(b.runGeneratedAt)}` : "—";
+        return `<li class="pr-bonus-history-row">
+          <div>
+            <div class="pr-bonus-history-period">${esc(period)}</div>
+            <div class="pr-bonus-history-meta">${esc(generated)}</div>
+          </div>
+          <div class="pr-bonus-history-amt">${esc(amt)}</div>
+        </li>`;
+      }).join("")}</ul>`;
+    } catch (err) {
+      const body = document.getElementById("prBonusHistoryBody");
+      if (body) body.innerHTML = `<div class="pr-bonus-history-empty" style="color:#b71c1c;">Couldn't load bonus history: ${esc(err.message || "unknown error")}</div>`;
+    }
+  }
+  window.showBonusHistory = showBonusHistory;
 
   function kpiSkeletonHtml() {
     const labels = ["This Week", "Pay Period", "This Month", "YTD Hours"];
@@ -10298,6 +10437,7 @@ rick@northeasternelec.com`
           </label>
         </div>
         <div id="prKpiTiles" class="pr-kpi-tiles"></div>
+        <div id="prBonusPills" class="pr-bonus-pills"></div>
         <div id="prListGrid"></div>
       </div>
 

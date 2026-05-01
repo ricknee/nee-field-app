@@ -2308,48 +2308,74 @@ async function handleCommissionGenerator(body) {
     }
   }
 
-  // ── Step 2: POST the commissioning Generator Service event ────────────
-  // Service Type is server-set rather than client-passed, but still
-  // validated against SERVICE_TYPE_OPTS so the typecast guard is
-  // consistent with other handlers (and a future rename to the option
-  // surfaces here as a clean fallback rather than a typecast-created dup).
+  // ── Shared lookup for steps 2 & 3 dup checks ──────────────────────────
+  // Resolve the generator's primary text (Generator Asset ID) once and
+  // reuse it for both the commissioning-service dup check (step 2) and
+  // the warranties dup check (step 3). For just-created records the
+  // formula may not have computed yet — in that case both dup checks
+  // see no matches and we create rather than wrongly skip (matches the
+  // pre-existing warranty-path behavior).
   const COMM_TYPE = "Install / Commissioning";
   const svcType = SERVICE_TYPE_OPTS.includes(COMM_TYPE) ? COMM_TYPE : SERVICE_TYPE_OPTS[0];
-
-  const svcFields = {};
-  svcFields[F.svc.generator]   = [resolvedGeneratorId];
-  svcFields[F.svc.job]         = [jobId];
-  svcFields[F.svc.serviceDate] = commissioningDate || installDate;
-  svcFields[F.svc.serviceType] = svcType;
-  if (technician)         svcFields[F.svc.technician] = String(technician);
-  if (generatorHours !== undefined && generatorHours !== null && generatorHours !== "")
-    svcFields[F.svc.generatorHours] = Number(generatorHours);
-  if (commissioningNotes && String(commissioningNotes).trim())
-    svcFields[F.svc.workNotes] = String(commissioningNotes);
-
-  let serviceRecordId = null;
-  try {
-    const svcData = await atFetch(`${encodeURIComponent(TABLES.generatorService)}`, {
-      method: "POST",
-      body: JSON.stringify({ fields: svcFields, typecast: true })
-    });
-    serviceRecordId = svcData.id;
-  } catch (err) {
-    warnings.push(`Failed to create commissioning service record: ${err.message}`);
-  }
-
-  // ── Step 3: Create one Warranty per matching Warranty Template ────────
-  // Idempotency: skip the whole step if any warranties already exist on
-  // this generator, so re-commissioning doesn't pile up duplicates.
-  const warrantyIds = [];
 
   let assetIdForLookup = "";
   try {
     const genRec = await atFetch(`${encodeURIComponent(TABLES.generators)}/${resolvedGeneratorId}`);
     assetIdForLookup = genRec?.fields?.[F.gen.assetId] || "";
   } catch (err) {
-    warnings.push(`Could not re-read generator for warranty dup-check: ${err.message}`);
+    warnings.push(`Could not re-read generator for dup-checks: ${err.message}`);
   }
+
+  // ── Step 2: POST the commissioning Generator Service event ────────────
+  // Idempotent: if an Install / Commissioning record already exists for
+  // this generator, reuse its ID rather than piling up duplicate
+  // commissioning rows on re-runs (matches step 3's warranty idempotency).
+  // Service Type is server-set rather than client-passed, but still
+  // validated against SERVICE_TYPE_OPTS so the typecast guard is
+  // consistent with other handlers.
+  let serviceRecordId = null;
+  let existingCommissioningRecord = null;
+  if (assetIdForLookup) {
+    try {
+      const safe = escapeFormulaString(assetIdForLookup);
+      const dupFilter = `AND(FIND("${safe}", ARRAYJOIN({${F.svc.generator}})), {${F.svc.serviceType}}="${svcType}")`;
+      const existing = await fetchAll(TABLES.generatorService, { filter: dupFilter });
+      if (existing.length) existingCommissioningRecord = existing[0];
+    } catch (err) {
+      warnings.push(`Could not check for existing commissioning record: ${err.message}`);
+    }
+  }
+
+  if (existingCommissioningRecord) {
+    serviceRecordId = existingCommissioningRecord.id;
+    warnings.push("Commissioning service record already exists — skipped re-creation.");
+  } else {
+    const svcFields = {};
+    svcFields[F.svc.generator]   = [resolvedGeneratorId];
+    svcFields[F.svc.job]         = [jobId];
+    svcFields[F.svc.serviceDate] = commissioningDate || installDate;
+    svcFields[F.svc.serviceType] = svcType;
+    if (technician)         svcFields[F.svc.technician] = String(technician);
+    if (generatorHours !== undefined && generatorHours !== null && generatorHours !== "")
+      svcFields[F.svc.generatorHours] = Number(generatorHours);
+    if (commissioningNotes && String(commissioningNotes).trim())
+      svcFields[F.svc.workNotes] = String(commissioningNotes);
+
+    try {
+      const svcData = await atFetch(`${encodeURIComponent(TABLES.generatorService)}`, {
+        method: "POST",
+        body: JSON.stringify({ fields: svcFields, typecast: true })
+      });
+      serviceRecordId = svcData.id;
+    } catch (err) {
+      warnings.push(`Failed to create commissioning service record: ${err.message}`);
+    }
+  }
+
+  // ── Step 3: Create one Warranty per matching Warranty Template ────────
+  // Idempotency: skip the whole step if any warranties already exist on
+  // this generator, so re-commissioning doesn't pile up duplicates.
+  const warrantyIds = [];
 
   let existingWarrantyCount = 0;
   if (assetIdForLookup) {

@@ -1135,6 +1135,42 @@
       opacity: 0; pointer-events: none; transition: opacity 0.12s; z-index: 10;
     }
     .pr-kpi-tile[data-range]:hover::after, .pr-kpi-tile[data-range]:focus::after { opacity: 1; }
+    /* ── My Hours: self-service tiles (mobile-primary, larger than admin) ── */
+    .mh-tiles {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+    }
+    @media (max-width: 640px) {
+      .mh-tiles { grid-template-columns: 1fr; gap: 12px; }
+    }
+    .mh-tile {
+      background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+      padding: 18px 20px; cursor: pointer; outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      min-height: 96px; text-align: left;
+    }
+    .mh-tile:hover, .mh-tile:focus,
+    .mh-tile.mh-tile-selected {
+      border-color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+    }
+    .mh-tile.mh-tile-skeleton { cursor: default; opacity: 0.55; }
+    .mh-tile.mh-tile-skeleton:hover { box-shadow: none; border-color: var(--line); }
+    .mh-tile-label {
+      font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .mh-tile-value {
+      font-family: 'Rajdhani', sans-serif; font-size: 36px; font-weight: 700;
+      color: var(--text); line-height: 1;
+    }
+    .mh-tile-unit { font-size: 16px; color: var(--muted); font-weight: 600; margin-left: 6px; }
+    .mh-tile-range { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    @media (max-width: 640px) {
+      .mh-tile { padding: 20px 18px; min-height: 110px; }
+      .mh-tile-value { font-size: 40px; }
+      .mh-tile-label { font-size: 14px; }
+      .mh-tile-range { font-size: 13px; margin-top: 10px; }
+    }
     /* ── Payroll Manager: bonus pills (V2 YTD by employee) ── */
     .pr-bonus-pills {
       display: flex; flex-wrap: wrap; gap: 8px;
@@ -1683,6 +1719,7 @@
       <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
       <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
       <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
+      <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ My Hours</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
@@ -2620,6 +2657,15 @@
       // the admin's view with a duplicate button.
       document.querySelectorAll(".non-admin-only").forEach(el => {
         el.classList.toggle("hidden", isStrictAdmin);
+      });
+
+      // Show/hide payroll-eligible-only elements — admin + employee, hidden
+      // from office and viewer. Mirrors the backend's isPayrollEligibleRole
+      // helper so the My Hours button and the backend stay in sync on who
+      // can see hours data.
+      const isPayrollEligible = role !== "office" && role !== "viewer";
+      document.querySelectorAll(".payroll-eligible-only").forEach(el => {
+        el.classList.toggle("hidden", !isPayrollEligible);
       });
 
       // Hide financial tabs from viewers
@@ -5486,6 +5532,8 @@
     if (schBtn) schBtn.addEventListener("click", openSchedule);
     const mySchBtn = $("btnMySchedule");
     if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
+    const myHoursBtn = $("btnMyHours");
+    if (myHoursBtn) myHoursBtn.addEventListener("click", openMyHours);
     const mileageBtn = $("btnMileage");
     if (mileageBtn) mileageBtn.addEventListener("click", openMileageModal);
 
@@ -8595,6 +8643,93 @@ rick@northeasternelec.com`
   }
   window.closeSchedule = closeSchedule;
 
+  // ─── My Hours: self-service hour view (employee + admin) ───────────────
+  function openMyHours() {
+    $("myHoursModal").style.display = "flex";
+    pushBackEntry("myHours", () => { $("myHoursModal").style.display = "none"; });
+    fetchAndRenderMyHoursTiles();
+  }
+  window.openMyHours = openMyHours;
+
+  function closeMyHours() {
+    popBackEntry("myHours");
+    $("myHoursModal").style.display = "none";
+  }
+  window.closeMyHours = closeMyHours;
+
+  // Pretty-print yyyy-mm-dd → "Apr 27" (no year). Matches the design sketch:
+  // tile ranges are short windows where the year would be visual noise.
+  function mhFmtDateNoYear(ymd) {
+    if (!ymd) return "—";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd;
+    const [y, m, d] = ymd.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+
+  function mhSkeletonHtml() {
+    const labels = ["This Week", "Pay Period", "This Month", "YTD Hours"];
+    return labels.map(l => `<div class="mh-tile mh-tile-skeleton">
+        <div class="mh-tile-label">${esc(l)}</div>
+        <div class="mh-tile-value">—<span class="mh-tile-unit">hrs</span></div>
+        <div class="mh-tile-range">Loading…</div>
+      </div>`).join("");
+  }
+
+  async function fetchAndRenderMyHoursTiles() {
+    const tiles = $("mhTiles");
+    if (!tiles) return;
+
+    // Delegated click — Commit 2 just gives a "selected" visual; Commit 3
+    // will replace this with the per-day drill-down popover off the same
+    // data-bucket attribute. Keeping the wiring minimal here so the Commit 3
+    // diff stays focused on the popover content, not the click plumbing.
+    if (!tiles._mhClickWired) {
+      tiles.addEventListener("click", (ev) => {
+        const tile = ev.target.closest(".mh-tile");
+        if (!tile || tile.classList.contains("mh-tile-skeleton")) return;
+        tiles.querySelectorAll(".mh-tile").forEach(t => t.classList.remove("mh-tile-selected"));
+        tile.classList.add("mh-tile-selected");
+      });
+      tiles._mhClickWired = true;
+    }
+
+    tiles.innerHTML = mhSkeletonHtml();
+    if (!state.user?.id) {
+      tiles.innerHTML = `<div class="pr-empty" style="grid-column: 1 / -1;">Not logged in.</div>`;
+      return;
+    }
+
+    try {
+      const d = await apiGet("myHoursRollup", { employeeId: state.user.id });
+      const r = d?.ranges || {};
+      const buckets = [
+        { key: "thisWeek",  label: "This Week",  data: r.thisWeek  },
+        { key: "payPeriod", label: "Pay Period", data: r.payPeriod },
+        { key: "thisMonth", label: "This Month", data: r.thisMonth },
+        { key: "ytd",       label: "YTD Hours",  data: r.ytd       }
+      ];
+      tiles.innerHTML = buckets.map(b => {
+        if (!b.data) {
+          return `<div class="mh-tile mh-tile-skeleton">
+            <div class="mh-tile-label">${esc(b.label)}</div>
+            <div class="mh-tile-value">—<span class="mh-tile-unit">hrs</span></div>
+            <div class="mh-tile-range">—</div>
+          </div>`;
+        }
+        const range = `${mhFmtDateNoYear(b.data.start)} – ${mhFmtDateNoYear(b.data.end)}`;
+        const hours = (Number(b.data.hours) || 0).toFixed(2);
+        return `<div class="mh-tile" tabindex="0"
+                  data-bucket="${esc(b.key)}" data-label="${esc(b.label)}">
+          <div class="mh-tile-label">${esc(b.label)}</div>
+          <div class="mh-tile-value">${esc(hours)}<span class="mh-tile-unit">hrs</span></div>
+          <div class="mh-tile-range">${esc(range)}</div>
+        </div>`;
+      }).join("");
+    } catch (e) {
+      tiles.innerHTML = `<div class="pr-empty" style="grid-column: 1 / -1;">Couldn't load your hour totals: ${esc(e.message || "unknown error")}</div>`;
+    }
+  }
+
   // Format Date → YYYY-MM-DD (local time, not UTC)
   function schYMD(d) {
     const y = d.getFullYear();
@@ -10634,6 +10769,19 @@ rick@northeasternelec.com`
         <span><span id="arRowCount">0</span> invoice(s)</span>
         <span>Filtered total: <span id="arFilteredTotal">$0.00</span></span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- MY HOURS MODAL (employee/admin self-service hour view) -->
+<div id="myHoursModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width:680px;">
+    <div class="payroll-modal-header">
+      <h2>⏱ My Hours</h2>
+      <button onclick="closeMyHours()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div id="mhTiles" class="mh-tiles"></div>
     </div>
   </div>
 </div>

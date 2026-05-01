@@ -1112,10 +1112,11 @@
     .pr-kpi-tile {
       position: relative; background: var(--panel-2); border: 1px solid var(--line);
       border-radius: 10px; padding: 12px 14px; text-align: center;
-      cursor: help; outline: none; transition: border-color 0.15s;
+      cursor: pointer; outline: none; transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .pr-kpi-tile:hover, .pr-kpi-tile:focus { border-color: var(--accent); }
-    .pr-kpi-tile.pr-kpi-skeleton { cursor: default; opacity: 0.55; }
+    .pr-kpi-tile:hover, .pr-kpi-tile:focus { border-color: var(--accent); box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+    .pr-kpi-tile.pr-kpi-skeleton { cursor: default; opacity: 0.55; box-shadow: none; }
+    .pr-kpi-tile.pr-kpi-skeleton:hover { box-shadow: none; border-color: var(--line); }
     .pr-kpi-label {
       font-family: 'Rajdhani', sans-serif; font-size: 11px; font-weight: 700;
       text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted);
@@ -8309,15 +8310,26 @@ rick@northeasternelec.com`
   async function fetchAndRenderKpiTiles() {
     const tiles = $("prKpiTiles");
     if (!tiles) return;
+    // Delegated click — same pattern as the bonus pills row.
+    if (!tiles._kpiClickWired) {
+      tiles.addEventListener("click", (ev) => {
+        const tile = ev.target.closest(".pr-kpi-tile");
+        if (!tile || tile.classList.contains("pr-kpi-skeleton")) return;
+        const bucket = tile.dataset.bucket;
+        const label  = tile.dataset.label || "Hours";
+        if (bucket) showHoursBreakdown(bucket, label);
+      });
+      tiles._kpiClickWired = true;
+    }
     tiles.innerHTML = kpiSkeletonHtml();
     try {
       const d = await apiGet("payrollHoursRollup");
       const r = d?.ranges || {};
       const buckets = [
-        { label: "This Week",  data: r.thisWeek  },
-        { label: "Pay Period", data: r.payPeriod },
-        { label: "This Month", data: r.thisMonth },
-        { label: "YTD Hours",  data: r.ytd       }
+        { key: "thisWeek",  label: "This Week",  data: r.thisWeek  },
+        { key: "payPeriod", label: "Pay Period", data: r.payPeriod },
+        { key: "thisMonth", label: "This Month", data: r.thisMonth },
+        { key: "ytd",       label: "YTD Hours",  data: r.ytd       }
       ];
       tiles.innerHTML = buckets.map(b => {
         if (!b.data) {
@@ -8329,7 +8341,9 @@ rick@northeasternelec.com`
         }
         const range = `${fmtDate(b.data.start)} → ${fmtDate(b.data.end)}`;
         const hours = fmtHrs(Number(b.data.hours) || 0);
-        return `<div class="pr-kpi-tile" tabindex="0" data-range="${esc(range)}" title="${esc(range)}">
+        return `<div class="pr-kpi-tile" tabindex="0"
+                  data-range="${esc(range)}" title="${esc(range)}"
+                  data-bucket="${esc(b.key)}" data-label="${esc(b.label)}">
           <div class="pr-kpi-label">${esc(b.label)}</div>
           <div class="pr-kpi-value">${esc(hours)}</div>
           <div class="pr-kpi-unit">hrs</div>
@@ -8339,6 +8353,70 @@ rick@northeasternelec.com`
       tiles.innerHTML = `<div class="pr-empty" style="grid-column: 1 / -1;">Couldn't load hour totals: ${esc(e.message || "unknown error")}</div>`;
     }
   }
+
+  // Per-employee hour breakdown for one of the four tile buckets. Layered over
+  // the main payroll modal (z-index 10001) — same shape as showBonusHistory so
+  // the two drills feel like the same thing.
+  async function showHoursBreakdown(bucket, label) {
+    let modal = document.getElementById("prHoursBreakdownModal");
+    if (modal) modal.remove();
+    modal = document.createElement("div");
+    modal.id = "prHoursBreakdownModal";
+    modal.className = "payroll-modal-backdrop";
+    modal.style.display = "flex";
+    modal.style.zIndex = "10001";
+    modal.innerHTML = `
+      <div class="payroll-modal" style="max-width:480px;">
+        <div class="payroll-modal-header">
+          <h2 id="prHoursBreakdownTitle" style="font-size:16px;">${esc(label)} — Hours Breakdown</h2>
+          <button id="prHoursBreakdownClose" class="btn btn-sm" style="font-size:18px;padding:4px 10px;">&times;</button>
+        </div>
+        <div class="payroll-modal-body" id="prHoursBreakdownBody">
+          <div class="pr-bonus-history-empty">Loading…</div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const close = () => modal.remove();
+    document.getElementById("prHoursBreakdownClose").onclick = close;
+    modal.addEventListener("click", (ev) => { if (ev.target === modal) close(); });
+
+    try {
+      const d = await apiGet("payrollHoursBreakdown", { bucket });
+      const body = document.getElementById("prHoursBreakdownBody");
+      if (!body) return;
+      const employees = Array.isArray(d.employees) ? d.employees : [];
+      const range = d.range ? `${fmtDate(d.range.start)} → ${fmtDate(d.range.end)}` : "";
+      const title = document.getElementById("prHoursBreakdownTitle");
+      if (title && range) title.textContent = `${label} — ${range}`;
+
+      if (!employees.length) {
+        body.innerHTML = `<div class="pr-bonus-history-empty">No employees to show.</div>`;
+        return;
+      }
+
+      const totalFmt = (Number(d.total) || 0).toFixed(2);
+      const rowsHtml = employees.map(e => {
+        const hrsFmt = (Number(e.hours) || 0).toFixed(2);
+        const c = EMP_COLORS[e.name] || PR_BONUS_DEFAULT_PILL;
+        return `<li class="pr-bonus-history-row">
+          <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c.bg};border:1px solid ${c.border};flex-shrink:0;"></span>
+            <span class="pr-bonus-history-period" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(e.name)}</span>
+          </div>
+          <div class="pr-bonus-history-amt">${esc(hrsFmt)}<span style="font-size:11px;color:var(--muted);font-weight:500;margin-left:3px;">hrs</span></div>
+        </li>`;
+      }).join("");
+      const totalRow = `<li class="pr-bonus-history-row" style="border-top:2px solid var(--line);margin-top:2px;">
+        <div class="pr-bonus-history-period" style="color:var(--muted);">Total</div>
+        <div class="pr-bonus-history-amt" style="color:var(--muted);">${esc(totalFmt)}<span style="font-size:11px;font-weight:500;margin-left:3px;">hrs</span></div>
+      </li>`;
+      body.innerHTML = `<ul class="pr-bonus-history-list">${rowsHtml}${totalRow}</ul>`;
+    } catch (err) {
+      const body = document.getElementById("prHoursBreakdownBody");
+      if (body) body.innerHTML = `<div class="pr-bonus-history-empty" style="color:#b71c1c;">Couldn't load hours breakdown: ${esc(err.message || "unknown error")}</div>`;
+    }
+  }
+  window.showHoursBreakdown = showHoursBreakdown;
 
   function enterCreateView() {
     $("prListView").style.display = "none";

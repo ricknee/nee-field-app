@@ -2191,9 +2191,111 @@
           </div>
 
           <div style="display:flex; gap:10px; flex-wrap:wrap; margin: 16px 0 8px;">
-            <a id="btnCommissionGen" href="#" target="_blank" class="action-btn warning" style="font-size:13px; text-decoration:none;">⚡ Generator Startup / Commissioning</a>
+            <button type="button" id="btnCommissionGen" class="action-btn warning" style="font-size:13px; cursor:pointer;">⚡ Generator Startup / Commissioning</button>
             <a id="btnServiceGen" href="#" target="_blank" class="action-btn photo-add" style="font-size:13px; text-decoration:none;">🔧 New Generator Service</a>
             <button type="button" id="btnQuickLogGen" class="action-btn pipe" style="font-size:13px; cursor:pointer;">⚡ Quick Service Log</button>
+          </div>
+
+          <!-- Commissioning panel — collapsed by default. Triggered by
+               btnCommissionGen. POSTs to commissionGenerator (orchestrator)
+               which auto-creates the Generators record if needed, posts the
+               Install / Commissioning service event, and creates one Warranty
+               per matching active Warranty Template. -->
+          <div id="commPanel" style="display:none; background:var(--panel); border:1px solid var(--accent); border-radius:10px; padding:14px 16px; margin-bottom:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <div style="font-weight:700; font-size:14px; color:var(--accent);">⚡ Generator Startup / Commissioning</div>
+              <button type="button" onclick="document.getElementById('commPanel').style.display='none'" style="background:none; border:none; cursor:pointer; color:var(--muted); font-size:18px;">✕</button>
+            </div>
+
+            <div style="font-weight:600; font-size:12px; color:var(--accent); margin: 8px 0 6px;">Generator Asset Info</div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:10px;">
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Install / In-Service Date <span style="color:#e74c3c;">*</span></label>
+                <input type="date" id="commInstallDate" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Generator Brand <span style="color:#e74c3c;">*</span></label>
+                <select id="commBrand" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;">
+                  <option value="">— Select —</option>
+                  <option value="Cummins">Cummins</option>
+                  <option value="Generac">Generac</option>
+                  <option value="Kohler">Kohler</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Generator Model</label>
+                <input type="text" id="commModel" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Generator KW</label>
+                <input type="number" id="commKw" min="0" step="1" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Fuel Type</label>
+                <select id="commFuelType" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;">
+                  <option value="">— Select —</option>
+                  <option value="Natural Gas">Natural Gas</option>
+                  <option value="Propane">Propane</option>
+                  <option value="Diesel">Diesel</option>
+                </select>
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Generator Serial #</label>
+                <input type="text" id="commSerial" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Transfer Switch Model</label>
+                <input type="text" id="commTsModel" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Transfer Switch Serial #</label>
+                <input type="text" id="commTsSerial" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+            </div>
+
+            <div style="font-weight:600; font-size:12px; color:var(--accent); margin: 8px 0 6px;">Battery &amp; Service Plan</div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:10px; align-items:end;">
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Battery Install Date</label>
+                <input type="date" id="commBatteryDate" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Service Interval (Months)</label>
+                <input type="number" id="commInterval" min="0" step="1" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div style="padding-bottom:6px;">
+                <label style="font-size:13px;"><input type="checkbox" id="commServicePlan" /> Service Plan Active</label>
+              </div>
+            </div>
+
+            <div style="font-weight:600; font-size:12px; color:var(--accent); margin: 8px 0 6px;">Commissioning Event</div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:10px;">
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Technician</label>
+                <input type="text" id="commTech" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+              <div>
+                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Generator Hours @ Commissioning</label>
+                <input type="number" id="commGenHours" min="0" step="1" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
+              </div>
+            </div>
+            <div style="margin-bottom:10px;">
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Commissioning Notes</label>
+              <textarea id="commNotes" rows="3" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px; font-family:inherit; resize:vertical;"></textarea>
+            </div>
+
+            <div style="font-weight:600; font-size:12px; color:var(--accent); margin: 8px 0 6px;">Asset Notes</div>
+            <div style="margin-bottom:10px;">
+              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Notes</label>
+              <textarea id="commAssetNotes" rows="2" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px; font-family:inherit; resize:vertical;"></textarea>
+            </div>
+
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+              <button type="button" id="btnCommCancel" class="btn btn-sm" style="background:var(--panel-2); color:var(--text); border:1px solid var(--line);">Cancel</button>
+              <button type="button" id="btnCommSave" class="btn btn-primary btn-sm">⚡ Commission Generator</button>
+            </div>
+            <div id="commMsg" style="margin-top:8px; font-size:12px; display:none;"></div>
           </div>
 
           <!-- Quick service log form — collapsed by default -->
@@ -3672,6 +3774,100 @@
       $("genInfoGrid").innerHTML = `<div class="empty-msg" style="color:#ff8b7e;">Error: ${esc(err.message)}</div>`;
       $("serviceRecordsList").innerHTML = "";
       $("warrantyBadges").innerHTML = "";
+    }
+
+    // ── Commissioning panel wiring (rebound each tab load, same as
+    // quick-log below). Defaults are filled on every open — commissioning
+    // is one-shot per asset, so resetting per-open is simpler than trying
+    // to preserve half-typed values across panel close/reopen.
+    const commOpenBtn = $("btnCommissionGen");
+    const commPanel   = $("commPanel");
+    if (commOpenBtn && commPanel) {
+      commOpenBtn.onclick = () => {
+        const isOpen = commPanel.style.display !== "none";
+        commPanel.style.display = isOpen ? "none" : "block";
+        if (!isOpen) {
+          const today = new Date().toISOString().slice(0,10);
+          $("commInstallDate").value   = today;
+          $("commBrand").value         = "";
+          $("commModel").value         = "";
+          $("commKw").value            = "";
+          $("commFuelType").value      = "";
+          $("commSerial").value        = "";
+          $("commTsModel").value       = "";
+          $("commTsSerial").value      = "";
+          $("commBatteryDate").value   = today;
+          $("commInterval").value      = "12";
+          $("commServicePlan").checked = true;
+          $("commTech").value          = state.user?.name || "";
+          $("commGenHours").value      = "0";
+          $("commNotes").value         = "";
+          $("commAssetNotes").value    = "";
+          $("commMsg").style.display   = "none";
+        }
+      };
+    }
+    const commCancelBtn = $("btnCommCancel");
+    if (commCancelBtn && commPanel) commCancelBtn.onclick = () => { commPanel.style.display = "none"; };
+
+    const commSaveBtn = $("btnCommSave");
+    if (commSaveBtn) {
+      commSaveBtn.onclick = async () => {
+        // Required-field checks (asterisks warn before submit; this is
+        // the second line of defense if the user ignores them).
+        const installDate = $("commInstallDate").value;
+        const brand       = $("commBrand").value;
+        if (!installDate) { alert("Install / In-Service Date is required."); return; }
+        if (!brand)       { alert("Generator Brand is required."); return; }
+
+        const payload = {
+          jobId,
+          installDate,
+          brand,
+          model:                 $("commModel").value || "",
+          kw:                    $("commKw").value || "",
+          fuelType:              $("commFuelType").value || "",
+          serialNumber:          $("commSerial").value || "",
+          transferSwitchModel:   $("commTsModel").value || "",
+          transferSwitchSerial:  $("commTsSerial").value || "",
+          batteryInstallDate:    $("commBatteryDate").value || "",
+          servicePlanActive:     $("commServicePlan").checked,
+          serviceIntervalMonths: $("commInterval").value || "",
+          assetNotes:            $("commAssetNotes").value || "",
+          commissioningDate:     installDate,
+          technician:            $("commTech").value || "",
+          generatorHours:        $("commGenHours").value || "0",
+          commissioningNotes:    $("commNotes").value || ""
+        };
+
+        commSaveBtn.disabled    = true;
+        commSaveBtn.textContent = "Commissioning...";
+        const msg = $("commMsg");
+        try {
+          const r = await apiPost("commissionGenerator", payload);
+          if (!r?.ok) throw new Error(r?.error || "Commission failed");
+          const wCount   = Array.isArray(r.warrantyIds) ? r.warrantyIds.length : 0;
+          const warnings = Array.isArray(r.warnings) ? r.warnings : [];
+          let html = `<span style="color:var(--green);">✓ Commissioned. ${wCount} warrant${wCount === 1 ? "y" : "ies"} created.</span>`;
+          if (warnings.length) {
+            html += `<div style="margin-top:6px; padding:6px 8px; background:rgba(241,196,15,0.12); border:1px solid rgba(241,196,15,0.4); border-radius:6px; color:#f1c40f;">${warnings.map(w => esc(w)).join("<br>")}</div>`;
+          }
+          msg.innerHTML = html;
+          msg.style.display = "block";
+          // Auto-collapse + tab refresh after 2.5s — gives field techs on
+          // mobile time to register the result before the panel goes away.
+          setTimeout(() => {
+            commPanel.style.display = "none";
+            loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl);
+          }, 2500);
+        } catch(e) {
+          msg.innerHTML = `<span style="color:var(--red);">Couldn't commission: ${esc(e.message)}</span>`;
+          msg.style.display = "block";
+        } finally {
+          commSaveBtn.disabled    = false;
+          commSaveBtn.textContent = "⚡ Commission Generator";
+        }
+      };
     }
 
     // ── Quick-log wiring (rebound each time the tab loads so we pick up

@@ -697,9 +697,18 @@ async function handlePayrollHoursRollup(params) {
   });
 }
 
+// Office and viewer roles never appear in payroll views — office staff are
+// admin support and don't get tracked, viewer is a trial/test account. Blank
+// or unrecognized roles default to eligible to match the login fallback.
+function isPayrollEligibleRole(empFields) {
+  const role = normalize(empFields?.[F.emp.role]);
+  return role !== "office" && role !== "viewer";
+}
+
 // YTD bonus totals per employee. Employee list = (Active) ∪ (had a non-superseded
-// YTD bonus). Bonuses linked to superseded runs are excluded — the Bonuses table
-// has no Superseded field of its own, so we join through Payroll Runs in memory.
+// YTD bonus), then restricted to payroll-eligible roles (employee + admin).
+// Bonuses linked to superseded runs are excluded — the Bonuses table has no
+// Superseded field of its own, so we join through Payroll Runs in memory.
 async function handlePayrollBonusesRollup(params) {
   const year = parseInt(params?.year, 10) || new Date().getFullYear();
   const yearStart = `${year}-01-01`;
@@ -712,6 +721,7 @@ async function handlePayrollBonusesRollup(params) {
   for (const r of allRuns) {
     if (gBool(r.fields, "Superseded")) supersededRunIds.add(r.id);
   }
+  const empById = new Map(employees.map(e => [e.id, e]));
 
   const bonuses = await fetchAll(PR_BONUSES.table, {
     filter: `DATESTR({Pay Period End})>="${yearStart}"`
@@ -725,6 +735,10 @@ async function handlePayrollBonusesRollup(params) {
     if (runId && supersededRunIds.has(runId)) continue;
     const empId = firstLinkedId(f["Employee"]);
     if (!empId) continue;
+    // Drop bonuses owned by office/viewer roles so an inactive office worker
+    // with a prior bonus can't sneak back into the result via the union.
+    const empRec = empById.get(empId);
+    if (empRec && !isPayrollEligibleRole(empRec.fields)) continue;
     const amt = Number(f["Amount"]) || 0;
     totalsByEmpId.set(empId, (totalsByEmpId.get(empId) || 0) + amt);
     empIdsWithBonus.add(empId);
@@ -732,6 +746,7 @@ async function handlePayrollBonusesRollup(params) {
 
   const result = [];
   for (const e of employees) {
+    if (!isPayrollEligibleRole(e.fields)) continue;
     const isActive = gBool(e.fields, "Active");
     if (!isActive && !empIdsWithBonus.has(e.id)) continue;
     result.push({
@@ -754,10 +769,17 @@ async function handlePayrollEmployeeBonusHistory(params) {
   }
   const limit = Math.max(1, Math.min(50, parseInt(params?.limit, 10) || 5));
 
-  const [allRuns, allBonuses] = await Promise.all([
+  const [allRuns, allBonuses, empRecs] = await Promise.all([
     fetchAll(PR_RUNS.table),
-    fetchAll(PR_BONUSES.table, { sortField: "Pay Period End", sortDir: "desc" })
+    fetchAll(PR_BONUSES.table, { sortField: "Pay Period End", sortDir: "desc" }),
+    fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` })
   ]);
+  // Defensive: if the employeeId belongs to office/viewer (or was constructed
+  // by hand against a non-eligible role), don't leak any bonus history.
+  const emp = empRecs[0];
+  if (emp && !isPayrollEligibleRole(emp.fields)) {
+    return resp(200, { ok: true, employeeId, limit, bonuses: [] });
+  }
   const supersededRunIds = new Set();
   const runGenAt = new Map();
   for (const r of allRuns) {

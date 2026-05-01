@@ -869,7 +869,15 @@ async function handlePayrollHoursBreakdown(params) {
   }
 
   const r2 = (n) => Math.round(n * 100) / 100;
+  // Same shape as the bonus rollup's union: keep Active eligible employees
+  // (so $0 actives still render) and inactive eligible employees who have
+  // positive hours in this bucket (so an ex-employee who left mid-year still
+  // appears in YTD). Inactive 0-hour ex-employees are hidden.
   const employeesOut = eligibleEmps
+    .filter(e => {
+      const hrs = hoursByEmpId.get(e.id) || 0;
+      return gBool(e.fields, "Active") || hrs > 0;
+    })
     .map(e => ({
       id: e.id,
       name: e.fields?.["Employee Name"] || "Unknown",

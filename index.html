@@ -2177,6 +2177,14 @@
         <!-- TAB: GENERATOR -->
         <div class="tab-content" id="tab-generator">
 
+          <!-- Warranty status row — populated by a separate getWarranties
+               fetch in loadGeneratorData. Warranties table is the source of
+               truth; the deprecated single Warranty Expiration field on the
+               Generators table is no longer rendered. -->
+          <div id="warrantyBadges" style="display:flex; gap:8px; flex-wrap:wrap; margin: 0 0 14px;">
+            <div class="loading-msg">Loading warranties...</div>
+          </div>
+
           <div class="section-header">Generator Asset Info</div>
           <div class="info-grid" id="genInfoGrid">
             <div class="loading-msg">Loading generator data...</div>
@@ -3515,14 +3523,60 @@
     }
   }
 
+  // Renders the warranty badges row above the generator info-grid. Filters
+  // out voided + already-expired warranties (those don't need attention).
+  // Color tier: green >90 days, yellow 30–90, red <30 — matches the
+  // urgency a tech should feel when triaging an asset's coverage.
+  // Inline styles intentional — see Phase 1D notes; refactor to dedicated
+  // .warranty-pill classes if/when behavior grows (tooltips, click actions).
+  function renderWarrantyBadges(warranties) {
+    const el = $("warrantyBadges");
+    if (!el) return;
+    const now = Date.now();
+    const active = (warranties || [])
+      .filter(w => !w.voided)
+      .filter(w => w.endDate && new Date(w.endDate).getTime() > now);
+
+    if (!active.length) {
+      el.innerHTML = `<div class="empty-msg" style="font-size:12px; margin:0;">No active warranties</div>`;
+      return;
+    }
+
+    el.innerHTML = active.map(w => {
+      const daysLeft = Math.ceil((new Date(w.endDate).getTime() - now) / 86400000);
+      let color;
+      if (daysLeft > 90)      color = { fg: "#2ecc71", bg: "rgba(46,204,113,0.15)" }; // green
+      else if (daysLeft >= 30) color = { fg: "#f1c40f", bg: "rgba(241,196,15,0.18)" }; // yellow
+      else                    color = { fg: "#e74c3c", bg: "rgba(231,76,60,0.18)" };  // red
+      const label = `${val(w.warrantyType)} · ${daysLeft} day${daysLeft === 1 ? "" : "s"} left`;
+      return `<span class="pill" style="font-size:12px; padding:4px 10px; border-radius:999px; background:${color.bg}; color:${color.fg}; border:1px solid ${color.fg};">${esc(label)}</span>`;
+    }).join("");
+  }
+
   // ── GENERATOR DATA ──
   async function loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl) {
     $("genInfoGrid").innerHTML = `<div class="loading-msg">Loading...</div>`;
     $("serviceRecordsList").innerHTML = `<div class="loading-msg">Loading...</div>`;
+    $("warrantyBadges").innerHTML = `<div class="loading-msg" style="font-size:12px;">Loading warranties...</div>`;
 
     let d = null;
     try {
       d = await apiGet("generator", { jobId });
+
+      // Warranty badges — fetched after the generator since we need gen.id.
+      // Failure here is non-fatal: log and show a muted error in the badge
+      // row so the rest of the tab still renders.
+      const genIdForWarranties = d?.generator?.id || null;
+      if (genIdForWarranties) {
+        try {
+          const w = await apiGet("getWarranties", { generatorId: genIdForWarranties });
+          renderWarrantyBadges(Array.isArray(w?.warranties) ? w.warranties : []);
+        } catch (werr) {
+          $("warrantyBadges").innerHTML = `<div class="empty-msg" style="font-size:12px; color:#ff8b7e;">Warranty lookup failed: ${esc(werr.message)}</div>`;
+        }
+      } else {
+        $("warrantyBadges").innerHTML = "";
+      }
 
       // Generator Asset
       const gen = d.generator;
@@ -3542,7 +3596,6 @@
           <div class="info-box"><div class="info-label">Service Interval (Months)</div><div class="info-value">${esc(val(gen.serviceIntervalMonths))}</div></div>
           <div class="info-box"><div class="info-label">Next Service Due</div><div class="info-value">${esc(fmtDate(gen.nextServiceDue))}</div></div>
           <div class="info-box"><div class="info-label">Service Status</div><div class="info-value">${esc(val(gen.serviceStatus))}</div></div>
-          <div class="info-box"><div class="info-label">Warranty Expiration</div><div class="info-value">${esc(fmtDate(gen.warrantyExpiration))}</div></div>
           <div class="info-box"><div class="info-label">Status</div><div class="info-value">${esc(val(gen.status))}</div></div>
           <div class="info-box"><div class="info-label">Battery Install Date</div><div class="info-value">${esc(fmtDate(gen.batteryInstallDate))}</div></div>
           <div class="info-box"><div class="info-label">Battery Age</div><div class="info-value">${esc(val(gen.batteryAge))} yrs</div></div>
@@ -3600,7 +3653,6 @@
           <div class="service-record">
             <div class="service-record-header">
               <div class="service-record-title">${esc(svcDateFmt)} — ${esc(val(r.serviceType))}</div>
-              <span class="pill default" style="font-size:11px;">${esc(val(r.technician))}</span>
             </div>
             <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
               ${r.servicePlanVisit ? "✅ Service Plan Visit" : ""} &nbsp;
@@ -3619,6 +3671,7 @@
     } catch(err) {
       $("genInfoGrid").innerHTML = `<div class="empty-msg" style="color:#ff8b7e;">Error: ${esc(err.message)}</div>`;
       $("serviceRecordsList").innerHTML = "";
+      $("warrantyBadges").innerHTML = "";
     }
 
     // ── Quick-log wiring (rebound each time the tab loads so we pick up

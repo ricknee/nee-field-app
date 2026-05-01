@@ -1101,6 +1101,39 @@
     }
     .pr-list-action:hover:not(:disabled) { background: rgba(21,101,192,0.18); }
     .pr-list-action:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* ── Payroll Manager: KPI tiles (V2 hour rollups) ── */
+    .pr-kpi-tiles {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: 10px; margin-bottom: 14px;
+    }
+    @media (max-width: 640px) {
+      .pr-kpi-tiles { grid-template-columns: repeat(2, 1fr); }
+    }
+    .pr-kpi-tile {
+      position: relative; background: var(--panel-2); border: 1px solid var(--line);
+      border-radius: 10px; padding: 12px 14px; text-align: center;
+      cursor: help; outline: none; transition: border-color 0.15s;
+    }
+    .pr-kpi-tile:hover, .pr-kpi-tile:focus { border-color: var(--accent); }
+    .pr-kpi-tile.pr-kpi-skeleton { cursor: default; opacity: 0.55; }
+    .pr-kpi-label {
+      font-family: 'Rajdhani', sans-serif; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .pr-kpi-value {
+      font-family: 'Rajdhani', sans-serif; font-size: 28px; font-weight: 700;
+      color: var(--text); line-height: 1.1;
+    }
+    .pr-kpi-unit { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .pr-kpi-tile::after {
+      content: attr(data-range); position: absolute; bottom: 100%; left: 50%;
+      transform: translateX(-50%); margin-bottom: 6px;
+      background: rgba(0,0,0,0.88); color: #fff; padding: 4px 9px;
+      border-radius: 5px; font-size: 11px; font-weight: 500; white-space: nowrap;
+      opacity: 0; pointer-events: none; transition: opacity 0.12s; z-index: 10;
+    }
+    .pr-kpi-tile[data-range]:hover::after, .pr-kpi-tile[data-range]:focus::after { opacity: 1; }
     .pr-back-link {
       display: inline-block; margin-bottom: 14px; font-size: 13px;
       color: var(--accent); text-decoration: none; font-weight: 600; cursor: pointer;
@@ -8119,9 +8152,54 @@ rick@northeasternelec.com`
   function enterListView() {
     $("prCreateView").style.display = "none";
     $("prListView").style.display = "";
+    // Two independent fetches — let them race.
     fetchAndRenderRuns();
+    fetchAndRenderKpiTiles();
   }
   window.enterListView = enterListView;
+
+  function kpiSkeletonHtml() {
+    const labels = ["This Week", "Pay Period", "This Month", "YTD Hours"];
+    return labels.map(l => `<div class="pr-kpi-tile pr-kpi-skeleton">
+        <div class="pr-kpi-label">${esc(l)}</div>
+        <div class="pr-kpi-value">—</div>
+        <div class="pr-kpi-unit">hrs</div>
+      </div>`).join("");
+  }
+
+  async function fetchAndRenderKpiTiles() {
+    const tiles = $("prKpiTiles");
+    if (!tiles) return;
+    tiles.innerHTML = kpiSkeletonHtml();
+    try {
+      const d = await apiGet("payrollHoursRollup");
+      const r = d?.ranges || {};
+      const buckets = [
+        { label: "This Week",  data: r.thisWeek  },
+        { label: "Pay Period", data: r.payPeriod },
+        { label: "This Month", data: r.thisMonth },
+        { label: "YTD Hours",  data: r.ytd       }
+      ];
+      tiles.innerHTML = buckets.map(b => {
+        if (!b.data) {
+          return `<div class="pr-kpi-tile pr-kpi-skeleton">
+            <div class="pr-kpi-label">${esc(b.label)}</div>
+            <div class="pr-kpi-value">—</div>
+            <div class="pr-kpi-unit">hrs</div>
+          </div>`;
+        }
+        const range = `${fmtDate(b.data.start)} → ${fmtDate(b.data.end)}`;
+        const hours = fmtHrs(Number(b.data.hours) || 0);
+        return `<div class="pr-kpi-tile" tabindex="0" data-range="${esc(range)}" title="${esc(range)}">
+          <div class="pr-kpi-label">${esc(b.label)}</div>
+          <div class="pr-kpi-value">${esc(hours)}</div>
+          <div class="pr-kpi-unit">hrs</div>
+        </div>`;
+      }).join("");
+    } catch (e) {
+      tiles.innerHTML = `<div class="pr-empty" style="grid-column: 1 / -1;">Couldn't load hour totals: ${esc(e.message || "unknown error")}</div>`;
+    }
+  }
 
   function enterCreateView() {
     $("prListView").style.display = "none";
@@ -10219,6 +10297,7 @@ rick@northeasternelec.com`
             <span>Show superseded</span>
           </label>
         </div>
+        <div id="prKpiTiles" class="pr-kpi-tiles"></div>
         <div id="prListGrid"></div>
       </div>
 

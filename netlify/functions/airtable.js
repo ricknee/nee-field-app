@@ -223,6 +223,30 @@ function extractUrl(formulaValue) {
 }
 function normalize(v) { return String(v || "").trim().toLowerCase(); }
 
+// yyyy-mm-dd ⇄ local-midnight Date helpers, used by the V2 payroll rollups.
+function ymdToDate(s) {
+  const [y, m, d] = String(s || "").split("-").map(Number);
+  if (!y || !m || !d) return null;
+  return new Date(y, m - 1, d);
+}
+function dateToYmd(dt) {
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+function shiftDays(dt, n) {
+  const out = new Date(dt);
+  out.setDate(out.getDate() + n);
+  return out;
+}
+function firstLinkedId(v) {
+  if (!Array.isArray(v) || !v.length) return null;
+  const first = v[0];
+  if (typeof first === "string") return first;
+  return first?.id || null;
+}
+
 async function atFetch(path, options = {}) {
   ensureEnv();
   const res = await fetch(`${API_ROOT}/${path}`, {
@@ -602,6 +626,163 @@ async function handlePayrollRunsList(params) {
   });
 
   return resp(200, { ok: true, runs });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PAYROLL V2 — hours + bonuses rollups for the Payroll Manager top row
+// ══════════════════════════════════════════════════════════════════
+
+// Hours-rollup tiles: This Week (Mon–Sat), current Pay Period (anchored on
+// the most recent non-superseded run's end date + 1 day), This Month, YTD.
+// One Time Entries fetch covering Jan 1 → today, bucketed in memory.
+async function handlePayrollHoursRollup(params) {
+  const todayStr = params?.today || dateToYmd(new Date());
+  const today = ymdToDate(todayStr);
+  if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
+
+  const yearStart  = new Date(today.getFullYear(), 0, 1);
+  const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+  const dow = today.getDay();
+  const diffToMon = (dow === 0) ? -6 : 1 - dow;
+  const thisWeekStart = shiftDays(today, diffToMon);
+  const thisWeekEnd   = shiftDays(thisWeekStart, 5); // Mon..Sat work week
+
+  // Pay period anchor: most recent non-superseded run's Pay Period End + 1 day,
+  // then +13 days. Fallback (no runs yet) mirrors the create-payroll dialog default.
+  let payPeriodStart, payPeriodEnd;
+  const recentRuns = await fetchAll(PR_RUNS.table, {
+    filter: `NOT({Superseded})`,
+    sortField: "Pay Period End",
+    sortDir: "desc"
+  });
+  if (recentRuns.length && recentRuns[0].fields?.["Pay Period End"]) {
+    const lastEnd = ymdToDate(recentRuns[0].fields["Pay Period End"]);
+    payPeriodStart = shiftDays(lastEnd, 1);
+    payPeriodEnd   = shiftDays(payPeriodStart, 13);
+  } else {
+    payPeriodStart = shiftDays(thisWeekStart, -7);
+    payPeriodEnd   = shiftDays(payPeriodStart, 13);
+  }
+
+  // DATESTR + string compare keeps us out of the IS_AFTER/IS_BEFORE granularity
+  // hole (only IS_SAME accepts a "day" unit). Both sides are "YYYY-MM-DD".
+  const fromStr = dateToYmd(yearStart);
+  const filter = `AND(DATESTR({Work Date})>="${fromStr}",DATESTR({Work Date})<="${todayStr}")`;
+  const records = await fetchAll(TABLES.timeEntries, { filter, sortField: "Work Date", sortDir: "asc" });
+
+  let wkHrs = 0, ppHrs = 0, moHrs = 0, ytdHrs = 0;
+  for (const r of records) {
+    const f = r.fields || {};
+    const ds = f["Work Date"];
+    if (!ds) continue;
+    const d = ymdToDate(ds);
+    if (!d) continue;
+    const hrs = Number(f["Hours"]) || 0;
+    if (d >= yearStart    && d <= today)    ytdHrs += hrs;
+    if (d >= monthStart   && d <= today)    moHrs  += hrs;
+    if (d >= thisWeekStart && d <= today)   wkHrs  += hrs;
+    if (d >= payPeriodStart && d <= today && d <= payPeriodEnd) ppHrs += hrs;
+  }
+
+  const r2 = (n) => Math.round(n * 100) / 100;
+  return resp(200, {
+    ok: true,
+    asOf: todayStr,
+    ranges: {
+      thisWeek:  { start: dateToYmd(thisWeekStart),  end: dateToYmd(thisWeekEnd),  hours: r2(wkHrs)  },
+      payPeriod: { start: dateToYmd(payPeriodStart), end: dateToYmd(payPeriodEnd), hours: r2(ppHrs)  },
+      thisMonth: { start: dateToYmd(monthStart),     end: todayStr,                hours: r2(moHrs)  },
+      ytd:       { start: dateToYmd(yearStart),      end: todayStr,                hours: r2(ytdHrs) }
+    }
+  });
+}
+
+// YTD bonus totals per employee. Employee list = (Active) ∪ (had a non-superseded
+// YTD bonus). Bonuses linked to superseded runs are excluded — the Bonuses table
+// has no Superseded field of its own, so we join through Payroll Runs in memory.
+async function handlePayrollBonusesRollup(params) {
+  const year = parseInt(params?.year, 10) || new Date().getFullYear();
+  const yearStart = `${year}-01-01`;
+
+  const [employees, allRuns] = await Promise.all([
+    fetchAll(TABLES.employees),
+    fetchAll(PR_RUNS.table)
+  ]);
+  const supersededRunIds = new Set();
+  for (const r of allRuns) {
+    if (gBool(r.fields, "Superseded")) supersededRunIds.add(r.id);
+  }
+
+  const bonuses = await fetchAll(PR_BONUSES.table, {
+    filter: `DATESTR({Pay Period End})>="${yearStart}"`
+  });
+
+  const totalsByEmpId = new Map();
+  const empIdsWithBonus = new Set();
+  for (const b of bonuses) {
+    const f = b.fields || {};
+    const runId = firstLinkedId(f["Payroll Run"]);
+    if (runId && supersededRunIds.has(runId)) continue;
+    const empId = firstLinkedId(f["Employee"]);
+    if (!empId) continue;
+    const amt = Number(f["Amount"]) || 0;
+    totalsByEmpId.set(empId, (totalsByEmpId.get(empId) || 0) + amt);
+    empIdsWithBonus.add(empId);
+  }
+
+  const result = [];
+  for (const e of employees) {
+    const isActive = gBool(e.fields, "Active");
+    if (!isActive && !empIdsWithBonus.has(e.id)) continue;
+    result.push({
+      id: e.id,
+      name: e.fields?.["Employee Name"] || "Unknown",
+      ytdBonus: Math.round((totalsByEmpId.get(e.id) || 0) * 100) / 100
+    });
+  }
+  result.sort((a, b) => a.name.localeCompare(b.name));
+  return resp(200, { ok: true, year, employees: result });
+}
+
+// Per-employee bonus history (last N non-superseded). Bonuses table is small
+// enough (one row per employee per period) to fetchAll and filter in memory —
+// avoids the {Employee}-link/ARRAYJOIN-returns-name pitfall.
+async function handlePayrollEmployeeBonusHistory(params) {
+  const employeeId = params?.employeeId;
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const limit = Math.max(1, Math.min(50, parseInt(params?.limit, 10) || 5));
+
+  const [allRuns, allBonuses] = await Promise.all([
+    fetchAll(PR_RUNS.table),
+    fetchAll(PR_BONUSES.table, { sortField: "Pay Period End", sortDir: "desc" })
+  ]);
+  const supersededRunIds = new Set();
+  const runGenAt = new Map();
+  for (const r of allRuns) {
+    if (gBool(r.fields, "Superseded")) supersededRunIds.add(r.id);
+    runGenAt.set(r.id, r.fields?.["Generated At"] || null);
+  }
+
+  const out = [];
+  for (const b of allBonuses) {
+    if (out.length >= limit) break;
+    const f = b.fields || {};
+    if (firstLinkedId(f["Employee"]) !== employeeId) continue;
+    const runId = firstLinkedId(f["Payroll Run"]);
+    if (runId && supersededRunIds.has(runId)) continue;
+    out.push({
+      id: b.id,
+      amount: Math.round((Number(f["Amount"]) || 0) * 100) / 100,
+      payPeriodStart: f["Pay Period Start"] || null,
+      payPeriodEnd:   f["Pay Period End"]   || null,
+      runId,
+      runGeneratedAt: runId ? (runGenAt.get(runId) || null) : null
+    });
+  }
+
+  return resp(200, { ok: true, employeeId, limit, bonuses: out });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2091,6 +2272,9 @@ export async function handler(event) {
       if (action === "payrollEntries")     return await handlePayrollEntries(params);
       if (action === "findMatchingPayrollRun") return await handleFindMatchingPayrollRun(params);
       if (action === "payrollRunsList")    return await handlePayrollRunsList(params);
+      if (action === "payrollHoursRollup")          return await handlePayrollHoursRollup(params);
+      if (action === "payrollBonusesRollup")        return await handlePayrollBonusesRollup(params);
+      if (action === "payrollEmployeeBonusHistory") return await handlePayrollEmployeeBonusHistory(params);
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);

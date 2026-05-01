@@ -7,13 +7,15 @@ const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 const API_ROOT = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
 
 const TABLES = {
-  employees:        "Employees",
-  jobs:             "Jobs",
-  generators:       "Generators",
-  generatorService: "Generator Service",
-  timeEntries:      "Time Entries",
-  scissorLifts:     "Scissor Lifts",
-  scheduleEntries:  "Schedule Entries"
+  employees:         "Employees",
+  jobs:              "Jobs",
+  generators:        "Generators",
+  generatorService:  "Generator Service",
+  warrantyTemplates: "Warranty Templates",
+  warranties:        "Warranties",
+  timeEntries:       "Time Entries",
+  scissorLifts:      "Scissor Lifts",
+  scheduleEntries:   "Schedule Entries"
 };
 
 const F = {
@@ -123,6 +125,28 @@ const F = {
     exerciseChecked:"Exercise Checked",troubleCodesFound:"Trouble Codes Found",
     workNotes:"Work Performed Notes",partsUsed:"Parts Used",laborHours:"Labor Hours",
     generatorHours:"Generator Hours @ Service"
+  },
+  warrantyTemplate: {
+    name:           "Template Name",
+    brand:          "Brand",
+    model:          "Model",
+    warrantyType:   "Warranty Type",
+    durationMonths: "Duration Months",
+    notes:          "Notes",
+    active:         "Active"
+  },
+  warranty: {
+    name:                "Warranty Name",
+    generator:           "Generator",
+    warrantyType:        "Warranty Type",
+    startDate:           "Start Date",
+    endDate:             "End Date",
+    durationMonths:      "Duration Months",
+    source:              "Source",
+    voided:              "Voided",
+    voidedReason:        "Voided Reason",
+    notes:               "Notes",
+    createdFromTemplate: "Created From Template"
   }
 };
 
@@ -246,6 +270,49 @@ function firstLinkedId(v) {
   if (typeof first === "string") return first;
   return first?.id || null;
 }
+
+// Adds N calendar months to a YYYY-MM-DD string and returns YYYY-MM-DD.
+// Uses UTC math to avoid local-timezone day shifts. JS setMonth handles
+// month overflow (e.g. Jan 31 + 1 month → Mar 3) which is the standard
+// "same calendar day N months later" interpretation we want for warranty
+// end dates.
+function addMonthsToDateStr(dateStr, months) {
+  const [y, m, d] = String(dateStr || "").split("-").map(Number);
+  if (!y || !m || !d) return null;
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCMonth(dt.getUTCMonth() + Number(months || 0));
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+// ── Singleselect whitelists ──────────────────────────────────────────────
+// Same pattern as ESTIMATE_TYPE_OPTS (see handleCreateJobEstimate): explicit
+// option list + fallback, so a stray client value can't trip Airtable's
+// typecast and silently create a duplicate option. Keep these in sync with
+// the singleselect choices configured on each table.
+
+// Generator Service.Service Type — 7 valid options. "Install / Commissioning"
+// is server-set by handleCommissionGenerator; the other six are user-selectable
+// in the New Generator Service panel (Phase 1C).
+const SERVICE_TYPE_OPTS = [
+  "Install / Commissioning",
+  "First Service",
+  "Annual Maintenance",
+  "Semi-Annual Maintenance",
+  "Repair",
+  "Warranty Repair",
+  "Emergency Service"
+];
+
+// Warranties.Warranty Type — fallback "Limited" is the most conservative
+// (least coverage) choice if a stray value arrives.
+const WARRANTY_TYPE_OPTS = ["Parts & Labor", "Parts Only", "Extended", "Limited"];
+
+// Warranties.Source — fallback "Standard" is the default for warranties
+// created from manufacturer templates at commissioning time.
+const WARRANTY_SOURCE_OPTS = ["Standard", "Extended Purchase", "Promotional", "Transferred"];
 
 async function atFetch(path, options = {}) {
   ensureEnv();
@@ -2008,6 +2075,348 @@ async function handleAddGeneratorService(body) {
   return resp(200, { ok: true, id: data.id });
 }
 
+// Builds the filterByFormula for Warranty Templates lookup, used by both
+// the standalone GET endpoint and the commissioning orchestrator. Blank
+// {Model} means "applies to all models for this brand" (the seeded Cummins
+// whole-house templates use this), so when the caller passes a model we
+// match either that exact model OR a blank Model. When the caller doesn't
+// pass a model, we only match blank-Model templates.
+function buildWarrantyTemplateFilter(brand, model) {
+  const safeBrand = escapeFormulaString(brand);
+  const parts = [
+    `{${F.warrantyTemplate.active}}=TRUE()`,
+    `LOWER({${F.warrantyTemplate.brand}})="${safeBrand.toLowerCase()}"`
+  ];
+  const trimmedModel = (model || "").trim();
+  if (trimmedModel) {
+    const safeModel = escapeFormulaString(trimmedModel);
+    parts.push(`OR(LOWER({${F.warrantyTemplate.model}})="${safeModel.toLowerCase()}",{${F.warrantyTemplate.model}}=BLANK())`);
+  } else {
+    parts.push(`{${F.warrantyTemplate.model}}=BLANK()`);
+  }
+  return `AND(${parts.join(",")})`;
+}
+
+// ── WARRANTY TEMPLATES ──────────────────────────────────────────────────
+// Read-side endpoint backing the commissioning panel's template lookup
+// (and any future "what would we auto-create?" preview). Filtered by Brand
+// (required) and optionally Model. Only Active=TRUE() rows return — the
+// Active flag is the kill switch for templates that have been superseded
+// or are not yet ready for production use.
+async function handleGetWarrantyTemplates(params) {
+  const brand = (params?.brand || "").trim();
+  const model = (params?.model || "").trim();
+  if (!brand) return resp(400, { ok: false, error: "Missing brand." });
+
+  const filter = buildWarrantyTemplateFilter(brand, model);
+  const records = await fetchAll(TABLES.warrantyTemplates, { filter });
+  const templates = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:             r.id,
+      name:           g(f, F.warrantyTemplate.name) || "",
+      brand:          g(f, F.warrantyTemplate.brand) || "",
+      model:          g(f, F.warrantyTemplate.model) || "",
+      warrantyType:   g(f, F.warrantyTemplate.warrantyType) || "",
+      durationMonths: gNum(f, F.warrantyTemplate.durationMonths),
+      notes:          g(f, F.warrantyTemplate.notes) || "",
+      active:         gBool(f, F.warrantyTemplate.active)
+    };
+  });
+  return resp(200, { ok: true, templates });
+}
+
+// ── WARRANTIES (READ) ───────────────────────────────────────────────────
+// Returns all warranties attached to a generator, sorted by End Date
+// ascending so the soonest-to-expire shows first. filterByFormula can't
+// match a linked-record field by record ID directly, so we resolve the
+// generator's primary text (Generator Asset ID) and use the same
+// FIND(..., ARRAYJOIN({Generator})) trick the Generator Service lookup
+// uses (see handleGenerator).
+async function handleGetWarranties(params) {
+  const generatorId = (params?.generatorId || "").trim();
+  if (!generatorId) return resp(400, { ok: false, error: "Missing generatorId." });
+
+  let assetId = "";
+  try {
+    const genRec = await atFetch(`${encodeURIComponent(TABLES.generators)}/${generatorId}`);
+    assetId = genRec?.fields?.[F.gen.assetId] || "";
+  } catch (err) {
+    return resp(404, { ok: false, error: "Generator not found." });
+  }
+  // Just-created records may not have their formula assetId computed yet
+  // — return empty rather than scanning the whole Warranties table.
+  if (!assetId) return resp(200, { ok: true, warranties: [] });
+
+  const safe = escapeFormulaString(assetId);
+  const filter = `FIND("${safe}", ARRAYJOIN({${F.warranty.generator}}))`;
+  const records = await fetchAll(TABLES.warranties, {
+    filter,
+    sortField: F.warranty.endDate,
+    sortDir:   "asc"
+  });
+  const warranties = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:             r.id,
+      name:           g(f, F.warranty.name) || "",
+      warrantyType:   g(f, F.warranty.warrantyType) || "",
+      startDate:      g(f, F.warranty.startDate) || "",
+      endDate:        g(f, F.warranty.endDate) || "",
+      durationMonths: gNum(f, F.warranty.durationMonths),
+      source:         g(f, F.warranty.source) || "",
+      voided:         gBool(f, F.warranty.voided),
+      voidedReason:   g(f, F.warranty.voidedReason) || "",
+      notes:          g(f, F.warranty.notes) || "",
+      templateId:     firstLinkedId(f[F.warranty.createdFromTemplate])
+    };
+  });
+  return resp(200, { ok: true, warranties });
+}
+
+// ── ADD WARRANTY ────────────────────────────────────────────────────────
+// Standalone single-warranty create. The commissioning orchestrator does
+// its own warranty inserts inline (so it can roll a single warnings[]
+// across all writes); this endpoint is for ad-hoc manual additions like
+// extended-purchase or transferred warranties added after commissioning.
+async function handleAddWarranty(body) {
+  const { generatorId, warrantyType, startDate, durationMonths, source, templateId, notes } = body || {};
+  if (!generatorId)              return resp(400, { ok: false, error: "Missing generatorId." });
+  if (!startDate)                return resp(400, { ok: false, error: "Missing startDate." });
+  if (durationMonths === undefined || durationMonths === null || durationMonths === "")
+    return resp(400, { ok: false, error: "Missing durationMonths." });
+  const months = Number(durationMonths);
+  if (!Number.isFinite(months) || months <= 0)
+    return resp(400, { ok: false, error: "durationMonths must be a positive number." });
+
+  const endDate = addMonthsToDateStr(startDate, months);
+  if (!endDate) return resp(400, { ok: false, error: "Invalid startDate format (need YYYY-MM-DD)." });
+
+  const fields = {};
+  fields[F.warranty.generator]      = [generatorId];
+  // Warranty Type whitelist (singleSelect) — fallback "Limited" is the most
+  // conservative coverage choice if a stray value somehow arrives.
+  fields[F.warranty.warrantyType]   = WARRANTY_TYPE_OPTS.includes(warrantyType) ? warrantyType : "Limited";
+  fields[F.warranty.startDate]      = startDate;
+  fields[F.warranty.endDate]        = endDate;
+  fields[F.warranty.durationMonths] = months;
+  // Source whitelist (singleSelect) — fallback "Standard" is the default
+  // for warranties created from manufacturer templates.
+  fields[F.warranty.source]         = WARRANTY_SOURCE_OPTS.includes(source) ? source : "Standard";
+  if (templateId)                    fields[F.warranty.createdFromTemplate] = [templateId];
+  if (notes && String(notes).trim()) fields[F.warranty.notes] = String(notes);
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.warranties)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  if (data.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, id: data.id });
+}
+
+// ── COMMISSION GENERATOR (orchestrator) ─────────────────────────────────
+// One-shot commissioning workflow: PATCH/CREATE the Generators record →
+// POST a "Install / Commissioning" Generator Service event → POST one
+// Warranty per matching Warranty Template (Source = "Standard").
+//
+// Not transactional (Airtable REST has no transactions). Best-effort: if
+// step 1 fails we abort. If steps 2 or 3 fail partially, we accumulate
+// reasons in warnings[] and return ok:true with whatever IDs did succeed,
+// so the UI can surface "the asset saved but the service event didn't —
+// here's what to retry" rather than a generic 500.
+//
+// Idempotent on warranties: if the generator already has any warranty
+// records, the warranty step is skipped (warning recorded). This makes
+// re-running commissioning on an existing asset safe.
+async function handleCommissionGenerator(body) {
+  const {
+    jobId, generatorId,
+    installDate, brand, model, kw, fuelType, serialNumber,
+    transferSwitchModel, transferSwitchSerial,
+    batteryInstallDate, servicePlanActive, serviceIntervalMonths,
+    assetNotes,
+    commissioningDate, technician, generatorHours, commissioningNotes
+  } = body || {};
+
+  if (!jobId)       return resp(400, { ok: false, error: "Missing jobId." });
+  if (!installDate) return resp(400, { ok: false, error: "Missing installDate." });
+  if (!brand)       return resp(400, { ok: false, error: "Missing brand (required for warranty template lookup)." });
+
+  const warnings = [];
+
+  // ── Step 1: PATCH or CREATE the Generators record ─────────────────────
+  // Same field shape works for both code paths; only difference is the
+  // Job linkage (set on create only).
+  const assetFields = {};
+  assetFields[F.gen.installDate] = installDate;
+  assetFields[F.gen.brand]       = brand;
+  if (model && String(model).trim())                     assetFields[F.gen.model] = String(model).trim();
+  if (kw !== undefined && kw !== null && kw !== "")     assetFields[F.gen.kw] = String(kw);
+  if (fuelType)                                          assetFields[F.gen.fuelType] = fuelType;
+  if (serialNumber && String(serialNumber).trim())       assetFields[F.gen.serialNumber] = String(serialNumber).trim();
+  if (transferSwitchModel && String(transferSwitchModel).trim())   assetFields[F.gen.transferSwitchModel] = String(transferSwitchModel).trim();
+  if (transferSwitchSerial && String(transferSwitchSerial).trim()) assetFields[F.gen.transferSwitchSerial] = String(transferSwitchSerial).trim();
+  if (batteryInstallDate)                                assetFields[F.gen.batteryInstallDate] = batteryInstallDate;
+  if (servicePlanActive !== undefined)                   assetFields[F.gen.servicePlanActive] = servicePlanActive === true;
+  if (serviceIntervalMonths !== undefined && serviceIntervalMonths !== null && serviceIntervalMonths !== "")
+    assetFields[F.gen.serviceIntervalMonths] = String(serviceIntervalMonths);
+  if (assetNotes && String(assetNotes).trim())           assetFields[F.gen.notes] = String(assetNotes);
+
+  let resolvedGeneratorId = generatorId || null;
+
+  // If caller didn't supply a generatorId, look for one already linked to
+  // the Job before falling back to creating a fresh asset. This keeps the
+  // re-commissioning path (asset exists, is being PATCHed) intact even
+  // when the frontend hasn't passed the ID along.
+  if (!resolvedGeneratorId) {
+    try {
+      const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+      const jobName = jobRecords[0]?.fields?.[F.job.name] || "";
+      if (jobName) {
+        const safeName = escapeFormulaString(jobName);
+        const linkedFilter = `FIND("${safeName}", ARRAYJOIN({${F.gen.job}}))`;
+        const linked = await fetchAll(TABLES.generators, { filter: linkedFilter });
+        if (linked.length) resolvedGeneratorId = linked[0].id;
+      }
+    } catch (err) {
+      // Lookup failure isn't fatal — we can still create a fresh asset below.
+      warnings.push(`Could not check for existing generator on job: ${err.message}`);
+    }
+  }
+
+  if (resolvedGeneratorId) {
+    try {
+      const patched = await atFetch(`${encodeURIComponent(TABLES.generators)}/${resolvedGeneratorId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields: assetFields, typecast: true })
+      });
+      resolvedGeneratorId = patched.id;
+    } catch (err) {
+      return resp(500, { ok: false, error: `Failed to update generator: ${err.message}` });
+    }
+  } else {
+    const createFields = { ...assetFields };
+    createFields[F.gen.job] = [jobId];
+    try {
+      const created = await atFetch(`${encodeURIComponent(TABLES.generators)}`, {
+        method: "POST",
+        body: JSON.stringify({ fields: createFields, typecast: true })
+      });
+      resolvedGeneratorId = created.id;
+    } catch (err) {
+      return resp(500, { ok: false, error: `Failed to create generator: ${err.message}` });
+    }
+  }
+
+  // ── Step 2: POST the commissioning Generator Service event ────────────
+  // Service Type is server-set rather than client-passed, but still
+  // validated against SERVICE_TYPE_OPTS so the typecast guard is
+  // consistent with other handlers (and a future rename to the option
+  // surfaces here as a clean fallback rather than a typecast-created dup).
+  const COMM_TYPE = "Install / Commissioning";
+  const svcType = SERVICE_TYPE_OPTS.includes(COMM_TYPE) ? COMM_TYPE : SERVICE_TYPE_OPTS[0];
+
+  const svcFields = {};
+  svcFields[F.svc.generator]   = [resolvedGeneratorId];
+  svcFields[F.svc.job]         = [jobId];
+  svcFields[F.svc.serviceDate] = commissioningDate || installDate;
+  svcFields[F.svc.serviceType] = svcType;
+  if (technician)         svcFields[F.svc.technician] = String(technician);
+  if (generatorHours !== undefined && generatorHours !== null && generatorHours !== "")
+    svcFields[F.svc.generatorHours] = Number(generatorHours);
+  if (commissioningNotes && String(commissioningNotes).trim())
+    svcFields[F.svc.workNotes] = String(commissioningNotes);
+
+  let serviceRecordId = null;
+  try {
+    const svcData = await atFetch(`${encodeURIComponent(TABLES.generatorService)}`, {
+      method: "POST",
+      body: JSON.stringify({ fields: svcFields, typecast: true })
+    });
+    serviceRecordId = svcData.id;
+  } catch (err) {
+    warnings.push(`Failed to create commissioning service record: ${err.message}`);
+  }
+
+  // ── Step 3: Create one Warranty per matching Warranty Template ────────
+  // Idempotency: skip the whole step if any warranties already exist on
+  // this generator, so re-commissioning doesn't pile up duplicates.
+  const warrantyIds = [];
+
+  let assetIdForLookup = "";
+  try {
+    const genRec = await atFetch(`${encodeURIComponent(TABLES.generators)}/${resolvedGeneratorId}`);
+    assetIdForLookup = genRec?.fields?.[F.gen.assetId] || "";
+  } catch (err) {
+    warnings.push(`Could not re-read generator for warranty dup-check: ${err.message}`);
+  }
+
+  let existingWarrantyCount = 0;
+  if (assetIdForLookup) {
+    try {
+      const safe = escapeFormulaString(assetIdForLookup);
+      const existingFilter = `FIND("${safe}", ARRAYJOIN({${F.warranty.generator}}))`;
+      const existing = await fetchAll(TABLES.warranties, { filter: existingFilter });
+      existingWarrantyCount = existing.length;
+    } catch (err) {
+      warnings.push(`Could not check existing warranties: ${err.message}`);
+    }
+  }
+
+  if (existingWarrantyCount > 0) {
+    warnings.push("Warranties already existed for this generator — skipped re-creation.");
+  } else {
+    let templates = [];
+    try {
+      const tFilter = buildWarrantyTemplateFilter(brand, model);
+      templates = await fetchAll(TABLES.warrantyTemplates, { filter: tFilter });
+    } catch (err) {
+      warnings.push(`Could not look up warranty templates: ${err.message}`);
+    }
+
+    if (!templates.length) {
+      warnings.push(`No active warranty templates found for brand "${brand}"${model ? ` / model "${model}"` : ""}.`);
+    }
+
+    for (const t of templates) {
+      const tf = t.fields || {};
+      const months = Number(tf[F.warrantyTemplate.durationMonths]);
+      const wType  = tf[F.warrantyTemplate.warrantyType];
+      const tName  = tf[F.warrantyTemplate.name] || t.id;
+      if (!Number.isFinite(months) || months <= 0) {
+        warnings.push(`Template "${tName}" has invalid Duration Months — skipped.`);
+        continue;
+      }
+      const wEnd = addMonthsToDateStr(installDate, months);
+      const wFields = {};
+      wFields[F.warranty.generator]           = [resolvedGeneratorId];
+      wFields[F.warranty.warrantyType]        = WARRANTY_TYPE_OPTS.includes(wType) ? wType : "Limited";
+      wFields[F.warranty.startDate]           = installDate;
+      wFields[F.warranty.endDate]             = wEnd;
+      wFields[F.warranty.durationMonths]      = months;
+      wFields[F.warranty.source]              = "Standard";
+      wFields[F.warranty.createdFromTemplate] = [t.id];
+      try {
+        const wData = await atFetch(`${encodeURIComponent(TABLES.warranties)}`, {
+          method: "POST",
+          body: JSON.stringify({ fields: wFields, typecast: true })
+        });
+        warrantyIds.push(wData.id);
+      } catch (err) {
+        warnings.push(`Failed to create warranty from template "${tName}": ${err.message}`);
+      }
+    }
+  }
+
+  return resp(200, {
+    ok: true,
+    generatorId:    resolvedGeneratorId,
+    serviceRecordId,
+    warrantyIds,
+    warnings
+  });
+}
+
 // ── SET INVOICE STATUS ───────────────────────────────────────────────────
 // Generalized status setter (replaces the old markInvoicePaid). Accepts any
 // option name; thanks to typecast: true, new options like "Disputed" get
@@ -2511,6 +2920,8 @@ export async function handler(event) {
       if (action === "jobs")               return await handleJobs();
       if (action === "jobById")            return await handleJobById(params);
       if (action === "generator")          return await handleGenerator(params);
+      if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
+      if (action === "getWarranties")      return await handleGetWarranties(params);
       if (action === "expenses")           return await handleExpenses(params);
       if (action === "timeEntries")        return await handleTimeEntries(params);
       if (action === "payrollEntries")     return await handlePayrollEntries(params);
@@ -2570,6 +2981,8 @@ export async function handler(event) {
       if (body.action === "markInvoicePaid")      return await handleMarkInvoicePaid(body);
       if (body.action === "setInvoiceStatus")     return await handleSetInvoiceStatus(body);
       if (body.action === "addGeneratorService")  return await handleAddGeneratorService(body);
+      if (body.action === "addWarranty")          return await handleAddWarranty(body);
+      if (body.action === "commissionGenerator")  return await handleCommissionGenerator(body);
       if (body.action === "addScheduleEntry")     return await handleAddScheduleEntry(body);
       if (body.action === "updateScheduleEntry")  return await handleUpdateScheduleEntry(body);
       if (body.action === "deleteScheduleEntry")  return await handleDeleteScheduleEntry(body);

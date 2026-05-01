@@ -894,6 +894,141 @@ async function handlePayrollHoursBreakdown(params) {
   });
 }
 
+// ── My Hours: per-user view of the same four buckets + per-day drill ──
+//
+// Auth model is trust-the-frontend: every endpoint takes an employeeId at
+// face value, since the app has no server session. The defensive role check
+// keeps office/viewer accounts out (the higher-value protection — a non-
+// payroll-eligible user can't query anyone's hours), but a payroll-eligible
+// user could in principle pass another employee's id and view their totals.
+// Acceptable for V1 of an internal payroll-visibility feature; flagged as a
+// known limitation, deferred to a broader auth rework.
+
+async function handleMyHoursRollup(params) {
+  const employeeId = params?.employeeId;
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const todayStr = params?.today || dateToYmd(new Date());
+  const today = ymdToDate(todayStr);
+  if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
+
+  const empRecs = await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` });
+  const emp = empRecs[0];
+  if (!emp) return resp(404, { ok: false, error: "Employee not found." });
+  if (!isPayrollEligibleRole(emp.fields)) {
+    return resp(403, { ok: false, error: "Employee role is not payroll-eligible." });
+  }
+
+  // Same date math as the admin tile — Pay Period anchor is the company-wide
+  // most-recent-non-superseded-run + 1, NOT a per-employee anchor.
+  const { yearStart, monthStart, thisWeekStart, thisWeekEnd, payPeriodStart, payPeriodEnd }
+    = await computePayrollDateRanges(today);
+
+  // One Time Entries fetch covering Jan 1 → today, then in-memory filter by
+  // the linked employee record id. ARRAYJOIN on {Employee (Linked)} expands
+  // to names, not ids, so a name-based filter would collide on shared first
+  // names — same gotcha the bonus history handler avoids.
+  const filter = `AND(DATESTR({Work Date})>="${dateToYmd(yearStart)}",DATESTR({Work Date})<="${todayStr}")`;
+  const records = await fetchAll(TABLES.timeEntries, { filter, sortField: "Work Date", sortDir: "asc" });
+
+  let wkHrs = 0, ppHrs = 0, moHrs = 0, ytdHrs = 0;
+  for (const r of records) {
+    const f = r.fields || {};
+    if (firstLinkedId(f["Employee (Linked)"]) !== employeeId) continue;
+    const ds = f["Work Date"];
+    if (!ds) continue;
+    const d = ymdToDate(ds);
+    if (!d) continue;
+    const hrs = Number(f["Hours"]) || 0;
+    if (d >= yearStart    && d <= today)    ytdHrs += hrs;
+    if (d >= monthStart   && d <= today)    moHrs  += hrs;
+    if (d >= thisWeekStart && d <= today)   wkHrs  += hrs;
+    if (d >= payPeriodStart && d <= today && d <= payPeriodEnd) ppHrs += hrs;
+  }
+
+  const r2 = (n) => Math.round(n * 100) / 100;
+  return resp(200, {
+    ok: true,
+    employeeId,
+    asOf: todayStr,
+    ranges: {
+      thisWeek:  { start: dateToYmd(thisWeekStart),  end: dateToYmd(thisWeekEnd),  hours: r2(wkHrs)  },
+      payPeriod: { start: dateToYmd(payPeriodStart), end: dateToYmd(payPeriodEnd), hours: r2(ppHrs)  },
+      thisMonth: { start: dateToYmd(monthStart),     end: todayStr,                hours: r2(moHrs)  },
+      ytd:       { start: dateToYmd(yearStart),      end: todayStr,                hours: r2(ytdHrs) }
+    }
+  });
+}
+
+async function handleMyHoursBreakdown(params) {
+  const VALID_BUCKETS = new Set(["thisWeek", "payPeriod", "thisMonth", "ytd"]);
+  const employeeId = params?.employeeId;
+  const bucket = params?.bucket;
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  if (!VALID_BUCKETS.has(bucket)) {
+    return resp(400, { ok: false, error: "Invalid bucket. Expected one of: thisWeek, payPeriod, thisMonth, ytd." });
+  }
+  const todayStr = params?.today || dateToYmd(new Date());
+  const today = ymdToDate(todayStr);
+  if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
+
+  const empRecs = await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` });
+  const emp = empRecs[0];
+  if (!emp) return resp(404, { ok: false, error: "Employee not found." });
+  if (!isPayrollEligibleRole(emp.fields)) {
+    return resp(403, { ok: false, error: "Employee role is not payroll-eligible." });
+  }
+
+  const ranges = await computePayrollDateRanges(today);
+  let bucketStart, bucketEnd;
+  if      (bucket === "thisWeek")  { bucketStart = ranges.thisWeekStart;  bucketEnd = ranges.thisWeekEnd; }
+  else if (bucket === "payPeriod") { bucketStart = ranges.payPeriodStart; bucketEnd = ranges.payPeriodEnd; }
+  else if (bucket === "thisMonth") { bucketStart = ranges.monthStart;     bucketEnd = today; }
+  else                             { bucketStart = ranges.yearStart;      bucketEnd = today; }
+
+  // Clip the fetch at today — entries beyond today aren't real yet (matches
+  // the admin breakdown's behavior for forward-leaning Pay Period).
+  const sumEnd = today < bucketEnd ? today : bucketEnd;
+
+  const records = await fetchAll(TABLES.timeEntries, {
+    filter: `AND(DATESTR({Work Date})>="${dateToYmd(bucketStart)}",DATESTR({Work Date})<="${dateToYmd(sumEnd)}")`,
+    sortField: "Work Date",
+    sortDir: "asc"
+  });
+
+  // One row per Time Entry — multi-job days produce multiple rows, frontend
+  // can group by date if it wants. Total is the raw sum rounded once at the
+  // end so it ties cleanly to the rollup tile.
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const entries = [];
+  let rawTotal = 0;
+  for (const r of records) {
+    const f = r.fields || {};
+    if (firstLinkedId(f["Employee (Linked)"]) !== employeeId) continue;
+    const hrs = Number(f["Hours"]) || 0;
+    entries.push({
+      id: r.id,
+      workDate: f["Work Date"] || "",
+      jobId:    firstLinkedId(f["Job"]),
+      jobName:  f["Job Name (Text)"] || "",
+      hours:    r2(hrs)
+    });
+    rawTotal += hrs;
+  }
+
+  return resp(200, {
+    ok: true,
+    employeeId,
+    bucket,
+    range: { start: dateToYmd(bucketStart), end: dateToYmd(bucketEnd) },
+    entries,
+    total: r2(rawTotal)
+  });
+}
+
 // ══════════════════════════════════════════════════════════════════
 // All existing handlers below — unchanged
 // ══════════════════════════════════════════════════════════════════
@@ -2385,6 +2520,8 @@ export async function handler(event) {
       if (action === "payrollHoursBreakdown")       return await handlePayrollHoursBreakdown(params);
       if (action === "payrollBonusesRollup")        return await handlePayrollBonusesRollup(params);
       if (action === "payrollEmployeeBonusHistory") return await handlePayrollEmployeeBonusHistory(params);
+      if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
+      if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);

@@ -55,6 +55,14 @@ const F = {
     addPhotosLink:           "Add Photos (Mobile)",
     viewPhotosLink:          "View pCloud Photos",
     trelloCardId:               "Trello Card ID",
+    // DEPRECATED (Phase 1B/1C): the underlying Airtable fields
+    // fldcWrozfYLQAjRqY (Generator Startup / Commissioning Form) and
+    // fldYKmECZm3qu8fJm (New Generator Service) are legacy
+    // Airtable-form redirect URLs from before commissioning + service
+    // entry moved into native UI panels. Both fields can be removed
+    // from the Airtable Jobs table after one production verification
+    // cycle confirms no other tooling reads them. Mapping preserved
+    // here so mapJob doesn't 500 if the fields still exist.
     generatorCommissioningForm: "Generator Startup / Commissioning Form",
     newGeneratorServiceForm:    "New Generator Service",
     taxStatus:                  "Tax Status",

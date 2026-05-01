@@ -3399,7 +3399,7 @@
     const genTab = $("genTabBtn");
     if (job.generatorInstalled) {
       genTab.style.display = "";
-      loadGeneratorData(job.id, job.generatorCommissioningForm, job.newGeneratorServiceForm);
+      loadGeneratorData(job.id);
     } else {
       genTab.style.display = "none";
       if (document.querySelector(".tab-btn.active")?.dataset?.tab === "generator") {
@@ -3757,7 +3757,7 @@
   }
 
   // ── GENERATOR DATA ──
-  async function loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl) {
+  async function loadGeneratorData(jobId) {
     $("genInfoGrid").innerHTML = `<div class="loading-msg">Loading...</div>`;
     $("serviceRecordsList").innerHTML = `<div class="loading-msg">Loading...</div>`;
     $("warrantyBadges").innerHTML = `<div class="loading-msg" style="font-size:12px;">Loading warranties...</div>`;
@@ -3805,33 +3805,6 @@
         `;
       } else {
         $("genInfoGrid").innerHTML = `<div class="empty-msg">No generator record linked to this job yet.</div>`;
-      }
-
-      // Wire the form buttons regardless of whether an asset is linked. The
-      // commissioning + service form URLs live on the JOB record, not the
-      // generator, so they should always be active when the job has them set
-      // — even if the generator asset itself hasn't been created yet.
-      const commBtn = $("btnCommissionGen");
-      if (commBtn) {
-        if (commissionFormUrl) {
-          commBtn.href = commissionFormUrl;
-          commBtn.classList.remove("disabled");
-        } else {
-          commBtn.href = "#";
-          commBtn.classList.add("disabled");
-          commBtn.onclick = (e) => { e.preventDefault(); alert("No commissioning form URL set on this job."); };
-        }
-      }
-      const svcBtn = $("btnServiceGen");
-      if (svcBtn) {
-        if (serviceFormUrl) {
-          svcBtn.href = serviceFormUrl;
-          svcBtn.classList.remove("disabled");
-        } else {
-          svcBtn.href = "#";
-          svcBtn.classList.add("disabled");
-          svcBtn.onclick = (e) => { e.preventDefault(); alert("No service form URL set on this job."); };
-        }
       }
 
       // Service Records
@@ -3959,7 +3932,7 @@
           // mobile time to register the result before the panel goes away.
           setTimeout(() => {
             commPanel.style.display = "none";
-            loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl);
+            loadGeneratorData(jobId);
           }, 2500);
         } catch(e) {
           msg.innerHTML = `<span style="color:var(--red);">Couldn't commission: ${esc(e.message)}</span>`;
@@ -4044,7 +4017,7 @@
            "nsvLoadTest","nsvFirmware","nsvExercise","nsvPlanVisit"].forEach(id => { $(id).checked = false; });
           ["nsvCodes","nsvNotes","nsvParts","nsvLabor","nsvGenHrs"].forEach(id => { $(id).value = ""; });
           // Refresh service-records list so the new entry appears.
-          setTimeout(() => loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl), 600);
+          setTimeout(() => loadGeneratorData(jobId), 600);
         } catch(e) {
           msg.textContent   = "Couldn't save: " + e.message;
           msg.style.color   = "var(--red)";
@@ -4121,7 +4094,7 @@
            "qlLoadTest","qlFirmware","qlExercise","qlPlanVisit"].forEach(id => { $(id).checked = false; });
           ["qlCodes","qlNotes","qlParts","qlLabor","qlGenHrs"].forEach(id => { $(id).value = ""; });
           // Refresh the service-records list so the new entry shows
-          setTimeout(() => loadGeneratorData(jobId, commissionFormUrl, serviceFormUrl), 600);
+          setTimeout(() => loadGeneratorData(jobId), 600);
         } catch(e) {
           msg.textContent = "Couldn't save: " + e.message;
           msg.style.color = "var(--red)";

@@ -632,14 +632,11 @@ async function handlePayrollRunsList(params) {
 // PAYROLL V2 — hours + bonuses rollups for the Payroll Manager top row
 // ══════════════════════════════════════════════════════════════════
 
-// Hours-rollup tiles: This Week (Mon–Sat), current Pay Period (anchored on
-// the most recent non-superseded run's end date + 1 day), This Month, YTD.
-// One Time Entries fetch covering Jan 1 → today, bucketed in memory.
-async function handlePayrollHoursRollup(params) {
-  const todayStr = params?.today || dateToYmd(new Date());
-  const today = ymdToDate(todayStr);
-  if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
-
+// Shared date-range derivation for the hour rollups. Returns local-midnight
+// Dates for each window boundary. Pay period anchors on the most recent
+// non-superseded run's end date + 1 day, then +13 days; falls back to the
+// create-payroll dialog's sliding window when no runs exist yet.
+async function computePayrollDateRanges(today) {
   const yearStart  = new Date(today.getFullYear(), 0, 1);
   const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
   const dow = today.getDay();
@@ -647,8 +644,6 @@ async function handlePayrollHoursRollup(params) {
   const thisWeekStart = shiftDays(today, diffToMon);
   const thisWeekEnd   = shiftDays(thisWeekStart, 5); // Mon..Sat work week
 
-  // Pay period anchor: most recent non-superseded run's Pay Period End + 1 day,
-  // then +13 days. Fallback (no runs yet) mirrors the create-payroll dialog default.
   let payPeriodStart, payPeriodEnd;
   const recentRuns = await fetchAll(PR_RUNS.table, {
     filter: `NOT({Superseded})`,
@@ -663,6 +658,19 @@ async function handlePayrollHoursRollup(params) {
     payPeriodStart = shiftDays(thisWeekStart, -7);
     payPeriodEnd   = shiftDays(payPeriodStart, 13);
   }
+
+  return { yearStart, monthStart, thisWeekStart, thisWeekEnd, payPeriodStart, payPeriodEnd };
+}
+
+// Hours-rollup tiles: This Week (Mon–Sat), current Pay Period, This Month, YTD.
+// One Time Entries fetch covering Jan 1 → today, bucketed in memory.
+async function handlePayrollHoursRollup(params) {
+  const todayStr = params?.today || dateToYmd(new Date());
+  const today = ymdToDate(todayStr);
+  if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
+
+  const { yearStart, monthStart, thisWeekStart, thisWeekEnd, payPeriodStart, payPeriodEnd }
+    = await computePayrollDateRanges(today);
 
   // DATESTR + string compare keeps us out of the IS_AFTER/IS_BEFORE granularity
   // hole (only IS_SAME accepts a "day" unit). Both sides are "YYYY-MM-DD".
@@ -805,6 +813,77 @@ async function handlePayrollEmployeeBonusHistory(params) {
   }
 
   return resp(200, { ok: true, employeeId, limit, bonuses: out });
+}
+
+// Per-employee hour breakdown for one of the four rollup tiles. Same date
+// derivation as handlePayrollHoursRollup (shared helper) and the same role
+// filter as the bonus rollup, so the popover can't surface office/viewer.
+// Total is the raw sum rounded once at the end so it ties cleanly back to
+// the tile value rather than drifting through per-employee rounding.
+async function handlePayrollHoursBreakdown(params) {
+  const VALID_BUCKETS = new Set(["thisWeek", "payPeriod", "thisMonth", "ytd"]);
+  const bucket = params?.bucket;
+  if (!VALID_BUCKETS.has(bucket)) {
+    return resp(400, { ok: false, error: "Invalid bucket. Expected one of: thisWeek, payPeriod, thisMonth, ytd." });
+  }
+
+  const todayStr = params?.today || dateToYmd(new Date());
+  const today = ymdToDate(todayStr);
+  if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
+
+  const ranges = await computePayrollDateRanges(today);
+
+  // Window the response advertises: full work-week / pay-period boundary for
+  // those buckets; today as end-cap for thisMonth / ytd. Mirrors the rollup.
+  let bucketStart, bucketEnd;
+  if      (bucket === "thisWeek")  { bucketStart = ranges.thisWeekStart;  bucketEnd = ranges.thisWeekEnd; }
+  else if (bucket === "payPeriod") { bucketStart = ranges.payPeriodStart; bucketEnd = ranges.payPeriodEnd; }
+  else if (bucket === "thisMonth") { bucketStart = ranges.monthStart;     bucketEnd = today; }
+  else                             { bucketStart = ranges.yearStart;      bucketEnd = today; }
+
+  // Sum range clipped at today — entries beyond today aren't counted even when
+  // the bucket window extends into the future (matches the rollup's behavior).
+  const sumEnd = today < bucketEnd ? today : bucketEnd;
+
+  const [records, employees] = await Promise.all([
+    fetchAll(TABLES.timeEntries, {
+      filter: `AND(DATESTR({Work Date})>="${dateToYmd(bucketStart)}",DATESTR({Work Date})<="${dateToYmd(sumEnd)}")`,
+      sortField: "Work Date",
+      sortDir: "asc"
+    }),
+    fetchAll(TABLES.employees)
+  ]);
+
+  const eligibleEmps = employees.filter(e => isPayrollEligibleRole(e.fields));
+  const eligibleSet  = new Set(eligibleEmps.map(e => e.id));
+
+  const hoursByEmpId = new Map();
+  let rawTotal = 0;
+  for (const r of records) {
+    const f = r.fields || {};
+    const empId = firstLinkedId(f["Employee (Linked)"]);
+    if (!empId || !eligibleSet.has(empId)) continue;
+    const hrs = Number(f["Hours"]) || 0;
+    hoursByEmpId.set(empId, (hoursByEmpId.get(empId) || 0) + hrs);
+    rawTotal += hrs;
+  }
+
+  const r2 = (n) => Math.round(n * 100) / 100;
+  const employeesOut = eligibleEmps
+    .map(e => ({
+      id: e.id,
+      name: e.fields?.["Employee Name"] || "Unknown",
+      hours: r2(hoursByEmpId.get(e.id) || 0)
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return resp(200, {
+    ok: true,
+    bucket,
+    range: { start: dateToYmd(bucketStart), end: dateToYmd(bucketEnd) },
+    employees: employeesOut,
+    total: r2(rawTotal)
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -2295,6 +2374,7 @@ export async function handler(event) {
       if (action === "findMatchingPayrollRun") return await handleFindMatchingPayrollRun(params);
       if (action === "payrollRunsList")    return await handlePayrollRunsList(params);
       if (action === "payrollHoursRollup")          return await handlePayrollHoursRollup(params);
+      if (action === "payrollHoursBreakdown")       return await handlePayrollHoursBreakdown(params);
       if (action === "payrollBonusesRollup")        return await handlePayrollBonusesRollup(params);
       if (action === "payrollEmployeeBonusHistory") return await handlePayrollEmployeeBonusHistory(params);
       if (action === "scissorLifts")       return await handleScissorLifts();

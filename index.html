@@ -1330,12 +1330,22 @@
     }
     .sch-day:hover { border-color: var(--accent); }
     .sch-day.today { border-color: var(--accent); background: var(--accent-glow); }
+    /* Weekend tint: light red wash that signals "non-work day" without
+       fighting the muted day-num/name opacity rules below. The dimmed
+       labels still carry the "off-day" feel; the red wash adds emphasis. */
     .sch-day.weekend {
-      background: rgba(0, 0, 0, 0.05);
-      border-color: rgba(0, 0, 0, 0.08);
+      background: rgba(220, 38, 38, 0.06);
+      border-color: rgba(220, 38, 38, 0.10);
     }
     .sch-day.weekend .sch-day-num { opacity: 0.5; }
     .sch-day.weekend .sch-day-name { opacity: 0.6; }
+    /* Weekday holiday tint: deeper red than weekends so the contrast reads
+       as "stronger don't-schedule signal" without being alarming. Skipped
+       when the holiday falls on a weekend — weekend tint already covers it. */
+    .sch-day.sch-day-holiday {
+      background: rgba(220, 38, 38, 0.12);
+      border-color: rgba(220, 38, 38, 0.22);
+    }
     .sch-day-header { display: flex; justify-content: space-between; align-items: baseline; }
     .sch-day-name { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.4px; }
     .sch-day-num { font-size: 16px; font-weight: 700; color: var(--text); }
@@ -1367,6 +1377,20 @@
       );
     }
     .sch-block.timeoff strong { font-style: italic; }
+
+    /* Holiday faux-entry: a system-rendered marker, not a real crew assignment.
+       Dashed border + italics + neutral fill keeps it from being confused with
+       a clickable assignment pill (which has a solid border and an employee color).
+       No onclick — clicks bubble up to the day card so day-detail still opens. */
+    .sch-block.sch-holiday {
+      background: rgba(0, 0, 0, 0.04);
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      font-style: italic;
+      cursor: default;
+    }
+    .sch-block.sch-holiday strong { font-style: italic; font-weight: 600; }
+    .sch-block.sch-holiday .crew  { font-style: italic; opacity: 0.85; }
 
     /* Drag-to-move on desktop. Pills get a grab cursor + slight transparency
        while dragging; the day cell currently being hovered over highlights
@@ -8877,6 +8901,38 @@ rick@northeasternelec.com`
     return new Date(y, m - 1, d);
   }
 
+  // ── US-paid-holiday calendar (display-only, no backend) ───────────────
+  // schGetHolidayName(ymd) returns the holiday name for a YYYY-MM-DD or null.
+  // Pure date math — no API call. To add a holiday, extend the fixed-date
+  // list or compute another Nth-weekday entry; the two helpers below cover
+  // both shapes. dow uses Sun=0, Mon=1, ..., Sat=6.
+  function schGetHolidayName(ymd) {
+    if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+    const [y, m, d] = ymd.split("-").map(Number);
+    if (m === 1  && d === 1)  return "New Year's Day";
+    if (m === 7  && d === 4)  return "Independence Day";
+    if (m === 12 && d === 25) return "Christmas Day";
+    if (m === 5  && d === schLastWeekdayOfMonth(y, 5, 1))  return "Memorial Day";   // last Mon of May
+    if (m === 9  && d === schNthWeekdayOfMonth(y, 9, 1, 1)) return "Labor Day";     // first Mon of Sep
+    if (m === 11 && d === schNthWeekdayOfMonth(y, 11, 4, 4)) return "Thanksgiving"; // fourth Thu of Nov
+    return null;
+  }
+  function schIsHoliday(ymd) { return schGetHolidayName(ymd) !== null; }
+
+  // Day-of-month for the Nth occurrence of `dow` in (year, month1). month1 is 1-12.
+  function schNthWeekdayOfMonth(year, month1, dow, n) {
+    const first = new Date(year, month1 - 1, 1);
+    const offset = (dow - first.getDay() + 7) % 7;
+    return 1 + offset + (n - 1) * 7;
+  }
+  // Day-of-month for the LAST occurrence of `dow` in (year, month1).
+  function schLastWeekdayOfMonth(year, month1, dow) {
+    const lastDay = new Date(year, month1, 0).getDate(); // day 0 of next month = last day of this month
+    const last = new Date(year, month1 - 1, lastDay);
+    const offset = (last.getDay() - dow + 7) % 7;
+    return lastDay - offset;
+  }
+
   async function loadScheduleData() {
     $("schStatus").textContent = "Loading schedule...";
     $("schStatus").style.display = "";
@@ -8951,6 +9007,12 @@ rick@northeasternelec.com`
       const dow       = d.getDay();
       const weekend   = (dow === 0 || dow === 6);
       const isPast    = d < todayDt;
+      // Holiday markers: only render the deeper tint + faux-entry on weekday
+      // holidays. Weekend holidays (e.g. Christmas 2027) get the regular
+      // weekend tint and no faux entry — the day is implicitly off, no need
+      // to double-render.
+      const holidayName     = schGetHolidayName(ymd);
+      const isWeekdayHoliday = !!holidayName && !weekend;
       // Find entries whose [start, end] range covers this day
       const todayEntries = schEntries.filter(e => {
         if (!e.startDate || !e.endDate) return false;
@@ -8993,14 +9055,23 @@ rick@northeasternelec.com`
         });
       }).join("");
       const dowName = ["SUN","MON","TUE","WED","THU","FRI","SAT"][dow];
+      // Holiday faux-entry sits at the top of the assignment stack so it's
+      // the first thing the eye lands on. No onclick — clicks bubble up to
+      // the day card and still open the day-detail panel.
+      const holidayBlock = isWeekdayHoliday
+        ? `<div class="sch-block sch-holiday" title="Paid holiday — ${esc(holidayName)}">
+             <strong>${esc(holidayName)}</strong>
+             <span class="crew">PTO</span>
+           </div>`
+        : "";
       return `
-        <div class="sch-day ${isToday ? "today" : ""} ${weekend ? "weekend" : ""}"
+        <div class="sch-day ${isToday ? "today" : ""} ${weekend ? "weekend" : ""} ${isWeekdayHoliday ? "sch-day-holiday" : ""}"
              onclick="schShowDayDetail('${ymd}')" data-ymd="${ymd}">
           <div class="sch-day-header">
             <span class="sch-day-name">${dowName}</span>
             <span class="sch-day-num">${d.getDate()}</span>
           </div>
-          <div class="sch-day-blocks">${blocks}</div>
+          <div class="sch-day-blocks">${holidayBlock}${blocks}</div>
         </div>`;
     }).join("");
     // Wire drag/drop handlers (desktop, non-read-only)

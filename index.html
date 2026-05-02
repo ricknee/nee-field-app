@@ -1497,6 +1497,38 @@
     .sch-job-result.active .contractor, .sch-job-result:hover .contractor { color: var(--accent); opacity: 0.85; }
     .sch-job-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
 
+    /* Inspection Agency typeahead — admin-only edit on the Inspections tab.
+       Shape cloned from .sch-job-search above so behavior matches the
+       schedule picker (focus opens list, blur defers, keyboard nav). */
+    .agency-search-wrap { position: relative; }
+    .agency-search {
+      width: 100%; padding: 6px 8px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+      font-family: inherit; box-sizing: border-box;
+    }
+    .agency-search:focus { outline: none; border-color: var(--accent); }
+    .agency-search.has-pick {
+      background: var(--accent-glow);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .agency-search-results {
+      position: absolute; left: 0; right: 0; top: 100%; margin-top: 2px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+      max-height: 240px; overflow-y: auto; z-index: 10;
+      display: none;
+    }
+    .agency-search-results.open { display: block; }
+    .agency-search-result {
+      padding: 7px 10px; font-size: 13px; cursor: pointer;
+      border-bottom: 1px solid var(--line);
+    }
+    .agency-search-result:last-child { border-bottom: none; }
+    .agency-search-result:hover, .agency-search-result.active { background: var(--accent-glow); color: var(--accent); }
+    .agency-search-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
+
     /* Day-detail panel: shown when a day is tapped */
     .sch-day-detail {
       background: var(--panel-2);
@@ -2091,6 +2123,32 @@
 
         <!-- TAB: INSPECTIONS -->
         <div class="tab-content" id="tab-inspections">
+          <!-- Admin-only edit form: agency picker + permit number. Lookup
+               fields on the info-grid below (agency phone/email/scheduling
+               link) refresh automatically once the linked Inspection Agency
+               record is changed. -->
+          <div class="admin-only hidden" id="inspectionEditForm" style="background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px;">
+            <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">📋 Update Inspection Info</div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div>
+                <label class="edit-label">Inspection Agency</label>
+                <div class="agency-search-wrap">
+                  <input type="text" class="agency-search" id="agencySearchInput" placeholder="Type to search…" autocomplete="off" />
+                  <div class="agency-search-results" id="agencySearchResults"></div>
+                  <input type="hidden" id="agencyEditId" value="" />
+                </div>
+              </div>
+              <div>
+                <label class="edit-label">Permit Number</label>
+                <input type="text" id="permitEditInput" class="edit-input" placeholder="Enter permit number" />
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px; margin-top:14px;">
+              <button id="saveJobInspectionBtn" class="btn btn-primary btn-sm" type="button">Save Changes</button>
+              <span id="inspectionEditStatus" style="font-size:12px;"></span>
+            </div>
+          </div>
+
           <!-- Job/Agency info (existing) -->
           <div class="info-grid">
             <div class="info-box">
@@ -2943,7 +3001,7 @@
         // piEditToggleRow gates Project Info edit mode; piNotesView is
         // admin-only per spec (notes can contain internal status that
         // shouldn't surface to viewers).
-        ["statusChangeRow", "pcEditForm", "btnNewJobEstimate", "btnAddInspection", "saveInspectionBtn", "piEditToggleRow", "piNotesView"].forEach(id => {
+        ["statusChangeRow", "pcEditForm", "btnNewJobEstimate", "btnAddInspection", "saveInspectionBtn", "inspectionEditForm", "piEditToggleRow", "piNotesView"].forEach(id => {
           const el = $(id);
           if (el) el.classList.add("hidden");
         });
@@ -3375,25 +3433,14 @@
     $("pcPerm").textContent = val(job.permWorkOrder);
     $("pcMeter").textContent = val(job.meterNumber);
 
-    // Inspections Tab
-    $("inPermit").textContent = val(job.permitNumber);
-    $("inAgency").textContent = val(job.inspectionAgency);
-
-    const iPhEl = $("inPhone");
-    if (job.inspectionAgencyPhone) {
-      iPhEl.innerHTML = `<a href="tel:${esc(job.inspectionAgencyPhone)}">${esc(job.inspectionAgencyPhone)}</a>`;
-    } else { iPhEl.textContent = "—"; }
-
-    const iEmEl = $("inEmail");
-    if (job.inspectionAgencyEmail) {
-      iEmEl.innerHTML = `<a href="mailto:${esc(job.inspectionAgencyEmail)}">${esc(job.inspectionAgencyEmail)}</a>`;
-    } else { iEmEl.textContent = "—"; }
-
-    $("inContacts").textContent = val(job.inspectionContacts);
-    // inJobInspections removed — inspections now loaded via loadInspections()
-
-    const schEl = $("inSchedulingLink");
-    checkLink(job.inspectionSchedulingLink, "Open Scheduling Portal", schEl);
+    // Inspections Tab — read-only card; admin edit form pre-populated below.
+    renderInspectionCard(job);
+    if (isAdmin()) {
+      populateAgencyDropdown(job.inspectionAgencyId || "", job.inspectionAgency || "");
+      $("permitEditInput").value = job.permitNumber || "";
+      const inspStatus = $("inspectionEditStatus");
+      if (inspStatus) inspStatus.textContent = "";
+    }
 
     // Generator Tab visibility
     const genTab = $("genTabBtn");
@@ -5045,6 +5092,196 @@
     }
   }
 
+  // ── INSPECTION AGENCY PICKER (admin-only) ──
+  // Cached agency list — fetched once on first picker open, reused for the
+  // life of the page session. Tap-throughs across jobs all reuse the same
+  // list, so there's no need to refetch per selectJob.
+  let _inspectionAgencies = null;
+  let _inspectionAgenciesPromise = null;
+
+  async function loadInspectionAgencies() {
+    if (_inspectionAgencies) return _inspectionAgencies;
+    if (_inspectionAgenciesPromise) return _inspectionAgenciesPromise;
+    _inspectionAgenciesPromise = (async () => {
+      try {
+        const d = await apiGet("getInspectionAgencies");
+        _inspectionAgencies = (d.agencies || []).slice();
+      } catch(e) {
+        _inspectionAgencies = [];
+      }
+      return _inspectionAgencies;
+    })();
+    return _inspectionAgenciesPromise;
+  }
+
+  // Build the candidate list, ensuring the currently-selected agency is
+  // present even if it'd otherwise be filtered out (mirror of
+  // schJobCandidates). Sorted alphabetically.
+  function agencyCandidates(selectedId) {
+    const list = (_inspectionAgencies || []).slice();
+    if (selectedId && !list.find(a => a.id === selectedId)) {
+      // Currently-selected agency isn't in the cached list — backend will
+      // have it on the job's lookup name, but we don't know enough to
+      // render it as a search result, so just leave it out of the list and
+      // let the input show the existing name as text.
+    }
+    list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    return list;
+  }
+
+  async function populateAgencyDropdown(selectedId, selectedName) {
+    await loadInspectionAgencies();
+    const list   = agencyCandidates(selectedId);
+    const hidden = $("agencyEditId");
+    const search = $("agencySearchInput");
+    const results = $("agencySearchResults");
+    if (!hidden || !search || !results) return;
+
+    hidden.value = selectedId || "";
+    search._agencies = list;
+
+    if (selectedId) {
+      const cur = list.find(a => a.id === selectedId);
+      search.value = cur ? cur.name : (selectedName || "");
+      search.classList.add("has-pick");
+    } else {
+      search.value = "";
+      search.classList.remove("has-pick");
+    }
+    results.classList.remove("open");
+    results.innerHTML = "";
+
+    if (!search._wired) {
+      search._wired = true;
+      let activeIdx = -1;
+
+      const renderResults = (q) => {
+        const candidates = search._agencies || [];
+        const ql = q.trim().toLowerCase();
+        const filtered = ql
+          ? candidates.filter(a => (a.name || "").toLowerCase().includes(ql))
+          : candidates.slice();
+        activeIdx = -1;
+        if (!filtered.length) {
+          results.innerHTML = `<div class="agency-search-result-empty">No matching agencies</div>`;
+          results.classList.add("open");
+          return;
+        }
+        results.innerHTML = filtered.slice(0, 30).map((a, i) =>
+          `<div class="agency-search-result" data-id="${esc(a.id)}" data-idx="${i}">${esc(a.name)}</div>`
+        ).join("");
+        results.classList.add("open");
+        results.querySelectorAll(".agency-search-result").forEach(row => {
+          row.onmousedown = (ev) => { ev.preventDefault(); pick(row.dataset.id); };
+        });
+      };
+
+      const pick = (agencyId) => {
+        const a = (search._agencies || []).find(x => x.id === agencyId);
+        hidden.value = agencyId || "";
+        if (a) {
+          search.value = a.name;
+          search.classList.add("has-pick");
+        } else {
+          search.classList.remove("has-pick");
+        }
+        results.classList.remove("open");
+      };
+
+      search.addEventListener("input", () => {
+        // Typing invalidates the previous pick — clear hidden until a new
+        // pick is made (matches sch-job-search behavior). An empty input
+        // means "clear the link" on save.
+        hidden.value = "";
+        search.classList.remove("has-pick");
+        renderResults(search.value);
+      });
+      search.addEventListener("focus", () => renderResults(search.value));
+      search.addEventListener("blur", () => {
+        setTimeout(() => results.classList.remove("open"), 150);
+      });
+      search.addEventListener("keydown", (e) => {
+        const rows = results.querySelectorAll(".agency-search-result");
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          activeIdx = Math.min(activeIdx + 1, rows.length - 1);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          activeIdx = Math.max(activeIdx - 1, 0);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter") {
+          if (activeIdx >= 0 && rows[activeIdx]) {
+            e.preventDefault();
+            pick(rows[activeIdx].dataset.id);
+          }
+        } else if (e.key === "Escape") {
+          results.classList.remove("open");
+        }
+      });
+    }
+  }
+
+  // Re-render the read-only Inspections card from a mapped job. Same fields
+  // selectJob populates — extracted so saveInspection() can refresh in
+  // place after the PATCH returns.
+  function renderInspectionCard(job) {
+    $("inPermit").textContent = val(job.permitNumber);
+    $("inAgency").textContent = val(job.inspectionAgency);
+
+    const iPhEl = $("inPhone");
+    if (job.inspectionAgencyPhone) {
+      iPhEl.innerHTML = `<a href="tel:${esc(job.inspectionAgencyPhone)}">${esc(job.inspectionAgencyPhone)}</a>`;
+    } else { iPhEl.textContent = "—"; }
+
+    const iEmEl = $("inEmail");
+    if (job.inspectionAgencyEmail) {
+      iEmEl.innerHTML = `<a href="mailto:${esc(job.inspectionAgencyEmail)}">${esc(job.inspectionAgencyEmail)}</a>`;
+    } else { iEmEl.textContent = "—"; }
+
+    $("inContacts").textContent = val(job.inspectionContacts);
+    checkLink(job.inspectionSchedulingLink, "Open Scheduling Portal", $("inSchedulingLink"));
+  }
+
+  async function saveJobInspection() {
+    if (!state.selected || !isAdmin()) return;
+    const btn    = $("saveJobInspectionBtn");
+    const status = $("inspectionEditStatus");
+    btn.disabled = true; btn.textContent = "Saving...";
+    status.textContent = "";
+    status.style.color = "";
+    try {
+      const d = await apiPost("updateJobInspection", {
+        jobId:        state.selected.id,
+        agencyId:     $("agencyEditId").value || "",
+        permitNumber: $("permitEditInput").value || ""
+      });
+      if (!d.ok || !d.job) throw new Error(d.error || "Save failed.");
+      // Splice the refreshed job into both state.selected and state.jobs so
+      // re-selecting or re-rendering doesn't show stale lookup values.
+      Object.assign(state.selected, d.job);
+      const idx = (state.jobs || []).findIndex(j => j.id === d.job.id);
+      if (idx >= 0) Object.assign(state.jobs[idx], d.job);
+
+      renderInspectionCard(d.job);
+      // Re-prime the picker with the newly-saved selection so the
+      // has-pick styling and hidden id stay in sync.
+      populateAgencyDropdown(d.job.inspectionAgencyId || "", d.job.inspectionAgency || "");
+      $("permitEditInput").value = d.job.permitNumber || "";
+
+      status.textContent = "✓ Saved";
+      status.style.color = "var(--green)";
+      setTimeout(() => { status.textContent = ""; }, 2000);
+    } catch(e) {
+      status.textContent = "Error: " + e.message;
+      status.style.color = "var(--red)";
+    } finally {
+      btn.disabled = false; btn.textContent = "Save Changes";
+    }
+  }
+
   // ── FLEET ──
   let fleetState = { vehicles: [], selectedVehicle: null };
 
@@ -6072,6 +6309,9 @@
     });
     const saveInspBtn = $("saveInspectionBtn");
     if (saveInspBtn) saveInspBtn.addEventListener("click", handleSaveInspection);
+
+    const saveJobInspBtn = $("saveJobInspectionBtn");
+    if (saveJobInspBtn) saveJobInspBtn.addEventListener("click", saveJobInspection);
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));

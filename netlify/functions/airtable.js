@@ -7,15 +7,16 @@ const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 const API_ROOT = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
 
 const TABLES = {
-  employees:         "Employees",
-  jobs:              "Jobs",
-  generators:        "Generators",
-  generatorService:  "Generator Service",
-  warrantyTemplates: "Warranty Templates",
-  warranties:        "Warranties",
-  timeEntries:       "Time Entries",
-  scissorLifts:      "Scissor Lifts",
-  scheduleEntries:   "Schedule Entries"
+  employees:           "Employees",
+  jobs:                "Jobs",
+  generators:          "Generators",
+  generatorService:    "Generator Service",
+  warrantyTemplates:   "Warranty Templates",
+  warranties:          "Warranties",
+  timeEntries:         "Time Entries",
+  scissorLifts:        "Scissor Lifts",
+  scheduleEntries:     "Schedule Entries",
+  inspectionAgencies:  "tblZrG9V7C3lVsXNT"
 };
 
 const F = {
@@ -1185,6 +1186,13 @@ function mapJob(r) {
         }
         return null;
       })(),
+      inspectionAgencyId: (() => {
+        const v = f["Inspection Agency"];
+        if (Array.isArray(v) && v.length > 0) {
+          return typeof v[0] === "string" ? v[0] : v[0]?.id || null;
+        }
+        return null;
+      })(),
       pCloudInvoicesSentId: f["pCloud Invoices Sent ID"] || null,
       expectedRevenue:gNum(f,F.job.expectedRevenue),
       actualJobCostCogs:gNum(f,F.job.actualJobCostCogs),totalReviewedCosts:gNum(f,F.job.totalReviewedCosts),
@@ -1887,6 +1895,14 @@ async function handleVendors() {
   const records = await fetchAll("Vendors", { sortField: "Vendor Name", sortDir: "asc" });
   const vendors = records.filter(r => r.fields["Active"] !== false).map(r => ({ id:r.id, name:r.fields["Vendor Name"]||"" })).filter(v => v.name);
   return resp(200, { ok: true, vendors });
+}
+
+async function handleGetInspectionAgencies() {
+  const records = await fetchAll(TABLES.inspectionAgencies, { sortField: "Inspection Agency Name", sortDir: "asc" });
+  const agencies = records
+    .map(r => ({ id: r.id, name: r.fields["Inspection Agency Name"] || "" }))
+    .filter(a => a.name);
+  return resp(200, { ok: true, agencies });
 }
 
 // ── LABOR BILLABLE RATES (for per-job rate selector) ──────────────────────
@@ -2868,6 +2884,29 @@ async function handleUpdateJobNotes(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// Admin-only Inspections-tab edit. Writes the Inspection Agency linked-record
+// (fldyKKACyUqt9tcEL) and Permit Number (fldDKGllmOyyyf9qo) on the Job.
+// Empty agencyId clears the link; empty permitNumber clears the text.
+async function handleUpdateJobInspection(body) {
+  const { jobId, agencyId, permitNumber } = body || {};
+  if (!jobId || !String(jobId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid jobId." });
+  }
+  const fields = {};
+  if (agencyId && String(agencyId).startsWith("rec")) {
+    fields["fldyKKACyUqt9tcEL"] = [agencyId];
+  } else {
+    fields["fldyKKACyUqt9tcEL"] = [];
+  }
+  fields["fldDKGllmOyyyf9qo"] = permitNumber || "";
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields, typecast: true })
+  });
+  return resp(200, { ok: true, job: mapJob(data) });
+}
+
 // Single-call update for the Project Info edit form. PATCHes any subset
 // of the seven editable fields in one round-trip; missing keys are left
 // untouched server-side. Empty strings clear the field (e.g. "" on
@@ -2981,6 +3020,7 @@ export async function handler(event) {
       if (action === "vendors")            return await handleVendors();
       if (action === "companies")          return await handleCompanies();
       if (action === "laborBillableRates") return await handleLaborBillableRates();
+      if (action === "getInspectionAgencies") return await handleGetInspectionAgencies();
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -3024,6 +3064,7 @@ export async function handler(event) {
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
+      if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);

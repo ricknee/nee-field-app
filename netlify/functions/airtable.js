@@ -446,7 +446,7 @@ async function handleUpdateTimeEntryPayroll(body) {
   if (cityTaxes !== undefined) fields[TE.cityTaxes] = cityTaxes;
   if (reviewed  !== undefined) fields[TE.reviewed]  = reviewed === true;
   if (jobId !== undefined) {
-    fields[TE.jobLink] = (jobId && String(jobId).startsWith("rec")) ? [{ id: String(jobId) }] : [];
+    fields[TE.jobLink] = (jobId && String(jobId).startsWith("rec")) ? [String(jobId)] : [];
   }
 
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });

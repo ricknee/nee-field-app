@@ -10946,7 +10946,7 @@ rick@northeasternelec.com`
           } else {
             // Update existing
             try {
-              await apiPost("updateTimeEntry", {
+              await apiPost("updateTimeEntryPayroll", {
                 entryId:  entry.id,
                 duration: newDur,
                 workDate: newDate,
@@ -10966,12 +10966,18 @@ rick@northeasternelec.com`
         }
 
         btn.disabled = false; btn.textContent = "💾 Save Changes";
-        if (errors.length) { alert("Some saves failed:\n" + errors.join("\n")); }
-        else {
-          msgEl.style.display = "inline";
-          setTimeout(() => { msgEl.style.display = "none"; }, 2500);
-        }
         renderPayroll();
+        if (errors.length) {
+          alert("Some saves failed:\n" + errors.join("\n"));
+        } else {
+          // renderPayroll() rebuilt the DOM; re-query the fresh msgEl
+          // so the chip lands on the live node, not the orphaned old one.
+          const freshMsgEl = document.querySelector(`.pr-save-msg[data-emp="${emp}"]`);
+          if (freshMsgEl) {
+            freshMsgEl.style.display = "inline";
+            setTimeout(() => { freshMsgEl.style.display = "none"; }, 2500);
+          }
+        }
       });
     });
   }

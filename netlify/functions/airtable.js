@@ -485,12 +485,17 @@ async function handleBackfillTimeEntryEmployeeLinks(body) {
   const maxBatches = (Number.isInteger(rawMax) && rawMax > 0) ? rawMax : 20;
 
   const [entries, employees] = await Promise.all([
-    // Narrow the scan to rows that might need fixing: text empty OR link
-    // empty. The unfiltered fetch on production data (~2500 rows) consumed
-    // ~50s before any PATCH could run and hit Netlify's idle timeout.
-    // Trade-off: rows with both fields populated-but-disagreeing won't
-    // appear in the mismatch count via this scan.
-    fetchAll(TABLES.timeEntries, { filter: `OR({Employee} = BLANK(), {Employee (Linked)} = BLANK())` }),
+    // Narrow the scan to rows that might need fixing: Work Date in 2025+
+    // AND (text empty OR link empty). The unfiltered fetch on production
+    // data (~2500 rows) consumed ~50s before any PATCH could run and hit
+    // Netlify's idle timeout; even after dropping bothPopulated rows the
+    // scan returned 7600+ rows going back to 2021, dominated by historical
+    // typos and departed-staff names with no matching Employees record.
+    // Pre-2025 entries are out of scope — they don't affect any current
+    // reporting and can be cleaned up manually with Airtable find-and-
+    // replace if ever needed. Trade-off: rows with both fields populated-
+    // but-disagreeing won't appear in the mismatch count via this scan.
+    fetchAll(TABLES.timeEntries, { filter: `AND(DATESTR({Work Date})>="2025-01-01",OR({Employee} = BLANK(), {Employee (Linked)} = BLANK()))` }),
     fetchAll(TABLES.employees)
   ]);
 

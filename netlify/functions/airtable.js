@@ -485,7 +485,12 @@ async function handleBackfillTimeEntryEmployeeLinks(body) {
   const maxBatches = (Number.isInteger(rawMax) && rawMax > 0) ? rawMax : 20;
 
   const [entries, employees] = await Promise.all([
-    fetchAll(TABLES.timeEntries),
+    // Narrow the scan to rows that might need fixing: text empty OR link
+    // empty. The unfiltered fetch on production data (~2500 rows) consumed
+    // ~50s before any PATCH could run and hit Netlify's idle timeout.
+    // Trade-off: rows with both fields populated-but-disagreeing won't
+    // appear in the mismatch count via this scan.
+    fetchAll(TABLES.timeEntries, { filter: `OR({Employee} = BLANK(), {Employee (Linked)} = BLANK())` }),
     fetchAll(TABLES.employees)
   ]);
 

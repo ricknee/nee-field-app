@@ -415,17 +415,20 @@ async function handlePayrollEntries(params) {
 
 // ── PAYROLL: create new time entry ─────────────────────────────────────────
 async function handleCreateTimeEntry(body) {
-  const { employee, workDate, duration, class: cls, cityTaxes, jobId } = body || {};
+  const { employee, employeeId, workDate, duration, class: cls, cityTaxes, jobId } = body || {};
   if (!employee || !workDate) return resp(400, { ok: false, error: "Missing employee or workDate." });
 
   const fields = {};
   fields[TE.employee]   = employee;
+  if (employeeId && String(employeeId).startsWith("rec")) {
+    fields[TE.employeeLink] = [String(employeeId)];
+  }
   fields[TE.workDate]   = workDate;
   fields[TE.duration]   = Math.round(Number(duration) || 0);
   fields[TE.class]      = cls || "Contract";
   fields[TE.cityTaxes]  = cityTaxes || "A No Tax";
   if (jobId && String(jobId).startsWith("rec")) {
-    fields[TE.jobLink] = [{ id: String(jobId) }];
+    fields[TE.jobLink] = [String(jobId)];
   }
 
   const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}`, {

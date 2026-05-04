@@ -8917,6 +8917,7 @@ rick@northeasternelec.com`
   let prWk2End    = null;
   let prListRuns  = [];    // archived runs for the list view
   let prShowSuperseded = false;
+  let prEmployeeIdByName = {};  // name → recordId, for dual-writing Employee (Linked) on createTimeEntry
 
   function openPayroll() {
     $("payrollModal").style.display = "flex";
@@ -8939,6 +8940,14 @@ rick@northeasternelec.com`
     fetchAndRenderRuns();
     fetchAndRenderKpiTiles();
     fetchAndRenderBonusPills();
+    // Pre-fetch active employees so the createTimeEntry path can dual-write
+    // Employee (Linked). On failure, leave the map empty — the server tolerates
+    // a missing employeeId by writing text-only.
+    apiGet("schedulingCrew")
+      .then(d => {
+        prEmployeeIdByName = Object.fromEntries((d.employees || []).map(e => [e.name, e.id]));
+      })
+      .catch(() => { /* leave map empty */ });
   }
   window.enterListView = enterListView;
 
@@ -10925,13 +10934,14 @@ rick@northeasternelec.com`
             // Create new record
             try {
               const result = await apiPost("createTimeEntry", {
-                employee: emp,
-                workDate: newDate,
-                duration: newDur,
-                class:    newClass,
-                cityTaxes: newTax,
-                jobId:    newJobId || null,
-                jobName:  newJobName || null
+                employee:   emp,
+                employeeId: prEmployeeIdByName[emp] || null,
+                workDate:   newDate,
+                duration:   newDur,
+                class:      newClass,
+                cityTaxes:  newTax,
+                jobId:      newJobId || null,
+                jobName:    newJobName || null
               });
               entry.id      = result.id;
               entry.isNew   = false;

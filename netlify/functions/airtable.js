@@ -478,6 +478,12 @@ async function handleBackfillTimeEntryEmployeeLinks(body) {
     return resp(400, { ok: false, error: 'Missing confirmation. Pass {"confirm":"YES"} to proceed.' });
   }
 
+  // Cap how many batched PATCHes run per invocation so a large historical
+  // backfill can't blow Netlify's 60s function timeout. Caller re-runs
+  // until the response reports complete: true.
+  const rawMax = body?.maxBatches;
+  const maxBatches = (Number.isInteger(rawMax) && rawMax > 0) ? rawMax : 20;
+
   const [entries, employees] = await Promise.all([
     fetchAll(TABLES.timeEntries),
     fetchAll(TABLES.employees)
@@ -549,7 +555,9 @@ async function handleBackfillTimeEntryEmployeeLinks(body) {
   // actual mutations. A failed batch doesn't abort — push the error and
   // continue so a single transient failure can't block the rest of the run.
   const errors = [];
+  let batchesProcessed = 0;
   for (let i = 0; i < patches.length; i += 10) {
+    if (batchesProcessed >= maxBatches) break;
     const chunk = patches.slice(i, i + 10);
     try {
       await atFetch(`${encodeURIComponent(TABLES.timeEntries)}`, {
@@ -564,7 +572,11 @@ async function handleBackfillTimeEntryEmployeeLinks(body) {
       console.error("[backfillTimeEntryEmployeeLinks] batch failed:", err);
       errors.push(err.message || String(err));
     }
+    batchesProcessed++;
   }
+
+  const pendingPatches = Math.max(0, patches.length - batchesProcessed * 10);
+  const complete = pendingPatches === 0;
 
   return resp(200, {
     ok: true,
@@ -580,6 +592,9 @@ async function handleBackfillTimeEntryEmployeeLinks(body) {
     bothEmptyIds,
     unresolvedTextNames: [...unresolvedTextNamesSet],
     unresolvedLinkIds: [...unresolvedLinkIdsSet],
+    batchesProcessed,
+    pendingPatches,
+    complete,
     errors
   });
 }

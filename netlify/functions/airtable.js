@@ -453,7 +453,7 @@ async function handleUpdateTimeEntryPayroll(body) {
 
   const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, {
     method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
+    body: JSON.stringify({ fields })
   });
   return resp(200, { ok: true, updatedId: data.id });
 }

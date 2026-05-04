@@ -462,6 +462,128 @@ async function handleUpdateTimeEntryPayroll(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// ── BACKFILL: reconcile Employee text + Employee (Linked) on Time Entries ──
+// One-shot admin endpoint. Idempotent — second run reports zero fixes.
+// Auth: ADMIN_BACKFILL_TOKEN env var + body.confirm === "YES".
+// Behavior: for each Time Entry, fill in whichever employee field is empty
+// when the other side is populated AND the missing side resolves via the
+// Employees table. Never overwrites a populated field; text↔link mismatches
+// are surfaced as a count + ID list, not silently corrected.
+async function handleBackfillTimeEntryEmployeeLinks(body) {
+  const token = body?.token;
+  if (!token || token !== process.env.ADMIN_BACKFILL_TOKEN) {
+    return resp(401, { ok: false, error: "Invalid or missing token." });
+  }
+  if (body?.confirm !== "YES") {
+    return resp(400, { ok: false, error: 'Missing confirmation. Pass {"confirm":"YES"} to proceed.' });
+  }
+
+  const [entries, employees] = await Promise.all([
+    fetchAll(TABLES.timeEntries),
+    fetchAll(TABLES.employees)
+  ]);
+
+  // name → recId and recId → name. Includes inactive employees so historical
+  // entries for departed staff are also linkable.
+  const nameToId = new Map();
+  const idToName = new Map();
+  for (const e of employees) {
+    const n = (e.fields?.[F.emp.name] || "").trim();
+    if (n) nameToId.set(n, e.id);
+    idToName.set(e.id, n);
+  }
+
+  let bothPopulated = 0, mismatch = 0, bothEmpty = 0;
+  let textOnlyFixed = 0, linkOnlyFixed = 0;
+  let textOnlyUnresolved = 0, linkOnlyUnresolved = 0;
+  const mismatchIds = [];
+  const bothEmptyIds = [];
+  const unresolvedTextNamesSet = new Set();
+  const unresolvedLinkIdsSet = new Set();
+  const patches = [];
+
+  for (const r of entries) {
+    const f = r.fields || {};
+    const text = (f["Employee"] || "").trim();
+    const linkedId = firstLinkedId(f["Employee (Linked)"]);
+    const hasText = !!text;
+    const hasLink = !!linkedId;
+
+    if (hasText && hasLink) {
+      const linkedName = (idToName.get(linkedId) || "").trim();
+      if (linkedName && linkedName !== text) {
+        mismatch++;
+        mismatchIds.push(r.id);
+      } else {
+        bothPopulated++;
+      }
+      continue;
+    }
+    if (!hasText && !hasLink) {
+      bothEmpty++;
+      bothEmptyIds.push(r.id);
+      continue;
+    }
+    if (hasText && !hasLink) {
+      const recId = nameToId.get(text);
+      if (recId) {
+        patches.push({ id: r.id, fields: { [TE.employeeLink]: [recId] } });
+      } else {
+        textOnlyUnresolved++;
+        unresolvedTextNamesSet.add(text);
+      }
+      continue;
+    }
+    // hasLink && !hasText
+    const name = idToName.get(linkedId);
+    if (name) {
+      patches.push({ id: r.id, fields: { [TE.employee]: name } });
+    } else {
+      linkOnlyUnresolved++;
+      unresolvedLinkIdsSet.add(linkedId);
+    }
+  }
+
+  // Apply batched PATCHes (10 records per call, Airtable cap). Tally fixed
+  // counts only after a successful batch write so the response reflects
+  // actual mutations. A failed batch doesn't abort — push the error and
+  // continue so a single transient failure can't block the rest of the run.
+  const errors = [];
+  for (let i = 0; i < patches.length; i += 10) {
+    const chunk = patches.slice(i, i + 10);
+    try {
+      await atFetch(`${encodeURIComponent(TABLES.timeEntries)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ records: chunk, typecast: true })
+      });
+      for (const p of chunk) {
+        if (p.fields[TE.employeeLink]) textOnlyFixed++;
+        else if (p.fields[TE.employee] !== undefined) linkOnlyFixed++;
+      }
+    } catch (err) {
+      console.error("[backfillTimeEntryEmployeeLinks] batch failed:", err);
+      errors.push(err.message || String(err));
+    }
+  }
+
+  return resp(200, {
+    ok: true,
+    scanned: entries.length,
+    bothPopulated,
+    textOnlyFixed,
+    linkOnlyFixed,
+    mismatch,
+    bothEmpty,
+    textOnlyUnresolved,
+    linkOnlyUnresolved,
+    mismatchIds,
+    bothEmptyIds,
+    unresolvedTextNames: [...unresolvedTextNamesSet],
+    unresolvedLinkIds: [...unresolvedLinkIdsSet],
+    errors
+  });
+}
+
 // ── PAYROLL ARCHIVE: upload an attachment to an existing record ────────────
 // Airtable's content-host endpoint accepts a base64 file payload directly,
 // no public URL hosting needed. Limit is 5 MB per file, per Airtable docs.
@@ -3037,6 +3159,7 @@ export async function handler(event) {
       if (body.action === "updateTimeEntryPayroll") return await handleUpdateTimeEntryPayroll(body);
       if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
+      if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body);
       if (body.action === "approveExpense")       return await handleApproveExpense(body);

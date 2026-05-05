@@ -11441,11 +11441,17 @@ rick@northeasternelec.com`
       });
     });
 
-    // Delete buttons — surgical: remove the <tr> in place, recompute totals
-    // for the affected day/other bucket, drop empty Other buckets. NO
-    // renderPayroll call (would clobber sibling optimistic rows + focus).
-    document.querySelectorAll(".pr-del-btn").forEach(btn => {
-      btn.addEventListener("click", async () => {
+    // Delete buttons — delegated click on #prBlocks so optimistic rows added
+    // by + Add Entry (which never re-runs wirePayrollEvents) and rows that
+    // survive a Save All cycle still respond. Same dataset-guard pattern as
+    // the row input/change delegation above. Surgical: remove the <tr> in
+    // place, recompute totals for the affected day/other bucket, drop empty
+    // Other buckets. NO renderPayroll (would clobber sibling optimistic rows
+    // + focus).
+    if (blocksEl && !blocksEl.dataset.delDelegated) {
+      blocksEl.addEventListener("click", async (ev) => {
+        const btn = ev.target.closest('.pr-del-btn');
+        if (!btn) return;
         const eid = btn.dataset.entryId;
         if (!confirm("Delete this time entry?")) return;
 
@@ -11474,7 +11480,8 @@ rick@northeasternelec.com`
         recomputeGlobalSummary();
         updateSaveAllUI();
       });
-    });
+      blocksEl.dataset.delDelegated = "true";
+    }
 
     // Save All — top button (in summary bar, regenerated each renderPayroll)
     // and bottom button (sticky footer, static markup). Both share the same

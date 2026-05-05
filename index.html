@@ -1039,12 +1039,6 @@
     .pr-select { width: 100%; padding: 4px 6px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); color: var(--text); font-size: 12px; }
     .pr-del-btn { background: var(--red-dim); border: 1px solid rgba(198,40,40,0.3); color: #ff8b7e; border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
     .pr-del-btn:hover { background: rgba(198,40,40,0.25); }
-    .pr-add-btn { background: var(--accent-glow); border: 1px solid rgba(21,101,192,0.3); color: var(--accent); border-radius: 6px; padding: 5px 12px; font-size: 11px; font-weight: 600; cursor: pointer; margin: 8px 10px; display: inline-block; }
-    .pr-add-btn:hover { background: rgba(21,101,192,0.18); }
-    .pr-save-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px 8px; }
-    .pr-save-btn { background: var(--green); color: white; border: none; border-radius: 6px; padding: 5px 14px; font-size: 11px; font-weight: 600; cursor: pointer; }
-    .pr-save-btn:hover { background: #1b5e20; }
-    .pr-save-msg { font-size: 11px; color: var(--green); display: none; }
     .pr-summary-bar {
       display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 16px;
       background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
@@ -1059,9 +1053,37 @@
     }
     .pr-pdf-btn:hover { background: var(--accent-2); }
     .pr-week-label { font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); padding: 6px 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
-    .pr-week-total { font-size: 12px; color: var(--muted); font-weight: 600; }
+    .pr-week-total { font-size: 12px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
     .pr-no-entries { font-size: 12px; color: var(--muted); padding: 10px; font-style: italic; }
     .pr-empty { text-align: center; padding: 40px; color: var(--muted); font-size: 14px; }
+    /* ── Payroll Manager: day grouping (Sun→Sat 14-day) ── */
+    .pr-emp-total { font-size: 12px; color: rgba(255,255,255,0.92); font-weight: 600; font-variant-numeric: tabular-nums; padding: 2px 8px; background: rgba(0,0,0,0.18); border-radius: 6px; }
+    .pr-day-header { background: rgba(0,0,0,0.04); }
+    .pr-day-header td { padding: 4px 10px !important; border-top: 1px solid var(--line); border-bottom: 1px dashed var(--line); }
+    .pr-table tr.pr-day-header:hover td { background: rgba(0,0,0,0.04); }
+    .pr-day-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+    .pr-day-total { font-size: 11px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+    .pr-day-actions { text-align: right; }
+    .pr-add-btn-day { background: transparent; border: 1px dashed rgba(21,101,192,0.4); color: var(--accent); border-radius: 5px; padding: 2px 9px; font-size: 10px; font-weight: 600; cursor: pointer; font-family: 'Inter', sans-serif; white-space: nowrap; }
+    .pr-add-btn-day:hover { background: var(--accent-glow); border-style: solid; }
+    .pr-other-bucket { margin: 10px 0 4px; border: 1px dashed rgba(255,193,7,0.45); border-radius: 8px; background: rgba(255,193,7,0.06); }
+    .pr-other-label { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid rgba(255,193,7,0.25); font-size: 11px; color: var(--muted); }
+    .pr-other-label em { font-style: italic; font-weight: 600; color: var(--text); margin-right: 4px; }
+    .pr-other-label small { font-size: 10px; opacity: 0.85; }
+    .pr-other-total { font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+    .pr-period-bar input[readonly] { opacity: 0.7; cursor: not-allowed; background: var(--panel-2); }
+    /* ── Payroll Manager: Save All + dirty tracking + error UX ── */
+    tr[data-dirty="true"] { box-shadow: inset 4px 0 0 rgba(255,193,7,0.9); }
+    .pr-bonus-input[data-dirty="true"] { border-color: rgba(255,193,7,0.9); box-shadow: 0 0 0 1px rgba(255,193,7,0.9); }
+    .pr-row-error { color: var(--red); font-weight: 700; margin-left: 6px; cursor: help; font-size: 13px; }
+    .pr-error-banner { padding: 8px 12px; background: rgba(198,40,40,0.08); border: 1px solid rgba(198,40,40,0.3); color: var(--text); border-radius: 6px; margin: 6px 0 12px; font-size: 12px; justify-content: space-between; align-items: center; gap: 10px; }
+    .pr-error-banner button { background: var(--accent); color: white; border: none; border-radius: 5px; padding: 4px 12px; font-size: 11px; font-weight: 600; cursor: pointer; }
+    .pr-error-banner button:hover { background: var(--accent-2); }
+    .pr-saving { opacity: 0.6; pointer-events: none; }
+    .pr-sticky-footer { position: sticky; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 14px; display: flex; justify-content: flex-end; align-items: center; gap: 8px; z-index: 10; margin-top: 14px; }
+    .pr-save-all-btn { background: var(--green); color: white; border: none; border-radius: 6px; padding: 6px 16px; font-size: 12px; font-weight: 700; cursor: pointer; font-family: 'Inter', sans-serif; }
+    .pr-save-all-btn:disabled { background: var(--muted); cursor: not-allowed; opacity: 0.5; }
+    .pr-save-all-btn:not(:disabled):hover { background: #1b5e20; }
     /* ── Payroll Manager: list view ── */
     .pr-list-toolbar {
       display: flex; align-items: center; gap: 12px;
@@ -1748,8 +1770,7 @@
       .pr-table .pr-hours { min-width: 58px !important; width: 58px !important; }
 
       .pr-week-label { padding: 6px 10px; font-size: 12px; }
-      .pr-add-btn { margin: 6px 8px; padding: 5px 10px; font-size: 11px; }
-      .pr-save-row { padding: 4px 8px 8px; }
+      .pr-add-btn-day { padding: 2px 8px; font-size: 10px; }
     }
   </style>
 </head>
@@ -8919,14 +8940,62 @@ rick@northeasternelec.com`
   let prShowSuperseded = false;
   let prEmployeeIdByName = {};  // name → recordId, for dual-writing Employee (Linked) on createTimeEntry
 
+  // ── Bonus localStorage cache (per-period, in-progress only) ────────
+  // Bonuses don't have a server-side "pending" table yet — they only persist
+  // when a payroll run is archived (creates Bonus rows in Airtable). This
+  // cache survives modal close/reopen so the user doesn't lose work. Cleared
+  // when the run successfully archives.
+  // FUTURE: swap to apiPost('upsertPendingBonus', {...}) when the Pending
+  // Bonuses Airtable table is created — see #2 plan A2.
+  const PR_BONUS_LS_KEY = "payroll_bonuses_v1";
+
+  function periodKey() {
+    const a = $("prWk1Start")?.value || "";
+    const b = $("prWk2End")?.value   || "";
+    return (a && b) ? `${a}_${b}` : "";
+  }
+
+  function loadBonusesFromLocalStorage(key) {
+    if (!key) return {};
+    try {
+      const root = JSON.parse(localStorage.getItem(PR_BONUS_LS_KEY)) || {};
+      return root[key] || {};
+    } catch { return {}; }
+  }
+
+  function saveBonusesToLocalStorage(key, bonusMap) {
+    if (!key) return;
+    try {
+      const root = JSON.parse(localStorage.getItem(PR_BONUS_LS_KEY)) || {};
+      root[key] = bonusMap || {};
+      localStorage.setItem(PR_BONUS_LS_KEY, JSON.stringify(root));
+    } catch (e) {
+      console.warn("Bonus localStorage write failed:", e);
+    }
+  }
+
+  function clearBonusesFromLocalStorage(key) {
+    if (!key) return;
+    try {
+      const root = JSON.parse(localStorage.getItem(PR_BONUS_LS_KEY)) || {};
+      delete root[key];
+      localStorage.setItem(PR_BONUS_LS_KEY, JSON.stringify(root));
+    } catch {}
+  }
+
   function openPayroll() {
     $("payrollModal").style.display = "flex";
+    // Known gap: browser-back / mobile back-swipe pops this entry directly,
+    // bypassing the dirty-confirm guard in closePayroll(). Acceptable for the
+    // current desktop-only Payroll Manager workflow. Revisit if mobile use
+    // becomes a thing.
     pushBackEntry("payroll", () => { $("payrollModal").style.display = "none"; });
     preloadJsPDF(); // start loading jsPDF in background
     enterListView();
   }
 
   function closePayroll() {
+    if (countDirty() > 0 && !confirm("You have unsaved changes. Close anyway?")) return;
     popBackEntry("payroll");
     $("payrollModal").style.display = "none";
   }
@@ -9181,14 +9250,25 @@ rick@northeasternelec.com`
     $("prListView").style.display = "none";
     $("prCreateView").style.display = "";
 
-    // Default the period to the most recent completed bi-weekly window (Mon→Sat).
+    // Default the period to the most recent completed bi-weekly window (Sun→Sat, 14 days).
     const today = new Date();
-    const dayOfWeek = today.getDay();
-    const diffToMon = (dayOfWeek === 0) ? -6 : 1 - dayOfWeek;
-    const wk2Mon = new Date(today); wk2Mon.setDate(today.getDate() + diffToMon - 7);
-    const wk2Sat = new Date(wk2Mon); wk2Sat.setDate(wk2Mon.getDate() + 12);
-    $("prWk1Start").value = wk2Mon.toISOString().slice(0,10);
-    $("prWk2End").value   = wk2Sat.toISOString().slice(0,10);
+    const dow = today.getDay(); // 0=Sun..6=Sat
+    const daysBackToSat = (dow + 1) % 7; // Sun→1, Mon→2, ..., Fri→6, Sat→0
+    const wk2EndDt   = new Date(today);    wk2EndDt.setDate(today.getDate() - daysBackToSat);
+    const wk1StartDt = new Date(wk2EndDt); wk1StartDt.setDate(wk2EndDt.getDate() - 13);
+    $("prWk1Start").value = wk1StartDt.toISOString().slice(0,10);
+    $("prWk2End").value   = wk2EndDt.toISOString().slice(0,10);
+
+    // wk1Start change → auto-derive wk2End (= wk1Start + 13 days, Sat). Property
+    // assignment overwrites any prior handler so re-binding on every enterCreateView
+    // is safe — no listener stacking.
+    $("prWk1Start").onchange = () => {
+      const v = $("prWk1Start").value;
+      if (!v) { $("prWk2End").value = ""; return; }
+      const s = localDate(v);
+      const e = new Date(s); e.setDate(s.getDate() + 13);
+      $("prWk2End").value = e.toISOString().slice(0,10);
+    };
 
     // Reset transient state for a fresh run.
     prJobs = state.jobs || [];
@@ -10668,12 +10748,12 @@ rick@northeasternelec.com`
     return new Date(y, m-1, d);
   }
 
-  // Given wk1Start (Mon), compute the 4 boundary dates
-  function computeWeekBounds(wk1StartStr, wk2EndStr) {
+  // Given wk1Start (Sun), compute the 4 boundary dates for a Sun→Sat 14-day window.
+  function computeWeekBounds(wk1StartStr) {
     const wk1S = localDate(wk1StartStr);
-    const wk1E = new Date(wk1S); wk1E.setDate(wk1S.getDate() + 5); // Sat
-    const wk2S = new Date(wk1S); wk2S.setDate(wk1S.getDate() + 7); // Mon
-    const wk2E = localDate(wk2EndStr);
+    const wk1E = new Date(wk1S); wk1E.setDate(wk1S.getDate() + 6);  // Sat of wk1
+    const wk2S = new Date(wk1S); wk2S.setDate(wk1S.getDate() + 7);  // Sun of wk2
+    const wk2E = new Date(wk1S); wk2E.setDate(wk1S.getDate() + 13); // Sat of wk2
     return { wk1S, wk1E, wk2S, wk2E };
   }
 
@@ -10696,7 +10776,7 @@ rick@northeasternelec.com`
     const wk2EndStr   = $("prWk2End").value;
     if (!wk1StartStr || !wk2EndStr) { alert("Please set both Week 1 Start and Week 2 End dates."); return; }
 
-    const bounds = computeWeekBounds(wk1StartStr, wk2EndStr);
+    const bounds = computeWeekBounds(wk1StartStr);
     prWk1Start = bounds.wk1S; prWk1End = bounds.wk1E;
     prWk2Start = bounds.wk2S; prWk2End = bounds.wk2E;
 
@@ -10710,7 +10790,10 @@ rick@northeasternelec.com`
     try {
       const d = await apiGet("payrollEntries", { startDate: dateStr(prWk1Start), endDate: dateStr(prWk2End) });
       prEntries = (d.entries || []).map(e => ({ ...e, isNew: false, _dirty: false }));
-      prBonuses = {};
+      // Hydrate bonuses from localStorage cache for this period. Loaded values
+      // are clean — no data-dirty marking. The user re-typing makes them dirty
+      // and the next saveAll() writes them back to localStorage.
+      prBonuses = { ...loadBonusesFromLocalStorage(periodKey()) };
       statusEl.style.display = "none";
       renderPayroll();
     } catch(e) {
@@ -10721,14 +10804,49 @@ rick@northeasternelec.com`
   }
   window.loadPayrollEntries = loadPayrollEntries;
 
+  // Flatten the day-bucketed week shape back to a flat entry array. The PDF
+  // and archive consumers were written before #1's day grouping and still
+  // expect arrays. Legacy array input is passed through unchanged so callers
+  // can't double-flatten.
+  function flattenWeek(week) {
+    if (Array.isArray(week)) return week;
+    if (week?.days) return Object.values(week.days).flat();
+    return [];
+  }
+
+  // Build the 7 day-key strings for a given week-start Date, in Sun..Sat order.
+  function buildEmptyDayMap(weekStart) {
+    const days = {};
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(weekStart); d.setDate(weekStart.getDate() + i);
+      days[dateStr(d)] = [];
+    }
+    return days;
+  }
+
   function groupEntries() {
-    // Group by employee then by week
+    // Bucket per employee → per day. Pre-populates all 14 day keys with empty
+    // arrays so the renderer can iterate days deterministically without having
+    // to re-derive the date list. Out-of-period and undated entries land in
+    // a single combined `other` array per employee.
     const empMap = {};
+    function ensureEmp(emp) {
+      if (!empMap[emp]) {
+        empMap[emp] = {
+          wk1: { days: buildEmptyDayMap(prWk1Start) },
+          wk2: { days: buildEmptyDayMap(prWk2Start) },
+          other: []
+        };
+      }
+      return empMap[emp];
+    }
     prEntries.forEach(e => {
-      if (!empMap[e.employee]) empMap[e.employee] = { wk1: [], wk2: [] };
+      const bucket = ensureEmp(e.employee);
+      if (!e.workDate) { bucket.other.push(e); return; }
       const wk = whichWeek(e.workDate, prWk1Start, prWk1End, prWk2Start, prWk2End);
-      if (wk === 1) empMap[e.employee].wk1.push(e);
-      else if (wk === 2) empMap[e.employee].wk2.push(e);
+      if (wk === 1 && bucket.wk1.days[e.workDate]) bucket.wk1.days[e.workDate].push(e);
+      else if (wk === 2 && bucket.wk2.days[e.workDate]) bucket.wk2.days[e.workDate].push(e);
+      else bucket.other.push(e);
     });
     return empMap;
   }
@@ -10740,6 +10858,8 @@ rick@northeasternelec.com`
     const empNames = Object.keys(empMap).sort();
     if (!empNames.length) {
       $("prBlocks").innerHTML = `<div class="pr-empty">No time entries found for this period.</div>`;
+      updateSaveAllUI();
+      updateErrorBanner(0, 0);
       return;
     }
 
@@ -10752,13 +10872,135 @@ rick@northeasternelec.com`
       <div class="pr-summary-chip">${empNames.length} <span>employees</span></div>
       <div class="pr-summary-chip">${fmtHrs(totalHrs)} <span>total hrs</span></div>
       <div class="pr-summary-chip">${dateStr(prWk1Start)} → ${dateStr(prWk2End)}</div>
+      <button id="prSaveAllTop" class="pr-save-all-btn" disabled>Save All</button>
       <button class="pr-pdf-btn" onclick="generatePayrollPDF()">⬇ Download PDF</button>`;
 
     // Render each employee block
     $("prBlocks").innerHTML = empMap ? empNames.map(emp => renderEmpBlock(emp, empMap[emp])).join("") : "";
 
-    // Wire all events
+    // Wire all events, then sync the Save All buttons + clear any stale banner.
     wirePayrollEvents();
+    updateSaveAllUI();
+    updateErrorBanner(0, 0);
+  }
+
+  function sumWeekHours(week) {
+    let total = 0;
+    Object.values(week.days).forEach(arr => arr.forEach(e => { total += secToHrs(e.duration || 0); }));
+    return total;
+  }
+  function sumOtherHours(arr) {
+    return arr.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
+  }
+
+  // Single editable row template — used by the initial render AND by the
+  // optimistic Add Entry click, so server-loaded rows and freshly-inserted
+  // rows have byte-identical structure.
+  function renderEntryRow(emp, e) {
+    const hrs = secToHrs(e.duration || 0);
+    const eid = esc(e.id || e._tmpId || "");
+    const isNew = e.isNew === true || (!e.id && !!e._tmpId);
+    const newAttrs = isNew ? ' data-new="true" data-dirty="true"' : '';
+    const jobOptionsHtml = prJobs
+      .filter(j => ["awarded","service call scheduled","ready to invoice"].includes((j.status||"").toLowerCase()))
+      .sort((a,b)=>(a.name||"").localeCompare(b.name||""))
+      .map(j => `<option value="${esc(j.id)}" ${e.jobId === j.id ? "selected" : ""}>${esc(j.name)}</option>`).join("");
+    const classOptionsHtml = PR_CLASSES.map(c => `<option value="${esc(c)}" ${e.class === c ? "selected" : ""}>${esc(c)}</option>`).join("");
+    const taxOptionsHtml   = PR_CITY_TAXES.map(t => `<option value="${esc(t)}" ${e.cityTaxes === t ? "selected" : ""}>${esc(t)}</option>`).join("");
+    return `
+      <tr data-entry-id="${eid}"${newAttrs}>
+        <td><input type="date" class="pr-input pr-date" value="${esc(e.workDate || "")}" /></td>
+        <td>
+          <select class="pr-select pr-job">
+            <option value="">— No Job —</option>
+            ${jobOptionsHtml}
+          </select>
+        </td>
+        <td><input type="number" class="pr-input pr-hours" value="${fmtHrs(hrs)}" min="0" max="24" step="0.25" style="width:72px;" /></td>
+        <td>
+          <select class="pr-select pr-class">${classOptionsHtml}</select>
+        </td>
+        <td>
+          <select class="pr-select pr-citytax">${taxOptionsHtml}</select>
+        </td>
+        <td><button class="pr-del-btn" data-entry-id="${eid}">🗑 Delete</button></td>
+      </tr>`;
+  }
+
+  // One <tbody data-day=...> per day of the pay period. The header row
+  // doubles as a daily-total chip and an "+ Add" button so empty days don't
+  // need a separate empty-state element.
+  function renderDayGroup(emp, dStr, dayEntries) {
+    const dt = localDate(dStr);
+    const wd = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
+    const shortDate = `${dt.getMonth()+1}/${dt.getDate()}`;
+    const dayTotal = dayEntries.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
+    const rowsHtml = dayEntries.map(e => renderEntryRow(emp, e)).join("");
+    return `
+      <tbody data-day="${dStr}" data-emp="${esc(emp)}">
+        <tr class="pr-day-header">
+          <td colspan="2" class="pr-day-label">${wd} ${shortDate}</td>
+          <td class="pr-day-total">${fmtHrs(dayTotal)} hrs</td>
+          <td colspan="3" class="pr-day-actions">
+            <button class="pr-add-btn-day" data-emp="${esc(emp)}" data-date="${dStr}">+ Add Entry</button>
+          </td>
+        </tr>
+        ${rowsHtml}
+      </tbody>`;
+  }
+
+  function renderWeekTable(emp, week, wkNum, weekStart, weekEnd, weekTotal, isSalaried) {
+    const col = PR_COLORS[emp] || { hdr: "#444", light: "#eee" };
+    const dayKeys = Object.keys(week.days); // already Sun..Sat (insertion order from buildEmptyDayMap)
+    const tbodies = dayKeys.map(d => renderDayGroup(emp, d, week.days[d])).join("");
+    return `
+      <div class="pr-week-label" style="background:${col.light}; color:#333;">
+        <span>Week ${wkNum} — ${dateStr(weekStart)} to ${dateStr(weekEnd)}</span>
+        <span class="pr-week-total" data-week="${wkNum}">${fmtHrs(weekTotal)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}</span>
+      </div>
+      <div class="pr-table-wrap">
+        <table class="pr-table pr-week-table" data-week="${wkNum}">
+          <thead><tr><th>Date</th><th>Job</th><th>Hours</th><th>Class</th><th>City Tax</th><th></th></tr></thead>
+          ${tbodies}
+        </table>
+      </div>`;
+  }
+
+  // Empty-bucket shell used by reflowRow when an entry's date moves out of
+  // the 14-day span and no bucket exists yet for this employee.
+  function renderEmptyOtherBucket(emp) {
+    return `
+      <div class="pr-other-bucket" data-emp="${esc(emp)}">
+        <div class="pr-other-label">
+          <span><em>Other entries</em> <small>(out of period or undated)</small></span>
+          <span class="pr-other-total">0 hrs</span>
+        </div>
+        <div class="pr-table-wrap">
+          <table class="pr-table pr-other-table">
+            <thead><tr><th>Date</th><th>Job</th><th>Hours</th><th>Class</th><th>City Tax</th><th></th></tr></thead>
+            <tbody data-other="true" data-emp="${esc(emp)}"></tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  function renderOtherBucket(emp, otherEntries) {
+    if (!otherEntries.length) return "";
+    const total = otherEntries.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
+    const rowsHtml = otherEntries.map(e => renderEntryRow(emp, e)).join("");
+    return `
+      <div class="pr-other-bucket" data-emp="${esc(emp)}">
+        <div class="pr-other-label">
+          <span><em>Other entries</em> <small>(out of period or undated)</small></span>
+          <span class="pr-other-total">${fmtHrs(total)} hrs</span>
+        </div>
+        <div class="pr-table-wrap">
+          <table class="pr-table pr-other-table">
+            <thead><tr><th>Date</th><th>Job</th><th>Hours</th><th>Class</th><th>City Tax</th><th></th></tr></thead>
+            <tbody data-other="true" data-emp="${esc(emp)}">${rowsHtml}</tbody>
+          </table>
+        </div>
+      </div>`;
   }
 
   function renderEmpBlock(emp, weeks) {
@@ -10766,16 +11008,17 @@ rick@northeasternelec.com`
     const isSalaried = SALARIED.includes(emp);
     const bonus = prBonuses[emp] || 0;
 
-    const wk1Html = renderWeekTable(emp, weeks.wk1, 1);
-    const wk2Html = renderWeekTable(emp, weeks.wk2, 2);
-    const wk1Total = weeks.wk1.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
-    const wk2Total = weeks.wk2.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
+    const wk1Total = sumWeekHours(weeks.wk1);
+    const wk2Total = sumWeekHours(weeks.wk2);
+    const otherTotal = sumOtherHours(weeks.other);
+    const empTotal = wk1Total + wk2Total + otherTotal;
 
     return `
     <div class="pr-emp-block" data-emp="${esc(emp)}">
       <div class="pr-emp-header" style="background:${col.hdr};">
         <span>${esc(emp)}${isSalaried ? ' <span style="font-size:10px; font-weight:400; opacity:0.8;">(Salaried)</span>' : ''}</span>
         <div class="pr-emp-right">
+          <span class="pr-emp-total">${fmtHrs(empTotal)} hrs</span>
           <div class="pr-bonus-wrap">
             <label>Bonus $</label>
             <input type="number" class="pr-bonus-input" data-emp="${esc(emp)}" value="${bonus}" min="0" step="0.01" placeholder="0.00" />
@@ -10783,115 +11026,433 @@ rick@northeasternelec.com`
         </div>
       </div>
 
-      <!-- Week 1 -->
-      <div class="pr-week-label" style="background:${col.light}; color:#333;">
-        <span>Week 1 — ${dateStr(prWk1Start)} to ${dateStr(prWk1End)}</span>
-        <span class="pr-week-total">${fmtHrs(wk1Total)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}</span>
-      </div>
-      ${wk1Html}
-      <button class="pr-add-btn" data-emp="${esc(emp)}" data-week="1">+ Add Entry</button>
-
-      <!-- Week 2 -->
-      <div class="pr-week-label" style="background:${col.light}; color:#333;">
-        <span>Week 2 — ${dateStr(prWk2Start)} to ${dateStr(prWk2End)}</span>
-        <span class="pr-week-total">${fmtHrs(wk2Total)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}</span>
-      </div>
-      ${wk2Html}
-      <button class="pr-add-btn" data-emp="${esc(emp)}" data-week="2">+ Add Entry</button>
-
-      <!-- Save row -->
-      <div class="pr-save-row">
-        <button class="pr-save-btn" data-emp="${esc(emp)}">💾 Save Changes</button>
-        <span class="pr-save-msg" data-emp="${esc(emp)}">✓ Saved</span>
-      </div>
+      ${renderWeekTable(emp, weeks.wk1, 1, prWk1Start, prWk1End, wk1Total, isSalaried)}
+      ${renderWeekTable(emp, weeks.wk2, 2, prWk2Start, prWk2End, wk2Total, isSalaried)}
+      ${renderOtherBucket(emp, weeks.other)}
     </div>`;
   }
 
-  function renderWeekTable(emp, entries, wkNum) {
-    if (!entries.length) return `<div class="pr-no-entries">No entries — use + Add Entry below.</div>`;
-    const jobOptions = prJobs
-      .filter(j => ["awarded","service call scheduled","ready to invoice"].includes((j.status||"").toLowerCase()))
-      .sort((a,b) => (a.name||"").localeCompare(b.name||""))
-      .map(j => `<option value="${esc(j.id)}">${esc(j.name)}</option>`).join("");
-    const classOptions = PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
-    const taxOptions   = PR_CITY_TAXES.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("");
+  // ── Recompute helpers ────────────────────────────────────────────
+  // Targeted DOM updates only — never call renderPayroll from these. The
+  // top-level render rebuilds innerHTML and would clobber any in-flight
+  // optimistic rows + lose the user's input focus mid-edit.
 
-    const rows = entries.map(e => {
-      const hrs = secToHrs(e.duration || 0);
-      return `
-      <tr data-entry-id="${esc(e.id || e._tmpId || "")}">
-        <td><input type="date" class="pr-input pr-date" value="${esc(e.workDate || "")}" /></td>
-        <td>
-          <select class="pr-select pr-job">
-            <option value="">— No Job —</option>
-            ${prJobs.filter(j => ["awarded","service call scheduled","ready to invoice"].includes((j.status||"").toLowerCase()))
-              .sort((a,b)=>(a.name||"").localeCompare(b.name||""))
-              .map(j => `<option value="${esc(j.id)}" ${e.jobId === j.id ? "selected" : ""}>${esc(j.name)}</option>`).join("")}
-          </select>
-        </td>
-        <td><input type="number" class="pr-input pr-hours" value="${fmtHrs(hrs)}" min="0" max="24" step="0.25" style="width:72px;" /></td>
-        <td>
-          <select class="pr-select pr-class">
-            ${PR_CLASSES.map(c => `<option value="${esc(c)}" ${e.class === c ? "selected" : ""}>${esc(c)}</option>`).join("")}
-          </select>
-        </td>
-        <td>
-          <select class="pr-select pr-citytax">
-            ${PR_CITY_TAXES.map(t => `<option value="${esc(t)}" ${e.cityTaxes === t ? "selected" : ""}>${esc(t)}</option>`).join("")}
-          </select>
-        </td>
-        <td><button class="pr-del-btn" data-entry-id="${esc(e.id || e._tmpId || "")}">🗑 Delete</button></td>
-      </tr>`;
-    }).join("");
+  function rowHoursValue(row) {
+    return parseFloat(row.querySelector('.pr-hours')?.value) || 0;
+  }
 
-    return `
-    <div class="pr-table-wrap">
-      <table class="pr-table">
-        <thead><tr><th>Date</th><th>Job</th><th>Hours</th><th>Class</th><th>City Tax</th><th></th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+  function recomputeDayTotal(tbody) {
+    if (!tbody) return 0;
+    let total = 0;
+    tbody.querySelectorAll('tr[data-entry-id]').forEach(r => { total += rowHoursValue(r); });
+    const totalEl = tbody.querySelector('.pr-day-total');
+    if (totalEl) totalEl.textContent = `${fmtHrs(total)} hrs`;
+    return total;
+  }
+
+  function recomputeOtherTotal(bucket) {
+    if (!bucket) return 0;
+    let total = 0;
+    bucket.querySelectorAll('tr[data-entry-id]').forEach(r => { total += rowHoursValue(r); });
+    const totalEl = bucket.querySelector('.pr-other-total');
+    if (totalEl) totalEl.textContent = `${fmtHrs(total)} hrs`;
+    return total;
+  }
+
+  function recomputeWeekTotal(table) {
+    if (!table) return 0;
+    let total = 0;
+    table.querySelectorAll('tr[data-entry-id]').forEach(r => { total += rowHoursValue(r); });
+    const block = table.closest('.pr-emp-block');
+    const wkNum = table.dataset.week;
+    const isSalaried = SALARIED.includes(block?.dataset.emp);
+    const totalEl = block?.querySelector(`.pr-week-total[data-week="${wkNum}"]`);
+    if (totalEl) totalEl.textContent = `${fmtHrs(total)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}`;
+    return total;
+  }
+
+  function recomputeBlockTotals(block) {
+    if (!block) return 0;
+    let blockTotal = 0;
+    block.querySelectorAll('table.pr-week-table').forEach(tbl => {
+      blockTotal += recomputeWeekTotal(tbl);
+      tbl.querySelectorAll('tbody[data-day]').forEach(tb => recomputeDayTotal(tb));
+    });
+    const otherBucket = block.querySelector('.pr-other-bucket');
+    if (otherBucket) blockTotal += recomputeOtherTotal(otherBucket);
+    const empTotalEl = block.querySelector('.pr-emp-total');
+    if (empTotalEl) empTotalEl.textContent = `${fmtHrs(blockTotal)} hrs`;
+    return blockTotal;
+  }
+
+  function recomputeGlobalSummary() {
+    let totalHrs = 0;
+    document.querySelectorAll('#prBlocks .pr-emp-block tr[data-entry-id]').forEach(r => {
+      totalHrs += rowHoursValue(r);
+    });
+    // Summary bar layout (renderPayroll): chip[0] = employee count,
+    // chip[1] = total hrs, chip[2] = period range. Update chip[1] only.
+    const chips = document.querySelectorAll('#prSummaryBar .pr-summary-chip');
+    if (chips[1]) chips[1].innerHTML = `${fmtHrs(totalHrs)} <span>total hrs</span>`;
+  }
+
+  // Move a row to the tbody matching its new date, creating the "Other"
+  // bucket on demand if the new date falls outside the 14-day span. Pure
+  // DOM mutation — no prEntries touch, no re-render.
+  function reflowRow(rowEl, newDateStr) {
+    const block = rowEl.closest('.pr-emp-block');
+    if (!block) return;
+    const oldContainer = rowEl.closest('tbody[data-day]') || rowEl.closest('tbody[data-other]');
+    let target = newDateStr ? block.querySelector(`tbody[data-day="${newDateStr}"]`) : null;
+
+    if (!target) {
+      // Date is empty or outside the 14-day span → Other bucket. Create it
+      // at the end of the block if one doesn't exist yet for this employee.
+      let otherBucket = block.querySelector('.pr-other-bucket');
+      if (!otherBucket) {
+        const emp = block.dataset.emp || '';
+        block.insertAdjacentHTML('beforeend', renderEmptyOtherBucket(emp));
+        otherBucket = block.querySelector('.pr-other-bucket');
+      }
+      target = otherBucket?.querySelector('tbody[data-other]') || null;
+    }
+
+    if (target && oldContainer && target !== oldContainer) {
+      target.appendChild(rowEl);
+    }
+
+    // Remove the Other bucket if it just emptied out — don't leave a dangling
+    // empty section with "0 hrs" when every row has a valid in-period date.
+    if (oldContainer && oldContainer.matches('tbody[data-other]') &&
+        !oldContainer.querySelector('tr[data-entry-id]')) {
+      oldContainer.closest('.pr-other-bucket')?.remove();
+    }
+  }
+
+  // Single entry-point for all per-row input/change events. fieldKind is one
+  // of 'date' | 'hours' | 'other'. Marks the row dirty (consumed by Save All),
+  // re-flows on date change, and refreshes totals on date/hours.
+  function handleRowChange(rowEl, fieldKind) {
+    if (!rowEl) return;
+    rowEl.dataset.dirty = "true";
+    if (fieldKind === 'date') {
+      const newDate = rowEl.querySelector('.pr-date')?.value || "";
+      reflowRow(rowEl, newDate);
+    }
+    if (fieldKind === 'date' || fieldKind === 'hours') {
+      const block = rowEl.closest('.pr-emp-block');
+      recomputeBlockTotals(block);
+      recomputeGlobalSummary();
+    }
+    updateSaveAllUI();
+  }
+
+  // ── Save All: dirty count, button state, error banner ────────────
+  function countDirty() {
+    return document.querySelectorAll("#prBlocks tr[data-dirty='true']").length
+         + document.querySelectorAll(".pr-bonus-input[data-dirty='true']").length;
+  }
+
+  function updateSaveAllUI() {
+    const count = countDirty();
+    const text = count > 0 ? `Save All (${count})` : "Save All";
+    document.querySelectorAll(".pr-save-all-btn").forEach(btn => {
+      btn.textContent = text;
+      btn.disabled = (count === 0);
+    });
+  }
+
+  function updateErrorBanner(failedCount, totalCount) {
+    const banner = $("prErrorBanner");
+    if (!banner) return;
+    if (!failedCount) {
+      banner.style.display = "none";
+      return;
+    }
+    const msgEl = banner.querySelector('.pr-error-banner-msg');
+    if (msgEl) msgEl.textContent = `${failedCount} of ${totalCount} changes failed to save.`;
+    banner.style.display = "flex";
+  }
+
+  function markRowError(row, msg) {
+    row.dataset.error = msg;
+    const delBtn = row.querySelector('.pr-del-btn');
+    if (!delBtn) return;
+    const cell = delBtn.parentElement;
+    let chip = cell.querySelector('.pr-row-error');
+    if (!chip) {
+      chip = document.createElement('span');
+      chip.className = 'pr-row-error';
+      chip.textContent = '!';
+      cell.appendChild(chip);
+    }
+    chip.title = msg;
+  }
+
+  function clearRowError(row) {
+    delete row.dataset.error;
+    row.querySelector('.pr-row-error')?.remove();
+  }
+
+  // ── Save All orchestration ───────────────────────────────────────
+  // Collects every dirty row + dirty bonus, fans out POST/PATCH/localStorage
+  // via Promise.allSettled, reconciles per-result. DOM is the source of truth
+  // for unsaved state; prEntries is synced post-success so the PDF/archive
+  // flow has consistent data. NO renderPayroll call from here — that would
+  // wipe focus and any rows still in error state.
+  async function saveAll() {
+    const dirtyRows = Array.from(document.querySelectorAll("#prBlocks tr[data-entry-id][data-dirty='true']"));
+    const dirtyBonusInputs = Array.from(document.querySelectorAll(".pr-bonus-input[data-dirty='true']"));
+
+    const jobs = [];
+
+    for (const row of dirtyRows) {
+      const block = row.closest('.pr-emp-block');
+      const emp = block?.dataset.emp || '';
+      const isCreate = row.dataset.new === 'true';
+
+      const newDate  = row.querySelector('.pr-date')?.value || '';
+      const newHrs   = parseFloat(row.querySelector('.pr-hours')?.value) || 0;
+      const newDur   = hrsToSec(newHrs);
+      const newClass = row.querySelector('.pr-class')?.value || '';
+      const newTax   = row.querySelector('.pr-citytax')?.value || '';
+      const newJobEl = row.querySelector('.pr-job');
+      const newJobId = newJobEl ? newJobEl.value : null;
+      const newJobName = newJobEl ? (newJobEl.options[newJobEl.selectedIndex]?.text || '') : '';
+
+      const fields = {
+        workDate: newDate, duration: newDur, class: newClass,
+        cityTaxes: newTax, jobId: newJobId, jobName: newJobName
+      };
+
+      if (isCreate) {
+        const payload = {
+          employee:   emp,
+          employeeId: prEmployeeIdByName[emp] || null,
+          workDate:   newDate,
+          duration:   newDur,
+          class:      newClass,
+          cityTaxes:  newTax,
+          jobId:      newJobId || null,
+          jobName:    newJobName || null
+        };
+        jobs.push({
+          kind: 'create', row, emp, fields, payload,
+          run: () => apiPost('createTimeEntry', payload)
+        });
+      } else {
+        const payload = {
+          entryId:  row.dataset.entryId,
+          duration: newDur,
+          workDate: newDate,
+          class:    newClass,
+          cityTaxes: newTax,
+          jobId:    newJobId || null
+        };
+        jobs.push({
+          kind: 'update', row, emp, fields, payload,
+          run: () => apiPost('updateTimeEntryPayroll', payload)
+        });
+      }
+    }
+
+    for (const inp of dirtyBonusInputs) {
+      const emp = inp.dataset.emp || '';
+      const value = parseFloat(inp.value) || 0;
+      jobs.push({
+        kind: 'bonus', input: inp, emp, value,
+        run: () => Promise.resolve().then(() => {
+          prBonuses[emp] = value;
+          const key = periodKey();
+          if (key) {
+            // FUTURE: swap to apiPost('upsertPendingBonus', { period: key, emp, value })
+            // when the Pending Bonuses Airtable table is created — see #2 plan A2.
+            const stored = loadBonusesFromLocalStorage(key);
+            stored[emp] = value;
+            saveBonusesToLocalStorage(key, stored);
+          }
+          return { ok: true };
+        })
+      });
+    }
+
+    if (jobs.length === 0) return { failed: 0, total: 0 };
+
+    const results = await Promise.allSettled(jobs.map(j => j.run()));
+
+    let failed = 0;
+    results.forEach((res, idx) => {
+      const job = jobs[idx];
+      if (res.status === 'fulfilled') {
+        if (job.kind === 'create') {
+          const newId = res.value?.id;
+          if (!newId) {
+            failed++;
+            markRowError(job.row, 'Server did not return an id');
+            return;
+          }
+          // Swap tmpId → recId on row + delete button.
+          job.row.dataset.entryId = newId;
+          job.row.querySelector('.pr-del-btn')?.setAttribute('data-entry-id', newId);
+          delete job.row.dataset.new;
+          delete job.row.dataset.dirty;
+          clearRowError(job.row);
+          prEntries.push({
+            id: newId,
+            employee: job.emp,
+            employeeId: prEmployeeIdByName[job.emp] || null,
+            workDate: job.fields.workDate,
+            duration: job.fields.duration,
+            hours: secToHrs(job.fields.duration || 0),
+            class: job.fields.class,
+            cityTaxes: job.fields.cityTaxes,
+            jobId: job.fields.jobId,
+            jobName: job.fields.jobName,
+            isNew: false,
+            _dirty: false
+          });
+        } else if (job.kind === 'update') {
+          delete job.row.dataset.dirty;
+          clearRowError(job.row);
+          const entryId = job.row.dataset.entryId;
+          const entry = prEntries.find(e => e.id === entryId);
+          if (entry) {
+            entry.workDate  = job.fields.workDate;
+            entry.duration  = job.fields.duration;
+            entry.hours     = secToHrs(job.fields.duration || 0);
+            entry.class     = job.fields.class;
+            entry.cityTaxes = job.fields.cityTaxes;
+            entry.jobId     = job.fields.jobId;
+            entry.jobName   = job.fields.jobName;
+            entry._dirty    = false;
+          }
+        } else if (job.kind === 'bonus') {
+          delete job.input.dataset.dirty;
+        }
+      } else {
+        failed++;
+        const err = res.reason;
+        const msg = (err && err.message) || String(err) || 'Save failed';
+        if (job.row) markRowError(job.row, msg);
+      }
+    });
+
+    return { failed, total: jobs.length };
+  }
+
+  // Click handler shared by both Save All buttons + the error banner Retry.
+  // Locks the panel during in-flight saves, restores state on completion.
+  async function onSaveAllClick() {
+    const blocks = $("prBlocks");
+    blocks?.classList.add("pr-saving");
+    document.querySelectorAll(".pr-save-all-btn").forEach(b => {
+      b.disabled = true;
+      b.textContent = "Saving…";
+    });
+    try {
+      const { failed, total } = await saveAll();
+      updateErrorBanner(failed, total);
+    } finally {
+      blocks?.classList.remove("pr-saving");
+      updateSaveAllUI(); // restores text + disabled based on remaining dirty count
+    }
   }
 
   let _tmpIdCounter = 0;
 
   function wirePayrollEvents() {
-    // Bonus inputs
+    // Bonus inputs — mark dirty on change so Save All picks them up.
     document.querySelectorAll(".pr-bonus-input").forEach(inp => {
       inp.addEventListener("change", () => {
         prBonuses[inp.dataset.emp] = parseFloat(inp.value) || 0;
+        inp.dataset.dirty = "true";
+        updateSaveAllUI();
       });
     });
 
-    // Add Entry buttons
-    document.querySelectorAll(".pr-add-btn").forEach(btn => {
+    // Delegated row-input listener — one listener on #prBlocks handles every
+    // row's input/change events. #prBlocks survives renderPayroll re-renders
+    // (only its innerHTML is replaced), so the dataset flag prevents stacking.
+    const blocksEl = $("prBlocks");
+    if (blocksEl && !blocksEl.dataset.rowDelegated) {
+      blocksEl.addEventListener("input", ev => {
+        const t = ev.target;
+        if (!(t instanceof HTMLElement)) return;
+        const row = t.closest('tr[data-entry-id]');
+        if (!row) return;
+        // 'input' fires per-keystroke for hours so totals tick live as the
+        // user types. Date and selects route through 'change' below.
+        if (t.classList.contains('pr-hours')) handleRowChange(row, 'hours');
+      });
+      blocksEl.addEventListener("change", ev => {
+        const t = ev.target;
+        if (!(t instanceof HTMLElement)) return;
+        const row = t.closest('tr[data-entry-id]');
+        if (!row) return;
+        if (t.classList.contains('pr-date'))      handleRowChange(row, 'date');
+        else if (t.classList.contains('pr-hours')) handleRowChange(row, 'hours');
+        else if (t.classList.contains('pr-job') ||
+                 t.classList.contains('pr-class') ||
+                 t.classList.contains('pr-citytax')) handleRowChange(row, 'other');
+      });
+      blocksEl.dataset.rowDelegated = "true";
+    }
+
+    // Per-day Add Entry buttons — optimistic insertion. Builds a fresh row
+    // via renderEntryRow with a tmpId, marks data-new + data-dirty, drops
+    // it into the matching tbody[data-day], recomputes totals. NO API call
+    // (Save All in #2 will branch POST/PATCH on data-new). NO prEntries
+    // mutation, NO renderPayroll — those would race the optimistic UI.
+    document.querySelectorAll(".pr-add-btn-day").forEach(btn => {
       btn.addEventListener("click", () => {
         const emp  = btn.dataset.emp;
-        const wk   = parseInt(btn.dataset.week);
-        const defaultDate = wk === 1 ? dateStr(prWk1Start) : dateStr(prWk2Start);
-        const tmpId = `_new_${++_tmpIdCounter}`;
-        prEntries.push({
-          id: null, _tmpId: tmpId, employee: emp,
-          workDate: defaultDate, duration: 0, hours: 0,
-          cityTaxes: "A No Tax", class: "Contract",
-          jobId: null, jobName: "", isNew: true, _dirty: true
-        });
-        renderPayroll();
-        // Scroll to new row
-        setTimeout(() => {
-          const row = document.querySelector(`[data-entry-id="${tmpId}"]`);
-          if (row) row.scrollIntoView({ behavior: "smooth", block: "center" });
-        }, 100);
+        const dStr = btn.dataset.date;
+        const block = btn.closest('.pr-emp-block');
+        if (!emp || !dStr || !block) return;
+        const tbody = block.querySelector(`tbody[data-day="${dStr}"]`);
+        if (!tbody) return;
+        const tmpId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+        const fresh = {
+          id: null,
+          _tmpId: tmpId,
+          employee: emp,
+          workDate: dStr,
+          duration: 0,
+          hours: 0,
+          cityTaxes: PR_CITY_TAXES[0] || "A No Tax",
+          class: PR_CLASSES[0] || "Contract",
+          jobId: null,
+          jobName: "",
+          isNew: true,
+          _dirty: true
+        };
+        tbody.insertAdjacentHTML('beforeend', renderEntryRow(emp, fresh));
+        const newRow = tbody.querySelector(`tr[data-entry-id="${CSS.escape(tmpId)}"]`);
+        if (newRow) {
+          newRow.dataset.new = "true";
+          newRow.dataset.dirty = "true";
+        }
+        recomputeBlockTotals(block);
+        recomputeGlobalSummary();
+        if (newRow) {
+          newRow.scrollIntoView({ behavior: "smooth", block: "center" });
+          newRow.querySelector('.pr-hours')?.focus();
+        }
       });
     });
 
-    // Delete buttons
+    // Delete buttons — surgical: remove the <tr> in place, recompute totals
+    // for the affected day/other bucket, drop empty Other buckets. NO
+    // renderPayroll call (would clobber sibling optimistic rows + focus).
     document.querySelectorAll(".pr-del-btn").forEach(btn => {
       btn.addEventListener("click", async () => {
         const eid = btn.dataset.entryId;
         if (!confirm("Delete this time entry?")) return;
-        // If it has a real Airtable id, delete via API
+
+        const row = btn.closest('tr[data-entry-id]');
         const entry = prEntries.find(e => (e.id || e._tmpId) === eid);
+        // Hit the API only for rows that already exist in Airtable. Optimistic
+        // (data-new="true", tmp_*) rows have no server-side counterpart yet.
         if (entry && entry.id) {
           btn.disabled = true; btn.textContent = "...";
           try {
@@ -10899,97 +11460,38 @@ rick@northeasternelec.com`
           } catch(e) { alert("Error deleting: " + e.message); btn.disabled = false; btn.textContent = "🗑 Delete"; return; }
         }
         prEntries = prEntries.filter(e => (e.id || e._tmpId) !== eid);
-        renderPayroll();
+
+        const container = row?.closest("tbody[data-day], tbody[data-other]");
+        const block = container?.closest(".pr-emp-block");
+        row?.remove();
+        if (container?.matches("tbody[data-day]")) {
+          recomputeDayTotal(container);
+        } else if (container?.matches("tbody[data-other]") &&
+                   !container.querySelector("tr[data-entry-id]")) {
+          container.closest(".pr-other-bucket")?.remove();
+        }
+        if (block) recomputeBlockTotals(block);
+        recomputeGlobalSummary();
+        updateSaveAllUI();
       });
     });
 
-    // Save buttons per employee
-    document.querySelectorAll(".pr-save-btn").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const emp = btn.dataset.emp;
-        const msgEl = document.querySelector(`.pr-save-msg[data-emp="${emp}"]`);
-        btn.disabled = true; btn.textContent = "Saving...";
-        msgEl.style.display = "none";
+    // Save All — top button (in summary bar, regenerated each renderPayroll)
+    // and bottom button (sticky footer, static markup). Both share the same
+    // click handler; property assignment overwrites any prior binding so
+    // re-runs of wirePayrollEvents don't stack listeners.
+    const topBtn = $("prSaveAllTop");
+    if (topBtn) topBtn.onclick = onSaveAllClick;
+    const bottomBtn = $("prSaveAllBottom");
+    if (bottomBtn) bottomBtn.onclick = onSaveAllClick;
 
-        // Collect all rows for this employee from the DOM
-        const block = btn.closest(".pr-emp-block");
-        const rows  = block.querySelectorAll("tr[data-entry-id]");
-        let errors  = [];
-
-        for (const row of rows) {
-          const eid      = row.dataset.entryId;
-          const entry    = prEntries.find(e => (e.id || e._tmpId) === eid);
-          if (!entry) continue;
-
-          const newDate  = row.querySelector(".pr-date").value;
-          const newHrs   = parseFloat(row.querySelector(".pr-hours").value) || 0;
-          const newDur   = hrsToSec(newHrs);
-          const newClass = row.querySelector(".pr-class").value;
-          const newTax   = row.querySelector(".pr-citytax").value;
-          const newJobEl = row.querySelector(".pr-job");
-          const newJobId = newJobEl ? newJobEl.value : null;
-          const newJobName = newJobEl ? (newJobEl.options[newJobEl.selectedIndex]?.text || "") : "";
-
-          if (entry.isNew) {
-            // Create new record
-            try {
-              const result = await apiPost("createTimeEntry", {
-                employee:   emp,
-                employeeId: prEmployeeIdByName[emp] || null,
-                workDate:   newDate,
-                duration:   newDur,
-                class:      newClass,
-                cityTaxes:  newTax,
-                jobId:      newJobId || null,
-                jobName:    newJobName || null
-              });
-              entry.id      = result.id;
-              entry.isNew   = false;
-              entry._dirty  = false;
-              entry.workDate = newDate;
-              entry.duration = newDur;
-              entry.class   = newClass;
-              entry.cityTaxes = newTax;
-              entry.jobId   = newJobId;
-              entry.jobName = newJobName;
-            } catch(e) { errors.push(e.message); }
-          } else {
-            // Update existing
-            try {
-              await apiPost("updateTimeEntryPayroll", {
-                entryId:  entry.id,
-                duration: newDur,
-                workDate: newDate,
-                class:    newClass,
-                cityTaxes: newTax,
-                jobId:    newJobId || null
-              });
-              entry.duration  = newDur;
-              entry.workDate  = newDate;
-              entry.class     = newClass;
-              entry.cityTaxes = newTax;
-              entry.jobId     = newJobId;
-              entry.jobName   = newJobName;
-              entry._dirty    = false;
-            } catch(e) { errors.push(e.message); }
-          }
-        }
-
-        btn.disabled = false; btn.textContent = "💾 Save Changes";
-        renderPayroll();
-        if (errors.length) {
-          alert("Some saves failed:\n" + errors.join("\n"));
-        } else {
-          // renderPayroll() rebuilt the DOM; re-query the fresh msgEl
-          // so the chip lands on the live node, not the orphaned old one.
-          const freshMsgEl = document.querySelector(`.pr-save-msg[data-emp="${emp}"]`);
-          if (freshMsgEl) {
-            freshMsgEl.style.display = "inline";
-            setTimeout(() => { freshMsgEl.style.display = "none"; }, 2500);
-          }
-        }
-      });
-    });
+    // Error banner Retry — wire once. Banner is static markup that survives
+    // re-renders, so addEventListener would stack without the dataset guard.
+    const banner = $("prErrorBanner");
+    if (banner && !banner.dataset.wired) {
+      banner.querySelector("#prErrorBannerRetry")?.addEventListener("click", onSaveAllClick);
+      banner.dataset.wired = "true";
+    }
   }
 
   // ── PDF GENERATION (client-side via jsPDF) ──────────────────────
@@ -11173,7 +11675,10 @@ rick@northeasternelec.com`
     // Resolve employeeId from prEntries (handlePayrollEntries now returns it).
     const employees = empNames.map(emp => {
       const wk = empMap[emp] || { wk1: [], wk2: [] };
-      const allEntries = [...wk.wk1, ...wk.wk2];
+      // Out-of-period (wk.other) entries are not paid in this period — they
+      // surface in the UI as "Other entries" for the user to fix, not for
+      // the archive to absorb.
+      const allEntries = [...flattenWeek(wk.wk1), ...flattenWeek(wk.wk2)];
       const employeeId = (allEntries.find(e => e && e.employeeId) || {}).employeeId || null;
       const totalHours = allEntries.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
       const bonus = prBonuses[emp] || 0;
@@ -11257,6 +11762,9 @@ rick@northeasternelec.com`
     const doArchive = async () => {
       try {
         const result = await apiPost("payrollRunCreate", archivePayload);
+        // Bonuses are now persisted as Bonus records on the archived run, so
+        // the localStorage scratch cache for this period is no longer needed.
+        clearBonusesFromLocalStorage(periodKey());
         triggerBlobDownload(blob, filename);
         // Compose toast — base success, optional supersede note, optional warnings.
         let msg = "Payroll archived ✓";
@@ -11449,8 +11957,8 @@ rick@northeasternelec.com`
     empNames.forEach(emp => {
       const col = PR_COLORS[emp] || { hdr: "#444", light: "#ddd" };
       const isSalaried = SALARIED.includes(emp);
-      const wk1 = empMap[emp]?.wk1 || [];
-      const wk2 = empMap[emp]?.wk2 || [];
+      const wk1 = flattenWeek(empMap[emp]?.wk1);
+      const wk2 = flattenWeek(empMap[emp]?.wk2);
       const bonus = prBonuses[emp] || 0;
       const wk1Total = wk1.reduce((a,e) => a + secToHrs(e.duration||0), 0);
       const wk2Total = wk2.reduce((a,e) => a + secToHrs(e.duration||0), 0);
@@ -11529,12 +12037,12 @@ rick@northeasternelec.com`
         <!-- Period picker -->
         <div class="pr-period-bar">
           <div>
-            <label>Week 1 Start (Mon)</label>
+            <label>Week 1 Start (Sun)</label>
             <input type="date" id="prWk1Start" />
           </div>
           <div>
             <label>Week 2 End (Sat)</label>
-            <input type="date" id="prWk2End" />
+            <input type="date" id="prWk2End" readonly title="Auto-set to Week 1 Start + 13 days (Sat)" />
           </div>
           <button class="pr-load-btn" id="prLoadBtn" onclick="loadPayrollEntries()">Load Entries</button>
         </div>
@@ -11542,11 +12050,22 @@ rick@northeasternelec.com`
         <!-- Status message -->
         <div id="prStatus" style="font-size:13px; color:var(--muted); margin-bottom:12px; display:none;"></div>
 
-        <!-- Summary bar + PDF button -->
+        <!-- Summary bar + Save All + PDF button -->
         <div id="prSummaryBar" class="pr-summary-bar" style="display:none;"></div>
+
+        <!-- Save All error banner — only visible after a partial-failure run -->
+        <div id="prErrorBanner" class="pr-error-banner" style="display:none;">
+          <span class="pr-error-banner-msg"></span>
+          <button id="prErrorBannerRetry" type="button">Retry</button>
+        </div>
 
         <!-- Employee blocks rendered here -->
         <div id="prBlocks"></div>
+
+        <!-- Sticky footer — second Save All for long pay periods. -->
+        <div class="pr-sticky-footer">
+          <button id="prSaveAllBottom" class="pr-save-all-btn" disabled>Save All</button>
+        </div>
       </div>
 
     </div>

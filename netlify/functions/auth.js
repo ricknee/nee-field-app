@@ -50,8 +50,6 @@ const F = {
     addPhotosLink:           "Add Photos (Mobile)",
     viewPhotosLink:          "View pCloud Photos",
     trelloCardId:               "Trello Card ID",
-    generatorCommissioningForm: "Generator Startup / Commissioning Form",
-    newGeneratorServiceForm:    "New Generator Service",
     taxStatus:                  "Tax Status",
     powerCompanyIntake:         "Power Company (Intake)",
 
@@ -305,8 +303,6 @@ async function handleJobs() {
       addPhotosLink:  extractUrl(g(f, F.job.addPhotosLink)),
       viewPhotosLink: extractUrl(g(f, F.job.viewPhotosLink)),
       trelloCardId:               g(f, F.job.trelloCardId) || "",
-      generatorCommissioningForm: g(f, F.job.generatorCommissioningForm) || "",
-      newGeneratorServiceForm:    g(f, F.job.newGeneratorServiceForm) || "",
       taxStatus:                  g(f, F.job.taxStatus) || "",
       powerCompanyIntake:         g(f, F.job.powerCompanyIntake) || "",
 

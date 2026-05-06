@@ -56,16 +56,6 @@ const F = {
     addPhotosLink:           "Add Photos (Mobile)",
     viewPhotosLink:          "View pCloud Photos",
     trelloCardId:               "Trello Card ID",
-    // DEPRECATED (Phase 1B/1C): the underlying Airtable fields
-    // fldcWrozfYLQAjRqY (Generator Startup / Commissioning Form) and
-    // fldYKmECZm3qu8fJm (New Generator Service) are legacy
-    // Airtable-form redirect URLs from before commissioning + service
-    // entry moved into native UI panels. Both fields can be removed
-    // from the Airtable Jobs table after one production verification
-    // cycle confirms no other tooling reads them. Mapping preserved
-    // here so mapJob doesn't 500 if the fields still exist.
-    generatorCommissioningForm: "Generator Startup / Commissioning Form",
-    newGeneratorServiceForm:    "New Generator Service",
     taxStatus:                  "Tax Status",
     billingMethod:              "Billing Method",
     baseContractAmount:         "Base Contract Amount",
@@ -1300,8 +1290,6 @@ function mapJob(r) {
       jobInspections:g(f,F.job.jobInspections)||"",wireLink:extractUrl(g(f,F.job.wireLink)),
       pipeLink:extractUrl(g(f,F.job.pipeLink)),addPhotosLink:extractUrl(g(f,F.job.addPhotosLink)),
       viewPhotosLink:extractUrl(g(f,F.job.viewPhotosLink)),trelloCardId:g(f,F.job.trelloCardId)||"",
-      generatorCommissioningForm:g(f,F.job.generatorCommissioningForm)||"",
-      newGeneratorServiceForm:g(f,F.job.newGeneratorServiceForm)||"",
       taxStatus:g(f,F.job.taxStatus)||"",powerCompanyIntake:g(f,F.job.powerCompanyIntake)||"",
       billingMethod:g(f,F.job.billingMethod)||"",
       baseContractAmount:gNum(f,F.job.baseContractAmount),

@@ -7881,6 +7881,9 @@ rick@northeasternelec.com`
   let estJobRef = null;
   let estLines  = [];
   const estEstimatesCache = [];   // estimates fetched for the selected job
+  // Estimate Builder policy: these statuses don't belong on the customer-facing
+  // estimate doc/PDF/snapshot. Invoice tab and Est. GP have their own policies.
+  const HIDDEN_ESTIMATE_STATUSES = new Set(["Rejected", "Archived/Completed"]);
 
   async function loadEstimateTab(job) {
     if (!job) return;
@@ -7895,7 +7898,9 @@ rick@northeasternelec.com`
       // "Estimate Display #"). New snapshots go to the "Sent Estimate PDFs"
       // table instead, so this filter becomes a no-op after the old records
       // are cleaned up.
-      const estimates = (d.estimates || []).filter(e => e.displayNumber == null);
+      const estimates = (d.estimates || [])
+        .filter(e => e.displayNumber == null)
+        .filter(e => !HIDDEN_ESTIMATE_STATUSES.has(e.status));
       estEstimatesCache.length = 0;
       estEstimatesCache.push(...estimates);
 

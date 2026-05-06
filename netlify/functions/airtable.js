@@ -1474,10 +1474,74 @@ async function handleJobEstimates(params) {
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, estimates: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
-  const records = await fetchAll("Job Estimates", { filter: `FIND("${jobName}", ARRAYJOIN({Job}))`, sortField: "Estimate Date", sortDir: "desc" });
-  let estimates = records.map(r => { const f=r.fields||{}; const pdfs=(f["Estimate PDF"]||[]).map(att=>({url:att.url,filename:att.filename,size:att.size})); return { id:r.id,name:f["Estimate Name"]||"",estimateType:f["Estimate Type"]?.name||f["Estimate Type"]||"",status:f["Status"]?.name||f["Status"]||"",date:f["Estimate Date"]||"",actualEstimate:f["Actual Estimate Sent"]??null,laborHours:f["Estimated Labor Hours"]??null,materialCost:f["Estimated Material Cost"]??null,calculatedTotal:f["Calculated Estimated Total"]??null,notes:f["Notes"]||"",displayNumber:f["Estimate Display #"]||null,snapshot:f["Estimate Snapshot"]||"",pdfs }; });
+
+  // Save Estimate writes the rich snapshot JSON to Sent Estimate PDFs, never
+  // back to the master Job Estimates record. Fetch both in parallel and join
+  // the matching Sent PDF in below so frontend "+ Add as Line" can read the
+  // customer-facing scope text via est.snapshot.
+  const [records, sentPdfRecords] = await Promise.all([
+    fetchAll("Job Estimates", { filter: `FIND("${jobName}", ARRAYJOIN({Job}))`, sortField: "Estimate Date", sortDir: "desc" }),
+    fetchSentEstimatePDFsForJob(jobId)
+  ]);
+
+  // Newest-first so the cascade's .find() returns the most-recent match.
+  // Tiebreaker: Estimate Display # desc.
+  const sortedSent = [...sentPdfRecords].sort((a, b) => {
+    const da = a.fields?.["Estimate Date"] || "", db = b.fields?.["Estimate Date"] || "";
+    if (db !== da) return db.localeCompare(da);
+    return Number(b.fields?.["Estimate Display #"] || 0) - Number(a.fields?.["Estimate Display #"] || 0);
+  });
+
+  // Cascade: 1) back-link match on "Job Estimate" (fldPoz43rrlqWRnwC), 2)
+  // fallback to most-recent same-job Sent PDF whose Total equals the master's
+  // Actual Estimate Sent (user-editable currency, not Calculated Estimated
+  // Total which is a formula and can drift on rounding). Empty string when
+  // no match — frontend falls through to est.notes.
+  function resolveSnapshot(estId, actualEstimate) {
+    const byBackLink = sortedSent.find(r => {
+      const links = r.fields?.["Job Estimate"];
+      return Array.isArray(links) && links.indexOf(estId) !== -1;
+    });
+    if (byBackLink) return byBackLink.fields?.["Snapshot"] || "";
+    if (actualEstimate != null) {
+      const target = Number(actualEstimate);
+      if (!isNaN(target)) {
+        const byTotal = sortedSent.find(r => Number(r.fields?.["Total"] || 0) === target);
+        if (byTotal) return byTotal.fields?.["Snapshot"] || "";
+      }
+    }
+    return "";
+  }
+
+  let estimates = records.map(r => { const f=r.fields||{}; const pdfs=(f["Estimate PDF"]||[]).map(att=>({url:att.url,filename:att.filename,size:att.size})); const actualEstimate=f["Actual Estimate Sent"]??null; const joinedSnapshot=resolveSnapshot(r.id, actualEstimate); return { id:r.id,name:f["Estimate Name"]||"",estimateType:f["Estimate Type"]?.name||f["Estimate Type"]||"",status:f["Status"]?.name||f["Status"]||"",date:f["Estimate Date"]||"",actualEstimate,laborHours:f["Estimated Labor Hours"]??null,materialCost:f["Estimated Material Cost"]??null,calculatedTotal:f["Calculated Estimated Total"]??null,notes:f["Notes"]||"",displayNumber:f["Estimate Display #"]||null,snapshot:joinedSnapshot||(f["Estimate Snapshot"]||""),pdfs }; });
   if (onlySaved) estimates = estimates.filter(e => e.displayNumber != null);
   return resp(200, { ok: true, estimates });
+}
+
+// Helper for handleJobEstimates: list all Sent Estimate PDFs records linked
+// to a Job. Mirrors handleSentEstimatePDFs's in-memory Job-link filter —
+// filterByFormula on multipleRecordLinks is unreliable. Returns [] if the
+// table doesn't exist yet so handleJobEstimates degrades gracefully.
+async function fetchSentEstimatePDFsForJob(jobId) {
+  try {
+    const all = [];
+    let offset = undefined;
+    do {
+      const qs = (offset ? "?offset=" + encodeURIComponent(offset) : "");
+      const page = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}${qs}`);
+      if (page.error) return [];
+      all.push(...(page.records || []));
+      offset = page.offset;
+    } while (offset);
+    return all.filter(r => {
+      const jobArr = r.fields?.["Job"];
+      return Array.isArray(jobArr) && jobArr.indexOf(jobId) !== -1;
+    });
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    if (/NOT_FOUND|could not.*find.*table/i.test(msg)) return [];
+    throw e;
+  }
 }
 
 async function handleUpdateEstimate(body) {

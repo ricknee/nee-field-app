@@ -1052,6 +1052,12 @@
       margin-left: auto; font-family: 'Inter', sans-serif; display: flex; align-items: center; gap: 7px;
     }
     .pr-pdf-btn:hover { background: var(--accent-2); }
+    .pr-add-hours-picker {
+      background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+      border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+      cursor: pointer; font-family: 'Inter', sans-serif;
+    }
+    .pr-add-hours-picker:hover { background: var(--panel); }
     .pr-week-label { font-family: 'Rajdhani', sans-serif; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--accent); padding: 6px 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
     .pr-week-total { font-size: 12px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
     .pr-no-entries { font-size: 12px; color: var(--muted); padding: 10px; font-style: italic; }
@@ -1060,7 +1066,6 @@
     .pr-emp-total { font-size: 12px; color: rgba(255,255,255,0.92); font-weight: 600; font-variant-numeric: tabular-nums; padding: 2px 8px; background: rgba(0,0,0,0.18); border-radius: 6px; }
     .pr-day-header { background: rgba(0,0,0,0.04); }
     .pr-day-header td { padding: 4px 10px !important; border-top: 1px solid var(--line); border-bottom: 1px dashed var(--line); }
-    .pr-table tr.pr-day-header:hover td { background: rgba(0,0,0,0.04); }
     .pr-day-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
     .pr-day-total { font-size: 11px; color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
     .pr-day-actions { text-align: right; }
@@ -8924,6 +8929,12 @@ rick@northeasternelec.com`
     "Rick Unruh":          { hdr: "#C0281C", light: "#F5C5C2" },
     "Scott Koehn":         { hdr: "#2E7D32", light: "#C8E6C9" },
   };
+  function hexToRgb(hex) {
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    return [r,g,b];
+  }
   const SALARIED = ["Larry Unruh", "Miles Unruh", "Rick Unruh"];
   const PR_CLASSES = ["Contract","Extra's","Rough & Service","Travel","Shop Work","Business Development","Admin/Office","Vehicle and Equipment Maintenance"];
   const PR_CITY_TAXES = ["A No Tax","Columbiana Tax","Canton Tax","Akron Tax","Other"];
@@ -8939,6 +8950,27 @@ rick@northeasternelec.com`
   let prListRuns  = [];    // archived runs for the list view
   let prShowSuperseded = false;
   let prEmployeeIdByName = {};  // name → recordId, for dual-writing Employee (Linked) on createTimeEntry
+  let prCrew = [];              // [{id, name, role}] from schedulingCrew — drives admin always-render (#4) + Add Hours picker (#5)
+
+  function getAdminEmployeeNames() {
+    return prCrew
+      .filter(e => (e.role || "").toLowerCase() === "admin")
+      .map(e => e.name);
+  }
+
+  // Active employees who can be added via the "+ Add Hours for…" picker.
+  // Excludes admins (auto-rendered via #4) and any employee already on screen
+  // so the picker shrinks as the user adds. Sorted alphabetically.
+  function buildAddHoursPickerOptions() {
+    const present = new Set(
+      [...document.querySelectorAll('#prBlocks .pr-emp-block')].map(el => el.dataset.emp)
+    );
+    return prCrew
+      .filter(e => (e.role || "").toLowerCase() === "employee")
+      .filter(e => !present.has(e.name))
+      .map(e => ({ id: e.id, name: e.name }))
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  }
 
   // ── Bonus localStorage cache (per-period, in-progress only) ────────
   // Bonuses don't have a server-side "pending" table yet — they only persist
@@ -9014,7 +9046,8 @@ rick@northeasternelec.com`
     // a missing employeeId by writing text-only.
     apiGet("schedulingCrew")
       .then(d => {
-        prEmployeeIdByName = Object.fromEntries((d.employees || []).map(e => [e.name, e.id]));
+        prCrew = d.employees || [];
+        prEmployeeIdByName = Object.fromEntries(prCrew.map(e => [e.name, e.id]));
       })
       .catch(() => { /* leave map empty */ });
   }
@@ -9246,7 +9279,7 @@ rick@northeasternelec.com`
   }
   window.showHoursBreakdown = showHoursBreakdown;
 
-  function enterCreateView() {
+  async function enterCreateView() {
     $("prListView").style.display = "none";
     $("prCreateView").style.display = "";
 
@@ -9277,6 +9310,18 @@ rick@northeasternelec.com`
     $("prBlocks").innerHTML = "";
     $("prSummaryBar").style.display = "none";
     $("prStatus").style.display = "none";
+
+    // Defensive: if the user landed here without passing through enterListView
+    // (e.g. URL-driven), prCrew may be empty. Fetch it now so admin auto-render
+    // (#4) and the Add Hours picker (#5) have data to work with. Idempotent —
+    // skipped when already populated.
+    if (!prCrew.length) {
+      try {
+        const d = await apiGet("schedulingCrew");
+        prCrew = d.employees || [];
+        prEmployeeIdByName = Object.fromEntries(prCrew.map(e => [e.name, e.id]));
+      } catch (_) { /* leave empty — features degrade gracefully */ }
+    }
   }
   window.enterCreateView = enterCreateView;
 
@@ -10848,6 +10893,10 @@ rick@northeasternelec.com`
       else if (wk === 2 && bucket.wk2.days[e.workDate]) bucket.wk2.days[e.workDate].push(e);
       else bucket.other.push(e);
     });
+    // #4: admins always get a section, even with zero entries. ensureEmp is a
+    // no-op when they already have entries this period, so the salaried PDF
+    // rows stay accurate.
+    getAdminEmployeeNames().forEach(adminName => { ensureEmp(adminName); });
     return empMap;
   }
 
@@ -10868,11 +10917,19 @@ rick@northeasternelec.com`
     prEntries.forEach(e => { totalHrs += secToHrs(e.duration || 0); });
     const summaryBar = $("prSummaryBar");
     summaryBar.style.display = "flex";
+    const pickerOpts = buildAddHoursPickerOptions();
+    const pickerHtml = pickerOpts.length
+      ? `<select id="prAddHoursPicker" class="pr-add-hours-picker">
+           <option value="" disabled selected>+ Add Hours for…</option>
+           ${pickerOpts.map(e => `<option value="${esc(e.name)}">${esc(e.name)}</option>`).join("")}
+         </select>`
+      : "";
     summaryBar.innerHTML = `
       <div class="pr-summary-chip">${empNames.length} <span>employees</span></div>
       <div class="pr-summary-chip">${fmtHrs(totalHrs)} <span>total hrs</span></div>
       <div class="pr-summary-chip">${dateStr(prWk1Start)} → ${dateStr(prWk2End)}</div>
       <button id="prSaveAllTop" class="pr-save-all-btn" disabled>Save All</button>
+      ${pickerHtml}
       <button class="pr-pdf-btn" onclick="generatePayrollPDF()">⬇ Download PDF</button>`;
 
     // Render each employee block
@@ -10963,16 +11020,24 @@ rick@northeasternelec.com`
 
   // One <tbody data-day=...> per day of the pay period. The header row
   // doubles as a daily-total chip and an "+ Add" button so empty days don't
-  // need a separate empty-state element.
+  // need a separate empty-state element. Day-header background is tinted with
+  // the employee's accent color (8% alpha) for at-a-glance employee tracking
+  // when scrolling — falls back to the CSS-default neutral gray for anyone
+  // not in PR_COLORS.
   function renderDayGroup(emp, dStr, dayEntries) {
     const dt = localDate(dStr);
     const wd = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dt.getDay()];
     const shortDate = `${dt.getMonth()+1}/${dt.getDate()}`;
     const dayTotal = dayEntries.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
     const rowsHtml = dayEntries.map(e => renderEntryRow(emp, e)).join("");
+    const col = PR_COLORS[emp];
+    const tintStyle = col ? (() => {
+      const [r, g, b] = hexToRgb(col.hdr);
+      return ` style="background:rgba(${r},${g},${b},0.08);"`;
+    })() : "";
     return `
       <tbody data-day="${dStr}" data-emp="${esc(emp)}">
-        <tr class="pr-day-header">
+        <tr class="pr-day-header"${tintStyle}>
           <td colspan="2" class="pr-day-label">${wd} ${shortDate}</td>
           <td class="pr-day-total">${fmtHrs(dayTotal)} hrs</td>
           <td colspan="3" class="pr-day-actions">
@@ -11064,6 +11129,89 @@ rick@northeasternelec.com`
       ${renderWeekTable(emp, weeks.wk2, 2, prWk2Start, prWk2End, wk2Total, isSalaried)}
       ${renderOtherBucket(emp, weeks.other)}
     </div>`;
+  }
+
+  // #5: append a new employee block + a pre-filled optimistic row on Mon of
+  // Week 1 (Sundays are never worked, so Mon is the natural starting point).
+  // Pure DOM mutation: empMap is not touched, prEntries is not touched. The
+  // delegated event listeners on #prBlocks (rows, bonus, Add Entry, Delete)
+  // cover the new block automatically; only the picker itself is re-rendered
+  // so the just-added employee drops out of its options.
+  function addEmployeeSection(empName) {
+    if (!empName) return;
+    const blocksEl = $("prBlocks");
+    if (!blocksEl) return;
+    if (blocksEl.querySelector(`.pr-emp-block[data-emp="${CSS.escape(empName)}"]`)) return;
+
+    // If "No time entries…" placeholder is showing, blow it away first.
+    const placeholder = blocksEl.querySelector('.pr-empty');
+    if (placeholder) blocksEl.innerHTML = "";
+
+    const emptyWeeks = {
+      wk1: { days: buildEmptyDayMap(prWk1Start) },
+      wk2: { days: buildEmptyDayMap(prWk2Start) },
+      other: []
+    };
+    blocksEl.insertAdjacentHTML('beforeend', renderEmpBlock(empName, emptyWeeks));
+
+    const newBlock = blocksEl.querySelector(`.pr-emp-block[data-emp="${CSS.escape(empName)}"]`);
+    if (!newBlock) return;
+
+    const mon = new Date(prWk1Start);
+    mon.setDate(prWk1Start.getDate() + 1);
+    const monStr = dateStr(mon);
+
+    const tmpId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+    const fresh = {
+      id: null,
+      _tmpId: tmpId,
+      employee: empName,
+      workDate: monStr,
+      duration: 0,
+      hours: 0,
+      cityTaxes: PR_CITY_TAXES[0] || "A No Tax",
+      class: PR_CLASSES[0] || "Contract",
+      jobId: null,
+      jobName: "",
+      isNew: true,
+      _dirty: true
+    };
+    const monTbody = newBlock.querySelector(`tbody[data-day="${monStr}"]`);
+    if (monTbody) {
+      monTbody.insertAdjacentHTML('beforeend', renderEntryRow(empName, fresh));
+      const newRow = monTbody.querySelector(`tr[data-entry-id="${CSS.escape(tmpId)}"]`);
+      if (newRow) {
+        newRow.dataset.new = "true";
+        newRow.dataset.dirty = "true";
+      }
+    }
+
+    recomputeBlockTotals(newBlock);
+    recomputeGlobalSummary();
+    updateSaveAllUI();
+
+    // Re-render the picker options (excluding the just-added employee).
+    const picker = $("prAddHoursPicker");
+    if (picker) {
+      const remaining = buildAddHoursPickerOptions();
+      if (remaining.length) {
+        picker.innerHTML =
+          `<option value="" disabled selected>+ Add Hours for…</option>` +
+          remaining.map(e => `<option value="${esc(e.name)}">${esc(e.name)}</option>`).join("");
+      } else {
+        picker.style.display = "none";
+      }
+    }
+
+    // Update the employee-count chip in the summary bar.
+    const chips = document.querySelectorAll('#prSummaryBar .pr-summary-chip');
+    if (chips[0]) {
+      const count = blocksEl.querySelectorAll('.pr-emp-block').length;
+      chips[0].innerHTML = `${count} <span>employees</span>`;
+    }
+
+    newBlock.scrollIntoView({ behavior: "smooth", block: "start" });
+    monTbody?.querySelector(`tr[data-entry-id="${CSS.escape(tmpId)}"] .pr-hours`)?.focus();
   }
 
   // ── Recompute helpers ────────────────────────────────────────────
@@ -11395,19 +11543,11 @@ rick@northeasternelec.com`
   let _tmpIdCounter = 0;
 
   function wirePayrollEvents() {
-    // Bonus inputs — mark dirty on change so Save All picks them up.
-    document.querySelectorAll(".pr-bonus-input").forEach(inp => {
-      inp.addEventListener("change", () => {
-        prBonuses[inp.dataset.emp] = parseFloat(inp.value) || 0;
-        inp.dataset.dirty = "true";
-        updateSaveAllUI();
-      });
-    });
+    const blocksEl = $("prBlocks");
 
     // Delegated row-input listener — one listener on #prBlocks handles every
     // row's input/change events. #prBlocks survives renderPayroll re-renders
     // (only its innerHTML is replaced), so the dataset flag prevents stacking.
-    const blocksEl = $("prBlocks");
     if (blocksEl && !blocksEl.dataset.rowDelegated) {
       blocksEl.addEventListener("input", ev => {
         const t = ev.target;
@@ -11432,13 +11572,28 @@ rick@northeasternelec.com`
       blocksEl.dataset.rowDelegated = "true";
     }
 
-    // Per-day Add Entry buttons — optimistic insertion. Builds a fresh row
-    // via renderEntryRow with a tmpId, marks data-new + data-dirty, drops
-    // it into the matching tbody[data-day], recomputes totals. NO API call
-    // (Save All in #2 will branch POST/PATCH on data-new). NO prEntries
-    // mutation, NO renderPayroll — those would race the optimistic UI.
-    document.querySelectorAll(".pr-add-btn-day").forEach(btn => {
-      btn.addEventListener("click", () => {
+    // Bonus inputs — delegated change so dynamically-added employee blocks
+    // (#5 Add Hours picker) get bonus tracking without re-wiring.
+    if (blocksEl && !blocksEl.dataset.bonusDelegated) {
+      blocksEl.addEventListener("change", ev => {
+        const inp = ev.target.closest('.pr-bonus-input');
+        if (!inp) return;
+        prBonuses[inp.dataset.emp] = parseFloat(inp.value) || 0;
+        inp.dataset.dirty = "true";
+        updateSaveAllUI();
+      });
+      blocksEl.dataset.bonusDelegated = "true";
+    }
+
+    // Per-day Add Entry buttons — delegated click on #prBlocks so + Add Entry
+    // works for blocks injected via the Add Hours picker (#5) without a
+    // wirePayrollEvents re-run. Optimistic insertion: fresh row with tmpId,
+    // data-new + data-dirty, dropped into the matching tbody[data-day], totals
+    // recomputed. NO API call (Save All branches POST/PATCH on data-new).
+    if (blocksEl && !blocksEl.dataset.addDayDelegated) {
+      blocksEl.addEventListener("click", ev => {
+        const btn = ev.target.closest('.pr-add-btn-day');
+        if (!btn) return;
         const emp  = btn.dataset.emp;
         const dStr = btn.dataset.date;
         const block = btn.closest('.pr-emp-block');
@@ -11473,7 +11628,21 @@ rick@northeasternelec.com`
           newRow.querySelector('.pr-hours')?.focus();
         }
       });
-    });
+      blocksEl.dataset.addDayDelegated = "true";
+    }
+
+    // Add Hours picker — property assignment so re-runs of wirePayrollEvents
+    // don't stack. The <select> is regenerated by renderPayroll each time, so
+    // the binding has to be re-attached after every render anyway.
+    const picker = $("prAddHoursPicker");
+    if (picker) {
+      picker.onchange = () => {
+        const empName = picker.value;
+        if (!empName) return;
+        addEmployeeSection(empName);
+        picker.value = "";
+      };
+    }
 
     // Delete buttons — delegated click on #prBlocks so optimistic rows added
     // by + Add Entry (which never re-runs wirePayrollEvents) and rows that
@@ -11548,7 +11717,11 @@ rick@northeasternelec.com`
   function generatePayrollPDF() {
     const empMap = groupEntries();
     const empNames = Object.keys(empMap).sort();
-    if (!empNames.length) { alert("No entries loaded — load a pay period first."); return; }
+    // After #4, empMap always includes admins (zero-entry sections), so
+    // empNames.length never reaches 0 even when nothing's been loaded.
+    // prEntries.length is the truthful "did the user actually load anything"
+    // signal — admin auto-injection doesn't touch it.
+    if (!prEntries.length) { alert("No entries loaded — load a pay period first."); return; }
 
     function runBuildAndArchive() {
       const result = buildPDF(empMap, empNames);
@@ -11835,13 +12008,6 @@ rick@northeasternelec.com`
     await doArchive();
   }
 
-  function hexToRgb(hex) {
-    const r = parseInt(hex.slice(1,3),16);
-    const g = parseInt(hex.slice(3,5),16);
-    const b = parseInt(hex.slice(5,7),16);
-    return [r,g,b];
-  }
-
   function buildPDF(empMap, empNames) {
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "pt", format: "letter" });
@@ -12026,10 +12192,13 @@ rick@northeasternelec.com`
         sumRow(`Total Hrs  ${fmtHrs(wk2Total)}`);
         cityTaxSection(taxBreakdown(wk2), col);
       } else {
-        // Salaried — show city tax hrs only if non-A-No-Tax exists
+        // Salaried — show city tax hrs only if non-A-No-Tax exists.
+        // Empty-week placeholder ("No hours this week") fires symmetrically
+        // for both weeks so admin-with-zero-entries (#4) renders cleanly.
         wkLabel("Week #1  —  Bi-weekly Salary", wk1Label, col);
         const city1 = taxBreakdown(wk1).filter(([t]) => t !== "A No Tax");
         if (city1.length) { city1.forEach(([t,h],i) => dataRow(t, fmtHrs(h), i%2===1)); }
+        else if (!wk1.length) dataRow("No hours this week", "", false);
         else dataRow("No City Taxes", "", false);
 
         wkLabel("Week #2  —  Bi-weekly Salary", wk2Label, col);

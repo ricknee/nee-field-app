@@ -10848,14 +10848,11 @@ rick@northeasternelec.com`
   }
   window.loadPayrollEntries = loadPayrollEntries;
 
-  // Flatten the day-bucketed week shape back to a flat entry array. The PDF
-  // and archive consumers were written before #1's day grouping and still
-  // expect arrays. Legacy array input is passed through unchanged so callers
-  // can't double-flatten.
-  function flattenWeek(week) {
-    if (Array.isArray(week)) return week;
-    if (week?.days) return Object.values(week.days).flat();
-    return [];
+  // Flatten a day-bucketed object ({ "YYYY-MM-DD": [entries], ... }) into a
+  // single flat entry array. Used by the PDF + archive paths, which want a
+  // flat list and don't care about date bucketing.
+  function flattenDays(daysObj) {
+    return Object.values(daysObj || {}).flat();
   }
 
   // Build the 7 day-key strings for a given week-start Date, in Sun..Sat order.
@@ -11882,11 +11879,11 @@ rick@northeasternelec.com`
     // Build per-employee summary + raw entries for the JSON payload.
     // Resolve employeeId from prEntries (handlePayrollEntries now returns it).
     const employees = empNames.map(emp => {
-      const wk = empMap[emp] || { wk1: [], wk2: [] };
+      const wk = empMap[emp];
       // Out-of-period (wk.other) entries are not paid in this period — they
       // surface in the UI as "Other entries" for the user to fix, not for
       // the archive to absorb.
-      const allEntries = [...flattenWeek(wk.wk1), ...flattenWeek(wk.wk2)];
+      const allEntries = [...flattenDays(wk.wk1?.days), ...flattenDays(wk.wk2?.days)];
       const employeeId = (allEntries.find(e => e && e.employeeId) || {}).employeeId || null;
       const totalHours = allEntries.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
       const bonus = prBonuses[emp] || 0;
@@ -12158,8 +12155,8 @@ rick@northeasternelec.com`
     empNames.forEach(emp => {
       const col = PR_COLORS[emp] || { hdr: "#444", light: "#ddd" };
       const isSalaried = SALARIED.includes(emp);
-      const wk1 = flattenWeek(empMap[emp]?.wk1);
-      const wk2 = flattenWeek(empMap[emp]?.wk2);
+      const wk1 = flattenDays(empMap[emp]?.wk1?.days);
+      const wk2 = flattenDays(empMap[emp]?.wk2?.days);
       const bonus = prBonuses[emp] || 0;
       const wk1Total = wk1.reduce((a,e) => a + secToHrs(e.duration||0), 0);
       const wk2Total = wk2.reduce((a,e) => a + secToHrs(e.duration||0), 0);

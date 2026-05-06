@@ -10893,6 +10893,45 @@ rick@northeasternelec.com`
     return arr.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
   }
 
+  // Builds the full inner HTML for a payroll job <select>: a leading
+  // "— No Job —" option followed by four <optgroup>s (Awarded, Other Active,
+  // Completed, Not Awarded). Anything not Awarded / Completed / Not Awarded
+  // falls into Other Active — that bucket covers Estimating, New Lead,
+  // Service Call Scheduled, and Ready to Invoice.
+  function buildJobOptgroupsHtml(selectedJobId) {
+    const buckets = { awarded: [], otherActive: [], completed: [], notAwarded: [] };
+    (prJobs || []).forEach(j => {
+      const s = (j.status || "").toLowerCase();
+      if (s === "awarded") buckets.awarded.push(j);
+      else if (s === "completed") buckets.completed.push(j);
+      else if (s === "not awarded") buckets.notAwarded.push(j);
+      else buckets.otherActive.push(j);
+    });
+    const cmp = (a, b) => (a.name || "").localeCompare(b.name || "");
+    buckets.awarded.sort(cmp);
+    buckets.otherActive.sort(cmp);
+    buckets.completed.sort(cmp);
+    buckets.notAwarded.sort(cmp);
+
+    const makeGroup = (label, jobs, withCompletedSuffix = false) => {
+      if (!jobs.length) return "";
+      const opts = jobs.map(j => {
+        const text = withCompletedSuffix ? `${esc(j.name)} (completed)` : esc(j.name);
+        const sel = selectedJobId === j.id ? " selected" : "";
+        return `<option value="${esc(j.id)}"${sel}>${text}</option>`;
+      }).join("");
+      return `<optgroup label="${esc(label)}">${opts}</optgroup>`;
+    };
+
+    return [
+      `<option value=""${selectedJobId ? "" : " selected"}>— No Job —</option>`,
+      makeGroup("Awarded", buckets.awarded),
+      makeGroup("Other Active", buckets.otherActive),
+      makeGroup("Completed", buckets.completed, true),
+      makeGroup("Not Awarded", buckets.notAwarded)
+    ].join("");
+  }
+
   // Single editable row template — used by the initial render AND by the
   // optimistic Add Entry click, so server-loaded rows and freshly-inserted
   // rows have byte-identical structure.
@@ -10901,10 +10940,6 @@ rick@northeasternelec.com`
     const eid = esc(e.id || e._tmpId || "");
     const isNew = e.isNew === true || (!e.id && !!e._tmpId);
     const newAttrs = isNew ? ' data-new="true" data-dirty="true"' : '';
-    const jobOptionsHtml = prJobs
-      .filter(j => ["awarded","service call scheduled","ready to invoice"].includes((j.status||"").toLowerCase()))
-      .sort((a,b)=>(a.name||"").localeCompare(b.name||""))
-      .map(j => `<option value="${esc(j.id)}" ${e.jobId === j.id ? "selected" : ""}>${esc(j.name)}</option>`).join("");
     const classOptionsHtml = PR_CLASSES.map(c => `<option value="${esc(c)}" ${e.class === c ? "selected" : ""}>${esc(c)}</option>`).join("");
     const taxOptionsHtml   = PR_CITY_TAXES.map(t => `<option value="${esc(t)}" ${e.cityTaxes === t ? "selected" : ""}>${esc(t)}</option>`).join("");
     return `
@@ -10912,8 +10947,7 @@ rick@northeasternelec.com`
         <td><input type="date" class="pr-input pr-date" value="${esc(e.workDate || "")}" /></td>
         <td>
           <select class="pr-select pr-job">
-            <option value="">— No Job —</option>
-            ${jobOptionsHtml}
+            ${buildJobOptgroupsHtml(e.jobId)}
           </select>
         </td>
         <td><input type="number" class="pr-input pr-hours" value="${fmtHrs(hrs)}" min="0" max="24" step="0.25" style="width:72px;" /></td>

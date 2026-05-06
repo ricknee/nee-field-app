@@ -165,11 +165,9 @@ const TE = {
   employeeLink:"fldYgTcZcQzNslRT5",  // Employee (Linked)
   workDate:   "fldzFwSSjLmAkWYHt",
   duration:   "fld9mz6As3099VPVp",   // Duration (Seconds) — writable
-  hours:      "fldC7LWlbpqMd27z9",   // Hours — formula, read only
   cityTaxes:  "flddCniABjh4Xib1c",
   class:      "fld4MG0FcFDnqYmtW",
   jobLink:    "fldmGwS0qXMdC7FlA",   // Job (linked record)
-  jobNameText:"fldsemB5S5PivoZjd",   // Job Name (Text) — plain text
   reviewed:   "fldQn7d06doEkrGBv"
 };
 

@@ -6399,40 +6399,41 @@
         return Number(e.actualEstimate) > 0;
       });
 
-      // Build Bill To — prefer customer intake fields; fall back to contractor billing address
-      let billToAddress = "";
-      const custName = [job.customerFirstName || "", job.customerLastName || ""].filter(Boolean).join(" ").trim();
-      const cityStateZip = [
-        [job.customerCity || "", job.customerState || ""].filter(Boolean).join(", "),
-        job.customerZip || ""
-      ].filter(Boolean).join(" ").trim();
-
-      // Always look up the contractor in Companies — we need the primary email
-      // for the Email button regardless of whether customer intake fields are set.
+      // Look up the contractor in Companies. Used for both the BILL TO default
+      // and the Email button's recipient address.
       let contractorEmail = "";
       let contractorCo    = null;
       try {
         const compData = await apiGet("companies");
         const companies = compData.companies || [];
-        const contractorName = job.contractor || "";
-        contractorCo = companies.find(c => c.name === contractorName) || null;
+        // Match by record id when available (set by mapJob from the Contractor
+        // link field); fall back to name match for legacy jobs missing the link.
+        contractorCo = (job.contractorId
+          ? companies.find(c => c.id === job.contractorId)
+          : companies.find(c => c.name === (job.contractor || ""))) || null;
         if (contractorCo?.primaryEmail) contractorEmail = contractorCo.primaryEmail;
       } catch(e) { /* silently fall back */ }
       window._invContractorEmail = contractorEmail;
 
-      if (custName || job.customerStreet || cityStateZip) {
-        billToAddress = [custName, job.customerStreet, cityStateZip].filter(Boolean).join("\n");
-      } else {
-        // Fall back to contractor billing address (previous behavior)
-        billToAddress = job.contractor || "";
-        if (contractorCo?.billingAddress) {
-          const addr = contractorCo.billingAddress.trim();
-          const lastCommaIdx = addr.lastIndexOf(", ", addr.lastIndexOf(",") - 1);
-          const formatted = lastCommaIdx > 0
-            ? addr.slice(0, lastCommaIdx + 1) + "\n" + addr.slice(lastCommaIdx + 2)
-            : addr;
-          billToAddress = (job.contractor || "") + "\n" + formatted;
+      // BILL TO default:
+      //   Line 1:   "<Contractor Name> - <Job Name>"
+      //   Lines 2+: Contractor's Billing Address (blank lines stripped)
+      // No contractor link → Job Name only (preserves legacy data).
+      // This default only seeds the textarea on a fresh open; saved invoices
+      // rehydrate from snapshot in loadInvoiceForEdit, so manual edits stick.
+      let billToAddress = "";
+      if (contractorCo) {
+        const lines = [`${contractorCo.name} - ${job.name || ""}`];
+        if (contractorCo.billingAddress) {
+          contractorCo.billingAddress
+            .split(/\r?\n/)
+            .map(s => s.trim())
+            .filter(Boolean)
+            .forEach(l => lines.push(l));
         }
+        billToAddress = lines.join("\n");
+      } else {
+        billToAddress = job.name || "";
       }
 
       // Detect Contract vs T&M billing — match either Job Type or Billing Method
@@ -7915,29 +7916,38 @@ rick@northeasternelec.com`
       estEstimatesCache.length = 0;
       estEstimatesCache.push(...estimates);
 
-      // Build Bill To the same way the Invoice tab does — prefer customer intake fields
-      let billToAddress = "";
-      const custName = [job.customerFirstName || "", job.customerLastName || ""].filter(Boolean).join(" ").trim();
-      const cityStateZip = [
-        [job.customerCity || "", job.customerState || ""].filter(Boolean).join(", "),
-        job.customerZip || ""
-      ].filter(Boolean).join(" ").trim();
-
-      // Look up contractor in Companies so we can stash the primary email
-      // for the Email button, regardless of which Bill To path is used.
+      // Look up the contractor in Companies. Used for both the BILL TO default
+      // and the Email button's recipient address.
       let contractorEmail = "";
+      let contractorCo    = null;
       try {
         const compData = await apiGet("companies");
         const companies = compData.companies || [];
-        const contractorCo = companies.find(c => c.name === (job.contractor || "")) || null;
+        contractorCo = (job.contractorId
+          ? companies.find(c => c.id === job.contractorId)
+          : companies.find(c => c.name === (job.contractor || ""))) || null;
         if (contractorCo?.primaryEmail) contractorEmail = contractorCo.primaryEmail;
       } catch(e) { /* silently fall back */ }
       window._estContractorEmail = contractorEmail;
 
-      if (custName || job.customerStreet || cityStateZip) {
-        billToAddress = [custName, job.customerStreet, cityStateZip].filter(Boolean).join("\n");
+      // BILL TO default mirrors the Invoice tab:
+      //   Line 1:   "<Contractor Name> - <Job Name>"
+      //   Lines 2+: Contractor's Billing Address (blank lines stripped)
+      // No contractor link → Job Name only. Saved estimates rehydrate from
+      // snapshot in loadEstimateForEdit, so manual edits stick.
+      let billToAddress = "";
+      if (contractorCo) {
+        const lines = [`${contractorCo.name} - ${job.name || ""}`];
+        if (contractorCo.billingAddress) {
+          contractorCo.billingAddress
+            .split(/\r?\n/)
+            .map(s => s.trim())
+            .filter(Boolean)
+            .forEach(l => lines.push(l));
+        }
+        billToAddress = lines.join("\n");
       } else {
-        billToAddress = job.contractor || "";
+        billToAddress = job.name || "";
       }
 
       // Seed default lines from the estimates list. If multiple, include them all; user can delete.

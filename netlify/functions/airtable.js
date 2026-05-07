@@ -300,7 +300,7 @@ function addMonthsToDateStr(dateStr, months) {
 
 // Generator Service.Service Type — 7 valid options. "Install / Commissioning"
 // is server-set by handleCommissionGenerator; the other six are user-selectable
-// in the New Generator Service panel (Phase 1C).
+// in the Generator Service panel (single canonical service-record form; supersedes legacy QSL + Phase 1C NGS).
 const SERVICE_TYPE_OPTS = [
   "Install / Commissioning",
   "First Service",

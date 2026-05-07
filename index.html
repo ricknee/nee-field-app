@@ -842,6 +842,19 @@
     /* ── GENERATOR RECORDS ── */
     .service-records { display: flex; flex-direction: column; gap: 10px; }
 
+    .nsv-tasks-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px 16px;
+      font-size: 12px;
+    }
+    @media (max-width: 900px) {
+      .nsv-tasks-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .nsv-tasks-grid { grid-template-columns: 1fr; }
+    }
+
     .service-record {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -2319,8 +2332,7 @@
 
           <div style="display:flex; gap:10px; flex-wrap:wrap; margin: 16px 0 8px;">
             <button type="button" id="btnCommissionGen" class="action-btn warning" style="font-size:13px; cursor:pointer;">⚡ Generator Startup / Commissioning</button>
-            <button type="button" id="btnServiceGen" class="action-btn photo-add" style="font-size:13px; cursor:pointer;">🔧 New Generator Service</button>
-            <button type="button" id="btnQuickLogGen" class="action-btn pipe" style="font-size:13px; cursor:pointer;">⚡ Quick Service Log</button>
+            <button type="button" id="btnServiceGen" class="action-btn photo-add" style="font-size:13px; cursor:pointer;">🔧 New Service Record</button>
           </div>
 
           <!-- Commissioning panel — collapsed by default. Triggered by
@@ -2425,19 +2437,17 @@
             <div id="commMsg" style="margin-top:8px; font-size:12px; display:none;"></div>
           </div>
 
-          <!-- New Generator Service panel — collapsed by default. Triggered
-               by btnServiceGen. POSTs to addGeneratorService (same endpoint
-               as Quick Service Log). Long-form sectioned layout with the 10
-               service-task checkboxes grouped by concern (Fluids & Filters /
-               Battery / Diagnostics / Visit Classification). Stay-open after
-               save — service entries are typically batch-logged at the end
-               of a visit, so successive logging without re-opening matches
-               the workflow. Service Type list excludes "Install /
+          <!-- Generator Service panel — collapsed by default. Triggered by
+               btnServiceGen. POSTs to addGeneratorService. Single canonical
+               service-record form (consolidated from prior NGS + QSL).
+               Stay-open after save — service entries are typically batch-logged
+               at the end of a visit, so successive logging without re-opening
+               matches the workflow. Service Type list excludes "Install /
                Commissioning" — that option is reserved for the commissioning
                panel above. -->
           <div id="nsvPanel" style="display:none; background:var(--panel); border:1px solid var(--accent); border-radius:10px; padding:14px 16px; margin-bottom:16px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-              <div style="font-weight:700; font-size:14px; color:var(--accent);">🔧 New Generator Service</div>
+              <div style="font-weight:700; font-size:14px; color:var(--accent);">🔧 Generator Service</div>
               <button type="button" onclick="document.getElementById('nsvPanel').style.display='none'" style="background:none; border:none; cursor:pointer; color:var(--muted); font-size:18px;">✕</button>
             </div>
 
@@ -2478,29 +2488,17 @@
             </div>
 
             <div style="font-weight:600; font-size:12px; color:var(--accent); margin: 8px 0 6px;">Service Tasks</div>
-            <div style="font-size:12px; padding: 6px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); margin-bottom:10px;">
-              <div style="font-size:11px; color:var(--muted); margin: 4px 0 4px;">Fluids &amp; Filters</div>
-              <div style="display:flex; flex-wrap:wrap; gap:8px 16px;">
-                <label><input type="checkbox" id="nsvOil" /> Oil Changed</label>
-                <label><input type="checkbox" id="nsvOilFilt" /> Oil Filter</label>
-                <label><input type="checkbox" id="nsvAirFilt" /> Air Filter</label>
-                <label><input type="checkbox" id="nsvPlugs" /> Spark Plugs</label>
-              </div>
-              <div style="font-size:11px; color:var(--muted); margin: 8px 0 4px;">Battery</div>
-              <div style="display:flex; flex-wrap:wrap; gap:8px 16px;">
-                <label><input type="checkbox" id="nsvBattTest" /> Battery Tested</label>
-                <label><input type="checkbox" id="nsvBattRepl" /> Battery Replaced</label>
-              </div>
-              <div style="font-size:11px; color:var(--muted); margin: 8px 0 4px;">Diagnostics</div>
-              <div style="display:flex; flex-wrap:wrap; gap:8px 16px;">
-                <label><input type="checkbox" id="nsvLoadTest" /> Load Test</label>
-                <label><input type="checkbox" id="nsvFirmware" /> Firmware/Settings</label>
-                <label><input type="checkbox" id="nsvExercise" /> Exercise Checked</label>
-              </div>
-              <div style="font-size:11px; color:var(--muted); margin: 8px 0 4px;">Visit Classification</div>
-              <div style="display:flex; flex-wrap:wrap; gap:8px 16px;">
-                <label><input type="checkbox" id="nsvPlanVisit" /> Service Plan Visit</label>
-              </div>
+            <div class="nsv-tasks-grid" style="padding: 6px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); margin-bottom:10px;">
+              <label><input type="checkbox" id="nsvOil" /> Oil Changed</label>
+              <label><input type="checkbox" id="nsvOilFilt" /> Oil Filter</label>
+              <label><input type="checkbox" id="nsvAirFilt" /> Air Filter</label>
+              <label><input type="checkbox" id="nsvPlugs" /> Spark Plugs</label>
+              <label><input type="checkbox" id="nsvBattTest" /> Battery Tested</label>
+              <label><input type="checkbox" id="nsvBattRepl" /> Battery Replaced</label>
+              <label><input type="checkbox" id="nsvLoadTest" /> Load Test</label>
+              <label><input type="checkbox" id="nsvFirmware" /> Firmware/Settings</label>
+              <label><input type="checkbox" id="nsvExercise" /> Exercise Checked</label>
+              <label><input type="checkbox" id="nsvPlanVisit" /> Service Plan Visit</label>
             </div>
 
             <div style="font-weight:600; font-size:12px; color:var(--accent); margin: 8px 0 6px;">Findings</div>
@@ -2524,71 +2522,6 @@
               <button type="button" id="btnNsvSave" class="btn btn-primary btn-sm">💾 Save Service Record</button>
             </div>
             <div id="nsvMsg" style="margin-top:8px; font-size:12px; display:none;"></div>
-          </div>
-
-          <!-- Quick service log form — collapsed by default -->
-          <div id="quickLogPanel" style="display:none; background:var(--panel); border:1px solid var(--accent); border-radius:10px; padding:14px 16px; margin-bottom:16px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-              <div style="font-weight:700; font-size:14px; color:var(--accent);">⚡ Quick Service Log</div>
-              <button type="button" onclick="document.getElementById('quickLogPanel').style.display='none'" style="background:none; border:none; cursor:pointer; color:var(--muted); font-size:18px;">✕</button>
-            </div>
-            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-bottom:10px;">
-              <div>
-                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Date</label>
-                <input type="date" id="qlDate" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
-              </div>
-              <div>
-                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Service Type</label>
-                <select id="qlType" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;">
-                  <option value="Routine Service">Routine Service</option>
-                  <option value="Repair">Repair</option>
-                  <option value="Inspection">Inspection</option>
-                  <option value="Battery">Battery</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-              <div>
-                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Technician</label>
-                <input type="text" id="qlTech" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
-              </div>
-              <div>
-                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Labor Hours</label>
-                <input type="number" id="qlLabor" min="0" step="0.25" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
-              </div>
-              <div>
-                <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Generator Hours</label>
-                <input type="number" id="qlGenHrs" min="0" step="1" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
-              </div>
-            </div>
-            <div style="display:flex; flex-wrap:wrap; gap:10px 16px; padding:8px 0; margin-bottom:10px; border-top:1px solid var(--line); border-bottom:1px solid var(--line); font-size:12px;">
-              <label><input type="checkbox" id="qlOil" /> Oil Changed</label>
-              <label><input type="checkbox" id="qlOilFilt" /> Oil Filter</label>
-              <label><input type="checkbox" id="qlAirFilt" /> Air Filter</label>
-              <label><input type="checkbox" id="qlPlugs" /> Spark Plugs</label>
-              <label><input type="checkbox" id="qlBattTest" /> Battery Tested</label>
-              <label><input type="checkbox" id="qlBattRepl" /> Battery Replaced</label>
-              <label><input type="checkbox" id="qlLoadTest" /> Load Test</label>
-              <label><input type="checkbox" id="qlFirmware" /> Firmware/Settings</label>
-              <label><input type="checkbox" id="qlExercise" /> Exercise Checked</label>
-              <label><input type="checkbox" id="qlPlanVisit" /> Service Plan Visit</label>
-            </div>
-            <div style="margin-bottom:10px;">
-              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Trouble Codes Found</label>
-              <input type="text" id="qlCodes" placeholder="e.g. 1100, 1300" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
-            </div>
-            <div style="margin-bottom:10px;">
-              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Work Performed Notes</label>
-              <textarea id="qlNotes" rows="2" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px; font-family:inherit; resize:vertical;"></textarea>
-            </div>
-            <div style="margin-bottom:10px;">
-              <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">Parts Used</label>
-              <input type="text" id="qlParts" placeholder="e.g. oil filter, spark plugs x2" style="width:100%; padding:6px 8px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-size:13px;" />
-            </div>
-            <div style="display:flex; gap:8px; justify-content:flex-end;">
-              <button type="button" id="btnQuickLogCancel" class="btn btn-sm" style="background:var(--panel-2); color:var(--text); border:1px solid var(--line);">Cancel</button>
-              <button type="button" id="btnQuickLogSave" class="btn btn-primary btn-sm">💾 Save Service Record</button>
-            </div>
-            <div id="qlMsg" style="margin-top:8px; font-size:12px; display:none;"></div>
           </div>
 
           <div class="section-header" style="margin-top:8px;">Service Records</div>
@@ -4170,83 +4103,6 @@
         } finally {
           nsvSaveBtn.disabled    = false;
           nsvSaveBtn.textContent = "💾 Save Service Record";
-        }
-      };
-    }
-
-    // ── Quick-log wiring (rebound each time the tab loads so we pick up
-    // the current job + generator). Stash refs in closure for save handler.
-    const qlOpenBtn = $("btnQuickLogGen");
-    const qlPanel   = $("quickLogPanel");
-    if (qlOpenBtn && qlPanel) {
-      qlOpenBtn.onclick = () => {
-        const isOpen = qlPanel.style.display !== "none";
-        qlPanel.style.display = isOpen ? "none" : "block";
-        if (!isOpen) {
-          // Pre-fill date = today, technician = current user
-          if (!$("qlDate").value) $("qlDate").value = new Date().toISOString().slice(0,10);
-          if (!$("qlTech").value) $("qlTech").value = state.user?.name || "";
-          $("qlMsg").style.display = "none";
-        }
-      };
-    }
-    const qlCancelBtn = $("btnQuickLogCancel");
-    if (qlCancelBtn && qlPanel) qlCancelBtn.onclick = () => { qlPanel.style.display = "none"; };
-
-    const qlSaveBtn = $("btnQuickLogSave");
-    if (qlSaveBtn) {
-      qlSaveBtn.onclick = async () => {
-        const generatorId = d?.generator?.id || null;
-        if (!generatorId) {
-          alert("No generator linked to this job — quick-log requires a linked generator asset.");
-          return;
-        }
-        const date = $("qlDate").value;
-        if (!date) { alert("Pick a service date."); return; }
-        const payload = {
-          generatorId,
-          jobId: jobId,
-          serviceDate:  date,
-          serviceType:  $("qlType").value,
-          technician:   $("qlTech").value,
-          servicePlanVisit:   $("qlPlanVisit").checked,
-          oilChanged:         $("qlOil").checked,
-          oilFilterChanged:   $("qlOilFilt").checked,
-          airFilterChanged:   $("qlAirFilt").checked,
-          sparkPlugsChanged:  $("qlPlugs").checked,
-          batteryTested:      $("qlBattTest").checked,
-          batteryReplaced:    $("qlBattRepl").checked,
-          loadTestPerformed:  $("qlLoadTest").checked,
-          firmwareChecked:    $("qlFirmware").checked,
-          exerciseChecked:    $("qlExercise").checked,
-          troubleCodesFound:  $("qlCodes").value || "",
-          workNotes:          $("qlNotes").value || "",
-          partsUsed:          $("qlParts").value || "",
-          laborHours:         $("qlLabor").value || "",
-          generatorHours:     $("qlGenHrs").value || ""
-        };
-        qlSaveBtn.disabled  = true;
-        qlSaveBtn.textContent = "Saving...";
-        const msg = $("qlMsg");
-        try {
-          const r = await apiPost("addGeneratorService", payload);
-          if (!r?.ok) throw new Error(r?.error || "Save failed");
-          msg.textContent = "✓ Saved.";
-          msg.style.color = "var(--green)";
-          msg.style.display = "block";
-          // Reset form fields, keep date+tech for fast successive logging
-          ["qlOil","qlOilFilt","qlAirFilt","qlPlugs","qlBattTest","qlBattRepl",
-           "qlLoadTest","qlFirmware","qlExercise","qlPlanVisit"].forEach(id => { $(id).checked = false; });
-          ["qlCodes","qlNotes","qlParts","qlLabor","qlGenHrs"].forEach(id => { $(id).value = ""; });
-          // Refresh the service-records list so the new entry shows
-          setTimeout(() => loadGeneratorData(jobId), 600);
-        } catch(e) {
-          msg.textContent = "Couldn't save: " + e.message;
-          msg.style.color = "var(--red)";
-          msg.style.display = "block";
-        } finally {
-          qlSaveBtn.disabled  = false;
-          qlSaveBtn.textContent = "💾 Save Service Record";
         }
       };
     }

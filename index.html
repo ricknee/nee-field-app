@@ -2764,7 +2764,8 @@
     filtered: [],
     selected: null,
     currentGenerator: null,
-    currentServiceRecords: []
+    currentServiceRecords: [],
+    currentWarranties: []
   };
 
   // ── DOM ──
@@ -3862,12 +3863,15 @@
 
       // Warranty badges — fetched after the generator since we need gen.id.
       // Failure here is non-fatal: log and show a muted error in the badge
-      // row so the rest of the tab still renders.
+      // row so the rest of the tab still renders. Lifted to state.* so the
+      // Commissioning Certificate PDF builder can read them without refetch.
+      state.currentWarranties = [];
       const genIdForWarranties = d?.generator?.id || null;
       if (genIdForWarranties) {
         try {
           const w = await apiGet("getWarranties", { generatorId: genIdForWarranties });
-          renderWarrantyBadges(Array.isArray(w?.warranties) ? w.warranties : []);
+          state.currentWarranties = Array.isArray(w?.warranties) ? w.warranties : [];
+          renderWarrantyBadges(state.currentWarranties);
         } catch (werr) {
           $("warrantyBadges").innerHTML = `<div class="empty-msg" style="font-size:12px; color:#ff8b7e;">Warranty lookup failed: ${esc(werr.message)}</div>`;
         }
@@ -3950,7 +3954,11 @@
           const svcId = btn.getAttribute('data-svc-id');
           const rec = (state.currentServiceRecords || []).find(r => r.id === svcId);
           if (!rec) { console.warn('[svc-pdf] record not found for id', svcId); return; }
-          reprintServiceReportPDF(rec, state.currentGenerator, state.selected);
+          if (rec.serviceType === "Install / Commissioning") {
+            reprintCommissioningCertificatePDF(rec, state.currentGenerator, state.selected, state.currentWarranties || []);
+          } else {
+            reprintServiceReportPDF(rec, state.currentGenerator, state.selected);
+          }
         });
       }
 
@@ -7506,6 +7514,43 @@ rick@northeasternelec.com`
 
   function reprintServiceReportPDF(rec, gen, job) { return window.reprintServiceReportPDF(rec, gen, job); }
 
+  // ── REPRINT COMMISSIONING CERTIFICATE PDF ──
+  // Called from the per-card 📄 button when serviceType === "Install /
+  // Commissioning". Mirrors reprintServiceReportPDF's lazy-load pattern.
+  window.reprintCommissioningCertificatePDF = function(rec, gen, job, warranties) {
+    if (!rec) return;
+
+    function doBuild() {
+      try {
+        const doc = buildCommissioningCertificatePDFDoc(rec, gen, job, warranties);
+        const safeName = String(job?.customerLastName || 'Customer').replace(/[^a-zA-Z0-9]/g, '_');
+        const yyyymmdd = String(rec?.serviceDate || '').replace(/-/g, '') ||
+                         new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const filename = `NEE-Commissioning-${safeName}-${yyyymmdd}.pdf`;
+        doc.save(filename);
+      } catch(e) {
+        console.error('[reprintCommissioningCertificatePDF] failed', e);
+        alert('Could not generate Commissioning Certificate PDF: ' + (e?.message || e));
+      }
+    }
+
+    if (window.jspdf) { doBuild(); return; }
+    if (!document.getElementById("jspdf-script")) {
+      const s = document.createElement("script");
+      s.id = "jspdf-script";
+      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+      document.head.appendChild(s);
+    }
+    let tries = 15;
+    (function waitForLib() {
+      if (window.jspdf) doBuild();
+      else if (--tries > 0) setTimeout(waitForLib, 300);
+      else alert("PDF library failed to load. Check your connection.");
+    })();
+  };
+
+  function reprintCommissioningCertificatePDF(rec, gen, job, warranties) { return window.reprintCommissioningCertificatePDF(rec, gen, job, warranties); }
+
   // ── EDIT EXISTING INVOICE ────────────────────────────────────────────────
   // Pull a saved invoice's snapshot back into the builder so the user can
   // tweak it and re-save WITHOUT creating a duplicate Airtable record.
@@ -7639,12 +7684,22 @@ rick@northeasternelec.com`
     poLabel:     "PROJECT"
   };
   const REPORT_THEME = {
-    title:       "SERVICE REPORT",
-    docLabel:    "Report",
-    accent:      [100, 100, 100],     // mid gray to match NEE-Gray logo
-    logoB64:     () => NEE_LOGO_GRAY_B64,
-    billToLabel: "CUSTOMER",
-    poLabel:     "GENERATOR"
+    title:         "SERVICE REPORT",
+    titleFontSize: 22,
+    docLabel:      "Report",
+    accent:        [100, 100, 100],     // mid gray to match NEE-Gray logo
+    logoB64:       () => NEE_LOGO_GRAY_B64,
+    billToLabel:   "CUSTOMER",
+    poLabel:       "GENERATOR"
+  };
+  const CERTIFICATE_THEME = {
+    title:         "COMMISSIONING CERTIFICATE",
+    titleFontSize: 18,                  // smaller than 22 — title is wider
+    docLabel:      "Certificate",
+    accent:        [100, 100, 100],
+    logoB64:       () => NEE_LOGO_GRAY_B64,
+    billToLabel:   "CUSTOMER",
+    poLabel:       "JOBSITE"
   };
 
   function buildInvoicePDFDoc(snapData, theme) {
@@ -8026,7 +8081,7 @@ rick@northeasternelec.com`
     y += logoSize + 14;
 
     // ── TITLE top right ──
-    doc.setFont("helvetica","bold"); doc.setFontSize(22);
+    doc.setFont("helvetica","bold"); doc.setFontSize(theme.titleFontSize || 22);
     doc.setTextColor(...C_TEXT);
     doc.text(theme.title, W-M, 56, { align: "right" });
 
@@ -8205,6 +8260,280 @@ rick@northeasternelec.com`
       doc.setFont("helvetica","italic"); doc.setFontSize(11); doc.setTextColor(...C_MUTED);
       doc.text("No additional findings or notes recorded.", M, y);
       y += 16;
+    }
+
+    // ── Footer bar ──
+    const footY = PAGE_H - BORDER_PAD - 28;
+    doc.setFillColor(...C_FOOTER);
+    doc.roundedRect(M, footY, INNER_W, 22, 4, 4, "F");
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+    doc.roundedRect(M, footY, INNER_W, 22, 4, 4);
+    doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(70,70,70);
+    doc.text("Phone #", M+5, footY+15);
+    doc.setFont("helvetica","bold"); doc.text("330-257-0447", M+40, footY+15);
+    doc.setFont("helvetica","normal"); doc.text("E-mail", M+124, footY+15);
+    doc.setFont("helvetica","bold"); doc.text("rick@northeasternelec.com", M+150, footY+15);
+
+    // ── Outer border on every page ──
+    const totalPages = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      doc.setDrawColor(70, 70, 70); doc.setLineWidth(2.2);
+      doc.roundedRect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD*2, PAGE_H - BORDER_PAD*2, 8, 8);
+    }
+    doc.setPage(totalPages);
+
+    return doc;
+  }
+
+  // ── COMMISSIONING CERTIFICATE PDF ──
+  // Customer-facing per-commissioning record. Same gray-themed shell as the
+  // Service Report, but the body is asset/install/plan/warranty detail
+  // instead of routine-service tasks. Triggered by the same per-card 📄
+  // button — the click handler routes by serviceType.
+  function buildCommissioningCertificatePDFDoc(rec, gen, job, warranties, theme) {
+    theme       = theme || CERTIFICATE_THEME;
+    rec         = rec || {};
+    gen         = gen || {};
+    job         = job || {};
+    warranties  = Array.isArray(warranties) ? warranties : [];
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "pt", format: "letter" });
+    const W = 612, M = 40;
+    const INNER_W = W - M*2;
+    let y = 36;
+
+    const C_BORDER  = [180,180,180];
+    const C_HDR_BG  = theme.accent;
+    const C_HDR_TXT = [255,255,255];
+    const C_TEXT    = [30,30,30];
+    const C_MUTED   = [100,100,100];
+    const C_FOOTER  = [240,242,245];
+
+    const PAGE_H = 792;
+    const BORDER_PAD = 20;
+    const BOTTOM_LIMIT = 700;
+
+    // ── Company header with logo ──
+    const logoSize = 72;
+    try {
+      doc.addImage(theme.logoB64(), "PNG", M, y, logoSize, logoSize);
+    } catch(e) {}
+    const textX = M + logoSize + 14;
+    doc.setFont("helvetica","bold"); doc.setFontSize(18);
+    doc.setTextColor(...C_TEXT);
+    doc.text("Northeastern Electric, Inc.", textX, y + 22);
+    doc.setFont("helvetica","normal"); doc.setFontSize(11);
+    doc.setTextColor(...C_MUTED);
+    doc.text("5909 Bandy Rd", textX, y + 40);
+    doc.text("Homeworth OH 44634", textX, y + 54);
+    doc.text("Ohio License #22855", textX, y + 68);
+    y += logoSize + 14;
+
+    // ── TITLE top right ──
+    doc.setFont("helvetica","bold"); doc.setFontSize(theme.titleFontSize || 22);
+    doc.setTextColor(...C_TEXT);
+    doc.text(theme.title, W-M, 56, { align: "right" });
+
+    // ── Meta table (Date / Service #) ──
+    const metaX = W - M - 168;
+    let metaY = 64;
+    const metaW = 84;
+    doc.setFillColor(...C_HDR_BG);
+    doc.roundedRect(metaX, metaY, metaW*2, 14, 3, 3, "F");
+    doc.setDrawColor(255,255,255); doc.setLineWidth(0.5);
+    doc.line(metaX+metaW, metaY+2, metaX+metaW, metaY+12);
+    doc.setFont("helvetica","bold"); doc.setFontSize(8); doc.setTextColor(...C_HDR_TXT);
+    doc.text("Date", metaX+5, metaY+10);
+    doc.text("Service #", metaX+metaW+5, metaY+10);
+    metaY += 14;
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+    doc.roundedRect(metaX, metaY-14, metaW*2, 30, 3, 3);
+    doc.line(metaX+metaW, metaY-14, metaX+metaW, metaY+16);
+    doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...C_TEXT);
+    doc.text(String(rec.serviceDate || ""), metaX+5, metaY+11);
+    const svcNum = rec.serviceNumber ? "SRV-" + String(rec.serviceNumber).padStart(4, "0") : "";
+    doc.text(svcNum, metaX+metaW+5, metaY+11);
+    metaY += 16;
+
+    y = Math.max(y, metaY + 14);
+
+    // ── Horizontal divider ──
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.8);
+    doc.line(M, y, W-M, y);
+    y += 12;
+
+    // ── CUSTOMER + JOBSITE side-by-side info boxes ──
+    const infoH = 92;
+    const leftW  = INNER_W * 0.6;
+    const rightW = INNER_W * 0.36;
+    const rightX = W - M - rightW;
+
+    // Customer box
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.6);
+    doc.roundedRect(M, y, leftW, infoH, 4, 4);
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
+    doc.text(theme.billToLabel || "CUSTOMER", M+9, y+15);
+    doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
+    const custName = (gen.customer && String(gen.customer).trim()) ||
+                     (job.customerLastName ? String(job.customerLastName) : "");
+    doc.text(custName, M+9, y+30);
+
+    // Jobsite box (street + city/state/zip)
+    doc.roundedRect(rightX, y, rightW, infoH, 4, 4);
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
+    doc.text(theme.poLabel || "JOBSITE", rightX+9, y+15);
+    doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
+    const jobsiteCSZ = [
+      [job.customerCity || "", job.customerState || ""].filter(Boolean).join(", "),
+      job.customerZip || ""
+    ].filter(Boolean).join(" ").trim();
+    const jobsiteLines = [job.customerStreet || "", jobsiteCSZ]
+      .filter(s => String(s || "").trim().length > 0);
+    doc.text(jobsiteLines, rightX+9, y+30);
+
+    y += infoH + 16;
+
+    // ── Helpers shared across the four boxed sections ──
+    function ensureRoom(needed) {
+      if (y + needed > BOTTOM_LIMIT) {
+        doc.addPage();
+        y = 60;
+      }
+    }
+    // Bold-label / dynamic-width / value rendering — same pattern as the
+    // service report's Service Event rows (post-c5688ca / 0063966 fixes).
+    function drawLabelValueRow(label, value, baseX, baseY) {
+      doc.setFont("helvetica","bold");
+      doc.text(label, baseX, baseY);
+      const labelW = doc.getTextWidth(label);
+      doc.setFont("helvetica","normal");
+      doc.text(String(value || ""), baseX + labelW + 8, baseY);
+    }
+    // Boxed section: gray header bar + bordered body. rows is an array of
+    // [label, value] pairs (already filtered for empties by the caller).
+    function drawBoxedSection(title, rows, extraBodyDraw) {
+      const barH  = 22;
+      const rowH  = 16;
+      const bodyH = (rows.length ? rowH * rows.length + 14 : 30) + (extraBodyDraw ? extraBodyDraw.height : 0);
+      ensureRoom(barH + bodyH + 16);
+      doc.setFillColor(...C_HDR_BG);
+      doc.roundedRect(M, y, INNER_W, barH, 4, 4, "F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_HDR_TXT);
+      doc.text(title, M+10, y+15);
+      doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+      doc.roundedRect(M, y+barH, INNER_W, bodyH, 4, 4);
+      let bodyY = y + barH + 18;
+      doc.setFont("helvetica","normal"); doc.setFontSize(10.5); doc.setTextColor(...C_TEXT);
+      rows.forEach(([label, value]) => {
+        drawLabelValueRow(label, value, M+12, bodyY);
+        bodyY += rowH;
+      });
+      if (extraBodyDraw && typeof extraBodyDraw.draw === "function") {
+        extraBodyDraw.draw(bodyY);
+      }
+      y += barH + bodyH + 16;
+    }
+    // Same green-square + white-check helper as the service report.
+    function drawCheckbox(x, y, size) {
+      doc.setFillColor(46, 160, 67);
+      doc.roundedRect(x, y, size, size, 1.5, 1.5, 'F');
+      doc.setDrawColor(255, 255, 255);
+      doc.setLineWidth(1.4);
+      doc.line(x + size*0.22, y + size*0.55, x + size*0.45, y + size*0.78);
+      doc.line(x + size*0.45, y + size*0.78, x + size*0.82, y + size*0.25);
+    }
+    // fmtDate falls back gracefully on empties — defined at script top.
+    function dt(v) { return v ? fmtDate(v) : ""; }
+
+    // ── 1. Generator Asset ──
+    const tsCombo = [
+      gen.transferSwitchModel  ? String(gen.transferSwitchModel).trim()  : "",
+      gen.transferSwitchSerial ? String(gen.transferSwitchSerial).trim() : ""
+    ].filter(Boolean).join(" / ");
+    const assetRows = [
+      ["Brand:",          gen.brand],
+      ["Model:",          gen.model],
+      ["Capacity:",       gen.kw ? String(gen.kw) + " kW" : ""],
+      ["Serial #:",       gen.serialNumber],
+      ["Fuel Type:",      gen.fuelType],
+      ["Transfer Switch:", tsCombo]
+    ].filter(([, v]) => String(v || "").trim().length > 0);
+    drawBoxedSection("Generator Asset", assetRows);
+
+    // ── 2. Commissioning ──
+    const commissioningRows = [
+      ["Install Date:",      dt(gen.installDate)],
+      ["Technician:",        rec.technician],
+      ["Hours @ Commission:", rec.generatorHours !== undefined && rec.generatorHours !== null && String(rec.generatorHours).length > 0 ? String(rec.generatorHours) : ""],
+      ["Battery Install:",   dt(gen.batteryInstallDate)]
+    ].filter(([, v]) => String(v || "").trim().length > 0);
+    drawBoxedSection("Commissioning", commissioningRows);
+
+    // ── 3. Service Plan ──
+    const planRows = [
+      ["Plan Active:",   gen.servicePlanActive ? "Yes" : "No"],
+      ["Interval:",      gen.serviceIntervalMonths ? String(gen.serviceIntervalMonths) + " months" : ""],
+      ["Next Service:",  dt(gen.nextServiceDue)]
+    ].filter(([, v]) => String(v || "").trim().length > 0);
+    drawBoxedSection("Service Plan", planRows);
+
+    // ── 4. Warranty Coverage ──
+    // Include all non-voided. Expired warranties are kept on the certificate
+    // (it's a permanent install record) but flagged "(expired)" inline.
+    const todayMs = Date.now();
+    const activeWarranties = warranties.filter(w => !w.voided);
+    const warrantyBarH  = 22;
+    const warrantyRowH  = 17;
+    const warrantyRows  = activeWarranties.length || 1;
+    const warrantyBodyH = warrantyRowH * warrantyRows + 14;
+    ensureRoom(warrantyBarH + warrantyBodyH + 16);
+    doc.setFillColor(...C_HDR_BG);
+    doc.roundedRect(M, y, INNER_W, warrantyBarH, 4, 4, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_HDR_TXT);
+    doc.text("Warranty Coverage", M+10, y+15);
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
+    doc.roundedRect(M, y+warrantyBarH, INNER_W, warrantyBodyH, 4, 4);
+
+    let warrantyY = y + warrantyBarH + 16;
+    if (!activeWarranties.length) {
+      doc.setFont("helvetica","italic"); doc.setFontSize(11); doc.setTextColor(...C_MUTED);
+      doc.text("No active warranties on file.", M+12, warrantyY);
+    } else {
+      const CHECK_SIZE = 11;
+      doc.setFont("helvetica","normal"); doc.setFontSize(10.5); doc.setTextColor(...C_TEXT);
+      activeWarranties.forEach(w => {
+        drawCheckbox(M+12, warrantyY - CHECK_SIZE + 2, CHECK_SIZE);
+        const parts = [];
+        if (w.warrantyType)   parts.push(String(w.warrantyType));
+        if (w.source)         parts.push("(" + String(w.source) + ")");
+        if (w.durationMonths) parts.push(String(w.durationMonths) + " months");
+        if (w.endDate) {
+          const endMs = new Date(w.endDate).getTime();
+          const expired = !isNaN(endMs) && endMs < todayMs;
+          parts.push("ends " + fmtDate(w.endDate) + (expired ? " (expired)" : ""));
+        }
+        doc.text(parts.join("   "), M+12 + CHECK_SIZE + 6, warrantyY);
+        warrantyY += warrantyRowH;
+      });
+    }
+
+    y += warrantyBarH + warrantyBodyH + 16;
+
+    // ── Commissioning Notes (unboxed, only if present) ──
+    // Source: rec.workNotes (the same Generator Service field where the
+    // commissioning panel writes commissioningNotes — see
+    // handleCommissionGenerator in airtable.js).
+    if (rec.workNotes && String(rec.workNotes).trim().length) {
+      const notesText  = String(rec.workNotes);
+      const noteLines  = doc.splitTextToSize(notesText, INNER_W);
+      ensureRoom(14 + noteLines.length * 14 + 10);
+      doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_HDR_BG);
+      doc.text("COMMISSIONING NOTES", M, y);
+      y += 14;
+      doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(...C_TEXT);
+      doc.text(noteLines, M, y);
+      y += noteLines.length * 14 + 10;
     }
 
     // ── Footer bar ──

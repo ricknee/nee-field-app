@@ -35,6 +35,7 @@ const F = {
     type:                    "Job Type",
     address:                 "Job Address - Full",
     contractor:              "Contractor Name (Text)",
+    billingCompany:          "Billing Company",
     generatorInstalled:      "Generator Installed",
     powerCompanyName:        "Power Company – Name (lookup)",
     powerCompanyContact:     "Power Company – Primary Contact (lookup)",
@@ -192,7 +193,7 @@ const PR_BONUSES = {
   payPeriodEnd:    "fldEOOhDf4msZlrEk"
 };
 
-function resp(code, body) {
+function resp(code, body, extraHeaders) {
   return {
     statusCode: code,
     headers: {
@@ -200,7 +201,8 @@ function resp(code, body) {
       "Cache-Control": "no-store",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Headers": "Content-Type",
-      "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      ...(extraHeaders || {})
     },
     body: JSON.stringify(body)
   };
@@ -1297,6 +1299,13 @@ function mapJob(r) {
   return {
     id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
     type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
+      billingCompanyId: (() => {
+        const v = f[F.job.billingCompany];
+        if (Array.isArray(v) && v.length > 0) {
+          return typeof v[0] === "string" ? v[0] : v[0]?.id || null;
+        }
+        return null;
+      })(),
       generatorInstalled:gBool(f,F.job.generatorInstalled),
       powerCompanyName:g(f,F.job.powerCompanyName)||"",powerCompanyContact:g(f,F.job.powerCompanyContact)||"",
       powerCompanyPhone:g(f,F.job.powerCompanyPhone)||"",powerCompanyEmail:g(f,F.job.powerCompanyEmail)||"",
@@ -2114,6 +2123,18 @@ async function handleVendors() {
   const records = await fetchAll("Vendors", { sortField: "Vendor Name", sortDir: "asc" });
   const vendors = records.filter(r => r.fields["Active"] !== false).map(r => ({ id:r.id, name:r.fields["Vendor Name"]||"" })).filter(v => v.name);
   return resp(200, { ok: true, vendors });
+}
+
+async function handleListContractors() {
+  const records = await fetchAll("Companies", {
+    filter: "{Active Contractor}=1",
+    sortField: "Company Name",
+    sortDir: "asc"
+  });
+  const contractors = records
+    .map(r => ({ id: r.id, name: r.fields["Company Name"] || "" }))
+    .filter(c => c.name);
+  return resp(200, { ok: true, contractors }, { "Cache-Control": "public, max-age=60" });
 }
 
 async function handleGetInspectionAgencies() {
@@ -3238,6 +3259,7 @@ export async function handler(event) {
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();
       if (action === "companies")          return await handleCompanies();
+      if (action === "listContractors")    return await handleListContractors();
       if (action === "laborBillableRates") return await handleLaborBillableRates();
       if (action === "getInspectionAgencies") return await handleGetInspectionAgencies();
       return resp(400, { ok: false, error: "Unknown GET action." });

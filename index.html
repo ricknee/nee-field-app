@@ -1849,21 +1849,17 @@
         </div>
         <div class="filter-row">
           <select id="statusFilter">
-            <option value="">All Statuses</option>
+            <option value="" selected>All Statuses</option>
             <option value="Service Call Scheduled">Service Call Scheduled</option>
-            <option value="Awarded" selected>Awarded</option>
+            <option value="Awarded">Awarded</option>
             <option value="Estimating">Estimating</option>
             <option value="New Lead">New Lead</option>
             <option value="Ready to Invoice">Ready to Invoice</option>
             <option value="Completed">Completed</option>
             <option value="Not Awarded">Not Awarded</option>
           </select>
-          <select id="typeFilter">
-            <option value="">All Types</option>
-            <option value="Contract">Contract</option>
-            <option value="Time & Material">Time & Material</option>
-            <option value="Warranty">Warranty</option>
-            <option value="Service Calls">Service Calls</option>
+          <select id="contractorFilter">
+            <option value="">All Contractors</option>
           </select>
         </div>
       </div>
@@ -3055,12 +3051,26 @@
     try {
       const d = await apiPost("login", { identifier, pin });
       saveUser(d.user);
-      await loadJobs();
+      await Promise.all([loadJobs(), loadContractors()]);
     } catch(err) {
       showAlert(alertEl, err.message || "Login failed.");
     } finally {
       $("loginBtn").disabled = false;
       $("loginBtn").textContent = "Sign In";
+    }
+  }
+
+  async function loadContractors() {
+    const sel = $("contractorFilter");
+    if (!sel) return;
+    try {
+      const d = await apiGet("listContractors");
+      const list = Array.isArray(d.contractors) ? d.contractors : [];
+      sel.innerHTML = `<option value="">All Contractors</option>` +
+        list.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+    } catch (e) {
+      // Non-fatal: leave the default "All Contractors" option in place.
+      console.warn("loadContractors failed:", e);
     }
   }
 
@@ -3100,14 +3110,14 @@
   function applyFilters() {
     const q = $("searchInput").value.trim().toLowerCase();
     const st = $("statusFilter").value.toLowerCase();
-    const ty = $("typeFilter").value.toLowerCase();
+    const cId = $("contractorFilter").value;
 
     state.filtered = state.jobs.filter(j => {
       const hay = [j.name, j.po, j.address, j.status, j.type, j.contractor].join(" ").toLowerCase();
       const mq = !q || hay.includes(q);
       const ms = !st || (j.status||"").toLowerCase() === st;
-      const mt = !ty || (j.type||"").toLowerCase() === ty;
-      return mq && ms && mt;
+      const mc = !cId || j.billingCompanyId === cId;
+      return mq && ms && mc;
     });
 
     renderJobList();
@@ -6225,7 +6235,7 @@
 
     $("searchInput").addEventListener("input", applyFilters);
     $("statusFilter").addEventListener("change", applyFilters);
-    $("typeFilter").addEventListener("change", applyFilters);
+    $("contractorFilter").addEventListener("change", applyFilters);
 
     $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
     const piEditBtn = $("piEditBtn");
@@ -6348,7 +6358,7 @@
     wireEvents();
     loadStoredUser();
     renderAuth();
-    if (state.user) await loadJobs();
+    if (state.user) await Promise.all([loadJobs(), loadContractors()]);
   }
 
   init();

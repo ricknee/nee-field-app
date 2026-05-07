@@ -2832,6 +2832,21 @@
       .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
+  // Split a Companies "Billing Address" value into mailing-label lines for
+  // the BILL TO default. Multi-line input is preserved as-is. A single-line
+  // US-format string ("Street, City, ST ZIP[-####]") is auto-split into two
+  // lines so it renders as a proper label; the trailing comma on the street
+  // line is preserved. Anything else passes through as one line.
+  function splitBillingAddressLines(addr) {
+    if (!addr) return [];
+    if (/[\r\n]/.test(addr)) {
+      return addr.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    }
+    const m = addr.match(/^(.+?),\s*([^,]+?,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?)\s*$/);
+    if (m) return [`${m[1]},`, m[2]];
+    return [addr.trim()];
+  }
+
   function fmtDate(v) {
     if (!v || v === "—") return "—";
     try {
@@ -6425,13 +6440,7 @@
       if (contractorCo) {
         const lines = [contractorCo.name];
         if (job.name) lines.push(job.name);
-        if (contractorCo.billingAddress) {
-          contractorCo.billingAddress
-            .split(/\r?\n/)
-            .map(s => s.trim())
-            .filter(Boolean)
-            .forEach(l => lines.push(l));
-        }
+        splitBillingAddressLines(contractorCo.billingAddress).forEach(l => lines.push(l));
         billToAddress = lines.join("\n");
       } else {
         billToAddress = job.name || "";
@@ -7940,13 +7949,7 @@ rick@northeasternelec.com`
       if (contractorCo) {
         const lines = [contractorCo.name];
         if (job.name) lines.push(job.name);
-        if (contractorCo.billingAddress) {
-          contractorCo.billingAddress
-            .split(/\r?\n/)
-            .map(s => s.trim())
-            .filter(Boolean)
-            .forEach(l => lines.push(l));
-        }
+        splitBillingAddressLines(contractorCo.billingAddress).forEach(l => lines.push(l));
         billToAddress = lines.join("\n");
       } else {
         billToAddress = job.name || "";

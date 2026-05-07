@@ -8026,9 +8026,9 @@ rick@northeasternelec.com`
     y += logoSize + 14;
 
     // ── TITLE top right ──
-    doc.setFont("helvetica","bold"); doc.setFontSize(30);
+    doc.setFont("helvetica","bold"); doc.setFontSize(22);
     doc.setTextColor(...C_TEXT);
-    doc.text(theme.title, W-M, 52, { align: "right" });
+    doc.text(theme.title, W-M, 56, { align: "right" });
 
     // ── Meta table (Date / Service #) ──
     const metaX = W - M - 168;
@@ -8046,8 +8046,9 @@ rick@northeasternelec.com`
     doc.roundedRect(metaX, metaY-14, metaW*2, 30, 3, 3);
     doc.line(metaX+metaW, metaY-14, metaX+metaW, metaY+16);
     doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.setTextColor(...C_TEXT);
-    doc.text(String(rec.serviceDate || ""),     metaX+5,        metaY+11);
-    doc.text(String(rec.serviceRecordId || ""), metaX+metaW+5,  metaY+11);
+    doc.text(String(rec.serviceDate || ""), metaX+5, metaY+11);
+    const svcNum = rec.serviceNumber ? "SRV-" + String(rec.serviceNumber).padStart(4, "0") : "";
+    doc.text(svcNum, metaX+metaW+5, metaY+11);
     metaY += 16;
 
     y = Math.max(y, metaY + 14);
@@ -8098,8 +8099,15 @@ rick@northeasternelec.com`
     y += infoH + 16;
 
     // ── Service Event boxed section (header bar + body) ──
+    const evtRows = [];
+    if (rec.serviceType) evtRows.push(["Service Type:", String(rec.serviceType)]);
+    if (rec.technician)  evtRows.push(["Technician:",   String(rec.technician)]);
+    if (rec.generatorHours !== undefined && rec.generatorHours !== null && String(rec.generatorHours).length > 0) {
+      evtRows.push(["Generator Hours @ Service:", String(rec.generatorHours)]);
+    }
+
     const evtBarH  = 22;
-    const evtBodyH = 56;
+    const evtBodyH = 16 * (evtRows.length || 1) + 14;
     doc.setFillColor(...C_HDR_BG);
     doc.roundedRect(M, y, INNER_W, evtBarH, 4, 4, "F");
     doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_HDR_TXT);
@@ -8107,29 +8115,12 @@ rick@northeasternelec.com`
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.5);
     doc.roundedRect(M, y+evtBarH, INNER_W, evtBodyH, 4, 4);
 
-    const evtRows = [];
-    if (rec.serviceType) evtRows.push(["Service Type:", String(rec.serviceType)]);
-    if (rec.technician)  evtRows.push(["Technician:",   String(rec.technician)]);
-    const hasLabor = rec.laborHours !== undefined && rec.laborHours !== null && String(rec.laborHours).length > 0;
-    const hasGen   = rec.generatorHours !== undefined && rec.generatorHours !== null && String(rec.generatorHours).length > 0;
-    if (hasLabor || hasGen) {
-      const left  = hasLabor ? "Labor Hours: " + rec.laborHours : "";
-      const right = hasGen   ? "Generator Hours @ Service: " + rec.generatorHours : "";
-      evtRows.push([left, right]);
-    }
-
     let evtTextY = y + evtBarH + 18;
     doc.setFont("helvetica","normal"); doc.setFontSize(10.5); doc.setTextColor(...C_TEXT);
-    evtRows.forEach((row, i) => {
-      if (i === 2 && row[1]) {
-        // Row 3: two-column layout for Labor + Generator hours
-        doc.text(row[0], M+12, evtTextY);
-        doc.text(row[1], M+12 + INNER_W*0.5, evtTextY);
-      } else {
-        doc.setFont("helvetica","bold"); doc.text(row[0], M+12, evtTextY);
-        doc.setFont("helvetica","normal");
-        doc.text(String(row[1] || ""), M+12 + 90, evtTextY);
-      }
+    evtRows.forEach(row => {
+      doc.setFont("helvetica","bold"); doc.text(row[0], M+12, evtTextY);
+      doc.setFont("helvetica","normal");
+      doc.text(String(row[1] || ""), M+12 + 90, evtTextY);
       evtTextY += 16;
     });
 
@@ -8166,22 +8157,28 @@ rick@northeasternelec.com`
     if (checkedTasks.length) {
       ensureRoom(40);
       drawSubsectionLabel("TASKS PERFORMED");
-      doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(...C_TEXT);
-      const ITEM_GAP   = 16;
-      const LINE_H     = 16;
-      let cursorX = M;
+      // Draw a green-filled rounded square with a white check mark. Drawn via
+      // jsPDF primitives rather than the ✓ glyph so we don't depend on the
+      // current font having that codepoint at the size we're rendering.
+      function drawCheckbox(x, y, size) {
+        doc.setFillColor(46, 160, 67);
+        doc.roundedRect(x, y, size, size, 1.5, 1.5, 'F');
+        doc.setDrawColor(255, 255, 255);
+        doc.setLineWidth(1.4);
+        doc.line(x + size*0.22, y + size*0.55, x + size*0.45, y + size*0.78);
+        doc.line(x + size*0.45, y + size*0.78, x + size*0.82, y + size*0.25);
+      }
+      const CHECK_SIZE = 11;
+      const LINE_H = 18;
+      doc.setFont("helvetica","normal"); doc.setFontSize(11);
       checkedTasks.forEach(([, label]) => {
-        const text = "✓ " + label;  // ✓
-        const w = doc.getTextWidth(text);
-        if (cursorX > M && cursorX + w > W - M) {
-          y += LINE_H;
-          cursorX = M;
-          ensureRoom(LINE_H);
-        }
-        doc.text(text, cursorX, y);
-        cursorX += w + ITEM_GAP;
+        ensureRoom(LINE_H);
+        drawCheckbox(M, y - CHECK_SIZE + 2, CHECK_SIZE);
+        doc.setTextColor(...C_TEXT);
+        doc.text(label, M + CHECK_SIZE + 6, y);
+        y += LINE_H;
       });
-      y += LINE_H + 8;
+      y += 4;
       renderedAny = true;
     }
 

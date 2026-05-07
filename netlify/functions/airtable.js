@@ -121,8 +121,8 @@ const F = {
     batteryAge:"Battery Age",serviceStatus:"Service Status",notes:"Notes"
   },
   svc: {
-    serviceRecordId:"Service Record ID",generator:"Generator",customer:"Customer",job:"Job",
-    serviceDate:"Service Date",serviceType:"Service Type",technician:"Technician",
+    serviceRecordId:"Service Record ID",serviceNumber:"Service Number",generator:"Generator",customer:"Customer",job:"Job",
+    serviceDate:"Service Date",serviceType:"Service Type",technician:"Technician",technicianName:"Technician Name",
     servicePlanVisit:"Service Plan Visit",oilChanged:"Oil Changed",oilFilterChanged:"Oil Filter Changed",
     airFilterChanged:"Air Filter Changed",sparkPlugsChanged:"Spark Plugs Changed",
     batteryTested:"Battery Tested",batteryReplaced:"Battery Replaced",
@@ -1407,7 +1407,7 @@ async function handleGenerator(params) {
   const genAssetId = generator.assetId || "";
   const svcFilter = genAssetId ? `FIND("${genAssetId}", ARRAYJOIN({${F.svc.generator}}))` : `FALSE()`;
   const svcRecords = await fetchAll(TABLES.generatorService, { filter: svcFilter, sortField: F.svc.serviceDate, sortDir: "desc" });
-  const serviceRecords = svcRecords.map(sr => { const sf=sr.fields||{}; return { id:sr.id,serviceRecordId:g(sf,F.svc.serviceRecordId)||"",serviceDate:g(sf,F.svc.serviceDate)||"",serviceType:g(sf,F.svc.serviceType)||"",technician:g(sf,F.svc.technician)||"",servicePlanVisit:gBool(sf,F.svc.servicePlanVisit),oilChanged:gBool(sf,F.svc.oilChanged),oilFilterChanged:gBool(sf,F.svc.oilFilterChanged),airFilterChanged:gBool(sf,F.svc.airFilterChanged),sparkPlugsChanged:gBool(sf,F.svc.sparkPlugsChanged),batteryTested:gBool(sf,F.svc.batteryTested),batteryReplaced:gBool(sf,F.svc.batteryReplaced),loadTestPerformed:gBool(sf,F.svc.loadTestPerformed),firmwareChecked:gBool(sf,F.svc.firmwareChecked),exerciseChecked:gBool(sf,F.svc.exerciseChecked),troubleCodesFound:g(sf,F.svc.troubleCodesFound)||"",workNotes:g(sf,F.svc.workNotes)||"",partsUsed:g(sf,F.svc.partsUsed)||"",laborHours:g(sf,F.svc.laborHours)||"",generatorHours:g(sf,F.svc.generatorHours)||"" }; });
+  const serviceRecords = svcRecords.map(sr => { const sf=sr.fields||{}; return { id:sr.id,serviceRecordId:g(sf,F.svc.serviceRecordId)||"",serviceNumber:g(sf,F.svc.serviceNumber)||"",serviceDate:g(sf,F.svc.serviceDate)||"",serviceType:g(sf,F.svc.serviceType)||"",technician:(()=>{const v=sf[F.svc.technicianName];return Array.isArray(v)?(v[0]||""):(v||"");})(),servicePlanVisit:gBool(sf,F.svc.servicePlanVisit),oilChanged:gBool(sf,F.svc.oilChanged),oilFilterChanged:gBool(sf,F.svc.oilFilterChanged),airFilterChanged:gBool(sf,F.svc.airFilterChanged),sparkPlugsChanged:gBool(sf,F.svc.sparkPlugsChanged),batteryTested:gBool(sf,F.svc.batteryTested),batteryReplaced:gBool(sf,F.svc.batteryReplaced),loadTestPerformed:gBool(sf,F.svc.loadTestPerformed),firmwareChecked:gBool(sf,F.svc.firmwareChecked),exerciseChecked:gBool(sf,F.svc.exerciseChecked),troubleCodesFound:g(sf,F.svc.troubleCodesFound)||"",workNotes:g(sf,F.svc.workNotes)||"",partsUsed:g(sf,F.svc.partsUsed)||"",laborHours:g(sf,F.svc.laborHours)||"",generatorHours:g(sf,F.svc.generatorHours)||"" }; });
   return resp(200, { ok: true, generator, serviceRecords });
 }
 

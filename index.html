@@ -6423,7 +6423,8 @@
       // rehydrate from snapshot in loadInvoiceForEdit, so manual edits stick.
       let billToAddress = "";
       if (contractorCo) {
-        const lines = [`${contractorCo.name} - ${job.name || ""}`];
+        const lines = [contractorCo.name];
+        if (job.name) lines.push(job.name);
         if (contractorCo.billingAddress) {
           contractorCo.billingAddress
             .split(/\r?\n/)
@@ -7937,7 +7938,8 @@ rick@northeasternelec.com`
       // snapshot in loadEstimateForEdit, so manual edits stick.
       let billToAddress = "";
       if (contractorCo) {
-        const lines = [`${contractorCo.name} - ${job.name || ""}`];
+        const lines = [contractorCo.name];
+        if (job.name) lines.push(job.name);
         if (contractorCo.billingAddress) {
           contractorCo.billingAddress
             .split(/\r?\n/)

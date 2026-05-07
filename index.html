@@ -364,6 +364,53 @@
     .insp-pill.default        { background:var(--panel-2); border-color:var(--line-2); color:var(--muted); }
     .insp-type-pill { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; font-weight:700; background:var(--panel-3); color:var(--accent); margin-right:6px; }
 
+    /* Clickable variants for inline status editing on inspection rows */
+    .insp-pill-btn {
+      display: inline-flex; align-items: center; gap: 3px;
+      cursor: pointer;
+      padding: 3px 10px;
+      font-size: 11px; font-weight: 700;
+      border-radius: 999px;
+      border: 1px solid;
+      background: transparent;
+      font-family: inherit;
+      line-height: 1.4;
+      transition: opacity 120ms;
+    }
+    .insp-pill-btn:hover:not(:disabled) { filter: brightness(0.96); }
+    .insp-pill-btn:disabled { opacity: 0.5; cursor: wait; }
+
+    .insp-pill-btn.passed.active    { background:#dcfce7; border-color:#86efac; color:#166534; }
+    .insp-pill-btn.failed.active    { background:#fee2e2; border-color:#f87171; color:#991b1b; }
+    .insp-pill-btn.reinspect.active { background:#fef9c3; border-color:#fde047; color:#854d0e; }
+
+    .insp-pill-btn.passed.inactive    { border-color:#86efac; color:#166534; opacity: 0.55; }
+    .insp-pill-btn.failed.inactive    { border-color:#f87171; color:#991b1b; opacity: 0.55; }
+    .insp-pill-btn.reinspect.inactive { border-color:#fde047; color:#854d0e; opacity: 0.55; }
+
+    /* Inline notes textarea */
+    .insp-notes-edit {
+      width: 100%;
+      min-height: 38px;
+      padding: 6px 8px;
+      border: 1px solid var(--line-2);
+      border-radius: 6px;
+      font-family: inherit; font-size: 13px;
+      resize: vertical;
+      background: var(--panel);
+      color: inherit;
+      box-sizing: border-box;
+    }
+    .insp-notes-edit:focus { outline: none; border-color: #93c5fd; }
+    .insp-notes-edit.required-empty {
+      border-color: #f87171;
+      box-shadow: 0 0 0 2px rgba(248,113,113,0.25);
+    }
+
+    .insp-row-msg { font-size: 11px; margin-left: 4px; }
+    .insp-row-msg.ok   { color: #166534; }
+    .insp-row-msg.warn { color: #991b1b; }
+
     /* ── MAIN LAYOUT ── */
     .app-wrap { display: flex; height: calc(100vh - 61px); }
 
@@ -5093,21 +5140,140 @@
         return;
       }
       list.innerHTML = inspections.map(ins => `
-        <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:8px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px;">
-            <div>
-              <span class="insp-type-pill">${esc(ins.inspectionType || "—")}</span>
-              <span style="font-size:13px; font-weight:600; color:var(--text);">${esc(fmtDate(ins.date))}</span>
+        <div class="insp-row" data-insp-id="${esc(ins.id)}"
+             style="border:1px solid var(--line-2); border-radius:10px;
+                    padding:12px 14px; margin-bottom:8px; background:var(--panel);">
+          <div style="display:flex; justify-content:space-between; align-items:center;
+                      gap:10px; margin-bottom:8px; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <span class="insp-type-pill">${esc(ins.inspectionType || '—')}</span>
+              <span style="font-size:13px; color:var(--muted);">${fmtDate(ins.date) || '—'}</span>
             </div>
-            ${inspStatusPill(ins.status)}
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span style="font-size:11px; color:var(--muted);">Set status:</span>
+              <button type="button" class="insp-pill-btn passed ${ins.status === 'Passed' ? 'active' : 'inactive'}"
+                      data-action="set-insp-status" data-status="Passed">✓ Passed</button>
+              <button type="button" class="insp-pill-btn failed ${ins.status === 'Failed' ? 'active' : 'inactive'}"
+                      data-action="set-insp-status" data-status="Failed">✗ Failed</button>
+              <button type="button" class="insp-pill-btn reinspect ${ins.status === 'Re-Inspect Needed' ? 'active' : 'inactive'}"
+                      data-action="set-insp-status" data-status="Re-Inspect Needed">↻ Re-Inspect</button>
+              <span class="insp-row-msg" data-role="row-msg" style="display:none;"></span>
+            </div>
           </div>
-          ${ins.permitNumber ? `<div style="font-size:12px; color:var(--muted);">📄 Permit: ${esc(ins.permitNumber)}</div>` : ""}
-          ${ins.agencyPhone  ? `<div style="font-size:12px; color:var(--muted);">📞 ${esc(ins.agencyPhone)}</div>` : ""}
-          ${ins.notes        ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">📝 ${esc(ins.notes)}</div>` : ""}
+          ${ins.permitNumber ? `<div style="font-size:13px; color:var(--muted); margin-bottom:4px;">📄 Permit: ${esc(ins.permitNumber)}</div>` : ''}
+          ${ins.agencyPhone ? `<div style="font-size:13px; color:var(--muted); margin-bottom:4px;">📞 ${esc(ins.agencyPhone)}</div>` : ''}
+          <div style="margin-top:6px;">
+            <div style="font-size:11px; color:var(--muted); margin-bottom:3px;">
+              📝 Notes${(ins.status === 'Failed' || ins.status === 'Re-Inspect Needed') ? ' <span style="color:#991b1b;">(required)</span>' : ''}
+            </div>
+            <textarea class="insp-notes-edit" data-field="insp-notes"
+                      data-initial="${esc(ins.notes || '')}"
+                      placeholder="Add notes…">${esc(ins.notes || '')}</textarea>
+          </div>
         </div>`).join("");
+      wireInspectionRowHandlers();
     } catch(err) {
       list.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
     }
+  }
+
+  function wireInspectionRowHandlers() {
+    const list = document.getElementById('inspectionRecordsList');
+    if (!list || list._inspEditWired) return;
+    list._inspEditWired = true;
+
+    // Pill click — immediate PATCH (with notes-required gate)
+    list.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-action="set-insp-status"]');
+      if (!btn || btn.disabled) return;
+      e.preventDefault();
+
+      const row = btn.closest('.insp-row');
+      if (!row) return;
+      const inspId = row.dataset.inspId;
+      const newStatus = btn.dataset.status;
+      const textarea = row.querySelector('[data-field="insp-notes"]');
+      const notes = textarea ? textarea.value : '';
+      const msg = row.querySelector('[data-role="row-msg"]');
+      const requiresNotes = (newStatus === 'Failed' || newStatus === 'Re-Inspect Needed');
+
+      if (requiresNotes && !notes.trim()) {
+        if (textarea) {
+          textarea.classList.add('required-empty');
+          textarea.focus();
+        }
+        if (msg) {
+          msg.textContent = 'Notes required';
+          msg.className = 'insp-row-msg warn';
+          msg.style.display = '';
+          setTimeout(() => { msg.style.display = 'none'; }, 2500);
+        }
+        return;
+      }
+
+      const pillButtons = row.querySelectorAll('[data-action="set-insp-status"]');
+      pillButtons.forEach(b => b.disabled = true);
+
+      try {
+        const payload = { inspectionId: inspId, status: newStatus };
+        if (textarea && textarea.value !== textarea.dataset.initial) {
+          payload.notes = textarea.value;
+        }
+        await apiPost('updateInspection', payload);
+        if (msg) {
+          msg.textContent = '✓ Saved';
+          msg.className = 'insp-row-msg ok';
+          msg.style.display = '';
+        }
+        await loadInspections(state.selected?.id);
+      } catch (err) {
+        console.error('updateInspection failed', err);
+        if (msg) {
+          msg.textContent = '✗ Save failed';
+          msg.className = 'insp-row-msg warn';
+          msg.style.display = '';
+        }
+        pillButtons.forEach(b => b.disabled = false);
+      }
+    });
+
+    // Notes textarea — blur autosave
+    list.addEventListener('blur', async (e) => {
+      if (!e.target.matches('[data-field="insp-notes"]')) return;
+      const textarea = e.target;
+      const initial = textarea.dataset.initial || '';
+      if (textarea.value === initial) return;
+
+      const row = textarea.closest('.insp-row');
+      if (!row) return;
+      const inspId = row.dataset.inspId;
+      const msg = row.querySelector('[data-role="row-msg"]');
+
+      textarea.disabled = true;
+      try {
+        await apiPost('updateInspection', {
+          inspectionId: inspId,
+          notes: textarea.value
+        });
+        textarea.dataset.initial = textarea.value;
+        textarea.classList.remove('required-empty');
+        if (msg) {
+          msg.textContent = '✓ Saved';
+          msg.className = 'insp-row-msg ok';
+          msg.style.display = '';
+          setTimeout(() => { msg.style.display = 'none'; }, 2000);
+        }
+      } catch (err) {
+        console.error('notes save failed', err);
+        if (msg) {
+          msg.textContent = '✗ Save failed';
+          msg.className = 'insp-row-msg warn';
+          msg.style.display = '';
+        }
+      } finally {
+        textarea.disabled = false;
+      }
+    }, true);  // capture phase — blur doesn't bubble
   }
 
   async function handleSaveInspection() {

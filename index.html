@@ -419,6 +419,7 @@
 
     .filter-row select {
       flex: 1;
+      min-width: 0;
       background: var(--panel-2);
       border: 1px solid var(--line-2);
       border-radius: 8px;
@@ -3116,7 +3117,7 @@
       const hay = [j.name, j.po, j.address, j.status, j.type, j.contractor].join(" ").toLowerCase();
       const mq = !q || hay.includes(q);
       const ms = !st || (j.status||"").toLowerCase() === st;
-      const mc = !cId || j.billingCompanyId === cId;
+      const mc = !cId || j.contractorId === cId;
       return mq && ms && mc;
     });
 

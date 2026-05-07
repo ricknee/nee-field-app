@@ -35,7 +35,7 @@ const F = {
     type:                    "Job Type",
     address:                 "Job Address - Full",
     contractor:              "Contractor Name (Text)",
-    billingCompany:          "Billing Company",
+    contractorLink:          "Contractor",
     generatorInstalled:      "Generator Installed",
     powerCompanyName:        "Power Company – Name (lookup)",
     powerCompanyContact:     "Power Company – Primary Contact (lookup)",
@@ -1299,8 +1299,8 @@ function mapJob(r) {
   return {
     id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
     type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
-      billingCompanyId: (() => {
-        const v = f[F.job.billingCompany];
+      contractorId: (() => {
+        const v = f[F.job.contractorLink];
         if (Array.isArray(v) && v.length > 0) {
           return typeof v[0] === "string" ? v[0] : v[0]?.id || null;
         }

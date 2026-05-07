@@ -8117,10 +8117,12 @@ rick@northeasternelec.com`
 
     let evtTextY = y + evtBarH + 18;
     doc.setFont("helvetica","normal"); doc.setFontSize(10.5); doc.setTextColor(...C_TEXT);
-    evtRows.forEach(row => {
-      doc.setFont("helvetica","bold"); doc.text(row[0], M+12, evtTextY);
+    evtRows.forEach((row) => {
+      doc.setFont("helvetica","bold");
+      doc.text(row[0], M+12, evtTextY);
+      const labelW = doc.getTextWidth(row[0]);
       doc.setFont("helvetica","normal");
-      doc.text(String(row[1] || ""), M+12 + 90, evtTextY);
+      doc.text(String(row[1] || ""), M+12 + labelW + 8, evtTextY);
       evtTextY += 16;
     });
 

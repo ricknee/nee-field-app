@@ -96,11 +96,16 @@ const F = {
     allPipeReviewed:           "All Pipe Reviewed?",
     allExpensesReviewed:       "All Expenses Reviewed?",
     allLaborReviewed:          "All Labor Reviewed",
-    expectedRevenueAllStatus:          "Expected Revenue (All Status)",
+    // Filtered rollups: include only Status = Sent / Approved / Archived-
+    // Completed (Rejected excluded). Naming gotcha: in Airtable, the
+    // "Projected Estimated X (from Job Estimates)" fields are the UNFILTERED
+    // twins; "Estimated X Rollup (from Job Estimates)" / "Expected Revenue"
+    // are the FILTERED ones. Inverted from intuition — trust the names here.
+    expectedRevenueAllStatus:          "Expected Revenue",
     projectedEstimatedTotalCost:       "Projected Estimated Total Cost",
-    projectedEstimatedLaborHours:      "Projected Estimated Labor Hours (from Job Estimates)",
-    projectedEstimatedMaterialCost:    "Projected Estimated Material Cost (from Job Estimates)",
-    projectedEstimatedLaborCost:       "Projected Estimated Labor Cost (from Job Estimates)",
+    projectedEstimatedLaborHours:      "Estimated Labor Hours Rollup (from Job Estimates)",
+    projectedEstimatedMaterialCost:    "Estimated Material Cost Rollup (from Job Estimates)",
+    projectedEstimatedLaborCost:       "Estimated Labor Cost Rollup (from Job Estimates)",
     projectedGrossProfitDollar:        "Projected Gross Profit $",
     projectedGrossProfitPct:           "Projected Gross Profit %"
   },
@@ -1276,6 +1281,19 @@ async function handleLogin(body) {
 // path returns the same shape the list-and-state code expects.
 function mapJob(r) {
   const f = r.fields || {};
+  // Est. GP cards: read the filtered rollups (Status = Sent / Approved /
+  // Archived-Completed) and compute Total Cost / GP $ / GP % here in JS.
+  // The Airtable formula twins for those three derivatives sum unfiltered
+  // inputs, so we no longer read them. Inclusion is controlled by the
+  // Status filter on the upstream Job-table rollups.
+  const expectedRevenueAllStatus       = gNum(f, F.job.expectedRevenueAllStatus);
+  const projectedEstimatedMaterialCost = gNum(f, F.job.projectedEstimatedMaterialCost);
+  const projectedEstimatedLaborCost    = gNum(f, F.job.projectedEstimatedLaborCost);
+  const projectedEstimatedTotalCost = projectedEstimatedMaterialCost + projectedEstimatedLaborCost;
+  const projectedGrossProfitDollar  = expectedRevenueAllStatus - projectedEstimatedTotalCost;
+  const projectedGrossProfitPct     = expectedRevenueAllStatus > 0
+    ? (projectedGrossProfitDollar / expectedRevenueAllStatus)
+    : null;
   return {
     id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
     type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
@@ -1337,13 +1355,13 @@ function mapJob(r) {
       grossProfitFinalPct:gNum(f,F.job.grossProfitFinalPct),allMaterialsReviewed:gFormulaBool(f,F.job.allMaterialsReviewed),
       allWireReviewed:gFormulaBool(f,F.job.allWireReviewed),allPipeReviewed:gFormulaBool(f,F.job.allPipeReviewed),
       allExpensesReviewed:gFormulaBool(f,F.job.allExpensesReviewed),allLaborReviewed:gFormulaBool(f,F.job.allLaborReviewed),
-      expectedRevenueAllStatus:gNum(f,F.job.expectedRevenueAllStatus),
-      projectedEstimatedTotalCost:gNum(f,F.job.projectedEstimatedTotalCost),
+      expectedRevenueAllStatus,
+      projectedEstimatedTotalCost,
       projectedEstimatedLaborHours:gNum(f,F.job.projectedEstimatedLaborHours),
-      projectedEstimatedMaterialCost:gNum(f,F.job.projectedEstimatedMaterialCost),
-      projectedEstimatedLaborCost:gNum(f,F.job.projectedEstimatedLaborCost),
-      projectedGrossProfitDollar:gNum(f,F.job.projectedGrossProfitDollar),
-      projectedGrossProfitPct:gNum(f,F.job.projectedGrossProfitPct)
+      projectedEstimatedMaterialCost,
+      projectedEstimatedLaborCost,
+      projectedGrossProfitDollar,
+      projectedGrossProfitPct
   };
 }
 

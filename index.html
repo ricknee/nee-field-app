@@ -3664,7 +3664,7 @@
     const grid = $("estGpGrid");
     grid.innerHTML = `
       ${infoBox("Job Name", val(job.name))}
-      ${infoBox("Expected Revenue (All Status)", fmtCurrency(job.expectedRevenueAllStatus))}
+      ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus))}
       ${infoBox("Projected Est. Total Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
       ${infoBox("Proj. Est. Labor Hours", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—")}
       ${infoBox("Proj. Est. Material Cost", fmtCurrency(job.projectedEstimatedMaterialCost))}

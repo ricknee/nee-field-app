@@ -9500,8 +9500,9 @@ rick@northeasternelec.com`
       `<option value="">— Pick contact —</option>`,
       `<option value="__new__">+ Add new contact</option>`,
       ..._npContacts.map(ct => {
-        const display = `${(ct.firstName||"").trim()} ${(ct.lastName||"").trim()}`.trim()
-                        || ct.primaryEmail || ct.primaryPhone || "(unnamed)";
+        const name = `${(ct.firstName||"").trim()} ${(ct.lastName||"").trim()}`.trim()
+                     || ct.primaryEmail || ct.primaryPhone || "(unnamed)";
+        const display = ct.role ? `${name} (${ct.role})` : name;
         return `<option value="${esc(ct.id)}">${esc(display)}</option>`;
       })
     ];

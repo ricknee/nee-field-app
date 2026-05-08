@@ -2153,26 +2153,40 @@ async function handleListContractors() {
 }
 
 // Lists Contacts linked to a given Company (by Company record ID), used by
-// the New Project modal's Contact picker. Treats unchecked Active as active
-// (matches handleVendors `r.fields["Active"] !== false` semantics) so legacy
-// rows without the box explicitly checked still appear.
+// the New Project modal's Contact picker. Filter strategy: server-side on
+// Active (cheap), client-side on the Company link. We can NOT filter the
+// Company link in the formula — ARRAYJOIN({Company}) resolves linked
+// records to their primary-field VALUES, not record IDs, so a FIND on a
+// recXXX id always missed (every Company returned an empty contact list
+// in the first cut). The raw {Company} field on each fetched record IS an
+// array of record IDs, so a JS .includes check is the right shape.
+// Role is also returned (multipleSelects → joined string) for display.
 async function handleListContactsByCompany(params) {
   const companyId = String(params?.companyId || "").trim();
   if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
 
   const records = await fetchAll(TABLES.contacts, {
-    filter: `AND(FIND("${escapeFormulaString(companyId)}", ARRAYJOIN({${F.contact.company}})), {${F.contact.active}}!=FALSE())`
+    filter: `{${F.contact.active}}!=FALSE()`
   });
 
   const contacts = records
-    .filter(r => r.fields["Active"] !== false)
-    .map(r => ({
-      id:           r.id,
-      firstName:    r.fields[F.contact.firstName]    || "",
-      lastName:     r.fields[F.contact.lastName]     || "",
-      primaryPhone: r.fields[F.contact.primaryPhone] || "",
-      primaryEmail: r.fields[F.contact.primaryEmail] || ""
-    }))
+    .filter(r => {
+      const links = r.fields[F.contact.company];
+      return Array.isArray(links) && links.includes(companyId);
+    })
+    .map(r => {
+      // Role is multipleSelects — join for display.
+      const roleVal = r.fields[F.contact.role];
+      const role = Array.isArray(roleVal) ? roleVal.join(", ") : (roleVal || "");
+      return {
+        id:           r.id,
+        firstName:    r.fields[F.contact.firstName]    || "",
+        lastName:     r.fields[F.contact.lastName]     || "",
+        primaryPhone: r.fields[F.contact.primaryPhone] || "",
+        primaryEmail: r.fields[F.contact.primaryEmail] || "",
+        role
+      };
+    })
     .sort((a, b) => {
       const ln = a.lastName.toLowerCase().localeCompare(b.lastName.toLowerCase());
       if (ln !== 0) return ln;

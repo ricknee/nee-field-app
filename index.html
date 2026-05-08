@@ -9586,6 +9586,22 @@ rick@northeasternelec.com`
       $("npCustLast").value  = ct.lastName     || "";
       $("npPhone").value     = ct.primaryPhone || "";
       $("npEmail").value     = ct.primaryEmail || "";
+
+      // Customer-role address fill: only when role explicitly includes
+      // "Customer" AND the contact has at least one address line on
+      // file. Other roles (Owner, Foreman, Super, etc.) leave the
+      // typed/auto-filled address alone — they're typically the GC's
+      // people, not the homeowner whose address is the job site.
+      const roleParts = (ct.role || "").toLowerCase()
+                                       .split(/,\s*/)
+                                       .map(s => s.trim());
+      const isCustomer = roleParts.includes("customer");
+      if (isCustomer && (ct.street || ct.city || ct.state || ct.zip)) {
+        $("npStreet").value = ct.street || "";
+        $("npCity").value   = ct.city   || "";
+        $("npState").value  = ct.state  || "";
+        $("npZip").value    = ct.zip    || "";
+      }
     };
   };
 

@@ -161,7 +161,11 @@ const F = {
     primaryEmail: "Primary Email",
     company:      "Company",
     active:       "Active",
-    role:         "Role"
+    role:         "Role",
+    street:       "Street",
+    city:         "City",
+    state:        "State",
+    zip:          "Zip"
   }
 };
 
@@ -2188,7 +2192,11 @@ async function handleListContactsByCompany(params) {
         lastName:     r.fields[F.contact.lastName]     || "",
         primaryPhone: r.fields[F.contact.primaryPhone] || "",
         primaryEmail: r.fields[F.contact.primaryEmail] || "",
-        role
+        role,
+        street:       r.fields[F.contact.street]       || "",
+        city:         r.fields[F.contact.city]         || "",
+        state:        r.fields[F.contact.state]        || "",
+        zip:          r.fields[F.contact.zip]          || ""
       };
     })
     .sort((a, b) => {

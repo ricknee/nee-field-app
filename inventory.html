@@ -3604,17 +3604,23 @@ async function lookupStock(itemId) {
 
       if (isAdmin) {
         var uomLabel = isWire ? 'lbs' : (stockItem.uom || 'units');
+        // Find the location's record ID so the create path (no slId yet) can
+        // POST a new Stock Level on first save. sortedLocs is derived from
+        // allLocations, so the lookup will hit unless data is mid-reload.
+        var loc = allLocations.find(function(L){ return L.name === locName; });
+        var locId = loc ? loc.id : "";
+        var safeItemName = (stockItem.name || "").replace(/"/g, "&quot;");
+        var safeLocName  = locName.replace(/"/g, "&quot;");
         html += '<div style="display:flex;align-items:center;gap:6px;margin-top:6px;">';
         html += '<span style="font-size:11px;color:var(--muted);">Min:</span>';
-        if (slId) {
-          html += '<input type="number" min="0" step="1" value="' + reorder + '" ';
-          html += 'data-slid="' + slId + '" onchange="saveReorderPoint(this)" ';
-          html += 'style="width:64px;background:var(--navy-mid);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:3px 7px;outline:none;" />';
-          html += '<span style="font-size:11px;color:var(--muted);">' + uomLabel + '</span>';
-          html += '<span style="font-size:10px;color:var(--muted);font-style:italic;">(0=none)</span>';
-        } else {
-          html += '<span style="font-size:11px;color:var(--muted);font-style:italic;">Receive item to enable</span>';
-        }
+        html += '<input type="number" min="0" step="1" value="' + reorder + '" ';
+        html += 'data-itemid="' + stockItem.id + '" data-itemname="' + safeItemName + '" ';
+        html += 'data-locid="' + locId + '" data-locname="' + safeLocName + '" ';
+        if (slId) html += 'data-slid="' + slId + '" ';
+        html += 'onchange="saveOrCreateReorderPoint(this)" ';
+        html += 'style="width:64px;background:var(--navy-mid);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:3px 7px;outline:none;" />';
+        html += '<span style="font-size:11px;color:var(--muted);">' + uomLabel + '</span>';
+        html += '<span style="font-size:10px;color:var(--muted);font-style:italic;">(0=none)</span>';
         html += '</div>';
       } else if (reorder > 0) {
         html += '<div style="font-size:11px;color:var(--muted);margin-top:3px;">Min: ' + fmtQty(reorder) + '</div>';
@@ -3931,13 +3937,40 @@ async function loadReorderAlerts() {
 }
 
 
-function saveReorderPoint(input) {
-  var val  = parseInt(input.value);
+function saveOrCreateReorderPoint(input) {
+  var val = parseInt(input.value);
   if (isNaN(val) || val < 0) { showToast("Invalid minimum — use 0 or higher", true); return; }
   var slid = input.dataset.slid;
-  if (!slid) return;
   input.style.borderColor = "var(--gold)";
-  apiPost({ action: "updateReorderPoint", stockLevelId: slid, reorderPoint: val })
+
+  var promise;
+  if (slid) {
+    promise = apiPost({ action: "updateReorderPoint", stockLevelId: slid, reorderPoint: val });
+  } else {
+    var itemId   = input.dataset.itemid;
+    var itemName = input.dataset.itemname;
+    var locId    = input.dataset.locid;
+    var locName  = input.dataset.locname;
+    if (!itemId || !locId) {
+      input.style.borderColor = "var(--red)";
+      showToast("Save failed: missing item or location reference", true);
+      return;
+    }
+    promise = apiPost({
+      action:       "createStockLevel",
+      itemId:       itemId,
+      itemName:     itemName,
+      locationId:   locId,
+      locationName: locName,
+      reorderPoint: val
+    }).then(function(d) {
+      // Promote this row to the update path for any subsequent edits.
+      if (d && d.recordId) input.dataset.slid = d.recordId;
+      return d;
+    });
+  }
+
+  promise
     .then(function() {
       input.style.borderColor = "var(--green)";
       showToast("✓ Minimum updated to " + val);

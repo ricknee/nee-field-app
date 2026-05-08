@@ -1408,6 +1408,16 @@
     .sch-add-btn { background: var(--accent); color: white; border: none; border-radius: 7px; padding: 7px 14px; font-size: 13px; font-weight: 700; cursor: pointer; }
     .sch-add-btn:hover { filter: brightness(1.1); }
 
+    /* Toolbar visibility split: month nav on desktop, 2-wk nav on mobile.
+       The buttons live in a flex container, but inline-block is preserved
+       so display:none toggling works the same as in non-flex contexts. */
+    .sch-desktop-only { display: inline-block; }
+    .sch-mobile-only  { display: none; }
+    @media (max-width: 768px) {
+      .sch-desktop-only { display: none; }
+      .sch-mobile-only  { display: inline-block; }
+    }
+
     /* Calendar grid: desktop = 7 days across, mobile = stacked */
     .sch-grid {
       display: grid;
@@ -1445,6 +1455,13 @@
       background: rgba(220, 38, 38, 0.12);
       border-color: rgba(220, 38, 38, 0.22);
     }
+    /* Leading/trailing days from neighboring months in the desktop month
+       view — gray them out so the user's eye lands on the focal month.
+       Existing today/weekend/holiday tints layer on top via opacity, which
+       is fine: a today-cell that's also other-month still reads as
+       "today, but next month." */
+    .sch-day.other-month { opacity: 0.4; }
+    .sch-day.other-month .sch-day-num { color: #999; }
     .sch-day-header { display: flex; justify-content: space-between; align-items: baseline; }
     .sch-day-name { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: 0.4px; }
     .sch-day-num { font-size: 16px; font-weight: 700; color: var(--text); }
@@ -10257,6 +10274,24 @@ rick@northeasternelec.com`
   }
   window.openMySchedule = openMySchedule;
 
+  // For a given first-of-month, returns the number of days needed to
+  // render a full Sun–Sat calendar grid that contains the entire month
+  // (including leading days from prev month and trailing days from next
+  // month). Always lands on a multiple of 7 (a whole number of weeks).
+  function schDayCountForMonth(firstOfMonth) {
+    const lastOfMonth = new Date(
+      firstOfMonth.getFullYear(),
+      firstOfMonth.getMonth() + 1,
+      0
+    );
+    const sunStart = schSundayOf(firstOfMonth);
+    const lastDow = lastOfMonth.getDay();
+    const daysToSat = lastDow === 6 ? 0 : 6 - lastDow;
+    const satEnd = new Date(lastOfMonth);
+    satEnd.setDate(satEnd.getDate() + daysToSat);
+    return Math.round((satEnd - sunStart) / 86400000) + 1;
+  }
+
   function schDoOpen(headerText) {
     $("scheduleModal").style.display = "flex";
     pushBackEntry("schedule", () => { $("scheduleModal").style.display = "none"; });
@@ -10266,14 +10301,19 @@ rick@northeasternelec.com`
     // Hide admin affordances in read-only mode
     const addBtn = $("schAddBtn");
     if (addBtn) addBtn.style.display = schReadOnly ? "none" : "";
-    // On desktop the calendar lays out as a 7-column grid, so we anchor the
-    // start to Sunday for a clean Sun-Sat layout. On mobile (where the grid
-    // collapses to one day per row), there's no visual benefit to leading
-    // with past days — start with today instead so the user lands on
-    // current/upcoming days, not last weekend.
-    schRangeStart = window.matchMedia("(max-width: 768px)").matches
-      ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())
-      : schSundayOf(new Date());
+    // Desktop renders a full Sun–Sat month grid (35–42 cells). Mobile
+    // collapses the grid to one day per row, so a 14-day list anchored
+    // at today is more useful than a 5-week month view. Always re-set
+    // schDayCount on each open in case a prior session toggled it.
+    if (window.matchMedia("(max-width: 768px)").matches) {
+      schRangeStart = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+      schDayCount   = 14;
+    } else {
+      const today = new Date();
+      const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      schRangeStart = schSundayOf(firstOfMonth);
+      schDayCount   = schDayCountForMonth(firstOfMonth);
+    }
     schEditingId = null;
     schSelectedCrew = new Set();
     schSelectedDate = null;
@@ -10587,9 +10627,27 @@ rick@northeasternelec.com`
       d.setDate(d.getDate() + i);
       days.push(d);
     }
-    // Range label
-    const fmt = d => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    $("schRangeLabel").textContent = `${fmt(days[0])} – ${fmt(days[days.length - 1])}, ${days[days.length - 1].getFullYear()}`;
+    // Mode + displayed month detection. Desktop shows a full calendar
+    // month (with neighbor-month spillover grayed out); the "displayed
+    // month" is whatever month covers the bulk of the grid, computed
+    // from (schRangeStart + 6 days) — the first Sun–Sat row always
+    // contains the 1st of the focal month.
+    const isDesktop = window.matchMedia("(min-width: 769px)").matches;
+    let displayedMonth = null;
+    if (isDesktop) {
+      const ref = new Date(schRangeStart);
+      ref.setDate(ref.getDate() + 6);
+      displayedMonth = { y: ref.getFullYear(), m: ref.getMonth() };
+    }
+    // Range label: month-name on desktop, date-range on mobile.
+    if (isDesktop) {
+      const label = new Date(displayedMonth.y, displayedMonth.m, 1)
+        .toLocaleDateString("en-US", { month: "long", year: "numeric" });
+      $("schRangeLabel").textContent = label;
+    } else {
+      const fmt = d => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      $("schRangeLabel").textContent = `${fmt(days[0])} – ${fmt(days[days.length - 1])}, ${days[days.length - 1].getFullYear()}`;
+    }
 
     const today = schYMD(new Date());
     const todayDt = schParseYMD(today);
@@ -10605,6 +10663,13 @@ rick@northeasternelec.com`
       const dow       = d.getDay();
       const weekend   = (dow === 0 || dow === 6);
       const isPast    = d < todayDt;
+      // Leading/trailing spillover from neighbor months gets dimmed via
+      // the .other-month class. Mobile leaves displayedMonth null so the
+      // flag is always false there — the 14-day list doesn't need the
+      // gray-out treatment.
+      const isOtherMonth = displayedMonth &&
+        (d.getFullYear() !== displayedMonth.y ||
+         d.getMonth()    !== displayedMonth.m);
       // Holiday markers: only render the deeper tint + faux-entry on weekday
       // holidays. Weekend holidays (e.g. Christmas 2027) get the regular
       // weekend tint and no faux entry — the day is implicitly off, no need
@@ -10663,7 +10728,7 @@ rick@northeasternelec.com`
            </div>`
         : "";
       return `
-        <div class="sch-day ${isToday ? "today" : ""} ${weekend ? "weekend" : ""} ${isWeekdayHoliday ? "sch-day-holiday" : ""}"
+        <div class="sch-day ${isToday ? "today" : ""} ${weekend ? "weekend" : ""} ${isWeekdayHoliday ? "sch-day-holiday" : ""} ${isOtherMonth ? "other-month" : ""}"
              onclick="schShowDayDetail('${ymd}')" data-ymd="${ymd}">
           <div class="sch-day-header">
             <span class="sch-day-name">${dowName}</span>
@@ -10968,10 +11033,35 @@ rick@northeasternelec.com`
     schEditingId = null;
     loadScheduleData();
   };
+  window.schShiftMonth = function(delta) {
+    // Displayed month = month of (schRangeStart + 6 days). The first
+    // calendar row spans Sun–Sat, so the 1st of the month is guaranteed
+    // to lie within those 7 days regardless of where the leading
+    // gray-out days come from.
+    const ref = new Date(schRangeStart);
+    ref.setDate(ref.getDate() + 6);
+    const newFirstOfMonth = new Date(
+      ref.getFullYear(),
+      ref.getMonth() + delta,
+      1
+    );
+    schRangeStart = schSundayOf(newFirstOfMonth);
+    schDayCount   = schDayCountForMonth(newFirstOfMonth);
+    $("schEditPanel").style.display = "none";
+    $("schDayDetail").style.display = "none";
+    schEditingId = null;
+    loadScheduleData();
+  };
   window.schGoToday = function() {
-    schRangeStart = window.matchMedia("(max-width: 768px)").matches
-      ? new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())
-      : schSundayOf(new Date());
+    if (window.matchMedia("(max-width: 768px)").matches) {
+      schRangeStart = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+      schDayCount   = 14;
+    } else {
+      const today = new Date();
+      const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      schRangeStart = schSundayOf(firstOfMonth);
+      schDayCount   = schDayCountForMonth(firstOfMonth);
+    }
     $("schEditPanel").style.display = "none";
     $("schDayDetail").style.display = "none";
     loadScheduleData();
@@ -13200,10 +13290,12 @@ rick@northeasternelec.com`
     </div>
     <div class="payroll-modal-body">
       <div class="sch-toolbar">
-        <button class="sch-nav-btn" onclick="schShiftRange(-14)">← Prev 2 wks</button>
+        <button class="sch-nav-btn sch-mobile-only" onclick="schShiftRange(-14)">← Prev 2 wks</button>
+        <button class="sch-nav-btn sch-desktop-only" onclick="schShiftMonth(-1)">← Prev month</button>
         <button class="sch-nav-btn" onclick="schGoToday()">Today</button>
         <span class="sch-range-label" id="schRangeLabel">—</span>
-        <button class="sch-nav-btn" onclick="schShiftRange(14)">Next 2 wks →</button>
+        <button class="sch-nav-btn sch-mobile-only" onclick="schShiftRange(14)">Next 2 wks →</button>
+        <button class="sch-nav-btn sch-desktop-only" onclick="schShiftMonth(1)">Next month →</button>
         <button class="sch-add-btn" onclick="schOpenNew()" id="schAddBtn">+ New Entry</button>
       </div>
 

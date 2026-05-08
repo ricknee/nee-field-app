@@ -2153,26 +2153,30 @@ async function handleListContractors() {
 }
 
 // Lists Contacts linked to a given Company (by Company record ID), used by
-// the New Project modal's Contact picker. Filter strategy: server-side on
-// Active (cheap), client-side on the Company link. We can NOT filter the
-// Company link in the formula — ARRAYJOIN({Company}) resolves linked
-// records to their primary-field VALUES, not record IDs, so a FIND on a
-// recXXX id always missed (every Company returned an empty contact list
-// in the first cut). The raw {Company} field on each fetched record IS an
-// array of record IDs, so a JS .includes check is the right shape.
+// the New Project modal's Contact picker. ALL filtering is client-side:
+//   - Company link: filterByFormula can't match against linked-record
+//     IDs (ARRAYJOIN resolves to primary-field values), but the raw
+//     {Company} field on each fetched record IS the recXXX-id array,
+//     so .includes(companyId) is the right shape.
+//   - Active: a server-side `{Active}!=FALSE()` filter wrongly drops
+//     records where the box is unchecked — in Airtable formula land,
+//     blank = 0 = FALSE(), so only records EXPLICITLY checked pass.
+//     Legacy Contacts created before Active was added have a blank
+//     value and were silently filtered out. Use the same idiom as
+//     handleVendors (`r.fields[Active] !== false`) which treats blank
+//     as "included" — only an explicitly unchecked box excludes.
 // Role is also returned (multipleSelects → joined string) for display.
 async function handleListContactsByCompany(params) {
   const companyId = String(params?.companyId || "").trim();
   if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
 
-  const records = await fetchAll(TABLES.contacts, {
-    filter: `{${F.contact.active}}!=FALSE()`
-  });
+  const records = await fetchAll(TABLES.contacts, {});
 
   const contacts = records
     .filter(r => {
       const links = r.fields[F.contact.company];
-      return Array.isArray(links) && links.includes(companyId);
+      if (!Array.isArray(links) || !links.includes(companyId)) return false;
+      return r.fields[F.contact.active] !== false;
     })
     .map(r => {
       // Role is multipleSelects — join for display.

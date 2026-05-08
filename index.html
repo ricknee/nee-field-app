@@ -9489,7 +9489,7 @@ rick@northeasternelec.com`
     }
 
     try {
-      const res = await apiGet("listContactsByCompany?companyId=" + encodeURIComponent(contractorId));
+      const res = await apiGet("listContactsByCompany", { companyId: contractorId });
       _npContacts = res.contacts || [];
     } catch (e) {
       console.error("listContactsByCompany failed", e);

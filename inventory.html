@@ -5240,6 +5240,24 @@ function renderEstimateForm() {
   }
 }
 
+// Render-time sort for line items: Category (A-Z, case-insensitive) then
+// itemName (A-Z, case-insensitive, numeric-aware). Items with no Category
+// sort to the bottom. Used at every line-item render site — never on the
+// underlying arrays consumed by save logic.
+function sortLineItemsByCategory(a, b) {
+  var catA = (a && a.category ? String(a.category).trim() : "");
+  var catB = (b && b.category ? String(b.category).trim() : "");
+  if (!catA && catB) return 1;
+  if (catA && !catB) return -1;
+  if (catA !== catB) {
+    var c = catA.localeCompare(catB, undefined, { sensitivity: "base", numeric: true });
+    if (c !== 0) return c;
+  }
+  var nameA = (a && a.itemName ? String(a.itemName) : "");
+  var nameB = (b && b.itemName ? String(b.itemName) : "");
+  return nameA.localeCompare(nameB, undefined, { sensitivity: "base", numeric: true });
+}
+
 function renderEstimateLines() {
   var e = estimateState.current;
   var lines = e.lines || [];
@@ -5250,7 +5268,15 @@ function renderEstimateLines() {
   var itemMap = {};
   allItems.forEach(function(i){ itemMap[i.id] = i; });
 
-  var rowsHtml = lines.length ? lines.map(function(l, idx) {
+  // Render-time sort: preserve original idx so input handlers map back to
+  // the right slot in e.lines (which save logic reads unsorted).
+  var sortedPairs = lines
+    .map(function(l, idx) { return { l: l, idx: idx }; })
+    .sort(function(a, b) { return sortLineItemsByCategory(a.l, b.l); });
+
+  var rowsHtml = sortedPairs.length ? sortedPairs.map(function(pair) {
+    var l = pair.l;
+    var idx = pair.idx;
     var isMisc = l.isMisc || !l.itemId;
     var nameHtml = isMisc
       ? '<input type="text" class="field-inp" id="estl-desc-' + idx + '" value="' + (l.description || "").replace(/"/g, "&quot;") +
@@ -6726,7 +6752,7 @@ function downloadEstimatePDF() {
     doc.setFontSize(9);
 
     var subtotal = 0;
-    (e.lines || []).forEach(function(l, idx) {
+    (e.lines || []).slice().sort(sortLineItemsByCategory).forEach(function(l, idx) {
       var qty   = Number(l.qty) || 0;
       var cost  = Number(l.unitCost) || 0;
       var total = qty * cost;
@@ -6917,6 +6943,7 @@ async function buildOrderWorkingList(estimate) {
           itemId:      "",
           itemName:    l.description || "Misc",
           isMisc:      true,
+          category:    l.category || "",
           description: l.description || "",
           estQty:      Number(l.qty) || 0,
           shop1:       0,
@@ -6940,6 +6967,7 @@ async function buildOrderWorkingList(estimate) {
         itemId:      l.itemId,
         itemName:    l.itemName || "Item",
         isMisc:      false,
+        category:    l.category || "",
         description: "",
         estQty:      estQty,
         shop1:       shop1,
@@ -7007,6 +7035,13 @@ function renderOrderBuild() {
       else if (it.shortfall > 0) needsOrder.push({ it: it, idx: idx });
       else inStock.push({ it: it, idx: idx });
     });
+
+    // Render-time sort within each section: Category then itemName.
+    // orderState.buildItems is NOT mutated — original idx is preserved.
+    var byCat = function(a, b) { return sortLineItemsByCategory(a.it, b.it); };
+    needsOrder.sort(byCat);
+    inStock.sort(byCat);
+    miscItems.sort(byCat);
 
     if (needsOrder.length) {
       content += sectionHtml("Items needing order", "var(--gold)", needsOrder, true);
@@ -7148,7 +7183,7 @@ async function saveOrderAndGeneratePDF() {
       vendor:    orderState.buildVendor || "",
       createdBy: currentUser ? currentUser.name : "",
       lines:     included.map(function(it) {
-        return { itemName: it.itemName, qty: it.orderQty, isBox: !!it.isBox };
+        return { itemName: it.itemName, qty: it.orderQty, isBox: !!it.isBox, category: it.category || "" };
       })
     });
 
@@ -7309,8 +7344,9 @@ function renderOrderDetail() {
       '<button onclick="saveOrderVendor()" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:0 16px;cursor:pointer;font-size:13px;">Save</button>' +
     '</div>';
 
-  // Lines list (read-only)
-  var lines = o.lines || [];
+  // Lines list (read-only) — sorted by Category then itemName at render time.
+  // o.lines is not mutated; this is a display-only copy.
+  var lines = (o.lines || []).slice().sort(sortLineItemsByCategory);
   var linesHtml = lines.length
     ? '<div style="display:flex;flex-direction:column;gap:6px;">' +
         lines.map(function(l) {
@@ -7408,7 +7444,7 @@ function redownloadOrderPDF() {
     vendor:    currentVendor,
     createdBy: o.createdBy,
     lines:     (o.lines || []).map(function(l) {
-      return { itemName: l.itemName || l.description || "Item", qty: l.qty, isBox: !!l.isBox };
+      return { itemName: l.itemName || l.description || "Item", qty: l.qty, isBox: !!l.isBox, category: l.category || "" };
     })
   });
 }
@@ -8040,7 +8076,7 @@ function generateOrderPDF(order) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
 
-    order.lines.forEach(function(l, idx) {
+    order.lines.slice().sort(sortLineItemsByCategory).forEach(function(l, idx) {
       var rowH = 8;
       y += rowH;
 

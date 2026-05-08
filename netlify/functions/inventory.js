@@ -1360,7 +1360,8 @@ async function handleEstimateGet(params) {
       itemMap[r.id] = {
         name: r.fields["Item Name"] || r.id,
         uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || "",
-        cost: r.fields["Default Unit Cost"] || 0
+        cost: r.fields["Default Unit Cost"] || 0,
+        cat:  r.fields["Category"]?.name || r.fields["Category"] || ""
       };
     });
 
@@ -1379,6 +1380,7 @@ async function handleEstimateGet(params) {
           itemId:   itemId,
           itemName: itemData.name || (f["Description"] || ""),
           uom:      itemData.uom || "",
+          category: itemData.cat || "",
           isMisc:   !itemId,
           description: f["Description"] || "",
           qty:      f["Quantity"] || 0,
@@ -2298,7 +2300,8 @@ async function handleOrderGet(params) {
     itemRecords.forEach(r => {
       itemMap[r.id] = {
         name: r.fields["Item Name"] || r.id,
-        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || ""
+        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || "",
+        cat:  r.fields["Category"]?.name || r.fields["Category"] || ""
       };
     });
 
@@ -2327,6 +2330,7 @@ async function handleOrderGet(params) {
           itemId:      itemId,
           itemName:    itemData.name || rawDesc || "",
           uom:         itemData.uom || "",
+          category:    itemData.cat || "",
           description: rawDesc,
           qty:         f["Quantity Ordered"] || 0,
           isMisc:      !itemId,

@@ -1134,6 +1134,9 @@ async function handleDelete(body) {
   return resp(200, { ok: true, deleted: txId });
 }
 
+// Stock Levels table fields
+const F_SL_REORDER_POINT = "fldy08kLJ1YH7lMVG";
+
 // ── STOCK LEVELS BY ITEM ──────────────────────────────────
 async function handleStockLevels(params) {
   const { itemId, itemName } = params || {};
@@ -1280,7 +1283,7 @@ async function handleUpdateReorderPoint(body) {
   if (reorderPoint === undefined) return resp(400, { ok: false, error: "Missing reorderPoint." });
   await atFetch(API_ROOT_INV, `${encodeURIComponent("Stock Levels")}/${stockLevelId}`, {
     method: "PATCH",
-    body: JSON.stringify({ fields: { "fldYS6soPXlHkxI1V": Number(reorderPoint) } })
+    body: JSON.stringify({ fields: { [F_SL_REORDER_POINT]: Number(reorderPoint) } })
   });
   return resp(200, { ok: true });
 }

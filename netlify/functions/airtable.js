@@ -16,7 +16,8 @@ const TABLES = {
   timeEntries:         "Time Entries",
   scissorLifts:        "Scissor Lifts",
   scheduleEntries:     "Schedule Entries",
-  inspectionAgencies:  "tblZrG9V7C3lVsXNT"
+  inspectionAgencies:  "tblZrG9V7C3lVsXNT",
+  contacts:            "tbl7vZpySDNfZX9Sq"
 };
 
 const F = {
@@ -152,6 +153,15 @@ const F = {
     voidedReason:        "Voided Reason",
     notes:               "Notes",
     createdFromTemplate: "Created From Template"
+  },
+  contact: {
+    firstName:    "First Name",
+    lastName:     "Last Name",
+    primaryPhone: "Primary Phone",
+    primaryEmail: "Primary Email",
+    company:      "Company",
+    active:       "Active",
+    role:         "Role"
   }
 };
 
@@ -2132,9 +2142,85 @@ async function handleListContractors() {
     sortDir: "asc"
   });
   const contractors = records
-    .map(r => ({ id: r.id, name: r.fields["Company Name"] || "" }))
+    .map(r => ({
+      id:           r.id,
+      name:         r.fields["Company Name"] || "",
+      primaryPhone: r.fields["Primary Phone"] || "",
+      primaryEmail: r.fields["Primary Email"] || ""
+    }))
     .filter(c => c.name);
   return resp(200, { ok: true, contractors }, { "Cache-Control": "public, max-age=60" });
+}
+
+// Lists Contacts linked to a given Company (by Company record ID), used by
+// the New Project modal's Contact picker. Treats unchecked Active as active
+// (matches handleVendors `r.fields["Active"] !== false` semantics) so legacy
+// rows without the box explicitly checked still appear.
+async function handleListContactsByCompany(params) {
+  const companyId = String(params?.companyId || "").trim();
+  if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
+
+  const records = await fetchAll(TABLES.contacts, {
+    filter: `AND(FIND("${escapeFormulaString(companyId)}", ARRAYJOIN({${F.contact.company}})), {${F.contact.active}}!=FALSE())`
+  });
+
+  const contacts = records
+    .filter(r => r.fields["Active"] !== false)
+    .map(r => ({
+      id:           r.id,
+      firstName:    r.fields[F.contact.firstName]    || "",
+      lastName:     r.fields[F.contact.lastName]     || "",
+      primaryPhone: r.fields[F.contact.primaryPhone] || "",
+      primaryEmail: r.fields[F.contact.primaryEmail] || ""
+    }))
+    .sort((a, b) => {
+      const ln = a.lastName.toLowerCase().localeCompare(b.lastName.toLowerCase());
+      if (ln !== 0) return ln;
+      return a.firstName.toLowerCase().localeCompare(b.firstName.toLowerCase());
+    });
+
+  return resp(200, { ok: true, contacts });
+}
+
+// Creates a Contact record linked to a Company. Used by the New Project
+// modal's "+ Add new contact" inline create. Linked-record writes use the
+// ["recXXX"] string-array shape (NOT [{id:"recXXX"}]) — the object shape
+// has silently dropped writes here in the past. typecast is intentionally
+// off; callers must send canonical field values.
+async function handleCreateContact(body) {
+  const firstName    = String(body?.firstName    || "").trim();
+  const lastName     = String(body?.lastName     || "").trim();
+  const primaryPhone = String(body?.primaryPhone || "").trim();
+  const primaryEmail = String(body?.primaryEmail || "").trim();
+  const companyId    = String(body?.companyId    || "").trim();
+
+  if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
+  if (!firstName && !lastName) return resp(400, { ok: false, error: "First Name or Last Name is required." });
+
+  const fields = {};
+  if (firstName)    fields[F.contact.firstName]    = firstName;
+  if (lastName)     fields[F.contact.lastName]     = lastName;
+  if (primaryPhone) fields[F.contact.primaryPhone] = primaryPhone;
+  if (primaryEmail) fields[F.contact.primaryEmail] = primaryEmail;
+  fields[F.contact.company] = [companyId];
+  fields[F.contact.active]  = true;
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.contacts)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields })
+  });
+
+  const f = data.fields || {};
+  return resp(200, {
+    ok: true,
+    contact: {
+      id:           data.id,
+      firstName:    f[F.contact.firstName]    || "",
+      lastName:     f[F.contact.lastName]     || "",
+      primaryPhone: f[F.contact.primaryPhone] || "",
+      primaryEmail: f[F.contact.primaryEmail] || ""
+    }
+  });
 }
 
 async function handleGetInspectionAgencies() {
@@ -3174,18 +3260,31 @@ async function handleUpdateJobInfo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
-// POSTs a new Jobs record from the in-app New Project modal. Job Name is
-// the only required field. Status defaults to "New Lead" so the new job
-// lands in the right sidebar group. Tax Status and Billing Method default
-// per spec. Optional fields are sent only when non-blank to avoid
-// stomping on Airtable defaults with empty strings. Contractor is
-// omitted entirely when Billing Method is Direct Customer.
+// POSTs a new Jobs record from the in-app New Project modal. Every new
+// job is now a contractor job: Contractor (linked) is required and the
+// same Company is written to both Contractor and Billing Company by
+// default. Status defaults to "New Lead" so the new job lands in the
+// right sidebar group. Optional fields are sent only when non-blank to
+// avoid stomping Airtable defaults with empty strings.
+//
+// Billing Method is force-set to "Contractor" — the radio is gone from
+// the UI but downstream invoice-builder reads (index.html:6514, 6605,
+// 6903, 7311) still inspect job.billingMethod as a Contract-vs-T&M
+// tiebreaker, so we keep the breadcrumb coherent.
+//
+// Contractor (Intake) is still written with the company name string;
+// Make.com and other downstream readers may still depend on it. Plan
+// is to remove it in a follow-up cleanup pass once confirmed unused.
+//
+// LINKED RECORD shape: ["recXXX"] string array, NEVER [{id:"recXXX"}].
+// The object shape has silently dropped linked writes in this codebase
+// before. typecast is intentionally off.
 //
 // Returns the new record run through mapJob() so the frontend can splice
 // it into state.jobs and selectJob() it without a full list refetch.
 async function handleCreateJob(body) {
   const {
-    jobName, jobType, taxStatus, billingMethod, contractor,
+    jobName, jobType, taxStatus, contractorId, contractorName, contactId,
     customerFirstName, customerLastName,
     customerStreet, customerCity, customerState, customerZip,
     customerPhone, customerEmail, notes
@@ -3194,16 +3293,28 @@ async function handleCreateJob(body) {
   const trimmedName = String(jobName || "").trim();
   if (!trimmedName) return resp(400, { ok: false, error: "Job Name is required." });
 
+  const trimmedContractorId = String(contractorId || "").trim();
+  if (!trimmedContractorId) return resp(400, { ok: false, error: "Contractor is required." });
+
   const fields = {};
-  fields["Job Name"] = trimmedName;
+  fields["Job Name"]       = trimmedName;
   fields["Job Status"]     = "New Lead";
-  fields["Tax Status"]     = taxStatus     || "Taxable";
-  fields["Billing Method"] = billingMethod || "Direct Customer";
+  fields["Tax Status"]     = taxStatus || "Taxable";
+  fields["Billing Method"] = "Contractor";
 
   if (jobType && String(jobType).trim()) fields["Job Type"] = String(jobType).trim();
-  if ((billingMethod === "Contractor") && contractor && String(contractor).trim()) {
-    fields["Contractor (Intake)"] = String(contractor).trim();
+
+  // Contractor + Billing Company default to the same Company on create.
+  fields["Contractor"]      = [trimmedContractorId];
+  fields["Billing Company"] = [trimmedContractorId];
+
+  // Keep the legacy text breadcrumb populated for downstream readers.
+  if (contractorName && String(contractorName).trim()) {
+    fields["Contractor (Intake)"] = String(contractorName).trim();
   }
+
+  const trimmedContactId = String(contactId || "").trim();
+  if (trimmedContactId) fields["Primary Contact"] = [trimmedContactId];
 
   if (customerFirstName && String(customerFirstName).trim()) fields["Customer 1st Name (Intake)"]      = String(customerFirstName).trim();
   if (customerLastName  && String(customerLastName ).trim()) fields["Customer Last Name (Intake)"]     = String(customerLastName ).trim();
@@ -3217,7 +3328,7 @@ async function handleCreateJob(body) {
 
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}`, {
     method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
+    body: JSON.stringify({ fields })
   });
   return resp(200, { ok: true, job: mapJob(data) });
 }
@@ -3260,6 +3371,7 @@ export async function handler(event) {
       if (action === "vendors")            return await handleVendors();
       if (action === "companies")          return await handleCompanies();
       if (action === "listContractors")    return await handleListContractors();
+      if (action === "listContactsByCompany") return await handleListContactsByCompany(params);
       if (action === "laborBillableRates") return await handleLaborBillableRates();
       if (action === "getInspectionAgencies") return await handleGetInspectionAgencies();
       return resp(400, { ok: false, error: "Unknown GET action." });
@@ -3309,6 +3421,7 @@ export async function handler(event) {
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "createJob")            return await handleCreateJob(body);
+      if (body.action === "createContact")        return await handleCreateContact(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body);

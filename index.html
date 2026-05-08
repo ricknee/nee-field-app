@@ -9465,26 +9465,48 @@ rick@northeasternelec.com`
   // is what broke Lifts/Fleet/Payroll/etc. on the prior attempt.
 
   let _npContractors = [];
+  let _npContacts    = [];
 
   function _npGetRadioValue(name) {
     const el = document.querySelector(`input[name="${name}"]:checked`);
     return el ? el.value : "";
   }
 
-  function _npSetBillingMethod(method) {
-    // Toggles the Contractor dropdown's visibility based on Billing
-    // Method. When switching back to Direct Customer we also clear the
-    // selected contractor so a previously-picked value doesn't ride
-    // along in hidden form state.
-    const row = $("npContractorRow");
-    if (!row) return;
-    if (method === "Contractor") {
-      row.style.display = "";
-    } else {
+  // Fetches active Contacts linked to the given contractor (Company)
+  // and repopulates #npContact. On a successful fetch the dropdown
+  // shows placeholder + "+ Add new contact" + each contact. On error
+  // we still surface placeholder + "+ Add new contact" so the user
+  // isn't blocked from creating a contact ad-hoc.
+  async function _npLoadContactsForContractor(contractorId) {
+    const sel = $("npContact");
+    const row = $("npContactRow");
+    _npContacts = [];
+    sel.value = "";
+
+    if (!contractorId) {
       row.style.display = "none";
-      const sel = $("npContractor");
-      if (sel) sel.value = "";
+      return;
     }
+
+    try {
+      const res = await apiGet("listContactsByCompany?companyId=" + encodeURIComponent(contractorId));
+      _npContacts = res.contacts || [];
+    } catch (e) {
+      console.error("listContactsByCompany failed", e);
+      _npContacts = [];
+    }
+
+    const opts = [
+      `<option value="">— Pick contact —</option>`,
+      `<option value="__new__">+ Add new contact</option>`,
+      ..._npContacts.map(ct => {
+        const display = `${(ct.firstName||"").trim()} ${(ct.lastName||"").trim()}`.trim()
+                        || ct.primaryEmail || ct.primaryPhone || "(unnamed)";
+        return `<option value="${esc(ct.id)}">${esc(display)}</option>`;
+      })
+    ];
+    sel.innerHTML = opts.join("");
+    row.style.display = "";
   }
 
   window.openNewProjectModal = async function() {
@@ -9513,11 +9535,14 @@ rick@northeasternelec.com`
     const taxR = document.querySelector('input[name="npTaxStatus"][value="Taxable"]');
     if (taxR) taxR.checked = true;
 
-    // Billing Method intentionally has NO default — user must pick.
-    // Clear both radios so a previous-open's selection doesn't carry.
-    document.querySelectorAll('input[name="npBilling"]').forEach(r => { r.checked = false; });
-    // Hide the Contractor dropdown and clear any prior selection.
-    _npSetBillingMethod("");
+    // Contractor + Contact reset. Contractor dropdown options are
+    // populated below; reset value to placeholder. Contact picker
+    // stays hidden until a contractor is chosen.
+    $("npContractor").value = "";
+    $("npContact").value    = "";
+    $("npContactRow").style.display = "none";
+    _npContacts = [];
+
     $("npMsg").style.display = "none";
 
     $("newProjectModal").style.display = "flex";
@@ -9528,18 +9553,39 @@ rick@northeasternelec.com`
     const sel = $("npContractor");
     if (!_npContractors.length) {
       try {
-        const res = await apiGet("companies");
-        _npContractors = res.companies || [];
+        const res = await apiGet("listContractors");
+        _npContractors = res.contractors || [];
       } catch (e) {
         _npContractors = [];
       }
     }
     sel.innerHTML = `<option value="">— Pick contractor —</option>` +
-      _npContractors.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
+      _npContractors.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
 
-    document.querySelectorAll('input[name="npBilling"]').forEach(r => {
-      r.onchange = () => _npSetBillingMethod(r.value);
-    });
+    sel.onchange = () => _npLoadContactsForContractor(sel.value);
+
+    // Customer-field auto-fill from contact pick. Always-overwrite
+    // semantics: picking a contact stamps its values onto the Customer
+    // (Intake) inputs; picking "+ Add new contact" clears them for
+    // fresh entry. Empty placeholder is a no-op so accidental opens of
+    // the dropdown don't wipe typed data.
+    $("npContact").onchange = () => {
+      const v = $("npContact").value;
+      if (v === "") return;
+      if (v === "__new__") {
+        $("npCustFirst").value = "";
+        $("npCustLast").value  = "";
+        $("npPhone").value     = "";
+        $("npEmail").value     = "";
+        return;
+      }
+      const ct = _npContacts.find(c => c.id === v);
+      if (!ct) return;
+      $("npCustFirst").value = ct.firstName    || "";
+      $("npCustLast").value  = ct.lastName     || "";
+      $("npPhone").value     = ct.primaryPhone || "";
+      $("npEmail").value     = ct.primaryEmail || "";
+    };
   };
 
   window.closeNewProjectModal = function() {
@@ -9560,40 +9606,85 @@ rick@northeasternelec.com`
       return;
     }
 
-    // Billing Method has no UI default — user must pick. Block submit
-    // if neither radio is selected so the new record doesn't quietly
-    // land with a backend fallback the user never confirmed.
-    const billingMethod = _npGetRadioValue("npBilling");
-    if (!billingMethod) {
-      msg.textContent = "Billing Method is required.";
+    // Contractor is now required for every new project (the redesign
+    // dropped the Direct Customer / Contractor distinction — every job
+    // gets a Contractor + Billing Company link on the back end).
+    const contractorId = $("npContractor").value;
+    if (!contractorId) {
+      msg.textContent = "Contractor is required.";
       msg.style.color = "var(--red)";
       msg.style.display = "block";
+      try { $("npContractor").focus(); } catch {}
       return;
     }
-    const contractor = (billingMethod === "Contractor") ? $("npContractor").value : "";
 
-    const body = {
-      jobName,
-      jobType:        _npGetRadioValue("npJobType"),
-      taxStatus:      _npGetRadioValue("npTaxStatus") || "Taxable",
-      billingMethod,
-      contractor,
-      customerFirstName: $("npCustFirst").value,
-      customerLastName:  $("npCustLast").value,
-      customerStreet:    $("npStreet").value,
-      customerCity:      $("npCity").value,
-      customerState:     $("npState").value,
-      customerZip:       $("npZip").value,
-      customerPhone:     $("npPhone").value,
-      customerEmail:     $("npEmail").value,
-      notes:             $("npNotes").value
-    };
+    // If the user picked "+ Add new contact", we'll create a Contact
+    // before posting the Job — so guard against an empty name pair
+    // here, where we can still focus the input. Phone/email alone
+    // aren't enough; Contacts are keyed off the name pair downstream.
+    const contactValue = $("npContact").value;
+    if (contactValue === "__new__") {
+      const fn = $("npCustFirst").value.trim();
+      const ln = $("npCustLast").value.trim();
+      if (!fn && !ln) {
+        msg.textContent = "First Name or Last Name is required for a new contact.";
+        msg.style.color = "var(--red)";
+        msg.style.display = "block";
+        try { $("npCustFirst").focus(); } catch {}
+        return;
+      }
+    }
+
+    // Pull contractorName from the selected option's text — the backend
+    // keeps writing it into the legacy "Contractor (Intake)" text field
+    // until downstream Make.com readers are confirmed off it.
+    const contractorSel = $("npContractor");
+    const contractorName = contractorSel.options[contractorSel.selectedIndex]?.text || "";
 
     btn.disabled = true;
     btn.textContent = "Creating…";
     msg.style.display = "none";
 
     try {
+      // If the user chose "+ Add new contact", create the Contact first
+      // and use the returned record ID as the Job's Primary Contact.
+      // Failure aborts the Job create so we don't end up with an
+      // orphan Job pointing at a contact that never landed.
+      let contactId;
+      if (contactValue === "__new__") {
+        const contactRes = await apiPost("createContact", {
+          firstName:    $("npCustFirst").value,
+          lastName:     $("npCustLast").value,
+          primaryPhone: $("npPhone").value,
+          primaryEmail: $("npEmail").value,
+          companyId:    contractorId
+        });
+        if (!contactRes.ok || !contactRes.contact) {
+          throw new Error(contactRes.error || "Contact create failed");
+        }
+        contactId = contactRes.contact.id;
+      } else if (contactValue && contactValue !== "") {
+        contactId = contactValue;
+      }
+
+      const body = {
+        jobName,
+        jobType:        _npGetRadioValue("npJobType"),
+        taxStatus:      _npGetRadioValue("npTaxStatus") || "Taxable",
+        contractorId,
+        contractorName,
+        customerFirstName: $("npCustFirst").value,
+        customerLastName:  $("npCustLast").value,
+        customerStreet:    $("npStreet").value,
+        customerCity:      $("npCity").value,
+        customerState:     $("npState").value,
+        customerZip:       $("npZip").value,
+        customerPhone:     $("npPhone").value,
+        customerEmail:     $("npEmail").value,
+        notes:             $("npNotes").value
+      };
+      if (contactId) body.contactId = contactId;
+
       const res = await apiPost("createJob", body);
       if (!res.ok || !res.job) throw new Error(res.error || "Create failed");
       const newJob = res.job;
@@ -13426,19 +13517,20 @@ rick@northeasternelec.com`
             <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npTaxStatus" value="Tax Exempt" /> Tax Exempt</label>
           </div>
         </div>
-        <div class="sl-field">
-          <label>Billing Method <span style="color:var(--red);">*</span></label>
-          <div style="display:flex; gap:14px; padding:6px 0;">
-            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npBilling" value="Direct Customer" /> Direct Customer</label>
-            <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npBilling" value="Contractor" /> Contractor</label>
-          </div>
-        </div>
       </div>
 
-      <div class="sl-field" id="npContractorRow" style="margin-top:6px; display:none;">
-        <label>Contractor</label>
+      <div class="sl-field" id="npContractorRow" style="margin-top:6px;">
+        <label>Contractor <span style="color:var(--red);">*</span></label>
         <select id="npContractor" class="edit-input">
           <option value="">— Loading contractors… —</option>
+        </select>
+      </div>
+
+      <div class="sl-field" id="npContactRow" style="margin-top:6px; display:none;">
+        <label>Contact</label>
+        <select id="npContact" class="edit-input">
+          <option value="">— Pick contact —</option>
+          <option value="__new__">+ Add new contact</option>
         </select>
       </div>
 

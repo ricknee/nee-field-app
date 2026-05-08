@@ -8136,6 +8136,21 @@ function generateOrderPDF(order) {
       var qtyText = l.isBox ? (fmtQty(l.qty) + " box") : fmtQty(l.qty);
       doc.text(qtyText, c2, y, { align: "right" });
       doc.setFont("helvetica", "normal");
+
+      // Leader dots between item name and qty for paper readability.
+      // Reset dash pattern after drawing — otherwise downstream lines (row
+      // hairlines, footer divider) inherit the dashed style.
+      var nameW  = doc.getTextWidth(displayName);
+      var qtyW   = doc.getTextWidth(qtyText);
+      var dotsX1 = c1 + nameW + 1.5;
+      var dotsX2 = c2 - qtyW - 1.5;
+      if (dotsX2 - dotsX1 > 2) {
+        doc.setDrawColor(160, 160, 160);
+        doc.setLineWidth(0.4);
+        doc.setLineDashPattern([0.4, 1.2], 0);
+        doc.line(dotsX1, y - 0.5, dotsX2, y - 0.5);
+        doc.setLineDashPattern([], 0);
+      }
     });
 
     // Footer with item count

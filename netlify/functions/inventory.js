@@ -1135,6 +1135,10 @@ async function handleDelete(body) {
 }
 
 // Stock Levels table fields
+const F_SL_STOCK_ID      = "fldrBCRyiuelyekGu";
+const F_SL_ITEM          = "flduTAU0KQojkrjW7";
+const F_SL_LOC           = "fldqiB4eTuEH5ebOw";
+const F_SL_QOH           = "fldYS6soPXlHkxI1V";
 const F_SL_REORDER_POINT = "fldy08kLJ1YH7lMVG";
 
 // ── STOCK LEVELS BY ITEM ──────────────────────────────────
@@ -1286,6 +1290,35 @@ async function handleUpdateReorderPoint(body) {
     body: JSON.stringify({ fields: { [F_SL_REORDER_POINT]: Number(reorderPoint) } })
   });
   return resp(200, { ok: true });
+}
+
+// ── CREATE STOCK LEVEL ────────────────────────────────────
+// Used when an admin sets a reorder point on an item × location combo that
+// has no Stock Level record yet. Creates the row with QoH=0; the existing
+// Airtable automation keys on Item ID + Location ID and will update this row
+// (without overwriting Reorder Point) on the next transaction.
+async function handleCreateStockLevel(body) {
+  const { itemId, itemName, locationId, locationName, reorderPoint } = body || {};
+  if (!itemId)     return resp(400, { ok: false, error: "Missing itemId." });
+  if (!locationId) return resp(400, { ok: false, error: "Missing locationId." });
+  if (reorderPoint === undefined) return resp(400, { ok: false, error: "Missing reorderPoint." });
+
+  const fields = {
+    [F_SL_STOCK_ID]:      `${itemName || ""} | ${locationName || ""}`,
+    [F_SL_ITEM]:          [String(itemId)],
+    [F_SL_LOC]:           [String(locationId)],
+    [F_SL_QOH]:           0,
+    [F_SL_REORDER_POINT]: Number(reorderPoint)
+  };
+
+  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Stock Levels"), {
+    method: "POST",
+    body: JSON.stringify({ records: [{ fields }], typecast: true })
+  });
+
+  const recordId = created.records?.[0]?.id;
+  if (!recordId) return resp(500, { ok: false, error: "Failed to create stock level." });
+  return resp(200, { ok: true, recordId });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2708,6 +2741,7 @@ export async function handler(event) {
       if (body.action === "createItem")        return await handleCreateItem(body);
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);
+      if (body.action === "createStockLevel")   return await handleCreateStockLevel(body);
       if (body.action === "delete")             return await handleDelete(body);
       if (body.action === "estimateCreate")     return await handleEstimateCreate(body);
       if (body.action === "estimateUpdate")     return await handleEstimateUpdate(body);

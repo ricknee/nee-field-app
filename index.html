@@ -2240,7 +2240,15 @@
                record is changed. -->
           <div class="admin-only hidden" id="inspectionEditForm" style="background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px;">
             <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">📋 Update Inspection Info</div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+            <!-- Not-required toggle: when checked, the agency/inspector/permit
+                 pickers hide and the info-grid below renders "Not Required". -->
+            <div style="margin-bottom:14px;">
+              <label style="display:inline-flex; align-items:center; gap:8px; font-size:14px; cursor:pointer;">
+                <input type="checkbox" id="inspNotReqCheckbox" />
+                <span>This job does not require inspections.</span>
+              </label>
+            </div>
+            <div id="inspectionPickers" style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
               <div>
                 <label class="edit-label">Inspection Agency</label>
                 <div class="agency-search-wrap">
@@ -2252,6 +2260,16 @@
               <div>
                 <label class="edit-label">Permit Number</label>
                 <input type="text" id="permitEditInput" class="edit-input" placeholder="Enter permit number" />
+              </div>
+              <!-- Inspector picker — only shown when an agency is selected.
+                   Mirrors the agency typeahead structure / CSS exactly. -->
+              <div id="inspectorEditWrap" style="grid-column:1;">
+                <label class="edit-label">Inspector</label>
+                <div class="agency-search-wrap">
+                  <input type="text" class="agency-search" id="inspectorSearchInput" placeholder="Select an agency first…" autocomplete="off" disabled />
+                  <div class="agency-search-results" id="inspectorSearchResults"></div>
+                  <input type="hidden" id="inspectorEditId" value="" />
+                </div>
               </div>
             </div>
             <div style="display:flex; align-items:center; gap:10px; margin-top:14px;">
@@ -2281,6 +2299,14 @@
             <div class="info-box">
               <div class="info-label">Inspection Contacts</div>
               <div class="info-value" id="inContacts">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Inspector Phone</div>
+              <div class="info-value" id="inInspectorPhone">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Inspector Email</div>
+              <div class="info-value" id="inInspectorEmail">—</div>
             </div>
             <div class="info-box full link-val">
               <div class="info-label">Inspection Scheduling Link</div>
@@ -3500,7 +3526,10 @@
     renderInspectionCard(job);
     if (isAdmin()) {
       populateAgencyDropdown(job.inspectionAgencyId || "", job.inspectionAgency || "");
+      populateInspectorDropdown(job.inspectionAgencyId || "", job.inspectorId || "");
       $("permitEditInput").value = job.permitNumber || "";
+      $("inspNotReqCheckbox").checked = !!job.inspectionNotRequired;
+      applyNotRequiredVisibility();
       const inspStatus = $("inspectionEditStatus");
       if (inspStatus) inspStatus.textContent = "";
     }
@@ -5285,6 +5314,14 @@
       search._wired = true;
       let activeIdx = -1;
 
+      // Sticky "+ Add new agency" row — appended to every render (including
+      // the empty-results state). Uses its own class .agency-search-add so
+      // arrow-key nav (which queries .agency-search-result) skips it; click
+      // is wired separately and opens #newAgencyModal pre-filled with the
+      // current search query.
+      const addAgencyRowHtml = () =>
+        `<div class="agency-search-add" style="padding:10px; font-size:13px; color:var(--accent); border-top:1px solid var(--line); cursor:pointer; font-weight:600;">+ Add new agency</div>`;
+
       const renderResults = (q) => {
         const candidates = search._agencies || [];
         const ql = q.trim().toLowerCase();
@@ -5292,18 +5329,24 @@
           ? candidates.filter(a => (a.name || "").toLowerCase().includes(ql))
           : candidates.slice();
         activeIdx = -1;
-        if (!filtered.length) {
-          results.innerHTML = `<div class="agency-search-result-empty">No matching agencies</div>`;
-          results.classList.add("open");
-          return;
-        }
-        results.innerHTML = filtered.slice(0, 30).map((a, i) =>
-          `<div class="agency-search-result" data-id="${esc(a.id)}" data-idx="${i}">${esc(a.name)}</div>`
-        ).join("");
+        const rowsHtml = filtered.length
+          ? filtered.slice(0, 30).map((a, i) =>
+              `<div class="agency-search-result" data-id="${esc(a.id)}" data-idx="${i}">${esc(a.name)}</div>`
+            ).join("")
+          : `<div class="agency-search-result-empty">No matching agencies</div>`;
+        results.innerHTML = rowsHtml + addAgencyRowHtml();
         results.classList.add("open");
         results.querySelectorAll(".agency-search-result").forEach(row => {
           row.onmousedown = (ev) => { ev.preventDefault(); pick(row.dataset.id); };
         });
+        const addRow = results.querySelector(".agency-search-add");
+        if (addRow) {
+          addRow.onmousedown = (ev) => {
+            ev.preventDefault();
+            results.classList.remove("open");
+            openNewAgencyModal(search.value);
+          };
+        }
       };
 
       const pick = (agencyId) => {
@@ -5316,6 +5359,10 @@
           search.classList.remove("has-pick");
         }
         results.classList.remove("open");
+        // Inspector belongs to the agency — picking (or clearing) the agency
+        // invalidates any prior inspector selection. Repopulate against the
+        // new agency so the picker re-enables / disables correctly.
+        populateInspectorDropdown(agencyId || "", "");
       };
 
       search.addEventListener("input", () => {
@@ -5324,9 +5371,352 @@
         // means "clear the link" on save.
         hidden.value = "";
         search.classList.remove("has-pick");
+        // Mirror the inspector invalidation done in pick() — once the agency
+        // is mid-edit, the prior inspector is no longer valid.
+        populateInspectorDropdown("", "");
         renderResults(search.value);
       });
       search.addEventListener("focus", () => renderResults(search.value));
+      search.addEventListener("blur", () => {
+        setTimeout(() => results.classList.remove("open"), 150);
+      });
+      search.addEventListener("keydown", (e) => {
+        const rows = results.querySelectorAll(".agency-search-result");
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          activeIdx = Math.min(activeIdx + 1, rows.length - 1);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          activeIdx = Math.max(activeIdx - 1, 0);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter") {
+          if (activeIdx >= 0 && rows[activeIdx]) {
+            e.preventDefault();
+            pick(rows[activeIdx].dataset.id);
+          }
+        } else if (e.key === "Escape") {
+          results.classList.remove("open");
+        }
+      });
+    }
+  }
+
+  // ── INSPECTOR PICKER (admin-only) ──
+  // Mirror of the agency picker but per-agency: each agency has its own
+  // cached list of {id, name, phone, email} inspectors. Cache is populated
+  // lazily — first time an agency is selected on this page session, fetch
+  // its inspectors and reuse for any later jobs that share the agency.
+  const _inspectorsByAgency = {};         // agencyId -> array of inspectors
+  const _inspectorsByAgencyPromise = {};  // agencyId -> in-flight promise
+
+  async function loadInspectorsForAgency(agencyId, agencyName) {
+    if (!agencyId) return [];
+    if (_inspectorsByAgency[agencyId]) return _inspectorsByAgency[agencyId];
+    if (_inspectorsByAgencyPromise[agencyId]) return _inspectorsByAgencyPromise[agencyId];
+    _inspectorsByAgencyPromise[agencyId] = (async () => {
+      try {
+        // Pass both — agencyName drives the cheap server-side prefilter, agencyId
+        // is the in-memory verify guard against agency-name substring collisions.
+        const d = await apiGet("inspectorsForAgency", { agencyName: agencyName || "", agencyId });
+        _inspectorsByAgency[agencyId] = (d.inspectors || []).slice();
+      } catch (e) {
+        _inspectorsByAgency[agencyId] = [];
+      }
+      return _inspectorsByAgency[agencyId];
+    })();
+    return _inspectorsByAgencyPromise[agencyId];
+  }
+
+  function inspectorCandidates(agencyId) {
+    const list = (_inspectorsByAgency[agencyId] || []).slice();
+    list.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    return list;
+  }
+
+  // Clears the inspector typeahead UI + hidden id. Does NOT touch the
+  // per-agency cache (the cached list is still valid; we're just deselecting).
+  function clearInspectorSelection() {
+    const hidden = $("inspectorEditId");
+    const search = $("inspectorSearchInput");
+    if (hidden) hidden.value = "";
+    if (search) {
+      search.value = "";
+      search.classList.remove("has-pick");
+    }
+    const results = $("inspectorSearchResults");
+    if (results) {
+      results.classList.remove("open");
+      results.innerHTML = "";
+    }
+  }
+
+  // Toggles the picker grid (#inspectionPickers wraps agency + permit +
+  // inspector) based on the not-required checkbox. Hidden fields underneath
+  // are preserved — un-ticking restores the prior selection on save.
+  function applyNotRequiredVisibility() {
+    const checked = !!$("inspNotReqCheckbox")?.checked;
+    const pickers = $("inspectionPickers");
+    if (pickers) pickers.classList.toggle("hidden", checked);
+  }
+
+  // ── INSPECTION AGENCY MODAL ──
+  function openNewAgencyModal(prefillName) {
+    // Lazy-wire the submit button on first open — the modal markup lives
+    // after this <script> in DOM order, so the element doesn't exist at
+    // script-init time.
+    const btn = $("newAgencySubmitBtn");
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", handleCreateAgencySubmit); }
+
+    $("newAgencyName").value  = (prefillName || "").trim();
+    $("newAgencyPhone").value = "";
+    $("newAgencyEmail").value = "";
+    $("newAgencyLink").value  = "";
+    $("newAgencyNotes").value = "";
+    const msg = $("newAgencyMsg");
+    msg.style.display = "none";
+    msg.textContent = "";
+    $("newAgencyModal").style.display = "flex";
+    pushBackEntry("newAgency", () => { $("newAgencyModal").style.display = "none"; });
+    setTimeout(() => { try { $("newAgencyName").focus(); } catch {} }, 0);
+  }
+
+  window.closeNewAgencyModal = function() {
+    popBackEntry("newAgency");
+    $("newAgencyModal").style.display = "none";
+  };
+
+  async function handleCreateAgencySubmit() {
+    const btn = $("newAgencySubmitBtn");
+    const msg = $("newAgencyMsg");
+    const name = $("newAgencyName").value.trim();
+    if (!name) {
+      msg.textContent = "Agency Name is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("newAgencyName").focus(); } catch {}
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    msg.style.display = "none";
+    try {
+      const d = await apiPost("createInspectionAgency", {
+        name,
+        phone:          $("newAgencyPhone").value,
+        email:          $("newAgencyEmail").value,
+        schedulingLink: $("newAgencyLink").value,
+        notes:          $("newAgencyNotes").value
+      });
+      if (!d.ok || !d.agency) throw new Error(d.error || "Create failed.");
+      // Push into the page-session cache so the typeahead sees it without a refetch.
+      if (Array.isArray(_inspectionAgencies)) _inspectionAgencies.push(d.agency);
+      else _inspectionAgencies = [d.agency];
+      // Auto-select on the current job's edit form.
+      $("agencyEditId").value = d.agency.id;
+      $("agencySearchInput").value = d.agency.name;
+      $("agencySearchInput").classList.add("has-pick");
+      // New agency has no inspectors yet — reset the inspector picker and
+      // re-populate (so the disabled/enabled state recomputes).
+      clearInspectorSelection();
+      populateInspectorDropdown(d.agency.id, "");
+      closeNewAgencyModal();
+    } catch (e) {
+      msg.textContent = "Error: " + (e.message || e);
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Create Agency";
+    }
+  }
+
+  // ── INSPECTION CONTACT (INSPECTOR) MODAL ──
+  function openNewInspectorModal() {
+    const agencyId   = $("agencyEditId").value;
+    const agencyName = $("agencySearchInput").value;
+    if (!agencyId) return;  // Belt-and-braces: the "+ Add new inspector" row is only rendered when an agency is set.
+
+    const btn = $("newInspectorSubmitBtn");
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", handleCreateInspectorSubmit); }
+
+    $("newInspectorAgencyLabel").textContent = `Adds inspector to: ${agencyName}`;
+    $("newInspectorFirst").value = "";
+    $("newInspectorLast").value  = "";
+    $("newInspectorPhone").value = "";
+    $("newInspectorEmail").value = "";
+    const msg = $("newInspectorMsg");
+    msg.style.display = "none";
+    msg.textContent = "";
+    $("newInspectorModal").style.display = "flex";
+    pushBackEntry("newInspector", () => { $("newInspectorModal").style.display = "none"; });
+    setTimeout(() => { try { $("newInspectorFirst").focus(); } catch {} }, 0);
+  }
+
+  window.closeNewInspectorModal = function() {
+    popBackEntry("newInspector");
+    $("newInspectorModal").style.display = "none";
+  };
+
+  async function handleCreateInspectorSubmit() {
+    const btn = $("newInspectorSubmitBtn");
+    const msg = $("newInspectorMsg");
+    const agencyId = $("agencyEditId").value;
+    if (!agencyId) {
+      msg.textContent = "Pick an agency first.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      return;
+    }
+    const firstName = $("newInspectorFirst").value.trim();
+    const lastName  = $("newInspectorLast").value.trim();
+    if (!firstName) {
+      msg.textContent = "First Name is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("newInspectorFirst").focus(); } catch {}
+      return;
+    }
+    if (!lastName) {
+      msg.textContent = "Last Name is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("newInspectorLast").focus(); } catch {}
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    msg.style.display = "none";
+    try {
+      const d = await apiPost("createInspectionContact", {
+        firstName,
+        lastName,
+        phone: $("newInspectorPhone").value,
+        email: $("newInspectorEmail").value,
+        agencyId
+      });
+      if (!d.ok || !d.inspector) throw new Error(d.error || "Create failed.");
+      // Append to the per-agency cache.
+      (_inspectorsByAgency[agencyId] = _inspectorsByAgency[agencyId] || []).push(d.inspector);
+      // Auto-select on the current job's edit form.
+      $("inspectorEditId").value = d.inspector.id;
+      $("inspectorSearchInput").value = d.inspector.name;
+      $("inspectorSearchInput").classList.add("has-pick");
+      $("inspectorSearchInput").disabled = false;
+      closeNewInspectorModal();
+    } catch (e) {
+      msg.textContent = "Error: " + (e.message || e);
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Create Inspector";
+    }
+  }
+
+  async function populateInspectorDropdown(agencyId, selectedId) {
+    const hidden  = $("inspectorEditId");
+    const search  = $("inspectorSearchInput");
+    const results = $("inspectorSearchResults");
+    if (!hidden || !search || !results) return;
+
+    // No agency → typeahead disabled, placeholder prompt, nothing else to do.
+    if (!agencyId) {
+      hidden.value = "";
+      search.value = "";
+      search.classList.remove("has-pick");
+      search.placeholder = "Select an agency first…";
+      search.disabled = true;
+      results.classList.remove("open");
+      results.innerHTML = "";
+      return;
+    }
+
+    // Resolve the agency name from the cached agency list so we can drive
+    // the server-side lookup-name prefilter. _inspectionAgencies is populated
+    // by loadInspectionAgencies(); if it hasn't run yet, name resolves to ""
+    // and the backend will use the in-memory ID verify path.
+    const agencyRec = (_inspectionAgencies || []).find(a => a.id === agencyId);
+    const agencyName = agencyRec ? agencyRec.name : "";
+
+    search.disabled = false;
+    search.placeholder = "Type to search inspectors…";
+
+    await loadInspectorsForAgency(agencyId, agencyName);
+    const list = inspectorCandidates(agencyId);
+    hidden.value = selectedId || "";
+    search._inspectors = list;
+    search._agencyId = agencyId;
+
+    if (selectedId) {
+      const cur = list.find(i => i.id === selectedId);
+      search.value = cur ? cur.name : "";
+      if (cur) search.classList.add("has-pick");
+      else     search.classList.remove("has-pick");
+    } else {
+      search.value = "";
+      search.classList.remove("has-pick");
+    }
+    results.classList.remove("open");
+    results.innerHTML = "";
+
+    if (!search._wired) {
+      search._wired = true;
+      let activeIdx = -1;
+
+      const addInspectorRowHtml = () =>
+        `<div class="agency-search-add" style="padding:10px; font-size:13px; color:var(--accent); border-top:1px solid var(--line); cursor:pointer; font-weight:600;">+ Add new inspector</div>`;
+
+      const renderResults = (q) => {
+        const candidates = search._inspectors || [];
+        const ql = q.trim().toLowerCase();
+        const filtered = ql
+          ? candidates.filter(i => (i.name || "").toLowerCase().includes(ql))
+          : candidates.slice();
+        activeIdx = -1;
+        const rowsHtml = filtered.length
+          ? filtered.slice(0, 30).map((i, idx) =>
+              `<div class="agency-search-result" data-id="${esc(i.id)}" data-idx="${idx}">${esc(i.name)}</div>`
+            ).join("")
+          : `<div class="agency-search-result-empty">No matching inspectors</div>`;
+        results.innerHTML = rowsHtml + addInspectorRowHtml();
+        results.classList.add("open");
+        results.querySelectorAll(".agency-search-result").forEach(row => {
+          row.onmousedown = (ev) => { ev.preventDefault(); pick(row.dataset.id); };
+        });
+        const addRow = results.querySelector(".agency-search-add");
+        if (addRow) {
+          addRow.onmousedown = (ev) => {
+            ev.preventDefault();
+            results.classList.remove("open");
+            openNewInspectorModal();
+          };
+        }
+      };
+
+      const pick = (inspectorId) => {
+        const list = search._inspectors || [];
+        const ins = list.find(x => x.id === inspectorId);
+        hidden.value = inspectorId || "";
+        if (ins) {
+          search.value = ins.name;
+          search.classList.add("has-pick");
+        } else {
+          search.classList.remove("has-pick");
+        }
+        results.classList.remove("open");
+      };
+
+      search.addEventListener("input", () => {
+        hidden.value = "";
+        search.classList.remove("has-pick");
+        renderResults(search.value);
+      });
+      search.addEventListener("focus", () => {
+        if (!search.disabled) renderResults(search.value);
+      });
       search.addEventListener("blur", () => {
         setTimeout(() => results.classList.remove("open"), 150);
       });
@@ -5358,6 +5748,21 @@
   // selectJob populates — extracted so saveInspection() can refresh in
   // place after the PATCH returns.
   function renderInspectionCard(job) {
+    // Not-required short-circuit: agency / inspector / permit cells render
+    // "Not Required". Phone / email / scheduling link are agency lookups —
+    // with no agency, they fall through to "—" naturally.
+    if (job.inspectionNotRequired) {
+      $("inPermit").textContent          = "Not Required";
+      $("inAgency").textContent          = "Not Required";
+      $("inContacts").textContent        = "Not Required";
+      $("inPhone").textContent           = "—";
+      $("inEmail").textContent           = "—";
+      $("inInspectorPhone").textContent  = "—";
+      $("inInspectorEmail").textContent  = "—";
+      checkLink("", "Open Scheduling Portal", $("inSchedulingLink"));
+      return;
+    }
+
     $("inPermit").textContent = val(job.permitNumber);
     $("inAgency").textContent = val(job.inspectionAgency);
 
@@ -5371,7 +5776,23 @@
       iEmEl.innerHTML = `<a href="mailto:${esc(job.inspectionAgencyEmail)}">${esc(job.inspectionAgencyEmail)}</a>`;
     } else { iEmEl.textContent = "—"; }
 
-    $("inContacts").textContent = val(job.inspectionContacts);
+    // Use the single-inspector field (mapJob extracts [0] from the lookup).
+    // job.inspectionContacts is the raw lookup array; inspectorName is the
+    // intent-revealing string for the single-inspector UI.
+    $("inContacts").textContent = val(job.inspectorName);
+
+    // Inspector phone/email — mirror the agency phone/email pattern. Either
+    // field may be empty (not every inspector has both).
+    const iIPhEl = $("inInspectorPhone");
+    if (job.inspectorPhone) {
+      iIPhEl.innerHTML = `<a href="tel:${esc(job.inspectorPhone)}">${esc(job.inspectorPhone)}</a>`;
+    } else { iIPhEl.textContent = "—"; }
+
+    const iIEmEl = $("inInspectorEmail");
+    if (job.inspectorEmail) {
+      iIEmEl.innerHTML = `<a href="mailto:${esc(job.inspectorEmail)}">${esc(job.inspectorEmail)}</a>`;
+    } else { iIEmEl.textContent = "—"; }
+
     checkLink(job.inspectionSchedulingLink, "Open Scheduling Portal", $("inSchedulingLink"));
   }
 
@@ -5384,9 +5805,11 @@
     status.style.color = "";
     try {
       const d = await apiPost("updateJobInspection", {
-        jobId:        state.selected.id,
-        agencyId:     $("agencyEditId").value || "",
-        permitNumber: $("permitEditInput").value || ""
+        jobId:                 state.selected.id,
+        agencyId:              $("agencyEditId").value || "",
+        inspectorId:           $("inspectorEditId").value || "",
+        permitNumber:          $("permitEditInput").value || "",
+        inspectionNotRequired: $("inspNotReqCheckbox").checked
       });
       if (!d.ok || !d.job) throw new Error(d.error || "Save failed.");
       // Splice the refreshed job into both state.selected and state.jobs so
@@ -5396,10 +5819,13 @@
       if (idx >= 0) Object.assign(state.jobs[idx], d.job);
 
       renderInspectionCard(d.job);
-      // Re-prime the picker with the newly-saved selection so the
-      // has-pick styling and hidden id stay in sync.
+      // Re-prime the pickers with the newly-saved selection so the
+      // has-pick styling and hidden ids stay in sync.
       populateAgencyDropdown(d.job.inspectionAgencyId || "", d.job.inspectionAgency || "");
+      populateInspectorDropdown(d.job.inspectionAgencyId || "", d.job.inspectorId || "");
       $("permitEditInput").value = d.job.permitNumber || "";
+      $("inspNotReqCheckbox").checked = !!d.job.inspectionNotRequired;
+      applyNotRequiredVisibility();
 
       status.textContent = "✓ Saved";
       status.style.color = "var(--green)";
@@ -6442,6 +6868,12 @@
 
     const saveJobInspBtn = $("saveJobInspectionBtn");
     if (saveJobInspBtn) saveJobInspBtn.addEventListener("click", saveJobInspection);
+
+    // Toggling "Inspection Not Required" hides/shows the picker grid but
+    // does not auto-save — same as the rest of this edit form. User clicks
+    // Save to persist.
+    const inspNotReqCb = $("inspNotReqCheckbox");
+    if (inspNotReqCb) inspNotReqCb.addEventListener("change", applyNotRequiredVisibility);
 
     document.querySelectorAll(".tab-btn").forEach(btn => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));
@@ -13685,6 +14117,91 @@ rick@northeasternelec.com`
         <button id="npSubmitBtn" onclick="submitNewProject()" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Project</button>
       </div>
       <div id="npMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── NEW INSPECTION AGENCY MODAL ─────────────────────────────────────────
+     Inline "+ Add new agency" from the agency typeahead on the Inspections
+     tab. Submits to createInspectionAgency. On success the new agency is
+     appended to the client-side cache, auto-selected on the current job's
+     edit form, and the modal closes. -->
+<div id="newAgencyModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2>+ Add New Inspection Agency</h2>
+      <button onclick="closeNewAgencyModal()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div class="sl-field">
+        <label>Agency Name <span style="color:var(--red);">*</span></label>
+        <input id="newAgencyName" type="text" class="edit-input" placeholder="e.g. City of Akron Building Dept." />
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+        <div class="sl-field">
+          <label>Phone</label>
+          <input id="newAgencyPhone" type="tel" class="edit-input" placeholder="(330) 555-0123" />
+        </div>
+        <div class="sl-field">
+          <label>Email</label>
+          <input id="newAgencyEmail" type="email" class="edit-input" placeholder="permits@example.gov" />
+        </div>
+      </div>
+      <div class="sl-field" style="margin-top:12px;">
+        <label>Scheduling Link</label>
+        <input id="newAgencyLink" type="url" class="edit-input" placeholder="https://…" />
+      </div>
+      <div class="sl-field" style="margin-top:12px;">
+        <label>Notes</label>
+        <textarea id="newAgencyNotes" class="edit-input" style="min-height:80px; resize:vertical; font-family:'Inter',sans-serif; line-height:1.5;" placeholder="Optional notes about this agency"></textarea>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:14px; border-top:1px solid var(--line);">
+        <button onclick="closeNewAgencyModal()" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">Cancel</button>
+        <button id="newAgencySubmitBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Agency</button>
+      </div>
+      <div id="newAgencyMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── NEW INSPECTION CONTACT (INSPECTOR) MODAL ────────────────────────────
+     Inline "+ Add new inspector" from the inspector typeahead. Auto-links to
+     the agency currently selected on the edit form (Active = TRUE on create
+     triggers Make.com Google sync). Header shows the agency name so the user
+     can't lose track of which agency they're adding to. -->
+<div id="newInspectorModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2 id="newInspectorTitle">+ Add New Inspector</h2>
+      <button onclick="closeNewInspectorModal()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="newInspectorAgencyLabel" style="font-size:12px; color:var(--muted); margin-bottom:14px;"></div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="sl-field">
+          <label>First Name <span style="color:var(--red);">*</span></label>
+          <input id="newInspectorFirst" type="text" class="edit-input" />
+        </div>
+        <div class="sl-field">
+          <label>Last Name <span style="color:var(--red);">*</span></label>
+          <input id="newInspectorLast" type="text" class="edit-input" />
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+        <div class="sl-field">
+          <label>Phone</label>
+          <input id="newInspectorPhone" type="tel" class="edit-input" placeholder="(330) 555-0123" />
+        </div>
+        <div class="sl-field">
+          <label>Email</label>
+          <input id="newInspectorEmail" type="email" class="edit-input" placeholder="inspector@example.gov" />
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:14px; border-top:1px solid var(--line);">
+        <button onclick="closeNewInspectorModal()" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">Cancel</button>
+        <button id="newInspectorSubmitBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Inspector</button>
+      </div>
+      <div id="newInspectorMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
     </div>
   </div>
 </div>

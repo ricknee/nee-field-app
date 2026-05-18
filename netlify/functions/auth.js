@@ -269,6 +269,13 @@ async function handleLogin(body) {
   });
 }
 
+// DEAD CODE for the field app — index.html's API constant points exclusively
+// to /.netlify/functions/airtable, not this function. The field app's job list
+// is served by airtable.js's handleJobs (different signature, different F.job
+// map). If you're adding fields to the Job shape, update airtable.js, not
+// here. Left in place to avoid disturbing the action=jobs route in case any
+// external caller still depends on it; rip out in a follow-up after grepping
+// for live callers.
 async function handleJobs() {
   const records = await fetchAll(TABLES.jobs);
   const jobs = records.map(r => {

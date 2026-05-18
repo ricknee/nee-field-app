@@ -17,6 +17,7 @@ const TABLES = {
   scissorLifts:        "Scissor Lifts",
   scheduleEntries:     "Schedule Entries",
   inspectionAgencies:  "tblZrG9V7C3lVsXNT",
+  inspectionContacts:  "tblnewJMKDPfczRRx",
   contacts:            "tbl7vZpySDNfZX9Sq"
 };
 
@@ -51,7 +52,11 @@ const F = {
     inspectionAgencyPhone:   "Inspection Agency Phone #",
     inspectionAgencyEmail:   "Inspection Agency Email Address",
     inspectionSchedulingLink:"Inspection Scheduling Link",
-    inspectionContacts:      "Inspection Name (from Inspection Contacts)",
+    // Was "Inspection Name (from Inspection Contacts)" — that field name does
+    // not exist on Jobs. The real lookup is "Inspector Name". The stale name
+    // meant this key returned "" for every job, so the Inspections-tab read-
+    // only "Inspection Contacts" cell silently rendered "—" everywhere.
+    inspectionContacts:      "Inspector Name (from Inspection Contacts)",
     jobInspections:          "Inspection Name (from Job Inspections)",
     wireLink:                "Wire (Mobile) or THHN (Mobile)",
     pipeLink:                "Add Pipe (Mobile)",
@@ -166,6 +171,31 @@ const F = {
     city:         "City",
     state:        "State",
     zip:          "Zip"
+  },
+  // Inspection Agencies table — field NAMES (for reading POST/PATCH responses).
+  // Write sites use field IDs inline (drift-resistance — see "+ Add new agency"
+  // handler). Active must be set to TRUE on create — that's the trigger for the
+  // Make.com Google Contacts sync. Never write the Google Contact ID / Sync
+  // Status / Last Synced At / Needs Sync to Google fields — those are sync-owned.
+  agency: {
+    name:           "Inspection Agency Name",
+    phone:          "Agency Phone",
+    email:          "Agency Email",
+    schedulingLink: "Scheduling Link",
+    notes:          "Notes",
+    active:         "Active"
+  },
+  // Inspection Contacts table — field NAMES (same read-vs-write split as agency).
+  // Same Active=TRUE-on-create rule. Inspector Name is a formula (First + Last)
+  // — read-only, never write.
+  inspector: {
+    nameFormula: "Inspector Name",
+    firstName:   "First Name",
+    lastName:    "Last Name",
+    phone:       "Phone",
+    email:       "Email",
+    agency:      "Inspection Agency",  // linked → Inspection Agencies
+    active:      "Active"
   }
 };
 
@@ -1371,6 +1401,21 @@ function mapJob(r) {
         }
         return null;
       })(),
+      // Inspection Contacts is a multipleRecordLinks field, but the field-app
+      // UI constrains it to a single inspector — we surface only the first.
+      inspectorId: (() => {
+        const v = f["Inspection Contacts"];
+        if (Array.isArray(v) && v.length > 0) {
+          return typeof v[0] === "string" ? v[0] : v[0]?.id || null;
+        }
+        return null;
+      })(),
+      inspectorName: (() => {
+        const v = f[F.job.inspectionContacts]; // "Inspector Name (from Inspection Contacts)" lookup
+        if (Array.isArray(v)) return v[0] || "";
+        return v || "";
+      })(),
+      inspectionNotRequired: gBool(f, "Inspection Not Required"),
       pCloudInvoicesSentId: f["pCloud Invoices Sent ID"] || null,
       expectedRevenue:gNum(f,F.job.expectedRevenue),
       actualJobCostCogs:gNum(f,F.job.actualJobCostCogs),totalReviewedCosts:gNum(f,F.job.totalReviewedCosts),
@@ -2255,6 +2300,122 @@ async function handleGetInspectionAgencies() {
     .map(r => ({ id: r.id, name: r.fields["Inspection Agency Name"] || "" }))
     .filter(a => a.name);
   return resp(200, { ok: true, agencies });
+}
+
+// Creates a new Inspection Agency from the "+ Add new agency" modal on the
+// Inspections tab. Required: name. Optional: phone, email, schedulingLink,
+// notes. Active is force-set to TRUE on create — that fires the Make.com
+// Google Contacts sync to both rick@ and nee@ accounts. No typecast — all
+// targets are text/phone/email/url/multilineText/checkbox; no singleSelects.
+async function handleCreateInspectionAgency(body) {
+  const { name, phone, email, schedulingLink, notes } = body || {};
+  const trimmedName = String(name || "").trim();
+  if (!trimmedName) return resp(400, { ok: false, error: "Agency Name is required." });
+
+  const fields = {};
+  fields["fldSJntthANaalIVG"] = trimmedName;        // Inspection Agency Name
+  fields["fldcJcwQ4dKnXe5nx"] = true;                // Active (Make.com sync trigger)
+  if (phone          && String(phone).trim())          fields["fld5bUALpCtHnehjk"] = String(phone).trim();
+  if (email          && String(email).trim())          fields["fldSns7jOVDPfcaFd"] = String(email).trim();
+  if (schedulingLink && String(schedulingLink).trim()) fields["fld9Ym5pNfp43spbs"] = String(schedulingLink).trim();
+  if (notes          && String(notes).trim())          fields["fldtlCyjRD3XJGjFH"] = String(notes);
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.inspectionAgencies)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields })
+  });
+  return resp(200, {
+    ok: true,
+    agency: {
+      id:   data.id,
+      name: data.fields?.[F.agency.name] || trimmedName
+    }
+  });
+}
+
+// Returns the active inspectors linked to a given agency. The frontend caches
+// {id, name} per agency, so it can send both: agencyName drives a cheap
+// filterByFormula prefilter (lookup field), and agencyId drives an in-memory
+// verify pass that defends against substring collisions on agency names —
+// same pattern as handleGetJobInvoices and the TODO.md sweep target. Pass
+// either or both; at least one is required.
+async function handleGetInspectorsForAgency(params) {
+  const { agencyName, agencyId } = params || {};
+  const trimmedName = String(agencyName || "").trim();
+  const trimmedId   = String(agencyId   || "").trim();
+  if (!trimmedName && !trimmedId) {
+    return resp(400, { ok: false, error: "Missing agencyName or agencyId." });
+  }
+
+  let records;
+  if (trimmedName) {
+    // Strip quotes so they can't terminate the filter literal.
+    const safeName = trimmedName.replace(/"/g, "");
+    const filter = `AND(FIND("${safeName}", ARRAYJOIN({Inspection Agency Name})) > 0, {Active}=TRUE())`;
+    records = await fetchAll(TABLES.inspectionContacts, { filter, sortField: "Inspector Name", sortDir: "asc" });
+  } else {
+    records = await fetchAll(TABLES.inspectionContacts, { filter: "{Active}=TRUE()", sortField: "Inspector Name", sortDir: "asc" });
+  }
+
+  // Verify the linked Agency record ID in-memory when we have it — same
+  // substring-collision guard as handleGetJobInvoices.
+  if (trimmedId) {
+    records = records.filter(r => {
+      const links = r.fields["Inspection Agency"];
+      return Array.isArray(links) && links.some(l => (typeof l === "string" ? l : l?.id) === trimmedId);
+    });
+  }
+
+  const inspectors = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:    r.id,
+      name:  f[F.inspector.nameFormula] || "",
+      phone: f[F.inspector.phone] || "",
+      email: f[F.inspector.email] || ""
+    };
+  }).filter(i => i.name);
+
+  return resp(200, { ok: true, inspectors });
+}
+
+// Creates a new Inspection Contact (inspector) from the "+ Add new inspector"
+// modal. Required: firstName, lastName, agencyId (linked → Inspection Agencies).
+// Optional: phone, email. Active is force-set to TRUE on create (Make.com sync
+// trigger). Inspector Name is a First+Last formula on the table — read back from
+// the POST response, never written. No typecast.
+async function handleCreateInspectionContact(body) {
+  const { firstName, lastName, phone, email, agencyId } = body || {};
+  const trimmedFirst = String(firstName || "").trim();
+  const trimmedLast  = String(lastName  || "").trim();
+  const trimmedAgency = String(agencyId || "").trim();
+
+  if (!trimmedAgency.startsWith("rec")) return resp(400, { ok: false, error: "Missing or invalid agencyId." });
+  if (!trimmedFirst) return resp(400, { ok: false, error: "First Name is required." });
+  if (!trimmedLast)  return resp(400, { ok: false, error: "Last Name is required." });
+
+  const fields = {};
+  fields["fldbLNgj4Msf7SeCu"] = trimmedFirst;            // First Name
+  fields["fld1BOsbSTi6BkEa7"] = trimmedLast;             // Last Name
+  fields["fldC6CpQmQ12ABY0z"] = [trimmedAgency];         // Inspection Agency (linked)
+  fields["fldF0zIEONjKdtAIR"] = true;                     // Active (Make.com sync trigger)
+  if (phone && String(phone).trim()) fields["fldh8oOPBJO0O305Y"] = String(phone).trim();
+  if (email && String(email).trim()) fields["fld9auKwBoqGJIRL3"] = String(email).trim();
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.inspectionContacts)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields })
+  });
+  const f = data.fields || {};
+  return resp(200, {
+    ok: true,
+    inspector: {
+      id:   data.id,
+      name: f[F.inspector.nameFormula] || `${trimmedFirst} ${trimmedLast}`.trim(),
+      phone: f[F.inspector.phone] || "",
+      email: f[F.inspector.email] || ""
+    }
+  });
 }
 
 // ── LABOR BILLABLE RATES (for per-job rate selector) ──────────────────────
@@ -3236,25 +3397,36 @@ async function handleUpdateJobNotes(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
-// Admin-only Inspections-tab edit. Writes the Inspection Agency linked-record
-// (fldyKKACyUqt9tcEL) and Permit Number (fldDKGllmOyyyf9qo) on the Job.
-// Empty agencyId clears the link; empty permitNumber clears the text.
+// Admin-only Inspections-tab edit. PATCHes four Job fields in a single call:
+//   - Inspection Agency       (fldyKKACyUqt9tcEL, linked)
+//   - Inspection Contacts     (fld9ApvXJqPhuDcm4, linked — single inspector)
+//   - Permit Number           (fldDKGllmOyyyf9qo, text)
+//   - Inspection Not Required (fldQ5VJgOYcQBxmCr, checkbox)
+// Empty agencyId / inspectorId clear their links; empty permitNumber clears
+// the text. Inspectors belong to a specific agency — if the agency is cleared,
+// the inspector link is force-cleared too (server-side guard against UI desync).
+// No typecast — all four targets are linked-records / text / checkbox; no
+// singleSelects in scope, so typecast would only mask broken input.
 async function handleUpdateJobInspection(body) {
-  const { jobId, agencyId, permitNumber } = body || {};
+  const { jobId, agencyId, permitNumber, inspectorId, inspectionNotRequired } = body || {};
   if (!jobId || !String(jobId).startsWith("rec")) {
     return resp(400, { ok: false, error: "Missing or invalid jobId." });
   }
   const fields = {};
-  if (agencyId && String(agencyId).startsWith("rec")) {
-    fields["fldyKKACyUqt9tcEL"] = [agencyId];
+  const hasAgency = !!agencyId && String(agencyId).startsWith("rec");
+  fields["fldyKKACyUqt9tcEL"] = hasAgency ? [agencyId] : [];
+  // Inspector belongs to an agency — if no agency, force-clear the inspector.
+  if (hasAgency && inspectorId && String(inspectorId).startsWith("rec")) {
+    fields["fld9ApvXJqPhuDcm4"] = [inspectorId];
   } else {
-    fields["fldyKKACyUqt9tcEL"] = [];
+    fields["fld9ApvXJqPhuDcm4"] = [];
   }
   fields["fldDKGllmOyyyf9qo"] = permitNumber || "";
+  fields["fldQ5VJgOYcQBxmCr"] = !!inspectionNotRequired;
 
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
     method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
+    body: JSON.stringify({ fields })
   });
   return resp(200, { ok: true, job: mapJob(data) });
 }
@@ -3400,6 +3572,7 @@ export async function handler(event) {
       if (action === "listContactsByCompany") return await handleListContactsByCompany(params);
       if (action === "laborBillableRates") return await handleLaborBillableRates();
       if (action === "getInspectionAgencies") return await handleGetInspectionAgencies();
+      if (action === "inspectorsForAgency")   return await handleGetInspectorsForAgency(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -3445,6 +3618,8 @@ export async function handler(event) {
       if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
+      if (body.action === "createInspectionAgency") return await handleCreateInspectionAgency(body);
+      if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "createContact")        return await handleCreateContact(body);

@@ -18,6 +18,8 @@ const TABLES = {
   scheduleEntries:     "Schedule Entries",
   inspectionAgencies:  "tblZrG9V7C3lVsXNT",
   inspectionContacts:  "tblnewJMKDPfczRRx",
+  powerCompanies:      "tblgxHavdZybnuMhM",
+  powerContacts:       "tblvouoPMTYh27FGT",
   contacts:            "tbl7vZpySDNfZX9Sq"
 };
 
@@ -38,10 +40,12 @@ const F = {
     address:                 "Job Address - Full",
     contractor:              "Contractor Name (Text)",
     contractorLink:          "Contractor",
+    powerCompanyLink:        "Power Companies",
     generatorInstalled:      "Generator Installed",
     powerCompanyName:        "Power Company – Name (lookup)",
     powerCompanyContact:     "Power Company – Primary Contact (lookup)",
-    powerCompanyPhone:       "Power Company – Phone (lookup)",
+    powerCompanyCellPhone:   "Power Company – Cell Phone (lookup)",
+    powerCompanyOfficePhone: "Power Company – Office Phone (lookup)",
     powerCompanyEmail:       "Power Company – Email (lookup)",
     aicNumber:               "AIC Number",
     tempWorkOrder:           "Temporary Work Order #",
@@ -198,6 +202,36 @@ const F = {
     email:       "Email",
     agency:      "Inspection Agency",  // linked → Inspection Agencies
     active:      "Active"
+  },
+  // Power Companies table — field NAMES (write sites use field IDs inline).
+  // Active must be set to TRUE on create — defaults to checked in Airtable, but
+  // the create handler should set it explicitly for safety. No Make.com sync
+  // trigger on this table (sync lives on Power Company Contacts).
+  powerCompany: {
+    name:          "Power Company Name",
+    utilityRegion: "Utility Region / Territory",
+    notes:         "Notes",
+    active:        "Active"
+  },
+  // Power Company Contacts table — field NAMES (same read-vs-write split as
+  // inspector). Active=TRUE-on-create is the trigger for the Make.com Google
+  // Contacts sync (formula "Needs Sync to Google" fires when Active=TRUE +
+  // Cell Phone set + Power Company linked). Contact Name is a TRIM()'d formula
+  // (First + Last) — read-only, never write. Never write the Google Contact ID
+  // - Rick / Google Contact ID - NEE / Last Synced At / Sync Status fields —
+  // those are sync-owned.
+  powerContact: {
+    nameFormula:      "Contact Name",
+    companyName:      "Power Company Name",  // (lookup, read-only)
+    firstName:        "First Name",
+    lastName:         "Last Name",
+    cellPhone:        "Cell Phone",
+    officePhone:      "Office Phone",
+    email:            "Email Address",
+    powerCompanyLink: "Power Company",
+    jobRoles:         "Job Roles",
+    notes:            "Notes",
+    active:           "Active"
   }
 };
 
@@ -1354,7 +1388,13 @@ function mapJob(r) {
       })(),
       generatorInstalled:gBool(f,F.job.generatorInstalled),
       powerCompanyName:g(f,F.job.powerCompanyName)||"",powerCompanyContact:g(f,F.job.powerCompanyContact)||"",
-      powerCompanyPhone:g(f,F.job.powerCompanyPhone)||"",powerCompanyEmail:g(f,F.job.powerCompanyEmail)||"",
+      // TRANSITIONAL: powerCompanyPhone is the legacy projection key, aliasing Cell Phone for
+      // backward compat with index.html:3511. Phase 4 removes this line when the UI rewrite
+      // adopts powerCompanyCellPhone + powerCompanyOfficePhone for the two-phone render.
+      powerCompanyPhone:g(f,F.job.powerCompanyCellPhone)||"",
+      powerCompanyCellPhone:g(f,F.job.powerCompanyCellPhone)||"",
+      powerCompanyOfficePhone:g(f,F.job.powerCompanyOfficePhone)||"",
+      powerCompanyEmail:g(f,F.job.powerCompanyEmail)||"",
       aicNumber:g(f,F.job.aicNumber)||"",tempWorkOrder:g(f,F.job.tempWorkOrder)||"",
       permWorkOrder:g(f,F.job.permWorkOrder)||"",meterNumber:g(f,F.job.meterNumber)||"",
       permitNumber:g(f,F.job.permitNumber)||"",inspectionAgency:g(f,F.job.inspectionAgency)||"",
@@ -1494,19 +1534,38 @@ async function handleUpdateJobStatus(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// Updates the Power Co. tab on a Job. Accepts powerCompanyId and powerContactId
+// as record IDs from the typeahead pickers (frontend resolves names → ids via
+// handleGetPowerCompanies / handleGetContactsForPowerCompany). Writes BOTH the
+// company link (fld3fZ9isIQmcFDna) AND the contact link (fldhKlMCFsnmHo5PH) as
+// ["recId"] string-array shape per multipleRecordLinks spec. Empty string on
+// either id clears the link via []. No typecast — all targets are link / text
+// fields, no singleSelects on this write surface. The legacy Intake singleSelect
+// (fldURTQ0ygHMMIbTU) is NOT written — its values are being retired and mapJob
+// still reads it transitionally for backward-compat with un-migrated rows.
+// Returns the full mapped job so the frontend can refresh the card without a
+// second fetch.
 async function handleUpdatePowerCo(body) {
-  const { jobId, powerCompany, powerContact, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
+  const { jobId, powerCompanyId, powerContactId, aicNumber, tempWorkOrder, permWorkOrder, meterNumber } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
-  const CONTACT_IDS = { "Dave Baker":"rec0Pmo9JBNVSdJ23","Dan Shaeffer":"recejs6S1LHK4rbNN","Earnest Kash":"reczPDI9EgwALy07k","Tom Shultz":"rec1Z0Epjw6C8BK90","Gavyn Lopez":"rec1kjUkMawcHocok","Diane Wintrow":"recf5WUTUQdvUW2QR","Dan Johnson":"reclI0d8M1mP4BpBM" };
   const fields = {};
-  if (powerCompany && powerCompany.trim() !== "") fields["fldURTQ0ygHMMIbTU"] = powerCompany.trim();
-  if (powerContact && CONTACT_IDS[powerContact]) fields["fldhKlMCFsnmHo5PH"] = [{ id: CONTACT_IDS[powerContact] }];
-  if (aicNumber !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
-  if (tempWorkOrder !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
-  if (permWorkOrder !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;
-  if (meterNumber !== undefined) fields["fldWXpfslcqLlwdTQ"] = meterNumber;
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
-  return resp(200, { ok: true, updatedId: data.id });
+  if (powerCompanyId !== undefined) {
+    const trimmed = String(powerCompanyId).trim();
+    fields["fld3fZ9isIQmcFDna"] = trimmed ? [trimmed] : [];
+  }
+  if (powerContactId !== undefined) {
+    const trimmed = String(powerContactId).trim();
+    fields["fldhKlMCFsnmHo5PH"] = trimmed ? [trimmed] : [];
+  }
+  if (aicNumber      !== undefined) fields["fld1vqpCklUdzgrjO"] = aicNumber;
+  if (tempWorkOrder  !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
+  if (permWorkOrder  !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;
+  if (meterNumber    !== undefined) fields["fldWXpfslcqLlwdTQ"] = meterNumber;
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields })
+  });
+  return resp(200, { ok: true, updatedId: data.id, job: mapJob(data) });
 }
 
 async function handleStartServiceCall(body) {
@@ -2429,6 +2488,134 @@ async function handleCreateInspectionContact(body) {
       name: f[F.inspector.nameFormula] || `${trimmedFirst} ${trimmedLast}`.trim(),
       phone: f[F.inspector.phone] || "",
       email: f[F.inspector.email] || ""
+    }
+  });
+}
+
+// ── POWER COMPANIES + POWER COMPANY CONTACTS (for Power Co. picker on Job) ──
+async function handleGetPowerCompanies() {
+  const records = await fetchAll(TABLES.powerCompanies, { sortField: F.powerCompany.name, sortDir: "asc" });
+  const companies = records
+    .map(r => ({ id: r.id, name: r.fields[F.powerCompany.name] || "" }))
+    .filter(c => c.name);
+  return resp(200, { ok: true, companies });
+}
+
+// Returns the active Power Company contacts linked to a given company. The
+// frontend caches {id, name, cellPhone, officePhone, email} per company, so it
+// can send both: companyName drives a cheap filterByFormula prefilter (lookup
+// field), and companyId drives an in-memory verify pass that defends against
+// substring collisions on company names — same pattern as
+// handleGetInspectorsForAgency. Pass either or both; at least one is required.
+async function handleGetContactsForPowerCompany(params) {
+  const { companyName, companyId } = params || {};
+  const trimmedName = String(companyName || "").trim();
+  const trimmedId   = String(companyId   || "").trim();
+  if (!trimmedName && !trimmedId) {
+    return resp(400, { ok: false, error: "Missing companyName or companyId." });
+  }
+
+  let records;
+  if (trimmedName) {
+    // Strip quotes so they can't terminate the filter literal.
+    const safeName = trimmedName.replace(/"/g, "");
+    const filter = `AND(FIND("${safeName}", ARRAYJOIN({${F.powerContact.companyName}})) > 0, {${F.powerContact.active}}=TRUE())`;
+    records = await fetchAll(TABLES.powerContacts, { filter, sortField: F.powerContact.nameFormula, sortDir: "asc" });
+  } else {
+    records = await fetchAll(TABLES.powerContacts, { filter: `{${F.powerContact.active}}=TRUE()`, sortField: F.powerContact.nameFormula, sortDir: "asc" });
+  }
+
+  // Verify the linked Power Company record ID in-memory when we have it —
+  // same substring-collision guard as handleGetInspectorsForAgency.
+  if (trimmedId) {
+    records = records.filter(r => {
+      const links = r.fields[F.powerContact.powerCompanyLink];
+      return Array.isArray(links) && links.some(l => (typeof l === "string" ? l : l?.id) === trimmedId);
+    });
+  }
+
+  const contacts = records.map(r => {
+    const f = r.fields || {};
+    return {
+      id:          r.id,
+      name:        f[F.powerContact.nameFormula] || "",
+      cellPhone:   f[F.powerContact.cellPhone]   || "",
+      officePhone: f[F.powerContact.officePhone] || "",
+      email:       f[F.powerContact.email]       || ""
+    };
+  }).filter(c => c.name);
+
+  return resp(200, { ok: true, contacts });
+}
+
+// Creates a new Power Company from the "+ Add new power company" modal on the
+// Power Co. tab. Required: name. Optional: utilityRegion, notes. Active is
+// force-set to TRUE on create — Airtable defaults to checked, but the handler
+// sets it explicitly for safety. No Make.com sync trigger on this table (sync
+// lives on Power Company Contacts). No typecast — all targets are
+// text/multilineText/checkbox; no singleSelects on this table.
+async function handleCreatePowerCompany(body) {
+  const { name, utilityRegion, notes } = body || {};
+  const trimmedName = String(name || "").trim();
+  if (!trimmedName) return resp(400, { ok: false, error: "Power Company Name is required." });
+
+  const fields = {};
+  fields["fldj7HRiBvKNp9DpN"] = trimmedName;        // Power Company Name
+  fields["fldFa3QqewblhWOID"] = true;                // Active
+  if (utilityRegion && String(utilityRegion).trim()) fields["fld8lBfO5NX2b3Q1H"] = String(utilityRegion).trim();
+  if (notes         && String(notes).trim())         fields["fldTpLUm9WJ88gwJs"] = String(notes);
+
+  const data = await atFetch(`${encodeURIComponent(TABLES.powerCompanies)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields })
+  });
+  return resp(200, {
+    ok: true,
+    company: {
+      id:   data.id,
+      name: data.fields?.[F.powerCompany.name] || trimmedName
+    }
+  });
+}
+
+// Creates a new Power Company Contact from the "+ Add new contact" modal on
+// the Power Co. tab. Required: firstName, cellPhone, companyId. Optional:
+// lastName, officePhone, email, jobRoles, notes. Active is force-set to TRUE
+// on create — Airtable defaults to checked, but the handler sets it
+// explicitly for safety. powerCompanyLink is written as ["recId"] string
+// array (multipleRecordLinks shape). No typecast — jobRoles is multiSelect
+// but options are seeded by office staff; UI picker only surfaces existing
+// options, so typecast is not needed.
+async function handleCreatePowerContact(body) {
+  const { firstName, lastName, cellPhone, officePhone, email, jobRoles, notes, companyId } = body || {};
+  const trimmedFirst = String(firstName || "").trim();
+  const trimmedCell  = String(cellPhone || "").trim();
+  const trimmedCoId  = String(companyId || "").trim();
+  if (!trimmedFirst) return resp(400, { ok: false, error: "First Name is required." });
+  if (!trimmedCell)  return resp(400, { ok: false, error: "Cell Phone is required." });
+  if (!trimmedCoId)  return resp(400, { ok: false, error: "Power Company is required." });
+  const fields = {};
+  fields["fldIhD7Wq3hSnlfbH"] = trimmedFirst;                    // First Name
+  fields["fldTvD0m1wQ1fZt1T"] = trimmedCell;                     // Cell Phone
+  fields["fldDDJG2OmuOtIWmA"] = [trimmedCoId];                   // Power Company link
+  fields["fldZmI3sYkwhwlKtk"] = true;                            // Active
+  if (lastName    && String(lastName).trim())    fields["fldZH9eCvyXNmUl9d"] = String(lastName).trim();
+  if (officePhone && String(officePhone).trim()) fields["fldd4qjr1fgkjM3L6"] = String(officePhone).trim();
+  if (email       && String(email).trim())       fields["fldQF88ZawxsH9rL1"] = String(email).trim();
+  if (Array.isArray(jobRoles) && jobRoles.length) fields["fldpnd8H4gKfkbOwO"] = jobRoles;
+  if (notes       && String(notes).trim())       fields["fld7MUJT2R2SRsYss"] = String(notes);
+  const data = await atFetch(`${encodeURIComponent(TABLES.powerContacts)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields })
+  });
+  return resp(200, {
+    ok: true,
+    contact: {
+      id:         data.id,
+      name:       data.fields?.[F.powerContact.nameFormula] || `${trimmedFirst} ${String(lastName || "").trim()}`.trim(),
+      cellPhone:  data.fields?.[F.powerContact.cellPhone]   || trimmedCell,
+      officePhone:data.fields?.[F.powerContact.officePhone] || "",
+      email:      data.fields?.[F.powerContact.email]       || ""
     }
   });
 }
@@ -3588,6 +3775,8 @@ export async function handler(event) {
       if (action === "laborBillableRates") return await handleLaborBillableRates();
       if (action === "getInspectionAgencies") return await handleGetInspectionAgencies();
       if (action === "inspectorsForAgency")   return await handleGetInspectorsForAgency(params);
+      if (action === "getPowerCompanies")           return await handleGetPowerCompanies();
+      if (action === "getContactsForPowerCompany")  return await handleGetContactsForPowerCompany(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
 
@@ -3596,6 +3785,8 @@ export async function handler(event) {
       if (body.action === "login")                return await handleLogin(body);
       if (body.action === "updateJobStatus")      return await handleUpdateJobStatus(body);
       if (body.action === "updatePowerCo")        return await handleUpdatePowerCo(body);
+      if (body.action === "createPowerCompany")   return await handleCreatePowerCompany(body);
+      if (body.action === "createPowerContact")   return await handleCreatePowerContact(body);
       if (body.action === "updateTimeEntry")      return await handleUpdateTimeEntry(body);
       if (body.action === "updateTimeEntryPayroll") return await handleUpdateTimeEntryPayroll(body);
       if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);

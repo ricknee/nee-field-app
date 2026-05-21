@@ -5181,6 +5181,198 @@
     if (dropdown) dropdown.hidden = true;
   }
 
+  // ── ADD POWER COMPANY MODAL (Phase 2 diff 4) ──
+  // Mirrors openNewAgencyModal (index.html:6000) — same lazy-wire pattern,
+  // same lifecycle, same validation shape. Prefills Name from whatever the
+  // user typed into the picker before clicking "+ Add new".
+  function openAddPowerCompanyModal(prefillName) {
+    const btn = $("newPowerCompanySubmitBtn");
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", handleAddPowerCompanySubmit); }
+    $("newPowerCompanyName").value   = (prefillName || "").trim();
+    $("newPowerCompanyRegion").value = "";
+    $("newPowerCompanyNotes").value  = "";
+    const msg = $("newPowerCompanyMsg");
+    msg.style.display = "none";
+    msg.textContent = "";
+    $("newPowerCompanyModal").style.display = "flex";
+    pushBackEntry("newPowerCompany", () => { $("newPowerCompanyModal").style.display = "none"; });
+    setTimeout(() => { try { $("newPowerCompanyName").focus(); } catch {} }, 0);
+  }
+
+  window.closeAddPowerCompanyModal = function() {
+    popBackEntry("newPowerCompany");
+    $("newPowerCompanyModal").style.display = "none";
+  };
+
+  async function handleAddPowerCompanySubmit() {
+    const btn = $("newPowerCompanySubmitBtn");
+    const msg = $("newPowerCompanyMsg");
+    const name = $("newPowerCompanyName").value.trim();
+    if (!name) {
+      msg.textContent = "Company Name is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("newPowerCompanyName").focus(); } catch {}
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    msg.style.display = "none";
+    try {
+      const d = await apiPost("createPowerCompany", {
+        name,
+        utilityRegion: $("newPowerCompanyRegion").value,
+        notes:         $("newPowerCompanyNotes").value
+      });
+      if (!d.ok || !d.company) throw new Error(d.error || "Create failed.");
+      const newRow = { id: d.company.id, label: d.company.name || name };
+      // Defend against the race where the user clicked "+ Add new" before
+      // the initial fetch resolved. Await ensures companyOptions is settled
+      // before we push; cheap if already loaded (cache short-circuit).
+      await fetchPowerCompanies();
+      if (Array.isArray(pcState.companyOptions)) {
+        pcState.companyOptions.push(newRow);
+        pcState.companyOptions.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+      }
+      // Dead-code guard: backend force-sets Active=true today, so this branch
+      // is unreachable in Path A. Kept as future-proofing in case the backend
+      // later honors a user-controllable checkbox.
+      if (d.company.active === false) {
+        msg.textContent = "Company created (inactive — won't show in dropdown).";
+        msg.style.color = "var(--muted)";
+        msg.style.display = "block";
+        return;
+      }
+      pickPcCompany(newRow.id, newRow.label);
+      closeAddPowerCompanyModal();
+    } catch(e) {
+      msg.textContent = "Error: " + (e.message || e);
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Create Company";
+    }
+  }
+
+  // ── ADD POWER COMPANY CONTACT MODAL (Phase 2 diff 4) ──
+  // Mirrors openNewInspectorModal (index.html:6071). Splits the picker's
+  // typed value on first whitespace to prefill firstName / lastName —
+  // "John Smith" → first="John", last="Smith"; "Cher" → first="Cher".
+  function openAddPowerContactModal(prefillName) {
+    // Belt-and-braces: the "+ Add new" row only renders when the contact
+    // picker is enabled, which requires a company. Refuse to open if pcState
+    // somehow has no company (defense matches openNewInspectorModal:6074).
+    if (!pcState.companyId) return;
+    const btn = $("newPowerContactSubmitBtn");
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", handleAddPowerContactSubmit); }
+    const parts = (prefillName || "").trim().split(/\s+/);
+    $("newPowerContactFirst").value  = parts[0] || "";
+    $("newPowerContactLast").value   = parts.slice(1).join(" ");
+    $("newPowerContactCell").value   = "";
+    $("newPowerContactOffice").value = "";
+    $("newPowerContactEmail").value  = "";
+    $("newPowerContactRole").value   = "";
+    $("newPowerContactNotes").value  = "";
+    $("newPowerContactCompanyLabel").textContent = `Adds contact to: ${pcState.companyLabel}`;
+    const msg = $("newPowerContactMsg");
+    msg.style.display = "none";
+    msg.textContent = "";
+    $("newPowerContactModal").style.display = "flex";
+    pushBackEntry("newPowerContact", () => { $("newPowerContactModal").style.display = "none"; });
+    setTimeout(() => { try { $("newPowerContactFirst").focus(); } catch {} }, 0);
+  }
+
+  window.closeAddPowerContactModal = function() {
+    popBackEntry("newPowerContact");
+    $("newPowerContactModal").style.display = "none";
+  };
+
+  async function handleAddPowerContactSubmit() {
+    const btn = $("newPowerContactSubmitBtn");
+    const msg = $("newPowerContactMsg");
+    // Re-read pcState.companyId at submit time. If the user has switched
+    // jobs or cleared the company while the modal was open, refuse to
+    // submit — backend requires companyId and we'd otherwise create the
+    // contact against a stale company.
+    const companyId = pcState.companyId;
+    if (!companyId) {
+      msg.textContent = "Pick a company first.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      return;
+    }
+    const firstName = $("newPowerContactFirst").value.trim();
+    const cellPhone = $("newPowerContactCell").value.trim();
+    if (!firstName) {
+      msg.textContent = "First Name is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("newPowerContactFirst").focus(); } catch {}
+      return;
+    }
+    if (!cellPhone) {
+      msg.textContent = "Cell Phone is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("newPowerContactCell").focus(); } catch {}
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    msg.style.display = "none";
+    try {
+      const role = $("newPowerContactRole").value.trim();
+      const lastName = $("newPowerContactLast").value;
+      const d = await apiPost("createPowerContact", {
+        firstName,
+        lastName,
+        cellPhone,
+        officePhone: $("newPowerContactOffice").value,
+        email:       $("newPowerContactEmail").value,
+        jobRoles:    role ? [role] : [],
+        notes:       $("newPowerContactNotes").value,
+        companyId
+      });
+      if (!d.ok || !d.contact) throw new Error(d.error || "Create failed.");
+      const newRow = {
+        id:    d.contact.id,
+        label: d.contact.name || `${firstName} ${String(lastName || "").trim()}`.trim()
+      };
+      // Same in-flight race defense as the company modal.
+      await fetchContactsForCompany(companyId);
+      const list = pcState.contactsByCompany.get(companyId);
+      if (Array.isArray(list)) {
+        list.push(newRow);
+        list.sort((a, b) => (a.label || "").localeCompare(b.label || ""));
+      }
+      // Same dead-code Active=false guard as the company modal.
+      if (d.contact.active === false) {
+        msg.textContent = "Contact created (inactive — won't show in dropdown).";
+        msg.style.color = "var(--muted)";
+        msg.style.display = "block";
+        return;
+      }
+      // Defend against job switch mid-modal — if pcState.companyId changed
+      // since open, the contact was created under a stale company link.
+      // Skip auto-select; the cache still holds it for when the user
+      // navigates back.
+      if (pcState.companyId !== companyId) {
+        closeAddPowerContactModal();
+        return;
+      }
+      pickPcContact(newRow.id, newRow.label);
+      closeAddPowerContactModal();
+    } catch(e) {
+      msg.textContent = "Error: " + (e.message || e);
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Create Contact";
+    }
+  }
+
   // ── REUSABLE TYPEAHEAD COMPONENT (Phase 2 Power Co. parity, diff 1) ──
   // renderTypeahead({...}) returns HTML for a self-contained picker. Diff 1
   // is scaffolding only — no call sites use it yet; diff 2 wires it into
@@ -5253,7 +5445,8 @@
       if (pickerId === "pc-company") {
         if (ev.target.closest(".pc-th-clear"))   { clearPcCompany(); return; }
         if (ev.target.closest(".pc-th-add-new")) {
-          console.log("[pc-th] add-new click", pickerId);  // TODO(diff 4): open new-company modal
+          const input = th.querySelector(".pc-th-input");
+          openAddPowerCompanyModal(input?.value || "");
           return;
         }
         const li = ev.target.closest(".pc-th-options li");
@@ -5270,7 +5463,8 @@
       if (pickerId === "pc-contact") {
         if (ev.target.closest(".pc-th-clear"))   { clearPcContact(); return; }
         if (ev.target.closest(".pc-th-add-new")) {
-          console.log("[pc-th] add-new click", pickerId);  // TODO(diff 4): open new-contact modal
+          const input = th.querySelector(".pc-th-input");
+          openAddPowerContactModal(input?.value || "");
           return;
         }
         const li = ev.target.closest(".pc-th-options li");
@@ -14736,6 +14930,94 @@ rick@northeasternelec.com`
         <button id="newInspectorSubmitBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Inspector</button>
       </div>
       <div id="newInspectorMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── NEW POWER COMPANY MODAL (Phase 2 diff 4) ────────────────────────────
+     Inline "+ Add new power company" from the Power Co. tab company picker.
+     Active=TRUE is force-set server-side; no checkbox here. Phone/email/
+     website are not on the Power Companies table — Phase 3 schema followup. -->
+<div id="newPowerCompanyModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2>+ Add New Power Company</h2>
+      <button onclick="closeAddPowerCompanyModal()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div class="sl-field">
+        <label>Company Name <span style="color:var(--red);">*</span></label>
+        <input id="newPowerCompanyName" type="text" class="edit-input" placeholder="e.g. Carroll Electric Co-op" />
+      </div>
+      <div class="sl-field" style="margin-top:12px;">
+        <label>Utility Region / Territory</label>
+        <input id="newPowerCompanyRegion" type="text" class="edit-input" placeholder="Optional — service territory" />
+      </div>
+      <div class="sl-field" style="margin-top:12px;">
+        <label>Notes</label>
+        <textarea id="newPowerCompanyNotes" class="edit-input" style="min-height:80px; resize:vertical; font-family:'Inter',sans-serif; line-height:1.5;" placeholder="Optional notes about this power company"></textarea>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:14px; border-top:1px solid var(--line);">
+        <button onclick="closeAddPowerCompanyModal()" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">Cancel</button>
+        <button id="newPowerCompanySubmitBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Company</button>
+      </div>
+      <div id="newPowerCompanyMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── NEW POWER COMPANY CONTACT MODAL (Phase 2 diff 4) ─────────────────────
+     Inline "+ Add new contact" from the Power Co. tab contact picker. Active
+     = TRUE on create triggers the Make.com Google Contacts sync (same as the
+     inspector modal). companyId is carried from pcState silently; the header
+     shows the company name so the user can't lose track. -->
+<div id="newPowerContactModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2>+ Add New Contact</h2>
+      <button onclick="closeAddPowerContactModal()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="newPowerContactCompanyLabel" style="font-size:12px; color:var(--muted); margin-bottom:14px;"></div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div class="sl-field">
+          <label>First Name <span style="color:var(--red);">*</span></label>
+          <input id="newPowerContactFirst" type="text" class="edit-input" />
+        </div>
+        <div class="sl-field">
+          <label>Last Name</label>
+          <input id="newPowerContactLast" type="text" class="edit-input" />
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+        <div class="sl-field">
+          <label>Cell Phone <span style="color:var(--red);">*</span></label>
+          <input id="newPowerContactCell" type="tel" class="edit-input" placeholder="(330) 555-0123" />
+        </div>
+        <div class="sl-field">
+          <label>Office Phone</label>
+          <input id="newPowerContactOffice" type="tel" class="edit-input" placeholder="(330) 555-0124" />
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+        <div class="sl-field">
+          <label>Email</label>
+          <input id="newPowerContactEmail" type="email" class="edit-input" placeholder="contact@example.com" />
+        </div>
+        <div class="sl-field">
+          <label>Role</label>
+          <input id="newPowerContactRole" type="text" class="edit-input" placeholder="e.g. Engineer, Dispatcher" />
+        </div>
+      </div>
+      <div class="sl-field" style="margin-top:12px;">
+        <label>Notes</label>
+        <textarea id="newPowerContactNotes" class="edit-input" style="min-height:80px; resize:vertical; font-family:'Inter',sans-serif; line-height:1.5;" placeholder="Optional notes about this contact"></textarea>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:14px; border-top:1px solid var(--line);">
+        <button onclick="closeAddPowerContactModal()" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">Cancel</button>
+        <button id="newPowerContactSubmitBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Contact</button>
+      </div>
+      <div id="newPowerContactMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
     </div>
   </div>
 </div>

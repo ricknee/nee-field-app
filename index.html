@@ -2251,8 +2251,13 @@
             <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">⚡ Update Power Co. Info</div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
               <div style="grid-column:1/-1;">
-                <label class="edit-label">Power Company</label>
-                <select id="pcEditCompany" class="edit-input">
+                <!-- Typeahead picker host — populated by renderPcCompanyPicker()
+                     from selectJob. Drives pcState; does NOT feed the save path. -->
+                <div id="pcCompanyPickerSlot"></div>
+                <!-- Legacy Intake <select>: hidden until diff 5 rewires the save
+                     handler. handlePowerCoSave reads .value here; selectJob writes
+                     job.powerCompanyIntake into it. Don't remove yet. -->
+                <select id="pcEditCompany" style="display:none;" aria-hidden="true" tabindex="-1">
                   <option value="">— Select —</option>
                   <option value="AEP">AEP</option>
                   <option value="Carroll Electric Co-op">Carroll Electric Co-op</option>
@@ -3615,6 +3620,14 @@
       $("statusChangeMsg").style.display = "none";
       // Pre-fill Power Co edit form
       $("pcEditCompany").value = job.powerCompanyIntake || "";
+      // Hydrate the new typeahead picker from the link-field-backed mapJob
+      // output. companyOptions reset to null so the next focus refetches
+      // (cheap; ~8 companies). The hidden legacy <select> above still drives
+      // the save path + contact-dropdown change listener until diff 5/3.
+      pcState.companyId      = job.powerCompanyId   || null;
+      pcState.companyLabel   = job.powerCompanyName || "";
+      pcState.companyOptions = null;
+      renderPcCompanyPicker();
       $("pcEditAic").value   = job.aicNumber || "";
       $("pcEditTemp").value  = job.tempWorkOrder || "";
       $("pcEditPerm").value  = job.permWorkOrder || "";
@@ -4883,6 +4896,119 @@
     row.style.display = "";
   }
 
+  // ── POWER CO COMPANY PICKER STATE (Phase 2 diff 2) ──
+  // pcState is the source of truth for the new typeahead. The hidden legacy
+  // <select id="pcEditCompany"> still drives the save payload until diff 5
+  // rewires handlePowerCoSave to read pcState.companyId.
+  const pcState = {
+    companyId:      null,   // recId from Power Companies table, or null
+    companyLabel:   "",     // display name shown in the input
+    companyOptions: null,   // null = not loaded; [] = loaded empty; [...] = loaded
+  };
+  let _pcCompaniesPromise = null;
+
+  // Mirrors loadInspectionAgencies (index.html:5421) — in-flight promise
+  // dedup, no retry-on-error semantics. Server returns {id, name}; remap to
+  // {id, label} so the picker stays decoupled from the API's field naming.
+  async function fetchPowerCompanies() {
+    if (pcState.companyOptions) return pcState.companyOptions;
+    if (_pcCompaniesPromise)    return _pcCompaniesPromise;
+    _pcCompaniesPromise = (async () => {
+      try {
+        const d = await apiGet("getPowerCompanies");
+        pcState.companyOptions = (d.companies || []).map(c => ({ id: c.id, label: c.name || "" }));
+      } catch(e) {
+        pcState.companyOptions = [];
+      }
+      return pcState.companyOptions;
+    })();
+    return _pcCompaniesPromise;
+  }
+
+  function renderPcCompanyPicker() {
+    const slot = $("pcCompanyPickerSlot");
+    if (!slot) return;
+    slot.innerHTML = renderTypeahead({
+      id:            "pc-company",
+      label:         "Power Company",
+      placeholder:   "Search companies…",
+      selectedId:    pcState.companyId,
+      selectedLabel: pcState.companyLabel,
+      addNewLabel:   "+ Add new power company",
+    });
+  }
+
+  // Up to 50 rows — keeps the dropdown manageable; the company table is
+  // small (~8 today) so the cap is precautionary, not user-facing.
+  function buildPcCompanyOptionsHtml(companies, filter) {
+    const ql = (filter || "").trim().toLowerCase();
+    const list = ql
+      ? companies.filter(c => (c.label || "").toLowerCase().includes(ql))
+      : companies.slice();
+    if (!list.length) return `<li class="pc-th-empty">No matches</li>`;
+    return list.slice(0, 50).map(c =>
+      `<li data-id="${esc(c.id)}">${esc(c.label)}</li>`
+    ).join("");
+  }
+
+  async function openPcCompanyDropdown(th, currentInputValue) {
+    const dropdown = th.querySelector(".pc-th-dropdown");
+    const options  = th.querySelector(".pc-th-options");
+    if (!dropdown || !options) return;
+    // Cancel any pending blur-close timer so re-focusing within 150ms of a
+    // pick/clear doesn't get the dropdown yanked away on us.
+    if (th._pcThCloseTimer) {
+      clearTimeout(th._pcThCloseTimer);
+      th._pcThCloseTimer = null;
+    }
+    if (pcState.companyOptions === null) {
+      options.innerHTML = `<li class="pc-th-empty">Loading…</li>`;
+      dropdown.hidden = false;
+      await fetchPowerCompanies();
+    }
+    options.innerHTML = buildPcCompanyOptionsHtml(pcState.companyOptions || [], currentInputValue);
+    dropdown.hidden = false;
+  }
+
+  function filterPcCompanyOptions(th, query) {
+    const options = th.querySelector(".pc-th-options");
+    if (!options || pcState.companyOptions === null) return;  // still loading
+    options.innerHTML = buildPcCompanyOptionsHtml(pcState.companyOptions, query);
+  }
+
+  function pickPcCompany(id, label) {
+    pcState.companyId    = id || null;
+    pcState.companyLabel = label || "";
+    const th = document.querySelector('#tab-powerco [data-picker-id="pc-company"]');
+    if (!th) return;
+    // kept in sync as a debug/inspect surface; not read by handlers.
+    th.dataset.selectedId = pcState.companyId || "";
+    const input = th.querySelector(".pc-th-input");
+    if (input) {
+      input.value = pcState.companyLabel;
+      input.classList.toggle("has-pick", !!pcState.companyId);
+    }
+    const dropdown = th.querySelector(".pc-th-dropdown");
+    if (dropdown) dropdown.hidden = true;
+  }
+
+  function clearPcCompany() {
+    pcState.companyId    = null;
+    pcState.companyLabel = "";
+    const th = document.querySelector('#tab-powerco [data-picker-id="pc-company"]');
+    if (!th) return;
+    // kept in sync as a debug/inspect surface; not read by handlers.
+    th.dataset.selectedId = "";
+    const input = th.querySelector(".pc-th-input");
+    if (input) {
+      input.value = "";
+      input.classList.remove("has-pick");
+      input.focus();
+    }
+    const dropdown = th.querySelector(".pc-th-dropdown");
+    if (dropdown) dropdown.hidden = true;
+  }
+
   // ── REUSABLE TYPEAHEAD COMPONENT (Phase 2 Power Co. parity, diff 1) ──
   // renderTypeahead({...}) returns HTML for a self-contained picker. Diff 1
   // is scaffolding only — no call sites use it yet; diff 2 wires it into
@@ -4913,20 +5039,62 @@
   }
 
   // Delegated listeners scoped to #tab-powerco (the tab is static markup —
-  // never re-rendered — but the data-bound guard keeps re-entry safe if a
-  // future diff turns the tab into a render target). Diff 1 stubs the
-  // click / input handlers (console.log only); keyboard nav is real to
-  // match the agency picker (index.html:5383) so diff 2 inherits a working
-  // ArrowUp/Down/Enter/Escape flow once the listbox is populated.
+  // never re-rendered — guarded by data-pc-th-bound). pickerId === "pc-company"
+  // gets real handlers (diff 2); other ids stay on console.log stubs so
+  // diff 3's contact picker has the same wiring waiting for it.
   (function bindPcTypeaheadListeners() {
     const root = document.getElementById("tab-powerco");
     if (!root || root.dataset.pcThBound === "1") return;
     root.dataset.pcThBound = "1";
 
+    // Focus → open dropdown (and lazy-fetch options on first open).
+    root.addEventListener("focusin", (ev) => {
+      const input = ev.target.closest(".pc-th-input");
+      if (!input) return;
+      const th = input.closest(".pc-typeahead");
+      const pickerId = th?.dataset.pickerId;
+      if (pickerId === "pc-company") openPcCompanyDropdown(th, input.value);
+    });
+
+    // Blur → close dropdown (150ms delay so option clicks register first;
+    // same trick the agency picker uses at index.html:5543). Timer id is
+    // stashed on the element so openPcCompanyDropdown can cancel it if
+    // the user re-focuses within the grace window.
+    root.addEventListener("focusout", (ev) => {
+      const input = ev.target.closest(".pc-th-input");
+      if (!input) return;
+      const th = input.closest(".pc-typeahead");
+      if (!th) return;
+      th._pcThCloseTimer = setTimeout(() => {
+        const dropdown = th.querySelector(".pc-th-dropdown");
+        if (dropdown) dropdown.hidden = true;
+        th._pcThCloseTimer = null;
+      }, 150);
+    });
+
     root.addEventListener("click", (ev) => {
       const th = ev.target.closest(".pc-typeahead");
       if (!th) return;
       const pickerId = th.dataset.pickerId;
+
+      if (pickerId === "pc-company") {
+        if (ev.target.closest(".pc-th-clear"))   { clearPcCompany(); return; }
+        if (ev.target.closest(".pc-th-add-new")) {
+          console.log("[pc-th] add-new click", pickerId);  // TODO(diff 4): open new-company modal
+          return;
+        }
+        const li = ev.target.closest(".pc-th-options li");
+        if (li && !li.classList.contains("pc-th-empty")) {
+          pickPcCompany(li.dataset.id, li.textContent);
+          return;
+        }
+        // Click on input re-opens the dropdown if it was closed (e.g. after Escape).
+        const input = ev.target.closest(".pc-th-input");
+        if (input) openPcCompanyDropdown(th, input.value);
+        return;
+      }
+
+      // Stub branch — used by future pickers (contact picker lands in diff 3).
       if (ev.target.closest(".pc-th-input"))   console.log("[pc-th] input click",   pickerId);
       if (ev.target.closest(".pc-th-clear"))   console.log("[pc-th] clear click",   pickerId);
       if (ev.target.closest(".pc-th-add-new")) console.log("[pc-th] add-new click", pickerId);
@@ -4940,14 +5108,21 @@
       const input = ev.target.closest(".pc-th-input");
       if (!input) return;
       const th = input.closest(".pc-typeahead");
-      console.log("[pc-th] filter input", th?.dataset.pickerId, input.value);
-      // TODO(diff 2): debounce + fetch + render listbox.
+      const pickerId = th?.dataset.pickerId;
+      if (pickerId === "pc-company") {
+        // Matches the agency picker (index.html:5531): synchronous re-render
+        // per keystroke, no debounce. Company list is small (~8) so cost
+        // is irrelevant either way; this is for consistency.
+        filterPcCompanyOptions(th, input.value);
+      } else {
+        console.log("[pc-th] filter input", pickerId, input.value);
+      }
     });
 
-    // Keyboard nav — mirrors agency picker behavior (index.html:5383-5403).
+    // Keyboard nav — mirrors agency picker behavior (index.html:5546-5566).
     // ArrowDown/Up shift the .active highlight among non-empty options;
-    // Enter logs the would-be-pick (real pick wired in diff 2); Escape
-    // closes the dropdown.
+    // Enter commits the active option for pc-company; other picker ids
+    // log only. Escape closes the dropdown.
     root.addEventListener("keydown", (ev) => {
       const input = ev.target.closest(".pc-th-input");
       if (!input) return;
@@ -4974,8 +5149,11 @@
         const active = th.querySelector(".pc-th-options li.active");
         if (active && !active.classList.contains("pc-th-empty")) {
           ev.preventDefault();
-          console.log("[pc-th] Enter pick", pickerId, active.dataset.id || active.textContent);
-          // TODO(diff 2): commit selection + close dropdown.
+          if (pickerId === "pc-company") {
+            pickPcCompany(active.dataset.id, active.textContent);
+          } else {
+            console.log("[pc-th] Enter pick", pickerId, active.dataset.id || active.textContent);
+          }
         }
       } else if (ev.key === "Escape") {
         if (dropdown) dropdown.hidden = true;

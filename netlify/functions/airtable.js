@@ -1388,6 +1388,13 @@ function mapJob(r) {
       })(),
       generatorInstalled:gBool(f,F.job.generatorInstalled),
       powerCompanyName:g(f,F.job.powerCompanyName)||"",powerCompanyContact:g(f,F.job.powerCompanyContact)||"",
+      powerCompanyId: (() => {
+        const v = f[F.job.powerCompanyLink];
+        if (Array.isArray(v) && v.length > 0) {
+          return typeof v[0] === "string" ? v[0] : v[0]?.id || null;
+        }
+        return null;
+      })(),
       // TRANSITIONAL: powerCompanyPhone is the legacy projection key, aliasing Cell Phone for
       // backward compat with index.html:3511. Phase 4 removes this line when the UI rewrite
       // adopts powerCompanyCellPhone + powerCompanyOfficePhone for the two-phone render.

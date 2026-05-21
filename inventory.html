@@ -2251,12 +2251,22 @@ async function openPushHistoryDetail(id) {
         ' at ' + dt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
       : "—";
 
+    // Stash for the reprint handler — admin-only feature reads from here.
+    window._historyDetailPush = p;
+
+    var isAdmin = currentUser && currentUser.role === "admin";
+
     var html = '<button onclick="loadPushHistory()" style="background:none;border:none;color:var(--gold);font-size:13px;font-weight:600;padding:0 0 12px;cursor:pointer;">‹ Back to history</button>';
 
     // Header card
     html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:14px;">';
     html += '<div style="font-size:16px;font-weight:700;color:var(--text);margin-bottom:4px;">' + (p.jobName || "Unknown job") + '</div>';
-    html += '<div style="font-size:12px;color:var(--dim);margin-bottom:10px;">' + dtStr + (p.pushedBy ? ' · pushed by ' + p.pushedBy : '') + '</div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;">';
+    html += '<div style="font-size:12px;color:var(--dim);flex:1;min-width:0;">' + dtStr + (p.pushedBy ? ' · pushed by ' + p.pushedBy : '') + '</div>';
+    if (isAdmin) {
+      html += '<button onclick="reprintPushHistoryPdf()" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-size:12px;font-weight:700;padding:6px 12px;cursor:pointer;flex-shrink:0;">Reprint PDF</button>';
+    }
+    html += '</div>';
 
     // Totals row
     html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:4px 0;">' +
@@ -2321,6 +2331,29 @@ async function openPushHistoryDetail(id) {
   }
 }
 
+// Admin-only: regenerate the submit-time PDF from the loaded history detail.
+// Passes dateOverride so the PDF header/footer date matches the original push.
+function reprintPushHistoryPdf() {
+  var p = window._historyDetailPush;
+  if (!p) { showToast("No push loaded.", true); return; }
+  var g = {
+    jobName:  p.jobName,
+    taxable:  p.taxable,
+    jobTotal: p.materialsTotal,
+    dateOverride: p.datePushed || null,
+    lines: (p.lines || []).map(function(l) {
+      return {
+        item:   l.itemName,
+        qty:    l.qty,
+        cost:   l.unitCost,
+        total:  l.lineTotal,
+        wireFt: l.wireFt
+      };
+    })
+  };
+  downloadReceiptPDF(g);
+}
+
 function downloadReceiptPDF(g) {
   var pdfBase64 = generateReceiptPDF(g);
   if (!pdfBase64) return;
@@ -2332,7 +2365,8 @@ function downloadReceiptPDF(g) {
     var url  = URL.createObjectURL(blob);
     var a    = document.createElement("a");
     var safe = (g.jobName || "job").replace(/[^a-z0-9]/gi, "_").substring(0, 30);
-    var date = new Date().toISOString().split("T")[0];
+    var dateSrc = g.dateOverride ? new Date(g.dateOverride) : new Date();
+    var date = dateSrc.toISOString().split("T")[0];
     a.href     = url;
     a.download = "NEE_Materials_" + safe + "_" + date + ".pdf";
     document.body.appendChild(a);
@@ -2361,7 +2395,7 @@ function generateReceiptPDF(g) {
     var pH      = 279.4;
     var mg      = 15;
     var cW      = pW - mg * 2;
-    var today   = new Date();
+    var today   = g.dateOverride ? new Date(g.dateOverride) : new Date();
     var dateStr = today.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
 
     // ── HEADER (white bg, logo left, title right) ─────────

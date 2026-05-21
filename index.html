@@ -1645,6 +1645,69 @@
     .agency-search-result:hover, .agency-search-result.active { background: var(--accent-glow); color: var(--accent); }
     .agency-search-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
 
+    /* Reusable typeahead component (.pc-typeahead) — diff 1 of Phase 2
+       Power Co. parity. Markup is produced by renderTypeahead({...}) and
+       wired by listeners scoped to #tab-powerco further down. Token-aligned
+       with .edit-input (input chrome) and .agency-search-results (dropdown
+       chrome) so it slots into existing edit panels without restyling. */
+    .pc-typeahead { position: relative; }
+    .pc-th-label {
+      display: block;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
+      text-transform: uppercase; color: var(--muted);
+      margin-bottom: 5px;
+    }
+    .pc-th-control { position: relative; }
+    .pc-th-input {
+      width: 100%; box-sizing: border-box;
+      padding: 8px 30px 8px 10px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 8px; color: var(--text); font-size: 13px;
+      font-family: inherit; outline: none;
+    }
+    .pc-th-input:focus { border-color: var(--accent); }
+    .pc-th-input:disabled { opacity: 0.55; cursor: not-allowed; }
+    .pc-th-input.has-pick {
+      background: var(--accent-glow);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .pc-th-clear {
+      position: absolute; top: 50%; right: 6px;
+      transform: translateY(-50%);
+      background: none; border: none; cursor: pointer;
+      color: var(--muted); font-size: 18px; line-height: 1;
+      padding: 2px 6px; border-radius: 4px;
+    }
+    .pc-th-clear:hover { color: var(--accent); }
+    .pc-th-dropdown {
+      position: absolute; left: 0; right: 0; top: 100%; margin-top: 2px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+      max-height: 280px; overflow-y: auto; z-index: 10;
+    }
+    .pc-th-options { list-style: none; margin: 0; padding: 0; }
+    .pc-th-options li {
+      padding: 7px 10px; font-size: 13px; cursor: pointer;
+      color: var(--text); border-bottom: 1px solid var(--line);
+    }
+    .pc-th-options li:last-child { border-bottom: none; }
+    .pc-th-options li:hover,
+    .pc-th-options li.active { background: var(--accent-glow); color: var(--accent); }
+    .pc-th-options li.pc-th-empty {
+      color: var(--muted); font-style: italic; text-align: center;
+      cursor: default;
+    }
+    .pc-th-options li.pc-th-empty:hover { background: transparent; color: var(--muted); }
+    .pc-th-add-new {
+      display: block; width: 100%; text-align: left;
+      padding: 10px; font-size: 13px; font-weight: 600;
+      background: var(--panel-2); color: var(--accent);
+      border: none; border-top: 1px solid var(--line);
+      cursor: pointer; font-family: inherit;
+    }
+    .pc-th-add-new:hover { background: var(--accent-glow); }
+
     /* Day-detail panel: shown when a day is tapped */
     .sch-day-detail {
       background: var(--panel-2);
@@ -4819,6 +4882,106 @@
       filtered.map(c => `<option value="${esc(c.name)}" ${c.name === currentContactName ? "selected" : ""}>${esc(c.name)}${c.phone ? " — " + esc(c.phone) : ""}</option>`).join("");
     row.style.display = "";
   }
+
+  // ── REUSABLE TYPEAHEAD COMPONENT (Phase 2 Power Co. parity, diff 1) ──
+  // renderTypeahead({...}) returns HTML for a self-contained picker. Diff 1
+  // is scaffolding only — no call sites use it yet; diff 2 wires it into
+  // the Power Co. edit form (replacing the company + contact <select>s).
+  // Test by injecting into DevTools while on the Power Co. tab:
+  //   document.body.insertAdjacentHTML('beforeend',
+  //     renderTypeahead({id:'tst', label:'Test', placeholder:'Type…'}));
+  function renderTypeahead({ id, label, placeholder, selectedId, selectedLabel, disabled, addNewLabel }) {
+    const sId  = selectedId  || "";
+    const sLbl = selectedLabel || "";
+    const ph   = placeholder || "Type to search…";
+    const lbl  = label || "";
+    const add  = addNewLabel || "+ Add new";
+    const dis  = disabled ? "disabled" : "";
+    return `
+      <div class="pc-typeahead" data-picker-id="${esc(id)}" data-selected-id="${esc(sId)}">
+        <label class="pc-th-label">${esc(lbl)}</label>
+        <div class="pc-th-control">
+          <input type="text" class="pc-th-input${sId ? " has-pick" : ""}"
+                 placeholder="${esc(ph)}" value="${esc(sLbl)}" autocomplete="off" ${dis}>
+          <button type="button" class="pc-th-clear" aria-label="Clear">×</button>
+        </div>
+        <div class="pc-th-dropdown" hidden>
+          <ul class="pc-th-options" role="listbox"></ul>
+          <button type="button" class="pc-th-add-new">${esc(add)}</button>
+        </div>
+      </div>`;
+  }
+
+  // Delegated listeners scoped to #tab-powerco (the tab is static markup —
+  // never re-rendered — but the data-bound guard keeps re-entry safe if a
+  // future diff turns the tab into a render target). Diff 1 stubs the
+  // click / input handlers (console.log only); keyboard nav is real to
+  // match the agency picker (index.html:5383) so diff 2 inherits a working
+  // ArrowUp/Down/Enter/Escape flow once the listbox is populated.
+  (function bindPcTypeaheadListeners() {
+    const root = document.getElementById("tab-powerco");
+    if (!root || root.dataset.pcThBound === "1") return;
+    root.dataset.pcThBound = "1";
+
+    root.addEventListener("click", (ev) => {
+      const th = ev.target.closest(".pc-typeahead");
+      if (!th) return;
+      const pickerId = th.dataset.pickerId;
+      if (ev.target.closest(".pc-th-input"))   console.log("[pc-th] input click",   pickerId);
+      if (ev.target.closest(".pc-th-clear"))   console.log("[pc-th] clear click",   pickerId);
+      if (ev.target.closest(".pc-th-add-new")) console.log("[pc-th] add-new click", pickerId);
+      const li = ev.target.closest(".pc-th-options li");
+      if (li && !li.classList.contains("pc-th-empty")) {
+        console.log("[pc-th] option click", pickerId, li.dataset.id || li.textContent);
+      }
+    });
+
+    root.addEventListener("input", (ev) => {
+      const input = ev.target.closest(".pc-th-input");
+      if (!input) return;
+      const th = input.closest(".pc-typeahead");
+      console.log("[pc-th] filter input", th?.dataset.pickerId, input.value);
+      // TODO(diff 2): debounce + fetch + render listbox.
+    });
+
+    // Keyboard nav — mirrors agency picker behavior (index.html:5383-5403).
+    // ArrowDown/Up shift the .active highlight among non-empty options;
+    // Enter logs the would-be-pick (real pick wired in diff 2); Escape
+    // closes the dropdown.
+    root.addEventListener("keydown", (ev) => {
+      const input = ev.target.closest(".pc-th-input");
+      if (!input) return;
+      const th = input.closest(".pc-typeahead");
+      if (!th) return;
+      const dropdown = th.querySelector(".pc-th-dropdown");
+      const rows = th.querySelectorAll(".pc-th-options li:not(.pc-th-empty)");
+      const pickerId = th.dataset.pickerId;
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        if (!rows.length) return;
+        let idx = Array.from(rows).findIndex(r => r.classList.contains("active"));
+        idx = Math.min(idx + 1, rows.length - 1);
+        rows.forEach((r, i) => r.classList.toggle("active", i === idx));
+        if (rows[idx]) rows[idx].scrollIntoView({ block: "nearest" });
+      } else if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        if (!rows.length) return;
+        let idx = Array.from(rows).findIndex(r => r.classList.contains("active"));
+        idx = Math.max(idx - 1, 0);
+        rows.forEach((r, i) => r.classList.toggle("active", i === idx));
+        if (rows[idx]) rows[idx].scrollIntoView({ block: "nearest" });
+      } else if (ev.key === "Enter") {
+        const active = th.querySelector(".pc-th-options li.active");
+        if (active && !active.classList.contains("pc-th-empty")) {
+          ev.preventDefault();
+          console.log("[pc-th] Enter pick", pickerId, active.dataset.id || active.textContent);
+          // TODO(diff 2): commit selection + close dropdown.
+        }
+      } else if (ev.key === "Escape") {
+        if (dropdown) dropdown.hidden = true;
+      }
+    });
+  })();
 
   // ── POWER CO SAVE (admin) ──
   async function handlePowerCoSave() {

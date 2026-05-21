@@ -3621,12 +3621,15 @@
       // Pre-fill Power Co edit form
       $("pcEditCompany").value = job.powerCompanyIntake || "";
       // Hydrate the new typeahead picker from the link-field-backed mapJob
-      // output. companyOptions reset to null so the next focus refetches
-      // (cheap; ~8 companies). The hidden legacy <select> above still drives
-      // the save path + contact-dropdown change listener until diff 5/3.
+      // output. companyOptions is intentionally NOT reset — Power Companies
+      // are tenant-wide data, so the cache lives for the page session
+      // (matches loadInspectionAgencies). Resetting it here while leaving
+      // _pcCompaniesPromise resolved would silently break the second job
+      // load: re-awaiting a resolved promise doesn't re-run the assignment.
+      // The hidden legacy <select> above still drives the save path +
+      // contact-dropdown change listener until diff 5/3.
       pcState.companyId      = job.powerCompanyId   || null;
       pcState.companyLabel   = job.powerCompanyName || "";
-      pcState.companyOptions = null;
       renderPcCompanyPicker();
       $("pcEditAic").value   = job.aicNumber || "";
       $("pcEditTemp").value  = job.tempWorkOrder || "";

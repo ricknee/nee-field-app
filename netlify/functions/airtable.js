@@ -44,6 +44,7 @@ const F = {
     generatorInstalled:      "Generator Installed",
     powerCompanyName:        "Power Company – Name (lookup)",
     powerCompanyContact:     "Power Company – Primary Contact (lookup)",
+    powerContactLink:        "Power Company Contacts",
     powerCompanyCellPhone:   "Power Company – Cell Phone (lookup)",
     powerCompanyOfficePhone: "Power Company – Office Phone (lookup)",
     powerCompanyEmail:       "Power Company – Email (lookup)",
@@ -1395,6 +1396,18 @@ function mapJob(r) {
         }
         return null;
       })(),
+      powerContactId: (() => {
+        const v = f[F.job.powerContactLink];
+        if (Array.isArray(v) && v.length > 0) {
+          return typeof v[0] === "string" ? v[0] : v[0]?.id || null;
+        }
+        return null;
+      })(),
+      // Alias for the existing powerCompanyContact key so the diff-3
+      // typeahead hydration can use the parallel naming (powerContactName).
+      // Same lookup field, different access name — keeps both consumers
+      // working until diff 6 deletes the legacy contact path.
+      powerContactName: g(f, F.job.powerCompanyContact) || "",
       // TRANSITIONAL: powerCompanyPhone is the legacy projection key, aliasing Cell Phone for
       // backward compat with index.html:3511. Phase 4 removes this line when the UI rewrite
       // adopts powerCompanyCellPhone + powerCompanyOfficePhone for the two-phone render.

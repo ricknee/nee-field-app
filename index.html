@@ -2269,9 +2269,18 @@
                   <option value="South Central REI">South Central REI</option>
                 </select>
               </div>
+              <!-- Typeahead picker host — populated by renderPcContactPicker()
+                   from selectJob and on every company change. Disabled until a
+                   company is selected (passes disabled:!pcState.companyId). -->
+                <div id="pcContactPickerSlot" style="grid-column:1/-1;"></div>
+              <!-- Legacy contact <select> wrapper: kept in DOM (always hidden)
+                   so handlePowerCoSave can still read .value and the existing
+                   updatePcContactDropdown can still populate it. Diff 5 rewires
+                   save → diff 6 deletes this whole legacy path. pcContactRow's
+                   display:none toggle from updatePcContactDropdown is now
+                   harmless (it wraps only an already-hidden select). -->
               <div id="pcContactRow" style="grid-column:1/-1; display:none;">
-                <label class="edit-label">Contact</label>
-                <select id="pcEditContact" class="edit-input">
+                <select id="pcEditContact" style="display:none;" aria-hidden="true" tabindex="-1">
                   <option value="">— Select Contact —</option>
                 </select>
               </div>
@@ -3631,6 +3640,13 @@
       pcState.companyId      = job.powerCompanyId   || null;
       pcState.companyLabel   = job.powerCompanyName || "";
       renderPcCompanyPicker();
+      // Contact hydration — pcState.contactsByCompany is NOT reset; it's a
+      // cross-job cache keyed by companyId (lazy-fetched on first focus).
+      // Same cache-survives-job-switch rationale as the company list, and
+      // the same diff-2-style invalidation bug we are NOT going to repeat.
+      pcState.contactId      = job.powerContactId   || null;
+      pcState.contactLabel   = job.powerContactName || "";
+      renderPcContactPicker();
       $("pcEditAic").value   = job.aicNumber || "";
       $("pcEditTemp").value  = job.tempWorkOrder || "";
       $("pcEditPerm").value  = job.permWorkOrder || "";
@@ -4904,11 +4920,18 @@
   // <select id="pcEditCompany"> still drives the save payload until diff 5
   // rewires handlePowerCoSave to read pcState.companyId.
   const pcState = {
-    companyId:      null,   // recId from Power Companies table, or null
-    companyLabel:   "",     // display name shown in the input
-    companyOptions: null,   // null = not loaded; [] = loaded empty; [...] = loaded
+    companyId:         null,   // recId from Power Companies table, or null
+    companyLabel:      "",     // company display name shown in the input
+    companyOptions:    null,   // null = not loaded; [] = loaded empty; [...] = loaded
+    contactId:         null,   // recId from Power Company Contacts table, or null
+    contactLabel:      "",     // contact display name shown in the input
+    contactsByCompany: new Map(),  // companyId → [{id, label}, ...], page-lifetime
   };
   let _pcCompaniesPromise = null;
+  // Shape: { companyId, promise } or null. companyId guard rejects stale
+  // in-flight returns when the user switches companies before the fetch
+  // resolves (see openPcContactDropdown for the post-await sibling guard).
+  let _pcContactsPromise  = null;
 
   // Mirrors loadInspectionAgencies (index.html:5421) — in-flight promise
   // dedup, no retry-on-error semantics. Server returns {id, name}; remap to
@@ -4980,6 +5003,7 @@
   }
 
   function pickPcCompany(id, label) {
+    const prevCompanyId  = pcState.companyId;
     pcState.companyId    = id || null;
     pcState.companyLabel = label || "";
     const th = document.querySelector('#tab-powerco [data-picker-id="pc-company"]');
@@ -4993,12 +5017,157 @@
     }
     const dropdown = th.querySelector(".pc-th-dropdown");
     if (dropdown) dropdown.hidden = true;
+    // Re-picking the same company preserves the contact selection; only
+    // clear contact when the company actually changed. Equality on null
+    // both sides (clear → clear) is a no-op which is also correct.
+    if (prevCompanyId !== pcState.companyId) {
+      pcState.contactId    = null;
+      pcState.contactLabel = "";
+      renderPcContactPicker();
+    }
   }
 
   function clearPcCompany() {
     pcState.companyId    = null;
     pcState.companyLabel = "";
+    // Clearing the company invalidates any contact selection — re-render
+    // the contact picker so it greys out (disabled:!pcState.companyId).
+    pcState.contactId    = null;
+    pcState.contactLabel = "";
     const th = document.querySelector('#tab-powerco [data-picker-id="pc-company"]');
+    if (!th) return;
+    // kept in sync as a debug/inspect surface; not read by handlers.
+    th.dataset.selectedId = "";
+    const input = th.querySelector(".pc-th-input");
+    if (input) {
+      input.value = "";
+      input.classList.remove("has-pick");
+      input.focus();
+    }
+    const dropdown = th.querySelector(".pc-th-dropdown");
+    if (dropdown) dropdown.hidden = true;
+    renderPcContactPicker();
+  }
+
+  // ── POWER CO CONTACT PICKER (Phase 2 diff 3) ──
+  // Mirrors the company picker above, parameterized on companyId. Cache lives
+  // in pcState.contactsByCompany (Map), latch lives in _pcContactsPromise
+  // (single {companyId,promise} object). Both persist for the page session.
+  async function fetchContactsForCompany(companyId) {
+    if (!companyId) return [];
+    const cached = pcState.contactsByCompany.get(companyId);
+    if (cached) return cached;
+    if (_pcContactsPromise && _pcContactsPromise.companyId === companyId) {
+      return _pcContactsPromise.promise;
+    }
+    // Pass both companyName (cheap server-side prefilter on the lookup field)
+    // and companyId (in-memory verify against substring-collision on the name).
+    // companyName only resolved when the requested company is the active one
+    // — pcState.companyLabel could be stale for any other companyId. Pattern
+    // parallels loadInspectorsForAgency (index.html:5765-5767).
+    const companyName = pcState.companyId === companyId ? pcState.companyLabel : "";
+    const promise = (async () => {
+      try {
+        const d = await apiGet("getContactsForPowerCompany", { companyName, companyId });
+        const contacts = (d.contacts || []).map(c => ({ id: c.id, label: c.name || "" }));
+        pcState.contactsByCompany.set(companyId, contacts);
+        return contacts;
+      } catch(e) {
+        pcState.contactsByCompany.set(companyId, []);
+        return [];
+      }
+    })();
+    _pcContactsPromise = { companyId, promise };
+    return promise;
+  }
+
+  function renderPcContactPicker() {
+    const slot = $("pcContactPickerSlot");
+    if (!slot) return;
+    // Disabled state lives at the call site, not in renderTypeahead — the
+    // reusable component stays unaware of contact-specific copy. Placeholder
+    // swap signals "pick a company first" without modal-style prompts.
+    const disabled = !pcState.companyId;
+    slot.innerHTML = renderTypeahead({
+      id:            "pc-contact",
+      label:         "Contact",
+      placeholder:   disabled ? "Select a company first…" : "Search contacts…",
+      selectedId:    pcState.contactId,
+      selectedLabel: pcState.contactLabel,
+      disabled:      disabled,
+      addNewLabel:   "+ Add new contact",
+    });
+  }
+
+  function buildPcContactOptionsHtml(contacts, filter) {
+    const ql = (filter || "").trim().toLowerCase();
+    const list = ql
+      ? contacts.filter(c => (c.label || "").toLowerCase().includes(ql))
+      : contacts.slice();
+    if (!list.length) return `<li class="pc-th-empty">No matches</li>`;
+    return list.slice(0, 50).map(c =>
+      `<li data-id="${esc(c.id)}">${esc(c.label)}</li>`
+    ).join("");
+  }
+
+  async function openPcContactDropdown(th, currentInputValue) {
+    const dropdown = th.querySelector(".pc-th-dropdown");
+    const options  = th.querySelector(".pc-th-options");
+    if (!dropdown || !options) return;
+    // Cancel any pending blur-close timer (same race fix as company picker).
+    if (th._pcThCloseTimer) {
+      clearTimeout(th._pcThCloseTimer);
+      th._pcThCloseTimer = null;
+    }
+    const companyId = pcState.companyId;
+    // Belt-and-braces: the input is disabled when companyId is null, so
+    // focusin shouldn't fire — but click-on-disabled-input still fires
+    // synthetically in some browsers, so guard explicitly.
+    if (!companyId) return;
+    if (!pcState.contactsByCompany.has(companyId)) {
+      options.innerHTML = `<li class="pc-th-empty">Loading…</li>`;
+      dropdown.hidden = false;
+      await fetchContactsForCompany(companyId);
+      // If the user picked a different company while the fetch was in flight,
+      // the picker DOM was re-rendered against the new company. Bail before
+      // writing innerHTML to a now-detached element. The orphaned fetch still
+      // resolves and caches under its companyId — harmless and useful for
+      // cache-warming if the user later switches back.
+      if (pcState.companyId !== companyId) return;
+    }
+    const contacts = pcState.contactsByCompany.get(companyId) || [];
+    options.innerHTML = buildPcContactOptionsHtml(contacts, currentInputValue);
+    dropdown.hidden = false;
+  }
+
+  function filterPcContactOptions(th, query) {
+    const options = th.querySelector(".pc-th-options");
+    if (!options) return;
+    const companyId = pcState.companyId;
+    if (!companyId || !pcState.contactsByCompany.has(companyId)) return;  // still loading or no company
+    options.innerHTML = buildPcContactOptionsHtml(pcState.contactsByCompany.get(companyId), query);
+  }
+
+  function pickPcContact(id, label) {
+    pcState.contactId    = id || null;
+    pcState.contactLabel = label || "";
+    const th = document.querySelector('#tab-powerco [data-picker-id="pc-contact"]');
+    if (!th) return;
+    // kept in sync as a debug/inspect surface; not read by handlers.
+    th.dataset.selectedId = pcState.contactId || "";
+    const input = th.querySelector(".pc-th-input");
+    if (input) {
+      input.value = pcState.contactLabel;
+      input.classList.toggle("has-pick", !!pcState.contactId);
+    }
+    const dropdown = th.querySelector(".pc-th-dropdown");
+    if (dropdown) dropdown.hidden = true;
+  }
+
+  function clearPcContact() {
+    pcState.contactId    = null;
+    pcState.contactLabel = "";
+    const th = document.querySelector('#tab-powerco [data-picker-id="pc-contact"]');
     if (!th) return;
     // kept in sync as a debug/inspect surface; not read by handlers.
     th.dataset.selectedId = "";
@@ -5056,7 +5225,8 @@
       if (!input) return;
       const th = input.closest(".pc-typeahead");
       const pickerId = th?.dataset.pickerId;
-      if (pickerId === "pc-company") openPcCompanyDropdown(th, input.value);
+      if (pickerId === "pc-company")      openPcCompanyDropdown(th, input.value);
+      else if (pickerId === "pc-contact") openPcContactDropdown(th, input.value);
     });
 
     // Blur → close dropdown (150ms delay so option clicks register first;
@@ -5097,7 +5267,23 @@
         return;
       }
 
-      // Stub branch — used by future pickers (contact picker lands in diff 3).
+      if (pickerId === "pc-contact") {
+        if (ev.target.closest(".pc-th-clear"))   { clearPcContact(); return; }
+        if (ev.target.closest(".pc-th-add-new")) {
+          console.log("[pc-th] add-new click", pickerId);  // TODO(diff 4): open new-contact modal
+          return;
+        }
+        const li = ev.target.closest(".pc-th-options li");
+        if (li && !li.classList.contains("pc-th-empty")) {
+          pickPcContact(li.dataset.id, li.textContent);
+          return;
+        }
+        const input = ev.target.closest(".pc-th-input");
+        if (input) openPcContactDropdown(th, input.value);
+        return;
+      }
+
+      // Stub branch — used by any future pickers (none planned beyond diff 3).
       if (ev.target.closest(".pc-th-input"))   console.log("[pc-th] input click",   pickerId);
       if (ev.target.closest(".pc-th-clear"))   console.log("[pc-th] clear click",   pickerId);
       if (ev.target.closest(".pc-th-add-new")) console.log("[pc-th] add-new click", pickerId);
@@ -5117,6 +5303,8 @@
         // per keystroke, no debounce. Company list is small (~8) so cost
         // is irrelevant either way; this is for consistency.
         filterPcCompanyOptions(th, input.value);
+      } else if (pickerId === "pc-contact") {
+        filterPcContactOptions(th, input.value);
       } else {
         console.log("[pc-th] filter input", pickerId, input.value);
       }
@@ -5154,6 +5342,8 @@
           ev.preventDefault();
           if (pickerId === "pc-company") {
             pickPcCompany(active.dataset.id, active.textContent);
+          } else if (pickerId === "pc-contact") {
+            pickPcContact(active.dataset.id, active.textContent);
           } else {
             console.log("[pc-th] Enter pick", pickerId, active.dataset.id || active.textContent);
           }

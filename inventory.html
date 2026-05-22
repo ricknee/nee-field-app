@@ -2476,10 +2476,12 @@ function generateReceiptPDF(g) {
         doc.rect(mg, y - rowH + 1, cW, rowH, "F");
       }
 
-      // Bottom border on each row
+      // Bottom border on each row — sits 1mm farther down on wire rows so it
+      // doesn't overlap the "(xxx ft)" sub-line baseline.
+      var borderY = isWire ? y + 3 : y + 2;
       doc.setDrawColor(230, 230, 230);
       doc.setLineWidth(0.1);
-      doc.line(mg, y + 2, pW - mg, y + 2);
+      doc.line(mg, borderY, pW - mg, borderY);
 
       // Item name
       doc.setTextColor(isReturn ? 180 : 30, isReturn ? 30 : 30, isReturn ? 30 : 30);
@@ -2492,7 +2494,7 @@ function generateReceiptPDF(g) {
         doc.text(Math.abs(l.qty) + " lbs", c2, y - 3, { align: "right" });
         doc.setFontSize(8);
         doc.setTextColor(52, 120, 190);
-        doc.text("(" + l.wireFt.toLocaleString() + " ft)", c2, y + 2, { align: "right" });
+        doc.text("(" + l.wireFt.toLocaleString() + " ft)", c2, y + 1, { align: "right" });
         doc.setFontSize(9);
         doc.setTextColor(50, 50, 50);
       } else {
@@ -2537,15 +2539,23 @@ function generateReceiptPDF(g) {
       doc.text("$" + taxAmt.toFixed(2), c4, y, { align: "right" });
     }
 
-    // Grand total — orange box, right side only
+    // Grand total — orange pill, right side only.
+    // Geometry is local to this block: label and amount anchor to the pill
+    // bounds (pillX/pillW), not to the table column rails (c3/c4) — the two
+    // coordinate systems used to drift, clipping the "G" outside the fill.
     y += 5;
+    var pillX = pW - mg - 65;
+    var pillW = 65;
+    var pillH = 11;
+    var pillR = 2;
+    var padX  = 3;
     doc.setFillColor(232, 101, 26);
-    doc.rect(pW - mg - 65, y, 65, 11, "F");
+    doc.roundedRect(pillX, y, pillW, pillH, pillR, pillR, "F");
     doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
     doc.setTextColor(255, 255, 255);
-    doc.text("GRAND TOTAL", c3 - 2, y + 7.5, { align: "right" });
-    doc.text("$" + grandTot.toFixed(2), c4, y + 7.5, { align: "right" });
+    doc.text("GRAND TOTAL", pillX + padX, y + 7.5);
+    doc.text("$" + grandTot.toFixed(2), pillX + pillW - padX, y + 7.5, { align: "right" });
 
     // ── FOOTER (minimal — just a thin orange line + small text) ───
     doc.setDrawColor(232, 101, 26);

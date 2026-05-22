@@ -2470,17 +2470,18 @@ function generateReceiptPDF(g) {
       var rowH     = isWire ? 11 : 7;
       y += rowH;
 
-      // Light alternating stripe
+      // Light alternating stripe. Top shrunk 1mm so it doesn't paint over the
+      // previous wire row's "(xxx ft)" descender; bottom stays at y + 1.
       if (idx % 2 === 0) {
         doc.setFillColor(252, 252, 252);
-        doc.rect(mg, y - rowH + 1, cW, rowH, "F");
+        doc.rect(mg, y - rowH + 2, cW, rowH - 1, "F");
       }
 
       // Bottom border on each row — sits 1mm farther down on wire rows so it
       // doesn't overlap the "(xxx ft)" sub-line baseline.
       var borderY = isWire ? y + 3 : y + 2;
-      doc.setDrawColor(230, 230, 230);
-      doc.setLineWidth(0.1);
+      doc.setDrawColor(180, 180, 180);
+      doc.setLineWidth(0.2);
       doc.line(mg, borderY, pW - mg, borderY);
 
       // Item name

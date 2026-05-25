@@ -2243,7 +2243,7 @@ async function handleAddGeneralExpense(body) {
   if (date)        fields["fldCCPYdyWAOGchWb"] = date;
   if (description) fields["fldelsB2jH2tvt1Cj"] = description;
   if (credit && Number(credit) > 0) fields["fldcld418pREq2bGq"] = Number(credit);
-  if (vendorId && String(vendorId).startsWith("rec")) fields["fldlTUL8hsPkReBAB"] = [{ id: String(vendorId) }];
+  if (vendorId && String(vendorId).startsWith("rec")) fields["fldlTUL8hsPkReBAB"] = [String(vendorId)];
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
   return resp(200, { ok: true, id: data.id });
 }
@@ -2273,9 +2273,94 @@ async function handleCompanies() {
 }
 
 async function handleVendors() {
-  const records = await fetchAll("Vendors", { sortField: "Vendor Name", sortDir: "asc" });
-  const vendors = records.filter(r => r.fields["Active"] !== false).map(r => ({ id:r.id, name:r.fields["Vendor Name"]||"" })).filter(v => v.name);
+  const records = await fetchAll("Vendors", {
+    sortField: "Vendor Name",
+    sortDir: "asc",
+    filter: "{Active}=TRUE()"
+  });
+  const vendors = records
+    .map(r => ({
+      id: r.id,
+      name: r.fields["Vendor Name"] || "",
+      phone: r.fields["Primary Phone"] || "",
+      email: r.fields["Primary Email"] || "",
+      chargesSalesTax: r.fields["Charges Sales Tax"] === true
+    }))
+    .filter(v => v.name);
+  // Pin "Other" to the bottom of the list — escape-hatch UX.
+  vendors.sort((a, b) => {
+    if (a.name === "Other") return 1;
+    if (b.name === "Other") return -1;
+    return a.name.localeCompare(b.name);
+  });
   return resp(200, { ok: true, vendors });
+}
+
+// Creates a new Vendor from the "+ Add new vendor" row on the Expenses-tab
+// vendor typeahead. Admin-only (admin OR office role, matching frontend
+// isAdmin()); 403s anyone else. Required: employeeId (for the role check),
+// name. Optional: phone, email, chargesSalesTax. Active is force-set to TRUE
+// on create — diff #1 made handleVendors filter on {Active}=TRUE() so a new
+// vendor must be Active to be discoverable by the typeahead after create.
+// Duplicate-name guard (case-insensitive) returns 409 with existingId so the
+// frontend can offer to select the existing record instead. No typecast —
+// all targets are text/phone/email/checkbox; no singleSelects.
+async function handleCreateVendor(body) {
+  const { employeeId, name, phone, email, chargesSalesTax } = body || {};
+
+  // ── Admin guard (trust-the-frontend, mirrors airtable.js:1210–1224) ──
+  const empId = String(employeeId || "").trim();
+  if (!empId.startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const empRecs = await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${empId}"` });
+  const emp = empRecs[0];
+  if (!emp) return resp(404, { ok: false, error: "Employee not found." });
+  const role = String(emp.fields[F.emp.role] || "").toLowerCase();
+  if (role !== "admin" && role !== "office") {
+    return resp(403, { ok: false, error: "Admin role required to create vendors." });
+  }
+
+  // ── Validate ──
+  const trimmedName = String(name || "").trim();
+  if (!trimmedName) return resp(400, { ok: false, error: "Vendor Name is required." });
+
+  // ── Duplicate-name guard (case-insensitive) ──
+  const safeName = escapeFormulaString(trimmedName.toLowerCase());
+  const existing = await fetchAll("Vendors", {
+    filter: `LOWER({Vendor Name})="${safeName}"`
+  });
+  if (existing.length > 0) {
+    return resp(409, {
+      ok: false,
+      error: `A vendor named "${existing[0].fields["Vendor Name"]}" already exists.`,
+      existingId: existing[0].id
+    });
+  }
+
+  // ── Build fields + create ──
+  const fields = {};
+  fields["fldcguWbBXsbSyj2B"] = trimmedName;                        // Vendor Name
+  fields["fldIM0IjHibKlpz5S"] = true;                                // Active
+  if (phone && String(phone).trim()) fields["fldMmOsK1riQu1yfV"] = String(phone).trim();
+  if (email && String(email).trim()) fields["fldAUaXdu6HWvTn5V"] = String(email).trim();
+  if (chargesSalesTax === true)      fields["fldB4AUNSsP3Gyuhj"] = true;
+
+  const data = await atFetch(`${encodeURIComponent("Vendors")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields })
+  });
+
+  return resp(200, {
+    ok: true,
+    vendor: {
+      id:              data.id,
+      name:            data.fields?.["Vendor Name"] || trimmedName,
+      phone:           data.fields?.["Primary Phone"] || "",
+      email:           data.fields?.["Primary Email"] || "",
+      chargesSalesTax: data.fields?.["Charges Sales Tax"] === true
+    }
+  });
 }
 
 async function handleListContractors() {
@@ -3853,6 +3938,7 @@ export async function handler(event) {
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body);
       if (body.action === "addGeneralExpense")    return await handleAddGeneralExpense(body);
+      if (body.action === "createVendor")         return await handleCreateVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }
 

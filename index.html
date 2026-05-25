@@ -1645,6 +1645,37 @@
     .agency-search-result:hover, .agency-search-result.active { background: var(--accent-glow); color: var(--accent); }
     .agency-search-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
 
+    /* Vendor typeahead — admin-only edit on the Expenses tab's New Expense panel.
+       Shape cloned from .agency-search above. Diff #4 of 6 (Vendor parity). */
+    .vendor-search-wrap { position: relative; }
+    .vendor-search {
+      width: 100%; padding: 6px 8px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 6px; color: var(--text); font-size: 13px;
+      font-family: inherit; box-sizing: border-box;
+    }
+    .vendor-search:focus { outline: none; border-color: var(--accent); }
+    .vendor-search.has-pick {
+      background: var(--accent-glow);
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    .vendor-search-results {
+      position: absolute; left: 0; right: 0; top: 100%; margin-top: 2px;
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 6px; box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+      max-height: 240px; overflow-y: auto; z-index: 10;
+      display: none;
+    }
+    .vendor-search-results.open { display: block; }
+    .vendor-search-result {
+      padding: 7px 10px; font-size: 13px; cursor: pointer;
+      border-bottom: 1px solid var(--line);
+    }
+    .vendor-search-result:last-child { border-bottom: none; }
+    .vendor-search-result:hover, .vendor-search-result.active { background: var(--accent-glow); color: var(--accent); }
+    .vendor-search-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
+
     /* Reusable typeahead component (.pc-typeahead) — diff 1 of Phase 2
        Power Co. parity. Markup is produced by renderTypeahead({...}) and
        wired by listeners scoped to #tab-powerco further down. Token-aligned
@@ -2738,7 +2769,11 @@
               </div>
               <div>
                 <label style="font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px;">Vendor</label>
-                <input type="text" id="genExpVendor" class="edit-input" style="font-size:13px; width:100%;" placeholder="e.g. CED, Menards..." />
+                <div class="vendor-search-wrap">
+                  <input type="text" id="genExpVendorSearch" class="vendor-search" placeholder="Type vendor name…" autocomplete="off" />
+                  <div class="vendor-search-results" id="genExpVendorResults"></div>
+                  <input type="hidden" id="genExpVendorId" value="" />
+                </div>
               </div>
             </div>
             <div style="margin-bottom:10px;">
@@ -5983,6 +6018,126 @@
   // Cached agency list — fetched once on first picker open, reused for the
   // life of the page session. Tap-throughs across jobs all reuse the same
   // list, so there's no need to refetch per selectJob.
+  // ── VENDORS CACHE + TYPEAHEAD (Expenses tab, New Expense panel) ──
+  // Mirrors loadInspectionAgencies/populateAgencyDropdown immediately below.
+  // Lazy-loaded on first open of #generalExpensePanel; pinned-Other ordering
+  // is handled server-side by handleVendors so we render the list as-is.
+  let _vendors = null;
+  let _vendorsPromise = null;
+
+  async function loadVendors() {
+    if (_vendors) return _vendors;
+    if (_vendorsPromise) return _vendorsPromise;
+    _vendorsPromise = (async () => {
+      try {
+        const d = await apiGet("vendors");
+        _vendors = (d.vendors || []).slice();
+      } catch(e) {
+        _vendors = [];
+      }
+      return _vendors;
+    })();
+    return _vendorsPromise;
+  }
+
+  // Resets the picker UI (clears hidden id, clears search input, removes
+  // .has-pick, closes dropdown). Cheap to call on every open.
+  function resetVendorPicker() {
+    const hidden = $("genExpVendorId");
+    const search = $("genExpVendorSearch");
+    const results = $("genExpVendorResults");
+    if (hidden) hidden.value = "";
+    if (search) {
+      search.value = "";
+      search.classList.remove("has-pick");
+    }
+    if (results) {
+      results.classList.remove("open");
+      results.innerHTML = "";
+    }
+  }
+
+  async function populateVendorDropdown() {
+    await loadVendors();
+    const hidden = $("genExpVendorId");
+    const search = $("genExpVendorSearch");
+    const results = $("genExpVendorResults");
+    if (!hidden || !search || !results) return;
+
+    // Always init empty — no edit-existing-expense flow today.
+    resetVendorPicker();
+    search._vendors = _vendors || [];
+
+    if (!search._wired) {
+      search._wired = true;
+      let activeIdx = -1;
+
+      const renderResults = (q) => {
+        const candidates = search._vendors || [];
+        const ql = q.trim().toLowerCase();
+        const filtered = ql
+          ? candidates.filter(v => (v.name || "").toLowerCase().includes(ql))
+          : candidates.slice();
+        activeIdx = -1;
+        const rowsHtml = filtered.length
+          ? filtered.slice(0, 30).map((v, i) =>
+              `<div class="vendor-search-result" data-id="${esc(v.id)}" data-idx="${i}">${esc(v.name)}</div>`
+            ).join("")
+          : `<div class="vendor-search-result-empty">No matching vendors</div>`;
+        results.innerHTML = rowsHtml;
+        results.classList.add("open");
+        results.querySelectorAll(".vendor-search-result").forEach(row => {
+          row.onmousedown = (ev) => { ev.preventDefault(); pick(row.dataset.id); };
+        });
+      };
+
+      const pick = (vendorId) => {
+        const v = (search._vendors || []).find(x => x.id === vendorId);
+        hidden.value = vendorId || "";
+        if (v) {
+          search.value = v.name;
+          search.classList.add("has-pick");
+        } else {
+          search.classList.remove("has-pick");
+        }
+        results.classList.remove("open");
+      };
+
+      search.addEventListener("input", () => {
+        // Typing invalidates the prior pick — empty hidden until a new
+        // selection is made. Matches the agency-picker convention.
+        hidden.value = "";
+        search.classList.remove("has-pick");
+        renderResults(search.value);
+      });
+      search.addEventListener("focus", () => renderResults(search.value));
+      search.addEventListener("blur", () => {
+        setTimeout(() => results.classList.remove("open"), 150);
+      });
+      search.addEventListener("keydown", (e) => {
+        const rows = results.querySelectorAll(".vendor-search-result");
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          activeIdx = Math.min(activeIdx + 1, rows.length - 1);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          activeIdx = Math.max(activeIdx - 1, 0);
+          rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter") {
+          if (activeIdx >= 0 && rows[activeIdx]) {
+            e.preventDefault();
+            pick(rows[activeIdx].dataset.id);
+          }
+        } else if (e.key === "Escape") {
+          results.classList.remove("open");
+        }
+      });
+    }
+  }
+
   let _inspectionAgencies = null;
   let _inspectionAgenciesPromise = null;
 
@@ -7202,7 +7357,7 @@
     const type     = $("genExpType").value;
     const amount   = parseFloat($("genExpAmount").value);
     const credit   = parseFloat($("genExpCredit").value) || 0;
-    const vendor   = ($("genExpVendor").value || "").trim();
+    const vendorId = ($("genExpVendorId").value || "").trim();
     const desc     = ($("genExpDesc").value || "").trim();
     const billable = $("genExpBillable").checked;
     const saveBtn  = $("genExpSaveBtn");
@@ -7216,12 +7371,17 @@
 
     saveBtn.disabled = true; saveBtn.textContent = "Saving...";
     try {
-      await apiPost("addGeneralExpense", { jobId, date, type, amount, credit, vendor, description: desc, billable });
+      // Only send vendorId if it's actually a rec-id pick — empty allowed
+      // for now (diff #6 owns required-validation). Backend already guards
+      // with startsWith("rec") so a non-rec value would be ignored anyway.
+      const payload = { jobId, date, type, amount, credit, description: desc, billable };
+      if (vendorId.startsWith("rec")) payload.vendorId = vendorId;
+      await apiPost("addGeneralExpense", payload);
       msgEl.style.display = "";
       $("genExpAmount").value = "";
       $("genExpCredit").value = "";
       $("genExpDesc").value = "";
-      $("genExpVendor").value = "";
+      resetVendorPicker();
       setTimeout(() => {
         msgEl.style.display = "none";
         $("generalExpensePanel").style.display = "none";
@@ -7529,6 +7689,9 @@
       $("expenseActionBtns").style.display = "none";
       // Set today's date
       $("genExpDate").value = new Date().toISOString().slice(0,10);
+      // Init/refresh the Vendor picker (lazy-loads vendor list on first open;
+      // resets hidden id + search input on every open).
+      populateVendorDropdown();
     });
     const genExpCancel = $("genExpCancelBtn");
     if (genExpCancel) genExpCancel.addEventListener("click", () => {

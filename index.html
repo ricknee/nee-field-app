@@ -3076,7 +3076,18 @@
       body: JSON.stringify({ action, ...body })
     });
     const d = await r.json().catch(()=>({}));
-    if (!r.ok || d.ok === false) throw new Error(d.error || "Request failed");
+    if (!r.ok || d.ok === false) {
+      // Forward-compatible structured-error pattern: callers that need
+      // to branch on specific failures (e.g. 409 duplicate → existingId
+      // for the vendor picker's "Use existing" UX) can read err.status
+      // and err.existingId off the thrown Error. Plain consumers that
+      // only read err.message see no behavior change. Add more known
+      // fields here when a future endpoint needs them.
+      const err = new Error(d.error || "Request failed");
+      err.status = r.status;
+      if (d.existingId) err.existingId = d.existingId;
+      throw err;
+    }
     return d;
   }
 
@@ -6510,53 +6521,51 @@
         email:           $("newVendorEmail").value,
         chargesSalesTax: $("newVendorTax").checked
       });
-      if (!d.ok) {
-        // 409 duplicate — backend returns { ok:false, error, existingId } so
-        // the user can explicitly choose "Use existing" rather than being
-        // silently auto-selected. Re-enable the submit button so "Rename"
-        // works without a second click.
-        if (d.existingId) {
-          msg.innerHTML =
-            `<span style="color:var(--red);">${esc(d.error || "A vendor with that name already exists.")}</span> ` +
-            `<button id="newVendorUseExisting" type="button" class="btn btn-sm" style="margin-left:8px; font-size:12px; padding:4px 10px;">Use existing</button>`;
-          msg.style.display = "block";
-          const useBtn = $("newVendorUseExisting");
-          if (useBtn) {
-            useBtn.addEventListener("click", async () => {
-              // Invalidate the page-session cache and re-fetch via the
-              // existing loadVendors() path so we get the existing vendor's
-              // full record (name/phone/email/chargesSalesTax) — robust
-              // against error-message wording changes.
-              //
-              // Edge case: the backend duplicate check (handleCreateVendor)
-              // does NOT filter Active, but handleVendors DOES
-              // (filter: "{Active}=TRUE()"). So a 409 can fire on an
-              // INACTIVE vendor that's invisible to the picker AND to the
-              // refreshed cache, leaving `fresh` undefined here. Acceptable
-              // behavior — picker UX makes it impossible to reach this
-              // state from typing a vendor that's already shown — we fall
-              // back to a minimal {id, name} stub so the user still gets
-              // an action rather than a silent failure.
-              useBtn.disabled = true;
-              useBtn.textContent = "Loading…";
-              _vendors = null;
-              _vendorsPromise = null;
-              await loadVendors();
-              const fresh = (_vendors || []).find(v => v.id === d.existingId);
-              const target = fresh || { id: d.existingId, name };
-              selectVendorAndCloseModal(target);
-            });
-          }
-          btn.disabled = false;
-          btn.textContent = "Create Vendor";
-          return;
-        }
-        // Other server errors (403 admin guard, 400 missing name, 500 etc.)
-        throw new Error(d.error || "Create failed.");
-      }
       if (!d.vendor) throw new Error("Create failed.");
       selectVendorAndCloseModal(d.vendor);
     } catch (e) {
+      // 409 duplicate — apiPost surfaces err.status + err.existingId on
+      // structured-error responses (see apiPost at index.html:3079+).
+      // Render an inline "Use existing" button so the user explicitly
+      // chooses between the existing record and a rename, rather than
+      // being silently auto-selected. Re-enable the submit button so
+      // "Rename" works without a second click.
+      if (e.status === 409 && e.existingId) {
+        msg.innerHTML =
+          `<span style="color:var(--red);">${esc(e.message)}</span> ` +
+          `<button id="newVendorUseExisting" type="button" class="btn btn-sm" style="margin-left:8px; font-size:12px; padding:4px 10px;">Use existing</button>`;
+        msg.style.display = "block";
+        const useBtn = $("newVendorUseExisting");
+        if (useBtn) {
+          useBtn.addEventListener("click", async () => {
+            // Invalidate the page-session cache (both _vendors AND
+            // _vendorsPromise — the latter is required for loadVendors's
+            // IIFE to actually re-run; otherwise it short-circuits on the
+            // settled promise from the first load) and re-fetch.
+            //
+            // Edge case: the backend duplicate check (handleCreateVendor)
+            // does NOT filter Active, but handleVendors DOES
+            // (filter: "{Active}=TRUE()"). So a 409 can fire on an
+            // INACTIVE vendor that's invisible to the picker AND to the
+            // refreshed cache, leaving `fresh` undefined here. Acceptable
+            // behavior — picker UX makes it impossible to reach this
+            // state from typing a vendor that's already shown — we fall
+            // back to a minimal {id, name} stub so the user still gets
+            // an action rather than a silent failure.
+            useBtn.disabled = true;
+            useBtn.textContent = "Loading…";
+            _vendors = null;
+            _vendorsPromise = null;
+            await loadVendors();
+            const fresh = (_vendors || []).find(v => v.id === e.existingId);
+            const target = fresh || { id: e.existingId, name };
+            selectVendorAndCloseModal(target);
+          });
+        }
+        btn.disabled = false;
+        btn.textContent = "Create Vendor";
+        return;
+      }
       msg.textContent = "Error: " + (e.message || e);
       msg.style.color = "var(--red)";
       msg.style.display = "block";

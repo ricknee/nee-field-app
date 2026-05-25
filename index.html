@@ -1646,7 +1646,7 @@
     .agency-search-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
 
     /* Vendor typeahead — admin-only edit on the Expenses tab's New Expense panel.
-       Shape cloned from .agency-search above. Diff #4 of 6 (Vendor parity). */
+       Shape cloned from .agency-search above. */
     .vendor-search-wrap { position: relative; }
     .vendor-search {
       width: 100%; padding: 6px 8px;
@@ -6072,6 +6072,16 @@
       search._wired = true;
       let activeIdx = -1;
 
+      // Sticky "+ Add new vendor" row — appended to every render (including
+      // the empty-results state) when current user is admin. Uses its own
+      // class .vendor-search-add so arrow-key nav (which queries
+      // .vendor-search-result) skips it; click is wired separately and opens
+      // #newVendorModal pre-filled with the current search query. Styles are
+      // inlined rather than a CSS class — mirrors .agency-search-add at
+      // populateAgencyDropdown's render block.
+      const addVendorRowHtml = () =>
+        `<div class="vendor-search-add" style="padding:10px; font-size:13px; color:var(--accent); border-top:1px solid var(--line); cursor:pointer; font-weight:600;">+ Add new vendor</div>`;
+
       const renderResults = (q) => {
         const candidates = search._vendors || [];
         const ql = q.trim().toLowerCase();
@@ -6084,11 +6094,19 @@
               `<div class="vendor-search-result" data-id="${esc(v.id)}" data-idx="${i}">${esc(v.name)}</div>`
             ).join("")
           : `<div class="vendor-search-result-empty">No matching vendors</div>`;
-        results.innerHTML = rowsHtml;
+        results.innerHTML = rowsHtml + (isAdmin() ? addVendorRowHtml() : "");
         results.classList.add("open");
         results.querySelectorAll(".vendor-search-result").forEach(row => {
           row.onmousedown = (ev) => { ev.preventDefault(); pick(row.dataset.id); };
         });
+        const addRow = results.querySelector(".vendor-search-add");
+        if (addRow) {
+          addRow.onmousedown = (ev) => {
+            ev.preventDefault();
+            results.classList.remove("open");
+            openNewVendorModal(search.value);
+          };
+        }
       };
 
       const pick = (vendorId) => {
@@ -6413,6 +6431,137 @@
     } finally {
       btn.disabled = false;
       btn.textContent = "Create Agency";
+    }
+  }
+
+  // ── NEW VENDOR MODAL (Expenses tab "+ Add new vendor") ──
+  // Admin-only by virtue of the backend createVendor 403 guard
+  // AND the frontend isAdmin() gate in populateVendorDropdown's render
+  // block that conditionally renders the "+ Add new vendor" row. Mirrors
+  // openNewAgencyModal exactly: lazy submit wiring, history-stack back-
+  // button entry, focus-after-paint.
+  function openNewVendorModal(prefillName) {
+    const btn = $("newVendorSubmitBtn");
+    if (btn && !btn._wired) { btn._wired = true; btn.addEventListener("click", handleCreateVendorSubmit); }
+
+    $("newVendorName").value  = (prefillName || "").trim();
+    $("newVendorPhone").value = "";
+    $("newVendorEmail").value = "";
+    $("newVendorTax").checked = true;            // default: charges sales tax
+    const msg = $("newVendorMsg");
+    msg.style.display = "none";
+    msg.innerHTML = "";                            // innerHTML (not textContent) — duplicate-confirm UI uses HTML
+    $("newVendorModal").style.display = "flex";
+    pushBackEntry("newVendor", () => { $("newVendorModal").style.display = "none"; });
+    setTimeout(() => { try { $("newVendorName").focus(); } catch {} }, 0);
+  }
+
+  window.closeNewVendorModal = function() {
+    popBackEntry("newVendor");
+    $("newVendorModal").style.display = "none";
+  };
+
+  // Auto-selects the given vendor in the picker — used by both the success
+  // path AND the duplicate-confirm "Use existing" path. Inline-style cache
+  // poke + DOM updates, matching handleCreateAgencySubmit's pattern —
+  // no shared pick helper, kept symmetric with the agency picker.
+  function selectVendorAndCloseModal(vendor) {
+    // Push into the page-session cache if it's not already there. New
+    // record → always push. "Use existing" path → push only if missing.
+    if (Array.isArray(_vendors)) {
+      if (!_vendors.find(v => v.id === vendor.id)) _vendors.push(vendor);
+    } else {
+      _vendors = [vendor];
+    }
+    // Keep "Other" pinned at the bottom — mirror server-side sort from
+    // handleVendors.
+    _vendors.sort((a, b) => {
+      if (a.name === "Other") return 1;
+      if (b.name === "Other") return -1;
+      return (a.name || "").localeCompare(b.name || "");
+    });
+    // Auto-select on the picker.
+    $("genExpVendorId").value = vendor.id;
+    $("genExpVendorSearch").value = vendor.name;
+    $("genExpVendorSearch").classList.add("has-pick");
+    closeNewVendorModal();
+  }
+
+  async function handleCreateVendorSubmit() {
+    const btn = $("newVendorSubmitBtn");
+    const msg = $("newVendorMsg");
+    const name = $("newVendorName").value.trim();
+    if (!name) {
+      msg.textContent = "Vendor Name is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("newVendorName").focus(); } catch {}
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+    msg.style.display = "none";
+    msg.innerHTML = "";
+    try {
+      const d = await apiPost("createVendor", {
+        employeeId:      state.user?.id || "",
+        name,
+        phone:           $("newVendorPhone").value,
+        email:           $("newVendorEmail").value,
+        chargesSalesTax: $("newVendorTax").checked
+      });
+      if (!d.ok) {
+        // 409 duplicate — backend returns { ok:false, error, existingId } so
+        // the user can explicitly choose "Use existing" rather than being
+        // silently auto-selected. Re-enable the submit button so "Rename"
+        // works without a second click.
+        if (d.existingId) {
+          msg.innerHTML =
+            `<span style="color:var(--red);">${esc(d.error || "A vendor with that name already exists.")}</span> ` +
+            `<button id="newVendorUseExisting" type="button" class="btn btn-sm" style="margin-left:8px; font-size:12px; padding:4px 10px;">Use existing</button>`;
+          msg.style.display = "block";
+          const useBtn = $("newVendorUseExisting");
+          if (useBtn) {
+            useBtn.addEventListener("click", async () => {
+              // Invalidate the page-session cache and re-fetch via the
+              // existing loadVendors() path so we get the existing vendor's
+              // full record (name/phone/email/chargesSalesTax) — robust
+              // against error-message wording changes.
+              //
+              // Edge case: the backend duplicate check (handleCreateVendor)
+              // does NOT filter Active, but handleVendors DOES
+              // (filter: "{Active}=TRUE()"). So a 409 can fire on an
+              // INACTIVE vendor that's invisible to the picker AND to the
+              // refreshed cache, leaving `fresh` undefined here. Acceptable
+              // behavior — picker UX makes it impossible to reach this
+              // state from typing a vendor that's already shown — we fall
+              // back to a minimal {id, name} stub so the user still gets
+              // an action rather than a silent failure.
+              useBtn.disabled = true;
+              useBtn.textContent = "Loading…";
+              _vendors = null;
+              _vendorsPromise = null;
+              await loadVendors();
+              const fresh = (_vendors || []).find(v => v.id === d.existingId);
+              const target = fresh || { id: d.existingId, name };
+              selectVendorAndCloseModal(target);
+            });
+          }
+          btn.disabled = false;
+          btn.textContent = "Create Vendor";
+          return;
+        }
+        // Other server errors (403 admin guard, 400 missing name, 500 etc.)
+        throw new Error(d.error || "Create failed.");
+      }
+      if (!d.vendor) throw new Error("Create failed.");
+      selectVendorAndCloseModal(d.vendor);
+    } catch (e) {
+      msg.textContent = "Error: " + (e.message || e);
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      btn.disabled = false;
+      btn.textContent = "Create Vendor";
     }
   }
 
@@ -7369,11 +7518,23 @@
 
     if (!amount || amount <= 0) { errEl.textContent = "Please enter an amount."; errEl.style.display = ""; return; }
 
+    // Vendor required — escape-hatch hint points users to the "Other"
+    // vendor record we seed in Airtable. Frontend-only validation by
+    // design; backend stays permissive so the bucket-truck batch save
+    // path at index.html:~7660 continues to work without vendorId.
+    if (!vendorId.startsWith("rec")) {
+      errEl.textContent = "Please select a vendor (use 'Other' if not listed).";
+      errEl.style.display = "";
+      return;
+    }
+
     saveBtn.disabled = true; saveBtn.textContent = "Saving...";
     try {
-      // Only send vendorId if it's actually a rec-id pick — empty allowed
-      // for now (diff #6 owns required-validation). Backend already guards
-      // with startsWith("rec") so a non-rec value would be ignored anyway.
+      // Vendor is required (validated above), so vendorId is guaranteed to
+      // start with "rec" here. The guard below is belt-and-suspenders —
+      // also keeps the backend permissive for the bucket-truck batch path
+      // (index.html:~7660) which writes directly without going through this
+      // handler.
       const payload = { jobId, date, type, amount, credit, description: desc, billable };
       if (vendorId.startsWith("rec")) payload.vendorId = vendorId;
       await apiPost("addGeneralExpense", payload);
@@ -15051,6 +15212,47 @@ rick@northeasternelec.com`
         <button id="newAgencySubmitBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Agency</button>
       </div>
       <div id="newAgencyMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── NEW VENDOR MODAL ────────────────────────────────────────────────────
+     Inline "+ Add new vendor" from the vendor typeahead on the Expenses
+     tab. Submits to createVendor (admin-only, see netlify/functions/
+     airtable.js:handleCreateVendor). On success the new vendor is pushed
+     into _vendors (with "Other" re-pinned to bottom), auto-selected on
+     the picker, and the modal closes. 409 duplicate path renders a
+     "Use existing" button inline. -->
+<div id="newVendorModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2>+ Add New Vendor</h2>
+      <button onclick="closeNewVendorModal()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div class="sl-field">
+        <label>Vendor Name <span style="color:var(--red);">*</span></label>
+        <input id="newVendorName" type="text" class="edit-input" placeholder="e.g. CED Akron" />
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+        <div class="sl-field">
+          <label>Primary Phone</label>
+          <input id="newVendorPhone" type="tel" class="edit-input" placeholder="(330) 555-0123" />
+        </div>
+        <div class="sl-field">
+          <label>Primary Email</label>
+          <input id="newVendorEmail" type="email" class="edit-input" placeholder="orders@example.com" />
+        </div>
+      </div>
+      <div class="sl-field" style="margin-top:12px; display:flex; align-items:center; gap:8px;">
+        <input id="newVendorTax" type="checkbox" checked style="accent-color:var(--accent); width:16px; height:16px; cursor:pointer;" />
+        <label for="newVendorTax" style="cursor:pointer; margin-bottom:0;">Charges sales tax</label>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px; padding-top:14px; border-top:1px solid var(--line);">
+        <button onclick="closeNewVendorModal()" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">Cancel</button>
+        <button id="newVendorSubmitBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Vendor</button>
+      </div>
+      <div id="newVendorMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
     </div>
   </div>
 </div>

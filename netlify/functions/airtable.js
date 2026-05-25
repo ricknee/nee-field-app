@@ -2300,8 +2300,8 @@ async function handleVendors() {
 // vendor typeahead. Admin-only (admin OR office role, matching frontend
 // isAdmin()); 403s anyone else. Required: employeeId (for the role check),
 // name. Optional: phone, email, chargesSalesTax. Active is force-set to TRUE
-// on create — diff #1 made handleVendors filter on {Active}=TRUE() so a new
-// vendor must be Active to be discoverable by the typeahead after create.
+// on create — handleVendors filters on {Active}=TRUE(), so a new vendor
+// must be Active to be discoverable by the typeahead after create.
 // Duplicate-name guard (case-insensitive) returns 409 with existingId so the
 // frontend can offer to select the existing record instead. No typecast —
 // all targets are text/phone/email/checkbox; no singleSelects.

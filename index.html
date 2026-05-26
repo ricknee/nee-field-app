@@ -344,6 +344,21 @@
     }
     .expense-table tr:last-child td { border-bottom: none; }
     .expense-table tr:hover td { background: var(--panel-2); }
+    .expense-table tr.exp-group-header td {
+      background: var(--panel-2);
+      border-top: 2px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      padding: 8px 12px;
+      font-size: 0.95em;
+    }
+    .expense-table tr.exp-group-header:hover td {
+      background: var(--panel-2);
+    }
+    .exp-grp-chev {
+      display: inline-block;
+      width: 1em;
+      color: var(--muted);
+    }
     .expense-status-pill {
       display: inline-block;
       padding: 2px 8px;
@@ -4773,6 +4788,11 @@
     }
   };
 
+  // Collapse state for vendor grouping on the Expenses tab. Lifted to window
+  // scope so the Set survives loadExpenses re-renders triggered by approve/
+  // delete (which rebuild the table from scratch).
+  window.__expGroupCollapsed = window.__expGroupCollapsed || new Set();
+
   // ── EXPENSES (admin) ──
   async function loadExpenses(jobId) {
     const el = $("expensesList");
@@ -4796,6 +4816,35 @@
       reviewed.sort(byDateDesc);
       pending.sort(byDateDesc);
 
+      // Bucket rows by vendor name (e.vendor is already a string from the
+      // handler; "" = no vendor). Returns groups in display order:
+      //   1. "(no vendor)" pinned first (only if non-empty)
+      //   2. alphabetical by vendor name, case-insensitive, excluding "Other"
+      //   3. "Other" pinned last (only if non-empty)
+      function groupByVendor(list) {
+        const buckets = new Map();
+        for (const e of list) {
+          const key = e.vendor || "";
+          if (!buckets.has(key)) buckets.set(key, []);
+          buckets.get(key).push(e);
+        }
+        const groups = [];
+        for (const [key, rows] of buckets) {
+          if (!rows.length) continue;
+          rows.sort(byDateDesc);
+          const totalCost = rows.reduce((s, r) => s + (r.totalCost || 0), 0);
+          const billable  = rows.reduce((s, r) => s + (r.billableMaterial || 0), 0);
+          const label = key === "" ? "⚠️ (no vendor)" : key;
+          groups.push({ key, label, rows, totalCost, billable, count: rows.length });
+        }
+        const noVendor = groups.filter(g => g.key === "");
+        const other    = groups.filter(g => g.key === "Other");
+        const middle   = groups
+          .filter(g => g.key !== "" && g.key !== "Other")
+          .sort((a, b) => a.key.toLowerCase().localeCompare(b.key.toLowerCase()));
+        return [...noVendor, ...middle, ...other];
+      }
+
       function expenseRow(e, showActions) {
         const markup = e.jobMarkupPct != null ? Math.round(e.jobMarkupPct * 100) + "%" : "—";
         return `<tr>
@@ -4817,8 +4866,32 @@
         </tr>`;
       }
 
+      // colSpec: "pending" → 10-col table (3|1|1|1|4)
+      //          "reviewed" → 8-col table (3|1|1|1|2)
+      function groupHeaderRow(group, colSpec) {
+        const collapsed = window.__expGroupCollapsed.has(group.key);
+        const chev      = collapsed ? "▸" : "▾";
+        const countWord = group.count === 1 ? "entry" : "entries";
+        const trailingSpan = colSpec === "pending" ? 4 : 2;
+        return `<tr class="exp-group-header" data-group-key="${esc(group.key)}">
+          <td colspan="3"><span class="exp-grp-chev">${chev}</span> <strong>${esc(group.label)}</strong> <span style="color:var(--muted);">(${group.count} ${countWord})</span></td>
+          <td style="text-align:right;">${fmtCurrency(group.totalCost)}</td>
+          <td></td>
+          <td style="text-align:right;">${fmtCurrency(group.billable)}</td>
+          <td colspan="${trailingSpan}"></td>
+        </tr>`;
+      }
+
       function renderPendingTab(list) {
         if (!list.length) return `<div class="empty-msg">No unreviewed expenses.</div>`;
+        const groups = groupByVendor(list);
+        const body = groups.map(g => {
+          const header = groupHeaderRow(g, "pending");
+          const rows   = window.__expGroupCollapsed.has(g.key)
+            ? ""
+            : g.rows.map(e => expenseRow(e, true)).join("");
+          return header + rows;
+        }).join("");
         return `<table class="expense-table">
           <thead><tr>
             <th>Date</th><th>Vendor</th><th>Description</th>
@@ -4826,12 +4899,20 @@
             <th style="text-align:right;">Billable Amt</th><th>Type</th>
             <th>Billable?</th><th>Approve</th><th></th>
           </tr></thead>
-          <tbody>${list.map(e => expenseRow(e, true)).join("")}</tbody>
+          <tbody>${body}</tbody>
         </table>`;
       }
 
       function renderReviewedTab(list) {
         if (!list.length) return `<div class="empty-msg">No reviewed expenses.</div>`;
+        const groups = groupByVendor(list);
+        const body = groups.map(g => {
+          const header = groupHeaderRow(g, "reviewed");
+          const rows   = window.__expGroupCollapsed.has(g.key)
+            ? ""
+            : g.rows.map(e => expenseRow(e, false)).join("");
+          return header + rows;
+        }).join("");
         return `<table class="expense-table">
           <thead><tr>
             <th>Date</th><th>Vendor</th><th>Description</th>
@@ -4839,7 +4920,7 @@
             <th style="text-align:right;">Billable Amt</th><th>Type</th>
             <th>Billable?</th>
           </tr></thead>
-          <tbody>${list.map(e => expenseRow(e, false)).join("")}</tbody>
+          <tbody>${body}</tbody>
         </table>`;
       }
 
@@ -4912,6 +4993,21 @@
             btn.disabled = false;
             btn.textContent = "🗑";
           }
+        });
+      });
+
+      // Wire group-header collapse toggling. Re-renders via loadExpenses(jobId);
+      // collapse state survives because window.__expGroupCollapsed is module-scope.
+      el.querySelectorAll("tr.exp-group-header").forEach(tr => {
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", () => {
+          const key = tr.dataset.groupKey;
+          if (window.__expGroupCollapsed.has(key)) {
+            window.__expGroupCollapsed.delete(key);
+          } else {
+            window.__expGroupCollapsed.add(key);
+          }
+          loadExpenses(jobId);
         });
       });
 

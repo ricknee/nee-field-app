@@ -9530,6 +9530,11 @@ rick@northeasternelec.com`
       return seg.type === "blank" ? BLANK_H : seg.lines.length * LINE_H;
     }
 
+    // Tracks rows drawn on the current page so the fit-or-push gate can refuse
+    // to push to a fresh page when doing so would leave the source page empty
+    // below the table-header bar (the destination page would be identical).
+    let rowsDrawnOnCurrentPage = 0;
+
     lines.forEach((line, i) => {
       const segments = processDescription(line.description || "");
 
@@ -9550,11 +9555,15 @@ rick@northeasternelec.com`
           const totalUsedH  = segments.reduce((acc, s) => acc + segHeight(s), 0);
           const availHHere  = BOTTOM_LIMIT - y - ROW_PAD_Y * 2;
           const availHFresh = BOTTOM_LIMIT - 36 - 20 - ROW_PAD_Y * 2; // page-top y + header advance + padding
-          console.log('[invoice-pdf-gate]', { rowIndex: i, totalUsedH, availHHere, availHFresh, willPush: (totalUsedH > availHHere && totalUsedH <= availHFresh) });
-          if (totalUsedH > availHHere && totalUsedH <= availHFresh) {
+          // Only push if at least one row has drawn on this page already.
+          // On a fresh page (rowsDrawnOnCurrentPage === 0) the destination
+          // page would be identical — defer to the chunk-splitter and let
+          // the row span the page boundary instead of leaving a blank page.
+          if (totalUsedH > availHHere && totalUsedH <= availHFresh && rowsDrawnOnCurrentPage > 0) {
             doc.addPage();
             y = 36;
             drawTableHeader();
+            rowsDrawnOnCurrentPage = 0;
           }
         }
 
@@ -9563,6 +9572,7 @@ rick@northeasternelec.com`
           doc.addPage();
           y = 36;
           drawTableHeader();
+          rowsDrawnOnCurrentPage = 0;
         }
 
         // How many segments fit on this page (inside the row)?
@@ -9584,6 +9594,7 @@ rick@northeasternelec.com`
           doc.addPage();
           y = 36;
           drawTableHeader();
+          rowsDrawnOnCurrentPage = 0;
           continue;
         }
 
@@ -9634,8 +9645,10 @@ rick@northeasternelec.com`
           doc.addPage();
           y = 36;
           drawTableHeader();
+          rowsDrawnOnCurrentPage = 0;
         }
       }
+      rowsDrawnOnCurrentPage += 1;
     });
 
     // (Skipping the table outer border — with multi-page row splitting, a bounding

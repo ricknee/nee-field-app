@@ -8065,16 +8065,25 @@
     el.innerHTML = `<div class="loading-msg">Building invoice...</div>`;
 
     try {
-      // Fetch time entries, expenses, approved estimates, and unlinked billing
-      // allocations in parallel. Allocations are only consumed in T&M mode but
-      // we fire them unconditionally — wasted call on Contract jobs is cheap
-      // and avoids a sequential round-trip in the common (T&M) case.
-      const [teData, expData, estData, laborAllocData, matAllocData] = await Promise.all([
+      // Fetch time entries, expenses, approved estimates, unlinked billing
+      // allocations, and prior invoices in parallel. Allocations are only
+      // consumed in T&M mode but we fire them unconditionally — wasted call
+      // on Contract jobs is cheap and avoids a sequential round-trip in the
+      // common (T&M) case. Prior invoices feed both the hasPriorInvoices gate
+      // (suppresses the fallback ternary on already-billed jobs — see T&M
+      // block below) and the Invoice History panel (passed to
+      // loadInvoiceHistory to skip a redundant refetch).
+      const [teData, expData, estData, laborAllocData, matAllocData, priorInvoicesData] = await Promise.all([
         apiGet("timeEntries", { jobId: job.id }),
         apiGet("expenses",    { jobId: job.id }),
         apiGet("jobEstimates", { jobId: job.id }),
         apiGet("unlinkedLaborAllocations",    { jobId: job.id }),
-        apiGet("unlinkedMaterialAllocations", { jobId: job.id })
+        apiGet("unlinkedMaterialAllocations", { jobId: job.id }),
+        apiPost("getJobInvoices", { jobId: job.id })
+          .catch(err => {
+            console.warn("[InvoiceDraft] getJobInvoices failed; assuming no prior invoices, fallback may fire incorrectly:", err);
+            return { invoices: [] };
+          })
       ]);
 
       const entries  = (teData.entries  || []).filter(e => e.reviewed);
@@ -8145,13 +8154,21 @@
       } else {
         // T&M MODE — existing logic: labor from time entries, materials from expenses
 
+        // hasPriorInvoices gates the fallback ternaries below. If a job has
+        // ever been invoiced, allocations exist (they're just linked to past
+        // invoices), so the unlinked sum legitimately being $0 means everything
+        // is already billed — not that allocations are missing. Suppress
+        // fallback in that case so we don't show phantom totals on fully-billed
+        // legacy jobs.
+        const hasPriorInvoices = (priorInvoicesData.invoices || []).length > 0;
+
         // Cost of Labor — sum from unlinked Labor Billing Allocations. Airtable
         // automations zero out the source row's Unbilled Labor Revenue $ formula
         // on Review and create an unlinked allocation row carrying the actual
         // amount, so we read from allocations rather than the (now-zero) formula.
-        // Defense-in-depth: filter to allocations whose Time Entry is in the
-        // reviewed set — also handles duplicate job names since allocations
-        // carry only the job NAME via lookup, not the record ID.
+        // Filter to allocations whose Time Entry is in the reviewed set — also
+        // handles duplicate job names since allocations carry only the job NAME
+        // via lookup, not the record ID.
         const reviewedTeIds = new Set(entries.map(e => e.id));
         const allocLabor = (laborAllocData.allocations || [])
           .filter(a => reviewedTeIds.has(a.timeEntryId));
@@ -8159,22 +8176,20 @@
           .reduce((s, a) => s + (a.allocatedRevenue || 0), 0)
           .toFixed(2);
 
-        // Reviewed entries with no allocation = automation lagged or failed.
-        const orphanTeIds = [...reviewedTeIds].filter(id =>
-          !allocLabor.some(a => a.timeEntryId === id)
-        );
-        if (orphanTeIds.length) {
-          console.error(`[InvoiceDraft] ${orphanTeIds.length} reviewed time entries missing allocations for job ${job.id}: ${orphanTeIds.join(", ")}. Draft may understate Cost of Labor.`);
-        }
-
-        // Fallback for legacy jobs without allocations set up at all.
+        // Fallback for first-invoice T&M jobs only — covers (a) brief
+        // automation lag between Review and allocation row creation, and
+        // (b) ancient jobs that predate the allocations architecture.
+        // Suppressed once the job has any prior invoice: $0 then correctly
+        // means "everything's already billed."
         const fallbackRate = job.billableHourlyRate || 0;
         const reviewedHrs  = entries.reduce((s, e) => s + (e.hours || 0), 0);
         const laborFallback = +(reviewedHrs * fallbackRate).toFixed(2);
-        if (laborTotal === 0 && laborFallback > 0) {
+        if (laborTotal === 0 && !hasPriorInvoices && laborFallback > 0) {
           console.warn(`[InvoiceDraft] Labor fallback fired for job ${job.id} — allocations summed to $0, fallback to ${reviewedHrs} hrs × $${fallbackRate} = $${laborFallback}.`);
         }
-        const laborAmount = laborTotal > 0 ? laborTotal : laborFallback;
+        const laborAmount = laborTotal > 0
+          ? laborTotal
+          : (hasPriorInvoices ? 0 : laborFallback);
 
         if (laborAmount > 0) {
           invLines.push({
@@ -8190,7 +8205,8 @@
         }
 
         // Cost of Materials — same pattern as Labor: read from unlinked Material
-        // Billing Allocations with defense-in-depth filter against reviewed expenses.
+        // Billing Allocations, filtered against reviewed expenses, with fallback
+        // gated by hasPriorInvoices (see labor block comment for rationale).
         const reviewedExpIds = new Set(expenses.map(e => e.id));
         const allocMaterial = (matAllocData.allocations || [])
           .filter(a => reviewedExpIds.has(a.expenseId));
@@ -8198,21 +8214,15 @@
           .reduce((s, a) => s + (a.allocatedMaterial || 0), 0)
           .toFixed(2);
 
-        const orphanExpIds = [...reviewedExpIds].filter(id =>
-          !allocMaterial.some(a => a.expenseId === id)
-        );
-        if (orphanExpIds.length) {
-          console.error(`[InvoiceDraft] ${orphanExpIds.length} reviewed expenses missing allocations for job ${job.id}: ${orphanExpIds.join(", ")}. Draft may understate Cost of Materials.`);
-        }
-
-        // Fallback for legacy jobs: billableMaterial totals across reviewed expenses.
         const matFallback = +expenses
           .reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0)
           .toFixed(2);
-        if (matTotal === 0 && matFallback > 0) {
+        if (matTotal === 0 && !hasPriorInvoices && matFallback > 0) {
           console.warn(`[InvoiceDraft] Material fallback fired for job ${job.id} — allocations summed to $0, fallback to billableMaterial sum = $${matFallback}.`);
         }
-        const matAmount = matTotal > 0 ? matTotal : matFallback;
+        const matAmount = matTotal > 0
+          ? matTotal
+          : (hasPriorInvoices ? 0 : matFallback);
 
         if (matAmount > 0) {
           invLines.push({
@@ -8228,7 +8238,7 @@
         }
       }
 
-      renderInvoiceBuilder(job, entries, expenses, billToAddress, estimates);
+      renderInvoiceBuilder(job, entries, expenses, billToAddress, estimates, priorInvoicesData.invoices || []);
 
     } catch(err) {
       el.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;
@@ -8239,7 +8249,7 @@
     return invLines.reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
   }
 
-  function renderInvoiceBuilder(job, entries, expenses, billToAddress, estimates) {
+  function renderInvoiceBuilder(job, entries, expenses, billToAddress, estimates, priorInvoices) {
     const today = new Date().toISOString().slice(0,10);
     const el = $("invoiceBuilder");
     const isContract = (job.type || "").toLowerCase() === "contract"
@@ -8440,7 +8450,7 @@
     wireInvEvents();
     // After render: auto-fill next invoice # and load history
     autoFillInvoiceNumber();
-    loadInvoiceHistory(job.id);
+    loadInvoiceHistory(job.id, priorInvoices);
   }
 
   function renderInvLines() {
@@ -8527,14 +8537,26 @@
     } catch(e) { /* leave blank on failure */ }
   }
 
-  async function loadInvoiceHistory(jobId) {
+  // Second param is an optional pre-fetched invoices array. Initial load from
+  // loadInvoiceTab passes it (data is already in Promise.all for the
+  // hasPriorInvoices gate, so reusing it skips a redundant network round-trip).
+  // Refresh callers omit the second arg — currently the inline setInvoiceStatus
+  // handler (~line 8697) and the Save Invoice success handler (~line 9029).
+  // These paths mutate one invoice and need to refetch the full list to
+  // reflect the change.
+  async function loadInvoiceHistory(jobId, prefetchedInvoices) {
     const listEl  = $("invHistoryList");
     const countEl = $("invHistoryCount");
     if (!listEl) return;
     try {
-      const res = await apiPost("getJobInvoices", { jobId });
-      if (!res?.ok) throw new Error(res?.error || "Fetch failed");
-      const invoices = res.invoices || [];
+      let invoices;
+      if (Array.isArray(prefetchedInvoices)) {
+        invoices = prefetchedInvoices;
+      } else {
+        const res = await apiPost("getJobInvoices", { jobId });
+        if (!res?.ok) throw new Error(res?.error || "Fetch failed");
+        invoices = res.invoices || [];
+      }
       if (countEl) countEl.textContent = invoices.length === 0 ? "(none yet)" : `(${invoices.length})`;
 
       // Smart default for Stage picker — based on what's already been sent for this job

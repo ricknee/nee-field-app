@@ -8065,11 +8065,16 @@
     el.innerHTML = `<div class="loading-msg">Building invoice...</div>`;
 
     try {
-      // Fetch time entries, expenses, and (for Contract jobs) approved estimates
-      const [teData, expData, estData] = await Promise.all([
+      // Fetch time entries, expenses, approved estimates, and unlinked billing
+      // allocations in parallel. Allocations are only consumed in T&M mode but
+      // we fire them unconditionally — wasted call on Contract jobs is cheap
+      // and avoids a sequential round-trip in the common (T&M) case.
+      const [teData, expData, estData, laborAllocData, matAllocData] = await Promise.all([
         apiGet("timeEntries", { jobId: job.id }),
         apiGet("expenses",    { jobId: job.id }),
-        apiGet("jobEstimates", { jobId: job.id })
+        apiGet("jobEstimates", { jobId: job.id }),
+        apiGet("unlinkedLaborAllocations",    { jobId: job.id }),
+        apiGet("unlinkedMaterialAllocations", { jobId: job.id })
       ]);
 
       const entries  = (teData.entries  || []).filter(e => e.reviewed);
@@ -8140,18 +8145,36 @@
       } else {
         // T&M MODE — existing logic: labor from time entries, materials from expenses
 
-        // Cost of Labor — sum of Unbilled Labor Revenue $ across all reviewed entries
-        const laborTotal = +entries
-          .filter(e => e.reviewed)
-          .reduce((s, e) => s + (e.unbilledRevenue || 0), 0)
+        // Cost of Labor — sum from unlinked Labor Billing Allocations. Airtable
+        // automations zero out the source row's Unbilled Labor Revenue $ formula
+        // on Review and create an unlinked allocation row carrying the actual
+        // amount, so we read from allocations rather than the (now-zero) formula.
+        // Defense-in-depth: filter to allocations whose Time Entry is in the
+        // reviewed set — also handles duplicate job names since allocations
+        // carry only the job NAME via lookup, not the record ID.
+        const reviewedTeIds = new Set(entries.map(e => e.id));
+        const allocLabor = (laborAllocData.allocations || [])
+          .filter(a => reviewedTeIds.has(a.timeEntryId));
+        const laborTotal = +allocLabor
+          .reduce((s, a) => s + (a.allocatedRevenue || 0), 0)
           .toFixed(2);
 
-        // Fallback: if all entries are fully billed (unbilledRevenue = 0), use reviewed hours × rate
-        // This handles jobs where billing allocations haven't been set up yet
+        // Reviewed entries with no allocation = automation lagged or failed.
+        const orphanTeIds = [...reviewedTeIds].filter(id =>
+          !allocLabor.some(a => a.timeEntryId === id)
+        );
+        if (orphanTeIds.length) {
+          console.error(`[InvoiceDraft] ${orphanTeIds.length} reviewed time entries missing allocations for job ${job.id}: ${orphanTeIds.join(", ")}. Draft may understate Cost of Labor.`);
+        }
+
+        // Fallback for legacy jobs without allocations set up at all.
         const fallbackRate = job.billableHourlyRate || 0;
-        const reviewedHrs  = entries.filter(e => e.reviewed).reduce((s, e) => s + (e.hours || 0), 0);
+        const reviewedHrs  = entries.reduce((s, e) => s + (e.hours || 0), 0);
         const laborFallback = +(reviewedHrs * fallbackRate).toFixed(2);
-        const laborAmount   = laborTotal > 0 ? laborTotal : laborFallback;
+        if (laborTotal === 0 && laborFallback > 0) {
+          console.warn(`[InvoiceDraft] Labor fallback fired for job ${job.id} — allocations summed to $0, fallback to ${reviewedHrs} hrs × $${fallbackRate} = $${laborFallback}.`);
+        }
+        const laborAmount = laborTotal > 0 ? laborTotal : laborFallback;
 
         if (laborAmount > 0) {
           invLines.push({
@@ -8166,17 +8189,29 @@
           });
         }
 
-        // Cost of Materials — sum of Unbilled Material Amount $ across reviewed expenses
-        const matTotal = +expenses
-          .filter(e => e.reviewed)
-          .reduce((s, e) => s + (e.unbilledMaterial || 0), 0)
+        // Cost of Materials — same pattern as Labor: read from unlinked Material
+        // Billing Allocations with defense-in-depth filter against reviewed expenses.
+        const reviewedExpIds = new Set(expenses.map(e => e.id));
+        const allocMaterial = (matAllocData.allocations || [])
+          .filter(a => reviewedExpIds.has(a.expenseId));
+        const matTotal = +allocMaterial
+          .reduce((s, a) => s + (a.allocatedMaterial || 0), 0)
           .toFixed(2);
 
-        // Fallback: if no unbilled material amounts, use billableMaterial totals
+        const orphanExpIds = [...reviewedExpIds].filter(id =>
+          !allocMaterial.some(a => a.expenseId === id)
+        );
+        if (orphanExpIds.length) {
+          console.error(`[InvoiceDraft] ${orphanExpIds.length} reviewed expenses missing allocations for job ${job.id}: ${orphanExpIds.join(", ")}. Draft may understate Cost of Materials.`);
+        }
+
+        // Fallback for legacy jobs: billableMaterial totals across reviewed expenses.
         const matFallback = +expenses
-          .filter(e => e.reviewed)
           .reduce((s, e) => s + (e.billableMaterial || e.totalCost || 0), 0)
           .toFixed(2);
+        if (matTotal === 0 && matFallback > 0) {
+          console.warn(`[InvoiceDraft] Material fallback fired for job ${job.id} — allocations summed to $0, fallback to billableMaterial sum = $${matFallback}.`);
+        }
         const matAmount = matTotal > 0 ? matTotal : matFallback;
 
         if (matAmount > 0) {

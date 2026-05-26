@@ -20,7 +20,9 @@ const TABLES = {
   inspectionContacts:  "tblnewJMKDPfczRRx",
   powerCompanies:      "tblgxHavdZybnuMhM",
   powerContacts:       "tblvouoPMTYh27FGT",
-  contacts:            "tbl7vZpySDNfZX9Sq"
+  contacts:            "tbl7vZpySDNfZX9Sq",
+  laborAllocations:    "tblHyJWVAcBczn3hn",
+  materialAllocations: "tblMoKg7txcfYczQQ"
 };
 
 const F = {
@@ -2177,6 +2179,34 @@ async function handleTimeEntries(params) {
   return resp(200, { ok: true, entries });
 }
 
+// {Job} on Labor Billing Allocations is a multipleLookupValues through Time
+// Entry → Job, so it returns the job NAME, not a record ID. We can't verify by
+// record ID here; defense-in-depth filtering by timeEntryId against the
+// reviewed Time Entry set happens on the frontend.
+async function handleUnlinkedLaborAllocations(params) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!jobRecords.length) return resp(200, { ok: true, allocations: [] });
+  const jobName = jobRecords[0].fields["Job Name"] || "";
+  const safeName = escapeFormulaString(jobName);
+  const filter = `AND(FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n"), {Invoice} = BLANK())`;
+  const records = await fetchAll(TABLES.laborAllocations, { filter });
+  const allocations = records.map(r => {
+    const f = r.fields || {};
+    const teArr = f["Time Entry"];
+    const jobArr = f["Job"];
+    return {
+      id: r.id,
+      allocatedHours: f["Allocated Hours"] ?? 0,
+      allocatedRevenue: f["Allocated Revenue $"] ?? 0,
+      timeEntryId: Array.isArray(teArr) ? teArr[0] : null,
+      jobName: Array.isArray(jobArr) ? jobArr[0] : (jobArr || "")
+    };
+  });
+  return resp(200, { ok: true, allocations });
+}
+
 async function handleExpenses(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -2204,6 +2234,32 @@ async function handleExpenses(params) {
     return { id:r.id,date:f["Expense Date"]||"",description:f["Description"]||"",vendor,expenseType:f["Expense Type"]?.name||f["Expense Type"]||"",totalCost:f["Total Cost (Actual)"]??null,expenseStatus:f["Expense Status"]?.name||f["Expense Status"]||"",billable:f["Billable?"]===true,jobMarkupPct:markup,billableMaterial:f["Billable Material Amount $"]??null,reviewed:f["Reviewed"]===true,unbilledMaterial:f["Unbilled Material Amount $"]??0 };
   });
   return resp(200, { ok: true, expenses });
+}
+
+// {Job} on Material Billing Allocations is a multipleLookupValues through
+// Expense → Job — returns job NAME, not record ID. Defense-in-depth filtering
+// by expenseId happens on the frontend.
+async function handleUnlinkedMaterialAllocations(params) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
+  if (!jobRecords.length) return resp(200, { ok: true, allocations: [] });
+  const jobName = jobRecords[0].fields["Job Name"] || "";
+  const safeName = escapeFormulaString(jobName);
+  const filter = `AND(FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n"), {Invoice} = BLANK())`;
+  const records = await fetchAll(TABLES.materialAllocations, { filter });
+  const allocations = records.map(r => {
+    const f = r.fields || {};
+    const expArr = f["Expense"];
+    const jobArr = f["Job"];
+    return {
+      id: r.id,
+      allocatedMaterial: f["Allocated Material Amount $"] ?? 0,
+      expenseId: Array.isArray(expArr) ? expArr[0] : null,
+      jobName: Array.isArray(jobArr) ? jobArr[0] : (jobArr || "")
+    };
+  });
+  return resp(200, { ok: true, allocations });
 }
 
 const SHOP_ADDRESS = "5909 Bandy Rd Homeworth OH 44634";
@@ -3853,6 +3909,8 @@ export async function handler(event) {
       if (action === "getWarranties")      return await handleGetWarranties(params);
       if (action === "expenses")           return await handleExpenses(params);
       if (action === "timeEntries")        return await handleTimeEntries(params);
+      if (action === "unlinkedLaborAllocations")    return await handleUnlinkedLaborAllocations(params);
+      if (action === "unlinkedMaterialAllocations") return await handleUnlinkedMaterialAllocations(params);
       if (action === "payrollEntries")     return await handlePayrollEntries(params);
       if (action === "findMatchingPayrollRun") return await handleFindMatchingPayrollRun(params);
       if (action === "payrollRunsList")    return await handlePayrollRunsList(params);

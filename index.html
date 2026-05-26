@@ -9550,6 +9550,7 @@ rick@northeasternelec.com`
           const totalUsedH  = segments.reduce((acc, s) => acc + segHeight(s), 0);
           const availHHere  = BOTTOM_LIMIT - y - ROW_PAD_Y * 2;
           const availHFresh = BOTTOM_LIMIT - 36 - 20 - ROW_PAD_Y * 2; // page-top y + header advance + padding
+          console.log('[invoice-pdf-gate]', { rowIndex: i, totalUsedH, availHHere, availHFresh, willPush: (totalUsedH > availHHere && totalUsedH <= availHFresh) });
           if (totalUsedH > availHHere && totalUsedH <= availHFresh) {
             doc.addPage();
             y = 36;

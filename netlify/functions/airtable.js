@@ -2292,13 +2292,23 @@ async function handleAddLiftExpense(body) {
 
 async function handleAddGeneralExpense(body) {
   const { jobId, date, type, amount, credit, vendorId, description, billable } = body || {};
-  if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Credit-only entries (Manual Material Cost blank, Material Credit > 0) are
+  // legitimate — used for returned/refunded supplies. Reject only when both
+  // amount and credit are empty/zero. Mirrors frontend validator at
+  // saveGeneralExpense (~index.html:7624).
+  const hasAmount = amount && Number(amount) > 0;
+  const hasCredit = credit && Number(credit) > 0;
+  if (!hasAmount && !hasCredit) return resp(400, { ok: false, error: "Missing amount or credit." });
   const idStr = String(jobId).trim();
   if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid jobId: ${idStr}` });
-  const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldwbLPIafVtmaSeb":Number(amount),"fldX2x2J0xkRyMY3y":type||"Materials","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
+  const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldX2x2J0xkRyMY3y":type||"Materials","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
   if (date)        fields["fldCCPYdyWAOGchWb"] = date;
   if (description) fields["fldelsB2jH2tvt1Cj"] = description;
-  if (credit && Number(credit) > 0) fields["fldcld418pREq2bGq"] = Number(credit);
+  // Gate both currency writes — leaves Manual Material Cost blank on credit-only
+  // entries, matching the 4 existing precedent records entered via Airtable web UI.
+  if (hasAmount) fields["fldwbLPIafVtmaSeb"] = Number(amount);
+  if (hasCredit) fields["fldcld418pREq2bGq"] = Number(credit);
   if (vendorId && String(vendorId).startsWith("rec")) fields["fldlTUL8hsPkReBAB"] = [String(vendorId)];
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
   return resp(200, { ok: true, id: data.id });

@@ -7621,7 +7621,15 @@
     msgEl.style.display = "none";
     errEl.style.display = "none";
 
-    if (!amount || amount <= 0) { errEl.textContent = "Please enter an amount."; errEl.style.display = ""; return; }
+    // Allow either amount or credit (or both). Credit-only entries (e.g. CED
+    // returned-supplies refund) are legitimate — Material Credit on the
+    // Expenses table can be the only populated currency field, with Total
+    // Cost (Actual) resolving to a negative.
+    if ((!amount || amount <= 0) && (!credit || credit <= 0)) {
+      errEl.textContent = "Please enter an amount or a credit.";
+      errEl.style.display = "";
+      return;
+    }
 
     // Vendor required — escape-hatch hint points users to the "Other"
     // vendor record we seed in Airtable. Frontend-only validation by

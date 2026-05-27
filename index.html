@@ -5753,28 +5753,40 @@
     err.style.display = "none";
 
     try {
-      await apiPost("updatePowerCo", {
-        jobId:         state.selected.id,
-        powerCompany:  $("pcEditCompany").value,
-        powerContact:  $("pcEditContact").value,
-        aicNumber:     $("pcEditAic").value,
-        tempWorkOrder: $("pcEditTemp").value,
-        permWorkOrder: $("pcEditPerm").value,
-        meterNumber:   $("pcEditMeter").value
+      const res = await apiPost("updatePowerCo", {
+        jobId:          state.selected.id,
+        powerCompanyId: pcState.companyId || "",
+        powerContactId: pcState.contactId || "",
+        aicNumber:      $("pcEditAic").value,
+        tempWorkOrder:  $("pcEditTemp").value,
+        permWorkOrder:  $("pcEditPerm").value,
+        meterNumber:    $("pcEditMeter").value
       });
 
-      // Update local state
-      state.selected.powerCompanyIntake = $("pcEditCompany").value;
-      state.selected.aicNumber     = $("pcEditAic").value;
-      state.selected.tempWorkOrder = $("pcEditTemp").value;
-      state.selected.permWorkOrder = $("pcEditPerm").value;
-      state.selected.meterNumber   = $("pcEditMeter").value;
+      // Merge backend mapJob output into local state. Link IDs +
+      // refreshed lookup fields (powerCompanyName/Contact/Phone/Email)
+      // come from the same source, so the read-only cards above stay
+      // consistent with what was actually saved.
+      if (res?.job) Object.assign(state.selected, res.job);
 
-      // Refresh display fields
-      $("pcAic").textContent  = val(state.selected.aicNumber);
-      $("pcTemp").textContent = val(state.selected.tempWorkOrder);
-      $("pcPerm").textContent = val(state.selected.permWorkOrder);
-      $("pcMeter").textContent = val(state.selected.meterNumber);
+      const j = state.selected;
+      $("pcName").textContent    = val(j.powerCompanyName);
+      $("pcContact").textContent = val(j.powerCompanyContact);
+
+      const phEl = $("pcPhone");
+      if (j.powerCompanyPhone) {
+        phEl.innerHTML = `<a href="tel:${esc(j.powerCompanyPhone)}">${esc(j.powerCompanyPhone)}</a>`;
+      } else { phEl.textContent = "—"; }
+
+      const emEl = $("pcEmail");
+      if (j.powerCompanyEmail) {
+        emEl.innerHTML = `<a href="mailto:${esc(j.powerCompanyEmail)}">${esc(j.powerCompanyEmail)}</a>`;
+      } else { emEl.textContent = "—"; }
+
+      $("pcAic").textContent   = val(j.aicNumber);
+      $("pcTemp").textContent  = val(j.tempWorkOrder);
+      $("pcPerm").textContent  = val(j.permWorkOrder);
+      $("pcMeter").textContent = val(j.meterNumber);
 
       msg.style.display = "inline";
       setTimeout(() => { msg.style.display = "none"; }, 2500);

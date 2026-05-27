@@ -3687,6 +3687,82 @@ async function handleGetJobInvoices(body) {
   return resp(200, { ok: true, invoices });
 }
 
+// ── PCLOUD UPLOAD ─────────────────────────────────────────────────────────────
+async function getPCloudToken() {
+  const email    = process.env.PCLOUD_EMAIL;
+  const password = process.env.PCLOUD_PASSWORD;
+  if (!email || !password) throw new Error("PCLOUD_EMAIL or PCLOUD_PASSWORD env vars not set.");
+
+  // pCloud direct auth via POST with digest/username+password
+  // Try eapi (US region) first, fall back to api (EU)
+  const endpoints = ["https://eapi.pcloud.com/userinfo", "https://api.pcloud.com/userinfo"];
+  
+  for (const endpoint of endpoints) {
+    const params = new URLSearchParams({
+      getauth: "1",
+      logout: "1", 
+      username: email,
+      password: password,
+      authexpire: "0"  // permanent token
+    });
+    const res  = await fetch(`${endpoint}?${params.toString()}`);
+    const json = await res.json();
+    if (json.result === 0 && json.token) return json.token;
+    if (json.result === 0 && json.auth) return json.auth;
+    // If result 2000 = invalid credentials, throw immediately
+    if (json.result === 2000) throw new Error("pCloud: Invalid email or password.");
+  }
+  throw new Error("pCloud auth failed on all endpoints.");
+}
+
+async function handleUploadToPCloud(body) {
+  const { folderId, filename, pdfBase64 } = body || {};
+  if (!folderId || !filename || !pdfBase64) {
+    return resp(400, { ok: false, error: "Missing folderId, filename, or pdfBase64." });
+  }
+  try {
+    const token     = await getPCloudToken();
+    const pdfBuffer = Buffer.from(pdfBase64, "base64");
+    const boundary  = "----NEEBoundary" + Date.now();
+    const CRLF      = "\r\n";
+
+    const headerParts = [
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="folderid"`,
+      "", String(folderId),
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="filename"`,
+      "", filename,
+      `--${boundary}`,
+      `Content-Disposition: form-data; name="file"; filename="${filename}"`,
+      "Content-Type: application/pdf",
+      "", ""
+    ].join(CRLF);
+
+    const footer    = CRLF + `--${boundary}--` + CRLF;
+    const headerBuf = Buffer.from(headerParts, "utf8");
+    const footerBuf = Buffer.from(footer, "utf8");
+    const multipart = Buffer.concat([headerBuf, pdfBuffer, footerBuf]);
+
+    const res = await fetch(`https://api.pcloud.com/uploadfile?auth=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        "Content-Length": String(multipart.length)
+      },
+      body: multipart
+    });
+
+    const json = await res.json().catch(() => ({}));
+    if (json.result !== 0) {
+      return resp(400, { ok: false, error: `pCloud upload error: ${json.error || JSON.stringify(json)}` });
+    }
+    return resp(200, { ok: true, fileId: json.fileids?.[0] });
+  } catch(err) {
+    return resp(500, { ok: false, error: err.message });
+  }
+}
+
 async function handleUpdateJobNotes(body) {
   const { jobId, notes } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -3918,6 +3994,7 @@ export async function handler(event) {
       if (body.action === "deleteScheduleEntry")  return await handleDeleteScheduleEntry(body);
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
+      if (body.action === "uploadToPCloud")       return await handleUploadToPCloud(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
       if (body.action === "createInspectionAgency") return await handleCreateInspectionAgency(body);

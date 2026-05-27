@@ -3106,6 +3106,49 @@
     return d;
   }
 
+  // ── pCloud upload via Make.com webhook ──
+  // [DEBUG-PCLOUD-UPLOAD-2026-05] - placeholder URL, fill in once Make scenario is live
+  const MAKE_PCLOUD_UPLOAD_WEBHOOK = 'https://hook.us1.make.com/q74u68tcuseg8spi4l164wu3i8rvb5oe';
+
+  function ensureJsPDF() {
+    return new Promise((resolve, reject) => {
+      if (window.jspdf) return resolve();
+      if (!document.getElementById("jspdf-script")) {
+        const s = document.createElement("script");
+        s.id  = "jspdf-script";
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+        document.head.appendChild(s);
+      }
+      let tries = 15;
+      (function wait() {
+        if (window.jspdf) resolve();
+        else if (--tries > 0) setTimeout(wait, 300);
+        else reject(new Error("PDF library failed to load"));
+      })();
+    });
+  }
+
+  async function uploadPDFToPCloud({ type, jobId, jobNumber, pdfDoc, filename, metadata = {} }) {
+    const pdfBase64 = pdfDoc.output('datauristring').split(',')[1];
+    const payload = { type, jobId, jobNumber, pdfBase64, filename, metadata };
+
+    console.log('[DEBUG-PCLOUD-UPLOAD-2026-05] uploading', { type, jobId, jobNumber, filename, metadata });
+    console.log('[DEBUG-PCLOUD-UPLOAD-2026-05] payload preview', { ...payload, pdfBase64: pdfBase64.slice(0, 24) + '... (' + pdfBase64.length + ' chars)' });
+
+    const res = await fetch(MAKE_PCLOUD_UPLOAD_WEBHOOK, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error(`Upload failed: HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error || 'Upload failed');
+
+    console.log('[DEBUG-PCLOUD-UPLOAD-2026-05] success', data);
+    return data;
+  }
+
   // ── AUTH ──
   function saveUser(u) {
     u.loginTime = Date.now();
@@ -4130,6 +4173,7 @@
             <div class="service-record-header">
               <div class="service-record-title">${esc(svcDateFmt)} — ${esc(val(r.serviceType))}</div>
               <button type="button" class="svc-pdf-btn" data-action="svc-pdf" data-svc-id="${esc(r.id)}" title="Download Service Report PDF" aria-label="Download Service Report PDF">📄</button>
+              <button type="button" class="svc-pdf-btn" data-action="svc-pcloud" data-svc-id="${esc(r.id)}" title="Upload Service Report PDF to pCloud" aria-label="Upload Service Report PDF to pCloud">📁</button>
             </div>
             <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
               ${r.servicePlanVisit ? "✅ Service Plan Visit" : ""} &nbsp;
@@ -4145,17 +4189,24 @@
         }).join("");
       }
 
-      // Delegated click handler for the per-card PDF button. Idempotent via
-      // _svcPdfWired flag (mirrors agency picker / inspection row patterns).
+      // Delegated click handler for the per-card PDF + pCloud-upload buttons.
+      // Idempotent via _svcPdfWired flag (mirrors agency picker / inspection
+      // row patterns).
       const recList = document.getElementById('serviceRecordsList');
       if (recList && !recList._svcPdfWired) {
         recList._svcPdfWired = true;
         recList.addEventListener('click', (e) => {
-          const btn = e.target.closest('[data-action="svc-pdf"]');
+          const pdfBtn   = e.target.closest('[data-action="svc-pdf"]');
+          const cloudBtn = e.target.closest('[data-action="svc-pcloud"]');
+          const btn      = pdfBtn || cloudBtn;
           if (!btn) return;
           const svcId = btn.getAttribute('data-svc-id');
           const rec = (state.currentServiceRecords || []).find(r => r.id === svcId);
           if (!rec) { console.warn('[svc-pdf] record not found for id', svcId); return; }
+          if (cloudBtn) {
+            uploadGeneratorReportToPCloud(rec, cloudBtn);
+            return;
+          }
           if (rec.serviceType === "Install / Commissioning") {
             reprintCommissioningCertificatePDF(rec, state.currentGenerator, state.selected, state.currentWarranties || []);
           } else {
@@ -8346,9 +8397,8 @@
           <button class="inv-btn secondary" onclick="invResetLines()">↺ Reset Lines</button>
           <button class="inv-btn secondary" onclick="invAddLine()">+ Add Line</button>
           <button class="inv-btn" onclick="invGeneratePDF()">⬇ Download PDF</button>
-          <button class="inv-btn green" onclick="invUploadToPCloud()">☁ Upload to pCloud</button>
+          <button class="inv-btn green" onclick="invUploadToPCloud()">📁 Upload to pCloud</button>
           <button class="inv-btn green" onclick="invSaveToAirtable()" id="invSaveBtn">💾 Save Invoice</button>
-          <button class="inv-btn secondary" onclick="invEmail()">✉ Email</button>
         </div>
 
         ${contractPanelHtml}
@@ -8750,42 +8800,38 @@
 
   window.invUploadToPCloud = async function() {
     if (!invJobRef) return;
-    const pCloudFolderId = invJobRef.pCloudInvoicesSentId;
-    if (!pCloudFolderId) {
-      alert("This job does not have a pCloud Invoices Sent folder ID set in Airtable.");
-      return;
-    }
-    const btn = document.querySelector(".inv-btn.green");
+    const btn = document.querySelector('button[onclick="invUploadToPCloud()"]');
+    const origLabel = btn ? btn.textContent : "";
     if (btn) { btn.disabled = true; btn.textContent = "Uploading..."; }
     try {
-      const invNum  = $("invNum")?.value || "";
-      const invDate = $("invDate")?.value || new Date().toISOString().slice(0,10);
-      const jobSlug = (invJobRef.name || "Invoice").replace(/[^a-zA-Z0-9]/g, "_");
-      const filename = `NEE_Invoice_${invNum ? invNum + "_" : ""}${jobSlug}_${invDate}.pdf`;
+      await ensureJsPDF();
+      const invNum = $("invNum")?.value || "";
+      const today  = new Date().toISOString().slice(0, 10);
+      const filename = `Invoice-${invNum || "no-num"}_${today}.pdf`;
 
-      // Generate PDF as base64
-      const pdfBase64 = await generateInvoicePDFBase64();
+      // buildInvoicePDFDoc() with no snap argument reads live DOM state —
+      // same path the Download PDF button takes.
+      const pdfDoc = buildInvoicePDFDoc();
 
-      // Upload to pCloud
-      const result = await apiPost("uploadToPCloud", {
-        folderId:  pCloudFolderId,
+      const result = await uploadPDFToPCloud({
+        type:      "invoice",
+        jobId:     invJobRef.id,
+        jobNumber: invJobRef.po || "",
+        pdfDoc,
         filename,
-        pdfBase64
+        metadata:  { invoiceNumber: invNum }
       });
-      if (!result.ok) throw new Error(result.error);
 
-      const banner = $("inv-saved-banner");
-      if (banner) {
-        banner.style.background = "";
-        banner.style.color      = "";
-        banner.textContent      = `✓ Uploaded to pCloud: ${filename}`;
-        banner.style.display    = "block";
-        setTimeout(() => { banner.style.display = "none"; }, 5000);
-      }
+      showAppToast("Uploaded to pCloud ✓", {
+        kind: "ok",
+        actionText: result.pcloudFolderUrl ? "Open Folder" : "",
+        actionHref: result.pcloudFolderUrl || ""
+      });
     } catch(err) {
-      alert("pCloud upload failed: " + err.message);
+      console.error('[DEBUG-PCLOUD-UPLOAD-2026-05] invoice upload failed', err);
+      showAppToast(`Upload failed: ${err.message}`, { kind: "error" });
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = "☁ Upload to pCloud"; }
+      if (btn) { btn.disabled = false; btn.textContent = origLabel || "📁 Upload to pCloud"; }
     }
   };
 
@@ -9079,42 +9125,6 @@
     }
   };
 
-  window.invEmail = function() {
-    const invNum  = $("invNum")?.value || "";
-    const total   = fmtCurrency(calcInvTotal());
-    const jobName = invJobRef?.name || "";
-    const to      = window._invContractorEmail || "";
-
-    // Trigger the PDF download first so the file is waiting in the user's
-    // Downloads folder when Gmail opens. The user then drags/attaches it
-    // manually — browsers don't allow cross-origin file injection into Gmail.
-    try { if (typeof window.invGeneratePDF === "function") window.invGeneratePDF(); }
-    catch (e) { /* non-fatal — user can still click Download PDF manually */ }
-
-    const subject = encodeURIComponent(`Invoice ${invNum ? "#" + invNum : ""} — ${jobName} — Northeastern Electric, Inc.`);
-    const body    = encodeURIComponent(
-      `Invoice ${invNum ? "#" + invNum : ""} for ${jobName} attached.
-
-Total: ${total}
-
-Thank you,
-Rick Unruh
-Northeastern Electric, Inc.
-330-257-0447
-rick@northeasternelec.com`
-    );
-    const toParam = to ? `&to=${encodeURIComponent(to)}` : "";
-    window.open(`https://mail.google.com/mail/?view=cm${toParam}&su=${subject}&body=${body}`, "_blank");
-
-    // Brief on-page reminder so the user knows the PDF is ready to attach
-    const banner = $("inv-saved-banner");
-    if (banner) {
-      banner.textContent   = "📄 PDF downloaded — drag it into the Gmail window to attach.";
-      banner.style.display = "block";
-      setTimeout(() => { banner.style.display = "none"; }, 6000);
-    }
-  };
-
   // ── REPRINT PDF FROM SAVED SNAPSHOT ──
   // Called from Invoice History "Reprint PDF" buttons. Rebuilds the exact same PDF.
   window.reprintInvoicePDF = function(snap) {
@@ -9221,6 +9231,57 @@ rick@northeasternelec.com`
   };
 
   function reprintCommissioningCertificatePDF(rec, gen, job, warranties) { return window.reprintCommissioningCertificatePDF(rec, gen, job, warranties); }
+
+  // Upload a generator report PDF (Service Report or Commissioning Certificate)
+  // to pCloud via the Make.com webhook. Picks builder by rec.serviceType, the
+  // same way the per-card 📄 button does.
+  async function uploadGeneratorReportToPCloud(rec, btn) {
+    const gen = state.currentGenerator;
+    const job = state.selected;
+    if (!rec || !gen || !job) {
+      showAppToast("Missing generator/job/record context", { kind: "error" });
+      return;
+    }
+    const orig = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "…"; }
+    try {
+      await ensureJsPDF();
+      const isCommissioning = rec.serviceType === "Install / Commissioning";
+      const ident = String(gen.assetId || gen.serialNumber || job.customerLastName || "Generator")
+        .replace(/[\/\s]+/g, "-");
+      const today = new Date().toISOString().slice(0, 10);
+      const prefix = isCommissioning ? "NEE-Commissioning" : "NEE-Service-Report";
+      const filename = `${prefix}-${ident}_${today}.pdf`;
+
+      const pdfDoc = isCommissioning
+        ? buildCommissioningCertificatePDFDoc(rec, gen, job, state.currentWarranties || [])
+        : buildServiceReportPDFDoc(rec, gen, job);
+
+      const result = await uploadPDFToPCloud({
+        type:      "generator_report",
+        jobId:     job.id,
+        jobNumber: job.po || "",
+        pdfDoc,
+        filename,
+        metadata:  {
+          generatorId:     gen.id || "",
+          serviceType:     rec.serviceType || "",
+          serviceRecordId: rec.id || ""
+        }
+      });
+
+      showAppToast("Uploaded to pCloud ✓", {
+        kind: "ok",
+        actionText: result.pcloudFolderUrl ? "Open Folder" : "",
+        actionHref: result.pcloudFolderUrl || ""
+      });
+    } catch(err) {
+      console.error('[DEBUG-PCLOUD-UPLOAD-2026-05] generator upload failed', err);
+      showAppToast(`Upload failed: ${err.message}`, { kind: "error" });
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = orig || "📁"; }
+    }
+  }
 
   // ── EDIT EXISTING INVOICE ────────────────────────────────────────────────
   // Pull a saved invoice's snapshot back into the builder so the user can
@@ -10367,7 +10428,7 @@ rick@northeasternelec.com`
           <button class="inv-btn secondary" onclick="estAddLine()">+ Add Line</button>
           <button class="inv-btn" onclick="estGeneratePDF()" style="background:#ea580c; border-color:#ea580c;">⬇ Download PDF</button>
           <button class="inv-btn green" onclick="estSaveToAirtable()" id="estSaveBtn">💾 Save Estimate</button>
-          <button class="inv-btn secondary" onclick="estEmail()">✉ Email</button>
+          <button class="inv-btn secondary" onclick="estUploadToPCloud()">📁 Upload to pCloud</button>
         </div>
 
         <!-- Edit-mode banner — shown when an existing estimate snapshot has
@@ -10589,37 +10650,55 @@ rick@northeasternelec.com`
     if (templates[val]) notes.value = templates[val];
   };
 
-  window.estEmail = function() {
-    const estNum  = $("estNum")?.value || "";
-    const total   = fmtCurrency(calcEstTotal());
-    const jobName = estJobRef?.name || "";
-    const to      = window._estContractorEmail || "";
+  window.estUploadToPCloud = async function() {
+    if (!estJobRef) return;
+    if (!estLines.length) { alert("No line items to upload."); return; }
+    const btn = document.querySelector('button[onclick="estUploadToPCloud()"]');
+    const origLabel = btn ? btn.textContent : "";
+    if (btn) { btn.disabled = true; btn.textContent = "Uploading..."; }
+    try {
+      await ensureJsPDF();
+      const estNum = $("estNum")?.value || "";
+      const today  = new Date().toISOString().slice(0, 10);
+      const filename = `Estimate-${estNum || "no-num"}_${today}.pdf`;
 
-    // Trigger the PDF download first so the file is ready to drag into Gmail.
-    try { if (typeof window.estGeneratePDF === "function") window.estGeneratePDF(); }
-    catch (e) { /* non-fatal */ }
+      // Mirrors the snap shape estGeneratePDF builds, fed to the shared
+      // buildInvoicePDFDoc with the orange ESTIMATE_THEME.
+      const snap = {
+        invNum:  estNum,
+        invDate: $("estDate")?.value || today,
+        billTo:  $("estBillTo")?.value || "",
+        po:      $("estJobLabel")?.value || "",
+        notes:   $("estNotes")?.value || "",
+        lines:   estLines.map(l => ({
+          id:          l.id,
+          section:     l.section || "",
+          description: l.description || "",
+          amount:      Number(l.amount) || 0
+        })),
+        jobName: estJobRef?.name || ""
+      };
+      const pdfDoc = buildInvoicePDFDoc(snap, ESTIMATE_THEME);
 
-    const subject = encodeURIComponent(`Estimate ${estNum ? "#" + estNum : ""} — ${jobName} — Northeastern Electric, Inc.`);
-    const body    = encodeURIComponent(
-      `Estimate ${estNum ? "#" + estNum : ""} for ${jobName} attached.
+      const result = await uploadPDFToPCloud({
+        type:      "estimate",
+        jobId:     estJobRef.id,
+        jobNumber: estJobRef.po || "",
+        pdfDoc,
+        filename,
+        metadata:  { estimateNumber: estNum }
+      });
 
-Total: ${total}
-
-Thank you,
-Rick Unruh
-Northeastern Electric, Inc.
-330-257-0447
-rick@northeasternelec.com`
-    );
-    const toParam = to ? `&to=${encodeURIComponent(to)}` : "";
-    window.open(`https://mail.google.com/mail/?view=cm${toParam}&su=${subject}&body=${body}`, "_blank");
-
-    // Brief on-page reminder so the user knows the PDF is ready to attach
-    const banner = $("est-saved-banner") || $("est-saved-msg");
-    if (banner) {
-      banner.textContent   = "📄 PDF downloaded — drag it into the Gmail window to attach.";
-      banner.style.display = "block";
-      setTimeout(() => { banner.style.display = "none"; }, 6000);
+      showAppToast("Uploaded to pCloud ✓", {
+        kind: "ok",
+        actionText: result.pcloudFolderUrl ? "Open Folder" : "",
+        actionHref: result.pcloudFolderUrl || ""
+      });
+    } catch(err) {
+      console.error('[DEBUG-PCLOUD-UPLOAD-2026-05] estimate upload failed', err);
+      showAppToast(`Upload failed: ${err.message}`, { kind: "error" });
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = origLabel || "📁 Upload to pCloud"; }
     }
   };
 
@@ -14362,6 +14441,46 @@ rick@northeasternelec.com`
     host.style.display = "block";
     clearTimeout(host._t);
     host._t = setTimeout(() => { host.style.display = "none"; }, 5000);
+  }
+
+  // App-wide toast (sibling of showPayrollToast — payroll styling stays
+  // frozen in its own helper). Supports an optional action link.
+  function showAppToast(msg, opts) {
+    const { kind = "ok", actionText = "", actionHref = "" } = opts || {};
+    let host = document.getElementById("appToast");
+    if (!host) {
+      host = document.createElement("div");
+      host.id = "appToast";
+      host.style.cssText = "position:fixed;bottom:24px;left:50%;transform:translateX(-50%);"
+        + "padding:12px 18px;border-radius:8px;font-size:14px;font-weight:600;"
+        + "z-index:10000;box-shadow:0 4px 14px rgba(0,0,0,0.25);max-width:90%;text-align:center;"
+        + "display:flex;align-items:center;gap:14px;";
+      document.body.appendChild(host);
+    }
+    const palette = kind === "error"
+      ? { bg: "#f8d7da", fg: "#842029", bd: "#f1aeb5" }
+      : kind === "warn"
+        ? { bg: "#fff3cd", fg: "#664d03", bd: "#ffe69c" }
+        : { bg: "#d4edda", fg: "#0f5132", bd: "#a3cfbb" };
+    host.style.background = palette.bg;
+    host.style.color      = palette.fg;
+    host.style.border     = `1px solid ${palette.bd}`;
+    host.innerHTML = "";
+    const span = document.createElement("span");
+    span.textContent = msg;
+    host.appendChild(span);
+    if (actionText && actionHref) {
+      const a = document.createElement("a");
+      a.href = actionHref;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.textContent = actionText;
+      a.style.cssText = `color:${palette.fg};text-decoration:underline;font-weight:700;`;
+      host.appendChild(a);
+    }
+    host.style.display = "flex";
+    clearTimeout(host._t);
+    host._t = setTimeout(() => { host.style.display = "none"; }, 6000);
   }
 
   function showArchiveErrorModal(message, retryFn, blob, filename) {

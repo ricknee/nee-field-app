@@ -114,7 +114,8 @@ async function handleEmployees() {
   });
   const employees = records.map(r => ({
     id:   r.id,
-    name: r.fields["Employee Name"] || ""
+    name: r.fields["Employee Name"] || "",
+    role: normalize(r.fields["Role New"] || r.fields["Role"] || "")
   }));
   return resp(200, { ok: true, employees });
 }

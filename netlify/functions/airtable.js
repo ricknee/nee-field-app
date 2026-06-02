@@ -1916,7 +1916,7 @@ async function handleEstimateTemplates(params) {
   // ARRAYJOIN() on a multipleRecordLinks field expands to the primary field
   // of the linked table; Companies' primary field is "Company Name", so a
   // FIND on the joined string resolves the linked contractor by name.
-  const safeContractor = (contractor || "").replace(/"/g, '\\"').trim();
+  const safeContractor = escapeFormulaString((contractor || "").trim());
   const filter = safeContractor
     ? `AND({Active}=TRUE(), FIND("${safeContractor}", ARRAYJOIN({Contractor})))`
     : `{Active}=TRUE()`;
@@ -2594,8 +2594,8 @@ async function handleGetInspectorsForAgency(params) {
 
   let records;
   if (trimmedName) {
-    // Strip quotes so they can't terminate the filter literal.
-    const safeName = trimmedName.replace(/"/g, "");
+    // Escape quotes/backslashes so they can't terminate the filter literal.
+    const safeName = escapeFormulaString(trimmedName);
     const filter = `AND(FIND("${safeName}", ARRAYJOIN({Inspection Agency Name})) > 0, {Active}=TRUE())`;
     records = await fetchAll(TABLES.inspectionContacts, { filter, sortField: "Inspector Name", sortDir: "asc" });
   } else {
@@ -2688,8 +2688,8 @@ async function handleGetContactsForPowerCompany(params) {
 
   let records;
   if (trimmedName) {
-    // Strip quotes so they can't terminate the filter literal.
-    const safeName = trimmedName.replace(/"/g, "");
+    // Escape quotes/backslashes so they can't terminate the filter literal.
+    const safeName = escapeFormulaString(trimmedName);
     const filter = `AND(FIND("${safeName}", ARRAYJOIN({${F.powerContact.companyName}})) > 0, {${F.powerContact.active}}=TRUE())`;
     records = await fetchAll(TABLES.powerContacts, { filter, sortField: F.powerContact.nameFormula, sortDir: "asc" });
   } else {

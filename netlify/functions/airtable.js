@@ -2076,7 +2076,7 @@ async function handleAddFleetService(body) {
   const { vehicleId, vehicleName, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
   if (!vehicleId) return resp(400, { ok: false, error: `Missing vehicleId. Keys: ${Object.keys(body||{}).join(",")}` });
   const fields = {};
-  fields["fld12gpaArqYw7BWU"] = vehicleName ? [vehicleName] : [{ id: String(vehicleId) }];
+  fields["fld12gpaArqYw7BWU"] = vehicleName ? [vehicleName] : [String(vehicleId)];
   if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
   if (mileage)      fields["fldE7SlKw7n85bZWD"] = Number(mileage);
   if (serviceTypes && serviceTypes.length) fields["fldCiHkwHtsOZmkWk"] = serviceTypes;
@@ -2284,7 +2284,7 @@ async function handleAddLiftExpense(body) {
   if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
   const idStr = String(jobId).trim();
   if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid jobId received: ${idStr}` });
-  const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldlTUL8hsPkReBAB":[{id:"recU56ncurkFrM2Nx"}],"fldwbLPIafVtmaSeb":Number(amount),"fldX2x2J0xkRyMY3y":"Scissor Lift","fldelsB2jH2tvt1Cj":description||"Scissor Lift Expense","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
+  const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldlTUL8hsPkReBAB":["recU56ncurkFrM2Nx"],"fldwbLPIafVtmaSeb":Number(amount),"fldX2x2J0xkRyMY3y":"Scissor Lift","fldelsB2jH2tvt1Cj":description||"Scissor Lift Expense","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
   if (date) fields["fldCCPYdyWAOGchWb"] = date;
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
   return resp(200, { ok: true, id: data.id });

@@ -2,7 +2,8 @@
 # served publicly on the live site. Keep internal docs and scratch files out.
 
 # Internal architecture / security map — do NOT publish to the public site
-SYSTEM-MAP.html
+docs/SYSTEM-MAP.html
+docs/SYSTEM-MAP.md
 
 # Scratch / temp files (e.g. .gray_const_line.tmp)
 *.tmp

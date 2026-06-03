@@ -17,7 +17,8 @@ docs/SYSTEM-MAP.md
 # Dependencies & local tooling
 node_modules/
 .netlify/
-.claude/        # local Claude Code config (incl. personal settings.local.json)
+# local Claude Code config (incl. personal settings.local.json)
+.claude/
 
 # OS / editor cruft
 .DS_Store

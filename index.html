@@ -2925,6 +2925,58 @@
 </div><!-- /appPage -->
 
 <script>
+  /* ============================================================================
+   * SECTION MAP — index.html field-app SPA  (~15.6K lines; this <script> ~2928→end)
+   * Line numbers drift as the file is edited; grep the function name to confirm.
+   * Markup above this script is banner-commented (login 1982, app shell 2009,
+   * tabs + tab panels 2120–2920). Conventions: apiGet/apiPost are the only
+   * backend calls; single `state` object + render*() rebuild DOM; back-stack via
+   * pushBackEntry/popBackEntry; jsPDF lazy-loaded; pCloud uploads go to Make.com.
+   *
+   *  CONFIG & STATE ............... 2928  API const, STORAGE_KEY, `state` (2931)
+   *  CORE UTILS ................... 2956  back-stack, esc/fmtDate/showAlert, status
+   *                                       pills, apiGet (3077), apiPost (3087),
+   *                                       ensureJsPDF (3113), uploadPDFToPCloud (3131),
+   *                                       session save/clear/load, isAdmin/isViewer
+   *  AUTH & JOB LIST .............. 3205  renderAuth, handleLogin (3272), loadJobs
+   *                                       (3313), filters/sort, renderJobList (3383),
+   *                                       selectJob (3454)
+   *  JOB DETAIL / PERF / CLOSEOUT . 3802  pills+fmt helpers, renderLivePerf (3850),
+   *                                       renderCloseout, refreshSelectedJob (3889),
+   *                                       renderEstGp, warranty badges, loadGeneratorData
+   *  TABS & BILLABLE RATE ......... 4405  switchTab, billable-rate bar (4431–4503)
+   *  TIME ENTRIES TAB ............. 4504  loadTimeEntries
+   *  EXPENSES TAB ................. 4848  loadExpenses
+   *  POWER CO PICKERS ............. 5096  contact-dropdown, company picker (5132),
+   *                                       contact picker (5249), add-co/contact modals
+   *                                       (5381), renderTypeahead (5576), save (5745)
+   *  JOB INFO EDIT / SAVE ......... 5815  address card, edit mode, saveJobInfo (5898),
+   *                                       handleStatusChange (5964)
+   *  INSPECTIONS .................. 6001  loadInspections (6007), vendors (6198),
+   *                                       agencies (6332), inspectors (6486), add-new
+   *                                       modals (6537–6818), card+save (6950–7042)
+   *  FLEET ........................ 7044  openFleet, grid (7079), detail (7103),
+   *                                       service history (7205), mileage modal (7339)
+   *  LIFTS & EXPENSE FORMS ........ 7425  loadJobLifts, scissor lifts (7540), general
+   *                                       expense (7667), lift/bucket panels (7755–7971)
+   *  APP WIRING ................... 7973  wireEvents, init (8112)
+   *  INVOICE TAB & BUILDER ........ 8133  loadInvoiceTab, renderInvoiceBuilder (8323),
+   *                                       lines/events, history (8617), totals (8794)
+   *  PDF BUILDERS ................. 9217  uploadGeneratorReportToPCloud, invoice PDF
+   *                                       (9327/9381), service report (9735),
+   *                                       commissioning cert (9984); reprint wrappers 9160+
+   *  ESTIMATE TAB & BUILDER ....... 10278 loadEstimateTab, renderEstimateBuilder (10354),
+   *                                       lines/events, history (10658)
+   *  NEW-ESTIMATE FLOW (np*) ...... 10975 templates/state, _npLoadContactsForContractor (11166)
+   *  PAYROLL (UI) ................. 11457 bonuses/KPI tiles, runs grid, create view
+   *  ALL INVOICES ................. 11899 open (11899), load (13085), summary+render (13142)
+   *  SCHEDULE ..................... 11930 open, loadScheduleData (12243), grid (12292),
+   *                                       drag/drop (12425), conflicts (12644), crew pills (12995)
+   *  PAYROLL (ENGINE) ............. 13366 week math, loadPayrollEntries (13394), groupEntries,
+   *                                       renderPayroll (13477), saveAll (13956), wire (14112)
+   *  PAYROLL PDF & ARCHIVE ........ 14276 generatePayrollPDF, archiveAndDownloadPayroll
+   *                                       (14466), buildPDF (14595)
+   * ========================================================================== */
   const API = "/.netlify/functions/airtable";
   const STORAGE_KEY = "nee_user_v2";
 

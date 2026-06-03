@@ -3,6 +3,75 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 
+/* ============================================================================
+ * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
+ * Shape: one exported handler() (3831) dispatches on an `action` string —
+ * GET reads queryStringParameters.action, POST reads JSON.parse(body).action.
+ * Flat `if (action === …)` chains: GET 3839–3877, POST 3882–3932. Unknown → 400.
+ * To add an endpoint: write a handleX(), then register it in the right chain.
+ *
+ * CONVENTIONS (see CLAUDE.md): TABLES maps logical→table name/id; F maps logical→
+ * Airtable field NAME and is READ-ONLY (never put an id in F); write sites use
+ * field/record ids inline. Linked-record writes = bare ["rec…"] arrays, not
+ * [{id}]. escapeFormulaString (301) is the canonical filterByFormula escaper.
+ * Never write Make-owned sync fields (Google Contact ID, Sync Status, …).
+ * handleGetJobInvoices (3638) is the reference SAFE cross-job pattern (FIND
+ * prefilter + verify linked id in memory) — TODO.md lists sites still unsafe.
+ *
+ * --- INFRASTRUCTURE / HELPERS ---
+ *   env + API_ROOT ........... 5     TABLES 9, F (field-name map) 28
+ *   TE/PR_RUNS/PR_BONUSES .... 242   field maps for time-entry & payroll tables
+ *   resp/ensureEnv ........... 279   escapeFormulaString 301, g/gNum/gBool 305
+ *   date + link helpers ...... 336   ymdToDate/dateToYmd/shiftDays, firstLinkedId 355
+ *   single-select whitelists . 387   SERVICE_TYPE_OPTS, WARRANTY_TYPE/SOURCE_OPTS
+ *   atFetch / fetchAll ....... 405   atFetch 405 (auth+unwrap), fetchAll 418 (paginate)
+ *   uploadAirtableAttachment . 694
+ *   payroll date helpers ..... 944   computePayrollDateRanges, isPayrollEligibleRole 1016
+ *   mapJob ................... 1367  (filtered-vs-unfiltered rollup notes inline)
+ *   fleet field maps ......... 1987  FLEET_TABLES/FV/ML; SHOP_ADDRESS 2265
+ *   buildWarrantyTemplateFilter 2994 ; SCHED_F 3413
+ *
+ * --- HANDLERS BY DOMAIN (action → line) ---
+ *   AUTH ......... login 1341
+ *   JOBS ......... jobs 1513, jobById 1524, createJob 3780, updateJobStatus 1550,
+ *                  updateJobInfo 3736, updateJobNotes 3690
+ *   TIME ENTRIES . timeEntries 2163, createTimeEntry 495, updateTimeEntry 2151,
+ *                  updateTimeEntryPayroll 520, deleteTimeEntry 2144,
+ *                  backfillTimeEntryEmployeeLinks 550 (ADMIN_BACKFILL_TOKEN-gated)
+ *   PAYROLL ...... payrollEntries 437, findMatchingPayrollRun 715, payrollRunCreate 748,
+ *                  payrollRunsList 886, payrollHoursRollup 972, payrollBonusesRollup 1025,
+ *                  payrollEmployeeBonusHistory 1078, payrollHoursBreakdown 1128,
+ *                  myHoursRollup 1212, myHoursBreakdown 1269
+ *   EXPENSES ..... expenses 2210, deleteExpense 1607, approveExpense 1614,
+ *                  addLiftExpense 2282, addGeneralExpense 2293, calculateMileage 2266,
+ *                  unlinkedLaborAllocations 2186, unlinkedMaterialAllocations 2242
+ *   ESTIMATES .... jobEstimates 1653, updateEstimate 1729, updateEstimateStatus 1741,
+ *                  getNextEstimateNumber 1756, saveEstimate 1789, sentEstimatePDFs 1844
+ *                  (helper fetchSentEstimatePDFsForJob 1707), estimateTemplates 1914,
+ *                  createJobEstimate 1950
+ *   INVOICES ..... saveInvoice 2843, setInvoiceStatus 3360, markInvoicePaid 3374,
+ *                  getNextInvoiceNumber 3379, allInvoices 3570, getJobInvoices 3638
+ *   POWER CO ..... updatePowerCo 1570, getPowerCompanies 2667,
+ *                  getContactsForPowerCompany 2681, createPowerCompany 2728,
+ *                  createPowerContact 2760
+ *   INSPECTIONS .. jobInspections 1629, createInspection 1640, updateInspection 2317,
+ *                  updateJobInspection 3707, getInspectionAgencies 2542,
+ *                  createInspectionAgency 2555, inspectorsForAgency 2587,
+ *                  createInspectionContact 2632
+ *   FLEET ........ fleetVehicles 1999, fleetServiceHistory 2005, updateFleetVehicle 2016,
+ *                  logMileage 2034, addFleetService 2075, updateFleetService 2096,
+ *                  deleteFleetService 2116
+ *   LIFTS ........ scissorLifts 2123, scissorLiftsByJob 1621, updateScissorLift 2129
+ *   GENERATOR .... generator 1532, getWarrantyTemplates 3016, getWarranties 3046,
+ *                  addWarranty 3092, addGeneratorService 2936, commissionGenerator 3141
+ *   SCHEDULE ..... scheduleEntries 3423, addScheduleEntry 3494, updateScheduleEntry 3518,
+ *                  deleteScheduleEntry 3540, schedulingCrew 3553
+ *   VENDORS/CONTACTS  vendors 2341, createVendor 2374, companies 2327,
+ *                  listContractors 2432, listContactsByCompany 2463, createContact 2506
+ *   BILLABLE RATES  laborBillableRates 2795, updateJobBillableRate 2818
+ *   SERVICE CALLS . startServiceCall 1593, completeServiceCall 1600
+ * ========================================================================== */
+
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
 const API_ROOT = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;

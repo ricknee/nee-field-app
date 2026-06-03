@@ -1,6 +1,7 @@
 // netlify/functions/airtable.js
 // Northeastern Electric Field App — Netlify Proxy
-// Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID
+// Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
+import { signToken, authedUser, hasRole } from "./_auth.js";
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID;
@@ -283,7 +284,7 @@ function resp(code, body, extraHeaders) {
       "Content-Type": "application/json",
       "Cache-Control": "no-store",
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       ...(extraHeaders || {})
     },
@@ -294,6 +295,60 @@ function resp(code, body, extraHeaders) {
 function ensureEnv() {
   if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID)
     throw new Error("Missing env vars AIRTABLE_API_KEY or AIRTABLE_BASE_ID");
+  if (!process.env.AUTH_SECRET)
+    throw new Error("Missing env var AUTH_SECRET");
+}
+
+// ── Authorization policy ────────────────────────────────────────────────────
+// Returns the allowed-role array for (method, action), or null = "any signed-in
+// role" (general reads). Role tiers mirror the client gating, enforced here so
+// the browser can no longer be trusted:
+//   PAYROLL      admin+employee — matches isPayrollEligibleRole / .payroll-eligible-only
+//   ADMIN_OFFICE admin+office   — back-office money ops (office acts like admin here)
+//   ADMIN        admin only     — scheduling (.strict-admin-only), payroll runs, dev tools
+//   NON_VIEWER   admin+office+employee (default for writes) — viewer is read-only
+// Conservative first pass: it locks out viewers from writes, gates payroll, and
+// admin-gates the high-risk ops, without over-restricting employees' field work.
+// Tighten specific actions later once real-world usage is observed.
+const _PAYROLL      = ["admin", "employee"];
+const _ADMIN_OFFICE = ["admin", "office"];
+const _ADMIN        = ["admin"];
+const _NON_VIEWER   = ["admin", "office", "employee"];
+
+const _PAYROLL_READS = new Set([
+  "payrollEntries", "findMatchingPayrollRun", "payrollRunsList",
+  "payrollHoursRollup", "payrollHoursBreakdown", "payrollBonusesRollup",
+  "payrollEmployeeBonusHistory", "myHoursRollup", "myHoursBreakdown",
+]);
+const _READ_LIKE_POSTS = new Set([
+  "getNextEstimateNumber", "getNextInvoiceNumber", "getJobInvoices", "calculateMileage",
+]);
+const _TIME_SELF_WRITES = new Set([
+  "createTimeEntry", "updateTimeEntry", "deleteTimeEntry",
+]);
+const _ADMIN_POSTS = new Set([
+  "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
+  "addScheduleEntry", "updateScheduleEntry", "deleteScheduleEntry",
+]);
+const _ADMIN_OFFICE_POSTS = new Set([
+  "deleteExpense", "approveExpense", "markInvoicePaid", "setInvoiceStatus",
+  "updateJobBillableRate", "createVendor",
+]);
+
+function authzFor(method, action) {
+  if (method === "GET") return _PAYROLL_READS.has(action) ? _PAYROLL : null;
+  // POST
+  if (_READ_LIKE_POSTS.has(action))    return null;
+  if (_TIME_SELF_WRITES.has(action))   return _PAYROLL;
+  if (_ADMIN_POSTS.has(action))        return _ADMIN;
+  if (_ADMIN_OFFICE_POSTS.has(action)) return _ADMIN_OFFICE;
+  return _NON_VIEWER; // all other writes: any signed-in non-viewer
+}
+
+// Parse the POST body's action without throwing on malformed JSON.
+function safeBodyAction(event) {
+  try { return event.body ? JSON.parse(event.body).action : undefined; }
+  catch { return undefined; }
 }
 
 // Escape a literal string for safe inclusion inside an Airtable filterByFormula
@@ -1358,7 +1413,9 @@ async function handleLogin(body) {
   else if (rawRole === "office") role = "office";
   else if (rawRole === "viewer") role = "viewer";
   else                            role = "employee";
-  return resp(200, { ok: true, user: { id: match.id, name: f[F.emp.name]||"Unknown", role } });
+  const user = { id: match.id, name: f[F.emp.name]||"Unknown", role };
+  // Issue a signed session token the client attaches to every later request.
+  return resp(200, { ok: true, user, token: signToken({ id: user.id, role: user.role }) });
 }
 
 // Shared mapper — used by handleJobs (list) and handleJobById (single).
@@ -3832,6 +3889,20 @@ export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
     ensureEnv();
+
+    // ── Server-side authn + authz (see _auth.js) ─────────────────────────────
+    // Every action except `login` requires a valid signed token; role is then
+    // checked per action. The browser's claimed role is no longer trusted.
+    const reqAction = event.httpMethod === "GET"
+      ? event.queryStringParameters?.action
+      : safeBodyAction(event);
+    if (reqAction !== "login") {
+      const authUser = authedUser(event);
+      if (!authUser) return resp(401, { ok: false, error: "Not signed in. Please log in again." });
+      if (!hasRole(authUser.role, authzFor(event.httpMethod, reqAction))) {
+        return resp(403, { ok: false, error: "You don't have permission to do that." });
+      }
+    }
 
     if (event.httpMethod === "GET") {
       const action = event.queryStringParameters?.action;

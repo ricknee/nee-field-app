@@ -454,14 +454,20 @@ const API = "/.netlify/functions/inventory";
 
 async function apiGet(action, params) {
   const qs = new URLSearchParams({ action, ...(params || {}) });
-  const r  = await fetch(`${API}?${qs}`);
+  const headers = {};
+  if (currentUser && currentUser.token) headers["Authorization"] = "Bearer " + currentUser.token;
+  const r  = await fetch(`${API}?${qs}`, { headers });
   const d  = await r.json();
+  if (r.status === 401 && currentUser) logout(); // session expired → back to login
   if (!d.ok) throw new Error(d.error || "API error");
   return d;
 }
 async function apiPost(body) {
-  const r = await fetch(API, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+  const headers = { "Content-Type":"application/json" };
+  if (currentUser && currentUser.token) headers["Authorization"] = "Bearer " + currentUser.token;
+  const r = await fetch(API, { method:"POST", headers, body:JSON.stringify(body) });
   const d = await r.json();
+  if (r.status === 401 && currentUser) logout(); // session expired → back to login
   if (!d.ok) throw new Error(d.error || "API error");
   return d;
 }
@@ -1032,6 +1038,7 @@ async function doLogin() {
   try {
     var d = await apiPost({ action:"login", identifier, pin });
     currentUser = d.user;
+    currentUser.token = d.token; // carry the signed session token for later requests
     currentLocation = loadLocation();
     saveSession(currentUser);
     applyUser();

@@ -1,0 +1,20 @@
+# Netlify publishes the repo ROOT (publish = "."), so any committed file is
+# served publicly on the live site. Keep internal docs and scratch files out.
+
+# Internal architecture / security map — do NOT publish to the public site
+SYSTEM-MAP.html
+
+# Scratch / temp files (e.g. .gray_const_line.tmp)
+*.tmp
+
+# Secrets — never commit. Functions read these via Netlify env vars or a local .env
+.env
+.env.*
+
+# Dependencies & local tooling
+node_modules/
+.netlify/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

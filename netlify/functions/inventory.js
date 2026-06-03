@@ -1,6 +1,7 @@
 // netlify/functions/inventory.js
 // NEE Inventory App v2 — Netlify Proxy
-// Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID
+// Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
+import { signToken, authedUser, hasRole } from "./_auth.js";
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const MAIN_BASE_ID     = process.env.AIRTABLE_BASE_ID;
@@ -14,7 +15,7 @@ function resp(code, body) {
     headers: {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Headers": "Content-Type",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
     },
     body: JSON.stringify(body)
@@ -25,6 +26,31 @@ function ensureEnv() {
   if (!AIRTABLE_API_KEY) throw new Error("Missing AIRTABLE_API_KEY");
   if (!MAIN_BASE_ID)     throw new Error("Missing AIRTABLE_BASE_ID");
   if (!INV_BASE_ID)      throw new Error("Missing INVENTORY_BASE_ID");
+  if (!process.env.AUTH_SECRET) throw new Error("Missing AUTH_SECRET");
+}
+
+// ── Authorization policy (see _auth.js) ──────────────────────────────────────
+// Reads: any signed-in role. Writes: any signed-in non-viewer, EXCEPT the
+// money/catalog/destructive ops, which require admin. A shared AUTH_SECRET means
+// tokens from the field app validate here too, so all four roles can appear.
+const _ADMIN_INV   = ["admin"];
+const _NON_VIEWER  = ["admin", "office", "employee"];
+const _ADMIN_WRITES = new Set([
+  "pushExpenses",        // pushes material cost into job Expenses (money)
+  "updateItemCost", "createItem", "syncItemCostToVendor", // catalog / pricing
+  "delete",              // transaction deletion
+  "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
+]);
+
+function authzFor(method, action) {
+  if (method === "GET") return null;                 // any signed-in role may read
+  return _ADMIN_WRITES.has(action) ? _ADMIN_INV : _NON_VIEWER; // viewer blocked on writes
+}
+
+// Parse the POST body's action without throwing on malformed JSON.
+function safeBodyAction(event) {
+  try { return event.body ? JSON.parse(event.body).action : undefined; }
+  catch { return undefined; }
 }
 
 function normalize(v) { return String(v || "").trim().toLowerCase(); }
@@ -93,16 +119,17 @@ async function handleLogin(body) {
 
   if (!match) return resp(401, { ok: false, error: "Invalid name or PIN." });
 
-  const f    = match.fields || {};
-  const role = normalize(f["Role New"] || f["Role"] || "");
-  return resp(200, {
-    ok: true,
-    user: {
-      id:   match.id,
-      name: f["Employee Name"] || "Unknown",
-      role: role === "admin" ? "admin" : "employee"
-    }
-  });
+  const f       = match.fields || {};
+  const rawRole = normalize(f["Role New"] || f["Role"] || "");
+  // Return the full canonical role (admin/office/viewer/employee) — both the
+  // picker and the server-side authz need the real role, not a collapsed one.
+  let role;
+  if      (rawRole === "admin")  role = "admin";
+  else if (rawRole === "office") role = "office";
+  else if (rawRole === "viewer") role = "viewer";
+  else                            role = "employee";
+  const user = { id: match.id, name: f["Employee Name"] || "Unknown", role };
+  return resp(200, { ok: true, user, token: signToken({ id: user.id, role: user.role }) });
 }
 
 // ── EMPLOYEES (for name picker) ────────────────────────────
@@ -2701,6 +2728,19 @@ export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
     ensureEnv();
+
+    // ── Server-side authn + authz (see _auth.js) ─────────────────────────────
+    // Every action except `login` requires a valid signed token; role checked per action.
+    const reqAction = event.httpMethod === "GET"
+      ? event.queryStringParameters?.action
+      : safeBodyAction(event);
+    if (reqAction !== "login") {
+      const authUser = authedUser(event);
+      if (!authUser) return resp(401, { ok: false, error: "Not signed in. Please log in again." });
+      if (!hasRole(authUser.role, authzFor(event.httpMethod, reqAction))) {
+        return resp(403, { ok: false, error: "You don't have permission to do that." });
+      }
+    }
 
     if (event.httpMethod === "GET") {
       const action = event.queryStringParameters?.action;

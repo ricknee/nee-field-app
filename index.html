@@ -3078,19 +3078,27 @@
     const url = new URL(API, location.origin);
     url.searchParams.set("action", action);
     Object.entries(params).forEach(([k,v]) => { if (v != null && v !== "") url.searchParams.set(k,v); });
-    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    const headers = { Accept: "application/json" };
+    if (state.user?.token) headers.Authorization = "Bearer " + state.user.token;
+    const r = await fetch(url, { headers });
     const d = await r.json().catch(()=>({}));
+    // Session expired/invalid token on an authenticated request → bounce to login.
+    if (r.status === 401 && state.user) clearUser();
     if (!r.ok || d.ok === false) throw new Error(d.error || "Request failed");
     return d;
   }
 
   async function apiPost(action, body={}) {
+    const headers = { "Content-Type":"application/json", Accept:"application/json" };
+    if (state.user?.token) headers.Authorization = "Bearer " + state.user.token;
     const r = await fetch(API, {
       method: "POST",
-      headers: { "Content-Type":"application/json", Accept:"application/json" },
+      headers,
       body: JSON.stringify({ action, ...body })
     });
     const d = await r.json().catch(()=>({}));
+    // Session expired/invalid token on an authenticated request → bounce to login.
+    if (r.status === 401 && state.user) clearUser();
     if (!r.ok || d.ok === false) {
       // Forward-compatible structured-error pattern: callers that need
       // to branch on specific failures (e.g. 409 duplicate → existingId
@@ -3285,6 +3293,7 @@
 
     try {
       const d = await apiPost("login", { identifier, pin });
+      d.user.token = d.token; // carry the signed session token for later requests
       saveUser(d.user);
       await Promise.all([loadJobs(), loadContractors()]);
     } catch(err) {

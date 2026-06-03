@@ -11,10 +11,13 @@ docs/SYSTEM-MAP.md
 # Secrets — never commit. Functions read these via Netlify env vars or a local .env
 .env
 .env.*
+# keep the committed template (no real secrets); .gitignore has no inline comments:
+!.env.example
 
 # Dependencies & local tooling
 node_modules/
 .netlify/
+.claude/        # local Claude Code config (incl. personal settings.local.json)
 
 # OS / editor cruft
 .DS_Store

@@ -44,6 +44,9 @@ There is **no build step, no linter, and no root `package.json`.** Do not look f
 - `INVENTORY_BASE_ID` — separate inventory base (`appfsLJwfow4CepCw`; `inventory.js` only)
 - `GOOGLE_MAPS_API_KEY` — `handleCalculateMileage` distance lookups
 - `ADMIN_BACKFILL_TOKEN` — gates the one-off `backfillTimeEntryEmployeeLinks` admin action
+- `AUTH_SECRET` — HMAC key for signing/verifying session tokens (`_auth.js`, shared by both
+  functions). **Required — auth fails closed:** `ensureEnv()` throws and every request 401s if
+  it's unset. Local `netlify dev` and `node tests/handlers.test.mjs` need it too.
 
 ## Architecture
 
@@ -97,11 +100,28 @@ live app authenticates — see Authentication & roles below.)
 ### Authentication & roles
 
 Login (`handleLogin`) matches the submitted identifier (name/username/email) + PIN against the
-**Employees table**, requiring `Active` and a non-empty PIN. It returns
-`{ id, name, role }` and **sets no cookie/token** — the functions are stateless per request and
-authorization is effectively client-enforced. Roles are normalized to four values: `admin`,
-`office`, `viewer`, `employee`. `office` behaves like admin in the field app but is filtered out
-of inventory and crew pickers; "strict admin" in the UI means `role === "admin"` only.
+**Employees table**, requiring `Active` and a non-empty PIN. On success it issues a **signed
+session token** (`signToken`) and returns `{ id, name, role, token }`. Roles are normalized to
+four values: `admin`, `office`, `viewer`, `employee`. `office` behaves like admin in the field
+app but is filtered out of inventory and crew pickers; "strict admin" in the UI means
+`role === "admin"` only.
+
+**Server-side authorization (PR #19, `_auth.js`) — this is now enforced, not client-trusted.**
+Tokens are stateless **HMAC-SHA256** over `base64url(JSON{id,role,iat,exp})`, 30-day TTL, no
+session store. The client attaches `Authorization: Bearer <token>` on every call (persisted in
+`localStorage`); the function rejects with **401** on missing/forged/expired tokens and **403**
+on role violations, then the client bounces to login. There is **no `AUTH_SECRET` fallback — it
+fails closed** (see env list above). `_auth.js` exports `signToken`/`verifyToken`/`tokenFromEvent`/
+`authedUser`/`hasRole` and is shared by both functions, so a token from either validates in both.
+
+Role policy lives in `authzFor(method, action)` (~airtable.js:407) returning an allowed-role
+array (or `null` = any signed-in role): `_PAYROLL` (admin+employee) for payroll reads/self
+time-writes, `_ADMIN` (admin only) for payroll runs, scheduling, and dev/backfill ops,
+`_ADMIN_OFFICE` (admin+office) for back-office money ops (delete/approve expense, mark-paid,
+billable-rate, createVendor), and `_NON_VIEWER` as the default for all other writes (viewers are
+read-only). It's a **conservative first pass** — it does NOT harden the plaintext-PIN compare in
+`handleLogin` (a separate pass). When adding a write action, decide its tier in `authzFor` or it
+defaults to non-viewer.
 
 ## Airtable integration conventions (read before touching `airtable.js`)
 

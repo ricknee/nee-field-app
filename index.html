@@ -9162,19 +9162,8 @@
       }
     }
 
-    if (window.jspdf) { doBuild(); return; }
-    if (!document.getElementById("jspdf-script")) {
-      const s = document.createElement("script");
-      s.id = "jspdf-script";
-      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-      document.head.appendChild(s);
-    }
-    let tries = 15;
-    (function waitForLib() {
-      if (window.jspdf) doBuild();
-      else if (--tries > 0) setTimeout(waitForLib, 300);
-      else alert("PDF library failed to load. Check your connection.");
-    })();
+    ensureJsPDF().then(doBuild)
+      .catch(() => alert("PDF library failed to load. Check your connection."));
   };
 
   function reprintInvoicePDF(snap) { return window.reprintInvoicePDF(snap); }
@@ -9199,19 +9188,8 @@
       }
     }
 
-    if (window.jspdf) { doBuild(); return; }
-    if (!document.getElementById("jspdf-script")) {
-      const s = document.createElement("script");
-      s.id = "jspdf-script";
-      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-      document.head.appendChild(s);
-    }
-    let tries = 15;
-    (function waitForLib() {
-      if (window.jspdf) doBuild();
-      else if (--tries > 0) setTimeout(waitForLib, 300);
-      else alert("PDF library failed to load. Check your connection.");
-    })();
+    ensureJsPDF().then(doBuild)
+      .catch(() => alert("PDF library failed to load. Check your connection."));
   };
 
   function reprintServiceReportPDF(rec, gen, job) { return window.reprintServiceReportPDF(rec, gen, job); }
@@ -9236,19 +9214,8 @@
       }
     }
 
-    if (window.jspdf) { doBuild(); return; }
-    if (!document.getElementById("jspdf-script")) {
-      const s = document.createElement("script");
-      s.id = "jspdf-script";
-      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-      document.head.appendChild(s);
-    }
-    let tries = 15;
-    (function waitForLib() {
-      if (window.jspdf) doBuild();
-      else if (--tries > 0) setTimeout(waitForLib, 300);
-      else alert("PDF library failed to load. Check your connection.");
-    })();
+    ensureJsPDF().then(doBuild)
+      .catch(() => alert("PDF library failed to load. Check your connection."));
   };
 
   function reprintCommissioningCertificatePDF(rec, gen, job, warranties) { return window.reprintCommissioningCertificatePDF(rec, gen, job, warranties); }
@@ -9367,27 +9334,8 @@
   // ── INVOICE PDF GENERATION ──
   // Returns PDF as base64 string (for pCloud upload)
   async function generateInvoicePDFBase64() {
-    return new Promise((resolve, reject) => {
-      function tryBuild(attempts) {
-        if (window.jspdf) {
-          try {
-            const b64 = buildInvoicePDFBase64();
-            resolve(b64);
-          } catch(e) { reject(e); }
-        } else if (attempts > 0) {
-          setTimeout(() => tryBuild(attempts - 1), 300);
-        } else {
-          reject(new Error("PDF library not loaded"));
-        }
-      }
-      if (!window.jspdf && !document.getElementById("jspdf-script")) {
-        const s = document.createElement("script");
-        s.id = "jspdf-script";
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-        document.head.appendChild(s);
-      }
-      tryBuild(15);
-    });
+    await ensureJsPDF();
+    return buildInvoicePDFBase64();
   }
 
   // Build PDF and return base64 string (shared by download and upload)
@@ -9399,24 +9347,8 @@
   window.invGeneratePDF = function() {
     if (!invJobRef) return;
     if (!invLines.length) { alert("No line items to print."); return; }
-
-    function tryBuildInv(attempts) {
-      if (window.jspdf) { buildInvoicePDF(); }
-      else if (attempts > 0) { setTimeout(() => tryBuildInv(attempts - 1), 300); }
-      else { alert("PDF library failed to load. Check your connection."); }
-    }
-
-    if (!window.jspdf) {
-      if (!document.getElementById("jspdf-script")) {
-        const s = document.createElement("script");
-        s.id = "jspdf-script";
-        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-        document.head.appendChild(s);
-      }
-      tryBuildInv(15);
-    } else {
-      buildInvoicePDF();
-    }
+    ensureJsPDF().then(buildInvoicePDF)
+      .catch(() => alert("PDF library failed to load. Check your connection."));
   };
 
   // Theme presets — control title text, header fill color, and logo image.
@@ -10841,19 +10773,8 @@
         alert("Reprint failed: " + e.message);
       }
     }
-    if (window.jspdf) { doBuild(); return; }
-    if (!document.getElementById("jspdf-script")) {
-      const s = document.createElement("script");
-      s.id = "jspdf-script";
-      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-      document.head.appendChild(s);
-    }
-    let tries = 15;
-    (function waitForLib() {
-      if (window.jspdf) doBuild();
-      else if (--tries > 0) setTimeout(waitForLib, 300);
-      else alert("PDF library failed to load. Check your connection.");
-    })();
+    ensureJsPDF().then(doBuild)
+      .catch(() => alert("PDF library failed to load. Check your connection."));
   };
 
   window.estSaveToAirtable = async function() {
@@ -11022,43 +10943,32 @@
     if (!estJobRef) return;
     if (!estLines.length) { alert("No line items to print."); return; }
 
-    function tryBuild(attempts) {
-      if (window.jspdf) {
-        try {
-          // Gather estimate DOM state into a snapData object (same shape invoice uses)
-          const snap = {
-            invNum:  $("estNum")?.value || "",
-            invDate: $("estDate")?.value || new Date().toISOString().slice(0,10),
-            billTo:  $("estBillTo")?.value || "",
-            po:      $("estJobLabel")?.value || "",
-            notes:   $("estNotes")?.value || "",
-            lines:   estLines.map(l => ({
-              id: l.id,
-              section: l.section || "",
-              description: l.description || "",
-              amount: Number(l.amount) || 0
-            })),
-            jobName: estJobRef?.name || ""
-          };
-          const doc = buildInvoicePDFDoc(snap, ESTIMATE_THEME);
-          const jobSlug = (snap.jobName || "Estimate").replace(/[^a-zA-Z0-9]/g, "_");
-          const filename = `NEE_Estimate_${snap.invNum ? snap.invNum + "_" : ""}${jobSlug}_${snap.invDate}.pdf`;
-          doc.save(filename);
-        } catch(e) { alert("Estimate PDF failed: " + e.message); }
-      } else if (attempts > 0) {
-        setTimeout(() => tryBuild(attempts - 1), 300);
-      } else {
-        alert("PDF library failed to load. Check your connection.");
-      }
+    function doBuild() {
+      try {
+        // Gather estimate DOM state into a snapData object (same shape invoice uses)
+        const snap = {
+          invNum:  $("estNum")?.value || "",
+          invDate: $("estDate")?.value || new Date().toISOString().slice(0,10),
+          billTo:  $("estBillTo")?.value || "",
+          po:      $("estJobLabel")?.value || "",
+          notes:   $("estNotes")?.value || "",
+          lines:   estLines.map(l => ({
+            id: l.id,
+            section: l.section || "",
+            description: l.description || "",
+            amount: Number(l.amount) || 0
+          })),
+          jobName: estJobRef?.name || ""
+        };
+        const doc = buildInvoicePDFDoc(snap, ESTIMATE_THEME);
+        const jobSlug = (snap.jobName || "Estimate").replace(/[^a-zA-Z0-9]/g, "_");
+        const filename = `NEE_Estimate_${snap.invNum ? snap.invNum + "_" : ""}${jobSlug}_${snap.invDate}.pdf`;
+        doc.save(filename);
+      } catch(e) { alert("Estimate PDF failed: " + e.message); }
     }
 
-    if (!window.jspdf && !document.getElementById("jspdf-script")) {
-      const s = document.createElement("script");
-      s.id = "jspdf-script";
-      s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-      document.head.appendChild(s);
-    }
-    tryBuild(15);
+    ensureJsPDF().then(doBuild)
+      .catch(() => alert("PDF library failed to load. Check your connection."));
   };
 
   // ═══════════════════════════════════════════════════════════════
@@ -14373,11 +14283,7 @@
   // ── PDF GENERATION (client-side via jsPDF) ──────────────────────
   // Pre-load jsPDF when payroll modal opens so it is ready when needed
   function preloadJsPDF() {
-    if (window.jspdf || document.getElementById("jspdf-script")) return;
-    const script = document.createElement("script");
-    script.id = "jspdf-script";
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-    document.head.appendChild(script);
+    ensureJsPDF().catch(() => {});
   }
 
   function generatePayrollPDF() {
@@ -14396,27 +14302,8 @@
       }
     }
 
-    function tryBuild(attempts) {
-      if (window.jspdf) {
-        runBuildAndArchive();
-      } else if (attempts > 0) {
-        setTimeout(() => tryBuild(attempts - 1), 300);
-      } else {
-        alert("PDF library failed to load. Check your internet connection and try again.");
-      }
-    }
-
-    if (!window.jspdf) {
-      if (!document.getElementById("jspdf-script")) {
-        const script = document.createElement("script");
-        script.id = "jspdf-script";
-        script.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
-        document.head.appendChild(script);
-      }
-      tryBuild(15); // retry up to 15x × 300ms = 4.5s
-    } else {
-      runBuildAndArchive();
-    }
+    ensureJsPDF().then(runBuildAndArchive)
+      .catch(() => alert("PDF library failed to load. Check your internet connection and try again."));
   }
   window.generatePayrollPDF = generatePayrollPDF;
 

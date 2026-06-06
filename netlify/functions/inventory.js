@@ -525,15 +525,17 @@ async function handleHistory(params) {
 // ── PENDING EXPENSES ───────────────────────────────────────
 async function handlePendingExpenses() {
 
-  // Fetch all Use AND Return transactions not yet pushed
-  const [txRecords, itemRecords, invJobRecords, mainJobRecords] = await Promise.all([
+  // Fetch all Use AND Return transactions not yet pushed.
+  // No longer reads the inventory-base Jobs *mirror* — transactions carry the
+  // main-base job id directly in "Job ID (Main)" (Drop-Jobs-mirror bet, Step C;
+  // legacy link-only rows were backfilled, so the name-match path is gone).
+  const [txRecords, itemRecords, mainJobRecords] = await Promise.all([
     fetchAll(API_ROOT_INV, "Inventory Transactions", {
       filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`,
       sortField: "Transaction Date",
       sortDir: "asc"
     }),
     fetchAll(API_ROOT_INV, "Inventory Items", {}),
-    fetchAll(API_ROOT_INV, "Jobs", {}),
     fetchAll(API_ROOT_MAIN, "Jobs", {})
   ]);
 
@@ -542,37 +544,15 @@ async function handlePendingExpenses() {
     itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0, wireFtPerLb: r.fields["Wire ft/lb"] || 0 };
   });
 
-  // Index main-base jobs two ways:
-  //  - by record ID — the Step B path: new transactions carry "Job ID (Main)"
-  //    text, so taxable/display resolve straight from the main job id.
-  //  - by Job Name — the LEGACY path: pre-Step-B transactions only have the
-  //    cross-base "Job" link into the inventory Jobs mirror, matched by name.
-  // (Drop-Jobs-mirror bet, Step B — dual-read; the name path is removed in
-  // Step C once open transactions are backfilled with "Job ID (Main)".)
-  const mainJobById   = {};
-  const mainJobByName = {};
+  // Index main-base jobs by record ID. Transactions carry the main-base job id
+  // in "Job ID (Main)" text, so taxable/display resolve straight from it — no
+  // cross-base mirror, no name matching (Drop-Jobs-mirror bet, Step C).
+  const mainJobById = {};
   mainJobRecords.forEach(r => {
     const f       = r.fields || {};
-    const name    = (f["Job Name"] || "").trim();
     const taxable = (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable";
     const display = (f["Job PO"] || f["Job Name"] || "").trim();
     mainJobById[r.id] = { id: r.id, taxable, display };
-    if (name) mainJobByName[name] = { id: r.id, taxable, display };
-  });
-
-  console.log("Main base job names sample:", Object.keys(mainJobByName).slice(0,5));
-
-  const invJobMap = {};
-  invJobRecords.forEach(r => {
-    const jobName = (r.fields["Job Name"] || "").trim();
-    const jobPO   = (r.fields["Job PO"]   || r.fields["Job Name"] || "").trim();
-    const mainJob = mainJobByName[jobName] || null;
-    console.log(`Inv job: "${jobName}" -> mainJobId: ${mainJob?.id || "NO MATCH"}`);
-    invJobMap[r.id] = {
-      name:      jobPO || jobName,
-      mainJobId: mainJob?.id   || null,
-      taxable:   mainJob?.taxable || false
-    };
   });
 
   // Build per-job, per-item accumulations using cost-per-transaction so that
@@ -580,24 +560,22 @@ async function handlePendingExpenses() {
   // Structure: jobKey -> { jobData, items: { itemId -> { name, wireFtPerLb, netQty, totalCost } }, txIds: [] }
   const jobGroups = {};
 
-  // Inv-base jobs whose name doesn't resolve to a main-base job. These used to be
-  // silently dropped (the cost just vanished). Instead, bucket them so the UI can
-  // warn the user that real material costs went unpushed. Keyed by inv job ID.
+  // Transactions whose "Job ID (Main)" doesn't resolve to a main-base job
+  // (blank or stale id). These used to be silently dropped (the cost just
+  // vanished). Instead, bucket them so the UI can warn the user that real
+  // material costs went unpushed. Keyed by the best stable handle we have.
   const unmatched = {};
 
   txRecords.forEach(r => {
     const f        = r.fields || {};
     const itemArr  = f["Inventory Item"] || [];
-    const jobArr   = f["Job"] || [];
     const txType   = f["Transaction Type"]?.name || f["Transaction Type"] || "";
     const itemId   = typeof itemArr[0] === "object" ? itemArr[0]?.id : String(itemArr[0] || "");
-    const invJobId = typeof jobArr[0]  === "object" ? jobArr[0]?.id  : String(jobArr[0]  || "");
     const qty      = Math.abs(f["Quantity"] ?? 0);
     const notesRaw = f["Notes"] || "";
     const snapshotCost = Number(f["Unit Cost (Snapshot)"] || 0);
 
-    // Resolve the main-base job. Prefer the Step B text field "Job ID (Main)";
-    // fall back to the legacy cross-base "Job" link → inventory mirror → name.
+    // Resolve the main-base job straight from the "Job ID (Main)" text field.
     const mainIdText = String(f["Job ID (Main)"] || "").trim();
     let mainJobId = null, jobLabel = "", taxable = false;
     if (mainIdText && mainJobById[mainIdText]) {
@@ -605,26 +583,19 @@ async function handlePendingExpenses() {
       mainJobId = mj.id;
       taxable   = mj.taxable;
       jobLabel  = (f["Job Name"] || "").trim() || mj.display;
-    } else if (invJobId && invJobMap[invJobId]?.mainJobId) {
-      const jd  = invJobMap[invJobId];
-      mainJobId = jd.mainJobId;
-      taxable   = jd.taxable;
-      jobLabel  = jd.name;
     }
 
-    // Need an item and at least one job reference (text id or legacy link).
-    if (!itemId || (!mainIdText && !invJobId)) return;
+    if (!itemId) return;
 
     if (!mainJobId) {
-      // No resolvable main-base job (blank/stale text id, or legacy name didn't
-      // match). Don't silently drop — tally an estimate of the unpushed cost
-      // (snapshot price, Use positive / Return negative) so the UI can surface
-      // "$X across N jobs couldn't be matched — fix it & re-run". Key by the best
-      // stable handle we have.
+      // No resolvable main-base job (blank/stale "Job ID (Main)"). Don't silently
+      // drop — tally an estimate of the unpushed cost (snapshot price, Use
+      // positive / Return negative) so the UI can surface "$X across N jobs
+      // couldn't be matched — fix it & re-run". Key by the best stable handle.
       const itemData = itemMap[itemId] || {};
       const txCost   = snapshotCost > 0 ? snapshotCost : (itemData.cost || 0);
       const delta    = txType === "Return" ? -qty : qty;
-      const uKey     = mainIdText || invJobId;
+      const uKey     = mainIdText || (f["Job Name"] || "").trim() || r.id;
       const u = unmatched[uKey] || (unmatched[uKey] = {
         jobName:  (f["Job Name"] || "").trim() || notesRaw.split(" | ")[0] || uKey,
         txCount:  0,
@@ -635,8 +606,7 @@ async function handlePendingExpenses() {
       return; // still not pushed — there is no safe main-base job to charge
     }
 
-    // Group by main-base job id (Neon-aligned, and merges legacy link-based and
-    // new text-based transactions for the same job into one push).
+    // Group by main-base job id (Neon-aligned).
     const jobKey = mainJobId;
     if (!jobGroups[jobKey]) {
       jobGroups[jobKey] = {

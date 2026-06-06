@@ -983,10 +983,10 @@ function loadLocation() { try { return JSON.parse(localStorage.getItem(LOC_KEY) 
   // Load employees for name picker
   try {
     var d = await apiGet("employees");
-    // Field crew only — exclude office staff (Tisha, Arlene) and viewer accounts
-    // from the inventory app's picker. Office roles have admin rights elsewhere
-    // but don't need to log into the inventory app. The employees endpoint now
-    // always exposes the normalized `role`, so we filter on it directly.
+    // Field crew only — exclude office and viewer accounts from the inventory
+    // app's picker. Office roles have admin rights elsewhere but don't need to
+    // log into the inventory app. The employees endpoint exposes the normalized
+    // `role`, so we filter on it directly (no hard-coded name list).
     var visibleEmployees = (d.employees || []).filter(function(e) {
       var role = String(e.role || "").toLowerCase();
       return role !== "office" && role !== "viewer";

@@ -2,6 +2,7 @@
 // NEE Inventory App v2 — Netlify Proxy
 // Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
+import { randomUUID } from "node:crypto";
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const MAIN_BASE_ID     = process.env.AIRTABLE_BASE_ID;
@@ -767,6 +768,7 @@ const F_PUSH_ITEM_COUNT  = "fldPvphfqpuYQZhgd";
 const F_PUSH_TAXABLE     = "fldX5Drh72lqcEUvR";
 const F_PUSH_EXP_IDS     = "fldZNQLIlZbQPMF9B";
 const F_PUSH_DESCRIPTION = "fldswL4blm5aFx14G";
+const F_PUSH_PUSHID      = "fldpGddBp19KLT7dW";  // idempotency key (one per job group)
 
 // Expense Push Lines fields
 const F_PL_TITLE     = "fld7XZyGWzWKC2H1O";
@@ -781,7 +783,7 @@ const F_PL_WIRE_FT   = "fldvpWg3Ky74GiE7q";
 // Best-effort: if either write fails we log and continue so the main
 // expense push still appears as success to the user. The Push ID is
 // returned so the caller can include it in the response.
-async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal, taxable, txCount, lines, expenseIds, description, pushedBy }) {
+async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal, taxable, txCount, lines, expenseIds, description, pushedBy, pushId }) {
   try {
     const now = new Date();
     const iso = now.toISOString();
@@ -803,13 +805,14 @@ async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal,
     headerFields[F_PUSH_TAXABLE]     = !!taxable;
     headerFields[F_PUSH_EXP_IDS]     = (expenseIds || []).join(", ");
     headerFields[F_PUSH_DESCRIPTION] = String(description || "");
+    if (pushId) headerFields[F_PUSH_PUSHID] = String(pushId);
 
     const created = await atFetch(API_ROOT_INV, encodeURIComponent("Expense Pushes"), {
       method: "POST",
       body: JSON.stringify({ records: [{ fields: headerFields }], typecast: true })
     });
-    const pushId = created.records?.[0]?.id;
-    if (!pushId) {
+    const pushHeaderId = created.records?.[0]?.id;
+    if (!pushHeaderId) {
       console.warn("Push History: header create returned no ID");
       return null;
     }
@@ -825,7 +828,7 @@ async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal,
 
       const f = {};
       f[F_PL_TITLE]     = lineTitle;
-      f[F_PL_PUSH]      = [String(pushId)];
+      f[F_PL_PUSH]      = [String(pushHeaderId)];
       f[F_PL_ITEM_NAME] = itemName;
       f[F_PL_QTY]       = qty;
       f[F_PL_UNIT_COST] = cost;
@@ -846,7 +849,7 @@ async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal,
       }
     }
 
-    return pushId;
+    return pushHeaderId;
   } catch(e) {
     console.warn("Push History: header write failed (non-fatal):", e.message);
     return null;
@@ -946,6 +949,43 @@ async function handlePushHistoryDetail(params) {
 }
 
 // ── PUSH EXPENSES TO MAIN BASE ─────────────────────────────
+// Idempotency: each pending job group carries a stable `pushId` (a UUID the
+// client mints when it loads the pending list and reuses on every retry of that
+// same group). We stamp it on the created Expenses, on the source transactions,
+// and on the Expense Pushes header, so the same materials can never be charged
+// to a job twice. Three guards, in order of the failure they close:
+//   1. Same pushId already produced Expenses  -> the create succeeded but the
+//      response/marking didn't land and the client retried. Skip the create,
+//      just (re)mark the transactions.
+//   2. Some/all of the group's transactions are no longer pending (already
+//      `Expense Created?`) -> the client snapshot is stale; its line totals
+//      include already-charged transactions, so charging now double-bills.
+//      Refuse the group and let the user reload pending.
+//   3. Per-group marking happens immediately after each group's expense is
+//      created (not one trailing batch), so a mid-loop failure can't leave an
+//      earlier group charged-but-unmarked -- the original re-push foot-gun.
+// In Airtable this stays a read-then-write (no unique constraint); when this
+// slice moves to Neon the pushId becomes a UNIQUE column + INSERT ... ON CONFLICT.
+const EXP_PUSH_ID_FIELD = "flddMVlSELtNT48ez";  // Expenses -> Push ID (main base)
+const TX_PUSH_ID_FIELD  = "fldv9iY9ZKrV1SOsA";  // Inventory Transactions -> Push ID (inv base)
+const TX_EXP_CREATED    = "fldO7Z0L7tpAvrgtH";  // Inventory Transactions -> Expense Created?
+
+// Mark a group's transactions as pushed and stamp the push ID. Batched by 10
+// (Airtable's PATCH cap). Called per-group right after that group's expense is
+// created so a failure later in the loop can't strand it unmarked.
+async function markTransactionsPushed(txIds, pushId) {
+  for (let i = 0; i < txIds.length; i += 10) {
+    const batch = txIds.slice(i, i + 10).map(id => ({
+      id,
+      fields: { [TX_EXP_CREATED]: true, [TX_PUSH_ID_FIELD]: String(pushId || "") }
+    }));
+    await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
+      method: "PATCH",
+      body: JSON.stringify({ records: batch })
+    });
+  }
+}
+
 async function handlePushExpenses(body) {
   const { pending, pdfs, pushedBy } = body || {};
   if (!pending || !pending.length) return resp(400, { ok: false, error: "Nothing to push." });
@@ -954,9 +994,33 @@ async function handlePushExpenses(body) {
   const today         = new Date().toISOString().split("T")[0];
   const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO";
   const expenseIds    = [];
-  const allTxIds      = [];
   const pushHistoryIds = [];
   let   pdfUploads    = 0;
+  let   txMarked      = 0;
+  let   created       = 0;  // groups freshly charged this call
+  let   alreadyPushed = 0;  // groups short-circuited by guard #1 (same pushId)
+  let   staleSkipped  = 0;  // groups refused by guard #2 (stale snapshot)
+
+  // ── Idempotency reads (authoritative, before any write) ───────────────────
+  // (a) The set of transactions that are *genuinely* still pending right now.
+  //     The client's `pending` payload can be stale; this re-read decides what
+  //     is actually chargeable — a transaction already marked can't re-charge.
+  const freshTx = await fetchAll(API_ROOT_INV, "Inventory Transactions", {
+    filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`
+  });
+  const stillPending = new Set(freshTx.map(r => r.id));
+
+  // (b) Which of this request's push IDs already produced Expenses. UUIDs are a
+  //     safe charset ([0-9a-f-]) so they need no formula escaping.
+  const reqPushIds = [...new Set(pending.map(g => g && g.pushId).filter(Boolean))];
+  const pushIdsWithExpenses = new Set();
+  if (reqPushIds.length) {
+    const clauses = reqPushIds.map(id => `{Push ID}='${id}'`);
+    const existing = await fetchAll(API_ROOT_MAIN, "Expenses", {
+      filter: clauses.length === 1 ? clauses[0] : `OR(${clauses.join(",")})`
+    });
+    existing.forEach(r => { const pid = r.fields?.["Push ID"]; if (pid) pushIdsWithExpenses.add(pid); });
+  }
 
   // Look up the "Receipt / Document" field ID once if PDFs are provided
   let receiptFieldId = null;
@@ -972,6 +1036,33 @@ async function handlePushExpenses(body) {
     const g = pending[i];
     const { jobId, jobName, taxable, lines, txIds } = g;
     if (!jobId || !lines?.length) continue;
+
+    const txList = Array.isArray(txIds) ? txIds : [];
+    // Per-group push ID. Falls back to a server-minted UUID for older clients
+    // that don't send one — note a fallback isn't stable across retries, so the
+    // client SHOULD always supply it (see inventory.html).
+    const pushId = (g.pushId && String(g.pushId)) || randomUUID();
+
+    // ── Guard #1: this exact push already created its Expenses. Don't create a
+    // second set; just make sure the transactions are marked (the usual reason
+    // for the retry is the original mark didn't land).
+    if (pushIdsWithExpenses.has(pushId)) {
+      if (txList.length) {
+        try { await markTransactionsPushed(txList, pushId); txMarked += txList.length; }
+        catch (e) { console.warn("Idempotent re-mark failed (non-fatal):", e.message); }
+      }
+      alreadyPushed++;
+      continue;
+    }
+
+    // ── Guard #2: any of this group's transactions are no longer pending — they
+    // were charged under another push. The client's line totals still include
+    // them, so charging now would double-bill. Refuse; the user reloads pending.
+    if (txList.length && txList.some(id => !stillPending.has(id))) {
+      console.warn(`Push: skipping "${jobName}" — ${txList.filter(id => !stillPending.has(id)).length}/${txList.length} txns already pushed (stale snapshot).`);
+      staleSkipped++;
+      continue;
+    }
 
     const jobTotal = lines.reduce((s, l) => s + (l.total || 0), 0);
     // Skip exactly-zero groups (uses and returns cancelled out — nothing to
@@ -1003,6 +1094,7 @@ async function handlePushExpenses(body) {
       "fldCCPYdyWAOGchWb": today,
       "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
       "fld9Afieu4ofjvhSb": true,
+      [EXP_PUSH_ID_FIELD]: pushId,
       "fldnSQEOnyq3sho5g": (jobTotal < 0 ? "Inventory credit (materials returned to shop) — " : "Inventory materials — ") + desc
     };
 
@@ -1042,6 +1134,7 @@ async function handlePushExpenses(body) {
         "fldX2x2J0xkRyMY3y": "Materials",
         "fldCCPYdyWAOGchWb": today,
         "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
+        [EXP_PUSH_ID_FIELD]: pushId,
         "fld9Afieu4ofjvhSb": true,
         "fldnSQEOnyq3sho5g": (jobTotal < 0 ? "Sales tax credit (7.5%) on returned materials — " : "Sales tax (7.5%) on inventory materials — ") + jobName
       };
@@ -1056,7 +1149,13 @@ async function handlePushExpenses(body) {
       }
     }
 
-    if (txIds?.length) allTxIds.push(...txIds);
+    // ── Mark THIS group's transactions immediately (guard #3). Best-effort: if
+    // it fails the expense already carries the push ID, so a retry hits guard #1
+    // and re-marks instead of re-charging.
+    if (txList.length) {
+      try { await markTransactionsPushed(txList, pushId); txMarked += txList.length; }
+      catch (e) { console.warn(`Mark transactions failed for "${jobName}" (non-fatal):`, e.message); }
+    }
 
     // Write Push History snapshot for this job — best-effort, non-fatal
     const historyId = await recordPushHistory({
@@ -1065,31 +1164,24 @@ async function handlePushExpenses(body) {
       materialsTotal: jobTotal,
       taxTotal:       jobTaxAmount,
       taxable:        !!taxable,
-      txCount:        (txIds || []).length,
+      txCount:        txList.length,
       lines,                 // [{item, qty, cost, total, wireFt}, ...]
       expenseIds:     jobExpenseIds,
       description:    desc,
-      pushedBy:       pushedBy || ""
+      pushedBy:       pushedBy || "",
+      pushId
     });
     if (historyId) pushHistoryIds.push(historyId);
-  }
-
-  // Mark all transactions as Expense Created
-  for (let i = 0; i < allTxIds.length; i += 10) {
-    const batch = allTxIds.slice(i, i + 10).map(id => ({
-      id,
-      fields: { "fldO7Z0L7tpAvrgtH": true }
-    }));
-    await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Transactions"), {
-      method: "PATCH",
-      body: JSON.stringify({ records: batch })
-    });
+    created++;
   }
 
   return resp(200, {
     ok: true,
     count:           expenseIds.length,
-    txCount:         allTxIds.length,
+    created,
+    alreadyPushed,
+    staleSkipped,
+    txCount:         txMarked,
     pdfUploads,
     pushHistoryIds
   });

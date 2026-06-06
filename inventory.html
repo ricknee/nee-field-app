@@ -2022,6 +2022,16 @@ function renderPushTabBar(activeTab) {
     '</div>';
 }
 
+// Generate a stable per-group push idempotency key (UUID v4). Prefers the native
+// crypto.randomUUID; falls back to a Math.random-based v4 for older webviews.
+function genPushId() {
+  if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c){
+    var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
 async function loadPushPending() {
   var body = document.getElementById("push-body");
   body.innerHTML = renderPushTabBar("pending") +
@@ -2031,6 +2041,12 @@ async function loadPushPending() {
     var d = await apiGet("pendingExpenses");
     var pending = d.pending || [];
     var unmatched = d.unmatched || [];
+    // Stamp a stable idempotency key on each group, generated once here and
+    // reused on every (re)push attempt of that group. The backend stamps it on
+    // the created expenses + transactions so the same materials can't be charged
+    // twice (a retry with the same key is skipped server-side). It lives on the
+    // group object so a failed push that's retried sends the SAME key.
+    pending.forEach(function(g){ g.pushId = genPushId(); });
     window._pendingExpenses = pending;
     window._unmatchedJobs   = unmatched;
 
@@ -2151,7 +2167,15 @@ async function pushOneJob(idx) {
       pending:  [g],
       pushedBy: (currentUser && currentUser.name) || ""
     });
-    showToast("✓ Pushed " + g.jobName);
+    // Idempotency outcomes: the server may have refused a stale group (its tx
+    // were already charged under another push) — don't splice it as "done",
+    // reload the real pending state instead.
+    if (result.staleSkipped) {
+      showToast("⚠ " + g.jobName + " is out of date — reloading", true);
+      loadPushPending();
+      return;
+    }
+    showToast(result.alreadyPushed ? "✓ " + g.jobName + " already pushed" : "✓ Pushed " + g.jobName);
     // Generate and download PDF receipt
     downloadReceiptPDF(g);
     window._pendingExpenses.splice(idx, 1);
@@ -2179,9 +2203,19 @@ async function submitPushExpenses(idxOnly) {
       pending:  toPush,
       pushedBy: (currentUser && currentUser.name) || ""
     });
-    showToast("✓ " + result.count + " expense" + (result.count !== 1 ? "s" : "") + " created!");
-    // Download one PDF per job
-    toPush.forEach(function(g){ downloadReceiptPDF(g); });
+    // Summarize the idempotency outcome. created = freshly charged this call,
+    // alreadyPushed = skipped as duplicates, staleSkipped = refused as out-of-date.
+    var parts = [];
+    if (result.created)       parts.push(result.created + " pushed");
+    if (result.alreadyPushed) parts.push(result.alreadyPushed + " already pushed");
+    if (result.staleSkipped)  parts.push(result.staleSkipped + " out of date");
+    var msg = parts.length ? parts.join(", ") : (result.count + " expense" + (result.count !== 1 ? "s" : "") + " created");
+    showToast((result.staleSkipped ? "⚠ " : "✓ ") + msg, !!result.staleSkipped);
+    // Download a receipt for each job that wasn't refused as stale.
+    if (!result.staleSkipped) toPush.forEach(function(g){ downloadReceiptPDF(g); });
+    // If anything was refused as out-of-date, reload pending so the user sees
+    // the true remaining state instead of clearing the list.
+    if (result.staleSkipped) { loadPushPending(); return; }
     window._pendingExpenses = null;
     goHome();
   } catch(ex) {

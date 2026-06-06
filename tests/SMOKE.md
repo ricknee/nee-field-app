@@ -44,7 +44,7 @@ paths never touch live data). See `.env.example`.
 ## Known traps a regression suite MUST guard (see docs/SYSTEM-MAP.html → "Where it hurts")
 
 - [ ] **Cross-job substring filter:** a job named e.g. `Jenny Ln 1` must NOT pull records from `Jenny Ln 10/11/12`. Verify the in-memory record-ID check, not just the `FIND` prefilter.
-- [ ] **Expense-push idempotency:** create expense + mark "Expense Created?" must be all-or-nothing; a failed mark must not allow a re-push.
+- [ ] **Expense-push idempotency:** a re-push of the same materials must NOT create a second expense. Now guarded by a stable per-group **Push ID** (stamped on the Expense, the source transactions, and the Expense Pushes header) plus a server-side re-read of `Expense Created?` and per-group marking. Automated coverage: `node tests/inventory-push.test.mjs` (guard #1 same-key retry, guard #2 stale-snapshot). Smoke: push a job, then push the same job again from a second tab → second push reports "already pushed"/"out of date", no duplicate expense lands on the job.
 - [ ] **FILTERED vs UNFILTERED rollups:** `mapJob` GP/revenue must read the *filtered* Airtable rollups (Sent/Approved/Archived), not the unfiltered twins.
 - [ ] **Two-base Job-Name join:** renaming a job must not silently drop it from `pendingExpenses` — unmatched jobs should surface, not vanish.
 - [ ] **Linked-record write shape:** writes use `["rec…"]` string arrays, not `[{id:"rec…"}]` (the object shape has silently dropped writes).

@@ -585,13 +585,18 @@ async function handlePendingExpenses() {
       jobLabel  = (f["Job Name"] || "").trim() || mj.display;
     }
 
-    if (!itemId) return;
+    // Skip transactions with no item, or no job reference at all. A jobless
+    // Use/Return (logged without picking a job — e.g. scratch/reversed stock
+    // moves) isn't a "job that couldn't be matched": there's no job to charge it
+    // to, so don't surface it as unmatched (matches pre-Step-C behavior).
+    if (!itemId || !mainIdText) return;
 
     if (!mainJobId) {
-      // No resolvable main-base job (blank/stale "Job ID (Main)"). Don't silently
-      // drop — tally an estimate of the unpushed cost (snapshot price, Use
-      // positive / Return negative) so the UI can surface "$X across N jobs
-      // couldn't be matched — fix it & re-run". Key by the best stable handle.
+      // "Job ID (Main)" is present but doesn't resolve to a current main-base job
+      // (stale/deleted job). Don't silently drop — tally an estimate of the
+      // unpushed cost (snapshot price, Use positive / Return negative) so the UI
+      // can surface "$X across N jobs couldn't be matched — fix it & re-run".
+      // Key by the best stable handle.
       const itemData = itemMap[itemId] || {};
       const txCost   = snapshotCost > 0 ? snapshotCost : (itemData.cost || 0);
       const delta    = txType === "Return" ? -qty : qty;

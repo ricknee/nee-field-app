@@ -152,14 +152,19 @@ await test("pendingExpenses: resolves by 'Job ID (Main)' text; never reads the m
   eq(r.unmatched.length, 0, "nothing stranded");
 });
 
-await test("pendingExpenses: blank/stale 'Job ID (Main)' → surfaced as unmatched, not dropped", async () => {
+await test("pendingExpenses: stale 'Job ID (Main)' → unmatched; jobless/link-only rows → skipped (no noise)", async () => {
   seedMain();
   invItems = [{ id: "recItem1", fields: { "Item Name": "12-2 Wire", "Default Unit Cost": 10 } }];
   invTx = [
-    // stale id (job no longer in main base) + a legacy link-only row — both unresolved now
+    // stale id (job no longer in main base) → genuinely "couldn't be matched" → surfaced
     { id: "recTxStale", fields: {
         "Inventory Item": ["recItem1"], "Quantity": 4, "Transaction Type": { name: "Use" },
         "Unit Cost (Snapshot)": 10, "Job ID (Main)": "recGhostGone", "Job Name": "Ghost Job" } },
+    // jobless scratch row (no Job ID (Main), no link) → skipped, NOT surfaced
+    { id: "recTxJobless", fields: {
+        "Inventory Item": ["recItem1"], "Quantity": 5, "Transaction Type": { name: "Use" },
+        "Unit Cost (Snapshot)": 10 } },
+    // legacy link-only row (no Job ID (Main)) → also skipped now (mirror no longer read)
     { id: "recTxLinkOnly", fields: {
         "Inventory Item": ["recItem1"], "Quantity": 1, "Transaction Type": { name: "Use" },
         "Unit Cost (Snapshot)": 10, "Job": ["recMirrorX"] } }
@@ -168,7 +173,8 @@ await test("pendingExpenses: blank/stale 'Job ID (Main)' → surfaced as unmatch
   const r = json(await GET("pendingExpenses"));
   eq(r.ok, true, "ok");
   eq(r.pending.length, 0, "nothing pushable");
-  eq(r.unmatched.length, 2, "both the stale-id and link-only rows are surfaced");
+  eq(r.unmatched.length, 1, "only the stale-id row is surfaced; jobless/link-only are skipped");
+  eq(r.unmatched[0].estTotal, 40, "the stale row's $40 is flagged");
 });
 
 // ── report ──

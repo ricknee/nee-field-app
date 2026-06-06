@@ -2030,15 +2030,21 @@ async function loadPushPending() {
   try {
     var d = await apiGet("pendingExpenses");
     var pending = d.pending || [];
+    var unmatched = d.unmatched || [];
     window._pendingExpenses = pending;
+    window._unmatchedJobs   = unmatched;
 
     if (!pending.length) {
+      // Nothing pushable — but unmatched jobs still need surfacing, otherwise an
+      // all-unmatched batch would read as "All caught up!" while costs go missing.
       body.innerHTML = renderPushTabBar("pending") +
-        '<div style="text-align:center;padding:40px 20px;">' +
-        '<div style="font-size:40px;margin-bottom:12px;">✅</div>' +
-        '<div style="font-size:16px;font-weight:600;color:var(--text);">All caught up!</div>' +
-        '<div style="font-size:13px;color:var(--dim);margin-top:6px;">No unpushed material transactions.</div>' +
-        '</div>';
+        renderUnmatchedWarning(unmatched) +
+        (unmatched.length ? '' :
+          '<div style="text-align:center;padding:40px 20px;">' +
+          '<div style="font-size:40px;margin-bottom:12px;">✅</div>' +
+          '<div style="font-size:16px;font-weight:600;color:var(--text);">All caught up!</div>' +
+          '<div style="font-size:13px;color:var(--dim);margin-top:6px;">No unpushed material transactions.</div>' +
+          '</div>');
       return;
     }
 
@@ -2047,6 +2053,31 @@ async function loadPushPending() {
     document.getElementById("push-body").innerHTML = renderPushTabBar("pending") +
       '<div class="empty">Error: ' + ex.message + '</div>';
   }
+}
+
+// Renders a red warning block listing inv-base jobs whose name didn't resolve to a
+// main-base job, so their materials were NOT pushed. Returns "" when none.
+// showCost=false renders a price-free version for the employee Material Report.
+function renderUnmatchedWarning(unmatched, showCost) {
+  unmatched = unmatched || [];
+  if (showCost === undefined) showCost = true;
+  if (!unmatched.length) return "";
+  var total = unmatched.reduce(function(s, u){ return s + (u.estTotal || 0); }, 0);
+  var html = '<div style="background:rgba(231,76,60,.10);border:1px solid rgba(231,76,60,.45);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--text);">';
+  html += '<div style="font-weight:700;color:var(--red);margin-bottom:6px;">⚠️ ' + unmatched.length + ' job' + (unmatched.length > 1 ? 's' : '') + ' couldn\'t be matched to a main-base job</div>';
+  html += '<div style="font-size:12px;color:var(--dim);margin-bottom:8px;">' +
+    (showCost
+      ? 'These material costs (~$' + Math.abs(total).toFixed(2) + ') were <b>not</b> pushed. Fix the job name in the inventory base so it exactly matches the main base (or create the job there), then reload.'
+      : 'These materials were <b>not</b> recorded to a job. Ask the office to fix the job name in the inventory base so it matches the main base (or create the job there).') +
+    '</div>';
+  unmatched.forEach(function(u){
+    html += '<div style="display:flex;justify-content:space-between;font-size:12px;padding:3px 0;border-top:1px solid rgba(231,76,60,.2);">';
+    html += '<span>' + escapeHtml(u.jobName) + ' <span style="color:var(--muted);">(' + u.txCount + ' tx)</span></span>';
+    if (showCost) html += '<span>~$' + Math.abs(u.estTotal).toFixed(2) + '</span>';
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
 }
 
 function renderPushExpenses() {
@@ -2059,7 +2090,8 @@ function renderPushExpenses() {
     '📋 Uses minus Returns are netted per item. Tax (7.5%) added for taxable jobs. Push one job or all at once.' +
     '<div style="margin-top:6px;font-size:11px;color:' + (pdfReady ? 'var(--green)' : 'var(--muted)') + ';">' +
     (pdfReady ? '📄 PDF receipts will auto-download when you push' : '📄 PDF receipts unavailable — reload page to enable') +
-    '</div></div>';
+    '</div></div>' +
+    renderUnmatchedWarning(window._unmatchedJobs);
 
   var grandTotal = 0;
   pending.forEach(function(g, idx) {
@@ -2639,15 +2671,19 @@ async function goMaterialReport() {
   try {
     var d = await apiGet("pendingExpenses");
     var pending = d.pending || [];
-    window._materialReport = pending;
+    var unmatched = d.unmatched || [];
+    window._materialReport       = pending;
+    window._materialUnmatched    = unmatched;
 
     if (!pending.length) {
       body.innerHTML =
-        '<div style="text-align:center;padding:40px 20px;">' +
-        '<div style="font-size:40px;margin-bottom:12px;">📭</div>' +
-        '<div style="font-size:16px;font-weight:600;color:var(--text);">No materials to report</div>' +
-        '<div style="font-size:13px;color:var(--dim);margin-top:6px;">Nothing has been used on jobs since the last push.</div>' +
-        '</div>';
+        renderUnmatchedWarning(unmatched, false) +
+        (unmatched.length ? '' :
+          '<div style="text-align:center;padding:40px 20px;">' +
+          '<div style="font-size:40px;margin-bottom:12px;">📭</div>' +
+          '<div style="font-size:16px;font-weight:600;color:var(--text);">No materials to report</div>' +
+          '<div style="font-size:13px;color:var(--dim);margin-top:6px;">Nothing has been used on jobs since the last push.</div>' +
+          '</div>');
       return;
     }
 
@@ -2665,7 +2701,8 @@ function renderMaterialReport() {
   var html = '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);">' +
     '📄 Materials used per job since the last push. Tap Download to save a PDF to your device.' +
     (pdfReady ? '' : '<div style="margin-top:6px;font-size:11px;color:var(--muted);">PDF library still loading — try again in a moment.</div>') +
-    '</div>';
+    '</div>' +
+    renderUnmatchedWarning(window._materialUnmatched, false);
 
   pending.forEach(function(g, idx) {
     html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:12px;">';

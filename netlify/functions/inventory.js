@@ -554,6 +554,11 @@ async function handlePendingExpenses() {
   // Structure: jobKey -> { jobData, items: { itemId -> { name, wireFtPerLb, netQty, totalCost } }, txIds: [] }
   const jobGroups = {};
 
+  // Inv-base jobs whose name doesn't resolve to a main-base job. These used to be
+  // silently dropped (the cost just vanished). Instead, bucket them so the UI can
+  // warn the user that real material costs went unpushed. Keyed by inv job ID.
+  const unmatched = {};
+
   txRecords.forEach(r => {
     const f        = r.fields || {};
     const itemArr  = f["Inventory Item"] || [];
@@ -568,7 +573,22 @@ async function handlePendingExpenses() {
     if (!itemId || !invJobId) return;
 
     const jobData  = invJobMap[invJobId] || {};
-    if (!jobData.mainJobId) return; // skip if no matching main base job
+    if (!jobData.mainJobId) {
+      // No matching main-base job — don't silently drop. Tally an estimate of the
+      // unpushed cost (snapshot price, Use positive / Return negative) so the UI
+      // can surface "$X across N jobs couldn't be matched — fix the name & re-run".
+      const itemData = itemMap[itemId] || {};
+      const txCost   = snapshotCost > 0 ? snapshotCost : (itemData.cost || 0);
+      const delta    = txType === "Return" ? -qty : qty;
+      const u = unmatched[invJobId] || (unmatched[invJobId] = {
+        jobName:  jobData.name || notesRaw.split(" | ")[0] || invJobId,
+        txCount:  0,
+        estTotal: 0
+      });
+      u.txCount  += 1;
+      u.estTotal += txCost * delta;
+      return; // still not pushed — there is no safe main-base job to charge
+    }
 
     const jobKey = invJobId;
     if (!jobGroups[jobKey]) {
@@ -638,7 +658,13 @@ async function handlePendingExpenses() {
   // pushed) still show up in pending and can be pushed as a credit memo.
   // Zero-dollar groups (returns exactly cancel uses) are still skipped.
 
-  return resp(200, { ok: true, pending });
+  // Surface unmatched jobs alongside the pushable ones (sorted, dollars rounded).
+  const unmatchedList = Object.values(unmatched)
+    .map(u => ({ ...u, estTotal: Math.round(u.estTotal * 100) / 100 }))
+    .filter(u => u.txCount > 0)
+    .sort((a, b) => String(a.jobName).localeCompare(String(b.jobName)));
+
+  return resp(200, { ok: true, pending, unmatched: unmatchedList });
 }
 
 // ── RECEIPT FIELD LOOKUP ──────────────────────────────────

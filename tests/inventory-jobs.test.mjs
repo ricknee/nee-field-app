@@ -25,7 +25,9 @@ process.env.AUTH_SECRET       = "test-secret";
 // 2) Mock Airtable. Tests set records per (base, table). The mock records every
 //    requested URL so a test can prove the inventory-base mirror is NOT read.
 let mainJobs = [];
-let invJobs  = [];        // mirror — should stay empty/unused after Phase 1
+let invJobs  = [];        // mirror — should stay empty/unused after Step A
+let invTx    = [];        // Inventory Transactions (for pendingExpenses dual-read)
+let invItems = [];        // Inventory Items
 const requested = [];     // every fetched URL, for "which base?" assertions
 
 globalThis.fetch = async (url) => {
@@ -35,6 +37,8 @@ globalThis.fetch = async (url) => {
   const table = m ? decodeURIComponent(m[2]) : "";
   let records = [];
   if (table === "Jobs") records = base === MAIN_BASE ? mainJobs : invJobs;
+  else if (table === "Inventory Transactions") records = invTx;
+  else if (table === "Inventory Items")         records = invItems;
   return { ok: true, status: 200, text: async () => JSON.stringify({ records }) };
 };
 
@@ -73,6 +77,8 @@ function seedMain() {
         "Contractor Name (Text)": "Miller Poultry" } }
   ];
   invJobs = [{ id: "recMirror", fields: { "Job Name": "STALE MIRROR JOB", "Contractor (Combined)": "Should Not Appear" } }];
+  invTx = [];
+  invItems = [];
   requested.length = 0;
 }
 
@@ -110,8 +116,64 @@ await test("templateContractors returns sorted distinct contractors from MAIN ba
   eq(hitInvJobs(), false, "must NOT fetch the inventory-base Jobs mirror");
 });
 
+// ── Step B: USE-cart picker repoint + expense-push dual-read ──
+
+await test("jobs (USE cart picker) reads MAIN base only (mirror untouched)", async () => {
+  seedMain();
+  const r = json(await GET("jobs"));
+  eq(r.ok, true, "ok");
+  eq(hitInvJobs(), false, "must NOT fetch the inventory-base Jobs mirror");
+  // returns main-base record IDs with a Name (PO) display
+  const a = r.jobs.find(j => j.id === "recJobA");
+  eq(!!a, true, "main job recJobA present");
+  eq(a.name, "Blue Ridge Poultry (BRB 126)", "PO display preferred");
+});
+
+await test("pendingExpenses: dual-read — text id AND legacy link both resolve to one group", async () => {
+  seedMain();
+  invItems = [{ id: "recItem1", fields: { "Item Name": "12-2 Wire", "Default Unit Cost": 10 } }];
+  // mirror job used ONLY by the legacy link path; its name matches main recJobA
+  invJobs = [{ id: "recMirrorA", fields: { "Job Name": "Blue Ridge Poultry", "Job PO": "Blue Ridge Poultry (BRB 126)" } }];
+  invTx = [
+    // NEW (Step B): carries "Job ID (Main)" text → resolves via mainJobById
+    { id: "recTxNew", fields: {
+        "Inventory Item": ["recItem1"], "Quantity": 2, "Transaction Type": { name: "Use" },
+        "Unit Cost (Snapshot)": 10, "Job ID (Main)": "recJobA", "Job Name": "Blue Ridge Poultry (BRB 126)" } },
+    // LEGACY: only the cross-base "Job" link → mirror → name → recJobA
+    { id: "recTxOld", fields: {
+        "Inventory Item": ["recItem1"], "Quantity": 3, "Transaction Type": { name: "Use" },
+        "Unit Cost (Snapshot)": 10, "Job": ["recMirrorA"] } }
+  ];
+  requested.length = 0;
+  const r = json(await GET("pendingExpenses"));
+  eq(r.ok, true, "ok");
+  eq(r.pending.length, 1, "both txns merge into one job group (keyed by main id)");
+  const g = r.pending[0];
+  eq(g.jobId, "recJobA", "grouped under the main-base job id");
+  eq(g.txIds.length, 2, "both transactions captured");
+  eq(g.jobTotal, 50, "(2+3) × $10 = $50");
+  eq(r.unmatched.length, 0, "nothing stranded");
+});
+
+await test("pendingExpenses: blank text id + unmatchable legacy name → surfaced, not dropped", async () => {
+  seedMain();
+  invItems = [{ id: "recItem1", fields: { "Item Name": "12-2 Wire", "Default Unit Cost": 10 } }];
+  invJobs = [{ id: "recMirrorX", fields: { "Job Name": "Ghost Job (no main match)" } }];
+  invTx = [
+    { id: "recTxOrphan", fields: {
+        "Inventory Item": ["recItem1"], "Quantity": 4, "Transaction Type": { name: "Use" },
+        "Unit Cost (Snapshot)": 10, "Job": ["recMirrorX"] } }
+  ];
+  requested.length = 0;
+  const r = json(await GET("pendingExpenses"));
+  eq(r.ok, true, "ok");
+  eq(r.pending.length, 0, "nothing pushable");
+  eq(r.unmatched.length, 1, "the orphan is surfaced");
+  eq(r.unmatched[0].estTotal, 40, "4 × $10 = $40 flagged as unpushed");
+});
+
 // ── report ──
-console.log("\ninventory.js jobs/contractors (Phase 1 mirror repoint)\n" + "-".repeat(54));
+console.log("\ninventory.js jobs/contractors + push dual-read (Steps A+B)\n" + "-".repeat(54));
 for (const [mark, name] of log) console.log(` ${mark} ${name}`);
 console.log("-".repeat(54));
 console.log(`${pass} passed, ${fail} failed\n`);

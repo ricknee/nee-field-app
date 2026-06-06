@@ -170,28 +170,15 @@ async function handleJobs() {
 // change-order or correction needs to go on a job that's already been
 // flagged complete).
 async function handleEstimatingJobs() {
-  // The status filter lives in the main NEE base, but Contractor (Combined) is a
-  // formula field on the synced Jobs table in the inventory base. Pull both in
-  // parallel and join on Job PO / Job Name.
-  const [mainRecs, syncedRecs] = await Promise.all([
-    fetchAll(API_ROOT_MAIN, "Jobs", {
-      filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
-      sortField: "Job Name",
-      sortDir: "asc"
-    }),
-    fetchAll(API_ROOT_INV, "Jobs", {})
-  ]);
-
-  const contractorByPo   = {};
-  const contractorByName = {};
-  syncedRecs.forEach(r => {
-    const f = r.fields || {};
-    const c = (f["Contractor (Combined)"] || "").trim();
-    if (!c) return;
-    const po = f["Job PO"] || "";
-    const nm = f["Job Name"] || "";
-    if (po) contractorByPo[po]   = c;
-    if (nm) contractorByName[nm] = c;
+  // Everything we need lives on the main NEE base Jobs table: the status filter,
+  // the "Name (PO)" display, tax status, and the contractor name. "Contractor Name
+  // (Text)" (= ARRAYJOIN({Contractor})) replaces the old "Contractor (Combined)"
+  // field from the synced inventory-base Jobs mirror, so there's no cross-base
+  // fetch or name-matching join anymore.
+  const mainRecs = await fetchAll(API_ROOT_MAIN, "Jobs", {
+    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
+    sortField: "Job Name",
+    sortDir: "asc"
   });
 
   return resp(200, {
@@ -209,21 +196,22 @@ async function handleEstimatingJobs() {
           name:       display,
           status:     f["Job Status"]?.name || f["Job Status"] || "",
           taxable:    (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable",
-          contractor: contractorByPo[display] || contractorByName[nm] || ""
+          contractor: (f["Contractor Name (Text)"] || "").trim()
         };
       })
       .filter(j => j.name)
   });
 }
 
-// ── DISTINCT CONTRACTORS (from synced Jobs) ────────────────
+// ── DISTINCT CONTRACTORS (from main NEE base Jobs) ─────────
 // Used by the Save-as-Template modal to populate a contractor datalist and
-// by the Templates list filter pills.
+// by the Templates list filter pills. Reads "Contractor Name (Text)" off the
+// main base Jobs table (no longer the synced inventory-base Jobs mirror).
 async function handleTemplateContractors() {
-  const records = await fetchAll(API_ROOT_INV, "Jobs", {});
+  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {});
   const set = {};
   records.forEach(r => {
-    const c = (r.fields?.["Contractor (Combined)"] || "").trim();
+    const c = (r.fields?.["Contractor Name (Text)"] || "").trim();
     if (c) set[c] = true;
   });
   const contractors = Object.keys(set).sort((a, b) => a.localeCompare(b));

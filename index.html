@@ -11500,7 +11500,44 @@
   }
   const SALARIED = ["Larry Unruh", "Miles Unruh", "Rick Unruh"];
   const PR_CLASSES = ["Contract","Extra's","Rough & Service","Travel","Shop Work","Business Development","Admin/Office","Vehicle and Equipment Maintenance"];
-  const PR_CITY_TAXES = ["A No Tax","Columbiana Tax","Canton Tax","Akron Tax","Other"];
+  // Free-text field in Airtable Time Entries — these strings must match the stored
+  // text EXACTLY (incl. spellings / missing "Tax" suffix) or the dropdown can't
+  // pre-select an existing entry's value and silently shows the first option.
+  const PR_CITY_TAXES = [
+    "A No Tax",
+    "Alliance Tax",
+    "Amherst Tax",
+    "Ashland City Tax",
+    "Austintown Tax",
+    "Canton Tax",
+    "Carrollton City Tax",
+    "Cleveland Tax",
+    "Columbiana Tax",
+    "Cuyahoga Falls Tax",
+    "Dennison City Tax",
+    "Grafton Tax",
+    "Green Tax",
+    "Hartville Tax",
+    "Hayesville",
+    "Madison City Tax",
+    "Massilon Tax",
+    "Medina Tax",
+    "Millersburg City Tax",
+    "Minerva Tax",
+    "N Canton",
+    "New Philadephia",
+    "Orrville City Tax",
+    "Rita Tax",
+    "Salem Tax",
+    "Sebring Tax",
+    "Steubenville Tax",
+    "Streetsboro Tax",
+    "Strongsville Tax",
+    "Utica Tax",
+    "Wadsworth Tax",
+    "Akron Tax",   // kept from prior list so historical entries still pre-select
+    "Other"
+  ];
 
   // State
   let prEntries   = [];    // [{id, employee, employeeId?, workDate, duration, hours, cityTaxes, class, jobId, jobName, isNew, _tmpId?, reviewed?}]

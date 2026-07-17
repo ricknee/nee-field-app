@@ -24,7 +24,9 @@ process.env.AUTH_SECRET = "test-secret"; // signs/verifies session tokens
 //    The mock parses the table name out of the REST URL and returns those
 //    records (single page, no offset). Reads only — these handlers don't write.
 let mockTables = {};
-globalThis.fetch = async (url) => {
+let lastFetch = null; // {url, opts} of the most recent request — lets write tests inspect the PATCH body
+globalThis.fetch = async (url, opts) => {
+  lastFetch = { url: String(url), opts: opts || {} };
   const m = String(url).match(/\/v0\/[^/]+\/([^?]+)/);
   const table = m ? decodeURIComponent(m[1]) : "";
   const records = mockTables[table] || [];
@@ -122,6 +124,47 @@ await test("getNextInvoiceNumber: returns max + 1", async () => {
     { id: "recI2", fields: { "Invoice Display #": 1699 } },
   ] };
   eq(json(await POST("getNextInvoiceNumber")).nextNumber, 1701, "max+1");
+});
+
+// ── bird date (poultry move-in) ──
+await test("scheduleEntries: surfaces jobs' Bird Date in birdDates[]", async () => {
+  mockTables = {
+    "Schedule Entries": [],
+    Jobs: [
+      { id: "recBird", fields: { "Job Name": "Case Farms 2-Barn", "Contractor Name (Text)": "Case Farms", "Job Status": "Awarded", "Bird Date": "2026-08-15" } },
+      { id: "recNoBird", fields: { "Job Name": "Regular Job", "Job Status": "Awarded" } },
+    ],
+    Employees: [],
+  };
+  const b = json(await GET("scheduleEntries"));
+  ok(b.ok, "ok");
+  eq(b.birdDates.length, 1, "only the job with a Bird Date");
+  eq(b.birdDates[0].jobId, "recBird", "jobId");
+  eq(b.birdDates[0].date, "2026-08-15", "date");
+  eq(b.birdDates[0].jobName, "Case Farms 2-Barn", "jobName");
+});
+
+await test("scheduleEntries: birdDates respects since/until window", async () => {
+  mockTables = {
+    "Schedule Entries": [],
+    Jobs: [
+      { id: "recIn",  fields: { "Job Name": "In Window",  "Job Status": "Awarded", "Bird Date": "2026-08-15" } },
+      { id: "recOut", fields: { "Job Name": "Out Window", "Job Status": "Awarded", "Bird Date": "2027-01-01" } },
+    ],
+    Employees: [],
+  };
+  const b = json(await GET("scheduleEntries", { since: "2026-08-01", until: "2026-08-31" }));
+  eq(b.birdDates.length, 1, "windowed"); eq(b.birdDates[0].jobId, "recIn", "in-window job");
+});
+
+await test("updateJobInfo: writes Bird Date field id; clears with null", async () => {
+  mockTables = {};
+  await POST("updateJobInfo", { jobId: "recJ1", birdDate: "2026-08-15" });
+  let fields = JSON.parse(lastFetch.opts.body).fields;
+  eq(fields["fldyKjtcqganpbhNc"], "2026-08-15", "sets the date on the Bird Date field id");
+  await POST("updateJobInfo", { jobId: "recJ1", birdDate: "" });
+  fields = JSON.parse(lastFetch.opts.body).fields;
+  eq(fields["fldyKjtcqganpbhNc"], null, "empty clears to null (not empty string)");
 });
 
 // ── auth / authorization cases ──

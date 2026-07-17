@@ -160,6 +160,7 @@ const F = {
     projectComplete:     "Project Complete (Ready to Invoice)",
     milesFromShop:       "Miles from Shop",
     notes:               "Notes",
+    birdDate:            "Bird Date",
     totalRevenueLive:          "Total Revenue (Live)",
     totalMaterialsLive:        "Total Materials (Live)",
     totalLaborCostLive:        "Total Labor Cost (Live)",
@@ -1566,6 +1567,7 @@ function mapJob(r) {
       startServiceCall:gBool(f,F.job.startServiceCall),serviceCallCreated:gBool(f,F.job.serviceCallCreated),
       projectComplete:gBool(f,F.job.projectComplete),milesFromShop:gNum(f,F.job.milesFromShop),
       notes:g(f,F.job.notes)||"",
+      birdDate:g(f,F.job.birdDate)||"",
       totalRevenueLive:gNum(f,F.job.totalRevenueLive),totalMaterialsLive:gNum(f,F.job.totalMaterialsLive),
       totalLaborCostLive:gNum(f,F.job.totalLaborCostLive),totalWireCost:gNum(f,F.job.totalWireCost),
       pipeCost:gNum(f,F.job.pipeCost),materialsInProgress:gNum(f,F.job.materialsInProgress),
@@ -3564,7 +3566,8 @@ async function handleGetScheduleEntries(params) {
       id: j.id,
       name:       g(f, F.job.name)       || "",
       contractor: g(f, F.job.contractor) || "",
-      status:     g(f, F.job.status)     || ""
+      status:     g(f, F.job.status)     || "",
+      birdDate:   g(f, F.job.birdDate)   || ""
     };
   });
   const empById = {};
@@ -3614,7 +3617,15 @@ async function handleGetScheduleEntries(params) {
   // Sort by start date ascending so the calendar renders chronologically
   filtered.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
 
-  return resp(200, { ok: true, entries: filtered });
+  // Bird move-in dates live on the Job (poultry new-construction). Surface
+  // any that fall in the requested window as a lightweight sibling array so
+  // the calendar can render a reminder pill on that day. Reuses the jobs we
+  // already fetched above — no extra Airtable round-trip.
+  const birdDates = Object.values(jobById)
+    .filter(j => j.birdDate && (!since || j.birdDate >= since) && (!until || j.birdDate <= until))
+    .map(j => ({ jobId: j.id, jobName: j.name, contractor: j.contractor, date: j.birdDate }));
+
+  return resp(200, { ok: true, entries: filtered, birdDates });
 }
 
 async function handleAddScheduleEntry(body) {
@@ -3860,7 +3871,7 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes } = body || {};
+  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, birdDate } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -3871,6 +3882,9 @@ async function handleUpdateJobInfo(body) {
   if (customerPhone  !== undefined) fields["fldBf6EC5EQXsPFAQ"] = customerPhone  || "";
   if (customerEmail  !== undefined) fields["fldzGgNmRlSxwpSMX"] = customerEmail  || "";
   if (notes          !== undefined) fields["fldAuZAW19iYPBPxP"] = notes          || "";
+  // Bird Date is a date-only field — send null (not "") to clear it, so an
+  // empty string never trips Airtable's date parsing.
+  if (birdDate       !== undefined) fields["fldyKjtcqganpbhNc"] = birdDate || null;
 
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
 

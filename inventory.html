@@ -5471,9 +5471,18 @@ function renderEstimateLines() {
 
   // Render-time sort: preserve original idx so input handlers map back to
   // the right slot in e.lines (which save logic reads unsorted).
+  // Just-added rows (_isNew) are held at the BOTTOM in add order so the user
+  // can find them to set qty; they fall into their category group when the
+  // estimate is saved & reopened (backend re-enriches category → this sort).
   var sortedPairs = lines
     .map(function(l, idx) { return { l: l, idx: idx }; })
-    .sort(function(a, b) { return sortLineItemsByCategory(a.l, b.l); });
+    .sort(function(a, b) {
+      var an = !!a.l._isNew, bn = !!b.l._isNew;
+      if (an && bn) return a.idx - b.idx;   // both new → keep add order
+      if (an) return 1;                      // a is new → after everything
+      if (bn) return -1;                     // b is new → after everything
+      return sortLineItemsByCategory(a.l, b.l);
+    });
 
   var rowsHtml = sortedPairs.length ? sortedPairs.map(function(pair) {
     var l = pair.l;
@@ -5686,9 +5695,15 @@ function addMiscLine() {
     itemId:      "",
     description: "",
     qty:         1,
-    unitCost:    0
+    unitCost:    0,
+    _isNew:      true   // hold at bottom until saved (see renderEstimateLines sort)
   });
+  var newIdx = estimateState.current.lines.length - 1;
   refreshLines();
+  // Land focus on the new bottom row's description so the user can type and
+  // tab straight into qty without hunting for it.
+  var el = document.getElementById("estl-desc-" + newIdx);
+  if (el) { el.focus(); el.scrollIntoView({ block: "center" }); }
 }
 
 // ── ITEM PICKER MODAL (overlay over the form) ─────────────
@@ -5777,11 +5792,17 @@ function addItemToEstimate(itemId) {
     qty:         1,
     unitCost:    item.cost || 0,
     _displayUnit: isWire ? "ft" : "lbs",
-    _displayQty:  null
+    _displayQty:  null,
+    _isNew:       true   // hold at bottom until saved (see renderEstimateLines sort)
   });
 
+  var newIdx = estimateState.current.lines.length - 1;
   closeEstimateItemPicker();
   refreshLines();
+  // Land focus on the new bottom row's qty and preselect the default "1" so
+  // the user can type the real qty immediately instead of hunting for the row.
+  var el = document.getElementById("estl-qty-" + newIdx);
+  if (el) { el.focus(); if (el.select) el.select(); el.scrollIntoView({ block: "center" }); }
 }
 
 // ── JOB SEARCH (for new estimate) ─────────────────────────

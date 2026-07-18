@@ -2450,7 +2450,11 @@ async function handleExpenses(params, authUser) {
     if (markupRaw?.valuesByLinkedRecordId) { markup=Object.values(markupRaw.valuesByLinkedRecordId).flat()[0]??null; }
     else if (Array.isArray(markupRaw)) { markup=markupRaw[0]??null; }
     else if (markupRaw!=null) { markup=markupRaw; }
-    return { id:r.id,date:f["Expense Date"]||"",description:f["Description"]||"",vendor,expenseType:f["Expense Type"]?.name||f["Expense Type"]||"",totalCost:f["Total Cost (Actual)"]??null,expenseStatus:f["Expense Status"]?.name||f["Expense Status"]||"",billable:f["Billable?"]===true,jobMarkupPct:markup,billableMaterial:f["Billable Material Amount $"]??null,reviewed:f["Reviewed"]===true,unbilledMaterial:f["Unbilled Material Amount $"]??0 };
+    // Who logged it (lookup of Employee Name through Submitted By). Blank on
+    // legacy expenses entered before the field existed. Shown on the admin view.
+    const submittedByRaw = f["Submitted By Name"];
+    const submittedBy = Array.isArray(submittedByRaw) ? submittedByRaw.filter(Boolean).join(", ") : (submittedByRaw || "");
+    return { id:r.id,date:f["Expense Date"]||"",description:f["Description"]||"",vendor,expenseType:f["Expense Type"]?.name||f["Expense Type"]||"",totalCost:f["Total Cost (Actual)"]??null,expenseStatus:f["Expense Status"]?.name||f["Expense Status"]||"",billable:f["Billable?"]===true,jobMarkupPct:markup,billableMaterial:f["Billable Material Amount $"]??null,reviewed:f["Reviewed"]===true,unbilledMaterial:f["Unbilled Material Amount $"]??0,submittedBy };
   });
   return resp(200, { ok: true, expenses });
 }

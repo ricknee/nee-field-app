@@ -230,14 +230,17 @@ await test("expenses: employee sees only own; admin/office see all", async () =>
   mockTables = {
     Jobs: [{ id: "recJob1", fields: { "Job Name": "Alpha" } }],
     Expenses: [
-      { id: "recX1", fields: { "Job": ["recJob1"], "Total Cost (Actual)": 100, "Submitted By": ["recEmpOwner"] } },
+      { id: "recX1", fields: { "Job": ["recJob1"], "Total Cost (Actual)": 100, "Submitted By": ["recEmpOwner"], "Submitted By Name": ["Owner Emp"] } },
       { id: "recX2", fields: { "Job": ["recJob1"], "Total Cost (Actual)": 200, "Submitted By": ["recEmpOther"] } },
       { id: "recX3", fields: { "Job": ["recJob1"], "Total Cost (Actual)": 300 } }, // legacy, no submitter
     ],
   };
   const emp = json(await GET("expenses", { jobId: "recJob1" }, OWNER_TOK));
   eq(emp.expenses.length, 1, "employee sees only their own"); eq(emp.expenses[0].id, "recX1", "own row");
-  eq(json(await GET("expenses", { jobId: "recJob1" }, ADMIN_TOK)).expenses.length, 3, "admin sees all");
+  const adm = json(await GET("expenses", { jobId: "recJob1" }, ADMIN_TOK));
+  eq(adm.expenses.length, 3, "admin sees all");
+  eq(adm.expenses.find(e => e.id === "recX1").submittedBy, "Owner Emp", "admin sees who logged it");
+  eq(adm.expenses.find(e => e.id === "recX3").submittedBy, "", "legacy expense has blank submitter");
   eq(json(await GET("expenses", { jobId: "recJob1" }, OFFICE_TOK)).expenses.length, 3, "office sees all");
 });
 

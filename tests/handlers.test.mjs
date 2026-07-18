@@ -167,6 +167,37 @@ await test("updateJobInfo: writes Bird Date field id; clears with null", async (
   eq(fields["fldyKjtcqganpbhNc"], null, "empty clears to null (not empty string)");
 });
 
+// ── hours by job (first Neon-slice read pattern) ──
+await test("hoursByJob: groups by static Job Name (Text), sums hours, flags historical", async () => {
+  mockTables = { "Time Entries": [
+    // Live job "Alpha": two entries, one still linked to a project.
+    { id: "recT1", fields: { "Job Name (Text)": "Alpha", "Hours": 8,   "Work Date": "2026-01-10", "Job": ["recJob1"] } },
+    { id: "recT2", fields: { "Job Name (Text)": "Alpha", "Hours": 2.5, "Work Date": "2026-01-05" } },
+    // Historical job "Bravo": no live Job link on any entry.
+    { id: "recT3", fields: { "Job Name (Text)": "Bravo", "Hours": 4,   "Work Date": "2021-06-01" } },
+    // Nameless entry — excluded from buckets, still counted in totals.
+    { id: "recT4", fields: { "Hours": 1, "Work Date": "2022-03-03" } },
+  ] };
+  const b = json(await GET("hoursByJob"));
+  ok(b.ok, "ok");
+  eq(b.jobs.length, 2, "two named buckets");
+  eq(b.jobs[0].jobName, "Alpha", "sorted by hours desc → Alpha first");
+  eq(b.jobs[0].hours, 10.5, "Alpha hours summed");
+  eq(b.jobs[0].entries, 2, "Alpha entry count");
+  eq(b.jobs[0].firstDate, "2026-01-05", "Alpha earliest date");
+  eq(b.jobs[0].lastDate, "2026-01-10", "Alpha latest date");
+  eq(b.jobs[0].historical, false, "Alpha has a live link → not historical");
+  const bravo = b.jobs.find(j => j.jobName === "Bravo");
+  eq(bravo.historical, true, "Bravo has no live link → historical");
+  eq(b.summary.jobCount, 2, "job count");
+  eq(b.summary.totalEntries, 4, "total entries incl. nameless");
+  eq(b.summary.namelessEntries, 1, "nameless excluded from buckets");
+});
+
+await test("hoursByJob: office role → 403 (payroll-eligible-only)", async () => {
+  eq((await GET("hoursByJob", {}, OFFICE_TOK)).statusCode, 403, "office blocked");
+});
+
 // ── auth / authorization cases ──
 await test("auth: no token → 401 on a read", async () => {
   mockTables = { Jobs: [] };

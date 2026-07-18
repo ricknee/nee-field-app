@@ -389,6 +389,7 @@ const _PAYROLL_READS = new Set([
   "payrollEntries", "findMatchingPayrollRun", "payrollRunsList",
   "payrollHoursRollup", "payrollHoursBreakdown", "payrollBonusesRollup",
   "payrollEmployeeBonusHistory", "myHoursRollup", "myHoursBreakdown",
+  "hoursByJob",
 ]);
 const _READ_LIKE_POSTS = new Set([
   "getNextEstimateNumber", "getNextInvoiceNumber", "getJobInvoices", "calculateMileage",
@@ -1131,6 +1132,65 @@ async function handlePayrollHoursRollup(params) {
       payPeriod: { start: dateToYmd(payPeriodStart), end: dateToYmd(payPeriodEnd), hours: r2(ppHrs)  },
       thisMonth: { start: dateToYmd(monthStart),     end: todayStr,                hours: r2(moHrs)  },
       ytd:       { start: dateToYmd(yearStart),      end: todayStr,                hours: r2(ytdHrs) }
+    }
+  });
+}
+
+// ── HOURS BY JOB — all-time hours grouped by the static Job Name (Text) ──
+// Read-only rollup behind the payroll/admin "Hours by Job" view. Groups every
+// Time Entry by its STATIC job-name snapshot (`Job Name (Text)`), NOT the
+// linked `Job` record — so the ~79% of historical entries whose project record
+// no longer exists still bucket and label correctly (see docs/PLAN-time-
+// entries-neon.md). A bucket is flagged `historical` when none of its entries
+// still carry a live `Job` link.
+//
+// This is the first Neon-slice read pattern and is deliberately NOT throwaway:
+// the shape ports 1:1 to
+//   SELECT job_name, SUM(hours), COUNT(*), MIN(work_date), MAX(work_date)
+//   FROM time_entries GROUP BY job_name ORDER BY SUM(hours) DESC;
+async function handleHoursByJob() {
+  const records = await fetchAll(TABLES.timeEntries);
+  const buckets = new Map(); // jobName -> aggregate
+  let namelessEntries = 0;
+  for (const r of records) {
+    const f = r.fields || {};
+    const name = String(f["Job Name (Text)"] || "").trim();
+    if (!name) { namelessEntries++; continue; }
+    const hrs = Number(f["Hours"]) || 0;
+    const ds  = f["Work Date"] || "";
+    const hasLiveLink = Array.isArray(f["Job"]) && f["Job"].length > 0;
+
+    let b = buckets.get(name);
+    if (!b) { b = { jobName: name, hours: 0, entries: 0, firstDate: "", lastDate: "", live: false }; buckets.set(name, b); }
+    b.hours   += hrs;
+    b.entries += 1;
+    if (hasLiveLink) b.live = true;
+    if (ds) {
+      if (!b.firstDate || ds < b.firstDate) b.firstDate = ds;
+      if (!b.lastDate  || ds > b.lastDate)  b.lastDate  = ds;
+    }
+  }
+
+  const jobs = Array.from(buckets.values())
+    .map(b => ({
+      jobName:    b.jobName,
+      hours:      Math.round(b.hours * 100) / 100,
+      entries:    b.entries,
+      firstDate:  b.firstDate,
+      lastDate:   b.lastDate,
+      historical: !b.live   // no entry still linked to a current project
+    }))
+    .sort((a, b) => b.hours - a.hours);
+
+  const totalHours = Math.round(jobs.reduce((s, j) => s + j.hours, 0) * 100) / 100;
+  return resp(200, {
+    ok: true,
+    jobs,
+    summary: {
+      jobCount:       jobs.length,
+      totalHours,
+      totalEntries:   records.length,
+      namelessEntries // entries with no Job Name (Text) — excluded from buckets
     }
   });
 }
@@ -4008,6 +4068,7 @@ export async function handler(event) {
       if (action === "payrollEmployeeBonusHistory") return await handlePayrollEmployeeBonusHistory(params);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
+      if (action === "hoursByJob")                  return await handleHoursByJob();
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "jobInspections")     return await handleJobInspections(params);

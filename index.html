@@ -5047,7 +5047,7 @@
         return `<tr>
           <td style="white-space:nowrap;">${esc(fmtDate(e.date))}</td>
           <td>${esc(e.vendor || "—")}</td>
-          <td>${esc(e.description || "—")}${e.submittedBy ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">👤 logged by ${esc(e.submittedBy)}</div>` : ""}</td>
+          <td>${esc(e.description || "—")}${e.submittedBy ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">👤 ${esc(e.submittedBy)}</div>` : ""}</td>
           <td style="text-align:right;">${e.totalCost != null ? fmtCurrency(e.totalCost) : "—"}</td>
           <td>${esc(markup)}</td>
           <td style="text-align:right;">${e.billableMaterial != null ? fmtCurrency(e.billableMaterial) : "—"}</td>

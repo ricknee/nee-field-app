@@ -2038,6 +2038,7 @@
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
       <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
+      <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
       <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
       <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
       <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
@@ -8163,6 +8164,8 @@
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
     const payrollBtn = $("btnPayroll");
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
+    const hoursByJobBtn = $("btnHoursByJob");
+    if (hoursByJobBtn) hoursByJobBtn.addEventListener("click", openHoursByJob);
     const allInvBtn = $("btnAllInvoices");
     if (allInvBtn) allInvBtn.addEventListener("click", openAllInvoices);
     const schBtn = $("btnSchedule");
@@ -12221,6 +12224,78 @@
   }
   window.closeMyHours = closeMyHours;
 
+  // ─── Hours by Job: all-time hours grouped by static job name ────────────
+  // Read-only management view (admin). Backed by the hoursByJob rollup — the
+  // first Neon-slice read pattern. Historical/orphaned jobs (no live project
+  // link) are flagged so the team can see them alongside current work.
+  let hbjData = null; // last fetched { jobs, summary }
+
+  async function openHoursByJob() {
+    $("hoursByJobModal").style.display = "flex";
+    pushBackEntry("hoursByJob", () => { $("hoursByJobModal").style.display = "none"; });
+    $("hbjSummary").textContent = "Loading…";
+    $("hbjList").innerHTML = "";
+    try {
+      const res = await apiGet("hoursByJob");
+      if (!res?.ok) throw new Error(res?.error || "Failed to load");
+      hbjData = res;
+      renderHoursByJobList();
+    } catch (e) {
+      $("hbjSummary").textContent = "Couldn't load: " + e.message;
+    }
+  }
+  window.openHoursByJob = openHoursByJob;
+
+  function closeHoursByJob() {
+    popBackEntry("hoursByJob");
+    $("hoursByJobModal").style.display = "none";
+  }
+  window.closeHoursByJob = closeHoursByJob;
+
+  function fmtHbjDate(ymd) {
+    // "2026-01-05" → "Jan 2026" (compact range endpoints)
+    const m = /^(\d{4})-(\d{2})/.exec(ymd || "");
+    if (!m) return ymd || "—";
+    const mon = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m[2]) - 1];
+    return `${mon} ${m[1]}`;
+  }
+
+  function renderHoursByJobList() {
+    if (!hbjData) return;
+    const q = ($("hbjSearch").value || "").trim().toLowerCase();
+    const sort = $("hbjSort").value;
+    const histOnly = $("hbjHistOnly").checked;
+
+    let jobs = hbjData.jobs.slice();
+    if (histOnly) jobs = jobs.filter(j => j.historical);
+    if (q) jobs = jobs.filter(j => j.jobName.toLowerCase().includes(q));
+
+    if (sort === "entries")     jobs.sort((a, b) => b.entries - a.entries);
+    else if (sort === "name")   jobs.sort((a, b) => a.jobName.localeCompare(b.jobName, undefined, { sensitivity: "base", numeric: true }));
+    else if (sort === "recent") jobs.sort((a, b) => (b.lastDate || "").localeCompare(a.lastDate || ""));
+    else                        jobs.sort((a, b) => b.hours - a.hours); // default: hours desc
+
+    const s = hbjData.summary || {};
+    const shownHrs = Math.round(jobs.reduce((t, j) => t + j.hours, 0) * 100) / 100;
+    $("hbjSummary").textContent =
+      `${jobs.length} of ${s.jobCount} jobs · ${shownHrs.toLocaleString()} of ${(s.totalHours || 0).toLocaleString()} hrs`;
+
+    if (!jobs.length) { $("hbjList").innerHTML = `<div style="padding:16px; color:var(--muted); text-align:center;">No matching jobs.</div>`; return; }
+
+    $("hbjList").innerHTML = jobs.map(j => `
+      <div style="display:flex; align-items:center; gap:10px; padding:9px 6px; border-bottom:1px solid var(--line);">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            ${esc(j.jobName)}
+            ${j.historical ? `<span title="No current project — historical" style="font-size:10px; font-weight:600; color:#8a5a00; background:#fff4e0; border:1px solid #f0c168; border-radius:6px; padding:1px 5px; margin-left:6px;">HIST</span>` : ""}
+          </div>
+          <div style="font-size:11px; color:var(--muted);">${j.entries} ${j.entries === 1 ? "entry" : "entries"} · ${fmtHbjDate(j.firstDate)} – ${fmtHbjDate(j.lastDate)}</div>
+        </div>
+        <div style="font-weight:700; font-size:14px; white-space:nowrap;">${j.hours.toLocaleString()} <span style="font-size:11px; font-weight:500; color:var(--muted);">hrs</span></div>
+      </div>`).join("");
+  }
+  window.renderHoursByJobList = renderHoursByJobList;
+
   // Pretty-print yyyy-mm-dd → "Apr 27" (no year). Matches the design sketch:
   // tile ranges are short windows where the year would be visual noise.
   function mhFmtDateNoYear(ymd) {
@@ -15179,6 +15254,34 @@
     </div>
     <div class="payroll-modal-body">
       <div id="mhTiles" class="mh-tiles"></div>
+    </div>
+  </div>
+</div>
+
+<!-- HOURS BY JOB MODAL — all-time hours grouped by static job name (incl. historical) -->
+<div id="hoursByJobModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width:760px;">
+    <div class="payroll-modal-header">
+      <h2>📊 Hours by Job</h2>
+      <button onclick="closeHoursByJob()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+        <input id="hbjSearch" type="text" placeholder="Search job name…" oninput="renderHoursByJobList()"
+               style="flex:1; min-width:180px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:14px;" />
+        <select id="hbjSort" onchange="renderHoursByJobList()"
+                style="padding:8px 10px; border:1px solid var(--line); border-radius:8px; font-size:13px;">
+          <option value="hours">Most hours</option>
+          <option value="entries">Most entries</option>
+          <option value="name">Job name (A–Z)</option>
+          <option value="recent">Most recent</option>
+        </select>
+        <label style="display:flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); white-space:nowrap;">
+          <input id="hbjHistOnly" type="checkbox" onchange="renderHoursByJobList()" /> Historical only
+        </label>
+      </div>
+      <div id="hbjSummary" style="font-size:12px; color:var(--muted); margin-bottom:8px;"></div>
+      <div id="hbjList" style="max-height:60vh; overflow:auto;"></div>
     </div>
   </div>
 </div>

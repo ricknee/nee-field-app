@@ -1674,6 +1674,7 @@
 
     /* Vendor typeahead — admin-only edit on the Expenses tab's New Expense panel.
        Shape cloned from .agency-search above. */
+    .myexp-lbl { font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px; }
     .vendor-search-wrap { position: relative; }
     .vendor-search {
       width: 100%; padding: 6px 8px;
@@ -2140,6 +2141,7 @@
           <button class="tab-btn admin-only hidden" data-tab="closeout">✅ Closeout</button>
           <button class="tab-btn admin-only hidden" data-tab="est-gp">📈 Est. GP</button>
           <button class="tab-btn admin-only hidden" data-tab="expenses">🧾 Expenses</button>
+          <button class="tab-btn employee-only hidden" data-tab="my-expenses">🧾 My Expenses</button>
           <button class="tab-btn admin-only hidden" data-tab="time-entries">⏱ Time Entries</button>
           <button class="tab-btn admin-only hidden" data-tab="estimate">📝 Estimate</button>
           <button class="tab-btn admin-only hidden" data-tab="invoice">🧾 Invoice</button>
@@ -2771,6 +2773,51 @@
         </div>
 
         <!-- TAB: EXPENSES (admin only) -->
+        <!-- MY EXPENSES — employee self-service (add/see-own/edit/delete until approved) -->
+        <div class="tab-content" id="tab-my-expenses">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+            <div style="font-size:12px; color:var(--muted); max-width:70%;">Add expenses you paid for on this job. Only you and the office see these — the office reviews and approves them.</div>
+            <button id="btnAddMyExpense" class="btn btn-sm btn-primary" type="button" style="font-size:12px;">➕ Add Expense</button>
+          </div>
+
+          <!-- Add / edit form (hidden until Add or Edit is tapped) -->
+          <div id="myExpensePanel" class="sl-expense-panel" style="display:none; margin-bottom:14px;">
+            <h4 id="myExpFormTitle">➕ New Expense</h4>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+              <div><label class="myexp-lbl">Date</label><input type="date" id="myExpDate" class="edit-input" style="font-size:13px; width:100%;" /></div>
+              <div><label class="myexp-lbl">Type</label>
+                <select id="myExpType" class="edit-input" style="font-size:13px; width:100%;">
+                  <option value="Materials" selected>Materials</option>
+                  <option value="Fuel">Fuel</option>
+                  <option value="Rental Equipment">Rental Equipment</option>
+                  <option value="Permit">Permit</option>
+                  <option value="Misc">Misc</option>
+                  <option value="Subcontract">Subcontract</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div><label class="myexp-lbl">Amount ($)</label><input type="number" id="myExpAmount" class="edit-input" style="font-size:13px; width:100%;" placeholder="0.00" min="0" step="0.01" /></div>
+              <div><label class="myexp-lbl">Credit ($) <span style="font-weight:400; text-transform:none;">(optional)</span></label><input type="number" id="myExpCredit" class="edit-input" style="font-size:13px; width:100%;" placeholder="0.00" min="0" step="0.01" /></div>
+              <div><label class="myexp-lbl">Vendor <span style="font-weight:400; text-transform:none;">(optional)</span></label>
+                <select id="myExpVendor" class="edit-input" style="font-size:13px; width:100%;"><option value="">— none —</option></select>
+              </div>
+            </div>
+            <div style="margin-bottom:10px;"><label class="myexp-lbl">Notes / Description</label><input type="text" id="myExpDesc" class="edit-input" style="font-size:13px; width:100%;" placeholder="What was this for?" /></div>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
+              <input type="checkbox" id="myExpBillable" checked style="accent-color:var(--green); width:16px; height:16px; cursor:pointer;" />
+              <label for="myExpBillable" style="font-size:13px; cursor:pointer;">Billable to customer</label>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button id="myExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Expense</button>
+              <button id="myExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+            </div>
+            <div id="myExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Saved!</div>
+            <div id="myExpErr" style="display:none; margin-top:8px; font-size:12px; color:var(--red);"></div>
+          </div>
+
+          <div id="myExpList"></div>
+        </div>
+
         <div class="tab-content" id="tab-expenses">
           <!-- Admin action buttons -->
           <div class="admin-only hidden" id="expenseActionBtns" style="display:none; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
@@ -3331,6 +3378,13 @@
       const isPayrollEligible = role !== "office" && role !== "viewer";
       document.querySelectorAll(".payroll-eligible-only").forEach(el => {
         el.classList.toggle("hidden", !isPayrollEligible);
+      });
+
+      // Employee-only elements — the "My Expenses" self-service tab. Admin/
+      // office use the full admin Expenses tab; viewers are read-only.
+      const isEmployeeRole = role === "employee";
+      document.querySelectorAll(".employee-only").forEach(el => {
+        el.classList.toggle("hidden", !isEmployeeRole);
       });
 
       // Hide financial tabs from viewers
@@ -4499,6 +4553,11 @@
     // Load estimate tab on demand
     if (tabId === "estimate" && state.selected) {
       loadEstimateTab(state.selected);
+    }
+    // Load the employee "My Expenses" list on demand
+    if (tabId === "my-expenses" && state.selected) {
+      closeMyExpenseForm();
+      loadMyExpenses(state.selected.id);
     }
   }
 
@@ -7891,6 +7950,127 @@
     }
   }
 
+  // ─── MY EXPENSES (employee self-service) ───────────────────────────────
+  // Isolated from the admin expense flow on purpose (money path). Reuses the
+  // vendor cache (loadVendors/_vendors) and fmtCurrency. The backend scopes
+  // apiGet("expenses") to the caller, so this list is always only the
+  // employee's own rows; we render no totals.
+  let myExpEditingId = null;
+
+  async function loadMyExpenses(jobId) {
+    const list = $("myExpList");
+    if (!list || !jobId) return;
+    list.innerHTML = `<div style="padding:14px; color:var(--muted);">Loading…</div>`;
+    try {
+      const res = await apiGet("expenses", { jobId });
+      const rows = res.expenses || [];
+      if (!rows.length) {
+        list.innerHTML = `<div style="padding:16px; color:var(--muted); text-align:center;">No expenses yet. Tap “Add Expense” to add one.</div>`;
+        return;
+      }
+      list.innerHTML = rows.map(e => {
+        const reviewed = e.reviewed === true || e.expenseStatus === "Reviewed";
+        const amt = e.totalCost != null ? fmtCurrency(e.totalCost) : "—";
+        const controls = reviewed
+          ? `<span style="font-size:11px; color:var(--green); font-weight:600; white-space:nowrap;">✅ Approved</span>`
+          : `<span style="font-size:11px; color:var(--muted); font-weight:600;">⬜ Pending</span>
+             <button class="btn btn-sm myexp-edit" data-id="${esc(e.id)}" type="button" style="font-size:11px; padding:3px 8px;">✏</button>
+             <button class="btn btn-sm myexp-del" data-id="${esc(e.id)}" type="button" style="font-size:11px; padding:3px 8px;">🗑</button>`;
+        return `<div style="display:flex; align-items:center; gap:10px; padding:9px 6px; border-bottom:1px solid var(--line);">
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(e.description || e.expenseType || "Expense")}</div>
+            <div style="font-size:11px; color:var(--muted);">${esc(e.date || "")}${e.vendor ? " · " + esc(e.vendor) : ""}${e.expenseType ? " · " + esc(e.expenseType) : ""}</div>
+          </div>
+          <div style="font-weight:700; font-size:14px; white-space:nowrap;">${amt}</div>
+          <div style="display:flex; align-items:center; gap:6px; white-space:nowrap;">${controls}</div>
+        </div>`;
+      }).join("");
+      list.querySelectorAll(".myexp-edit").forEach(b => b.onclick = () => openMyExpenseForm(rows.find(r => r.id === b.dataset.id)));
+      list.querySelectorAll(".myexp-del").forEach(b => b.onclick = () => deleteMyExpense(b.dataset.id));
+    } catch (e) {
+      list.innerHTML = `<div style="padding:14px; color:var(--red);">Couldn't load: ${esc(e.message)}</div>`;
+    }
+  }
+
+  async function openMyExpenseForm(expense) {
+    myExpEditingId = expense ? expense.id : null;
+    $("myExpFormTitle").textContent = expense ? "✏ Edit Expense" : "➕ New Expense";
+    // Vendor picker from the shared cache (employees can't create vendors).
+    await loadVendors();
+    const vsel = $("myExpVendor");
+    vsel.innerHTML = `<option value="">— none —</option>` +
+      (_vendors || []).map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    $("myExpDate").value     = expense?.date || new Date().toISOString().slice(0, 10);
+    $("myExpType").value     = expense?.expenseType || "Materials";
+    $("myExpAmount").value   = (expense && expense.totalCost != null) ? expense.totalCost : "";
+    $("myExpCredit").value   = "";
+    $("myExpDesc").value     = expense?.description || "";
+    $("myExpBillable").checked = expense ? expense.billable === true : true;
+    // expense.vendor is a name (lookup) — best-effort match back to an id.
+    vsel.value = (expense && expense.vendor && (_vendors || []).find(v => v.name === expense.vendor)?.id) || "";
+    $("myExpMsg").style.display = "none";
+    $("myExpErr").style.display = "none";
+    $("myExpensePanel").style.display = "";
+    $("btnAddMyExpense").style.display = "none";
+    $("myExpDate").focus();
+  }
+
+  function closeMyExpenseForm() {
+    $("myExpensePanel").style.display = "none";
+    $("btnAddMyExpense").style.display = "";
+    myExpEditingId = null;
+  }
+
+  async function saveMyExpense() {
+    const job = state.selected;
+    if (!job) return;
+    const amount = parseFloat($("myExpAmount").value);
+    const credit = parseFloat($("myExpCredit").value) || 0;
+    const errEl = $("myExpErr"), msgEl = $("myExpMsg");
+    errEl.style.display = "none"; msgEl.style.display = "none";
+    if ((!amount || amount <= 0) && (!credit || credit <= 0)) {
+      errEl.textContent = "Please enter an amount or a credit.";
+      errEl.style.display = ""; return;
+    }
+    const payload = {
+      date:        $("myExpDate").value,
+      type:        $("myExpType").value,
+      amount:      amount || 0,
+      credit,
+      description: ($("myExpDesc").value || "").trim(),
+      billable:    $("myExpBillable").checked
+    };
+    const vendorId = $("myExpVendor").value;
+    if (vendorId && vendorId.startsWith("rec")) payload.vendorId = vendorId;
+
+    const btn = $("myExpSaveBtn");
+    btn.disabled = true; btn.textContent = "Saving…";
+    try {
+      if (myExpEditingId) {
+        await apiPost("updateExpense", { expenseId: myExpEditingId, ...payload });
+      } else {
+        await apiPost("addGeneralExpense", { jobId: job.id, ...payload });
+      }
+      closeMyExpenseForm();
+      loadMyExpenses(job.id);
+    } catch (e) {
+      errEl.textContent = "Error: " + e.message;
+      errEl.style.display = "";
+    } finally {
+      btn.disabled = false; btn.textContent = "Save Expense";
+    }
+  }
+
+  async function deleteMyExpense(expenseId) {
+    if (!confirm("Delete this expense?\n\nThis cannot be undone.")) return;
+    try {
+      await apiPost("deleteExpense", { expenseId });
+      if (state.selected) loadMyExpenses(state.selected.id);
+    } catch (e) {
+      alert("Couldn't delete: " + e.message);
+    }
+  }
+
   // ── SCISSOR LIFT EXPENSE ──
   const LIFT_RATES = {
     "Lift #1":1,"Lift #2":1,"Lift #3":1,"Lift #4":1,"Lift #5":1,
@@ -8197,6 +8377,14 @@
     });
     const genExpSave = $("genExpSaveBtn");
     if (genExpSave) genExpSave.addEventListener("click", saveGeneralExpense);
+
+    // My Expenses (employee self-service)
+    const btnAddMyExp = $("btnAddMyExpense");
+    if (btnAddMyExp) btnAddMyExp.addEventListener("click", () => openMyExpenseForm(null));
+    const myExpSave = $("myExpSaveBtn");
+    if (myExpSave) myExpSave.addEventListener("click", saveMyExpense);
+    const myExpCancel = $("myExpCancelBtn");
+    if (myExpCancel) myExpCancel.addEventListener("click", closeMyExpenseForm);
 
     // Scissor Lift Expense
     const btnAddLift = $("btnAddLiftExpense");

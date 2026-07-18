@@ -402,7 +402,11 @@ const _ADMIN_POSTS = new Set([
   "addScheduleEntry", "updateScheduleEntry", "deleteScheduleEntry",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
-  "deleteExpense", "approveExpense", "markInvoicePaid", "setInvoiceStatus",
+  // NOTE: deleteExpense is intentionally NOT here — it now defaults to
+  // _NON_VIEWER and handleDeleteExpense enforces owner+unreviewed for
+  // employees (admin/office may delete any). updateExpense likewise defaults
+  // to _NON_VIEWER with in-handler owner/status enforcement.
+  "approveExpense", "markInvoicePaid", "setInvoiceStatus",
   "updateJobBillableRate", "createVendor",
 ]);
 
@@ -1792,9 +1796,28 @@ async function handleCompleteServiceCall(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
-async function handleDeleteExpense(body) {
+// Shared guard for employee self-service on an existing expense. Managers
+// (admin/office) may mutate any expense; an employee may mutate ONLY their own
+// AND only while it is still "Not Reviewed" (approval locks it). Returns
+// { ok:true, record } or { ok:false, resp } with the right 400/403.
+async function guardExpenseMutation(expenseId, authUser) {
+  if (!expenseId) return { ok: false, resp: resp(400, { ok: false, error: "Missing expenseId." }) };
+  const rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`);
+  const f = rec.fields || {};
+  const isMgr = authUser && (authUser.role === "admin" || authUser.role === "office");
+  if (isMgr) return { ok: true, record: rec };
+  const owns = Array.isArray(f["Submitted By"]) && f["Submitted By"].includes(authUser?.id);
+  const status = f["Expense Status"]?.name || f["Expense Status"] || "";
+  const reviewed = f["Reviewed"] === true || status === "Reviewed";
+  if (!owns)    return { ok: false, resp: resp(403, { ok: false, error: "You can only change your own expenses." }) };
+  if (reviewed) return { ok: false, resp: resp(403, { ok: false, error: "This expense has been approved and can no longer be changed." }) };
+  return { ok: true, record: rec };
+}
+
+async function handleDeleteExpense(body, authUser) {
   const { expenseId } = body || {};
-  if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
+  const guard = await guardExpenseMutation(expenseId, authUser);
+  if (!guard.ok) return guard.resp;
   await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "DELETE" });
   return resp(200, { ok: true, deleted: expenseId });
 }
@@ -2395,7 +2418,7 @@ async function handleUnlinkedLaborAllocations(params) {
   return resp(200, { ok: true, allocations });
 }
 
-async function handleExpenses(params) {
+async function handleExpenses(params, authUser) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
@@ -2407,7 +2430,15 @@ async function handleExpenses(params) {
   const safeName = escapeFormulaString(jobName);
   const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`;
   const allRecords = await fetchAll("Expenses", { filter, sortField: "Expense Date", sortDir: "desc" });
-  const records = allRecords.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
+  const jobRecordsForJob = allRecords.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
+  // SERVER-SIDE SCOPE: admin/office see every expense on the job; an employee
+  // sees ONLY the ones they submitted (Submitted By link = their record id).
+  // This is the real boundary — the employee UI also hides totals, but even a
+  // direct API call can't leak the job total or other people's expenses.
+  const isMgr = authUser && (authUser.role === "admin" || authUser.role === "office");
+  const records = isMgr
+    ? jobRecordsForJob
+    : jobRecordsForJob.filter(r => Array.isArray(r.fields?.["Submitted By"]) && r.fields["Submitted By"].includes(authUser?.id));
   const expenses = records.map(r => {
     const f = r.fields || {};
     const vendorLookup = f["Vendor Name (from Vendor)"]; let vendor = "";
@@ -2467,18 +2498,20 @@ async function handleCalculateMileage(body) {
   return resp(200, { ok: true, miles });
 }
 
-async function handleAddLiftExpense(body) {
+async function handleAddLiftExpense(body, authUser) {
   const { jobId, date, amount, description, billable } = body || {};
   if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
   const idStr = String(jobId).trim();
   if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid jobId received: ${idStr}` });
   const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldlTUL8hsPkReBAB":["recU56ncurkFrM2Nx"],"fldwbLPIafVtmaSeb":Number(amount),"fldX2x2J0xkRyMY3y":"Scissor Lift","fldelsB2jH2tvt1Cj":description||"Scissor Lift Expense","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
+  // Submitted By (Employee link) — stamped from the token, never client input.
+  if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
   if (date) fields["fldCCPYdyWAOGchWb"] = date;
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
   return resp(200, { ok: true, id: data.id });
 }
 
-async function handleAddGeneralExpense(body) {
+async function handleAddGeneralExpense(body, authUser) {
   const { jobId, date, type, amount, credit, vendorId, description, billable } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   // Credit-only entries (Manual Material Cost blank, Material Credit > 0) are
@@ -2498,8 +2531,39 @@ async function handleAddGeneralExpense(body) {
   if (hasAmount) fields["fldwbLPIafVtmaSeb"] = Number(amount);
   if (hasCredit) fields["fldcld418pREq2bGq"] = Number(credit);
   if (vendorId && String(vendorId).startsWith("rec")) fields["fldlTUL8hsPkReBAB"] = [String(vendorId)];
+  // Submitted By (Employee link) — stamped from the token, never client input.
+  // This is what lets employees see/edit only their own expenses.
+  if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
   return resp(200, { ok: true, id: data.id });
+}
+
+// Edit an existing expense. Managers may edit any; an employee may edit only
+// their own unreviewed one (enforced by guardExpenseMutation). Fields mirror
+// the add form; amount/credit follow the same credit-only rule (set the one
+// provided, clear the other). Submitted By is NOT touched here — ownership
+// never changes on edit.
+async function handleUpdateExpense(body, authUser) {
+  const { expenseId, date, type, amount, credit, vendorId, description, billable } = body || {};
+  const guard = await guardExpenseMutation(expenseId, authUser);
+  if (!guard.ok) return guard.resp;
+
+  const hasAmount = amount != null && Number(amount) > 0;
+  const hasCredit = credit != null && Number(credit) > 0;
+  if (!hasAmount && !hasCredit) return resp(400, { ok: false, error: "Missing amount or credit." });
+
+  const fields = {
+    "fldX2x2J0xkRyMY3y": type || "Materials",
+    "fld9Afieu4ofjvhSb": billable === true || billable === "true",
+    "fldwbLPIafVtmaSeb": hasAmount ? Number(amount) : null,  // Total Cost (Actual)
+    "fldcld418pREq2bGq": hasCredit ? Number(credit) : null   // Material Credit
+  };
+  if (date !== undefined)        fields["fldCCPYdyWAOGchWb"] = date || null;
+  if (description !== undefined) fields["fldelsB2jH2tvt1Cj"] = description || "";
+  if (vendorId !== undefined)    fields["fldlTUL8hsPkReBAB"] = (vendorId && String(vendorId).startsWith("rec")) ? [String(vendorId)] : [];
+
+  const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
+  return resp(200, { ok: true, updatedId: data.id });
 }
 
 async function handleUpdateInspection(body) {
@@ -4039,8 +4103,11 @@ export async function handler(event) {
     const reqAction = event.httpMethod === "GET"
       ? event.queryStringParameters?.action
       : safeBodyAction(event);
+    // Hoisted so expense handlers can scope/authorize by the signed-in user
+    // (see-own, edit/delete-until-approved). Null only for the login action.
+    let authUser = null;
     if (reqAction !== "login") {
-      const authUser = authedUser(event);
+      authUser = authedUser(event);
       if (!authUser) return resp(401, { ok: false, error: "Not signed in. Please log in again." });
       if (!hasRole(authUser.role, authzFor(event.httpMethod, reqAction))) {
         return resp(403, { ok: false, error: "You don't have permission to do that." });
@@ -4055,7 +4122,7 @@ export async function handler(event) {
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);
-      if (action === "expenses")           return await handleExpenses(params);
+      if (action === "expenses")           return await handleExpenses(params, authUser);
       if (action === "timeEntries")        return await handleTimeEntries(params);
       if (action === "unlinkedLaborAllocations")    return await handleUnlinkedLaborAllocations(params);
       if (action === "unlinkedMaterialAllocations") return await handleUnlinkedMaterialAllocations(params);
@@ -4105,7 +4172,8 @@ export async function handler(event) {
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
       if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
-      if (body.action === "deleteExpense")        return await handleDeleteExpense(body);
+      if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
+      if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);
       if (body.action === "approveExpense")       return await handleApproveExpense(body);
       if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body);
       if (body.action === "createInspection")     return await handleCreateInspection(body);
@@ -4142,8 +4210,8 @@ export async function handler(event) {
       if (body.action === "createContact")        return await handleCreateContact(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
-      if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body);
-      if (body.action === "addGeneralExpense")    return await handleAddGeneralExpense(body);
+      if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body, authUser);
+      if (body.action === "addGeneralExpense")    return await handleAddGeneralExpense(body, authUser);
       if (body.action === "createVendor")         return await handleCreateVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }

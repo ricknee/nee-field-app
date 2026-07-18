@@ -27,10 +27,26 @@ let mockTables = {};
 let lastFetch = null; // {url, opts} of the most recent request — lets write tests inspect the PATCH body
 globalThis.fetch = async (url, opts) => {
   lastFetch = { url: String(url), opts: opts || {} };
-  const m = String(url).match(/\/v0\/[^/]+\/([^?]+)/);
+  const method = (opts?.method || "GET").toUpperCase();
+  // Path after /v0/<base>/ → "<Table>" (list) or "<Table>/<recId>" (single record).
+  const m = String(url).match(/\/v0\/[^/]+\/([^/?]+)(?:\/([^?]+))?/);
   const table = m ? decodeURIComponent(m[1]) : "";
-  const records = mockTables[table] || [];
-  return { ok: true, status: 200, text: async () => JSON.stringify({ records }) };
+  const recId = m && m[2] ? decodeURIComponent(m[2]) : "";
+  const rows = mockTables[table] || [];
+  let bodyObj;
+  if (recId) {
+    // Single-record op (GET one / PATCH / DELETE). Airtable returns the record
+    // object directly, not a {records:[...]} envelope.
+    const rec = rows.find(r => r.id === recId) || { id: recId, fields: {} };
+    if (method === "PATCH")       bodyObj = { id: recId, fields: { ...rec.fields, ...(opts?.body ? JSON.parse(opts.body).fields : {}) } };
+    else if (method === "DELETE") bodyObj = { id: recId, deleted: true };
+    else                          bodyObj = rec;
+  } else if (method === "POST") {
+    bodyObj = { id: "recNEW", fields: opts?.body ? JSON.parse(opts.body).fields : {} };
+  } else {
+    bodyObj = { records: rows }; // list read (single page, no offset)
+  }
+  return { ok: true, status: 200, text: async () => JSON.stringify(bodyObj) };
 };
 
 // 3) Import the real handler (dynamic import = after env is set).
@@ -196,6 +212,65 @@ await test("hoursByJob: groups by static Job Name (Text), sums hours, flags hist
 
 await test("hoursByJob: office role → 403 (payroll-eligible-only)", async () => {
   eq((await GET("hoursByJob", {}, OFFICE_TOK)).statusCode, 403, "office blocked");
+});
+
+// ── employee self-service expenses ──
+const OWNER_TOK = signToken({ id: "recEmpOwner", role: "employee" });
+const OTHER_TOK = signToken({ id: "recEmpOther", role: "employee" });
+const SUBMITTED_BY = "fldRWV0eIKwBrXwHV"; // Expenses → Submitted By (Employee link)
+
+await test("addGeneralExpense: stamps Submitted By from the token (not client input)", async () => {
+  mockTables = {};
+  await POST("addGeneralExpense", { jobId: "recJob1", amount: 50, type: "Materials" }, OWNER_TOK);
+  const fields = JSON.parse(lastFetch.opts.body).fields;
+  eq(JSON.stringify(fields[SUBMITTED_BY]), JSON.stringify(["recEmpOwner"]), "Submitted By = token user id");
+});
+
+await test("expenses: employee sees only own; admin/office see all", async () => {
+  mockTables = {
+    Jobs: [{ id: "recJob1", fields: { "Job Name": "Alpha" } }],
+    Expenses: [
+      { id: "recX1", fields: { "Job": ["recJob1"], "Total Cost (Actual)": 100, "Submitted By": ["recEmpOwner"] } },
+      { id: "recX2", fields: { "Job": ["recJob1"], "Total Cost (Actual)": 200, "Submitted By": ["recEmpOther"] } },
+      { id: "recX3", fields: { "Job": ["recJob1"], "Total Cost (Actual)": 300 } }, // legacy, no submitter
+    ],
+  };
+  const emp = json(await GET("expenses", { jobId: "recJob1" }, OWNER_TOK));
+  eq(emp.expenses.length, 1, "employee sees only their own"); eq(emp.expenses[0].id, "recX1", "own row");
+  eq(json(await GET("expenses", { jobId: "recJob1" }, ADMIN_TOK)).expenses.length, 3, "admin sees all");
+  eq(json(await GET("expenses", { jobId: "recJob1" }, OFFICE_TOK)).expenses.length, 3, "office sees all");
+});
+
+await test("updateExpense: employee edits own unreviewed → 200 + patches amount", async () => {
+  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Not Reviewed" } }] };
+  const res = await POST("updateExpense", { expenseId: "recX1", amount: 75, type: "Fuel" }, OWNER_TOK);
+  eq(res.statusCode, 200, "ok");
+  eq(JSON.parse(lastFetch.opts.body).fields["fldwbLPIafVtmaSeb"], 75, "amount patched");
+});
+
+await test("updateExpense: employee edits someone else's → 403", async () => {
+  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Not Reviewed" } }] };
+  eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, OTHER_TOK)).statusCode, 403, "not owner");
+});
+
+await test("updateExpense: employee edits an approved one → 403 (locked)", async () => {
+  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Reviewed", "Reviewed": true } }] };
+  eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, OWNER_TOK)).statusCode, 403, "locked after approval");
+});
+
+await test("updateExpense: admin edits any expense → 200", async () => {
+  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOther"], "Expense Status": "Reviewed", "Reviewed": true } }] };
+  eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, ADMIN_TOK)).statusCode, 200, "admin any");
+});
+
+await test("deleteExpense: employee deletes own unreviewed → 200; other's → 403", async () => {
+  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Not Reviewed" } }] };
+  eq((await POST("deleteExpense", { expenseId: "recX1" }, OWNER_TOK)).statusCode, 200, "own unreviewed");
+  eq((await POST("deleteExpense", { expenseId: "recX1" }, OTHER_TOK)).statusCode, 403, "not owner");
+});
+
+await test("deleteExpense: viewer still blocked (403)", async () => {
+  eq((await POST("deleteExpense", { expenseId: "recX1" }, VIEWER_TOK)).statusCode, 403, "viewer read-only");
 });
 
 // ── auth / authorization cases ──

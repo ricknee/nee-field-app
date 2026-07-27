@@ -2531,8 +2531,16 @@ async function handleCalculateMileage(body) {
   // that case 2 no longer logs a red 400 on every open of an affected job —
   // routine console noise trains people to ignore the console, which is exactly
   // where case 1 needs to be visible.
+  // Google's `error_message` is where the ACTIONABLE detail lives — e.g.
+  // "API keys with referer restrictions cannot be used with this API" or
+  // "This API project is not authorized to use this API". `status` alone
+  // (REQUEST_DENIED) says only that the key was rejected, not why. Pass it
+  // through: it is a config diagnostic, never end-user data, and it contains
+  // no credentials.
   if (data.status !== "OK")
-    return resp(502, { ok: false, reason: "upstream_error", error: `Google API error: ${data.status}` });
+    return resp(502, { ok: false, reason: "upstream_error",
+      error: `Google API error: ${data.status}`,
+      detail: data.error_message || null });
   const element = data.rows?.[0]?.elements?.[0];
   if (!element || element.status !== "OK")
     return resp(200, { ok: false, reason: "address_unresolved",

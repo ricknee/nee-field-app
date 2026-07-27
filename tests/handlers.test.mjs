@@ -243,12 +243,14 @@ await test("calculateMileage: unresolvable address → 200 ok:false (no console 
   eq(b.reason, "address_unresolved", "reason distinguishes it from a broken integration");
 });
 
-await test("calculateMileage: Google config/quota failure stays loud → 502", async () => {
-  mockGoogle = { status: "REQUEST_DENIED" };
+await test("calculateMileage: Google config/quota failure stays loud → 502 with detail", async () => {
+  mockGoogle = { status: "REQUEST_DENIED",
+                 error_message: "API keys with referer restrictions cannot be used with this API." };
   const r = await POST("calculateMileage", { jobId: "recJob1", address: "123 Main St" });
   eq(r.statusCode, 502, "502 — a broken key affects every job and must stay visible");
   const b = JSON.parse(r.body);
   eq(b.reason, "upstream_error", "reason marks it as an integration failure");
+  ok(/referer restrictions/.test(b.detail), "Google's error_message is passed through, not swallowed");
   mockGoogle = null;
 });
 

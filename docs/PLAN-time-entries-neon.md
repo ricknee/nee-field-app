@@ -168,11 +168,54 @@ the query shape is identical in Neon, so it is **not throwaway work**.
    anywhere in the Airtable Time Entries fields (only `Source` = "TSheets"), so this is net-
    new and must be confirmed available from the API response.
 
-   **Open questions to answer first:** (a) what the old "Vacation Time API" profile did and
-   whether the "tsheets" profile is the one Make uses — **do not disturb Make's profile
-   while Make is still live**; (b) token type (long-lived vs OAuth2 refresh) — decides
-   whether the function needs refresh handling; (c) rate limits (almost certainly a non-
-   issue at ~7 entries/day).
+   **Open questions — ALL RESOLVED 2026-07-27 by probing the live API:**
+   - The **"tsheets" profile IS Make's** — its OAuth Redirect URI is
+     `https://www.integromat.com/oAuth/cb/tsheets` (Integromat = Make's former name).
+     **Do not touch it while Make is live.** Use a separate profile for the puller.
+   - **No OAuth flow needed.** QB Time mints long-lived tokens in the web UI (Add Token);
+     the puller just sends `Authorization: Bearer $QB_TIME_TOKEN`. Verified working.
+   - Rate limits are a non-issue at this volume.
+
+### QB Time API — verified request shape
+
+`GET https://rest.tsheets.com/api/v1/timesheets?modified_since=<ISO>&per_page=50`
+
+- `modified_since` must be **ISO-8601 WITHOUT milliseconds** — `2026-07-13T23:21:44+00:00`.
+  A JS `toISOString()` (which emits `.075Z`) is rejected with **HTTP 417**. Strip the ms.
+- Response: `results.timesheets` is an **object keyed by id**, not an array.
+- `more: true` signals another page — paginate with `page=N`.
+- `supplemental_data` returns `jobcodes`, `users`, and `customfields` in the same call, so
+  one request gives both the rows and their lookup tables.
+
+### QB Time → Neon field map (verified against live data)
+
+| QB Time | Neon `time_entries` |
+|---|---|
+| `id` (e.g. 611431596) | **`qb_timesheet_id`** — the upsert key |
+| `duration` (seconds, e.g. 2880) | `duration_seconds` → `hours` generated (quarter-hour rule) |
+| `date` ("2026-07-10") | `work_date` → `week_start_date` generated |
+| `user_id` → `supplemental_data.users` | `employee_name` + `employee_id` FK |
+| `jobcode_id` → `supplemental_data.jobcodes[].name` | `job_name` + `job_id` FK |
+| customfield **65840** "Taxes" | `city_taxes` |
+| customfield **71185** "Class" | `class` |
+| customfield **71183** "Service Item" | (Airtable's "Service Item", = "LABOR") |
+| customfield **71181** "Billable" ("Yes"/"No") | `billable` (coerce to boolean) |
+| customfield 71833 "Job Services" | empty in all sampled rows — ignore for now |
+| `notes` | `notes` |
+| `last_modified` | the sync watermark |
+| — | `source` = 'TSheets' |
+
+Jobcode names already match the Airtable `Job Name (Text)` convention — e.g.
+`"Shop Work (SHS 115)"`, `"Trail Cabinet (CLT 256)"` — so `job_name` maps straight across.
+Jobcodes are hierarchical (`parent_id`); the leaf name is the one to use.
+
+### ⚠ App-owned fields the puller MUST NOT overwrite
+
+`labor_reviewed` does **not** exist in QuickBooks Time — it is set in the app/Airtable after
+the fact. If the puller includes it in `ON CONFLICT DO UPDATE SET …`, every re-sync silently
+resets reviewed flags on entries QB happens to touch. Exclude it (and any future app-owned
+column) from the update set; the upsert should only overwrite QB-sourced columns.
+Same class of trap as the quarter-hour `hours` bug: it would look fine and quietly corrupt.
 
 6. Cut over: retire the Make time importer, make Neon authoritative. Also move the app's own
    time-entry writes (`handleCreateTimeEntry` / `handleUpdateTimeEntry`, currently writing to

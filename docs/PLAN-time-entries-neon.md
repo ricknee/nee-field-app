@@ -135,8 +135,48 @@ the query shape is identical in Neon, so it is **not throwaway work**.
    tombstoning an implausible share of the table (a truncated extract must not look like a
    mass delete).
    **REMAINING for 4b: set `DATABASE_URL` in the Netlify dashboard**, then soak.
-5. Repoint the **QuickBooks Time importer** (Make `watchTimesheet`) from Airtable → Neon.
-6. Cut over writes; retire the Make time importer.
+5. **Build a scheduled QB Time → Neon pull. DECIDED 2026-07-27: replace Make on this path
+   rather than repoint it.**
+
+   Original plan was to swap the destination module inside the Make `watchTimesheet`
+   scenario. Owner's stated problem is that **Make breaks intermittently**, and QuickBooks
+   Time exposes a direct API (owner already has app profiles under Company Settings → API;
+   an old unused "Vacation Time API" profile exists and can be ignored/replaced).
+
+   **Why a pull beats both Make and webhooks here:** Make and webhooks are *push* — one
+   failed run or undelivered event silently loses a record, and nothing notices. A scheduled
+   pull is **self-healing**: it asks "everything modified since my watermark," so a failed
+   run costs a retry, not data. Same property that makes `time-entries-full.mjs` safe to
+   re-run.
+
+   Shape:
+   - Netlify **Scheduled Function** (built-in; no new infra or cost)
+   - QB Time API with a `modified_since` watermark
+   - Upsert on **`qb_timesheet_id`** (see prerequisite below)
+   - Acceptance-check style diffing so drift is loud, not silent
+   - Lives in-repo: diffable, testable via `tests/handlers.test.mjs`, revertible with git —
+     unlike a Make scenario, which is unversioned config
+
+   **Runs in PARALLEL with Make at first** — Make keeps writing Airtable, the puller writes
+   Neon, and the two get compared. Same shadow pattern as step 4b. Nothing is retired until
+   they agree.
+
+   **PREREQUISITE — do this before the puller writes anything:** add a nullable
+   `qb_timesheet_id text UNIQUE` to `time_entries`. Today the idempotency key is
+   `airtable_id`, which will not exist for rows QB writes directly; without a conflict
+   target a replayed run duplicates hours. No QuickBooks/TSheets ID is currently stored
+   anywhere in the Airtable Time Entries fields (only `Source` = "TSheets"), so this is net-
+   new and must be confirmed available from the API response.
+
+   **Open questions to answer first:** (a) what the old "Vacation Time API" profile did and
+   whether the "tsheets" profile is the one Make uses — **do not disturb Make's profile
+   while Make is still live**; (b) token type (long-lived vs OAuth2 refresh) — decides
+   whether the function needs refresh handling; (c) rate limits (almost certainly a non-
+   issue at ~7 entries/day).
+
+6. Cut over: retire the Make time importer, make Neon authoritative. Also move the app's own
+   time-entry writes (`handleCreateTimeEntry` / `handleUpdateTimeEntry`, currently writing to
+   Airtable) over to Neon — "cut over writes" means these too, not just the importer.
 
 ## Acceptance checks — PASSED 2026-07-27
 

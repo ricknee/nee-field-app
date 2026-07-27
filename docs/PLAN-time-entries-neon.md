@@ -117,9 +117,14 @@ the query shape is identical in Neon, so it is **not throwaway work**.
 2. ~~ETL: page all rows, map fields, **upsert by `airtable_id`** (idempotent re-runnable).~~
    **DONE** — `db/etl/time-entries-full.mjs`. Full prod load verified, then re-run end-to-end
    to prove idempotency (identical results, no duplicates).
-3. Repair the **5 nameless** rows (or leave them — `job_name` is nullable, so they load
-   cleanly and are simply excluded from job buckets; this is now optional cleanup, not a
-   blocker).
+3. ~~Repair the **5 nameless** rows.~~ **DONE 2026-07-27** — 4 of 5 were recoverable from
+   their still-live `Job` link and were labeled **in Airtable** (`Adena DG (31614)` ×1,
+   `Shop Work` ×3), then picked up by a re-run. Blank `job_name` is now **1**: Scott Koehn,
+   2026-05-18, 8.00 h — no link, no name, genuinely unrecoverable without asking him.
+   NOTE: repairs must be made in **Airtable**, not Neon — Airtable is still the source of
+   truth, so a Neon-only edit is overwritten by the next ETL run.
+   All 5 were recent manual entries (`source` is null, i.e. not from QB Time), so the
+   root cause is hand-entry skipping the job field, not historical rot.
 4. Rebuild the payroll/rollup formulas as Neon views; verify against Airtable (dual-read).
    **4a verify DONE** — the ETL's own acceptance checks diff Neon against Airtable on every
    run. **4b (views + app-side dual-read) is the next work.**

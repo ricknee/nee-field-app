@@ -81,17 +81,18 @@ left the row count unchanged), and the `hoursByJob` GROUP BY porting 1:1 includi
 
 ### Note on the acceptance baseline
 
-The 2026-06-06 numbers below are a **June snapshot, not a fixed target** — production
-read **14,522 entries** on 2026-07-27 because time keeps being logged. Re-capture the
-counts against prod immediately before the full ETL and use those as the acceptance
-check.
+The 2026-06-06 numbers below are a **June snapshot, not a fixed target** — the table keeps
+growing as time is logged. The ETL therefore does **not** compare against hard-coded
+numbers: it computes the Airtable-side aggregates in memory during extraction and diffs
+Neon against *those*, so it self-baselines on every run and stays correct as the data
+moves.
 
-### Credential gap for step 2
+### Credentials
 
-The local `.env` PAT is scoped to the **sandbox** base (`appojcmXxqDUdJDYB`) only — the
-sample was validated there, which is fine for schema shape since it is a structural
-duplicate. **The full ETL needs a prod-scoped (read) PAT** against `appiqWg6SvKcGfMAu`.
-Sort that out before starting step 2.
+`.env` holds **`AIRTABLE_PROD_READ_PAT`** — a READ-ONLY PAT (`data.records:read` +
+`schema.bases:read`) scoped to prod `appiqWg6SvKcGfMAu`. Verified 2026-07-27: reads
+return 200, writes return 403. `AIRTABLE_API_KEY` stays pointed at the sandbox for
+`netlify dev`. The ETL prefers the prod read PAT and falls back to `AIRTABLE_API_KEY`.
 
 ## The "Hours by Job" view — build now, ports 1:1
 
@@ -108,22 +109,47 @@ the query shape is identical in Neon, so it is **not throwaway work**.
 
 ## Migration steps (when the slice begins)
 
-**Step 1 DONE 2026-07-27** — schema applied + proven against a 200-row sample.
-**RESUME AT STEP 2.**
+**Steps 1, 2 and the verify half of 4 are DONE (2026-07-27).**
+**RESUME AT STEP 4b — rebuild the payroll rollups as Neon views + app-side dual-read.**
 
-1. ~~Model `time_entries` (+ `employees`, `jobs`) on a Neon branch with real FKs.~~ DONE.
-2. ETL: page all 14,171 rows (the 2026-06-06 scan script is the extractor skeleton), map
-   fields, **upsert by `airtable_id`** (idempotent re-runnable).
-3. Repair the **5 nameless** rows first (or import with a sentinel `job_name` and flag).
+1. ~~Model `time_entries` (+ `employees`, `jobs`) on a Neon branch with real FKs.~~ **DONE** —
+   applied to the default branch; see `db/schema/001_time_entries.sql`.
+2. ~~ETL: page all rows, map fields, **upsert by `airtable_id`** (idempotent re-runnable).~~
+   **DONE** — `db/etl/time-entries-full.mjs`. Full prod load verified, then re-run end-to-end
+   to prove idempotency (identical results, no duplicates).
+3. Repair the **5 nameless** rows (or leave them — `job_name` is nullable, so they load
+   cleanly and are simply excluded from job buckets; this is now optional cleanup, not a
+   blocker).
 4. Rebuild the payroll/rollup formulas as Neon views; verify against Airtable (dual-read).
+   **4a verify DONE** — the ETL's own acceptance checks diff Neon against Airtable on every
+   run. **4b (views + app-side dual-read) is the next work.**
 5. Repoint the **QuickBooks Time importer** (Make `watchTimesheet`) from Airtable → Neon.
 6. Cut over writes; retire the Make time importer.
 
-## Acceptance checks (assert post-ETL)
+## Acceptance checks — PASSED 2026-07-27
 
-- Row count = 14,171; total hours ≈ 50,178.8; date range 2021-05-12 → 2026-06-05.
-- `job_name` non-null on ≥ 14,166 rows; distinct `job_name` = 376.
-- Sum(hours) per `job_name` matches the Airtable scan per bucket.
+Automated in `db/etl/time-entries-full.mjs`; it exits non-zero on any mismatch. All eight
+passed against production on the full load **and** on a second identical run:
+
+| Check | Airtable | Neon |
+|---|---|---|
+| Row count | 14,522 | 14,522 |
+| Total hours | 51,364.25 | 51,364.25 |
+| First work date | 2021-05-12 | 2021-05-12 |
+| Last work date | 2026-07-24 | 2026-07-24 |
+| Blank `job_name` | 5 | 5 |
+| No job link (historical) | 11,178 | 11,178 |
+| Distinct `job_name` | 380 | 380 |
+| Per-job hour buckets mismatched | 0 | 0 |
+
+The **total-hours match is the load-bearing one**: Neon's `hours` is a generated column
+computing the quarter-hour rule from `duration_seconds`, while the Airtable side is read
+straight from Airtable's own `Hours` field. Agreement to the cent across 14,522 rows and
+all 380 job buckets independently confirms the rounding rule is right — the naive
+`seconds/3600` would have drifted by roughly 90 hours.
+
+Historical share holds at **77%** (11,178 of 14,522 have no live job link) and every one
+of them still carries its `job_name` snapshot, which was the original premise of the slice.
 
 ## Open / deferred
 

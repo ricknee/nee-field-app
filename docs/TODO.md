@@ -1,5 +1,11 @@
 # TODO
 
+## Deferred build: Receipt photos on expenses
+
+Design decided (Cloudflare R2, presigned upload — bytes in object storage, reference in the DB),
+build deferred as too big for now. Full plan in `docs/PLAN-expense-receipts.md`. Pick up as a
+later slice, ideally alongside the Neon move so `expense_receipts` lands as a real table.
+
 ## Sweep: remaining `FIND(name, ARRAYJOIN(...))` substring filters
 
 The cross-job filter bug fixed in commit `03f552a` (handleTimeEntries / handleExpenses) has

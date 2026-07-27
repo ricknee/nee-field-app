@@ -152,6 +152,49 @@ await upsertBatch("time_entries",
     ];
   }), "airtable_id", 200);
 
+// ── reconcile deletions ───────────────────────────────────────────────────
+// An upsert can insert and update but never remove, so a time entry DELETED in
+// Airtable would live on in Neon forever — inflating hours and surfacing as a
+// phantom dual-read mismatch. Every run extracts the COMPLETE id set, so we can
+// diff it against Neon and tombstone the orphans.
+//
+// Tombstone rather than DELETE: silently dropping payroll history is exactly the
+// kind of thing you want a record of. Rows are moved aside, not destroyed.
+await sql.query(`CREATE TABLE IF NOT EXISTS time_entries_deleted (
+  LIKE time_entries INCLUDING DEFAULTS,
+  deleted_detected_at timestamptz DEFAULT now()
+)`);
+
+const liveIds = new Set(entries.map(r => r.id));
+const neonIds = (await sql.query(`SELECT airtable_id FROM time_entries`)).map(r => r.airtable_id);
+const orphans = neonIds.filter(id => !liveIds.has(id));
+
+// Guardrail: a truncated or partially-failed extract would make most of the
+// table look "deleted". Refuse to tombstone an implausible share of rows and
+// make a human look instead — the ETL is re-runnable, so stopping costs nothing.
+const orphanShare = neonIds.length ? orphans.length / neonIds.length : 0;
+if (orphans.length > 50 && orphanShare > 0.05) {
+  console.error(`\nABORT: ${orphans.length} of ${neonIds.length} rows (${(orphanShare * 100).toFixed(1)}%) ` +
+    `look deleted upstream. That is too many to be real — suspecting a bad extract. ` +
+    `Nothing was changed; investigate before re-running.`);
+  process.exit(2);
+}
+
+if (orphans.length) {
+  console.log(`reconcile: ${orphans.length} row(s) gone from Airtable -> tombstoning`);
+  for (let i = 0; i < orphans.length; i += 200) {
+    const chunk = orphans.slice(i, i + 200);
+    const ph = chunk.map((_, k) => `$${k + 1}`).join(",");
+    // Copy to the tombstone table first, then remove from the live table.
+    await sql.query(
+      `INSERT INTO time_entries_deleted
+       SELECT t.*, now() FROM time_entries t WHERE t.airtable_id IN (${ph})`, chunk);
+    await sql.query(`DELETE FROM time_entries WHERE airtable_id IN (${ph})`, chunk);
+  }
+} else {
+  console.log("reconcile: no deletions detected");
+}
+
 // ── acceptance checks ─────────────────────────────────────────────────────
 const [tot] = await sql.query(`
   SELECT count(*)::int AS entries,

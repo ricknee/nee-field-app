@@ -214,6 +214,36 @@ await test("hoursByJob: office role → 403 (payroll-eligible-only)", async () =
   eq((await GET("hoursByJob", {}, OFFICE_TOK)).statusCode, 403, "office blocked");
 });
 
+// ── Neon shadow read (migration step 4b) ──
+// The dual-read must be observability ONLY: Airtable stays authoritative and a
+// missing/broken Neon must never alter the response. These lock that contract in.
+const SHADOW_ROWS = { "Time Entries": [
+  { id: "recS1", fields: { "Job Name (Text)": "Alpha", "Hours": 8, "Work Date": "2026-01-10" } },
+] };
+
+await test("shadow read: no _shadow field when DATABASE_URL is unset", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = SHADOW_ROWS;
+  const b = json(await GET("hoursByJob"));
+  ok(b.ok, "ok");
+  eq(b._shadow, undefined, "no _shadow when Neon is not configured");
+  eq(b.jobs[0].hours, 8, "Airtable answer unchanged");
+});
+
+await test("shadow read: unreachable Neon degrades to _shadow.ok=false, response intact", async () => {
+  // Deliberately malformed so the driver fails fast without any network I/O.
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = SHADOW_ROWS;
+  const b = json(await GET("hoursByJob"));
+  ok(b.ok, "request still succeeds");
+  eq(b.jobs[0].jobName, "Alpha", "Airtable answer unchanged");
+  eq(b.jobs[0].hours, 8, "Airtable hours unchanged");
+  eq(b.summary.jobCount, 1, "summary unchanged");
+  ok(b._shadow, "_shadow attached for observability");
+  eq(b._shadow.ok, false, "shadow reports failure rather than throwing");
+  delete process.env.DATABASE_URL;
+});
+
 // ── employee self-service expenses ──
 const OWNER_TOK = signToken({ id: "recEmpOwner", role: "employee" });
 const OTHER_TOK = signToken({ id: "recEmpOther", role: "employee" });

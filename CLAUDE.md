@@ -47,6 +47,12 @@ There is **no build step, no linter, and no root `package.json`.** Do not look f
 - `AUTH_SECRET` — HMAC key for signing/verifying session tokens (`_auth.js`, shared by both
   functions). **Required — auth fails closed:** `ensureEnv()` throws and every request 401s if
   it's unset. Local `netlify dev` and `node tests/handlers.test.mjs` need it too.
+- `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
+  migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
+  attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of
+  `_auth.js`): unset/slow/broken Neon must never alter a response, so it is deliberately
+  **not** in `ensureEnv()`. The driver is lazy-imported, keeping the test suite offline and
+  install-free. See `docs/PLAN-time-entries-neon.md`.
 
 ## Architecture
 

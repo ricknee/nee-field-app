@@ -125,9 +125,16 @@ the query shape is identical in Neon, so it is **not throwaway work**.
    truth, so a Neon-only edit is overwritten by the next ETL run.
    All 5 were recent manual entries (`source` is null, i.e. not from QB Time), so the
    root cause is hand-entry skipping the job field, not historical rot.
-4. Rebuild the payroll/rollup formulas as Neon views; verify against Airtable (dual-read).
-   **4a verify DONE** — the ETL's own acceptance checks diff Neon against Airtable on every
-   run. **4b (views + app-side dual-read) is the next work.**
+4. ~~Rebuild the payroll/rollup formulas as Neon views; verify against Airtable (dual-read).~~
+   **DONE 2026-07-27.** 4a = the ETL's acceptance checks diff Neon vs Airtable every run.
+   4b = three Neon views (`v_hours_by_job`, `v_hours_daily`, `v_hours_by_employee_week`)
+   plus `netlify/functions/_neon.js` and a shadow read on `handleHoursByJob`.
+   Verified live: `match: true`, 381 buckets both sides, totals identical, ~330 ms.
+   **Also closed the deletion-drift gap** — the ETL now reconciles rows deleted upstream
+   into a `time_entries_deleted` tombstone table, with a guardrail that aborts rather than
+   tombstoning an implausible share of the table (a truncated extract must not look like a
+   mass delete).
+   **REMAINING for 4b: set `DATABASE_URL` in the Netlify dashboard**, then soak.
 5. Repoint the **QuickBooks Time importer** (Make `watchTimesheet`) from Airtable → Neon.
 6. Cut over writes; retire the Make time importer.
 

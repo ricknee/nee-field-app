@@ -2,6 +2,8 @@
 // Northeastern Electric Field App — Netlify Proxy
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
+// Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
+import { neonEnabled, neonQuery, shadowCompare } from "./_neon.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -1187,6 +1189,27 @@ async function handleHoursByJob() {
     .sort((a, b) => b.hours - a.hours);
 
   const totalHours = Math.round(jobs.reduce((s, j) => s + j.hours, 0) * 100) / 100;
+
+  // ── SHADOW READ (migration step 4b) ───────────────────────────────────────
+  // Ask Neon the same question and diff it, but ALWAYS return the Airtable
+  // answer above as authoritative. Neon being unset/slow/broken must not change
+  // a single field of the response — `_shadow` is observability only, and it is
+  // omitted entirely when DATABASE_URL isn't configured.
+  // Remove this block at cutover, when Neon becomes the primary read.
+  let _shadow;
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT job_name, hours::float8 AS hours FROM v_hours_by_job`
+    );
+    _shadow = shadowCompare({
+      label:    "hoursByJob",
+      airtable: new Map(jobs.map(j => [j.jobName, j.hours])),
+      neon:     q?.rows ? new Map(q.rows.map(r => [r.job_name, Number(r.hours)])) : null,
+      ms:       q?.ms,
+      error:    q?.error,
+    });
+  }
+
   return resp(200, {
     ok: true,
     jobs,
@@ -1195,7 +1218,8 @@ async function handleHoursByJob() {
       totalHours,
       totalEntries:   records.length,
       namelessEntries // entries with no Job Name (Text) — excluded from buckets
-    }
+    },
+    ...(_shadow ? { _shadow } : {})
   });
 }
 

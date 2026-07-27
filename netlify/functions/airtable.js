@@ -2518,9 +2518,25 @@ async function handleCalculateMileage(body) {
   const origin=encodeURIComponent(SHOP_ADDRESS),dest=encodeURIComponent(address);
   const url=`https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${dest}&units=imperial&key=${apiKey}`;
   const res=await fetch(url); const data=await res.json();
-  if (data.status !== "OK") return resp(400, { ok: false, error: `Google API error: ${data.status}` });
+
+  // Two very different failures used to look identical (both 400):
+  //   1. The integration is broken  — REQUEST_DENIED / OVER_QUERY_LIMIT / bad key.
+  //      Affects EVERY job, needs a human. Stays loud: 502 so it shows in the
+  //      browser console and in logs.
+  //   2. Google worked, but couldn't geocode THIS address — e.g. state routes
+  //      written "8250 Ohio 676". Expected, per-job, nothing to fix in code.
+  //      Now returns 200 + ok:false.
+  // The client throws on `ok === false` regardless (see apiPost, ~index.html:3226)
+  // and hides the mileage line either way, so the UI is unchanged. The point is
+  // that case 2 no longer logs a red 400 on every open of an affected job —
+  // routine console noise trains people to ignore the console, which is exactly
+  // where case 1 needs to be visible.
+  if (data.status !== "OK")
+    return resp(502, { ok: false, reason: "upstream_error", error: `Google API error: ${data.status}` });
   const element = data.rows?.[0]?.elements?.[0];
-  if (!element || element.status !== "OK") return resp(400, { ok: false, error: "Could not calculate distance for this address." });
+  if (!element || element.status !== "OK")
+    return resp(200, { ok: false, reason: "address_unresolved",
+      error: `Could not calculate distance for this address (${element?.status || "no result"}).` });
   const miles = Math.round(element.distance.value * 0.000621371 * 10) / 10;
   await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldMy1yR7aHtVko9F": miles } }) });
   return resp(200, { ok: true, miles });

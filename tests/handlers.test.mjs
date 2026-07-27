@@ -25,9 +25,16 @@ process.env.AUTH_SECRET = "test-secret"; // signs/verifies session tokens
 //    records (single page, no offset). Reads only — these handlers don't write.
 let mockTables = {};
 let lastFetch = null; // {url, opts} of the most recent request — lets write tests inspect the PATCH body
+// Google Distance Matrix stub for handleCalculateMileage. Tests set
+// `mockGoogle` to the JSON body Google would return. Note this branch returns a
+// response with .json() (what that handler calls), not .text() like Airtable.
+let mockGoogle = null;
 globalThis.fetch = async (url, opts) => {
   lastFetch = { url: String(url), opts: opts || {} };
   const method = (opts?.method || "GET").toUpperCase();
+  if (String(url).includes("maps.googleapis.com")) {
+    return { ok: true, status: 200, json: async () => mockGoogle };
+  }
   // Path after /v0/<base>/ → "<Table>" (list) or "<Table>/<recId>" (single record).
   const m = String(url).match(/\/v0\/[^/]+\/([^/?]+)(?:\/([^?]+))?/);
   const table = m ? decodeURIComponent(m[1]) : "";
@@ -212,6 +219,37 @@ await test("hoursByJob: groups by static Job Name (Text), sums hours, flags hist
 
 await test("hoursByJob: office role → 403 (payroll-eligible-only)", async () => {
   eq((await GET("hoursByJob", {}, OFFICE_TOK)).statusCode, 403, "office blocked");
+});
+
+// ── calculateMileage: unresolvable address must not look like an error ──
+// Regression for the 400 seen in the browser console on every open of a job
+// whose address Google can't geocode (e.g. "8250 Ohio 676"). A per-job data
+// quirk must not be indistinguishable from a broken Maps integration.
+await test("calculateMileage: resolvable address → 200 with miles, cached to Airtable", async () => {
+  mockGoogle = { status: "OK", rows: [{ elements: [{ status: "OK", distance: { value: 48280 } }] }] };
+  const r = await POST("calculateMileage", { jobId: "recJob1", address: "123 Main St" });
+  eq(r.statusCode, 200, "200");
+  const b = JSON.parse(r.body);
+  ok(b.ok, "ok true");
+  eq(b.miles, 30, "48280 m → 30.0 miles");
+});
+
+await test("calculateMileage: unresolvable address → 200 ok:false (no console 400)", async () => {
+  mockGoogle = { status: "OK", rows: [{ elements: [{ status: "NOT_FOUND" }] }] };
+  const r = await POST("calculateMileage", { jobId: "recJob1", address: "8250 Ohio 676" });
+  eq(r.statusCode, 200, "200 so the browser logs no failed request");
+  const b = JSON.parse(r.body);
+  eq(b.ok, false, "ok:false → client still hides the mileage line");
+  eq(b.reason, "address_unresolved", "reason distinguishes it from a broken integration");
+});
+
+await test("calculateMileage: Google config/quota failure stays loud → 502", async () => {
+  mockGoogle = { status: "REQUEST_DENIED" };
+  const r = await POST("calculateMileage", { jobId: "recJob1", address: "123 Main St" });
+  eq(r.statusCode, 502, "502 — a broken key affects every job and must stay visible");
+  const b = JSON.parse(r.body);
+  eq(b.reason, "upstream_error", "reason marks it as an integration failure");
+  mockGoogle = null;
 });
 
 // ── Neon shadow read (migration step 4b) ──

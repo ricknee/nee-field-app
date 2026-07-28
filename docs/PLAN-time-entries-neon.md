@@ -209,6 +209,29 @@ Jobcode names already match the Airtable `Job Name (Text)` convention — e.g.
 `"Shop Work (SHS 115)"`, `"Trail Cabinet (CLT 256)"` — so `job_name` maps straight across.
 Jobcodes are hierarchical (`parent_id`); the leaf name is the one to use.
 
+### Sync behaviour (verified 2026-07-27)
+
+- **Cadence:** scheduled pull, NOT event-driven. Nothing fires on clock-out, so there is no
+  event to miss. Run **hourly** — a pull is cheap and self-healing, and there's no reason to
+  inherit Make's nightly batch cadence (that existed because Make bills per operation).
+  Worst-case lag from clock-out to Neon: one hour.
+- **Edits sync automatically.** Editing a timesheet bumps `last_modified`, so the next
+  watermark pull returns it and the `ON CONFLICT (qb_timesheet_id)` upsert overwrites the
+  existing row. No duplicate, no special handling. Strictly better than push, where edit
+  propagation depends on scenario config.
+- **DELETIONS — use the dedicated endpoint.** `GET /api/v1/timesheets_deleted?modified_since=`
+  works with the same watermark (verified 200). **This is not theoretical: 3 timesheets were
+  deleted in the 30 days to 2026-07-27.** Without polling this, deleted hours would live on
+  in Neon forever and quietly inflate payroll. Poll BOTH endpoints each run.
+- **Timesheet `type`:** `regular` (clock in/out) and `manual` (hand-entered) both seen; both
+  are real hours. `state` is OPEN while clocked in — an open timesheet has partial duration,
+  which is harmless since the upsert settles it to the final value once closed.
+- **Breaks:** the `Lunch Break` jobcode has jobcode-`type` `unpaid_break` (the only
+  non-regular jobcode). Breaks arrive as ordinary timesheets pointing at that jobcode.
+  **DECIDE BEFORE CUTOVER — and first check what Make does today**, so the puller reproduces
+  current behaviour rather than silently changing hour totals: exclude unpaid_break jobcodes,
+  or import them flagged.
+
 ### ⚠ App-owned fields the puller MUST NOT overwrite
 
 `labor_reviewed` does **not** exist in QuickBooks Time — it is set in the app/Airtable after

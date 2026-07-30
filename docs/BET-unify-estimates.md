@@ -69,6 +69,35 @@ app can read "sum of linked cart lines for this job" without the two systems bei
 Steps 1–3 are **additive** — the current send-an-estimate flow does not change until a cart is
 deliberately linked. Low risk; matches the loose-coupling rule.
 
+## Hard constraint — the GP / profit math must survive the move
+
+**Owner requirement (2026-07-27): keep all of the gross-profit and live-profit reporting.**
+Nothing in this bet may reduce what the Est. GP / Live GP / Final GP cards show today. Before
+anything Airtable-side is retired (build order step 5), the existing formulas must be inventoried
+and ported to Neon views, then diffed job-by-job against Airtable the same way `v_hours_by_job`
+was diffed in the time-entries slice.
+
+Three families exist today, and they are **not** built the same way:
+
+1. **Gross Profit (Live) $ / %** — `F.job.grossProfitLiveDollar` / `…LivePct` (airtable.js:172–173).
+   Airtable-side formula/rollup, read straight through by `mapJob`.
+2. **Gross Profit (Final) $ / %** — `F.job.grossProfitFinalDollar` / `…FinalPct` (airtable.js:181–182).
+   Same shape as Live, different inputs.
+3. **Projected Gross Profit $ / %** — **computed in JS**, not read from Airtable
+   (`mapJob`, airtable.js:1584–1596): `expectedRevenueAllStatus − (projectedEstimatedMaterialCost +
+   projectedEstimatedLaborCost)`. The formula twins in Airtable sum *unfiltered* inputs and are
+   deliberately not read — see the FILTERED-vs-UNFILTERED rollup note in CLAUDE.md.
+
+**Why this bet specifically endangers them:** Projected GP is driven by Expected Revenue and the
+projected cost rollups, which roll up **from the Job Estimates links**. Move estimates to a Neon
+`job_id` FK and delete the Airtable estimate tables/links, and those rollups lose their inputs —
+the GP cards go blank or silently wrong while every individual estimate still looks fine. Same
+GP-formula risk already flagged before the JotForm wire/pipe table deletes.
+
+**Rule:** capture the full formula text of all three families (plus their upstream rollups and
+each rollup's Status filter) during the schema design step, port them as Neon views, prove
+agreement on real jobs, and only then retire anything. Do not treat GP as a follow-up.
+
 ## Open questions / watch-outs
 
 - **PDF for inventory estimates?** Out of scope for this bet — carts stay PDF-less; only the

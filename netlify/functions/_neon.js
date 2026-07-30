@@ -28,6 +28,8 @@ export function neonEnabled() {
   return !!process.env.DATABASE_URL;
 }
 
+let _initFailure = null;   // remembered so we log the cause once, not per request
+
 async function getSql() {
   if (!process.env.DATABASE_URL) return null;
   if (_sql) return _sql;
@@ -35,8 +37,17 @@ async function getSql() {
     const { neon } = await import("@neondatabase/serverless");
     _sql = neon(process.env.DATABASE_URL);
     return _sql;
-  } catch {
-    return null;   // driver absent -> shadow read silently disabled
+  } catch (e) {
+    // NEVER swallow this silently. A bare `catch {}` here cost real debugging time:
+    // the caller only saw "no rows", which is indistinguishable from an empty result,
+    // so a bundling failure looked exactly like a working fallback. Failing soft means
+    // not breaking the request — it does not mean saying nothing.
+    const msg = String(e?.message || e).slice(0, 300);
+    if (_initFailure !== msg) {
+      _initFailure = msg;
+      console.error(`_neon: driver init FAILED, Neon reads disabled: ${msg}`);
+    }
+    return null;
   }
 }
 

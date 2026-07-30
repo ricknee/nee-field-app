@@ -2,6 +2,19 @@
   publish = "."
   functions = "netlify/functions"
 
+# The Neon driver is loaded through a DYNAMIC import in _neon.js (kept lazy so
+# `node tests/handlers.test.mjs` runs offline with no node_modules). The bundler does
+# not trace that into the airtable function's dependency graph, so on production the
+# import threw and every Neon read fell back to Airtable — hoursByJob quietly kept
+# costing ~16 s while looking like it had succeeded.
+#
+# Marking the package external tells the bundler not to inline it and to ship it in
+# node_modules instead, which is what a runtime dynamic import actually needs. The
+# dependency itself is declared in netlify/functions/package.json.
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["@neondatabase/serverless"]
+
 # QB Time -> Neon incremental pull. Hourly, not Make's nightly 9pm cadence: a pull is
 # cheap, and the nightly batch only existed because Make bills per operation.
 # Runs in PARALLEL with Make scenario 4546051 during the migration — Make keeps

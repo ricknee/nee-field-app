@@ -2,6 +2,13 @@
   publish = "."
   functions = "netlify/functions"
 
+# QB Time -> Neon incremental pull. Hourly, not Make's nightly 9pm cadence: a pull is
+# cheap, and the nightly batch only existed because Make bills per operation.
+# Runs in PARALLEL with Make scenario 4546051 during the migration — Make keeps
+# writing Airtable, this writes Neon, and the check-only ETL reconciles the two.
+[functions."qb-time-pull"]
+  schedule = "@hourly"
+
 [[redirects]]
   from = "/materials*"
   to = "/inventory"

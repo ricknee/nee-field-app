@@ -57,6 +57,25 @@ export async function neonQuery(text, params = [], timeoutMs = DEFAULT_TIMEOUT_M
   }
 }
 
+// Best-effort WRITE. Same fail-soft contract as neonQuery: Airtable is still the
+// authoritative write and its result is what the caller returns, so a Neon failure
+// here must never surface to the user or roll anything back. It is logged and
+// swallowed.
+//
+// Used by the app's time-entry write paths to mirror manual entries into Neon.
+// Those are rare (19 rows in all of 2026) but they are the ONLY time rows the QB
+// puller will never see — without this mirror they would vanish the moment reads
+// move to Neon.
+export async function neonExec(label, text, params = [], timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const r = await neonQuery(text, params, timeoutMs);
+  if (!r) return false;                       // Neon not configured — nothing to do
+  if (r.error) {
+    console.error(`neonExec ${label} failed (ignored): ${r.error}`);
+    return false;
+  }
+  return true;
+}
+
 // Builds the `_shadow` block attached to dual-read responses. Compares two
 // keyed maps of numbers (e.g. jobName -> hours) and reports where they differ.
 // `tolerance` absorbs float noise only — it is NOT a licence to ignore drift.

@@ -3,7 +3,7 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
-import { neonEnabled, neonQuery, shadowCompare } from "./_neon.js";
+import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -623,6 +623,82 @@ async function handlePayrollEntries(params) {
   return resp(200, { ok: true, entries });
 }
 
+// ── Neon mirror for app-written time entries ───────────────────────────────
+// The QB puller owns ~99% of time_entries and keys them by qb_timesheet_id. Rows
+// written HERE are the one class it can never supply: manual entries that exist in
+// no QuickBooks timesheet, and app-set fields (notably Labor Reviewed, which the
+// puller deliberately excludes from its updates so it can't wipe them). Once payroll
+// reads come from Neon, anything not mirrored here is simply invisible.
+//
+// THE TRAP THIS SOLVES: after cutover a QB timesheet exists in Neon as a PULLER row
+// (qb_timesheet_id set, airtable_id NULL) while Make separately creates the Airtable
+// record the app edits. Mirroring naively on airtable_id would find nothing and
+// INSERT a second row — double-counted hours. So we locate the target row by
+// airtable_id OR by natural key, and stamp airtable_id onto the puller's row when we
+// adopt it. After that the row carries both keys and the two writers converge.
+//
+// Fail-soft throughout: the Airtable write has already succeeded and is what the
+// caller returns. A Neon problem is logged and swallowed, never surfaced.
+async function mirrorTimeEntryToNeon(record) {
+  if (!record?.id || !neonEnabled()) return;
+  const f = record.fields || {};
+
+  const vals = [
+    record.id,                                            // $1  airtable_id
+    f["Employee"] || null,                                // $2  employee_name
+    firstLinkedId(f["Employee (Linked)"]) || null,        // $3  employee airtable id
+    f["Work Date"] || null,                               // $4  work_date
+    Number(f["Duration (Seconds)"] ?? 0),                 // $5  duration_seconds
+    f["City Taxes"] || null,                              // $6
+    f["Class"] || null,                                   // $7
+    f["Labor Type"] || null,                              // $8
+    f["Notes"] || null,                                   // $9
+    f["Billable"] === undefined ? null : f["Billable"] === true,  // $10
+    firstLinkedId(f["Job"]) || null,                      // $11 job airtable id
+    f["Job Name (Text)"] || null,                         // $12
+    f["Labor Reviewed"] === true,                         // $13
+    f["Source"] || "Manual",                              // $14 insert-only
+  ];
+
+  // Prefer an exact airtable_id hit; otherwise adopt an unclaimed row matching the
+  // natural key. `source` is NOT in the SET list — a TSheets row edited here must
+  // stay marked TSheets.
+  const upd = await neonQuery(
+    `UPDATE time_entries t SET
+       airtable_id = $1, employee_name = $2,
+       employee_id = COALESCE((SELECT id FROM employees WHERE airtable_id = $3), t.employee_id),
+       work_date = $4::date, duration_seconds = $5::numeric,
+       city_taxes = $6, class = $7, labor_type = $8, notes = $9, billable = $10,
+       job_id = COALESCE((SELECT id FROM jobs WHERE airtable_id = $11), t.job_id),
+       job_name = $12, labor_reviewed = $13
+     WHERE t.id = (
+       SELECT id FROM time_entries
+        WHERE airtable_id = $1
+           OR (airtable_id IS NULL
+               AND work_date = $4::date
+               AND duration_seconds = $5::numeric
+               AND lower(coalesce(employee_name,'')) = lower(coalesce($2,'')))
+        ORDER BY (airtable_id = $1) DESC NULLS LAST
+        LIMIT 1)
+     RETURNING t.id`,
+    vals
+  );
+  if (upd?.rows?.length) return;
+  if (upd?.error) return;   // already logged by neonQuery's caller contract
+
+  await neonExec("timeEntry.insert",
+    `INSERT INTO time_entries
+       (airtable_id, employee_name, employee_id, work_date, duration_seconds,
+        city_taxes, class, labor_type, notes, billable, job_id, job_name,
+        labor_reviewed, source, airtable_created_at)
+     VALUES ($1, $2, (SELECT id FROM employees WHERE airtable_id = $3), $4::date, $5::numeric,
+             $6, $7, $8, $9, $10, (SELECT id FROM jobs WHERE airtable_id = $11), $12,
+             $13, $14, now())
+     ON CONFLICT (airtable_id) DO NOTHING`,
+    vals
+  );
+}
+
 // ── PAYROLL: create new time entry ─────────────────────────────────────────
 async function handleCreateTimeEntry(body) {
   const { employee, employeeId, workDate, duration, class: cls, cityTaxes, jobId } = body || {};
@@ -645,6 +721,9 @@ async function handleCreateTimeEntry(body) {
     method: "POST",
     body: JSON.stringify({ fields, typecast: true })
   });
+  // Mirror to Neon using Airtable's OWN response, so computed fields (notably
+  // "Job Name (Text)") carry the value Airtable actually stored rather than a guess.
+  await mirrorTimeEntryToNeon(data);
   return resp(200, { ok: true, id: data.id });
 }
 
@@ -669,6 +748,7 @@ async function handleUpdateTimeEntryPayroll(body) {
     method: "PATCH",
     body: JSON.stringify({ fields })
   });
+  await mirrorTimeEntryToNeon(data);
   return resp(200, { ok: true, updatedId: data.id });
 }
 
@@ -2380,6 +2460,23 @@ async function handleDeleteTimeEntry(body) {
   const { entryId } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
   await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, { method: "DELETE" });
+  // Tombstone rather than DELETE, matching the ETL and the puller: dropping payroll
+  // history silently is exactly what you want a record of. Only reaches rows this app
+  // has touched (airtable_id set) — a QB-owned row deleted in QuickBooks is the
+  // puller's /timesheets_deleted poll to handle.
+  await neonExec("timeEntry.delete",
+    `WITH gone AS (
+       INSERT INTO time_entries_deleted
+         (airtable_id, qb_timesheet_id, employee_name, employee_id, work_date,
+          duration_seconds, city_taxes, class, labor_type, source, notes, billable,
+          job_id, job_name, labor_reviewed, airtable_created_at, deleted_detected_at)
+       SELECT airtable_id, qb_timesheet_id, employee_name, employee_id, work_date,
+              duration_seconds, city_taxes, class, labor_type, source, notes, billable,
+              job_id, job_name, labor_reviewed, airtable_created_at, now()
+         FROM time_entries WHERE airtable_id = $1
+       RETURNING airtable_id)
+     DELETE FROM time_entries WHERE airtable_id IN (SELECT airtable_id FROM gone)`,
+    [entryId]);
   return resp(200, { ok: true, deleted: entryId });
 }
 
@@ -2392,6 +2489,11 @@ async function handleUpdateTimeEntry(body) {
   if (notes    !== undefined) fields["Notes"]            = String(notes || "");
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
   const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
+  // This is the path that sets Labor Reviewed. The QB puller deliberately EXCLUDES
+  // that column from its updates so it can't wipe the flag — which only works if the
+  // flag reaches Neon in the first place. Without this mirror, reviewing a timesheet
+  // would appear to do nothing once payroll reads come from Neon.
+  await mirrorTimeEntryToNeon(data);
   return resp(200, { ok: true, updatedId: data.id });
 }
 

@@ -311,16 +311,30 @@ away. Both are now encoded in `netlify/functions/qb-time-pull.js`.
    silently inflating. Whether unpaid breaks *should* be excluded is a real question; it is
    just not a question a data migration gets to answer as a side effect.
 
-2. **Make has been losing real hours — 712 of them.** Timesheets on jobcodes that DO map to a
-   known Job, in range, that never reached Airtable. In the last 30 days alone: **10 timesheets
-   / 21.25 h** (2026-07-07..07-24 — Bethel School, Trail Cabinet, Equiprents, Gary Strauss).
-   This is the intermittent-Make failure that motivated pull-over-push, caught in the act.
+2. ~~**Make has been losing real hours — 712 of them.**~~ **RETRACTED, same day — this was a
+   measurement error, not a finding.** The claim came from counting QB timesheet ids absent
+   from Neon. That is the correct test for "should the puller insert this row"; it is the
+   WRONG test for "is anyone unpaid". QB splits a working day into several timesheets per
+   clock-in/out, and editing a timesheet mints a new id — so an absent id usually means an
+   edited or re-split version of a segment already imported, not lost work.
+
+   The honest comparison is total hours per **(employee, work_date, job)**. `db/etl/qb-gap-report.mjs`
+   does exactly that. Across both paid periods (2026-06-28..07-25), with break-type jobcodes
+   excluded:
+
+   > **QB ahead of Neon: 0.00 h. Neon ahead of QB: 8.75 h.**
+
+   Every one of the 10 "missing" July timesheets sits in a bucket Airtable already holds MORE
+   hours for. Nobody is owed. If anything Airtable runs slightly ahead of QuickBooks, which is
+   consistent with payroll adjustments made in the app after import.
 
 **Insert policy (owner decision 2026-07-30):** `INSERT_FLOOR_DATE = "2026-07-26"`, the start of
-the open pay period. Those lost July dates sit inside the period ending 2026-07-25 that was
-**already run and paid** on 07-27; inserting them would retroactively change a closed period.
-The hours are not lost — they remain in QuickBooks. Recovering them is a deliberate separate
-exercise: lower the floor, re-run, and reconcile the resulting divergence.
+the open pay period. Given the retraction above, this guard is doing something better than the
+conservatism it was chosen for: inserting those rows would have **added 21.25 h on top of
+buckets that already exceed QB** — an over-count, not a correction. Keep the floor.
+
+**Rule this bought:** an unmatched id is a data-plumbing signal. Before it becomes a claim about
+money, reconcile at the (employee, date, job) level and exclude jobcodes Make never imported.
 
 **Record-id linkage blocks the remaining read flips.** Puller-created Neon rows carry
 `qb_timesheet_id` but no `airtable_id`, while Make separately creates the Airtable record the

@@ -17,8 +17,20 @@ skill after structural changes.
 
 ## Commands, build, and tests
 
-There is **no build step, no linter, and no root `package.json`.** Do not look for one.
-`netlify/functions/package.json` exists only to set `"type": "module"` for the functions.
+There is **no linter and no root `package.json`.** Do not look for one.
+
+There is **one build command**, and only one: `netlify.toml` runs
+`npm install --prefix netlify/functions --omit=dev`. It compiles nothing — it exists solely
+so the functions' declared dependencies are actually installed on the Netlify build machine.
+`netlify/functions/package.json` sets `"type": "module"` **and** declares
+`@neondatabase/serverless`, which the Neon read path imports at runtime.
+
+**Adding a dependency to `netlify/functions/package.json` is not enough on its own** if that
+command is ever removed. Without it Netlify runs no install at all, `netlify/functions/
+node_modules` is gitignored so it never ships, and the function fails at runtime with
+`Cannot find package … imported from /var/task/netlify/functions/airtable.js`. That failure
+is easy to miss because `_neon.js` fails soft: reads fall back to Airtable and return correct
+answers, just slowly. It went unnoticed for three days.
 
 - **Deploy:** push to `main`. Netlify auto-deploys `main` to production. There is no staging.
   Before committing anything described as "push to live", confirm `git branch --show-current`

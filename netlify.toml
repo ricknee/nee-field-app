@@ -1,6 +1,21 @@
 [build]
   publish = "."
   functions = "netlify/functions"
+  # The ONLY build step this repo has, and it exists for one reason: without it the
+  # Neon driver never reaches production.
+  #
+  # There is no root package.json by design, so Netlify ran no install at all. The
+  # dependency in netlify/functions/package.json was therefore never installed on the
+  # build machine, and netlify/functions/node_modules is gitignored so it never
+  # shipped either. It existed only on developer machines. Production failed with
+  #   Cannot find package '@neondatabase/serverless' imported from
+  #   /var/task/netlify/functions/airtable.js
+  # and every Neon read silently fell back to Airtable — including the step-4b shadow
+  # read, which reported ok:false for three days while being recorded as verified.
+  #
+  # Keep this in sync with netlify/functions/package.json. If a function ever needs a
+  # new dependency, adding it there is not enough on its own.
+  command = "npm install --prefix netlify/functions --omit=dev"
 
 # The Neon driver is loaded through a DYNAMIC import in _neon.js (kept lazy so
 # `node tests/handlers.test.mjs` runs offline with no node_modules). The bundler does

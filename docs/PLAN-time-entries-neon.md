@@ -136,6 +136,87 @@ several days running.
 Read "What the live data revealed" below before touching the puller's insert policy —
 the counts are not intuitive and the defaults encode a payroll decision.
 
+---
+
+## FORWARD PLAN — what happens next (set 2026-07-30)
+
+### The dependency that drives the order
+
+**Make cannot be retired until payroll reads leave Airtable.** Kill Make and Airtable stops
+receiving QB time, while `handlePayrollEntries` and the hours rollups are still reading it.
+So the order is forced: **linkage → payroll reads → retire Make.** Billing is a separate track.
+
+A useful discovery that splits the work: **`handlePayrollEntries` returns no billing fields** —
+just id, employee, date, duration, hours, class, city tax, job, reviewed. Only the *per-job*
+Time Entries tab (`handleTimeEntries`) needs the labor-billing layer. So the payroll reads are a
+small job and the per-job tab is a large one; they do not have to happen together.
+
+### Now → ~2026-08-09 — verification only (~1 h, spread out)
+
+No building. Confirms what shipped on 07-30.
+
+- **Payroll smoke test + generated PDF** (~20 min) — **before the ~Aug 9 run.** The weekly
+  round-up (`4ac5afb`) is not smoke-tested; I could not generate the PDF.
+- **City-tax allocation** — confirm with whoever handles withholding. The weekly round-up is
+  assigned to the jurisdiction with the most hours that week.
+- **Reconciler daily** (~5 min) — `node db/etl/time-entries-full.mjs`, no flags. The run the
+  morning after a Make 21:00 is the one that empirically settles double-counting.
+- **Watch the write mirror** on the next real add / edit / Labor-Reviewed tick — it shipped
+  alongside the broken driver and has never been exercised.
+
+> **🛑 STOP POINT — and a good one.** Everything works, Make is intact, nothing is half-migrated.
+> This state is stable indefinitely. There is no decay if the next slice never happens.
+
+### Slice 2 — Neon becomes the source of truth for time
+
+**Sitting A — linkage + reads (~3-4 h)**
+
+1. Backfill `airtable_id` onto puller-created rows by natural key — the claim pass in reverse,
+   matching the rows Make creates in Airtable to the rows the puller already made (~45 min)
+2. Decide the canonical entry id: Neon `uuid`, carrying `airtable_id` alongside while Make
+   lives (~30 min)
+3. Flip `handlePayrollEntries` to Neon-first + Airtable fallback + `_source` (~1 h)
+4. Flip the payroll rollups and my-hours reads the same way (~1 h)
+
+> **🛑 STOP POINT.** All time reads served by Neon, writes still Airtable-first. Fully
+> reversible — the fallbacks stay in place.
+
+**Sitting B — writes (~3 h)**
+
+5. Flip the four write paths to Neon-first; Airtable becomes the mirror (the reverse of the
+   07-30 arrangement)
+6. Soak and reconcile
+
+> **🛑 STOP POINT.** Neon authoritative for time. Airtable still written, still correct, still
+> a working fallback.
+
+### Slice 3 — retire Make from the time path (~2 h)
+
+Only after **several consecutive clean reconciler days**. Turn off scenario `4546051`; keep the
+Airtable table and Make's other ~69 scenarios. Rotate the QB `tsheets` credentials once it is
+off (rotating sooner breaks Make).
+
+> **🛑 STOP POINT.** Make out of the time path — the original goal of this whole slice.
+
+### Slice 4 — labor billing allocations (~3-4 sittings)
+
+The big one. Two linked tables, four rollups, rate lookups, and the GP formulas. Unblocks the
+per-job Time Entries tab and satisfies the hard constraint on the unify-estimates bet. Scoped in
+"What the live data revealed" → treat as its own bet, not a phase.
+
+### On these estimates
+
+They are **build** time. On 2026-07-30 the seven planned phases landed roughly on schedule, but
+debugging the dependency-bundling failure cost an extra hour that no estimate would have caught.
+Assume a real sitting runs longer than the sum of its parts.
+
+**The stop points matter more than the estimates.** Every one leaves the system coherent, with
+fallbacks intact and nothing half-done.
+
+**Only two steps in this entire plan are irreversible:** retiring Make (Slice 3), and eventually
+dropping Airtable's Time Entries table (not scheduled at all). Everything before them is
+additive and can be rolled back by reverting a commit.
+
 1. ~~Model `time_entries` (+ `employees`, `jobs`) on a Neon branch with real FKs.~~ **DONE** —
    applied to the default branch; see `db/schema/001_time_entries.sql`.
 2. ~~ETL: page all rows, map fields, **upsert by `airtable_id`** (idempotent re-runnable).~~

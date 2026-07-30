@@ -261,26 +261,32 @@ const SHADOW_ROWS = { "Time Entries": [
   { id: "recS1", fields: { "Job Name (Text)": "Alpha", "Hours": 8, "Work Date": "2026-01-10" } },
 ] };
 
-await test("shadow read: no _shadow field when DATABASE_URL is unset", async () => {
+// NOTE: as of the step-7 cutover (2026-07-30) Neon is the PRIMARY read for
+// hoursByJob and Airtable is the FALLBACK — the inverse of the old shadow contract.
+// What must still hold is that an unset or broken Neon returns the correct Airtable
+// answer, because Make keeps importing into Airtable in parallel and that copy stays
+// complete. `_source` must report which side served the request, so that a silent
+// permanent fallback is visible instead of looking like success.
+await test("hoursByJob: serves from Airtable when DATABASE_URL is unset", async () => {
   delete process.env.DATABASE_URL;
   mockTables = SHADOW_ROWS;
   const b = json(await GET("hoursByJob"));
   ok(b.ok, "ok");
-  eq(b._shadow, undefined, "no _shadow when Neon is not configured");
-  eq(b.jobs[0].hours, 8, "Airtable answer unchanged");
+  eq(b._source, "airtable", "reports which side served it");
+  eq(b._shadow, undefined, "shadow block is gone — Neon is primary now, not a shadow");
+  eq(b.jobs[0].hours, 8, "Airtable answer correct");
 });
 
-await test("shadow read: unreachable Neon degrades to _shadow.ok=false, response intact", async () => {
+await test("hoursByJob: unreachable Neon falls back to Airtable, response intact", async () => {
   // Deliberately malformed so the driver fails fast without any network I/O.
   process.env.DATABASE_URL = "not-a-valid-connection-string";
   mockTables = SHADOW_ROWS;
   const b = json(await GET("hoursByJob"));
   ok(b.ok, "request still succeeds");
+  eq(b._source, "airtable", "fallback is reported, not silent");
   eq(b.jobs[0].jobName, "Alpha", "Airtable answer unchanged");
   eq(b.jobs[0].hours, 8, "Airtable hours unchanged");
   eq(b.summary.jobCount, 1, "summary unchanged");
-  ok(b._shadow, "_shadow attached for observability");
-  eq(b._shadow.ok, false, "shadow reports failure rather than throwing");
   delete process.env.DATABASE_URL;
 });
 

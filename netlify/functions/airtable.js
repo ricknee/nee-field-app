@@ -1234,7 +1234,57 @@ async function handlePayrollHoursRollup(params) {
 // the shape ports 1:1 to
 //   SELECT job_name, SUM(hours), COUNT(*), MIN(work_date), MAX(work_date)
 //   FROM time_entries GROUP BY job_name ORDER BY SUM(hours) DESC;
+// NEON-FIRST as of the step-7 cutover (2026-07-30). Neon is now the primary read
+// and Airtable is the fallback — the inverse of the step-4b shadow phase.
+//
+// Why this one first: on production the Airtable path costs ~15.4 s because it pages
+// the ENTIRE Time Entries table (146 sequential fetches) to build the buckets, while
+// the same answer out of v_hours_by_job takes ~330 ms.
+//
+// The fallback is not ceremony. Make is still importing into Airtable in parallel, so
+// Airtable remains a complete, current copy — if Neon is unset, slow or broken, the
+// old path still returns the right answer. `_source` reports which one served the
+// request, so a silent, permanent fallback shows up instead of hiding.
 async function handleHoursByJob() {
+  if (neonEnabled()) {
+    const [q, meta] = await Promise.all([
+      neonQuery(`SELECT job_name, hours::float8 AS hours, entries,
+                        first_date::text AS first_date, last_date::text AS last_date,
+                        historical
+                   FROM v_hours_by_job ORDER BY hours DESC`),
+      neonQuery(`SELECT count(*) FILTER (WHERE job_name IS NULL)::int AS nameless,
+                        count(*)::int AS total FROM time_entries`),
+    ]);
+
+    if (q?.rows && meta?.rows?.length) {
+      const jobs = q.rows.map(r => ({
+        jobName:    r.job_name,
+        hours:      Number(r.hours),
+        entries:    r.entries,
+        firstDate:  r.first_date || "",
+        lastDate:   r.last_date  || "",
+        historical: r.historical === true,
+      }));
+      const totalHours = Math.round(jobs.reduce((s, j) => s + j.hours, 0) * 100) / 100;
+      return resp(200, {
+        ok: true,
+        jobs,
+        summary: {
+          jobCount:       jobs.length,
+          totalHours,
+          totalEntries:   meta.rows[0].total,
+          namelessEntries: meta.rows[0].nameless,
+        },
+        _source: "neon",
+        _ms: q.ms,
+      });
+    }
+    console.error(`hoursByJob: Neon read failed, falling back to Airtable: ${q?.error || meta?.error || "no rows"}`);
+  }
+  return hoursByJobFromAirtable();
+}
+
+async function hoursByJobFromAirtable() {
   const records = await fetchAll(TABLES.timeEntries);
   const buckets = new Map(); // jobName -> aggregate
   let namelessEntries = 0;
@@ -1276,20 +1326,6 @@ async function handleHoursByJob() {
   // a single field of the response — `_shadow` is observability only, and it is
   // omitted entirely when DATABASE_URL isn't configured.
   // Remove this block at cutover, when Neon becomes the primary read.
-  let _shadow;
-  if (neonEnabled()) {
-    const q = await neonQuery(
-      `SELECT job_name, hours::float8 AS hours FROM v_hours_by_job`
-    );
-    _shadow = shadowCompare({
-      label:    "hoursByJob",
-      airtable: new Map(jobs.map(j => [j.jobName, j.hours])),
-      neon:     q?.rows ? new Map(q.rows.map(r => [r.job_name, Number(r.hours)])) : null,
-      ms:       q?.ms,
-      error:    q?.error,
-    });
-  }
-
   return resp(200, {
     ok: true,
     jobs,
@@ -1299,7 +1335,7 @@ async function handleHoursByJob() {
       totalEntries:   records.length,
       namelessEntries // entries with no Job Name (Text) — excluded from buckets
     },
-    ...(_shadow ? { _shadow } : {})
+    _source: "airtable"
   });
 }
 

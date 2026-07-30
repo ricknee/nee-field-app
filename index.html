@@ -13870,6 +13870,41 @@
   // Seconds → hours (nearest 0.25)
   function secToHrs(s) { return Math.round((s / 3600) * 4) / 4; }
 
+  // ── PAYROLL ROUNDING POLICY (owner decision 2026-07-30) ────────────────────
+  // Paid hours are rounded UP to the next quarter hour, ONCE PER EMPLOYEE PER WEEK.
+  // Stated goal: as true to logged time as possible, but never under it.
+  //
+  // Why not per entry: secToHrs rounds each timesheet to the NEAREST quarter, and
+  // QuickBooks splits a working day into ~3 segments, so that error compounds
+  // downward. Measured over 2026-06-28..07-25 the old behaviour paid 666.25 h
+  // against 669.58 h actually worked — 3.33 h SHORT every four weeks.
+  //
+  // Why weekly rather than per pay period: overtime is computed per week
+  // (Reg = min(total,40), OT = the remainder), so a period-level round-up has no
+  // well-defined week and therefore no defensible Reg/OT classification. 11 of 17
+  // employee-weeks in the sample were over 40 h, so that is the normal case.
+  //
+  // Why not per day: frequency is the whole cost. Same sample, hours above actual:
+  //   per week  +1.92    per day  +8.17    per entry  +23.67
+  // Weekly caps the overshoot at 0.25 h per person per week (~6 min) while making
+  // it arithmetically impossible to underpay.
+  //
+  // max() ensures the paid figure is never below EITHER the exact logged time or
+  // the sum of the per-entry values shown on screen, so the PDF always adds up.
+  function weekHoursPaid(entries) {
+    const list  = entries || [];
+    const secs  = list.reduce((s, e) => s + (Number(e.duration) || 0), 0);
+    const shown = list.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
+    return Math.max(shown, Math.ceil((secs / 3600) * 4) / 4);
+  }
+
+  // What the round-up added, surfaced explicitly on the PDF rather than buried in
+  // a formula — a payroll figure nobody can reconcile by hand reads as an error.
+  function weekRoundingAdj(entries) {
+    const shown = (entries || []).reduce((s, e) => s + secToHrs(e.duration || 0), 0);
+    return Math.round((weekHoursPaid(entries) - shown) * 100) / 100;
+  }
+
   async function loadPayrollEntries() {
     const wk1StartStr = $("prWk1Start").value;
     const wk2EndStr   = $("prWk2End").value;
@@ -13963,9 +13998,14 @@
       return;
     }
 
-    // Summary bar
+    // Summary bar. Sums the PAID weekly figures so the headline matches what the
+    // PDF and the archive will say — summing raw per-entry hours here would show a
+    // different (lower) number than the payroll actually pays.
     let totalHrs = 0;
-    prEntries.forEach(e => { totalHrs += secToHrs(e.duration || 0); });
+    empNames.forEach(emp => {
+      const wk = empMap?.[emp] || {};
+      totalHrs += (wk.wk1 ? sumWeekHours(wk.wk1) : 0) + (wk.wk2 ? sumWeekHours(wk.wk2) : 0);
+    });
     const summaryBar = $("prSummaryBar");
     summaryBar.style.display = "flex";
     const pickerOpts = buildAddHoursPickerOptions();
@@ -13992,10 +14032,10 @@
     updateErrorBanner(0, 0);
   }
 
+  // Weekly total is the PAID figure — rounded up once for the week, not a sum of
+  // per-entry roundings. See weekHoursPaid.
   function sumWeekHours(week) {
-    let total = 0;
-    Object.values(week.days).forEach(arr => arr.forEach(e => { total += secToHrs(e.duration || 0); }));
-    return total;
+    return weekHoursPaid(Object.values(week?.days || {}).flat());
   }
   function sumOtherHours(arr) {
     return arr.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
@@ -14955,14 +14995,24 @@
       // Out-of-period (wk.other) entries are not paid in this period — they
       // surface in the UI as "Other entries" for the user to fix, not for
       // the archive to absorb.
-      const allEntries = [...flattenDays(wk.wk1?.days), ...flattenDays(wk.wk2?.days)];
+      const wk1Entries = flattenDays(wk.wk1?.days);
+      const wk2Entries = flattenDays(wk.wk2?.days);
+      const allEntries = [...wk1Entries, ...wk2Entries];
       const employeeId = (allEntries.find(e => e && e.employeeId) || {}).employeeId || null;
-      const totalHours = allEntries.reduce((a, e) => a + secToHrs(e.duration || 0), 0);
+      // MUST match the PDF: paid hours are the per-week round-up, summed — not a
+      // sum of per-entry roundings. An archive that disagrees with the payslip it
+      // was generated alongside is worse than no archive.
+      const totalHours = weekHoursPaid(wk1Entries) + weekHoursPaid(wk2Entries);
+      const roundingAdjustment = Number(
+        (weekRoundingAdj(wk1Entries) + weekRoundingAdj(wk2Entries)).toFixed(2));
       const bonus = prBonuses[emp] || 0;
       return {
         employeeId,
         name: emp,
         totalHours: Number(totalHours.toFixed(2)),
+        // Recorded so a past run can be re-derived exactly, and so the policy is
+        // auditable rather than implicit in a formula that may change later.
+        roundingAdjustment,
         bonus: Number(bonus) || 0,
         timeEntries: allEntries.map(e => ({
           id:        e.id || null,
@@ -15212,14 +15262,24 @@
     }
 
     // Compute tax breakdown for a set of entries
-    function taxBreakdown(entries) {
+    // The weekly round-up has to land in SOME jurisdiction, or these rows stop
+    // summing to Total Hrs and the payslip looks wrong. It is allocated to the
+    // bucket with the most hours that week — the employee's predominant work
+    // location. At most 0.25 h per employee per week, but it is a tax-withholding
+    // choice, so confirm with payroll if a different rule is required.
+    function taxBreakdown(entries, adj = 0) {
       const map = {};
       entries.forEach(e => {
         const t = e.cityTaxes || "A No Tax";
-        const h = secToHrs(e.duration || 0);
-        map[t] = (map[t] || 0) + h;
+        map[t] = (map[t] || 0) + secToHrs(e.duration || 0);
       });
-      return Object.entries(map);
+      const rows = Object.entries(map);
+      if (adj > 0 && rows.length) {
+        let top = 0;
+        for (let i = 1; i < rows.length; i++) if (rows[i][1] > rows[top][1]) top = i;
+        rows[top][1] = Math.round((rows[top][1] + adj) * 100) / 100;
+      }
+      return rows;
     }
 
     newPage();
@@ -15230,8 +15290,12 @@
       const wk1 = flattenDays(empMap[emp]?.wk1?.days);
       const wk2 = flattenDays(empMap[emp]?.wk2?.days);
       const bonus = prBonuses[emp] || 0;
-      const wk1Total = wk1.reduce((a,e) => a + secToHrs(e.duration||0), 0);
-      const wk2Total = wk2.reduce((a,e) => a + secToHrs(e.duration||0), 0);
+      // PAID weekly totals — rounded UP once for the week (see weekHoursPaid), so
+      // Reg/OT below is split on the figure actually paid, not on a lower one.
+      const wk1Total = weekHoursPaid(wk1);
+      const wk2Total = weekHoursPaid(wk2);
+      const wk1Adj   = weekRoundingAdj(wk1);
+      const wk2Adj   = weekRoundingAdj(wk2);
       const wk1Reg = Math.min(wk1Total, 40);
       const wk1OT  = Math.max(0, wk1Total - 40);
       const wk2Reg = Math.min(wk2Total, 40);
@@ -15244,16 +15308,20 @@
         // Week 1
         wkLabel("Week #1", wk1Label, col);
         dataRow("Weekly Hours", fmtHrs(wk1Total), false);
+        // Stated explicitly: a total that can't be reconciled against the entries
+        // above it looks like an error to whoever checks the payslip.
+        if (wk1Adj > 0) dataRow("incl. rounded up to next 1/4 hr", `+${fmtHrs(wk1Adj)}`, false);
         sumRow(`Reg Hrs  ${fmtHrs(wk1Reg)}${wk1OT > 0 ? `     OT Hrs  ${fmtHrs(wk1OT)}` : ""}`);
         sumRow(`Total Hrs  ${fmtHrs(wk1Total)}`);
-        cityTaxSection(taxBreakdown(wk1), col);
+        cityTaxSection(taxBreakdown(wk1, wk1Adj), col);
 
         // Week 2
         wkLabel("Week #2", wk2Label, col);
         dataRow("Weekly Hours", fmtHrs(wk2Total), false);
+        if (wk2Adj > 0) dataRow("incl. rounded up to next 1/4 hr", `+${fmtHrs(wk2Adj)}`, false);
         sumRow(`Reg Hrs  ${fmtHrs(wk2Reg)}${wk2OT > 0 ? `     OT Hrs  ${fmtHrs(wk2OT)}` : ""}`);
         sumRow(`Total Hrs  ${fmtHrs(wk2Total)}`);
-        cityTaxSection(taxBreakdown(wk2), col);
+        cityTaxSection(taxBreakdown(wk2, wk2Adj), col);
       } else {
         // Salaried — show city tax hrs only if non-A-No-Tax exists.
         // Empty-week placeholder ("No hours this week") fires symmetrically

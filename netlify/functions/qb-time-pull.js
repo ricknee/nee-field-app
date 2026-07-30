@@ -16,7 +16,18 @@
 //    in ON CONFLICT DO UPDATE SET, or every re-sync silently wipes the reviewed
 //    flags payroll depends on.
 //
-// 2. QB holds FAR more than Airtable ever did — 23,669 timesheets vs 14,556 rows,
+// 2. OPEN timesheets are NOT in the `modified_since` feed. Verified 2026-07-30: two
+//    employees were clocked in (state OPEN, duration 0, last_modified that morning)
+//    and a modified_since query covering that window returned neither. A timesheet
+//    only enters the feed once it is CLOSED and has a real duration.
+//    So the puller sees a shift roughly an hour after CLOCK-OUT, not while it runs.
+//    This is better than the alternative — no zero-duration placeholder rows to
+//    update later — but it has one consequence: a shift nobody clocks out of stays
+//    OPEN and never imports. Make has the same blind spot, so it is not a
+//    regression, but hourly pulls make it visible sooner. Watch for a shift that
+//    never lands rather than assuming the puller dropped it.
+//
+// 3. QB holds FAR more than Airtable ever did — 23,669 timesheets vs 14,556 rows,
 //    going back to 2020 while Airtable starts 2021-05-12, and including jobcodes
 //    like "Lunch Break", "Travel" and "Unit 11". That is not drift: Make's "Seach
 //    Job Name" module looks up {Job PO - Locked} and, finding no Job, drops the

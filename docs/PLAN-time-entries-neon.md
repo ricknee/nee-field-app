@@ -109,8 +109,32 @@ the query shape is identical in Neon, so it is **not throwaway work**.
 
 ## Migration steps (when the slice begins)
 
-**Steps 1, 2 and the verify half of 4 are DONE (2026-07-27).**
-**RESUME AT STEP 4b — rebuild the payroll rollups as Neon views + app-side dual-read.**
+**STATUS 2026-07-30 — steps 1-5 DONE, step 6 shipped as a fail-soft mirror rather than a
+move, step 7 (reads) PARTIALLY done. On origin/main as `d64cb41` + `d6c1a1f`.**
+
+Live shape — two independent pipes from the same source, reconciled daily:
+
+```
+QB Time API
+  |                                   (unchanged safety net)
+  +--> MAKE 4546051 (21:00) --------> Airtable Time Entries
+  |
+  +--> PULLER (hourly) -------------> Neon time_entries   [key: qb_timesheet_id]
+                                            ^
+App time-entry writes --> Airtable + Neon mirror          [key: airtable_id]
+                                            |
+handleHoursByJob --> NEON FIRST, Airtable fallback -------+
+```
+
+**Make is NOT retired.** It keeps writing Airtable as an independent copy to reconcile
+against. Retiring it is a later sitting, once the check-only reconciler has agreed for
+several days running.
+
+**⚠ `QB_TIME_TOKEN` must be set in the Netlify dashboard** or the hourly function logs
+"missing config" and does nothing. Fails safe, but the puller is inert until it is set.
+
+Read "What the live data revealed" below before touching the puller's insert policy —
+the counts are not intuitive and the defaults encode a payroll decision.
 
 1. ~~Model `time_entries` (+ `employees`, `jobs`) on a Neon branch with real FKs.~~ **DONE** —
    applied to the default branch; see `db/schema/001_time_entries.sql`.
@@ -268,6 +292,43 @@ all 380 job buckets independently confirms the rounding rule is right — the na
 
 Historical share holds at **77%** (11,178 of 14,522 have no live job link) and every one
 of them still carries its `job_name` snapshot, which was the original premise of the slice.
+
+## What the live data revealed (2026-07-30)
+
+Probing QuickBooks directly for the first time turned up two things the plan had assumed
+away. Both are now encoded in `netlify/functions/qb-time-pull.js`.
+
+**QB holds 23,669 timesheets; Airtable holds 14,556.** That gap is not drift:
+
+1. **Make's implicit jobcode filter — by design, and replicated.** Make's "Seach Job Name"
+   module looks up `{Job PO - Locked}` for the jobcode name and, finding no Job, **drops the
+   bundle entirely**. So Make only ever imported timesheets whose jobcode maps to a real Job.
+   **7,968** in-range timesheets fall out this way — **5,815 of them `Lunch Break`**, plus
+   `Travel`, `Vacation`, unqualified `Shop Work`, and `Troy Koehn (MIT 380)` (a real-looking
+   job with no Airtable record). A puller that honestly imported `jobcode_type: "all"` — which
+   is what Make's trigger literally requests — would inject thousands of hours payroll has
+   never counted. The puller replicates the filter and **reports every skip** rather than
+   silently inflating. Whether unpaid breaks *should* be excluded is a real question; it is
+   just not a question a data migration gets to answer as a side effect.
+
+2. **Make has been losing real hours — 712 of them.** Timesheets on jobcodes that DO map to a
+   known Job, in range, that never reached Airtable. In the last 30 days alone: **10 timesheets
+   / 21.25 h** (2026-07-07..07-24 — Bethel School, Trail Cabinet, Equiprents, Gary Strauss).
+   This is the intermittent-Make failure that motivated pull-over-push, caught in the act.
+
+**Insert policy (owner decision 2026-07-30):** `INSERT_FLOOR_DATE = "2026-07-26"`, the start of
+the open pay period. Those lost July dates sit inside the period ending 2026-07-25 that was
+**already run and paid** on 07-27; inserting them would retroactively change a closed period.
+The hours are not lost — they remain in QuickBooks. Recovering them is a deliberate separate
+exercise: lower the floor, re-run, and reconcile the resulting divergence.
+
+**Record-id linkage blocks the remaining read flips.** Puller-created Neon rows carry
+`qb_timesheet_id` but no `airtable_id`, while Make separately creates the Airtable record the
+payroll UI edits against. Entry-level reads (`handlePayrollEntries`, my-hours) therefore stay
+on Airtable deliberately — they are 14-day/YTD filtered queries, not the full-table scan that
+made `hoursByJob` cost 15.4 s, so there is no urgency. `mirrorTimeEntryToNeon` already adopts
+an unclaimed row by natural key and stamps `airtable_id` onto it, so rows the app touches
+converge on one row carrying both keys; a general solution builds on that.
 
 ## Open / deferred
 

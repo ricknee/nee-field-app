@@ -29,11 +29,45 @@ let lastFetch = null; // {url, opts} of the most recent request — lets write t
 // `mockGoogle` to the JSON body Google would return. Note this branch returns a
 // response with .json() (what that handler calls), not .text() like Airtable.
 let mockGoogle = null;
+// pCloud stub for the jobsite-photo handlers. Tests set `mockPcloud.listfolder`
+// to the folder contents and `mockPcloud.bytes` to the thumbnail payload.
+// pCloud always answers HTTP 200 and signals failure in the body's `result`
+// field, so the stub mirrors that — a stub that used HTTP status would let a
+// real bug (treating result!==0 as success) pass.
+let mockPcloud = { listfolder: [], bytes: Buffer.from("JPEGBYTES"), result: 0 };
 globalThis.fetch = async (url, opts) => {
   lastFetch = { url: String(url), opts: opts || {} };
   const method = (opts?.method || "GET").toUpperCase();
   if (String(url).includes("maps.googleapis.com")) {
     return { ok: true, status: 200, json: async () => mockGoogle };
+  }
+  if (String(url).includes("pcloud.com")) {
+    const u = new URL(String(url));
+    if (mockPcloud.result !== 0) {
+      return { ok: true, status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ result: mockPcloud.result, error: "pcloud says no" }) };
+    }
+    if (u.pathname === "/listfolder") {
+      return { ok: true, status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ result: 0, metadata: { contents: mockPcloud.listfolder } }) };
+    }
+    if (u.pathname === "/getthumb") {
+      return { ok: true, status: 200,
+        headers: { get: () => "image/jpeg" },
+        arrayBuffer: async () => mockPcloud.bytes };
+    }
+    if (u.pathname === "/getfilelink") {
+      return { ok: true, status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => ({ result: 0, hosts: ["p-def1.pcloud.com"], path: "/full.jpg" }) };
+    }
+  }
+  if (String(url).includes("p-def1.pcloud.com")) {
+    return { ok: true, status: 200,
+      headers: { get: () => "image/jpeg" },
+      arrayBuffer: async () => mockPcloud.bytes };
   }
   // Path after /v0/<base>/ → "<Table>" (list) or "<Table>/<recId>" (single record).
   const m = String(url).match(/\/v0\/[^/]+\/([^/?]+)(?:\/([^?]+))?/);
@@ -58,7 +92,7 @@ globalThis.fetch = async (url, opts) => {
 
 // 3) Import the real handler (dynamic import = after env is set).
 const { handler } = await import("../netlify/functions/airtable.js");
-const { signToken, verifyToken } = await import("../netlify/functions/_auth.js");
+const { signToken, verifyToken, signScope } = await import("../netlify/functions/_auth.js");
 
 // Test session tokens — auth is now enforced, so reads/writes need a valid one.
 const ADMIN_TOK  = signToken({ id: "recAdmin",  role: "admin" });
@@ -518,6 +552,91 @@ await test("authz: employee passes auth on a field write (not 401/403)", async (
   mockTables = {};
   const s = (await POST("addGeneralExpense", { jobId: "recJ" }, EMP_TOK)).statusCode;
   ok(s !== 401 && s !== 403, `employee field write should pass auth, got ${s}`);
+});
+
+// ── jobsite photos (docs/PLAN-job-photos.md, slice 1) ──
+const JOB_WITH_FOLDER = () => ({
+  Jobs: [{ id: "recJ1", fields: { "Job Name": "Hardwood Solutions", "pCloud Photo's ID": "30344195184" } }],
+});
+const PHOTO_A = { fileid: 111, name: "a.jpg", isfolder: false, contenttype: "image/jpeg", thumb: true, size: 4000, created: "2026-02-10T10:00:00Z", parentfolderid: 30344195184 };
+const PHOTO_B = { fileid: 222, name: "b.jpg", isfolder: false, contenttype: "image/jpeg", thumb: true, size: 5000, created: "2026-02-12T10:00:00Z", parentfolderid: 30344195184 };
+
+await test("jobPhotos: pCloud unconfigured → soft available:false, never a 500", async () => {
+  delete process.env.PCLOUD_ACCESS_TOKEN;
+  mockTables = JOB_WITH_FOLDER();
+  const res = await GET("jobPhotos", { jobId: "recJ1" });
+  eq(res.statusCode, 200, "status");
+  const b = json(res);
+  ok(b.ok, "ok"); eq(b.available, false, "available"); eq(b.reason, "not-configured", "reason");
+});
+
+await test("jobPhotos: job with no pCloud folder id → reason no-folder", async () => {
+  process.env.PCLOUD_ACCESS_TOKEN = "test-pcloud-token";
+  mockTables = { Jobs: [{ id: "recJ2", fields: { "Job Name": "No Folder Job" } }] };
+  const b = json(await GET("jobPhotos", { jobId: "recJ2" }));
+  eq(b.available, false, "available"); eq(b.reason, "no-folder", "reason");
+});
+
+await test("jobPhotos: lists images newest-first, skips non-images, mints a grant each", async () => {
+  process.env.PCLOUD_ACCESS_TOKEN = "test-pcloud-token";
+  mockTables = JOB_WITH_FOLDER();
+  mockPcloud = { ...mockPcloud, result: 0, listfolder: [
+    PHOTO_A, PHOTO_B,
+    { fileid: 333, name: "notes.pdf", isfolder: false, contenttype: "application/pdf" },
+    { folderid: 9, name: "subfolder", isfolder: true },
+  ] };
+  const b = json(await GET("jobPhotos", { jobId: "recJ1" }));
+  eq(b.available, true, "available");
+  eq(b.photos.length, 2, "only the two images");
+  eq(b.photos[0].fileid, 222, "newest first");
+  ok(b.photos.every(p => typeof p.grant === "string" && p.grant.length > 10), "every photo carries a grant");
+});
+
+await test("jobPhotos: pCloud 2005 → reason folder-missing (the Make failure mode)", async () => {
+  process.env.PCLOUD_ACCESS_TOKEN = "test-pcloud-token";
+  mockTables = JOB_WITH_FOLDER();
+  mockPcloud = { ...mockPcloud, result: 2005 };
+  const b = json(await GET("jobPhotos", { jobId: "recJ1" }));
+  eq(b.available, false, "available"); eq(b.reason, "folder-missing", "reason");
+  mockPcloud = { ...mockPcloud, result: 0 };
+});
+
+await test("jobPhoto: valid grant serves cacheable base64 image WITHOUT a bearer token", async () => {
+  process.env.PCLOUD_ACCESS_TOKEN = "test-pcloud-token";
+  const grant = signScope(["recJ1", 111]);
+  // tok=null — an <img src> cannot send Authorization; the grant is the auth.
+  const res = await GET("jobPhoto", { jobId: "recJ1", fileid: "111", grant }, null);
+  eq(res.statusCode, 200, "status");
+  eq(res.isBase64Encoded, true, "binary flag");
+  ok(res.headers["Cache-Control"].includes("immutable"), "immutable cache header");
+  ok(res.headers["Content-Type"].startsWith("image/"), "image content-type");
+});
+
+await test("jobPhoto: no grant → 403", async () => {
+  eq((await GET("jobPhoto", { jobId: "recJ1", fileid: "111" }, null)).statusCode, 403, "status");
+});
+
+await test("jobPhoto: grant for a different photo can't be replayed", async () => {
+  const grant = signScope(["recJ1", 111]);
+  eq((await GET("jobPhoto", { jobId: "recJ1", fileid: "222", grant }, null)).statusCode, 403, "other fileid");
+  eq((await GET("jobPhoto", { jobId: "recOTHER", fileid: "111", grant }, null)).statusCode, 403, "other job");
+});
+
+await test("jobPhoto: expired grant → 403", async () => {
+  const stale = signScope(["recJ1", 111], -1000);  // already expired
+  eq((await GET("jobPhoto", { jobId: "recJ1", fileid: "111", grant: stale }, null)).statusCode, 403, "status");
+});
+
+await test("jobPhoto: off-spec thumb size is rejected, not passed to pCloud", async () => {
+  process.env.PCLOUD_ACCESS_TOKEN = "test-pcloud-token";
+  const grant = signScope(["recJ1", 111]);
+  // 321 is divisible by neither 4 nor 5 — pCloud would hard-error on it.
+  const res = await GET("jobPhoto", { jobId: "recJ1", fileid: "111", size: "321x321", grant }, null);
+  eq(res.statusCode, 502, "status");
+});
+
+await test("jobPhotos still requires a bearer token (grant carve-out is jobPhoto only)", async () => {
+  eq((await GET("jobPhotos", { jobId: "recJ1" }, null)).statusCode, 401, "status");
 });
 
 // ── report ──

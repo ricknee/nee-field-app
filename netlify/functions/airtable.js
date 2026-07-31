@@ -1,9 +1,14 @@
 // netlify/functions/airtable.js
 // Northeastern Electric Field App — Netlify Proxy
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
-import { signToken, authedUser, hasRole } from "./_auth.js";
+import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
+// Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
+import {
+  pcloudEnabled, PcloudError, listFolderImages, assertFileInFolder,
+  getThumbBytes, getFileBytes,
+} from "./_pcloud.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -144,8 +149,16 @@ const F = {
     jobInspections:          "Inspection Name (from Job Inspections)",
     wireLink:                "Wire (Mobile) or THHN (Mobile)",
     pipeLink:                "Add Pipe (Mobile)",
+    // Legacy JotForm/pCloud URL fields. Still populated for Airtable users who
+    // click them there; the app no longer depends on them for photos.
     addPhotosLink:           "Add Photos (Mobile)",
     viewPhotosLink:          "View pCloud Photos",
+    // The pCloud folderid for this job's photos — a stable numeric id, and the
+    // ONLY safe way to address the folder. The retired Make scenario rebuilt a
+    // path from five editable fields plus the current year instead, which is
+    // why it died with "[2005] Directory does not exist". Never reconstruct a
+    // path; read this.
+    pcloudPhotoFolderId:     "pCloud Photo's ID",
     trelloCardId:               "Trello Card ID",
     taxStatus:                  "Tax Status",
     billingMethod:              "Billing Method",
@@ -414,6 +427,13 @@ const _ADMIN_OFFICE_POSTS = new Set([
   "approveExpense", "markInvoicePaid", "setInvoiceStatus",
   "updateJobBillableRate", "createVendor",
 ]);
+
+// Actions authenticated by a URL-carried scoped grant instead of the bearer
+// token, because the browser can't attach headers to the request (an <img src>).
+// See signScope/verifyScope in _auth.js. The handler MUST verify the grant
+// itself — the dispatcher only skips the bearer check for these, it does not
+// make them public. Keep this set tiny and byte-serving only.
+const _GRANT_AUTH_ACTIONS = new Set(["jobPhoto"]);
 
 function authzFor(method, action) {
   if (method === "GET") return _PAYROLL_READS.has(action) ? _PAYROLL : null;
@@ -701,7 +721,15 @@ async function mirrorTimeEntryToNeon(record) {
   if (!record?.id || !neonEnabled()) return;
   const f = record.fields || {};
 
-  const vals = [
+  // The UPDATE binds $1..$13; the INSERT additionally sets `source` as $14.
+  // These are built as SEPARATE arrays deliberately. They were once a single
+  // 14-element array shared by both, which made every UPDATE fail with
+  //   "bind message supplies 14 parameters, but prepared statement requires 13"
+  // — Postgres rejects extra parameters. The failure was invisible because the
+  // caller swallowed the error, so reviewing a timesheet silently did nothing in
+  // Neon for as long as it was deployed. Keep them separate; do not "tidy" this
+  // back into one array.
+  const updVals = [
     record.id,                                            // $1  airtable_id
     f["Employee"] || null,                                // $2  employee_name
     firstLinkedId(f["Employee (Linked)"]) || null,        // $3  employee airtable id
@@ -715,8 +743,8 @@ async function mirrorTimeEntryToNeon(record) {
     firstLinkedId(f["Job"]) || null,                      // $11 job airtable id
     f["Job Name (Text)"] || null,                         // $12
     f["Labor Reviewed"] === true,                         // $13
-    f["Source"] || "Manual",                              // $14 insert-only
   ];
+  const insVals = [...updVals, f["Source"] || "Manual"];  // $14, insert only
 
   // Prefer an exact airtable_id hit; otherwise adopt an unclaimed row matching the
   // natural key. `source` is NOT in the SET list — a TSheets row edited here must
@@ -739,10 +767,17 @@ async function mirrorTimeEntryToNeon(record) {
         ORDER BY (airtable_id = $1) DESC NULLS LAST
         LIMIT 1)
      RETURNING t.id`,
-    vals
+    updVals
   );
   if (upd?.rows?.length) return;
-  if (upd?.error) return;   // already logged by neonQuery's caller contract
+  // NEVER swallow this. An earlier version returned silently here with a comment
+  // claiming neonQuery logs it — neonQuery does NOT log, it returns the error. That
+  // is how a parameter-count bug stayed invisible while every mirror write failed.
+  // Fail soft means not breaking the caller's request; it does not mean saying nothing.
+  if (upd?.error) {
+    console.error(`mirrorTimeEntryToNeon UPDATE failed for ${record.id}: ${upd.error}`);
+    return;
+  }
 
   await neonExec("timeEntry.insert",
     `INSERT INTO time_entries
@@ -753,7 +788,7 @@ async function mirrorTimeEntryToNeon(record) {
              $6, $7, $8, $9, $10, (SELECT id FROM jobs WHERE airtable_id = $11), $12,
              $13, $14, now())
      ON CONFLICT (airtable_id) DO NOTHING`,
-    vals
+    insVals
   );
 }
 
@@ -1886,7 +1921,12 @@ function mapJob(r) {
       inspectionSchedulingLink:g(f,F.job.inspectionSchedulingLink)||"",inspectionContacts:g(f,F.job.inspectionContacts)||"",
       jobInspections:g(f,F.job.jobInspections)||"",wireLink:extractUrl(g(f,F.job.wireLink)),
       pipeLink:extractUrl(g(f,F.job.pipeLink)),addPhotosLink:extractUrl(g(f,F.job.addPhotosLink)),
-      viewPhotosLink:extractUrl(g(f,F.job.viewPhotosLink)),trelloCardId:g(f,F.job.trelloCardId)||"",
+      viewPhotosLink:extractUrl(g(f,F.job.viewPhotosLink)),
+      // Drives the in-app Photos tab. Null/blank means this job never had its
+      // pCloud folders provisioned — the tab must say so plainly rather than
+      // guess at a folder path.
+      photoFolderId:g(f,F.job.pcloudPhotoFolderId)||"",
+      trelloCardId:g(f,F.job.trelloCardId)||"",
       taxStatus:g(f,F.job.taxStatus)||"",powerCompanyIntake:g(f,F.job.powerCompanyIntake)||"",
       billingMethod:g(f,F.job.billingMethod)||"",
       baseContractAmount:gNum(f,F.job.baseContractAmount),
@@ -4463,6 +4503,111 @@ async function handleCreateJob(body) {
   return resp(200, { ok: true, job: mapJob(data) });
 }
 
+/* ── Jobsite photos (docs/PLAN-job-photos.md, slice 1: read-only) ───────────
+ * Replaces the "View pCloud Photos" link, which dropped the user into the
+ * pCloud web app — requiring a pCloud login and then exposing the whole
+ * account's file tree. These handlers serve one job's photo folder and nothing
+ * else. Upload still goes through the existing JotForm → Make path; that is
+ * slice 2.
+ *
+ * pCloud is OPTIONAL here. If PCLOUD_ACCESS_TOKEN is unset or the folder id is
+ * missing, `jobPhotos` answers 200 with available:false so the tab renders an
+ * explanation. A photo problem must never break the job view.
+ */
+
+// Binary response. resp() hardcodes Cache-Control: no-store, which is right for
+// JSON and exactly wrong here — uncached photos would re-fetch on every gallery
+// scroll, and each fetch is a function invocation against the Netlify plan
+// allowance. (fileid, size) is a stable key so these are safely immutable.
+// `private` keeps job photos out of shared/CDN caches at the cost of not
+// deduping across users — the right trade for customer job sites.
+function respImage(buffer, contentType) {
+  return {
+    statusCode: 200,
+    headers: {
+      "Content-Type": contentType || "image/jpeg",
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "Access-Control-Allow-Origin": "*",
+    },
+    body: buffer.toString("base64"),
+    isBase64Encoded: true,
+  };
+}
+
+// Maps a pCloud failure onto a calm, non-leaking answer. Never echo the raw
+// pCloud message to the client — it can contain account/path detail.
+function photoUnavailable(e, where) {
+  const code = e instanceof PcloudError ? e.code : null;
+  // 2005 = directory does not exist. Almost always a job whose pCloud folders
+  // were never provisioned, not an outage — say so specifically.
+  if (code === 2005) return { reason: "folder-missing" };
+  // 1000/2000/2094 = not logged in / bad token. This one is on us, so it must
+  // be loud in the logs even though the user gets a soft answer.
+  if (code === 1000 || code === 2000 || code === 2094 || code === "HTTP_401") {
+    console.error(`pCloud auth FAILED in ${where}: check PCLOUD_ACCESS_TOKEN / PCLOUD_API_HOST`);
+    return { reason: "auth" };
+  }
+  if (code === "TIMEOUT") return { reason: "timeout" };
+  console.error(`pCloud error in ${where}: ${String(e?.message || e).slice(0, 200)}`);
+  return { reason: "error" };
+}
+
+async function handleJobPhotos(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!pcloudEnabled()) return resp(200, { ok: true, available: false, reason: "not-configured", photos: [] });
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  const folderId = g(records[0].fields || {}, F.job.pcloudPhotoFolderId);
+  if (!folderId) return resp(200, { ok: true, available: false, reason: "no-folder", photos: [] });
+
+  try {
+    const images = await listFolderImages(folderId);
+    // Mint one grant per photo. Membership in this job's folder is proven HERE,
+    // by listfolder, so the image endpoint doesn't have to re-check it — the
+    // grant is the proof, and it only exists for files we just saw in the
+    // folder. See signScope in _auth.js for why the URL carries the auth.
+    const photos = images.map(p => ({ ...p, grant: signScope([jobId, p.fileid]) }));
+    return resp(200, { ok: true, available: true, folderId: String(folderId), photos });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...photoUnavailable(e, "jobPhotos"), photos: [] });
+  }
+}
+
+// Serves the bytes for one photo, straight into an <img> tag.
+//
+// Authenticated by the URL's grant, NOT the bearer token — an <img> cannot send
+// an Authorization header. The grant names (jobId, fileid), so it cannot be
+// replayed against any other photo or job, and it expires on its own.
+async function handleJobPhoto(params) {
+  const jobId  = params?.jobId;
+  const fileid = params?.fileid;
+  const size   = params?.size || "320x320";
+  if (!jobId || !fileid) return resp(400, { ok: false, error: "Missing jobId or fileid." });
+
+  if (!verifyScope(params?.grant, [jobId, fileid])) {
+    return resp(403, { ok: false, error: "Photo link is invalid or expired. Reopen the job." });
+  }
+  if (!pcloudEnabled()) return resp(503, { ok: false, error: "Photos are not configured." });
+
+  try {
+    const { buffer, contentType } = size === "full"
+      ? await getFileBytes(fileid)
+      : await getThumbBytes(fileid, size);
+    return respImage(buffer, contentType);
+  } catch (e) {
+    const { reason } = photoUnavailable(e, "jobPhoto");
+    // 1014 = pCloud can't thumbnail this file type. Tell the client to retry at
+    // full size rather than leaving a permanently broken tile.
+    if (e instanceof PcloudError && e.code === 1014) {
+      return resp(415, { ok: false, error: "No thumbnail for this file type.", retryFull: true });
+    }
+    return resp(502, { ok: false, error: "Could not load photo.", reason });
+  }
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -4477,7 +4622,7 @@ export async function handler(event) {
     // Hoisted so expense handlers can scope/authorize by the signed-in user
     // (see-own, edit/delete-until-approved). Null only for the login action.
     let authUser = null;
-    if (reqAction !== "login") {
+    if (reqAction !== "login" && !_GRANT_AUTH_ACTIONS.has(reqAction)) {
       authUser = authedUser(event);
       if (!authUser) return resp(401, { ok: false, error: "Not signed in. Please log in again." });
       if (!hasRole(authUser.role, authzFor(event.httpMethod, reqAction))) {
@@ -4490,6 +4635,8 @@ export async function handler(event) {
       const params = event.queryStringParameters || {};
       if (action === "jobs")               return await handleJobs();
       if (action === "jobById")            return await handleJobById(params);
+      if (action === "jobPhotos")          return await handleJobPhotos(params);
+      if (action === "jobPhoto")           return await handleJobPhoto(params);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);

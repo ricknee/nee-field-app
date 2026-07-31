@@ -85,3 +85,55 @@ export function hasRole(role, allowed) {
   if (allowed === null) return true;
   return Array.isArray(allowed) && allowed.includes(role);
 }
+
+// ── Scoped grants ──────────────────────────────────────────────────────────
+// A short-lived capability bound to specific resource parts, carried IN A URL
+// rather than an Authorization header.
+//
+// Why this exists: a browser <img src="..."> cannot send an Authorization
+// header, so any endpoint that returns bytes to an <img> tag can't be
+// protected by the bearer token the rest of the API uses. The alternatives are
+// worse — leaving the endpoint unauthenticated, or fetching every image as a
+// blob in JS (which forfeits browser caching, the thing keeping photo
+// bandwidth survivable).
+//
+// So: the authenticated JSON call that lists a job's photos mints one grant per
+// photo over (jobId, fileid); the image endpoint verifies the grant instead of
+// a bearer token. A grant is useless for anything but the exact resource it
+// names, expires on its own, and cannot be forged without AUTH_SECRET.
+//
+// This is NOT a general-purpose auth bypass. Only add an action to the grant
+// path when it returns bytes to an <img>/<video> tag and the resource parts
+// fully pin down what may be served.
+export const SCOPE_TTL_MS = 6 * 60 * 60 * 1000;   // outlives a workday's gallery browsing
+
+// NUL separator, written via fromCharCode so the byte is unambiguous in source
+// rather than an invisible control character pasted into the file.
+const SEP = String.fromCharCode(0);
+
+function scopeSig(parts, exp) {
+  // NUL-joined so parts can't be shifted across the boundary — ("ab","c") and
+  // ("a","bc") must not produce the same signature.
+  const msg = parts.map(p => String(p)).join(SEP) + "|" + exp;
+  return b64url(createHmac("sha256", secret()).update(msg).digest());
+}
+
+export function signScope(parts, ttlMs = SCOPE_TTL_MS, nowMs = Date.now()) {
+  const exp = nowMs + ttlMs;
+  return `${exp}.${scopeSig(parts, exp)}`;
+}
+
+// Returns true only for an unexpired grant whose signature matches these exact
+// parts. Never throws (a missing AUTH_SECRET rejects, same as verifyToken).
+export function verifyScope(token, parts, nowMs = Date.now()) {
+  if (!token || typeof token !== "string") return false;
+  const i = token.indexOf(".");
+  if (i < 1 || i === token.length - 1) return false;
+  const exp = Number(token.slice(0, i));
+  if (!Number.isFinite(exp) || nowMs >= exp) return false;
+  let expected;
+  try { expected = scopeSig(parts, exp); } catch { return false; }
+  const a = Buffer.from(token.slice(i + 1));
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}

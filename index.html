@@ -3682,7 +3682,18 @@
 
     // Action Buttons
     setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
-    setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
+    // View Photos now opens the in-app gallery instead of the pCloud web app,
+    // so nobody needs a pCloud login and nobody lands in the full company file
+    // tree. Enabled whenever the job has a photo folder id; the gallery itself
+    // explains the "not set up yet" case rather than leaving a dead button.
+    {
+      const vp = $("btnViewPhotos");
+      vp.href = "#";
+      vp.removeAttribute("target");
+      vp.textContent = "🖼 View Photos";
+      vp.classList.toggle("disabled", !job.photoFolderId);
+      vp.onclick = (e) => { e.preventDefault(); if (job.photoFolderId) openJobPhotos(); };
+    }
 
     // New Job Estimate button (admin only) — opens in-app modal that loads
     // an Estimate Template, snapshots its values, and POSTs a Job Estimates
@@ -4239,6 +4250,142 @@
       el.classList.add("disabled");
     }
   }
+
+  /* ── Jobsite photo gallery (docs/PLAN-job-photos.md, slice 1) ─────────────
+   * Reads the job's existing pCloud photo folder through the function, so it
+   * works on every photo already taken — not just ones added from here on.
+   * Uploading is still the old JotForm button; that's slice 2.
+   *
+   * Thumbnails are ordinary <img src> tags. Each URL carries a signed grant
+   * minted by the jobPhotos call, because an <img> cannot send an
+   * Authorization header (see signScope in _auth.js). Keeping them as real
+   * <img> tags is what lets the browser cache them — fetching blobs in JS
+   * would re-download every photo on every visit.
+   */
+  const jobPhotoState = { jobId: null, jobName: "", photos: [], index: 0 };
+
+  function jobPhotoUrl(p, size) {
+    const q = new URLSearchParams({
+      action: "jobPhoto",
+      jobId:  jobPhotoState.jobId,
+      fileid: String(p.fileid),
+      size,
+      grant:  p.grant,
+    });
+    return `${API}?${q.toString()}`;
+  }
+
+  function photoUnavailableMsg(reason) {
+    if (reason === "no-folder")      return "This job doesn't have a pCloud photo folder set up yet.";
+    if (reason === "folder-missing") return "The pCloud photo folder for this job is missing or was moved.";
+    if (reason === "not-configured") return "Photo viewing isn't switched on yet.";
+    if (reason === "timeout")        return "pCloud took too long to answer. Try again.";
+    if (reason === "auth")           return "The app can't reach pCloud right now. An admin has been notified in the logs.";
+    return "Photos are unavailable right now.";
+  }
+
+  window.openJobPhotos = async function() {
+    const job = state.selected;
+    if (!job) return;
+    jobPhotoState.jobId   = job.id;
+    jobPhotoState.jobName = job.name || "";
+    jobPhotoState.photos  = [];
+
+    $("jobPhotosTitle").textContent  = `📷 Photos — ${job.name || ""}`;
+    $("jobPhotosGrid").innerHTML     = "";
+    $("jobPhotosStatus").textContent = "Loading photos…";
+    $("jobPhotosModal").style.display = "flex";
+    pushBackEntry("jobPhotos", () => { $("jobPhotosModal").style.display = "none"; });
+
+    try {
+      const d = await apiGet("jobPhotos", { jobId: job.id });
+      if (!d.available) {
+        $("jobPhotosStatus").textContent = photoUnavailableMsg(d.reason);
+        return;
+      }
+      jobPhotoState.photos = d.photos || [];
+      renderJobPhotos();
+    } catch (e) {
+      $("jobPhotosStatus").textContent = `Could not load photos: ${e.message}`;
+    }
+  };
+
+  function renderJobPhotos() {
+    const grid   = $("jobPhotosGrid");
+    const status = $("jobPhotosStatus");
+    const photos = jobPhotoState.photos;
+
+    if (!photos.length) {
+      status.textContent = "No photos on this job yet.";
+      grid.innerHTML = "";
+      return;
+    }
+    status.textContent = `${photos.length} photo${photos.length === 1 ? "" : "s"}`;
+
+    grid.innerHTML = photos.map((p, i) => {
+      // thumb:false means pCloud can't generate a thumbnail for this format
+      // (some raw/HEIC files). Load the full image into the tile instead of
+      // rendering a permanently broken box.
+      const src = jobPhotoUrl(p, p.thumb ? "320x320" : "full");
+      return `<img src="${esc(src)}" alt="${esc(p.name || "photo")}" loading="lazy"
+                   data-idx="${i}"
+                   style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; cursor:pointer; background:var(--line);" />`;
+    }).join("");
+
+    grid.querySelectorAll("img[data-idx]").forEach(img => {
+      img.addEventListener("click", () => openJobPhotoLightbox(Number(img.dataset.idx)));
+      // A thumbnail that 404s or 415s still has a valid full-size original —
+      // retry once at full size rather than leaving a blank tile.
+      img.addEventListener("error", () => {
+        if (img.dataset.retried) return;
+        img.dataset.retried = "1";
+        img.src = jobPhotoUrl(photos[Number(img.dataset.idx)], "full");
+      }, { once: true });
+    });
+  }
+
+  window.closeJobPhotos = function() {
+    popBackEntry("jobPhotos");
+    $("jobPhotosModal").style.display = "none";
+  };
+
+  function openJobPhotoLightbox(i) {
+    const p = jobPhotoState.photos[i];
+    if (!p) return;
+    jobPhotoState.index = i;
+
+    const url = jobPhotoUrl(p, "full");
+    $("jobPhotoLightboxImg").src        = url;
+    $("jobPhotoLightboxName").textContent = p.name || "";
+    $("jobPhotoCounter").textContent    = `${i + 1} of ${jobPhotoState.photos.length}`;
+    const dl = $("jobPhotoDownload");
+    dl.href     = url;
+    dl.download = p.name || "photo.jpg";
+    $("jobPhotoLightbox").style.display = "flex";
+    pushBackEntry("jobPhoto", () => { $("jobPhotoLightbox").style.display = "none"; });
+  }
+
+  window.closeJobPhotoLightbox = function() {
+    popBackEntry("jobPhoto");
+    $("jobPhotoLightbox").style.display = "none";
+    // Drop the src so a large image isn't held in memory behind the gallery.
+    $("jobPhotoLightboxImg").src = "";
+  };
+
+  window.stepJobPhoto = function(delta) {
+    const n = jobPhotoState.photos.length;
+    if (!n) return;
+    const next = (jobPhotoState.index + delta + n) % n;
+    const p = jobPhotoState.photos[next];
+    jobPhotoState.index = next;
+    const url = jobPhotoUrl(p, "full");
+    $("jobPhotoLightboxImg").src          = url;
+    $("jobPhotoLightboxName").textContent = p.name || "";
+    $("jobPhotoCounter").textContent      = `${next + 1} of ${n}`;
+    const dl = $("jobPhotoDownload");
+    dl.href     = url;
+    dl.download = p.name || "photo.jpg";
+  };
 
   // Renders the warranty badges row above the generator info-grid. Filters
   // out voided + already-expired warranties (those don't need attention).
@@ -16128,6 +16275,43 @@
      Inline "+ Add new power company" from the Power Co. tab company picker.
      Active=TRUE is force-set server-side; no checkbox here. Phone/email/
      website are not on the Power Companies table — Phase 3 schema followup. -->
+<!-- Jobsite photo gallery (docs/PLAN-job-photos.md, slice 1).
+     Replaces the old "View pCloud Photos" link, which sent the user to the
+     pCloud web app — a login prompt, and then the whole company file tree.
+     Thumbnails are plain <img> tags pointing at the jobPhoto action; each URL
+     carries its own signed grant because an <img> can't send an auth header. -->
+<div id="jobPhotosModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:900px; width:95%;">
+    <div class="sl-modal-header">
+      <h2 id="jobPhotosTitle">📷 Photos</h2>
+      <button onclick="closeJobPhotos()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="jobPhotosStatus" style="font-size:13px; color:var(--muted); padding:8px 0;"></div>
+      <div id="jobPhotosGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Full-size viewer. Separate from the grid modal so the phone back button
+     closes the photo first and the gallery second, matching how back works
+     everywhere else in the app. -->
+<div id="jobPhotoLightbox" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,.92); align-items:center; justify-content:center; flex-direction:column;">
+  <div style="position:absolute; top:0; left:0; right:0; display:flex; align-items:center; justify-content:space-between; padding:10px 14px; gap:10px;">
+    <span id="jobPhotoLightboxName" style="color:#fff; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+    <span style="display:flex; gap:8px; flex:0 0 auto;">
+      <a id="jobPhotoDownload" class="btn btn-sm" style="font-size:13px; padding:6px 12px;" download>⬇ Save</a>
+      <button onclick="closeJobPhotoLightbox()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 12px;">&times;</button>
+    </span>
+  </div>
+  <img id="jobPhotoLightboxImg" alt="" style="max-width:96vw; max-height:82vh; object-fit:contain; border-radius:6px;" />
+  <div style="position:absolute; bottom:0; left:0; right:0; display:flex; align-items:center; justify-content:center; gap:18px; padding:12px;">
+    <button onclick="stepJobPhoto(-1)" class="btn btn-sm" style="font-size:15px; padding:8px 18px;">‹ Prev</button>
+    <span id="jobPhotoCounter" style="color:#fff; font-size:12px;"></span>
+    <button onclick="stepJobPhoto(1)" class="btn btn-sm" style="font-size:15px; padding:8px 18px;">Next ›</button>
+  </div>
+</div>
+
 <div id="newPowerCompanyModal" class="sl-modal-backdrop" style="display:none;">
   <div class="sl-modal">
     <div class="sl-modal-header">

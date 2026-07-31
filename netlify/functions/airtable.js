@@ -10,7 +10,7 @@ import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
 // have been down for months, so no API token could be issued. That file and
 // tools/pcloud-*.mjs are kept on disk in case it ever reopens (a mirror-to-
 // pCloud option), but nothing calls them. See docs/PLAN-job-photos.md.
-import { r2Enabled, r2Status, listJobPhotos, presignPut, thumbKeyFor, jobPrefix, R2Error } from "./_r2.js";
+import { r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut, thumbKeyFor, jobPrefix, R2Error } from "./_r2.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -4529,8 +4529,15 @@ async function handleCreateJob(body) {
 // Admin diagnostic: is R2 wired up correctly? Exists because every wiring
 // mistake (typo'd bucket, wrong account id, unscoped token, truncated secret)
 // otherwise surfaces to the user as the same useless "photos unavailable".
-async function handleR2Status() {
+async function handleR2Status(params) {
   const status = await r2Status();
+  // ?selfTest=1 additionally round-trips a real object through the SAME
+  // presigned urls the browser uses — but server-side, where neither CORS nor
+  // a service worker applies. Those two are what make a browser report every
+  // upload failure as an indistinguishable "Failed to fetch".
+  if (String(params?.selfTest || "") === "1") {
+    return resp(200, { ok: true, r2: status, selfTest: await r2SelfTest() });
+  }
   return resp(200, { ok: true, r2: status });
 }
 
@@ -4646,7 +4653,7 @@ export async function handler(event) {
       const params = event.queryStringParameters || {};
       if (action === "jobs")               return await handleJobs();
       if (action === "jobById")            return await handleJobById(params);
-      if (action === "r2Status")           return await handleR2Status();
+      if (action === "r2Status")           return await handleR2Status(params);
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);

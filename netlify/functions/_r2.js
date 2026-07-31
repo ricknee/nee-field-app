@@ -193,6 +193,59 @@ export async function r2Status(timeoutMs = DEFAULT_TIMEOUT_MS) {
   }
 }
 
+// Full round-trip through the SAME presigned urls the browser uses, executed
+// server-side where no CORS rule and no service worker can interfere.
+//
+// This exists because a browser cannot tell these apart — R2 rejecting a
+// signature returns an error response, and if that response carries no CORS
+// headers the browser hides it and `fetch` throws a bare "Failed to fetch",
+// identical to a CORS block. Running the same urls from here removes every
+// browser variable: if PUT succeeds here, the signature is fine and the
+// problem is in the browser; if it fails here, the signing is wrong.
+export async function r2SelfTest(timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const steps = [];
+  const key = "diagnostics/selftest.txt";
+  const record = (name, ok, detail) => { steps.push({ step: name, ok, detail }); return ok; };
+
+  try {
+    const putUrl = await presignPut(key, "text/plain", 300);
+    record("presign-put", true, `${putUrl.split("?")[0]} (+${putUrl.split("?")[1]?.length || 0} bytes of query)`);
+
+    const putRes = await withTimeout(
+      (signal) => fetch(putUrl, { method: "PUT", headers: { "Content-Type": "text/plain" }, body: "selftest", signal }),
+      timeoutMs
+    );
+    const putBody = putRes.ok ? "" : (await putRes.text().catch(() => "")).slice(0, 300);
+    if (!record("put", putRes.ok, `HTTP ${putRes.status}${putBody ? " " + putBody : ""}`)) {
+      return { ok: false, steps };
+    }
+
+    const getUrl = await presignGet(key, 300);
+    const getRes = await withTimeout((signal) => fetch(getUrl, { signal }), timeoutMs);
+    const text = getRes.ok ? (await getRes.text()).slice(0, 40) : (await getRes.text().catch(() => "")).slice(0, 300);
+    record("get", getRes.ok && text === "selftest", `HTTP ${getRes.status} body="${text}"`);
+
+    // Clean up with header-signed auth (not presigned) so a failure here can't
+    // be confused with a presigning problem.
+    try {
+      const client = await getClient();
+      const c = config();
+      const delRes = await withTimeout(
+        (signal) => client.fetch(`${c.endpoint}/${c.bucket}/${encodeURI(key)}`, { method: "DELETE", signal }),
+        timeoutMs
+      );
+      record("delete", delRes.ok || delRes.status === 204, `HTTP ${delRes.status}`);
+    } catch (e) {
+      record("delete", false, String(e?.message || e).slice(0, 200));
+    }
+
+    return { ok: steps.every(s => s.ok), steps };
+  } catch (e) {
+    record("threw", false, String(e?.message || e).slice(0, 300));
+    return { ok: false, steps };
+  }
+}
+
 // ── Listing ────────────────────────────────────────────────────────────────
 
 // Minimal ListObjectsV2 XML reader. The response shape is small and fixed, so

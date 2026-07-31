@@ -477,6 +477,9 @@
     .filter-row {
       display: flex;
       gap: 6px;
+      /* Three selects now. Wrapping keeps them readable on a narrow sidebar or a
+         phone rather than squeezing every label into an ellipsis. */
+      flex-wrap: wrap;
     }
 
     .filter-row select {
@@ -2074,6 +2077,11 @@
           <select id="contractorFilter">
             <option value="">All Contractors</option>
           </select>
+          <!-- Options are built from the loaded jobs in populateYearFilter(), which
+               also selects the current year by default. -->
+          <select id="yearFilter">
+            <option value="">All Years</option>
+          </select>
         </div>
       </div>
 
@@ -3450,12 +3458,35 @@
     }
   }
 
+  // Year options come from the jobs themselves rather than a fixed range, so the
+  // list can't drift out of date and never offers a year with nothing in it.
+  // Defaults to the CURRENT year — day to day that's what you want — but only when
+  // the current year actually has jobs, otherwise the sidebar would open empty and
+  // look broken. Falls back to the most recent year that does.
+  // Re-selects whatever was chosen before if it's still available, so a refresh
+  // doesn't yank you back to this year while you're looking at a previous one.
+  function populateYearFilter() {
+    const sel = $("yearFilter");
+    if (!sel) return;
+    const prev = sel.value;
+    const years = [...new Set(state.jobs.map(j => j.year).filter(Boolean))].sort((a, b) => b - a);
+    sel.innerHTML = `<option value="">All Years</option>` +
+      years.map(y => `<option value="${y}">${y}</option>`).join("");
+
+    if (prev && (prev === "" || years.includes(Number(prev)))) { sel.value = prev; return; }
+    const thisYear = new Date().getFullYear();
+    sel.value = years.includes(thisYear) ? String(thisYear)
+              : years.length              ? String(years[0])
+              : "";
+  }
+
   // ── JOBS ──
   async function loadJobs() {
     $("jobsList").innerHTML = `<div class="loading-msg">Loading jobs...</div>`;
     try {
       const d = await apiGet("jobs");
       state.jobs = Array.isArray(d.jobs) ? d.jobs : [];
+      populateYearFilter();
       applyFilters();
 
       // If we arrived from another app (e.g. Inventory) with ?jobId=recXXX
@@ -3487,13 +3518,17 @@
     const q = $("searchInput").value.trim().toLowerCase();
     const st = $("statusFilter").value.toLowerCase();
     const cId = $("contractorFilter").value;
+    const yr = $("yearFilter") ? $("yearFilter").value : "";
 
     state.filtered = state.jobs.filter(j => {
       const hay = [j.name, j.po, j.address, j.status, j.type, j.contractor].join(" ").toLowerCase();
       const mq = !q || hay.includes(q);
       const ms = !st || (j.status||"").toLowerCase() === st;
       const mc = !cId || j.contractorId === cId;
-      return mq && ms && mc;
+      // A job with no year is only hidden when a specific year is selected —
+      // "All Years" must never drop a record just because the field is blank.
+      const my = !yr || String(j.year || "") === yr;
+      return mq && ms && mc && my;
     });
 
     renderJobList();
@@ -8320,6 +8355,7 @@
     $("searchInput").addEventListener("input", applyFilters);
     $("statusFilter").addEventListener("change", applyFilters);
     $("contractorFilter").addEventListener("change", applyFilters);
+    $("yearFilter")?.addEventListener("change", applyFilters);
 
     $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
     const piEditBtn = $("piEditBtn");
@@ -11751,6 +11787,14 @@
       // "where did my new job go?" case.
       const statusFilter = $("statusFilter");
       if (statusFilter) statusFilter.value = "New Lead";
+      // Same reasoning as the status reset above, for the year filter. "Job Year"
+      // is set Airtable-side, so a freshly created job can come back with year
+      // null — and the year filter defaults to the current year, which would hide
+      // it. Rebuild the options (the new job may introduce a year) and clear the
+      // selection so the thing you just made is definitely visible.
+      populateYearFilter();
+      const yearFilter = $("yearFilter");
+      if (yearFilter) yearFilter.value = "";
       applyFilters();
       selectJob(newJob);
 

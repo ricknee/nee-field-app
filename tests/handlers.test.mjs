@@ -136,6 +136,17 @@ await test("jobs: maps records and filters out archived/closed", async () => {
   eq(b.jobs.length, 1, "filtered"); eq(b.jobs[0].name, "Live Job", "name"); eq(b.jobs[0].id, "recJ1", "id");
 });
 
+await test("jobs: exposes Job Year for the sidebar year filter, null when absent", async () => {
+  mockTables = { Jobs: [
+    { id: "recJ1", fields: { "Job Name": "This Year", "Job Status": "Awarded", "Job Year": 2026 } },
+    { id: "recJ2", fields: { "Job Name": "No Year",   "Job Status": "Awarded" } },
+  ] };
+  const b = json(await GET("jobs"));
+  eq(b.jobs.find(j => j.id === "recJ1").year, 2026, "year is a NUMBER, not a string — the filter compares on it");
+  // A yearless job must stay reachable under "All Years" rather than vanish.
+  eq(b.jobs.find(j => j.id === "recJ2").year, null, "missing Job Year maps to null, not 0 or undefined");
+});
+
 await test("getNextInvoiceNumber: floors at 1633 when empty", async () => {
   mockTables = { Invoices: [] };
   eq(json(await POST("getNextInvoiceNumber")).nextNumber, 1633, "floor");

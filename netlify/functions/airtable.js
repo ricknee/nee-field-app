@@ -111,6 +111,9 @@ const F = {
     po:                      "Job PO",
     status:                  "Job Status",
     type:                    "Job Type",
+    // Populated on 100% of jobs (verified 2026-07-31 across all 109). Backs the
+    // job-list year filter, which defaults to the current year.
+    year:                    "Job Year",
     address:                 "Job Address - Full",
     contractor:              "Contractor Name (Text)",
     contractorLink:          "Contractor",
@@ -1840,6 +1843,7 @@ function mapJob(r) {
   return {
     id:r.id,name:g(f,F.job.name)||"",po:g(f,F.job.po)||"",status:g(f,F.job.status)||"",
     type:g(f,F.job.type)||"",address:g(f,F.job.address)||"",contractor:g(f,F.job.contractor)||"",
+    year:gNum(f,F.job.year)??null,
       contractorId: (() => {
         const v = f[F.job.contractorLink];
         if (Array.isArray(v) && v.length > 0) {

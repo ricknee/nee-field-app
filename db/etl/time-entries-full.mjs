@@ -181,6 +181,15 @@ const billAllocs = await fetchAll("Labor Billing Allocations");
 const costRates  = await fetchAll("Labor Cost Rates");
 const weeklyTime = await fetchAll("Employee Weekly Time");
 const jobAllocs  = await fetchAll("Job Labor Allocation");
+// Phase C — the remaining sources every Jobs rollup reads from. Wire and Pipe are
+// LEGACY (tracked in the inventory app now, pushed across as expenses) so they are
+// copied as frozen history: they still feed Actual Job Cost (COGS) on old jobs but
+// will not move again.
+const estimates  = await fetchAll("Job Estimates");
+const expenses   = await fetchAll("Expenses");
+const invoices   = await fetchAll("Invoices");
+const wireWeighs = await fetchAll("Wire Weigh-Ins");
+const pipeUsage  = await fetchAll("Pipe Usage");
 console.log(`extracted: ${employees.length} employees, ${jobs.length} jobs, ${entries.length} time entries`);
 
 // ── Airtable-side truth, computed BEFORE loading ──────────────────────────
@@ -344,6 +353,74 @@ await upsertBatch("jobs",
             (SELECT count(*) FROM job_labor_allocations)::int AS allocs,
             (SELECT count(*) FROM job_labor_allocations WHERE job_id IS NOT NULL)::int AS allocs_linked`);
   console.log(`cost chain: ${cc.rates} rates, ${cc.weeks} employee-weeks, ${cc.allocs} allocations (${cc.allocs_linked} linked to a job)`);
+}
+
+// Phase C — the remaining GP source tables. Formula fields are stored as their
+// COMPUTED VALUE, not re-derived: Airtable is still the calculator, and these are
+// inputs to the Jobs rollups rather than things Neon decides. Re-running the ETL
+// refreshes them.
+{
+  const jobMapAt = new Map((await sql.query(`SELECT id, airtable_id FROM jobs`)).map(r => [r.airtable_id, r.id]));
+  const now = new Date().toISOString();
+  const J = rec => { const a = firstId(rec.fields["Job"]); return [jobMapAt.get(a) ?? null, a]; };
+
+  await upsertBatch("job_estimates",
+    ["airtable_id", "job_id", "job_airtable_id", "estimate_type", "status", "actual_estimate_sent",
+     "estimated_labor_hours", "estimated_labor_cost", "estimated_material_cost",
+     "calculated_estimated_total", "estimate_date", "notes", "synced_at"],
+    estimates.map(r => [r.id, ...J(r), nul(r.fields["Estimate Type"]), nul(r.fields["Status"]),
+      num(r.fields["Actual Estimate Sent"]), num(r.fields["Estimated Labor Hours"]),
+      num(r.fields["Estimated Labor Cost"]), num(r.fields["Estimated Material Cost"]),
+      num(r.fields["Calculated Estimated Total"]), nul(r.fields["Estimate Date"]),
+      nul(r.fields["Notes"]), now]), "airtable_id", 200);
+
+  await upsertBatch("expenses",
+    ["airtable_id", "job_id", "job_airtable_id", "expense_type", "expense_status", "expense_date",
+     "total_cost_actual", "reviewed", "reviewed_expenses", "billable", "billable_material_amount",
+     "billed_material_amount", "unbilled_material_amount", "manual_material_cost", "material_credit",
+     "vendor_name", "description", "push_id", "synced_at"],
+    expenses.map(r => [r.id, ...J(r), nul(r.fields["Expense Type"]), nul(r.fields["Expense Status"]),
+      nul(r.fields["Expense Date"]), num(r.fields["Total Cost (Actual)"]),
+      r.fields["Reviewed"] === true, num(r.fields["Reviewed Expenses"]),
+      r.fields["Billable?"] === true, num(r.fields["Billable Material Amount $"]),
+      num(r.fields["Billed Material Amount $"]), num(r.fields["Unbilled Material Amount $"]),
+      num(r.fields["Manual Material Cost"]), num(r.fields["Material Credit"]),
+      // Lookup -> array; the vendor NAME is the durable snapshot, same rule as job_name.
+      (Array.isArray(r.fields["Vendor Name (from Vendor)"]) ? r.fields["Vendor Name (from Vendor)"][0] : null) ?? null,
+      nul(r.fields["Description"]), nul(r.fields["Push ID"]), now]), "airtable_id", 200);
+
+  await upsertBatch("invoices",
+    ["airtable_id", "job_id", "job_airtable_id", "invoice_number", "invoice_status", "invoice_type",
+     "billing_mode", "invoice_stage", "invoice_date", "snapshot_total", "invoice_total",
+     "manual_labor", "manual_material", "percent_to_bill", "auto_allocate", "invoice_display_no", "synced_at"],
+    invoices.map(r => [r.id, ...J(r), nul(r.fields["Invoice Number"]), nul(r.fields["Invoice Status"]),
+      nul(r.fields["Invoice Type"]), nul(r.fields["Billing Mode"]), nul(r.fields["Invoice Stage"]),
+      nul(r.fields["Invoice Date"]), num(r.fields["Snapshot Total"]), num(r.fields["Invoice Total"]),
+      num(r.fields["Manual Labor $"]), num(r.fields["Manual Material $"]),
+      num(r.fields["Percent to Bill"]), r.fields["Auto Allocate?"] === true,
+      num(r.fields["Invoice Display #"]), now]), "airtable_id", 200);
+
+  await upsertBatch("wire_weigh_ins",
+    ["airtable_id", "job_id", "job_airtable_id", "weigh_in_date", "net_weight", "footage_used",
+     "total_wire_cost", "reviewed", "reviewed_wire_cost", "wire_status", "synced_at"],
+    wireWeighs.map(r => [r.id, ...J(r), nul(r.fields["Weigh-In Date"]), num(r.fields["Net Weight"]),
+      num(r.fields["Footage Used"]), num(r.fields["Total Wire Cost"]), r.fields["Reviewed"] === true,
+      num(r.fields["Reviewed Wire Cost"]), nul(r.fields["Wire Status"]), now]), "airtable_id", 200);
+
+  await upsertBatch("pipe_usage",
+    ["airtable_id", "job_id", "job_airtable_id", "usage_date", "feet_used", "total_feet",
+     "total_pipe_cost", "reviewed", "pipe_cost_reviewed", "pipe_cost_in_progress", "synced_at"],
+    pipeUsage.map(r => [r.id, ...J(r), nul(r.fields["Date"]), num(r.fields["Feet Used"]),
+      num(r.fields["Total Feet"]), num(r.fields["Total Pipe Cost"]), r.fields["Reviewed"] === true,
+      num(r.fields["Pipe Cost – Reviewed"]), num(r.fields["Pipe Cost – In Progress"]), now]), "airtable_id", 200);
+
+  const [pc] = await sql.query(
+    `SELECT (SELECT count(*) FROM job_estimates)::int  AS est,
+            (SELECT count(*) FROM expenses)::int       AS exp,
+            (SELECT count(*) FROM invoices)::int       AS inv,
+            (SELECT count(*) FROM wire_weigh_ins)::int AS wire,
+            (SELECT count(*) FROM pipe_usage)::int     AS pipe`);
+  console.log(`GP sources: ${pc.est} estimates, ${pc.exp} expenses, ${pc.inv} invoices, ${pc.wire} wire weigh-ins, ${pc.pipe} pipe usage`);
 }
 
 // ── link puller rows to their Airtable twins ──────────────────────────────

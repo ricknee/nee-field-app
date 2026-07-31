@@ -59,6 +59,11 @@ answers, just slowly. It went unnoticed for three days.
 - `AUTH_SECRET` — HMAC key for signing/verifying session tokens (`_auth.js`, shared by both
   functions). **Required — auth fails closed:** `ensureEnv()` throws and every request 401s if
   it's unset. Local `netlify dev` and `node tests/handlers.test.mjs` need it too.
+- `PCLOUD_ACCESS_TOKEN` / `PCLOUD_API_HOST` — **optional.** pCloud OAuth token for the in-app
+  jobsite photo gallery (`_pcloud.js`). **Fails soft like `_neon.js`, not closed** — unset just
+  disables the Photos view. It is a **full-account** credential (pCloud has no presigned upload),
+  so it is server-side only; that constraint is why photo bytes proxy through the function.
+  Wrong region host = "invalid access token"; see `.env.example`. See `docs/PLAN-job-photos.md`.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

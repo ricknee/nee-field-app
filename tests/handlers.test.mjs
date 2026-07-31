@@ -635,6 +635,28 @@ await test("jobPhoto: off-spec thumb size is rejected, not passed to pCloud", as
   eq(res.statusCode, 502, "status");
 });
 
+await test("pCloud native token is sent as auth=, not access_token=", async () => {
+  // The two token flavours are NOT interchangeable — sending a getauth token as
+  // access_token returns "log in failed", which reads like a bad password.
+  delete process.env.PCLOUD_ACCESS_TOKEN;
+  process.env.PCLOUD_AUTH_TOKEN = "native-token-abc";
+  mockTables = JOB_WITH_FOLDER();
+  mockPcloud = { ...mockPcloud, result: 0, listfolder: [PHOTO_A] };
+  const b = json(await GET("jobPhotos", { jobId: "recJ1" }));
+  eq(b.available, true, "available");
+  ok(lastFetch.url.includes("auth=native-token-abc"), `expected auth= param, got ${lastFetch.url}`);
+  ok(!lastFetch.url.includes("access_token="), "must not send access_token for a native token");
+});
+
+await test("OAuth token still wins and is sent as access_token=", async () => {
+  process.env.PCLOUD_ACCESS_TOKEN = "oauth-token-xyz";
+  process.env.PCLOUD_AUTH_TOKEN   = "native-token-abc";
+  mockTables = JOB_WITH_FOLDER();
+  json(await GET("jobPhotos", { jobId: "recJ1" }));
+  ok(lastFetch.url.includes("access_token=oauth-token-xyz"), `expected access_token=, got ${lastFetch.url}`);
+  delete process.env.PCLOUD_AUTH_TOKEN;
+});
+
 await test("jobPhotos still requires a bearer token (grant carve-out is jobPhoto only)", async () => {
   eq((await GET("jobPhotos", { jobId: "recJ1" }, null)).statusCode, 401, "status");
 });

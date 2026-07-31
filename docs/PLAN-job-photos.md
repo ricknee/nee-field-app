@@ -1,8 +1,26 @@
 # Plan: Jobsite photos — in-app viewing + direct upload (pCloud)
 
-**Status:** Approved 2026-07-31. Slice 1 in progress.
-**Store decision: pCloud** (R2 considered and rejected — see §3).
-**Make.com: not touched.** Scenario 4522457 keeps running until Slice 2 has soaked.
+**Status:** 2026-07-31 — **store decision REVERSED to Cloudflare R2.** pCloud slice 1 is written,
+tested, and DORMANT (nothing calls it). Production reverted to the original pCloud link.
+**Make.com: not touched.** Scenario 4522457 still runs the JotForm upload path unchanged.
+
+> ### Why pCloud was abandoned after being chosen
+>
+> pCloud was picked on 2026-07-31 because the folders, the photos, and the receipts were already
+> there (§3). Building it revealed the blocker: **pCloud's app-registration page
+> (`docs.pcloud.com/my_apps/`) has been down for months**, so no OAuth client can be created and
+> no API token can be issued.
+>
+> The documented fallback — native login via `userinfo?getauth=1` — gets as far as the password
+> (verified: a bad password returns `2000`, this account returns `1022`) and then demands a second
+> factor under an **undocumented parameter name**. `code` is ignored; the same `1022` returns.
+>
+> Make.com keeps working because **Make registered its own pCloud app years ago**, before the page
+> broke, and holds a non-expiring OAuth token for the account (connection `24595`, `expire: null`).
+> Make's API does not expose connection secrets, so that token can't be borrowed.
+>
+> The premise of the pCloud decision was "we already have it and it works." The developer API is
+> precisely the part that does not work, and hasn't for months. R2 is entirely self-serve.
 
 **One-line:** Give every job an in-app photo gallery that reads its existing pCloud photo folder
 (no pCloud login for the user), then replace the JotForm upload with a direct app → pCloud upload
@@ -158,7 +176,30 @@ per device, ever. So:
 | Airtable attachment field | Lowest | ✅ | ✅ | ❌ Worst Neon migration shape (see PLAN-expense-receipts) |
 | Fix the Make scenario only (folderid + unique filename) | Lowest | ✅ mostly | ❌ | Parked at user's request; keep as the emergency lever |
 
-### Why R2 was rejected
+### What carries over to R2 (most of it)
+
+The storage backend is the smallest part of what was built. Unchanged by the switch:
+
+- `signScope` / `verifyScope` in `_auth.js` — signed image URLs, because an `<img>` can't send an
+  auth header. Needed for R2 too (or replaced by R2 presigned GETs, which are the same idea).
+- `jobPhotos` / `jobPhoto` handler shape, the `photoUnavailable` soft-failure mapping, `respImage`,
+  and the `_GRANT_AUTH_ACTIONS` dispatcher carve-out.
+- The whole gallery UI in `index.html` — grid, lightbox, prev/next, save, lazy loading, the
+  thumb-fails-so-retry-full path.
+- All 12 photo tests.
+
+What gets replaced: `_pcloud.js` → an R2 client. And R2 changes two things for the better —
+uploads go **straight from the phone** via a presigned PUT (no 4.5 MB function ceiling), and
+images can be served by presigned GET instead of proxying bytes through the function.
+
+### Migrating the five years of existing photos — without the API
+
+R2's one real disadvantage was that existing photos stay in pCloud. That is solvable **without
+pCloud's API**: pCloud Drive mounts the account as a local drive letter, so the job folders are
+ordinary files on disk. A one-time script can walk them and upload to R2 — no token, no
+registration, no second factor. **Confirm pCloud Drive is installed before relying on this.**
+
+### Why R2 was rejected (superseded — see the status note at the top)
 
 R2 is the cleaner engineering answer — presigned PUT *and* GET, no referrer restriction, no proxy,
 free egress, 10 GB free, S3 API. It lost on workflow, decisively:
@@ -220,9 +261,10 @@ free egress, 10 GB free, S3 API. It lost on workflow, decisively:
 
 ## 6. Slices
 
-- **Slice 1 — viewing (read-only).** `_pcloud.js` helper, `jobPhotos` + `jobPhoto` actions, in-app
-  Photos tab with grid + lightbox, `#btnViewPhotos` opens it instead of pCloud. Existing photos
-  work immediately. Make untouched.
+- **Slice 1 — viewing (read-only). CODE COMPLETE, untested against real pCloud.**
+  `_pcloud.js` helper, `signScope`/`verifyScope` in `_auth.js`, `jobPhotos` + `jobPhoto` actions,
+  gallery modal + lightbox in `index.html`, `#btnViewPhotos` opens it instead of pCloud.
+  10 new offline tests pass (54 total). **Blocked on `PCLOUD_ACCESS_TOKEN` to smoke-test.**
 - **Slice 2 — upload.** `uploadJobPhoto` + camera/compress UI on `#btnAddPhotos`. JotForm no longer
   used by the app. Make scenario left running as a fallback during soak.
 - **Slice 3 — `Job Photos` table**, captions/tags, backfill from a `listfolder` sweep.
@@ -247,10 +289,35 @@ free egress, 10 GB free, S3 API. It lost on workflow, decisively:
 
 ## 8. Blocked on
 
-1. **`PCLOUD_ACCESS_TOKEN`** — register an app at pCloud's developer dashboard, run the OAuth
-   code flow once, capture the token and the returned `hostname`. Nothing server-side can be
-   tested until this exists.
+1. **A pCloud token** — nothing server-side can be tested until one exists. Two routes; set
+   whichever env var matches, never both:
+
+   | Route | Script | Env var | Notes |
+   |---|---|---|---|
+   | OAuth | `tools/pcloud-oauth.mjs` | `PCLOUD_ACCESS_TOKEN` | Preferred — revocable per app. Needs app registration, which **was down ("temporarily unavailable") on 2026-07-31**. |
+   | Native login | `tools/pcloud-token.mjs` | `PCLOUD_AUTH_TOKEN` | No registration needed. Prompts for the account password (never an argv). Revoked only by password change or `logout`. Fails if the account has 2FA. |
+
+   pCloud sends the two under different parameter names (`?access_token=` vs `?auth=`) and they
+   are **not interchangeable** — the wrong one returns "log in failed", which reads like a bad
+   password rather than a wiring mistake. `_pcloud.js` picks the parameter from whichever env
+   var is set; both paths are covered by tests.
 2. **Netlify plan check** — free vs Pro, old bandwidth model vs 2026 credits.
+
+## 8b. Next session — start here
+
+1. **Create the R2 bucket** (Cloudflare dashboard → R2 → Create bucket, e.g. `nee-job-photos`).
+   Generate an S3-compatible API token; add `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+   `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` to Netlify. Entirely self-serve — nothing can block it.
+2. **Write `netlify/functions/_r2.js`** to the same fail-soft contract as `_pcloud.js`
+   (presign PUT, presign GET, list by job prefix). Key layout: `jobs/<jobId>/<timestamp>-<n>.jpg`.
+3. **Repoint `jobPhotos` / `jobPhoto`** at `_r2.js`. Handler shape and tests stay.
+4. **Re-point `#btnViewPhotos`** at `openJobPhotos()` (index.html ~:3691, currently reverted to
+   the legacy link with a comment marking the spot).
+5. **Upload slice** — camera capture + client compression + presigned PUT direct from the browser.
+6. **Backfill** existing photos from pCloud Drive (see above), if installed.
+
+Keep `_pcloud.js` and both `tools/pcloud-*.mjs` scripts for now — if pCloud ever fixes app
+registration, the mirror-to-pCloud option reopens with no rework.
 
 ## 9. Open questions
 

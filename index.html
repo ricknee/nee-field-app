@@ -3682,18 +3682,13 @@
 
     // Action Buttons
     setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
-    // View Photos now opens the in-app gallery instead of the pCloud web app,
-    // so nobody needs a pCloud login and nobody lands in the full company file
-    // tree. Enabled whenever the job has a photo folder id; the gallery itself
-    // explains the "not set up yet" case rather than leaving a dead button.
-    {
-      const vp = $("btnViewPhotos");
-      vp.href = "#";
-      vp.removeAttribute("target");
-      vp.textContent = "🖼 View Photos";
-      vp.classList.toggle("disabled", !job.photoFolderId);
-      vp.onclick = (e) => { e.preventDefault(); if (job.photoFolderId) openJobPhotos(); };
-    }
+    // REVERTED 2026-07-31 to the original pCloud link. The in-app gallery below
+    // (openJobPhotos) is complete and tested but DORMANT — nothing calls it —
+    // because pCloud's app-registration page has been down for months, so no
+    // API token can be issued and the gallery could never load. The photo work
+    // moves to Cloudflare R2; see docs/PLAN-job-photos.md. Re-point this button
+    // at openJobPhotos once the R2 read path lands.
+    setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
 
     // New Job Estimate button (admin only) — opens in-app modal that loads
     // an Estimate Template, snapshots its values, and POSTs a Job Estimates
@@ -4262,7 +4257,7 @@
    * <img> tags is what lets the browser cache them — fetching blobs in JS
    * would re-download every photo on every visit.
    */
-  const jobPhotoState = { jobId: null, jobName: "", photos: [], index: 0 };
+  const jobPhotoState = { jobId: null, jobName: "", photos: [], index: 0, legacyLink: "" };
 
   function jobPhotoUrl(p, size) {
     const q = new URLSearchParams({
@@ -4287,9 +4282,10 @@
   window.openJobPhotos = async function() {
     const job = state.selected;
     if (!job) return;
-    jobPhotoState.jobId   = job.id;
-    jobPhotoState.jobName = job.name || "";
-    jobPhotoState.photos  = [];
+    jobPhotoState.jobId      = job.id;
+    jobPhotoState.jobName    = job.name || "";
+    jobPhotoState.photos     = [];
+    jobPhotoState.legacyLink = job.viewPhotosLink || "";
 
     $("jobPhotosTitle").textContent  = `📷 Photos — ${job.name || ""}`;
     $("jobPhotosGrid").innerHTML     = "";
@@ -4300,15 +4296,27 @@
     try {
       const d = await apiGet("jobPhotos", { jobId: job.id });
       if (!d.available) {
-        $("jobPhotosStatus").textContent = photoUnavailableMsg(d.reason);
+        showPhotosUnavailable(photoUnavailableMsg(d.reason));
         return;
       }
       jobPhotoState.photos = d.photos || [];
       renderJobPhotos();
     } catch (e) {
-      $("jobPhotosStatus").textContent = `Could not load photos: ${e.message}`;
+      showPhotosUnavailable(`Could not load photos: ${e.message}`);
     }
   };
+
+  // Whenever the in-app gallery can't serve photos, fall back to the legacy
+  // pCloud link rather than dead-ending. Losing the nicer view is annoying;
+  // losing access to jobsite photos in the field is not acceptable, and this
+  // path is what a missing PCLOUD_ACCESS_TOKEN looks like in production.
+  function showPhotosUnavailable(msg) {
+    const link = jobPhotoState.legacyLink;
+    $("jobPhotosGrid").innerHTML = "";
+    $("jobPhotosStatus").innerHTML = esc(msg) + (link
+      ? ` <a href="${esc(link)}" target="_blank" rel="noopener" style="color:var(--blue); text-decoration:underline;">Open this job's folder in pCloud instead →</a>`
+      : "");
+  }
 
   function renderJobPhotos() {
     const grid   = $("jobPhotosGrid");

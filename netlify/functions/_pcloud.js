@@ -39,14 +39,28 @@ export class PcloudError extends Error {
   }
 }
 
+// pCloud has TWO token flavours and they are NOT interchangeable — each must be
+// sent under its own parameter name, and using the wrong one returns "log in
+// failed", which looks like a bad password rather than a wiring mistake:
+//
+//   PCLOUD_ACCESS_TOKEN -> ?access_token=   OAuth, from app registration
+//   PCLOUD_AUTH_TOKEN   -> ?auth=           native, from userinfo?getauth=1
+//
+// Both are full-account credentials; the app treats them identically otherwise.
+// The native one exists because pCloud's app-registration page is frequently
+// down ("temporarily unavailable"), which would otherwise block this entirely.
 export function pcloudEnabled() {
-  return !!process.env.PCLOUD_ACCESS_TOKEN;
+  return !!(process.env.PCLOUD_ACCESS_TOKEN || process.env.PCLOUD_AUTH_TOKEN);
 }
 
-function requireToken() {
-  const t = process.env.PCLOUD_ACCESS_TOKEN;
-  if (!t) throw new PcloudError("pCloud is not configured", "NOT_CONFIGURED");
-  return t;
+// Returns the auth query parameter as a single-entry object, ready to spread
+// into a request. OAuth wins if somehow both are set.
+function authParam() {
+  const oauth = process.env.PCLOUD_ACCESS_TOKEN;
+  if (oauth) return { access_token: oauth };
+  const native = process.env.PCLOUD_AUTH_TOKEN;
+  if (native) return { auth: native };
+  throw new PcloudError("pCloud is not configured", "NOT_CONFIGURED");
 }
 
 function buildUrl(method, params = {}) {
@@ -73,8 +87,7 @@ async function withTimeout(fn, timeoutMs) {
 // JSON call. pCloud always answers HTTP 200 and signals failure in the body's
 // `result` field, so checking res.ok alone silently treats errors as success.
 async function pcApi(method, params = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const token = requireToken();
-  const url = buildUrl(method, { ...params, access_token: token });
+  const url = buildUrl(method, { ...params, ...authParam() });
 
   const res = await withTimeout(
     (signal) => fetch(url, { signal, headers: { Accept: "application/json" } }),
@@ -93,8 +106,7 @@ async function pcApi(method, params = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
 
 // Binary call (getthumb). Returns raw bytes, not a link.
 async function pcBinary(method, params = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const token = requireToken();
-  const url = buildUrl(method, { ...params, access_token: token });
+  const url = buildUrl(method, { ...params, ...authParam() });
 
   const res = await withTimeout((signal) => fetch(url, { signal }), timeoutMs);
   if (!res.ok) throw new PcloudError(`pCloud HTTP ${res.status} on ${method}`, "HTTP_" + res.status);
@@ -201,13 +213,12 @@ export async function getFileBytes(fileid, timeoutMs = DEFAULT_TIMEOUT_MS) {
 // renameifexists=1 makes pCloud disambiguate rather than clobber, so a
 // filename collision can never destroy an existing photo.
 export async function uploadFile({ folderid, filename, bytes, contentType = "image/jpeg" }, timeoutMs = 20000) {
-  const token = requireToken();
   if (!folderid) throw new PcloudError("Missing pCloud folder id", "NO_FOLDER");
   if (!filename) throw new PcloudError("Missing filename", "NO_FILENAME");
 
   const url = buildUrl("uploadfile", {
     folderid,
-    access_token: token,
+    ...authParam(),
     nopartial: 1,        // don't keep a truncated file if the upload dies mid-flight
     renameifexists: 1,
   });

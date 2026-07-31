@@ -4488,7 +4488,15 @@
       if (failed) {
         // Show WHY, not just that it failed — see putToR2. The tech reading
         // this has no console.
-        status.textContent = `${done} uploaded, ${failed} failed. ${lastFailure || ""}`;
+        //
+        // The controlling service worker is named explicitly because a stale
+        // worker intercepting uploads produces the same "Failed to fetch" as a
+        // CORS rejection, and there is no way to tell them apart on a phone.
+        // If this line says "controlled by" after a failure, suspect the worker
+        // before suspecting the bucket.
+        const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+        const swNote = sw ? ` [page controlled by service worker]` : ` [no service worker]`;
+        status.textContent = `${done} uploaded, ${failed} failed. ${lastFailure || ""}${swNote}`;
       } else {
         showAppToast(`${done} photo${done === 1 ? "" : "s"} uploaded ✓`);
       }
@@ -16546,8 +16554,17 @@
 
 <script>
   // ── SERVICE WORKER (offline support) ──
+  // register() alone is not enough: once a worker is installed the browser may
+  // keep serving the OLD script for up to 24h, so a fix shipped IN sw.js can
+  // sit un-applied while index.html is already current. That is exactly what
+  // happened with the upload bug — the page was new, the worker was not, and
+  // the symptom was indistinguishable from a server-side problem.
+  // update() forces the check on every load; sw.js already calls skipWaiting()
+  // and clients.claim(), so a new worker takes over immediately.
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => { try { reg.update(); } catch {} })
+      .catch(() => {});
   }
 </script>
 

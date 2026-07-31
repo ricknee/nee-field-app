@@ -1,6 +1,7 @@
 {
   "type": "module",
   "dependencies": {
-    "@neondatabase/serverless": "^1.0.2"
+    "@neondatabase/serverless": "^1.0.2",
+    "aws4fetch": "^1.0.20"
   }
 }

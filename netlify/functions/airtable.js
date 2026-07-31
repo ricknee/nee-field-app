@@ -9,6 +9,9 @@ import {
   pcloudEnabled, PcloudError, listFolderImages, assertFileInFolder,
   getThumbBytes, getFileBytes,
 } from "./_pcloud.js";
+// Cloudflare R2 — the photo store the feature actually ships on. The _pcloud.js
+// path above is dormant (nothing calls it); see docs/PLAN-job-photos.md.
+import { r2Enabled, r2Status } from "./_r2.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -435,8 +438,16 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // make them public. Keep this set tiny and byte-serving only.
 const _GRANT_AUTH_ACTIONS = new Set(["jobPhoto"]);
 
+// Admin-only GET reads. Diagnostics belong here: r2Status reports which env
+// var is wrong and echoes R2's error text, which is exactly the kind of detail
+// that shouldn't be readable by every signed-in field tech.
+const _ADMIN_READS = new Set(["r2Status"]);
+
 function authzFor(method, action) {
-  if (method === "GET") return _PAYROLL_READS.has(action) ? _PAYROLL : null;
+  if (method === "GET") {
+    if (_ADMIN_READS.has(action)) return _ADMIN;
+    return _PAYROLL_READS.has(action) ? _PAYROLL : null;
+  }
   // POST
   if (_READ_LIKE_POSTS.has(action))    return null;
   if (_TIME_SELF_WRITES.has(action))   return _PAYROLL;
@@ -4552,6 +4563,14 @@ function photoUnavailable(e, where) {
   return { reason: "error" };
 }
 
+// Admin diagnostic: is R2 wired up correctly? Exists because every wiring
+// mistake (typo'd bucket, wrong account id, unscoped token, truncated secret)
+// otherwise surfaces to the user as the same useless "photos unavailable".
+async function handleR2Status() {
+  const status = await r2Status();
+  return resp(200, { ok: true, r2: status });
+}
+
 async function handleJobPhotos(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -4635,6 +4654,7 @@ export async function handler(event) {
       const params = event.queryStringParameters || {};
       if (action === "jobs")               return await handleJobs();
       if (action === "jobById")            return await handleJobById(params);
+      if (action === "r2Status")           return await handleR2Status();
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "jobPhoto")           return await handleJobPhoto(params);
       if (action === "generator")          return await handleGenerator(params);

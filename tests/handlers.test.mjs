@@ -661,6 +661,18 @@ await test("jobPhotos still requires a bearer token (grant carve-out is jobPhoto
   eq((await GET("jobPhotos", { jobId: "recJ1" }, null)).statusCode, 401, "status");
 });
 
+await test("r2Status: reports exactly which env vars are missing", async () => {
+  for (const k of ["R2_ACCOUNT_ID","R2_ACCESS_KEY_ID","R2_SECRET_ACCESS_KEY","R2_BUCKET"]) delete process.env[k];
+  const b = json(await GET("r2Status"));
+  eq(b.r2.ok, false, "ok"); eq(b.r2.reason, "not-configured", "reason");
+  eq(b.r2.missing.length, 4, "names all four");
+});
+
+await test("r2Status: admin only — employee gets 403", async () => {
+  eq((await GET("r2Status", {}, EMP_TOK)).statusCode, 403, "employee");
+  eq((await GET("r2Status", {}, VIEWER_TOK)).statusCode, 403, "viewer");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

@@ -116,6 +116,11 @@ const employees = await fetchAll("Employees");
 const nul  = v => (v === undefined || v === "" ? null : v);
 const num  = v => (v === undefined || v === "" || v === null ? null : Number(v));
 const bool = v => (v === undefined ? null : v === true);
+// Airtable lookups come back as ARRAYS even when they resolve to one value.
+// Verified 2026-07-31: no job resolves to more than one billable rate, so taking
+// the first element is faithful — but it is a first, not a sum, deliberately.
+const firstNum = v => (Array.isArray(v) ? num(v[0]) : num(v));
+const firstId  = v => (Array.isArray(v) && v.length ? v[0] : null);
 
 // Jobs MASTER DATA (slice 4) — descriptive fields only. The ~40 financial rollups
 // are deliberately NOT copied: they roll up from estimates / invoices / expenses /
@@ -160,10 +165,18 @@ const JOB_FIELDS = [
   ["markup_pct",              "Job Markup %",                     num],
   ["generator_installed",     "Generator Installed",              bool],
   ["inspection_not_required", "Inspection Not Required",          bool],
+  // Slice 5 phase A: the value Airtable's lookup hands to Time Entries as
+  // T&M Bill Rate. Stored verbatim so the diff gate is a comparison, not a
+  // re-derivation. 34 of 110 jobs have none — that is normal, not missing data.
+  ["billable_hourly_rate",    "Billable Hourly Rate (from Labor Billable Rates)", firstNum],
 ];
 
 const jobs = await fetchAll("Jobs", { "fields[]": JOB_FIELDS.map(([, at]) => at) });
 const entries   = await fetchAll("Time Entries");
+// Slice 5 phase A — the labor REVENUE chain. The cost chain (Labor Cost Rates,
+// Job Labor Allocation) is phase B and is deliberately not loaded yet.
+const rates     = await fetchAll("Labor Billable Rates");
+const billAllocs = await fetchAll("Labor Billing Allocations");
 console.log(`extracted: ${employees.length} employees, ${jobs.length} jobs, ${entries.length} time entries`);
 
 // ── Airtable-side truth, computed BEFORE loading ──────────────────────────
@@ -229,12 +242,50 @@ await upsertBatch("employees", ["airtable_id", "name", "username", "role", "acti
                       // QB Time user id — the puller's employee lookup key.
                       nul(e.fields["Employee ID"])]), "airtable_id");
 
+// Billable rates BEFORE jobs — jobs carry an FK to them.
+await upsertBatch("labor_billable_rates",
+  ["airtable_id", "labor_type", "billable_hourly_rate", "effective_start_date", "effective_end_date", "notes", "synced_at"],
+  rates.map(r => [r.id, nul(r.fields["Labor Type"]), num(r.fields["Billable Hourly Rate"]),
+                  nul(r.fields["Effective Start Date"]), nul(r.fields["Effective End Date"]),
+                  nul(r.fields["Notes"]), new Date().toISOString()]), "airtable_id");
+
+const rateMap = new Map((await sql.query(`SELECT id, airtable_id FROM labor_billable_rates`))
+  .map(r => [r.airtable_id, r.id]));
+
 // Jobs master data. Airtable stays the source of truth for Jobs — nothing writes
 // back — so `synced_at` is the only thing that makes a stale row visible.
 await upsertBatch("jobs",
-  ["airtable_id", ...JOB_FIELDS.map(([col]) => col), "synced_at"],
-  jobs.map(j => [j.id, ...JOB_FIELDS.map(([, at, coerce]) => coerce(j.fields[at])), new Date().toISOString()]),
+  ["airtable_id", ...JOB_FIELDS.map(([col]) => col), "billable_rate_id", "synced_at"],
+  jobs.map(j => [j.id,
+                 ...JOB_FIELDS.map(([, at, coerce]) => coerce(j.fields[at])),
+                 rateMap.get(firstId(j.fields["Labor Billable Rates"])) ?? null,
+                 new Date().toISOString()]),
   "airtable_id");
+
+// Labor billing allocations. Loads in BOTH modes like the other dimensions —
+// Airtable is the only writer, they are keyed by airtable_id, and they carry no
+// hours of their own that could double-count. `time_entry_id` is resolved against
+// whatever time_entries already holds; an allocation whose entry has not landed yet
+// simply keeps a NULL FK and picks it up on a later run.
+{
+  const teMap = new Map((await sql.query(`SELECT id, airtable_id FROM time_entries WHERE airtable_id IS NOT NULL`))
+    .map(r => [r.airtable_id, r.id]));
+
+  await upsertBatch("labor_billing_allocations",
+    ["airtable_id", "time_entry_id", "time_entry_airtable_id", "invoice_airtable_id",
+     "allocated_hours", "bill_rate", "billing_stage", "synced_at"],
+    billAllocs.map(a => {
+      const teAt = firstId(a.fields["Time Entry"]);
+      return [a.id, teMap.get(teAt) ?? null, teAt, firstId(a.fields["Invoice"]),
+              num(a.fields["Allocated Hours"]), firstNum(a.fields["Bill Rate"]),
+              nul(a.fields["Billing Stage"]), new Date().toISOString()];
+    }), "airtable_id", 200);
+
+  const [ac] = await sql.query(
+    `SELECT count(*)::int AS total, count(time_entry_id)::int AS linked,
+            count(invoice_airtable_id)::int AS invoiced FROM labor_billing_allocations`);
+  console.log(`billing allocations: ${ac.total} rows, ${ac.linked} linked to a time entry, ${ac.invoiced} on an invoice`);
+}
 
 // ── link puller rows to their Airtable twins ──────────────────────────────
 // Runs in BOTH modes, like the dimension loads — it writes only the linkage

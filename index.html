@@ -4415,9 +4415,13 @@
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
-    // Rear camera on phones, but still allows picking from the gallery.
-    input.setAttribute("capture", "environment");
     input.multiple = true;
+    // NOTE: no `capture` attribute on purpose. Setting capture="environment"
+    // forces the camera and makes phones IGNORE `multiple` — you get exactly
+    // one shot per tap, with a confirm screen each time. Without it the OS
+    // shows its own chooser, so the tech can either take a photo or select a
+    // whole batch from the camera roll, which is what shooting a job actually
+    // looks like.
     input.style.display = "none";
     document.body.appendChild(input);
     input.addEventListener("change", async () => {
@@ -4466,7 +4470,7 @@
 
       // One at a time with per-photo status. A partial failure must be visible
       // and retryable, not swallowed by a single all-or-nothing spinner.
-      let done = 0, failed = 0;
+      let done = 0, failed = 0, lastFailure = "";
       for (let i = 0; i < prepared.length; i++) {
         status.textContent = `Uploading ${i + 1} of ${prepared.length}…`;
         try {
@@ -4475,13 +4479,16 @@
           done++;
         } catch (e) {
           failed++;
+          lastFailure = e.message || String(e);
           console.error("[photo-upload] failed", e);
         }
       }
 
       await refreshJobPhotos();
       if (failed) {
-        status.textContent = `${done} uploaded, ${failed} failed. Tap Add Photos to retry the rest.`;
+        // Show WHY, not just that it failed — see putToR2. The tech reading
+        // this has no console.
+        status.textContent = `${done} uploaded, ${failed} failed. ${lastFailure || ""}`;
       } else {
         showAppToast(`${done} photo${done === 1 ? "" : "s"} uploaded ✓`);
       }
@@ -4491,17 +4498,35 @@
     }
   }
 
+  // Uploads one blob to a presigned R2 url.
+  //
+  // Error reporting here is deliberately verbose: this runs on a phone in a
+  // basement, where nobody can open a browser console. A bare "upload failed"
+  // is unactionable, so each distinct failure names itself on screen.
   async function putToR2(url, blob, contentType) {
-    const r = await fetch(url, {
-      method: "PUT",
-      headers: { "Content-Type": contentType },
-      body: blob,
-    });
+    let r;
+    try {
+      r = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": contentType },
+        body: blob,
+      });
+    } catch (e) {
+      // fetch only throws for network-level failures. Against a presigned url
+      // that has almost always got one cause: the browser blocked it because
+      // the bucket's CORS policy doesn't list this exact origin.
+      throw new Error(`Blocked before reaching storage (usually the bucket CORS policy not listing ${location.origin}). [${e.message}]`);
+    }
     if (!r.ok) {
-      // A CORS rejection surfaces as a thrown TypeError rather than this, so
-      // reaching here means R2 answered and refused — usually an expired
-      // signature (the URL is good for 10 minutes).
-      throw new Error(`R2 refused the upload (HTTP ${r.status})`);
+      // R2 answers with an XML <Message> explaining itself. Surfacing it beats
+      // guessing between an expired signature, a clock skew and a bad key.
+      let detail = "";
+      try {
+        const body = await r.text();
+        const m = /<Message>([\s\S]*?)<\/Message>/.exec(body) || /<Code>([\s\S]*?)<\/Code>/.exec(body);
+        detail = m ? ` — ${m[1]}` : ` — ${body.slice(0, 120)}`;
+      } catch {}
+      throw new Error(`Storage refused the upload (HTTP ${r.status})${detail}`);
     }
   }
 

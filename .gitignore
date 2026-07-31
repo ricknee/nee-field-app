@@ -27,3 +27,6 @@ node_modules/
 # OS / editor cruft
 .DS_Store
 Thumbs.db
+
+# Derived GP rollup definitions — same sensitivity as the inventory above
+docs/GP-ROLLUP-INFERENCE.json

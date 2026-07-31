@@ -86,12 +86,37 @@ L.push("Aggregation and filter **must be captured manually**. Until every TODO h
 L.push("in and each ported view diffed job-by-job against Airtable, nothing Airtable-side may");
 L.push("be retired.");
 L.push("");
-L.push("| Field | Linked via | Rolls up | Aggregation | Filter |");
-L.push("|---|---|---|---|---|");
+// Merge in whatever gp-infer-rollups.mjs was able to derive from the data.
+let inferred = new Map();
+try {
+  const j = JSON.parse(fs.readFileSync(path.join(ROOT, "docs/GP-ROLLUP-INFERENCE.json"), "utf8"));
+  inferred = new Map(j.map(r => [r.name, r]));
+  L.push("Aggregation and filter below were **inferred from production data** by");
+  L.push("`db/etl/gp-infer-rollups.mjs`, not read from the API — the API does not have them.");
+  L.push("A candidate had to match on EVERY job with linked records; one counter-example");
+  L.push("rejected it. Confidence is stated per row:");
+  L.push("");
+  L.push("- **CONFIDENT** — exactly one aggregation/filter explains every job.");
+  L.push("- **LIKELY** — several explanations fit; the tightest is shown. Worth eyeballing.");
+  L.push("- **UNDETERMINED** — the underlying values are all null/zero, so the data cannot");
+  L.push("  distinguish the aggregations. Must be read off the UI (but is currently inert).");
+  L.push("- **AMBIGUOUS** — nothing matched. Must be read off the UI.");
+  L.push("");
+} catch {
+  L.push("Aggregation and filter **must be captured manually** — run");
+  L.push("`node db/etl/gp-infer-rollups.mjs` first to derive most of them from data.");
+  L.push("");
+}
+L.push("| Field | Linked via | Rolls up | Aggregation | Filter | Confidence |");
+L.push("|---|---|---|---|---|---|");
 for (const f of rollups) {
   const o = f.options || {};
+  const i = inferred.get(f.name);
+  const agg    = i?.agg    ? i.agg    : "**TODO**";
+  const filt   = i?.filter ? i.filter : (i?.detail ? "_" + i.detail + "_" : "**TODO**");
+  const conf   = i?.verdict || "—";
   L.push(`| ${f.name} | ${nameById.get(o.recordLinkFieldId) || "?"} | ` +
-         `${nameById.get(o.fieldIdInLinkedTable) || "?"} | **TODO** | **TODO** |`);
+         `${nameById.get(o.fieldIdInLinkedTable) || "?"} | ${agg} | ${filt} | ${conf} |`);
 }
 L.push("");
 L.push("## Billing / allocation tables these depend on");

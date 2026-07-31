@@ -59,11 +59,20 @@ answers, just slowly. It went unnoticed for three days.
 - `AUTH_SECRET` — HMAC key for signing/verifying session tokens (`_auth.js`, shared by both
   functions). **Required — auth fails closed:** `ensureEnv()` throws and every request 401s if
   it's unset. Local `netlify dev` and `node tests/handlers.test.mjs` need it too.
-- `PCLOUD_ACCESS_TOKEN` / `PCLOUD_API_HOST` — **optional.** pCloud OAuth token for the in-app
-  jobsite photo gallery (`_pcloud.js`). **Fails soft like `_neon.js`, not closed** — unset just
-  disables the Photos view. It is a **full-account** credential (pCloud has no presigned upload),
-  so it is server-side only; that constraint is why photo bytes proxy through the function.
-  Wrong region host = "invalid access token"; see `.env.example`. See `docs/PLAN-job-photos.md`.
+- `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET` — **optional as a
+  group.** Cloudflare R2 store for jobsite photos (`_r2.js`, `docs/PLAN-job-photos.md`).
+  **Fails soft like `_neon.js`, not closed** — unset just disables the Photos buttons. The browser
+  uploads and downloads via **presigned URLs**, so photo bytes never pass through the function
+  (no 4.5 MB payload ceiling, no per-image invocation). `aws4fetch` is lazy-imported, so the test
+  suite stays offline. The bucket also needs a **CORS policy** allowing `PUT` from
+  `https://hub.northeasternelec.com`, or uploads are refused by the browser before any credential
+  is checked — that is bucket config, not env. Diagnose wiring with the admin action
+  `GET ?action=r2Status`, which names the specific misconfiguration.
+- `PCLOUD_ACCESS_TOKEN` / `PCLOUD_AUTH_TOKEN` / `PCLOUD_API_HOST` — **unused.** `_pcloud.js` and
+  `tools/pcloud-*.mjs` are kept on disk but nothing imports them: pCloud's app-registration page
+  has been down for months, so no API token can be issued (its native login demands a second factor
+  under an undocumented parameter). Make.com still reaches pCloud only because Make registered its
+  own app years ago. Don't wire these back up without re-reading `docs/PLAN-job-photos.md`.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

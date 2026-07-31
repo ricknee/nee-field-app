@@ -1,17 +1,16 @@
 // netlify/functions/airtable.js
 // Northeastern Electric Field App — Netlify Proxy
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
-import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
+import { signToken, authedUser, hasRole } from "./_auth.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
-import {
-  pcloudEnabled, PcloudError, listFolderImages, assertFileInFolder,
-  getThumbBytes, getFileBytes,
-} from "./_pcloud.js";
-// Cloudflare R2 — the photo store the feature actually ships on. The _pcloud.js
-// path above is dormant (nothing calls it); see docs/PLAN-job-photos.md.
-import { r2Enabled, r2Status } from "./_r2.js";
+// Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
+// pCloud lost the store decision when its app-registration page turned out to
+// have been down for months, so no API token could be issued. That file and
+// tools/pcloud-*.mjs are kept on disk in case it ever reopens (a mirror-to-
+// pCloud option), but nothing calls them. See docs/PLAN-job-photos.md.
+import { r2Enabled, r2Status, listJobPhotos, presignPut, thumbKeyFor, jobPrefix, R2Error } from "./_r2.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -431,12 +430,12 @@ const _ADMIN_OFFICE_POSTS = new Set([
   "updateJobBillableRate", "createVendor",
 ]);
 
-// Actions authenticated by a URL-carried scoped grant instead of the bearer
-// token, because the browser can't attach headers to the request (an <img src>).
-// See signScope/verifyScope in _auth.js. The handler MUST verify the grant
-// itself — the dispatcher only skips the bearer check for these, it does not
-// make them public. Keep this set tiny and byte-serving only.
-const _GRANT_AUTH_ACTIONS = new Set(["jobPhoto"]);
+// NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
+// image proxy authenticate from a signed URL because an <img> can't send an
+// Authorization header. It is GONE — R2 presigned URLs solve the same problem
+// without the function serving bytes, so no action needs to skip the bearer
+// check. Don't reintroduce a bypass without a case that genuinely can't be
+// served by a presigned URL. (signScope/verifyScope remain in _auth.js.)
 
 // Admin-only GET reads. Diagnostics belong here: r2Status reports which env
 // var is wrong and echoes R2's error text, which is exactly the kind of detail
@@ -4526,42 +4525,6 @@ async function handleCreateJob(body) {
  * explanation. A photo problem must never break the job view.
  */
 
-// Binary response. resp() hardcodes Cache-Control: no-store, which is right for
-// JSON and exactly wrong here — uncached photos would re-fetch on every gallery
-// scroll, and each fetch is a function invocation against the Netlify plan
-// allowance. (fileid, size) is a stable key so these are safely immutable.
-// `private` keeps job photos out of shared/CDN caches at the cost of not
-// deduping across users — the right trade for customer job sites.
-function respImage(buffer, contentType) {
-  return {
-    statusCode: 200,
-    headers: {
-      "Content-Type": contentType || "image/jpeg",
-      "Cache-Control": "private, max-age=31536000, immutable",
-      "Access-Control-Allow-Origin": "*",
-    },
-    body: buffer.toString("base64"),
-    isBase64Encoded: true,
-  };
-}
-
-// Maps a pCloud failure onto a calm, non-leaking answer. Never echo the raw
-// pCloud message to the client — it can contain account/path detail.
-function photoUnavailable(e, where) {
-  const code = e instanceof PcloudError ? e.code : null;
-  // 2005 = directory does not exist. Almost always a job whose pCloud folders
-  // were never provisioned, not an outage — say so specifically.
-  if (code === 2005) return { reason: "folder-missing" };
-  // 1000/2000/2094 = not logged in / bad token. This one is on us, so it must
-  // be loud in the logs even though the user gets a soft answer.
-  if (code === 1000 || code === 2000 || code === 2094 || code === "HTTP_401") {
-    console.error(`pCloud auth FAILED in ${where}: check PCLOUD_ACCESS_TOKEN / PCLOUD_API_HOST`);
-    return { reason: "auth" };
-  }
-  if (code === "TIMEOUT") return { reason: "timeout" };
-  console.error(`pCloud error in ${where}: ${String(e?.message || e).slice(0, 200)}`);
-  return { reason: "error" };
-}
 
 // Admin diagnostic: is R2 wired up correctly? Exists because every wiring
 // mistake (typo'd bucket, wrong account id, unscoped token, truncated secret)
@@ -4571,59 +4534,88 @@ async function handleR2Status() {
   return resp(200, { ok: true, r2: status });
 }
 
+// Maps an R2 failure onto a calm answer for the client. Never echo raw R2
+// error text to a non-admin — it can name bucket and account internals. The
+// admin r2Status action exists for the detailed version.
+function r2Unavailable(e, where) {
+  const code = e instanceof R2Error ? e.code : null;
+  if (code === "NOT_CONFIGURED") return { reason: "not-configured" };
+  if (code === "TIMEOUT")        return { reason: "timeout" };
+  if (code === "NO_SIGNER") {
+    console.error(`_r2: aws4fetch missing in ${where} — check netlify.toml's npm install step`);
+    return { reason: "error" };
+  }
+  console.error(`R2 error in ${where}: ${String(e?.message || e).slice(0, 200)}`);
+  return { reason: "error" };
+}
+
+// Lists one job's photos. Every URL comes back pre-signed, so the browser
+// fetches images straight from Cloudflare — no bytes through this function.
+//
+// Scoping is by Airtable RECORD ID, not job name. That matters: the FIND-on-
+// name pattern used elsewhere in this file matches substrings, so "Jenny Ln 1"
+// leaks into "Jenny Ln 10/11/12" (see TODO.md). Record ids can't collide, so
+// two jobs with the same name still never see each other's photos.
 async function handleJobPhotos(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
-  if (!pcloudEnabled()) return resp(200, { ok: true, available: false, reason: "not-configured", photos: [] });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", photos: [] });
 
   const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
   if (!records.length) return resp(404, { ok: false, error: "Job not found." });
 
-  const folderId = g(records[0].fields || {}, F.job.pcloudPhotoFolderId);
-  if (!folderId) return resp(200, { ok: true, available: false, reason: "no-folder", photos: [] });
-
   try {
-    const images = await listFolderImages(folderId);
-    // Mint one grant per photo. Membership in this job's folder is proven HERE,
-    // by listfolder, so the image endpoint doesn't have to re-check it — the
-    // grant is the proof, and it only exists for files we just saw in the
-    // folder. See signScope in _auth.js for why the URL carries the auth.
-    const photos = images.map(p => ({ ...p, grant: signScope([jobId, p.fileid]) }));
-    return resp(200, { ok: true, available: true, folderId: String(folderId), photos });
+    const photos = await listJobPhotos(jobId);
+    return resp(200, { ok: true, available: true, photos });
   } catch (e) {
-    return resp(200, { ok: true, available: false, ...photoUnavailable(e, "jobPhotos"), photos: [] });
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "jobPhotos"), photos: [] });
   }
 }
 
-// Serves the bytes for one photo, straight into an <img> tag.
+// Hands back short-lived upload URLs so the phone PUTs straight to R2.
 //
-// Authenticated by the URL's grant, NOT the bearer token — an <img> cannot send
-// an Authorization header. The grant names (jobId, fileid), so it cannot be
-// replayed against any other photo or job, and it expires on its own.
-async function handleJobPhoto(params) {
-  const jobId  = params?.jobId;
-  const fileid = params?.fileid;
-  const size   = params?.size || "320x320";
-  if (!jobId || !fileid) return resp(400, { ok: false, error: "Missing jobId or fileid." });
+// The bytes never touch this function, which is the whole point: no 4.5 MB
+// Netlify payload ceiling, no 10s timeout risk on a slow jobsite connection,
+// and no bandwidth cost. The function's only job is to decide the key and
+// prove the caller is allowed to write to this job.
+//
+// Two URLs per photo — the compressed original and its thumbnail. The client
+// generates both; R2 is pure storage and won't make thumbnails for us, and a
+// gallery that loads full-size images would be unusable on mobile data.
+async function handleJobPhotoUploadUrls(body) {
+  const jobId = body?.jobId;
+  const files = Array.isArray(body?.files) ? body.files : [];
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!files.length) return resp(400, { ok: false, error: "No files requested." });
+  if (files.length > 25) return resp(400, { ok: false, error: "Too many photos at once (max 25)." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage isn't configured." });
 
-  if (!verifyScope(params?.grant, [jobId, fileid])) {
-    return resp(403, { ok: false, error: "Photo link is invalid or expired. Reopen the job." });
-  }
-  if (!pcloudEnabled()) return resp(503, { ok: false, error: "Photos are not configured." });
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
 
+  // Keys are server-decided. If the client named them, a caller could write
+  // outside its own job's prefix just by sending "../otherjob/x.jpg".
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15); // YYYYMMDDHHMMSS
   try {
-    const { buffer, contentType } = size === "full"
-      ? await getFileBytes(fileid)
-      : await getThumbBytes(fileid, size);
-    return respImage(buffer, contentType);
+    const uploads = await Promise.all(files.map(async (f, i) => {
+      const contentType = /^image\/(jpeg|png|webp)$/.test(String(f?.contentType || ""))
+        ? f.contentType : "image/jpeg";
+      const ext = contentType === "image/png" ? "png" : contentType === "image/webp" ? "webp" : "jpg";
+      // Random suffix so two techs uploading in the same second can't collide.
+      const rand = Math.random().toString(36).slice(2, 8);
+      const key = `${jobPrefix(jobId)}${stamp}-${String(i + 1).padStart(2, "0")}-${rand}.${ext}`;
+      const tKey = thumbKeyFor(key);
+      return {
+        key, thumbKey: tKey,
+        putUrl:      await presignPut(key, contentType),
+        thumbPutUrl: await presignPut(tKey, contentType),
+        contentType,
+      };
+    }));
+    return resp(200, { ok: true, uploads });
   } catch (e) {
-    const { reason } = photoUnavailable(e, "jobPhoto");
-    // 1014 = pCloud can't thumbnail this file type. Tell the client to retry at
-    // full size rather than leaving a permanently broken tile.
-    if (e instanceof PcloudError && e.code === 1014) {
-      return resp(415, { ok: false, error: "No thumbnail for this file type.", retryFull: true });
-    }
-    return resp(502, { ok: false, error: "Could not load photo.", reason });
+    const { reason } = r2Unavailable(e, "jobPhotoUploadUrls");
+    return resp(502, { ok: false, error: "Could not prepare the upload.", reason });
   }
 }
 
@@ -4641,7 +4633,7 @@ export async function handler(event) {
     // Hoisted so expense handlers can scope/authorize by the signed-in user
     // (see-own, edit/delete-until-approved). Null only for the login action.
     let authUser = null;
-    if (reqAction !== "login" && !_GRANT_AUTH_ACTIONS.has(reqAction)) {
+    if (reqAction !== "login") {
       authUser = authedUser(event);
       if (!authUser) return resp(401, { ok: false, error: "Not signed in. Please log in again." });
       if (!hasRole(authUser.role, authzFor(event.httpMethod, reqAction))) {
@@ -4656,7 +4648,6 @@ export async function handler(event) {
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status();
       if (action === "jobPhotos")          return await handleJobPhotos(params);
-      if (action === "jobPhoto")           return await handleJobPhoto(params);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);
@@ -4738,6 +4729,7 @@ export async function handler(event) {
       if (body.action === "updateScheduleEntry")  return await handleUpdateScheduleEntry(body);
       if (body.action === "deleteScheduleEntry")  return await handleDeleteScheduleEntry(body);
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
+      if (body.action === "jobPhotoUploadUrls")   return await handleJobPhotoUploadUrls(body);
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);

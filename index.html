@@ -3681,14 +3681,23 @@
     }
 
     // Action Buttons
-    setActionBtn($("btnAddPhotos"), job.addPhotosLink, "Add Photos");
-    // REVERTED 2026-07-31 to the original pCloud link. The in-app gallery below
-    // (openJobPhotos) is complete and tested but DORMANT — nothing calls it —
-    // because pCloud's app-registration page has been down for months, so no
-    // API token can be issued and the gallery could never load. The photo work
-    // moves to Cloudflare R2; see docs/PLAN-job-photos.md. Re-point this button
-    // at openJobPhotos once the R2 read path lands.
-    setActionBtn($("btnViewPhotos"), job.viewPhotosLink, "View pCloud Photos");
+    // Photos now go to Cloudflare R2 and are viewed in-app — no JotForm, no
+    // Make, no pCloud login. See docs/PLAN-job-photos.md.
+    {
+      const ap = $("btnAddPhotos");
+      ap.href = "#";
+      ap.removeAttribute("target");
+      ap.textContent = "📷 Add Photos";
+      ap.classList.remove("disabled");
+      ap.onclick = (e) => { e.preventDefault(); openAddPhotos(); };
+
+      const vp = $("btnViewPhotos");
+      vp.href = "#";
+      vp.removeAttribute("target");
+      vp.textContent = "🖼 View Photos";
+      vp.classList.remove("disabled");
+      vp.onclick = (e) => { e.preventDefault(); openJobPhotos(); };
+    }
 
     // New Job Estimate button (admin only) — opens in-app modal that loads
     // an Estimate Template, snapshots its values, and POSTs a Job Estimates
@@ -4246,76 +4255,55 @@
     }
   }
 
-  /* ── Jobsite photo gallery (docs/PLAN-job-photos.md, slice 1) ─────────────
-   * Reads the job's existing pCloud photo folder through the function, so it
-   * works on every photo already taken — not just ones added from here on.
-   * Uploading is still the old JotForm button; that's slice 2.
+  /* ── Jobsite photos on R2 (docs/PLAN-job-photos.md) ──────────────────────
+   * Photos live in Cloudflare R2 under jobs/<airtable record id>/, so a job
+   * only ever sees its own. That scoping is by RECORD ID, not job name —
+   * the name-matching used elsewhere in this app matches substrings, so
+   * "Jenny Ln 1" leaks into "Jenny Ln 10/11/12". Record ids can't collide.
    *
-   * Thumbnails are ordinary <img src> tags. Each URL carries a signed grant
-   * minted by the jobPhotos call, because an <img> cannot send an
-   * Authorization header (see signScope in _auth.js). Keeping them as real
-   * <img> tags is what lets the browser cache them — fetching blobs in JS
-   * would re-download every photo on every visit.
+   * Every image URL arrives pre-signed by the function, so <img> loads
+   * straight from Cloudflare — no bytes through Netlify, no per-thumbnail
+   * function call. Uploads go the same way in reverse: the function hands
+   * back a signed PUT and the phone sends the file directly to R2, so the
+   * 4.5 MB Netlify payload limit never applies.
    */
-  const jobPhotoState = { jobId: null, jobName: "", photos: [], index: 0, legacyLink: "" };
-
-  function jobPhotoUrl(p, size) {
-    const q = new URLSearchParams({
-      action: "jobPhoto",
-      jobId:  jobPhotoState.jobId,
-      fileid: String(p.fileid),
-      size,
-      grant:  p.grant,
-    });
-    return `${API}?${q.toString()}`;
-  }
+  const jobPhotoState = { jobId: null, jobName: "", photos: [], index: 0 };
 
   function photoUnavailableMsg(reason) {
-    if (reason === "no-folder")      return "This job doesn't have a pCloud photo folder set up yet.";
-    if (reason === "folder-missing") return "The pCloud photo folder for this job is missing or was moved.";
-    if (reason === "not-configured") return "Photo viewing isn't switched on yet.";
-    if (reason === "timeout")        return "pCloud took too long to answer. Try again.";
-    if (reason === "auth")           return "The app can't reach pCloud right now. An admin has been notified in the logs.";
+    if (reason === "not-configured") return "Photo storage isn't switched on yet.";
+    if (reason === "timeout")        return "Storage took too long to answer. Try again.";
     return "Photos are unavailable right now.";
   }
 
   window.openJobPhotos = async function() {
     const job = state.selected;
     if (!job) return;
-    jobPhotoState.jobId      = job.id;
-    jobPhotoState.jobName    = job.name || "";
-    jobPhotoState.photos     = [];
-    jobPhotoState.legacyLink = job.viewPhotosLink || "";
+    jobPhotoState.jobId   = job.id;
+    jobPhotoState.jobName = job.name || "";
+    jobPhotoState.photos  = [];
 
-    $("jobPhotosTitle").textContent  = `📷 Photos — ${job.name || ""}`;
-    $("jobPhotosGrid").innerHTML     = "";
-    $("jobPhotosStatus").textContent = "Loading photos…";
+    $("jobPhotosTitle").textContent   = `📷 Photos — ${job.name || ""}`;
+    $("jobPhotosGrid").innerHTML      = "";
+    $("jobPhotosStatus").textContent  = "Loading photos…";
     $("jobPhotosModal").style.display = "flex";
     pushBackEntry("jobPhotos", () => { $("jobPhotosModal").style.display = "none"; });
+    await refreshJobPhotos();
+  };
 
+  async function refreshJobPhotos() {
     try {
-      const d = await apiGet("jobPhotos", { jobId: job.id });
+      const d = await apiGet("jobPhotos", { jobId: jobPhotoState.jobId });
       if (!d.available) {
-        showPhotosUnavailable(photoUnavailableMsg(d.reason));
+        $("jobPhotosGrid").innerHTML = "";
+        $("jobPhotosStatus").textContent = photoUnavailableMsg(d.reason);
         return;
       }
       jobPhotoState.photos = d.photos || [];
       renderJobPhotos();
     } catch (e) {
-      showPhotosUnavailable(`Could not load photos: ${e.message}`);
+      $("jobPhotosGrid").innerHTML = "";
+      $("jobPhotosStatus").textContent = `Could not load photos: ${e.message}`;
     }
-  };
-
-  // Whenever the in-app gallery can't serve photos, fall back to the legacy
-  // pCloud link rather than dead-ending. Losing the nicer view is annoying;
-  // losing access to jobsite photos in the field is not acceptable, and this
-  // path is what a missing PCLOUD_ACCESS_TOKEN looks like in production.
-  function showPhotosUnavailable(msg) {
-    const link = jobPhotoState.legacyLink;
-    $("jobPhotosGrid").innerHTML = "";
-    $("jobPhotosStatus").innerHTML = esc(msg) + (link
-      ? ` <a href="${esc(link)}" target="_blank" rel="noopener" style="color:var(--blue); text-decoration:underline;">Open this job's folder in pCloud instead →</a>`
-      : "");
   }
 
   function renderJobPhotos() {
@@ -4324,17 +4312,16 @@
     const photos = jobPhotoState.photos;
 
     if (!photos.length) {
-      status.textContent = "No photos on this job yet.";
+      status.textContent = "No photos on this job yet. Tap 📷 Add Photos to take some.";
       grid.innerHTML = "";
       return;
     }
     status.textContent = `${photos.length} photo${photos.length === 1 ? "" : "s"}`;
 
     grid.innerHTML = photos.map((p, i) => {
-      // thumb:false means pCloud can't generate a thumbnail for this format
-      // (some raw/HEIC files). Load the full image into the tile instead of
-      // rendering a permanently broken box.
-      const src = jobPhotoUrl(p, p.thumb ? "320x320" : "full");
+      // No thumbUrl means a backfilled or pre-thumbnail upload — fall back to
+      // the full image rather than rendering a broken tile.
+      const src = p.thumbUrl || p.url;
       return `<img src="${esc(src)}" alt="${esc(p.name || "photo")}" loading="lazy"
                    data-idx="${i}"
                    style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; cursor:pointer; background:var(--line);" />`;
@@ -4342,12 +4329,10 @@
 
     grid.querySelectorAll("img[data-idx]").forEach(img => {
       img.addEventListener("click", () => openJobPhotoLightbox(Number(img.dataset.idx)));
-      // A thumbnail that 404s or 415s still has a valid full-size original —
-      // retry once at full size rather than leaving a blank tile.
       img.addEventListener("error", () => {
         if (img.dataset.retried) return;
         img.dataset.retried = "1";
-        img.src = jobPhotoUrl(photos[Number(img.dataset.idx)], "full");
+        img.src = photos[Number(img.dataset.idx)].url;
       }, { once: true });
     });
   }
@@ -4357,18 +4342,20 @@
     $("jobPhotosModal").style.display = "none";
   };
 
-  function openJobPhotoLightbox(i) {
+  function showLightbox(i) {
     const p = jobPhotoState.photos[i];
     if (!p) return;
     jobPhotoState.index = i;
-
-    const url = jobPhotoUrl(p, "full");
-    $("jobPhotoLightboxImg").src        = url;
+    $("jobPhotoLightboxImg").src          = p.url;
     $("jobPhotoLightboxName").textContent = p.name || "";
-    $("jobPhotoCounter").textContent    = `${i + 1} of ${jobPhotoState.photos.length}`;
+    $("jobPhotoCounter").textContent      = `${i + 1} of ${jobPhotoState.photos.length}`;
     const dl = $("jobPhotoDownload");
-    dl.href     = url;
+    dl.href     = p.url;
     dl.download = p.name || "photo.jpg";
+  }
+
+  function openJobPhotoLightbox(i) {
+    showLightbox(i);
     $("jobPhotoLightbox").style.display = "flex";
     pushBackEntry("jobPhoto", () => { $("jobPhotoLightbox").style.display = "none"; });
   }
@@ -4383,17 +4370,140 @@
   window.stepJobPhoto = function(delta) {
     const n = jobPhotoState.photos.length;
     if (!n) return;
-    const next = (jobPhotoState.index + delta + n) % n;
-    const p = jobPhotoState.photos[next];
-    jobPhotoState.index = next;
-    const url = jobPhotoUrl(p, "full");
-    $("jobPhotoLightboxImg").src          = url;
-    $("jobPhotoLightboxName").textContent = p.name || "";
-    $("jobPhotoCounter").textContent      = `${next + 1} of ${n}`;
-    const dl = $("jobPhotoDownload");
-    dl.href     = url;
-    dl.download = p.name || "photo.jpg";
+    showLightbox((jobPhotoState.index + delta + n) % n);
   };
+
+  /* ── Upload ───────────────────────────────────────────────────────────── */
+
+  // Shrink and re-encode before upload. Three jobs at once:
+  //  - a 3–5 MB phone photo becomes ~400 KB, so uploads finish on jobsite LTE
+  //  - iPhone HEIC becomes JPEG for free (canvas can decode it, and every
+  //    browser can display the result — raw HEIC is a viewing headache)
+  //  - EXIF is dropped, which is why orientation must be applied during decode:
+  //    without imageOrientation:"from-image" every iPhone photo lands sideways.
+  async function compressImage(file, maxEdge, quality) {
+    let bmp = null;
+    try {
+      bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch {
+      // Older Safari doesn't support the options argument. Fall back to an
+      // <img>, which applies EXIF orientation itself when rendering.
+      bmp = await new Promise((res, rej) => {
+        const im = new Image();
+        im.onload  = () => res(im);
+        im.onerror = () => rej(new Error("Could not read that image"));
+        im.src = URL.createObjectURL(file);
+      });
+    }
+    const w0 = bmp.width, h0 = bmp.height;
+    const scale = Math.min(1, maxEdge / Math.max(w0, h0));
+    const w = Math.max(1, Math.round(w0 * scale));
+    const h = Math.max(1, Math.round(h0 * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bmp, 0, 0, w, h);
+    if (bmp.close) bmp.close();
+
+    return await new Promise(res => canvas.toBlob(res, "image/jpeg", quality));
+  }
+
+  window.openAddPhotos = function() {
+    const job = state.selected;
+    if (!job) return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    // Rear camera on phones, but still allows picking from the gallery.
+    input.setAttribute("capture", "environment");
+    input.multiple = true;
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files || []);
+      input.remove();
+      if (files.length) await uploadJobPhotos(job, files);
+    });
+    input.click();
+  };
+
+  async function uploadJobPhotos(job, files) {
+    // Show progress inside the gallery so the user sees photos appear where
+    // they'll later look for them.
+    jobPhotoState.jobId   = job.id;
+    jobPhotoState.jobName = job.name || "";
+    if ($("jobPhotosModal").style.display !== "flex") {
+      $("jobPhotosTitle").textContent   = `📷 Photos — ${job.name || ""}`;
+      $("jobPhotosGrid").innerHTML      = "";
+      $("jobPhotosModal").style.display = "flex";
+      pushBackEntry("jobPhotos", () => { $("jobPhotosModal").style.display = "none"; });
+    }
+    const status = $("jobPhotosStatus");
+    const MAX_BATCH = 25;
+    if (files.length > MAX_BATCH) {
+      status.textContent = `Too many at once — taking the first ${MAX_BATCH}.`;
+      files = files.slice(0, MAX_BATCH);
+    }
+
+    try {
+      status.textContent = `Preparing ${files.length} photo${files.length === 1 ? "" : "s"}…`;
+      const prepared = [];
+      for (let i = 0; i < files.length; i++) {
+        status.textContent = `Shrinking photo ${i + 1} of ${files.length}…`;
+        const full  = await compressImage(files[i], 2048, 0.75);
+        const thumb = await compressImage(files[i], 400, 0.7);
+        if (!full || !thumb) throw new Error(`Could not read "${files[i].name || "photo"}"`);
+        prepared.push({ full, thumb });
+      }
+
+      const d = await apiPost("jobPhotoUploadUrls", {
+        jobId: job.id,
+        files: prepared.map(() => ({ contentType: "image/jpeg" })),
+      });
+      const uploads = d.uploads || [];
+      if (uploads.length !== prepared.length) throw new Error("Upload could not be prepared");
+
+      // One at a time with per-photo status. A partial failure must be visible
+      // and retryable, not swallowed by a single all-or-nothing spinner.
+      let done = 0, failed = 0;
+      for (let i = 0; i < prepared.length; i++) {
+        status.textContent = `Uploading ${i + 1} of ${prepared.length}…`;
+        try {
+          await putToR2(uploads[i].putUrl,      prepared[i].full,  uploads[i].contentType);
+          await putToR2(uploads[i].thumbPutUrl, prepared[i].thumb, uploads[i].contentType);
+          done++;
+        } catch (e) {
+          failed++;
+          console.error("[photo-upload] failed", e);
+        }
+      }
+
+      await refreshJobPhotos();
+      if (failed) {
+        status.textContent = `${done} uploaded, ${failed} failed. Tap Add Photos to retry the rest.`;
+      } else {
+        showAppToast(`${done} photo${done === 1 ? "" : "s"} uploaded ✓`);
+      }
+    } catch (e) {
+      console.error("[photo-upload]", e);
+      status.textContent = `Upload failed: ${e.message}`;
+    }
+  }
+
+  async function putToR2(url, blob, contentType) {
+    const r = await fetch(url, {
+      method: "PUT",
+      headers: { "Content-Type": contentType },
+      body: blob,
+    });
+    if (!r.ok) {
+      // A CORS rejection surfaces as a thrown TypeError rather than this, so
+      // reaching here means R2 answered and refused — usually an expired
+      // signature (the URL is good for 10 minutes).
+      throw new Error(`R2 refused the upload (HTTP ${r.status})`);
+    }
+  }
 
   // Renders the warranty badges row above the generator info-grid. Filters
   // out voided + already-expired warranties (those don't need attention).

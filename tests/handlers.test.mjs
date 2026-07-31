@@ -334,6 +334,85 @@ await test("payrollEntries: still 400s without a date range on either path", asy
   eq((await GET("payrollEntries", {})).statusCode, 400, "missing dates rejected before any read");
 });
 
+// ── time-entry WRITE paths + the Neon mirror ──
+// These had NO coverage before 2026-07-31, which mattered because every one of them
+// now also mirrors into Neon — and payroll READS come from Neon. If a write reaches
+// Airtable but not Neon, the payroll screen shows stale hours while the edit looks
+// saved. The contract being locked here:
+//   1. the Airtable write is correct and unchanged (field IDs, linked-record shape)
+//   2. a missing or broken Neon must NEVER fail a write that Airtable accepted
+const TE_F = {
+  employee: "fldG8nGxyJcXRxBNQ", employeeLink: "fldYgTcZcQzNslRT5",
+  workDate: "fldzFwSSjLmAkWYHt", duration: "fld9mz6As3099VPVp",
+  cityTaxes: "flddCniABjh4Xib1c", class: "fld4MG0FcFDnqYmtW",
+  jobLink: "fldmGwS0qXMdC7FlA", reviewed: "fldQn7d06doEkrGBv",
+};
+
+await test("createTimeEntry: writes the right Airtable fields and returns the new id", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  const b = json(await POST("createTimeEntry", {
+    employee: "Jeff Koehn", employeeId: "recEmp1", workDate: "2026-07-27",
+    duration: 28800, class: "Contract", cityTaxes: "A No Tax", jobId: "recJob1",
+  }));
+  ok(b.ok, "ok");
+  eq(b.id, "recNEW", "returns the created Airtable record id");
+  const f = JSON.parse(lastFetch.opts.body).fields;
+  eq(f[TE_F.employee], "Jeff Koehn", "employee text");
+  eq(f[TE_F.workDate], "2026-07-27", "work date");
+  eq(f[TE_F.duration], 28800, "duration in SECONDS, not hours");
+  // Linked records must be a bare ["rec…"] array — the [{id}] shape silently drops.
+  eq(JSON.stringify(f[TE_F.employeeLink]), JSON.stringify(["recEmp1"]), "employee link shape");
+  eq(JSON.stringify(f[TE_F.jobLink]), JSON.stringify(["recJob1"]), "job link shape");
+});
+
+await test("createTimeEntry: a broken Neon must not fail a write Airtable accepted", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = {};
+  const res = await POST("createTimeEntry", {
+    employee: "Jeff Koehn", workDate: "2026-07-27", duration: 3600,
+  });
+  eq(res.statusCode, 200, "still 200 — the mirror fails soft");
+  eq(json(res).id, "recNEW", "id still returned");
+  delete process.env.DATABASE_URL;
+});
+
+await test("createTimeEntry: rejects a missing employee or work date before writing", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  eq((await POST("createTimeEntry", { workDate: "2026-07-27" })).statusCode, 400, "no employee");
+  eq((await POST("createTimeEntry", { employee: "Jeff Koehn" })).statusCode, 400, "no work date");
+});
+
+await test("updateTimeEntry: sets Labor Reviewed — the flag the puller must never clobber", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = { "Time Entries": [{ id: "recTE1", fields: { "Hours": 8 } }] };
+  const b = json(await POST("updateTimeEntry", { entryId: "recTE1", reviewed: true }));
+  ok(b.ok, "ok");
+  eq(JSON.parse(lastFetch.opts.body).fields[TE_F.reviewed], true, "Labor Reviewed written");
+});
+
+await test("updateTimeEntryPayroll: patches duration and city tax by field id", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = { "Time Entries": [{ id: "recTE1", fields: {} }] };
+  const b = json(await POST("updateTimeEntryPayroll", {
+    entryId: "recTE1", duration: 7200, cityTaxes: "Massilon",
+  }));
+  ok(b.ok, "ok");
+  const f = JSON.parse(lastFetch.opts.body).fields;
+  eq(f[TE_F.duration], 7200, "duration patched");
+  eq(f[TE_F.cityTaxes], "Massilon", "city tax patched verbatim (QB spelling)");
+});
+
+await test("deleteTimeEntry: succeeds even when Neon is unreachable", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = { "Time Entries": [{ id: "recTE1", fields: {} }] };
+  const res = await POST("deleteTimeEntry", { entryId: "recTE1" });
+  eq(res.statusCode, 200, "delete still succeeds");
+  eq(json(res).deleted, "recTE1", "reports what was deleted");
+  delete process.env.DATABASE_URL;
+});
+
 // ── employee self-service expenses ──
 const OWNER_TOK = signToken({ id: "recEmpOwner", role: "employee" });
 const OTHER_TOK = signToken({ id: "recEmpOther", role: "employee" });

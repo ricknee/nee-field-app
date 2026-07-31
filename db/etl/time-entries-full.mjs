@@ -52,6 +52,20 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // stay live in both modes — single writer, keyed by airtable_id, cannot double.
 const LOAD = process.argv.includes("--load");
 
+// --repair: UPDATE existing Neon rows from Airtable where the two disagree.
+// NEVER inserts, never deletes — it can only correct a row that already exists on
+// both sides, so it cannot duplicate hours no matter how often it runs.
+//
+// Why this exists: payroll now READS from Neon while the app's write paths mirror
+// into it fail-soft. A mirror that fails leaves Airtable right and Neon stale, the
+// edit looks saved but the payroll screen shows the old number, and nothing fixes
+// it — the reconciler can see the divergence but not repair it. This closes that.
+//
+// Scoped to work_date <= ASOF on purpose: the puller updates Neon hourly while Make
+// writes Airtable nightly, so for TODAY Neon is legitimately ahead. Repairing from
+// Airtable inside that window would overwrite fresh data with stale data.
+const REPAIR = process.argv.includes("--repair");
+
 // Make imports into Airtable once nightly at 21:00; the puller runs hourly. So
 // between those, Neon legitimately holds hours Airtable has not seen yet and a
 // naive diff would scream every day. Compare only work dates Make has had a chance
@@ -63,7 +77,7 @@ const ASOF = asofArg
 
 console.log(LOAD
   ? `MODE: --load (writing time_entries). Only valid while the QB puller is NOT live.`
-  : `MODE: check-only (default). Comparing work_date <= ${ASOF}.`);
+  : `MODE: check-only (default). Comparing work_date <= ${ASOF}.${REPAIR ? " --repair ON (update-only)." : ""}`);
 
 // ── extract ───────────────────────────────────────────────────────────────
 // Airtable REST returns records keyed by FIELD NAME. Rate limit is 5 req/sec
@@ -236,6 +250,75 @@ await upsertBatch("jobs", ["airtable_id", "name", "po_locked"],
         `UPDATE time_entries t SET airtable_id = v.aid
            FROM (VALUES ${tuples.join(",")}) AS v(id, aid)
           WHERE t.id = v.id AND t.airtable_id IS NULL`,
+        params
+      );
+    }
+  }
+}
+
+// ── repair drifted rows (--repair) ────────────────────────────────────────
+// UPDATE-only, matched on airtable_id, bounded to work_date <= ASOF. See the flag
+// definition at the top for why each of those constraints matters.
+if (REPAIR && !LOAD) {
+  const norm = v => (v === undefined || v === null || v === "" ? null : String(v));
+  const FIELDS = [
+    ["employee_name",    f => norm(f["Employee"])],
+    ["city_taxes",       f => norm(f["City Taxes"])],
+    ["class",            f => norm(f["Class"])],
+    ["labor_type",       f => norm(f["Labor Type"])],
+    ["job_name",         f => norm(f["Job Name (Text)"])],
+  ];
+
+  const neonRows = await sql.query(
+    `SELECT airtable_id, employee_name, city_taxes, class, labor_type, job_name,
+            duration_seconds::float8 AS duration_seconds, labor_reviewed
+       FROM time_entries
+      WHERE airtable_id IS NOT NULL AND (work_date IS NULL OR work_date <= $1::date)`,
+    [ASOF]
+  );
+  const neonById = new Map(neonRows.map(r => [r.airtable_id, r]));
+
+  const fixes = [];
+  const reasons = new Map();
+  for (const r of scoped) {
+    const n = neonById.get(r.id);
+    if (!n) continue;                       // not in Neon — an INSERT, which repair never does
+    const f = r.fields;
+
+    const why = [];
+    for (const [col, get] of FIELDS) if (norm(n[col]) !== get(f)) why.push(col);
+    // Hours are what payroll pays, so duration gets its own tolerance check.
+    const atSecs = Number(f["Duration (Seconds)"] ?? 0);
+    if (Math.abs(Number(n.duration_seconds) - atSecs) > 0.05) why.push("duration_seconds");
+    if ((n.labor_reviewed === true) !== (f["Labor Reviewed"] === true)) why.push("labor_reviewed");
+    if (!why.length) continue;
+
+    for (const w of why) reasons.set(w, (reasons.get(w) || 0) + 1);
+    fixes.push([r.id, norm(f["Employee"]), atSecs, norm(f["City Taxes"]), norm(f["Class"]),
+                norm(f["Labor Type"]), norm(f["Job Name (Text)"]), f["Labor Reviewed"] === true]);
+  }
+
+  if (!fixes.length) {
+    console.log("repair: nothing to fix — Airtable and Neon agree on every row in scope");
+  } else {
+    console.log(`repair: updating ${fixes.length} drifted row(s) —`,
+      [...reasons.entries()].map(([k, v]) => `${k}:${v}`).join(" "));
+    for (let i = 0; i < fixes.length; i += 200) {
+      const chunk = fixes.slice(i, i + 200);
+      const params = [];
+      const tuples = chunk.map(row => {
+        const ph = row.map(v => { params.push(v); return `$${params.length}`; });
+        return `(${ph[0]}::text, ${ph[1]}::text, ${ph[2]}::numeric, ${ph[3]}::text, ${ph[4]}::text, ${ph[5]}::text, ${ph[6]}::text, ${ph[7]}::boolean)`;
+      });
+      await sql.query(
+        `UPDATE time_entries t SET
+           employee_name = v.employee_name, duration_seconds = v.duration_seconds,
+           city_taxes = v.city_taxes, class = v.class, labor_type = v.labor_type,
+           job_name = v.job_name, labor_reviewed = v.labor_reviewed
+         FROM (VALUES ${tuples.join(",")})
+              AS v(airtable_id, employee_name, duration_seconds, city_taxes, class,
+                   labor_type, job_name, labor_reviewed)
+         WHERE t.airtable_id = v.airtable_id`,
         params
       );
     }

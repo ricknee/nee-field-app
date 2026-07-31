@@ -5,6 +5,10 @@
 docs/SYSTEM-MAP.html
 docs/SYSTEM-MAP.md
 
+# GP / margin formula inventory — commercially sensitive (markup %, gross-profit
+# maths, cost structure). Regenerate any time with: node db/etl/gp-inventory.mjs
+docs/GP-FORMULA-INVENTORY.md
+
 # Scratch / temp files (e.g. .gray_const_line.tmp)
 *.tmp
 

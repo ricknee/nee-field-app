@@ -10,7 +10,10 @@ import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
 // have been down for months, so no API token could be issued. That file and
 // tools/pcloud-*.mjs are kept on disk in case it ever reopens (a mirror-to-
 // pCloud option), but nothing calls them. See docs/PLAN-job-photos.md.
-import { r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut, thumbKeyFor, jobPrefix, R2Error } from "./_r2.js";
+import {
+  r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut,
+  thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum, R2Error,
+} from "./_r2.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -4601,7 +4604,10 @@ async function handleJobPhotoUploadUrls(body) {
   if (!records.length) return resp(404, { ok: false, error: "Job not found." });
 
   // Keys are server-decided. If the client named them, a caller could write
-  // outside its own job's prefix just by sending "../otherjob/x.jpg".
+  // outside its own job's prefix just by sending "../otherjob/x.jpg". The
+  // album name is the only client-supplied part of the path, so it is
+  // sanitized and encoded (see sanitizeAlbum) before it becomes a segment.
+  const album = albumSegment(body?.album);
   const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15); // YYYYMMDDHHMMSS
   try {
     const uploads = await Promise.all(files.map(async (f, i) => {
@@ -4610,7 +4616,7 @@ async function handleJobPhotoUploadUrls(body) {
       const ext = contentType === "image/png" ? "png" : contentType === "image/webp" ? "webp" : "jpg";
       // Random suffix so two techs uploading in the same second can't collide.
       const rand = Math.random().toString(36).slice(2, 8);
-      const key = `${jobPrefix(jobId)}${stamp}-${String(i + 1).padStart(2, "0")}-${rand}.${ext}`;
+      const key = `${jobPrefix(jobId)}${album}${stamp}-${String(i + 1).padStart(2, "0")}-${rand}.${ext}`;
       const tKey = thumbKeyFor(key);
       return {
         key, thumbKey: tKey,
@@ -4619,7 +4625,7 @@ async function handleJobPhotoUploadUrls(body) {
         contentType,
       };
     }));
-    return resp(200, { ok: true, uploads });
+    return resp(200, { ok: true, uploads, album: sanitizeAlbum(body?.album) });
   } catch (e) {
     const { reason } = r2Unavailable(e, "jobPhotoUploadUrls");
     return resp(502, { ok: false, error: "Could not prepare the upload.", reason });

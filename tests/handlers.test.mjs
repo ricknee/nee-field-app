@@ -624,6 +624,23 @@ await test('jobPhotoUploadUrls: viewer is read-only → 403', async () => {
   eq((await POST('jobPhotoUploadUrls', { jobId: 'recJ1', files: [{ contentType: 'image/jpeg' }] }, VIEWER_TOK)).statusCode, 403, 'viewer');
 });
 
+await test('r2 albums: one safe path segment, names survive a round trip', async () => {
+  const { albumSegment, albumFromKey, sanitizeAlbum, jobPrefix } = await import('../netlify/functions/_r2.js');
+  // The album name is the ONLY client-supplied part of an object key, so it
+  // must not be able to forge extra segments or climb out of the job prefix.
+  eq(albumSegment('Gym'), 'Gym/', 'simple');
+  eq(albumSegment('a/../../b'), 'a%20..%20..%20b/', 'slashes neutralised');
+  eq(albumSegment('..'), '', 'dot-dot rejected');
+  eq(albumSegment(''), '', 'empty = no album');
+  eq(albumSegment('   '), '', 'whitespace = no album');
+  ok(!albumSegment('x/y').includes('/', 0) || albumSegment('x/y').split('/').length === 2, 'never more than one segment');
+  // Display names with spaces and punctuation must come back exactly.
+  const key = `${jobPrefix('recJ1')}${albumSegment('Panel Room #2')}20260731-01-a.jpg`;
+  eq(albumFromKey('recJ1', key), 'Panel Room #2', 'round trip');
+  eq(albumFromKey('recJ1', `${jobPrefix('recJ1')}loose.jpg`), null, 'no album for a loose photo');
+  eq(sanitizeAlbum('x'.repeat(200)).length, 60, 'length capped');
+});
+
 await test('r2 keys: scoped per job, thumbs pair with their original', async () => {
   const { jobPrefix, thumbKeyFor, isThumbKey } = await import('../netlify/functions/_r2.js');
   // Scoping is by Airtable record id, so two jobs named the same never mix —

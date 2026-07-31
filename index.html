@@ -4267,7 +4267,11 @@
    * back a signed PUT and the phone sends the file directly to R2, so the
    * 4.5 MB Netlify payload limit never applies.
    */
-  const jobPhotoState = { jobId: null, jobName: "", photos: [], index: 0 };
+  // album: undefined = showing the album overview; "" = the Unsorted album;
+  // a string = that album. `visible` is whatever the grid is currently showing,
+  // which is what the lightbox pages through — paging must follow the album
+  // you opened, not every photo on the job.
+  const jobPhotoState = { jobId: null, jobName: "", photos: [], visible: [], index: 0, album: undefined, lastAlbum: "" };
 
   function photoUnavailableMsg(reason) {
     if (reason === "not-configured") return "Photo storage isn't switched on yet.";
@@ -4281,6 +4285,7 @@
     jobPhotoState.jobId   = job.id;
     jobPhotoState.jobName = job.name || "";
     jobPhotoState.photos  = [];
+    jobPhotoState.album   = undefined;   // always open on the album overview
 
     $("jobPhotosTitle").textContent   = `📷 Photos — ${job.name || ""}`;
     $("jobPhotosGrid").innerHTML      = "";
@@ -4306,6 +4311,18 @@
     }
   }
 
+  // Groups the loaded photos by album. "" is the bucket for loose photos that
+  // were uploaded before albums existed, or deliberately filed without one.
+  function albumsOf(photos) {
+    const m = new Map();
+    for (const p of photos) {
+      const k = p.album || "";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(p);
+    }
+    return m;
+  }
+
   function renderJobPhotos() {
     const grid   = $("jobPhotosGrid");
     const status = $("jobPhotosStatus");
@@ -4316,9 +4333,35 @@
       grid.innerHTML = "";
       return;
     }
-    status.textContent = `${photos.length} photo${photos.length === 1 ? "" : "s"}`;
 
-    grid.innerHTML = photos.map((p, i) => {
+    const byAlbum = albumsOf(photos);
+    const hasAlbums = [...byAlbum.keys()].some(k => k !== "");
+
+    // A job that never used albums keeps the plain grid — grouping shouldn't
+    // add a tap to a service call with four photos.
+    if (hasAlbums && jobPhotoState.album === undefined) {
+      renderAlbumOverview(byAlbum);
+      return;
+    }
+
+    const list = jobPhotoState.album === undefined
+      ? photos
+      : (byAlbum.get(jobPhotoState.album || "") || []);
+    jobPhotoState.visible = list;
+
+    const label = jobPhotoState.album === undefined
+      ? `${list.length} photo${list.length === 1 ? "" : "s"}`
+      : `${jobPhotoState.album || "Unsorted"} — ${list.length} photo${list.length === 1 ? "" : "s"}`;
+
+    status.innerHTML = (jobPhotoState.album !== undefined && hasAlbums)
+      ? `<a href="#" id="jobPhotosBackToAlbums" style="color:var(--blue); text-decoration:underline;">‹ All albums</a> &nbsp; ${esc(label)}`
+      : esc(label);
+
+    const back = $("jobPhotosBackToAlbums");
+    if (back) back.onclick = (e) => { e.preventDefault(); jobPhotoState.album = undefined; renderJobPhotos(); };
+
+    grid.style.gridTemplateColumns = "repeat(auto-fill, minmax(110px, 1fr))";
+    grid.innerHTML = list.map((p, i) => {
       // No thumbUrl means a backfilled or pre-thumbnail upload — fall back to
       // the full image rather than rendering a broken tile.
       const src = p.thumbUrl || p.url;
@@ -4332,8 +4375,43 @@
       img.addEventListener("error", () => {
         if (img.dataset.retried) return;
         img.dataset.retried = "1";
-        img.src = photos[Number(img.dataset.idx)].url;
+        img.src = list[Number(img.dataset.idx)].url;
       }, { once: true });
+    });
+  }
+
+  // Album tiles: cover photo + name + count. Sorted with named albums first so
+  // "Unsorted" never sits above the ones someone deliberately created.
+  function renderAlbumOverview(byAlbum) {
+    const grid   = $("jobPhotosGrid");
+    const status = $("jobPhotosStatus");
+    const names = [...byAlbum.keys()].sort((a, b) => {
+      if (!a) return 1;
+      if (!b) return -1;
+      return a.localeCompare(b);
+    });
+
+    status.textContent = `${names.length} album${names.length === 1 ? "" : "s"} — tap one to open`;
+    grid.style.gridTemplateColumns = "repeat(auto-fill, minmax(150px, 1fr))";
+    grid.innerHTML = names.map(name => {
+      const list  = byAlbum.get(name);
+      const cover = list[0];
+      const src   = cover.thumbUrl || cover.url;
+      const title = name || "Unsorted";
+      return `
+        <div data-album="${esc(name)}" style="cursor:pointer;">
+          <img src="${esc(src)}" alt="${esc(title)}" loading="lazy"
+               style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; background:var(--line);" />
+          <div style="font-size:13px; font-weight:600; margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(title)}</div>
+          <div style="font-size:11px; color:var(--muted);">${list.length} photo${list.length === 1 ? "" : "s"}</div>
+        </div>`;
+    }).join("");
+
+    grid.querySelectorAll("[data-album]").forEach(el => {
+      el.addEventListener("click", () => {
+        jobPhotoState.album = el.dataset.album || "";
+        renderJobPhotos();
+      });
     });
   }
 
@@ -4342,13 +4420,20 @@
     $("jobPhotosModal").style.display = "none";
   };
 
+  // Pages through whatever the grid is currently showing — inside an album,
+  // next/prev must stay in that album rather than wandering the whole job.
+  function currentPhotoList() {
+    return jobPhotoState.visible.length ? jobPhotoState.visible : jobPhotoState.photos;
+  }
+
   function showLightbox(i) {
-    const p = jobPhotoState.photos[i];
+    const list = currentPhotoList();
+    const p = list[i];
     if (!p) return;
     jobPhotoState.index = i;
     $("jobPhotoLightboxImg").src          = p.url;
     $("jobPhotoLightboxName").textContent = p.name || "";
-    $("jobPhotoCounter").textContent      = `${i + 1} of ${jobPhotoState.photos.length}`;
+    $("jobPhotoCounter").textContent      = `${i + 1} of ${list.length}`;
     const dl = $("jobPhotoDownload");
     dl.href     = p.url;
     dl.download = p.name || "photo.jpg";
@@ -4368,7 +4453,7 @@
   };
 
   window.stepJobPhoto = function(delta) {
-    const n = jobPhotoState.photos.length;
+    const n = currentPhotoList().length;
     if (!n) return;
     showLightbox((jobPhotoState.index + delta + n) % n);
   };
@@ -4409,9 +4494,54 @@
     return await new Promise(res => canvas.toBlob(res, "image/jpeg", quality));
   }
 
-  window.openAddPhotos = function() {
+  // Asks which album before opening the picker. Existing albums are offered as
+  // tappable chips so people choose rather than retype — typing is how you end
+  // up with "Classrooms" and "classroom" as two albums.
+  //
+  // Resolves to a string (album name), "" (no album), or null (cancelled).
+  function askForAlbum(job) {
+    return new Promise(async (resolve) => {
+      let albums = [];
+      try {
+        // Reuse already-loaded photos when the gallery is open; otherwise ask.
+        const photos = (jobPhotoState.jobId === job.id && jobPhotoState.photos.length)
+          ? jobPhotoState.photos
+          : ((await apiGet("jobPhotos", { jobId: job.id })).photos || []);
+        albums = [...new Set(photos.map(p => p.album).filter(Boolean))].sort();
+      } catch { /* offering no chips is fine — the text box still works */ }
+
+      const chips = albums.map(a =>
+        `<button type="button" class="btn btn-sm nee-album-chip" data-album="${esc(a)}" style="font-size:13px; padding:6px 12px; margin:0 6px 6px 0;">${esc(a)}</button>`
+      ).join("");
+
+      $("jobAlbumChips").innerHTML = chips ||
+        `<div style="font-size:12px; color:var(--muted);">No albums yet on this job.</div>`;
+      $("jobAlbumInput").value = jobPhotoState.lastAlbum || "";
+      $("jobAlbumModal").style.display = "flex";
+      pushBackEntry("jobAlbum", () => { $("jobAlbumModal").style.display = "none"; });
+
+      const close = (value) => {
+        popBackEntry("jobAlbum");
+        $("jobAlbumModal").style.display = "none";
+        resolve(value);
+      };
+      $("jobAlbumModal").querySelectorAll(".nee-album-chip").forEach(b => {
+        b.onclick = () => close(b.dataset.album);
+      });
+      $("jobAlbumUse").onclick    = () => close($("jobAlbumInput").value.trim());
+      $("jobAlbumSkip").onclick   = () => close("");
+      $("jobAlbumCancel").onclick = () => close(null);
+    });
+  }
+
+  window.openAddPhotos = async function() {
     const job = state.selected;
     if (!job) return;
+
+    const album = await askForAlbum(job);
+    if (album === null) return;           // cancelled
+    jobPhotoState.lastAlbum = album;      // shooting 20 gym photos is one choice
+
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
@@ -4427,7 +4557,7 @@
     input.addEventListener("change", async () => {
       const files = Array.from(input.files || []);
       input.remove();
-      if (files.length) await uploadJobPhotos(job, files);
+      if (files.length) await uploadJobPhotos(job, files, album);
     });
     input.click();
   };
@@ -4444,7 +4574,7 @@
   const UPLOAD_CHUNK = 20;
   const UPLOAD_CONCURRENCY = 3;
 
-  async function uploadJobPhotos(job, files) {
+  async function uploadJobPhotos(job, files, album) {
     jobPhotoState.jobId   = job.id;
     jobPhotoState.jobName = job.name || "";
     if ($("jobPhotosModal").style.display !== "flex") {
@@ -4473,6 +4603,7 @@
 
         const d = await apiPost("jobPhotoUploadUrls", {
           jobId: job.id,
+          album: album || "",
           files: prepared.map(() => ({ contentType: "image/jpeg" })),
         });
         const uploads = d.uploads || [];
@@ -16462,6 +16593,29 @@
     <div class="sl-modal-body">
       <div id="jobPhotosStatus" style="font-size:13px; color:var(--muted); padding:8px 0;"></div>
       <div id="jobPhotosGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Album picker, shown before the file chooser. Existing albums appear as
+     chips so people tap rather than retype — typing is how a job ends up with
+     both "Classrooms" and "classroom". -->
+<div id="jobAlbumModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:460px; width:92%;">
+    <div class="sl-modal-header">
+      <h2>Which album?</h2>
+      <button id="jobAlbumCancel" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="jobAlbumChips" style="margin-bottom:12px;"></div>
+      <div class="sl-field">
+        <label>Or type a new one</label>
+        <input id="jobAlbumInput" type="text" class="edit-input" placeholder="e.g. Gym, Entry, Classrooms, Outside" maxlength="60" />
+      </div>
+      <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
+        <button id="jobAlbumSkip" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">No album</button>
+        <button id="jobAlbumUse" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Continue</button>
+      </div>
     </div>
   </div>
 </div>

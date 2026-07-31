@@ -105,6 +105,39 @@ async function getClient() {
 export function jobPrefix(jobId) {
   return `jobs/${String(jobId)}/`;
 }
+
+// Albums are one optional path segment between the job and the file:
+//   jobs/recBethel/Gym/20260731-01-a3f9.jpg      -> album "Gym"
+//   jobs/recBethel/20260731-01-a3f9.jpg          -> no album
+// The folder name IS the album — no table, no schema, nothing to keep in sync,
+// and photos uploaded before albums existed keep working untouched.
+//
+// The name is percent-encoded in the key so spaces and punctuation survive a
+// round trip ("Panel Room" stays "Panel Room", not "panel-room").
+export const MAX_ALBUM_LEN = 60;
+
+// Slashes would forge extra path segments, and "." / ".." could climb out of
+// the job's prefix entirely — the client never picks raw keys, but an album
+// name reaches the key builder, so it is sanitized at the boundary.
+export function sanitizeAlbum(name) {
+  const s = String(name ?? "").replace(/[/\\]/g, " ").replace(/\s+/g, " ").trim();
+  if (!s || s === "." || s === "..") return null;
+  return s.slice(0, MAX_ALBUM_LEN);
+}
+
+export function albumSegment(album) {
+  const clean = sanitizeAlbum(album);
+  return clean ? `${encodeURIComponent(clean)}/` : "";
+}
+
+// Album a key belongs to, or null for a loose photo at the job root.
+export function albumFromKey(jobId, key) {
+  const rel = String(key).slice(jobPrefix(jobId).length);
+  const i = rel.indexOf("/");
+  if (i < 0) return null;
+  try { return decodeURIComponent(rel.slice(0, i)); }
+  catch { return rel.slice(0, i); }   // tolerate a hand-made key
+}
 export function isThumbKey(key) {
   return /_thumb\.[a-z0-9]+$/i.test(String(key));
 }
@@ -328,6 +361,7 @@ export async function listJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
     return {
       key: o.key,
       name: o.key.slice(o.key.lastIndexOf("/") + 1),
+      album: albumFromKey(jobId, o.key),
       size: o.size,
       uploadedAt: o.lastModified,
       url: await presignGet(o.key),

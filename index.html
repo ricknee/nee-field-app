@@ -4425,11 +4425,22 @@
     }
 
     const n = jobPhotoState.selected.size;
+    const shown = jobPhotoState.visible.length;
+    const allShown = shown > 0 && n >= shown;
     bar.innerHTML = `
       <span style="font-size:13px; font-weight:600;">${n} selected</span>
+      <button type="button" id="phAll" class="btn btn-sm" style="font-size:13px; padding:6px 14px;">${allShown ? "Select none" : `Select all ${shown}`}</button>
       <button type="button" id="phMove" class="btn btn-sm" style="font-size:13px; padding:6px 14px;" ${n ? "" : "disabled"}>Move to album</button>
       ${canDeletePhotos() ? `<button type="button" id="phDelete" class="btn btn-sm" style="font-size:13px; padding:6px 14px; color:var(--red);" ${n ? "" : "disabled"}>Delete</button>` : ""}
       <button type="button" id="phCancelSel" class="btn btn-sm" style="font-size:13px; padding:6px 14px;">Cancel</button>`;
+
+    // Acts on what's currently shown, so inside an album it selects that album
+    // rather than every photo on the job.
+    $("phAll").onclick = () => {
+      if (allShown) jobPhotoState.selected.clear();
+      else jobPhotoState.visible.forEach(p => jobPhotoState.selected.add(p.key));
+      renderJobPhotos();
+    };
 
     $("phCancelSel").onclick = () => {
       jobPhotoState.selecting = false;
@@ -4446,6 +4457,25 @@
     renderJobPhotos();
   }
 
+  // The function caps one request at 12 keys — a move is up to four R2 calls
+  // per photo and Netlify allows 10 seconds, so 47 photos in a single request
+  // returned a 504 with nothing moved. Chunking keeps every request inside the
+  // budget and gives real progress instead of one long stall.
+  const BULK_PHOTO_CHUNK = 10;
+
+  async function bulkPhotoRequest(action, keys, extra, verb) {
+    const status = $("jobPhotosStatus");
+    let done = 0, failed = 0;
+    for (let i = 0; i < keys.length; i += BULK_PHOTO_CHUNK) {
+      const slice = keys.slice(i, i + BULK_PHOTO_CHUNK);
+      status.textContent = `${verb} ${Math.min(i + slice.length, keys.length)} of ${keys.length}…`;
+      const d = await apiPost(action, { jobId: jobPhotoState.jobId, keys: slice, ...extra });
+      done += d.done || 0;
+      failed += d.failed || 0;
+    }
+    return { done, failed };
+  }
+
   async function moveSelectedPhotos() {
     const job = state.selected;
     if (!job) return;
@@ -4456,17 +4486,19 @@
     if (album === null) return;
 
     const status = $("jobPhotosStatus");
-    status.textContent = `Moving ${keys.length} photo${keys.length === 1 ? "" : "s"}…`;
     try {
-      const d = await apiPost("moveJobPhotos", { jobId: job.id, keys, album: album || "" });
+      const { done, failed } = await bulkPhotoRequest("moveJobPhotos", keys, { album: album || "" }, "Moving");
       jobPhotoState.selecting = false;
       jobPhotoState.selected.clear();
       jobPhotoState.album = undefined;   // land back on the overview
       await refreshJobPhotos();
-      if (d.failed) showAppToast(`${d.done} moved, ${d.failed} failed`);
-      else showAppToast(`Moved to ${album || "Unsorted"} ✓`);
+      if (failed) showAppToast(`${done} moved, ${failed} failed`);
+      else showAppToast(`Moved ${done} to ${album || "Unsorted"} ✓`);
     } catch (e) {
-      status.textContent = `Move failed: ${e.message}`;
+      // Whatever already moved has moved — show the real state rather than
+      // leaving a stale grid behind an error.
+      await refreshJobPhotos();
+      status.textContent = `Move stopped: ${e.message}`;
     }
   }
 
@@ -4480,16 +4512,16 @@
     if (!confirm(`Permanently delete ${keys.length} photo${keys.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
 
     const status = $("jobPhotosStatus");
-    status.textContent = `Deleting ${keys.length} photo${keys.length === 1 ? "" : "s"}…`;
     try {
-      const d = await apiPost("deleteJobPhotos", { jobId: job.id, keys });
+      const { done, failed } = await bulkPhotoRequest("deleteJobPhotos", keys, {}, "Deleting");
       jobPhotoState.selecting = false;
       jobPhotoState.selected.clear();
       await refreshJobPhotos();
-      if (d.failed) showAppToast(`${d.done} deleted, ${d.failed} failed`);
-      else showAppToast(`${d.done} deleted ✓`);
+      if (failed) showAppToast(`${done} deleted, ${failed} failed`);
+      else showAppToast(`${done} deleted ✓`);
     } catch (e) {
-      status.textContent = `Delete failed: ${e.message}`;
+      await refreshJobPhotos();
+      status.textContent = `Delete stopped: ${e.message}`;
     }
   }
 

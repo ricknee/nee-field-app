@@ -647,7 +647,7 @@ await test('bulk photo ops: validate job and selection before touching storage',
   mockTables = JOB_ONLY();
   eq((await POST('deleteJobPhotos', { keys: ['x'] })).statusCode, 400, 'no jobId');
   eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: [] })).statusCode, 400, 'no keys');
-  const many = Array.from({ length: 201 }, (_, i) => `jobs/recJ1/${i}.jpg`);
+  const many = Array.from({ length: 13 }, (_, i) => `jobs/recJ1/${i}.jpg`);
   eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: many })).statusCode, 400, 'too many');
   mockTables = { Jobs: [] };
   eq((await POST('deleteJobPhotos', { jobId: 'recNOPE', keys: ['jobs/recNOPE/a.jpg'] })).statusCode, 404, 'unknown job');

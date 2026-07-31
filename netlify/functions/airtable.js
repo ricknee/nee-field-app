@@ -4638,6 +4638,13 @@ async function handleJobPhotoUploadUrls(body) {
   }
 }
 
+// Sized against Netlify's 10-second synchronous function budget. A move is up
+// to four R2 round trips per photo; 12 photos at 5-way concurrency is roughly
+// 10 sequential round trips of work, which leaves comfortable headroom. The
+// client chunks larger selections into requests of this size.
+const BULK_PHOTO_MAX = 12;
+const BULK_PHOTO_CONCURRENCY = 5;
+
 // Shared shape for the two bulk photo mutations: validate the job once, then
 // apply `fn` per key and report per-key outcomes rather than failing the whole
 // batch. Selecting 40 photos and having one bad key abort the lot is the wrong
@@ -4647,25 +4654,42 @@ async function bulkPhotoOp(body, label, fn) {
   const keys = Array.isArray(body?.keys) ? body.keys : [];
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!keys.length) return resp(400, { ok: false, error: "No photos selected." });
-  if (keys.length > 200) return resp(400, { ok: false, error: "Too many photos at once (max 200)." });
+  // Netlify gives a synchronous function 10 seconds. A move is four R2 calls
+  // (copy, copy thumb, delete, delete thumb), so 47 photos done sequentially
+  // was ~188 round trips and returned a 504 with nothing moved. The client now
+  // chunks; this cap is the backstop that keeps one request inside the budget.
+  if (keys.length > BULK_PHOTO_MAX) {
+    return resp(400, { ok: false, error: `Too many photos in one request (max ${BULK_PHOTO_MAX}).` });
+  }
   if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage isn't configured." });
 
   const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
   if (!records.length) return resp(404, { ok: false, error: "Job not found." });
 
+  // Run several at once. Sequential was the direct cause of the 504: each
+  // photo is up to four R2 round trips, and they are almost entirely waiting
+  // on the network, so concurrency cuts wall-clock roughly linearly.
   let done = 0;
   const failures = [];
-  for (const key of keys) {
-    try { await fn(jobId, key); done++; }
-    catch (e) {
-      // KEY_OUTSIDE_JOB means the client sent a key belonging to another job.
-      // That is either a bug or someone probing — log it loudly either way.
-      if (e instanceof R2Error && e.code === "KEY_OUTSIDE_JOB") {
-        console.error(`${label}: rejected key outside job ${jobId}: ${String(key).slice(0, 120)}`);
+  let next = 0;
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= keys.length) return;
+      const key = keys[i];
+      try { await fn(jobId, key); done++; }
+      catch (e) {
+        // KEY_OUTSIDE_JOB means the client sent a key belonging to another job.
+        // That is either a bug or someone probing — log it loudly either way.
+        if (e instanceof R2Error && e.code === "KEY_OUTSIDE_JOB") {
+          console.error(`${label}: rejected key outside job ${jobId}: ${String(key).slice(0, 120)}`);
+        }
+        failures.push({ key, error: String(e?.message || e).slice(0, 160) });
       }
-      failures.push({ key, error: String(e?.message || e).slice(0, 160) });
     }
   }
+  await Promise.all(Array.from({ length: Math.min(BULK_PHOTO_CONCURRENCY, keys.length) }, worker));
+
   return resp(200, { ok: failures.length === 0, done, failed: failures.length, failures });
 }
 

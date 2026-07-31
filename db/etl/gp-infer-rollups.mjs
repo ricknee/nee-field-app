@@ -98,8 +98,44 @@ const subsetsOf = arr => {
   return out;
 };
 
+// Where data inference finds a CORRELATION but semantics give the real rule, the
+// human judgement is recorded here with its evidence. Pure pattern-matching cannot
+// make these calls — that is the limit of the method, not a bug in it.
+const OVERRIDES = {
+  "Total Contract Billed": {
+    agg: "sum", filter: "Invoice Type in [Contract]",
+    why: "inference offered 'Auto Allocate? = false', which matches only because every " +
+         "Time & Material invoice happens to have Auto Allocate set. Reading the excluded " +
+         "invoices directly, ALL of them are Invoice Type = Time & Material, and the field " +
+         "is called *Contract* Billed. Verified: sum WHERE Invoice Type = Contract matches all 42 jobs.",
+  },
+  "Actual Subcontract Expense": {
+    agg: "sum", filter: "Expense Type in [Subcontract]",
+    why: "only 2 Subcontract expense rows exist ($10,255 total), so several filters fit the " +
+         "data equally. The field name and the Expense Type value are the same word; the " +
+         "sibling rollup Actual Material Cost is the identical shape on Expense Type = Materials.",
+  },
+  "Base Contract Amount": {
+    agg: "sum", filter: "Status in [Approved] AND Estimate Type in [Original]",
+    why: "the automatic pair search reports 7 equivalent explanations, but restricting the " +
+         "search to the two semantically plausible fields (Status x Estimate Type) leaves " +
+         "EXACTLY ONE match across all 49 jobs. Confirmed by hand on Gary Strauss (CAG 139): " +
+         "two Approved estimates, Original 47,250 and Extra's 2,500, rollup = 47,250 — the " +
+         "Original only. Every other job has no Approved+Original estimate and reads 0.",
+  },
+  // Pipe Usage and Wire Weigh-Ins are LEGACY (owner, 2026-07-31): pipe and wire are
+  // tracked in the inventory app now and pushed across as expenses. These rollups are
+  // frozen history — they still feed Actual Job Cost (COGS) for old jobs but will not
+  // move again. Port them faithfully for history; expect 0 on anything new.
+};
+
 const results = [];
 for (const s of specs) {
+  const ov = OVERRIDES[s.name];
+  if (ov) {
+    results.push({ ...s, verdict: "CONFIRMED", agg: ov.agg, filter: ov.filter, evidence: ov.why });
+    continue;
+  }
   // Per job: the linked target values, plus each record's raw fields for filtering.
   const cases = [];
   for (const j of jobs) {
@@ -193,7 +229,7 @@ for (const s of specs) {
 
 const pad = (s, n) => String(s ?? "").padEnd(n);
 console.log("\n\n=== INFERRED ROLLUP DEFINITIONS ===\n");
-for (const v of ["CONFIDENT", "LIKELY", "AMBIGUOUS", "NO DATA"]) {
+for (const v of ["CONFIRMED", "CONFIDENT", "LIKELY", "UNDETERMINED", "AMBIGUOUS", "NO DATA"]) {
   const grp = results.filter(r => r.verdict === v);
   if (!grp.length) continue;
   console.log(`--- ${v} (${grp.length}) ---`);

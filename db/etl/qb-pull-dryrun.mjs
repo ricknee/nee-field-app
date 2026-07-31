@@ -53,7 +53,7 @@ const { unknownJobcodes, insertSamples, deletedSamples, ...counts } = report;
 console.table([counts]);
 
 if (unknownJobcodes.length) {
-  console.log(`\n-- jobcodes skipped for having no matching Job (Make parity) --`);
+  console.log(`\n-- jobcodes imported with NO matching Job (job_id NULL) — Make does the same --`);
   console.log("   " + unknownJobcodes.join("\n   "));
 }
 

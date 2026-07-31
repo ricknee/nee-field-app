@@ -27,15 +27,25 @@
 //    regression, but hourly pulls make it visible sooner. Watch for a shift that
 //    never lands rather than assuming the puller dropped it.
 //
-// 3. QB holds FAR more than Airtable ever did — 23,669 timesheets vs 14,556 rows,
-//    going back to 2020 while Airtable starts 2021-05-12, and including jobcodes
-//    like "Lunch Break", "Travel" and "Unit 11". That is not drift: Make's "Seach
-//    Job Name" module looks up {Job PO - Locked} and, finding no Job, drops the
-//    bundle. So Make only ever imported timesheets whose jobcode maps to a real
-//    Job. Inserting the rest would add thousands of hours payroll has never
-//    counted. We replicate Make's behaviour deliberately (see INSERT POLICY) and
-//    report every skip, so the filter is visible rather than silent.
-//    Changing what counts as payable hours is a separate, deliberate decision.
+// 3. What Make actually excludes is TIME OFF — not unmatched jobcodes.
+//    An earlier version of this file skipped any timesheet whose jobcode had no
+//    matching Job, on the theory that Make's "Seach Job Name" module drops the
+//    bundle when its search finds nothing. That was WRONG and it was skipping real
+//    work. Disproved 2026-07-31 by Airtable's own contents: "Troy Koehn (MIT 380)"
+//    (6 rows, 20 h), bare "Shop Work" (450 rows, 944 h), "Travel" and
+//    "Office Work (MIO 427)" all exist as Time Entries with an EMPTY Job link —
+//    so Make imports unmatched jobcodes quite happily.
+//
+//    Comparing 2026 only, so it reflects the CURRENT Make scenario: QB used 64
+//    jobcodes, Airtable holds 58. The six absent are Lunch Break (567), Paid
+//    Vacation (8), Holiday (7), Vacation (4) — all time off — plus 12 timesheets
+//    on two REAL jobs (Jeannie Oyster 11, Alpine Kitchen 1) that Make simply
+//    missed. So the rule is an explicit time-off list, and the stragglers are
+//    Make's intermittent failures, which is what this puller exists to fix.
+//
+//    Consequence worth expecting: the puller is MORE complete than Make, so while
+//    both run the reconciler may report Neon slightly ahead. That is correct, not
+//    drift — INSERT_FLOOR_DATE keeps it out of closed pay periods.
 import { neon } from "@neondatabase/serverless";
 
 const QB = "https://rest.tsheets.com/api/v1";
@@ -58,6 +68,21 @@ const QB = "https://rest.tsheets.com/api/v1";
 // NOT lost — they are still in QuickBooks. Recovering them is a deliberate, separate
 // decision: lower this floor and re-run, then expect (and reconcile) the divergence.
 const INSERT_FLOOR_DATE = "2026-07-26";
+
+// Jobcodes that are TIME OFF, not work. Derived from data, not assumed: these are
+// the only non-job jobcodes with QB timesheets in 2026 and zero Time Entries in
+// Airtable. Everything else QB reports IS imported by Make, including jobcodes with
+// no matching Job record — see note 3 above.
+//
+// Compared lowercase. If a new time-off jobcode is added in QuickBooks it will start
+// importing as if it were work; the run report lists every jobcode carrying a NULL
+// job_id, so a newcomer shows up there rather than silently inflating payroll.
+const NON_WORK_JOBCODES = new Set([
+  "lunch break",
+  "vacation",
+  "paid vacation",
+  "holiday",
+]);
 
 // Overlap re-asked on every run. Costs nothing (upserts are idempotent) and covers
 // clock skew between QB's clock and ours.
@@ -102,8 +127,10 @@ export async function runPull({ sql, token, since, dryRun = false }) {
   const report = {
     since, dryRun,
     fetched: 0, upserted: 0, claimed: 0,
-    skippedUnknownJobcode: 0, skippedTooOld: 0, skippedNoEmployee: 0,
+    skippedTimeOff: 0, skippedTooOld: 0, skippedNoEmployee: 0,
     deleted: 0, wouldInsert: 0, wouldUpdate: 0,
+    // Jobcodes imported with a NULL job_id. NOT skipped — reported so an unfamiliar
+    // one is noticed rather than silently becoming payable hours.
     unknownJobcodes: [], insertSamples: [], deletedSamples: [],
     newWatermark: null, errors: [],
   };
@@ -130,8 +157,15 @@ export async function runPull({ sql, token, since, dryRun = false }) {
     const jobName = jobcodes.get(String(ts.jobcode_id)) || null;
     const jobId   = jobName ? jobByPo.get(jobName.trim().toLowerCase()) || null : null;
 
-    // Make parity: no matching Job means Make never created a row for it.
-    if (!jobId) { report.skippedUnknownJobcode++; unknown.add(jobName || `(jobcode ${ts.jobcode_id})`); continue; }
+    // Time off is not work — the only category Make genuinely excludes.
+    if (jobName && NON_WORK_JOBCODES.has(jobName.trim().toLowerCase())) {
+      report.skippedTimeOff++;
+      continue;
+    }
+    // A jobcode with no matching Job is still imported, with job_id left NULL and
+    // job_name carrying the text — exactly what Make does. Tracked so an unfamiliar
+    // jobcode is visible in the run report instead of quietly becoming payable hours.
+    if (!jobId) unknown.add(jobName || `(jobcode ${ts.jobcode_id})`);
 
     const empName = users.get(String(ts.user_id)) || null;
     const empId   = empByQbId.get(String(ts.user_id)) || null;

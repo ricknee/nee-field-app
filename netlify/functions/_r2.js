@@ -371,3 +371,79 @@ export async function listJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
     };
   }));
 }
+
+// ── Mutation ───────────────────────────────────────────────────────────────
+
+// Every mutating helper takes jobId and refuses any key outside that job's
+// prefix. The client sends keys back to us (it got them from listJobPhotos), so
+// without this a signed-in user could delete or move any object in the bucket
+// by editing one string.
+function assertKeyInJob(jobId, key) {
+  const prefix = jobPrefix(jobId);
+  const k = String(key || "");
+  if (!k.startsWith(prefix) || k.includes("..")) {
+    throw new R2Error("That photo does not belong to this job", "KEY_OUTSIDE_JOB");
+  }
+  return k;
+}
+
+async function deleteObject(key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const c = config();
+  const client = await getClient();
+  const res = await withTimeout(
+    (signal) => client.fetch(`${c.endpoint}/${c.bucket}/${encodeURI(key)}`, { method: "DELETE", signal }),
+    timeoutMs
+  );
+  // S3 delete is idempotent — 204 for both "deleted" and "was never there".
+  if (!res.ok && res.status !== 204 && res.status !== 404) {
+    throw new R2Error(`R2 delete failed: HTTP ${res.status}`, "HTTP_" + res.status);
+  }
+}
+
+async function copyObject(srcKey, destKey, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const c = config();
+  const client = await getClient();
+  const res = await withTimeout(
+    (signal) => client.fetch(`${c.endpoint}/${c.bucket}/${encodeURI(destKey)}`, {
+      method: "PUT",
+      headers: { "x-amz-copy-source": `/${c.bucket}/${encodeURI(srcKey)}` },
+      signal,
+    }),
+    timeoutMs
+  );
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new R2Error(`R2 copy failed: HTTP ${res.status} ${body.slice(0, 200)}`, "HTTP_" + res.status);
+  }
+}
+
+// Deletes a photo and its thumbnail. IRREVERSIBLE — the bucket has no
+// versioning, so there is no undo behind this.
+export async function deleteJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInJob(jobId, key);
+  await deleteObject(k, timeoutMs);
+  await deleteObject(thumbKeyFor(k), timeoutMs);   // tolerates a missing thumb
+}
+
+// Moves a photo (and its thumbnail) into another album. R2 has no rename, so
+// this is copy-then-delete.
+//
+// The order matters: if the delete fails we are left with a harmless duplicate,
+// whereas delete-then-copy would lose the photo outright. A duplicate is
+// visible and re-movable; a lost jobsite photo is not recoverable.
+export async function moveJobPhoto(jobId, key, album, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInJob(jobId, key);
+  const filename = k.slice(k.lastIndexOf("/") + 1);
+  const destKey = `${jobPrefix(jobId)}${albumSegment(album)}${filename}`;
+  if (destKey === k) return { key: k, moved: false };   // already in that album
+
+  await copyObject(k, destKey, timeoutMs);
+  // A missing thumb must not abort the move — the gallery falls back to the
+  // full image, and backfilled photos have no thumb at all.
+  try { await copyObject(thumbKeyFor(k), thumbKeyFor(destKey), timeoutMs); } catch { /* no thumb */ }
+
+  await deleteObject(k, timeoutMs);
+  try { await deleteObject(thumbKeyFor(k), timeoutMs); } catch { /* already gone */ }
+
+  return { key: destKey, moved: true };
+}

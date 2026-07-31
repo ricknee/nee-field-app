@@ -624,6 +624,47 @@ await test('jobPhotoUploadUrls: viewer is read-only → 403', async () => {
   eq((await POST('jobPhotoUploadUrls', { jobId: 'recJ1', files: [{ contentType: 'image/jpeg' }] }, VIEWER_TOK)).statusCode, 403, 'viewer');
 });
 
+await test('deleteJobPhotos: admin/office only, viewer and employee blocked', async () => {
+  setR2();
+  mockTables = JOB_ONLY();
+  const body = { jobId: 'recJ1', keys: ['jobs/recJ1/a.jpg'] };
+  eq((await POST('deleteJobPhotos', body, VIEWER_TOK)).statusCode, 403, 'viewer');
+  eq((await POST('deleteJobPhotos', body, EMP_TOK)).statusCode, 403, 'employee');
+  // admin/office must at least pass the authz gate (storage call may fail offline)
+  ok((await POST('deleteJobPhotos', body, OFFICE_TOK)).statusCode !== 403, 'office allowed');
+});
+
+await test('moveJobPhotos: any non-viewer may re-file (reversible)', async () => {
+  setR2();
+  mockTables = JOB_ONLY();
+  const body = { jobId: 'recJ1', keys: ['jobs/recJ1/a.jpg'], album: 'Gym' };
+  eq((await POST('moveJobPhotos', body, VIEWER_TOK)).statusCode, 403, 'viewer blocked');
+  ok((await POST('moveJobPhotos', body, EMP_TOK)).statusCode !== 403, 'employee allowed');
+});
+
+await test('bulk photo ops: validate job and selection before touching storage', async () => {
+  setR2();
+  mockTables = JOB_ONLY();
+  eq((await POST('deleteJobPhotos', { keys: ['x'] })).statusCode, 400, 'no jobId');
+  eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: [] })).statusCode, 400, 'no keys');
+  const many = Array.from({ length: 201 }, (_, i) => `jobs/recJ1/${i}.jpg`);
+  eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: many })).statusCode, 400, 'too many');
+  mockTables = { Jobs: [] };
+  eq((await POST('deleteJobPhotos', { jobId: 'recNOPE', keys: ['jobs/recNOPE/a.jpg'] })).statusCode, 404, 'unknown job');
+});
+
+await test('r2 mutation guard: a key from another job is refused', async () => {
+  const { moveJobPhoto, deleteJobPhoto } = await import('../netlify/functions/_r2.js');
+  // The client sends keys back to us, so this is the check that stops a
+  // signed-in user reaching another job's photos by editing one string.
+  for (const [label, fn] of [['move', () => moveJobPhoto('recJ1', 'jobs/recOTHER/a.jpg', 'Gym')],
+                             ['delete', () => deleteJobPhoto('recJ1', 'jobs/recOTHER/a.jpg')]]) {
+    let threw = null;
+    try { await fn(); } catch (e) { threw = e; }
+    ok(threw && threw.code === 'KEY_OUTSIDE_JOB', `${label} rejects a foreign key (got ${threw && threw.code})`);
+  }
+});
+
 await test('r2 albums: one safe path segment, names survive a round trip', async () => {
   const { albumSegment, albumFromKey, sanitizeAlbum, jobPrefix } = await import('../netlify/functions/_r2.js');
   // The album name is the ONLY client-supplied part of an object key, so it

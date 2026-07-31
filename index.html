@@ -4271,7 +4271,7 @@
   // a string = that album. `visible` is whatever the grid is currently showing,
   // which is what the lightbox pages through — paging must follow the album
   // you opened, not every photo on the job.
-  const jobPhotoState = { jobId: null, jobName: "", photos: [], visible: [], index: 0, album: undefined, lastAlbum: "" };
+  const jobPhotoState = { jobId: null, jobName: "", photos: [], visible: [], index: 0, album: undefined, lastAlbum: "", selecting: false, selected: new Set() };
 
   function photoUnavailableMsg(reason) {
     if (reason === "not-configured") return "Photo storage isn't switched on yet.";
@@ -4286,6 +4286,8 @@
     jobPhotoState.jobName = job.name || "";
     jobPhotoState.photos  = [];
     jobPhotoState.album   = undefined;   // always open on the album overview
+    jobPhotoState.selecting = false;
+    jobPhotoState.selected.clear();
 
     $("jobPhotosTitle").textContent   = `📷 Photos — ${job.name || ""}`;
     $("jobPhotosGrid").innerHTML      = "";
@@ -4331,6 +4333,9 @@
     if (!photos.length) {
       status.textContent = "No photos on this job yet. Tap 📷 Add Photos to take some.";
       grid.innerHTML = "";
+      // Clear any Select/Move/Delete buttons left over from before a deletion
+      // emptied the job.
+      renderPhotoToolbar();
       return;
     }
 
@@ -4371,13 +4376,121 @@
     }).join("");
 
     grid.querySelectorAll("img[data-idx]").forEach(img => {
-      img.addEventListener("click", () => openJobPhotoLightbox(Number(img.dataset.idx)));
+      const photo = list[Number(img.dataset.idx)];
+      if (jobPhotoState.selecting && jobPhotoState.selected.has(photo.key)) {
+        img.style.outline = "3px solid var(--blue)";
+        img.style.opacity = "0.65";
+      }
+      img.addEventListener("click", () => {
+        if (jobPhotoState.selecting) togglePhotoSelection(photo.key);
+        else openJobPhotoLightbox(Number(img.dataset.idx));
+      });
       img.addEventListener("error", () => {
         if (img.dataset.retried) return;
         img.dataset.retried = "1";
-        img.src = list[Number(img.dataset.idx)].url;
+        img.src = photo.url;
       }, { once: true });
     });
+
+    renderPhotoToolbar();
+  }
+
+  /* ── Select / move / delete ───────────────────────────────────────────── */
+
+  // Delete is admin/office only and the server enforces that; hiding the
+  // button just avoids offering an action that would come back 403.
+  function canDeletePhotos() {
+    const r = (state.user && state.user.role) || "";
+    return r === "admin" || r === "office";
+  }
+
+  function renderPhotoToolbar() {
+    const bar = $("jobPhotosToolbar");
+    if (!bar) return;
+    // No toolbar on the album overview — selection applies to photos.
+    if (jobPhotoState.album === undefined && [...albumsOf(jobPhotoState.photos).keys()].some(k => k !== "")) {
+      bar.innerHTML = "";
+      return;
+    }
+    if (!jobPhotoState.photos.length) { bar.innerHTML = ""; return; }
+
+    if (!jobPhotoState.selecting) {
+      bar.innerHTML = `<button type="button" id="phSelect" class="btn btn-sm" style="font-size:13px; padding:6px 14px;">Select</button>`;
+      $("phSelect").onclick = () => {
+        jobPhotoState.selecting = true;
+        jobPhotoState.selected.clear();
+        renderJobPhotos();
+      };
+      return;
+    }
+
+    const n = jobPhotoState.selected.size;
+    bar.innerHTML = `
+      <span style="font-size:13px; font-weight:600;">${n} selected</span>
+      <button type="button" id="phMove" class="btn btn-sm" style="font-size:13px; padding:6px 14px;" ${n ? "" : "disabled"}>Move to album</button>
+      ${canDeletePhotos() ? `<button type="button" id="phDelete" class="btn btn-sm" style="font-size:13px; padding:6px 14px; color:var(--red);" ${n ? "" : "disabled"}>Delete</button>` : ""}
+      <button type="button" id="phCancelSel" class="btn btn-sm" style="font-size:13px; padding:6px 14px;">Cancel</button>`;
+
+    $("phCancelSel").onclick = () => {
+      jobPhotoState.selecting = false;
+      jobPhotoState.selected.clear();
+      renderJobPhotos();
+    };
+    if ($("phMove"))   $("phMove").onclick   = moveSelectedPhotos;
+    if ($("phDelete")) $("phDelete").onclick = deleteSelectedPhotos;
+  }
+
+  function togglePhotoSelection(key) {
+    if (jobPhotoState.selected.has(key)) jobPhotoState.selected.delete(key);
+    else jobPhotoState.selected.add(key);
+    renderJobPhotos();
+  }
+
+  async function moveSelectedPhotos() {
+    const job = state.selected;
+    if (!job) return;
+    const keys = [...jobPhotoState.selected];
+    if (!keys.length) return;
+
+    const album = await askForAlbum(job);
+    if (album === null) return;
+
+    const status = $("jobPhotosStatus");
+    status.textContent = `Moving ${keys.length} photo${keys.length === 1 ? "" : "s"}…`;
+    try {
+      const d = await apiPost("moveJobPhotos", { jobId: job.id, keys, album: album || "" });
+      jobPhotoState.selecting = false;
+      jobPhotoState.selected.clear();
+      jobPhotoState.album = undefined;   // land back on the overview
+      await refreshJobPhotos();
+      if (d.failed) showAppToast(`${d.done} moved, ${d.failed} failed`);
+      else showAppToast(`Moved to ${album || "Unsorted"} ✓`);
+    } catch (e) {
+      status.textContent = `Move failed: ${e.message}`;
+    }
+  }
+
+  async function deleteSelectedPhotos() {
+    const job = state.selected;
+    if (!job) return;
+    const keys = [...jobPhotoState.selected];
+    if (!keys.length) return;
+
+    // No versioning on the bucket, so this really is permanent. Say so.
+    if (!confirm(`Permanently delete ${keys.length} photo${keys.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+
+    const status = $("jobPhotosStatus");
+    status.textContent = `Deleting ${keys.length} photo${keys.length === 1 ? "" : "s"}…`;
+    try {
+      const d = await apiPost("deleteJobPhotos", { jobId: job.id, keys });
+      jobPhotoState.selecting = false;
+      jobPhotoState.selected.clear();
+      await refreshJobPhotos();
+      if (d.failed) showAppToast(`${d.done} deleted, ${d.failed} failed`);
+      else showAppToast(`${d.done} deleted ✓`);
+    } catch (e) {
+      status.textContent = `Delete failed: ${e.message}`;
+    }
   }
 
   // Album tiles: cover photo + name + count. Sorted with named albums first so
@@ -4392,6 +4505,7 @@
     });
 
     status.textContent = `${names.length} album${names.length === 1 ? "" : "s"} — tap one to open`;
+    renderPhotoToolbar();   // selection belongs to a photo grid, not this view
     grid.style.gridTemplateColumns = "repeat(auto-fill, minmax(150px, 1fr))";
     grid.innerHTML = names.map(name => {
       const list  = byAlbum.get(name);
@@ -16592,6 +16706,7 @@
     </div>
     <div class="sl-modal-body">
       <div id="jobPhotosStatus" style="font-size:13px; color:var(--muted); padding:8px 0;"></div>
+      <div id="jobPhotosToolbar" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-bottom:10px;"></div>
       <div id="jobPhotosGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;"></div>
     </div>
   </div>

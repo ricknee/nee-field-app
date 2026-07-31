@@ -12,7 +12,8 @@ import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
 // pCloud option), but nothing calls them. See docs/PLAN-job-photos.md.
 import {
   r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut,
-  thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum, R2Error,
+  thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
+  deleteJobPhoto, moveJobPhoto, R2Error,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -431,6 +432,11 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // to _NON_VIEWER with in-handler owner/status enforcement.
   "approveExpense", "markInvoicePaid", "setInvoiceStatus",
   "updateJobBillableRate", "createVendor",
+  // Photo deletion is irreversible (no bucket versioning) and nothing records
+  // who took a photo, so the expense-style "own until reviewed" rule can't
+  // apply. Moving between albums is NOT here — it's reversible, so any
+  // non-viewer may re-file.
+  "deleteJobPhotos",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -4632,6 +4638,51 @@ async function handleJobPhotoUploadUrls(body) {
   }
 }
 
+// Shared shape for the two bulk photo mutations: validate the job once, then
+// apply `fn` per key and report per-key outcomes rather than failing the whole
+// batch. Selecting 40 photos and having one bad key abort the lot is the wrong
+// behaviour when the user is standing in a parking lot.
+async function bulkPhotoOp(body, label, fn) {
+  const jobId = body?.jobId;
+  const keys = Array.isArray(body?.keys) ? body.keys : [];
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!keys.length) return resp(400, { ok: false, error: "No photos selected." });
+  if (keys.length > 200) return resp(400, { ok: false, error: "Too many photos at once (max 200)." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage isn't configured." });
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  let done = 0;
+  const failures = [];
+  for (const key of keys) {
+    try { await fn(jobId, key); done++; }
+    catch (e) {
+      // KEY_OUTSIDE_JOB means the client sent a key belonging to another job.
+      // That is either a bug or someone probing — log it loudly either way.
+      if (e instanceof R2Error && e.code === "KEY_OUTSIDE_JOB") {
+        console.error(`${label}: rejected key outside job ${jobId}: ${String(key).slice(0, 120)}`);
+      }
+      failures.push({ key, error: String(e?.message || e).slice(0, 160) });
+    }
+  }
+  return resp(200, { ok: failures.length === 0, done, failed: failures.length, failures });
+}
+
+// IRREVERSIBLE — the bucket has no versioning. Restricted to admin/office in
+// authzFor because nothing records who took a photo, so the "uploader may
+// delete their own until reviewed" rule used for expenses can't be enforced.
+async function handleDeleteJobPhotos(body) {
+  return await bulkPhotoOp(body, "deleteJobPhotos", (jobId, key) => deleteJobPhoto(jobId, key));
+}
+
+// Re-filing a photo is not destructive (copy-then-delete, and a failed delete
+// leaves a duplicate rather than a hole), so any non-viewer may do it.
+async function handleMoveJobPhotos(body) {
+  const album = sanitizeAlbum(body?.album) || "";
+  return await bulkPhotoOp(body, "moveJobPhotos", (jobId, key) => moveJobPhoto(jobId, key, album));
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -4743,6 +4794,8 @@ export async function handler(event) {
       if (body.action === "deleteScheduleEntry")  return await handleDeleteScheduleEntry(body);
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
       if (body.action === "jobPhotoUploadUrls")   return await handleJobPhotoUploadUrls(body);
+      if (body.action === "moveJobPhotos")        return await handleMoveJobPhotos(body);
+      if (body.action === "deleteJobPhotos")      return await handleDeleteJobPhotos(body);
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);

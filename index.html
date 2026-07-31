@@ -15308,9 +15308,14 @@
         // Week 1
         wkLabel("Week #1", wk1Label, col);
         dataRow("Weekly Hours", fmtHrs(wk1Total), false);
-        // Stated explicitly: a total that can't be reconciled against the entries
-        // above it looks like an error to whoever checks the payslip.
-        if (wk1Adj > 0) dataRow("incl. rounded up to next 1/4 hr", `+${fmtHrs(wk1Adj)}`, false);
+        // NO rounding-adjustment line here, deliberately (owner decision 2026-07-31).
+        // This PDF is the FINISHED document that goes to the accountant, not a working
+        // one. Payroll is reconciled against QuickBooks Time on screen first and any
+        // mistakes corrected there; by the time the PDF is generated the number IS the
+        // answer. A note about rounding mechanics only raises a question the accountant
+        // should never have to think about.
+        // The adjustment is still computed — it feeds the city-tax allocation below and
+        // is recorded as `roundingAdjustment` in the archived JSON for auditability.
         sumRow(`Reg Hrs  ${fmtHrs(wk1Reg)}${wk1OT > 0 ? `     OT Hrs  ${fmtHrs(wk1OT)}` : ""}`);
         sumRow(`Total Hrs  ${fmtHrs(wk1Total)}`);
         cityTaxSection(taxBreakdown(wk1, wk1Adj), col);
@@ -15318,7 +15323,6 @@
         // Week 2
         wkLabel("Week #2", wk2Label, col);
         dataRow("Weekly Hours", fmtHrs(wk2Total), false);
-        if (wk2Adj > 0) dataRow("incl. rounded up to next 1/4 hr", `+${fmtHrs(wk2Adj)}`, false);
         sumRow(`Reg Hrs  ${fmtHrs(wk2Reg)}${wk2OT > 0 ? `     OT Hrs  ${fmtHrs(wk2OT)}` : ""}`);
         sumRow(`Total Hrs  ${fmtHrs(wk2Total)}`);
         cityTaxSection(taxBreakdown(wk2, wk2Adj), col);

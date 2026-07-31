@@ -17,7 +17,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { neon } from "@neondatabase/serverless";
+// Resolved by RELATIVE PATH, not as a bare specifier. The repo has no root
+// package.json, so a bare import would look in db/etl -> db -> repo root and find
+// nothing; running it used to require copying this file into a scratch directory
+// that happened to have the driver. The functions directory already declares it.
+import { neon } from "../../netlify/functions/node_modules/@neondatabase/serverless/index.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // REPO_ROOT lets the script run from a scratch dir that has the Neon driver
@@ -33,9 +37,15 @@ const env = Object.fromEntries(
 
 const KEY  = env.AIRTABLE_PROD_READ_PAT || env.AIRTABLE_API_KEY;
 const BASE = env.AIRTABLE_PROD_BASE_ID || "appiqWg6SvKcGfMAu";
-const NEON = process.env.NEON_URL;
+// NEON_URL comes from .env like every other credential, so the daily command is
+// just `node db/etl/time-entries-full.mjs` with nothing to paste. An explicit
+// environment variable still wins, for one-off runs against a Neon branch.
+const NEON = process.env.NEON_URL || env.NEON_URL || env.DATABASE_URL;
 if (!KEY)  throw new Error("no Airtable PAT in .env (AIRTABLE_PROD_READ_PAT)");
-if (!NEON) throw new Error("set NEON_URL");
+if (!NEON) throw new Error(
+  "No Neon connection string.\n" +
+  "  Add a line to .env:   NEON_URL=postgresql://...\n" +
+  "  Get it from the Neon console (project damp-silence-99074350) -> Connect -> POOLED connection string.");
 
 const sql = neon(NEON);
 const sleep = ms => new Promise(r => setTimeout(r, ms));

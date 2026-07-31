@@ -2664,9 +2664,59 @@ async function handleUpdateTimeEntry(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// NEON-FIRST since slice 5 phase A. Airtable is the fallback.
+//
+// This one waited on the billing chain: it returns `unbilledHours` and
+// `unbilledRevenue`, which Airtable derives through Labor Billing Allocations and
+// the per-job billable rate. Those now exist as v_time_entry_billing, diffed
+// against Airtable across all 14,564 entries with zero mismatches.
+//
+// Side benefit worth noting: the Airtable path below is one of the sites on the
+// FIND-substring cross-job pattern that docs/TODO.md tracks — it prefilters on a
+// job-name substring and then verifies the linked record id in memory, because a
+// job name that is a prefix of another ("Jenny Ln 1" vs "Jenny Ln 10") would
+// otherwise leak entries across jobs. In Neon it is a plain FK equality on job_id,
+// so the whole class of bug does not exist on this path.
 async function handleTimeEntries(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT t.airtable_id                     AS id,
+              t.work_date::text                 AS work_date,
+              t.employee_name, t.class, t.city_taxes, t.notes,
+              t.hours::float8                   AS hours,
+              t.duration_seconds::float8        AS duration,
+              t.labor_reviewed,
+              b.unbilled_hours::float8          AS unbilled_hours,
+              b.unbilled_labor_revenue::float8  AS unbilled_revenue
+         FROM time_entries t
+         JOIN jobs j              ON j.id = t.job_id
+         LEFT JOIN v_time_entry_billing b ON b.id = t.id
+        WHERE j.airtable_id = $1
+        ORDER BY t.work_date DESC`,
+      [jobId]
+    );
+    if (q?.rows) {
+      const entries = q.rows.map(r => ({
+        id:              r.id,                       // Airtable rec id — the UI edits by it
+        workDate:        r.work_date || "",
+        employee:        r.employee_name || "",
+        class:           r.class || "",
+        cityTaxes:       r.city_taxes || "",
+        hours:           r.hours ?? null,
+        reviewed:        r.labor_reviewed === true,
+        notes:           r.notes || "",
+        duration:        r.duration ?? null,
+        unbilledHours:   Number(r.unbilled_hours) || 0,
+        unbilledRevenue: Number(r.unbilled_revenue) || 0,
+      }));
+      return resp(200, { ok: true, entries, _source: "neon", _ms: q.ms });
+    }
+    console.error(`timeEntries: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, entries: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
@@ -2680,7 +2730,7 @@ async function handleTimeEntries(params) {
   const records = await fetchAll(TABLES.timeEntries || "Time Entries", { filter, sortField: "Work Date", sortDir: "desc" });
   const matched = records.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
   const entries = matched.map(r => { const f=r.fields||{}; return { id:r.id,workDate:f["Work Date"]||"",employee:f["Employee"]||"",class:f["Class"]||"",cityTaxes:f["City Taxes"]||"",hours:f["Hours"]??null,reviewed:f["Labor Reviewed"]===true,notes:f["Notes"]||"",duration:f["Duration (Seconds)"]??null,unbilledHours:f["Unbilled Hours"]??0,unbilledRevenue:f["Unbilled Labor Revenue $"]??0 }; });
-  return resp(200, { ok: true, entries });
+  return resp(200, { ok: true, entries, _source: "airtable" });
 }
 
 // {Job} on Labor Billing Allocations is a multipleLookupValues through Time

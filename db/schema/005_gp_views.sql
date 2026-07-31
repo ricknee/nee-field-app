@@ -1,0 +1,69 @@
+-- Neon slice 5, phases C + D — the GP layer.
+-- APPLIED to the default branch of Neon project damp-silence-99074350 on 2026-07-31.
+--
+-- Tables (phase C): job_estimates, expenses, invoices, wire_weigh_ins, pipe_usage.
+-- Views  (phase C/D): v_job_rollups, v_job_financials.
+--
+-- Wire and Pipe are FROZEN HISTORY — both are tracked in the inventory app now and
+-- pushed across as expenses. They still feed Actual Job Cost (COGS) on old jobs but
+-- will never move again.
+--
+-- Airtable formula fields are stored as their COMPUTED VALUE rather than re-derived.
+-- Airtable is still the calculator for its own inputs; these are inputs to the
+-- rollups, not things Neon decides. Re-running the ETL refreshes them.
+--
+-- ── v_job_rollups — the 27 determinable Jobs rollups ───────────────────────
+-- Airtable's Meta API exposes NO aggregation and NO filter for any rollup, so every
+-- definition below was inferred from production data by db/etl/gp-infer-rollups.mjs
+-- (a candidate had to match EVERY job; one counter-example rejected it) and, for
+-- three of them, settled by semantics over correlation. See the OVERRIDES map there.
+--
+--   Expected Revenue              sum   WHERE Status IN (Archived/Completed, Sent, Approved)
+--   Expected Revenue (All Status) sum   unfiltered            <- the "counterintuitive" pair
+--   Base Contract Amount          sum   WHERE Status=Approved AND Estimate Type=Original
+--   Actual Labor Cost (Reviewed)  sum   WHERE Reviewed = true
+--   Labor Cost (In Progress)      sum   WHERE Reviewed = false
+--   Actual Material Cost          sum   WHERE Expense Type = Materials
+--   Actual Subcontract Expense    sum   WHERE Expense Type = Subcontract
+--   Actual Scissor Lift Expense   sum   WHERE Expense Type = Scissor Lift
+--   Actual Rental Equipment Exp.  sum   WHERE Expense Type = Rental Equipment
+--   Total Contract Billed         sum   WHERE Invoice Type = Contract
+--   Approved Estimates            COUNT WHERE Status = Approved
+--   (the rest are unfiltered sums)
+--
+-- VERIFIED 2026-07-31: 2,970 rollup comparisons across all 110 jobs — 0 mismatches.
+--
+-- ── v_job_financials — the 14 formulas that combine them ───────────────────
+-- Ported verbatim from docs/GP-FORMULA-INVENTORY.md. Dependency order matters, hence
+-- the CTE chain: labour/materials -> markup -> revenue -> COGS -> the GP families.
+--
+--   Total Labor Cost (Live)  = Actual Labor Cost (Reviewed) + Labor Cost (In Progress)
+--   Total Labor Cost (Final) = IF(status IN (Ready to Invoice, Completed), reviewed, 0)
+--   Materials In Progress    = MAX(0, wire - reviewed wire) + pipe in progress
+--                              + MAX(0, all expenses - reviewed expenses)
+--   Total Materials (Live)   = Total Reviewed Costs + Materials In Progress
+--   Material Cost w/ Markup  = IF(base = 0, 0, base * (1 + Job Markup %))
+--   Labor Revenue (T&M)      = Hours Rollup * Billable Hourly Rate
+--   Total Revenue (Live)     = IF(type IN (T&M, Service Call),
+--                                 labor rev + material w/ markup + rental + lift,
+--                                 Expected Revenue)
+--   Actual Job Cost (COGS)   = reviewed labor + wire + material + pipe + lift
+--                              + rental + subcontract
+--   Gross Profit (Live) $    = Total Revenue (Live) - Total Materials (Live)
+--                              - Total Labor Cost (Live)
+--   Gross Profit (Final) $   = IF(status IN (Ready to Invoice, Completed),
+--                                 IF(T&M, revenue - COGS, Expected Revenue - COGS),
+--                                 BLANK)
+--
+-- BLANK maps to NULL, not 0 — Gross Profit (Final) is genuinely undefined until a
+-- job reaches Ready to Invoice or Completed, and flattening that to zero would make
+-- unfinished jobs look like they broke even.
+--
+-- VERIFIED 2026-07-31: 1,540 formula comparisons across all 110 jobs — 0 mismatches,
+-- including all three GP families. This is the gate the unify-estimates bet demands
+-- before anything Airtable-side is retired.
+--
+-- NOT YET PORTED: Projected Gross Profit is computed in JS inside mapJob
+-- (airtable.js), not in Airtable, so it is not part of this view. See CLAUDE.md's
+-- FILTERED-vs-UNFILTERED note — mapJob deliberately reads the filtered rollups and
+-- computes projected GP itself from Expected Revenue (All Status).

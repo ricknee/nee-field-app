@@ -110,9 +110,59 @@ async function fetchAll(table, params = {}) {
 
 console.log(`extracting from ${BASE} (read-only) ...`);
 const employees = await fetchAll("Employees");
-// "Job PO - Locked" is the format QB Time jobcodes use ("Joe Yoder (CAJ 436)"), and is
-// how the puller resolves job_id — see db/schema/002_qb_puller.sql.
-const jobs      = await fetchAll("Jobs", { "fields[]": ["Job Name", "Job PO - Locked"] });
+// Field coercers. Defined HERE rather than in the load section below because
+// JOB_FIELDS references them when the array literal is evaluated — declaring them
+// later is a temporal-dead-zone error, not a hoisting nicety.
+const nul  = v => (v === undefined || v === "" ? null : v);
+const num  = v => (v === undefined || v === "" || v === null ? null : Number(v));
+const bool = v => (v === undefined ? null : v === true);
+
+// Jobs MASTER DATA (slice 4) — descriptive fields only. The ~40 financial rollups
+// are deliberately NOT copied: they roll up from estimates / invoices / expenses /
+// labor allocations, none of which are in Neon, so their values here would silently
+// go stale. See db/schema/003_jobs_master.sql for the full reasoning.
+//
+// [neon column, Airtable field, coercion]. Requesting fields explicitly keeps the
+// payload small — the Airtable table has 165 fields including attachments.
+const JOB_FIELDS = [
+  ["name",                    "Job Name",                         v => v || "(unnamed)"],
+  ["po",                      "Job PO",                           nul],
+  ["po_locked",               "Job PO - Locked",                  nul],
+  ["po_number",               "Job PO Number",                    num],
+  ["tsheets_job_id",          "TSheets Job ID",                   nul],
+  ["status",                  "Job Status",                       nul],
+  ["job_type",                "Job Type",                         nul],
+  ["job_year",                "Job Year",                         num],
+  ["billing_method",          "Billing Method",                   nul],
+  ["billing_ready",           "Billing Ready",                    nul],
+  ["tax_status",              "Tax Status",                       nul],
+  ["start_date",              "Start Date",                       nul],
+  ["finish_date",             "Finish Date",                      nul],
+  ["project_completed_at",    "Project Completed At",             nul],
+  ["bird_date",               "Bird Date",                        nul],
+  ["address_full",            "Job Address - Full",               nul],
+  ["address_street",          "Job Site Street Address (Intake)",  nul],
+  ["address_city",            "Job Site City (Intake)",            nul],
+  ["address_state",           "Job Site State (Intake)",           nul],
+  ["address_zip",             "Job Site Zip Code (Intake)",        nul],
+  ["miles_from_shop",         "Miles from Shop",                  num],
+  ["customer_first_name",     "Customer 1st Name (Intake)",       nul],
+  ["customer_last_name",      "Customer Last Name (Intake)",      nul],
+  ["customer_email",          "Customer Email (Intake)",          nul],
+  ["customer_phone",          "Customer Phone (Intake)",          nul],
+  ["contractor_code",         "Contractor Code",                  nul],
+  ["contractor_name",         "Contractor Name (Text)",           nul],
+  ["notes",                   "Notes",                            nul],
+  ["meter_number",            "Meter Number",                     nul],
+  ["work_order_number",       "Permanent Work Order #",           nul],
+  ["email_alias",             "Job Email Alias",                  nul],
+  ["power_company",           "Power Company (Intake)",           nul],
+  ["markup_pct",              "Job Markup %",                     num],
+  ["generator_installed",     "Generator Installed",              bool],
+  ["inspection_not_required", "Inspection Not Required",          bool],
+];
+
+const jobs = await fetchAll("Jobs", { "fields[]": JOB_FIELDS.map(([, at]) => at) });
 const entries   = await fetchAll("Time Entries");
 console.log(`extracted: ${employees.length} employees, ${jobs.length} jobs, ${entries.length} time entries`);
 
@@ -145,7 +195,6 @@ for (const r of scoped) {
 src.hours = Math.round(src.hours * 100) / 100;
 
 // ── load ──────────────────────────────────────────────────────────────────
-const nul = v => (v === undefined || v === "" ? null : v);
 const link = v => (Array.isArray(v) && v.length ? v[0] : null);
 
 async function upsertBatch(table, cols, rows, conflict, batch = 300) {
@@ -180,9 +229,12 @@ await upsertBatch("employees", ["airtable_id", "name", "username", "role", "acti
                       // QB Time user id — the puller's employee lookup key.
                       nul(e.fields["Employee ID"])]), "airtable_id");
 
-await upsertBatch("jobs", ["airtable_id", "name", "po_locked"],
-  jobs.map(j => [j.id, j.fields["Job Name"] || "(unnamed)",
-                 nul(j.fields["Job PO - Locked"])]), "airtable_id");
+// Jobs master data. Airtable stays the source of truth for Jobs — nothing writes
+// back — so `synced_at` is the only thing that makes a stale row visible.
+await upsertBatch("jobs",
+  ["airtable_id", ...JOB_FIELDS.map(([col]) => col), "synced_at"],
+  jobs.map(j => [j.id, ...JOB_FIELDS.map(([, at, coerce]) => coerce(j.fields[at])), new Date().toISOString()]),
+  "airtable_id");
 
 // ── link puller rows to their Airtable twins ──────────────────────────────
 // Runs in BOTH modes, like the dimension loads — it writes only the linkage

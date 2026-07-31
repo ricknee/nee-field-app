@@ -259,7 +259,14 @@ await upsertBatch("jobs", ["airtable_id", "name", "po_locked"],
 // ── repair drifted rows (--repair) ────────────────────────────────────────
 // UPDATE-only, matched on airtable_id, bounded to work_date <= ASOF. See the flag
 // definition at the top for why each of those constraints matters.
-if (REPAIR && !LOAD) {
+// Drift is DETECTED on every run and only CORRECTED with --repair. Keeping those
+// separate matters: the acceptance checks below compare aggregates, so a row can be
+// wrong on class / labor_type / employee_name and still pass all 8. (Proven the hard
+// way on 2026-07-31 — a bad UPDATE nulled two fields on a row and every check stayed
+// green.) And if repair ran automatically, a permanently broken write mirror would be
+// silently papered over every night instead of being noticed.
+let driftCount = 0;
+if (!LOAD) {
   const norm = v => (v === undefined || v === null || v === "" ? null : String(v));
   const FIELDS = [
     ["employee_name",    f => norm(f["Employee"])],
@@ -298,8 +305,14 @@ if (REPAIR && !LOAD) {
                 norm(f["Labor Type"]), norm(f["Job Name (Text)"]), f["Labor Reviewed"] === true]);
   }
 
+  driftCount = fixes.length;
+
   if (!fixes.length) {
-    console.log("repair: nothing to fix — Airtable and Neon agree on every row in scope");
+    console.log("drift: none — Airtable and Neon agree field-by-field on every row in scope");
+  } else if (!REPAIR) {
+    console.log(`drift: ${fixes.length} row(s) differ —`,
+      [...reasons.entries()].map(([k, v]) => `${k}:${v}`).join(" "),
+      `\n       re-run with --repair to correct them (UPDATE-only, cannot duplicate)`);
   } else {
     console.log(`repair: updating ${fixes.length} drifted row(s) —`,
       [...reasons.entries()].map(([k, v]) => `${k}:${v}`).join(" "));
@@ -322,6 +335,7 @@ if (REPAIR && !LOAD) {
         params
       );
     }
+    driftCount = 0;   // corrected — the checks below now verify the repair
   }
 }
 
@@ -453,6 +467,10 @@ for (const [name, hrs] of src.buckets) {
   if (n === undefined || Math.abs(n - hrs) > 0.01) bucketDiffs++;
 }
 chk("per-job hour buckets matching", 0, bucketDiffs);
+// Aggregates alone cannot see a row that is wrong on class / labor_type /
+// employee_name, so field-level drift gets its own line. Fails loudly rather than
+// being silently corrected — see the note above the drift block.
+if (!LOAD) chk("rows with field-level drift", 0, driftCount);
 
 console.log("\n== ACCEPTANCE CHECKS (Airtable vs Neon) ==");
 console.table(checks);

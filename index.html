@@ -4515,7 +4515,12 @@
       // fetch only throws for network-level failures. Against a presigned url
       // that has almost always got one cause: the browser blocked it because
       // the bucket's CORS policy doesn't list this exact origin.
-      throw new Error(`Blocked before reaching storage (usually the bucket CORS policy not listing ${location.origin}). [${e.message}]`);
+      // Two very different causes look identical here, so don't assert either:
+      // a bucket CORS policy missing this origin, and a service worker that
+      // intercepted the request (sw.js used to swallow all non-GET traffic and
+      // surfaced it as exactly this). Verify CORS with an OPTIONS probe before
+      // believing the CORS explanation.
+      throw new Error(`Request blocked before reaching storage — check the bucket CORS policy lists ${location.origin}, and that no service worker is intercepting uploads. [${e.message}]`);
     }
     if (!r.ok) {
       // R2 answers with an XML <Message> explaining itself. Surfacing it beats

@@ -33,6 +33,23 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
+  // Only GET is cacheable. Without this, the catch-all handler at the bottom
+  // swallowed every upload: cache.put() throws a TypeError on a non-GET
+  // request, the .catch() then resolved to `undefined`, and respondWith(
+  // undefined) reaches the page as a bare "Failed to fetch" — which looks
+  // exactly like a CORS rejection and sent us hunting the wrong problem.
+  if (event.request.method !== 'GET') {
+    return; // let the browser do it
+  }
+
+  // Cross-origin requests are not ours to manage. Photo URLs are presigned and
+  // carry their signature in the query string, so every fresh one is a new
+  // cache key — caching them would balloon the cache with entries that expire
+  // anyway. The browser's own HTTP cache handles these correctly.
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
   // Never cache API calls — always go to network
   if (url.pathname.startsWith('/.netlify/')) {
     return; // Let browser handle normally

@@ -170,6 +170,78 @@ await upsertBatch("jobs", ["airtable_id", "name", "po_locked"],
   jobs.map(j => [j.id, j.fields["Job Name"] || "(unnamed)",
                  nul(j.fields["Job PO - Locked"])]), "airtable_id");
 
+// ── link puller rows to their Airtable twins ──────────────────────────────
+// Runs in BOTH modes, like the dimension loads — it writes only the linkage
+// column, never hours.
+//
+// The QB puller creates a Neon row keyed by qb_timesheet_id within the hour;
+// Make creates the matching Airtable record at 21:00. So for up to a day a
+// timesheet exists in both systems with neither knowing the other's id. That
+// matters because the payroll UI edits by AIRTABLE record id — an unlinked row
+// can be read but not edited.
+//
+// This pass closes that gap using the same one-candidate-only rule as the claim
+// pass: match on (employee, work_date, duration, job_name), and only when the
+// key is unambiguous in both directions. Ambiguity is reported, never guessed.
+{
+  const unlinked = await sql.query(
+    `SELECT id, employee_name, work_date::text AS work_date,
+            duration_seconds::float8 AS duration_seconds, job_name
+       FROM time_entries WHERE airtable_id IS NULL`
+  );
+
+  if (!unlinked.length) {
+    console.log("link: no unlinked rows");
+  } else {
+    // Airtable ids already claimed by a Neon row must never be re-assigned.
+    const taken = new Set(
+      (await sql.query(`SELECT airtable_id FROM time_entries WHERE airtable_id IS NOT NULL`))
+        .map(r => r.airtable_id)
+    );
+
+    const key = (emp, date, secs, job) =>
+      `${(emp || "").trim().toLowerCase()}|${date || ""}|${Number(secs).toFixed(1)}|${(job || "").trim().toLowerCase()}`;
+
+    const byKey = new Map();
+    for (const r of entries) {
+      if (taken.has(r.id)) continue;
+      const f = r.fields;
+      const k = key(f["Employee"], f["Work Date"], Number(f["Duration (Seconds)"] ?? 0), f["Job Name (Text)"]);
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(r.id);
+    }
+
+    const pairs = [];
+    let ambiguous = 0, unmatched = 0;
+    const usedAt = new Set();
+    for (const row of unlinked) {
+      const bucket = byKey.get(key(row.employee_name, row.work_date, row.duration_seconds, row.job_name));
+      if (!bucket || !bucket.length) { unmatched++; continue; }
+      if (bucket.length > 1)         { ambiguous++; continue; }
+      if (usedAt.has(bucket[0]))     { ambiguous++; continue; }
+      usedAt.add(bucket[0]);
+      pairs.push([row.id, bucket[0]]);
+    }
+
+    console.log(`link: ${unlinked.length} unlinked -> ${pairs.length} matched, ${unmatched} not yet in Airtable, ${ambiguous} ambiguous`);
+
+    for (let i = 0; i < pairs.length; i += 200) {
+      const chunk = pairs.slice(i, i + 200);
+      const params = [];
+      const tuples = chunk.map(([nid, aid]) => {
+        params.push(nid, aid);
+        return `($${params.length - 1}::uuid, $${params.length}::text)`;
+      });
+      await sql.query(
+        `UPDATE time_entries t SET airtable_id = v.aid
+           FROM (VALUES ${tuples.join(",")}) AS v(id, aid)
+          WHERE t.id = v.id AND t.airtable_id IS NULL`,
+        params
+      );
+    }
+  }
+}
+
 if (LOAD) {
 // Resolve FKs in JS so the row inserts carry literal uuids (no per-row subselect).
 const empMap = new Map((await sql.query(`SELECT id, airtable_id FROM employees`)).map(r => [r.airtable_id, r.id]));

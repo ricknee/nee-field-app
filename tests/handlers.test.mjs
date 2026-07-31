@@ -290,6 +290,50 @@ await test("hoursByJob: unreachable Neon falls back to Airtable, response intact
   delete process.env.DATABASE_URL;
 });
 
+// ── Neon-first payroll reads (slice 2, 2026-07-31) ──
+// payrollEntries, payrollHoursRollup and myHoursRollup moved to Neon-first with an
+// Airtable fallback. These lock the fallback contract: a broken or absent Neon must
+// still return the CORRECT Airtable answer, and `_source` must say which side served
+// it so a silent permanent fallback can't masquerade as success.
+//
+// `id` is the thing to watch on payrollEntries — the payroll UI edits and deletes
+// through it, and it must remain the AIRTABLE record id on both paths.
+const PR_ROWS = { "Time Entries": [
+  { id: "recPR1", fields: {
+      "Employee": "Jeff Koehn", "Work Date": "2026-07-27", "Duration (Seconds)": 28800,
+      "Hours": 8, "City Taxes": "A No Tax", "Class": "Contract",
+      "Job Name (Text)": "Bethel School (MIB 433)", "Labor Reviewed": true } },
+] };
+
+await test("payrollEntries: serves from Airtable when DATABASE_URL is unset", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = PR_ROWS;
+  const b = json(await GET("payrollEntries", { startDate: "2026-07-26", endDate: "2026-08-08" }));
+  ok(b.ok, "ok");
+  eq(b._source, "airtable", "reports which side served it");
+  eq(b.entries[0].id, "recPR1", "id is the Airtable record id the UI edits through");
+  eq(b.entries[0].hours, 8, "hours correct");
+  eq(b.entries[0].reviewed, true, "Labor Reviewed carried through");
+});
+
+await test("payrollEntries: unreachable Neon falls back to Airtable, ids intact", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = PR_ROWS;
+  const b = json(await GET("payrollEntries", { startDate: "2026-07-26", endDate: "2026-08-08" }));
+  ok(b.ok, "request still succeeds");
+  eq(b._source, "airtable", "fallback is reported, not silent");
+  eq(b.entries.length, 1, "entry still returned");
+  eq(b.entries[0].id, "recPR1", "editable id survives the fallback");
+  eq(b.entries[0].cityTaxes, "A No Tax", "city tax carried through");
+  delete process.env.DATABASE_URL;
+});
+
+await test("payrollEntries: still 400s without a date range on either path", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = PR_ROWS;
+  eq((await GET("payrollEntries", {})).statusCode, 400, "missing dates rejected before any read");
+});
+
 // ── employee self-service expenses ──
 const OWNER_TOK = signToken({ id: "recEmpOwner", role: "employee" });
 const OTHER_TOK = signToken({ id: "recEmpOther", role: "employee" });

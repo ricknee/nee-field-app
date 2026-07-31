@@ -566,9 +566,64 @@ async function fetchAll(tableName, opts = {}) {
 }
 
 // ── PAYROLL: fetch time entries by date range ──────────────────────────────
+// NEON-FIRST since the step-2 cutover; Airtable is the fallback.
+//
+// `id` MUST stay the Airtable record id: the payroll UI edits and deletes through
+// it, and the write handlers address Airtable by rec id. Neon rows carry it in
+// `airtable_id`, kept current by the linker in db/etl/time-entries-full.mjs — the
+// puller creates a row within the hour while Make writes Airtable at 21:00, so
+// there is a window where a row exists in both systems with neither knowing the
+// other's id. `unlinked` in the response counts any such rows in the window: they
+// display with correct hours but cannot be edited until the linker runs. That is
+// visible rather than silent, and self-heals on the next reconcile.
 async function handlePayrollEntries(params) {
   const { startDate, endDate } = params || {};
   if (!startDate || !endDate) return resp(400, { ok: false, error: "Missing startDate or endDate." });
+
+  if (neonEnabled()) {
+    // Same 14-day window the Airtable path builds, expressed as a range.
+    const q = await neonQuery(
+      `SELECT t.airtable_id            AS id,
+              t.employee_name          AS employee,
+              e.airtable_id            AS employee_id,
+              t.work_date::text        AS work_date,
+              t.duration_seconds::float8 AS duration,
+              t.hours::float8          AS hours,
+              t.city_taxes, t.class,
+              j.airtable_id            AS job_id,
+              t.job_name, t.labor_reviewed
+         FROM time_entries t
+         LEFT JOIN employees e ON e.id = t.employee_id
+         LEFT JOIN jobs      j ON j.id = t.job_id
+        WHERE t.work_date >= $1::date AND t.work_date <= ($1::date + 13)
+        ORDER BY t.work_date ASC`,
+      [startDate]
+    );
+
+    if (q?.rows) {
+      const entries = q.rows.map(r => ({
+        id:         r.id,                       // null only while unlinked
+        employee:   r.employee || "",
+        employeeId: r.employee_id || null,
+        workDate:   r.work_date || "",
+        duration:   Number(r.duration) || 0,
+        hours:      Number(r.hours) || 0,
+        cityTaxes:  r.city_taxes || "A No Tax",
+        class:      r.class || "",
+        jobId:      r.job_id || null,
+        jobName:    r.job_name || "",
+        reviewed:   r.labor_reviewed === true,
+      }));
+      const unlinked = entries.filter(e => !e.id).length;
+      if (unlinked) console.warn(`payrollEntries: ${unlinked} row(s) not yet linked to Airtable — not editable until the linker runs`);
+      return resp(200, { ok: true, entries, _source: "neon", _ms: q.ms, ...(unlinked ? { unlinked } : {}) });
+    }
+    console.error(`payrollEntries: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+  return payrollEntriesFromAirtable(startDate, endDate);
+}
+
+async function payrollEntriesFromAirtable(startDate, endDate) {
 
   // Use IS_SAME() for date comparison — required for Airtable date fields in filterByFormula
   // Build OR across all 14 days in the pay period
@@ -620,7 +675,7 @@ async function handlePayrollEntries(params) {
     };
   });
 
-  return resp(200, { ok: true, entries });
+  return resp(200, { ok: true, entries, _source: "airtable" });
 }
 
 // ── Neon mirror for app-written time entries ───────────────────────────────
@@ -1189,9 +1244,43 @@ async function handlePayrollHoursRollup(params) {
   const { yearStart, monthStart, thisWeekStart, thisWeekEnd, payPeriodStart, payPeriodEnd }
     = await computePayrollDateRanges(today);
 
+  const fromStr = dateToYmd(yearStart);
+
+  // NEON-FIRST. The Airtable path below pages every entry from Jan 1 to today and
+  // buckets them in JS; Postgres does the same work in one pass with FILTER clauses.
+  // The outer WHERE bounds everything to [yearStart, today], so each FILTER inherits
+  // that bound exactly as the JS loop does.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT round(coalesce(sum(hours) FILTER (WHERE work_date >= $2::date), 0), 2)::float8 AS wk,
+              round(coalesce(sum(hours) FILTER (WHERE work_date >= $3::date
+                                                  AND work_date <= $4::date), 0), 2)::float8 AS pp,
+              round(coalesce(sum(hours) FILTER (WHERE work_date >= $5::date), 0), 2)::float8 AS mo,
+              round(coalesce(sum(hours), 0), 2)::float8 AS ytd
+         FROM time_entries
+        WHERE work_date >= $1::date AND work_date <= $6::date`,
+      [fromStr, dateToYmd(thisWeekStart), dateToYmd(payPeriodStart),
+       dateToYmd(payPeriodEnd), dateToYmd(monthStart), todayStr]
+    );
+    if (q?.rows?.length) {
+      const n = q.rows[0];
+      return resp(200, {
+        ok: true,
+        asOf: todayStr,
+        ranges: {
+          thisWeek:  { start: dateToYmd(thisWeekStart),  end: dateToYmd(thisWeekEnd),  hours: Number(n.wk)  },
+          payPeriod: { start: dateToYmd(payPeriodStart), end: dateToYmd(payPeriodEnd), hours: Number(n.pp)  },
+          thisMonth: { start: dateToYmd(monthStart),     end: todayStr,                hours: Number(n.mo)  },
+          ytd:       { start: fromStr,                   end: todayStr,                hours: Number(n.ytd) }
+        },
+        _source: "neon", _ms: q.ms
+      });
+    }
+    console.error(`payrollHoursRollup: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   // DATESTR + string compare keeps us out of the IS_AFTER/IS_BEFORE granularity
   // hole (only IS_SAME accepts a "day" unit). Both sides are "YYYY-MM-DD".
-  const fromStr = dateToYmd(yearStart);
   const filter = `AND(DATESTR({Work Date})>="${fromStr}",DATESTR({Work Date})<="${todayStr}")`;
   const records = await fetchAll(TABLES.timeEntries, { filter, sortField: "Work Date", sortDir: "asc" });
 
@@ -1218,7 +1307,8 @@ async function handlePayrollHoursRollup(params) {
       payPeriod: { start: dateToYmd(payPeriodStart), end: dateToYmd(payPeriodEnd), hours: r2(ppHrs)  },
       thisMonth: { start: dateToYmd(monthStart),     end: todayStr,                hours: r2(moHrs)  },
       ytd:       { start: dateToYmd(yearStart),      end: todayStr,                hours: r2(ytdHrs) }
-    }
+    },
+    _source: "airtable"
   });
 }
 
@@ -1559,6 +1649,42 @@ async function handleMyHoursRollup(params) {
   const { yearStart, monthStart, thisWeekStart, thisWeekEnd, payPeriodStart, payPeriodEnd }
     = await computePayrollDateRanges(today);
 
+  // NEON-FIRST. The Airtable path below is the worst of the rollups: it pages the
+  // ENTIRE year of entries for every employee and then throws away all but one
+  // person's. In Neon the employee filter is a join on employees.airtable_id, so
+  // only that employee's rows are ever read.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT round(coalesce(sum(t.hours) FILTER (WHERE t.work_date >= $3::date), 0), 2)::float8 AS wk,
+              round(coalesce(sum(t.hours) FILTER (WHERE t.work_date >= $4::date
+                                                    AND t.work_date <= $5::date), 0), 2)::float8 AS pp,
+              round(coalesce(sum(t.hours) FILTER (WHERE t.work_date >= $6::date), 0), 2)::float8 AS mo,
+              round(coalesce(sum(t.hours), 0), 2)::float8 AS ytd
+         FROM time_entries t
+         JOIN employees e ON e.id = t.employee_id
+        WHERE e.airtable_id = $1
+          AND t.work_date >= $2::date AND t.work_date <= $7::date`,
+      [employeeId, dateToYmd(yearStart), dateToYmd(thisWeekStart), dateToYmd(payPeriodStart),
+       dateToYmd(payPeriodEnd), dateToYmd(monthStart), todayStr]
+    );
+    if (q?.rows?.length) {
+      const n = q.rows[0];
+      return resp(200, {
+        ok: true,
+        employeeId,
+        asOf: todayStr,
+        ranges: {
+          thisWeek:  { start: dateToYmd(thisWeekStart),  end: dateToYmd(thisWeekEnd),  hours: Number(n.wk)  },
+          payPeriod: { start: dateToYmd(payPeriodStart), end: dateToYmd(payPeriodEnd), hours: Number(n.pp)  },
+          thisMonth: { start: dateToYmd(monthStart),     end: todayStr,                hours: Number(n.mo)  },
+          ytd:       { start: dateToYmd(yearStart),      end: todayStr,                hours: Number(n.ytd) }
+        },
+        _source: "neon", _ms: q.ms
+      });
+    }
+    console.error(`myHoursRollup: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   // One Time Entries fetch covering Jan 1 → today, then in-memory filter by
   // the linked employee record id. ARRAYJOIN on {Employee (Linked)} expands
   // to names, not ids, so a name-based filter would collide on shared first
@@ -1591,7 +1717,8 @@ async function handleMyHoursRollup(params) {
       payPeriod: { start: dateToYmd(payPeriodStart), end: dateToYmd(payPeriodEnd), hours: r2(ppHrs)  },
       thisMonth: { start: dateToYmd(monthStart),     end: todayStr,                hours: r2(moHrs)  },
       ytd:       { start: dateToYmd(yearStart),      end: todayStr,                hours: r2(ytdHrs) }
-    }
+    },
+    _source: "airtable"
   });
 }
 

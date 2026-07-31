@@ -4432,9 +4432,19 @@
     input.click();
   };
 
+  // Uploads any number of photos. The function caps a single request at 25
+  // urls (a runaway guard), so the client chunks transparently rather than
+  // exposing that number to the user — a school walkthrough is 60+ photos and
+  // "only 25 at a time" is not an answer.
+  //
+  // Chunking also bounds memory: compression happens per chunk, so a phone
+  // never holds 60 decoded bitmaps at once. And because each chunk's signed
+  // urls are requested immediately before use, a slow connection can't run
+  // past their 10-minute expiry the way one giant up-front batch would.
+  const UPLOAD_CHUNK = 20;
+  const UPLOAD_CONCURRENCY = 3;
+
   async function uploadJobPhotos(job, files) {
-    // Show progress inside the gallery so the user sees photos appear where
-    // they'll later look for them.
     jobPhotoState.jobId   = job.id;
     jobPhotoState.jobName = job.name || "";
     if ($("jobPhotosModal").style.display !== "flex") {
@@ -4444,44 +4454,52 @@
       pushBackEntry("jobPhotos", () => { $("jobPhotosModal").style.display = "none"; });
     }
     const status = $("jobPhotosStatus");
-    const MAX_BATCH = 25;
-    if (files.length > MAX_BATCH) {
-      status.textContent = `Too many at once — taking the first ${MAX_BATCH}.`;
-      files = files.slice(0, MAX_BATCH);
-    }
+    const total = files.length;
+    let done = 0, failed = 0, lastFailure = "";
 
     try {
-      status.textContent = `Preparing ${files.length} photo${files.length === 1 ? "" : "s"}…`;
-      const prepared = [];
-      for (let i = 0; i < files.length; i++) {
-        status.textContent = `Shrinking photo ${i + 1} of ${files.length}…`;
-        const full  = await compressImage(files[i], 2048, 0.75);
-        const thumb = await compressImage(files[i], 400, 0.7);
-        if (!full || !thumb) throw new Error(`Could not read "${files[i].name || "photo"}"`);
-        prepared.push({ full, thumb });
-      }
+      for (let start = 0; start < total; start += UPLOAD_CHUNK) {
+        const chunk = files.slice(start, start + UPLOAD_CHUNK);
 
-      const d = await apiPost("jobPhotoUploadUrls", {
-        jobId: job.id,
-        files: prepared.map(() => ({ contentType: "image/jpeg" })),
-      });
-      const uploads = d.uploads || [];
-      if (uploads.length !== prepared.length) throw new Error("Upload could not be prepared");
-
-      // One at a time with per-photo status. A partial failure must be visible
-      // and retryable, not swallowed by a single all-or-nothing spinner.
-      let done = 0, failed = 0, lastFailure = "";
-      for (let i = 0; i < prepared.length; i++) {
-        status.textContent = `Uploading ${i + 1} of ${prepared.length}…`;
-        try {
-          await putToR2(uploads[i].putUrl,      prepared[i].full,  uploads[i].contentType);
-          await putToR2(uploads[i].thumbPutUrl, prepared[i].thumb, uploads[i].contentType);
-          done++;
-        } catch (e) {
-          failed++;
-          lastFailure = e.message || String(e);
-          console.error("[photo-upload] failed", e);
+        // Shrink this chunk only.
+        const prepared = [];
+        for (let i = 0; i < chunk.length; i++) {
+          status.textContent = `Preparing ${start + i + 1} of ${total}…`;
+          const full  = await compressImage(chunk[i], 2048, 0.75);
+          const thumb = await compressImage(chunk[i], 400, 0.7);
+          if (!full || !thumb) throw new Error(`Could not read "${chunk[i].name || "photo"}"`);
+          prepared.push({ full, thumb });
         }
+
+        const d = await apiPost("jobPhotoUploadUrls", {
+          jobId: job.id,
+          files: prepared.map(() => ({ contentType: "image/jpeg" })),
+        });
+        const uploads = d.uploads || [];
+        if (uploads.length !== prepared.length) throw new Error("Upload could not be prepared");
+
+        // A few at a time. Strictly sequential is painfully slow over jobsite
+        // LTE; unbounded parallelism stalls the connection and times out.
+        let next = 0;
+        async function worker() {
+          for (;;) {
+            const i = next++;
+            if (i >= prepared.length) return;
+            try {
+              await putToR2(uploads[i].putUrl,      prepared[i].full,  uploads[i].contentType);
+              await putToR2(uploads[i].thumbPutUrl, prepared[i].thumb, uploads[i].contentType);
+              done++;
+            } catch (e) {
+              failed++;
+              lastFailure = e.message || String(e);
+              console.error("[photo-upload] failed", e);
+            }
+            status.textContent = `Uploading ${done + failed} of ${total}…`;
+          }
+        }
+        await Promise.all(
+          Array.from({ length: Math.min(UPLOAD_CONCURRENCY, prepared.length) }, worker)
+        );
       }
 
       await refreshJobPhotos();
@@ -4492,8 +4510,6 @@
         // The controlling service worker is named explicitly because a stale
         // worker intercepting uploads produces the same "Failed to fetch" as a
         // CORS rejection, and there is no way to tell them apart on a phone.
-        // If this line says "controlled by" after a failure, suspect the worker
-        // before suspecting the bucket.
         const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
         const swNote = sw ? ` [page controlled by service worker]` : ` [no service worker]`;
         status.textContent = `${done} uploaded, ${failed} failed. ${lastFailure || ""}${swNote}`;
@@ -4502,7 +4518,8 @@
       }
     } catch (e) {
       console.error("[photo-upload]", e);
-      status.textContent = `Upload failed: ${e.message}`;
+      await refreshJobPhotos();   // whatever already landed should still show
+      status.textContent = `Upload stopped after ${done} of ${total}: ${e.message}`;
     }
   }
 

@@ -105,3 +105,32 @@ SELECT t.id, t.airtable_id, t.work_date, t.employee_name, t.job_name, t.hours,
                FROM labor_billing_allocations
               WHERE time_entry_id IS NOT NULL
               GROUP BY time_entry_id) b ON b.time_entry_id = t.id;
+
+-- ── PHASE B — the labor COST chain (applied 2026-07-31) ────────────────────
+-- Tables: labor_cost_rates, employee_weekly_time, job_labor_allocations.
+--
+-- employee_weekly_time is ported DELIBERATELY. Nothing in the repo reads it, but
+-- AIRTABLE does: its Weekly Hours drives Job Labor Allocation's overtime split,
+-- which drives labor cost, which drives Gross Profit. It is maintained by MAKE
+-- (scenario 4546051, modules 29/32/35), so without a copy here retiring Make would
+-- silently degrade GP. Porting it is what makes Make retirable.
+--
+-- v_job_labor_cost — FAITHFUL. Reproduces Airtable exactly, flaw included:
+--   Overtime = IF(Weekly Total <= 40, 0, Allocated * ((Weekly Total - 40)/Weekly Total))
+--   Regular  = Allocated - Overtime
+--   Cost     = Regular * rate + Overtime * rate * 1.5
+--   rate     = the employee's CURRENTLY effective rate (Employees.Current True Cost
+--              Rate), NOT the rate in force during that week.
+--   VERIFIED: Overtime Hours, Regular Hours and Allocated Labor Cost all diffed
+--   against Airtable across ALL 3,935 allocations — ZERO mismatches.
+--
+-- v_job_labor_cost_dated — CORRECTED, and read by nothing. Joins the rate effective
+--   at week_start_date. Falls back to the employee's EARLIEST known rate for weeks
+--   predating their rate history (696 rows) — without that fallback those rows cost
+--   ZERO and the comparison overstates the gap by $68k, which is missing data, not a
+--   saving. 3 rows stay uncosted: they have no employee link.
+--
+--   Faithful $393,772.53  vs  date-effective $384,923.79  =  $8,848.75 overstated.
+--
+-- Switching is a one-line change once the faithful port is trusted, and the ONLY
+-- difference should be exactly that figure. Owner's call when.

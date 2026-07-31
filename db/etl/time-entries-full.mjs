@@ -177,6 +177,10 @@ const entries   = await fetchAll("Time Entries");
 // Job Labor Allocation) is phase B and is deliberately not loaded yet.
 const rates     = await fetchAll("Labor Billable Rates");
 const billAllocs = await fetchAll("Labor Billing Allocations");
+// Phase B — the labor COST chain.
+const costRates  = await fetchAll("Labor Cost Rates");
+const weeklyTime = await fetchAll("Employee Weekly Time");
+const jobAllocs  = await fetchAll("Job Labor Allocation");
 console.log(`extracted: ${employees.length} employees, ${jobs.length} jobs, ${entries.length} time entries`);
 
 // ── Airtable-side truth, computed BEFORE loading ──────────────────────────
@@ -285,6 +289,61 @@ await upsertBatch("jobs",
     `SELECT count(*)::int AS total, count(time_entry_id)::int AS linked,
             count(invoice_airtable_id)::int AS invoiced FROM labor_billing_allocations`);
   console.log(`billing allocations: ${ac.total} rows, ${ac.linked} linked to a time entry, ${ac.invoiced} on an invoice`);
+}
+
+// Phase B — the labor COST chain. Same posture as the rest: Airtable is the only
+// writer, keyed by airtable_id, loads in both modes.
+//
+// employee_weekly_time is ported deliberately. Nothing in the REPO reads it, but
+// Airtable does — its Weekly Hours drives Job Labor Allocation's overtime split,
+// which drives labor cost, which drives Gross Profit. It is maintained by MAKE
+// (scenario 4546051), so without a copy here, retiring Make would silently degrade
+// GP. Porting it is what makes Make retirable.
+{
+  const empMapAt = new Map((await sql.query(`SELECT id, airtable_id FROM employees`)).map(r => [r.airtable_id, r.id]));
+  const jobMapAt = new Map((await sql.query(`SELECT id, airtable_id FROM jobs`)).map(r => [r.airtable_id, r.id]));
+  const now = new Date().toISOString();
+
+  await upsertBatch("labor_cost_rates",
+    ["airtable_id", "employee_id", "employee_airtable_id", "labor_type", "effective_start_date",
+     "effective_end_date", "base_hourly_wage", "payroll_burden_pct", "true_cost_rate", "notes", "synced_at"],
+    costRates.map(r => {
+      const e = firstId(r.fields["Employee"]);
+      return [r.id, empMapAt.get(e) ?? null, e, nul(r.fields["Labor Type"]),
+              nul(r.fields["Effective Start Date"]), nul(r.fields["Effective End Date"]),
+              num(r.fields["Base Hourly Wage"]), num(r.fields["Payroll Burden %"]),
+              num(r.fields["True Cost Rate"]), nul(r.fields["Notes"]), now];
+    }), "airtable_id");
+
+  await upsertBatch("employee_weekly_time",
+    ["airtable_id", "employee_id", "employee_airtable_id", "week_start_date", "weekly_hours", "employee_week_key", "synced_at"],
+    weeklyTime.map(w => {
+      const e = firstId(w.fields["Employee"]);
+      return [w.id, empMapAt.get(e) ?? null, e, nul(w.fields["Week Start Date"]),
+              num(w.fields["Weekly Hours"]), nul(w.fields["Employee Week Key"]), now];
+    }), "airtable_id", 200);
+
+  await upsertBatch("job_labor_allocations",
+    ["airtable_id", "job_id", "job_airtable_id", "employee_id", "employee_airtable_id",
+     "week_start_date", "reviewed", "allocated_hours", "weekly_total_hours", "notes", "synced_at"],
+    jobAllocs.map(a => {
+      const j = firstId(a.fields["Job"]), e = firstId(a.fields["Employee"]);
+      return [a.id, jobMapAt.get(j) ?? null, j, empMapAt.get(e) ?? null, e,
+              nul(a.fields["Week Start Date"]), a.fields["Reviewed"] === true,
+              num(a.fields["Allocated Hours"]),
+              // Weekly Total Hours is a LOOKUP through Employee Weekly Time, so it
+              // arrives as an array. Snapshotting the value keeps the cost views
+              // computable even if that link is ever broken.
+              firstNum(a.fields["Weekly Total Hours"]),
+              nul(a.fields["Notes"]), now];
+    }), "airtable_id", 200);
+
+  const [cc] = await sql.query(
+    `SELECT (SELECT count(*) FROM labor_cost_rates)::int AS rates,
+            (SELECT count(*) FROM employee_weekly_time)::int AS weeks,
+            (SELECT count(*) FROM job_labor_allocations)::int AS allocs,
+            (SELECT count(*) FROM job_labor_allocations WHERE job_id IS NOT NULL)::int AS allocs_linked`);
+  console.log(`cost chain: ${cc.rates} rates, ${cc.weeks} employee-weeks, ${cc.allocs} allocations (${cc.allocs_linked} linked to a job)`);
 }
 
 // ── link puller rows to their Airtable twins ──────────────────────────────

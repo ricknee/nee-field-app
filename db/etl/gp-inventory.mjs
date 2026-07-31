@@ -34,7 +34,11 @@ const resolve = s => String(s || "")
   .replace(/\s+/g, " ").trim();
 
 const jobs = schema.tables.find(t => t.name === "Jobs");
-const MONEY = /gross profit|revenue|cost|unbilled|billed|profit|markup|contract|material|labor|hours/i;
+// Take EVERY formula and rollup on Jobs. An earlier keyword regex silently missed
+// 5 of 28 rollups — including Actual Scissor Lift Expense and Actual Rental
+// Equipment Expense, both referenced directly by Actual Job Cost (COGS) and
+// Total Revenue (Live). A filter that quietly drops GP inputs is worse than noise.
+const MONEY = /./;
 const formulas = jobs.fields.filter(f => f.type === "formula" && MONEY.test(f.name));
 const rollups  = jobs.fields.filter(f => f.type === "rollup"  && MONEY.test(f.name));
 

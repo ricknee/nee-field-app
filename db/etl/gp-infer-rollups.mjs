@@ -52,7 +52,11 @@ const fieldById = new Map();
 for (const t of meta.tables) for (const f of t.fields) fieldById.set(f.id, { ...f, tableId: t.id });
 
 const jobsT = meta.tables.find(t => t.name === "Jobs");
-const MONEY = /gross profit|revenue|cost|unbilled|billed|profit|markup|contract|material|labor|hours/i;
+// Take EVERY formula and rollup on Jobs. An earlier keyword regex silently missed
+// 5 of 28 rollups — including Actual Scissor Lift Expense and Actual Rental
+// Equipment Expense, both referenced directly by Actual Job Cost (COGS) and
+// Total Revenue (Live). A filter that quietly drops GP inputs is worse than noise.
+const MONEY = /./;
 const specs = jobsT.fields.filter(f => f.type === "rollup" && MONEY.test(f.name)).map(f => {
   const o = f.options || {};
   const linkF = fieldById.get(o.recordLinkFieldId);

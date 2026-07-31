@@ -198,7 +198,35 @@ off (rotating sooner breaks Make).
 
 > **🛑 STOP POINT.** Make out of the time path — the original goal of this whole slice.
 
-### Slice 4 — labor billing allocations (~3-4 sittings)
+### Slice 4 — Jobs master data (~3 h) — ADDED 2026-07-31
+
+**Jobs has 165 distinct fields.** That is not one migration, it is four groups:
+
+| Group | ~Count | Notes |
+|---|---|---|
+| **Master data** | ~30 | name, PO / PO-Locked / PO Number, status, type, year, full + split address, start/finish dates, contractor, notes, meter #, tax status |
+| **Links** | ~25 | contractor, contacts, estimates, invoices, expenses, inspections, allocations, schedule |
+| **Financial rollups** | ~40 | **BLOCKED** — GP families, actual/estimated/projected costs, T&M revenue, unbilled |
+| **External refs** | ~25 | 18 pCloud folder IDs, Trello card IDs, automation flags |
+
+Only the **master-data** group moves in this slice. The financial ~40 roll up from estimates,
+invoices, expenses and labor allocations — none of which are in Neon — so they cannot be
+computed there yet and are genuinely last, not next.
+
+**Why this slice comes BEFORE labor billing:** `Billable Hourly Rate (from Labor Billable Rates)`
+is a lookup from a **`Labor Billable Rates`** table hanging off Jobs. The T&M rate the billing
+slice needs lives here.
+
+**Bonus find:** Jobs already stores **`TSheets Job ID`** (e.g. `29725244`) — a far stronger key
+for the puller's job resolution than the current `po_locked` string match. Adopt it when this
+slice touches the table.
+
+**Do not write** `Google Contact ID`, `Sync Status`, `Last Synced At`, `Needs Sync to Google` —
+Make owns them (see CLAUDE.md).
+
+> **🛑 STOP POINT.** Jobs master data in Neon, nothing reading it yet. Purely additive.
+
+### Slice 5 — labor billing allocations (~3-4 sittings)
 
 The big one. Two linked tables, four rollups, rate lookups, and the GP formulas. Unblocks the
 per-job Time Entries tab and satisfies the hard constraint on the unify-estimates bet. Scoped in

@@ -22,7 +22,16 @@
 # is not is worse than no backup, because you stop keeping the other copy.
 
 param(
-  [string]$Time       = "12:30",
+  # SEVERAL times a day, not one. If the external drive is unplugged when the
+  # task fires, the script exits "skipped" - and Windows counts that as the
+  # task having RUN, so -StartWhenAvailable will not re-fire it. A single daily
+  # trigger could therefore miss days in a row with no signal that anything is
+  # wrong. Three triggers means three chances to catch the drive connected.
+  #
+  # (Repetition -- "every 4 hours" -- would be the obvious alternative, but
+  # Windows disables StartWhenAvailable catch-up on repeating triggers, which
+  # is the behaviour we most want to keep.)
+  [string[]]$Times    = @("08:30", "12:30", "17:00"),
   [string]$TaskName   = "NEE Photo Backup",
   [string]$ScriptPath = (Join-Path $PSScriptRoot "backup-photos.ps1"),
   [switch]$Wake                                  # also try to wake the PC
@@ -42,7 +51,7 @@ $action = New-ScheduledTaskAction `
   -Execute "powershell.exe" `
   -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Verify"
 
-$trigger = New-ScheduledTaskTrigger -Daily -At $Time
+$triggers = @($Times | ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ })
 
 $settings = New-ScheduledTaskSettingsSet `
   -StartWhenAvailable `
@@ -57,16 +66,17 @@ if ($Wake) { $settings.WakeToRun = $true }
 Register-ScheduledTask `
   -TaskName    $TaskName `
   -Action      $action `
-  -Trigger     $trigger `
+  -Trigger     $triggers `
   -Settings    $settings `
   -Description "Copies the Cloudflare R2 jobsite-photo bucket to the external drive. Never deletes (rclone copy, not sync)." `
   -Force | Out-Null
 
 Write-Output ""
 Write-Output "Registered '$TaskName'"
-Write-Output "  runs      : daily at $Time"
+Write-Output ("  runs      : daily at " + ($Times -join ", "))
 Write-Output "  script    : $ScriptPath"
 Write-Output "  if missed : runs as soon as the PC is next awake"
+Write-Output "  if F: off : skips quietly and tries again at the next time slot"
 if ($Wake) { Write-Output "  wake      : will try to wake the PC (needs wake timers enabled in Power Options)" }
 Write-Output ""
 Write-Output "Test it right now without waiting for the schedule:"

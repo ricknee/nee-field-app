@@ -51,6 +51,7 @@ param(
   [string[]]$Destinations = @("F:\NEE-Job-Photos", "P:\NEE Job Photos Backup"),
   [string]$Bucket         = "nee-job-photos",
   [switch]$Flat,                                    # keep raw record-id folders
+  [switch]$IncludeThumbnails,                       # also back up the _thumb previews
   [switch]$Verify                                   # adds an rclone check pass
 )
 
@@ -209,6 +210,16 @@ foreach ($dest in $Destinations) {
   # NOTE: copy, not sync. See the header.
   $rcArgs = @("--transfers", "4", "--checksum", "--log-level", "INFO",
               "--log-file", $script:LogFile, "--stats", "30s", "--stats-one-line")
+
+  # Skip the _thumb previews by default. They are small (~7% of the bytes) but
+  # they DOUBLE the file count, which makes the backup unpleasant to browse -
+  # and browsing it is the whole reason the folders are named by job.
+  #
+  # Safe to omit: thumbnails are derived, not originals. If R2 were ever lost
+  # and you restored from here, the gallery falls back to the full image when a
+  # thumbnail is missing (see thumbUrl handling in index.html) - slower to
+  # scroll, but nothing is lost. Pass -IncludeThumbnails for a byte-for-byte copy.
+  if (-not $IncludeThumbnails) { $rcArgs += @("--exclude", "*_thumb.*") }
 
   if ($jobMap) {
     foreach ($id in $jobIds) {

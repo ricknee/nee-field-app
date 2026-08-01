@@ -4620,7 +4620,9 @@ async function handleJobPhotoUploadUrls(body) {
   // album name is the only client-supplied part of the path, so it is
   // sanitized and encoded (see sanitizeAlbum) before it becomes a segment.
   const album = albumSegment(body?.album);
-  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 15); // YYYYMMDDHHMMSS
+  // YYYYMMDDHHMMSS is 14 chars, not 15 — slicing 15 off "20260801202906.123Z"
+  // kept the decimal point and produced names like "20260801202906.-05-x.jpg".
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
   try {
     const uploads = await Promise.all(files.map(async (f, i) => {
       const contentType = /^image\/(jpeg|png|webp)$/.test(String(f?.contentType || ""))

@@ -99,6 +99,14 @@ $env:RCLONE_CONFIG_R2_ENDPOINT          = "https://$acct.r2.cloudflarestorage.co
 $env:RCLONE_CONFIG_R2_REGION            = "auto"
 $env:RCLONE_CONFIG_R2_NO_CHECK_BUCKET   = "true"   # a read-only token cannot create buckets
 
+# Point rclone at an empty config file it can actually find. Without this it
+# emits 'Config file not found - using defaults' on every single call, which
+# clutters the logs and - worse - is stderr output that PowerShell can turn
+# into a fatal error (see the lsf call below).
+$script:RcloneConf = Join-Path $env:TEMP "nee-rclone-empty.conf"
+if (-not (Test-Path $script:RcloneConf)) { New-Item -ItemType File -Path $script:RcloneConf | Out-Null }
+$env:RCLONE_CONFIG = $script:RcloneConf
+
 # -- Job id -> readable name ------------------------------------------------
 
 # Job names come from THE APP, not from a database directly.
@@ -156,7 +164,11 @@ if (-not $Flat) {
 # Record ids that actually have photos in R2.
 $jobIds = @()
 if ($jobMap) {
-  $lsd = & rclone lsf "R2:$Bucket/jobs/" --dirs-only 2>$null
+  # NO `2>$null` here. Redirecting a NATIVE command's stderr in PowerShell 5.1
+  # wraps each line in an ErrorRecord, and with $ErrorActionPreference = "Stop"
+  # that is fatal - so rclone printing a harmless NOTICE killed the whole run.
+  # Silence it at the source (--log-level ERROR) instead of redirecting.
+  $lsd = & rclone lsf "R2:$Bucket/jobs/" --dirs-only --log-level ERROR
   if ($LASTEXITCODE -eq 0) { $jobIds = @($lsd | ForEach-Object { $_.TrimEnd('/') } | Where-Object { $_ }) }
   if (-not $jobIds.Count) {
     Write-Output "Could not list jobs in the bucket - falling back to a flat copy."

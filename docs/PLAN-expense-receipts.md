@@ -144,8 +144,52 @@ rule for the photo recycle bin is added, it must **exclude `expenses/`**.
 > it is purged from Cloudflare. That was chosen to survive accidental deletion and happens to
 > satisfy record retention too.
 
-## 10. Still open
+## 10. Scope — settled 2026-08-01
 
-1. **Scope: which expense types?** The field app has general expenses and lift expenses; the
-   inventory app pushes material expenses across from the other base. Receipts obviously fit the
-   first two — unclear whether the inventory push path needs them.
+Three ways money gets logged, and they split into two different jobs:
+
+| Source | What a "receipt" means | Work |
+|---|---|---|
+| General expenses (field app) | photograph the paper slip | Slices 1-3 above |
+| Lift / rental expenses (field app) | photograph the paper slip | same |
+| **Material push (inventory app)** | **archive the PDF the app already generates** | §11 |
+
+## 11. Archiving the materials PDF (inventory app)
+
+The inventory app **already builds a PDF** on every push — `generateReceiptPDF()` (inventory.html
+:2451) returns base64, and `downloadReceiptPDF()` (:2425) turns it into a blob and triggers a
+browser download named `NEE_Materials_<job>_<date>.pdf`.
+
+**It is never stored.** It goes to whatever machine did the push, into that browser's Downloads
+folder, and that is the only copy. Close the tab and there is no record beyond the Airtable
+expense rows themselves.
+
+So this is not a camera feature — the file already exists in memory at push time. It is the same
+presigned upload as a photo, without the camera or the compression:
+
+```
+downloadReceiptPDF(g)          <- keep, people still want the local copy
+  └─ also: POST jobDocUploadUrl -> presigned PUT -> R2
+```
+
+**Key layout.** PDFs must not land in the photo gallery — `listJobPhotos` returns every non-thumb
+object under the job prefix, so a PDF would render as a broken image tile. Give them their own
+segment, excluded from the gallery the same way `_deleted/` is:
+
+```
+jobs/<job record id>/_docs/NEE_Materials_<date>-<push id>.pdf
+```
+
+The push already mints a **Push ID** for idempotency (see the expense-push work), which makes a
+natural unique filename and means a retried push can't produce a second copy.
+
+**Viewing.** A "Documents" row in the job's Photos view — filename, date, tap to open. PDFs open
+in the browser's viewer; no gallery work needed.
+
+**Effort:** ~2 h, and it is independent of slices 1-3 — it could ship first, since it needs no
+camera work and no decisions about compression.
+
+**Worth noting:** this closes a real gap. Right now the materials list backing a job's costs
+exists only as Airtable rows plus a PDF on one person's laptop. Archiving it puts the document
+that justifies the numbers next to the job, and the nightly backup then copies it to F: and P:
+with no extra work.

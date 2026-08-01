@@ -61,6 +61,38 @@ Add the table later only if captions, OCR text, or per-receipt metadata are actu
 **The one catch:** an expense record must exist before its receipts can be keyed to it, so the
 upload happens *after* save, not during. See §4.
 
+## 3a. Two capture routes — phone photo AND scanner PDF
+
+Added 2026-08-01. Receipts arrive two ways and they are **not** the same kind of file:
+
+| Route | Produces | Handling |
+|---|---|---|
+| Phone camera / camera roll | JPEG | compress to 2048px q0.75 + thumbnail, as photos do |
+| **ScanSnap** (desktop or mobile) | **PDF**, often multi-page | **upload untouched** — no compression, no thumbnail |
+
+Consequences worth stating up front, because they are easy to get wrong:
+
+- **Never compress a PDF.** The canvas resize path is image-only. Running a scan through it would
+  either fail or silently rasterise a crisp 300dpi scan into a worse JPEG. Branch on file type at
+  the picker, not deeper in.
+- **PDFs get no thumbnail.** Generating one needs pdf.js, which is a heavy dependency for a tile.
+  Show a document icon instead. The existing gallery already tolerates a missing thumbnail (falls
+  back to the full image), but a PDF is not an image at all, so it needs its own tile treatment
+  rather than that fallback.
+- **A multi-page scan is ONE receipt**, not N. Page count is irrelevant to the data model — the
+  file is the attachment.
+- **Size is a non-issue.** Uploads are presigned PUTs straight to R2, so the 4.5 MB Netlify
+  payload ceiling never applies. A 10 MB scan is fine.
+- **The file picker accepts both:** `accept="image/*,application/pdf"`, no `capture` attribute
+  (which would force the camera and rule out picking a scan — the same trap that broke
+  multi-select on the photo upload).
+- **Desktop matters here.** ScanSnap Desktop drops the PDF on a PC, so the attach flow has to work
+  from the office browser, not just the phone. It does, but it means the UI can't assume a camera.
+
+The stored object keeps its real content type so the viewer can branch: images open in the
+existing lightbox, PDFs open in the browser's own PDF viewer (already proven by the Documents
+strip in §11).
+
 ## 4. Flow
 
 ```
@@ -80,12 +112,15 @@ expense that was never created, and the existing save path stays untouched.
 
 ## 5. Slices
 
-**Slice 1 — attach and view (~3-4 h)**
+**Slice 1 — attach and view (~4-5 h; was 3-4 before PDFs)**
 - `_r2.js`: `expensePrefix(expenseId)`, reuse everything else
-- `airtable.js`: `expenseReceiptUploadUrls` (POST), `expenseReceipts` (GET)
-- `index.html`: an "Add receipt" button on the expense row + a thumbnail strip, reusing
-  `compressImage` and the existing lightbox
-- Tests mirroring the photo ones: validation, authorization, key-ownership
+- `airtable.js`: `expenseReceiptUploadUrls` (POST, accepts image **or** `application/pdf`),
+  `expenseReceipts` (GET, returns `contentType` so the client can branch)
+- `index.html`: an "Add receipt" button on the expense row + an attachment strip
+  - images → `compressImage` → thumbnail tile → existing lightbox
+  - PDFs → upload untouched → document tile → open in a new tab
+- Tests mirroring the photo ones: validation, authorization, key-ownership, **and that a PDF is
+  never routed through the image compressor**
 
 **Slice 2 — the approval view (~1-2 h)**
 - Receipt thumbnails in the admin/office Expenses list, next to the amount

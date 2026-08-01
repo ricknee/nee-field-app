@@ -127,11 +127,25 @@ inherit a boundary that's been in production for weeks.
 | Storage growth | Negligible — receipts are far rarer than jobsite photos, and 10 GB is ~25,000 images |
 | Airtable retirement | Nothing new is stored in Airtable, so this adds **zero** new migration work |
 
-## 9. Open questions
+## 9. Decisions (settled 2026-08-01)
 
-1. **Should an expense be blocked from submission without a receipt?** A hard requirement gets
-   compliance but will be worked around (blurry photo of nothing) if someone genuinely lost it.
-   Suggest: allow, but flag it visibly for admin.
-2. **Receipts on inventory/material pushes too**, or only the field-app expense types?
-3. **Retention** — do receipts need keeping longer than photos for tax purposes? Affects whether
-   the recycle bin should purge them at all.
+**A receipt is never required to save an expense.** Cash spends, lost slips and vendors who
+don't hand one over are normal. A hard requirement would just be satisfied with a blurry photo
+of a countertop, which is worse than an honest blank. Instead show a **"no receipt" marker** on
+those expenses in the admin list — visibility, not a gate, so the few worth chasing are obvious.
+
+**Receipts are exempt from auto-purge.** A jobsite photo deleted by mistake is a nuisance; a
+receipt is a financial record that may be wanted years later for tax or a disputed customer
+charge. They are rare and small, so keeping them costs effectively nothing. When the R2 lifecycle
+rule for the photo recycle bin is added, it must **exclude `expenses/`**.
+
+> Note: the backup already covers this independently. `tools/backup-photos.ps1` uses `rclone
+> copy`, never `sync`, so anything ever written to R2 stays on F: and P: permanently — even after
+> it is purged from Cloudflare. That was chosen to survive accidental deletion and happens to
+> satisfy record retention too.
+
+## 10. Still open
+
+1. **Scope: which expense types?** The field app has general expenses and lift expenses; the
+   inventory app pushes material expenses across from the other base. Receipts obviously fit the
+   first two — unclear whether the inventory push path needs them.

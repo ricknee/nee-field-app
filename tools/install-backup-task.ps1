@@ -1,0 +1,78 @@
+# Registers the nightly photo backup as a Windows scheduled task.
+# See docs/PLAN-job-photos.md.
+# ---------------------------------------------------------------------------
+# Run ONCE, from an elevated PowerShell (right-click -> Run as administrator):
+#
+#   powershell -ExecutionPolicy Bypass -File tools\install-backup-task.ps1
+#
+# THE PROBLEM THIS SOLVES: the office PC sleeps, so a 2am schedule silently
+# never runs and the backup looks healthy while doing nothing. Three settings
+# handle that, in order of how much they can be relied on:
+#
+#   1. -StartWhenAvailable   run as soon as possible after a MISSED start.
+#                            This is the one that always works: whenever the PC
+#                            next wakes up, the task catches up.
+#   2. Daytime schedule      default 12:30pm, when the PC is already awake.
+#                            A backup does not have to run at 2am.
+#   3. -WakeToRun            ask Windows to wake the machine. Genuinely useful,
+#                            but BIOS settings or "fast startup" can disable
+#                            wake timers, so it is a bonus, not the plan.
+#
+# Deliberately NOT relying on wake alone: a backup you believe is running but
+# is not is worse than no backup, because you stop keeping the other copy.
+
+param(
+  [string]$Time       = "12:30",
+  [string]$TaskName   = "NEE Photo Backup",
+  [string]$ScriptPath = (Join-Path $PSScriptRoot "backup-photos.ps1"),
+  [switch]$Wake                                  # also try to wake the PC
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Test-Path $ScriptPath)) {
+  Write-Output "Cannot find $ScriptPath"
+  exit 1
+}
+$ScriptPath = (Resolve-Path $ScriptPath).Path
+
+# Task Scheduler needs a real user context to see the R2_* user environment
+# variables and the F: drive letter, so the task runs as the logged-on user.
+$action = New-ScheduledTaskAction `
+  -Execute "powershell.exe" `
+  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$ScriptPath`" -Verify"
+
+$trigger = New-ScheduledTaskTrigger -Daily -At $Time
+
+$settings = New-ScheduledTaskSettingsSet `
+  -StartWhenAvailable `
+  -DontStopIfGoingOnBatteries `
+  -AllowStartIfOnBatteries `
+  -RunOnlyIfNetworkAvailable `
+  -ExecutionTimeLimit (New-TimeSpan -Hours 3) `
+  -MultipleInstances IgnoreNew
+
+if ($Wake) { $settings.WakeToRun = $true }
+
+Register-ScheduledTask `
+  -TaskName    $TaskName `
+  -Action      $action `
+  -Trigger     $trigger `
+  -Settings    $settings `
+  -Description "Copies the Cloudflare R2 jobsite-photo bucket to the external drive. Never deletes (rclone copy, not sync)." `
+  -Force | Out-Null
+
+Write-Output ""
+Write-Output "Registered '$TaskName'"
+Write-Output "  runs      : daily at $Time"
+Write-Output "  script    : $ScriptPath"
+Write-Output "  if missed : runs as soon as the PC is next awake"
+if ($Wake) { Write-Output "  wake      : will try to wake the PC (needs wake timers enabled in Power Options)" }
+Write-Output ""
+Write-Output "Test it right now without waiting for the schedule:"
+Write-Output "  Start-ScheduledTask -TaskName '$TaskName'"
+Write-Output ""
+Write-Output "Check when it last ran and whether it succeeded:"
+Write-Output "  Get-ScheduledTaskInfo -TaskName '$TaskName'"
+Write-Output ""
+Write-Output "LastTaskResult 0 = success, 2 = drive was not connected (skipped, not a failure)."

@@ -1,328 +1,164 @@
-# Plan: Jobsite photos — in-app viewing + direct upload (pCloud)
+# Jobsite photos — SHIPPED (Cloudflare R2)
 
-**Status:** 2026-07-31 — **store decision REVERSED to Cloudflare R2.** pCloud slice 1 is written,
-tested, and DORMANT (nothing calls it). Production reverted to the original pCloud link.
-**Make.com: not touched.** Scenario 4522457 still runs the JotForm upload path unchanged.
+**Status:** Complete and in production as of 2026-08-01. ~970 photos live, backed up twice daily.
+**Store: Cloudflare R2.** pCloud was chosen first and abandoned mid-build — see §2.
+**Make.com: untouched.** Scenario 4522457 and the JotForm form still run; retiring them is §7.
 
-> ### Why pCloud was abandoned after being chosen
->
-> pCloud was picked on 2026-07-31 because the folders, the photos, and the receipts were already
-> there (§3). Building it revealed the blocker: **pCloud's app-registration page
-> (`docs.pcloud.com/my_apps/`) has been down for months**, so no OAuth client can be created and
-> no API token can be issued.
->
-> The documented fallback — native login via `userinfo?getauth=1` — gets as far as the password
-> (verified: a bad password returns `2000`, this account returns `1022`) and then demands a second
-> factor under an **undocumented parameter name**. `code` is ignored; the same `1022` returns.
->
-> Make.com keeps working because **Make registered its own pCloud app years ago**, before the page
-> broke, and holds a non-expiring OAuth token for the account (connection `24595`, `expire: null`).
-> Make's API does not expose connection secrets, so that token can't be borrowed.
->
-> The premise of the pCloud decision was "we already have it and it works." The developer API is
-> precisely the part that does not work, and hasn't for months. R2 is entirely self-serve.
-
-**One-line:** Give every job an in-app photo gallery that reads its existing pCloud photo folder
-(no pCloud login for the user), then replace the JotForm upload with a direct app → pCloud upload
-that files by **folder ID** instead of a rebuilt path.
+**One-line:** Replaced the JotForm → Make → pCloud photo path with camera → compressed on the
+phone → straight to Cloudflare R2, plus an in-app gallery with albums, soft delete, and a
+twice-daily backup to two local drives.
 
 ---
 
-## 1. What exists today (verified 2026-07-31)
+## 1. What it replaced, and why it was broken
 
-**Button:** `index.html:2136` `#btnAddPhotos` — a plain `<a target="_blank">` whose href comes from
-the Airtable Jobs field `Add Photos (Mobile)` (`F.job.addPhotosLink`, airtable.js:147). Wired by
-`setActionBtn` (index.html:4233). Sibling `#btnViewPhotos` ← `View pCloud Photos` (airtable.js:148).
-Neither touches a Netlify function — they are just links.
-
-The Add link opens JotForm form `260246511955053` ("Jobsite Photo Upload") with `?jobPo=<Job PO>`.
-Then **Make scenario 4522457 "Submitt Photos"** (team 6575, hook 2590669, active) runs:
-
-| # | Module | What it does |
-|---|---|---|
-| 1 | `jotform:watchForSubmissions` | fires on submit |
-| 6 | `airtable:ActionSearchRecords` | Jobs, `{Job PO} = "{{1.request.q3_jobPo}}"`, limit 1 |
-| 2 | `builtin:BasicFeeder` | iterate `uploadPhotos[]` |
-| 5 | `http:DownloadFile` | pull each photo back off jotform.com |
-| 4 | `pcloud:uploadFile` | upload **by path string**, `overwrite: false` |
-
-Path is rebuilt from five text fields on every run:
+The old path: **📷 Add Photos** opened JotForm form `260246511955053`, which fired Make scenario
+**4522457 "Submitt Photos"** — Airtable job lookup → download each photo back off jotform.com →
+`pcloud:uploadFile` **by path string**:
 
 ```
 /Northeastern Electric Jobs/NEE Jobs/{{formatDate(now;"YYYY")}}/{{Contractor Name (Text)}}/{{Job PO}}/{{Jobsite Files (pCloud)}}/{{pCloud Photo Upload}}
 ```
 
-Filename is `{{Job Name}} {{Job Type}}.jpg` — the same name for every photo on a job.
-Observed cost: ~9–11 Make ops and 4–9 MB transfer per submission; a sample photo was
-**2.5 MB at 4000×1848**, uploaded raw.
-
-### The break, with evidence
-
-Execution history shows a hard failure on **2026-07-01T18:00:25Z**, status 3:
-
-> `[2005] Directory does not exist.` — causeModule `pcloud / uploadFile`
-
+Observed failure, 2026-07-01: **`[2005] Directory does not exist`** from `pcloud/uploadFile`.
 Structural, not flaky:
 
-1. **`formatDate(now,"YYYY")` is the *current* year, not the job's.** Any job created in one year
-   whose photos are uploaded the next points at a folder that doesn't exist. Breaks every January
-   and on every carry-over job.
-2. **The path is rebuilt from five human-editable strings.** Rename a contractor, fix a Job PO
-   typo, or edit `Jobsite Files (pCloud)` / `pCloud Photo Upload` and it silently stops resolving.
-3. **The job record already holds the answer and the scenario ignores it.** Jobs carries
-   `pCloud Photo's ID` — a real pCloud **folderid** (e.g. `30344195184`). Uploading by folderid
-   cannot hit failures 1 or 2 at all.
-4. **Identical filename for every photo**, `overwrite:false` → renames and collisions.
-5. **Job lookup is an exact unescaped match** on `Job PO`; a stale prefill or a `"` in the PO
-   returns 0 records and the run dies or uploads with empty path segments.
-6. **JotForm is an extra hop with its own failure modes** — plan caps, and `http:DownloadFile`
-   404s if JotForm purges the upload.
+1. `formatDate(now,"YYYY")` is the **current** year, not the job's — breaks every January and on
+   every carry-over job.
+2. The path is rebuilt from five human-editable fields; any rename silently breaks it.
+3. The job record already held `pCloud Photo's ID` — a stable folder id the scenario ignored.
+4. Every photo got the same filename, `{{Job Name}} {{Job Type}}.jpg`.
+5. Viewing meant `my.pcloud.com/#/filemanager?folder=…` — a pCloud **login**, and then the whole
+   company file tree.
 
-**Viewing today:** `View pCloud Photos` = `https://my.pcloud.com/#/filemanager?folder=30344195184`
-— the pCloud web app, so it **requires a pCloud login**, and once in, the user can browse the whole
-account.
+## 2. Why pCloud lost the store decision after winning it
 
----
+pCloud was chosen on workflow grounds (folders and receipts already there, already paid for) and
+abandoned two hours later on a hard blocker: **`docs.pcloud.com/my_apps/` — app registration —
+has been down for months**, so no OAuth client and no API token can be created.
 
-## 2. Target design
+The documented fallback (`userinfo?getauth=1`) authenticates the password (verified: a bad
+password returns `2000`, this account returns `1022`) and then demands a second factor under an
+**undocumented parameter** — `code` is ignored and `1022` repeats.
 
-### Why viewing ships first (changed from the first draft)
+Make.com still reaches pCloud only because **Make registered its own pCloud app years ago**, before
+the page broke, and holds a non-expiring token (connection `24595`, `expire: null`). Make's API
+never exposes connection secrets, so it can't be borrowed.
 
-The original draft did upload first. Viewing-first is better here:
+R2 then turned out to be mechanically better anyway: **presigned URLs** mean the browser talks to
+Cloudflare directly, so no bytes pass through the function — no per-thumbnail invocation, no
+Netlify bandwidth per photo, and no 4.5 MB payload ceiling on upload. The pCloud design would have
+had to proxy every image, because pCloud restricts download-link referrers to pcloud.com.
 
-- **It works on five years of existing photos immediately.** Every job's folder is already
-  populated. Ship viewing and the feature is useful on day one across the whole job history —
-  upload-first would only help photos taken after the deploy.
-- **It's read-only.** No writes to pCloud, no risk to existing files, nothing to roll back.
-- **It proves out the pCloud integration and the token** before anything writes bytes.
-- **It fixes the complaint that actually stings** — techs having to log into pCloud.
-- Make scenario 4522457 keeps working untouched the whole time.
-
-### Slice 1 — in-app gallery (read-only)
+## 3. How it works now
 
 ```
-[Job → 📷 Photos tab]
-  └─ GET action=jobPhotos&jobId=…
-       └─ read job's pCloud Photo's ID (folderid)
-            └─ pCloud listfolder(folderid)  → [{fileid, name, size, thumb, created, contenttype}]
-                 └─ return JSON list (no bytes)
+📷 Add Photos
+  └─ album picker (existing albums as chips, or type a new one)
+       └─ file picker: camera OR a batch from the camera roll
+            └─ per photo: compress to 2048px q0.75 (~400 KB) + a 400px thumbnail
+                 └─ POST jobPhotoUploadUrls  (chunks of 10; the function caps one request at 12)
+                      └─ PUT both files straight to R2, 3 at a time
 
-  thumbnails → GET action=jobPhoto&jobId=…&fileid=…&size=thumb
-  full size  → GET action=jobPhoto&jobId=…&fileid=…&size=full
-       └─ function fetches bytes from pCloud and returns the image with a long Cache-Control
+🖼 View Photos
+  └─ GET jobPhotos → presigned GET urls
+       └─ album tiles → grid → lightbox (full size, prev/next, Save)
+       └─ Select → Move to album / Delete
+       └─ 🗑 Recently deleted (admin/office) → Restore / Delete permanently
 ```
 
-The pCloud key lives **server-side only** (`PCLOUD_ACCESS_TOKEN` in Netlify env). The user's device
-never holds a pCloud credential and can only reach fileids that are inside the requested job's
-folder — the handler must verify that, not trust the client's fileid.
-
-### Slice 2 — direct upload
+### Object layout
 
 ```
-[📷 Add Photos]
-  └─ <input type="file" accept="image/*" capture="environment" multiple>
-       └─ client compress → JPEG ~1600–2048px long edge, q≈0.75  (2.5 MB → ~400 KB, HEIC→JPEG free)
-            └─ POST action=uploadJobPhoto  (one photo per call, 2–3 concurrent)
-                 └─ pCloud uploadfile (multipart, folderid, never a path)
+jobs/<airtable record id>/<album>/<stamp>-<n>-<rand>.jpg          the photo
+jobs/<airtable record id>/<album>/<stamp>-<n>-<rand>_thumb.jpg    its thumbnail
+jobs/<airtable record id>/_deleted/<album>/…                      recycle bin
+jobs/<airtable record id>/_deleted/_none/…                        was loose when deleted
 ```
 
-### The viewing catch
+Scoping is by **Airtable record id, not job name**. The `FIND`-on-name pattern used elsewhere in
+`airtable.js` matches substrings, so "Jenny Ln 1" leaks into "Jenny Ln 10/11/12" (TODO.md). Record
+ids can't collide, so two jobs named the same never see each other's photos. Tested.
 
-pCloud's `getfilelink` and `getpublinkdownload` both state:
+The album is the **only** client-supplied part of a key, so it is sanitized (slashes neutralised,
+`..` rejected, 60 chars) and percent-encoded. Every mutation re-validates the key against the job's
+own prefix server-side — the client sends keys back to us, so without that a signed-in user could
+reach another job's photos by editing one string. Tested.
 
-> "This method can't be used from web applications. Referrer is restricted to pcloud.com."
+## 4. Files
 
-So a pCloud URL **cannot** be dropped into an `<img src>` on the app domain. Options in order:
-
-| Approach | Verdict |
+| File | Role |
 |---|---|
-| **`getthumblink` + `<img referrerpolicy="no-referrer">`** | Docs don't list the restriction on `getthumblink`. **Spike this — 30 min, needs the token.** If it works, thumbnails come straight from pCloud and cost us nothing. |
-| **Function serves the bytes** (fetch server-side, return image + long `Cache-Control`) | Always works — server-to-server has no referrer. Costs Netlify bandwidth. **Assume this; treat the spike as upside.** |
-| **`getfolderpublink`** → no-login pCloud page | Not a gallery, but ideal for the "send photos to the customer" button. |
+| `netlify/functions/_r2.js` | R2 client: presign, list, move, soft delete, restore, purge, self-test. Fails soft like `_neon.js`; `aws4fetch` lazy-imported so tests stay offline. |
+| `netlify/functions/airtable.js` | Actions: `jobPhotos`, `jobPhotosDeleted`, `r2Status`, `jobPhotoUploadUrls`, `moveJobPhotos`, `deleteJobPhotos`, `restoreJobPhotos`, `purgeJobPhotos` |
+| `index.html` | Album picker modal, gallery modal, lightbox, selection toolbar, client-side compression |
+| `tools/backup-photos.ps1` | rclone **copy** (never sync) to F: and P: |
+| `tools/install-backup-task.ps1` | Scheduled task, 3×/day with wake-catch-up |
+| `netlify/functions/_pcloud.js`, `tools/pcloud-*.mjs` | **Dead.** Kept only in case pCloud reopens registration. |
 
-`getthumblink` sizes: width 16–2048, height 16–1024, **each divisible by 4 or 5** (use `320x320`).
-Thumbs exist only where the file's metadata has `thumb: true`.
+Env: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`. Optional as a group,
+never in `ensureEnv()`. The bucket also needs a **CORS policy** allowing `PUT` from
+`https://hub.northeasternelec.com` — bucket config, not env, and invisible until uploads fail.
 
-### Caching is a requirement, not an optimization
+Diagnose with `GET ?action=r2Status&selfTest=1` (admin): it round-trips a real object through the
+same presigned urls the browser uses, **server-side**, which is the only way to tell a signing
+problem from a CORS block — a browser reports both as a bare "Failed to fetch".
 
-Netlify moved to credit-based pricing in 2026 (300 credits/month on Free, bandwidth at 20
-credits/GB ≈ 15 GB; accounts created before 2025-09-04 may be grandfathered on the old 100 GB).
-**Confirm which plan/model this account is on before Slice 1 ships.**
+## 5. Authorization
 
-Rough load: a 30-photo gallery at ~30 KB per thumb ≈ 0.9 MB per *first* view, and one function
-invocation per thumbnail. Uncached, a few crews scrolling galleries would be material against
-either allowance — in invocations more than bytes. Cached properly, each photo is fetched once
-per device, ever. So:
-
-- Immutable `Cache-Control: private, max-age=31536000` on `action=jobPhoto` (fileid + size is a
-  stable key — pCloud fileids don't get reused for different content). `private` keeps job photos
-  out of shared caches, at the cost of no cross-user dedupe.
-- **`sw.js` is fine — verified.** Its `/.netlify/` branch `return`s without calling
-  `respondWith`, so the service worker simply doesn't intercept and the browser's own HTTP cache
-  honours the header normally. The comment there says "never cache", which describes the SW, not
-  the browser. No `netlify.toml` reroute needed.
-- `resp()` hardcodes `Cache-Control: no-store`; the image path needs its own response builder
-  (`respImage`).
-
----
-
-## 3. Options considered
-
-| Option | Effort | Fixes upload? | View w/o login? | Verdict |
-|---|---|---|---|---|
-| **pCloud, by folderid, app-served gallery** | Medium | ✅ root cause | ✅ | **CHOSEN** |
-| Cloudflare R2 (presigned PUT/GET) | Medium | ✅ | ✅ natively, no proxy | Rejected — see below |
-| App → existing Make webhook | Low | Partly — drops JotForm, keeps Make | ❌ | Rejected as an endpoint; viable emergency stopgap |
-| Airtable attachment field | Lowest | ✅ | ✅ | ❌ Worst Neon migration shape (see PLAN-expense-receipts) |
-| Fix the Make scenario only (folderid + unique filename) | Lowest | ✅ mostly | ❌ | Parked at user's request; keep as the emergency lever |
-
-### What carries over to R2 (most of it)
-
-The storage backend is the smallest part of what was built. Unchanged by the switch:
-
-- `signScope` / `verifyScope` in `_auth.js` — signed image URLs, because an `<img>` can't send an
-  auth header. Needed for R2 too (or replaced by R2 presigned GETs, which are the same idea).
-- `jobPhotos` / `jobPhoto` handler shape, the `photoUnavailable` soft-failure mapping, `respImage`,
-  and the `_GRANT_AUTH_ACTIONS` dispatcher carve-out.
-- The whole gallery UI in `index.html` — grid, lightbox, prev/next, save, lazy loading, the
-  thumb-fails-so-retry-full path.
-- All 12 photo tests.
-
-What gets replaced: `_pcloud.js` → an R2 client. And R2 changes two things for the better —
-uploads go **straight from the phone** via a presigned PUT (no 4.5 MB function ceiling), and
-images can be served by presigned GET instead of proxying bytes through the function.
-
-### Migrating the five years of existing photos — without the API
-
-R2's one real disadvantage was that existing photos stay in pCloud. That is solvable **without
-pCloud's API**: pCloud Drive mounts the account as a local drive letter, so the job folders are
-ordinary files on disk. A one-time script can walk them and upload to R2 — no token, no
-registration, no second factor. **Confirm pCloud Drive is installed before relying on this.**
-
-### Why R2 was rejected (superseded — see the status note at the top)
-
-R2 is the cleaner engineering answer — presigned PUT *and* GET, no referrer restriction, no proxy,
-free egress, 10 GB free, S3 API. It lost on workflow, decisively:
-
-1. **Five years of job photos already sit in pCloud.** R2 starts empty, so photos would live in two
-   places forever, or need a migration project.
-2. **Receipt PDFs already use the same per-job folder structure.** Choosing pCloud collapses the
-   deferred `PLAN-expense-receipts` work onto this same plumbing — one system, not two. That
-   consolidation was R2's main argument, and the existing folder structure takes it away.
-3. pCloud is already bought and paid for, and the office lives in that folder tree.
-
-**Consequence to fold in:** `docs/PLAN-expense-receipts.md` says R2. It should be revised to pCloud
-(`pCloud Job Receipts ID` is already on every job) once Slice 1 proves the integration.
-
----
-
-## 4. Better ideas folded in
-
-1. **Slice 3: give photos a database row.** Today *nothing* records that a photo exists — the only
-   evidence is a file in a folder. Slice 1 reads the folder live, which is fine and needs no
-   schema. But a `Job Photos` table (Airtable now, Neon later, mirroring the `expense_receipts`
-   shape) later buys captions, before/after tags, who shot it, gallery loads without hitting
-   pCloud, and pulling photos into service reports and invoices.
-   ```
-   job_photos: id, job_id→Jobs, pcloud_fileid, pcloud_folderid, filename, content_type,
-               width, height, bytes, caption, tag(before|after|issue|closeout),
-               uploaded_by→Employees, uploaded_at, client_ref UNIQUE
-   ```
-2. **Real filenames** on upload: `{JobPO}_{YYYYMMDD-HHmmss}_{initials}_{seq}.jpg`. Collisions gone,
-   and the pCloud folder stays self-describing for whoever opens it directly.
-3. **Compress on the client.** 2.5 MB → ~400 KB, converts iPhone HEIC → JPEG for free, works on bad
-   jobsite LTE, stays far inside Netlify's ~4.5 MB effective binary payload limit. Watch EXIF
-   orientation — canvas re-encode drops it, so use
-   `createImageBitmap(blob, {imageOrientation:'from-image'})` or every iPhone photo lands sideways.
-4. **Idempotency via `client_ref`** — reuse the inventory "Push ID" pattern so a retry on flaky
-   signal doesn't double-upload.
-5. **Offline queue (later).** Basements and steel buildings have no signal. Queue blobs in
-   IndexedDB, upload on reconnect, pending badge. Biggest real-world reliability win after Slice 2.
-6. **Per-photo progress and retry**, not one all-or-nothing spinner — techs shoot 5–15 at a time.
-7. **Customer share link** — `getfolderpublink` with an `expire`, as "Send photos to customer".
-   Covers people who aren't app users at all.
-8. **Download / share from the gallery** — save to camera roll, native share sheet, download-all.
-9. **Keep the Airtable `Add Photos (Mobile)` / `View pCloud Photos` fields.** Airtable users may
-   still click them; just stop the app depending on them.
-
----
-
-## 5. Risks
-
-| Risk | Mitigation |
+| Action | Who |
 |---|---|
-| `getthumblink` also referrer-locked | Spike first; fall back to function-served bytes (the assumed path) |
-| `PCLOUD_ACCESS_TOKEN` is a full-account credential | Server-side only, never in `index.html`; confirm expiry behavior |
-| Wrong API host (`api.pcloud.com` US vs `eapi.pcloud.com` EU) | OAuth response returns `hostname`/`locationid`; store as `PCLOUD_API_HOST`. Links are `my.pcloud.com` → likely US |
-| A client could request an arbitrary fileid | Handler verifies the fileid's `parentfolderid` matches the job's folder before serving bytes |
-| Job missing `pCloud Photo's ID` | Fail loudly ("photo folder not set up for this job"), never fall back to a path |
-| Netlify bandwidth / invocations | Immutable caching, thumbs in the grid, full size only on tap; confirm plan tier |
-| ~~`sw.js` swallows caching~~ | **Resolved** — the SW doesn't intercept `/.netlify/`; browser HTTP caching applies |
+| View photos, upload, move between albums | any signed-in non-viewer |
+| Delete (to recycle bin), restore, purge, list the bin | admin / office |
+| `r2Status` | admin |
 
-## 6. Slices
+Delete is admin/office because **nothing records who took a photo**, so the expense-style "your own
+until reviewed" rule can't be enforced. `purgeJobPhoto` refuses any key not already in the bin, so
+permanent delete can never be aimed at a live photo.
 
-- **Slice 1 — viewing (read-only). CODE COMPLETE, untested against real pCloud.**
-  `_pcloud.js` helper, `signScope`/`verifyScope` in `_auth.js`, `jobPhotos` + `jobPhoto` actions,
-  gallery modal + lightbox in `index.html`, `#btnViewPhotos` opens it instead of pCloud.
-  10 new offline tests pass (54 total). **Blocked on `PCLOUD_ACCESS_TOKEN` to smoke-test.**
-- **Slice 2 — upload.** `uploadJobPhoto` + camera/compress UI on `#btnAddPhotos`. JotForm no longer
-  used by the app. Make scenario left running as a fallback during soak.
-- **Slice 3 — `Job Photos` table**, captions/tags, backfill from a `listfolder` sweep.
-- **Slice 4 — hardening.** Offline queue, per-photo retry, customer share link, download-all.
-- **Slice 5 — retire.** After soak: pause (don't delete) Make scenario 4522457 and the JotForm form,
-  matching the wire/pipe retirement pattern.
+## 6. Backup
 
-## 7. Touch points
+Two destinations, three times a day, `rclone copy` — **never `sync`**. Sync would mirror deletions
+into the backup, so deleting photos in the app would erase them from the backup on the next run,
+protecting against nothing.
 
-- `index.html:2136` `#btnAddPhotos` / `#btnViewPhotos`; `setActionBtn` (:4233); job render (:3684).
-- Browser→cloud upload precedent: `uploadPDFToPCloud` (index.html:3272).
-- `airtable.js`: `F.job.addPhotosLink` (:147) / `viewPhotosLink` (:148); add
-  `pcloudPhotoFolderId` ← `pCloud Photo's ID`; surface it in `mapJob` (:1828).
-- New actions in the GET dispatch chain (~airtable.js:4509): `jobPhotos`, `jobPhoto`.
-  Slice 2 adds `uploadJobPhoto` to the POST chain (~:4574). Tier them in `authzFor` (:418) —
-  reads default to `null` (any signed-in role), upload `_NON_VIEWER`, delete `_ADMIN_OFFICE`.
-- `resp()` (:355) is `no-store` — the image route needs its own cacheable response builder.
-- New env: `PCLOUD_ACCESS_TOKEN`, `PCLOUD_API_HOST`. Add to `.env.example` + CLAUDE.md.
-  **Fails soft like `_neon.js`, not closed like `_auth.js`** — no token means the Photos tab shows
-  "photos unavailable", never a 500 on the job view.
-- Tests: `tests/handlers.test.mjs` with a mocked pCloud fetch (stays offline).
+- `F:\NEE-Job-Photos` — physical, offline, survives an account problem
+- `P:\NEE Job Photos Backup` — pCloud Drive, off-site, survives the building
 
-## 8. Blocked on
+Runs 08:30 / 12:30 / 17:00 with `-StartWhenAvailable`, so a sleeping PC catches up on next wake.
+Three slots rather than one because a missing drive **exits "skipped" and Windows counts that as
+having run** — a single trigger could miss days while still looking healthy. Uses a **separate
+read-only** R2 token.
 
-1. **A pCloud token** — nothing server-side can be tested until one exists. Two routes; set
-   whichever env var matches, never both:
+First run 2026-08-01: 1,944 files (~970 photos) to both, verified.
 
-   | Route | Script | Env var | Notes |
-   |---|---|---|---|
-   | OAuth | `tools/pcloud-oauth.mjs` | `PCLOUD_ACCESS_TOKEN` | Preferred — revocable per app. Needs app registration, which **was down ("temporarily unavailable") on 2026-07-31**. |
-   | Native login | `tools/pcloud-token.mjs` | `PCLOUD_AUTH_TOKEN` | No registration needed. Prompts for the account password (never an argv). Revoked only by password change or `logout`. Fails if the account has 2FA. |
+## 7. Still open
 
-   pCloud sends the two under different parameter names (`?access_token=` vs `?auth=`) and they
-   are **not interchangeable** — the wrong one returns "log in failed", which reads like a bad
-   password rather than a wiring mistake. `_pcloud.js` picks the parameter from whichever env
-   var is set; both paths are covered by tests.
-2. **Netlify plan check** — free vs Pro, old bandwidth model vs 2026 credits.
+1. **The 30-day recycle-bin expiry is a promise, not a mechanism.** Nothing purges `_deleted/`.
+   Needs an R2 lifecycle rule on that prefix, or the bin grows forever. Low urgency (storage is
+   pennies, and "keeps everything" errs safe) but it is an unfinished edge.
+2. **Retire JotForm + Make.** After a week of real use, pause form `260246511955053` and scenario
+   `4522457` — pause, don't delete, matching the wire/pipe retirement pattern. No code change.
+3. **Offline upload queue.** Basements and steel buildings have no signal. Worth building around
+   observed field behaviour rather than guesses.
+4. **Receipts on R2.** `docs/PLAN-expense-receipts.md` specifies R2 and is now consistent with
+   reality — the upload path, compression and presigning already exist, so it is largely assembly.
+5. **An office-browsable pCloud copy.** The backup is keyed by record id, which is deliberate but
+   not readable. A copy named by Job PO would need an Airtable id→name mapping step.
 
-## 8b. Next session — start here
+## 8. Things that cost time, recorded so they don't again
 
-1. **Create the R2 bucket** (Cloudflare dashboard → R2 → Create bucket, e.g. `nee-job-photos`).
-   Generate an S3-compatible API token; add `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-   `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` to Netlify. Entirely self-serve — nothing can block it.
-2. **Write `netlify/functions/_r2.js`** to the same fail-soft contract as `_pcloud.js`
-   (presign PUT, presign GET, list by job prefix). Key layout: `jobs/<jobId>/<timestamp>-<n>.jpg`.
-3. **Repoint `jobPhotos` / `jobPhoto`** at `_r2.js`. Handler shape and tests stay.
-4. **Re-point `#btnViewPhotos`** at `openJobPhotos()` (index.html ~:3691, currently reverted to
-   the legacy link with a comment marking the spot).
-5. **Upload slice** — camera capture + client compression + presigned PUT direct from the browser.
-6. **Backfill** existing photos from pCloud Drive (see above), if installed.
-
-Keep `_pcloud.js` and both `tools/pcloud-*.mjs` scripts for now — if pCloud ever fixes app
-registration, the mirror-to-pCloud option reopens with no rework.
-
-## 9. Open questions
-
-1. Should the gallery show *all* files in the photo folder, or filter to image types only?
-   (Assume images only, ignore stray PDFs/docs.)
-2. Sort newest-first or oldest-first? (Assume newest-first.)
-3. Who can delete a photo — admin/office only, or the uploader within a window like
-   `guardExpenseMutation`? (Assume no delete in Slice 1–2; add in Slice 4.)
+- **A stale service worker looks exactly like a CORS rejection.** `sw.js` intercepted the
+  cross-origin `PUT`, `cache.put()` threw on a non-GET, and the page got a bare "Failed to fetch".
+  Both the bucket CORS (verified `204` by direct OPTIONS probe) and the deployed `sw.js` were fine.
+  Fixed by skipping non-GET and cross-origin in the worker, **and** forcing `registration.update()`
+  on load — a registered worker can serve the old script for 24h, so a fix shipped *inside* sw.js
+  can sit unapplied while index.html is already current.
+- **A 403 from R2 with no CORS headers also surfaces as "Failed to fetch".** The real cause was an
+  **Object Read only** token. `r2Status&selfTest=1` exists because of this.
+- **Netlify gives a sync function 10 seconds.** Moving 47 photos was ~188 sequential R2 round trips
+  → 504 while the work carried on server-side, so the user saw a failure *and* the photos moved.
+  Fixed with client chunking + server concurrency.
+- **`capture="environment"` makes phones ignore `multiple`.** One photo per tap.
+- **Windows PowerShell 5.1 reads `.ps1` as ANSI without a BOM**, so em dashes in comments break the
+  parse. The `tools/*.ps1` scripts are deliberately ASCII-only.

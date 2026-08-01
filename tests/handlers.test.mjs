@@ -640,14 +640,19 @@ await test('job notes: readable by every role, writable only by admin/office', a
   ok((await POST('updateJobNotes', write, ADMIN_TOK)).statusCode !== 403, 'admin can write');
 });
 
-await test('deleteJobPhotos: admin/office only, viewer and employee blocked', async () => {
+await test('recycle-bin actions: admin/office only, viewer and employee blocked', async () => {
   setR2();
   mockTables = JOB_ONLY();
   const body = { jobId: 'recJ1', keys: ['jobs/recJ1/a.jpg'] };
-  eq((await POST('deleteJobPhotos', body, VIEWER_TOK)).statusCode, 403, 'viewer');
-  eq((await POST('deleteJobPhotos', body, EMP_TOK)).statusCode, 403, 'employee');
-  // admin/office must at least pass the authz gate (storage call may fail offline)
-  ok((await POST('deleteJobPhotos', body, OFFICE_TOK)).statusCode !== 403, 'office allowed');
+  for (const action of ['deleteJobPhotos', 'restoreJobPhotos', 'purgeJobPhotos']) {
+    eq((await POST(action, body, VIEWER_TOK)).statusCode, 403, `${action} viewer`);
+    eq((await POST(action, body, EMP_TOK)).statusCode, 403, `${action} employee`);
+    // admin/office must at least pass the authz gate (storage call fails offline)
+    ok((await POST(action, body, OFFICE_TOK)).statusCode !== 403, `${action} office allowed`);
+  }
+  // Browsing what was deleted is admin/office too.
+  eq((await GET('jobPhotosDeleted', { jobId: 'recJ1' }, EMP_TOK)).statusCode, 403, 'employee cannot list the bin');
+  ok((await GET('jobPhotosDeleted', { jobId: 'recJ1' }, ADMIN_TOK)).statusCode !== 403, 'admin can list the bin');
 });
 
 await test('moveJobPhotos: any non-viewer may re-file (reversible)', async () => {
@@ -670,15 +675,42 @@ await test('bulk photo ops: validate job and selection before touching storage',
 });
 
 await test('r2 mutation guard: a key from another job is refused', async () => {
-  const { moveJobPhoto, deleteJobPhoto } = await import('../netlify/functions/_r2.js');
+  const r2 = await import('../netlify/functions/_r2.js');
   // The client sends keys back to us, so this is the check that stops a
   // signed-in user reaching another job's photos by editing one string.
-  for (const [label, fn] of [['move', () => moveJobPhoto('recJ1', 'jobs/recOTHER/a.jpg', 'Gym')],
-                             ['delete', () => deleteJobPhoto('recJ1', 'jobs/recOTHER/a.jpg')]]) {
+  const foreign = 'jobs/recOTHER/a.jpg';
+  const cases = [
+    ['move',    () => r2.moveJobPhoto('recJ1', foreign, 'Gym')],
+    ['delete',  () => r2.softDeleteJobPhoto('recJ1', foreign)],
+    ['restore', () => r2.restoreJobPhoto('recJ1', foreign)],
+    ['purge',   () => r2.purgeJobPhoto('recJ1', 'jobs/recOTHER/_deleted/_none/a.jpg')],
+  ];
+  for (const [label, fn] of cases) {
     let threw = null;
     try { await fn(); } catch (e) { threw = e; }
     ok(threw && threw.code === 'KEY_OUTSIDE_JOB', `${label} rejects a foreign key (got ${threw && threw.code})`);
   }
+});
+
+await test('recycle bin: keys round-trip the original album, purge refuses live photos', async () => {
+  const { isDeletedKey, deletedFromAlbum, purgeJobPhoto } = await import('../netlify/functions/_r2.js');
+
+  const live  = 'jobs/recJ1/Gym/20260731-01-a.jpg';
+  const binned = 'jobs/recJ1/_deleted/Gym/20260731-01-a.jpg';
+  const binnedLoose = 'jobs/recJ1/_deleted/_none/20260731-01-a.jpg';
+
+  ok(!isDeletedKey('recJ1', live), 'live photo is not in the bin');
+  ok(isDeletedKey('recJ1', binned), 'binned photo is detected');
+  // The album has to survive the trip or Restore has nowhere to put it back.
+  eq(deletedFromAlbum('recJ1', binned), 'Gym', 'remembers the album');
+  eq(deletedFromAlbum('recJ1', binnedLoose), '', 'loose photo restores to no album');
+  eq(deletedFromAlbum('recJ1', 'jobs/recJ1/_deleted/Panel%20Room/x.jpg'), 'Panel Room', 'decodes spaces');
+
+  // Permanent delete must never be reachable for a photo still in the gallery,
+  // even if the client asks for it directly.
+  let threw = null;
+  try { await purgeJobPhoto('recJ1', live); } catch (e) { threw = e; }
+  ok(threw && threw.code === 'NOT_DELETED', `purge refuses a live photo (got ${threw && threw.code})`);
 });
 
 await test('r2 albums: one safe path segment, names survive a round trip', async () => {

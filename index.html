@@ -4275,7 +4275,9 @@
   // a string = that album. `visible` is whatever the grid is currently showing,
   // which is what the lightbox pages through — paging must follow the album
   // you opened, not every photo on the job.
-  const jobPhotoState = { jobId: null, jobName: "", photos: [], visible: [], index: 0, album: undefined, lastAlbum: "", selecting: false, selected: new Set() };
+  // album === DELETED_VIEW selects the recycle bin rather than a real album.
+  const DELETED_VIEW = " __deleted__";   // cannot collide with a real album name
+  const jobPhotoState = { jobId: null, jobName: "", photos: [], visible: [], deleted: [], index: 0, album: undefined, lastAlbum: "", selecting: false, selected: new Set() };
 
   function photoUnavailableMsg(reason) {
     if (reason === "not-configured") return "Photo storage isn't switched on yet.";
@@ -4301,7 +4303,21 @@
     await refreshJobPhotos();
   };
 
+  // Recently deleted is a separate listing, fetched alongside the gallery so
+  // the bin tile can show a count without a second round trip when opened.
+  // Admin/office only — the server refuses it for anyone else, so don't ask.
+  async function refreshDeletedPhotos() {
+    if (!canDeletePhotos()) { jobPhotoState.deleted = []; return; }
+    try {
+      const d = await apiGet("jobPhotosDeleted", { jobId: jobPhotoState.jobId });
+      jobPhotoState.deleted = d.available ? (d.photos || []) : [];
+    } catch {
+      jobPhotoState.deleted = [];   // never let the bin break the gallery
+    }
+  }
+
   async function refreshJobPhotos() {
+    await refreshDeletedPhotos();
     try {
       const d = await apiGet("jobPhotos", { jobId: jobPhotoState.jobId });
       if (!d.available) {
@@ -4343,12 +4359,20 @@
       return;
     }
 
+    // The recycle bin is its own view, not an album — it has different actions
+    // (Restore / Delete permanently) and different contents.
+    if (jobPhotoState.album === DELETED_VIEW) {
+      renderDeletedPhotos();
+      return;
+    }
+
     const byAlbum = albumsOf(photos);
     const hasAlbums = [...byAlbum.keys()].some(k => k !== "");
 
     // A job that never used albums keeps the plain grid — grouping shouldn't
-    // add a tap to a service call with four photos.
-    if (hasAlbums && jobPhotoState.album === undefined) {
+    // add a tap to a service call with four photos. The bin tile only appears
+    // once something has been deleted, so the simple case stays simple.
+    if ((hasAlbums || jobPhotoState.deleted.length) && jobPhotoState.album === undefined) {
       renderAlbumOverview(byAlbum);
       return;
     }
@@ -4512,8 +4536,9 @@
     const keys = [...jobPhotoState.selected];
     if (!keys.length) return;
 
-    // No versioning on the bucket, so this really is permanent. Say so.
-    if (!confirm(`Permanently delete ${keys.length} photo${keys.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    // Soft delete now — recoverable for 30 days, so this no longer needs to
+    // read like a warning. The permanent version lives in Recently deleted.
+    if (!confirm(`Move ${keys.length} photo${keys.length === 1 ? "" : "s"} to Recently deleted?\n\nYou can restore them for 30 days.`)) return;
 
     const status = $("jobPhotosStatus");
     try {
@@ -4522,7 +4547,7 @@
       jobPhotoState.selected.clear();
       await refreshJobPhotos();
       if (failed) showAppToast(`${done} deleted, ${failed} failed`);
-      else showAppToast(`${done} deleted ✓`);
+      else showAppToast(`${done} moved to Recently deleted ✓`);
     } catch (e) {
       await refreshJobPhotos();
       status.textContent = `Delete stopped: ${e.message}`;
@@ -4557,12 +4582,124 @@
         </div>`;
     }).join("");
 
+    // Recycle-bin tile, appended after the real albums and only when it has
+    // something in it. Visually distinct so nobody mistakes it for an album.
+    if (jobPhotoState.deleted.length) {
+      const n = jobPhotoState.deleted.length;
+      const cover = jobPhotoState.deleted[0];
+      const src = cover.thumbUrl || cover.url;
+      grid.insertAdjacentHTML("beforeend", `
+        <div data-deleted-tile="1" style="cursor:pointer; opacity:0.75;">
+          <img src="${esc(src)}" alt="Recently deleted" loading="lazy"
+               style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; background:var(--line); filter:grayscale(1);" />
+          <div style="font-size:13px; font-weight:600; margin-top:4px;">🗑 Recently deleted</div>
+          <div style="font-size:11px; color:var(--muted);">${n} photo${n === 1 ? "" : "s"}</div>
+        </div>`);
+      const tile = grid.querySelector("[data-deleted-tile]");
+      if (tile) tile.addEventListener("click", () => {
+        jobPhotoState.album = DELETED_VIEW;
+        jobPhotoState.selecting = false;
+        jobPhotoState.selected.clear();
+        renderJobPhotos();
+      });
+    }
+
     grid.querySelectorAll("[data-album]").forEach(el => {
       el.addEventListener("click", () => {
         jobPhotoState.album = el.dataset.album || "";
         renderJobPhotos();
       });
     });
+  }
+
+  // The recycle bin. Same grid, different actions — Restore puts photos back
+  // in the album they came from, Delete permanently is the only thing in the
+  // app that actually destroys a photo.
+  function renderDeletedPhotos() {
+    const grid   = $("jobPhotosGrid");
+    const status = $("jobPhotosStatus");
+    const list   = jobPhotoState.deleted;
+    jobPhotoState.visible = list;
+
+    status.innerHTML =
+      `<a href="#" id="jobPhotosBackToAlbums" style="color:var(--blue); text-decoration:underline;">‹ All albums</a>`
+      + ` &nbsp; 🗑 Recently deleted — ${list.length} photo${list.length === 1 ? "" : "s"}, kept 30 days`;
+    const back = $("jobPhotosBackToAlbums");
+    if (back) back.onclick = (e) => {
+      e.preventDefault();
+      jobPhotoState.album = undefined;
+      jobPhotoState.selecting = false;
+      jobPhotoState.selected.clear();
+      renderJobPhotos();
+    };
+
+    grid.style.gridTemplateColumns = "repeat(auto-fill, minmax(110px, 1fr))";
+    grid.innerHTML = list.map((p, i) => {
+      const src = p.thumbUrl || p.url;
+      const from = p.deletedFrom ? `from ${p.deletedFrom}` : "";
+      return `<img src="${esc(src)}" alt="${esc(p.name || "photo")}" loading="lazy" data-idx="${i}"
+                   title="${esc(from)}"
+                   style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; cursor:pointer; background:var(--line); opacity:0.8;" />`;
+    }).join("");
+
+    grid.querySelectorAll("img[data-idx]").forEach(img => {
+      const photo = list[Number(img.dataset.idx)];
+      if (jobPhotoState.selected.has(photo.key)) {
+        img.style.outline = "3px solid var(--blue)";
+        img.style.opacity = "0.5";
+      }
+      img.addEventListener("click", () => togglePhotoSelection(photo.key));
+    });
+
+    renderDeletedToolbar();
+  }
+
+  function renderDeletedToolbar() {
+    const bar = $("jobPhotosToolbar");
+    if (!bar) return;
+    const n = jobPhotoState.selected.size;
+    const shown = jobPhotoState.deleted.length;
+    const allShown = shown > 0 && n >= shown;
+
+    bar.innerHTML = `
+      <span style="font-size:13px; font-weight:600;">${n} selected</span>
+      <button type="button" id="phAll" class="btn btn-sm" style="font-size:13px; padding:6px 14px;">${allShown ? "Select none" : `Select all ${shown}`}</button>
+      <button type="button" id="phRestore" class="btn btn-sm" style="font-size:13px; padding:6px 14px;" ${n ? "" : "disabled"}>Restore</button>
+      <button type="button" id="phPurge" class="btn btn-sm" style="font-size:13px; padding:6px 14px; color:var(--red);" ${n ? "" : "disabled"}>Delete permanently</button>`;
+
+    $("phAll").onclick = () => {
+      if (allShown) jobPhotoState.selected.clear();
+      else jobPhotoState.deleted.forEach(p => jobPhotoState.selected.add(p.key));
+      renderJobPhotos();
+    };
+    $("phRestore").onclick = () => bulkDeletedAction("restoreJobPhotos", "Restoring", "restored");
+    $("phPurge").onclick = async () => {
+      const n2 = jobPhotoState.selected.size;
+      // This one really is gone. It is the only place in the app that says so.
+      if (!confirm(`Permanently delete ${n2} photo${n2 === 1 ? "" : "s"}?\n\nThis cannot be undone — they will not be recoverable.`)) return;
+      bulkDeletedAction("purgeJobPhotos", "Deleting", "permanently deleted");
+    };
+  }
+
+  async function bulkDeletedAction(action, verb, pastTense) {
+    const keys = [...jobPhotoState.selected];
+    if (!keys.length) return;
+    const status = $("jobPhotosStatus");
+    try {
+      const { done, failed } = await bulkPhotoRequest(action, keys, {}, verb);
+      jobPhotoState.selected.clear();
+      jobPhotoState.selecting = false;
+      await refreshJobPhotos();
+      // The bin may now be empty, in which case its tile is gone and there is
+      // nothing to come back to.
+      if (!jobPhotoState.deleted.length) jobPhotoState.album = undefined;
+      renderJobPhotos();
+      if (failed) showAppToast(`${done} ${pastTense}, ${failed} failed`);
+      else showAppToast(`${done} ${pastTense} ✓`);
+    } catch (e) {
+      await refreshJobPhotos();
+      status.textContent = `${verb} stopped: ${e.message}`;
+    }
   }
 
   window.closeJobPhotos = function() {

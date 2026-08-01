@@ -13,7 +13,8 @@ import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
 import {
   r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut,
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
-  deleteJobPhoto, moveJobPhoto, R2Error,
+  moveJobPhoto, softDeleteJobPhoto, restoreJobPhoto, purgeJobPhoto,
+  listDeletedJobPhotos, R2Error,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -441,7 +442,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // who took a photo, so the expense-style "own until reviewed" rule can't
   // apply. Moving between albums is NOT here — it's reversible, so any
   // non-viewer may re-file.
-  "deleteJobPhotos",
+  "deleteJobPhotos", "restoreJobPhotos", "purgeJobPhotos",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -454,7 +455,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // Admin-only GET reads. Diagnostics belong here: r2Status reports which env
 // var is wrong and echoes R2's error text, which is exactly the kind of detail
 // that shouldn't be readable by every signed-in field tech.
-const _ADMIN_READS = new Set(["r2Status"]);
+const _ADMIN_READS = new Set(["r2Status", "jobPhotosDeleted"]);
 
 function authzFor(method, action) {
   if (method === "GET") {
@@ -4698,11 +4699,43 @@ async function bulkPhotoOp(body, label, fn) {
   return resp(200, { ok: failures.length === 0, done, failed: failures.length, failures });
 }
 
-// IRREVERSIBLE — the bucket has no versioning. Restricted to admin/office in
-// authzFor because nothing records who took a photo, so the "uploader may
-// delete their own until reviewed" rule used for expenses can't be enforced.
+// Soft delete: photos move to the recycle bin, out of the gallery but
+// recoverable for 30 days. R2 has no versioning, so before this a mis-tap on a
+// 40-photo selection was unrecoverable — and with no backup yet, the app's own
+// Delete button was the most likely way these photos ever got lost.
+//
+// Admin/office only, because nothing records who took a photo, so the
+// "uploader may delete their own until reviewed" rule used for expenses can't
+// be enforced here.
 async function handleDeleteJobPhotos(body) {
-  return await bulkPhotoOp(body, "deleteJobPhotos", (jobId, key) => deleteJobPhoto(jobId, key));
+  return await bulkPhotoOp(body, "deleteJobPhotos", (jobId, key) => softDeleteJobPhoto(jobId, key));
+}
+
+async function handleRestoreJobPhotos(body) {
+  return await bulkPhotoOp(body, "restoreJobPhotos", (jobId, key) => restoreJobPhoto(jobId, key));
+}
+
+// The real, permanent delete. purgeJobPhoto refuses any key that isn't already
+// in the bin, so this can never be pointed at live photos.
+async function handlePurgeJobPhotos(body) {
+  return await bulkPhotoOp(body, "purgeJobPhotos", (jobId, key) => purgeJobPhoto(jobId, key));
+}
+
+// Recycle-bin listing. Admin/office only — employees shouldn't be browsing
+// what was deleted.
+async function handleJobPhotosDeleted(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", photos: [] });
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  try {
+    return resp(200, { ok: true, available: true, photos: await listDeletedJobPhotos(jobId) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "jobPhotosDeleted"), photos: [] });
+  }
 }
 
 // Re-filing a photo is not destructive (copy-then-delete, and a failed delete
@@ -4741,6 +4774,7 @@ export async function handler(event) {
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "jobPhotos")          return await handleJobPhotos(params);
+      if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);
@@ -4825,6 +4859,8 @@ export async function handler(event) {
       if (body.action === "jobPhotoUploadUrls")   return await handleJobPhotoUploadUrls(body);
       if (body.action === "moveJobPhotos")        return await handleMoveJobPhotos(body);
       if (body.action === "deleteJobPhotos")      return await handleDeleteJobPhotos(body);
+      if (body.action === "restoreJobPhotos")     return await handleRestoreJobPhotos(body);
+      if (body.action === "purgeJobPhotos")       return await handlePurgeJobPhotos(body);
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);

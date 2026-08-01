@@ -347,29 +347,51 @@ export async function listJobObjects(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
 // The gallery view: full-size originals only, each paired with its thumbnail
 // if one was uploaded, newest first, every URL pre-signed and ready for an
 // <img> tag.
-export async function listJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const objects = await listJobObjects(jobId, timeoutMs);
+async function buildPhotoList(jobId, objects, keep, decorate, timeoutMs) {
   const thumbs = new Set(objects.filter(o => isThumbKey(o.key)).map(o => o.key));
-
   const originals = objects
-    .filter(o => !isThumbKey(o.key))
+    .filter(o => !isThumbKey(o.key) && keep(o.key))
     .sort((a, b) => new Date(b.lastModified || 0) - new Date(a.lastModified || 0));
 
   return await Promise.all(originals.map(async (o) => {
     const tKey = thumbKeyFor(o.key);
-    const hasThumb = thumbs.has(tKey);
     return {
       key: o.key,
       name: o.key.slice(o.key.lastIndexOf("/") + 1),
-      album: albumFromKey(jobId, o.key),
       size: o.size,
       uploadedAt: o.lastModified,
       url: await presignGet(o.key),
       // No thumb means an older or backfilled upload — the client falls back to
       // the full image rather than rendering a broken tile.
-      thumbUrl: hasThumb ? await presignGet(tKey) : null,
+      thumbUrl: thumbs.has(tKey) ? await presignGet(tKey) : null,
+      ...decorate(o),
     };
   }));
+}
+
+// The gallery. Excludes the recycle bin — a soft-deleted photo must disappear
+// from the album it was in, or "delete" would look like it did nothing.
+export async function listJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listJobObjects(jobId, timeoutMs);
+  return await buildPhotoList(
+    jobId, objects,
+    (key) => !isDeletedKey(jobId, key),
+    (o) => ({ album: albumFromKey(jobId, o.key) }),
+    timeoutMs
+  );
+}
+
+// The recycle bin, newest deletion first. `deletedFrom` is the album it will
+// go back to on restore; `deletedAt` is when it was binned, which is what the
+// 30-day expiry is measured from.
+export async function listDeletedJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listJobObjects(jobId, timeoutMs);
+  return await buildPhotoList(
+    jobId, objects,
+    (key) => isDeletedKey(jobId, key),
+    (o) => ({ deletedFrom: deletedFromAlbum(jobId, o.key), deletedAt: o.lastModified }),
+    timeoutMs
+  );
 }
 
 // ── Mutation ───────────────────────────────────────────────────────────────
@@ -417,33 +439,87 @@ async function copyObject(srcKey, destKey, timeoutMs = DEFAULT_TIMEOUT_MS) {
   }
 }
 
-// Deletes a photo and its thumbnail. IRREVERSIBLE — the bucket has no
-// versioning, so there is no undo behind this.
-export async function deleteJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const k = assertKeyInJob(jobId, key);
-  await deleteObject(k, timeoutMs);
-  await deleteObject(thumbKeyFor(k), timeoutMs);   // tolerates a missing thumb
-}
-
-// Moves a photo (and its thumbnail) into another album. R2 has no rename, so
-// this is copy-then-delete.
+// Moves a photo AND its thumbnail from one key to another. R2 has no rename,
+// so this is copy-then-delete.
 //
 // The order matters: if the delete fails we are left with a harmless duplicate,
 // whereas delete-then-copy would lose the photo outright. A duplicate is
 // visible and re-movable; a lost jobsite photo is not recoverable.
-export async function moveJobPhoto(jobId, key, album, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const k = assertKeyInJob(jobId, key);
-  const filename = k.slice(k.lastIndexOf("/") + 1);
-  const destKey = `${jobPrefix(jobId)}${albumSegment(album)}${filename}`;
-  if (destKey === k) return { key: k, moved: false };   // already in that album
+async function moveObjectPair(srcKey, destKey, timeoutMs) {
+  if (destKey === srcKey) return { key: srcKey, moved: false };
 
-  await copyObject(k, destKey, timeoutMs);
-  // A missing thumb must not abort the move — the gallery falls back to the
+  await copyObject(srcKey, destKey, timeoutMs);
+  // A missing thumb must not abort the move - the gallery falls back to the
   // full image, and backfilled photos have no thumb at all.
-  try { await copyObject(thumbKeyFor(k), thumbKeyFor(destKey), timeoutMs); } catch { /* no thumb */ }
+  try { await copyObject(thumbKeyFor(srcKey), thumbKeyFor(destKey), timeoutMs); } catch { /* no thumb */ }
 
-  await deleteObject(k, timeoutMs);
-  try { await deleteObject(thumbKeyFor(k), timeoutMs); } catch { /* already gone */ }
+  await deleteObject(srcKey, timeoutMs);
+  try { await deleteObject(thumbKeyFor(srcKey), timeoutMs); } catch { /* already gone */ }
 
   return { key: destKey, moved: true };
+}
+
+// Moves a photo into another album.
+export async function moveJobPhoto(jobId, key, album, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInJob(jobId, key);
+  const filename = k.slice(k.lastIndexOf('/') + 1);
+  return await moveObjectPair(k, jobPrefix(jobId) + albumSegment(album) + filename, timeoutMs);
+}
+
+// -- Recycle bin -----------------------------------------------------------
+// Deleting moves photos here instead of erasing them. R2 has no versioning, so
+// without this a mis-tap on a 40-photo selection is unrecoverable - and the
+// app's own Delete button is the most likely way these photos ever get lost.
+//
+// Layout keeps the original album so a restore knows where to put it back:
+//   jobs/<id>/_deleted/<album>/<file>.jpg      was in album <album>
+//   jobs/<id>/_deleted/_none/<file>.jpg        was loose at the job root
+export const DELETED_SEGMENT = '_deleted';
+const NO_ALBUM_MARKER = '_none';
+
+export function isDeletedKey(jobId, key) {
+  return String(key).startsWith(jobPrefix(jobId) + DELETED_SEGMENT + "/");
+}
+
+// The album a deleted photo came from: '' when it was loose, else the name.
+export function deletedFromAlbum(jobId, key) {
+  const rel = String(key).slice((jobPrefix(jobId) + DELETED_SEGMENT + '/').length);
+  const i = rel.indexOf('/');
+  if (i < 0) return '';
+  const seg = rel.slice(0, i);
+  if (seg === NO_ALBUM_MARKER) return '';
+  try { return decodeURIComponent(seg); } catch { return seg; }
+}
+
+// Soft delete: out of the gallery, into the bin, still recoverable.
+export async function softDeleteJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInJob(jobId, key);
+  if (isDeletedKey(jobId, k)) return { key: k, moved: false };   // already binned
+
+  const filename = k.slice(k.lastIndexOf('/') + 1);
+  const album = albumFromKey(jobId, k);
+  const seg = album ? encodeURIComponent(album) : NO_ALBUM_MARKER;
+  const destKey = jobPrefix(jobId) + DELETED_SEGMENT + '/' + seg + '/' + filename;
+  return await moveObjectPair(k, destKey, timeoutMs);
+}
+
+// Puts a binned photo back in the album it came from.
+export async function restoreJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInJob(jobId, key);
+  if (!isDeletedKey(jobId, k)) return { key: k, moved: false };   // not in the bin
+
+  const filename = k.slice(k.lastIndexOf('/') + 1);
+  const album = deletedFromAlbum(jobId, k);
+  return await moveObjectPair(k, jobPrefix(jobId) + albumSegment(album) + filename, timeoutMs);
+}
+
+// Permanent, no undo. Deliberately refuses anything not already in the bin, so
+// 'empty the bin' can never be pointed at live photos by a bad key.
+export async function purgeJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInJob(jobId, key);
+  if (!isDeletedKey(jobId, k)) {
+    throw new R2Error('Only photos already in Recently deleted can be permanently removed', 'NOT_DELETED');
+  }
+  await deleteObject(k, timeoutMs);
+  await deleteObject(thumbKeyFor(k), timeoutMs);   // tolerates a missing thumb
 }

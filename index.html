@@ -4317,9 +4317,14 @@
   }
 
   // Generated documents for the job — currently the inventory app's materials
-  // PDF, archived at push time. Any signed-in role may see them: the crew
-  // benefits from knowing what materials were charged to their job.
+  // PDF, archived at push time.
+  //
+  // ADMIN/OFFICE ONLY. That PDF itemises unit costs and job totals, which is
+  // exactly what the Expenses view already keeps from employees. The server
+  // enforces it (jobDocs is in _ADMIN_READS); skipping the call here just
+  // avoids a guaranteed 403 on every gallery open.
   async function refreshJobDocs() {
+    if (!canDeletePhotos()) { jobPhotoState.docs = []; return; }   // admin/office check
     try {
       const d = await apiGet("jobDocs", { jobId: jobPhotoState.jobId });
       jobPhotoState.docs = d.available ? (d.docs || []) : [];

@@ -640,16 +640,23 @@ await test('job notes: readable by every role, writable only by admin/office', a
   ok((await POST('updateJobNotes', write, ADMIN_TOK)).statusCode !== 403, 'admin can write');
 });
 
-await test('jobDocs: readable by every role, soft-fails when R2 is off', async () => {
-  clearR2();
-  mockTables = JOB_ONLY();
-  const b = json(await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK));
-  eq(b.available, false, 'available'); eq(b.reason, 'not-configured', 'reason');
-  eq(b.docs.length, 0, 'docs');
-  // The crew benefits from seeing what materials were charged to their job, so
-  // this is NOT admin-gated the way the recycle bin is.
+await test('jobDocs: admin/office only — the materials PDF shows costs', async () => {
   setR2();
-  ok((await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK)).statusCode !== 403, 'employee may read docs');
+  mockTables = JOB_ONLY();
+  // The materials PDF itemises unit costs and job totals. handleExpenses
+  // already scopes employees to their own submissions and hides job totals;
+  // this must not become the back door around that.
+  eq((await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK)).statusCode, 403, 'employee blocked');
+  eq((await GET('jobDocs', { jobId: 'recJ1' }, VIEWER_TOK)).statusCode, 403, 'viewer blocked');
+  ok((await GET('jobDocs', { jobId: 'recJ1' }, OFFICE_TOK)).statusCode !== 403, 'office allowed');
+  ok((await GET('jobDocs', { jobId: 'recJ1' }, ADMIN_TOK)).statusCode !== 403, 'admin allowed');
+
+  clearR2();
+  const b = json(await GET('jobDocs', { jobId: 'recJ1' }));
+  eq(b.available, false, 'soft-fails when R2 is off'); eq(b.reason, 'not-configured', 'reason');
+  eq(b.docs.length, 0, 'docs');
+
+  setR2();
   eq((await GET('jobDocs', {})).statusCode, 400, 'missing jobId');
   mockTables = { Jobs: [] };
   eq((await GET('jobDocs', { jobId: 'recNOPE' })).statusCode, 404, 'unknown job');
@@ -674,9 +681,12 @@ await test('recycle-bin actions: admin/office only, viewer and employee blocked'
     // admin/office must at least pass the authz gate (storage call fails offline)
     ok((await POST(action, body, OFFICE_TOK)).statusCode !== 403, `${action} office allowed`);
   }
-  // Browsing what was deleted is admin/office too.
+  // Browsing what was deleted must match the tier of the actions available on
+  // it — restore and purge are admin/office, so listing is too. Office was
+  // previously locked out by a strict-admin read tier.
   eq((await GET('jobPhotosDeleted', { jobId: 'recJ1' }, EMP_TOK)).statusCode, 403, 'employee cannot list the bin');
   ok((await GET('jobPhotosDeleted', { jobId: 'recJ1' }, ADMIN_TOK)).statusCode !== 403, 'admin can list the bin');
+  ok((await GET('jobPhotosDeleted', { jobId: 'recJ1' }, OFFICE_TOK)).statusCode !== 403, 'office can list the bin');
 });
 
 await test('moveJobPhotos: any non-viewer may re-file (reversible)', async () => {

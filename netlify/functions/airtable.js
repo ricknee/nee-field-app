@@ -455,11 +455,23 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // Admin-only GET reads. Diagnostics belong here: r2Status reports which env
 // var is wrong and echoes R2's error text, which is exactly the kind of detail
 // that shouldn't be readable by every signed-in field tech.
-const _ADMIN_READS = new Set(["r2Status", "jobPhotosDeleted"]);
+// Strict-admin reads. Diagnostics only — r2Status echoes bucket/account detail
+// and R2's own error text, which no field tech needs.
+const _ADMIN_READS = new Set(["r2Status"]);
+
+// Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
+// so listing must match the actions available on what's listed:
+//   jobPhotosDeleted - the recycle bin, whose restore/purge are admin/office
+//   jobDocs          - the materials PDF, which itemises unit costs and job
+//                      totals. handleExpenses already scopes employees to their
+//                      own submissions and hides job totals; this must not
+//                      become the back door around that.
+const _ADMIN_OFFICE_READS = new Set(["jobPhotosDeleted", "jobDocs"]);
 
 function authzFor(method, action) {
   if (method === "GET") {
-    if (_ADMIN_READS.has(action)) return _ADMIN;
+    if (_ADMIN_READS.has(action))        return _ADMIN;
+    if (_ADMIN_OFFICE_READS.has(action)) return _ADMIN_OFFICE;
     return _PAYROLL_READS.has(action) ? _PAYROLL : null;
   }
   // POST
@@ -4724,8 +4736,13 @@ async function handlePurgeJobPhotos(body) {
 }
 
 // Generated documents attached to a job — currently the inventory app's
-// materials PDF, archived at push time. Readable by any signed-in role: the
-// crew benefits from seeing what materials were charged to their job.
+// materials PDF, archived at push time.
+//
+// ADMIN/OFFICE ONLY (see _ADMIN_READS). The materials PDF itemises unit costs
+// and job totals, which is exactly the pricing detail the rest of the app takes
+// care to keep from employees — the Expenses view already scopes an employee to
+// their own submissions and hides job totals. Receipts an employee entered
+// themselves are a different matter and stay visible to them.
 async function handleJobDocs(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });

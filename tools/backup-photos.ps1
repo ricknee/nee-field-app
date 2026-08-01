@@ -1,7 +1,7 @@
-# Nightly backup of the R2 jobsite-photo bucket to an external drive.
+# Backup of the R2 jobsite-photo bucket to one or more local drives.
 # See docs/PLAN-job-photos.md.
 # ---------------------------------------------------------------------------
-#   powershell -ExecutionPolicy Bypass -File tools\backup-photos.ps1
+#   powershell -ExecutionPolicy Bypass -File tools\backup-photos.ps1 -Verify
 #
 # WHY THIS EXISTS: R2 is designed for eleven nines of durability, so Cloudflare
 # losing the photos is not a realistic risk. The realistic risks are an
@@ -9,10 +9,18 @@
 # compromised key - and durability protects against none of those. One copy in
 # one account is not a backup no matter how durable it is.
 #
+# TWO DESTINATIONS BY DEFAULT:
+#   F: external drive  - physical, offline, unaffected by any account problem
+#   P: pCloud Drive    - off-site, survives the building
+# Different failure modes, so both is meaningfully better than either. Each is
+# handled independently: an unplugged F: does not stop the P: copy, and vice
+# versa. A missing drive is SKIPPED, not treated as a failure - but the run
+# only reports success if at least one destination actually got the files.
+#
 # THE CRITICAL CHOICE: this uses `rclone copy`, NEVER `rclone sync`.
 #   copy  = only ever adds files to the backup
 #   sync  = makes the backup mirror the source, INCLUDING deletions
-# With sync, deleting 47 photos in the app would delete them from the backup on
+# With sync, deleting photos in the app would delete them from the backup on
 # the next run, and the backup would have protected you from the single most
 # likely way you lose photos. Do not "improve" this to sync.
 #
@@ -23,15 +31,20 @@
 #   setx R2_BACKUP_SECRET     "..."
 # Use a SEPARATE, READ-ONLY R2 token for these (Object Read only, scoped to the
 # bucket). A backup job has no business holding a key that can delete.
+#
+# FOLDER NAMES: photos land under jobs\<airtable record id>\<album>\. Record ids
+# are what guarantees two jobs with the same name never mix, but they are not
+# readable. This is a BACKUP, not the office's browsing copy - restoring means
+# copying files back, not hunting through folders by eye.
 
 param(
-  [string]$Destination = "F:\NEE-Job-Photos",
-  [string]$Bucket      = "nee-job-photos",
-  [string]$LogDir      = "F:\NEE-Job-Photos\_logs",
+  [string[]]$Destinations = @("F:\NEE-Job-Photos", "P:\NEE Job Photos Backup"),
+  [string]$Bucket         = "nee-job-photos",
   [switch]$Verify                                   # adds an rclone check pass
 )
 
 $ErrorActionPreference = "Stop"
+$script:LogFile = $null
 
 function Write-Log($msg) {
   $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
@@ -40,15 +53,6 @@ function Write-Log($msg) {
 }
 
 # -- Preconditions ----------------------------------------------------------
-
-# An unplugged drive must fail loudly, not silently create F:\ on the system
-# disk and report success - a backup that quietly writes nowhere is worse than
-# no backup, because you stop worrying about it.
-$driveRoot = Split-Path -Qualifier $Destination
-if (-not (Test-Path "$driveRoot\")) {
-  Write-Output "BACKUP SKIPPED: drive $driveRoot is not connected."
-  exit 2
-}
 
 $rclone = (Get-Command rclone -ErrorAction SilentlyContinue)
 if (-not $rclone) {
@@ -64,10 +68,6 @@ if (-not $acct -or -not $keyId -or -not $secret) {
   exit 1
 }
 
-New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-New-Item -ItemType Directory -Force -Path $LogDir      | Out-Null
-$script:LogFile = Join-Path $LogDir ("backup-{0}.log" -f (Get-Date -Format "yyyy-MM"))
-
 # -- rclone remote, defined inline ------------------------------------------
 # Configuring the remote through environment variables means there is no
 # rclone.conf holding the keys, and nothing to keep in sync between machines.
@@ -77,42 +77,73 @@ $env:RCLONE_CONFIG_R2_ACCESS_KEY_ID     = $keyId
 $env:RCLONE_CONFIG_R2_SECRET_ACCESS_KEY = $secret
 $env:RCLONE_CONFIG_R2_ENDPOINT          = "https://$acct.r2.cloudflarestorage.com"
 $env:RCLONE_CONFIG_R2_REGION            = "auto"
-$env:RCLONE_CONFIG_R2_NO_CHECK_BUCKET   = "true"   # a read-only token can't create buckets
+$env:RCLONE_CONFIG_R2_NO_CHECK_BUCKET   = "true"   # a read-only token cannot create buckets
 
-Write-Log "Backup starting: R2:$Bucket -> $Destination"
+$succeeded = 0
+$skipped   = @()
+$failed    = @()
 
-# --transfers 8: photos are small and this is mostly network wait.
-# --checksum: compare by hash, not timestamp - a re-uploaded photo with the
-#             same name and a new body must be picked up.
-# NOTE: copy, not sync. See the header.
-& rclone copy "R2:$Bucket" $Destination `
-    --transfers 8 `
-    --checksum `
-    --log-level INFO `
-    --log-file $script:LogFile `
-    --stats 30s `
-    --stats-one-line
+foreach ($dest in $Destinations) {
 
-$copyExit = $LASTEXITCODE
-if ($copyExit -ne 0) {
-  Write-Log "BACKUP FAILED: rclone copy exited $copyExit"
-  exit $copyExit
+  # An unplugged drive - or pCloud Drive not running - must be skipped, not
+  # silently written to the system disk. A backup that quietly writes nowhere
+  # is worse than no backup, because you stop keeping the other copy.
+  $driveRoot = Split-Path -Qualifier $dest
+  if (-not (Test-Path "$driveRoot\")) {
+    Write-Output ("SKIPPED {0}: drive {1} is not available." -f $dest, $driveRoot)
+    $skipped += $dest
+    continue
+  }
+
+  $logDir = Join-Path $dest "_logs"
+  New-Item -ItemType Directory -Force -Path $dest   | Out-Null
+  New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+  $script:LogFile = Join-Path $logDir ("backup-{0}.log" -f (Get-Date -Format "yyyy-MM"))
+
+  Write-Log "Backup starting: R2:$Bucket -> $dest"
+
+  # --transfers 4: pCloud Drive is a network mount and does not love heavy
+  #   parallelism; 4 is comfortable for both destinations.
+  # --checksum: compare by hash, not timestamp - a re-uploaded photo with the
+  #   same name and a new body must still be picked up.
+  # NOTE: copy, not sync. See the header.
+  & rclone copy "R2:$Bucket" $dest `
+      --transfers 4 `
+      --checksum `
+      --log-level INFO `
+      --log-file $script:LogFile `
+      --stats 30s `
+      --stats-one-line
+
+  if ($LASTEXITCODE -ne 0) {
+    Write-Log ("FAILED: rclone copy exited {0}" -f $LASTEXITCODE)
+    $failed += $dest
+    continue
+  }
+
+  $count = (Get-ChildItem -Path $dest -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notlike "$logDir*" }).Count
+  Write-Log "OK. $count files now in $dest"
+  $succeeded++
+
+  if ($Verify) {
+    # --one-way: only complain about things in R2 missing locally. Files present
+    # locally but gone from R2 are EXPECTED - that is the whole point of a
+    # backup that keeps deleted photos.
+    Write-Log "Verifying (one-way: everything in R2 must exist here)..."
+    & rclone check "R2:$Bucket" $dest --one-way --checksum --log-file $script:LogFile --log-level NOTICE
+    if ($LASTEXITCODE -eq 0) { Write-Log "Verify OK: every object in R2 is present in this copy." }
+    else                     { Write-Log ("VERIFY FOUND DIFFERENCES (exit {0}) - see the log above." -f $LASTEXITCODE) }
+  }
 }
 
-# -- Report -----------------------------------------------------------------
-$localCount = (Get-ChildItem -Path $Destination -Recurse -File -ErrorAction SilentlyContinue |
-               Where-Object { $_.FullName -notlike "$LogDir*" }).Count
-Write-Log "Backup OK. $localCount files now in $Destination"
+# -- Summary ----------------------------------------------------------------
+$script:LogFile = $null
+Write-Output ""
+Write-Output ("Destinations backed up : {0}" -f $succeeded)
+if ($skipped.Count) { Write-Output ("Skipped (not available): {0}" -f ($skipped -join ", ")) }
+if ($failed.Count)  { Write-Output ("FAILED                 : {0}" -f ($failed  -join ", ")) }
 
-# -- Optional verification --------------------------------------------------
-# --one-way: only complain about things in R2 that are missing locally. Files
-# present locally but gone from R2 are EXPECTED - that is the whole point of a
-# backup that keeps deleted photos.
-if ($Verify) {
-  Write-Log "Verifying (one-way: everything in R2 must exist locally)..."
-  & rclone check "R2:$Bucket" $Destination --one-way --checksum --log-file $script:LogFile --log-level NOTICE
-  if ($LASTEXITCODE -eq 0) { Write-Log "Verify OK: every object in R2 is present in the backup." }
-  else                     { Write-Log "VERIFY FOUND DIFFERENCES (exit $LASTEXITCODE) - see the log above." }
-}
-
+if ($failed.Count)    { exit 1 }   # something was reachable and still went wrong
+if ($succeeded -eq 0) { exit 2 }   # nothing was plugged in - try again next slot
 exit 0

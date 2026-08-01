@@ -624,6 +624,22 @@ await test('jobPhotoUploadUrls: viewer is read-only → 403', async () => {
   eq((await POST('jobPhotoUploadUrls', { jobId: 'recJ1', files: [{ contentType: 'image/jpeg' }] }, VIEWER_TOK)).statusCode, 403, 'viewer');
 });
 
+await test('job notes: readable by every role, writable only by admin/office', async () => {
+  mockTables = { Jobs: [{ id: 'recJ1', fields: { 'Job Name': 'Bethel', Notes: 'Gate code 4417' } }] };
+  // Read: notes ride along on the job payload, which every signed-in role gets.
+  for (const [label, tok] of [['employee', EMP_TOK], ['viewer', VIEWER_TOK], ['office', OFFICE_TOK]]) {
+    const b = json(await GET('jobById', { jobId: 'recJ1' }, tok));
+    eq(b.job.notes, 'Gate code 4417', `${label} can read notes`);
+  }
+  // Write: opening up reading must NOT open up writing. Before this change the
+  // action defaulted to _NON_VIEWER, so only the hidden UI stopped an employee.
+  const write = { jobId: 'recJ1', notes: 'edited' };
+  eq((await POST('updateJobNotes', write, EMP_TOK)).statusCode, 403, 'employee cannot write');
+  eq((await POST('updateJobNotes', write, VIEWER_TOK)).statusCode, 403, 'viewer cannot write');
+  ok((await POST('updateJobNotes', write, OFFICE_TOK)).statusCode !== 403, 'office can write');
+  ok((await POST('updateJobNotes', write, ADMIN_TOK)).statusCode !== 403, 'admin can write');
+});
+
 await test('deleteJobPhotos: admin/office only, viewer and employee blocked', async () => {
   setR2();
   mockTables = JOB_ONLY();

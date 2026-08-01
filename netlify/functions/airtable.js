@@ -432,6 +432,11 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // to _NON_VIEWER with in-handler owner/status enforcement.
   "approveExpense", "markInvoicePaid", "setInvoiceStatus",
   "updateJobBillableRate", "createVendor",
+  // Job notes became readable by every role on 2026-07-31 so crews get job
+  // instructions. WRITING them stays admin/office: they can still carry
+  // internal status, and until now the UI was the only thing stopping an
+  // employee from POSTing to this action (it defaulted to _NON_VIEWER).
+  "updateJobNotes",
   // Photo deletion is irreversible (no bucket versioning) and nothing records
   // who took a photo, so the expense-style "own until reviewed" rule can't
   // apply. Moving between albums is NOT here — it's reversible, so any

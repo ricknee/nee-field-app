@@ -2218,10 +2218,13 @@
             </div>
           </div>
 
-          <!-- ADMIN: Notes view block. Hidden for non-admins entirely
-               and hidden during edit mode (the textarea inside the
-               Edit Panel takes over). -->
-          <div class="admin-only hidden" id="piNotesView" style="margin-top:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;">
+          <!-- Notes view block. READ-ONLY FOR EVERYONE as of 2026-07-31 —
+               previously admin/office only, on the reasoning that notes can
+               carry internal status. Opened up deliberately so crews see job
+               instructions; EDITING is still admin/office (the Edit Panel and
+               the server both gate it). Hidden during edit mode, where the
+               textarea inside the Edit Panel takes over. -->
+          <div class="hidden" id="piNotesView" style="margin-top:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;">
             <div class="info-label" style="margin-bottom:6px;">📝 Job Notes</div>
             <div id="piNotesText" style="white-space:pre-wrap; font-size:13px; color:var(--text); line-height:1.5;">—</div>
           </div>
@@ -3402,10 +3405,11 @@
           if (btn) btn.classList.add("hidden");
         });
         // Viewers can see but not edit — hide edit-only controls.
-        // piEditToggleRow gates Project Info edit mode; piNotesView is
-        // admin-only per spec (notes can contain internal status that
-        // shouldn't surface to viewers).
-        ["statusChangeRow", "pcEditForm", "btnNewJobEstimate", "btnAddInspection", "saveInspectionBtn", "inspectionEditForm", "piEditToggleRow", "piNotesView"].forEach(id => {
+        // piEditToggleRow gates Project Info edit mode. piNotesView is NO
+        // LONGER in this list: job notes are readable by every signed-in role
+        // as of 2026-07-31 so crews get job instructions. Editing them is
+        // still admin/office, enforced in the Edit Panel and server-side.
+        ["statusChangeRow", "pcEditForm", "btnNewJobEstimate", "btnAddInspection", "saveInspectionBtn", "inspectionEditForm", "piEditToggleRow"].forEach(id => {
           const el = $(id);
           if (el) el.classList.add("hidden");
         });
@@ -3759,12 +3763,12 @@
       piEmEl.innerHTML = `<a href="mailto:${esc(job.customerEmail)}">${esc(job.customerEmail)}</a>`;
     } else { piEmEl.textContent = "—"; }
 
-    // Notes — admin-only block, populated read-only here. Edit mode swaps
-    // it out for the textarea inside the Edit Panel.
-    if (isAdmin()) {
-      const notesEl = $("piNotesText");
-      if (notesEl) notesEl.textContent = job.notes && job.notes.trim() ? job.notes : "—";
-    }
+    // Notes — read-only for every role (admin/office edit via the Edit Panel).
+    // Populated here; edit mode swaps it for the textarea in the Edit Panel.
+    // textContent, not innerHTML: notes are free text and must never render as
+    // markup.
+    const notesEl = $("piNotesText");
+    if (notesEl) notesEl.textContent = job.notes && job.notes.trim() ? job.notes : "—";
 
     // Always exit edit mode on job switch — prevents in-progress edits
     // from carrying over to a different job.
@@ -6719,10 +6723,10 @@
     if (editPanel) editPanel.classList.add("hidden");
     const saveBar = $("piSaveBar");
     if (saveBar) saveBar.classList.add("hidden");
-    if (isAdmin()) {
-      const notesView = $("piNotesView");
-      if (notesView) notesView.classList.remove("hidden");
-    }
+    // Every role gets the notes back when leaving edit mode — only admin/office
+    // can reach edit mode in the first place, so this is not a permission gate.
+    const notesView = $("piNotesView");
+    if (notesView) notesView.classList.remove("hidden");
     refreshBirdDateView();
     const editBtn = $("piEditBtn");
     if (editBtn) {

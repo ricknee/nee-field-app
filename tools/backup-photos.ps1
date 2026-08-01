@@ -19,8 +19,11 @@
 # READABLE FOLDER NAMES: R2 stores photos under the Airtable RECORD ID, which
 # is what guarantees two jobs with the same name never mix - but it means a
 # backup full of "rec0i9ooATrs9r978" folders that nobody can browse. So this
-# script looks the record ids up in Airtable and copies each job into a folder
+# script asks THE APP for the job names and copies each job into a folder
 # named after its Job PO. Set -Flat to skip that and mirror record ids instead.
+#
+# Names come from the app rather than a database directly, so this keeps working
+# unchanged when jobs move from Airtable to Neon.
 #
 # Renaming a job in Airtable creates a NEW folder here on the next run; the old
 # one stays, because this script never deletes. That is the correct trade for a
@@ -38,15 +41,15 @@
 #   setx R2_ACCOUNT_ID          "44ac..."
 #   setx R2_BACKUP_KEY_ID       "..."          READ-ONLY R2 token
 #   setx R2_BACKUP_SECRET       "..."
-#   setx AIRTABLE_PROD_READ_PAT "pat..."       read-only Airtable PAT, names only
-# Both tokens are read-only on purpose: a backup job has no business holding a
-# key that can delete. Without the Airtable one the script still runs, just
-# with record-id folder names.
+#   setx NEE_BACKUP_USER        "backup"        an ordinary app login...
+#   setx NEE_BACKUP_PIN         "..."           ...used only to read job names
+# The R2 token is read-only on purpose: a backup job has no business holding a
+# key that can delete. Without the app login the script still runs, just with
+# record-id folder names. NO database credential is needed on this machine.
 
 param(
   [string[]]$Destinations = @("F:\NEE-Job-Photos", "P:\NEE Job Photos Backup"),
   [string]$Bucket         = "nee-job-photos",
-  [string]$BaseId         = "appiqWg6SvKcGfMAu",
   [switch]$Flat,                                    # keep raw record-id folders
   [switch]$Verify                                   # adds an rclone check pass
 )
@@ -98,35 +101,48 @@ $env:RCLONE_CONFIG_R2_NO_CHECK_BUCKET   = "true"   # a read-only token cannot cr
 
 # -- Job id -> readable name ------------------------------------------------
 
-function Get-JobNameMap($baseId) {
-  $pat = $env:AIRTABLE_PROD_READ_PAT
-  if (-not $pat) { $pat = $env:AIRTABLE_API_KEY }
-  if (-not $pat) { return $null }
+# Job names come from THE APP, not from a database directly.
+#
+# Deliberate: the app is the one source that stays correct through the Neon
+# migration. Today `?action=jobs` reads Airtable; after the cutover it reads
+# Neon - and this script keeps working untouched either way. Querying Airtable
+# directly would hard-wire the backup to a system being retired; querying Neon
+# directly would need a Postgres client on this PC and a full connection
+# string sitting in an environment variable.
+#
+# It also means no database credential lives on the backup machine at all -
+# just a login for an ordinary low-privilege app account.
+function Get-JobNameMap {
+  $user = $env:NEE_BACKUP_USER
+  $pin  = $env:NEE_BACKUP_PIN
+  if (-not $user -or -not $pin) { return $null }
+
+  $api = $env:NEE_API_BASE
+  if (-not $api) { $api = "https://hub.northeasternelec.com" }
+  $endpoint = "$api/.netlify/functions/airtable"
+
+  $login = Invoke-RestMethod -Uri $endpoint -Method Post -ContentType "application/json" `
+             -Body (@{ action = "login"; identifier = $user; pin = $pin } | ConvertTo-Json)
+  if (-not $login.token) { throw "login failed for $user" }
+
+  $res = Invoke-RestMethod -Uri "${endpoint}?action=jobs" -Method Get `
+           -Headers @{ Authorization = "Bearer $($login.token)" }
 
   $map = @{}
-  $offset = $null
-  do {
-    # Ask for only the two name fields - this token should never need more, and
-    # a narrow request is a narrow blast radius if it ever leaks.
-    $uri = "https://api.airtable.com/v0/$baseId/Jobs?pageSize=100&fields%5B%5D=Job%20PO&fields%5B%5D=Job%20Name"
-    if ($offset) { $uri += "&offset=$offset" }
-    $res = Invoke-RestMethod -Uri $uri -Headers @{ Authorization = "Bearer $pat" } -Method Get
-    foreach ($r in $res.records) {
-      $label = $r.fields.'Job PO'
-      if (-not $label) { $label = $r.fields.'Job Name' }
-      if ($label) { $map[$r.id] = Get-SafeName $label }
-    }
-    $offset = $res.offset
-  } while ($offset)
+  foreach ($j in $res.jobs) {
+    $label = $j.po
+    if (-not $label) { $label = $j.name }
+    if ($label -and $j.id) { $map[$j.id] = Get-SafeName $label }
+  }
   return $map
 }
 
 $jobMap = $null
 if (-not $Flat) {
   try {
-    $jobMap = Get-JobNameMap $BaseId
+    $jobMap = Get-JobNameMap
     if ($null -eq $jobMap) {
-      Write-Output "No Airtable token (AIRTABLE_PROD_READ_PAT) - falling back to record-id folder names."
+      Write-Output "No app login (NEE_BACKUP_USER / NEE_BACKUP_PIN) - falling back to record-id folder names."
     } else {
       Write-Output ("Job names loaded: {0}" -f $jobMap.Count)
     }

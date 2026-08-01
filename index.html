@@ -4277,7 +4277,7 @@
   // you opened, not every photo on the job.
   // album === DELETED_VIEW selects the recycle bin rather than a real album.
   const DELETED_VIEW = " __deleted__";   // cannot collide with a real album name
-  const jobPhotoState = { jobId: null, jobName: "", photos: [], visible: [], deleted: [], index: 0, album: undefined, lastAlbum: "", selecting: false, selected: new Set() };
+  const jobPhotoState = { jobId: null, jobName: "", photos: [], visible: [], deleted: [], docs: [], index: 0, album: undefined, lastAlbum: "", selecting: false, selected: new Set() };
 
   function photoUnavailableMsg(reason) {
     if (reason === "not-configured") return "Photo storage isn't switched on yet.";
@@ -4316,8 +4316,41 @@
     }
   }
 
+  // Generated documents for the job — currently the inventory app's materials
+  // PDF, archived at push time. Any signed-in role may see them: the crew
+  // benefits from knowing what materials were charged to their job.
+  async function refreshJobDocs() {
+    try {
+      const d = await apiGet("jobDocs", { jobId: jobPhotoState.jobId });
+      jobPhotoState.docs = d.available ? (d.docs || []) : [];
+    } catch {
+      jobPhotoState.docs = [];   // never let documents break the gallery
+    }
+  }
+
+  function renderJobDocs() {
+    const el = $("jobPhotosDocs");
+    if (!el) return;
+    const docs = jobPhotoState.docs || [];
+    // Only shown on the album overview — inside an album it would be noise.
+    if (!docs.length || jobPhotoState.album !== undefined) { el.innerHTML = ""; return; }
+
+    el.innerHTML =
+      `<div style="font-size:12px; font-weight:600; color:var(--muted); margin-bottom:6px;">📄 Documents</div>` +
+      docs.map(d => {
+        const when = d.uploadedAt ? new Date(d.uploadedAt).toLocaleDateString() : "";
+        const kb = d.size ? ` · ${Math.max(1, Math.round(d.size / 1024))} KB` : "";
+        return `<div style="margin-bottom:4px;">
+          <a href="${esc(d.url)}" target="_blank" rel="noopener"
+             style="color:var(--blue); text-decoration:underline; font-size:13px;">${esc(d.name)}</a>
+          <span style="font-size:11px; color:var(--muted);">${esc(when)}${kb}</span>
+        </div>`;
+      }).join("");
+  }
+
   async function refreshJobPhotos() {
     await refreshDeletedPhotos();
+    await refreshJobDocs();
     try {
       const d = await apiGet("jobPhotos", { jobId: jobPhotoState.jobId });
       if (!d.available) {
@@ -4346,6 +4379,7 @@
   }
 
   function renderJobPhotos() {
+    renderJobDocs();   // shows/hides itself based on the current view
     const grid   = $("jobPhotosGrid");
     const status = $("jobPhotosStatus");
     const photos = jobPhotoState.photos;
@@ -16880,6 +16914,9 @@
     <div class="sl-modal-body">
       <div id="jobPhotosStatus" style="font-size:13px; color:var(--muted); padding:8px 0;"></div>
       <div id="jobPhotosToolbar" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-bottom:10px;"></div>
+      <!-- Generated documents (materials PDFs pushed from the inventory app).
+           Rendered above the photo grid, only when the job has any. -->
+      <div id="jobPhotosDocs" style="padding-bottom:12px;"></div>
       <div id="jobPhotosGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;"></div>
     </div>
   </div>

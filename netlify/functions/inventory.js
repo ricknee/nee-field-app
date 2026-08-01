@@ -3,6 +3,10 @@
 // Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { randomUUID } from "node:crypto";
+// Archiving the generated materials PDF into the same R2 bucket the field app's
+// jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
+// See docs/PLAN-expense-receipts.md §11.
+import { r2Enabled, jobDocsPrefix, presignPut, R2Error } from "./_r2.js";
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const MAIN_BASE_ID     = process.env.AIRTABLE_BASE_ID;
@@ -38,6 +42,7 @@ const _ADMIN_INV   = ["admin"];
 const _NON_VIEWER  = ["admin", "office", "employee"];
 const _ADMIN_WRITES = new Set([
   "pushExpenses",        // pushes material cost into job Expenses (money)
+  "jobDocUploadUrl",     // archives the materials PDF — same tier as the push it documents
   "updateItemCost", "createItem", "syncItemCostToVendor", // catalog / pricing
   "delete",              // transaction deletion
   "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
@@ -2863,6 +2868,49 @@ async function handleSyncItemCostToVendor(body) {
 }
 
 // ── ROUTER ─────────────────────────────────────────────────
+// Presigned PUT for archiving the materials PDF this app generates on every
+// push. See docs/PLAN-expense-receipts.md §11.
+//
+// Until now that PDF was generated in the browser, handed straight to a
+// download, and never stored — so the document backing a job's material costs
+// existed only in whichever Downloads folder did the push.
+//
+// The key uses the caller's pushId, which is the SAME idempotency key stamped
+// on the expenses and transactions. A retried push therefore overwrites its own
+// document rather than accumulating near-duplicates.
+async function handleJobDocUploadUrl(body) {
+  const jobId  = String(body?.jobId  || "").trim();
+  const pushId = String(body?.pushId || "").trim();
+  const date   = String(body?.date   || "").trim();
+
+  if (!jobId)  return resp(400, { ok: false, error: "Missing jobId." });
+  if (!pushId) return resp(400, { ok: false, error: "Missing pushId." });
+  // Both land in an object key, so neither may contain path separators.
+  if (/[/\\]/.test(jobId) || /[/\\]/.test(pushId) || /\.\./.test(jobId + pushId)) {
+    return resp(400, { ok: false, error: "Invalid jobId or pushId." });
+  }
+  // Archiving is a bonus, not part of the push. If R2 isn't configured the
+  // client must still complete the push and its local download.
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured" });
+
+  const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0, 10);
+  const key = `${jobDocsPrefix(jobId)}NEE_Materials_${safeDate}-${pushId}.pdf`;
+
+  try {
+    return resp(200, {
+      ok: true,
+      available: true,
+      key,
+      putUrl: await presignPut(key, "application/pdf"),
+      contentType: "application/pdf",
+    });
+  } catch (e) {
+    const detail = e instanceof R2Error ? e.code : "error";
+    console.error(`jobDocUploadUrl failed for job ${jobId}: ${String(e?.message || e).slice(0, 200)}`);
+    return resp(200, { ok: true, available: false, reason: detail });
+  }
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -2918,6 +2966,7 @@ export async function handler(event) {
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);
       if (body.action === "pushExpenses")    return await handlePushExpenses(body);
+      if (body.action === "jobDocUploadUrl") return await handleJobDocUploadUrl(body);
       if (body.action === "createItem")        return await handleCreateItem(body);
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);

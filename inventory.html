@@ -2422,9 +2422,46 @@ function reprintPushHistoryPdf() {
   downloadReceiptPDF(g);
 }
 
+// Archives the generated materials PDF to R2 so it survives beyond whichever
+// Downloads folder happened to run the push. See docs/PLAN-expense-receipts.md.
+//
+// Deliberately fire-and-forget: the push has already succeeded by the time this
+// runs, and the user still gets their local download. An archiving failure must
+// never make a completed push look broken, so it logs and stays quiet.
+async function archiveReceiptPDF(g, pdfBase64) {
+  try {
+    if (!g || !g.jobId || !g.pushId || !pdfBase64) return;   // nothing to key it to
+
+    var dateSrc = g.dateOverride ? new Date(g.dateOverride) : new Date();
+    var d = await apiPost({
+      action: "jobDocUploadUrl",
+      jobId:  g.jobId,
+      pushId: g.pushId,
+      date:   dateSrc.toISOString().split("T")[0]
+    });
+    if (!d.available || !d.putUrl) return;                   // R2 not configured — fine
+
+    var binary = atob(pdfBase64);
+    var bytes  = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    var r = await fetch(d.putUrl, {
+      method:  "PUT",
+      headers: { "Content-Type": d.contentType || "application/pdf" },
+      body:    new Blob([bytes], { type: "application/pdf" })
+    });
+    if (!r.ok) throw new Error("storage refused the upload (HTTP " + r.status + ")");
+    console.log("[materials-pdf] archived", d.key);
+  } catch (e) {
+    console.warn("[materials-pdf] archive failed (push itself was fine):", e);
+  }
+}
+
 function downloadReceiptPDF(g) {
   var pdfBase64 = generateReceiptPDF(g);
   if (!pdfBase64) return;
+  // Archive alongside the download. Not awaited - see archiveReceiptPDF.
+  archiveReceiptPDF(g, pdfBase64);
   try {
     var binary = atob(pdfBase64);
     var bytes  = new Uint8Array(binary.length);

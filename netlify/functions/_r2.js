@@ -370,15 +370,33 @@ async function buildPhotoList(jobId, objects, keep, decorate, timeoutMs) {
 }
 
 // The gallery. Excludes the recycle bin — a soft-deleted photo must disappear
-// from the album it was in, or "delete" would look like it did nothing.
+// from the album it was in, or "delete" would look like it did nothing — and
+// excludes _docs, which holds PDFs that would render as broken image tiles.
 export async function listJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const objects = await listJobObjects(jobId, timeoutMs);
   return await buildPhotoList(
     jobId, objects,
-    (key) => !isDeletedKey(jobId, key),
+    (key) => !isDeletedKey(jobId, key) && !isDocKey(jobId, key),
     (o) => ({ album: albumFromKey(jobId, o.key) }),
     timeoutMs
   );
+}
+
+// Generated documents for a job, newest first. No thumbnails — these are PDFs,
+// and the browser's own viewer opens them from the signed URL.
+export async function listJobDocs(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listJobObjects(jobId, timeoutMs);
+  const docs = objects
+    .filter(o => isDocKey(jobId, o.key))
+    .sort((a, b) => new Date(b.lastModified || 0) - new Date(a.lastModified || 0));
+
+  return await Promise.all(docs.map(async (o) => ({
+    key: o.key,
+    name: o.key.slice(o.key.lastIndexOf("/") + 1),
+    size: o.size,
+    uploadedAt: o.lastModified,
+    url: await presignGet(o.key),
+  })));
 }
 
 // The recycle bin, newest deletion first. `deletedFrom` is the album it will
@@ -479,6 +497,23 @@ const NO_ALBUM_MARKER = '_none';
 
 export function isDeletedKey(jobId, key) {
   return String(key).startsWith(jobPrefix(jobId) + DELETED_SEGMENT + "/");
+}
+
+// ── Job documents ──────────────────────────────────────────────────────────
+// Generated PDFs that belong to a job — currently the inventory app's materials
+// list, which until now only ever landed in one person's Downloads folder.
+//
+// They get their own segment because listJobPhotos returns EVERY non-thumb
+// object under the job prefix; a PDF dropped in among the photos would render
+// as a broken image tile in the gallery.
+export const DOCS_SEGMENT = "_docs";
+
+export function jobDocsPrefix(jobId) {
+  return `${jobPrefix(jobId)}${DOCS_SEGMENT}/`;
+}
+
+export function isDocKey(jobId, key) {
+  return String(key).startsWith(jobDocsPrefix(jobId));
 }
 
 // The album a deleted photo came from: '' when it was loose, else the name.

@@ -640,6 +640,30 @@ await test('job notes: readable by every role, writable only by admin/office', a
   ok((await POST('updateJobNotes', write, ADMIN_TOK)).statusCode !== 403, 'admin can write');
 });
 
+await test('jobDocs: readable by every role, soft-fails when R2 is off', async () => {
+  clearR2();
+  mockTables = JOB_ONLY();
+  const b = json(await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK));
+  eq(b.available, false, 'available'); eq(b.reason, 'not-configured', 'reason');
+  eq(b.docs.length, 0, 'docs');
+  // The crew benefits from seeing what materials were charged to their job, so
+  // this is NOT admin-gated the way the recycle bin is.
+  setR2();
+  ok((await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK)).statusCode !== 403, 'employee may read docs');
+  eq((await GET('jobDocs', {})).statusCode, 400, 'missing jobId');
+  mockTables = { Jobs: [] };
+  eq((await GET('jobDocs', { jobId: 'recNOPE' })).statusCode, 404, 'unknown job');
+});
+
+await test('job docs live outside the photo gallery', async () => {
+  const { jobDocsPrefix, isDocKey, jobPrefix } = await import('../netlify/functions/_r2.js');
+  // listJobPhotos returns every non-thumb object under the job prefix, so a PDF
+  // filed among the photos would render as a broken image tile.
+  eq(jobDocsPrefix('recJ1'), 'jobs/recJ1/_docs/', 'prefix');
+  ok(isDocKey('recJ1', 'jobs/recJ1/_docs/NEE_Materials_2026-08-01-abc.pdf'), 'detects a doc');
+  ok(!isDocKey('recJ1', `${jobPrefix('recJ1')}Gym/20260801-01-x.jpg`), 'a photo is not a doc');
+});
+
 await test('recycle-bin actions: admin/office only, viewer and employee blocked', async () => {
   setR2();
   mockTables = JOB_ONLY();

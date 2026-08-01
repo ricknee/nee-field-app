@@ -14,7 +14,7 @@ import {
   r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut,
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
   moveJobPhoto, softDeleteJobPhoto, restoreJobPhoto, purgeJobPhoto,
-  listDeletedJobPhotos, R2Error,
+  listDeletedJobPhotos, listJobDocs, R2Error,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -4723,6 +4723,24 @@ async function handlePurgeJobPhotos(body) {
   return await bulkPhotoOp(body, "purgeJobPhotos", (jobId, key) => purgeJobPhoto(jobId, key));
 }
 
+// Generated documents attached to a job — currently the inventory app's
+// materials PDF, archived at push time. Readable by any signed-in role: the
+// crew benefits from seeing what materials were charged to their job.
+async function handleJobDocs(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", docs: [] });
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  try {
+    return resp(200, { ok: true, available: true, docs: await listJobDocs(jobId) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "jobDocs"), docs: [] });
+  }
+}
+
 // Recycle-bin listing. Admin/office only — employees shouldn't be browsing
 // what was deleted.
 async function handleJobPhotosDeleted(params) {
@@ -4777,6 +4795,7 @@ export async function handler(event) {
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
+      if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);

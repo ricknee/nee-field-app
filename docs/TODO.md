@@ -9,9 +9,16 @@ The cross-job filter bug fixed in `03f552a` (handleTimeEntries / handleExpenses)
 shape in four remaining places. Each matches a job by NAME via substring, so one job whose name
 contains another's leaks across — and duplicate exact names collide outright.
 
-**This is not hypothetical on this data.** Live job names include *Craig Davidson* alongside
-*Davidson's Addition*, and *Harlin Smith (2 Barn)* alongside *Coltonas 2 Barn*. A collision shows
-inspections or estimates **on the wrong job** — quiet, plausible-looking wrong data.
+**When it fires:** only when one job's name is *contained inside* another's — `FIND` is a
+substring test. The known real case is **"Jenny Ln 1" inside "Jenny Ln 10/11/12"**: numbered jobs
+at the same address or on the same street. Duplicate exact names collide outright.
+
+> Similar-*looking* names are NOT the trigger. "Craig Davidson" and "Davidson's Addition" are
+> fine — neither contains the other. (An earlier revision of this file cited those as examples;
+> that was wrong.) The naming convention is not the problem — the substring match is.
+
+The damage is inspections or estimates appearing **on the wrong job** — quiet, plausible-looking
+wrong data rather than an error anyone would notice.
 
 Line numbers verified 2026-08-02 (they drift; grep `FIND(` + `ARRAYJOIN` to confirm):
 

@@ -106,12 +106,41 @@ Deliberately reversible for as long as possible. Nothing before step 4 destroys 
 Steps 1-3: ~30 min. Then two soak windows. Steps 5-8: ~15 min. Total hands-on well under an hour,
 spread over 3-4 days by the soaks.
 
-## 8. Honest assessment of value
+## 8. Why this matters for the Neon migration
 
-The bet's actual goal — the app no longer depends on the mirror — was achieved at Step C2. C3
-removes a stale duplicate of production data that no longer updates anything and nothing reads.
+Confirmed with the owner 2026-08-03: **the inventory app is in scope for the migration too**, not
+just the field app. That reframes C3 from tidying to sequencing.
 
-That is worth doing (a synced copy of jobs sitting in a second base is exactly the thing someone
-wires something new into by accident a year from now), but it is **not urgent**, and it is the
-only genuinely irreversible item on the whole roadmap. There is no cost to leaving it a while
-longer, and no decay if it never happens.
+The mirror is **the only hard coupling between the two Airtable bases**. While it exists,
+`Inventory Transactions` reaches a job through a *cross-base Airtable record link* — a construct
+with no equivalent in Postgres. You cannot port it; you can only replace it, which Step B already
+did with `Job ID (Main)`, a plain record-id string. That is exactly the shape Neon wants: a
+foreign key by value.
+
+So C3 is what makes the inventory base **structurally independent** of the main base. After it,
+the two can migrate on their own timelines instead of having to move together — which matters,
+because the field app's Neon work (time entries, payroll, GP) is mid-flight and the inventory app
+shouldn't have to wait on it.
+
+The inventory schema is already annotated for this. Field descriptions in the base itself carry
+the target mapping:
+
+- `Inventory Transactions.Job ID (Main)` — *"Future Neon: inventory_transactions.main_job_id"*
+- `Expense Pushes.Push ID` — *"Future Neon: expense_pushes.push_id UNIQUE"*
+- `Labor Units` — *"Future Neon: labor_units table, Labor Code as UNIQUE business key"*
+- `Conduit Assemblies` — *"per-ft money fields become a SQL view over components"*
+
+Rough order once C3 lands (not planned in detail yet): reference data first (Vendors, Locations,
+Inventory Items), then the ledger (Inventory Transactions, Stock Levels as a view rather than a
+maintained table), then estimating (Estimates, Templates, Assemblies). The expense push is the
+seam to the main base and should move last, because it is the only path that writes across.
+
+## 9. Honest assessment of value
+
+The bet's original goal — the app no longer depends on the mirror — was achieved at Step C2. On
+its own, C3 removes a stale duplicate that no longer updates anything and nothing reads.
+
+Read against §8 it earns more than that: it is the step that lets the inventory base move to Neon
+independently. Still **not urgent** — it is the only genuinely irreversible item on the roadmap,
+there is no decay if it waits, and it should happen when there is appetite for a 48-hour soak
+rather than because it is next on a list.

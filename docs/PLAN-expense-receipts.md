@@ -112,7 +112,7 @@ expense that was never created, and the existing save path stays untouched.
 
 ## 5. Slices
 
-**Slice 1 — attach and view (~4-5 h; was 3-4 before PDFs)**
+**Slice 1 — attach and view (~4-5 h; was 3-4 before PDFs)** ✅ SHIPPED 2026-08-03 (`fff3209`)
 - `_r2.js`: `expensePrefix(expenseId)`, reuse everything else
 - `airtable.js`: `expenseReceiptUploadUrls` (POST, accepts image **or** `application/pdf`),
   `expenseReceipts` (GET, returns `contentType` so the client can branch)
@@ -122,11 +122,11 @@ expense that was never created, and the existing save path stays untouched.
 - Tests mirroring the photo ones: validation, authorization, key-ownership, **and that a PDF is
   never routed through the image compressor**
 
-**Slice 2 — the approval view (~1-2 h)**
+**Slice 2 — the approval view (~1-2 h)** ✅ SHIPPED 2026-08-03 (`3eafbcb`)
 - Receipt thumbnails in the admin/office Expenses list, next to the amount
 - Tap to enlarge before approving
 
-**Slice 3 — delete + polish (~1-2 h)**
+**Slice 3 — delete + polish (~1-2 h)** ✅ SHIPPED 2026-08-03
 - Soft delete reusing the recycle-bin helpers
 - Multiple receipts per expense (a fuel stop plus a parts counter slip)
 - "No receipt" indicator so gaps are visible at a glance

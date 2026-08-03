@@ -15,7 +15,8 @@ import {
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
   moveJobPhoto, softDeleteJobPhoto, restoreJobPhoto, purgeJobPhoto,
   listDeletedJobPhotos, listJobDocs,
-  expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts, R2Error,
+  expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
+  softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -444,6 +445,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // apply. Moving between albums is NOT here — it's reversible, so any
   // non-viewer may re-file.
   "deleteJobPhotos", "restoreJobPhotos", "purgeJobPhotos",
+  // Receipts are financial records and there is no "reviewed" state to key an
+  // employee self-service window off, so deletion is manager-only.
+  "deleteExpenseReceipts", "restoreExpenseReceipts",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -4807,6 +4811,65 @@ async function handleExpenseReceipts(params, authUser) {
   }
 }
 
+// Delete / restore a receipt. ADMIN-OFFICE ONLY (see _ADMIN_OFFICE_POSTS):
+// receipts are financial records, and unlike an expense row there is no
+// "reviewed" state to key an employee window off.
+//
+// Soft delete — the object moves to a bin nested inside the expense, which the
+// photo lifecycle rule deliberately cannot reach, so a deleted receipt is kept
+// indefinitely rather than expiring at 30 days.
+async function receiptMutation(body, authUser, label, fn) {
+  const expenseId = body?.expenseId;
+  const keys = Array.isArray(body?.keys) ? body.keys : [];
+  if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
+  if (!keys.length) return resp(400, { ok: false, error: "No receipts selected." });
+  if (keys.length > 20) return resp(400, { ok: false, error: "Too many receipts at once (max 20)." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Receipt storage isn't configured." });
+
+  // Confirms the expense exists and that this caller may touch it at all.
+  const guard = await guardExpenseMutation(expenseId, authUser);
+  if (!guard.ok) return guard.resp;
+
+  let done = 0;
+  const failures = [];
+  for (const key of keys) {
+    try { await fn(expenseId, key); done++; }
+    catch (e) {
+      if (e instanceof R2Error && e.code === "KEY_OUTSIDE_EXPENSE") {
+        console.error(`${label}: rejected key outside expense ${expenseId}: ${String(key).slice(0, 120)}`);
+      }
+      failures.push({ key, error: String(e?.message || e).slice(0, 160) });
+    }
+  }
+  return resp(200, { ok: failures.length === 0, done, failed: failures.length, failures });
+}
+
+async function handleDeleteExpenseReceipts(body, authUser) {
+  return await receiptMutation(body, authUser, "deleteExpenseReceipts",
+    (id, key) => softDeleteExpenseReceipt(id, key));
+}
+
+async function handleRestoreExpenseReceipts(body, authUser) {
+  return await receiptMutation(body, authUser, "restoreExpenseReceipts",
+    (id, key) => restoreExpenseReceipt(id, key));
+}
+
+// The receipt bin for one expense. Same scoping as reading live receipts.
+async function handleDeletedExpenseReceipts(params, authUser) {
+  const expenseId = params?.expenseId;
+  if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", receipts: [] });
+
+  const guard = await guardExpenseMutation(expenseId, authUser);
+  if (!guard.ok) return guard.resp;
+
+  try {
+    return resp(200, { ok: true, available: true, receipts: await listDeletedExpenseReceipts(expenseId) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "deletedExpenseReceipts"), receipts: [] });
+  }
+}
+
 // Receipt presence for every expense on a job, for the approval list — count
 // plus a thumbnail of the first one. The point of receipts is being able to see
 // the slip while approving the amount, and to spot at a glance which expenses
@@ -4993,6 +5056,7 @@ export async function handler(event) {
       if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
       if (action === "expenseReceiptSummary") return await handleExpenseReceiptSummary(params, authUser);
+      if (action === "deletedExpenseReceipts") return await handleDeletedExpenseReceipts(params, authUser);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);
@@ -5076,6 +5140,8 @@ export async function handler(event) {
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
       if (body.action === "jobPhotoUploadUrls")   return await handleJobPhotoUploadUrls(body);
       if (body.action === "expenseReceiptUploadUrls") return await handleExpenseReceiptUploadUrls(body, authUser);
+      if (body.action === "deleteExpenseReceipts")  return await handleDeleteExpenseReceipts(body, authUser);
+      if (body.action === "restoreExpenseReceipts") return await handleRestoreExpenseReceipts(body, authUser);
       if (body.action === "moveJobPhotos")        return await handleMoveJobPhotos(body);
       if (body.action === "deleteJobPhotos")      return await handleDeleteJobPhotos(body);
       if (body.action === "restoreJobPhotos")     return await handleRestoreJobPhotos(body);

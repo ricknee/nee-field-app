@@ -4830,7 +4830,7 @@
    * byte. Running a 300dpi scan through a canvas would either fail outright or
    * silently rasterise it into something worse than what was scanned.
    */
-  const expReceiptState = { expenseId: null, label: "", receipts: [] };
+  const expReceiptState = { expenseId: null, label: "", receipts: [], deleted: [], showDeleted: false };
 
   window.openExpenseReceipts = async function(expenseId, label) {
     if (!expenseId) return;
@@ -4853,7 +4853,17 @@
     $("expReceiptsModal").style.display = "none";
   };
 
+  // Only managers may delete a receipt, so only they need the bin fetched.
+  async function refreshDeletedExpenseReceipts() {
+    if (!canDeletePhotos()) { expReceiptState.deleted = []; return; }
+    try {
+      const d = await apiGet("deletedExpenseReceipts", { expenseId: expReceiptState.expenseId });
+      expReceiptState.deleted = d.available ? (d.receipts || []) : [];
+    } catch { expReceiptState.deleted = []; }
+  }
+
   async function refreshExpenseReceipts() {
+    await refreshDeletedExpenseReceipts();
     try {
       const d = await apiGet("expenseReceipts", { expenseId: expReceiptState.expenseId });
       if (!d.available) {
@@ -4871,28 +4881,76 @@
     }
   }
 
+  // One tile. `mode` is "live" (offers Delete) or "deleted" (offers Restore).
+  function receiptTile(r, mode) {
+    const when = (mode === "deleted" ? r.deletedAt : r.uploadedAt);
+    const date = when ? new Date(when).toLocaleDateString() : "";
+    const kb = r.size ? `${Math.max(1, Math.round(r.size / 1024))} KB` : "";
+    // A PDF gets a document tile — there is no thumbnail to show, and rendering
+    // it in an <img> would just give a broken icon.
+    const tile = r.isPdf
+      ? `<div style="width:100%; aspect-ratio:1; display:flex; align-items:center; justify-content:center;
+                     border:1px solid var(--line); border-radius:6px; background:var(--panel-2); font-size:34px;">📄</div>`
+      : `<img src="${esc(r.thumbUrl || r.url)}" alt="${esc(r.name)}" loading="lazy"
+               style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; background:var(--line);" />`;
+
+    const action = !canDeletePhotos() ? "" : (mode === "deleted"
+      ? `<button type="button" class="rcpt-restore" data-key="${esc(r.key)}" style="background:none; border:none; cursor:pointer; font-size:11px; color:var(--blue); padding:2px;">↩ Restore</button>`
+      : `<button type="button" class="rcpt-del" data-key="${esc(r.key)}" style="background:none; border:none; cursor:pointer; font-size:11px; color:var(--red); padding:2px;">🗑 Delete</button>`);
+
+    return `<div style="${mode === "deleted" ? "opacity:.6;" : ""}">
+        <a href="${esc(r.url)}" target="_blank" rel="noopener" style="text-decoration:none; color:inherit;">
+          ${tile}
+          <div style="font-size:11px; margin-top:4px; color:var(--muted);">${esc(r.isPdf ? "PDF" : "Photo")} · ${esc(date)}${kb ? " · " + esc(kb) : ""}</div>
+        </a>
+        ${action}
+      </div>`;
+  }
+
   function renderExpenseReceipts() {
     const grid = $("expReceiptsGrid");
     const list = expReceiptState.receipts;
-    $("expReceiptsStatus").textContent = list.length
-      ? `${list.length} receipt${list.length === 1 ? "" : "s"}`
-      : "No receipt on this expense yet.";
+    const del  = expReceiptState.deleted;
 
-    grid.innerHTML = list.map(r => {
-      const when = r.uploadedAt ? new Date(r.uploadedAt).toLocaleDateString() : "";
-      const kb = r.size ? `${Math.max(1, Math.round(r.size / 1024))} KB` : "";
-      // A PDF gets a document tile — there is no thumbnail to show, and
-      // rendering it in an <img> would just give a broken icon.
-      const tile = r.isPdf
-        ? `<div style="width:100%; aspect-ratio:1; display:flex; align-items:center; justify-content:center;
-                       border:1px solid var(--line); border-radius:6px; background:var(--panel-2); font-size:34px;">📄</div>`
-        : `<img src="${esc(r.thumbUrl || r.url)}" alt="${esc(r.name)}" loading="lazy"
-                 style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; background:var(--line);" />`;
-      return `<a href="${esc(r.url)}" target="_blank" rel="noopener" style="text-decoration:none; color:inherit;">
-          ${tile}
-          <div style="font-size:11px; margin-top:4px; color:var(--muted);">${esc(r.isPdf ? "PDF" : "Photo")} · ${esc(when)}${kb ? " · " + esc(kb) : ""}</div>
-        </a>`;
-    }).join("");
+    const parts = [`${list.length} receipt${list.length === 1 ? "" : "s"}`];
+    if (!list.length) parts[0] = "No receipt on this expense yet.";
+    if (del.length) {
+      // Deleted receipts are kept indefinitely — they are financial records and
+      // are deliberately outside the 30-day photo purge. Say so, so nobody
+      // assumes they have aged out.
+      parts.push(`<a href="#" id="rcptToggleDeleted" style="color:var(--blue); text-decoration:underline;">${
+        expReceiptState.showDeleted ? "hide" : "show"} ${del.length} deleted</a> <span style="font-size:11px;">(kept indefinitely)</span>`);
+    }
+    $("expReceiptsStatus").innerHTML = parts.join(" · ");
+
+    grid.innerHTML = list.map(r => receiptTile(r, "live")).join("")
+      + (expReceiptState.showDeleted ? del.map(r => receiptTile(r, "deleted")).join("") : "");
+
+    const toggle = $("rcptToggleDeleted");
+    if (toggle) toggle.onclick = (e) => {
+      e.preventDefault();
+      expReceiptState.showDeleted = !expReceiptState.showDeleted;
+      renderExpenseReceipts();
+    };
+    grid.querySelectorAll(".rcpt-del").forEach(b =>
+      b.onclick = () => mutateReceipt("deleteExpenseReceipts", b.dataset.key, "Deleting"));
+    grid.querySelectorAll(".rcpt-restore").forEach(b =>
+      b.onclick = () => mutateReceipt("restoreExpenseReceipts", b.dataset.key, "Restoring"));
+  }
+
+  async function mutateReceipt(action, key, verb) {
+    if (action === "deleteExpenseReceipts" &&
+        !confirm("Remove this receipt from the expense?\n\nIt is kept and can be restored.")) return;
+    const status = $("expReceiptsStatus");
+    status.textContent = `${verb}…`;
+    try {
+      await apiPost(action, { expenseId: expReceiptState.expenseId, keys: [key] });
+      await refreshExpenseReceipts();
+      // Keep the row behind the modal honest about the new count.
+      if (state.selected?.id) paintExpenseReceiptSlots(document, state.selected.id);
+    } catch (e) {
+      status.textContent = `${verb} failed: ${e.message}`;
+    }
   }
 
   async function addExpenseReceipts() {

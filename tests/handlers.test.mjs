@@ -574,6 +574,30 @@ await test('expenseReceipts: employee sees own, not someone else\'s', async () =
   ok((await GET('expenseReceipts', { expenseId: 'recX1' }, OFFICE_TOK)).statusCode !== 403, 'office any');
 });
 
+await test('receipt delete: manager-only, and the bin escapes the 30-day purge', async () => {
+  const r2 = await import('../netlify/functions/_r2.js');
+  const live   = 'expenses/recX1/20260803-01-ab.jpg';
+  const binned = 'expenses/recX1/_deleted/20260803-01-ab.jpg';
+
+  ok(!r2.isDeletedReceiptKey('recX1', live), 'live not flagged');
+  ok(r2.isDeletedReceiptKey('recX1', binned), 'binned detected');
+  // The photo lifecycle rule targets the TOP-LEVEL `_deleted/` prefix. Receipts
+  // are financial records the owner exempted from auto-purge, so their bin is
+  // nested inside the expense where that rule cannot reach it.
+  ok(!binned.startsWith('_deleted/'), 'receipt bin is outside the 30-day rule');
+  ok(binned.startsWith('expenses/'), 'still under expenses/');
+
+  setR2();
+  mockTables = EXPENSE('recEmp');
+  const body = { expenseId: 'recX1', keys: [live] };
+  // No "reviewed" state to key an employee window off, so deletion is
+  // manager-only rather than owner-until-approved.
+  eq((await POST('deleteExpenseReceipts', body, EMP_TOK)).statusCode, 403, 'employee blocked');
+  eq((await POST('deleteExpenseReceipts', body, VIEWER_TOK)).statusCode, 403, 'viewer blocked');
+  ok((await POST('deleteExpenseReceipts', body, OFFICE_TOK)).statusCode !== 403, 'office allowed');
+  eq((await POST('deleteExpenseReceipts', { expenseId: 'recX1', keys: [] })).statusCode, 400, 'no keys');
+});
+
 await test('expenseReceiptSummary: an employee only sees their own expenses', async () => {
   setR2();
   // Two expenses on the job, submitted by different people. The summary must

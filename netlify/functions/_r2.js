@@ -632,8 +632,10 @@ export async function listExpenseReceipts(expenseId, timeoutMs = DEFAULT_TIMEOUT
   const objects = await listByPrefix(expensePrefix(expenseId), timeoutMs);
   const thumbs = new Set(objects.filter(o => isThumbKey(o.key)).map(o => o.key));
 
+  // Deleted receipts live in a nested _deleted/ sub-prefix, so they come back
+  // in this list and must be filtered out or a deleted receipt would still show.
   const originals = objects
-    .filter(o => !isThumbKey(o.key))
+    .filter(o => !isThumbKey(o.key) && !isDeletedReceiptKey(expenseId, o.key))
     .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0));
 
   return await Promise.all(originals.map(async (o) => {
@@ -710,7 +712,7 @@ export async function summarizeExpenseReceipts(expenseIds, timeoutMs = DEFAULT_T
       try {
         const objects = await listByPrefix(expensePrefix(id), timeoutMs);
         const originals = objects
-          .filter(o => !isThumbKey(o.key))
+          .filter(o => !isThumbKey(o.key) && !isDeletedReceiptKey(id, o.key))
           .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0));
         if (!originals.length) { out[id] = { count: 0, thumbUrl: null, isPdf: false }; continue; }
 
@@ -733,4 +735,57 @@ export async function summarizeExpenseReceipts(expenseIds, timeoutMs = DEFAULT_T
   }
   await Promise.all(Array.from({ length: Math.min(6, ids.length) }, worker));
   return out;
+}
+
+// ── Deleted receipts ───────────────────────────────────────────────────────
+// Deliberately NOT the top-level `_deleted/` bin the photos use. That prefix is
+// covered by a 30-day lifecycle rule, and receipts are financial records the
+// owner decided are exempt from auto-purge (docs/PLAN-expense-receipts.md §9).
+//
+// Nesting the bin INSIDE the expense keeps it under `expenses/`, which the rule
+// never matches — so a deleted receipt persists until someone removes it on
+// purpose, and the nightly backup has it either way.
+//
+//   expenses/<id>/20260803-01-ab.jpg           live
+//   expenses/<id>/_deleted/20260803-01-ab.jpg  deleted, kept indefinitely
+const RECEIPT_DELETED_SEGMENT = "_deleted/";
+
+export function isDeletedReceiptKey(expenseId, key) {
+  return String(key).startsWith(expensePrefix(expenseId) + RECEIPT_DELETED_SEGMENT);
+}
+
+export async function softDeleteExpenseReceipt(expenseId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInExpense(expenseId, key);
+  if (isDeletedReceiptKey(expenseId, k)) return { key: k, moved: false };
+  const filename = k.slice(k.lastIndexOf("/") + 1);
+  return await moveObjectPair(k, expensePrefix(expenseId) + RECEIPT_DELETED_SEGMENT + filename, timeoutMs);
+}
+
+export async function restoreExpenseReceipt(expenseId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInExpense(expenseId, key);
+  if (!isDeletedReceiptKey(expenseId, k)) return { key: k, moved: false };
+  const filename = k.slice(k.lastIndexOf("/") + 1);
+  return await moveObjectPair(k, expensePrefix(expenseId) + filename, timeoutMs);
+}
+
+export async function listDeletedExpenseReceipts(expenseId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(expensePrefix(expenseId) + RECEIPT_DELETED_SEGMENT, timeoutMs);
+  const originals = objects
+    .filter(o => !isThumbKey(o.key))
+    .sort((a, b) => new Date(b.lastModified || 0) - new Date(a.lastModified || 0));
+
+  return await Promise.all(originals.map(async (o) => {
+    const contentType = contentTypeForKey(o.key);
+    const isPdf = contentType === "application/pdf";
+    const tKey = thumbKeyFor(o.key);
+    return {
+      key: o.key,
+      name: o.key.slice(o.key.lastIndexOf("/") + 1),
+      contentType, isPdf,
+      size: o.size,
+      deletedAt: o.lastModified,
+      url: await presignGet(o.key),
+      thumbUrl: (!isPdf && objects.some(x => x.key === tKey)) ? await presignGet(tKey) : null,
+    };
+  }));
 }

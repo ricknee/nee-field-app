@@ -119,6 +119,22 @@
       width: auto !important;
     }
 
+    /* Employee top-bar button order. The DOM order of .topbar-row2 is tuned for
+       the admin row; employees see a different (much smaller) subset, and the
+       order that reads well for admin doesn't for them. Reordering with
+       flexbox `order` rather than by moving the markup leaves the admin /
+       office / viewer row exactly as it was — one DOM, two orderings.
+       Refresh and Log Out are pinned last on purpose: `order` defaults to 0,
+       so without an explicit value they'd float ahead of everything given a
+       positive order. Adding a top-bar button employees can see? Give it an
+       order here too, or it lands at the front. */
+    body.role-employee #btnMySchedule { order: 1; }
+    body.role-employee #btnMyHours    { order: 2; }
+    body.role-employee #btnFleet      { order: 3; }
+    body.role-employee #btnMileage    { order: 4; }
+    body.role-employee #refreshBtn    { order: 5; }
+    body.role-employee #logoutBtn     { order: 6; }
+
     #statusChangeRow:not(.hidden) { display: flex; }
     #piSaveBar:not(.hidden) { display: flex; }
 
@@ -482,16 +498,34 @@
       flex-wrap: wrap;
     }
 
+    /* `min-width: 0` used to sit here, which quietly defeated the flex-wrap
+       above: instead of wrapping, all three selects shrank below their own
+       labels and "All Contractors" clipped to "All Contract⌄" on Windows.
+       Two causes, both fixed here — the selects could shrink past their text,
+       and the native Windows dropdown arrow is painted over the padding box,
+       so it needs reserved room (hence the fat padding-right).
+       The floor is sized for the longest DEFAULT label, not the longest
+       option: contractor names like "Aaron McLauglin (MIA 274)" are far wider,
+       and sizing to those (max-content / fit-content) would blow the sidebar
+       out. Long options are the dropdown's problem, not the closed select's. */
     .filter-row select {
-      flex: 1;
-      min-width: 0;
+      flex: 1 1 auto;
+      min-width: 130px;
       background: var(--panel-2);
       border: 1px solid var(--line-2);
       border-radius: 8px;
-      padding: 7px 10px;
+      padding: 7px 20px 7px 10px;
       color: var(--text);
       font-size: 12px;
       outline: none;
+    }
+
+    /* Year holds "2026" / "All Years" — it doesn't need the shared floor, and
+       letting it grow would strand it as a full-width select on its own row
+       once the other two wrap. */
+    .filter-row #yearFilter {
+      flex: 0 1 auto;
+      min-width: 84px;
     }
 
     .filter-row select:focus { border-color: var(--accent); }
@@ -3414,6 +3448,11 @@
       document.querySelectorAll(".employee-only").forEach(el => {
         el.classList.toggle("hidden", !isEmployeeRole);
       });
+
+      // Drives the employee-only top-bar button order (see body.role-employee
+      // in the CSS). A class rather than reordered markup so admin/office/
+      // viewer keep the DOM order.
+      document.body.classList.toggle("role-employee", isEmployeeRole);
 
       // Hide financial tabs from viewers
       if (isViewer()) {

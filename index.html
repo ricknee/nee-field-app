@@ -4784,6 +4784,154 @@
     showLightbox((jobPhotoState.index + delta + n) % n);
   };
 
+  /* ── Expense receipts (docs/PLAN-expense-receipts.md, slice 1) ──────────
+   * Reuses the photo machinery: compressImage for phone shots, presigned PUTs
+   * straight to R2, the same folder-is-the-record keying. The one thing it does
+   * NOT reuse is the compressor for PDFs — a ScanSnap scan is uploaded byte for
+   * byte. Running a 300dpi scan through a canvas would either fail outright or
+   * silently rasterise it into something worse than what was scanned.
+   */
+  const expReceiptState = { expenseId: null, label: "", receipts: [] };
+
+  window.openExpenseReceipts = async function(expenseId, label) {
+    if (!expenseId) return;
+    expReceiptState.expenseId = expenseId;
+    expReceiptState.label = label || "";
+    expReceiptState.receipts = [];
+
+    $("expReceiptsTitle").textContent = `🧾 Receipts${label ? " — " + label : ""}`;
+    $("expReceiptsGrid").innerHTML = "";
+    $("expReceiptsStatus").textContent = "Loading…";
+    $("expReceiptsModal").style.display = "flex";
+    pushBackEntry("expReceipts", () => { $("expReceiptsModal").style.display = "none"; });
+    $("expReceiptAddBtn").onclick = addExpenseReceipts;
+
+    await refreshExpenseReceipts();
+  };
+
+  window.closeExpenseReceipts = function() {
+    popBackEntry("expReceipts");
+    $("expReceiptsModal").style.display = "none";
+  };
+
+  async function refreshExpenseReceipts() {
+    try {
+      const d = await apiGet("expenseReceipts", { expenseId: expReceiptState.expenseId });
+      if (!d.available) {
+        $("expReceiptsGrid").innerHTML = "";
+        $("expReceiptsStatus").textContent = d.reason === "not-configured"
+          ? "Receipt storage isn't switched on yet."
+          : "Receipts are unavailable right now.";
+        return;
+      }
+      expReceiptState.receipts = d.receipts || [];
+      renderExpenseReceipts();
+    } catch (e) {
+      $("expReceiptsGrid").innerHTML = "";
+      $("expReceiptsStatus").textContent = `Couldn't load receipts: ${e.message}`;
+    }
+  }
+
+  function renderExpenseReceipts() {
+    const grid = $("expReceiptsGrid");
+    const list = expReceiptState.receipts;
+    $("expReceiptsStatus").textContent = list.length
+      ? `${list.length} receipt${list.length === 1 ? "" : "s"}`
+      : "No receipt on this expense yet.";
+
+    grid.innerHTML = list.map(r => {
+      const when = r.uploadedAt ? new Date(r.uploadedAt).toLocaleDateString() : "";
+      const kb = r.size ? `${Math.max(1, Math.round(r.size / 1024))} KB` : "";
+      // A PDF gets a document tile — there is no thumbnail to show, and
+      // rendering it in an <img> would just give a broken icon.
+      const tile = r.isPdf
+        ? `<div style="width:100%; aspect-ratio:1; display:flex; align-items:center; justify-content:center;
+                       border:1px solid var(--line); border-radius:6px; background:var(--panel-2); font-size:34px;">📄</div>`
+        : `<img src="${esc(r.thumbUrl || r.url)}" alt="${esc(r.name)}" loading="lazy"
+                 style="width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; background:var(--line);" />`;
+      return `<a href="${esc(r.url)}" target="_blank" rel="noopener" style="text-decoration:none; color:inherit;">
+          ${tile}
+          <div style="font-size:11px; margin-top:4px; color:var(--muted);">${esc(r.isPdf ? "PDF" : "Photo")} · ${esc(when)}${kb ? " · " + esc(kb) : ""}</div>
+        </a>`;
+    }).join("");
+  }
+
+  async function addExpenseReceipts() {
+    const input = document.createElement("input");
+    input.type = "file";
+    // Images AND PDFs. No `capture` attribute — see the note on the modal.
+    input.accept = "image/*,application/pdf";
+    input.multiple = true;
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files || []);
+      input.remove();
+      if (files.length) await uploadExpenseReceipts(files);
+    });
+    input.click();
+  }
+
+  async function uploadExpenseReceipts(files) {
+    const status = $("expReceiptsStatus");
+    const MAX = 10;
+    if (files.length > MAX) {
+      status.textContent = `Too many at once — taking the first ${MAX}.`;
+      files = files.slice(0, MAX);
+    }
+
+    try {
+      // Prepare first: images get compressed + a thumbnail, PDFs pass straight
+      // through. Branching happens HERE, at the picker, not deeper in.
+      const prepared = [];
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
+        status.textContent = `Preparing ${i + 1} of ${files.length}…`;
+        if (isPdf) {
+          prepared.push({ isPdf: true, contentType: "application/pdf", body: f, thumb: null });
+        } else {
+          // Receipts are small faded print, so keep more detail than a jobsite
+          // photo: 2560px at q0.85 rather than 2048 at q0.75.
+          const full  = await compressImage(f, 2560, 0.85);
+          const thumb = await compressImage(f, 400, 0.7);
+          if (!full) throw new Error(`Could not read "${f.name || "file"}"`);
+          prepared.push({ isPdf: false, contentType: "image/jpeg", body: full, thumb });
+        }
+      }
+
+      const d = await apiPost("expenseReceiptUploadUrls", {
+        expenseId: expReceiptState.expenseId,
+        files: prepared.map(p => ({ contentType: p.contentType })),
+      });
+      const uploads = d.uploads || [];
+      if (uploads.length !== prepared.length) throw new Error("Upload could not be prepared");
+
+      let done = 0, failed = 0, lastErr = "";
+      for (let i = 0; i < prepared.length; i++) {
+        status.textContent = `Uploading ${i + 1} of ${prepared.length}…`;
+        try {
+          await putToR2(uploads[i].putUrl, prepared[i].body, uploads[i].contentType);
+          if (prepared[i].thumb && uploads[i].thumbPutUrl) {
+            await putToR2(uploads[i].thumbPutUrl, prepared[i].thumb, uploads[i].contentType);
+          }
+          done++;
+        } catch (err) {
+          failed++; lastErr = err.message || String(err);
+          console.error("[receipt-upload] failed", err);
+        }
+      }
+
+      await refreshExpenseReceipts();
+      if (failed) status.textContent = `${done} attached, ${failed} failed. ${lastErr}`;
+      else showAppToast(`${done} receipt${done === 1 ? "" : "s"} attached ✓`);
+    } catch (e) {
+      console.error("[receipt-upload]", e);
+      await refreshExpenseReceipts();
+      status.textContent = `Upload failed: ${e.message}`;
+    }
+  }
+
   /* ── Upload ───────────────────────────────────────────────────────────── */
 
   // Shrink and re-encode before upload. Three jobs at once:
@@ -5870,6 +6018,7 @@
             <input type="checkbox" data-expense-id="${esc(e.id)}" class="exp-review-chk" title="Mark as reviewed" style="cursor:pointer; width:16px; height:16px;" />
           </td>
           <td style="text-align:center;">
+            <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(e.vendor || e.description || fmtDate(e.date))}" class="exp-receipt-btn" title="Receipts" style="background:none; border:none; cursor:pointer; font-size:15px; opacity:0.75; padding:2px 4px;">🧾</button>
             <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(fmtDate(e.date))} – ${esc(e.vendor || e.description || "")}" class="exp-delete-btn" title="Delete" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;">🗑</button>
           </td>` : ""}
         </tr>`;
@@ -5984,6 +6133,12 @@
             chk.checked = false;
           }
         });
+      });
+
+      // Wire receipt buttons — opens the attach/view modal for that expense.
+      el.querySelectorAll(".exp-receipt-btn").forEach(btn => {
+        btn.addEventListener("click", () =>
+          openExpenseReceipts(btn.dataset.expenseId, btn.dataset.expenseLabel));
       });
 
       // Wire delete buttons
@@ -8785,7 +8940,7 @@
         const amt = e.totalCost != null ? fmtCurrency(e.totalCost) : "—";
         const controls = reviewed
           ? `<span style="font-size:11px; color:var(--green); font-weight:600; white-space:nowrap;">✅ Approved</span>`
-          : `<span style="font-size:11px; color:var(--muted); font-weight:600;">⬜ Pending</span>
+          : `${receiptBtn}<span style="font-size:11px; color:var(--muted); font-weight:600;">⬜ Pending</span>
              <button class="btn btn-sm myexp-edit" data-id="${esc(e.id)}" type="button" style="font-size:11px; padding:3px 8px;">✏</button>
              <button class="btn btn-sm myexp-del" data-id="${esc(e.id)}" type="button" style="font-size:11px; padding:3px 8px;">🗑</button>`;
         return `<div style="display:flex; align-items:center; gap:10px; padding:9px 6px; border-bottom:1px solid var(--line);">
@@ -8799,6 +8954,7 @@
       }).join("");
       list.querySelectorAll(".myexp-edit").forEach(b => b.onclick = () => openMyExpenseForm(rows.find(r => r.id === b.dataset.id)));
       list.querySelectorAll(".myexp-del").forEach(b => b.onclick = () => deleteMyExpense(b.dataset.id));
+      list.querySelectorAll(".myexp-receipt").forEach(b => b.onclick = () => openExpenseReceipts(b.dataset.id, b.dataset.label));
     } catch (e) {
       list.innerHTML = `<div style="padding:14px; color:var(--red);">Couldn't load: ${esc(e.message)}</div>`;
     }
@@ -16963,6 +17119,28 @@
            Rendered above the photo grid, only when the job has any. -->
       <div id="jobPhotosDocs" style="padding-bottom:12px;"></div>
       <div id="jobPhotosGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Receipts on an expense (docs/PLAN-expense-receipts.md, slice 1).
+     Two capture routes: a phone photo (compressed, thumbnailed) and a ScanSnap
+     PDF (uploaded untouched, no thumbnail). Deliberately NO `capture` attribute
+     on the input — capture forces the camera and would make picking a scan off
+     a PC impossible, which is where scans come from. -->
+<div id="expReceiptsModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:760px; width:95%;">
+    <div class="sl-modal-header">
+      <h2 id="expReceiptsTitle">🧾 Receipts</h2>
+      <button onclick="closeExpenseReceipts()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="expReceiptsStatus" style="font-size:13px; color:var(--muted); padding:6px 0 10px;"></div>
+      <div id="expReceiptsActions" style="padding-bottom:12px;">
+        <button type="button" id="expReceiptAddBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">📎 Add receipt</button>
+        <span style="font-size:11px; color:var(--muted); margin-left:8px;">photo or scanned PDF</span>
+      </div>
+      <div id="expReceiptsGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:10px;"></div>
     </div>
   </div>
 </div>

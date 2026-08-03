@@ -14,7 +14,8 @@ import {
   r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut,
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
   moveJobPhoto, softDeleteJobPhoto, restoreJobPhoto, purgeJobPhoto,
-  listDeletedJobPhotos, listJobDocs, R2Error,
+  listDeletedJobPhotos, listJobDocs,
+  expensePrefix, listExpenseReceipts, receiptFileKind, R2Error,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -4729,6 +4730,83 @@ async function handleJobPhotoUploadUrls(body) {
 const BULK_PHOTO_MAX = 12;
 const BULK_PHOTO_CONCURRENCY = 5;
 
+/* ── Expense receipts (docs/PLAN-expense-receipts.md, slice 1) ──────────────
+ * Photograph the paper slip, or attach a ScanSnap PDF. Stored in R2 keyed by
+ * the expense's record id — folder-is-the-record, same as photos, so there is
+ * no new table and nothing extra to port to Neon.
+ *
+ * Authorization deliberately reuses the expense rules rather than inventing
+ * new ones: guardExpenseMutation for attaching (owner while unreviewed,
+ * admin/office always) and the same per-employee scoping handleExpenses
+ * already enforces for reading.
+ */
+
+// Presigned PUTs so the phone (or the office PC, for a scan) uploads straight
+// to R2. Keys are server-decided — a client-named key could write outside its
+// own expense.
+async function handleExpenseReceiptUploadUrls(body, authUser) {
+  const expenseId = body?.expenseId;
+  const files = Array.isArray(body?.files) ? body.files : [];
+  if (!files.length) return resp(400, { ok: false, error: "No files requested." });
+  if (files.length > 10) return resp(400, { ok: false, error: "Too many receipts at once (max 10)." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Receipt storage isn't configured." });
+
+  // Same window as editing the expense itself: an employee may attach to their
+  // own until it is reviewed; admin/office any time.
+  const guard = await guardExpenseMutation(expenseId, authUser);
+  if (!guard.ok) return guard.resp;
+
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  try {
+    const uploads = await Promise.all(files.map(async (f, i) => {
+      // PDFs are scans and pass through untouched; images are compressed
+      // client-side and carry a thumbnail. See receiptFileKind.
+      const kind = receiptFileKind(f?.contentType);
+      const rand = Math.random().toString(36).slice(2, 8);
+      const key = `${expensePrefix(expenseId)}${stamp}-${String(i + 1).padStart(2, "0")}-${rand}.${kind.ext}`;
+
+      return {
+        key,
+        contentType: kind.contentType,
+        isPdf: kind.isPdf,
+        putUrl: await presignPut(key, kind.contentType),
+        thumbPutUrl: kind.wantsThumb ? await presignPut(thumbKeyFor(key), kind.contentType) : null,
+      };
+    }));
+    return resp(200, { ok: true, uploads });
+  } catch (e) {
+    const { reason } = r2Unavailable(e, "expenseReceiptUploadUrls");
+    return resp(502, { ok: false, error: "Could not prepare the upload.", reason });
+  }
+}
+
+// Receipts for one expense. Scoped exactly like handleExpenses: admin/office
+// see any, an employee sees only receipts on expenses they submitted.
+async function handleExpenseReceipts(params, authUser) {
+  const expenseId = params?.expenseId;
+  if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", receipts: [] });
+
+  let rec;
+  try { rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`); }
+  catch { return resp(404, { ok: false, error: "Expense not found." }); }
+
+  const role = (authUser?.role || "").toLowerCase();
+  if (role !== "admin" && role !== "office") {
+    const submitted = rec.fields?.["Submitted By"];
+    const owner = Array.isArray(submitted) ? submitted[0] : submitted;
+    if (owner !== authUser?.id) {
+      return resp(403, { ok: false, error: "You can only see receipts on your own expenses." });
+    }
+  }
+
+  try {
+    return resp(200, { ok: true, available: true, receipts: await listExpenseReceipts(expenseId) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "expenseReceipts"), receipts: [] });
+  }
+}
+
 // Shared shape for the two bulk photo mutations: validate the job once, then
 // apply `fn` per key and report per-key outcomes rather than failing the whole
 // batch. Selecting 40 photos and having one bad key abort the lot is the wrong
@@ -4877,6 +4955,7 @@ export async function handler(event) {
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
       if (action === "jobDocs")            return await handleJobDocs(params);
+      if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);
@@ -4959,6 +5038,7 @@ export async function handler(event) {
       if (body.action === "deleteScheduleEntry")  return await handleDeleteScheduleEntry(body);
       if (body.action === "getNextInvoiceNumber") return await handleGetNextInvoiceNumber();
       if (body.action === "jobPhotoUploadUrls")   return await handleJobPhotoUploadUrls(body);
+      if (body.action === "expenseReceiptUploadUrls") return await handleExpenseReceiptUploadUrls(body, authUser);
       if (body.action === "moveJobPhotos")        return await handleMoveJobPhotos(body);
       if (body.action === "deleteJobPhotos")      return await handleDeleteJobPhotos(body);
       if (body.action === "restoreJobPhotos")     return await handleRestoreJobPhotos(body);

@@ -599,3 +599,92 @@ export async function purgeJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) 
   await deleteObject(k, timeoutMs);
   await deleteObject(thumbKeyFor(k), timeoutMs);   // tolerates a missing thumb
 }
+
+// ── Expense receipts ───────────────────────────────────────────────────────
+// Same folder-is-the-record idea as photos: key by the owning expense's record
+// id and list by prefix. No table, no schema, nothing new to port to Neon —
+// which matters with Airtable mid-retirement.
+//
+// Receipts arrive TWO ways and they are not the same kind of file:
+//   phone photo  -> JPEG, compressed client-side, has a _thumb twin
+//   ScanSnap     -> PDF, often multi-page, uploaded UNTOUCHED, no thumbnail
+// A multi-page scan is ONE receipt; page count is irrelevant to the model.
+//
+// Receipts are deliberately EXCLUDED from the recycle bin's lifecycle rule —
+// they are financial records that may be wanted years later. The bin lives at
+// the top-level `_deleted/` prefix, so `expenses/` is excluded by construction.
+export function expensePrefix(expenseId) {
+  return `expenses/${String(expenseId)}/`;
+}
+
+// R2's list response carries no Content-Type, so derive it from the extension.
+// The client branches on this: images open in the lightbox, PDFs in the
+// browser's own viewer.
+export function contentTypeForKey(key) {
+  const ext = String(key).toLowerCase().split(".").pop();
+  if (ext === "pdf")  return "application/pdf";
+  if (ext === "png")  return "image/png";
+  if (ext === "webp") return "image/webp";
+  return "image/jpeg";
+}
+
+export async function listExpenseReceipts(expenseId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(expensePrefix(expenseId), timeoutMs);
+  const thumbs = new Set(objects.filter(o => isThumbKey(o.key)).map(o => o.key));
+
+  const originals = objects
+    .filter(o => !isThumbKey(o.key))
+    .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0));
+
+  return await Promise.all(originals.map(async (o) => {
+    const tKey = thumbKeyFor(o.key);
+    const contentType = contentTypeForKey(o.key);
+    const isPdf = contentType === "application/pdf";
+    return {
+      key: o.key,
+      name: o.key.slice(o.key.lastIndexOf("/") + 1),
+      contentType,
+      isPdf,
+      size: o.size,
+      uploadedAt: o.lastModified,
+      url: await presignGet(o.key),
+      // PDFs never have one — generating a thumbnail from a PDF needs pdf.js,
+      // which is a heavy dependency for a tile. The client shows a document
+      // icon instead of falling back to rendering the file as an image.
+      thumbUrl: (!isPdf && thumbs.has(tKey)) ? await presignGet(tKey) : null,
+    };
+  }));
+}
+
+// Decides how one uploaded receipt is handled, from its declared content type.
+// Pure on purpose: this is the rule that keeps a ScanSnap PDF out of the image
+// path, and it must be testable without a signer or a network.
+//
+// Anything unrecognised falls back to JPEG rather than being stored as an
+// unknown blob — the client only ever offers images and PDFs.
+export function receiptFileKind(contentType) {
+  const raw = String(contentType || "");
+  const ct = /^image\/(jpeg|png|webp)$/.test(raw) ? raw
+           : raw === "application/pdf" ? "application/pdf"
+           : "image/jpeg";
+  const isPdf = ct === "application/pdf";
+  return {
+    contentType: ct,
+    isPdf,
+    ext: isPdf ? "pdf" : ct === "image/png" ? "png" : ct === "image/webp" ? "webp" : "jpg",
+    // A PDF gets no thumbnail: generating one needs pdf.js, too heavy for a
+    // tile. The client shows a document icon instead.
+    wantsThumb: !isPdf,
+  };
+}
+
+// Guards a receipt key the client hands back, the same way assertKeyInJob does
+// for photos: without it a signed-in user could reach another expense's
+// receipts by editing one string.
+export function assertKeyInExpense(expenseId, key) {
+  const k = String(key || "");
+  if (!k.startsWith(expensePrefix(expenseId)) || k.includes("..")) {
+    throw new R2Error("That receipt does not belong to this expense", "KEY_OUTSIDE_EXPENSE");
+  }
+  return k;
+}

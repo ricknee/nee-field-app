@@ -554,6 +554,73 @@ await test("authz: employee passes auth on a field write (not 401/403)", async (
   ok(s !== 401 && s !== 403, `employee field write should pass auth, got ${s}`);
 });
 
+// ── expense receipts (docs/PLAN-expense-receipts.md, slice 1) ──
+const EXPENSE = (submittedBy = 'recEmp', reviewed = false) => ({
+  Expenses: [{ id: 'recX1', fields: {
+    'Submitted By': [submittedBy],
+    Reviewed: reviewed,
+    Amount: 42,
+  } }],
+});
+
+await test('expenseReceipts: employee sees own, not someone else\'s', async () => {
+  setR2();
+  mockTables = EXPENSE('recEmp');
+  ok((await GET('expenseReceipts', { expenseId: 'recX1' }, EMP_TOK)).statusCode !== 403, 'own expense');
+  mockTables = EXPENSE('recSomeoneElse');
+  eq((await GET('expenseReceipts', { expenseId: 'recX1' }, EMP_TOK)).statusCode, 403, "someone else's");
+  // Admin and office are not scoped — same rule handleExpenses already applies.
+  ok((await GET('expenseReceipts', { expenseId: 'recX1' }, ADMIN_TOK)).statusCode !== 403, 'admin any');
+  ok((await GET('expenseReceipts', { expenseId: 'recX1' }, OFFICE_TOK)).statusCode !== 403, 'office any');
+});
+
+await test('expenseReceipts: soft-fails when R2 is off, 400 without an id', async () => {
+  clearR2();
+  mockTables = EXPENSE('recEmp');
+  const b = json(await GET('expenseReceipts', { expenseId: 'recX1' }, EMP_TOK));
+  eq(b.available, false, 'available'); eq(b.reason, 'not-configured', 'reason');
+  eq((await GET('expenseReceipts', {})).statusCode, 400, 'missing expenseId');
+});
+
+await test('receipt kinds: a ScanSnap PDF never enters the image path', async () => {
+  const { receiptFileKind, expensePrefix, assertKeyInExpense } = await import('../netlify/functions/_r2.js');
+
+  // This is the rule that matters. Compressing a 300dpi scan through a canvas
+  // would either fail or silently rasterise it into something worse.
+  const pdf = receiptFileKind('application/pdf');
+  eq(pdf.contentType, 'application/pdf', 'type preserved');
+  eq(pdf.isPdf, true, 'flagged');
+  eq(pdf.ext, 'pdf', 'extension');
+  eq(pdf.wantsThumb, false, 'PDFs get NO thumbnail - pdf.js is too heavy for a tile');
+
+  const jpg = receiptFileKind('image/jpeg');
+  eq(jpg.isPdf, false, 'image not flagged'); eq(jpg.ext, 'jpg', 'extension');
+  eq(jpg.wantsThumb, true, 'images get a thumbnail');
+
+  eq(receiptFileKind('image/png').ext, 'png', 'png');
+  // Anything unrecognised becomes a JPEG rather than an unknown blob.
+  eq(receiptFileKind('application/zip').contentType, 'image/jpeg', 'unknown falls back');
+  eq(receiptFileKind(undefined).contentType, 'image/jpeg', 'missing falls back');
+
+  // Keys are scoped to the owning expense, and a foreign one is refused.
+  eq(expensePrefix('recX1'), 'expenses/recX1/', 'prefix');
+  let code = null;
+  try { assertKeyInExpense('recX1', 'expenses/recOTHER/x.jpg'); } catch (e) { code = e.code; }
+  eq(code, 'KEY_OUTSIDE_EXPENSE', 'foreign key refused');
+});
+
+await test('receipt upload: validation and the reviewed-expense lock', async () => {
+  setR2();
+  mockTables = EXPENSE('recEmp');
+  eq((await POST('expenseReceiptUploadUrls', { expenseId: 'recX1', files: [] })).statusCode, 400, 'no files');
+  const many = Array.from({ length: 11 }, () => ({ contentType: 'image/jpeg' }));
+  eq((await POST('expenseReceiptUploadUrls', { expenseId: 'recX1', files: many })).statusCode, 400, 'too many');
+  // An approved expense is locked for employees — attaching reuses that window.
+  mockTables = EXPENSE('recEmp', true);
+  eq((await POST('expenseReceiptUploadUrls',
+    { expenseId: 'recX1', files: [{ contentType: 'image/jpeg' }] }, EMP_TOK)).statusCode, 403, 'locked once reviewed');
+});
+
 // ── cross-job filter safety (docs/TODO.md sweep) ──
 // A bare FIND(name, ARRAYJOIN({Job})) is a SUBSTRING test, so a job whose name
 // contains another's ("Jenny Ln 1" inside "Jenny Ln 10/11/12") pulls the wrong

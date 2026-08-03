@@ -14739,6 +14739,26 @@
     return Math.round((weekHoursPaid(entries) - shown) * 100) / 100;
   }
 
+  // The same explanation, for the SCREEN. Three different numbers are in play and
+  // only one of them is displayed, which reads as an arithmetic error:
+  //
+  //   rows    sum of each entry rounded to the NEAREST quarter — what you see
+  //   logged  actual time from QuickBooks — what the EMPLOYEE sees
+  //   paid    logged rounded UP to the next quarter, once per week — the header
+  //
+  // Adding the day rows by hand gives `rows`, never `paid`. Without this the gap
+  // looks like a bug; it's the deliberate never-underpay policy above.
+  // Returns "" when they agree, so the note only appears when it's needed.
+  function weekHoursNote(entries) {
+    const list = entries || [];
+    if (!list.length) return "";
+    const shown  = list.reduce((s, e) => s + secToHrs(e.duration || 0), 0);
+    const logged = list.reduce((s, e) => s + (Number(e.duration) || 0), 0) / 3600;
+    const adj    = weekRoundingAdj(list);
+    if (!adj) return "";
+    return `rows ${fmtHrs(shown)} · logged ${logged.toFixed(2)} · +${adj.toFixed(2)} round-up`;
+  }
+
   async function loadPayrollEntries() {
     const wk1StartStr = $("prWk1Start").value;
     const wk2EndStr   = $("prWk2End").value;
@@ -14980,7 +15000,14 @@
     return `
       <div class="pr-week-label" style="background:${col.light}; color:#333;">
         <span>Week ${wkNum} — ${dateStr(weekStart)} to ${dateStr(weekEnd)}</span>
-        <span class="pr-week-total" data-week="${wkNum}">${fmtHrs(weekTotal)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}</span>
+        <span class="pr-week-total" data-week="${wkNum}">${fmtHrs(weekTotal)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}${
+          // Salaried rows show city-tax hours, not paid hours, so the round-up
+          // explanation doesn't apply to them.
+          isSalaried ? '' : (() => {
+            const note = weekHoursNote(Object.values(week?.days || {}).flat());
+            return note ? `<span style="display:block; font-size:10px; font-weight:500; color:#666; text-align:right; margin-top:2px;">${note}</span>` : '';
+          })()
+        }</span>
       </div>
       <div class="pr-table-wrap">
         <table class="pr-table pr-week-table" data-week="${wkNum}">

@@ -975,6 +975,29 @@ await test("r2Status: admin only — employee gets 403", async () => {
   eq((await GET("r2Status", {}, VIEWER_TOK)).statusCode, 403, "viewer");
 });
 
+await test("fleet: employees get full parity with admin; viewer stays read-only", async () => {
+  // The 🚗 Fleet button was admin-only in the UI even though every fleet action
+  // already sat at the permissive tier. The button is now open to all roles, so
+  // pin the backend tiers here — moving any of these into _ADMIN_POSTS /
+  // _ADMIN_READS would break the crews without touching a line of index.html.
+  mockTables = { "Fleet Vehicles": [{ id: "recV1", fields: { Name: "Truck 1" } }] };
+  for (const tok of [EMP_TOK, VIEWER_TOK]) {
+    ok((await GET("fleetVehicles", {}, tok)).statusCode !== 403, "reads vehicles");
+    ok((await GET("fleetServiceHistory", { vehicleId: "recV1" }, tok)).statusCode !== 403, "reads history");
+  }
+  const writes = [
+    ["updateFleetVehicle", { vehicleId: "recV1", currentMileage: 1000 }],
+    ["logMileage",         { vehicleId: "recV1", newMileage: 1000, date: "2026-08-03" }],
+    ["addFleetService",    { vehicleId: "recV1", date: "2026-08-03", serviceTypes: ["Oil Change"] }],
+    ["updateFleetService", { serviceRecordId: "recS1", date: "2026-08-03" }],
+    ["deleteFleetService", { serviceRecordId: "recS1" }],
+  ];
+  for (const [action, body] of writes) {
+    ok((await POST(action, body, EMP_TOK)).statusCode !== 403, `${action} employee allowed`);
+    eq((await POST(action, body, VIEWER_TOK)).statusCode, 403, `${action} viewer blocked`);
+  }
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

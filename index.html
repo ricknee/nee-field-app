@@ -2040,7 +2040,11 @@
     <div class="topbar-row2">
       <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ New Project</button>
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
-      <button id="btnFleet" class="btn btn-sm admin-only hidden" type="button">🚗 Fleet</button>
+      <!-- Fleet is intentionally ungated (like ⛽ Mileage below): crews service
+           the trucks, so every signed-in role gets it. The backend already
+           agrees — fleetVehicles/fleetServiceHistory are open reads and all
+           five fleet writes fall through to _NON_VIEWER in authzFor. -->
+      <button id="btnFleet" class="btn btn-sm" type="button">🚗 Fleet</button>
       <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
       <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
       <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
@@ -8586,7 +8590,11 @@
       const records = d.records || [];
       if (!records.length) { list.innerHTML = `<div class="empty-msg">No service records yet.</div>`; return; }
 
-      const admin = isAdmin();
+      // Edit/delete a service record: employees get full parity with admin on
+      // fleet, so this is !isViewer() rather than isAdmin(). Matches the
+      // backend, where updateFleetService/deleteFleetService are _NON_VIEWER —
+      // a viewer clicking these would only earn a 403.
+      const canEdit = !isViewer();
       const SERVICE_TYPES = ["Oil Change","Air Filter","Fuel Filter","Tire Rotation","Tires Replaced","Inspection","Brakes","Battery","Other"];
 
       list.innerHTML = records.map(r => `
@@ -8597,7 +8605,7 @@
               ${r.mileage ? `<span style="font-size:12px; color:var(--muted);">📍 ${r.mileage.toLocaleString()} mi</span>` : ""}
               ${r.cost ? `<span style="font-size:12px; color:var(--muted);">💵 ${fmtCurrency(r.cost)}</span>` : ""}
               ${r.performedBy ? `<span style="font-size:12px; color:var(--muted);">👤 ${esc(r.performedBy)}</span>` : ""}
-              ${admin ? `
+              ${canEdit ? `
                 <button data-svc-id="${esc(r.id)}" class="fleet-svc-edit-btn btn btn-sm" style="font-size:11px; padding:2px 8px;">✏️ Edit</button>
                 <button data-svc-id="${esc(r.id)}" data-svc-label="${esc(fmtDate(r.date))}" class="fleet-svc-del-btn" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;" title="Delete">🗑</button>
               ` : ""}
@@ -8616,7 +8624,7 @@
           ${r.tireBrand||r.tireSize ? `<div style="font-size:12px; color:var(--muted); margin-top:2px;">🔄 Tires: ${[r.tireBrand, r.tireSize].filter(Boolean).join(" ")}</div>` : ""}
           ${r.notes ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">📝 ${esc(r.notes)}</div>` : ""}
 
-          ${admin ? `
+          ${canEdit ? `
           <!-- Inline edit form (hidden by default) -->
           <div id="svcedit-${esc(r.id)}" style="display:none; margin-top:10px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:12px;">
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
@@ -8648,7 +8656,7 @@
           </div>` : ""}
         </div>`).join("");
 
-      if (admin) {
+      if (canEdit) {
         // Wire edit toggles
         list.querySelectorAll(".fleet-svc-edit-btn").forEach(btn => {
           btn.addEventListener("click", () => {

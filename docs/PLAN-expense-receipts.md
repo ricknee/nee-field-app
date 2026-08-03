@@ -1,7 +1,15 @@
 # Plan: Receipt photos on expenses
 
-**Status:** Planned, not started. Original design 2026-07-27; **rewritten 2026-08-01** now that
-the jobsite-photo system has shipped on R2 and most of the machinery already exists.
+**Status:** ✅ **SHIPPED 2026-08-03 — slices 1, 2 and 3 all complete.** Original design 2026-07-27;
+rewritten 2026-08-01 once the jobsite-photo system existed, which turned it from a from-scratch
+build into mostly assembly.
+
+Two things below are historical rather than current, and are kept because the reasoning still
+matters: §3a says images compress at 2048/q0.75, but receipts ship at **2560/q0.85** — they are
+small faded print, not a wide scene. And §5 slice 3 says the recycle-bin helpers are reused;
+they are not. Deleted receipts go to a bin **nested inside the expense** (`expenses/<id>/_deleted/`)
+specifically so the 30-day lifecycle rule on the top-level `_deleted/` prefix cannot reach them —
+receipts are financial records and were exempted from auto-purge (§9).
 
 **One-line:** Let whoever enters an expense attach a photo of the receipt, visible to admin and
 office, stored in R2 next to the jobsite photos.

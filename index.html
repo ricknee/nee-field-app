@@ -2818,6 +2818,11 @@
               <input type="checkbox" id="myExpBillable" checked style="accent-color:var(--green); width:16px; height:16px; cursor:pointer;" />
               <label for="myExpBillable" style="font-size:13px; cursor:pointer;">Billable to customer</label>
             </div>
+            <!-- Same as the admin form: picked now, uploaded after save. -->
+            <div style="display:flex; align-items:center; gap:10px; margin:4px 0 10px;">
+              <button id="myExpReceiptBtn" class="btn btn-sm" type="button" style="font-size:12px;">📎 Attach receipt</button>
+              <span id="myExpReceiptInfo" style="font-size:12px; color:var(--muted);">photo or scanned PDF — optional</span>
+            </div>
             <div style="display:flex; gap:8px;">
               <button id="myExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Expense</button>
               <button id="myExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
@@ -2882,6 +2887,14 @@
             <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">
               <input type="checkbox" id="genExpBillable" checked style="accent-color:var(--green); width:16px; height:16px; cursor:pointer;" />
               <label for="genExpBillable" style="font-size:13px; cursor:pointer;">Billable to customer</label>
+            </div>
+            <!-- Attach a receipt while entering the expense. The files are held
+                 here and uploaded straight after save, because a receipt is
+                 keyed to the expense's record id and that id doesn't exist
+                 until the expense is created. -->
+            <div style="display:flex; align-items:center; gap:10px; margin:4px 0 10px;">
+              <button id="genExpReceiptBtn" class="btn btn-sm" type="button" style="font-size:12px;">📎 Attach receipt</button>
+              <span id="genExpReceiptInfo" style="font-size:12px; color:var(--muted);">photo or scanned PDF — optional</span>
             </div>
             <div style="display:flex; gap:8px;">
               <button id="genExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Expense</button>
@@ -4969,6 +4982,117 @@
     input.click();
   }
 
+  /* ── Attach a receipt while creating the expense ────────────────────────
+   * A receipt is keyed to the expense's record id, and that id does not exist
+   * until the expense is saved. So the file is chosen up front, held here, and
+   * uploaded the instant the save returns an id.
+   *
+   * Holding rather than uploading also means an abandoned form leaves nothing
+   * behind — no orphaned objects under an expense that was never created.
+   */
+  const pendingReceipts = { gen: [], my: [] };
+
+  function wireReceiptPicker(which, btnId, infoId) {
+    const btn = $(btnId), info = $(infoId);
+    if (!btn || !info) return;
+    const paint = () => {
+      const n = pendingReceipts[which].length;
+      info.innerHTML = n
+        ? `${n} file${n === 1 ? "" : "s"} ready — uploads after save · <a href="#" data-clear="${which}" style="color:var(--blue);">clear</a>`
+        : `photo or scanned PDF — optional`;
+      const clear = info.querySelector(`[data-clear="${which}"]`);
+      if (clear) clear.onclick = (e) => { e.preventDefault(); pendingReceipts[which] = []; paint(); };
+    };
+    btn.onclick = () => {
+      const input = document.createElement("input");
+      input.type = "file";
+      // Images AND PDFs, and no `capture` — a scan comes off a PC.
+      input.accept = "image/*,application/pdf";
+      input.multiple = true;
+      input.style.display = "none";
+      document.body.appendChild(input);
+      input.addEventListener("change", () => {
+        pendingReceipts[which] = Array.from(input.files || []).slice(0, 10);
+        input.remove();
+        paint();
+      });
+      input.click();
+    };
+    paint();
+  }
+
+  // Called right after an expense saves. Failures are reported but never undo
+  // the save — the expense is already correct, it just has no receipt yet, and
+  // the user can attach one from the 🧾 button.
+  async function flushPendingReceipts(which, expenseId, say) {
+    const files = pendingReceipts[which];
+    if (!files.length || !expenseId) return;
+    try {
+      const { done, failed, lastErr } = await uploadReceiptFiles(expenseId, files, say);
+      pendingReceipts[which] = [];
+      if (failed) showAppToast(`Expense saved · ${done} receipt${done === 1 ? "" : "s"} attached, ${failed} failed`);
+      else if (done) showAppToast(`Expense saved with ${done} receipt${done === 1 ? "" : "s"} ✓`);
+    } catch (e) {
+      console.error("[receipt-on-save]", e);
+      pendingReceipts[which] = [];
+      showAppToast(`Expense saved, but the receipt didn't upload: ${e.message}`);
+    }
+  }
+
+  // The upload core, shared by the receipts modal and by the "attach while
+  // creating the expense" path on the New Expense forms.
+  //
+  // Takes an expenseId explicitly rather than reading modal state, because the
+  // form path only learns the id AFTER the expense saves — a receipt cannot be
+  // keyed to a record that does not exist yet.
+  //
+  // `onStatus` lets each caller report progress in its own place (modal line,
+  // or the form's save button) without this function knowing about either.
+  async function uploadReceiptFiles(expenseId, files, onStatus = () => {}) {
+    const say = (t) => { try { onStatus(t); } catch {} };
+    const prepared = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
+      say(`Preparing ${i + 1} of ${files.length}…`);
+      if (isPdf) {
+        // A scan is uploaded byte for byte. Running a 300dpi PDF through the
+        // canvas compressor would fail or silently rasterise it.
+        prepared.push({ contentType: "application/pdf", body: f, thumb: null });
+      } else {
+        // Receipts keep more detail than jobsite photos — small faded print,
+        // not a wide scene.
+        const full  = await compressImage(f, 2560, 0.85);
+        const thumb = await compressImage(f, 400, 0.7);
+        if (!full) throw new Error(`Could not read "${f.name || "file"}"`);
+        prepared.push({ contentType: "image/jpeg", body: full, thumb });
+      }
+    }
+
+    const d = await apiPost("expenseReceiptUploadUrls", {
+      expenseId,
+      files: prepared.map(p => ({ contentType: p.contentType })),
+    });
+    const uploads = d.uploads || [];
+    if (uploads.length !== prepared.length) throw new Error("Upload could not be prepared");
+
+    let done = 0, failed = 0, lastErr = "";
+    for (let i = 0; i < prepared.length; i++) {
+      say(`Uploading ${i + 1} of ${prepared.length}…`);
+      try {
+        await putToR2(uploads[i].putUrl, prepared[i].body, uploads[i].contentType);
+        if (prepared[i].thumb && uploads[i].thumbPutUrl) {
+          await putToR2(uploads[i].thumbPutUrl, prepared[i].thumb, uploads[i].contentType);
+        }
+        done++;
+      } catch (err) {
+        failed++; lastErr = err.message || String(err);
+        console.error("[receipt-upload] failed", err);
+      }
+    }
+    return { done, failed, lastErr };
+  }
+
   async function uploadExpenseReceipts(files) {
     const status = $("expReceiptsStatus");
     const MAX = 10;
@@ -4978,46 +5102,8 @@
     }
 
     try {
-      // Prepare first: images get compressed + a thumbnail, PDFs pass straight
-      // through. Branching happens HERE, at the picker, not deeper in.
-      const prepared = [];
-      for (let i = 0; i < files.length; i++) {
-        const f = files[i];
-        const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
-        status.textContent = `Preparing ${i + 1} of ${files.length}…`;
-        if (isPdf) {
-          prepared.push({ isPdf: true, contentType: "application/pdf", body: f, thumb: null });
-        } else {
-          // Receipts are small faded print, so keep more detail than a jobsite
-          // photo: 2560px at q0.85 rather than 2048 at q0.75.
-          const full  = await compressImage(f, 2560, 0.85);
-          const thumb = await compressImage(f, 400, 0.7);
-          if (!full) throw new Error(`Could not read "${f.name || "file"}"`);
-          prepared.push({ isPdf: false, contentType: "image/jpeg", body: full, thumb });
-        }
-      }
-
-      const d = await apiPost("expenseReceiptUploadUrls", {
-        expenseId: expReceiptState.expenseId,
-        files: prepared.map(p => ({ contentType: p.contentType })),
-      });
-      const uploads = d.uploads || [];
-      if (uploads.length !== prepared.length) throw new Error("Upload could not be prepared");
-
-      let done = 0, failed = 0, lastErr = "";
-      for (let i = 0; i < prepared.length; i++) {
-        status.textContent = `Uploading ${i + 1} of ${prepared.length}…`;
-        try {
-          await putToR2(uploads[i].putUrl, prepared[i].body, uploads[i].contentType);
-          if (prepared[i].thumb && uploads[i].thumbPutUrl) {
-            await putToR2(uploads[i].thumbPutUrl, prepared[i].thumb, uploads[i].contentType);
-          }
-          done++;
-        } catch (err) {
-          failed++; lastErr = err.message || String(err);
-          console.error("[receipt-upload] failed", err);
-        }
-      }
+      const { done, failed, lastErr } = await uploadReceiptFiles(
+        expReceiptState.expenseId, files, (t) => { status.textContent = t; });
 
       await refreshExpenseReceipts();
       // Repaint the row behind the modal so its slot matches what was just
@@ -9003,7 +9089,11 @@
       // handler.
       const payload = { jobId, date, type, amount, credit, description: desc, billable };
       if (vendorId.startsWith("rec")) payload.vendorId = vendorId;
-      await apiPost("addGeneralExpense", payload);
+      const saved = await apiPost("addGeneralExpense", payload);
+      // Upload any receipt picked on the form. Awaited so the panel doesn't
+      // close mid-upload, but a failure here never undoes the save — the
+      // expense is already correct.
+      await flushPendingReceipts("gen", saved?.id, (t) => { saveBtn.textContent = t; });
       msgEl.style.display = "";
       $("genExpAmount").value = "";
       $("genExpCredit").value = "";
@@ -9068,6 +9158,9 @@
 
   async function openMyExpenseForm(expense) {
     myExpEditingId = expense ? expense.id : null;
+    // Clear anything left from a previously abandoned form, then wire the picker.
+    pendingReceipts.my = [];
+    wireReceiptPicker("my", "myExpReceiptBtn", "myExpReceiptInfo");
     $("myExpFormTitle").textContent = expense ? "✏ Edit Expense" : "➕ New Expense";
     // Vendor picker from the shared cache (employees can't create vendors).
     await loadVendors();
@@ -9122,8 +9215,10 @@
     try {
       if (myExpEditingId) {
         await apiPost("updateExpense", { expenseId: myExpEditingId, ...payload });
+        await flushPendingReceipts("my", myExpEditingId, (t) => { btn.textContent = t; });
       } else {
-        await apiPost("addGeneralExpense", { jobId: job.id, ...payload });
+        const saved = await apiPost("addGeneralExpense", { jobId: job.id, ...payload });
+        await flushPendingReceipts("my", saved?.id, (t) => { btn.textContent = t; });
       }
       closeMyExpenseForm();
       loadMyExpenses(job.id);
@@ -9452,6 +9547,7 @@
     });
     const genExpSave = $("genExpSaveBtn");
     if (genExpSave) genExpSave.addEventListener("click", saveGeneralExpense);
+    wireReceiptPicker("gen", "genExpReceiptBtn", "genExpReceiptInfo");
 
     // My Expenses (employee self-service)
     const btnAddMyExp = $("btnAddMyExpense");

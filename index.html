@@ -14696,9 +14696,22 @@
   // Stated goal: as true to logged time as possible, but never under it.
   //
   // Why not per entry: secToHrs rounds each timesheet to the NEAREST quarter, and
-  // QuickBooks splits a working day into ~3 segments, so that error compounds
-  // downward. Measured over 2026-06-28..07-25 the old behaviour paid 666.25 h
-  // against 669.58 h actually worked — 3.33 h SHORT every four weeks.
+  // QuickBooks splits a working day into ~3 segments, so an individual week can
+  // land well under actual. Measured over 2026-06-28..07-25 the old behaviour paid
+  // 666.25 h against 669.58 h actually worked — 3.33 h short.
+  //
+  // CORRECTION 2026-08-03: that window is the WORST month of the year, not a
+  // typical one, and the original note read as if it generalised. Measured against
+  // Neon across all of 2026 (2,117 entries, 6,421.96 h actual), per-entry rounding
+  // nets out at just 5.46 h under — 0.085%. Two months ran the other way (March
+  // +2.33 h OVER). Nearest-quarter rounding is symmetric, so it mostly cancels.
+  //
+  // The policy stands anyway, and NOT because of the size of the drift. It stands
+  // because an employee reads 49.32 h in QuickBooks and must never be paid less
+  // than that (owner, 2026-08-03: "worth a few hours lost to me"). Paying above
+  // logged time is a deliberate cost, not an error to optimise away. Do not
+  // "fix" this into per-entry rounding on the grounds that the average is small —
+  // the average is not what the employee looks at.
   //
   // Why weekly rather than per pay period: overtime is computed per week
   // (Reg = min(total,40), OT = the remainder), so a period-level round-up has no

@@ -1,9 +1,37 @@
 # TODO
 
-## 🐛 NEXT UP — sweep the remaining `FIND(name, ARRAYJOIN(...))` substring filters
+## ✅ DONE 2026-08-03 — `FIND(name, ARRAYJOIN(...))` substring sweep
 
-**Agreed 2026-08-02 as the next piece of work. ~1-2 h.** The only genuine *correctness* bug
-outstanding; everything else on the list is a feature or a cleanup.
+Seven sites fixed, three deliberately left. Regression tests added for the three that could be
+reached through a handler (`jobInspections`, `jobEstimates`, `generator`) — each fails against the
+old code.
+
+**Fixed** — newline-delimited so `FIND` matches per linked element, plus an in-memory record-id
+check wherever an id was available:
+
+| Site | What leaked |
+|---|---|
+| `handleGenerator` | wrong job's generator **and** its whole service history |
+| `handleGenerator` (service) | wrong generator's services via prefix-colliding asset id |
+| `handleJobInspections` | wrong job's inspections |
+| `handleJobEstimates` | wrong job's estimates — money, so it misstated expected revenue and GP |
+| `handleEstimateTemplates` | another contractor's templates ("Case Farms" vs "Case Farms North") |
+| generator resolve-by-job (commissioning) | attached a service record to the wrong generator |
+| duplicate-service check | **functional**: a substring hit made the dup check fire on another generator and silently skip creating a record |
+| existing-warranty count | decided whether warranties got created |
+
+`handleGenerator` was also interpolating the job name **unescaped** — a name containing a double
+quote broke the formula outright. Now escaped.
+
+**Deliberately left:**
+- `airtable.js:2846` (`Job Name (Text)`) — already safe. `{Job Name (Text)}` holds
+  `"Job Name (PO suffix)"`, so an exact match never fires; the substring `FIND` is a deliberate
+  loose prefilter and correctness comes from the in-memory record-id check right below it.
+- `airtable.js:3339` (Inspection Agency Name), `:3433` (power-company contacts) — these back
+  **name typeaheads**, where substring matching is plausibly the intended behaviour. Making them
+  exact could break a picker. Confirm the callers pass a full selected name before changing.
+
+## Previously recorded (kept for context)
 
 The cross-job filter bug fixed in `03f552a` (handleTimeEntries / handleExpenses) has the same
 shape in four remaining places. Each matches a job by NAME via substring, so one job whose name

@@ -554,6 +554,60 @@ await test("authz: employee passes auth on a field write (not 401/403)", async (
   ok(s !== 401 && s !== 403, `employee field write should pass auth, got ${s}`);
 });
 
+// ── cross-job filter safety (docs/TODO.md sweep) ──
+// A bare FIND(name, ARRAYJOIN({Job})) is a SUBSTRING test, so a job whose name
+// contains another's ("Jenny Ln 1" inside "Jenny Ln 10/11/12") pulls the wrong
+// job's records. Two defences: newline-delimit so FIND matches per linked
+// element, and verify the linked record id in memory for duplicate names.
+const TWO_JOBS = {
+  Jobs: [{ id: 'recJ1', fields: { 'Job Name': 'Jenny Ln 1' } }],
+};
+const linkedTo = (id, extra = {}) => ({ Job: [id], ...extra });
+
+await test('jobInspections: does not leak a longer-named job\'s inspections', async () => {
+  mockTables = {
+    ...TWO_JOBS,
+    'Job Inspections': [
+      { id: 'recI1', fields: linkedTo('recJ1',    { 'Inspection Type': 'Rough' }) },
+      { id: 'recI2', fields: linkedTo('recJ10',   { 'Inspection Type': 'Final' }) },  // "Jenny Ln 10/11/12"
+    ],
+  };
+  const b = json(await GET('jobInspections', { jobId: 'recJ1' }));
+  eq(b.inspections.length, 1, 'only this job');
+  eq(b.inspections[0].id, 'recI1', 'the right one');
+  // And the filter itself is exact-per-element, not a bare substring test.
+  ok(/%0A/.test(lastFetch.url), `filter should newline-delimit, got ${decodeURIComponent(lastFetch.url)}`);
+});
+
+await test('jobEstimates: does not leak a longer-named job\'s estimates', async () => {
+  mockTables = {
+    ...TWO_JOBS,
+    'Job Estimates': [
+      { id: 'recE1', fields: linkedTo('recJ1') },
+      { id: 'recE2', fields: linkedTo('recJ10') },
+    ],
+    'Sent Estimate PDFs': [],
+  };
+  const b = json(await GET('jobEstimates', { jobId: 'recJ1' }));
+  eq(b.estimates.length, 1, 'only this job');
+  eq(b.estimates[0].id, 'recE1', 'the right one');
+});
+
+await test('generator: does not resolve to a longer-named job\'s generator', async () => {
+  mockTables = {
+    ...TWO_JOBS,
+    Generators: [
+      { id: 'recG2', fields: { Job: ['recJ10'], 'Asset ID': 'GEN-10' } },  // wrong job, listed first
+      { id: 'recG1', fields: { Job: ['recJ1'],  'Asset ID': 'GEN-1'  } },
+    ],
+    'Generator Service': [],
+  };
+  const b = json(await GET('generator', { jobId: 'recJ1' }));
+  // Before the fix this returned recG2 — the first row Airtable handed back.
+  ok(b.generator, 'a generator was found');
+  eq(b.generator.id, 'recG1', 'the one actually linked to this job');
+});
+
 // ── jobsite photos on R2 (docs/PLAN-job-photos.md) ──
 // COVERAGE NOTE: the signing path (presigned URLs, ListObjectsV2) needs
 // aws4fetch, which is intentionally NOT installed for this suite — the harness

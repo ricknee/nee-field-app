@@ -154,7 +154,7 @@ because they're next:
 
 | Item | Size | Notes |
 |---|---|---|
-| `FIND` substring sweep | ~1-2 h | The only genuine *correctness* bug outstanding. `docs/TODO.md` |
+| ~~`FIND` substring sweep~~ | — | ✅ **Done 2026-08-03** — 7 sites fixed, 3 regression tests. `docs/TODO.md` |
 | Receipts on expenses | ~8-11 h | Feature. Plan is complete. |
 | R2 lifecycle rule | ~15 min | Add prefix `_deleted/` in the Cloudflare dashboard |
 | Retire JotForm photos | ~10 min | ~Aug 8, after a week's soak. Pause form + scenario `4522457` |

@@ -2075,13 +2075,29 @@ async function handleGenerator(params) {
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, generator: null, serviceRecords: [] });
   const jobName = jobRecords[0].fields[F.job.name] || "";
-  const filter = `FIND("${jobName}", ARRAYJOIN({${F.gen.job}}))`;
-  const genRecords = await fetchAll(TABLES.generators, { filter });
+  // Cross-job filter safety (see CLAUDE.md). A bare FIND is a SUBSTRING test, so
+  // "Jenny Ln 1" matches "Jenny Ln 10/11/12" and the wrong job's generator comes
+  // back. Two defences, same as handleExpenses / handleGetJobInvoices:
+  //   1. newline-delimit both sides so FIND becomes an exact match PER LINKED
+  //      ELEMENT rather than anywhere in the joined string
+  //   2. verify the linked record id in memory, which also survives two jobs
+  //      that genuinely share a name
+  // The name is escaped too — it was interpolated raw, so a job name containing
+  // a double quote broke the formula outright.
+  const safeName = escapeFormulaString(jobName);
+  const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({${F.gen.job}}, "\n") & "\n")`;
+  const genCandidates = await fetchAll(TABLES.generators, { filter });
+  const genRecords = genCandidates.filter(r =>
+    Array.isArray(r.fields?.[F.gen.job]) && r.fields[F.gen.job].includes(jobId));
   if (!genRecords.length) return resp(200, { ok: true, generator: null, serviceRecords: [] });
   const r = genRecords[0]; const f = r.fields || {};
   const generator = { id:r.id,assetId:g(f,F.gen.assetId)||"",customer:g(f,F.gen.customer)||"",customerPhone:g(f,F.gen.customerPhone)||"",siteAddress:g(f,F.gen.siteAddress)||"",brand:g(f,F.gen.brand)||"",model:g(f,F.gen.model)||"",kw:g(f,F.gen.kw)||"",serialNumber:g(f,F.gen.serialNumber)||"",transferSwitchModel:g(f,F.gen.transferSwitchModel)||"",transferSwitchSerial:g(f,F.gen.transferSwitchSerial)||"",fuelType:g(f,F.gen.fuelType)||"",installDate:g(f,F.gen.installDate)||"",servicePlanActive:gBool(f,F.gen.servicePlanActive),serviceIntervalMonths:g(f,F.gen.serviceIntervalMonths)||"",nextServiceDue:g(f,F.gen.nextServiceDue)||"",warrantyExpiration:g(f,F.gen.warrantyExpiration)||"",status:g(f,F.gen.status)||"",batteryInstallDate:g(f,F.gen.batteryInstallDate)||"",batteryAge:g(f,F.gen.batteryAge)||"",serviceStatus:g(f,F.gen.serviceStatus)||"",notes:g(f,F.gen.notes)||"" };
   const genAssetId = generator.assetId || "";
-  const svcFilter = genAssetId ? `FIND("${genAssetId}", ARRAYJOIN({${F.svc.generator}}))` : `FALSE()`;
+  // Same shape, same fix: an asset id that is a prefix of another (GEN-1 vs
+  // GEN-10) would otherwise pull in the wrong generator's service history.
+  const svcFilter = genAssetId
+    ? `FIND("\n${escapeFormulaString(genAssetId)}\n", "\n" & ARRAYJOIN({${F.svc.generator}}, "\n") & "\n")`
+    : `FALSE()`;
   const svcRecords = await fetchAll(TABLES.generatorService, { filter: svcFilter, sortField: F.svc.serviceDate, sortDir: "desc" });
   const serviceRecords = svcRecords.map(sr => { const sf=sr.fields||{}; return { id:sr.id,serviceRecordId:g(sf,F.svc.serviceRecordId)||"",serviceNumber:g(sf,F.svc.serviceNumber)||"",serviceDate:g(sf,F.svc.serviceDate)||"",serviceType:g(sf,F.svc.serviceType)||"",technician:(()=>{const v=sf[F.svc.technicianName];return Array.isArray(v)?(v[0]||""):(v||"");})(),servicePlanVisit:gBool(sf,F.svc.servicePlanVisit),oilChanged:gBool(sf,F.svc.oilChanged),oilFilterChanged:gBool(sf,F.svc.oilFilterChanged),airFilterChanged:gBool(sf,F.svc.airFilterChanged),sparkPlugsChanged:gBool(sf,F.svc.sparkPlugsChanged),batteryTested:gBool(sf,F.svc.batteryTested),batteryReplaced:gBool(sf,F.svc.batteryReplaced),loadTestPerformed:gBool(sf,F.svc.loadTestPerformed),firmwareChecked:gBool(sf,F.svc.firmwareChecked),exerciseChecked:gBool(sf,F.svc.exerciseChecked),troubleCodesFound:g(sf,F.svc.troubleCodesFound)||"",workNotes:g(sf,F.svc.workNotes)||"",partsUsed:g(sf,F.svc.partsUsed)||"",laborHours:g(sf,F.svc.laborHours)||"",generatorHours:g(sf,F.svc.generatorHours)||"" }; });
   return resp(200, { ok: true, generator, serviceRecords });
@@ -2191,7 +2207,16 @@ async function handleJobInspections(params) {
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, inspections: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
-  const records = await fetchAll("Job Inspections", { filter: `FIND("${jobName}", ARRAYJOIN({Job}))`, sortField: "Inspection Date", sortDir: "desc" });
+  // Cross-job filter safety — see the note in handleGenerator. A bare FIND is a
+  // substring test, so inspections from "Jenny Ln 10/11/12" would surface on
+  // "Jenny Ln 1". Newline-delimit for an exact per-element match, then verify
+  // the linked record id in memory for duplicate names.
+  const safeName = escapeFormulaString(jobName);
+  const candidates = await fetchAll("Job Inspections", {
+    filter: `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`,
+    sortField: "Inspection Date", sortDir: "desc",
+  });
+  const records = candidates.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
   const inspections = records.map(r => { const f=r.fields||{}; const permitRaw=f["Permit Number"]; const permit=Array.isArray(permitRaw)?permitRaw[0]:(permitRaw||""); const phoneRaw=f["Inspections Agency Phone #"]; const agencyPhone=Array.isArray(phoneRaw)?phoneRaw[0]:(phoneRaw||""); return { id:r.id,inspectionType:f["Inspection Type"]?.name||f["Inspection Type"]||"",date:f["Inspection Date"]||"",status:f["Inspection Status"]?.name||f["Inspection Status"]||"",notes:f["Notes"]||"",permitNumber:permit,agencyPhone }; });
   return resp(200, { ok: true, inspections });
 }
@@ -2220,10 +2245,17 @@ async function handleJobEstimates(params) {
   // back to the master Job Estimates record. Fetch both in parallel and join
   // the matching Sent PDF in below so frontend "+ Add as Line" can read the
   // customer-facing scope text via est.snapshot.
-  const [records, sentPdfRecords] = await Promise.all([
-    fetchAll("Job Estimates", { filter: `FIND("${jobName}", ARRAYJOIN({Job}))`, sortField: "Estimate Date", sortDir: "desc" }),
+  // Cross-job filter safety — see the note in handleGenerator. Estimates are
+  // money, so a leak here misstates a job's expected revenue and its GP.
+  const safeName = escapeFormulaString(jobName);
+  const [estCandidates, sentPdfRecords] = await Promise.all([
+    fetchAll("Job Estimates", {
+      filter: `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`,
+      sortField: "Estimate Date", sortDir: "desc",
+    }),
     fetchSentEstimatePDFsForJob(jobId)
   ]);
+  const records = estCandidates.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
 
   // Newest-first so the cascade's .find() returns the most-recent match.
   // Tiebreaker: Estimate Display # desc.
@@ -2475,9 +2507,17 @@ async function handleEstimateTemplates(params) {
   // ARRAYJOIN() on a multipleRecordLinks field expands to the primary field
   // of the linked table; Companies' primary field is "Company Name", so a
   // FIND on the joined string resolves the linked contractor by name.
+  // Cross-name filter safety — see the note in handleGenerator. Newline-delimited
+  // so FIND is an exact match per linked contractor rather than a substring:
+  // without it, "Case Farms" also matches "Case Farms North" and that
+  // contractor's templates appear under the wrong one.
+  //
+  // No in-memory id verification here, unlike the job sites: the caller passes a
+  // contractor NAME, not a record id, so there is nothing to verify against.
+  // Exact-per-element matching is the whole fix available.
   const safeContractor = escapeFormulaString((contractor || "").trim());
   const filter = safeContractor
-    ? `AND({Active}=TRUE(), FIND("${safeContractor}", ARRAYJOIN({Contractor})))`
+    ? `AND({Active}=TRUE(), FIND("\n${safeContractor}\n", "\n" & ARRAYJOIN({Contractor}, "\n") & "\n"))`
     : `{Active}=TRUE()`;
   const records = await fetchAll("Estimate Templates", { filter, sortField: "Template Name", sortDir: "asc" });
 
@@ -3759,7 +3799,13 @@ async function handleGetWarranties(params) {
   if (!assetId) return resp(200, { ok: true, warranties: [] });
 
   const safe = escapeFormulaString(assetId);
-  const filter = `FIND("${safe}", ARRAYJOIN({${F.warranty.generator}}))`;
+  // Asset ids are prefix-collidable (GEN-1 vs GEN-10), so exact-per-element.
+  const filter = `FIND("
+${safe}
+", "
+" & ARRAYJOIN({${F.warranty.generator}}, "
+") & "
+")`;
   const records = await fetchAll(TABLES.warranties, {
     filter,
     sortField: F.warranty.endDate,
@@ -3883,9 +3929,14 @@ async function handleCommissionGenerator(body) {
       const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
       const jobName = jobRecords[0]?.fields?.[F.job.name] || "";
       if (jobName) {
+        // Cross-job filter safety — see handleGenerator. Exact-per-element match,
+        // then verify the linked record id so a same-named job can't resolve to
+        // the wrong generator and attach a service record to it.
         const safeName = escapeFormulaString(jobName);
-        const linkedFilter = `FIND("${safeName}", ARRAYJOIN({${F.gen.job}}))`;
-        const linked = await fetchAll(TABLES.generators, { filter: linkedFilter });
+        const linkedFilter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({${F.gen.job}}, "\n") & "\n")`;
+        const linkedAll = await fetchAll(TABLES.generators, { filter: linkedFilter });
+        const linked = linkedAll.filter(r =>
+          Array.isArray(r.fields?.[F.gen.job]) && r.fields[F.gen.job].includes(jobId));
         if (linked.length) resolvedGeneratorId = linked[0].id;
       }
     } catch (err) {
@@ -3948,7 +3999,14 @@ async function handleCommissionGenerator(body) {
   if (assetIdForLookup) {
     try {
       const safe = escapeFormulaString(assetIdForLookup);
-      const dupFilter = `AND(FIND("${safe}", ARRAYJOIN({${F.svc.generator}})), {${F.svc.serviceType}}="${svcType}")`;
+      // Exact-per-element: a substring hit here makes the DUPLICATE CHECK fire on
+      // another generator, silently skipping a service record that should exist.
+      const dupFilter = `AND(FIND("
+${safe}
+", "
+" & ARRAYJOIN({${F.svc.generator}}, "
+") & "
+"), {${F.svc.serviceType}}="${svcType}")`;
       const existing = await fetchAll(TABLES.generatorService, { filter: dupFilter });
       if (existing.length) existingCommissioningRecord = existing[0];
     } catch (err) {
@@ -3991,7 +4049,13 @@ async function handleCommissionGenerator(body) {
   if (assetIdForLookup) {
     try {
       const safe = escapeFormulaString(assetIdForLookup);
-      const existingFilter = `FIND("${safe}", ARRAYJOIN({${F.warranty.generator}}))`;
+      // Exact-per-element — this count decides whether warranties get created.
+      const existingFilter = `FIND("
+${safe}
+", "
+" & ARRAYJOIN({${F.warranty.generator}}, "
+") & "
+")`;
       const existing = await fetchAll(TABLES.warranties, { filter: existingFilter });
       existingWarrantyCount = existing.length;
     } catch (err) {

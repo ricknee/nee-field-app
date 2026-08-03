@@ -42,12 +42,23 @@ Everything else is negotiable. That isn't.
 
 No building. Confirms what shipped on 2026-07-30 actually works before anything is stacked on it.
 
-- **Payroll smoke test + generate the PDF** ⚠ **before the ~Aug 9 run** — 20 min. The weekly
-  round-up has never been smoke-tested and the PDF has never been produced.
-- **Confirm city-tax allocation** with whoever handles withholding.
-- **Run the reconciler daily** — `node db/etl/time-entries-full.mjs`. The run the morning after a
+- ✅ **Payroll smoke test + PDF — DONE 2026-08-03.** A run was created and
+  `NEE_Payroll_2026-08-08.pdf` saved. Every line reconciled against Neon: Jeff Koehn 49.3167
+  actual → 49.50 paid (Reg 40 / OT 9.50); Patrick Gingerich 40.9833 → 41.00 (Reg 40 / OT 1, city
+  tax 39.50 A-No-Tax + 1.50 Columbiana = 41.00); three salaried employees rendered correctly;
+  week 2 empty and Neon agrees. Reg+OT sums to the total and city-tax hours sum to the paid
+  figure in every case. The weekly round-up is therefore smoke-tested and lands in the
+  employee's favour, as intended.
+- ✅ **City-tax requirement — CLARIFIED 2026-08-03.** All the business needs is **hours worked per
+  city**; the tax accountant handles withholding itself. The current rule (assign the weekly
+  round-up to the jurisdiction with the most hours) satisfies that, and the round-up is ≤0.25 h.
+  > ⚠ **Still untested by real data:** nobody this period had a round-up *and* split
+  > jurisdictions at once. Jeff had a round-up but one jurisdiction; Patrick had two jurisdictions
+  > but needed no round-up. The allocation rule has never actually fired. Worth a glance the first
+  > period it does.
+- ⬜ **Run the reconciler daily** — `node db/etl/time-entries-full.mjs`. The run the morning after a
   Make 21:00 is the one that settles double-counting.
-- **Watch the write mirror** on the next real time-entry add or Labor-Reviewed tick — it shipped
+- ⬜ **Watch the write mirror** on the next real time-entry add or Labor-Reviewed tick — it shipped
   alongside a broken driver and has never been exercised.
 
 > 🛑 **STOP POINT — and a good one.** Everything works, Make is intact, nothing is half-done in a
@@ -160,4 +171,7 @@ because they're next:
 - **"Should I do X first?"** → if X is in §7, no.
 - **Update it when a step lands**, not when it's planned.
 
-**Current answer to "what's next": the payroll smoke test in §3 NOW.** It has a date on it.
+**Current answer to "what's next":** the two remaining ⬜ items in §3 NOW are both *observational* —
+run the reconciler, and watch the write mirror next time someone edits a time entry. Neither is a
+sitting. Once they've been seen working, **Step 1 (payroll reads → Neon, ~3-4 h)** is the next
+build, and there is nothing dated ahead of it.

@@ -4784,6 +4784,45 @@
     showLightbox((jobPhotoState.index + delta + n) % n);
   };
 
+  // Fills each expense row's receipt button with what that expense actually
+  // has: a thumbnail if it's a photo, 📄 if it's a scan, and a muted "—" when
+  // there is nothing attached.
+  //
+  // The "—" is the useful half. Approving is faster when the expenses WITHOUT a
+  // receipt are the ones that stand out, since those are the few worth chasing.
+  // A receipt is never required to save an expense (owner decision) — this
+  // surfaces the gap instead of preventing it.
+  async function paintExpenseReceiptSlots(el, jobId) {
+    let map;
+    try {
+      const d = await apiGet("expenseReceiptSummary", { jobId });
+      if (!d.available) return;          // storage off — leave the plain buttons
+      map = d.receipts || {};
+    } catch { return; }                  // never let this break the expenses tab
+
+    el.querySelectorAll("[data-receipt-slot]").forEach(btn => {
+      const info = map[btn.dataset.receiptSlot];
+      if (!info) return;
+      if (info.count === null) return;   // lookup failed for this one — say nothing rather than "none"
+
+      if (!info.count) {
+        btn.innerHTML = `<span style="color:var(--muted); font-weight:600;">—</span>`;
+        btn.title = "No receipt — click to attach";
+        btn.style.opacity = "0.5";
+        return;
+      }
+      const badge = info.count > 1
+        ? `<span style="position:absolute; right:-2px; bottom:-2px; font-size:9px; font-weight:700; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:0 3px;">${info.count}</span>`
+        : "";
+      const inner = info.thumbUrl
+        ? `<img src="${esc(info.thumbUrl)}" alt="receipt" style="width:26px; height:26px; object-fit:cover; border-radius:3px; display:block;" />`
+        : `<span style="font-size:15px;">📄</span>`;
+      btn.innerHTML = `<span style="position:relative; display:inline-block;">${inner}${badge}</span>`;
+      btn.title = `${info.count} receipt${info.count === 1 ? "" : "s"} — click to view`;
+      btn.style.opacity = "1";
+    });
+  }
+
   /* ── Expense receipts (docs/PLAN-expense-receipts.md, slice 1) ──────────
    * Reuses the photo machinery: compressImage for phone shots, presigned PUTs
    * straight to R2, the same folder-is-the-record keying. The one thing it does
@@ -4923,6 +4962,11 @@
       }
 
       await refreshExpenseReceipts();
+      // Repaint the row behind the modal so its slot matches what was just
+      // attached — otherwise the table keeps showing "—" until a reload.
+      if (state.selected?.id) {
+        paintExpenseReceiptSlots(document, state.selected.id);
+      }
       if (failed) status.textContent = `${done} attached, ${failed} failed. ${lastErr}`;
       else showAppToast(`${done} receipt${done === 1 ? "" : "s"} attached ✓`);
     } catch (e) {
@@ -6018,7 +6062,7 @@
             <input type="checkbox" data-expense-id="${esc(e.id)}" class="exp-review-chk" title="Mark as reviewed" style="cursor:pointer; width:16px; height:16px;" />
           </td>
           <td style="text-align:center;">
-            <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(e.vendor || e.description || fmtDate(e.date))}" class="exp-receipt-btn" title="Receipts" style="background:none; border:none; cursor:pointer; font-size:15px; opacity:0.75; padding:2px 4px;">🧾</button>
+            <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(e.vendor || e.description || fmtDate(e.date))}" class="exp-receipt-btn" data-receipt-slot="${esc(e.id)}" title="Receipts" style="background:none; border:none; cursor:pointer; font-size:15px; opacity:0.75; padding:2px 4px; min-width:34px;">🧾</button>
             <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(fmtDate(e.date))} – ${esc(e.vendor || e.description || "")}" class="exp-delete-btn" title="Delete" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;">🗑</button>
           </td>` : ""}
         </tr>`;
@@ -6140,6 +6184,10 @@
         btn.addEventListener("click", () =>
           openExpenseReceipts(btn.dataset.expenseId, btn.dataset.expenseLabel));
       });
+      // Then fill in what each expense actually has. Deliberately AFTER the
+      // table renders and not awaited: the receipt lookup hits storage, and the
+      // expenses list must never wait on it to appear.
+      paintExpenseReceiptSlots(el, jobId);
 
       // Wire delete buttons
       el.querySelectorAll(".exp-delete-btn").forEach(btn => {

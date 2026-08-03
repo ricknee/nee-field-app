@@ -15,7 +15,7 @@ import {
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
   moveJobPhoto, softDeleteJobPhoto, restoreJobPhoto, purgeJobPhoto,
   listDeletedJobPhotos, listJobDocs,
-  expensePrefix, listExpenseReceipts, receiptFileKind, R2Error,
+  expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts, R2Error,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -4807,6 +4807,42 @@ async function handleExpenseReceipts(params, authUser) {
   }
 }
 
+// Receipt presence for every expense on a job, for the approval list — count
+// plus a thumbnail of the first one. The point of receipts is being able to see
+// the slip while approving the amount, and to spot at a glance which expenses
+// have none.
+//
+// Scoping repeats handleExpenses' rule rather than trusting a client-supplied
+// list of expense ids: an employee sees only their own submissions, so this
+// can't become a way to enumerate a job's expenses.
+async function handleExpenseReceiptSummary(params, authUser) {
+  const { jobId } = params || {};
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", receipts: {} });
+
+  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!jobRecords.length) return resp(200, { ok: true, available: true, receipts: {} });
+
+  const safeName = escapeFormulaString(jobRecords[0].fields["Job Name"] || "");
+  const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`;
+  const all = await fetchAll("Expenses", { filter });
+  const onJob = all.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
+
+  const isMgr = authUser && (authUser.role === "admin" || authUser.role === "office");
+  const visible = isMgr
+    ? onJob
+    : onJob.filter(r => Array.isArray(r.fields?.["Submitted By"]) && r.fields["Submitted By"].includes(authUser?.id));
+
+  try {
+    return resp(200, {
+      ok: true, available: true,
+      receipts: await summarizeExpenseReceipts(visible.map(r => r.id)),
+    });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "expenseReceiptSummary"), receipts: {} });
+  }
+}
+
 // Shared shape for the two bulk photo mutations: validate the job once, then
 // apply `fn` per key and report per-key outcomes rather than failing the whole
 // batch. Selecting 40 photos and having one bad key abort the lot is the wrong
@@ -4956,6 +4992,7 @@ export async function handler(event) {
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
       if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
+      if (action === "expenseReceiptSummary") return await handleExpenseReceiptSummary(params, authUser);
       if (action === "generator")          return await handleGenerator(params);
       if (action === "getWarrantyTemplates") return await handleGetWarrantyTemplates(params);
       if (action === "getWarranties")      return await handleGetWarranties(params);

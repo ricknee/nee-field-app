@@ -688,3 +688,49 @@ export function assertKeyInExpense(expenseId, key) {
   }
   return k;
 }
+
+// A cheap per-expense summary for the approval list: how many receipts, and a
+// thumbnail for the first one. Not the full listing — the Expenses table only
+// needs "is there one, and roughly what does it look like".
+//
+// One list call PER EXPENSE, run a few at a time. Deliberately not one big
+// list over `expenses/`: that would scale with every receipt ever stored,
+// while this scales with the expenses on the job being viewed — naturally
+// bounded, and it stays bounded as the business grows.
+export async function summarizeExpenseReceipts(expenseIds, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const ids = [...new Set((expenseIds || []).filter(Boolean))];
+  const out = {};
+  let next = 0;
+
+  async function worker() {
+    for (;;) {
+      const i = next++;
+      if (i >= ids.length) return;
+      const id = ids[i];
+      try {
+        const objects = await listByPrefix(expensePrefix(id), timeoutMs);
+        const originals = objects
+          .filter(o => !isThumbKey(o.key))
+          .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0));
+        if (!originals.length) { out[id] = { count: 0, thumbUrl: null, isPdf: false }; continue; }
+
+        const first = originals[0];
+        const isPdf = contentTypeForKey(first.key) === "application/pdf";
+        const tKey  = thumbKeyFor(first.key);
+        const hasThumb = !isPdf && objects.some(o => o.key === tKey);
+        out[id] = {
+          count: originals.length,
+          isPdf,
+          // A PDF has no thumbnail by design; the client shows a document icon.
+          thumbUrl: hasThumb ? await presignGet(tKey) : null,
+        };
+      } catch {
+        // One expense failing must not blank the whole column — report it as
+        // unknown rather than as "no receipt", which would be a lie.
+        out[id] = { count: null, thumbUrl: null, isPdf: false };
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(6, ids.length) }, worker));
+  return out;
+}

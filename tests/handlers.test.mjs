@@ -574,6 +574,30 @@ await test('expenseReceipts: employee sees own, not someone else\'s', async () =
   ok((await GET('expenseReceipts', { expenseId: 'recX1' }, OFFICE_TOK)).statusCode !== 403, 'office any');
 });
 
+await test('expenseReceiptSummary: an employee only sees their own expenses', async () => {
+  setR2();
+  // Two expenses on the job, submitted by different people. The summary must
+  // not become a way for an employee to enumerate the job's expenses.
+  mockTables = {
+    Jobs: [{ id: 'recJ1', fields: { 'Job Name': 'Bethel' } }],
+    Expenses: [
+      { id: 'recX1', fields: { Job: ['recJ1'], 'Submitted By': ['recEmp'] } },
+      { id: 'recX2', fields: { Job: ['recJ1'], 'Submitted By': ['recOther'] } },
+    ],
+  };
+  const emp = json(await GET('expenseReceiptSummary', { jobId: 'recJ1' }, EMP_TOK));
+  const keys = Object.keys(emp.receipts || {});
+  ok(!keys.includes('recX2'), `employee must not see another's expense (got ${keys})`);
+
+  const admin = json(await GET('expenseReceiptSummary', { jobId: 'recJ1' }, ADMIN_TOK));
+  ok(admin.available !== false || admin.reason, 'admin gets a real answer');
+
+  eq((await GET('expenseReceiptSummary', {})).statusCode, 400, 'missing jobId');
+  clearR2();
+  const off = json(await GET('expenseReceiptSummary', { jobId: 'recJ1' }));
+  eq(off.available, false, 'soft-fails when R2 is off');
+});
+
 await test('expenseReceipts: soft-fails when R2 is off, 400 without an id', async () => {
   clearR2();
   mockTables = EXPENSE('recEmp');

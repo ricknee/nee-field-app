@@ -1,6 +1,8 @@
 # Plan: job prints & documents in the field app
 
-**Status:** Planned 2026-08-03, not started. Owner's idea; near-future build.
+**Status:** PARKED 2026-08-03, same day it was planned. Prints already reach crews via Trello, so the
+field-app copy solves a problem that is not currently being felt. Kept because the design work is
+done and the visibility decision in §3 is the expensive part to re-derive.
 
 **One-line:** A button on the Project Info tab to upload PDF prints against a job, which **crews
 can open and download on site** — without a pCloud login.

@@ -94,13 +94,28 @@ rotating sooner breaks Make.
 > 🛑 **STOP POINT — the original goal of this whole migration.** Time data flows QB → Neon → app,
 > with no Airtable and no Make in the path.
 
-### Step 4 — Everything else in the field app (not yet planned)
+### Step 4 — The remaining field-app domains
 
-Estimates, invoices, expenses, fleet, generators, inspections. Each is its own slice on the same
-pattern: mirror → read-flip → write-flip → retire.
+Each is its own slice on the same pattern: **mirror → read-flip → write-flip → retire.** Ordered
+by risk, cheapest and safest first, so the pattern is proven on something that can't cost money
+before it's used on something that can.
 
-**Hard constraint:** every GP and live-profit formula must be ported to Neon views *before*
-anything Airtable-side is retired. Those formulas are the business.
+| # | Domain | Why here | Rough size |
+|---|---|---|---|
+| **4a** | **Fleet + Lifts** | Simplest in the app. Few fields, no money formulas, no Make involvement, no cross-table rollups. If the migration pattern has a flaw, find it here. | ~3-4 h |
+| **4b** | **Inspections, Generators, Warranties** | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. | ~4-5 h |
+| **4c** | **Expenses** | Money, but plain arithmetic rather than rollup formulas. Already has the `Push ID` idempotency pattern. Receipts (`PLAN-expense-receipts.md`) land here, so do them together if receipts hasn't shipped by then. | ~4-6 h |
+| **4d** | **Estimates + Invoices** | **LAST, deliberately.** These carry the GP and live-profit formulas — the numbers the business runs on. | large |
+
+> ⛔ **Hard constraint on 4d:** every GP and live-profit formula must be reproduced as Neon views
+> and reconciled against Airtable *before* anything Airtable-side is retired. Not after, not
+> alongside. `docs/GP-FORMULA-INVENTORY.md` is the checklist; a previous sweep found the inventory
+> was silently dropping 5 of 28 rollups, two of them GP-critical — so the checklist itself has
+> been wrong before and gets re-verified, not trusted.
+
+**Can 4a start before Step 3?** Technically yes — fleet has nothing to do with the time path or
+Make. But it would mean two half-migrated domains at once, which is the same argument that puts
+the inventory app after the field app (§6). Finish the time track first; it's three sittings.
 
 ---
 

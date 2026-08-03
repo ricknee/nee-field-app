@@ -311,9 +311,14 @@ function parseListXml(xml) {
 // Lists every object under one job's prefix, following continuation tokens so
 // a job with more than 1000 photos doesn't silently truncate.
 export async function listJobObjects(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  return await listByPrefix(jobPrefix(jobId), timeoutMs);
+}
+
+// Lists every object under an arbitrary prefix, following continuation tokens so
+// a prefix with more than 1000 objects cannot silently truncate.
+export async function listByPrefix(prefix, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const c = config();
   const client = await getClient();
-  const prefix = jobPrefix(jobId);
 
   const all = [];
   let token = null;
@@ -369,14 +374,15 @@ async function buildPhotoList(jobId, objects, keep, decorate, timeoutMs) {
   }));
 }
 
-// The gallery. Excludes the recycle bin — a soft-deleted photo must disappear
-// from the album it was in, or "delete" would look like it did nothing — and
-// excludes _docs, which holds PDFs that would render as broken image tiles.
+// The gallery. The current bin is a separate top-level prefix so it never
+// appears here at all; the LEGACY nested bin still has to be excluded by hand,
+// or photos deleted before 2026-08-03 would reappear in their old album.
+// _docs is excluded too — PDFs would render as broken image tiles.
 export async function listJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const objects = await listJobObjects(jobId, timeoutMs);
   return await buildPhotoList(
     jobId, objects,
-    (key) => !isDeletedKey(jobId, key) && !isDocKey(jobId, key),
+    (key) => !isLegacyDeletedKey(jobId, key) && !isDocKey(jobId, key),
     (o) => ({ album: albumFromKey(jobId, o.key) }),
     timeoutMs
   );
@@ -402,11 +408,18 @@ export async function listJobDocs(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
 // The recycle bin, newest deletion first. `deletedFrom` is the album it will
 // go back to on restore; `deletedAt` is when it was binned, which is what the
 // 30-day expiry is measured from.
+// Reads BOTH bin locations: the current top-level one and the legacy nested
+// one, so nothing deleted before the move becomes stranded and unrecoverable.
 export async function listDeletedJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const objects = await listJobObjects(jobId, timeoutMs);
+  const [binned, inJob] = await Promise.all([
+    listByPrefix(DELETED_ROOT + jobPrefix(jobId), timeoutMs),
+    listJobObjects(jobId, timeoutMs),
+  ]);
+  const objects = binned.concat(inJob.filter(o => isLegacyDeletedKey(jobId, o.key)));
+
   return await buildPhotoList(
     jobId, objects,
-    (key) => isDeletedKey(jobId, key),
+    () => true,   // everything gathered above is already binned
     (o) => ({ deletedFrom: deletedFromAlbum(jobId, o.key), deletedAt: o.lastModified }),
     timeoutMs
   );
@@ -419,9 +432,12 @@ export async function listDeletedJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS
 // without this a signed-in user could delete or move any object in the bucket
 // by editing one string.
 function assertKeyInJob(jobId, key) {
-  const prefix = jobPrefix(jobId);
   const k = String(key || "");
-  if (!k.startsWith(prefix) || k.includes("..")) {
+  // Live photos sit under jobs/<id>/; binned ones under _deleted/jobs/<id>/ (and
+  // legacy ones under jobs/<id>/_deleted/). All three are this job and nothing
+  // else is.
+  const owned = k.startsWith(jobPrefix(jobId)) || k.startsWith(DELETED_ROOT + jobPrefix(jobId));
+  if (!owned || k.includes("..")) {
     throw new R2Error("That photo does not belong to this job", "KEY_OUTSIDE_JOB");
   }
   return k;
@@ -489,14 +505,34 @@ export async function moveJobPhoto(jobId, key, album, timeoutMs = DEFAULT_TIMEOU
 // without this a mis-tap on a 40-photo selection is unrecoverable - and the
 // app's own Delete button is the most likely way these photos ever get lost.
 //
-// Layout keeps the original album so a restore knows where to put it back:
-//   jobs/<id>/_deleted/<album>/<file>.jpg      was in album <album>
-//   jobs/<id>/_deleted/_none/<file>.jpg        was loose at the job root
-export const DELETED_SEGMENT = '_deleted';
-const NO_ALBUM_MARKER = '_none';
+// The bin is a TOP-LEVEL prefix holding the photo's original key verbatim:
+//   jobs/<id>/Gym/x.jpg   ->   _deleted/jobs/<id>/Gym/x.jpg
+//
+// Two reasons it lives at the top rather than nested inside each job:
+//
+//  1. R2 lifecycle rules match a LITERAL prefix, no wildcards. With the bin
+//     nested at jobs/<id>/_deleted/ there is no single prefix that matches
+//     every job's bin - it would need one rule per job, forever. One rule on
+//     '_deleted/' now expires the lot, and expenses/ is excluded by
+//     construction rather than by remembering to exclude it.
+//  2. Keeping the original key verbatim means restore is just stripping the
+//     prefix, and the album survives with no marker segment to invent.
+export const DELETED_ROOT = '_deleted/';
+
+// Where a live key goes when binned, and where a binned key came from.
+export function deletedKeyFor(key)     { return DELETED_ROOT + String(key); }
+export function restoredKeyFor(key)    { return String(key).slice(DELETED_ROOT.length); }
 
 export function isDeletedKey(jobId, key) {
-  return String(key).startsWith(jobPrefix(jobId) + DELETED_SEGMENT + "/");
+  return String(key).startsWith(DELETED_ROOT + jobPrefix(jobId));
+}
+
+// LEGACY bin location, written before 2026-08-03. Still readable, restorable
+// and purgeable so nothing already deleted becomes stranded - but nothing new
+// is written here, and the lifecycle rule will NOT expire it. Purge these from
+// the UI when convenient; then this can go.
+export function isLegacyDeletedKey(jobId, key) {
+  return String(key).startsWith(jobPrefix(jobId) + '_deleted/');
 }
 
 // ── Job documents ──────────────────────────────────────────────────────────
@@ -516,43 +552,48 @@ export function isDocKey(jobId, key) {
   return String(key).startsWith(jobDocsPrefix(jobId));
 }
 
-// The album a deleted photo came from: '' when it was loose, else the name.
+// The album a binned photo goes back to: '' when it was loose, else the name.
 export function deletedFromAlbum(jobId, key) {
-  const rel = String(key).slice((jobPrefix(jobId) + DELETED_SEGMENT + '/').length);
-  const i = rel.indexOf('/');
-  if (i < 0) return '';
-  const seg = rel.slice(0, i);
-  if (seg === NO_ALBUM_MARKER) return '';
-  try { return decodeURIComponent(seg); } catch { return seg; }
+  const k = String(key);
+  if (isLegacyDeletedKey(jobId, k)) {
+    // Legacy layout: jobs/<id>/_deleted/<album|_none>/<file>
+    const rel = k.slice((jobPrefix(jobId) + '_deleted/').length);
+    const i = rel.indexOf('/');
+    if (i < 0) return '';
+    const seg = rel.slice(0, i);
+    if (seg === '_none') return '';
+    try { return decodeURIComponent(seg); } catch { return seg; }
+  }
+  // Current layout: the original key is preserved verbatim under the bin root.
+  return albumFromKey(jobId, restoredKeyFor(k)) || '';
 }
 
 // Soft delete: out of the gallery, into the bin, still recoverable.
 export async function softDeleteJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const k = assertKeyInJob(jobId, key);
-  if (isDeletedKey(jobId, k)) return { key: k, moved: false };   // already binned
-
-  const filename = k.slice(k.lastIndexOf('/') + 1);
-  const album = albumFromKey(jobId, k);
-  const seg = album ? encodeURIComponent(album) : NO_ALBUM_MARKER;
-  const destKey = jobPrefix(jobId) + DELETED_SEGMENT + '/' + seg + '/' + filename;
-  return await moveObjectPair(k, destKey, timeoutMs);
+  if (isDeletedKey(jobId, k) || isLegacyDeletedKey(jobId, k)) return { key: k, moved: false };
+  return await moveObjectPair(k, deletedKeyFor(k), timeoutMs);
 }
 
 // Puts a binned photo back in the album it came from.
 export async function restoreJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const k = assertKeyInJob(jobId, key);
-  if (!isDeletedKey(jobId, k)) return { key: k, moved: false };   // not in the bin
-
-  const filename = k.slice(k.lastIndexOf('/') + 1);
-  const album = deletedFromAlbum(jobId, k);
-  return await moveObjectPair(k, jobPrefix(jobId) + albumSegment(album) + filename, timeoutMs);
+  if (isDeletedKey(jobId, k)) return await moveObjectPair(k, restoredKeyFor(k), timeoutMs);
+  if (isLegacyDeletedKey(jobId, k)) {
+    // Rebuild the live key from the remembered album, then restore into the
+    // CURRENT layout so legacy entries drain rather than round-trip.
+    const filename = k.slice(k.lastIndexOf('/') + 1);
+    const album = deletedFromAlbum(jobId, k);
+    return await moveObjectPair(k, jobPrefix(jobId) + albumSegment(album) + filename, timeoutMs);
+  }
+  return { key: k, moved: false };   // not in the bin
 }
 
 // Permanent, no undo. Deliberately refuses anything not already in the bin, so
 // 'empty the bin' can never be pointed at live photos by a bad key.
 export async function purgeJobPhoto(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const k = assertKeyInJob(jobId, key);
-  if (!isDeletedKey(jobId, k)) {
+  if (!isDeletedKey(jobId, k) && !isLegacyDeletedKey(jobId, k)) {
     throw new R2Error('Only photos already in Recently deleted can be permanently removed', 'NOT_DELETED');
   }
   await deleteObject(k, timeoutMs);

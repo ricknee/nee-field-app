@@ -726,24 +726,43 @@ await test('r2 mutation guard: a key from another job is refused', async () => {
   }
 });
 
-await test('recycle bin: keys round-trip the original album, purge refuses live photos', async () => {
-  const { isDeletedKey, deletedFromAlbum, purgeJobPhoto } = await import('../netlify/functions/_r2.js');
+await test('recycle bin: top-level prefix so ONE lifecycle rule can expire it', async () => {
+  const r2 = await import('../netlify/functions/_r2.js');
+  const live   = 'jobs/recJ1/Gym/20260731-01-a.jpg';
+  const binned = r2.deletedKeyFor(live);
 
-  const live  = 'jobs/recJ1/Gym/20260731-01-a.jpg';
-  const binned = 'jobs/recJ1/_deleted/Gym/20260731-01-a.jpg';
-  const binnedLoose = 'jobs/recJ1/_deleted/_none/20260731-01-a.jpg';
+  // R2 lifecycle rules match a literal prefix with no wildcards. The bin MUST
+  // sit at the top level or no single rule can cover every job's bin.
+  eq(binned, '_deleted/jobs/recJ1/Gym/20260731-01-a.jpg', 'binned key');
+  ok(binned.startsWith(r2.DELETED_ROOT), 'one rule on _deleted/ catches it');
+  ok(!'expenses/recE1/receipt.jpg'.startsWith(r2.DELETED_ROOT), 'receipts excluded by construction');
 
-  ok(!isDeletedKey('recJ1', live), 'live photo is not in the bin');
-  ok(isDeletedKey('recJ1', binned), 'binned photo is detected');
-  // The album has to survive the trip or Restore has nowhere to put it back.
-  eq(deletedFromAlbum('recJ1', binned), 'Gym', 'remembers the album');
-  eq(deletedFromAlbum('recJ1', binnedLoose), '', 'loose photo restores to no album');
-  eq(deletedFromAlbum('recJ1', 'jobs/recJ1/_deleted/Panel%20Room/x.jpg'), 'Panel Room', 'decodes spaces');
+  // Keeping the original key verbatim makes restore a prefix strip and carries
+  // the album with it — no marker segment to invent.
+  eq(r2.restoredKeyFor(binned), live, 'restore round-trips');
+  eq(r2.deletedFromAlbum('recJ1', binned), 'Gym', 'album survives');
+  ok(r2.isDeletedKey('recJ1', binned), 'binned detected');
+  ok(!r2.isDeletedKey('recJ1', live), 'live is not binned');
+});
 
+await test('recycle bin: photos binned under the OLD layout stay recoverable', async () => {
+  const r2 = await import('../netlify/functions/_r2.js');
+  // Anything deleted before 2026-08-03 sits at jobs/<id>/_deleted/<album>/.
+  // It must still be listed, restorable and purgeable, and must NOT leak back
+  // into the gallery now that the exclusion rule changed.
+  const legacy = 'jobs/recJ1/_deleted/Gym/20260731-01-a.jpg';
+  ok(r2.isLegacyDeletedKey('recJ1', legacy), 'legacy detected');
+  eq(r2.deletedFromAlbum('recJ1', legacy), 'Gym', 'legacy album remembered');
+  eq(r2.deletedFromAlbum('recJ1', 'jobs/recJ1/_deleted/_none/x.jpg'), '', 'legacy loose photo');
+  eq(r2.deletedFromAlbum('recJ1', 'jobs/recJ1/_deleted/Panel%20Room/x.jpg'), 'Panel Room', 'decodes spaces');
+});
+
+await test('recycle bin: purge refuses live photos in either layout', async () => {
+  const { purgeJobPhoto } = await import('../netlify/functions/_r2.js');
   // Permanent delete must never be reachable for a photo still in the gallery,
   // even if the client asks for it directly.
   let threw = null;
-  try { await purgeJobPhoto('recJ1', live); } catch (e) { threw = e; }
+  try { await purgeJobPhoto('recJ1', 'jobs/recJ1/Gym/20260731-01-a.jpg'); } catch (e) { threw = e; }
   ok(threw && threw.code === 'NOT_DELETED', `purge refuses a live photo (got ${threw && threw.code})`);
 });
 

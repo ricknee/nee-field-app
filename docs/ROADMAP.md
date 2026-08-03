@@ -156,6 +156,7 @@ because they're next:
 |---|---|---|
 | ~~`FIND` substring sweep~~ | — | ✅ **Done 2026-08-03** — 7 sites fixed, 3 regression tests. `docs/TODO.md` |
 | Receipts on expenses | ~8-11 h | Feature. Plan is complete. |
+| Job prints in the field app | ~4 h | Owner idea 2026-08-03. Crews open drawings without a pCloud login.  |
 | R2 lifecycle rule | ~15 min | Add prefix `_deleted/` in the Cloudflare dashboard |
 | Retire JotForm photos | ~10 min | ~Aug 8, after a week's soak. Pause form + scenario `4522457` |
 | Offline photo upload queue | ? | Wait until crews actually hit it |

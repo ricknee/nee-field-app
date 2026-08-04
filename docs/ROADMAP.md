@@ -5,7 +5,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 
 **This file is the running order.** If something isn't on it, it's a detour — see §7.
 
-*Last updated 2026-08-03.*
+*Last updated 2026-08-04.*
 
 ---
 
@@ -15,7 +15,8 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 |---|---|
 | **Time entries** | ✅ In Neon. QB Time pulls straight in. Airtable still written as a mirror. |
 | **Jobs master data** | ✅ In Neon (110 jobs), read by 4 app endpoints |
-| **Payroll reads** | ⬜ Still Airtable |
+| **Payroll reads** | 🟨 **Already flipped in code** — `handlePayrollEntries`, `handlePayrollHoursRollup` and `handleMyHoursRollup` are all Neon-first with an Airtable fallback (verified in source 2026-08-04). Confirm `_source:"neon"` on a real prod response before calling it done. |
+| **Job list / GP** | 🟨 Whole GP layer ported to Neon views and diffed to **zero** mismatches — but `handleJobs` still reads Airtable, so none of it serves the app yet. ~1 h to flip. |
 | **Everything else** (estimates, invoices, expenses, fleet, generators, inspections) | ⬜ Still Airtable |
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
 | **Inventory app** | ⬜ Still Airtable, still coupled to the main base via the Jobs mirror |
@@ -69,10 +70,19 @@ No building. Confirms what shipped on 2026-07-30 actually works before anything 
 *Why now:* it's the forced next link (§2), and it's smaller than it looks — `handlePayrollEntries`
 returns no billing fields, so the labor-billing layer isn't involved.
 
-1. Backfill `airtable_id` onto puller-created rows by natural key (~45 min)
+> ⚠ **Mostly already done — re-scoped 2026-08-04.** Substeps 3 and 4 are flipped in the deployed
+> source, and the `airtable_id` linker was folded into the reconciler (first run: 8 unlinked → 8
+> matched, 0 ambiguous). What remains is **verification, not building**. Check this against the
+> code before planning a sitting for it.
+
+1. ~~Backfill `airtable_id` onto puller-created rows by natural key~~ — **done**, linker lives in
+   `db/etl/time-entries-full.mjs` and runs in both modes
 2. Decide the canonical entry id — Neon uuid, carrying `airtable_id` while Make lives (~30 min)
-3. Flip `handlePayrollEntries` to Neon-first + Airtable fallback + `_source` (~1 h)
-4. Flip the payroll rollups and my-hours reads the same way (~1 h)
+3. ~~Flip `handlePayrollEntries` to Neon-first + Airtable fallback + `_source`~~ — **done**
+4. ~~Flip the payroll rollups and my-hours reads the same way~~ — **done**
+5. **Confirm `_source:"neon"` on real production responses** for all three. Code-complete is not
+   the same as serving — a broken driver once made every Neon read fall back silently for three
+   days while returning correct answers.
 
 > 🛑 **STOP POINT.** All time reads served by Neon, writes still Airtable-first. Fully reversible —
 > the fallbacks stay in place.
@@ -103,7 +113,7 @@ before it's used on something that can.
 | # | Domain | Why here | Rough size |
 |---|---|---|---|
 | **4a** | **Fleet + Lifts** | Simplest in the app. Few fields, no money formulas, no Make involvement, no cross-table rollups. If the migration pattern has a flaw, find it here. | ~3-4 h |
-| **4b** | **Inspections, Generators, Warranties** | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. | ~4-5 h |
+| **4b** | **Inspections, Generators, Warranties** | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. **The job service visit log (`PLAN-job-warranty-service-log.md` §3) belongs here** — build it Neon-native as part of this slice rather than in Airtable first. | ~4-5 h + ~4-6 h |
 | **4c** | **Expenses** | Money, but plain arithmetic rather than rollup formulas. Already has the `Push ID` idempotency pattern. Receipts (`PLAN-expense-receipts.md`) land here, so do them together if receipts hasn't shipped by then. | ~4-6 h |
 | **4d** | **Estimates + Invoices** | **LAST, deliberately.** These carry the GP and live-profit formulas — the numbers the business runs on. | large |
 
@@ -170,6 +180,8 @@ because they're next:
 | Item | Size | Notes |
 |---|---|---|
 | ~~`FIND` substring sweep~~ | — | ✅ **Done 2026-08-03** — 7 sites fixed, 3 regression tests. `docs/TODO.md` |
+| Job warranty clock | ~1-1.5 h | Owner idea 2026-08-04. `docs/PLAN-job-warranty-service-log.md` §2. Two dead Airtable fields + a badge; Neon side is 2 columns on the `jobs` table that already exists. Cheap enough to slot in any time. |
+| Job service visit log | ~4-6 h | Same plan, §3. **Do this at Step 4b, not before** — 4b already covers Generators/Warranties, so building it in Airtable now means building it twice. |
 | ~~Receipts on expenses~~ | — | ✅ **Done 2026-08-03** — slices 1-3 shipped. Photos + ScanSnap PDFs, visible in the approval list, manager-only delete. |
 | Job prints in the field app | ~4 h | Owner idea 2026-08-03. Crews open drawings without a pCloud login.  |
 | R2 lifecycle rule | ~15 min | Add prefix `_deleted/` in the Cloudflare dashboard |
@@ -187,7 +199,20 @@ because they're next:
 - **"Should I do X first?"** → if X is in §7, no.
 - **Update it when a step lands**, not when it's planned.
 
-**Current answer to "what's next":** the two remaining ⬜ items in §3 NOW are both *observational* —
-run the reconciler, and watch the write mirror next time someone edits a time entry. Neither is a
-sitting. Once they've been seen working, **Step 1 (payroll reads → Neon, ~3-4 h)** is the next
-build, and there is nothing dated ahead of it.
+**Current answer to "what's next" (revised 2026-08-04):** further along than this file said. The two
+remaining ⬜ items in §3 NOW are still *observational* — run the reconciler, watch the write mirror.
+**Step 1 is now mostly verification, not building** (see its note). The next thing that is actually
+a *build* is one of:
+
+- **Schedule the jobs sync, then flip `handleJobs` to Neon** (~2-3 h) — cashes in the entire GP
+  layer, which is ported and diffed to zero mismatches but serving nothing today.
+  > ⚠ **The sync is the prerequisite, and it is not optional.** `jobs` in Neon refreshes only when
+  > someone runs `db/etl/time-entries-full.mjs` by hand. Checked 2026-08-04: **110 rows, last synced
+  > 2026-07-31 — 4.5 days stale, against 112 in Airtable.** Flipping today would drop the two newest
+  > jobs off the job list and show four-day-old statuses and GP. Time entries avoid this because the
+  > QB puller runs hourly as a scheduled function; jobs has no equivalent yet. Put the refresh on
+  > that same mechanism first, then flip.
+- **Step 2 — payroll writes → Neon** (~3 h), the forced next link in §2.
+
+Either is a reasonable next sitting. The `handleJobs` route is the one that shows up on screen —
+leaving proven work switched off is how it rots — but price it at 2-3 h, not 1.

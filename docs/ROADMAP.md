@@ -14,7 +14,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | System | State |
 |---|---|
 | **Time entries** | ✅ In Neon. QB Time pulls straight in. Airtable still written as a mirror. |
-| **Jobs master data** | ✅ In Neon (110 jobs), read by 4 app endpoints |
+| **Jobs master data** | ✅ In Neon (112 jobs), read by 4 app endpoints. Identity columns refresh **hourly** since 2026-08-05; the other ~22 master columns still need a hand-run ETL. |
 | **Payroll reads** | 🟨 **Already flipped in code** — `handlePayrollEntries`, `handlePayrollHoursRollup` and `handleMyHoursRollup` are all Neon-first with an Airtable fallback (verified in source 2026-08-04). Confirm `_source:"neon"` on a real prod response before calling it done. |
 | **Job list / GP** | 🟨 Whole GP layer ported to Neon views and diffed to **zero** mismatches — but `handleJobs` still reads Airtable, so none of it serves the app yet. ~1 h to flip. |
 | **Everything else** (estimates, invoices, expenses, fleet, generators, inspections) | ⬜ Still Airtable |
@@ -57,8 +57,10 @@ No building. Confirms what shipped on 2026-07-30 actually works before anything 
   > jurisdictions at once. Jeff had a round-up but one jurisdiction; Patrick had two jurisdictions
   > but needed no round-up. The allocation rule has never actually fired. Worth a glance the first
   > period it does.
-- ⬜ **Run the reconciler daily** — `node db/etl/time-entries-full.mjs`. The run the morning after a
-  Make 21:00 is the one that settles double-counting.
+- ✅ **Reconciler run and CLEAN — 2026-08-05.** All 9 acceptance checks pass across a Make 21:00
+  boundary: 14,590 rows and 51,570.25 h on both sides, 0 bucket mismatches, 0 field-level drift.
+  **No double-counting.** Getting there took fixing check 5 — see the job-link bug in `3f3048a`.
+  Keep running it; this is the gate for retiring Make.
 - ⬜ **Watch the write mirror** on the next real time-entry add or Labor-Reviewed tick — it shipped
   alongside a broken driver and has never been exercised.
 

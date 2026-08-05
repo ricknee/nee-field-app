@@ -206,12 +206,19 @@ a *build* is one of:
 
 - **Schedule the jobs sync, then flip `handleJobs` to Neon** (~2-3 h) — cashes in the entire GP
   layer, which is ported and diffed to zero mismatches but serving nothing today.
-  > ⚠ **The sync is the prerequisite, and it is not optional.** `jobs` in Neon refreshes only when
-  > someone runs `db/etl/time-entries-full.mjs` by hand. Checked 2026-08-04: **110 rows, last synced
-  > 2026-07-31 — 4.5 days stale, against 112 in Airtable.** Flipping today would drop the two newest
-  > jobs off the job list and show four-day-old statuses and GP. Time entries avoid this because the
-  > QB puller runs hourly as a scheduled function; jobs has no equivalent yet. Put the refresh on
-  > that same mechanism first, then flip.
+  > 🟨 **Half done as of 2026-08-05 (`3f3048a`).** `netlify/functions/_jobs-sync.js` now refreshes
+  > the **8 identity columns** hourly from inside `qb-time-pull`, which fixed the bug that prompted
+  > it (see below). But it deliberately does NOT carry the other ~22 master columns — status,
+  > addresses, customer, markup — and deliberately does NOT stamp `synced_at`, so that field still
+  > honestly reports the last *full* refresh.
+  >
+  > **So the flip still needs a full-field scheduled sync.** `handleJobs`/`mapJob` read status and
+  > the descriptive spine; serving those from a mirror only refreshed when someone hand-runs the ETL
+  > would show stale statuses on the job list. Extend `_jobs-sync.js` to the full `JOB_FIELDS` set
+  > (and let it stamp `synced_at`) before flipping — the ETL's array is the reference.
+  >
+  > *Why this mattered:* checked 2026-08-04, `jobs` was **110 rows, 4.5 days stale, against 112 in
+  > Airtable** — and the two missing jobs were silently costing hours their FK link.
 - **Step 2 — payroll writes → Neon** (~3 h), the forced next link in §2.
 
 Either is a reasonable next sitting. The `handleJobs` route is the one that shows up on screen —

@@ -260,7 +260,7 @@ because they're next:
 | Job warranty clock | ~1-1.5 h | Owner idea 2026-08-04. `docs/PLAN-job-warranty-service-log.md` §2. Two dead Airtable fields + a badge; Neon side is 2 columns on the `jobs` table that already exists. Cheap enough to slot in any time. |
 | Job service visit log | ~4-6 h | Same plan, §3. **Do this at Step 4b, not before** — 4b already covers Generators/Warranties, so building it in Airtable now means building it twice. |
 | ~~Receipts on expenses~~ | — | ✅ **Done 2026-08-03** — slices 1-3 shipped. Photos + ScanSnap PDFs, visible in the approval list, manager-only delete. |
-| ~~Job prints in the field app~~ | — | ✅ **Built 2026-08-05**, un-parked on request — ⬜ awaiting prod smoke test. 📐 button in the job action row with a count badge, drag-and-drop upload, open on site, admin/office delete + **permanent** delete (storage). Readable by every role, unlike `jobDocs`. `docs/PLAN-job-prints.md` |
+| ~~Job prints in the field app~~ | — | ✅ **Shipped 2026-08-05**, un-parked on request. Upload/open/download smoke-tested on prod. 📐 button in the job action row with a count badge, drag-and-drop upload, ⬇ download → opens in the device's own PDF app **and works offline afterwards**, admin/office delete + **permanent** delete (storage). Readable by every role, unlike `jobDocs`. `docs/PLAN-job-prints.md` |
 | R2 lifecycle rule | ~15 min | Add prefix `_deleted/` in the Cloudflare dashboard |
 | Retire JotForm photos | ~10 min | ~Aug 8, after a week's soak. Pause form + scenario `4522457` |
 | Offline photo upload queue | ? | Wait until crews actually hit it |

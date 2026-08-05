@@ -1,7 +1,12 @@
 # Plan: job prints & documents in the field app
 
-**Status:** BUILT 2026-08-05 — un-parked at the owner's request ("i can use this feature"). Slices 1,
-2 and permanent delete all landed together. ⬜ Not yet smoke-tested on production.
+**Status:** SHIPPED 2026-08-05 — un-parked at the owner's request ("i can use this feature"). Slices
+1, 2 and permanent delete landed together (`ea518e0`), download-to-native-app followed (`f971dbd`).
+
+**Smoke-tested on production 2026-08-05:** upload ✅, open ✅, ⬇ download → opens in the phone's own
+PDF app ✅.
+**Not yet exercised on prod:** delete → bin → restore → delete-forever, and select-to-download of a
+multi-sheet set (the best-effort path — expect only the first on a phone).
 
 *(Was PARKED 2026-08-03, same day it was planned, on the grounds that Trello already got prints to
 crews. The visibility decision in §3 survived un-parking unchanged — it was the expensive part.)*

@@ -747,6 +747,24 @@
       color: #14b8a6;
     }
 
+    /* Prints — blueprint blue, distinct from Trello's blue by being lighter and
+       sitting next to the photo buttons rather than the integrations. */
+    .action-btn.prints {
+      background: rgba(96,165,250,0.12);
+      border-color: rgba(96,165,250,0.40);
+      color: #60a5fa;
+    }
+    /* The count rides on the button so "does this job have drawings?" is
+       answered without opening anything. Hidden at zero — an empty badge reads
+       as a loading state. */
+    .action-btn .count-badge {
+      background: rgba(96,165,250,0.28);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
     .action-btn.disabled {
       opacity: 0.35;
       pointer-events: none;
@@ -2179,6 +2197,12 @@
         <div class="action-buttons">
           <a id="btnAddPhotos" href="#" target="_blank" class="action-btn photo-add disabled">📷 Add Photos</a>
           <a id="btnViewPhotos" href="#" target="_blank" class="action-btn photo-view disabled">🖼 View pCloud Photos</a>
+          <!-- Prints sit in the action row rather than on a tab deliberately:
+               this strip is above the tab bar, so it is on screen whichever tab
+               you are on, and it is the first thing on a job. The count badge is
+               what makes it useful without opening anything — a crew can see at
+               a glance whether this job HAS drawings. -->
+          <a id="btnJobPrints" href="#" class="action-btn prints disabled">📐 Prints</a>
           <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled">📋 Trello Card</a>
           <a id="btnInventory" href="/inventory" target="_blank" class="action-btn inventory">📦 Inventory</a>
         </div>
@@ -3763,6 +3787,16 @@
       vp.textContent = "🖼 View Photos";
       vp.classList.remove("disabled");
       vp.onclick = (e) => { e.preventDefault(); openJobPhotos(); };
+
+      // Prints — every role, including employees. That is the point of the
+      // feature: the drawings are what a crew came to the job for, and they
+      // are one tap from the top of the job rather than behind a pCloud login.
+      // See docs/PLAN-job-prints.md.
+      const pr = $("btnJobPrints");
+      pr.classList.remove("disabled");
+      pr.onclick = (e) => { e.preventDefault(); openJobPrints(); };
+      // Fire and forget — the header must not wait on an R2 round trip.
+      loadPrintBadge(job.id);
     }
 
     // New Job Estimate button (admin only) — opens in-app modal that loads
@@ -5059,12 +5093,16 @@
     return Array.from(e.dataTransfer?.types || []).includes("Files");
   }
 
-  // Makes `el` accept dropped receipts. onFiles receives the accepted files and
-  // how many were rejected, so the caller can say so rather than silently
-  // dropping them.
-  function wireReceiptDropZone(el, onFiles) {
-    if (!el || el._rcptDropWired) return;
-    el._rcptDropWired = true;
+  // Makes `el` accept dropped files. `accepts` is a predicate on File; onFiles
+  // receives the accepted ones and how many were rejected, so the caller can
+  // say so rather than silently dropping them.
+  //
+  // Generalised from the receipts-only version when prints arrived. The
+  // dragenter depth counting below is the fiddly part and there should only
+  // ever be one copy of it.
+  function wireFileDropZone(el, accepts, onFiles) {
+    if (!el || el._fileDropWired) return;
+    el._fileDropWired = true;
     // dragenter/dragleave fire once per descendant the cursor crosses, so a
     // naive on/off pair strobes as you move over the tiles. Count depth.
     let depth = 0;
@@ -5090,10 +5128,12 @@
       e.preventDefault(); depth = 0; lit(false);
       const all = Array.from(e.dataTransfer?.files || []);
       if (!all.length) return;
-      const ok = all.filter(isReceiptFile);
+      const ok = all.filter(accepts);
       onFiles(ok, all.length - ok.length);
     });
   }
+
+  const wireReceiptDropZone = (el, onFiles) => wireFileDropZone(el, isReceiptFile, onFiles);
 
   // A file dropped anywhere OUTSIDE a zone makes the browser navigate to it,
   // silently discarding a half-filled expense form. Swallow those. Gated on
@@ -5269,6 +5309,313 @@
     } catch (e) {
       console.error("[receipt-upload]", e);
       await refreshExpenseReceipts();
+      status.textContent = `Upload failed: ${e.message}`;
+    }
+  }
+
+  /* ── Job prints (docs/PLAN-job-prints.md) ────────────────────────────────
+   * Drawings a crew can open on site without a pCloud login. Reuses the R2
+   * machinery wholesale — presigned PUT/GET, folder-is-the-record — with two
+   * things done differently from photos, both deliberate:
+   *
+   *  - NOTHING IS COMPRESSED. compressImage would either fail on a PDF or
+   *    silently rasterise a 300 dpi sheet into something where the callouts are
+   *    unreadable, which is the only reason anyone opens a print.
+   *  - The original filename is kept end to end. "E-1 Rev B.pdf" IS the
+   *    revision system; there is no versioning field to build because the name
+   *    already carries it.
+   *
+   * pCloud is untouched by all this. It stays the office document tree; this is
+   * the field-accessible copy.
+   */
+  const jobPrintState = { jobId: null, prints: [], deleted: [], showDeleted: false };
+
+  // Wider than the receipt filter: a print may legitimately be a CAD file that
+  // the browser cannot render at all but which still wants to be downloadable.
+  // `accept` on a file input does NOT apply to a drop, so this has to be
+  // explicit — see the note above wireFileDropZone.
+  const PRINT_EXT_RE = /\.(pdf|jpe?g|png|gif|bmp|webp|heic|heif|dwg|dxf|dwf)$/i;
+
+  function isPrintFile(f) {
+    const t = (f?.type || "").toLowerCase();
+    if (t === "application/pdf" || t.startsWith("image/")) return true;
+    return PRINT_EXT_RE.test(f?.name || "");
+  }
+
+  // Prints are the one thing in the app measured in tens of megabytes, so sizes
+  // are shown in the units they actually land in.
+  function printSize(bytes) {
+    const n = Number(bytes) || 0;
+    if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(n / 1024))} KB`;
+  }
+
+  function printIcon(p) {
+    if (p.isPdf) return "📕";
+    return /\.(dwg|dxf|dwf)$/i.test(p.name || "") ? "📐" : "🖼";
+  }
+
+  /* Count badge on the action-row button.
+   * Fired and forgotten after the job renders: listing R2 is a network round
+   * trip and the job header must never wait on it. Cached per job so the
+   * re-renders that happen constantly (status change, tab switch) don't
+   * re-fetch. */
+  const printBadge = { jobId: null, count: null };
+
+  function paintPrintBadge() {
+    const btn = $("btnJobPrints");
+    if (!btn) return;
+    const n = printBadge.count;
+    // Zero renders as no badge at all — an empty pill reads as "still loading".
+    btn.innerHTML = `📐 Prints${n ? ` <span class="count-badge">${n}</span>` : ""}`;
+  }
+
+  async function loadPrintBadge(jobId) {
+    if (printBadge.jobId === jobId && printBadge.count !== null) { paintPrintBadge(); return; }
+    printBadge.jobId = jobId;
+    printBadge.count = null;
+    paintPrintBadge();
+    try {
+      const d = await apiGet("jobPrints", { jobId });
+      // A different job may have been opened while this was in flight. The
+      // answer to the old question must not paint over the new one.
+      if (printBadge.jobId !== jobId) return;
+      printBadge.count = d.available ? (d.prints || []).length : 0;
+      paintPrintBadge();
+    } catch { /* the button still opens; the badge is a nicety, not a gate */ }
+  }
+
+  window.openJobPrints = async function() {
+    const job = state.selected;
+    if (!job) return;
+    jobPrintState.jobId = job.id;
+    jobPrintState.prints = [];
+    jobPrintState.deleted = [];
+    jobPrintState.showDeleted = false;
+
+    $("jobPrintsTitle").textContent  = `📐 Prints — ${job.name || ""}`;
+    $("jobPrintsList").innerHTML     = "";
+    $("jobPrintsStatus").textContent = "Loading…";
+    $("jobPrintsModal").style.display = "flex";
+    pushBackEntry("jobPrints", () => { $("jobPrintsModal").style.display = "none"; });
+    // Viewers may READ prints — that is the open tier — but uploading is
+    // _NON_VIEWER on the server, so showing them an Add button would offer a
+    // guaranteed 403. Read-only for them, drop zone included.
+    const canAdd = ((state.user && state.user.role) || "") !== "viewer";
+    $("jobPrintsActions").style.display = canAdd ? "" : "none";
+    $("jobPrintAddBtn").onclick = addJobPrints;
+    // Idempotent, and the handler reads jobPrintState at drop time, so nothing
+    // from a previously-opened job is captured.
+    wireFileDropZone($("jobPrintsDropZone"), isPrintFile, (files, rejected) => {
+      // Read the role HERE, not from the enclosing canAdd: the zone is wired
+      // once per element, so a value captured on the first open would outlive
+      // the state it was read from.
+      if (((state.user && state.user.role) || "") === "viewer") return;
+      if (!files.length) {
+        $("jobPrintsStatus").textContent = "Only PDFs, photos and CAD files can be added.";
+        return;
+      }
+      if (rejected) {
+        showAppToast(`Skipped ${rejected} file${rejected === 1 ? "" : "s"} — PDF, photo or CAD only`, { kind: "warn" });
+      }
+      uploadJobPrints(files);
+    });
+
+    await refreshJobPrints();
+  };
+
+  window.closeJobPrints = function() {
+    popBackEntry("jobPrints");
+    $("jobPrintsModal").style.display = "none";
+  };
+
+  // Only managers can delete, so only they need the bin fetched.
+  async function refreshDeletedJobPrints() {
+    if (!canDeletePhotos()) { jobPrintState.deleted = []; return; }
+    try {
+      const d = await apiGet("jobPrintsDeleted", { jobId: jobPrintState.jobId });
+      jobPrintState.deleted = d.available ? (d.prints || []) : [];
+    } catch { jobPrintState.deleted = []; }
+  }
+
+  async function refreshJobPrints() {
+    await refreshDeletedJobPrints();
+    try {
+      const d = await apiGet("jobPrints", { jobId: jobPrintState.jobId });
+      if (!d.available) {
+        $("jobPrintsList").innerHTML = "";
+        $("jobPrintsStatus").textContent = d.reason === "not-configured"
+          ? "Print storage isn't switched on yet."
+          : "Prints are unavailable right now.";
+        return;
+      }
+      jobPrintState.prints = d.prints || [];
+      // Keep the badge behind the modal honest about what just changed.
+      if (printBadge.jobId === jobPrintState.jobId) {
+        printBadge.count = jobPrintState.prints.length;
+        paintPrintBadge();
+      }
+      renderJobPrints();
+    } catch (e) {
+      $("jobPrintsList").innerHTML = "";
+      $("jobPrintsStatus").textContent = `Couldn't load prints: ${e.message}`;
+    }
+  }
+
+  // One row. `mode` is "live" (opens, offers Delete) or "deleted" (offers
+  // Restore and the permanent one).
+  function printRow(p, mode) {
+    const when = mode === "deleted" ? p.deletedAt : p.uploadedAt;
+    const date = when ? new Date(when).toLocaleDateString() : "";
+    const meta = [printSize(p.size), date].filter(Boolean).join(" · ");
+
+    const actions = !canDeletePhotos() ? "" : (mode === "deleted"
+      ? `<button type="button" class="prt-restore" data-key="${esc(p.key)}" style="background:none; border:none; cursor:pointer; font-size:12px; color:var(--blue); padding:4px 6px;">↩ Restore</button>
+         <button type="button" class="prt-purge" data-key="${esc(p.key)}" style="background:none; border:none; cursor:pointer; font-size:12px; color:var(--red); padding:4px 6px;">✕ Delete forever</button>`
+      : `<button type="button" class="prt-del" data-key="${esc(p.key)}" style="background:none; border:none; cursor:pointer; font-size:12px; color:var(--red); padding:4px 6px;">🗑 Delete</button>`);
+
+    // The whole row is the link, so a gloved thumb on a phone doesn't have to
+    // find the filename text. target=_blank hands the PDF to the browser's own
+    // viewer, which is better than anything we could render and already has a
+    // download button.
+    return `<div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); ${mode === "deleted" ? "opacity:.6;" : ""}">
+        <a href="${esc(p.url)}" target="_blank" rel="noopener" style="flex:1; min-width:0; display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit;">
+          <span style="font-size:22px; flex:none;">${printIcon(p)}</span>
+          <span style="min-width:0;">
+            <span style="display:block; font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(p.name)}</span>
+            <span style="display:block; font-size:11px; color:var(--muted);">${esc(meta)}</span>
+          </span>
+        </a>
+        <span style="flex:none; display:flex; align-items:center;">${actions}</span>
+      </div>`;
+  }
+
+  function renderJobPrints() {
+    const list = jobPrintState.prints;
+    const del  = jobPrintState.deleted;
+
+    const parts = [];
+    if (!list.length) {
+      parts.push("No prints on this job yet.");
+    } else {
+      const bytes = list.reduce((s, p) => s + (Number(p.size) || 0), 0);
+      // Total size is shown because storage is the running cost of this
+      // feature — a job carrying 300 MB should be visible, not a surprise.
+      parts.push(`${list.length} print${list.length === 1 ? "" : "s"} · ${printSize(bytes)}`);
+    }
+    if (del.length) {
+      parts.push(`<a href="#" id="prtToggleDeleted" style="color:var(--blue); text-decoration:underline;">${
+        jobPrintState.showDeleted ? "hide" : "show"} ${del.length} deleted</a> <span style="font-size:11px;">(kept until deleted forever)</span>`);
+    }
+    $("jobPrintsStatus").innerHTML = parts.join(" · ");
+
+    $("jobPrintsList").innerHTML = list.map(p => printRow(p, "live")).join("")
+      + (jobPrintState.showDeleted ? del.map(p => printRow(p, "deleted")).join("") : "");
+
+    const toggle = $("prtToggleDeleted");
+    if (toggle) toggle.onclick = (e) => {
+      e.preventDefault();
+      jobPrintState.showDeleted = !jobPrintState.showDeleted;
+      renderJobPrints();
+    };
+    const list_ = $("jobPrintsList");
+    list_.querySelectorAll(".prt-del").forEach(b =>
+      b.onclick = () => mutatePrint("deleteJobPrints", b.dataset.key, "Deleting",
+        "Remove this print from the job?\n\nIt is kept and can be restored."));
+    list_.querySelectorAll(".prt-restore").forEach(b =>
+      b.onclick = () => mutatePrint("restoreJobPrints", b.dataset.key, "Restoring", ""));
+    list_.querySelectorAll(".prt-purge").forEach(b =>
+      b.onclick = () => mutatePrint("purgeJobPrints", b.dataset.key, "Deleting permanently",
+        "Delete this print PERMANENTLY?\n\nThis frees the storage and cannot be undone."));
+  }
+
+  async function mutatePrint(action, key, verb, confirmMsg) {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    const status = $("jobPrintsStatus");
+    status.textContent = `${verb}…`;
+    try {
+      await apiPost(action, { jobId: jobPrintState.jobId, keys: [key] });
+      await refreshJobPrints();
+    } catch (e) {
+      status.textContent = `${verb} failed: ${e.message}`;
+    }
+  }
+
+  async function addJobPrints() {
+    const input = document.createElement("input");
+    input.type = "file";
+    // No `capture` — prints come off a PC far more often than a camera, and
+    // capture would make picking a file impossible there.
+    input.accept = ".pdf,.dwg,.dxf,.dwf,image/*,application/pdf";
+    input.multiple = true;
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files || []);
+      input.remove();
+      if (files.length) await uploadJobPrints(files);
+    });
+    input.click();
+  }
+
+  async function uploadJobPrints(files) {
+    const status = $("jobPrintsStatus");
+    const MAX = 15;   // matches the server's per-request cap
+    if (files.length > MAX) {
+      status.textContent = `Too many at once — taking the first ${MAX}.`;
+      files = files.slice(0, MAX);
+    }
+
+    // A print's key IS its filename, so re-uploading a name that already exists
+    // replaces it. That is usually the intent ("here is the corrected E-1") but
+    // it is never something to do silently — the old file goes without passing
+    // through the bin.
+    const existing = new Set(jobPrintState.prints.map(p => (p.name || "").toLowerCase()));
+    const clashes = files.filter(f => existing.has(String(f.name || "").toLowerCase()));
+    if (clashes.length) {
+      const names = clashes.slice(0, 5).map(f => `• ${f.name}`).join("\n");
+      if (!confirm(`${clashes.length} file${clashes.length === 1 ? " is" : "s are"} already on this job:\n\n${names}${
+        clashes.length > 5 ? "\n…" : ""}\n\nUploading will REPLACE the existing version${clashes.length === 1 ? "" : "s"}. Continue?`)) {
+        // Keep the rest — dropping a folder where one sheet clashes shouldn't
+        // discard the sheets that don't.
+        files = files.filter(f => !existing.has(String(f.name || "").toLowerCase()));
+        if (!files.length) { status.textContent = "Nothing uploaded."; return; }
+      }
+    }
+
+    try {
+      status.textContent = "Preparing…";
+      const d = await apiPost("jobPrintUploadUrls", {
+        jobId: jobPrintState.jobId,
+        // Files go up byte for byte: no compressImage, no thumbnail. The name
+        // is sent because the server builds the key from it.
+        files: files.map(f => ({ name: f.name, contentType: f.type })),
+      });
+      const uploads = d.uploads || [];
+      if (uploads.length !== files.length) throw new Error("Upload could not be prepared");
+
+      let done = 0, failed = 0, lastErr = "";
+      for (let i = 0; i < files.length; i++) {
+        // Prints are big and jobsite connections are not, so the count is a
+        // real progress report rather than a formality.
+        status.textContent = `Uploading ${i + 1} of ${files.length} — ${files[i].name} (${printSize(files[i].size)})…`;
+        try {
+          // The signed URL commits to the content type the SERVER chose, so
+          // send that one back, not the browser's guess.
+          await putToR2(uploads[i].putUrl, files[i], uploads[i].contentType);
+          done++;
+        } catch (err) {
+          failed++; lastErr = err.message || String(err);
+          console.error("[print-upload] failed", err);
+        }
+      }
+
+      await refreshJobPrints();
+      if (failed) status.textContent = `${done} added, ${failed} failed. ${lastErr}`;
+      else showAppToast(`${done} print${done === 1 ? "" : "s"} added ✓`);
+    } catch (e) {
+      console.error("[print-upload]", e);
+      await refreshJobPrints();
       status.textContent = `Upload failed: ${e.message}`;
     }
   }
@@ -17645,6 +17992,32 @@
            Rendered above the photo grid, only when the job has any. -->
       <div id="jobPhotosDocs" style="padding-bottom:12px;"></div>
       <div id="jobPhotosGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(110px, 1fr)); gap:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Job prints (docs/PLAN-job-prints.md).
+     Separate from the photo gallery on purpose: different file types, a
+     different permission class (_prints is readable by everyone, _docs is not),
+     and the photo modal already carries albums, a toolbar, a bin and a docs
+     strip. A list, not a grid — a drawing is identified by its NAME ("E-1 Rev
+     B"), and no thumbnail small enough to tile is legible anyway. -->
+<div id="jobPrintsModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:760px; width:95%;">
+    <div class="sl-modal-header">
+      <h2 id="jobPrintsTitle">📐 Prints</h2>
+      <button onclick="closeJobPrints()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <!-- The whole body is the drop target, same reasoning as receipts: prints
+         come off a PC, where dragging is the natural gesture, and a big target
+         is easier to hit than a precise one. -->
+    <div class="sl-modal-body" id="jobPrintsDropZone" style="min-height:200px;">
+      <div id="jobPrintsStatus" style="font-size:13px; color:var(--muted); padding:6px 0 10px;"></div>
+      <div id="jobPrintsActions" style="padding-bottom:12px;">
+        <button type="button" id="jobPrintAddBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">📎 Add prints</button>
+        <span style="font-size:11px; color:var(--muted); margin-left:8px;">PDF, photo or CAD file — or drag files anywhere into this window</span>
+      </div>
+      <div id="jobPrintsList" style="display:flex; flex-direction:column; gap:6px;"></div>
     </div>
   </div>
 </div>

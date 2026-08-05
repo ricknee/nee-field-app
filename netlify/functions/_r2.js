@@ -377,12 +377,13 @@ async function buildPhotoList(jobId, objects, keep, decorate, timeoutMs) {
 // The gallery. The current bin is a separate top-level prefix so it never
 // appears here at all; the LEGACY nested bin still has to be excluded by hand,
 // or photos deleted before 2026-08-03 would reappear in their old album.
-// _docs is excluded too — PDFs would render as broken image tiles.
+// _docs and _prints are excluded too — PDFs would render as broken image
+// tiles, and albumFromKey would turn each segment into a phantom album.
 export async function listJobPhotos(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const objects = await listJobObjects(jobId, timeoutMs);
   return await buildPhotoList(
     jobId, objects,
-    (key) => !isLegacyDeletedKey(jobId, key) && !isDocKey(jobId, key),
+    (key) => !isLegacyDeletedKey(jobId, key) && !isDocKey(jobId, key) && !isPrintKey(jobId, key),
     (o) => ({ album: albumFromKey(jobId, o.key) }),
     timeoutMs
   );
@@ -473,6 +474,17 @@ async function copyObject(srcKey, destKey, timeoutMs = DEFAULT_TIMEOUT_MS) {
   }
 }
 
+// Moves ONE object. Copy-then-delete for the same reason as the pair below: a
+// failed delete leaves a harmless duplicate, a failed copy after a delete loses
+// the file. Used by prints, which have no thumbnail to carry along — running
+// them through moveObjectPair would just add two round trips guaranteed to 404.
+async function moveObject(srcKey, destKey, timeoutMs) {
+  if (destKey === srcKey) return { key: srcKey, moved: false };
+  await copyObject(srcKey, destKey, timeoutMs);
+  await deleteObject(srcKey, timeoutMs);
+  return { key: destKey, moved: true };
+}
+
 // Moves a photo AND its thumbnail from one key to another. R2 has no rename,
 // so this is copy-then-delete.
 //
@@ -550,6 +562,153 @@ export function jobDocsPrefix(jobId) {
 
 export function isDocKey(jobId, key) {
   return String(key).startsWith(jobDocsPrefix(jobId));
+}
+
+// ── Job prints (docs/PLAN-job-prints.md) ───────────────────────────────────
+// The drawings a crew needs on site: prints, specs, marked-up sheets. They get
+// their own segment for two reasons, and the second is the important one.
+//
+//  1. Same as _docs — listJobPhotos returns EVERY non-thumb object under the
+//     job prefix, so a 30 MB PDF sitting among the photos renders as a broken
+//     image tile, and albumFromKey would invent an album named "_prints".
+//  2. The segment IS the permission. _docs is admin/office because it itemises
+//     unit costs; _prints is readable by every signed-in role, which is the
+//     entire point of the feature. A file's LOCATION is its visibility, so
+//     there is no per-file flag anyone can tick wrong. Do not replace this
+//     with a "shared" checkbox on one combined list: one mis-tick would put
+//     job costing in front of the whole crew, and nothing about the file would
+//     show that it was wrong.
+export const PRINTS_SEGMENT = "_prints";
+
+export function jobPrintsPrefix(jobId) {
+  return `${jobPrefix(jobId)}${PRINTS_SEGMENT}/`;
+}
+
+export function isPrintKey(jobId, key) {
+  return String(key).startsWith(jobPrintsPrefix(jobId));
+}
+
+// Prints keep their ORIGINAL filename, unlike photos, which get a
+// server-generated one. "E-1 Rev B.pdf" is the revision system — renaming it
+// to 20260805-01-a3f9.pdf would throw away the only thing telling a crew which
+// sheet they are looking at.
+//
+// That means a client-supplied string reaches the key builder, so it is
+// sanitized at the boundary exactly like an album name (sanitizeAlbum):
+// slashes forge extra path segments and ".." climbs out of the job's prefix.
+// The whitelist is tighter than it looks necessary because presign() builds
+// the URL with encodeURI, which leaves '#', '?' and '&' intact — a print named
+// "Panel #3.pdf" would sign one URL and address a different object.
+export const MAX_PRINT_NAME_LEN = 120;
+
+export function sanitizePrintName(name) {
+  const raw = String(name ?? "").replace(/[/\\]/g, " ");
+  const cleaned = raw
+    // Runs of dots collapse to one. Without the slashes there is no traversal
+    // left to do, but assertKeyInPrints refuses ANY key containing '..' — so a
+    // print that kept them would upload happily and then be impossible to
+    // delete, which is the one operation that reclaims storage.
+    .replace(/\.{2,}/g, ".")
+    .replace(/[^A-Za-z0-9 ._()-]/g, "_")   // keeps "E-1 Rev B (2).pdf" intact
+    .replace(/\s+/g, " ")
+    .replace(/^[.\s]+/, "")                 // no leading dot: ".." and hidden keys
+    .trim();
+  if (!cleaned || cleaned === "." || cleaned === "..") return null;
+  // Trim from the FRONT so the extension survives — a 200-char name truncated
+  // from the back would lose ".pdf" and open as a download of unknown type.
+  return cleaned.length > MAX_PRINT_NAME_LEN
+    ? cleaned.slice(cleaned.length - MAX_PRINT_NAME_LEN)
+    : cleaned;
+}
+
+// Prints are binned NESTED inside their own segment, not in the top-level
+// `_deleted/` root the photos use:
+//
+//   jobs/<id>/_prints/E-1.pdf            live
+//   jobs/<id>/_prints/_deleted/E-1.pdf   binned, still recoverable
+//
+// Two reasons, both learned from the code above rather than guessed:
+//  - listDeletedJobPhotos keeps EVERYTHING under `_deleted/jobs/<id>/`
+//    (`keep = () => true`), so a print binned there would show up in the photo
+//    recycle bin as a broken tile and could be "restored" into an album.
+//  - the lifecycle rule on `_deleted/` expires photos after 30 days. A print
+//    should not silently evaporate; it leaves when someone says so. Same
+//    reasoning as receipts, which are nested for the same reason.
+const PRINT_DELETED_SEGMENT = "_deleted/";
+
+export function isPrintDeletedKey(jobId, key) {
+  return String(key).startsWith(jobPrintsPrefix(jobId) + PRINT_DELETED_SEGMENT);
+}
+
+// Mutating helpers refuse any key outside this job's PRINTS prefix — stricter
+// than assertKeyInJob, which would happily accept a photo key. A print delete
+// must never be able to point at the gallery.
+function assertKeyInPrints(jobId, key) {
+  const k = String(key || "");
+  if (!isPrintKey(jobId, k) || k.includes("..")) {
+    throw new R2Error("That print does not belong to this job", "KEY_OUTSIDE_JOB");
+  }
+  return k;
+}
+
+function printListEntry(o) {
+  const name = o.key.slice(o.key.lastIndexOf("/") + 1);
+  return {
+    key: o.key,
+    name,
+    size: o.size,
+    isPdf: /\.pdf$/i.test(name),
+  };
+}
+
+async function buildPrintList(objects, stamp) {
+  const sorted = objects.sort((a, b) => new Date(b.lastModified || 0) - new Date(a.lastModified || 0));
+  return await Promise.all(sorted.map(async (o) => ({
+    ...printListEntry(o),
+    [stamp]: o.lastModified,
+    url: await presignGet(o.key),
+  })));
+}
+
+// One job's prints, newest first, every URL pre-signed so the browser opens the
+// PDF straight from Cloudflare. No thumbnails: these are drawings, and the
+// browser's own viewer renders them better than any tile we could make.
+export async function listJobPrints(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(jobPrintsPrefix(jobId), timeoutMs);
+  return await buildPrintList(objects.filter(o => !isPrintDeletedKey(jobId, o.key)), "uploadedAt");
+}
+
+export async function listDeletedJobPrints(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(jobPrintsPrefix(jobId) + PRINT_DELETED_SEGMENT, timeoutMs);
+  return await buildPrintList(objects, "deletedAt");
+}
+
+// Soft delete: out of the list, into the nested bin, still recoverable. Uses
+// the single-object move — a print has no thumbnail to carry with it.
+export async function softDeleteJobPrint(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPrints(jobId, key);
+  if (isPrintDeletedKey(jobId, k)) return { key: k, moved: false };
+  const filename = k.slice(k.lastIndexOf("/") + 1);
+  return await moveObject(k, jobPrintsPrefix(jobId) + PRINT_DELETED_SEGMENT + filename, timeoutMs);
+}
+
+export async function restoreJobPrint(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPrints(jobId, key);
+  if (!isPrintDeletedKey(jobId, k)) return { key: k, moved: false };
+  const filename = k.slice(k.lastIndexOf("/") + 1);
+  return await moveObject(k, jobPrintsPrefix(jobId) + filename, timeoutMs);
+}
+
+// Permanent, no undo — and the only thing that actually reclaims storage, which
+// is why it exists. Refuses anything not already in the bin, so "delete
+// forever" can never be pointed at a live print by a bad key.
+export async function purgeJobPrint(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPrints(jobId, key);
+  if (!isPrintDeletedKey(jobId, k)) {
+    throw new R2Error("Only prints already deleted can be permanently removed", "NOT_DELETED");
+  }
+  await deleteObject(k, timeoutMs);
+  return { key: k, purged: true };
 }
 
 // The album a binned photo goes back to: '' when it was loose, else the name.

@@ -890,6 +890,95 @@ await test('job docs live outside the photo gallery', async () => {
   ok(!isDocKey('recJ1', `${jobPrefix('recJ1')}Gym/20260801-01-x.jpg`), 'a photo is not a doc');
 });
 
+// ── job prints (docs/PLAN-job-prints.md) ──
+await test('prints: EVERY signed-in role can read them — that is the feature', async () => {
+  setR2();
+  mockTables = JOB_ONLY();
+  // The whole point is a crew opening drawings on site without a pCloud login,
+  // so an employee reading this must never 403. jobDocs is the deliberate
+  // contrast: same storage, same job, admin/office only, because the materials
+  // PDF itemises unit costs. If these two ever agree, one of them is wrong.
+  for (const tok of [EMP_TOK, VIEWER_TOK, OFFICE_TOK, ADMIN_TOK]) {
+    ok((await GET('jobPrints', { jobId: 'recJ1' }, tok)).statusCode !== 403, 'prints readable');
+  }
+  eq((await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK)).statusCode, 403, 'employee still blocked from jobDocs');
+});
+
+await test('prints: any non-viewer may upload, only admin/office may remove', async () => {
+  setR2();
+  mockTables = JOB_ONLY();
+  const files = { jobId: 'recJ1', files: [{ name: 'E-1.pdf', contentType: 'application/pdf' }] };
+  // A crew member photographing a marked-up sheet is a legitimate print.
+  ok((await POST('jobPrintUploadUrls', files, EMP_TOK)).statusCode !== 403, 'employee may upload');
+  eq((await POST('jobPrintUploadUrls', files, VIEWER_TOK)).statusCode, 403, 'viewer may not');
+
+  // Removing one is manager-only: a crew that arrives to find the drawing gone
+  // cannot do the job, and purge is unrecoverable.
+  const body = { jobId: 'recJ1', keys: ['jobs/recJ1/_prints/E-1.pdf'] };
+  for (const action of ['deleteJobPrints', 'restoreJobPrints', 'purgeJobPrints']) {
+    eq((await POST(action, body, EMP_TOK)).statusCode, 403, `${action} employee`);
+    eq((await POST(action, body, VIEWER_TOK)).statusCode, 403, `${action} viewer`);
+    ok((await POST(action, body, OFFICE_TOK)).statusCode !== 403, `${action} office allowed`);
+  }
+  eq((await GET('jobPrintsDeleted', { jobId: 'recJ1' }, EMP_TOK)).statusCode, 403, 'employee cannot browse the prints bin');
+  ok((await GET('jobPrintsDeleted', { jobId: 'recJ1' }, OFFICE_TOK)).statusCode !== 403, 'office can');
+});
+
+await test('prints live outside the photo gallery and outside the photo bin', async () => {
+  const r2 = await import('../netlify/functions/_r2.js');
+  eq(r2.jobPrintsPrefix('recJ1'), 'jobs/recJ1/_prints/', 'prefix');
+  ok(r2.isPrintKey('recJ1', 'jobs/recJ1/_prints/E-1 Rev B.pdf'), 'detects a print');
+  ok(!r2.isPrintKey('recJ1', 'jobs/recJ1/Gym/20260801-01-x.jpg'), 'a photo is not a print');
+  // listJobPhotos returns every non-thumb object under the job prefix, so a
+  // 30 MB PDF among the photos would render as a broken tile AND albumFromKey
+  // would invent an album called "_prints".
+  eq(r2.albumFromKey('recJ1', 'jobs/recJ1/_prints/E-1.pdf'), '_prints', 'why the exclusion exists');
+  // The prints bin is NESTED, not the top-level _deleted/ root: listDeletedJobPhotos
+  // keeps everything under _deleted/jobs/<id>/, so a print binned there would
+  // appear in the PHOTO recycle bin and could be restored into an album.
+  const binned = 'jobs/recJ1/_prints/_deleted/E-1.pdf';
+  ok(r2.isPrintDeletedKey('recJ1', binned), 'binned print detected');
+  ok(!r2.isDeletedKey('recJ1', binned), 'not in the photo bin');
+  ok(!r2.isLegacyDeletedKey('recJ1', binned), 'not in the legacy photo bin');
+  ok(r2.isPrintKey('recJ1', binned), 'still inside the prints prefix');
+});
+
+await test('prints: the filename is preserved but can never forge a path', async () => {
+  const { sanitizePrintName, MAX_PRINT_NAME_LEN } = await import('../netlify/functions/_r2.js');
+  // The name is client-supplied AND becomes the object key, so it is the one
+  // string in this feature that can do damage.
+  eq(sanitizePrintName('E-1 Rev B.pdf'), 'E-1 Rev B.pdf', 'revision survives verbatim');
+  eq(sanitizePrintName('Panel (2).pdf'), 'Panel (2).pdf', 'parens survive');
+  ok(!sanitizePrintName('../../etc/passwd').includes('/'), 'no slashes');
+  ok(!sanitizePrintName('a/../b.pdf').includes('..'), 'no climb');
+  eq(sanitizePrintName('..'), null, 'dot-dot rejected outright');
+  eq(sanitizePrintName('   '), null, 'whitespace rejected');
+  eq(sanitizePrintName('.hidden.pdf'), 'hidden.pdf', 'no leading dot');
+  // presign() builds the URL with encodeURI, which leaves these intact — a
+  // print named "Panel #3.pdf" would sign one URL and address another object.
+  ok(!/[#?&]/.test(sanitizePrintName('Panel #3 ?a&b.pdf')), 'url-breaking chars neutralised');
+  // Truncation takes from the FRONT so the extension survives; a name cut from
+  // the back would lose ".pdf" and open as a download of unknown type.
+  const long = sanitizePrintName('x'.repeat(300) + '.pdf');
+  eq(long.length, MAX_PRINT_NAME_LEN, 'length capped');
+  ok(long.endsWith('.pdf'), 'extension survives truncation');
+});
+
+await test('prints: purge refuses anything still live', async () => {
+  const { purgeJobPrint, softDeleteJobPrint } = await import('../netlify/functions/_r2.js');
+  let threw = null;
+  try { await purgeJobPrint('recJ1', 'jobs/recJ1/_prints/E-1.pdf'); } catch (e) { threw = e; }
+  ok(threw && threw.code === 'NOT_DELETED', `purge refuses a live print (got ${threw && threw.code})`);
+  // And no print operation may be pointed at a photo — assertKeyInPrints is
+  // stricter than the photo guard, which only checks the job prefix.
+  threw = null;
+  try { await softDeleteJobPrint('recJ1', 'jobs/recJ1/Gym/20260801-01-x.jpg'); } catch (e) { threw = e; }
+  ok(threw && threw.code === 'KEY_OUTSIDE_JOB', `a photo key is refused (got ${threw && threw.code})`);
+  threw = null;
+  try { await softDeleteJobPrint('recJ1', 'jobs/recOTHER/_prints/E-1.pdf'); } catch (e) { threw = e; }
+  ok(threw && threw.code === 'KEY_OUTSIDE_JOB', `another job's print is refused (got ${threw && threw.code})`);
+});
+
 await test('recycle-bin actions: admin/office only, viewer and employee blocked', async () => {
   setR2();
   mockTables = JOB_ONLY();

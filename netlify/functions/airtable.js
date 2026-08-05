@@ -15,6 +15,8 @@ import {
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
   moveJobPhoto, softDeleteJobPhoto, restoreJobPhoto, purgeJobPhoto,
   listDeletedJobPhotos, listJobDocs,
+  jobPrintsPrefix, sanitizePrintName, listJobPrints, listDeletedJobPrints,
+  softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
   expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
 } from "./_r2.js";
@@ -449,6 +451,11 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // apply. Moving between albums is NOT here — it's reversible, so any
   // non-viewer may re-file.
   "deleteJobPhotos", "restoreJobPhotos", "purgeJobPhotos",
+  // Prints: any non-viewer may UPLOAD one (jobPrintUploadUrls is deliberately
+  // not here — a crew member photographing a marked-up sheet is the feature),
+  // but removing one is manager-only. A crew that arrives to find the drawing
+  // gone cannot do the job, and purge is genuinely unrecoverable.
+  "deleteJobPrints", "restoreJobPrints", "purgeJobPrints",
   // Receipts are financial records and there is no "reviewed" state to key an
   // employee self-service window off, so deletion is manager-only.
   "deleteExpenseReceipts", "restoreExpenseReceipts",
@@ -475,7 +482,13 @@ const _ADMIN_READS = new Set(["r2Status"]);
 //                      totals. handleExpenses already scopes employees to their
 //                      own submissions and hides job totals; this must not
 //                      become the back door around that.
-const _ADMIN_OFFICE_READS = new Set(["jobPhotosDeleted", "jobDocs"]);
+//   jobPrintsDeleted - the prints bin, whose restore/purge are admin/office
+//
+// `jobPrints` itself is deliberately ABSENT from every set here, so authzFor
+// returns null and any signed-in role may read it. That is the entire feature:
+// a crew opening the drawings on site without a pCloud login. If you find
+// yourself adding it here, you have confused prints with jobDocs.
+const _ADMIN_OFFICE_READS = new Set(["jobPhotosDeleted", "jobDocs", "jobPrintsDeleted"]);
 
 function authzFor(method, action) {
   if (method === "GET") {
@@ -4980,17 +4993,17 @@ async function handleExpenseReceiptSummary(params, authUser) {
 // apply `fn` per key and report per-key outcomes rather than failing the whole
 // batch. Selecting 40 photos and having one bad key abort the lot is the wrong
 // behaviour when the user is standing in a parking lot.
-async function bulkPhotoOp(body, label, fn) {
+async function bulkPhotoOp(body, label, fn, noun = "photos") {
   const jobId = body?.jobId;
   const keys = Array.isArray(body?.keys) ? body.keys : [];
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
-  if (!keys.length) return resp(400, { ok: false, error: "No photos selected." });
+  if (!keys.length) return resp(400, { ok: false, error: `No ${noun} selected.` });
   // Netlify gives a synchronous function 10 seconds. A move is four R2 calls
   // (copy, copy thumb, delete, delete thumb), so 47 photos done sequentially
   // was ~188 round trips and returned a 504 with nothing moved. The client now
   // chunks; this cap is the backstop that keeps one request inside the budget.
   if (keys.length > BULK_PHOTO_MAX) {
-    return resp(400, { ok: false, error: `Too many photos in one request (max ${BULK_PHOTO_MAX}).` });
+    return resp(400, { ok: false, error: `Too many ${noun} in one request (max ${BULK_PHOTO_MAX}).` });
   }
   if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage isn't configured." });
 
@@ -5069,6 +5082,140 @@ async function handleJobDocs(params) {
   }
 }
 
+/* ── Job prints (docs/PLAN-job-prints.md) ───────────────────────────────────
+ * The drawings a crew needs on site — opened from the job, no pCloud login.
+ * Same machinery as photos (presigned PUT/GET, folder-is-the-record, nothing in
+ * Airtable) with three deliberate differences:
+ *
+ *  1. READING IS OPEN TO EVERY SIGNED-IN ROLE. jobDocs above is admin/office
+ *     because the materials PDF itemises unit costs; prints are the opposite,
+ *     and being readable in the field is the entire point.
+ *  2. The original filename is preserved. "E-1 Rev B.pdf" is how a crew knows
+ *     which sheet it is holding — a server-generated name throws that away.
+ *     That makes the name client-supplied, hence sanitizePrintName.
+ *  3. No compression and no thumbnail. A print is a document; the browser's
+ *     PDF viewer renders it better than any tile, and running a 300 dpi sheet
+ *     through the image compressor would destroy the only thing on it that
+ *     matters — the small text.
+ *
+ * This does NOT replace pCloud. pCloud stays the office document tree; this is
+ * a field-accessible copy of the drawings the crew actually needs.
+ */
+async function handleJobPrints(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", prints: [] });
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  try {
+    return resp(200, { ok: true, available: true, prints: await listJobPrints(jobId) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "jobPrints"), prints: [] });
+  }
+}
+
+// The prints bin. Admin/office only, matching the restore/purge actions on it.
+async function handleJobPrintsDeleted(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", prints: [] });
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  try {
+    return resp(200, { ok: true, available: true, prints: await listDeletedJobPrints(jobId) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "jobPrintsDeleted"), prints: [] });
+  }
+}
+
+// Prints are documents, not photos: whatever the browser reports is stored
+// as-is where it is recognised, and anything unrecognised becomes a plain
+// download rather than being coerced. Coercion is what bit receipts — an
+// unrecognised type there fell back to image/jpeg, so a .docx was stored with a
+// .jpg extension and rendered as a permanently broken tile.
+const PRINT_CONTENT_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif",
+  "image/vnd.dwg", "application/dxf",
+]);
+
+function printContentType(raw, name) {
+  const t = String(raw || "").toLowerCase().split(";")[0].trim();
+  if (PRINT_CONTENT_TYPES.has(t)) return t;
+  // Windows hands over an empty type often enough to matter, so fall back to
+  // the extension — the same sniff order uploadReceiptFiles uses client-side.
+  if (/\.pdf$/i.test(name || "")) return "application/pdf";
+  if (/\.(jpe?g)$/i.test(name || "")) return "image/jpeg";
+  if (/\.png$/i.test(name || "")) return "image/png";
+  return "application/octet-stream";
+}
+
+// Presigned PUTs straight to R2 — the bytes never pass through this function,
+// which is what makes a 40 MB drawing set possible at all (Netlify caps a
+// function payload at 4.5 MB).
+//
+// Any non-viewer may upload: a crew member photographing a marked-up sheet on
+// site is a legitimate print, and gating that on admin would mean it never
+// happens. Removing one is admin/office — see _ADMIN_OFFICE_POSTS.
+async function handleJobPrintUploadUrls(body) {
+  const jobId = body?.jobId;
+  const files = Array.isArray(body?.files) ? body.files : [];
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!files.length) return resp(400, { ok: false, error: "No files requested." });
+  if (files.length > 15) return resp(400, { ok: false, error: "Too many prints at once (max 15)." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Print storage isn't configured." });
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  try {
+    // The filename is the only client-supplied part of the key and it is
+    // sanitized before it becomes one — a raw name could carry a slash (a
+    // forged path segment) or ".." (a climb out of this job's prefix).
+    //
+    // Uploading the same name twice REPLACES the earlier file. That is the
+    // right default for a document — "here is the corrected E-1" — and the
+    // client warns before it happens, having already listed what is there.
+    const seen = new Set();
+    const uploads = await Promise.all(files.map(async (f, i) => {
+      const contentType = printContentType(f?.contentType, f?.name);
+      let name = sanitizePrintName(f?.name);
+      if (!name) name = `print-${String(i + 1).padStart(2, "0")}${contentType === "application/pdf" ? ".pdf" : ""}`;
+      // Two files sanitizing to the same name inside ONE request would have the
+      // second silently overwrite the first before anyone could see either.
+      if (seen.has(name.toLowerCase())) name = `${i + 1}-${name}`;
+      seen.add(name.toLowerCase());
+
+      const key = `${jobPrintsPrefix(jobId)}${name}`;
+      return { key, name, putUrl: await presignPut(key, contentType), contentType };
+    }));
+    return resp(200, { ok: true, uploads });
+  } catch (e) {
+    const { reason } = r2Unavailable(e, "jobPrintUploadUrls");
+    return resp(502, { ok: false, error: "Could not prepare the upload.", reason });
+  }
+}
+
+// Soft delete — out of the list, into the prints bin, still restorable.
+async function handleDeleteJobPrints(body) {
+  return await bulkPhotoOp(body, "deleteJobPrints", (jobId, key) => softDeleteJobPrint(jobId, key), "prints");
+}
+
+async function handleRestoreJobPrints(body) {
+  return await bulkPhotoOp(body, "restoreJobPrints", (jobId, key) => restoreJobPrint(jobId, key), "prints");
+}
+
+// Permanent. This is the one that actually reclaims storage — a binned print
+// still costs, and the prints bin is deliberately outside the lifecycle rule
+// that expires deleted photos after 30 days, so nothing here leaves on its own.
+async function handlePurgeJobPrints(body) {
+  return await bulkPhotoOp(body, "purgeJobPrints", (jobId, key) => purgeJobPrint(jobId, key), "prints");
+}
+
 // Recycle-bin listing. Admin/office only — employees shouldn't be browsing
 // what was deleted.
 async function handleJobPhotosDeleted(params) {
@@ -5123,6 +5270,8 @@ export async function handler(event) {
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
+      if (action === "jobPrints")          return await handleJobPrints(params);
+      if (action === "jobPrintsDeleted")   return await handleJobPrintsDeleted(params);
       if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
       if (action === "expenseReceiptSummary") return await handleExpenseReceiptSummary(params, authUser);
@@ -5216,6 +5365,10 @@ export async function handler(event) {
       if (body.action === "deleteJobPhotos")      return await handleDeleteJobPhotos(body);
       if (body.action === "restoreJobPhotos")     return await handleRestoreJobPhotos(body);
       if (body.action === "purgeJobPhotos")       return await handlePurgeJobPhotos(body);
+      if (body.action === "jobPrintUploadUrls")   return await handleJobPrintUploadUrls(body);
+      if (body.action === "deleteJobPrints")      return await handleDeleteJobPrints(body);
+      if (body.action === "restoreJobPrints")     return await handleRestoreJobPrints(body);
+      if (body.action === "purgeJobPrints")       return await handlePurgeJobPrints(body);
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);

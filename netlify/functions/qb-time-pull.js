@@ -355,7 +355,7 @@ export const handler = async () => {
 
   const sql = neon(url);
 
-  // Refresh the Jobs identity columns BEFORE pulling timesheets, so a job created
+  // Refresh the Jobs master record BEFORE pulling timesheets, so a job created
   // in Airtable since the last run is already resolvable by the jobByPo lookup in
   // runPull. Order matters: run it after, and a timesheet for a brand-new job lands
   // with job_id NULL and nothing ever goes back to fix it — that was the bug this

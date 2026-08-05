@@ -4453,6 +4453,76 @@ const SCHED_F = {
   type:      "Entry Type"
 };
 
+// NEON-FIRST since migration Step 4a. The Airtable path below stays as the
+// fallback and is unchanged.
+//
+// Worth knowing why this one was picked to go first: the old path pages THREE
+// whole Airtable tables on every load — Schedule Entries, Jobs and Employees —
+// purely to resolve names for the grid. Jobs and employees are already in Neon,
+// so the same answer is one query with two joins.
+//
+// Crew is a real many-to-many (schedule_entry_crew), not an array column. It is
+// the first slice to need that, and Step 4c's generator service history will too.
+async function handleGetScheduleEntriesFromNeon(params) {
+  const since = params?.since || "";
+  const until = params?.until || "";
+  const jobId = params?.jobId || "";
+
+  const q = await neonQuery(
+    `SELECT s.id::text AS id, s.title, s.entry_type, s.notes,
+            s.start_date::text AS start_date, s.end_date::text AS end_date,
+            j.airtable_id AS job_at_id, j.name AS job_name,
+            j.contractor_name, j.status AS job_status,
+            COALESCE(array_agg(e.airtable_id ORDER BY e.name)
+                     FILTER (WHERE e.airtable_id IS NOT NULL), '{}') AS crew_ids,
+            COALESCE(array_agg(e.name ORDER BY e.name)
+                     FILTER (WHERE e.name IS NOT NULL), '{}') AS crew_names
+       FROM schedule_entries s
+       LEFT JOIN jobs j ON j.id = s.job_id
+       LEFT JOIN schedule_entry_crew c ON c.schedule_entry_id = s.id
+       LEFT JOIN employees e ON e.id = c.employee_id
+      WHERE ($1 = '' OR j.airtable_id = $1)
+        -- Overlap test, matching the JS below: an entry with no dates at all is
+        -- always kept, otherwise it shows when its range meets the window.
+        AND ($2 = '' OR s.start_date IS NULL OR COALESCE(s.end_date, s.start_date) >= $2::date)
+        AND ($3 = '' OR s.start_date IS NULL OR COALESCE(s.start_date, s.end_date) <= $3::date)
+      GROUP BY s.id, j.airtable_id, j.name, j.contractor_name, j.status
+      ORDER BY s.start_date ASC NULLS FIRST`,
+    [jobId, since, until]);
+  if (!q?.rows) return null;
+
+  const entries = q.rows.map(r => ({
+    id:         r.id,
+    title:      r.title || "",
+    type:       r.entry_type || "Job",
+    jobId:      r.job_at_id || "",
+    jobName:    r.job_name || "",
+    contractor: r.contractor_name || "",
+    jobStatus:  r.job_status || "",
+    startDate:  r.start_date || "",
+    endDate:    r.end_date || "",
+    // Crew comes back ordered by NAME rather than in Airtable's insertion order —
+    // deterministic, and the grid renders these as an unordered set of pills.
+    crewIds:    r.crew_ids || [],
+    crew:       r.crew_names || [],
+    notes:      r.notes || ""
+  }));
+
+  const bd = await neonQuery(
+    `SELECT airtable_id, name, contractor_name, bird_date::text AS bird_date
+       FROM jobs
+      WHERE bird_date IS NOT NULL
+        AND ($1 = '' OR bird_date >= $1::date)
+        AND ($2 = '' OR bird_date <= $2::date)`,
+    [since, until]);
+  const birdDates = (bd?.rows || []).map(r => ({
+    jobId: r.airtable_id, jobName: r.name || "",
+    contractor: r.contractor_name || "", date: r.bird_date
+  }));
+
+  return { entries, birdDates, ms: q.ms };
+}
+
 async function handleGetScheduleEntries(params) {
   // Optional date-range filter: ?since=YYYY-MM-DD & ?until=YYYY-MM-DD.
   // Filter is "any overlap" — an entry shows if its [start, end] range
@@ -4460,6 +4530,13 @@ async function handleGetScheduleEntries(params) {
   const since = params?.since || "";
   const until = params?.until || "";
   const jobId = params?.jobId || "";
+
+  if (neonEnabled()) {
+    const r = await handleGetScheduleEntriesFromNeon(params);
+    if (r) return resp(200, { ok: true, entries: r.entries, birdDates: r.birdDates,
+                              _source: "neon", _ms: r.ms });
+    console.error("scheduleEntries: Neon read failed, falling back to Airtable");
+  }
 
   const records = await fetchAll(TABLES.scheduleEntries);
   const jobs = await fetchAll(TABLES.jobs);
@@ -5599,24 +5676,30 @@ async function handleSavePanelSchedule(body, authUser) {
   // than rejected: a stale editor open on a 42-way panel that someone else
   // shrank to 30 should save the 30 it shares, not fail the request outright.
   const sent = Array.isArray(body?.circuits_list) ? body.circuits_list : [];
-  const nums = [], descs = [];
+  const nums = [], descs = [], poles = [];
   for (const c of sent) {
     const n = Math.round(Number(c?.number));
     if (!Number.isFinite(n) || n < 1 || n > circuits) continue;
     nums.push(n);
     descs.push(String(c?.description ?? "").trim().slice(0, 200));
+    // `poles` marks a ganged breaker and lives on the FIRST circuit of the span
+    // only: 2 on circuit 1 means it also occupies circuit 3 (same side, next
+    // number up). The covered circuits carry null, which is what stops two
+    // adjacent 2-pole breakers from reading as one 4-pole.
+    const p = Math.round(Number(c?.poles));
+    poles.push(p === 2 || p === 3 ? p : 0);
   }
 
   if (nums.length) {
     // One statement, not one per circuit: 42 sequential round trips to Neon is
     // most of the 10 seconds Netlify gives a synchronous function.
     await neonWrite("panels.saveCircuits",
-      `INSERT INTO panel_circuits (panel_id, number, description)
-       SELECT $1::uuid, n, d
-         FROM unnest($2::int[], $3::text[]) AS t(n, d)
+      `INSERT INTO panel_circuits (panel_id, number, description, poles)
+       SELECT $1::uuid, n, d, NULLIF(p, 0)
+         FROM unnest($2::int[], $3::text[], $4::int[]) AS t(n, d, p)
        ON CONFLICT (panel_id, number)
-       DO UPDATE SET description = EXCLUDED.description`,
-      [String(panelId), nums, descs]);
+       DO UPDATE SET description = EXCLUDED.description, poles = EXCLUDED.poles`,
+      [String(panelId), nums, descs, poles]);
   }
 
   const saved = (await neonWrite("panels.afterSave",

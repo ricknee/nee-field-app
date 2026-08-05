@@ -159,8 +159,13 @@ to draw, `checkSpace` before each block).
 - **Header band** from the metadata that is set: `PANEL "MOP"  120/240V, 1-PHASE, 3-WIRE   MLO
   SURFACE MOUNT   NEMA1`, plus the job name and today's date. Fields left blank simply don't print.
 - **Filename:** `Panel MOP - Bethel School.pdf`.
-- **Empty circuits print as empty numbered rows** — image 2 does exactly this (17 through 41 are
-  blank but numbered). A blank row is a real statement: that breaker space exists and is unused.
+- **Empty circuits print `spare`**, small and italic, in their numbered row. (Revised on owner
+  feedback 2026-08-05 — the plan originally left them blank. A blank row reads as unfinished
+  paperwork; "spare" reads as a decision. The row is still numbered either way, so a 42-way panel
+  still looks like a 42-way panel.) The editor's placeholder says `spare` too, so the screen
+  previews the door schedule.
+- **Panel name is centred at the top**, largest thing on the sheet — it is what anyone looks for
+  first when the schedule is behind a door.
 
 ## 6. Authorization
 
@@ -207,10 +212,19 @@ the schema in §3 already has the columns.
 3. **Shrinking the circuit count destroys data.** Going 42 → 30 orphans circuits 31-42, which may
    have descriptions. Warn with the count of non-empty circuits about to be lost, and require
    confirmation. Growing is always safe.
-4. **Multi-pole breakers are not modelled in slice 1.** In image 2 a 2-pole breaker occupies
-   circuits 1 *and* 3 with the same description. Until slice 3 adds `poles`, that is just the same
-   text typed on both rows — which fill-down makes cheap. Don't half-build pole spanning in slice 1;
-   it changes how rows render and is a slice-3 concern.
+4. **Multi-pole breakers — built 2026-08-05 on owner feedback, ahead of slice 3.** Each circuit has
+   a tie checkbox; a RUN of ticked circuits on the same side (1 and 3, or 1, 3 and 5) merges into
+   one cell with the line between them removed and the description centred across the span.
+   The rules that matter:
+   - `poles` is stored on the **head circuit only** (2 on circuit 1 means it also occupies 3), and
+     the covered circuits are **blanked** on save. Store the span on every member instead and two
+     adjacent 2-poles become an unreadable 4-pole.
+   - Runs are **capped at 3**. Without the cap, ticking four in a row silently gangs them all.
+   - Unticking a *merged* cell breaks the whole gang, since a merged cell shows only one box —
+     that click is the only way out of a 3-pole.
+   - The grid sets `grid-row`/`grid-column` **explicitly**. Auto-placement pushes the *other*
+     side's rows down when one side spans, which knocks the two columns out of step.
+   - The filled counter counts **circuits, not cells**: a 2-pole is one input but two spaces.
 5. **`updated_by` is a name, not a link.** Same reasoning as `job_name` on time entries: the text
    snapshot is the history, and an employee record that changes later must not rewrite who filled in
    a panel schedule two years ago.

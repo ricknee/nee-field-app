@@ -808,10 +808,31 @@
     .panel-ckt {
       flex: 0 0 30px;
       text-align: right;
-      font-size: 12px;
-      font-weight: 700;
-      color: var(--muted);
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text);
       font-variant-numeric: tabular-nums;
+    }
+    /* A ganged breaker shows every circuit it occupies, spread over the full
+       height of the merged cell — the same way both numbers stay printed on a
+       real schedule even though the two spaces are one breaker. */
+    .panel-ckt.stack {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: flex-end;
+      padding: 4px 0;
+    }
+    /* The tie checkbox. Tick two circuits on the same side and they become one
+       breaker; the line between them goes and the description centres across
+       both. Untick the merged cell to break it apart again. */
+    .panel-tie {
+      flex: 0 0 auto;
+      width: 15px;
+      height: 15px;
+      margin: 0 1px;
+      cursor: pointer;
+      accent-color: #d97706;
     }
     .panel-desc {
       flex: 1 1 auto;
@@ -824,6 +845,23 @@
       color: var(--text);
     }
     .panel-desc:focus { border-color: var(--accent); outline: none; }
+    /* Blank reads as "spare" in small italic — the same thing the PDF prints
+       for an empty circuit, so the screen previews the door schedule. */
+    .panel-desc::placeholder {
+      font-size: 11px;
+      font-style: italic;
+      color: var(--muted);
+      opacity: 0.75;
+    }
+    /* Merged multi-pole cell: one description, centred over the full height of
+       the circuits it spans, with no dividing line inside it. */
+    .panel-row.merged { align-items: stretch; }
+    .panel-desc.merged {
+      text-align: center;
+      font-weight: 600;
+      background: #fffaf0;
+      border-color: rgba(217,119,6,0.55);
+    }
     /* A filled circuit reads differently from an empty one at a glance — the
        whole job of this screen is "which breakers still need walking?". */
     .panel-desc.has-val { background: #fffdf5; border-color: rgba(245,158,11,0.45); }
@@ -856,6 +894,14 @@
       /* The right column's header would otherwise repeat mid-list once the two
          columns stack. */
       .panel-col-head.right { display: none; }
+      /* Rows carry explicit grid-row/grid-column so a merged breaker can span
+         two rows of ONE side (see renderPanelGrid). Stacked to a single column
+         those coordinates would punch holes in the list, so they are dropped
+         and DOM order — which is circuit order — takes over again. */
+      .panel-grid > * {
+        grid-column: 1 !important;
+        grid-row: auto !important;
+      }
     }
 
     /* ── TABS ── */
@@ -5545,7 +5591,7 @@
   // the loss. It is what makes the server's 409 guard live rather than
   // ceremonial: send it unconditionally and a second editor's shrink would be
   // rubber-stamped by whoever saved last.
-  const panelState = { jobId: null, panels: [], panel: null, circuits: [], dirty: false, shrinkOk: false };
+  const panelState = { jobId: null, panels: [], panel: null, circuits: [], dirty: false, shrinkOk: false, tied: new Set() };
 
   // Offered as a datalist, not a <select> — these four cover almost everything
   // NEE touches, but a real building will eventually hold something that isn't
@@ -5725,6 +5771,15 @@
       panelState.dirty = false;
       panelState.shrinkOk = false;
 
+      // Rebuild the tie ticks from the stored spans. `poles` lives on the first
+      // circuit of a gang only, so a 2 on circuit 1 re-ticks 1 and 3.
+      panelState.tied = new Set();
+      for (const c of panelState.circuits) {
+        const p = Number(c.poles);
+        if (p !== 2 && p !== 3) continue;
+        for (let i = 0; i < p; i++) panelState.tied.add(c.number + i * 2);
+      }
+
       // A draft only exists if a previous save didn't land. Apply it over the
       // server values rather than prompting: the person typed those words and
       // the alternative is losing them to a dialog they tap through.
@@ -5834,24 +5889,74 @@
     };
   }
 
-  // Circuit order in the DOM (1,2,3,4…), NOT column order. The two-column grid
-  // places odds left and evens right on its own because they alternate, and
-  // that same DOM order is what makes the mobile single-column stack read
-  // 1,2,3,4 instead of every odd followed by every even.
+  /* Ganged breakers.
+   * `panelState.tied` holds the circuit numbers whose tie box is ticked. A RUN
+   * of ticked circuits on the same side — 1 and 3, or 1, 3 and 5 — is one
+   * breaker: they merge into a single cell. A lone tick is not a span yet, it's
+   * a half-finished one, and renders as an ordinary row with the box ticked.
+   *
+   * Runs are capped at 3. A 4-pole breaker is not a thing on a panelboard, and
+   * without the cap two adjacent 2-pole breakers ticked back to back would
+   * silently become one 4-pole.
+   */
+  function panelBlocks() {
+    const tied = panelState.tied;
+    const max = panelState.panel ? panelState.panel.circuits : 0;
+    const blocks = [];
+    const covered = new Set();
+    for (const c of panelState.circuits) {
+      if (covered.has(c.number)) continue;
+      const members = [c.number];
+      if (tied.has(c.number)) {
+        let next = c.number + 2;
+        while (tied.has(next) && next <= max && members.length < 3) {
+          members.push(next);
+          next += 2;
+        }
+      }
+      if (members.length > 1) members.forEach(n => covered.add(n));
+      blocks.push({ members, poles: members.length });
+    }
+    return blocks;
+  }
+
+  // Circuit order in the DOM (1,2,3,4…), NOT column order — that is what makes
+  // the mobile single-column stack read 1,2,3,4 instead of every odd followed
+  // by every even. Row and column are then set EXPLICITLY rather than left to
+  // auto-placement, because a merged breaker spans two rows of one side and
+  // auto-flow would push the other side's rows down with it.
   function renderPanelGrid() {
     const grid = $("panelGrid");
+    const descOf = new Map(panelState.circuits.map(c => [c.number, c.description || ""]));
+
+    const body = panelBlocks().map(b => {
+      const first = b.members[0];
+      const v = descOf.get(first) || "";
+      const col = first % 2 === 1 ? 1 : 2;
+      // +2 for the two header cells occupying grid row 1.
+      const row = Math.ceil(first / 2) + 1;
+      const merged = b.members.length > 1;
+      const ckt = merged
+        ? `<span class="panel-ckt stack">${b.members.map(n => `<span>${n}</span>`).join("")}</span>`
+        : `<span class="panel-ckt">${first}</span>`;
+      return `<div class="panel-row${merged ? " merged" : ""}" style="grid-column:${col}; grid-row:${row} / span ${b.members.length};">
+        ${ckt}
+        <input class="panel-desc${v ? " has-val" : ""}${merged ? " merged" : ""}" data-ckt="${first}" value="${esc(v)}"
+               placeholder="spare" autocomplete="off" enterkeyhint="next" />
+        <input type="checkbox" class="panel-tie" data-ckt="${first}" ${panelState.tied.has(first) ? "checked" : ""}
+               title="Tick this and the next circuit on this side to gang them into one breaker" />
+        <button type="button" class="panel-fill" data-ckt="${first}" title="Copy this down the rest of this side">↓</button>
+      </div>`;
+    }).join("");
+
     grid.innerHTML =
-      `<div class="panel-col-head">Ckt — what it feeds</div>` +
-      `<div class="panel-col-head right">Ckt — what it feeds</div>` +
-      panelState.circuits.map(c => {
-        const v = c.description || "";
-        return `<div class="panel-row">
-          <span class="panel-ckt">${c.number}</span>
-          <input class="panel-desc${v ? " has-val" : ""}" data-ckt="${c.number}" value="${esc(v)}"
-                 placeholder="—" autocomplete="off" enterkeyhint="next" />
-          <button type="button" class="panel-fill" data-ckt="${c.number}" title="Copy this down the rest of this side">↓</button>
-        </div>`;
-      }).join("");
+      `<div class="panel-col-head" style="grid-column:1; grid-row:1;">Ckt — what it feeds</div>` +
+      `<div class="panel-col-head right" style="grid-column:2; grid-row:1;">Ckt — what it feeds</div>` +
+      body;
+
+    grid.querySelectorAll(".panel-tie").forEach(box => {
+      box.addEventListener("change", () => toggleTie(Number(box.dataset.ckt), box.checked));
+    });
 
     grid.querySelectorAll(".panel-desc").forEach(inp => {
       inp.addEventListener("input", () => {
@@ -5873,8 +5978,39 @@
     updateFilledCount();
   }
 
+  // Unticking a MERGED cell breaks the whole gang apart, not just the circuit
+  // whose box was clicked — the merged cell only shows one box, so that click
+  // is the only way back out of a 3-pole.
+  function toggleTie(num, checked) {
+    syncGridToState();
+    if (checked) {
+      panelState.tied.add(num);
+    } else {
+      const block = panelBlocks().find(b => b.members[0] === num);
+      (block ? block.members : [num]).forEach(n => panelState.tied.delete(n));
+    }
+    // A newly merged cell keeps the first circuit's description, unless it is
+    // blank and one of the circuits swallowed by the merge has text — losing
+    // typed words to a tick box would be the wrong trade.
+    for (const b of panelBlocks()) {
+      if (b.members.length < 2) continue;
+      const head = panelState.circuits.find(c => c.number === b.members[0]);
+      if (head && !head.description) {
+        const donor = b.members.slice(1)
+          .map(n => panelState.circuits.find(c => c.number === n))
+          .find(c => c && c.description);
+        if (donor) head.description = donor.description;
+      }
+    }
+    markPanelDirty();
+    renderPanelGrid();
+    updateFilledCount();
+  }
+
   // Reads the DOM, not panelState — the inputs are the live truth between
   // renders, and re-rendering on every keystroke would fight the caret.
+  // NOTE: a merged cell contributes ONE entry, under its first circuit. The
+  // circuits it covers keep whatever they had in state until save clears them.
   function readGridValues() {
     return [...document.querySelectorAll("#panelGrid .panel-desc")].map(i => ({
       number: Number(i.dataset.ckt),
@@ -5908,12 +6044,18 @@
     writePanelDraft();
   }
 
+  // Counts CIRCUITS, not cells. A 2-pole breaker is one input but occupies two
+  // spaces in the panel, and the question this line answers is "how much of the
+  // panel still needs walking?" — so it has to count the spaces.
   function updateFilledCount() {
     const el = $("panelFilledCount");
     if (!el) return;
-    const vals = readGridValues();
-    const n = vals.filter(c => c.description).length;
-    el.textContent = `${n} of ${vals.length} circuits filled in`;
+    const filledHeads = new Set(readGridValues().filter(c => c.description).map(c => c.number));
+    let n = 0;
+    for (const b of panelBlocks()) if (filledHeads.has(b.members[0])) n += b.members.length;
+    const total = panelState.panel ? panelState.panel.circuits : 0;
+    const gangs = panelBlocks().filter(b => b.members.length > 1).length;
+    el.textContent = `${n} of ${total} circuits filled in${gangs ? ` · ${gangs} ganged breaker${gangs === 1 ? "" : "s"}` : ""}`;
   }
 
   // Copies this circuit's description into every EMPTY circuit below it on the
@@ -5977,6 +6119,9 @@
         return;
       }
       panelState.circuits = panelState.circuits.filter(c => c.number <= even);
+      // Ties above the new top would otherwise survive as ticks on circuits
+      // that no longer exist, and re-gang the wrong breakers if it grows back.
+      [...panelState.tied].forEach(n => { if (n > even) panelState.tied.delete(n); });
       // The user has now seen and accepted the number; the save may confirm.
       panelState.shrinkOk = true;
     } else if (even > p.circuits) {
@@ -5987,6 +6132,18 @@
     $("panelFieldCircuits").value = even;
     markPanelDirty();
     renderPanelEditor(0);
+  }
+
+  function panelCircuitsForSave() {
+    const out = new Map(panelState.circuits.map(c => [c.number, { number: c.number, description: "", poles: 0 }]));
+    for (const b of panelBlocks()) {
+      const head = out.get(b.members[0]);
+      if (!head) continue;
+      const src = panelState.circuits.find(c => c.number === b.members[0]);
+      head.description = src ? (src.description || "") : "";
+      head.poles = b.members.length > 1 ? b.members.length : 0;
+    }
+    return [...out.values()];
   }
 
   async function savePanel() {
@@ -6004,7 +6161,11 @@
       circuits: p.circuits,
       location: $("panelFieldLocation").value.trim(),
       fedFrom: $("panelFieldFedFrom").value.trim(),
-      circuits_list: panelState.circuits.map(c => ({ number: c.number, description: c.description })),
+      // Flattened from the blocks so the gangs persist: the head of a span
+      // carries `poles` and its description, and the circuits it covers are
+      // blanked — their words belong to the merged cell now, and leaving them
+      // behind would resurrect stale text the moment someone unties it.
+      circuits_list: panelCircuitsForSave(),
       // Only true when THIS editor shrank the panel and the user accepted the
       // loss — see panelState.shrinkOk.
       confirmShrink: !!panelState.shrinkOk,
@@ -6084,22 +6245,21 @@
     const jobName = (state.selected && state.selected.name) || "";
 
     // Pairs: row i holds circuit 2i+1 on the left and 2i+2 on the right.
+    // Row r holds circuit 2r+1 on the left and 2r+2 on the right.
     const byNum = new Map(panelState.circuits.map(c => [c.number, c.description || ""]));
-    const pairs = [];
-    for (let n = 1; n <= p.circuits; n += 2) {
-      pairs.push({ l: n, lDesc: byNum.get(n) || "", r: n + 1, rDesc: byNum.get(n + 1) || "" });
-    }
 
     let y = 0;
     const drawHeader = () => {
-      y = 46;
-      doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 20);
-      doc.text(`PANEL ${p.name.toUpperCase()}`, M, y);
+      y = 50;
+      // Panel name centred at the top — it is the first thing anyone looks for
+      // when the sheet is behind a door, and it reads at arm's length.
+      doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.setTextColor(15, 15, 15);
+      doc.text(`PANEL ${p.name.toUpperCase()}`, W / 2, y, { align: "center" });
+      y += 16;
       doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(90, 90, 90);
-      if (jobName) doc.text(jobName, W - M, y, { align: "right" });
-      y += 15;
-      const meta = [p.voltage, p.fedFrom ? `Fed from ${p.fedFrom}` : "", p.location].filter(Boolean).join("   ·   ");
-      if (meta) { doc.text(meta, M, y); y += 13; }
+      const meta = [p.voltage, jobName, p.fedFrom ? `Fed from ${p.fedFrom}` : "", p.location]
+        .filter(Boolean).join("   ·   ");
+      if (meta) { doc.text(meta, W / 2, y, { align: "center" }); y += 13; }
       doc.setFontSize(8);
       doc.text(`Printed ${new Date().toLocaleDateString()}`, W - M, y - 1, { align: "right" });
       y += 6;
@@ -6127,26 +6287,66 @@
       return lines[0] || "";
     };
 
-    drawHeader();
-    doc.setFont("helvetica", "normal"); doc.setFontSize(9);
-    for (const pr of pairs) {
-      if (y + ROW_H > 756) { doc.addPage(); drawHeader(); doc.setFont("helvetica", "normal"); doc.setFontSize(9); }
-      let x = M;
+    // A ganged breaker is ONE description box spanning the circuits it occupies,
+    // with the line between them gone and the text centred over the whole span —
+    // the circuit numbers stay in their own boxes, because both spaces are still
+    // real spaces in the panel. `heads` maps a row index to the box that starts
+    // there; a row absent from it on that side is covered by the span above.
+    const blocks = panelBlocks();
+    const headsFor = (odd) => {
+      const m = new Map();
+      for (const b of blocks) {
+        const first = b.members[0];
+        if ((first % 2 === 1) !== odd) continue;
+        m.set(odd ? (first - 1) / 2 : (first - 2) / 2,
+              { span: b.members.length, desc: byNum.get(first) || "" });
+      }
+      return m;
+    };
+    const leftHeads = headsFor(true), rightHeads = headsFor(false);
+
+    // An empty circuit prints "spare" small and italic rather than as a blank —
+    // a blank row reads as unfinished paperwork, "spare" reads as a decision.
+    const drawDesc = (x, yTop, height, text) => {
       doc.setDrawColor(170, 170, 170); doc.setLineWidth(0.4);
-      doc.rect(M, y, W - M * 2, ROW_H);
-      const cells = [
-        { text: String(pr.l), align: "center", muted: true },
-        { text: fit(pr.lDesc, DESC_W), align: "left", muted: false },
-        { text: fit(pr.rDesc, DESC_W), align: "left", muted: false },
-        { text: String(pr.r), align: "center", muted: true },
-      ];
-      cells.forEach((cell, i) => {
-        if (i) doc.line(x, y, x, y + ROW_H);
-        doc.setTextColor(cell.muted ? 110 : 20, cell.muted ? 110 : 20, cell.muted ? 110 : 20);
-        if (cell.align === "center") doc.text(cell.text, x + COLS[i] / 2, y + 12, { align: "center" });
-        else doc.text(cell.text, x + 5, y + 12);
-        x += COLS[i];
-      });
+      doc.rect(x, yTop, DESC_W, height);
+      const mid = yTop + height / 2 + 3;
+      if (text) {
+        doc.setFont("helvetica", height > ROW_H ? "bold" : "normal");
+        doc.setFontSize(9); doc.setTextColor(20, 20, 20);
+        // A merged cell centres its one word; a single circuit stays left-aligned
+        // so a column of descriptions reads as a column.
+        if (height > ROW_H) doc.text(fit(text, DESC_W), x + DESC_W / 2, mid, { align: "center" });
+        else doc.text(fit(text, DESC_W), x + 5, mid);
+      } else {
+        doc.setFont("helvetica", "italic"); doc.setFontSize(7); doc.setTextColor(150, 150, 150);
+        doc.text("spare", x + 5, mid);
+      }
+    };
+
+    drawHeader();
+    const rows = Math.ceil(p.circuits / 2);
+    for (let r = 0; r < rows; r++) {
+      // Never let a gang straddle a page break — half a 3-pole breaker on the
+      // next sheet is worse than a short page.
+      const span = Math.max(leftHeads.get(r)?.span || 1, rightHeads.get(r)?.span || 1);
+      if (y + span * ROW_H > 756) { doc.addPage(); drawHeader(); }
+
+      const lNum = r * 2 + 1, rNum = r * 2 + 2;
+      // Circuit-number boxes: always one row each, and darker/bold to match the
+      // screen — they are the thing you scan for.
+      doc.setDrawColor(170, 170, 170); doc.setLineWidth(0.4);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(25, 25, 25);
+      doc.rect(M, y, CKT_W, ROW_H);
+      doc.text(String(lNum), M + CKT_W / 2, y + 12, { align: "center" });
+      doc.rect(W - M - CKT_W, y, CKT_W, ROW_H);
+      doc.text(String(rNum), W - M - CKT_W / 2, y + 12, { align: "center" });
+
+      const lh = leftHeads.get(r);
+      if (lh) drawDesc(M + CKT_W, y, lh.span * ROW_H, lh.desc);
+      const rh = rightHeads.get(r);
+      if (rh) drawDesc(M + CKT_W + DESC_W, y, rh.span * ROW_H, rh.desc);
+
       y += ROW_H;
     }
 

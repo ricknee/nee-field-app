@@ -89,7 +89,7 @@ have to be reconciled later.
 
 - **Reusable templates** ("standard shop supplies" copied onto a new job). Worth doing if the same
   list gets retyped; premature before anyone has retyped one.
-- **Reordering** items by drag. Typed order is load order and has been enough so far.
+- ~~**Reordering** items by drag.~~ ✅ **Built 2026-08-05 on owner request** — see §9.
 - **Assigning** an item to a person, or due dates. That's the Trello furniture this replaces.
 - **A PDF.** Explicitly not wanted — this list lives on a phone.
 
@@ -102,3 +102,24 @@ have to be reconciled later.
    text is held in `ckAddDraft` across renders and cleared *before* the re-render on a successful
    add — clear it after and the draft is restored into the box you just emptied.
 4. **`created_by` / `done_by` are names, not links** — same snapshot reasoning as everywhere else.
+
+## 9. Drag to reorder (built 2026-08-05)
+
+- **Pointer events, not the HTML5 drag-and-drop API.** That API never fires on a touchscreen, and
+  this list lives on a phone. Pointer events cover mouse, touch and stylus in one path.
+- **`touch-action: none` on the grip** is the line that makes it work on a phone at all — without
+  it the browser claims the vertical gesture as a scroll and the drag never starts. Only the grip
+  gives that up, so the list still scrolls normally everywhere else.
+- **A dedicated grip, not the whole row.** Dragging the row would fight scrolling, and the row
+  also carries a checkbox and a delete button — every mis-drag would be a mis-tap on one of them.
+- **The real row moves during the drag**, swapping against whichever neighbour's midpoint the
+  pointer crossed. No placeholder, so what you see mid-drag is what gets saved.
+- **Only open items are draggable.** Once something is on the truck its position is history.
+- **The server rewrites positions for every item from the client's full ordered id list**, and
+  scopes the UPDATE with `WHERE checklist_id = $1`. Without that scope a crafted id list would
+  renumber another list's items — verified against live Neon by smuggling a foreign id into the
+  order and confirming it stayed put.
+- **A drop that changed nothing doesn't post.** A grip tapped and released is not a reorder.
+- **A failed reorder re-fetches** rather than guessing: the screen must never keep showing an
+  order the database doesn't have. (Unlike a tick, which queues — order is cosmetic, a tick is
+  the record of what's on the truck.)

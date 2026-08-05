@@ -1302,6 +1302,19 @@ await test('checklists: empty names and empty items are refused', async () => {
   eq((await POST('setChecklistItemDone', {})).statusCode, 400, 'itemId required');
 });
 
+await test('checklists: reorder validates its id list before it renumbers anything', async () => {
+  mockTables = JOB_ONLY();
+  const good = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+  eq((await POST('reorderChecklistItems', { itemIds: [good] })).statusCode, 400, 'listId required');
+  eq((await POST('reorderChecklistItems', { listId: 'l1', itemIds: [] })).statusCode, 400, 'empty order refused');
+  // A malformed id would abort the whole UPDATE on the uuid cast, so it is
+  // caught here and reported instead of surfacing as a 500.
+  eq((await POST('reorderChecklistItems', { listId: 'l1', itemIds: [good, 'not-a-uuid'] })).statusCode, 400, 'bad id refused');
+  // Reordering is the crew's own housekeeping, so it is not manager-gated.
+  ok((await POST('reorderChecklistItems', { listId: 'l1', itemIds: [good] }, EMP_TOK)).statusCode !== 403, 'employee may reorder');
+  eq((await POST('reorderChecklistItems', { listId: 'l1', itemIds: [good] }, VIEWER_TOK)).statusCode, 403, 'viewer may not');
+});
+
 await test('checklists: without DATABASE_URL they fail CLOSED, not soft', async () => {
   mockTables = JOB_ONLY();
   // There is no Airtable table to fall back to, so answering "no lists" would

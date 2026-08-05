@@ -5975,6 +5975,42 @@ async function handleSetChecklistItemDone(body, authUser) {
   return resp(200, { ok: true, item: mapChecklistItem(rows[0]) });
 }
 
+// The client sends EVERY item id in the order it is showing them — open items
+// in their new order, then the loaded ones — and positions are rewritten 1..N
+// to match. Sending only the dragged item and its new index would need the
+// server to re-derive everyone else's position, and two crews dragging at once
+// would interleave into an order neither of them chose.
+//
+// `WHERE checklist_id` is the guard that matters: without it, a crafted id list
+// could renumber items belonging to another job's list.
+async function handleReorderChecklistItems(body) {
+  const listId = body?.listId;
+  const ids = Array.isArray(body?.itemIds) ? body.itemIds.map(String) : [];
+  if (!listId) return resp(400, { ok: false, error: "Missing listId." });
+  if (!ids.length) return resp(400, { ok: false, error: "No items to reorder." });
+
+  // A malformed id would abort the whole statement on the uuid cast, so the
+  // shape is checked here rather than letting Postgres raise. Before the
+  // neonEnabled() check, like the panel validators: a bad id is a bad id
+  // whatever the database is doing, and a 503 would hide it.
+  if (!ids.every(id => /^[0-9a-f-]{36}$/i.test(id))) {
+    return resp(400, { ok: false, error: "Bad item id." });
+  }
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const rows = await neonWrite("checklists.reorder",
+    `UPDATE checklist_items c
+        SET position = t.ord
+       FROM unnest($2::uuid[]) WITH ORDINALITY AS t(id, ord)
+      WHERE c.id = t.id AND c.checklist_id = $1::uuid
+      RETURNING c.id`,
+    [String(listId), ids]);
+
+  await neonWrite("checklists.touchOrder",
+    `UPDATE job_checklists SET updated_at = now() WHERE id = $1::uuid`, [String(listId)]);
+  return resp(200, { ok: true, moved: rows?.length || 0 });
+}
+
 // Deleting an ITEM is _NON_VIEWER: you typed it wrong, you fix it. Deleting a
 // whole LIST is admin/office — see _ADMIN_OFFICE_POSTS.
 async function handleDeleteChecklistItem(body) {
@@ -6160,6 +6196,7 @@ export async function handler(event) {
       if (body.action === "addChecklistItem")     return await handleAddChecklistItem(body, authUser);
       if (body.action === "setChecklistItemDone") return await handleSetChecklistItemDone(body, authUser);
       if (body.action === "deleteChecklistItem")  return await handleDeleteChecklistItem(body);
+      if (body.action === "reorderChecklistItems") return await handleReorderChecklistItems(body);
       if (body.action === "deleteChecklist")      return await handleDeleteChecklist(body);
       if (body.action === "deleteJobPrints")      return await handleDeleteJobPrints(body);
       if (body.action === "restoreJobPrints")     return await handleRestoreJobPrints(body);

@@ -810,6 +810,28 @@
       color: var(--text);
       word-break: break-word;
     }
+    /* Drag handle. `touch-action: none` is what makes this work on a phone —
+       without it the browser claims the gesture as a scroll and the drag never
+       starts. Only the handle gives up scrolling, so the list still scrolls
+       normally everywhere else. */
+    .ck-grip {
+      flex: 0 0 auto;
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1;
+      padding: 4px 2px;
+      opacity: 0.55;
+    }
+    .ck-grip:active { cursor: grabbing; opacity: 1; }
+    .ck-item.dragging {
+      opacity: 0.9;
+      border-color: var(--accent);
+      box-shadow: var(--shadow);
+    }
     .ck-item.done { background: var(--panel-2); border-color: var(--line); }
     .ck-item.done .ck-body { text-decoration: line-through; color: var(--muted); }
     .ck-del {
@@ -5866,7 +5888,10 @@
     const done = listState.items.filter(i => i.done);
     const pending = listState.items.filter(i => i.pending).length;
 
-    const itemRow = (i) => `<div class="ck-item${i.done ? " done" : ""}${i.pending ? " pending" : ""}" data-item-id="${esc(i.id)}">
+    // Only OPEN items get a grip. Order matters for what you still have to
+    // load; once something is on the truck its position is history.
+    const itemRow = (i, draggable) => `<div class="ck-item${i.done ? " done" : ""}${i.pending ? " pending" : ""}" data-item-id="${esc(i.id)}">
+      ${draggable ? `<span class="ck-grip" title="Drag to reorder">⠿</span>` : ""}
       <input type="checkbox" class="ck-box" ${i.done ? "checked" : ""} data-item-id="${esc(i.id)}" />
       <span class="ck-body">${esc(i.body)}</span>
       <button type="button" class="ck-del" data-item-id="${esc(i.id)}" title="Remove this line">✕</button>
@@ -5881,8 +5906,8 @@
         ${canDeleteLists() ? `<button type="button" id="ckDeleteListBtn" class="btn btn-sm" style="font-size:11px; color:var(--red); margin-left:auto;">🗑 Delete list</button>` : ""}
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:6px;">
-        ${open.map(itemRow).join("")}
+      <div id="ckOpenList" style="display:flex; flex-direction:column; gap:6px;">
+        ${open.map(i => itemRow(i, open.length > 1)).join("")}
       </div>
 
       <!-- Add box sits under the open items: you type, hit Enter, and it lands
@@ -5899,7 +5924,7 @@
           <span>✓ Loaded (${done.length})</span>
           <span>${listState.showDone ? "hide ▾" : "show ▸"}</span>
         </button>
-        ${listState.showDone ? `<div style="display:flex; flex-direction:column; gap:6px;">${done.map(itemRow).join("")}</div>` : ""}
+        ${listState.showDone ? `<div style="display:flex; flex-direction:column; gap:6px;">${done.map(i => itemRow(i, false)).join("")}</div>` : ""}
       ` : ""}`;
 
     const body = $("ckItemsBody");
@@ -5914,6 +5939,8 @@
     const delList = $("ckDeleteListBtn");
     if (delList) delList.onclick = deleteWholeChecklist;
 
+    wireChecklistDrag();
+
     $("ckAddBtn").onclick = addChecklistItem;
     const input = $("ckAddInput");
     input.addEventListener("input", () => { ckAddDraft = input.value; });
@@ -5922,6 +5949,93 @@
       e.preventDefault();
       addChecklistItem();
     });
+  }
+
+  /* Drag to reorder.
+   *
+   * Pointer events, NOT the HTML5 drag-and-drop API: that one never fires on a
+   * touchscreen, and this list is used on a phone far more than on a desk.
+   * Pointer events cover mouse, touch and stylus with one code path.
+   *
+   * The drag is on a dedicated grip rather than the whole row. Dragging from
+   * the row would mean stealing the vertical gesture from scrolling — and the
+   * row also carries a checkbox and a delete button, so every mis-drag would be
+   * a mis-tap on one of those.
+   */
+  function wireChecklistDrag() {
+    const list = $("ckOpenList");
+    if (!list) return;
+    let dragEl = null;
+
+    const endDrag = () => {
+      if (!dragEl) return;
+      dragEl.classList.remove("dragging");
+      dragEl = null;
+      commitChecklistOrder();
+    };
+
+    list.querySelectorAll(".ck-grip").forEach(grip => {
+      grip.addEventListener("pointerdown", (e) => {
+        dragEl = grip.closest(".ck-item");
+        if (!dragEl) return;
+        // Capture on the grip so the drag survives the pointer outrunning the
+        // row — a finger moves faster than the DOM reflows behind it.
+        grip.setPointerCapture(e.pointerId);
+        dragEl.classList.add("dragging");
+        e.preventDefault();
+      });
+
+      grip.addEventListener("pointermove", (e) => {
+        if (!dragEl) return;
+        e.preventDefault();
+        // Swap against whichever neighbour's midpoint the pointer has crossed.
+        // Moving the real row (rather than drawing a placeholder) keeps the
+        // list honest: what you see during the drag is what gets saved.
+        for (const row of list.querySelectorAll(".ck-item")) {
+          if (row === dragEl) continue;
+          const box = row.getBoundingClientRect();
+          const mid = box.top + box.height / 2;
+          const dragIsAfter = !!(row.compareDocumentPosition(dragEl) & Node.DOCUMENT_POSITION_FOLLOWING);
+          if (e.clientY < mid && dragIsAfter)  { list.insertBefore(dragEl, row); break; }
+          if (e.clientY > mid && !dragIsAfter) { list.insertBefore(dragEl, row.nextSibling); break; }
+        }
+      });
+
+      grip.addEventListener("pointerup", endDrag);
+      // A cancel is a phone taking the gesture back (a call, a notification).
+      // Committing what's on screen is right either way — the user moved it.
+      grip.addEventListener("pointercancel", endDrag);
+    });
+  }
+
+  // Reads the order off the DOM after a drop, reorders state to match, then
+  // persists. Positions are rewritten for EVERY item — open in their new order,
+  // then loaded — so what is stored is exactly what is on screen.
+  async function commitChecklistOrder() {
+    const list = $("ckOpenList");
+    if (!list || !listState.list) return;
+    const openIds = [...list.querySelectorAll(".ck-item")].map(r => r.dataset.itemId);
+    const byId = new Map(listState.items.map(i => [i.id, i]));
+
+    const reordered = openIds.map(id => byId.get(id)).filter(Boolean);
+    const doneItems = listState.items.filter(i => i.done);
+    // Nothing actually moved — don't spend a round trip on a click that missed.
+    const before = listState.items.filter(i => !i.done).map(i => i.id).join(",");
+    if (before === reordered.map(i => i.id).join(",")) return;
+
+    listState.items = [...reordered, ...doneItems];
+    try {
+      await apiPost("reorderChecklistItems", {
+        listId: listState.list.id,
+        itemIds: listState.items.map(i => i.id),
+      });
+      $("ckAddStatus").textContent = "";
+    } catch (e) {
+      // Re-fetch rather than guess: the screen must not keep showing an order
+      // the database doesn't have.
+      $("ckAddStatus").textContent = "Couldn't save the new order: " + e.message;
+      openChecklist(listState.list.id);
+    }
   }
 
   // Optimistic: the row moves the instant it's tapped. The write follows, and

@@ -46,12 +46,17 @@
 
 const AT_API = "https://api.airtable.com/v0";
 
-// [neon column, Airtable field, coercion]. This is the full master set and must stay
-// in step with JOB_FIELDS in db/etl/time-entries-full.mjs — that array is the
-// reference, and the two writers must agree or an hourly sync would silently revert
-// whatever the ETL last wrote. The ~40 financial rollups are excluded on purpose:
-// they roll up from estimates / invoices / expenses / allocations and their values
-// here would go stale. See db/schema/003_jobs_master.sql.
+// [neon column, Airtable field, coercion]. **THIS IS THE SINGLE SOURCE OF TRUTH for
+// the jobs field map.** It is exported as JOB_FIELDS and imported by the ETL
+// (db/etl/time-entries-full.mjs), which used to keep its own copy — two writers
+// against one table, and if they disagreed an hourly sync would silently revert
+// whatever the ETL last wrote. That risk is now structural rather than a comment:
+// there is only one list.
+//
+// The ~40 financial rollups are excluded on purpose — they roll up from estimates /
+// invoices / expenses / allocations, so a copied VALUE here would go stale between
+// syncs. Those are computed live from v_job_rollups / v_job_financials instead.
+// Same for the five "All … Reviewed?" gates. See db/schema/003_jobs_master.sql.
 //
 // `po_locked` remains the load-bearing one — it is what the puller matches QB
 // jobcode names against.
@@ -62,7 +67,16 @@ const bool = v => (v === undefined ? null : v === true);
 // resolves to more than one billable rate (verified 2026-07-31), so taking the first
 // is faithful — but it is a first, not a sum, deliberately.
 const firstNum = v => (Array.isArray(v) ? num(v[0]) : num(v));
-const FIELDS = [
+// Lookup fields (multipleLookupValues) also arrive as arrays. `g()` in airtable.js
+// renders them by joining on ", ", so this MUST join the same way — the stored value
+// has to equal what mapJob produces today or the read flip changes what is on screen.
+const joinText = v => (Array.isArray(v) ? (v.length ? v.join(", ") : null) : nul(v));
+// Link fields (multipleRecordLinks) arrive as ["rec…"]. The UI wants a single id for
+// typeahead prefill, and these tables stay Airtable-owned, so the rec id is stored
+// verbatim as text rather than resolved to a Neon FK.
+const firstAtId = v => (Array.isArray(v) && v.length
+  ? (typeof v[0] === "string" ? v[0] : v[0]?.id || null) : null);
+export const JOB_FIELDS = [
   ["name",                    "Job Name",                         v => v || "(unnamed)"],
   ["po",                      "Job PO",                           nul],
   ["po_locked",               "Job PO - Locked",                  nul],
@@ -99,7 +113,63 @@ const FIELDS = [
   ["generator_installed",     "Generator Installed",              bool],
   ["inspection_not_required", "Inspection Not Required",          bool],
   ["billable_hourly_rate",    "Billable Hourly Rate (from Labor Billable Rates)", firstNum],
+
+  // ── Added 2026-08-05 for the handleJobs flip ─────────────────────────────
+  // Everything below is what `mapJob` returns beyond the original master set.
+  // It looked like it needed three new dimension tables (Power Companies,
+  // Inspection Agencies, Inspection Contacts) — it does not. Every value field
+  // is a multipleLookupValues ON Jobs, so Airtable already hands back the
+  // resolved value inside the Jobs record. Only the links need an id.
+  ["power_company_name",       "Power Company – Name (lookup)",             joinText],
+  ["power_company_contact",    "Power Company – Primary Contact (lookup)",  joinText],
+  ["power_company_cell_phone", "Power Company – Cell Phone (lookup)",       joinText],
+  ["power_company_office_phone","Power Company – Office Phone (lookup)",    joinText],
+  ["power_company_email",      "Power Company – Email (lookup)",            joinText],
+  ["power_company_at_id",      "Power Companies",                           firstAtId],
+  ["power_contact_at_id",      "Power Company Contacts",                    firstAtId],
+  ["aic_number",               "AIC Number",                                joinText],
+  ["temp_work_order",          "Temporary Work Order #",                    joinText],
+  ["permit_number",            "Permit Number",                             joinText],
+  ["inspection_agency",        "Inspection Agency Name (from Inspection Agency)", joinText],
+  ["inspection_agency_phone",  "Inspection Agency Phone #",                 joinText],
+  ["inspection_agency_email",  "Inspection Agency Email Address",           joinText],
+  ["inspection_agency_at_id",  "Inspection Agency",                         firstAtId],
+  ["inspection_scheduling_link","Inspection Scheduling Link",               joinText],
+  // One column feeds TWO mapJob keys: `inspectionContacts` (the joined string)
+  // and `inspectorName` (the first element). The UI constrains a job to a single
+  // inspector, so in practice they are the same value.
+  ["inspector_name",           "Inspector Name (from Inspection Contacts)", joinText],
+  ["inspector_phone",          "Inspector Phone",                           joinText],
+  ["inspector_email",          "Inspector Email",                           joinText],
+  ["inspector_at_id",          "Inspection Contacts",                       firstAtId],
+  ["job_inspections",          "Inspection Name (from Job Inspections)",    joinText],
+  // Stored RAW. mapJob runs extractUrl() over these at read time to pull the href
+  // out of the formula text — keep that transform at the read, not here, so the
+  // stored value stays faithful to Airtable.
+  //
+  // NOT carried: the old `wireLink` / `pipeLink` keys. Their Airtable fields
+  // ("Wire (Mobile) or THHN (Mobile)", "Add Pipe (Mobile)") no longer exist — the
+  // JotForm wire/pipe path was retired in favour of the inventory app's expense
+  // push — so mapJob had been returning null for both on every job, and nothing in
+  // either SPA read them. Requesting them here 422s the whole fetch, which is how
+  // they were found. Removed from F.job and mapJob in the same change.
+  ["add_photos_link",          "Add Photos (Mobile)",                       joinText],
+  ["view_photos_link",         "View pCloud Photos",                        joinText],
+  ["pcloud_photo_folder_id",   "pCloud Photo's ID",                         joinText],
+  ["pcloud_invoices_sent_id",  "pCloud Invoices Sent ID",                   joinText],
+  ["trello_card_id",           "Trello Card ID",                            joinText],
+  ["start_service_call",       "Start Service Call",                        bool],
+  ["service_call_created",     "Service Call Created",                      bool],
+  ["project_complete",         "Project Complete (Ready to Invoice)",       bool],
+  // "Worklfow" is misspelled IN AIRTABLE. Match it verbatim — correcting it here
+  // silently returns null for every job.
+  ["workflow_status",          "Worklfow Status",                           joinText],
+  ["contractor_at_id",         "Contractor",                                firstAtId],
+  ["labor_billable_rate_at_id","Labor Billable Rates",                      firstAtId],
 ];
+
+// Kept as the module-local name the rest of this file already uses.
+const FIELDS = JOB_FIELDS;
 
 // Airtable paginates at 100 and rate-limits at 5 req/sec per base. Requesting only
 // the fields we map keeps the payload small — the Jobs table has 184 fields, several

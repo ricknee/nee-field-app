@@ -96,3 +96,60 @@ CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs (status);
 -- Partial unique: 40% of jobs have no TSheets id, and NULLs must not collide.
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_tsheets_job_id_idx
   ON jobs (tsheets_job_id) WHERE tsheets_job_id IS NOT NULL;
+
+-- ── The handleJobs flip, 2026-08-05 ────────────────────────────────────────
+-- Everything `mapJob` returns beyond the original master set, so the job list and
+-- job detail screen can be served from Neon.
+--
+-- This looked like it needed three new dimension tables (Power Companies,
+-- Inspection Agencies, Inspection Contacts). It does NOT: every value field is a
+-- multipleLookupValues ON Jobs, so Airtable already returns the resolved value
+-- inside the Jobs record. Only the links need an id, and those stay Airtable rec
+-- ids as text — those tables are still Airtable-owned, so resolving them to Neon
+-- FKs would be inventing a relationship the migration has not made yet.
+--
+-- Deliberately NOT here: the ~40 financial rollups and the five "All … Reviewed?"
+-- gates. Both change without the Jobs row being touched, so a copied value would
+-- go stale between hourly syncs. They compute live from v_job_rollups /
+-- v_job_financials instead.
+ALTER TABLE jobs
+  ADD COLUMN IF NOT EXISTS power_company_name         text,
+  ADD COLUMN IF NOT EXISTS power_company_contact      text,
+  ADD COLUMN IF NOT EXISTS power_company_cell_phone   text,
+  ADD COLUMN IF NOT EXISTS power_company_office_phone text,
+  ADD COLUMN IF NOT EXISTS power_company_email        text,
+  ADD COLUMN IF NOT EXISTS power_company_at_id        text,
+  ADD COLUMN IF NOT EXISTS power_contact_at_id        text,
+  ADD COLUMN IF NOT EXISTS aic_number                 text,
+  ADD COLUMN IF NOT EXISTS temp_work_order            text,
+  ADD COLUMN IF NOT EXISTS permit_number              text,
+  ADD COLUMN IF NOT EXISTS inspection_agency          text,
+  ADD COLUMN IF NOT EXISTS inspection_agency_phone    text,
+  ADD COLUMN IF NOT EXISTS inspection_agency_email    text,
+  ADD COLUMN IF NOT EXISTS inspection_agency_at_id    text,
+  ADD COLUMN IF NOT EXISTS inspection_scheduling_link text,
+  ADD COLUMN IF NOT EXISTS inspector_name             text,
+  ADD COLUMN IF NOT EXISTS inspector_phone            text,
+  ADD COLUMN IF NOT EXISTS inspector_email            text,
+  ADD COLUMN IF NOT EXISTS inspector_at_id            text,
+  ADD COLUMN IF NOT EXISTS job_inspections            text,
+  ADD COLUMN IF NOT EXISTS add_photos_link            text,
+  ADD COLUMN IF NOT EXISTS view_photos_link           text,
+  ADD COLUMN IF NOT EXISTS pcloud_photo_folder_id     text,
+  ADD COLUMN IF NOT EXISTS pcloud_invoices_sent_id    text,
+  ADD COLUMN IF NOT EXISTS trello_card_id             text,
+  ADD COLUMN IF NOT EXISTS start_service_call         boolean,
+  ADD COLUMN IF NOT EXISTS service_call_created       boolean,
+  ADD COLUMN IF NOT EXISTS project_complete           boolean,
+  ADD COLUMN IF NOT EXISTS workflow_status            text,
+  ADD COLUMN IF NOT EXISTS contractor_at_id           text,
+  ADD COLUMN IF NOT EXISTS labor_billable_rate_at_id  text;
+
+-- wire_link / pipe_link were added and immediately dropped in the same sitting.
+-- Their Airtable fields ("Wire (Mobile) or THHN (Mobile)", "Add Pipe (Mobile)")
+-- do not exist — the JotForm wire/pipe capture was retired for the inventory
+-- app's expense push — so mapJob had been returning null for both on every job
+-- and neither SPA read them. Requesting them by name 422s the whole Jobs fetch,
+-- which is how they were found.
+ALTER TABLE jobs DROP COLUMN IF EXISTS wire_link;
+ALTER TABLE jobs DROP COLUMN IF EXISTS pipe_link;

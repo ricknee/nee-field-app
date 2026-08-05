@@ -24,7 +24,9 @@ import { fileURLToPath } from "node:url";
 import { neon } from "../../netlify/functions/node_modules/@neondatabase/serverless/index.mjs";
 // Shared with the hourly puller so the job-link matching rule has ONE definition.
 // The module imports nothing itself — it takes an already-connected `sql`.
-import { backfillJobLinks } from "../../netlify/functions/_jobs-sync.js";
+// JOB_FIELDS comes from there too: both this script and the hourly sync write the
+// `jobs` table, and a second copy of the map here would let them drift apart.
+import { backfillJobLinks, JOB_FIELDS } from "../../netlify/functions/_jobs-sync.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // REPO_ROOT lets the script run from a scratch dir that has the Neon driver
@@ -139,66 +141,29 @@ async function fetchAll(table, params = {}) {
 
 console.log(`extracting from ${BASE} (read-only) ...`);
 const employees = await fetchAll("Employees");
-// Field coercers. Defined HERE rather than in the load section below because
-// JOB_FIELDS references them when the array literal is evaluated — declaring them
-// later is a temporal-dead-zone error, not a hoisting nicety.
+// Field coercers for the tables THIS script still maps itself (allocations, rates,
+// weekly time, GP sources). The jobs coercers moved to _jobs-sync.js along with
+// JOB_FIELDS; `bool` went with them and is no longer referenced here.
 const nul  = v => (v === undefined || v === "" ? null : v);
 const num  = v => (v === undefined || v === "" || v === null ? null : Number(v));
-const bool = v => (v === undefined ? null : v === true);
 // Airtable lookups come back as ARRAYS even when they resolve to one value.
 // Verified 2026-07-31: no job resolves to more than one billable rate, so taking
 // the first element is faithful — but it is a first, not a sum, deliberately.
 const firstNum = v => (Array.isArray(v) ? num(v[0]) : num(v));
 const firstId  = v => (Array.isArray(v) && v.length ? v[0] : null);
 
-// Jobs MASTER DATA (slice 4) — descriptive fields only. The ~40 financial rollups
-// are deliberately NOT copied: they roll up from estimates / invoices / expenses /
-// labor allocations, none of which are in Neon, so their values here would silently
-// go stale. See db/schema/003_jobs_master.sql for the full reasoning.
+// Jobs MASTER DATA. The field map is NOT defined here any more — it is imported
+// from netlify/functions/_jobs-sync.js, which is the single source of truth.
 //
-// [neon column, Airtable field, coercion]. Requesting fields explicitly keeps the
-// payload small — the Airtable table has 165 fields including attachments.
-const JOB_FIELDS = [
-  ["name",                    "Job Name",                         v => v || "(unnamed)"],
-  ["po",                      "Job PO",                           nul],
-  ["po_locked",               "Job PO - Locked",                  nul],
-  ["po_number",               "Job PO Number",                    num],
-  ["tsheets_job_id",          "TSheets Job ID",                   nul],
-  ["status",                  "Job Status",                       nul],
-  ["job_type",                "Job Type",                         nul],
-  ["job_year",                "Job Year",                         num],
-  ["billing_method",          "Billing Method",                   nul],
-  ["billing_ready",           "Billing Ready",                    nul],
-  ["tax_status",              "Tax Status",                       nul],
-  ["start_date",              "Start Date",                       nul],
-  ["finish_date",             "Finish Date",                      nul],
-  ["project_completed_at",    "Project Completed At",             nul],
-  ["bird_date",               "Bird Date",                        nul],
-  ["address_full",            "Job Address - Full",               nul],
-  ["address_street",          "Job Site Street Address (Intake)",  nul],
-  ["address_city",            "Job Site City (Intake)",            nul],
-  ["address_state",           "Job Site State (Intake)",           nul],
-  ["address_zip",             "Job Site Zip Code (Intake)",        nul],
-  ["miles_from_shop",         "Miles from Shop",                  num],
-  ["customer_first_name",     "Customer 1st Name (Intake)",       nul],
-  ["customer_last_name",      "Customer Last Name (Intake)",      nul],
-  ["customer_email",          "Customer Email (Intake)",          nul],
-  ["customer_phone",          "Customer Phone (Intake)",          nul],
-  ["contractor_code",         "Contractor Code",                  nul],
-  ["contractor_name",         "Contractor Name (Text)",           nul],
-  ["notes",                   "Notes",                            nul],
-  ["meter_number",            "Meter Number",                     nul],
-  ["work_order_number",       "Permanent Work Order #",           nul],
-  ["email_alias",             "Job Email Alias",                  nul],
-  ["power_company",           "Power Company (Intake)",           nul],
-  ["markup_pct",              "Job Markup %",                     num],
-  ["generator_installed",     "Generator Installed",              bool],
-  ["inspection_not_required", "Inspection Not Required",          bool],
-  // Slice 5 phase A: the value Airtable's lookup hands to Time Entries as
-  // T&M Bill Rate. Stored verbatim so the diff gate is a comparison, not a
-  // re-derivation. 34 of 110 jobs have none — that is normal, not missing data.
-  ["billable_hourly_rate",    "Billable Hourly Rate (from Labor Billable Rates)", firstNum],
-];
+// It used to be a second copy maintained in parallel with the hourly sync. Two
+// writers against one table, and if the lists disagreed the hourly sync would
+// silently revert whatever this script last wrote. Keeping them identical was a
+// comment; now it is structural.
+//
+// Excluded on purpose (unchanged): the ~40 financial rollups and the five
+// "All … Reviewed?" gates. They roll up from estimates / invoices / expenses /
+// allocations, so a copied value would go stale between runs — they are computed
+// live from v_job_rollups / v_job_financials instead.
 
 const jobs = await fetchAll("Jobs", { "fields[]": JOB_FIELDS.map(([, at]) => at) });
 const entries   = await fetchAll("Time Entries");

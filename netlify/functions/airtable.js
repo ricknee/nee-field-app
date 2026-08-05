@@ -156,8 +156,12 @@ const F = {
     // only "Inspection Contacts" cell silently rendered "—" everywhere.
     inspectionContacts:      "Inspector Name (from Inspection Contacts)",
     jobInspections:          "Inspection Name (from Job Inspections)",
-    wireLink:                "Wire (Mobile) or THHN (Mobile)",
-    pipeLink:                "Add Pipe (Mobile)",
+    // REMOVED 2026-08-05: `wireLink` / `pipeLink`. Both named Airtable fields
+    // ("Wire (Mobile) or THHN (Mobile)", "Add Pipe (Mobile)") no longer exist —
+    // the JotForm wire/pipe capture was retired in favour of the inventory app's
+    // expense push. mapJob returned null for both on every job and neither SPA
+    // ever read them. Found when the jobs sync requested them by name and
+    // Airtable 422'd UNKNOWN_FIELD_NAME.
     // Legacy JotForm/pCloud URL fields. Still populated for Airtable users who
     // click them there; the app no longer depends on them for photos.
     addPhotosLink:           "Add Photos (Mobile)",
@@ -2003,8 +2007,8 @@ function mapJob(r) {
       permitNumber:g(f,F.job.permitNumber)||"",inspectionAgency:g(f,F.job.inspectionAgency)||"",
       inspectionAgencyPhone:g(f,F.job.inspectionAgencyPhone)||"",inspectionAgencyEmail:g(f,F.job.inspectionAgencyEmail)||"",
       inspectionSchedulingLink:g(f,F.job.inspectionSchedulingLink)||"",inspectionContacts:g(f,F.job.inspectionContacts)||"",
-      jobInspections:g(f,F.job.jobInspections)||"",wireLink:extractUrl(g(f,F.job.wireLink)),
-      pipeLink:extractUrl(g(f,F.job.pipeLink)),addPhotosLink:extractUrl(g(f,F.job.addPhotosLink)),
+      jobInspections:g(f,F.job.jobInspections)||"",
+      addPhotosLink:extractUrl(g(f,F.job.addPhotosLink)),
       viewPhotosLink:extractUrl(g(f,F.job.viewPhotosLink)),
       // Drives the in-app Photos tab. Null/blank means this job never had its
       // pCloud folders provisioned — the tab must say so plainly rather than

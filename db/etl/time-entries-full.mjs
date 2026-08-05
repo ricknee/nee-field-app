@@ -22,6 +22,9 @@ import { fileURLToPath } from "node:url";
 // nothing; running it used to require copying this file into a scratch directory
 // that happened to have the driver. The functions directory already declares it.
 import { neon } from "../../netlify/functions/node_modules/@neondatabase/serverless/index.mjs";
+// Shared with the hourly puller so the job-link matching rule has ONE definition.
+// The module imports nothing itself — it takes an already-connected `sql`.
+import { backfillJobLinks } from "../../netlify/functions/_jobs-sync.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // REPO_ROOT lets the script run from a scratch dir that has the Neon driver
@@ -503,6 +506,20 @@ await upsertBatch("jobs",
       );
     }
   }
+}
+
+// ── backfill job_id on rows whose job arrived later ───────────────────────
+// Runs in BOTH modes and needs no flag: like the linker above it writes only a
+// linkage column, never hours, and it is UPDATE-only on rows that already exist.
+//
+// The linker directly above closes the airtable_id gap. This closes the matching
+// job_id gap, which nothing owned until 2026-08-05 — see netlify/functions/
+// _jobs-sync.js for the full account. Imported rather than reimplemented so the
+// hourly puller and this script can never drift apart on the matching rule.
+{
+  const r = await backfillJobLinks(sql);
+  if (r.ok && !r.linked) console.log("job links: none to backfill");
+  else if (!r.ok)        console.log(`job links: backfill FAILED — ${r.error}`);
 }
 
 // ── repair drifted rows (--repair) ────────────────────────────────────────

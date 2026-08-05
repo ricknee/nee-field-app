@@ -47,6 +47,7 @@
 //    both run the reconciler may report Neon slightly ahead. That is correct, not
 //    drift — INSERT_FLOOR_DATE keeps it out of closed pay periods.
 import { neon } from "@neondatabase/serverless";
+import { syncJobs, backfillJobLinks } from "./_jobs-sync.js";
 
 const QB = "https://rest.tsheets.com/api/v1";
 
@@ -353,13 +354,27 @@ export const handler = async () => {
   }
 
   const sql = neon(url);
+
+  // Refresh the Jobs identity columns BEFORE pulling timesheets, so a job created
+  // in Airtable since the last run is already resolvable by the jobByPo lookup in
+  // runPull. Order matters: run it after, and a timesheet for a brand-new job lands
+  // with job_id NULL and nothing ever goes back to fix it — that was the bug this
+  // exists to close (see _jobs-sync.js). Then heal anything that slipped through
+  // historically. Both fail soft: the timesheet pull is the job that must not stop.
+  const atKey  = process.env.AIRTABLE_API_KEY;
+  const atBase = process.env.AIRTABLE_BASE_ID;
+  let jobsReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
+  if (atKey && atBase) jobsReport = await syncJobs(sql, atKey, atBase);
+  else console.error("qb-time-pull: jobs sync skipped — AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset");
+  const linkReport = await backfillJobLinks(sql);
+
   const [state] = await sql.query(`SELECT watermark FROM sync_state WHERE key = 'qb_timesheets'`);
   const since = state?.watermark
     ? new Date(new Date(state.watermark).getTime() - WATERMARK_OVERLAP_MS)
     : new Date(Date.now() - COLD_START_LOOKBACK_MS);
 
   try {
-    const report = await runPull({ sql, token, since });
+    const report = { ...(await runPull({ sql, token, since })), jobsSync: jobsReport, jobLinks: linkReport };
     console.log("qb-time-pull", JSON.stringify(report));
     return { statusCode: 200, body: JSON.stringify(report) };
   } catch (e) {

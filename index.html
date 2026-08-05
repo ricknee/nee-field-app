@@ -765,9 +765,97 @@
       font-weight: 700;
     }
 
+    /* Panels — amber, because it sits beside Prints and two blues in a row are
+       indistinguishable at arm's length in daylight. */
+    .action-btn.panels {
+      background: rgba(245,158,11,0.12);
+      border-color: rgba(245,158,11,0.40);
+      color: #d97706;
+    }
+    .action-btn.panels .count-badge { background: rgba(245,158,11,0.25); }
+
     .action-btn.disabled {
       opacity: 0.35;
       pointer-events: none;
+    }
+
+    /* ── PANEL SCHEDULES (docs/PLAN-panel-schedules.md) ── */
+    /* The grid is two columns of circuits, odd left and even right, because that
+       is how the breakers are physically arranged in the panel. Below 640px it
+       becomes ONE column in circuit order (1,2,3,4…) rather than two unusably
+       narrow ones — see the media query at the bottom of this block. */
+    .panel-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0 18px;
+    }
+    .panel-col-head {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--muted);
+      padding: 0 0 5px 0;
+      border-bottom: 2px solid var(--line);
+      margin-bottom: 4px;
+    }
+    .panel-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 0;
+    }
+    .panel-ckt {
+      flex: 0 0 30px;
+      text-align: right;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .panel-desc {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 13px;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+    }
+    .panel-desc:focus { border-color: var(--accent); outline: none; }
+    /* A filled circuit reads differently from an empty one at a glance — the
+       whole job of this screen is "which breakers still need walking?". */
+    .panel-desc.has-val { background: #fffdf5; border-color: rgba(245,158,11,0.45); }
+    .panel-fill {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--muted);
+      padding: 4px 5px;
+      line-height: 1;
+      border-radius: 4px;
+    }
+    .panel-fill:hover { background: var(--panel-2); color: var(--accent); }
+    .panel-list-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      cursor: pointer;
+    }
+    .panel-list-row:hover { border-color: var(--accent); }
+
+    @media (max-width: 640px) {
+      .panel-grid { grid-template-columns: 1fr; }
+      /* The right column's header would otherwise repeat mid-list once the two
+         columns stack. */
+      .panel-col-head.right { display: none; }
     }
 
     /* ── TABS ── */
@@ -2203,6 +2291,10 @@
                what makes it useful without opening anything — a crew can see at
                a glance whether this job HAS drawings. -->
           <a id="btnJobPrints" href="#" class="action-btn prints disabled">📐 Prints</a>
+          <!-- Panel schedules sit beside Prints for the same reason: both are
+               things a crew opens on arrival, and both want to be reachable
+               from whichever tab you happen to be on. -->
+          <a id="btnJobPanels" href="#" class="action-btn panels disabled">⚡ Panels</a>
           <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled">📋 Trello Card</a>
           <a id="btnInventory" href="/inventory" target="_blank" class="action-btn inventory">📦 Inventory</a>
         </div>
@@ -3797,6 +3889,14 @@
       pr.onclick = (e) => { e.preventDefault(); openJobPrints(); };
       // Fire and forget — the header must not wait on an R2 round trip.
       loadPrintBadge(job.id);
+
+      // Panels — same reasoning, one step further: the electrician at the panel
+      // is the person who knows what circuit 23 feeds, so reading AND writing
+      // are open to every non-viewer. See docs/PLAN-panel-schedules.md.
+      const pn = $("btnJobPanels");
+      pn.classList.remove("disabled");
+      pn.onclick = (e) => { e.preventDefault(); openJobPanels(); };
+      loadPanelBadge(job.id);
     }
 
     // New Job Estimate button (admin only) — opens in-app modal that loads
@@ -5430,6 +5530,631 @@
     popBackEntry("jobPrints");
     $("jobPrintsModal").style.display = "none";
   };
+
+  /* ── PANEL SCHEDULES (docs/PLAN-panel-schedules.md) ─────────────────────────
+   * The grid that goes in the panel door. Circuit numbers are furniture; the
+   * description is the only thing anyone types.
+   *
+   * This is the app's first NEON-NATIVE domain — no Airtable table behind it,
+   * so a failed save is a failed save. Which is why every editor keystroke also
+   * writes a localStorage draft: a panel room is where signal goes to die, and
+   * losing 42 typed descriptions to one dropped connection is the failure this
+   * screen exists to avoid.
+   */
+  // shrinkOk is set only when THIS editor shrank the panel and the user accepted
+  // the loss. It is what makes the server's 409 guard live rather than
+  // ceremonial: send it unconditionally and a second editor's shrink would be
+  // rubber-stamped by whoever saved last.
+  const panelState = { jobId: null, panels: [], panel: null, circuits: [], dirty: false, shrinkOk: false };
+
+  // Offered as a datalist, not a <select> — these four cover almost everything
+  // NEE touches, but a real building will eventually hold something that isn't
+  // on the list, and a closed dropdown would make that unrecordable.
+  const PANEL_VOLTAGES = [
+    "120/240V 1-Phase",
+    "120/208V 3-Phase",
+    "277/480V 3-Phase",
+    "120/240V 3-Phase (High Leg)",
+  ];
+  // The panelboard sizes that actually get specified. Typing is still allowed.
+  const PANEL_SIZES = [12, 18, 20, 24, 30, 42];
+
+  function canDeletePanels() {
+    const r = (state.user && state.user.role) || "";
+    return r === "admin" || r === "office";
+  }
+
+  /* Count badge on the action-row button — same fire-and-forget contract as
+   * prints: the job header must never wait on a round trip. */
+  const panelBadge = { jobId: null, count: null };
+
+  function paintPanelBadge() {
+    const btn = $("btnJobPanels");
+    if (!btn) return;
+    const n = panelBadge.count;
+    btn.innerHTML = `⚡ Panels${n ? ` <span class="count-badge">${n}</span>` : ""}`;
+  }
+
+  async function loadPanelBadge(jobId) {
+    if (panelBadge.jobId === jobId && panelBadge.count !== null) { paintPanelBadge(); return; }
+    panelBadge.jobId = jobId;
+    panelBadge.count = null;
+    paintPanelBadge();
+    try {
+      const d = await apiGet("panelSchedules", { jobId });
+      // A different job may have been opened while this was in flight; the
+      // answer to the old question must not paint over the new one.
+      if (panelBadge.jobId !== jobId) return;
+      panelBadge.count = (d.panels || []).length;
+      paintPanelBadge();
+    } catch { /* the button still opens; the badge is a nicety, not a gate */ }
+  }
+
+  // ── Panel list ─────────────────────────────────────────────────────────────
+  window.openJobPanels = async function() {
+    const job = state.selected;
+    if (!job) return;
+    panelState.jobId = job.id;
+    panelState.panels = [];
+    $("panelListTitle").textContent = `⚡ Panel Schedules — ${job.name || ""}`;
+    $("panelListBody").innerHTML = `<div class="loading-msg">Loading panels…</div>`;
+    $("panelNewForm").style.display = "none";
+    $("panelListModal").style.display = "flex";
+    pushBackEntry("panelList", () => { $("panelListModal").style.display = "none"; });
+    await refreshPanelList();
+  };
+
+  window.closeJobPanels = function() {
+    popBackEntry("panelList");
+    $("panelListModal").style.display = "none";
+  };
+
+  async function refreshPanelList() {
+    try {
+      const d = await apiGet("panelSchedules", { jobId: panelState.jobId });
+      panelState.panels = d.panels || [];
+      if (panelBadge.jobId === panelState.jobId) {
+        panelBadge.count = panelState.panels.length;
+        paintPanelBadge();
+      }
+      renderPanelList();
+    } catch (e) {
+      $("panelListBody").innerHTML =
+        `<div class="empty-msg" style="color:var(--red);">Couldn't load panels: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderPanelList() {
+    const rows = panelState.panels.map(p => {
+      // "31 / 42" is the whole reason the list exists — it answers "which panels
+      // still need walking?" without opening any of them.
+      const filled = p.filled != null ? `${p.filled} / ${p.circuits} filled in` : `${p.circuits} circuits`;
+      const sub = [p.voltage, filled, p.location].filter(Boolean).join(" · ");
+      return `<div class="panel-list-row" data-panel-id="${esc(p.id)}">
+        <span style="font-size:18px; flex:none;">⚡</span>
+        <span style="flex:1 1 auto; min-width:0;">
+          <span style="display:block; font-size:14px; font-weight:700;">${esc(p.name)}</span>
+          <span style="display:block; font-size:11px; color:var(--muted);">${esc(sub)}</span>
+        </span>
+        <span style="flex:none; font-size:16px; color:var(--muted);">›</span>
+      </div>`;
+    }).join("");
+
+    $("panelListBody").innerHTML = rows ||
+      `<div class="empty-msg">No panel schedules on this job yet. Add the first one below.</div>`;
+
+    $("panelListBody").querySelectorAll(".panel-list-row").forEach(row => {
+      row.onclick = () => openPanelEditor(row.dataset.panelId);
+    });
+  }
+
+  window.showNewPanelForm = function() {
+    const f = $("panelNewForm");
+    const showing = f.style.display !== "none";
+    f.style.display = showing ? "none" : "";
+    if (!showing) {
+      $("panelNewName").value = "";
+      $("panelNewVoltage").value = PANEL_VOLTAGES[0];
+      $("panelNewCircuits").value = 42;
+      $("panelNewStatus").textContent = "";
+      $("panelNewName").focus();
+    }
+  };
+
+  window.createPanel = async function() {
+    const name     = $("panelNewName").value.trim();
+    const voltage  = $("panelNewVoltage").value.trim();
+    const circuits = Number($("panelNewCircuits").value);
+    const status   = $("panelNewStatus");
+    if (!name) { status.textContent = "Give the panel a name."; return; }
+    // Rounded here as well as refused server-side: an odd count is almost always
+    // a typo, and silently fixing it in the panel room beats an error message.
+    const even = circuits % 2 === 0 ? circuits : circuits + 1;
+    if (!(even >= 2 && even <= 84)) { status.textContent = "Circuits must be between 2 and 84."; return; }
+
+    const btn = $("panelNewSaveBtn");
+    btn.disabled = true;
+    status.textContent = even !== circuits ? `Creating with ${even} circuits (rounded up to an even number)…` : "Creating…";
+    try {
+      const d = await apiPost("createPanelSchedule", { jobId: panelState.jobId, name, voltage, circuits: even });
+      $("panelNewForm").style.display = "none";
+      await refreshPanelList();
+      openPanelEditor(d.panel.id);
+    } catch (e) {
+      status.textContent = "Couldn't create it: " + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // ── The editor ─────────────────────────────────────────────────────────────
+  // The draft is keyed by panel id and holds ONLY descriptions — the header
+  // fields are one-line edits nobody loses sleep over, and keeping the draft
+  // narrow means a stale one can't resurrect an old panel name.
+  function panelDraftKey(id) { return `nee_panel_draft_${id}`; }
+
+  function writePanelDraft() {
+    if (!panelState.panel) return;
+    try {
+      const descs = {};
+      for (const c of readGridValues()) if (c.description) descs[c.number] = c.description;
+      localStorage.setItem(panelDraftKey(panelState.panel.id),
+        JSON.stringify({ descs, at: Date.now() }));
+    } catch { /* private mode / quota — the save button still works */ }
+  }
+
+  function clearPanelDraft(id) {
+    try { localStorage.removeItem(panelDraftKey(id)); } catch {}
+  }
+
+  function readPanelDraft(id) {
+    try {
+      const raw = localStorage.getItem(panelDraftKey(id));
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  }
+
+  window.openPanelEditor = async function(panelId) {
+    $("panelEditBody").innerHTML = `<div class="loading-msg">Loading panel…</div>`;
+    $("panelEditModal").style.display = "flex";
+    pushBackEntry("panelEdit", () => { $("panelEditModal").style.display = "none"; });
+    try {
+      const d = await apiGet("panelSchedule", { panelId });
+      panelState.panel = d.panel;
+      panelState.circuits = d.circuits || [];
+      panelState.dirty = false;
+      panelState.shrinkOk = false;
+
+      // A draft only exists if a previous save didn't land. Apply it over the
+      // server values rather than prompting: the person typed those words and
+      // the alternative is losing them to a dialog they tap through.
+      const draft = readPanelDraft(panelId);
+      let restored = 0;
+      if (draft && draft.descs) {
+        for (const c of panelState.circuits) {
+          const v = draft.descs[c.number];
+          if (v != null && v !== c.description) { c.description = v; restored++; }
+        }
+      }
+      renderPanelEditor(restored);
+    } catch (e) {
+      $("panelEditBody").innerHTML =
+        `<div class="empty-msg" style="color:var(--red);">Couldn't open that panel: ${esc(e.message)}</div>`;
+    }
+  };
+
+  window.closePanelEditor = function() {
+    if (panelState.dirty && !confirm("You have unsaved changes on this panel.\n\nClose anyway? They stay saved on this device and come back next time you open it.")) return;
+    popBackEntry("panelEdit");
+    $("panelEditModal").style.display = "none";
+    panelState.panel = null;
+    panelState.circuits = [];
+    panelState.dirty = false;
+    refreshPanelList();
+  };
+
+  function renderPanelEditor(restoredCount) {
+    const p = panelState.panel;
+    $("panelEditTitle").textContent = `⚡ ${p.name}`;
+
+    const sizeChips = PANEL_SIZES.map(n =>
+      `<button type="button" class="btn btn-sm panel-size-chip" data-size="${n}" style="font-size:11px; padding:4px 9px;${n === p.circuits ? " border-color:var(--accent); color:var(--accent);" : ""}">${n}</button>`
+    ).join("");
+
+    $("panelEditBody").innerHTML = `
+      ${restoredCount ? `<div id="panelDraftBanner" style="margin-bottom:10px; padding:8px 12px; border-radius:8px; background:#fff8e1; border:1px solid rgba(245,158,11,0.45); font-size:12px; color:#92400e;">
+        ↩ Restored ${restoredCount} unsaved circuit${restoredCount === 1 ? "" : "s"} from this device — tap <strong>Save</strong> to send them.
+        <a href="#" id="panelDraftDiscard" style="color:#92400e; text-decoration:underline; margin-left:6px;">discard</a>
+      </div>` : ""}
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+        <label style="flex:1 1 160px; min-width:140px;">
+          <span style="display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;">Panel</span>
+          <input id="panelFieldName" class="edit-input" style="width:100%; font-size:13px;" value="${esc(p.name)}" placeholder="Panel A" />
+        </label>
+        <label style="flex:1 1 190px; min-width:170px;">
+          <span style="display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;">Voltage / Phase</span>
+          <input id="panelFieldVoltage" class="edit-input" list="panelVoltageList" style="width:100%; font-size:13px;" value="${esc(p.voltage)}" placeholder="120/240V 1-Phase" />
+        </label>
+        <label style="flex:0 1 150px; min-width:130px;">
+          <span style="display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;">Circuits</span>
+          <input id="panelFieldCircuits" class="edit-input" type="number" min="2" max="84" step="2" style="width:100%; font-size:13px;" value="${p.circuits}" />
+        </label>
+      </div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; align-items:center;">
+        <span style="font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Size</span>
+        ${sizeChips}
+        <label style="flex:1 1 150px; min-width:130px; margin-left:auto;">
+          <input id="panelFieldLocation" class="edit-input" style="width:100%; font-size:12px;" value="${esc(p.location)}" placeholder="Location (boiler room…)" />
+        </label>
+        <label style="flex:1 1 130px; min-width:120px;">
+          <input id="panelFieldFedFrom" class="edit-input" style="width:100%; font-size:12px;" value="${esc(p.fedFrom)}" placeholder="Fed from (Panel D…)" />
+        </label>
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:8px 0; border-top:1px solid var(--line);">
+        <button type="button" id="panelSpareBtn" class="btn btn-sm" style="font-size:12px;">Fill blanks with “spare”</button>
+        <span id="panelFilledCount" style="font-size:12px; color:var(--muted);"></span>
+      </div>
+
+      <div id="panelGrid" class="panel-grid"></div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+        <button type="button" id="panelSaveBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 18px;">Save</button>
+        <button type="button" id="panelPdfBtn" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">📄 Download PDF</button>
+        ${canDeletePanels() ? `<button type="button" id="panelDeleteBtn" class="btn btn-sm" style="font-size:12px; color:var(--red); margin-left:auto;">🗑 Delete panel</button>` : ""}
+      </div>
+      <div id="panelEditStatus" style="font-size:12px; color:var(--muted); margin-top:8px; min-height:16px;">
+        ${p.updatedBy ? `Last edited by ${esc(p.updatedBy)}` : ""}
+      </div>`;
+
+    renderPanelGrid();
+    // A resize re-renders the whole editor, so the unsaved marker has to be
+    // re-applied or the panel would look saved when it isn't.
+    if (panelState.dirty) $("panelSaveBtn").textContent = "Save •";
+
+    // Header fields are dirty-tracked too, but not drafted — see panelDraftKey.
+    ["panelFieldName", "panelFieldVoltage", "panelFieldLocation", "panelFieldFedFrom"].forEach(id => {
+      $(id).addEventListener("input", () => markPanelDirty());
+    });
+    $("panelFieldCircuits").addEventListener("change", () => resizePanel(Number($("panelFieldCircuits").value)));
+    $("panelEditBody").querySelectorAll(".panel-size-chip").forEach(chip => {
+      chip.onclick = () => resizePanel(Number(chip.dataset.size));
+    });
+    $("panelSpareBtn").onclick = fillBlanksWithSpare;
+    $("panelSaveBtn").onclick  = savePanel;
+    $("panelPdfBtn").onclick   = downloadPanelPdf;
+    const del = $("panelDeleteBtn");
+    if (del) del.onclick = deletePanel;
+    const discard = $("panelDraftDiscard");
+    if (discard) discard.onclick = (e) => {
+      e.preventDefault();
+      clearPanelDraft(p.id);
+      openPanelEditor(p.id);
+    };
+  }
+
+  // Circuit order in the DOM (1,2,3,4…), NOT column order. The two-column grid
+  // places odds left and evens right on its own because they alternate, and
+  // that same DOM order is what makes the mobile single-column stack read
+  // 1,2,3,4 instead of every odd followed by every even.
+  function renderPanelGrid() {
+    const grid = $("panelGrid");
+    grid.innerHTML =
+      `<div class="panel-col-head">Ckt — what it feeds</div>` +
+      `<div class="panel-col-head right">Ckt — what it feeds</div>` +
+      panelState.circuits.map(c => {
+        const v = c.description || "";
+        return `<div class="panel-row">
+          <span class="panel-ckt">${c.number}</span>
+          <input class="panel-desc${v ? " has-val" : ""}" data-ckt="${c.number}" value="${esc(v)}"
+                 placeholder="—" autocomplete="off" enterkeyhint="next" />
+          <button type="button" class="panel-fill" data-ckt="${c.number}" title="Copy this down the rest of this side">↓</button>
+        </div>`;
+      }).join("");
+
+    grid.querySelectorAll(".panel-desc").forEach(inp => {
+      inp.addEventListener("input", () => {
+        inp.classList.toggle("has-val", !!inp.value.trim());
+        markPanelDirty();
+        updateFilledCount();
+      });
+      // Enter moves to the next circuit rather than submitting anything —
+      // filling a panel is one long run of typing.
+      inp.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const all = [...grid.querySelectorAll(".panel-desc")];
+        const next = all[all.indexOf(inp) + 1];
+        if (next) { next.focus(); next.select(); }
+      });
+    });
+    grid.querySelectorAll(".panel-fill").forEach(b => b.onclick = () => fillDown(Number(b.dataset.ckt)));
+    updateFilledCount();
+  }
+
+  // Reads the DOM, not panelState — the inputs are the live truth between
+  // renders, and re-rendering on every keystroke would fight the caret.
+  function readGridValues() {
+    return [...document.querySelectorAll("#panelGrid .panel-desc")].map(i => ({
+      number: Number(i.dataset.ckt),
+      description: i.value.trim(),
+    }));
+  }
+
+  function syncGridToState() {
+    const byNum = new Map(readGridValues().map(c => [c.number, c.description]));
+    for (const c of panelState.circuits) {
+      if (byNum.has(c.number)) c.description = byNum.get(c.number);
+    }
+  }
+
+  // The header inputs are rebuilt from panelState.panel on every re-render, so
+  // anything typed into them has to be folded back in FIRST or a resize would
+  // quietly revert the name someone just corrected.
+  function syncHeaderToState() {
+    const p = panelState.panel;
+    if (!p || !$("panelFieldName")) return;
+    p.name     = $("panelFieldName").value.trim() || p.name;
+    p.voltage  = $("panelFieldVoltage").value.trim();
+    p.location = $("panelFieldLocation").value.trim();
+    p.fedFrom  = $("panelFieldFedFrom").value.trim();
+  }
+
+  function markPanelDirty() {
+    panelState.dirty = true;
+    const btn = $("panelSaveBtn");
+    if (btn) { btn.textContent = "Save •"; btn.classList.add("btn-primary"); }
+    writePanelDraft();
+  }
+
+  function updateFilledCount() {
+    const el = $("panelFilledCount");
+    if (!el) return;
+    const vals = readGridValues();
+    const n = vals.filter(c => c.description).length;
+    el.textContent = `${n} of ${vals.length} circuits filled in`;
+  }
+
+  // Copies this circuit's description into every EMPTY circuit below it on the
+  // same side. Same side matters: a run of spares is 9,11,13,15… down one
+  // column, which is what the panel physically looks like.
+  function fillDown(startNum) {
+    const inputs = [...document.querySelectorAll("#panelGrid .panel-desc")];
+    const src = inputs.find(i => Number(i.dataset.ckt) === startNum);
+    if (!src || !src.value.trim()) return;
+    const val = src.value.trim();
+    let n = 0;
+    for (const inp of inputs) {
+      const num = Number(inp.dataset.ckt);
+      if (num <= startNum) continue;
+      if (num % 2 !== startNum % 2) continue;   // same side only
+      if (inp.value.trim()) continue;           // never overwrite
+      inp.value = val;
+      inp.classList.add("has-val");
+      n++;
+    }
+    if (n) { markPanelDirty(); updateFilledCount(); }
+    setPanelStatus(n ? `Copied “${val}” into ${n} circuit${n === 1 ? "" : "s"} below.` : "Nothing empty below on that side.");
+  }
+
+  function fillBlanksWithSpare() {
+    const inputs = [...document.querySelectorAll("#panelGrid .panel-desc")];
+    let n = 0;
+    for (const inp of inputs) {
+      if (inp.value.trim()) continue;
+      inp.value = "spare";
+      inp.classList.add("has-val");
+      n++;
+    }
+    if (n) { markPanelDirty(); updateFilledCount(); }
+    setPanelStatus(n ? `Filled ${n} empty circuit${n === 1 ? "" : "s"} with “spare”.` : "Nothing left blank.");
+  }
+
+  function setPanelStatus(msg) {
+    const el = $("panelEditStatus");
+    if (el) el.textContent = msg;
+  }
+
+  // Growing is free. SHRINKING DESTROYS DATA, so the confirm names the number
+  // of filled-in circuits about to go — the server refuses an unconfirmed
+  // shrink too, which is what catches a second editor open on the same panel.
+  function resizePanel(next) {
+    const p = panelState.panel;
+    if (!Number.isFinite(next)) { $("panelFieldCircuits").value = p.circuits; return; }
+    const even = next % 2 === 0 ? next : next + 1;
+    if (even < 2 || even > 84) {
+      setPanelStatus("Circuits must be between 2 and 84.");
+      $("panelFieldCircuits").value = p.circuits;
+      return;
+    }
+    syncGridToState();
+    syncHeaderToState();
+    if (even < p.circuits) {
+      const lost = panelState.circuits.filter(c => c.number > even && c.description).length;
+      if (lost && !confirm(`Shrinking to ${even} circuits discards ${lost} filled-in circuit${lost === 1 ? "" : "s"} (${even + 1}–${p.circuits}).\n\nContinue?`)) {
+        $("panelFieldCircuits").value = p.circuits;
+        return;
+      }
+      panelState.circuits = panelState.circuits.filter(c => c.number <= even);
+      // The user has now seen and accepted the number; the save may confirm.
+      panelState.shrinkOk = true;
+    } else if (even > p.circuits) {
+      for (let n = p.circuits + 1; n <= even; n++) panelState.circuits.push({ number: n, description: "" });
+      panelState.circuits.sort((a, b) => a.number - b.number);
+    }
+    p.circuits = even;
+    $("panelFieldCircuits").value = even;
+    markPanelDirty();
+    renderPanelEditor(0);
+  }
+
+  async function savePanel() {
+    const p = panelState.panel;
+    if (!p) return;
+    syncGridToState();
+    const btn = $("panelSaveBtn");
+    btn.disabled = true;
+    setPanelStatus("Saving…");
+
+    const payload = {
+      panelId: p.id,
+      name: $("panelFieldName").value.trim(),
+      voltage: $("panelFieldVoltage").value.trim(),
+      circuits: p.circuits,
+      location: $("panelFieldLocation").value.trim(),
+      fedFrom: $("panelFieldFedFrom").value.trim(),
+      circuits_list: panelState.circuits.map(c => ({ number: c.number, description: c.description })),
+      // Only true when THIS editor shrank the panel and the user accepted the
+      // loss — see panelState.shrinkOk.
+      confirmShrink: !!panelState.shrinkOk,
+    };
+
+    try {
+      const d = await apiPost("savePanelSchedule", payload);
+      panelState.panel = d.panel;
+      panelState.dirty = false;
+      panelState.shrinkOk = false;
+      // Only clear the draft once the bytes are actually in Neon.
+      clearPanelDraft(p.id);
+      btn.textContent = "Save";
+      setPanelStatus(`Saved${d.panel.updatedBy ? ` by ${d.panel.updatedBy}` : ""}.`);
+      $("panelEditTitle").textContent = `⚡ ${d.panel.name}`;
+    } catch (e) {
+      // A 409 is the server refusing an unconfirmed shrink — someone else made
+      // this panel smaller while this editor was open. Arm the confirm so the
+      // next tap goes through, and let the message say what will be lost.
+      if (e.status === 409) {
+        panelState.shrinkOk = true;
+        setPanelStatus(e.message);
+      } else {
+        // The draft is deliberately left in place — this is the case it exists for.
+        setPanelStatus(`Couldn't save: ${e.message}. Your typing is kept on this device; try Save again when you have signal.`);
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function deletePanel() {
+    const p = panelState.panel;
+    if (!p) return;
+    if (!confirm(`Delete the schedule for ${p.name}?\n\nEvery circuit on it goes too. This cannot be undone.`)) return;
+    setPanelStatus("Deleting…");
+    try {
+      await apiPost("deletePanelSchedule", { panelId: p.id });
+      clearPanelDraft(p.id);
+      panelState.dirty = false;
+      popBackEntry("panelEdit");
+      $("panelEditModal").style.display = "none";
+      panelState.panel = null;
+      await refreshPanelList();
+    } catch (e) {
+      setPanelStatus("Couldn't delete it: " + e.message);
+    }
+  }
+
+  /* ── The PDF ────────────────────────────────────────────────────────────────
+   * Portrait letter, circuit numbers on the OUTER edges with the descriptions
+   * inboard — the layout of a real panel schedule, so it reads the same way in
+   * the door as it does on the screen.
+   *
+   * Empty circuits print as empty NUMBERED rows on purpose. A blank numbered row
+   * is a statement: that breaker space exists and is unused. Dropping the row
+   * would make a 42-way panel look like a 30-way one.
+   */
+  async function downloadPanelPdf() {
+    const p = panelState.panel;
+    if (!p) return;
+    syncGridToState();
+    setPanelStatus("Building PDF…");
+    try {
+      await ensureJsPDF();
+    } catch (e) {
+      setPanelStatus("Couldn't load the PDF library: " + e.message);
+      return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "pt", format: "letter" });
+
+    const W = 612, M = 45;
+    const CKT_W = 34, DESC_W = (W - M * 2 - CKT_W * 2) / 2;   // 34 | 222 | 222 | 34
+    const COLS = [CKT_W, DESC_W, DESC_W, CKT_W];
+    const ROW_H = 17, HEAD_H = 18;
+    const jobName = (state.selected && state.selected.name) || "";
+
+    // Pairs: row i holds circuit 2i+1 on the left and 2i+2 on the right.
+    const byNum = new Map(panelState.circuits.map(c => [c.number, c.description || ""]));
+    const pairs = [];
+    for (let n = 1; n <= p.circuits; n += 2) {
+      pairs.push({ l: n, lDesc: byNum.get(n) || "", r: n + 1, rDesc: byNum.get(n + 1) || "" });
+    }
+
+    let y = 0;
+    const drawHeader = () => {
+      y = 46;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(20, 20, 20);
+      doc.text(`PANEL ${p.name.toUpperCase()}`, M, y);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(90, 90, 90);
+      if (jobName) doc.text(jobName, W - M, y, { align: "right" });
+      y += 15;
+      const meta = [p.voltage, p.fedFrom ? `Fed from ${p.fedFrom}` : "", p.location].filter(Boolean).join("   ·   ");
+      if (meta) { doc.text(meta, M, y); y += 13; }
+      doc.setFontSize(8);
+      doc.text(`Printed ${new Date().toLocaleDateString()}`, W - M, y - 1, { align: "right" });
+      y += 6;
+
+      // Column header band
+      doc.setFillColor(238, 240, 243);
+      doc.rect(M, y, W - M * 2, HEAD_H, "F");
+      doc.setDrawColor(120, 120, 120); doc.setLineWidth(0.7);
+      doc.rect(M, y, W - M * 2, HEAD_H);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(40, 40, 40);
+      let x = M;
+      ["CKT", "DESCRIPTION", "DESCRIPTION", "CKT"].forEach((label, i) => {
+        if (i) { doc.line(x, y, x, y + HEAD_H); }
+        doc.text(label, x + COLS[i] / 2, y + 12, { align: "center" });
+        x += COLS[i];
+      });
+      y += HEAD_H;
+    };
+
+    // Truncate rather than wrap: a circuit description is one line by
+    // definition, and a wrapped row would break the fixed grid the numbers ride.
+    const fit = (text, width) => {
+      if (!text) return "";
+      const lines = doc.splitTextToSize(String(text), width - 8);
+      return lines[0] || "";
+    };
+
+    drawHeader();
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+    for (const pr of pairs) {
+      if (y + ROW_H > 756) { doc.addPage(); drawHeader(); doc.setFont("helvetica", "normal"); doc.setFontSize(9); }
+      let x = M;
+      doc.setDrawColor(170, 170, 170); doc.setLineWidth(0.4);
+      doc.rect(M, y, W - M * 2, ROW_H);
+      const cells = [
+        { text: String(pr.l), align: "center", muted: true },
+        { text: fit(pr.lDesc, DESC_W), align: "left", muted: false },
+        { text: fit(pr.rDesc, DESC_W), align: "left", muted: false },
+        { text: String(pr.r), align: "center", muted: true },
+      ];
+      cells.forEach((cell, i) => {
+        if (i) doc.line(x, y, x, y + ROW_H);
+        doc.setTextColor(cell.muted ? 110 : 20, cell.muted ? 110 : 20, cell.muted ? 110 : 20);
+        if (cell.align === "center") doc.text(cell.text, x + COLS[i] / 2, y + 12, { align: "center" });
+        else doc.text(cell.text, x + 5, y + 12);
+        x += COLS[i];
+      });
+      y += ROW_H;
+    }
+
+    // Filename carries the panel and the job, because these get emailed.
+    const safe = (s) => String(s || "").replace(/[\\/:*?"<>|]/g, "").trim();
+    doc.save(`Panel ${safe(p.name)}${jobName ? ` - ${safe(jobName)}` : ""}.pdf`);
+    setPanelStatus("PDF downloaded.");
+  }
 
   // Only managers can delete, so only they need the bin fetched.
   async function refreshDeletedJobPrints() {
@@ -18158,6 +18883,68 @@
     </div>
   </div>
 </div>
+
+<!-- Panel schedules (docs/PLAN-panel-schedules.md).
+     Two modals: the job's list of panels, and the grid editor for one of them.
+     Separate rather than swapped views inside one modal so each gets its own
+     back-stack entry — the phone back button steps editor → list → job, which
+     is the order they were opened in. -->
+<div id="panelListModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:640px; width:95%;">
+    <div class="sl-modal-header">
+      <h2 id="panelListTitle">⚡ Panel Schedules</h2>
+      <button onclick="closeJobPanels()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body" style="min-height:180px;">
+      <div id="panelListBody" style="display:flex; flex-direction:column; gap:8px;"></div>
+
+      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+        <button type="button" onclick="showNewPanelForm()" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">➕ New panel</button>
+        <div id="panelNewForm" style="display:none; margin-top:12px;">
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <label style="flex:1 1 150px; min-width:130px;">
+              <span style="display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;">Panel</span>
+              <input id="panelNewName" class="edit-input" style="width:100%; font-size:13px;" placeholder="Panel A" autocomplete="off" />
+            </label>
+            <label style="flex:1 1 180px; min-width:160px;">
+              <span style="display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;">Voltage / Phase</span>
+              <input id="panelNewVoltage" class="edit-input" list="panelVoltageList" style="width:100%; font-size:13px;" placeholder="120/240V 1-Phase" autocomplete="off" />
+            </label>
+            <label style="flex:0 1 120px; min-width:110px;">
+              <span style="display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;">Circuits</span>
+              <input id="panelNewCircuits" class="edit-input" type="number" min="2" max="84" step="2" value="42" style="width:100%; font-size:13px;" />
+            </label>
+          </div>
+          <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+            <button type="button" id="panelNewSaveBtn" onclick="createPanel()" class="btn btn-primary btn-sm" style="font-size:13px;">Create</button>
+            <button type="button" onclick="showNewPanelForm()" class="btn btn-sm" style="font-size:12px;">Cancel</button>
+            <span id="panelNewStatus" style="font-size:12px; color:var(--muted);"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="panelEditModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:920px; width:96%;">
+    <div class="sl-modal-header">
+      <h2 id="panelEditTitle">⚡ Panel</h2>
+      <button onclick="closePanelEditor()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body" id="panelEditBody" style="min-height:200px;"></div>
+  </div>
+</div>
+
+<!-- Shared by the create form and the editor. A datalist rather than a select:
+     these four cover almost everything, but a closed list would make anything
+     else unrecordable. -->
+<datalist id="panelVoltageList">
+  <option value="120/240V 1-Phase"></option>
+  <option value="120/208V 3-Phase"></option>
+  <option value="277/480V 3-Phase"></option>
+  <option value="120/240V 3-Phase (High Leg)"></option>
+</datalist>
 
 <!-- Receipts on an expense (docs/PLAN-expense-receipts.md, slice 1).
      Two capture routes: a phone photo (compressed, thumbnailed) and a ScanSnap

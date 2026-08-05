@@ -1156,6 +1156,67 @@ await test("fleet: employees get full parity with admin; viewer stays read-only"
   }
 });
 
+// ── panel schedules (docs/PLAN-panel-schedules.md) ──
+// DATABASE_URL is deliberately unset in this harness, so every panel handler
+// short-circuits to 503 before touching Neon. That is exactly what makes these
+// authz assertions meaningful offline: 403 is decided by authzFor BEFORE the
+// handler runs, so "not 403" proves the role tier without needing a database.
+await test('panels: every signed-in role can READ a panel schedule', async () => {
+  mockTables = JOB_ONLY();
+  // The electrician standing at the panel is the person who needs to know what
+  // circuit 23 feeds. Same contract as prints, and the same trap: if this ever
+  // starts matching jobDocs (admin/office), someone has confused the two.
+  for (const tok of [EMP_TOK, VIEWER_TOK, OFFICE_TOK, ADMIN_TOK]) {
+    ok((await GET('panelSchedules', { jobId: 'recJ1' }, tok)).statusCode !== 403, 'list readable');
+    ok((await GET('panelSchedule', { panelId: 'p1' }, tok)).statusCode !== 403, 'one panel readable');
+  }
+});
+
+await test('panels: the field fills them in, only managers delete them', async () => {
+  mockTables = JOB_ONLY();
+  const create = { jobId: 'recJ1', name: 'Panel A', voltage: '120/240V 1-Phase', circuits: 42 };
+  const save   = { panelId: 'p1', circuits_list: [{ number: 1, description: 'AC' }] };
+
+  // Writing is the whole point — an employee at the panel must not be blocked.
+  ok((await POST('createPanelSchedule', create, EMP_TOK)).statusCode !== 403, 'employee creates');
+  ok((await POST('savePanelSchedule',  save,   EMP_TOK)).statusCode !== 403, 'employee saves');
+  eq((await POST('createPanelSchedule', create, VIEWER_TOK)).statusCode, 403, 'viewer cannot create');
+  eq((await POST('savePanelSchedule',  save,   VIEWER_TOK)).statusCode, 403, 'viewer cannot save');
+
+  // Deleting takes every circuit with it and there is no bin.
+  eq((await POST('deletePanelSchedule', { panelId: 'p1' }, EMP_TOK)).statusCode, 403, 'employee cannot delete');
+  eq((await POST('deletePanelSchedule', { panelId: 'p1' }, VIEWER_TOK)).statusCode, 403, 'viewer cannot delete');
+  ok((await POST('deletePanelSchedule', { panelId: 'p1' }, OFFICE_TOK)).statusCode !== 403, 'office can delete');
+});
+
+await test('panels: an odd or absurd circuit count is refused, not rounded silently', async () => {
+  mockTables = JOB_ONLY();
+  const base = { jobId: 'recJ1', name: 'Panel A' };
+  // Validation runs BEFORE the database check so these are reachable offline —
+  // and so a bad count reports itself instead of hiding behind a 503.
+  for (const bad of [41, 0, -2, 86, 'forty-two', null]) {
+    eq((await POST('createPanelSchedule', { ...base, circuits: bad })).statusCode, 400, `circuits=${bad} refused`);
+  }
+  for (const good of [2, 12, 42, 84]) {
+    ok((await POST('createPanelSchedule', { ...base, circuits: good })).statusCode !== 400, `circuits=${good} accepted`);
+  }
+  // A nameless panel is unusable in a list of five panels on one job.
+  eq((await POST('createPanelSchedule', { jobId: 'recJ1', name: '  ', circuits: 42 })).statusCode, 400, 'name required');
+  eq((await POST('createPanelSchedule', { name: 'Panel A', circuits: 42 })).statusCode, 400, 'jobId required');
+});
+
+await test('panels: without DATABASE_URL they fail CLOSED, not soft', async () => {
+  mockTables = JOB_ONLY();
+  // The opposite of every other Neon path in this file. Reads elsewhere fall
+  // back to Airtable and answer correctly but slowly; panel schedules have no
+  // Airtable table to fall back TO, so pretending they are empty would tell a
+  // crew the panel was never walked. 503 is the honest answer.
+  eq((await GET('panelSchedules', { jobId: 'recJ1' })).statusCode, 503, 'list 503s');
+  eq((await GET('panelSchedule', { panelId: 'p1' })).statusCode, 503, 'read 503s');
+  eq((await POST('savePanelSchedule', { panelId: 'p1' })).statusCode, 503, 'save 503s');
+  eq((await POST('deletePanelSchedule', { panelId: 'p1' })).statusCode, 503, 'delete 503s');
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

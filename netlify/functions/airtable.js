@@ -459,6 +459,11 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // Receipts are financial records and there is no "reviewed" state to key an
   // employee self-service window off, so deletion is manager-only.
   "deleteExpenseReceipts", "restoreExpenseReceipts",
+  // Deleting a whole panel schedule takes every circuit with it and there is no
+  // bin. Creating and filling one in stays _NON_VIEWER — the electrician at the
+  // panel is the person who knows what circuit 23 feeds, and gating that on
+  // admin means it never gets written down.
+  "deletePanelSchedule",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -488,6 +493,9 @@ const _ADMIN_READS = new Set(["r2Status"]);
 // returns null and any signed-in role may read it. That is the entire feature:
 // a crew opening the drawings on site without a pCloud login. If you find
 // yourself adding it here, you have confused prints with jobDocs.
+//
+// `panelSchedules` / `panelSchedule` are absent for the same reason: the person
+// who needs to read what circuit 23 feeds is standing at the panel.
 const _ADMIN_OFFICE_READS = new Set(["jobPhotosDeleted", "jobDocs", "jobPrintsDeleted"]);
 
 function authzFor(method, action) {
@@ -5389,6 +5397,247 @@ async function handlePurgeJobPrints(body) {
   return await bulkPhotoOp(body, "purgeJobPrints", (jobId, key) => purgeJobPrint(jobId, key), "prints");
 }
 
+/* ── Panel schedules (docs/PLAN-panel-schedules.md) ─────────────────────────
+ * The grid that goes in the panel door: circuit numbers down both sides, odd on
+ * the left, even on the right, and what each breaker feeds.
+ *
+ * THIS DOMAIN IS NEON-NATIVE. It has no Airtable table and never will — it is
+ * the first thing in this app born in Neon instead of migrated to it. So unlike
+ * every other handler here there is no Airtable write, no mirror, and no
+ * fallback: `neonWrite` throughout, which FAILS CLOSED. A panel schedule that
+ * silently failed to save is worse than an error, because the crew walks away
+ * from the panel believing it is recorded.
+ *
+ * Reads are open to every signed-in role, for the same reason prints are: the
+ * electrician standing at the panel is the person who needs this.
+ */
+
+// Panels are keyed on the AIRTABLE job id, not a FK to Neon's jobs.id — the
+// jobs table refreshes hourly, so a job created ten minutes ago is not in Neon
+// yet and a FK would reject the first panel added to it. job_id backfills.
+const PANEL_MAX_CIRCUITS = 84;
+
+function mapPanel(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    voltage: row.voltage || "",
+    circuits: row.circuits,
+    feed: row.feed || "",
+    mounting: row.mounting || "",
+    enclosure: row.enclosure || "",
+    location: row.location || "",
+    fedFrom: row.fed_from || "",
+    notes: row.notes || "",
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by || "",
+    // Present on the list read only — how much of the panel is actually filled
+    // in, so a crew can see at a glance which panels still need walking.
+    filled: row.filled != null ? Number(row.filled) : undefined,
+  };
+}
+
+// Even, in range, and a number. Returns null when the value is unusable so the
+// caller can 400 rather than letting the CHECK constraint raise a 500 that
+// reads like a bug to whoever is standing in the panel room.
+function cleanCircuitCount(raw) {
+  const n = Math.round(Number(raw));
+  if (!Number.isFinite(n) || n < 2 || n > PANEL_MAX_CIRCUITS) return null;
+  return n % 2 === 0 ? n : null;
+}
+
+async function handlePanelSchedules(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Panel schedules are unavailable (database not configured)." });
+
+  const rows = await neonWrite("panels.list",
+    `SELECT p.*,
+            (SELECT count(*) FROM panel_circuits c
+              WHERE c.panel_id = p.id AND c.description <> '')::int AS filled
+       FROM panel_schedules p
+      WHERE p.job_airtable_id = $1
+      ORDER BY p.name`,
+    [String(jobId)]);
+  return resp(200, { ok: true, panels: (rows || []).map(mapPanel) });
+}
+
+// One panel plus every circuit. Circuits are returned for the FULL width of the
+// panel even where no row exists yet — a panel created and never edited has no
+// rows in panel_circuits at all, and the editor still has to render 42 empty
+// numbered slots. generate_series is what makes that the database's job rather
+// than a gap-filling loop on the client that would drift from `circuits`.
+async function handlePanelSchedule(params) {
+  const panelId = params?.panelId;
+  if (!panelId) return resp(400, { ok: false, error: "Missing panelId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Panel schedules are unavailable (database not configured)." });
+
+  const rows = await neonWrite("panels.get",
+    `SELECT * FROM panel_schedules WHERE id::text = $1`, [String(panelId)]);
+  const panel = rows?.[0];
+  if (!panel) return resp(404, { ok: false, error: "Panel not found." });
+
+  const circuits = await neonWrite("panels.circuits",
+    `SELECT g AS number,
+            COALESCE(c.description, '') AS description,
+            c.watts, c.amps, c.poles
+       FROM generate_series(1, $2::int) g
+       LEFT JOIN panel_circuits c ON c.panel_id = $1::uuid AND c.number = g
+      ORDER BY g`,
+    [String(panelId), panel.circuits]);
+
+  return resp(200, {
+    ok: true,
+    panel: mapPanel(panel),
+    circuits: (circuits || []).map(c => ({
+      number: Number(c.number),
+      description: c.description || "",
+      watts: c.watts, amps: c.amps, poles: c.poles,
+    })),
+  });
+}
+
+async function handleCreatePanelSchedule(body, authUser) {
+  const jobId = body?.jobId;
+  const name  = String(body?.name || "").trim();
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!name)  return resp(400, { ok: false, error: "Give the panel a name." });
+
+  // Input is validated BEFORE the database check on purpose: a bad circuit
+  // count is wrong whatever the infrastructure is doing, and a 503 would hide
+  // the real problem behind one the user cannot act on.
+  const circuits = cleanCircuitCount(body?.circuits);
+  if (circuits === null) {
+    return resp(400, { ok: false, error: `Circuits must be an even number between 2 and ${PANEL_MAX_CIRCUITS}.` });
+  }
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Panel schedules are unavailable (database not configured)." });
+
+  // The job must exist in AIRTABLE — that is still the jobs master. Deliberately
+  // not a Neon lookup: a job created in the last hour is not in Neon yet, and
+  // refusing to schedule its panels is exactly the failure this design avoids.
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  const rows = await neonWrite("panels.create",
+    `INSERT INTO panel_schedules
+       (job_airtable_id, job_id, name, voltage, circuits, location, fed_from, updated_by)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3, $4, $5, $6, $7)
+     RETURNING *`,
+    [String(jobId), name, String(body?.voltage || "").trim() || null, circuits,
+     String(body?.location || "").trim() || null, String(body?.fedFrom || "").trim() || null,
+     authUser?.name || null]);
+
+  return resp(200, { ok: true, panel: mapPanel(rows[0]) });
+}
+
+// Saves the WHOLE panel in one request — header plus every circuit. Not
+// per-cell: a panel room is where signal goes to die, and 42 in-flight autosaves
+// is 42 chances to half-save a schedule. One request either lands or doesn't,
+// and the client keeps a local draft until it does.
+async function handleSavePanelSchedule(body, authUser) {
+  const panelId = body?.panelId;
+  if (!panelId) return resp(400, { ok: false, error: "Missing panelId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Panel schedules are unavailable (database not configured)." });
+
+  const existing = (await neonWrite("panels.forSave",
+    `SELECT * FROM panel_schedules WHERE id::text = $1`, [String(panelId)]))?.[0];
+  if (!existing) return resp(404, { ok: false, error: "Panel not found." });
+
+  const name = body?.name != null ? String(body.name).trim() : existing.name;
+  if (!name) return resp(400, { ok: false, error: "Give the panel a name." });
+
+  let circuits = existing.circuits;
+  if (body?.circuits != null) {
+    circuits = cleanCircuitCount(body.circuits);
+    if (circuits === null) {
+      return resp(400, { ok: false, error: `Circuits must be an even number between 2 and ${PANEL_MAX_CIRCUITS}.` });
+    }
+  }
+
+  // SHRINKING DESTROYS DATA. Going 42 → 30 orphans circuits 31-42, which may be
+  // the only record of what those breakers feed. The count of what would be lost
+  // is returned so the client can name it in the confirm; `confirmShrink` is the
+  // client saying the user saw that number and accepted it.
+  if (circuits < existing.circuits) {
+    const lost = (await neonWrite("panels.shrinkCheck",
+      `SELECT count(*)::int AS n FROM panel_circuits
+        WHERE panel_id = $1::uuid AND number > $2 AND description <> ''`,
+      [String(panelId), circuits]))?.[0]?.n || 0;
+    if (lost > 0 && !body?.confirmShrink) {
+      // `error` carries the human sentence because that is the only field the
+      // client's apiPost lifts onto the thrown Error — a machine code here would
+      // surface to the user as the literal string "shrink-would-discard".
+      return resp(409, {
+        ok: false,
+        error: `Shrinking to ${circuits} circuits discards ${lost} filled-in circuit${lost === 1 ? "" : "s"}. Tap Save again to confirm.`,
+        code: "shrink-would-discard",
+        lost,
+      });
+    }
+    await neonWrite("panels.trim",
+      `DELETE FROM panel_circuits WHERE panel_id = $1::uuid AND number > $2`,
+      [String(panelId), circuits]);
+  }
+
+  await neonWrite("panels.update",
+    `UPDATE panel_schedules
+        SET name = $2, voltage = $3, circuits = $4, location = $5, fed_from = $6,
+            feed = $7, mounting = $8, enclosure = $9, notes = $10,
+            updated_at = now(), updated_by = $11,
+            job_id = COALESCE(job_id, (SELECT id FROM jobs WHERE airtable_id = job_airtable_id))
+      WHERE id = $1::uuid`,
+    [String(panelId), name, String(body?.voltage ?? existing.voltage ?? "").trim() || null, circuits,
+     String(body?.location ?? existing.location ?? "").trim() || null,
+     String(body?.fedFrom ?? existing.fed_from ?? "").trim() || null,
+     String(body?.feed ?? existing.feed ?? "").trim() || null,
+     String(body?.mounting ?? existing.mounting ?? "").trim() || null,
+     String(body?.enclosure ?? existing.enclosure ?? "").trim() || null,
+     String(body?.notes ?? existing.notes ?? "").trim() || null,
+     authUser?.name || null]);
+
+  // Circuits arrive as the whole panel. Out-of-range numbers are dropped rather
+  // than rejected: a stale editor open on a 42-way panel that someone else
+  // shrank to 30 should save the 30 it shares, not fail the request outright.
+  const sent = Array.isArray(body?.circuits_list) ? body.circuits_list : [];
+  const nums = [], descs = [];
+  for (const c of sent) {
+    const n = Math.round(Number(c?.number));
+    if (!Number.isFinite(n) || n < 1 || n > circuits) continue;
+    nums.push(n);
+    descs.push(String(c?.description ?? "").trim().slice(0, 200));
+  }
+
+  if (nums.length) {
+    // One statement, not one per circuit: 42 sequential round trips to Neon is
+    // most of the 10 seconds Netlify gives a synchronous function.
+    await neonWrite("panels.saveCircuits",
+      `INSERT INTO panel_circuits (panel_id, number, description)
+       SELECT $1::uuid, n, d
+         FROM unnest($2::int[], $3::text[]) AS t(n, d)
+       ON CONFLICT (panel_id, number)
+       DO UPDATE SET description = EXCLUDED.description`,
+      [String(panelId), nums, descs]);
+  }
+
+  const saved = (await neonWrite("panels.afterSave",
+    `SELECT * FROM panel_schedules WHERE id = $1::uuid`, [String(panelId)]))?.[0];
+  return resp(200, { ok: true, panel: mapPanel(saved) });
+}
+
+// Admin/office only. The circuits go with it (ON DELETE CASCADE) and there is no
+// bin — a panel schedule is cheap to re-walk, unlike a photo, and a soft-delete
+// tier here would be machinery nobody asked for.
+async function handleDeletePanelSchedule(body) {
+  const panelId = body?.panelId;
+  if (!panelId) return resp(400, { ok: false, error: "Missing panelId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Panel schedules are unavailable (database not configured)." });
+
+  const rows = await neonWrite("panels.delete",
+    `DELETE FROM panel_schedules WHERE id::text = $1 RETURNING id`, [String(panelId)]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Panel not found." });
+  return resp(200, { ok: true });
+}
+
 // Recycle-bin listing. Admin/office only — employees shouldn't be browsing
 // what was deleted.
 async function handleJobPhotosDeleted(params) {
@@ -5445,6 +5694,8 @@ export async function handler(event) {
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
       if (action === "jobPrints")          return await handleJobPrints(params);
       if (action === "jobPrintsDeleted")   return await handleJobPrintsDeleted(params);
+      if (action === "panelSchedules")     return await handlePanelSchedules(params);
+      if (action === "panelSchedule")      return await handlePanelSchedule(params);
       if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
       if (action === "expenseReceiptSummary") return await handleExpenseReceiptSummary(params, authUser);
@@ -5539,6 +5790,9 @@ export async function handler(event) {
       if (body.action === "restoreJobPhotos")     return await handleRestoreJobPhotos(body);
       if (body.action === "purgeJobPhotos")       return await handlePurgeJobPhotos(body);
       if (body.action === "jobPrintUploadUrls")   return await handleJobPrintUploadUrls(body);
+      if (body.action === "createPanelSchedule")  return await handleCreatePanelSchedule(body, authUser);
+      if (body.action === "savePanelSchedule")    return await handleSavePanelSchedule(body, authUser);
+      if (body.action === "deletePanelSchedule")  return await handleDeletePanelSchedule(body);
       if (body.action === "deleteJobPrints")      return await handleDeleteJobPrints(body);
       if (body.action === "restoreJobPrints")     return await handleRestoreJobPrints(body);
       if (body.action === "purgeJobPrints")       return await handlePurgeJobPrints(body);

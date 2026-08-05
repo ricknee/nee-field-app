@@ -5328,7 +5328,7 @@
    * pCloud is untouched by all this. It stays the office document tree; this is
    * the field-accessible copy.
    */
-  const jobPrintState = { jobId: null, prints: [], deleted: [], showDeleted: false };
+  const jobPrintState = { jobId: null, prints: [], deleted: [], showDeleted: false, selecting: false, selected: new Set() };
 
   // Wider than the receipt filter: a print may legitimately be a CAD file that
   // the browser cannot render at all but which still wants to be downloadable.
@@ -5392,6 +5392,8 @@
     jobPrintState.prints = [];
     jobPrintState.deleted = [];
     jobPrintState.showDeleted = false;
+    jobPrintState.selecting = false;
+    jobPrintState.selected.clear();
 
     $("jobPrintsTitle").textContent  = `📐 Prints — ${job.name || ""}`;
     $("jobPrintsList").innerHTML     = "";
@@ -5450,6 +5452,11 @@
         return;
       }
       jobPrintState.prints = d.prints || [];
+      // A print that was deleted or replaced while selected would otherwise
+      // leave a key in the set that no row can clear, and "Select all" would
+      // never look complete.
+      const liveKeys = new Set(jobPrintState.prints.map(p => p.key));
+      jobPrintState.selected.forEach(k => { if (!liveKeys.has(k)) jobPrintState.selected.delete(k); });
       // Keep the badge behind the modal honest about what just changed.
       if (printBadge.jobId === jobPrintState.jobId) {
         printBadge.count = jobPrintState.prints.length;
@@ -5462,12 +5469,116 @@
     }
   }
 
+  /* ── Downloading, and why it is a separate button from opening ───────────
+   * Tapping a print opens it in the BROWSER's PDF viewer. Downloading hands
+   * the file to the OS, which opens it with whatever the device has registered
+   * for PDFs — Acrobat, Xodo, Bluebeam, Files. No web page can launch a named
+   * app; a download is the only handoff there is.
+   *
+   * It also puts the file on the device for good. The signed link expires in
+   * six hours, but the downloaded copy doesn't — pull the drawings on wifi and
+   * they open in a basement with no signal.
+   *
+   * The `download` attribute is set but does NOTHING here: browsers ignore it
+   * cross-origin, and R2 is a different origin. The filename comes from the
+   * Content-Disposition baked into the signed URL by presignGetDownload.
+   */
+  function triggerPrintDownload(p) {
+    const a = document.createElement("a");
+    a.href = p.downloadUrl || p.url;
+    a.download = p.name || "";
+    a.rel = "noopener";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => a.remove(), 0);
+  }
+
+  // Downloads a selection one at a time.
+  //
+  // ⚠ Best-effort ON PURPOSE, and the UI says so rather than pretending
+  // otherwise. Only the first download is inside the user's tap; iOS Safari in
+  // particular blocks later ones for exactly that reason, and desktop Chrome
+  // asks permission for "multiple files". The spacing gives each one time to
+  // start. The per-row ⬇ is the path that always works, which is why it stays
+  // on every row even when nothing is selected.
+  async function downloadPrintsSequentially(prints) {
+    const status = $("jobPrintsStatus");
+    for (let i = 0; i < prints.length; i++) {
+      status.textContent = `Downloading ${i + 1} of ${prints.length} — ${prints[i].name}…`;
+      triggerPrintDownload(prints[i]);
+      if (i < prints.length - 1) await new Promise(r => setTimeout(r, 1200));
+    }
+    showAppToast(prints.length === 1
+      ? "Download started — open it from your downloads ✓"
+      : `${prints.length} downloads started — if only the first arrived, tap ⬇ on the rest`);
+    jobPrintState.selecting = false;
+    jobPrintState.selected.clear();
+    renderJobPrints();
+  }
+
+  function renderPrintToolbar() {
+    const bar = $("jobPrintsToolbar");
+    if (!bar) return;
+    const live = jobPrintState.prints;
+    if (!live.length) { bar.innerHTML = ""; return; }
+
+    if (!jobPrintState.selecting) {
+      bar.innerHTML = `<button type="button" id="prtSelect" class="btn btn-sm" style="font-size:12px; padding:6px 12px;">☑ Select to download</button>`;
+      $("prtSelect").onclick = () => {
+        jobPrintState.selecting = true;
+        jobPrintState.selected.clear();
+        renderJobPrints();
+      };
+      return;
+    }
+
+    const n = jobPrintState.selected.size;
+    const allOn = n === live.length;
+    bar.innerHTML = `
+      <button type="button" id="prtSelAll" class="btn btn-sm" style="font-size:12px; padding:6px 12px;">${allOn ? "Clear all" : "Select all"}</button>
+      <button type="button" id="prtDlSel" class="btn btn-primary btn-sm" style="font-size:12px; padding:6px 12px;" ${n ? "" : "disabled"}>⬇ Download ${n || ""}</button>
+      <button type="button" id="prtSelCancel" class="btn btn-sm" style="font-size:12px; padding:6px 12px;">Cancel</button>
+      <span style="font-size:11px; color:var(--muted);">phones may only take the first — ⬇ each row if so</span>`;
+
+    $("prtSelAll").onclick = () => {
+      if (allOn) jobPrintState.selected.clear();
+      else live.forEach(p => jobPrintState.selected.add(p.key));
+      renderJobPrints();
+    };
+    $("prtSelCancel").onclick = () => {
+      jobPrintState.selecting = false;
+      jobPrintState.selected.clear();
+      renderJobPrints();
+    };
+    $("prtDlSel").onclick = () => {
+      const picked = live.filter(p => jobPrintState.selected.has(p.key));
+      if (picked.length) downloadPrintsSequentially(picked);
+    };
+  }
+
   // One row. `mode` is "live" (opens, offers Delete) or "deleted" (offers
   // Restore and the permanent one).
   function printRow(p, mode) {
     const when = mode === "deleted" ? p.deletedAt : p.uploadedAt;
     const date = when ? new Date(when).toLocaleDateString() : "";
     const meta = [printSize(p.size), date].filter(Boolean).join(" · ");
+
+    // Selection is offered on live prints only — the bin is for restoring and
+    // clearing space, not for collecting a set to take to site.
+    const picking = jobPrintState.selecting && mode === "live";
+    const checkbox = picking
+      ? `<input type="checkbox" class="prt-pick" data-key="${esc(p.key)}" ${jobPrintState.selected.has(p.key) ? "checked" : ""}
+                style="flex:none; width:20px; height:20px; accent-color:var(--blue);" />`
+      : "";
+
+    // ⬇ sits on every live row and is the reliable way onto a phone: it hands
+    // the file to the OS, which opens it in the device's PDF app, and leaves it
+    // there to read offline.
+    const dl = mode === "live"
+      ? `<button type="button" class="prt-dl" data-key="${esc(p.key)}" title="Download — opens in your PDF app, and works offline afterwards"
+                 style="background:none; border:none; cursor:pointer; font-size:16px; color:var(--blue); padding:4px 8px;">⬇</button>`
+      : "";
 
     const actions = !canDeletePhotos() ? "" : (mode === "deleted"
       ? `<button type="button" class="prt-restore" data-key="${esc(p.key)}" style="background:none; border:none; cursor:pointer; font-size:12px; color:var(--blue); padding:4px 6px;">↩ Restore</button>
@@ -5478,15 +5589,22 @@
     // find the filename text. target=_blank hands the PDF to the browser's own
     // viewer, which is better than anything we could render and already has a
     // download button.
+    // While picking, the whole row toggles the checkbox instead of opening the
+    // print — a tap that navigates away mid-selection loses the selection.
+    const body = picking
+      ? `<span class="prt-pickrow" data-key="${esc(p.key)}" style="flex:1; min-width:0; display:flex; align-items:center; gap:10px; cursor:pointer;">`
+      : `<a href="${esc(p.url)}" target="_blank" rel="noopener" style="flex:1; min-width:0; display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit;">`;
+
     return `<div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); ${mode === "deleted" ? "opacity:.6;" : ""}">
-        <a href="${esc(p.url)}" target="_blank" rel="noopener" style="flex:1; min-width:0; display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit;">
+        ${checkbox}
+        ${body}
           <span style="font-size:22px; flex:none;">${printIcon(p)}</span>
           <span style="min-width:0;">
             <span style="display:block; font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(p.name)}</span>
             <span style="display:block; font-size:11px; color:var(--muted);">${esc(meta)}</span>
           </span>
-        </a>
-        <span style="flex:none; display:flex; align-items:center;">${actions}</span>
+        ${picking ? "</span>" : "</a>"}
+        <span style="flex:none; display:flex; align-items:center;">${dl}${actions}</span>
       </div>`;
   }
 
@@ -5518,7 +5636,23 @@
       jobPrintState.showDeleted = !jobPrintState.showDeleted;
       renderJobPrints();
     };
+    renderPrintToolbar();
+
     const list_ = $("jobPrintsList");
+    list_.querySelectorAll(".prt-dl").forEach(b =>
+      b.onclick = () => {
+        const p = jobPrintState.prints.find(x => x.key === b.dataset.key);
+        if (p) downloadPrintsSequentially([p]);
+      });
+    const togglePick = (key) => {
+      if (jobPrintState.selected.has(key)) jobPrintState.selected.delete(key);
+      else jobPrintState.selected.add(key);
+      renderJobPrints();
+    };
+    list_.querySelectorAll(".prt-pick").forEach(b =>
+      b.onclick = () => togglePick(b.dataset.key));
+    list_.querySelectorAll(".prt-pickrow").forEach(b =>
+      b.onclick = () => togglePick(b.dataset.key));
     list_.querySelectorAll(".prt-del").forEach(b =>
       b.onclick = () => mutatePrint("deleteJobPrints", b.dataset.key, "Deleting",
         "Remove this print from the job?\n\nIt is kept and can be restored."));
@@ -18017,6 +18151,9 @@
         <button type="button" id="jobPrintAddBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">📎 Add prints</button>
         <span style="font-size:11px; color:var(--muted); margin-left:8px;">PDF, photo or CAD file — or drag files anywhere into this window</span>
       </div>
+      <!-- Select-to-download lives above the list; ⬇ on each row is the path
+           that always works. See downloadPrintsSequentially. -->
+      <div id="jobPrintsToolbar" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-bottom:10px;"></div>
       <div id="jobPrintsList" style="display:flex; flex-direction:column; gap:6px;"></div>
     </div>
   </div>

@@ -162,11 +162,15 @@ async function withTimeout(fn, timeoutMs) {
 
 // A time-limited URL the browser can use directly — <img src>, a download
 // link, or an upload target. Never returns credentials themselves.
-async function presign(method, key, { ttl, contentType } = {}) {
+async function presign(method, key, { ttl, contentType, params } = {}) {
   const c = config();
   const client = await getClient();
   const url = new URL(`${c.endpoint}/${c.bucket}/${encodeURI(key)}`);
   url.searchParams.set("X-Amz-Expires", String(ttl));
+  // Response-header overrides must go on BEFORE signing — they are part of the
+  // canonical query string, so appending one afterwards invalidates the
+  // signature and R2 answers 403.
+  for (const [k, v] of Object.entries(params || {})) url.searchParams.set(k, v);
 
   const signed = await client.sign(
     new Request(url, { method, ...(contentType ? { headers: { "Content-Type": contentType } } : {}) }),
@@ -177,6 +181,41 @@ async function presign(method, key, { ttl, contentType } = {}) {
 
 export function presignGet(key, ttl = VIEW_URL_TTL_SECONDS) {
   return presign("GET", key, { ttl });
+}
+
+// A URL that DOWNLOADS rather than previews.
+//
+// This is the whole mechanism behind "open it in my PDF app": no web page can
+// launch a named app, but a downloaded file gets handed to the OS, which opens
+// it with whatever the device has registered for PDFs. Chrome and Safari both
+// render a PDF inline unless the response says attachment.
+//
+// It cannot be done from the client — <a download> is IGNORED cross-origin, and
+// R2 is a different origin — so the instruction has to be baked into the signed
+// URL here.
+//
+// Second benefit, and the bigger one on a jobsite: the downloaded copy is
+// OFFLINE. This link dies after VIEW_URL_TTL_SECONDS; the file on the phone
+// does not. Pull the drawings on wifi, read them in a basement with no signal.
+export function presignGetDownload(key, filename, ttl = VIEW_URL_TTL_SECONDS) {
+  return presign("GET", key, {
+    ttl,
+    params: { "response-content-disposition": attachmentDisposition(filename) },
+  });
+}
+
+// Split out as a pure function so it is testable: presign itself needs the
+// aws4fetch signer, which is lazy-imported and deliberately absent from the
+// offline test suite. The escaping is the part that can be got wrong.
+//
+// sanitizePrintName has already restricted a print's name, but this value ends
+// up in an HTTP header — a stray quote truncates the filename, and a newline
+// would be header injection if anything ever reaches here unsanitized.
+export function attachmentDisposition(filename) {
+  const safe = String(filename || "download")
+    .replace(/[^A-Za-z0-9 ._()-]/g, "_")
+    .slice(0, 120) || "download";
+  return `attachment; filename="${safe}"`;
 }
 
 export function presignPut(key, contentType = "image/jpeg", ttl = UPLOAD_URL_TTL_SECONDS) {
@@ -663,11 +702,19 @@ function printListEntry(o) {
 
 async function buildPrintList(objects, stamp) {
   const sorted = objects.sort((a, b) => new Date(b.lastModified || 0) - new Date(a.lastModified || 0));
-  return await Promise.all(sorted.map(async (o) => ({
-    ...printListEntry(o),
-    [stamp]: o.lastModified,
-    url: await presignGet(o.key),
-  })));
+  return await Promise.all(sorted.map(async (o) => {
+    const entry = printListEntry(o);
+    return {
+      ...entry,
+      [stamp]: o.lastModified,
+      // Two URLs for the same object: one previews, one downloads. Signing is
+      // local HMAC with no network call, so the second costs nothing worth
+      // saving, and having both in hand is what lets the client offer
+      // "open" and "download for your PDF app" without another round trip.
+      url: await presignGet(o.key),
+      downloadUrl: await presignGetDownload(o.key, entry.name),
+    };
+  }));
 }
 
 // One job's prints, newest first, every URL pre-signed so the browser opens the

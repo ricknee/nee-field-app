@@ -964,6 +964,25 @@ await test('prints: the filename is preserved but can never forge a path', async
   ok(long.endsWith('.pdf'), 'extension survives truncation');
 });
 
+await test('prints: the download filename is safe in an HTTP header', async () => {
+  const { attachmentDisposition } = await import('../netlify/functions/_r2.js');
+  // Downloading rather than previewing is the ONLY handoff to a native PDF app
+  // — <a download> is ignored cross-origin, so the instruction has to ride in
+  // the signed URL as response-content-disposition.
+  //
+  // Only the escaping is asserted here: presign() needs the aws4fetch signer,
+  // which is lazy-imported and deliberately absent from this offline suite.
+  // That the param sits INSIDE the signature (append it afterwards and R2 says
+  // 403) is covered by the browser smoke test, not here.
+  eq(attachmentDisposition('E-1 Rev B.pdf'), 'attachment; filename="E-1 Rev B.pdf"', 'name preserved');
+  // A quote would truncate the filename mid-header; a newline would be header
+  // injection. sanitizePrintName blocks both upstream — this is the backstop.
+  const nasty = attachmentDisposition('a"b\nc.pdf');
+  ok(!/["\n]/.test(nasty.slice('attachment; filename="'.length, -1)), 'quote and newline neutralised');
+  eq(attachmentDisposition(''), 'attachment; filename="download"', 'empty name still valid');
+  ok(attachmentDisposition('x'.repeat(300)).length < 160, 'length capped');
+});
+
 await test('prints: purge refuses anything still live', async () => {
   const { purgeJobPrint, softDeleteJobPrint } = await import('../netlify/functions/_r2.js');
   let threw = null;

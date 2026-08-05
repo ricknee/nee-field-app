@@ -40,6 +40,21 @@ Three things worth knowing that the plan below did not anticipate:
   which is usually the intent ("here is the corrected sheet"). The client warns first, and offers to
   upload the non-clashing files only.
 
+**Download for the device's own PDF app** (owner request, 2026-08-05): tapping a print opens it in
+the *browser's* viewer; a **⬇ on each row** downloads it instead, which is the only handoff a web
+page has — the OS then opens it in Acrobat/Xodo/Bluebeam/Files. It cannot be done client-side:
+`<a download>` is ignored cross-origin, so `presignGetDownload` bakes
+`response-content-disposition: attachment` into the signed URL (before signing — appending it after
+invalidates the signature and R2 returns 403).
+
+Second benefit, and the bigger one in the field: **the downloaded copy is offline.** The signed link
+dies after 6 h; the file on the phone does not. Pull the drawings on wifi, read them in a basement.
+
+There is also **select-to-download** for grabbing a set at once. It fires the downloads sequentially
+with a 1.2 s gap and is **best-effort by design** — only the first is inside the user's tap, and iOS
+Safari blocks the rest for that reason. The toolbar says so ("phones may only take the first — ⬇ each
+row if so") rather than looking broken. Per-row ⬇ is the path that always works.
+
 **Permanent delete exists** (owner request: "i would like the option to delete prints if need be for
 storage sake"). Soft delete alone does not reclaim anything — a binned object still costs, and the
 prints bin is deliberately outside the lifecycle rule. So the bin offers **↩ Restore** and **✕ Delete

@@ -508,6 +508,53 @@ await test("writes still require a non-viewer role before any of this runs", asy
   eq(lastFetch, null, "nothing written");
 });
 
+// ── Schedule (migration Step 4a) — same fail-closed contract as time entries ──
+// The Neon path cannot be exercised offline (no DATABASE_URL means the SQL never
+// runs), so what is locked here is the contract at the boundary: a write that
+// cannot reach the source of truth fails, and leaves nothing behind in Airtable.
+// The SQL itself is proven by the live branch test, per the 2026-07-31 lesson.
+await test("schedule writes fail CLOSED when Neon is unreachable", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = {};
+  lastFetch = null;
+  const add = await POST("addScheduleEntry",
+    { jobId: "recJ1", startDate: "2026-09-01", endDate: "2026-09-02" });
+  eq(add.statusCode, 500, "add fails rather than half-landing");
+  eq(lastFetch, null, "and writes nothing to Airtable");
+
+  lastFetch = null;
+  eq((await POST("updateScheduleEntry", { entryId: "recS1", title: "x" })).statusCode, 500, "update fails");
+  eq(lastFetch, null, "no Airtable PATCH");
+
+  lastFetch = null;
+  eq((await POST("deleteScheduleEntry", { entryId: "recS1" })).statusCode, 500, "delete fails");
+  eq(lastFetch, null, "Airtable record still there");
+  delete process.env.DATABASE_URL;
+});
+
+await test("schedule: validation runs before either system is touched", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  lastFetch = null;
+  eq((await POST("addScheduleEntry", { startDate: "2026-09-01", endDate: "2026-09-02" })).statusCode,
+     400, "a Job entry without a jobId is rejected");
+  eq((await POST("addScheduleEntry", { jobId: "recJ1", endDate: "2026-09-02" })).statusCode,
+     400, "missing startDate rejected");
+  eq((await POST("updateScheduleEntry", {})).statusCode, 400, "update needs an entryId");
+  eq((await POST("deleteScheduleEntry", {})).statusCode, 400, "delete needs an entryId");
+  eq(lastFetch, null, "nothing written on any of them");
+});
+
+await test("schedule: viewers cannot write", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  lastFetch = null;
+  eq((await POST("addScheduleEntry",
+    { jobId: "recJ1", startDate: "2026-09-01", endDate: "2026-09-02" }, VIEWER_TOK)).statusCode,
+    403, "blocked at authz, ahead of the write path");
+  eq(lastFetch, null, "nothing written");
+});
+
 // ── employee self-service expenses ──
 const OWNER_TOK = signToken({ id: "recEmpOwner", role: "employee" });
 const OTHER_TOK = signToken({ id: "recEmpOther", role: "employee" });

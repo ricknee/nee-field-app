@@ -4607,7 +4607,38 @@ async function handleGetScheduleEntries(params) {
     .filter(j => j.birdDate && (!since || j.birdDate >= since) && (!until || j.birdDate <= until))
     .map(j => ({ jobId: j.id, jobName: j.name, contractor: j.contractor, date: j.birdDate }));
 
-  return resp(200, { ok: true, entries: filtered, birdDates });
+  return resp(200, { ok: true, entries: filtered, birdDates, _source: "airtable" });
+}
+
+// ── Schedule writes: NEON-FIRST, Airtable the fail-soft mirror ─────────────
+// Same contract as the time-entry writes (see neonWrite in _neon.js): the Neon
+// write is authoritative and FAILS CLOSED, because the read above is served from
+// Neon and a row that reaches only Airtable would be invisible.
+//
+// Unlike time entries there is no second writer here — no Make scenario, no
+// puller — the app is the only thing that has ever created a schedule entry. So
+// the id can be the Neon uuid from the start; nothing else in the base references
+// a schedule entry. resolveScheduleEntry still accepts a `rec…` id because the
+// Airtable read fallback returns those.
+async function resolveScheduleEntry(entryId) {
+  const rows = await neonWrite("schedule.resolve",
+    `SELECT id, airtable_id FROM schedule_entries
+      WHERE id::text = $1 OR airtable_id = $1 LIMIT 1`, [String(entryId)]);
+  return rows?.[0] || null;
+}
+
+// Crew is replaced wholesale on every write rather than diffed. The set is at
+// most a handful of people, and delete-then-insert cannot leave a half-updated
+// crew behind if the second statement fails.
+async function setScheduleCrew(entryUuid, crewAtIds) {
+  await neonWrite("schedule.crew.clear",
+    `DELETE FROM schedule_entry_crew WHERE schedule_entry_id = $1`, [entryUuid]);
+  const ids = (Array.isArray(crewAtIds) ? crewAtIds : []).filter(x => typeof x === "string" && x.startsWith("rec"));
+  if (!ids.length) return;
+  await neonWrite("schedule.crew.set",
+    `INSERT INTO schedule_entry_crew (schedule_entry_id, employee_id)
+     SELECT $1, e.id FROM employees e WHERE e.airtable_id = ANY($2::text[])
+     ON CONFLICT DO NOTHING`, [entryUuid, ids]);
 }
 
 async function handleAddScheduleEntry(body) {
@@ -4616,6 +4647,16 @@ async function handleAddScheduleEntry(body) {
   if (entryType === "Job" && !jobId) return resp(400, { ok: false, error: "Missing jobId for Job entry." });
   if (!startDate) return resp(400, { ok: false, error: "Missing startDate." });
   if (!endDate)   return resp(400, { ok: false, error: "Missing endDate." });
+
+  const rows = await neonWrite("schedule.insert",
+    `INSERT INTO schedule_entries
+       (title, entry_type, job_id, start_date, end_date, notes, source)
+     VALUES ($1, $2, (SELECT id FROM jobs WHERE airtable_id = $3), $4::date, $5::date, $6, 'app')
+     RETURNING id`,
+    [title ? String(title) : null, entryType, jobId || null,
+     startDate, endDate, notes ? String(notes) : null]);
+  const neonId = rows?.[0]?.id;
+  await setScheduleCrew(neonId, crewIds);
 
   const fields = {};
   fields[SCHED_F.type] = entryType;
@@ -4626,17 +4667,47 @@ async function handleAddScheduleEntry(body) {
   if (notes) fields[SCHED_F.notes] = String(notes);
   if (title) fields[SCHED_F.title] = String(title);
 
-  const data = await atFetch(`${encodeURIComponent("Schedule Entries")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  return resp(200, { ok: true, id: data.id });
+  const data = await mirrorToAirtable("addScheduleEntry", () =>
+    atFetch(`${encodeURIComponent("Schedule Entries")}`, {
+      method: "POST", body: JSON.stringify({ fields, typecast: true })
+    }));
+  if (data?.id) {
+    await mirrorToAirtable("addScheduleEntry.stamp", () =>
+      neonWrite("schedule.stampAirtableId",
+        `UPDATE schedule_entries SET airtable_id = $2 WHERE id = $1`, [neonId, data.id]));
+  }
+  return resp(200, { ok: true, id: neonId, airtableId: data?.id || null });
 }
 
 async function handleUpdateScheduleEntry(body) {
   const { entryId, jobId, startDate, endDate, crewIds, notes, title, type } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
+
+  const target = await resolveScheduleEntry(entryId);
+  if (!target) return resp(404, { ok: false, error: "Schedule entry not found." });
+
+  // Only the fields the client actually sent are written, so an omitted field is
+  // left alone rather than nulled — the drag-to-move path sends dates only.
+  const sets = [], vals = [target.id];
+  const put = (col, v, cast = "") => { vals.push(v); sets.push(`${col} = $${vals.length}${cast}`); };
+  if (type      !== undefined) put("entry_type", type || "Job");
+  if (startDate !== undefined) put("start_date", startDate || null, "::date");
+  if (endDate   !== undefined) put("end_date",   endDate   || null, "::date");
+  if (notes     !== undefined) put("notes", String(notes || ""));
+  if (title     !== undefined) put("title", String(title || ""));
+  if (jobId     !== undefined) {
+    vals.push(jobId || null);
+    sets.push(`job_id = (SELECT id FROM jobs WHERE airtable_id = $${vals.length})`);
+  }
+  if (sets.length) {
+    await neonWrite("schedule.update",
+      `UPDATE schedule_entries SET ${sets.join(", ")} WHERE id = $1`, vals);
+  }
+  if (crewIds !== undefined) await setScheduleCrew(target.id, crewIds);
+  if (!sets.length && crewIds === undefined) {
+    return resp(400, { ok: false, error: "Nothing to update." });
+  }
+
   const fields = {};
   if (type        !== undefined) fields[SCHED_F.type]      = type || "Job";
   if (jobId       !== undefined) fields[SCHED_F.job]       = jobId ? [jobId] : [];
@@ -4646,24 +4717,34 @@ async function handleUpdateScheduleEntry(body) {
   if (notes       !== undefined) fields[SCHED_F.notes]     = String(notes || "");
   if (title       !== undefined) fields[SCHED_F.title]     = String(title || "");
 
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
-
-  const data = await atFetch(`${encodeURIComponent("Schedule Entries")}/${entryId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  return resp(200, { ok: true, id: data.id });
+  // Mirror only when the row has an Airtable twin. Entries created after this
+  // flip have none until the mirror succeeds, and that is not an error.
+  if (target.airtable_id && Object.keys(fields).length) {
+    await mirrorToAirtable("updateScheduleEntry", () =>
+      atFetch(`${encodeURIComponent("Schedule Entries")}/${target.airtable_id}`, {
+        method: "PATCH", body: JSON.stringify({ fields, typecast: true })
+      }));
+  }
+  return resp(200, { ok: true, id: target.id });
 }
 
 async function handleDeleteScheduleEntry(body) {
   const { entryId } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
-  const data = await atFetch(`${encodeURIComponent("Schedule Entries")}/${entryId}`, {
-    method: "DELETE"
-  });
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  return resp(200, { ok: true, deletedId: entryId });
+
+  const target = await resolveScheduleEntry(entryId);
+  if (!target) return resp(404, { ok: false, error: "Schedule entry not found." });
+
+  // No tombstone here, unlike time entries: a schedule entry is a plan, not a
+  // financial record, and losing one costs a re-drag rather than someone's pay.
+  // schedule_entry_crew is ON DELETE CASCADE, so the crew rows go with it.
+  await neonWrite("schedule.delete", `DELETE FROM schedule_entries WHERE id = $1`, [target.id]);
+
+  if (target.airtable_id) {
+    await mirrorToAirtable("deleteScheduleEntry", () =>
+      atFetch(`${encodeURIComponent("Schedule Entries")}/${target.airtable_id}`, { method: "DELETE" }));
+  }
+  return resp(200, { ok: true, deletedId: target.id });
 }
 
 // Helper: list active employees with role exposed, for the crew picker.

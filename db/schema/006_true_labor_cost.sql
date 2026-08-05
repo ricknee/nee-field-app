@@ -117,3 +117,56 @@ SELECT j.id AS job_id, j.airtable_id, j.name, j.po_locked,
   FROM v_job_labor_cost_true c
   JOIN jobs j ON j.id = c.job_id
  GROUP BY j.id, j.airtable_id, j.name, j.po_locked;
+
+-- ── Feeding true labor into the GP layer ───────────────────────────────────
+-- Labor enters v_job_financials at exactly two inputs:
+--   actual_labor_cost_reviewed  -> total_labor_cost_final, actual_job_cost_cogs
+--   labor_cost_in_progress      -> (with the above) total_labor_cost_live
+-- Everything downstream — GP live, GP final, COGS — is derived from those. So the
+-- substitution happens ONCE, here, rather than by rewriting the GP maths.
+CREATE OR REPLACE VIEW v_job_rollups_true AS
+SELECT r.id, r.airtable_id, r.po,
+       r.expected_revenue, r.expected_revenue_all_status, r.base_contract_amount,
+       r.est_labor_hours_rollup, r.est_labor_cost_rollup, r.est_material_cost_rollup,
+       r.proj_est_labor_hours, r.proj_est_labor_cost, r.proj_est_material_cost,
+       r.approved_estimates, r.actual_material_cost, r.actual_subcontract_expense,
+       r.actual_scissor_lift_expense, r.actual_rental_equipment_expense,
+       r.reviewed_expenses_rollup, r.total_actual_expenses_audit, r.total_contract_billed,
+       r.total_wire_cost, r.reviewed_wire_cost_rollup, r.pipe_cost, r.pipe_cost_reviewed,
+       COALESCE(t.labor_cost_reviewed, 0::numeric) AS actual_labor_cost_reviewed,
+       COALESCE(t.labor_cost_live - COALESCE(t.labor_cost_reviewed, 0::numeric), 0::numeric)
+         AS labor_cost_in_progress,
+       r.hours_rollup, r.unbilled_hours, r.unbilled_labor_revenue_tm, r.unallocated_labor_hours
+  FROM v_job_rollups r
+  LEFT JOIN v_job_labor_cost_true_by_job t ON t.job_id = r.id;
+
+-- v_job_financials_true is GENERATED FROM v_job_financials' own definition, with the
+-- single `FROM v_job_rollups r` swapped for the _true source. Deliberately not
+-- hand-copied: the faithful view is the diff gate against Airtable and must stay
+-- authoritative, and a hand-maintained twin would drift the first time it is
+-- corrected. Re-run this to regenerate after any change to v_job_financials.
+--
+-- The count check is the safety catch — if the reference count is ever not exactly
+-- 1 (a rename, a second join), it raises instead of silently producing a view that
+-- still reads the OLD labor numbers while claiming to be the true one.
+--
+--   DO $do$
+--   DECLARE d text; n int;
+--   BEGIN
+--     d := pg_get_viewdef('v_job_financials'::regclass, true);
+--     n := (length(d) - length(replace(d, 'v_job_rollups r', ''))) / length('v_job_rollups r');
+--     IF n <> 1 THEN RAISE EXCEPTION 'expected 1 reference, found %', n; END IF;
+--     EXECUTE 'CREATE OR REPLACE VIEW v_job_financials_true AS '
+--             || replace(d, 'v_job_rollups r', 'v_job_rollups_true r');
+--   END $do$;
+--
+-- ── WHAT THIS CHANGES ON SCREEN (measured 2026-08-05, 60 jobs with a final GP) ──
+-- Total final GP 1,017,242 -> 883,093, a drop of 134,149. Biggest movers:
+-- Strongsville DG -19,463 · Wheeling DG -19,422 · Cambridge DG -14,530 ·
+-- Adena DG -13,237 · Beliot DG -10,831.
+--
+-- ⚠ 14 of the 15 jobs that end up negative have ZERO recorded revenue — mostly
+-- Service Calls. They read as losses because cost is now real while revenue was
+-- never recorded against them. That is a SEPARATE pre-existing gap this exposes
+-- rather than causes (possibly uninvoiced work), not a fault in the labor maths.
+-- The one genuine outlier is Strongsville DG: 1,800 revenue against 29,562 cost.

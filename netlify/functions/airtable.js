@@ -2114,12 +2114,170 @@ function mapJob(r) {
   };
 }
 
+// ── NEON-FIRST job reads ───────────────────────────────────────────────────
+// The descriptive spine comes from `jobs` (refreshed hourly by _jobs-sync.js);
+// every financial number is COMPUTED LIVE from the GP views, never copied, so it
+// cannot go stale between syncs. Labor cost comes from v_job_financials_true —
+// see db/schema/006_true_labor_cost.sql for why Airtable's own figure was wrong.
+//
+// `id` stays the AIRTABLE record id, unlike time entries. Jobs are still
+// Airtable-keyed everywhere else in the app — expenses, invoices, photos and the
+// inventory app all address a job by `rec…` — so switching it here would break
+// all of them. Time entries could move to a uuid because nothing else referenced
+// them; jobs cannot, yet.
+const JOB_SELECT = `
+  SELECT j.airtable_id, j.name, j.po, j.status, j.job_type, j.job_year,
+         j.address_full, j.contractor_name, j.contractor_at_id,
+         j.generator_installed, j.power_company_name, j.power_company_contact,
+         j.power_company_at_id, j.power_contact_at_id, j.power_company_cell_phone,
+         j.power_company_office_phone, j.power_company_email, j.power_company,
+         j.aic_number, j.temp_work_order, j.work_order_number, j.meter_number,
+         j.permit_number, j.inspection_agency, j.inspection_agency_phone,
+         j.inspection_agency_email, j.inspection_agency_at_id,
+         j.inspection_scheduling_link, j.inspector_name, j.inspector_phone,
+         j.inspector_email, j.inspector_at_id, j.job_inspections,
+         j.inspection_not_required, j.add_photos_link, j.view_photos_link,
+         j.pcloud_photo_folder_id, j.pcloud_invoices_sent_id, j.trello_card_id,
+         j.tax_status, j.billing_method, j.customer_first_name, j.customer_last_name,
+         j.address_street, j.address_city, j.address_state, j.address_zip,
+         j.customer_phone, j.customer_email, j.start_service_call,
+         j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
+         j.bird_date::text AS bird_date, j.workflow_status, j.billable_hourly_rate,
+         j.labor_billable_rate_at_id,
+         r.base_contract_amount, r.total_contract_billed, r.total_wire_cost,
+         r.reviewed_wire_cost_rollup, r.pipe_cost, r.pipe_cost_reviewed,
+         r.expected_revenue, r.hours_rollup,
+         r.est_labor_hours_rollup, r.est_labor_cost_rollup, r.est_material_cost_rollup,
+         r.reviewed_expenses_rollup,
+         r.total_actual_expenses_audit,
+         f.total_revenue_live, f.total_materials_live, f.total_labor_cost_live,
+         f.materials_in_progress, f.gross_profit_live_dollar, f.gross_profit_live_pct,
+         f.actual_job_cost_cogs, f.total_reviewed_costs, f.total_labor_cost_final,
+         f.gross_profit_final_dollar, f.gross_profit_final_pct,
+         t.all_labor_reviewed
+    FROM jobs j
+    LEFT JOIN v_job_rollups_true      r ON r.id = j.id
+    LEFT JOIN v_job_financials_true   f ON f.id = j.id
+    LEFT JOIN v_job_labor_cost_true_by_job t ON t.job_id = j.id`;
+
+const n  = v => (v === null || v === undefined ? null : Number(v));
+const s  = v => (v === null || v === undefined ? "" : String(v));
+
+// Produces the SAME shape mapJob does. Any key added there must be added here or
+// the flip silently drops it from the response — that is what the diff harness in
+// the commit for this change checks, key by key across every job.
+function mapJobFromNeon(r) {
+  // Airtable's "All … Reviewed?" formulas, reproduced from the rollups rather than
+  // read as stored values. The Airtable originals compare a total against its
+  // reviewed twin; labor now comes from the true view instead of the manual
+  // allocation checkbox that nothing ever ticked.
+  const eq = (a, b) => Number(a || 0) === Number(b || 0);
+  const allWire     = eq(r.total_wire_cost, r.reviewed_wire_cost_rollup);
+  const allPipe     = eq(r.pipe_cost, r.pipe_cost_reviewed);
+  const allExpenses = eq(r.total_actual_expenses_audit, r.reviewed_expenses_rollup);
+
+  // ⚠ THE FILTERED-vs-UNFILTERED TRAP (CLAUDE.md). These four keys are named
+  // "projected"/"all status" but deliberately read the FILTERED rollups — estimates
+  // with Status Sent / Approved / Archived-Completed only. mapJob does the same and
+  // says so: the Est. GP card is meant to ignore Draft and Rejected estimates, so a
+  // Not-Awarded job holding a Draft estimate correctly shows zero.
+  //
+  // The first cut of this function used Neon's `expected_revenue_all_status` and
+  // `proj_est_*` — the genuinely unfiltered columns, which is what the names
+  // suggest. That made 4 jobs (Cross Club Ministries, David Troyer, Doylestown DG,
+  // Guernsey County Dog Shelter) report Draft-estimate revenue the app has always
+  // and correctly hidden. Caught by the key-by-key diff against Airtable.
+  const expectedRevenueAllStatus       = n(r.expected_revenue) || 0;
+  const projectedEstimatedMaterialCost = n(r.est_material_cost_rollup) || 0;
+  const projectedEstimatedLaborCost    = n(r.est_labor_cost_rollup) || 0;
+  const projectedEstimatedTotalCost = projectedEstimatedMaterialCost + projectedEstimatedLaborCost;
+  const projectedGrossProfitDollar  = expectedRevenueAllStatus - projectedEstimatedTotalCost;
+  const projectedGrossProfitPct     = expectedRevenueAllStatus > 0
+    ? (projectedGrossProfitDollar / expectedRevenueAllStatus) : null;
+
+  return {
+    id: r.airtable_id, name: s(r.name), po: s(r.po), status: s(r.status),
+    type: s(r.job_type), address: s(r.address_full), contractor: s(r.contractor_name),
+    year: n(r.job_year), contractorId: r.contractor_at_id || null,
+    generatorInstalled: r.generator_installed === true,
+    powerCompanyName: s(r.power_company_name), powerCompanyContact: s(r.power_company_contact),
+    powerCompanyId: r.power_company_at_id || null, powerContactId: r.power_contact_at_id || null,
+    powerContactName: s(r.power_company_contact),
+    powerCompanyPhone: s(r.power_company_cell_phone),
+    powerCompanyCellPhone: s(r.power_company_cell_phone),
+    powerCompanyOfficePhone: s(r.power_company_office_phone),
+    powerCompanyEmail: s(r.power_company_email),
+    aicNumber: s(r.aic_number), tempWorkOrder: s(r.temp_work_order),
+    permWorkOrder: s(r.work_order_number), meterNumber: s(r.meter_number),
+    permitNumber: s(r.permit_number), inspectionAgency: s(r.inspection_agency),
+    inspectionAgencyPhone: s(r.inspection_agency_phone),
+    inspectionAgencyEmail: s(r.inspection_agency_email),
+    inspectionSchedulingLink: s(r.inspection_scheduling_link),
+    inspectionContacts: s(r.inspector_name), jobInspections: s(r.job_inspections),
+    addPhotosLink: extractUrl(r.add_photos_link), viewPhotosLink: extractUrl(r.view_photos_link),
+    photoFolderId: s(r.pcloud_photo_folder_id), trelloCardId: s(r.trello_card_id),
+    taxStatus: s(r.tax_status), powerCompanyIntake: s(r.power_company),
+    billingMethod: s(r.billing_method),
+    baseContractAmount: n(r.base_contract_amount), totalContractBilled: n(r.total_contract_billed),
+    customerFirstName: s(r.customer_first_name), customerLastName: s(r.customer_last_name),
+    customerStreet: s(r.address_street), customerCity: s(r.address_city),
+    customerState: s(r.address_state), customerZip: s(r.address_zip),
+    customerPhone: s(r.customer_phone), customerEmail: s(r.customer_email),
+    startServiceCall: r.start_service_call === true,
+    serviceCallCreated: r.service_call_created === true,
+    projectComplete: r.project_complete === true,
+    milesFromShop: n(r.miles_from_shop), notes: s(r.notes), birdDate: s(r.bird_date),
+    totalRevenueLive: n(r.total_revenue_live), totalMaterialsLive: n(r.total_materials_live),
+    totalLaborCostLive: n(r.total_labor_cost_live), totalWireCost: n(r.total_wire_cost),
+    pipeCost: n(r.pipe_cost), materialsInProgress: n(r.materials_in_progress),
+    grossProfitLiveDollar: n(r.gross_profit_live_dollar),
+    grossProfitLivePct: n(r.gross_profit_live_pct),
+    workflowStatus: r.workflow_status ?? null,
+    estimatedLaborHoursRollup: n(r.est_labor_hours_rollup), hoursRollup: n(r.hours_rollup),
+    billableHourlyRate: n(r.billable_hourly_rate),
+    laborBillableRateId: r.labor_billable_rate_at_id || null,
+    inspectionAgencyId: r.inspection_agency_at_id || null,
+    inspectorId: r.inspector_at_id || null,
+    // The UI constrains a job to one inspector, so the first element is the value.
+    inspectorName: s(r.inspector_name).split(", ")[0] || "",
+    inspectorPhone: s(r.inspector_phone).split(", ")[0] || "",
+    inspectorEmail: s(r.inspector_email).split(", ")[0] || "",
+    inspectionNotRequired: r.inspection_not_required === true,
+    pCloudInvoicesSentId: r.pcloud_invoices_sent_id || null,
+    expectedRevenue: n(r.expected_revenue), actualJobCostCogs: n(r.actual_job_cost_cogs),
+    totalReviewedCosts: n(r.total_reviewed_costs),
+    totalLaborCostFinal: n(r.total_labor_cost_final),
+    grossProfitFinalDollar: n(r.gross_profit_final_dollar),
+    grossProfitFinalPct: n(r.gross_profit_final_pct),
+    allMaterialsReviewed: allWire && allPipe && allExpenses,
+    allWireReviewed: allWire, allPipeReviewed: allPipe,
+    allExpensesReviewed: allExpenses,
+    allLaborReviewed: r.all_labor_reviewed === true,
+    expectedRevenueAllStatus, projectedEstimatedTotalCost,
+    projectedEstimatedLaborHours: n(r.est_labor_hours_rollup),
+    projectedEstimatedMaterialCost, projectedEstimatedLaborCost,
+    projectedGrossProfitDollar, projectedGrossProfitPct
+  };
+}
+
 async function handleJobs() {
+  if (neonEnabled()) {
+    const q = await neonQuery(`${JOB_SELECT} ORDER BY j.name`);
+    if (q?.rows?.length) {
+      const jobs = q.rows.map(mapJobFromNeon)
+        .filter(j => !["archived","cancelled","canceled","closed"].includes(normalize(j.status)));
+      return resp(200, { ok: true, jobs, _source: "neon", _ms: q.ms });
+    }
+    // Guarded on .length, not .rows: an empty jobs table is never a legitimate
+    // answer here — the app cannot function with no jobs — so treat it as failure
+    // and let Airtable answer rather than blanking the job list.
+    console.error(`jobs: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
   const records = await fetchAll(TABLES.jobs);
   const jobs = records
     .map(mapJob)
     .filter(j => !["archived","cancelled","canceled","closed"].includes(normalize(j.status)));
-  return resp(200, { ok: true, jobs });
+  return resp(200, { ok: true, jobs, _source: "airtable" });
 }
 
 // Returns a single Job in the same shape as handleJobs. Used to refresh
@@ -2128,9 +2286,24 @@ async function handleJobs() {
 async function handleJobById(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // Flipped alongside handleJobs deliberately. This runs after an estimate write
+  // to refresh the Est. GP cards, so if it read Airtable while the list read Neon,
+  // saving an estimate would visibly REVERT the job's numbers to the old labor
+  // figures. The two must share a source.
+  if (neonEnabled()) {
+    const q = await neonQuery(`${JOB_SELECT} WHERE j.airtable_id = $1`, [jobId]);
+    if (q?.rows?.length) {
+      return resp(200, { ok: true, job: mapJobFromNeon(q.rows[0]), _source: "neon", _ms: q.ms });
+    }
+    // No rows here is ambiguous — a genuinely unknown job, or a job created in
+    // Airtable within the last hour that the sync has not carried over yet. Fall
+    // through to Airtable, which answers both correctly.
+    console.error(`jobById: Neon miss for ${jobId}, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
   const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!records.length) return resp(404, { ok: false, error: "Job not found." });
-  return resp(200, { ok: true, job: mapJob(records[0]) });
+  return resp(200, { ok: true, job: mapJob(records[0]), _source: "airtable" });
 }
 
 async function handleGenerator(params) {

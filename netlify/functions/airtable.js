@@ -19,6 +19,7 @@ import {
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
   expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
+  listByPrefix,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -433,6 +434,10 @@ const _TIME_SELF_WRITES = new Set([
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
   "addScheduleEntry", "updateScheduleEntry", "deleteScheduleEntry",
+  // One-off migration action, admin only. Gated by role rather than by
+  // ADMIN_BACKFILL_TOKEN: it is idempotent, copies rather than mutates, and the
+  // token is itself a write-only Netlify secret nobody has a copy of.
+  "copyLiftPhotosToR2",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -2974,6 +2979,81 @@ async function handleScissorLifts() {
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => { const f=r.fields||{}; const photos=(f["Photo"]||[]).map(a=>a.url); return { id:r.id,name:f["Lift Name"]||"",status:f["Status"]||"Available",currentJob:f["Current Job"]||"",assignedTo:f["Assigned To"]||"",dateDeployed:f["Date Deployed"]||"",notes:f["Notes"]||"",photoUrl:photos[0]||"",hooksLeft:f["Lift Hooks Left at Job"]===true,boxLeft:f["Lift Box Left at Job"]===true }; });
   return resp(200, { ok: true, lifts });
+}
+
+// ── ONE-OFF: copy lift photos from Airtable into R2 (Step 4b) ──────────────
+// Runs HERE, on Netlify, rather than in db/etl/scissor-lifts.mjs, for a mundane
+// reason: the R2 credentials are write-only Netlify secrets. Nobody has a copy,
+// Cloudflare shows an R2 secret key exactly once at creation, and minting a new
+// token just to run a migration script is more moving parts than the job needs.
+// The deployed function already holds working credentials — so the copy runs
+// where they are.
+//
+// WHY IT HAS TO RUN BEFORE THE READ FLIP. Airtable serves attachments from
+// v5.airtableusercontent.com on SIGNED URLs THAT EXPIRE (~2 h). The current
+// handler only works because it re-fetches them from Airtable on every request.
+// The moment lifts are read from Neon, that stops — so any photo not already in
+// R2 dies within the hour, silently, and would have looked fine in testing.
+//
+// Idempotent: keys already present are skipped, so an interrupted or repeated run
+// costs nothing and cannot duplicate. Safe to leave in place after the migration.
+async function handleCopyLiftPhotosToR2() {
+  if (!r2Enabled()) return resp(503, { ok: false, error: "R2 is not configured." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Neon is not configured." });
+
+  const records = await fetchAll(TABLES.scissorLifts);
+  const rows = await neonWrite("lifts.listForCopy",
+    `SELECT id, airtable_id FROM scissor_lifts WHERE airtable_id IS NOT NULL`);
+  const idByAirtable = new Map(rows.map(r => [r.airtable_id, r.id]));
+
+  // One list up front so a re-run resumes rather than re-uploading.
+  const existing = new Set((await listByPrefix("lifts/")).map(o => o.key));
+
+  const report = { copied: 0, skipped: 0, failed: 0, unmatched: 0, details: [] };
+  for (const rec of records) {
+    const liftId = idByAirtable.get(rec.id);
+    if (!liftId) {
+      // A lift in Airtable that the ETL has not loaded yet. Reported, not
+      // guessed at — copying it under a made-up id would strand the file.
+      report.unmatched++;
+      report.details.push(`unmatched: ${rec.fields?.["Lift Name"] || rec.id}`);
+      continue;
+    }
+    for (const att of (rec.fields?.["Photo"] || [])) {
+      // Keyed on the ATTACHMENT id, not the filename: two lifts can both have
+      // "photo.jpg", and a rename in Airtable must not orphan the copy.
+      const ext = (att.filename?.match(/\.[a-z0-9]+$/i) || [".jpg"])[0].toLowerCase();
+      const key = `lifts/${liftId}/${att.id}${ext}`;
+      if (existing.has(key)) { report.skipped++; continue; }
+      try {
+        // Download and upload back to back, while the signed URL is still valid.
+        const img = await fetch(att.url);
+        if (!img.ok) throw new Error(`download ${img.status}`);
+        const buf = Buffer.from(await img.arrayBuffer());
+        const put = await fetch(presignPut(key, att.type || "image/jpeg"), {
+          method: "PUT", body: buf,
+          headers: { "content-type": att.type || "image/jpeg" },
+        });
+        if (!put.ok) throw new Error(`upload ${put.status}`);
+        report.copied++;
+        report.details.push(`copied: ${rec.fields["Lift Name"]} → ${key} (${buf.length}b)`);
+      } catch (e) {
+        report.failed++;
+        report.details.push(`FAILED: ${rec.fields?.["Lift Name"]} ${key}: ${e.message}`);
+      }
+    }
+  }
+
+  const after = (await listByPrefix("lifts/")).length;
+  const expected = records.reduce((n, r) => n + (r.fields?.["Photo"]?.length || 0), 0);
+  return resp(200, {
+    ok: report.failed === 0 && report.unmatched === 0 && after === expected,
+    ...report,
+    objectsInR2: after,
+    attachmentsInAirtable: expected,
+    // The caller should not flip anything until these two agree.
+    reconciled: after === expected,
+  });
 }
 
 async function handleUpdateScissorLift(body) {
@@ -6151,6 +6231,7 @@ export async function handler(event) {
       if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
       if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);
+      if (body.action === "copyLiftPhotosToR2")   return await handleCopyLiftPhotosToR2();
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);

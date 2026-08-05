@@ -839,19 +839,23 @@
       min-width: 0;
       font-size: 13px;
       padding: 6px 8px;
-      border: 1px solid var(--line);
+      /* --line-2, not --line: these borders ARE the grid separating one circuit
+         from the next, and at --line they wash out against the panel. */
+      border: 1px solid var(--line-2);
       border-radius: 6px;
       background: var(--panel);
       color: var(--text);
     }
     .panel-desc:focus { border-color: var(--accent); outline: none; }
     /* Blank reads as "spare" in small italic — the same thing the PDF prints
-       for an empty circuit, so the screen previews the door schedule. */
+       for an empty circuit, so the screen previews the door schedule. Full
+       opacity and the body text colour, not --muted: this is read in daylight
+       on a phone, where the browser's own faded default is illegible. */
     .panel-desc::placeholder {
       font-size: 11px;
       font-style: italic;
-      color: var(--muted);
-      opacity: 0.75;
+      color: #4a5568;
+      opacity: 1;
     }
     /* Merged multi-pole cell: one description, centred over the full height of
        the circuits it spans, with no dividing line inside it. */
@@ -6310,7 +6314,8 @@
       // Column header band
       doc.setFillColor(238, 240, 243);
       doc.rect(M, y, W - M * 2, HEAD_H, "F");
-      doc.setDrawColor(120, 120, 120); doc.setLineWidth(0.7);
+      // Same weight as the body grid — see RULE below.
+      doc.setDrawColor(90, 90, 90); doc.setLineWidth(0.7);
       doc.rect(M, y, W - M * 2, HEAD_H);
       doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(40, 40, 40);
       let x = M;
@@ -6350,8 +6355,14 @@
 
     // An empty circuit prints "spare" small and italic rather than as a blank —
     // a blank row reads as unfinished paperwork, "spare" reads as a decision.
+    // Grid weight. This sheet gets printed, taped inside a door and read in a
+    // basement by torchlight — hairline grey rules that look right on a monitor
+    // disappear on paper, so the separators are deliberately heavier and darker
+    // than screen convention.
+    const RULE = () => { doc.setDrawColor(90, 90, 90); doc.setLineWidth(0.7); };
+
     const drawDesc = (x, yTop, height, text) => {
-      doc.setDrawColor(170, 170, 170); doc.setLineWidth(0.4);
+      RULE();
       doc.rect(x, yTop, DESC_W, height);
       const mid = yTop + height / 2 + 3;
       if (text) {
@@ -6362,7 +6373,9 @@
         if (height > ROW_H) doc.text(fit(text, DESC_W), x + DESC_W / 2, mid, { align: "center" });
         else doc.text(fit(text, DESC_W), x + 5, mid);
       } else {
-        doc.setFont("helvetica", "italic"); doc.setFontSize(7); doc.setTextColor(150, 150, 150);
+        // Still smaller and italic so a spare never reads as a real load — but
+        // dark enough to actually read. 150 grey was invisible on paper.
+        doc.setFont("helvetica", "italic"); doc.setFontSize(8); doc.setTextColor(95, 95, 95);
         doc.text("spare", x + 5, mid);
       }
     };
@@ -6378,7 +6391,7 @@
       const lNum = r * 2 + 1, rNum = r * 2 + 2;
       // Circuit-number boxes: always one row each, and darker/bold to match the
       // screen — they are the thing you scan for.
-      doc.setDrawColor(170, 170, 170); doc.setLineWidth(0.4);
+      RULE();
       doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(25, 25, 25);
       doc.rect(M, y, CKT_W, ROW_H);
       doc.text(String(lNum), M + CKT_W / 2, y + 12, { align: "center" });

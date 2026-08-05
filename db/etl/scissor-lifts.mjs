@@ -121,7 +121,10 @@ for (const rec of records) {
       const img = await fetch(att.url);
       if (!img.ok) throw new Error(`download ${img.status}`);
       const body = Buffer.from(await img.arrayBuffer());
-      const put = await fetch(presignPut(key, att.type || "image/jpeg"), {
+      // presignPut is ASYNC (aws4fetch signs asynchronously). Missing the await
+      // hands fetch a Promise and fails with "Failed to parse URL from
+      // [object Promise]" on every single photo.
+      const put = await fetch(await presignPut(key, att.type || "image/jpeg"), {
         method: "PUT", body, headers: { "content-type": att.type || "image/jpeg" } });
       if (!put.ok) throw new Error(`upload ${put.status} ${(await put.text()).slice(0, 120)}`);
       console.log(`  ✓ ${rec.fields["Lift Name"]} → ${key} (${body.length} bytes)`);

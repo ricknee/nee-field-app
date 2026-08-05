@@ -3030,7 +3030,10 @@ async function handleCopyLiftPhotosToR2() {
         const img = await fetch(att.url);
         if (!img.ok) throw new Error(`download ${img.status}`);
         const buf = Buffer.from(await img.arrayBuffer());
-        const put = await fetch(presignPut(key, att.type || "image/jpeg"), {
+        // presignPut is ASYNC — signing is async in aws4fetch. Without the await
+        // fetch receives a Promise and dies with "Failed to parse URL from
+        // [object Promise]". Every other call site in this file awaits it.
+        const put = await fetch(await presignPut(key, att.type || "image/jpeg"), {
           method: "PUT", body: buf,
           headers: { "content-type": att.type || "image/jpeg" },
         });

@@ -246,22 +246,35 @@ Each is its own slice on the same pattern: **mirror → read-flip → write-flip
 by risk, cheapest and safest first, so the pattern is proven on something that can't cost money
 before it's used on something that can.
 
+> **⚠ RE-LETTERED 2026-08-05.** Schedule was missing from this file entirely — it has a top-bar
+> tab and a whole backend family and appeared nowhere in the running order. Adding it at the
+> front pushed every other letter along one. **Older notes saying "Step 4b" for the job service
+> visit log now mean 4c, and "4d" for estimates/invoices now means 4e.**
+
 | # | Domain | Why here | Rough size |
 |---|---|---|---|
-| **4a** | **Fleet + Lifts** | Simplest in the app. Few fields, no money formulas, no Make involvement, no cross-table rollups. If the migration pattern has a flaw, find it here. | ~3-4 h |
-| **4b** | **Inspections, Generators, Warranties** | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. **The job service visit log (`PLAN-job-warranty-service-log.md` §3) belongs here** — build it Neon-native as part of this slice rather than in Airtable first. | ~4-5 h + ~4-6 h |
-| **4c** | **Expenses** | Money, but plain arithmetic rather than rollup formulas. Already has the `Push ID` idempotency pattern. Receipts (`PLAN-expense-receipts.md`) land here, so do them together if receipts hasn't shipped by then. | ~4-6 h |
-| **4d** | **Estimates + Invoices** | **LAST, deliberately.** These carry the GP and live-profit formulas — the numbers the business runs on. | large |
+| **4a** | **Schedule** ⬅ *owner's chosen next project (2026-08-05)* | **The smallest slice in the app, and the best place to prove the pattern.** One table, **7 fields, 64 rows** (Title, Job, Start/End Date, Crew, Notes, Entry Type). No money, no formulas, no rollups, no Make. Its only two links — **Job and Employee — are already in Neon**, so the FKs resolve on day one. | ~2 h |
+| **4b** | **Fleet + Lifts** | Was 4a. Few fields, no money formulas, no Make involvement, no cross-table rollups. Still an excellent second slice. | ~3-4 h |
+| **4c** | **Inspections, Generators, Warranties** | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. **The job service visit log (`PLAN-job-warranty-service-log.md` §3) belongs here** — build it Neon-native as part of this slice rather than in Airtable first. | ~4-5 h + ~4-6 h |
+| **4d** | **Expenses** | Money, but plain arithmetic rather than rollup formulas. Already has the `Push ID` idempotency pattern. Receipts (`PLAN-expense-receipts.md`) land here, so do them together if receipts hasn't shipped by then. | ~4-6 h |
+| **4e** | **Estimates + Invoices** | **LAST, deliberately.** These carry the GP and live-profit formulas — the numbers the business runs on. | large |
 
-> ⛔ **Hard constraint on 4d:** every GP and live-profit formula must be reproduced as Neon views
+> ⛔ **Hard constraint on 4e:** every GP and live-profit formula must be reproduced as Neon views
 > and reconciled against Airtable *before* anything Airtable-side is retired. Not after, not
 > alongside. `docs/GP-FORMULA-INVENTORY.md` is the checklist; a previous sweep found the inventory
 > was silently dropping 5 of 28 rollups, two of them GP-critical — so the checklist itself has
 > been wrong before and gets re-verified, not trusted.
 
-**Can 4a start before Step 3?** Technically yes — fleet has nothing to do with the time path or
-Make. But it would mean two half-migrated domains at once, which is the same argument that puts
-the inventory app after the field app (§6). Finish the time track first; it's three sittings.
+**Not in this list, because it is already done:** the **panel schedule builder** is a different
+thing from the crew Schedule above — it is the electrical panel/circuit layout, and
+`handlePanelSchedules` reads `panel_schedules` / `panel_circuits` **directly in Neon**, returning
+503 if Neon is unavailable. Built Neon-native from day one like the jobsite photos, so it never
+needs migrating. Both tables are still empty; nobody has used it yet.
+
+**Can 4a start before Step 3?** Technically yes — Schedule has nothing to do with the time path
+or Make, and both its foreign keys are already migrated. But it would mean two half-migrated
+domains at once, which is the same argument that puts the inventory app after the field app (§6).
+Finish the time track first; it's one sitting away.
 
 ---
 
@@ -317,9 +330,10 @@ because they're next:
 |---|---|---|
 | ~~`FIND` substring sweep~~ | — | ✅ **Done 2026-08-03** — 7 sites fixed, 3 regression tests. `docs/TODO.md` |
 | Job warranty clock | ~1-1.5 h | Owner idea 2026-08-04. `docs/PLAN-job-warranty-service-log.md` §2. Two dead Airtable fields + a badge; Neon side is 2 columns on the `jobs` table that already exists. Cheap enough to slot in any time. |
-| Job service visit log | ~4-6 h | Same plan, §3. **Do this at Step 4b, not before** — 4b already covers Generators/Warranties, so building it in Airtable now means building it twice. |
+| Job service visit log | ~4-6 h | Same plan, §3. **Do this at Step 4c, not before** (was 4b before the 2026-08-05 re-lettering) — that slice already covers Generators/Warranties, so building it in Airtable now means building it twice. |
 | ~~Receipts on expenses~~ | — | ✅ **Done 2026-08-03** — slices 1-3 shipped. Photos + ScanSnap PDFs, visible in the approval list, manager-only delete. |
 | ~~Job prints in the field app~~ | — | ✅ **Shipped 2026-08-05**, un-parked on request. Upload/open/download smoke-tested on prod. 📐 button in the job action row with a count badge, drag-and-drop upload, ⬇ download → opens in the device's own PDF app **and works offline afterwards**, admin/office delete + **permanent** delete (storage). Readable by every role, unlike `jobDocs`. `docs/PLAN-job-prints.md` |
+| ~~Panel schedules~~ | — | ✅ **Built 2026-08-05**, ⬜ needs a prod smoke test. `⚡ Panels` beside Prints: name + voltage + circuit count, odd-left/even-right grid, fill-down, PDF export. **First domain born in Neon rather than migrated to it** — `db/schema/007_panel_schedules.sql`, no Airtable table, writes fail closed. Slices 3-4 (watts/amps/poles, save-PDF-to-Prints) not built. `docs/PLAN-panel-schedules.md` |
 | R2 lifecycle rule | ~15 min | Add prefix `_deleted/` in the Cloudflare dashboard |
 | Retire JotForm photos | ~10 min | ~Aug 8, after a week's soak. Pause form + scenario `4522457` |
 | Offline photo upload queue | ? | Wait until crews actually hit it |

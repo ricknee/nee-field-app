@@ -438,7 +438,7 @@ const _ADMIN_POSTS = new Set([
   // One-off migration action, admin only. Gated by role rather than by
   // ADMIN_BACKFILL_TOKEN: it is idempotent, copies rather than mutates, and the
   // token is itself a write-only Netlify secret nobody has a copy of.
-  "copyLiftPhotosToR2",
+  "copyLiftPhotosToR2", "copyFleetPhotosToR2",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -2467,7 +2467,7 @@ async function handleScissorLiftsByJob(params) {
       `${LIFT_SELECT} WHERE current_job = $1 AND status = 'On Job'${LIFT_ORDER}`, [jobName]);
     if (q?.rows) {
       return resp(200, {
-        ok: true, lifts: await attachLiftPhotos(q.rows.map(mapLiftRow)),
+        ok: true, lifts: await attachEquipPhotos("lifts", q.rows.map(mapLiftRow)),
         _source: "neon", _ms: q.ms,
       });
     }
@@ -2872,15 +2872,91 @@ const ML = {
   notes:      "fldHyERXXifvzyebA"
 };
 
+// ── Fleet: NEON-FIRST, photos from R2 (roadmap Step 4b) ────────────────────
+// Same shape as the lifts migration, for the same reason: Airtable attachment
+// URLs expire (~2 h), so the photos were re-hosted in R2 first.
+//
+// Only ACTIVE vehicles are returned, matching the Airtable path — a sold truck
+// stays in the table for its service history but leaves the list.
+async function handleFleetVehiclesFromNeon() {
+  const q = await neonQuery(
+    `SELECT id::text, airtable_id, name, year, make, model, color, vin, plate,
+            vehicle_type, current_mileage, mileage_date::text AS mileage_date,
+            oil_type, oil_capacity, tire_brand, tire_size,
+            tire_install_date::text AS tire_install_date, notes, wrench_size, lug_torque
+       FROM fleet_vehicles
+      WHERE active IS TRUE
+      ORDER BY NULLIF(regexp_replace(name, '\\D', '', 'g'), '')::int NULLS LAST, name`);
+  if (!q?.rows) return null;
+
+  const vehicles = q.rows.map(r => ({
+    id: r.id, airtableId: r.airtable_id || null,
+    name: r.name || "", year: r.year ?? null, make: r.make || "", model: r.model || "",
+    color: r.color || "", vin: r.vin || "", plate: r.plate || "",
+    type: r.vehicle_type || "",
+    currentMileage: r.current_mileage ?? null, mileageDate: r.mileage_date || "",
+    oilType: r.oil_type || "", oilCapacity: r.oil_capacity == null ? null : Number(r.oil_capacity),
+    tireBrand: r.tire_brand || "", tireSize: r.tire_size || "",
+    tireInstallDate: r.tire_install_date || "", notes: r.notes || "",
+    wrenchSize: r.wrench_size || "",
+    lugTorque: r.lug_torque == null ? null : Number(r.lug_torque),
+  }));
+  return { vehicles: await attachEquipPhotos("fleet", vehicles), ms: q.ms };
+}
+
 async function handleFleetVehicles() {
+  if (neonEnabled()) {
+    const r = await handleFleetVehiclesFromNeon();
+    if (r) return resp(200, { ok: true, vehicles: r.vehicles, _source: "neon", _ms: r.ms });
+    console.error("fleetVehicles: Neon read failed, falling back to Airtable");
+  }
   const records = await fetchAll(FLEET_TABLES.vehicles, { sortField: "Vehicle Name", sortDir: "asc" });
   const vehicles = records.filter(r => r.fields["Active"] === true).map(r => { const f=r.fields||{}; return { id:r.id,name:f["Vehicle Name"]||"",year:f["Year"]||null,make:f["Make"]||"",model:f["Model"]||"",color:f["Color"]||"",vin:f["VIN"]||"",plate:f["License Plate"]||"",type:f["Vehicle Type"]?.name||f["Vehicle Type"]||"",currentMileage:f["Current Mileage"]??null,mileageDate:f["Mileage Date"]||"",oilType:f["Oil Type"]||"",oilCapacity:f["Oil Capacity (qts)"]??null,tireBrand:f["Tire Brand"]||"",tireSize:f["Tire Size"]||"",tireInstallDate:f["Tire Install Date"]||"",notes:f["Notes"]||"",photoUrl:(f["Photo"]||[])[0]?.url||"",wrenchSize:f["Oil Drain Wrench Size"]||"",lugTorque:f["Lug Torque (ft-lbs)"]??null }; });
   return resp(200, { ok: true, vehicles });
 }
 
+// Resolves either id form — the Airtable fallback still returns `rec…` ids.
+async function resolveVehicle(vehicleId) {
+  const rows = await neonWrite("fleet.resolve",
+    `SELECT id, airtable_id, name FROM fleet_vehicles
+      WHERE id::text = $1 OR airtable_id = $1 LIMIT 1`, [String(vehicleId)]);
+  return rows?.[0] || null;
+}
+
 async function handleFleetServiceHistory(params) {
   const { vehicleId } = params || {};
   if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+
+  // A REAL FOREIGN KEY, unlike the Airtable path below, which filters
+  // {Vehicle}="<name>" — two trucks named alike, or a rename, and the service
+  // history follows the wrong one. That name is also interpolated unescaped
+  // there, so an apostrophe in a vehicle name breaks the formula outright.
+  if (neonEnabled()) {
+    const target = await resolveVehicle(vehicleId);
+    if (!target) return resp(200, { ok: true, records: [], _source: "neon" });
+    const q = await neonQuery(
+      `SELECT id::text, service_date::text AS service_date, mileage, service_types,
+              filter_no, oil_type_used, oil_qty, tire_brand, tire_size, cost,
+              performed_by, shop, notes
+         FROM fleet_maintenance WHERE vehicle_id = $1
+        ORDER BY service_date DESC NULLS LAST`, [target.id]);
+    if (q?.rows) {
+      return resp(200, {
+        ok: true,
+        records: q.rows.map(r => ({
+          id: r.id, date: r.service_date || "", mileage: r.mileage ?? null,
+          serviceTypes: r.service_types || [],
+          oilBrand: r.filter_no || "", oilType: r.oil_type_used || "",
+          oilQty: r.oil_qty == null ? null : Number(r.oil_qty),
+          tireBrand: r.tire_brand || "", tireSize: r.tire_size || "",
+          cost: r.cost == null ? null : Number(r.cost),
+          performedBy: r.performed_by || "", shop: r.shop || "", notes: r.notes || "",
+        })),
+        _source: "neon", _ms: q.ms,
+      });
+    }
+    console.error(`fleetServiceHistory: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
   const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
   if (!vehRecords.length) return resp(200, { ok: true, records: [] });
   const vehName = vehRecords[0].fields["Vehicle Name"] || "";
@@ -2892,6 +2968,31 @@ async function handleFleetServiceHistory(params) {
 async function handleUpdateFleetVehicle(body) {
   const { vehicleId, currentMileage, oilType, oilCapacity, tireBrand, tireSize, tireInstallDate, vin, plate, notes } = body || {};
   if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+
+  const target = await resolveVehicle(vehicleId);
+  if (!target) return resp(404, { ok: false, error: "Vehicle not found." });
+
+  const sets = [], vals = [target.id];
+  const put = (col, v, cast = "") => { vals.push(v); sets.push(`${col} = $${vals.length}${cast}`); };
+  // Setting the mileage stamps the date with it, matching the Airtable path —
+  // a reading without a date is not much of a reading.
+  if (currentMileage !== undefined) {
+    put("current_mileage", Number(currentMileage));
+    put("mileage_date", new Date().toISOString().slice(0, 10), "::date");
+  }
+  if (oilType         !== undefined) put("oil_type", oilType || null);
+  if (oilCapacity     !== undefined) put("oil_capacity", Number(oilCapacity));
+  if (tireBrand       !== undefined) put("tire_brand", tireBrand || null);
+  if (tireSize        !== undefined) put("tire_size", tireSize || null);
+  if (tireInstallDate !== undefined) put("tire_install_date", tireInstallDate || null, "::date");
+  if (vin             !== undefined) put("vin", vin || null);
+  if (plate           !== undefined) put("plate", plate || null);
+  if (notes           !== undefined) put("notes", notes || null);
+  if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
+  await neonWrite("fleet.update",
+    `UPDATE fleet_vehicles SET ${sets.join(", ")} WHERE id = $1`, vals);
+
+  if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id });
   const fields = {};
   if (currentMileage !== undefined) { fields[FV.mileage]=Number(currentMileage); fields[FV.mileageDate]=new Date().toISOString().slice(0,10); }
   if (oilType        !== undefined) fields[FV.oilType]=oilType;
@@ -2902,8 +3003,10 @@ async function handleUpdateFleetVehicle(body) {
   if (vin            !== undefined) fields[FV.vin]=vin;
   if (plate          !== undefined) fields[FV.plate]=plate;
   if (notes          !== undefined) fields[FV.notes]=notes;
-  const data = await atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${vehicleId}`, { method: "PATCH", body: JSON.stringify({ fields }) });
-  return resp(200, { ok: true, updatedId: data.id });
+  await mirrorToAirtable("updateFleetVehicle", () =>
+    atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${target.airtable_id}`,
+      { method: "PATCH", body: JSON.stringify({ fields }) }));
+  return resp(200, { ok: true, updatedId: target.id });
 }
 
 // ── LOG MILEAGE: creates entry in Fleet Mileage Log AND updates Fleet Vehicles ──
@@ -2913,14 +3016,38 @@ async function handleLogMileage(body) {
   if (mileage === undefined || mileage === null || mileage === "") {
     return resp(400, { ok: false, error: "Missing mileage." });
   }
+  // Accepts BOTH id forms. This used to demand a `rec…` prefix, which quietly
+  // rejected every Neon uuid the moment the vehicle list started returning them —
+  // logging mileage would have failed with "Invalid vehicleId" on every truck.
+  // Caught by the branch test rather than in the field.
   const idStr = String(vehicleId).trim();
-  if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid vehicleId: ${idStr}` });
+  const looksLikeId = idStr.startsWith("rec") || /^[0-9a-f-]{36}$/i.test(idStr);
+  if (!looksLikeId) return resp(400, { ok: false, error: `Invalid vehicleId: ${idStr}` });
 
   const effectiveDate = date || new Date().toISOString().slice(0,10);
   const mileageNum = Number(mileage);
   if (isNaN(mileageNum) || mileageNum < 0) {
     return resp(400, { ok: false, error: "Invalid mileage value." });
   }
+
+  // NEON FIRST, and both writes in ONE statement. This path always did two
+  // things — append to the log AND update the vehicle's current reading — and in
+  // Airtable they were two round-trips that could half-succeed, leaving a log
+  // entry the truck's odometer never caught up with. A CTE makes them atomic.
+  const target = await resolveVehicle(idStr);
+  if (!target) return resp(404, { ok: false, error: "Vehicle not found." });
+  const rows = await neonWrite("fleet.logMileage",
+    `WITH ins AS (
+       INSERT INTO fleet_mileage_log (vehicle_id, log_date, mileage, recorded_by, notes)
+       VALUES ($1, $2::date, $3, $4, $5) RETURNING id
+     ), upd AS (
+       UPDATE fleet_vehicles SET current_mileage = $3, mileage_date = $2::date WHERE id = $1
+     )
+     SELECT id FROM ins`,
+    [target.id, effectiveDate, mileageNum, recordedBy || null, notes || null]);
+  const neonLogId = rows?.[0]?.id;
+
+  if (!target.airtable_id) return resp(200, { ok: true, logId: neonLogId, vehicleId: target.id });
 
   // 1. Create log entry in Fleet Mileage Log table
   const logFields = {};
@@ -2930,27 +3057,50 @@ async function handleLogMileage(body) {
   if (recordedBy) logFields[ML.recordedBy] = recordedBy;
   if (notes)      logFields[ML.notes]      = notes;
 
-  const logData = await atFetch(`${encodeURIComponent(FLEET_TABLES.mileageLog)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields: logFields, typecast: true })
-  });
+  // Airtable mirror, both halves fail-soft. The authoritative pair already
+  // landed atomically in Neon above; a failure here leaves Airtable behind, not
+  // the app.
+  logFields[ML.vehicle] = [target.airtable_id];
+  const logData = await mirrorToAirtable("logMileage.log", () =>
+    atFetch(`${encodeURIComponent(FLEET_TABLES.mileageLog)}`, {
+      method: "POST", body: JSON.stringify({ fields: logFields, typecast: true }) }));
 
   // 2. Update Fleet Vehicles record with new Current Mileage and Mileage Date
   const vehFields = {};
   vehFields[FV.mileage]     = mileageNum;
   vehFields[FV.mileageDate] = effectiveDate;
+  await mirrorToAirtable("logMileage.vehicle", () =>
+    atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${target.airtable_id}`, {
+      method: "PATCH", body: JSON.stringify({ fields: vehFields }) }));
 
-  const vehData = await atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${idStr}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: vehFields })
-  });
-
-  return resp(200, { ok: true, logId: logData.id, vehicleId: vehData.id });
+  // Stamp the mirror's id so the two systems agree on this log row.
+  if (logData?.id && neonLogId) {
+    await mirrorToAirtable("logMileage.stamp", () =>
+      neonWrite("fleet.stampLogId",
+        `UPDATE fleet_mileage_log SET airtable_id = $2 WHERE id = $1`, [neonLogId, logData.id]));
+  }
+  return resp(200, { ok: true, logId: neonLogId, vehicleId: target.id });
 }
 
 async function handleAddFleetService(body) {
   const { vehicleId, vehicleName, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
   if (!vehicleId) return resp(400, { ok: false, error: `Missing vehicleId. Keys: ${Object.keys(body||{}).join(",")}` });
+
+  const target = await resolveVehicle(vehicleId);
+  if (!target) return resp(404, { ok: false, error: "Vehicle not found." });
+  const svcRows = await neonWrite("fleet.addService",
+    `INSERT INTO fleet_maintenance
+       (vehicle_id, service_date, mileage, service_types, filter_no, oil_type_used,
+        oil_qty, tire_brand, tire_size, cost, performed_by, shop, notes)
+     VALUES ($1,$2::date,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+    [target.id, date || null, mileage ? Number(mileage) : null,
+     Array.isArray(serviceTypes) ? serviceTypes : [],
+     oilBrand || null, oilType || null, oilQty ? Number(oilQty) : null,
+     tireBrand || null, tireSize || null, cost ? Number(cost) : null,
+     performedBy || null, shop || null, notes || null]);
+  const neonSvcId = svcRows?.[0]?.id;
+  if (!target.airtable_id) return resp(200, { ok: true, id: neonSvcId });
+
   const fields = {};
   fields["fld12gpaArqYw7BWU"] = vehicleName ? [vehicleName] : [String(vehicleId)];
   if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
@@ -2965,13 +3115,55 @@ async function handleAddFleetService(body) {
   if (performedBy)  fields["fld4mHAqeBjCqSjkB"] = performedBy;
   if (shop)         fields["fldZddoeHsPrxapz1"] = shop;
   if (notes)        fields["fldwNDO1V7E26vql1"] = notes;
-  const data = await atFetch(`${encodeURIComponent("Fleet Maintenance")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
-  return resp(200, { ok: true, id: data.id });
+  const data = await mirrorToAirtable("addFleetService", () =>
+    atFetch(`${encodeURIComponent("Fleet Maintenance")}`,
+      { method: "POST", body: JSON.stringify({ fields, typecast: true }) }));
+  if (data?.id && neonSvcId) {
+    await mirrorToAirtable("addFleetService.stamp", () =>
+      neonWrite("fleet.stampServiceId",
+        `UPDATE fleet_maintenance SET airtable_id = $2 WHERE id = $1`, [neonSvcId, data.id]));
+  }
+  return resp(200, { ok: true, id: neonSvcId, airtableId: data?.id || null });
+}
+
+// Resolves a service record by either id form, same as the vehicle resolver.
+async function resolveFleetService(serviceRecordId) {
+  const rows = await neonWrite("fleet.resolveService",
+    `SELECT id, airtable_id FROM fleet_maintenance
+      WHERE id::text = $1 OR airtable_id = $1 LIMIT 1`, [String(serviceRecordId)]);
+  return rows?.[0] || null;
 }
 
 async function handleUpdateFleetService(body) {
   const { serviceRecordId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
   if (!serviceRecordId) return resp(400, { ok: false, error: "Missing serviceRecordId." });
+
+  const target = await resolveFleetService(serviceRecordId);
+  if (!target) return resp(404, { ok: false, error: "Service record not found." });
+
+  // Mirrors the Airtable field gating exactly, including its quirks: date,
+  // mileage, oilQty and cost are gated on TRUTHINESS, so a 0 does not overwrite.
+  // Reproduced rather than "fixed" — changing it would silently alter what a
+  // blanked field does, which is its own decision.
+  const sets = [], vals = [target.id];
+  const put = (col, v, cast = "") => { vals.push(v); sets.push(`${col} = $${vals.length}${cast}`); };
+  if (date)         put("service_date", date, "::date");
+  if (mileage)      put("mileage", Number(mileage));
+  if (serviceTypes) put("service_types", Array.isArray(serviceTypes) ? serviceTypes : []);
+  if (oilBrand    !== undefined) put("filter_no", oilBrand || null);
+  if (oilType     !== undefined) put("oil_type_used", oilType || null);
+  if (oilQty)       put("oil_qty", Number(oilQty));
+  if (cost)         put("cost", Number(cost));
+  if (tireBrand   !== undefined) put("tire_brand", tireBrand || null);
+  if (tireSize    !== undefined) put("tire_size", tireSize || null);
+  if (performedBy !== undefined) put("performed_by", performedBy || null);
+  if (shop        !== undefined) put("shop", shop || null);
+  if (notes       !== undefined) put("notes", notes || null);
+  if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
+  await neonWrite("fleet.updateService",
+    `UPDATE fleet_maintenance SET ${sets.join(", ")} WHERE id = $1`, vals);
+  if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id });
+
   const fields = {};
   if (date)         fields["fldwEhvgTGGEy9E3g"] = date;
   if (mileage)      fields["fldE7SlKw7n85bZWD"] = Number(mileage);
@@ -2985,15 +3177,24 @@ async function handleUpdateFleetService(body) {
   if (performedBy !== undefined) fields["fld4mHAqeBjCqSjkB"] = performedBy;
   if (shop  !== undefined) fields["fldZddoeHsPrxapz1"] = shop;
   if (notes !== undefined) fields["fldwNDO1V7E26vql1"] = notes;
-  const data = await atFetch(`${encodeURIComponent("Fleet Maintenance")}/${serviceRecordId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
-  return resp(200, { ok: true, updatedId: data.id });
+  await mirrorToAirtable("updateFleetService", () =>
+    atFetch(`${encodeURIComponent("Fleet Maintenance")}/${target.airtable_id}`,
+      { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) }));
+  return resp(200, { ok: true, updatedId: target.id });
 }
 
 async function handleDeleteFleetService(body) {
   const { serviceRecordId } = body || {};
   if (!serviceRecordId) return resp(400, { ok: false, error: "Missing serviceRecordId." });
-  await atFetch(`${encodeURIComponent("Fleet Maintenance")}/${serviceRecordId}`, { method: "DELETE" });
-  return resp(200, { ok: true, deleted: serviceRecordId });
+  const target = await resolveFleetService(serviceRecordId);
+  if (!target) return resp(404, { ok: false, error: "Service record not found." });
+  await neonWrite("fleet.deleteService",
+    `DELETE FROM fleet_maintenance WHERE id = $1`, [target.id]);
+  if (target.airtable_id) {
+    await mirrorToAirtable("deleteFleetService", () =>
+      atFetch(`${encodeURIComponent("Fleet Maintenance")}/${target.airtable_id}`, { method: "DELETE" }));
+  }
+  return resp(200, { ok: true, deleted: target.id });
 }
 
 // ── Scissor lifts: NEON-FIRST, photos from R2 (roadmap Step 4b) ────────────
@@ -3013,26 +3214,26 @@ const LIFT_ORDER = `
 // see db/schema/009_scissor_lifts.sql for why an Airtable URL could not be kept.
 // ONE list call covers every lift, then the objects are grouped by id, so the
 // page costs a single R2 round-trip rather than one per lift.
-async function attachLiftPhotos(lifts) {
-  if (!r2Enabled() || !lifts.length) return lifts.map(l => ({ ...l, photos: [], photoUrl: "" }));
+async function attachEquipPhotos(kind, records) {
+  if (!r2Enabled() || !records.length) return records.map(l => ({ ...l, photos: [], photoUrl: "" }));
   let objects = [];
   try {
-    objects = await listByPrefix("lifts/");
+    objects = await listByPrefix(kind + "/");
   } catch (e) {
     // Photos are a nicety; the lift list itself must still render. Same fail-soft
     // stance the Photos tab takes when R2 is unavailable.
-    console.error(`lifts: R2 list failed, returning lifts without photos: ${e?.message || e}`);
-    return lifts.map(l => ({ ...l, photos: [], photoUrl: "" }));
+    console.error(`${kind}: R2 list failed, returning records without photos: ${e?.message || e}`);
+    return records.map(l => ({ ...l, photos: [], photoUrl: "" }));
   }
   const byLift = new Map();
   for (const o of objects) {
-    const rest = o.key.slice("lifts/".length);
+    const rest = o.key.slice((kind + "/").length);
     const id = rest.slice(0, rest.indexOf("/"));
     if (!id) continue;
     if (!byLift.has(id)) byLift.set(id, []);
     byLift.get(id).push(o);
   }
-  return await Promise.all(lifts.map(async l => {
+  return await Promise.all(records.map(async l => {
     const objs = (byLift.get(l.id) || [])
       .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0));
     const photos = await Promise.all(objs.map(async o => ({
@@ -3060,7 +3261,7 @@ async function handleScissorLifts() {
     const q = await neonQuery(`${LIFT_SELECT}${LIFT_ORDER}`);
     if (q?.rows) {
       return resp(200, {
-        ok: true, lifts: await attachLiftPhotos(q.rows.map(mapLiftRow)),
+        ok: true, lifts: await attachEquipPhotos("lifts", q.rows.map(mapLiftRow)),
         _source: "neon", _ms: q.ms,
       });
     }
@@ -3088,32 +3289,48 @@ async function handleScissorLifts() {
 // Idempotent: keys already present are skipped, so an interrupted or repeated run
 // costs nothing and cannot duplicate. Safe to leave in place after the migration.
 async function handleCopyLiftPhotosToR2() {
+  return copyAirtablePhotosToR2({
+    table: TABLES.scissorLifts, neonTable: "scissor_lifts",
+    kind: "lifts", nameField: "Lift Name",
+  });
+}
+
+// Fleet vehicles have the identical problem and the identical fix — see the
+// note above. Same action, different table.
+async function handleCopyFleetPhotosToR2() {
+  return copyAirtablePhotosToR2({
+    table: "Fleet Vehicles", neonTable: "fleet_vehicles",
+    kind: "fleet", nameField: "Vehicle Name",
+  });
+}
+
+async function copyAirtablePhotosToR2({ table, neonTable, kind, nameField }) {
   if (!r2Enabled()) return resp(503, { ok: false, error: "R2 is not configured." });
   if (!neonEnabled()) return resp(503, { ok: false, error: "Neon is not configured." });
 
-  const records = await fetchAll(TABLES.scissorLifts);
-  const rows = await neonWrite("lifts.listForCopy",
-    `SELECT id, airtable_id FROM scissor_lifts WHERE airtable_id IS NOT NULL`);
+  const records = await fetchAll(table);
+  const rows = await neonWrite(`${kind}.listForCopy`,
+    `SELECT id, airtable_id FROM ${neonTable} WHERE airtable_id IS NOT NULL`);
   const idByAirtable = new Map(rows.map(r => [r.airtable_id, r.id]));
 
   // One list up front so a re-run resumes rather than re-uploading.
-  const existing = new Set((await listByPrefix("lifts/")).map(o => o.key));
+  const existing = new Set((await listByPrefix(kind + "/")).map(o => o.key));
 
   const report = { copied: 0, skipped: 0, failed: 0, unmatched: 0, details: [] };
   for (const rec of records) {
-    const liftId = idByAirtable.get(rec.id);
-    if (!liftId) {
-      // A lift in Airtable that the ETL has not loaded yet. Reported, not
+    const recId = idByAirtable.get(rec.id);
+    if (!recId) {
+      // A record in Airtable that the ETL has not loaded yet. Reported, not
       // guessed at — copying it under a made-up id would strand the file.
       report.unmatched++;
-      report.details.push(`unmatched: ${rec.fields?.["Lift Name"] || rec.id}`);
+      report.details.push(`unmatched: ${rec.fields?.[nameField] || rec.id}`);
       continue;
     }
     for (const att of (rec.fields?.["Photo"] || [])) {
-      // Keyed on the ATTACHMENT id, not the filename: two lifts can both have
-      // "photo.jpg", and a rename in Airtable must not orphan the copy.
+      // Keyed on the ATTACHMENT id, not the filename: two records can both
+      // have "photo.jpg", and a rename in Airtable must not orphan the copy.
       const ext = (att.filename?.match(/\.[a-z0-9]+$/i) || [".jpg"])[0].toLowerCase();
-      const key = `lifts/${liftId}/${att.id}${ext}`;
+      const key = `${kind}/${recId}/${att.id}${ext}`;
       if (existing.has(key)) { report.skipped++; continue; }
       try {
         // Download and upload back to back, while the signed URL is still valid.
@@ -3129,15 +3346,15 @@ async function handleCopyLiftPhotosToR2() {
         });
         if (!put.ok) throw new Error(`upload ${put.status}`);
         report.copied++;
-        report.details.push(`copied: ${rec.fields["Lift Name"]} → ${key} (${buf.length}b)`);
+        report.details.push(`copied: ${rec.fields[nameField]} → ${key} (${buf.length}b)`);
       } catch (e) {
         report.failed++;
-        report.details.push(`FAILED: ${rec.fields?.["Lift Name"]} ${key}: ${e.message}`);
+        report.details.push(`FAILED: ${rec.fields?.[nameField]} ${key}: ${e.message}`);
       }
     }
   }
 
-  const after = (await listByPrefix("lifts/")).length;
+  const after = (await listByPrefix(kind + "/")).length;
   const expected = records.reduce((n, r) => n + (r.fields?.["Photo"]?.length || 0), 0);
   return resp(200, {
     ok: report.failed === 0 && report.unmatched === 0 && after === expected,
@@ -6455,6 +6672,7 @@ export async function handler(event) {
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
       if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);
       if (body.action === "copyLiftPhotosToR2")   return await handleCopyLiftPhotosToR2();
+      if (body.action === "copyFleetPhotosToR2")  return await handleCopyFleetPhotosToR2();
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);

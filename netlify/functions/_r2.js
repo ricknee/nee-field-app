@@ -1005,23 +1005,25 @@ export async function listDeletedExpenseReceipts(expenseId, timeoutMs = DEFAULT_
 // The files got here from Airtable because ATTACHMENT URLS EXPIRE (~2 h) — see
 // db/schema/009_scissor_lifts.sql. Storing an Airtable URL would have broken
 // every lift photo the same afternoon.
-export function liftPrefix(liftId) {
-  return `lifts/${String(liftId)}/`;
-}
+// Lifts and fleet vehicles are the same problem twice — a record with one
+// picture, sold/retired as a unit — so they share an implementation and differ
+// only in the top-level segment.
+const equipPrefix = (kind, id) => `${kind}/${String(id)}/`;
 
-// Same guard shape as assertKeyInJob: a key from another lift, or one climbing
-// out via "..", is refused rather than acted on. The client never picks raw keys
-// but the delete endpoint takes one, so it is checked at the boundary.
-function assertKeyInLift(liftId, key) {
+// Same guard shape as assertKeyInJob: a key belonging to a different record, or
+// one climbing out via "..", is refused rather than acted on. The client never
+// picks raw keys, but the delete endpoint takes one, so it is checked here.
+function assertKeyInEquip(kind, id, key) {
   const k = String(key || "");
-  if (!k.startsWith(liftPrefix(liftId)) || k.includes("..")) {
-    throw new R2Error("That photo does not belong to this lift", "KEY_OUTSIDE_LIFT");
+  if (!k.startsWith(equipPrefix(kind, id)) || k.includes("..")) {
+    throw new R2Error(`That photo does not belong to this ${kind === "lifts" ? "lift" : "vehicle"}`,
+      "KEY_OUTSIDE_RECORD");
   }
   return k;
 }
 
-export async function listLiftPhotos(liftId, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const objects = await listByPrefix(liftPrefix(liftId), timeoutMs);
+async function listEquipPhotos(kind, id, timeoutMs) {
+  const objects = await listByPrefix(equipPrefix(kind, id), timeoutMs);
   return await Promise.all(
     objects
       .filter(o => !isThumbKey(o.key))
@@ -1034,19 +1036,28 @@ export async function listLiftPhotos(liftId, timeoutMs = DEFAULT_TIMEOUT_MS) {
       })));
 }
 
-// NO RECYCLE BIN, unlike job photos. The owner's rule for lifts is that selling
-// one removes everything, photos included — so a bin would only be a place for
-// deleted things to sit and cost money. Deliberate divergence, not an oversight.
-export async function deleteLiftPhoto(liftId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const k = assertKeyInLift(liftId, key);
+// NO RECYCLE BIN, unlike job photos. Selling a lift or a truck removes
+// everything, photos included — a bin would only be a place for disposed
+// equipment to sit and cost money. Deliberate divergence, not an oversight.
+async function deleteEquipPhoto(kind, id, key, timeoutMs) {
+  const k = assertKeyInEquip(kind, id, key);
   await deleteObject(k, timeoutMs);
   await deleteObject(thumbKeyFor(k), timeoutMs);   // tolerates a missing thumb
 }
 
-// Everything under one lift. Used when a sold lift is deleted — nothing else
-// will ever clean these up, since the row that pointed at them is gone.
-export async function deleteAllLiftPhotos(liftId, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const objects = await listByPrefix(liftPrefix(liftId), timeoutMs);
+// Everything under one record. Used when it is retired — nothing else will ever
+// clean these up, since the row that pointed at them is gone.
+async function deleteAllEquipPhotos(kind, id, timeoutMs) {
+  const objects = await listByPrefix(equipPrefix(kind, id), timeoutMs);
   for (const o of objects) await deleteObject(o.key, timeoutMs);
   return objects.length;
 }
+
+export const liftPrefix  = (id) => equipPrefix("lifts", id);
+export const fleetPrefix = (id) => equipPrefix("fleet", id);
+export const listLiftPhotos  = (id, t = DEFAULT_TIMEOUT_MS) => listEquipPhotos("lifts", id, t);
+export const listFleetPhotos = (id, t = DEFAULT_TIMEOUT_MS) => listEquipPhotos("fleet", id, t);
+export const deleteLiftPhoto  = (id, key, t = DEFAULT_TIMEOUT_MS) => deleteEquipPhoto("lifts", id, key, t);
+export const deleteFleetPhoto = (id, key, t = DEFAULT_TIMEOUT_MS) => deleteEquipPhoto("fleet", id, key, t);
+export const deleteAllLiftPhotos  = (id, t = DEFAULT_TIMEOUT_MS) => deleteAllEquipPhotos("lifts", id, t);
+export const deleteAllFleetPhotos = (id, t = DEFAULT_TIMEOUT_MS) => deleteAllEquipPhotos("fleet", id, t);

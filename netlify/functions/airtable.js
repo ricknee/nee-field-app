@@ -4751,6 +4751,32 @@ async function handleDeleteScheduleEntry(body) {
 // (Filters by Active checkbox; frontend filters further by role to exclude
 // office + viewer.) Used by the schedule modal's crew dropdown.
 async function handleListEmployeesForScheduling() {
+  // NEON-FIRST. Flipped right after the schedule entries themselves, because the
+  // Schedule tab fires both calls in a Promise.all — so leaving this one on
+  // Airtable meant the screen was still gated on an Airtable round-trip and the
+  // load felt exactly as slow as before. Half a flip buys nothing on a parallel
+  // fetch; the slowest leg sets the time.
+  //
+  // `id` stays the AIRTABLE employee id: it is what the crew picker sends back in
+  // `crewIds`, what schedule_entry_crew resolves against, and what the payroll
+  // screens use. Employees are still an Airtable-owned dimension.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, name, lower(coalesce(role, 'employee')) AS role
+         FROM employees
+        WHERE active IS TRUE AND airtable_id IS NOT NULL
+        ORDER BY name`);
+    if (q?.rows?.length) {
+      return resp(200, {
+        ok: true,
+        employees: q.rows.map(r => ({ id: r.airtable_id, name: r.name || "", role: r.role || "employee" })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    // Zero active employees is never a legitimate answer — it would empty the crew
+    // picker — so treat it as a failure and let Airtable answer.
+    console.error(`schedulingCrew: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
   const records = await fetchAll(TABLES.employees);
   const employees = records
     .filter(r => gBool(r.fields || {}, F.emp.active))
@@ -4764,7 +4790,7 @@ async function handleListEmployeesForScheduling() {
     });
   // Sort by name for a stable picker
   employees.sort((a, b) => a.name.localeCompare(b.name));
-  return resp(200, { ok: true, employees });
+  return resp(200, { ok: true, employees, _source: "airtable" });
 }
 
 async function handleGetAllInvoices() {

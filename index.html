@@ -774,6 +774,76 @@
     }
     .action-btn.panels .count-badge { background: rgba(245,158,11,0.25); }
 
+    /* Lists — green, and the badge counts what's still OUTSTANDING, so a number
+       here means "things to bring", not "things that exist". */
+    .action-btn.lists {
+      background: rgba(46,125,50,0.10);
+      border-color: rgba(46,125,50,0.35);
+      color: #2e7d32;
+    }
+    .action-btn.lists .count-badge { background: rgba(46,125,50,0.22); }
+
+    /* ── JOB CHECKLISTS (docs/PLAN-job-checklists.md) ── */
+    .ck-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 9px 10px;
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    /* Big tap target: this gets tapped with gloves on, in a truck, at 6am. */
+    .ck-box {
+      flex: 0 0 auto;
+      width: 22px;
+      height: 22px;
+      margin: 0;
+      cursor: pointer;
+      accent-color: var(--green);
+    }
+    .ck-body {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 14px;
+      line-height: 1.35;
+      color: var(--text);
+      word-break: break-word;
+    }
+    .ck-item.done { background: var(--panel-2); border-color: var(--line); }
+    .ck-item.done .ck-body { text-decoration: line-through; color: var(--muted); }
+    .ck-del {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      color: var(--muted);
+      opacity: 0.6;
+      padding: 2px 4px;
+    }
+    .ck-del:hover { opacity: 1; color: var(--red); }
+    /* An item whose tick hasn't reached the server yet. It still reads as
+       ticked — the tick is real to the user — but says so. */
+    .ck-item.pending { border-style: dashed; border-color: var(--yellow); }
+    .ck-done-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      margin-top: 14px;
+      padding: 9px 10px;
+      border: none;
+      border-top: 1px solid var(--line-2);
+      background: none;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+    }
+    .ck-done-toggle:hover { color: var(--accent); }
+
     .action-btn.disabled {
       opacity: 0.35;
       pointer-events: none;
@@ -2345,6 +2415,9 @@
                things a crew opens on arrival, and both want to be reachable
                from whichever tab you happen to be on. -->
           <a id="btnJobPanels" href="#" class="action-btn panels disabled">⚡ Panels</a>
+          <!-- The badge here counts OPEN items across every list on the job, so
+               "✅ Lists 7" means seven things still to bring. -->
+          <a id="btnJobLists" href="#" class="action-btn lists disabled">✅ Lists</a>
           <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled">📋 Trello Card</a>
           <a id="btnInventory" href="/inventory" target="_blank" class="action-btn inventory">📦 Inventory</a>
         </div>
@@ -3947,6 +4020,12 @@
       pn.classList.remove("disabled");
       pn.onclick = (e) => { e.preventDefault(); openJobPanels(); };
       loadPanelBadge(job.id);
+
+      // Lists — the crew's own checklists. Same open-to-everyone reasoning.
+      const lb = $("btnJobLists");
+      lb.classList.remove("disabled");
+      lb.onclick = (e) => { e.preventDefault(); openJobLists(); };
+      loadListBadge(job.id);
     }
 
     // New Job Estimate button (admin only) — opens in-app modal that loads
@@ -5580,6 +5659,348 @@
     popBackEntry("jobPrints");
     $("jobPrintsModal").style.display = "none";
   };
+
+  /* ── JOB CHECKLISTS (docs/PLAN-job-checklists.md) ───────────────────────────
+   * The Trello checklist a crew keeps per job, brought into the app. Name a
+   * list, type items one per line, tick them off while loading the truck.
+   *
+   * Unlike the panel editor there is NO Save button. You are standing at a
+   * shelf ticking items one at a time, so every tick writes on its own — and
+   * because that is exactly where signal dies, a tick that fails is queued in
+   * localStorage and replayed, rather than being lost or blocking the tap.
+   */
+  const listState = { jobId: null, lists: [], list: null, items: [], showDone: false };
+
+  // Half-typed text in the add box, held across re-renders. Ticking an item
+  // rebuilds the whole list body, and without this the line you were part way
+  // through typing would vanish the moment you ticked something off.
+  let ckAddDraft = "";
+
+  const CK_QUEUE_KEY = "nee_checklist_queue";
+
+  function ckQueue() {
+    try { return JSON.parse(localStorage.getItem(CK_QUEUE_KEY) || "[]"); } catch { return []; }
+  }
+  function ckQueueWrite(q) {
+    try { localStorage.setItem(CK_QUEUE_KEY, JSON.stringify(q)); } catch { /* private mode */ }
+  }
+  // Last write wins per item: ticking then unticking the same line while offline
+  // should replay as one final state, not as two fighting requests.
+  function ckQueuePush(itemId, done) {
+    const q = ckQueue().filter(e => e.itemId !== itemId);
+    q.push({ itemId, done });
+    ckQueueWrite(q);
+  }
+
+  // Replays queued ticks oldest-first. The server's setChecklistItemDone is
+  // idempotent, so a replay that already landed is a no-op rather than an error.
+  // A 404 means the item was deleted meanwhile — drop it, don't retry forever.
+  async function flushCkQueue() {
+    let q = ckQueue();
+    if (!q.length) return 0;
+    const stuck = [];
+    for (const e of q) {
+      try {
+        await apiPost("setChecklistItemDone", { itemId: e.itemId, done: e.done });
+      } catch (err) {
+        if (err.status !== 404) stuck.push(e);
+      }
+    }
+    ckQueueWrite(stuck);
+    return stuck.length;
+  }
+
+  const listBadge = { jobId: null, count: null };
+
+  function paintListBadge() {
+    const btn = $("btnJobLists");
+    if (!btn) return;
+    const n = listBadge.count;
+    btn.innerHTML = `✅ Lists${n ? ` <span class="count-badge">${n}</span>` : ""}`;
+  }
+
+  async function loadListBadge(jobId) {
+    if (listBadge.jobId === jobId && listBadge.count !== null) { paintListBadge(); return; }
+    listBadge.jobId = jobId;
+    listBadge.count = null;
+    paintListBadge();
+    try {
+      const d = await apiGet("jobChecklists", { jobId });
+      if (listBadge.jobId !== jobId) return;   // a different job was opened mid-flight
+      listBadge.count = Number(d.openTotal) || 0;
+      paintListBadge();
+    } catch { /* the button still opens; the badge is a nicety */ }
+  }
+
+  function canDeleteLists() {
+    const r = (state.user && state.user.role) || "";
+    return r === "admin" || r === "office";
+  }
+
+  // ── The job's lists ────────────────────────────────────────────────────────
+  window.openJobLists = async function() {
+    const job = state.selected;
+    if (!job) return;
+    listState.jobId = job.id;
+    listState.lists = [];
+    $("ckListsTitle").textContent = `✅ Lists — ${job.name || ""}`;
+    $("ckListsBody").innerHTML = `<div class="loading-msg">Loading lists…</div>`;
+    $("ckNewForm").style.display = "none";
+    $("ckListsModal").style.display = "flex";
+    pushBackEntry("ckLists", () => { $("ckListsModal").style.display = "none"; });
+    // Anything ticked while offline goes up before we ask for the counts, or
+    // the list would report stale numbers straight after coming back into signal.
+    await flushCkQueue();
+    await refreshLists();
+  };
+
+  window.closeJobLists = function() {
+    popBackEntry("ckLists");
+    $("ckListsModal").style.display = "none";
+  };
+
+  async function refreshLists() {
+    try {
+      const d = await apiGet("jobChecklists", { jobId: listState.jobId });
+      listState.lists = d.lists || [];
+      if (listBadge.jobId === listState.jobId) {
+        listBadge.count = Number(d.openTotal) || 0;
+        paintListBadge();
+      }
+      renderLists();
+    } catch (e) {
+      $("ckListsBody").innerHTML =
+        `<div class="empty-msg" style="color:var(--red);">Couldn't load lists: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderLists() {
+    const rows = listState.lists.map(l => {
+      const open = l.open || 0, done = l.done || 0;
+      const sub = open
+        ? `${open} to go${done ? ` · ${done} loaded` : ""}`
+        : (done ? `all ${done} loaded` : "empty");
+      return `<div class="panel-list-row" data-list-id="${esc(l.id)}">
+        <span style="font-size:18px; flex:none;">${open ? "📋" : "✅"}</span>
+        <span style="flex:1 1 auto; min-width:0;">
+          <span style="display:block; font-size:14px; font-weight:700;">${esc(l.name)}</span>
+          <span style="display:block; font-size:11px; color:var(--muted);">${esc(sub)}</span>
+        </span>
+        <span style="flex:none; font-size:16px; color:var(--muted);">›</span>
+      </div>`;
+    }).join("");
+
+    $("ckListsBody").innerHTML = rows ||
+      `<div class="empty-msg">No lists on this job yet. Start one below.</div>`;
+    $("ckListsBody").querySelectorAll(".panel-list-row").forEach(row => {
+      row.onclick = () => openChecklist(row.dataset.listId);
+    });
+  }
+
+  window.showNewListForm = function() {
+    const f = $("ckNewForm");
+    const showing = f.style.display !== "none";
+    f.style.display = showing ? "none" : "";
+    if (!showing) {
+      $("ckNewName").value = "";
+      $("ckNewStatus").textContent = "";
+      $("ckNewName").focus();
+    }
+  };
+
+  window.createChecklist = async function() {
+    const name = $("ckNewName").value.trim();
+    const status = $("ckNewStatus");
+    if (!name) { status.textContent = "Give the list a name."; return; }
+    const btn = $("ckNewSaveBtn");
+    btn.disabled = true;
+    status.textContent = "Creating…";
+    try {
+      const d = await apiPost("createChecklist", { jobId: listState.jobId, name });
+      $("ckNewForm").style.display = "none";
+      await refreshLists();
+      openChecklist(d.list.id);
+    } catch (e) {
+      status.textContent = "Couldn't create it: " + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  // ── One checklist ──────────────────────────────────────────────────────────
+  window.openChecklist = async function(listId) {
+    $("ckItemsBody").innerHTML = `<div class="loading-msg">Loading…</div>`;
+    $("ckItemsModal").style.display = "flex";
+    pushBackEntry("ckItems", () => { $("ckItemsModal").style.display = "none"; });
+    listState.showDone = false;
+    ckAddDraft = "";
+    try {
+      const d = await apiGet("jobChecklist", { listId });
+      listState.list = d.list;
+      listState.items = d.items || [];
+      // Re-apply anything still queued, so a tick made offline doesn't appear to
+      // undo itself when the server's older answer arrives.
+      const q = ckQueue();
+      for (const e of q) {
+        const it = listState.items.find(i => i.id === e.itemId);
+        if (it) { it.done = e.done; it.pending = true; }
+      }
+      $("ckItemsTitle").textContent = d.list.name;
+      renderChecklist();
+    } catch (e) {
+      $("ckItemsBody").innerHTML =
+        `<div class="empty-msg" style="color:var(--red);">Couldn't open that list: ${esc(e.message)}</div>`;
+    }
+  };
+
+  window.closeChecklist = function() {
+    popBackEntry("ckItems");
+    $("ckItemsModal").style.display = "none";
+    listState.list = null;
+    listState.items = [];
+    refreshLists();
+  };
+
+  function renderChecklist() {
+    const open = listState.items.filter(i => !i.done);
+    const done = listState.items.filter(i => i.done);
+    const pending = listState.items.filter(i => i.pending).length;
+
+    const itemRow = (i) => `<div class="ck-item${i.done ? " done" : ""}${i.pending ? " pending" : ""}" data-item-id="${esc(i.id)}">
+      <input type="checkbox" class="ck-box" ${i.done ? "checked" : ""} data-item-id="${esc(i.id)}" />
+      <span class="ck-body">${esc(i.body)}</span>
+      <button type="button" class="ck-del" data-item-id="${esc(i.id)}" title="Remove this line">✕</button>
+    </div>`;
+
+    $("ckItemsBody").innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+        <span style="font-size:13px; font-weight:700; color:${open.length ? "var(--text)" : "var(--green)"};">
+          ${open.length ? `${open.length} to go` : (done.length ? "All loaded 🎉" : "Nothing on this list yet")}
+        </span>
+        ${pending ? `<span style="font-size:11px; color:var(--yellow); font-weight:600;">${pending} tick${pending === 1 ? "" : "s"} waiting for signal</span>` : ""}
+        ${canDeleteLists() ? `<button type="button" id="ckDeleteListBtn" class="btn btn-sm" style="font-size:11px; color:var(--red); margin-left:auto;">🗑 Delete list</button>` : ""}
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        ${open.map(itemRow).join("")}
+      </div>
+
+      <!-- Add box sits under the open items: you type, hit Enter, and it lands
+           at the bottom of exactly the list you're looking at. -->
+      <div style="display:flex; gap:8px; margin-top:12px;">
+        <input id="ckAddInput" class="edit-input" style="flex:1 1 auto; font-size:14px;" value="${esc(ckAddDraft)}"
+               placeholder="Add an item — 200ft 2&quot; PVC" autocomplete="off" enterkeyhint="done" />
+        <button type="button" id="ckAddBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Add</button>
+      </div>
+      <div id="ckAddStatus" style="font-size:12px; color:var(--muted); margin-top:6px; min-height:16px;"></div>
+
+      ${done.length ? `
+        <button type="button" class="ck-done-toggle" id="ckDoneToggle">
+          <span>✓ Loaded (${done.length})</span>
+          <span>${listState.showDone ? "hide ▾" : "show ▸"}</span>
+        </button>
+        ${listState.showDone ? `<div style="display:flex; flex-direction:column; gap:6px;">${done.map(itemRow).join("")}</div>` : ""}
+      ` : ""}`;
+
+    const body = $("ckItemsBody");
+    body.querySelectorAll(".ck-box").forEach(box => {
+      box.addEventListener("change", () => setItemDone(box.dataset.itemId, box.checked));
+    });
+    body.querySelectorAll(".ck-del").forEach(b => {
+      b.onclick = () => deleteChecklistItem(b.dataset.itemId);
+    });
+    const toggle = $("ckDoneToggle");
+    if (toggle) toggle.onclick = () => { listState.showDone = !listState.showDone; renderChecklist(); };
+    const delList = $("ckDeleteListBtn");
+    if (delList) delList.onclick = deleteWholeChecklist;
+
+    $("ckAddBtn").onclick = addChecklistItem;
+    const input = $("ckAddInput");
+    input.addEventListener("input", () => { ckAddDraft = input.value; });
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      addChecklistItem();
+    });
+  }
+
+  // Optimistic: the row moves the instant it's tapped. The write follows, and
+  // if it fails the tick is queued rather than bounced — the item was loaded
+  // onto the truck whether or not there was signal to say so.
+  async function setItemDone(itemId, done) {
+    const it = listState.items.find(i => i.id === itemId);
+    if (!it) return;
+    it.done = done;
+    it.pending = true;
+    renderChecklist();
+    try {
+      await apiPost("setChecklistItemDone", { itemId, done });
+      it.pending = false;
+      const q = ckQueue().filter(e => e.itemId !== itemId);
+      ckQueueWrite(q);
+    } catch (e) {
+      if (e.status === 404) {
+        // Someone deleted the line while it was on screen.
+        listState.items = listState.items.filter(i => i.id !== itemId);
+      } else {
+        ckQueuePush(itemId, done);
+      }
+    }
+    renderChecklist();
+  }
+
+  async function addChecklistItem() {
+    const input = $("ckAddInput");
+    const text = input.value.trim();
+    if (!text) return;
+    const status = $("ckAddStatus");
+    status.textContent = "Adding…";
+    try {
+      const d = await apiPost("addChecklistItem", { listId: listState.list.id, body: text });
+      listState.items.push(d.item);
+      // Cleared BEFORE the re-render, or the draft would be restored straight
+      // back into the box we just emptied.
+      ckAddDraft = "";
+      renderChecklist();
+      // Focus back in the box: the next line is usually already in your head,
+      // and re-tapping the field each time is the friction that stops a list
+      // getting written down at all.
+      $("ckAddInput").focus();
+      $("ckAddStatus").textContent = "";
+    } catch (e) {
+      // The typed text stays in the box, so nothing is lost to a failed add.
+      status.textContent = `Couldn't add that: ${e.message}. It's still in the box — try again.`;
+    }
+  }
+
+  async function deleteChecklistItem(itemId) {
+    const it = listState.items.find(i => i.id === itemId);
+    if (!it) return;
+    if (!confirm(`Remove "${it.body}" from this list?`)) return;
+    try {
+      await apiPost("deleteChecklistItem", { itemId });
+      listState.items = listState.items.filter(i => i.id !== itemId);
+      renderChecklist();
+    } catch (e) {
+      $("ckAddStatus").textContent = "Couldn't remove it: " + e.message;
+    }
+  }
+
+  async function deleteWholeChecklist() {
+    const l = listState.list;
+    if (!l) return;
+    if (!confirm(`Delete the list "${l.name}"?\n\nEvery item on it goes too. This cannot be undone.`)) return;
+    try {
+      await apiPost("deleteChecklist", { listId: l.id });
+      popBackEntry("ckItems");
+      $("ckItemsModal").style.display = "none";
+      listState.list = null;
+      listState.items = [];
+      await refreshLists();
+    } catch (e) {
+      $("ckAddStatus").textContent = "Couldn't delete it: " + e.message;
+    }
+  }
 
   /* ── PANEL SCHEDULES (docs/PLAN-panel-schedules.md) ─────────────────────────
    * The grid that goes in the panel door. Circuit numbers are furniture; the
@@ -19137,6 +19558,42 @@
       <div id="jobPrintsToolbar" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding-bottom:10px;"></div>
       <div id="jobPrintsList" style="display:flex; flex-direction:column; gap:6px;"></div>
     </div>
+  </div>
+</div>
+
+<!-- Job checklists (docs/PLAN-job-checklists.md).
+     Same two-modal shape as panels — the job's lists, then one list — so the
+     phone back button steps list → lists → job in the order they were opened. -->
+<div id="ckListsModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:560px; width:95%;">
+    <div class="sl-modal-header">
+      <h2 id="ckListsTitle">✅ Lists</h2>
+      <button onclick="closeJobLists()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body" style="min-height:160px;">
+      <div id="ckListsBody" style="display:flex; flex-direction:column; gap:8px;"></div>
+      <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
+        <button type="button" onclick="showNewListForm()" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">➕ New list</button>
+        <div id="ckNewForm" style="display:none; margin-top:12px;">
+          <input id="ckNewName" class="edit-input" style="width:100%; font-size:14px;" placeholder="Supplies from shop" autocomplete="off" />
+          <div style="margin-top:10px; display:flex; gap:8px; align-items:center;">
+            <button type="button" id="ckNewSaveBtn" onclick="createChecklist()" class="btn btn-primary btn-sm" style="font-size:13px;">Create</button>
+            <button type="button" onclick="showNewListForm()" class="btn btn-sm" style="font-size:12px;">Cancel</button>
+            <span id="ckNewStatus" style="font-size:12px; color:var(--muted);"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="ckItemsModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:560px; width:95%;">
+    <div class="sl-modal-header">
+      <h2 id="ckItemsTitle">List</h2>
+      <button onclick="closeChecklist()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body" id="ckItemsBody" style="min-height:180px;"></div>
   </div>
 </div>
 

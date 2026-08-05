@@ -464,6 +464,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // panel is the person who knows what circuit 23 feeds, and gating that on
   // admin means it never gets written down.
   "deletePanelSchedule",
+  // Same split for checklists: deleting the whole LIST takes every item with it,
+  // so it's manager-only. Adding, ticking and removing a single item are all
+  // _NON_VIEWER — the crew keeps the list, that's the point of it.
+  "deleteChecklist",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -495,7 +499,9 @@ const _ADMIN_READS = new Set(["r2Status"]);
 // yourself adding it here, you have confused prints with jobDocs.
 //
 // `panelSchedules` / `panelSchedule` are absent for the same reason: the person
-// who needs to read what circuit 23 feeds is standing at the panel.
+// who needs to read what circuit 23 feeds is standing at the panel. So are
+// `jobChecklists` / `jobChecklist` — a crew loading the truck at 6am is the
+// whole audience for a supply list.
 const _ADMIN_OFFICE_READS = new Set(["jobPhotosDeleted", "jobDocs", "jobPrintsDeleted"]);
 
 function authzFor(method, action) {
@@ -5828,6 +5834,171 @@ async function handleDeletePanelSchedule(body) {
   return resp(200, { ok: true });
 }
 
+/* ── Job checklists (docs/PLAN-job-checklists.md) ───────────────────────────
+ * The Trello checklist a crew keeps per job — "Supplies from shop", "Punch
+ * list" — brought into the app. Name a list, type items one per line, tick
+ * them off while loading the truck.
+ *
+ * Neon-native like panel schedules: no Airtable table, no mirror, `neonWrite`
+ * throughout so writes fail CLOSED.
+ *
+ * TICKED IS NOT DELETED. `done` flips and the row stays, because the client
+ * moves ticked items into a collapsed "Loaded" section that can be reopened.
+ * A mis-tap on a phone in a truck must not be able to lose the line — you
+ * would arrive without the pipe and never know which item went missing.
+ */
+function mapChecklist(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    createdBy: row.created_by || "",
+    updatedAt: row.updated_at,
+    open: row.open != null ? Number(row.open) : undefined,
+    done: row.done_count != null ? Number(row.done_count) : undefined,
+  };
+}
+
+function mapChecklistItem(row) {
+  return {
+    id: row.id,
+    body: row.body,
+    done: row.done === true,
+    doneBy: row.done_by || "",
+    doneAt: row.done_at,
+    position: Number(row.position),
+  };
+}
+
+async function handleJobChecklists(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const rows = await neonWrite("checklists.list",
+    `SELECT c.*,
+            (SELECT count(*) FROM checklist_items i WHERE i.checklist_id = c.id AND NOT i.done)::int AS open,
+            (SELECT count(*) FROM checklist_items i WHERE i.checklist_id = c.id AND     i.done)::int AS done_count
+       FROM job_checklists c
+      WHERE c.job_airtable_id = $1
+      ORDER BY c.created_at`,
+    [String(jobId)]);
+  const lists = (rows || []).map(mapChecklist);
+  // The action-row badge is "how many things do I still need?" across the whole
+  // job, so it is summed here rather than by the client counting lists.
+  return resp(200, { ok: true, lists, openTotal: lists.reduce((s, l) => s + (l.open || 0), 0) });
+}
+
+async function handleJobChecklist(params) {
+  const listId = params?.listId;
+  if (!listId) return resp(400, { ok: false, error: "Missing listId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const rows = await neonWrite("checklists.get",
+    `SELECT * FROM job_checklists WHERE id::text = $1`, [String(listId)]);
+  const list = rows?.[0];
+  if (!list) return resp(404, { ok: false, error: "List not found." });
+
+  const items = await neonWrite("checklists.items",
+    `SELECT * FROM checklist_items WHERE checklist_id = $1::uuid ORDER BY position, created_at`,
+    [String(listId)]);
+
+  return resp(200, { ok: true, list: mapChecklist(list), items: (items || []).map(mapChecklistItem) });
+}
+
+async function handleCreateChecklist(body, authUser) {
+  const jobId = body?.jobId;
+  const name  = String(body?.name || "").trim().slice(0, 120);
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!name)  return resp(400, { ok: false, error: "Give the list a name." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  // Airtable is still the jobs master. Deliberately not a Neon lookup — see the
+  // keying note in db/schema/008_job_checklists.sql.
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+
+  const rows = await neonWrite("checklists.create",
+    `INSERT INTO job_checklists (job_airtable_id, job_id, name, created_by)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3)
+     RETURNING *`,
+    [String(jobId), name, authUser?.name || null]);
+  return resp(200, { ok: true, list: mapChecklist(rows[0]) });
+}
+
+// One item at a time, because that is how they are typed: a line, Enter, the
+// next line. A batch endpoint would need the client to hold unsaved text, which
+// is the thing this design avoids.
+async function handleAddChecklistItem(body, authUser) {
+  const listId = body?.listId;
+  const text   = String(body?.body ?? body?.text ?? "").trim().slice(0, 300);
+  if (!listId) return resp(400, { ok: false, error: "Missing listId." });
+  if (!text)   return resp(400, { ok: false, error: "Type something to add." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const exists = await neonWrite("checklists.forAdd",
+    `SELECT id FROM job_checklists WHERE id::text = $1`, [String(listId)]);
+  if (!exists?.length) return resp(404, { ok: false, error: "List not found." });
+
+  // position = end of the list, computed server-side so two people adding at
+  // once can't land on the same number.
+  const rows = await neonWrite("checklists.addItem",
+    `INSERT INTO checklist_items (checklist_id, body, position, created_by)
+     VALUES ($1::uuid, $2,
+             (SELECT COALESCE(MAX(position), 0) + 1 FROM checklist_items WHERE checklist_id = $1::uuid),
+             $3)
+     RETURNING *`,
+    [String(listId), text, authUser?.name || null]);
+
+  await neonWrite("checklists.touch",
+    `UPDATE job_checklists SET updated_at = now() WHERE id = $1::uuid`, [String(listId)]);
+  return resp(200, { ok: true, item: mapChecklistItem(rows[0]) });
+}
+
+// Idempotent on purpose: the client queues ticks made with no signal and
+// replays them, so the same "done: true" may arrive twice. Setting a row that
+// is already done to done is a no-op, not an error.
+async function handleSetChecklistItemDone(body, authUser) {
+  const itemId = body?.itemId;
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+  const done = body?.done !== false;
+
+  const rows = await neonWrite("checklists.setDone",
+    `UPDATE checklist_items
+        SET done = $2,
+            done_at = CASE WHEN $2 THEN now() ELSE NULL END,
+            done_by = CASE WHEN $2 THEN $3   ELSE NULL END
+      WHERE id::text = $1
+      RETURNING *`,
+    [String(itemId), done, authUser?.name || null]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Item not found." });
+  return resp(200, { ok: true, item: mapChecklistItem(rows[0]) });
+}
+
+// Deleting an ITEM is _NON_VIEWER: you typed it wrong, you fix it. Deleting a
+// whole LIST is admin/office — see _ADMIN_OFFICE_POSTS.
+async function handleDeleteChecklistItem(body) {
+  const itemId = body?.itemId;
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const rows = await neonWrite("checklists.deleteItem",
+    `DELETE FROM checklist_items WHERE id::text = $1 RETURNING id`, [String(itemId)]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Item not found." });
+  return resp(200, { ok: true });
+}
+
+async function handleDeleteChecklist(body) {
+  const listId = body?.listId;
+  if (!listId) return resp(400, { ok: false, error: "Missing listId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const rows = await neonWrite("checklists.delete",
+    `DELETE FROM job_checklists WHERE id::text = $1 RETURNING id`, [String(listId)]);
+  if (!rows?.length) return resp(404, { ok: false, error: "List not found." });
+  return resp(200, { ok: true });
+}
+
 // Recycle-bin listing. Admin/office only — employees shouldn't be browsing
 // what was deleted.
 async function handleJobPhotosDeleted(params) {
@@ -5886,6 +6057,8 @@ export async function handler(event) {
       if (action === "jobPrintsDeleted")   return await handleJobPrintsDeleted(params);
       if (action === "panelSchedules")     return await handlePanelSchedules(params);
       if (action === "panelSchedule")      return await handlePanelSchedule(params);
+      if (action === "jobChecklists")      return await handleJobChecklists(params);
+      if (action === "jobChecklist")       return await handleJobChecklist(params);
       if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
       if (action === "expenseReceiptSummary") return await handleExpenseReceiptSummary(params, authUser);
@@ -5983,6 +6156,11 @@ export async function handler(event) {
       if (body.action === "createPanelSchedule")  return await handleCreatePanelSchedule(body, authUser);
       if (body.action === "savePanelSchedule")    return await handleSavePanelSchedule(body, authUser);
       if (body.action === "deletePanelSchedule")  return await handleDeletePanelSchedule(body);
+      if (body.action === "createChecklist")      return await handleCreateChecklist(body, authUser);
+      if (body.action === "addChecklistItem")     return await handleAddChecklistItem(body, authUser);
+      if (body.action === "setChecklistItemDone") return await handleSetChecklistItemDone(body, authUser);
+      if (body.action === "deleteChecklistItem")  return await handleDeleteChecklistItem(body);
+      if (body.action === "deleteChecklist")      return await handleDeleteChecklist(body);
       if (body.action === "deleteJobPrints")      return await handleDeleteJobPrints(body);
       if (body.action === "restoreJobPrints")     return await handleRestoreJobPrints(body);
       if (body.action === "purgeJobPrints")       return await handlePurgeJobPrints(body);

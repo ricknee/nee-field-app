@@ -1264,6 +1264,54 @@ await test('panels: without DATABASE_URL they fail CLOSED, not soft', async () =
   eq((await POST('deletePanelSchedule', { panelId: 'p1' })).statusCode, 503, 'delete 503s');
 });
 
+// ── job checklists (docs/PLAN-job-checklists.md) ──
+// Same offline reasoning as the panel tests: DATABASE_URL is unset, so these
+// short-circuit to 503 and any "not 403" proves the tier without a database.
+await test('checklists: every signed-in role can read the job lists', async () => {
+  mockTables = JOB_ONLY();
+  // A crew loading the truck at 6am is the whole audience for a supply list.
+  for (const tok of [EMP_TOK, VIEWER_TOK, OFFICE_TOK, ADMIN_TOK]) {
+    ok((await GET('jobChecklists', { jobId: 'recJ1' }, tok)).statusCode !== 403, 'lists readable');
+    ok((await GET('jobChecklist', { listId: 'l1' }, tok)).statusCode !== 403, 'one list readable');
+  }
+});
+
+await test('checklists: the crew keeps the list, only managers delete the whole thing', async () => {
+  mockTables = JOB_ONLY();
+  const writes = [
+    ['createChecklist',      { jobId: 'recJ1', name: 'Supplies from shop' }],
+    ['addChecklistItem',     { listId: 'l1', body: '200ft 2" PVC' }],
+    ['setChecklistItemDone', { itemId: 'i1', done: true }],
+    ['deleteChecklistItem',  { itemId: 'i1' }],
+  ];
+  for (const [action, body] of writes) {
+    ok((await POST(action, body, EMP_TOK)).statusCode !== 403, `${action} employee allowed`);
+    eq((await POST(action, body, VIEWER_TOK)).statusCode, 403, `${action} viewer blocked`);
+  }
+  // Removing one line you typed wrong is not the same as binning the list.
+  eq((await POST('deleteChecklist', { listId: 'l1' }, EMP_TOK)).statusCode, 403, 'employee cannot delete a list');
+  ok((await POST('deleteChecklist', { listId: 'l1' }, OFFICE_TOK)).statusCode !== 403, 'office can');
+});
+
+await test('checklists: empty names and empty items are refused', async () => {
+  mockTables = JOB_ONLY();
+  eq((await POST('createChecklist', { jobId: 'recJ1', name: '   ' })).statusCode, 400, 'blank list name');
+  eq((await POST('createChecklist', { name: 'Supplies' })).statusCode, 400, 'jobId required');
+  eq((await POST('addChecklistItem', { listId: 'l1', body: '  ' })).statusCode, 400, 'blank item');
+  eq((await POST('addChecklistItem', { body: 'PVC' })).statusCode, 400, 'listId required');
+  eq((await POST('setChecklistItemDone', {})).statusCode, 400, 'itemId required');
+});
+
+await test('checklists: without DATABASE_URL they fail CLOSED, not soft', async () => {
+  mockTables = JOB_ONLY();
+  // There is no Airtable table to fall back to, so answering "no lists" would
+  // tell a crew there is nothing to bring. 503 is the honest answer.
+  eq((await GET('jobChecklists', { jobId: 'recJ1' })).statusCode, 503, 'list 503s');
+  eq((await GET('jobChecklist', { listId: 'l1' })).statusCode, 503, 'read 503s');
+  eq((await POST('setChecklistItemDone', { itemId: 'i1', done: true })).statusCode, 503, 'tick 503s');
+  eq((await POST('deleteChecklist', { listId: 'l1' })).statusCode, 503, 'delete 503s');
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

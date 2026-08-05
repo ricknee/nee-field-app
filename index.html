@@ -3201,8 +3201,13 @@
               <button id="genExpReceiptBtn" class="btn btn-sm" type="button" style="font-size:12px;">📎 Attach receipt</button>
               <span id="genExpReceiptInfo" style="font-size:12px; color:var(--muted);">photo or scanned PDF — optional</span>
             </div>
-            <div style="display:flex; gap:8px;">
-              <button id="genExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1; font-size:13px;">Save Expense</button>
+            <!-- "Save & add another" is the primary action because entering
+                 expenses is almost always a pile of receipts, not one. The
+                 form stays open and keeps date/type/vendor; only the amount,
+                 credit and description clear. -->
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button id="genExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1 1 160px; font-size:13px;">Save &amp; add another</button>
+              <button id="genExpSaveCloseBtn" class="btn btn-sm" type="button" style="flex:0 1 auto; font-size:13px;">Save &amp; close</button>
               <button id="genExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
             </div>
             <div id="genExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expense saved!</div>
@@ -5420,6 +5425,9 @@
    * behind — no orphaned objects under an expense that was never created.
    */
   const pendingReceipts = { gen: [], my: [] };
+  // Each picker's repaint function, published so a detached upload can clear the
+  // "1 file ready" line the moment it takes ownership of the files.
+  const receiptPickerPaint = {};
 
   function wireReceiptPicker(which, btnId, infoId) {
     const btn = $(btnId), info = $(infoId);
@@ -5454,6 +5462,8 @@
     // The row holding the button and the hint doubles as the drop target — no
     // extra markup, and it's already where the eye is. Wired once per element;
     // the handler reads pendingReceipts live, so re-opening the form is safe.
+    receiptPickerPaint[which] = paint;
+
     wireReceiptDropZone(btn.parentElement, (files, rejected) => {
       // Append rather than replace: dropping page 2 shouldn't discard page 1.
       // (The picker still replaces — it's a single deliberate selection.)
@@ -5468,6 +5478,40 @@
   // Called right after an expense saves. Failures are reported but never undo
   // the save — the expense is already correct, it just has no receipt yet, and
   // the user can attach one from the 🧾 button.
+  /* Detached variant, for the keep-typing expense flow.
+   *
+   * THE SNAPSHOT-AND-CLEAR IS THE WHOLE POINT and must stay synchronous. The
+   * awaited version below reads `pendingReceipts[which]` and only empties it
+   * once the upload finishes; run that in the background and the next expense's
+   * receipt gets pushed onto the very array being uploaded, so it lands on the
+   * PREVIOUS expense — a receipt filed against the wrong money, silently.
+   *
+   * Taking a copy and emptying the real array before any await closes that
+   * window: from the caller's next line onwards, the picker is already empty
+   * and belongs to the next expense.
+   */
+  function flushPendingReceiptsDetached(which, expenseId, label) {
+    const files = pendingReceipts[which].slice();
+    pendingReceipts[which] = [];
+    const repaint = receiptPickerPaint[which];
+    if (repaint) repaint();
+    if (!files.length || !expenseId) return;
+
+    const what = label ? ` (${label})` : "";
+    (async () => {
+      try {
+        const { done, failed } = await uploadReceiptFiles(expenseId, files);
+        // The toast names the expense because several uploads can be in flight
+        // at once now — "1 failed" is useless if you can't tell which.
+        if (failed) showAppToast(`${done} receipt${done === 1 ? "" : "s"} attached${what}, ${failed} failed`);
+        else if (done) showAppToast(`${done} receipt${done === 1 ? "" : "s"} attached${what} ✓`);
+      } catch (e) {
+        console.error("[receipt-detached]", e);
+        showAppToast(`Receipt didn't upload${what}: ${e.message}`);
+      }
+    })();
+  }
+
   async function flushPendingReceipts(which, expenseId, say) {
     const files = pendingReceipts[which];
     if (!files.length || !expenseId) return;
@@ -11345,7 +11389,16 @@
   // resetVendorPicker(), which would wipe anything written before it resolves.
   // Vendor is prefilled as *search text only* — the hidden id stays empty on
   // purpose, so saving still requires picking a real vendor record.
+  // How many expenses this run of the form has saved, shown so a batch of
+  // twenty gives some sense of progress. Reset each time the panel opens.
+  let genExpSessionCount = 0;
+  // Set by "Save & close" so the shared save path knows to tear the panel down
+  // afterwards instead of staying open for the next slip.
+  let genExpCloseAfterSave = false;
+
   async function openGeneralExpenseForm(prefill) {
+    genExpSessionCount = 0;
+    genExpCloseAfterSave = false;
     $("generalExpensePanel").style.display = "";
     $("liftExpensePanel").style.display = "none";
     const bp = $("bucketExpensePanel"); if (bp) bp.style.display = "none";
@@ -11372,6 +11425,12 @@
   }
 
   async function saveGeneralExpense() {
+    // Read and clear the intent IMMEDIATELY. The validation guards below return
+    // early, so leaving the flag set would mean a rejected "Save & close" makes
+    // the NEXT "Save & add another" tear the panel down instead.
+    const closeAfter = genExpCloseAfterSave;
+    genExpCloseAfterSave = false;
+
     const job = state.selected;
     if (!job) return;
     const jobId = String(job.id || '');
@@ -11411,7 +11470,9 @@
       return;
     }
 
+    const closeBtn = $("genExpSaveCloseBtn");
     saveBtn.disabled = true; saveBtn.textContent = "Saving...";
+    if (closeBtn) closeBtn.disabled = true;
     try {
       // Vendor is required (validated above), so vendorId is guaranteed to
       // start with "rec" here. The guard below is belt-and-suspenders —
@@ -11421,26 +11482,43 @@
       const payload = { jobId, date, type, amount, credit, description: desc, billable };
       if (vendorId.startsWith("rec")) payload.vendorId = vendorId;
       const saved = await apiPost("addGeneralExpense", payload);
-      // Upload any receipt picked on the form. Awaited so the panel doesn't
-      // close mid-upload, but a failure here never undoes the save — the
-      // expense is already correct.
-      await flushPendingReceipts("gen", saved?.id, (t) => { saveBtn.textContent = t; });
-      msgEl.style.display = "";
+
+      // The receipt uploads in the BACKGROUND from here. The expense record is
+      // already saved and correct; waiting on an image to travel was most of
+      // the old per-entry delay, and a failed upload never undid the save — it
+      // just told you about it later. It still tells you later, without holding
+      // the form hostage meanwhile. See flushPendingReceiptsDetached for why
+      // the files must be snapshotted synchronously.
+      const label = ($("genExpVendorSearch")?.value || "").trim() || fmtCurrency(amount || credit);
+      flushPendingReceiptsDetached("gen", saved?.id, label);
+
+      genExpSessionCount++;
+      // Clear only what changes between two slips off the same pile. Date, type
+      // and VENDOR deliberately stay: entering six Home Depot receipts meant
+      // re-picking Home Depot six times, which was the slowest part of the old
+      // flow after the artificial delay.
       $("genExpAmount").value = "";
       $("genExpCredit").value = "";
       $("genExpDesc").value = "";
-      resetVendorPicker();
-      setTimeout(() => {
-        msgEl.style.display = "none";
+
+      if (closeAfter) {
         $("generalExpensePanel").style.display = "none";
         $("expenseActionBtns").style.display = "flex";
         loadExpenses(job.id);
-      }, 1500);
+      } else {
+        // No setTimeout. The old flow sat on a hard-coded 1.5s pause and then
+        // tore the panel down, so every extra expense cost a re-open and a
+        // fresh vendor pick.
+        msgEl.innerHTML = `✓ Saved — <strong>${genExpSessionCount}</strong> added this session. Next one:`;
+        msgEl.style.display = "";
+        $("genExpAmount").focus();
+      }
     } catch(e) {
       errEl.textContent = "Error: " + e.message;
       errEl.style.display = "";
     } finally {
-      saveBtn.disabled = false; saveBtn.textContent = "Save Expense";
+      saveBtn.disabled = false; saveBtn.textContent = "Save & add another";
+      if (closeBtn) { closeBtn.disabled = false; closeBtn.textContent = "Save & close"; }
     }
   }
 
@@ -11865,9 +11943,18 @@
     if (genExpCancel) genExpCancel.addEventListener("click", () => {
       $("generalExpensePanel").style.display = "none";
       $("expenseActionBtns").style.display = "flex";
+      // Cancel now means "stop adding", not "undo" — anything already saved in
+      // this run is real, so the list behind has to catch up or it shows a job
+      // that's twelve expenses out of date.
+      if (genExpSessionCount > 0 && state.selected) loadExpenses(state.selected.id);
     });
     const genExpSave = $("genExpSaveBtn");
     if (genExpSave) genExpSave.addEventListener("click", saveGeneralExpense);
+    const genExpSaveClose = $("genExpSaveCloseBtn");
+    if (genExpSaveClose) genExpSaveClose.addEventListener("click", () => {
+      genExpCloseAfterSave = true;
+      saveGeneralExpense();
+    });
     wireReceiptPicker("gen", "genExpReceiptBtn", "genExpReceiptInfo");
 
     // My Expenses (employee self-service)

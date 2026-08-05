@@ -995,3 +995,58 @@ export async function listDeletedExpenseReceipts(expenseId, timeoutMs = DEFAULT_
     };
   }));
 }
+
+// ── Scissor lift photos (roadmap Step 4b) ──────────────────────────────────
+// Same folder-is-the-record idea as job photos and expense receipts: the prefix
+// IS the ownership, so there is no table of photo keys to keep in step with the
+// files. Existing top-level prefixes are jobs/, expenses/ and _deleted/, so
+// lifts/ collides with nothing.
+//
+// The files got here from Airtable because ATTACHMENT URLS EXPIRE (~2 h) — see
+// db/schema/009_scissor_lifts.sql. Storing an Airtable URL would have broken
+// every lift photo the same afternoon.
+export function liftPrefix(liftId) {
+  return `lifts/${String(liftId)}/`;
+}
+
+// Same guard shape as assertKeyInJob: a key from another lift, or one climbing
+// out via "..", is refused rather than acted on. The client never picks raw keys
+// but the delete endpoint takes one, so it is checked at the boundary.
+function assertKeyInLift(liftId, key) {
+  const k = String(key || "");
+  if (!k.startsWith(liftPrefix(liftId)) || k.includes("..")) {
+    throw new R2Error("That photo does not belong to this lift", "KEY_OUTSIDE_LIFT");
+  }
+  return k;
+}
+
+export async function listLiftPhotos(liftId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(liftPrefix(liftId), timeoutMs);
+  return await Promise.all(
+    objects
+      .filter(o => !isThumbKey(o.key))
+      .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0))
+      .map(async o => ({
+        key: o.key,
+        name: o.key.slice(o.key.lastIndexOf("/") + 1),
+        size: o.size,
+        url: await presignGet(o.key),
+      })));
+}
+
+// NO RECYCLE BIN, unlike job photos. The owner's rule for lifts is that selling
+// one removes everything, photos included — so a bin would only be a place for
+// deleted things to sit and cost money. Deliberate divergence, not an oversight.
+export async function deleteLiftPhoto(liftId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInLift(liftId, key);
+  await deleteObject(k, timeoutMs);
+  await deleteObject(thumbKeyFor(k), timeoutMs);   // tolerates a missing thumb
+}
+
+// Everything under one lift. Used when a sold lift is deleted — nothing else
+// will ever clean these up, since the row that pointed at them is gone.
+export async function deleteAllLiftPhotos(liftId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(liftPrefix(liftId), timeoutMs);
+  for (const o of objects) await deleteObject(o.key, timeoutMs);
+  return objects.length;
+}

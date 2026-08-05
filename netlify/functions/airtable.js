@@ -19,7 +19,8 @@ import {
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
   expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
-  listByPrefix,
+  listByPrefix, liftPrefix, listLiftPhotos, deleteLiftPhoto, deleteAllLiftPhotos,
+  presignGet,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -446,6 +447,11 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // to _NON_VIEWER with in-handler owner/status enforcement.
   "approveExpense", "markInvoicePaid", "setInvoiceStatus",
   "updateJobBillableRate", "createVendor",
+  // Lifts became employee-editable on 2026-08-03 (see the fleet parity change),
+  // so updateScissorLift stays _NON_VIEWER — a crew marks a lift on/off a job.
+  // But adding equipment to the books, and RETIRING a sold one along with its
+  // photos, is not a field action. Same for removing a photo.
+  "createScissorLift", "deleteScissorLift", "deleteLiftPhoto",
   // Job notes became readable by every role on 2026-07-31 so crews get job
   // instructions. WRITING them stays admin/office: they can still carry
   // internal status, and until now the UI was the only thing stopping an
@@ -2452,6 +2458,21 @@ async function handleApproveExpense(body) {
 async function handleScissorLiftsByJob(params) {
   const { jobName } = params || {};
   if (!jobName) return resp(200, { ok: true, lifts: [] });
+
+  // Matches on the job NAME, not an id, because `current_job` mirrors Airtable's
+  // singleLineText. Making it a real FK is a behaviour change (renaming a job
+  // would move lifts) and belongs in its own decision — see 009_scissor_lifts.sql.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `${LIFT_SELECT} WHERE current_job = $1 AND status = 'On Job'${LIFT_ORDER}`, [jobName]);
+    if (q?.rows) {
+      return resp(200, {
+        ok: true, lifts: await attachLiftPhotos(q.rows.map(mapLiftRow)),
+        _source: "neon", _ms: q.ms,
+      });
+    }
+    console.error(`scissorLiftsByJob: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => { const f=r.fields||{}; const photos=(f["Photo"]||[]).map(a=>a.url); return { id:r.id,name:f["Lift Name"]||"",status:f["Status"]||"Available",currentJob:f["Current Job"]||"",assignedTo:f["Assigned To"]||"",dateDeployed:f["Date Deployed"]||"",notes:f["Notes"]||"",photoUrl:photos[0]||"",hooksLeft:f["Lift Hooks Left at Job"]===true,boxLeft:f["Lift Box Left at Job"]===true }; }).filter(l => l.currentJob === jobName && l.status === "On Job");
   return resp(200, { ok: true, lifts });
@@ -2975,10 +2996,79 @@ async function handleDeleteFleetService(body) {
   return resp(200, { ok: true, deleted: serviceRecordId });
 }
 
+// ── Scissor lifts: NEON-FIRST, photos from R2 (roadmap Step 4b) ────────────
+// NATURAL SORT. Airtable ordered by Lift Name as text, so "Lift #10" sat between
+// #1 and #2. The digits are extracted and sorted numerically; a lift whose name
+// has no digits falls back to alphabetical instead of erroring on the cast.
+// Done in the query rather than a stored sort column, so renaming a lift cannot
+// leave a stale key behind.
+const LIFT_SELECT = `
+  SELECT id::text, airtable_id, name, status, current_job, assigned_to,
+         date_deployed::text AS date_deployed, notes, hooks_left, box_left
+    FROM scissor_lifts`;
+const LIFT_ORDER = `
+   ORDER BY NULLIF(regexp_replace(name, '\\D', '', 'g'), '')::int NULLS LAST, name`;
+
+// Photos live in R2 under lifts/<id>/ and are listed, never stored in Neon —
+// see db/schema/009_scissor_lifts.sql for why an Airtable URL could not be kept.
+// ONE list call covers every lift, then the objects are grouped by id, so the
+// page costs a single R2 round-trip rather than one per lift.
+async function attachLiftPhotos(lifts) {
+  if (!r2Enabled() || !lifts.length) return lifts.map(l => ({ ...l, photos: [], photoUrl: "" }));
+  let objects = [];
+  try {
+    objects = await listByPrefix("lifts/");
+  } catch (e) {
+    // Photos are a nicety; the lift list itself must still render. Same fail-soft
+    // stance the Photos tab takes when R2 is unavailable.
+    console.error(`lifts: R2 list failed, returning lifts without photos: ${e?.message || e}`);
+    return lifts.map(l => ({ ...l, photos: [], photoUrl: "" }));
+  }
+  const byLift = new Map();
+  for (const o of objects) {
+    const rest = o.key.slice("lifts/".length);
+    const id = rest.slice(0, rest.indexOf("/"));
+    if (!id) continue;
+    if (!byLift.has(id)) byLift.set(id, []);
+    byLift.get(id).push(o);
+  }
+  return await Promise.all(lifts.map(async l => {
+    const objs = (byLift.get(l.id) || [])
+      .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0));
+    const photos = await Promise.all(objs.map(async o => ({
+      key: o.key, name: o.key.slice(o.key.lastIndexOf("/") + 1),
+      size: o.size, url: await presignGet(o.key),
+    })));
+    // photoUrl is kept as the first photo so the existing card/detail markup
+    // keeps working unchanged; `photos` is what the new add/remove UI uses.
+    return { ...l, photos, photoUrl: photos[0]?.url || "" };
+  }));
+}
+
+function mapLiftRow(r) {
+  return {
+    id: r.id, airtableId: r.airtable_id || null,
+    name: r.name || "", status: r.status || "Available",
+    currentJob: r.current_job || "", assignedTo: r.assigned_to || "",
+    dateDeployed: r.date_deployed || "", notes: r.notes || "",
+    hooksLeft: r.hooks_left === true, boxLeft: r.box_left === true,
+  };
+}
+
 async function handleScissorLifts() {
+  if (neonEnabled()) {
+    const q = await neonQuery(`${LIFT_SELECT}${LIFT_ORDER}`);
+    if (q?.rows) {
+      return resp(200, {
+        ok: true, lifts: await attachLiftPhotos(q.rows.map(mapLiftRow)),
+        _source: "neon", _ms: q.ms,
+      });
+    }
+    console.error(`scissorLifts: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
-  const lifts = records.map(r => { const f=r.fields||{}; const photos=(f["Photo"]||[]).map(a=>a.url); return { id:r.id,name:f["Lift Name"]||"",status:f["Status"]||"Available",currentJob:f["Current Job"]||"",assignedTo:f["Assigned To"]||"",dateDeployed:f["Date Deployed"]||"",notes:f["Notes"]||"",photoUrl:photos[0]||"",hooksLeft:f["Lift Hooks Left at Job"]===true,boxLeft:f["Lift Box Left at Job"]===true }; });
-  return resp(200, { ok: true, lifts });
+  const lifts = records.map(r => { const f=r.fields||{}; const photos=(f["Photo"]||[]).map(a=>a.url); return { id:r.id,name:f["Lift Name"]||"",status:f["Status"]||"Available",currentJob:f["Current Job"]||"",assignedTo:f["Assigned To"]||"",dateDeployed:f["Date Deployed"]||"",notes:f["Notes"]||"",photoUrl:photos[0]||"",photos:[],hooksLeft:f["Lift Hooks Left at Job"]===true,boxLeft:f["Lift Box Left at Job"]===true }; });
+  return resp(200, { ok: true, lifts, _source: "airtable" });
 }
 
 // ── ONE-OFF: copy lift photos from Airtable into R2 (Step 4b) ──────────────
@@ -3059,9 +3149,137 @@ async function handleCopyLiftPhotosToR2() {
   });
 }
 
+// Resolves either id form. The Airtable read fallback still returns `rec…` ids,
+// so this is permanent rather than a transition shim — same as time entries.
+async function resolveLift(liftId) {
+  const rows = await neonWrite("lifts.resolve",
+    `SELECT id, airtable_id, name FROM scissor_lifts
+      WHERE id::text = $1 OR airtable_id = $1 LIMIT 1`, [String(liftId)]);
+  return rows?.[0] || null;
+}
+
+// ── NEW 2026-08-05: add a lift ─────────────────────────────────────────────
+// Did not exist before — lifts could only be created in Airtable directly.
+// Born in Neon with no airtable_id; the Airtable mirror stamps one if it lands.
+async function handleCreateScissorLift(body) {
+  const name = String(body?.name || "").trim();
+  if (!name) return resp(400, { ok: false, error: "Missing lift name." });
+
+  const rows = await neonWrite("lifts.insert",
+    `INSERT INTO scissor_lifts (name, status, current_job, assigned_to, notes)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [name, body?.status || "Available", body?.currentJob || null,
+     body?.assignedTo || null, body?.notes || null]);
+  const liftId = rows?.[0]?.id;
+
+  const fields = { "Lift Name": name, "Status": body?.status || "Available" };
+  if (body?.currentJob)  fields["Current Job"] = String(body.currentJob);
+  if (body?.assignedTo)  fields["Assigned To"] = String(body.assignedTo);
+  if (body?.notes)       fields["Notes"]       = String(body.notes);
+  const data = await mirrorToAirtable("createScissorLift", () =>
+    atFetch(`${encodeURIComponent(TABLES.scissorLifts)}`, {
+      method: "POST", body: JSON.stringify({ fields, typecast: true }) }));
+  if (data?.id && liftId) {
+    await mirrorToAirtable("createScissorLift.stamp", () =>
+      neonWrite("lifts.stampAirtableId",
+        `UPDATE scissor_lifts SET airtable_id = $2 WHERE id = $1`, [liftId, data.id]));
+  }
+  return resp(200, { ok: true, id: liftId, airtableId: data?.id || null });
+}
+
+// ── NEW 2026-08-05: delete a sold lift, photos and all ─────────────────────
+// Owner's rule: selling a lift removes everything. Safe to hard-delete —
+// handleAddLiftExpense links its Expense to the JOB with a hardcoded vendor and
+// type "Scissor Lift"; it never references the lift record, so no financial
+// history depends on this row.
+//
+// R2 is cleaned FIRST and deliberately: once the row is gone nothing knows the
+// prefix, and the files would sit there paid-for and unreachable forever. There
+// is no recycle bin here, unlike job photos — a bin would only be somewhere for
+// sold equipment to linger.
+async function handleDeleteScissorLift(body) {
+  const { liftId } = body || {};
+  if (!liftId) return resp(400, { ok: false, error: "Missing liftId." });
+  const target = await resolveLift(liftId);
+  if (!target) return resp(404, { ok: false, error: "Lift not found." });
+
+  let photosDeleted = 0;
+  if (r2Enabled()) {
+    try {
+      photosDeleted = await deleteAllLiftPhotos(target.id);
+    } catch (e) {
+      // Orphaned files are wasteful but harmless; refusing to retire a sold lift
+      // because storage hiccuped would be worse. Reported, not silently eaten.
+      console.error(`deleteScissorLift: R2 cleanup failed for ${target.id}: ${e?.message || e}`);
+    }
+  }
+  await neonWrite("lifts.delete", `DELETE FROM scissor_lifts WHERE id = $1`, [target.id]);
+  if (target.airtable_id) {
+    await mirrorToAirtable("deleteScissorLift", () =>
+      atFetch(`${encodeURIComponent(TABLES.scissorLifts)}/${target.airtable_id}`, { method: "DELETE" }));
+  }
+  return resp(200, { ok: true, deletedId: target.id, name: target.name, photosDeleted });
+}
+
+// ── NEW 2026-08-05: add a photo ────────────────────────────────────────────
+// Presigned PUT, so the bytes go browser → R2 directly and never through the
+// function — no 4.5 MB payload ceiling, same pattern as jobsite photos.
+async function handleLiftPhotoUploadUrl(body) {
+  const { liftId, contentType } = body || {};
+  if (!liftId) return resp(400, { ok: false, error: "Missing liftId." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage is not configured." });
+  const target = await resolveLift(liftId);
+  if (!target) return resp(404, { ok: false, error: "Lift not found." });
+
+  const type = String(contentType || "image/jpeg");
+  if (!type.startsWith("image/")) return resp(400, { ok: false, error: "Photos must be images." });
+  const ext = type === "image/png" ? ".png" : type === "image/webp" ? ".webp" : ".jpg";
+  // Random suffix rather than the client's filename: two phones both send
+  // "IMG_0001.jpg", and a client-chosen name is a key-injection surface.
+  const key = `${liftPrefix(target.id)}${Date.now()}-${Math.random().toString(16).slice(2, 8)}${ext}`;
+  return resp(200, { ok: true, key, putUrl: await presignPut(key, type), contentType: type });
+}
+
+// ── NEW 2026-08-05: remove one photo ───────────────────────────────────────
+async function handleDeleteLiftPhoto(body) {
+  const { liftId, key } = body || {};
+  if (!liftId || !key) return resp(400, { ok: false, error: "Missing liftId or key." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage is not configured." });
+  const target = await resolveLift(liftId);
+  if (!target) return resp(404, { ok: false, error: "Lift not found." });
+  try {
+    // assertKeyInLift inside this refuses a key belonging to another lift.
+    await deleteLiftPhoto(target.id, key);
+  } catch (e) {
+    if (e instanceof R2Error) return resp(400, { ok: false, error: e.message });
+    throw e;
+  }
+  return resp(200, { ok: true, deletedKey: key });
+}
+
 async function handleUpdateScissorLift(body) {
   const { liftId, status, currentJob, assignedTo, dateDeployed, notes, hooksLeft, boxLeft } = body || {};
   if (!liftId) return resp(400, { ok: false, error: "Missing liftId." });
+
+  const target = await resolveLift(liftId);
+  if (!target) return resp(404, { ok: false, error: "Lift not found." });
+
+  // Only what the client sent is written, so an omitted field is left alone
+  // rather than nulled — the job-assign path sends status and job only.
+  const sets = [], vals = [target.id];
+  const put = (col, v, cast = "") => { vals.push(v); sets.push(`${col} = $${vals.length}${cast}`); };
+  if (status)                    put("status", status);
+  if (currentJob   !== undefined) put("current_job", currentJob || null);
+  if (assignedTo   !== undefined) put("assigned_to", assignedTo || null);
+  if (dateDeployed)               put("date_deployed", dateDeployed, "::date");
+  if (notes        !== undefined) put("notes", notes || null);
+  if (hooksLeft    !== undefined) put("hooks_left", hooksLeft === true);
+  if (boxLeft      !== undefined) put("box_left", boxLeft === true);
+  if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
+  await neonWrite("lifts.update",
+    `UPDATE scissor_lifts SET ${sets.join(", ")} WHERE id = $1`, vals);
+
+  if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id });
   const fields = {};
   if (status)                   fields["fldB9Kwqm0NS3RFFP"] = status;
   if (currentJob !== undefined) fields["fldZpCcD52inR2PGm"] = currentJob;
@@ -3070,8 +3288,10 @@ async function handleUpdateScissorLift(body) {
   if (notes !== undefined)      fields["fldG5MLCzQbyClax0"] = notes;
   if (hooksLeft !== undefined)  fields["fldlpqrIcnTH8R7Yw"] = hooksLeft === true;
   if (boxLeft   !== undefined)  fields["fldm5zfYDcw0oQHX4"] = boxLeft === true;
-  const data = await atFetch(`${encodeURIComponent(TABLES.scissorLifts)}/${liftId}`, { method: "PATCH", body: JSON.stringify({ fields }) });
-  return resp(200, { ok: true, updatedId: data.id });
+  await mirrorToAirtable("updateScissorLift", () =>
+    atFetch(`${encodeURIComponent(TABLES.scissorLifts)}/${target.airtable_id}`,
+      { method: "PATCH", body: JSON.stringify({ fields }) }));
+  return resp(200, { ok: true, updatedId: target.id });
 }
 
 async function handleDeleteTimeEntry(body) {
@@ -6240,6 +6460,10 @@ export async function handler(event) {
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);
       if (body.action === "approveExpense")       return await handleApproveExpense(body);
       if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body);
+      if (body.action === "createScissorLift")    return await handleCreateScissorLift(body);
+      if (body.action === "deleteScissorLift")    return await handleDeleteScissorLift(body);
+      if (body.action === "liftPhotoUploadUrl")   return await handleLiftPhotoUploadUrl(body);
+      if (body.action === "deleteLiftPhoto")      return await handleDeleteLiftPhoto(body);
       if (body.action === "createInspection")     return await handleCreateInspection(body);
       if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);
       if (body.action === "updateEstimateStatus") return await handleUpdateEstimateStatus(body);

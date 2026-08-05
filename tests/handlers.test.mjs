@@ -181,6 +181,36 @@ await test("jobs: exposes Job Year for the sidebar year filter, null when absent
   eq(b.jobs.find(j => j.id === "recJ2").year, null, "missing Job Year maps to null, not 0 or undefined");
 });
 
+// Regression: the Closeout tab's three checkboxes had NEVER rendered checked.
+// The "All … Reviewed?" formulas return "✅ Yes" / "⚠️ Pending Review", but the
+// coercer only accepted a bare "yes"/"true"/"1", so every gate read false on every
+// job — 102 of 112 jobs were materials-reviewed while the app showed none.
+await test("jobs: the All-Reviewed gates read the ✅/⚠ formula strings", async () => {
+  mockTables = { Jobs: [
+    { id: "recJ1", fields: { "Job Name": "Reviewed", "Job Status": "Awarded",
+      "All Materials Reviewed?": "✅ Yes", "All Expenses Reviewed?": "✅ Yes",
+      "All Labor Reviewed": "✅ Yes", "All Wire Reviewed?": "✅ Yes",
+      "All Pipe Reviewed?": "✅ Yes" } },
+    { id: "recJ2", fields: { "Job Name": "Pending", "Job Status": "Awarded",
+      "All Materials Reviewed?": "⚠️ Pending Review",
+      "All Expenses Reviewed?": "⚠️ Pending Review",
+      "All Labor Reviewed": "⚠️ Pending Review" } },
+  ] };
+  const b = json(await GET("jobs"));
+  const done = b.jobs.find(j => j.id === "recJ1");
+  const open = b.jobs.find(j => j.id === "recJ2");
+  eq(done.allMaterialsReviewed, true,  "✅ Yes → true (this was false for the app's whole life)");
+  eq(done.allExpensesReviewed,  true,  "expenses gate");
+  eq(done.allLaborReviewed,     true,  "labor gate");
+  eq(done.allWireReviewed,      true,  "wire gate");
+  eq(done.allPipeReviewed,      true,  "pipe gate");
+  eq(open.allMaterialsReviewed, false, "⚠️ Pending Review stays false");
+  eq(open.allLaborReviewed,     false, "pending labor stays false");
+  // A missing field must not read as reviewed — that would show a job as closed
+  // out when nobody has checked anything.
+  eq(open.allWireReviewed,      false, "absent field is false, never true");
+});
+
 await test("getNextInvoiceNumber: floors at 1633 when empty", async () => {
   mockTables = { Invoices: [] };
   eq(json(await POST("getNextInvoiceNumber")).nextNumber, 1633, "floor");

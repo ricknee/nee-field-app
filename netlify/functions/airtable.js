@@ -517,11 +517,29 @@ function gBool(fields, fieldName) {
   if (typeof v === "string") return ["true","yes","1"].includes(v.trim().toLowerCase());
   return false;
 }
+// Coerces an Airtable FORMULA field to a boolean. Used only by the five
+// "All … Reviewed?" gates on Jobs, which drive the Closeout tab's checkboxes.
+//
+// ⚠ FIXED 2026-08-05 — these checkboxes had NEVER worked. The formulas return
+// "✅ Yes" / "⚠️ Pending Review", but this function only accepted a bare "yes",
+// "true" or "1". "✅ Yes" lowercases to "✅ yes", matched nothing, and so all five
+// keys were false on every job forever. Measured before the fix: 102 of 112 jobs
+// were materials-reviewed, 104 expenses-reviewed and 66 labor-reviewed, while the
+// app rendered every box unchecked.
+//
+// The emoji is part of the value, not decoration — do not strip it and compare.
+// "Pending" is tested FIRST so a future "⚠️ Pending — Yes 3 of 4"-style string
+// cannot read as true off a loose suffix match.
 function gFormulaBool(fields, fieldName) {
   const v = fields[fieldName];
   if (typeof v === "boolean") return v;
   if (typeof v === "number") return v !== 0;
-  if (typeof v === "string") { const s = v.trim().toLowerCase(); return s==="1"||s==="true"||s==="yes"; }
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (!s) return false;
+    if (s.includes("pending") || s.includes("⚠")) return false;
+    return s === "1" || s === "true" || s === "yes" || s.includes("✅") || s.endsWith(" yes");
+  }
   return false;
 }
 function extractUrl(formulaValue) {

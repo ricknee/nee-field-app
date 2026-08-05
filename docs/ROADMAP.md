@@ -160,6 +160,12 @@ Totals reconcile exactly: 14,590 rows before and after (−1 delete, +1 create),
 51,570.25 → 51,571.25 = −2.0 deleted + 2.5 added + 0.5 from the edit. `unmirrored` is 0, so
 Airtable is fully in step.
 
+> **The smoke test ran against live data in the open pay period** (`2026-07-26 → 08-08`) — a 2.0 h
+> deletion on 07-30, a 2.5 h addition on 08-05, and a 0.5 h edit. **Owner reviewed and accepted
+> these 2026-08-05: they do not matter, do not re-raise them.** Noted only so a later reconcile
+> does not "discover" them as unexplained drift. The deleted row is tombstoned in
+> `time_entries_deleted` (`rec8ocf0vN7Ijagvl`) if it is ever wanted back.
+
 **This also finally closes the "watch the write mirror" item** that had been open in §3 NOW since
 the mirror shipped alongside the broken driver and had never been exercised.
 

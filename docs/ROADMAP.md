@@ -153,7 +153,22 @@ profit on those jobs is slightly better than shown. Owner saw the list and accep
 is data entry in Airtable's **Labor Cost Rates**, not code; the view prefers an exact rate match
 automatically and flags every fallback row via `used_earliest_rate_fallback`.
 
-⬜ **Views only — nothing reads them yet.** They go live with the `handleJobs` flip below.
+✅ **LIVE since 2026-08-05** — `handleJobs` and `handleJobById` serve these numbers.
+
+> **Zero-revenue jobs — REVIEWED AND ACCEPTED 2026-08-05, do not re-raise.** Costing labor
+> correctly made **14 jobs show a final loss because they have no recorded revenue** (~$12,766
+> of cost). They read $0 profit before only because labor cost $0 too. This is a **separate
+> pre-existing gap the fix exposed**, not a fault in the labor maths — "no revenue" means no
+> invoice *in this system*; work billed directly in QuickBooks looks identical.
+>
+> Owner reviewed the full list with dates and chose to leave them: they are old records from
+> before actual data was being entered. **MaryAnn McReady (2026-08-03) is being billed by the
+> owner — labor only, no supplies.** Biggest: Jenny Ln 1 ($5,027, 164.5 h) · Wayne TWP Fire
+> Dept. ($2,464) · Alliance Stone ($1,843) · Gus Tar ($1,426, materials only).
+>
+> **Strongsville DG (Contract, MES 394) is NOT in that list and is still unexplained** — it has
+> real recorded revenue of $1,800 against $29,562 of cost, so it is not the zero-revenue
+> artifact. Worth a look if job profitability is ever questioned.
 
 ### ✅ Step 2 — Payroll writes move to Neon — **DONE + SMOKE-VERIFIED ON PROD 2026-08-05**
 

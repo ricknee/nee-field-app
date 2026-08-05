@@ -13,7 +13,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 
 | System | State |
 |---|---|
-| **Time entries** | ✅ In Neon. QB Time pulls straight in. Airtable still written as a mirror. |
+| **Time entries** | ✅ In Neon, and **authoritative for writes since 2026-08-05** — all four app write paths are Neon-first, Airtable is the mirror. QB Time pulls straight in. |
 | **Jobs master data** | ✅ In Neon (112 jobs), read by 4 app endpoints. Identity columns refresh **hourly** since 2026-08-05; the other ~22 master columns still need a hand-run ETL. |
 | **Payroll reads** | ✅ **Served by Neon — confirmed on production 2026-08-05.** All three of `handlePayrollHoursRollup` (`_ms` 90), `handleMyHoursRollup` (65) and `handlePayrollEntries` (60) returned `_source:"neon"`, with the rollup figures matching Neon exactly. |
 | **Job list / GP** | 🟨 Whole GP layer ported to Neon views and diffed to **zero** mismatches — but `handleJobs` still reads Airtable, so none of it serves the app yet. ~1 h to flip. |
@@ -110,10 +110,43 @@ returns no billing fields, so the labor-billing layer isn't involved.
 > 🛑 **STOP POINT.** All time reads served by Neon, writes still Airtable-first. Fully reversible —
 > the fallbacks stay in place.
 
-### Step 2 — Payroll writes move to Neon (~3 h)
+### ✅ Step 2 — Payroll writes move to Neon — **BUILT 2026-08-05, awaiting smoke test**
 
-Flip the four write paths to Neon-first; Airtable becomes the mirror — the exact reverse of
-today's arrangement. Then soak and reconcile.
+All four write paths (`handleCreateTimeEntry`, `handleUpdateTimeEntryPayroll`,
+`handleUpdateTimeEntry`, `handleDeleteTimeEntry`) now write **Neon first**; Airtable is the
+fail-soft mirror. Verified by running the real handlers against a **Neon branch** with Airtable
+stubbed — 28 checks, all passing, every statement actually executed.
+
+**Three contract changes came with it. All three matter more than the flip itself:**
+
+1. **Writes now fail CLOSED** (`neonWrite` in `_neon.js`). Reads still fail soft — that is
+   correct for reads, where Airtable serves a correct-but-slow answer. It is *wrong* for writes
+   now: a write that lands in Airtable but not Neon is invisible, because every payroll read
+   comes from Neon. Adding time with Neon down returns an error instead of quietly half-saving,
+   and leaves nothing behind in Airtable.
+2. **The entry id the UI edits by is now the Neon uuid**, not the Airtable rec id. This was
+   pulled forward deliberately — see the note below. Write handlers resolve **either** form, and
+   that is permanent, not a shim: the Airtable read fallback still returns `rec…` ids by design.
+3. **`--repair` is DISABLED** in `db/etl/time-entries-full.mjs`. It updates Neon *from* Airtable,
+   which was right when Airtable was authoritative and is now precisely backwards — it would
+   overwrite correct payroll data with stale mirror values, from a routine daily command. Drift
+   detection is untouched. Repairing Airtable *from* Neon is the correct direction now, but the
+   ETL holds a read-only PAT, so that needs a write credential and its own decision.
+
+> **Why the uuid switch happened now rather than at Step 4.** The Airtable rec id stops being
+> minted at **Step 3**. The puller never creates Airtable time-entry rows — Make does. Turn Make
+> off and every new QB timesheet lands in Neon with `airtable_id` NULL permanently, so a UI keyed
+> on the Airtable id would find every new entry uneditable the day Make is retired. Keeping the
+> old contract would have meant rewriting the same four payroll write paths twice, two hours
+> apart. `unlinked` therefore demotes from "uneditable" to a plain health signal, and is expected
+> to be permanently non-zero after Step 3.
+
+**Schema:** `te_has_a_key` relaxed to accept `source = 'Manual'` as a third origin — it required
+an Airtable or QB id, which a Neon-native row does not have at insert time (`002_qb_puller.sql`).
+
+**⚠ Still owed before this counts as done:** a real smoke test on production — add a time entry,
+edit one, tick Labor Reviewed, delete one, and confirm each lands in Neon. Code-complete is not
+serving; that is the whole lesson of Step 1.
 
 > 🛑 **STOP POINT.** Neon authoritative for time. Airtable still written, still correct, still a
 > working fallback.
@@ -222,27 +255,37 @@ because they're next:
 - **"Should I do X first?"** → if X is in §7, no.
 - **Update it when a step lands**, not when it's planned.
 
-**Current answer to "what's next" (revised 2026-08-05):** **Step 1 is closed** — payroll reads are
-confirmed served by Neon on production, so the §2 gate is half-cleared (reads have left Airtable;
-writes haven't). The one remaining ⬜ in §3 NOW is observational — watch the write mirror. The next
-thing that is actually a *build* is one of:
+**Current answer to "what's next" (revised 2026-08-05, second pass):** **Steps 1 and 2 are both
+done** — payroll reads confirmed served by Neon on production, and the four write paths flipped
+Neon-first and verified on a branch. The §2 gate is therefore **cleared**: time has left Airtable
+in both directions.
 
-- **Schedule the jobs sync, then flip `handleJobs` to Neon** (~2-3 h) — cashes in the entire GP
-  layer, which is ported and diffed to zero mismatches but serving nothing today.
-  > 🟨 **Half done as of 2026-08-05 (`3f3048a`).** `netlify/functions/_jobs-sync.js` now refreshes
-  > the **8 identity columns** hourly from inside `qb-time-pull`, which fixed the bug that prompted
-  > it (see below). But it deliberately does NOT carry the other ~22 master columns — status,
-  > addresses, customer, markup — and deliberately does NOT stamp `synced_at`, so that field still
-  > honestly reports the last *full* refresh.
-  >
-  > **So the flip still needs a full-field scheduled sync.** `handleJobs`/`mapJob` read status and
-  > the descriptive spine; serving those from a mirror only refreshed when someone hand-runs the ETL
-  > would show stale statuses on the job list. Extend `_jobs-sync.js` to the full `JOB_FIELDS` set
-  > (and let it stamp `synced_at`) before flipping — the ETL's array is the reference.
-  >
-  > *Why this mattered:* checked 2026-08-04, `jobs` was **110 rows, 4.5 days stale, against 112 in
-  > Airtable** — and the two missing jobs were silently costing hours their FK link.
-- **Step 2 — payroll writes → Neon** (~3 h), the forced next link in §2.
+**The next thing is a smoke test, not a build.** Exercise the four write paths on production
+(add / edit / Labor-Reviewed / delete) and confirm each lands in Neon. That also finally covers
+the "watch the write mirror" item that has been sitting in §3 NOW since it shipped alongside the
+broken driver. After a few clean reconciler days, **Step 3 retires Make** — the original goal.
 
-Either is a reasonable next sitting. The `handleJobs` route is the one that shows up on screen —
-leaving proven work switched off is how it rots — but price it at 2-3 h, not 1.
+The remaining jobs-flip work, for when you come back to it:
+
+- ✅ **The full-field jobs sync is DONE 2026-08-05.** `_jobs-sync.js` carries all 37 master
+  columns hourly and stamps `synced_at`. Verified on a Neon branch: 112 jobs, **zero differences**
+  against the already-verified ETL output across every column.
+- ⬜ **The `handleJobs` flip itself — RE-PRICED at 4-6 h, not the "~1 h" this file used to say.**
+  The GP half really is ready (`v_job_financials` + `v_job_rollups` cover every financial key).
+  The descriptive half is not, and nobody had costed it: **`mapJob` returns 89 keys and roughly
+  35 have no Neon source at all**, because the jobs port deliberately excluded links and external
+  refs. Missing: the whole **power-company block** (8 keys, lookups into Power Companies /
+  Contacts), the **inspection block** (10 keys, through Inspection Agencies / Contacts), **7
+  external refs** (wire/pipe/photo links, pCloud + Trello ids), **customer mailing address** (4 —
+  Neon has the *job site* address, which is a different thing), and flags like `workflowStatus`,
+  `projectComplete` and the five `all*Reviewed` formula bools.
+  >
+  > **And it is not just the list that would thin out.** Opening a job uses the **cached list
+  > record** (`state.jobs.find(...)` → `selectJob`, `index.html:3667`), not a refetch — `jobById`
+  > only runs on `refreshSelectedJob()` after estimate writes. So a partial flip blanks the power
+  > company and inspection blocks **on the job detail screen**.
+  >
+  > Real scope: 3 small dimension tables (Power Companies, Inspection Agencies, Inspection
+  > Contacts) + ~15 flat columns + sync + flip. Also worth knowing the latency case is weak —
+  > `handleJobs` pages 112 records in 2 Airtable requests, not the 146-page scan that made
+  > `hoursByJob` take 15 s. This buys migration progress, not speed.

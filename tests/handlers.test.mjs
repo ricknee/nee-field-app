@@ -379,83 +379,103 @@ await test("payrollEntries: still 400s without a date range on either path", asy
   eq((await GET("payrollEntries", {})).statusCode, 400, "missing dates rejected before any read");
 });
 
-// ── time-entry WRITE paths + the Neon mirror ──
-// These had NO coverage before 2026-07-31, which mattered because every one of them
-// now also mirrors into Neon — and payroll READS come from Neon. If a write reaches
-// Airtable but not Neon, the payroll screen shows stale hours while the edit looks
-// saved. The contract being locked here:
-//   1. the Airtable write is correct and unchanged (field IDs, linked-record shape)
-//   2. a missing or broken Neon must NEVER fail a write that Airtable accepted
-const TE_F = {
-  employee: "fldG8nGxyJcXRxBNQ", employeeLink: "fldYgTcZcQzNslRT5",
-  workDate: "fldzFwSSjLmAkWYHt", duration: "fld9mz6As3099VPVp",
-  cityTaxes: "flddCniABjh4Xib1c", class: "fld4MG0FcFDnqYmtW",
-  jobLink: "fldmGwS0qXMdC7FlA", reviewed: "fldQn7d06doEkrGBv",
-};
+// ── time-entry WRITE paths — NEON-FIRST, FAIL-CLOSED (migration Step 2) ──
+// ⚠ THE CONTRACT HERE WAS DELIBERATELY INVERTED ON 2026-08-05. The previous version
+// of this block asserted "a broken Neon must NEVER fail a write Airtable accepted".
+// That was right while Airtable was the source of truth. It is now exactly wrong:
+// every payroll read is served from Neon, so a write that lands in Airtable but not
+// Neon is INVISIBLE — hours nobody can see, on the screen people are paid from.
+//
+// What is locked here now:
+//   1. a write that cannot reach Neon FAILS (500) rather than half-succeeding
+//   2. and leaves NOTHING behind in Airtable — no orphan record to reconcile later
+//   3. validation still rejects bad input before either system is touched
+//
+// ⚠ COVERAGE GAP, KNOWINGLY ACCEPTED: the old tests also asserted the Airtable field
+// mapping (duration in SECONDS, the bare ["rec…"] link shape, verbatim QB city-tax
+// spellings). Those assertions cannot run offline any more — the Airtable write is
+// now downstream of a successful Neon write, so it never executes without a real
+// connection. This is the same conclusion the 2026-07-31 mirror bug reached: a test
+// of a Neon write path that does not actually connect proves nothing. Restoring that
+// coverage needs a live-Neon test against a BRANCH, which is the right follow-up.
 
-await test("createTimeEntry: writes the right Airtable fields and returns the new id", async () => {
-  delete process.env.DATABASE_URL;
-  mockTables = {};
-  const b = json(await POST("createTimeEntry", {
-    employee: "Jeff Koehn", employeeId: "recEmp1", workDate: "2026-07-27",
-    duration: 28800, class: "Contract", cityTaxes: "A No Tax", jobId: "recJob1",
-  }));
-  ok(b.ok, "ok");
-  eq(b.id, "recNEW", "returns the created Airtable record id");
-  const f = JSON.parse(lastFetch.opts.body).fields;
-  eq(f[TE_F.employee], "Jeff Koehn", "employee text");
-  eq(f[TE_F.workDate], "2026-07-27", "work date");
-  eq(f[TE_F.duration], 28800, "duration in SECONDS, not hours");
-  // Linked records must be a bare ["rec…"] array — the [{id}] shape silently drops.
-  eq(JSON.stringify(f[TE_F.employeeLink]), JSON.stringify(["recEmp1"]), "employee link shape");
-  eq(JSON.stringify(f[TE_F.jobLink]), JSON.stringify(["recJob1"]), "job link shape");
-});
-
-await test("createTimeEntry: a broken Neon must not fail a write Airtable accepted", async () => {
+await test("createTimeEntry: fails CLOSED when Neon is unreachable, writing nothing", async () => {
   process.env.DATABASE_URL = "not-a-valid-connection-string";
   mockTables = {};
+  lastFetch = null;
   const res = await POST("createTimeEntry", {
     employee: "Jeff Koehn", workDate: "2026-07-27", duration: 3600,
   });
-  eq(res.statusCode, 200, "still 200 — the mirror fails soft");
-  eq(json(res).id, "recNEW", "id still returned");
+  eq(res.statusCode, 500, "500 — a write that can't reach the source of truth must fail");
+  eq(lastFetch, null, "and NOTHING was written to Airtable — no orphan record");
   delete process.env.DATABASE_URL;
+});
+
+await test("createTimeEntry: an unset DATABASE_URL is a failure, not a bypass", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  lastFetch = null;
+  const res = await POST("createTimeEntry", {
+    employee: "Jeff Koehn", employeeId: "recEmp1", workDate: "2026-07-27",
+    duration: 28800, class: "Contract", cityTaxes: "A No Tax", jobId: "recJob1",
+  });
+  // Misconfiguration must not silently fall back to the old Airtable-only path —
+  // that would recreate the invisible-hours bug this whole step exists to prevent.
+  eq(res.statusCode, 500, "unset DATABASE_URL fails the write");
+  eq(lastFetch, null, "no Airtable write on the way past");
 });
 
 await test("createTimeEntry: rejects a missing employee or work date before writing", async () => {
   delete process.env.DATABASE_URL;
   mockTables = {};
+  lastFetch = null;
   eq((await POST("createTimeEntry", { workDate: "2026-07-27" })).statusCode, 400, "no employee");
   eq((await POST("createTimeEntry", { employee: "Jeff Koehn" })).statusCode, 400, "no work date");
+  eq(lastFetch, null, "validation runs before either system is touched");
 });
 
-await test("updateTimeEntry: sets Labor Reviewed — the flag the puller must never clobber", async () => {
-  delete process.env.DATABASE_URL;
+await test("updateTimeEntry: Labor Reviewed fails closed rather than half-landing", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
   mockTables = { "Time Entries": [{ id: "recTE1", fields: { "Hours": 8 } }] };
-  const b = json(await POST("updateTimeEntry", { entryId: "recTE1", reviewed: true }));
-  ok(b.ok, "ok");
-  eq(JSON.parse(lastFetch.opts.body).fields[TE_F.reviewed], true, "Labor Reviewed written");
-});
-
-await test("updateTimeEntryPayroll: patches duration and city tax by field id", async () => {
+  lastFetch = null;
+  const res = await POST("updateTimeEntry", { entryId: "recTE1", reviewed: true });
+  eq(res.statusCode, 500, "500 rather than ticking Airtable only");
+  eq(lastFetch, null, "Airtable untouched — the flag the puller must never clobber");
   delete process.env.DATABASE_URL;
-  mockTables = { "Time Entries": [{ id: "recTE1", fields: {} }] };
-  const b = json(await POST("updateTimeEntryPayroll", {
-    entryId: "recTE1", duration: 7200, cityTaxes: "Massilon",
-  }));
-  ok(b.ok, "ok");
-  const f = JSON.parse(lastFetch.opts.body).fields;
-  eq(f[TE_F.duration], 7200, "duration patched");
-  eq(f[TE_F.cityTaxes], "Massilon", "city tax patched verbatim (QB spelling)");
 });
 
-await test("deleteTimeEntry: succeeds even when Neon is unreachable", async () => {
+await test("updateTimeEntryPayroll: fails closed, leaving no partial edit", async () => {
   process.env.DATABASE_URL = "not-a-valid-connection-string";
   mockTables = { "Time Entries": [{ id: "recTE1", fields: {} }] };
-  const res = await POST("deleteTimeEntry", { entryId: "recTE1" });
-  eq(res.statusCode, 200, "delete still succeeds");
-  eq(json(res).deleted, "recTE1", "reports what was deleted");
+  lastFetch = null;
+  const res = await POST("updateTimeEntryPayroll", {
+    entryId: "recTE1", duration: 7200, cityTaxes: "Massilon",
+  });
+  eq(res.statusCode, 500, "500 — payroll edits do not half-apply");
+  eq(lastFetch, null, "no Airtable PATCH");
   delete process.env.DATABASE_URL;
+});
+
+await test("deleteTimeEntry: fails closed — never deletes from Airtable alone", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = { "Time Entries": [{ id: "recTE1", fields: {} }] };
+  lastFetch = null;
+  const res = await POST("deleteTimeEntry", { entryId: "recTE1" });
+  // Deleting from the mirror while the authoritative row survives is the worst of
+  // both: the hours come back on the next reconcile and the deletion looks done.
+  eq(res.statusCode, 500, "500 rather than deleting the mirror copy");
+  eq(lastFetch, null, "Airtable record still there");
+  delete process.env.DATABASE_URL;
+});
+
+await test("writes still require a non-viewer role before any of this runs", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  lastFetch = null;
+  const res = await POST("createTimeEntry",
+    { employee: "Jeff Koehn", workDate: "2026-07-27" }, VIEWER_TOK);
+  eq(res.statusCode, 403, "viewer blocked at authz, ahead of the write path");
+  eq(lastFetch, null, "nothing written");
 });
 
 // ── employee self-service expenses ──

@@ -69,15 +69,31 @@ const LOAD = process.argv.includes("--load");
 // NEVER inserts, never deletes — it can only correct a row that already exists on
 // both sides, so it cannot duplicate hours no matter how often it runs.
 //
-// Why this exists: payroll now READS from Neon while the app's write paths mirror
-// into it fail-soft. A mirror that fails leaves Airtable right and Neon stale, the
-// edit looks saved but the payroll screen shows the old number, and nothing fixes
-// it — the reconciler can see the divergence but not repair it. This closes that.
+// ⛔ DISABLED AT MIGRATION STEP 2 (2026-08-05). IT NOW POINTS THE WRONG WAY.
 //
-// Scoped to work_date <= ASOF on purpose: the puller updates Neon hourly while Make
-// writes Airtable nightly, so for TODAY Neon is legitimately ahead. Repairing from
-// Airtable inside that window would overwrite fresh data with stale data.
+// It was written when Airtable was authoritative and the app mirrored into Neon
+// fail-soft: a failed mirror left Airtable right and Neon stale, and this fixed it.
+// Step 2 inverted that. The four write paths now write NEON first and mirror to
+// Airtable, so a failed mirror leaves NEON right and AIRTABLE stale — and running
+// this would overwrite the correct value with the stale one, on payroll data, from
+// what used to be a routine daily command. Exactly the direction that must not run.
+//
+// Repairing AIRTABLE from NEON is the correct direction now, but it is not a flag
+// flip: this script holds AIRTABLE_PROD_READ_PAT, which is read-only by design
+// (verified read 200 / write 403), so it cannot write Airtable at all. That needs a
+// write credential and a deliberate decision about blast radius.
+//
+// Drift DETECTION is untouched and still runs on every pass — you keep the signal,
+// you just no longer have a one-flag correction pointed at the wrong system.
 const REPAIR = process.argv.includes("--repair");
+if (REPAIR) {
+  console.error(
+    "\n--repair is DISABLED as of migration Step 2.\n" +
+    "It updates Neon FROM Airtable, but Neon is now the source of truth for time\n" +
+    "entries — running it would overwrite correct payroll data with stale mirror\n" +
+    "values. Drift is still detected and reported; re-run without the flag.\n");
+  process.exit(2);
+}
 
 // Make imports into Airtable once nightly at 21:00; the puller runs hourly. So
 // between those, Neon legitimately holds hours Airtable has not seen yet and a

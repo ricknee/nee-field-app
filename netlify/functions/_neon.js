@@ -87,6 +87,29 @@ export async function neonExec(label, text, params = [], timeoutMs = DEFAULT_TIM
   return true;
 }
 
+// AUTHORITATIVE write — throws on any failure. This is the OPPOSITE contract to
+// neonExec above, and the opposite of this file's header, so read this before using
+// either one.
+//
+// neonExec is right while Airtable owns the data: the Airtable write already
+// succeeded and is what the caller returns, so a Neon failure is cosmetic and gets
+// swallowed. Once Neon owns the data that logic inverts. Every payroll read is now
+// served from Neon, so a write that fails in Neon and succeeds in Airtable is
+// INVISIBLE to the app — hours nobody can see, on the screen people get paid from.
+// Failing the request is strictly better: the user retries, and nothing is lost.
+//
+// Use neonWrite for anything Neon is the source of truth for (the four time-entry
+// write paths). Use neonExec for genuine mirrors, where the real write landed
+// somewhere else first.
+export async function neonWrite(label, text, params = [], timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const r = await neonQuery(text, params, timeoutMs);
+  // Distinct from a query error on purpose: an unset DATABASE_URL is a deploy fault,
+  // not a transient one, and it should read that way in the logs.
+  if (!r)      throw new Error(`${label}: Neon is not configured (DATABASE_URL unset)`);
+  if (r.error) throw new Error(`${label}: ${r.error}`);
+  return r.rows;
+}
+
 // Builds the `_shadow` block attached to dual-read responses. Compares two
 // keyed maps of numbers (e.g. jobName -> hours) and reports where they differ.
 // `tolerance` absorbs float noise only — it is NOT a licence to ignore drift.

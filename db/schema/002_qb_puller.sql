@@ -31,6 +31,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS time_entries_qb_timesheet_id_idx
 ALTER TABLE time_entries ADD CONSTRAINT te_has_a_key
   CHECK (airtable_id IS NOT NULL OR qb_timesheet_id IS NOT NULL);
 
+-- ── RELAXED 2026-08-05, migration Step 2 (payroll writes → Neon) ────────────
+-- The original form encoded an assumption that stopped being true: that every row
+-- originates in Airtable or QuickBooks. Once the app writes Neon FIRST, a row is
+-- born here with neither key — it gets an airtable_id only afterwards, if the
+-- Airtable mirror succeeds, and after Step 3 retires Make it never gets one at all.
+-- The check as written rejected every Neon-native insert.
+--
+-- The guard's PURPOSE still holds — a row must declare an origin, so nothing lands
+-- that no writer can address and no reconciler can explain. `source = 'Manual'` is
+-- that declaration for app-created rows, which is why handleCreateTimeEntry sets it
+-- explicitly rather than leaving it to a default.
+ALTER TABLE time_entries DROP CONSTRAINT te_has_a_key;
+ALTER TABLE time_entries ADD CONSTRAINT te_has_a_key
+  CHECK (airtable_id IS NOT NULL OR qb_timesheet_id IS NOT NULL OR source = 'Manual');
+
 -- The puller identifies people by QB `user_id`; Neon had no such column, so there was
 -- no way to resolve employee_id without going back to Airtable per row. Sourced from
 -- the Airtable Employees field "Employee ID" (fldvsUs0s8CCwrfIN) — the same field

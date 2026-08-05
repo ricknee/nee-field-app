@@ -3,7 +3,7 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
-import { neonEnabled, neonQuery, neonExec, shadowCompare } from "./_neon.js";
+import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
 // pCloud lost the store decision when its app-registration page turned out to
@@ -648,7 +648,8 @@ async function handlePayrollEntries(params) {
   if (neonEnabled()) {
     // Same 14-day window the Airtable path builds, expressed as a range.
     const q = await neonQuery(
-      `SELECT t.airtable_id            AS id,
+      `SELECT t.id::text              AS id,
+              t.airtable_id            AS airtable_id,
               t.employee_name          AS employee,
               e.airtable_id            AS employee_id,
               t.work_date::text        AS work_date,
@@ -667,7 +668,7 @@ async function handlePayrollEntries(params) {
 
     if (q?.rows) {
       const entries = q.rows.map(r => ({
-        id:         r.id,                       // null only while unlinked
+        id:         r.id,                       // Neon uuid — always present
         employee:   r.employee || "",
         employeeId: r.employee_id || null,
         workDate:   r.work_date || "",
@@ -679,8 +680,13 @@ async function handlePayrollEntries(params) {
         jobName:    r.job_name || "",
         reviewed:   r.labor_reviewed === true,
       }));
-      const unlinked = entries.filter(e => !e.id).length;
-      if (unlinked) console.warn(`payrollEntries: ${unlinked} row(s) not yet linked to Airtable — not editable until the linker runs`);
+      // `unlinked` is now a HEALTH SIGNAL, not a functional limitation. It used to
+      // mean "uneditable", because the id the UI edits by was the Airtable one and
+      // these rows had none. Editing is keyed on the Neon uuid now, so an unlinked
+      // row behaves normally and this only reports how far the Airtable mirror is
+      // behind. Expect it to be permanently non-zero after Step 3 retires Make.
+      const unlinked = q.rows.filter(r => !r.airtable_id).length;
+      if (unlinked) console.warn(`payrollEntries: ${unlinked} row(s) not yet mirrored to Airtable`);
       return resp(200, { ok: true, entries, _source: "neon", _ms: q.ms, ...(unlinked ? { unlinked } : {}) });
     }
     console.error(`payrollEntries: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
@@ -743,123 +749,117 @@ async function payrollEntriesFromAirtable(startDate, endDate) {
   return resp(200, { ok: true, entries, _source: "airtable" });
 }
 
-// ── Neon mirror for app-written time entries ───────────────────────────────
-// The QB puller owns ~99% of time_entries and keys them by qb_timesheet_id. Rows
-// written HERE are the one class it can never supply: manual entries that exist in
-// no QuickBooks timesheet, and app-set fields (notably Labor Reviewed, which the
-// puller deliberately excludes from its updates so it can't wipe them). Once payroll
-// reads come from Neon, anything not mirrored here is simply invisible.
+// ── NEON-FIRST time-entry writes (migration Step 2) ────────────────────────
+// Neon is the SOURCE OF TRUTH for time entries. All four write paths below write
+// Neon FIRST and treat Airtable as the mirror — the exact reverse of the mirror
+// that shipped 2026-07-30, which wrote Airtable first and copied into Neon.
 //
-// THE TRAP THIS SOLVES: after cutover a QB timesheet exists in Neon as a PULLER row
-// (qb_timesheet_id set, airtable_id NULL) while Make separately creates the Airtable
-// record the app edits. Mirroring naively on airtable_id would find nothing and
-// INSERT a second row — double-counted hours. So we locate the target row by
-// airtable_id OR by natural key, and stamp airtable_id onto the puller's row when we
-// adopt it. After that the row carries both keys and the two writers converge.
+// WHY THE ORDER HAD TO INVERT: under the old arrangement a failed Airtable write
+// meant the entry reached NEITHER system. Survivable while Airtable was
+// authoritative; not survivable now that every payroll read is served from Neon.
+// It also stops working entirely at Step 3 — once Make is retired, nothing creates
+// the Airtable row, so any design that needs one breaks the day Make is switched off.
 //
-// Fail-soft throughout: the Airtable write has already succeeded and is what the
-// caller returns. A Neon problem is logged and swallowed, never surfaced.
-async function mirrorTimeEntryToNeon(record) {
-  if (!record?.id || !neonEnabled()) return;
-  const f = record.fields || {};
+// WHY THESE FAIL CLOSED: see neonWrite in _neon.js. Reads fail soft, writes do not.
+// A write that succeeds in Airtable but fails in Neon is invisible to the app.
+//
+// Airtable is still written, for as long as it is the read fallback and Make is
+// alive. A failed Airtable mirror is logged and swallowed: the row is already safe
+// in Neon with correct hours and shows on the payroll screen, it simply carries
+// airtable_id NULL until the reconciler's linker matches it — the same `unlinked`
+// state the system already understands and reports.
 
-  // The UPDATE binds $1..$13; the INSERT additionally sets `source` as $14.
-  // These are built as SEPARATE arrays deliberately. They were once a single
-  // 14-element array shared by both, which made every UPDATE fail with
-  //   "bind message supplies 14 parameters, but prepared statement requires 13"
-  // — Postgres rejects extra parameters. The failure was invisible because the
-  // caller swallowed the error, so reviewing a timesheet silently did nothing in
-  // Neon for as long as it was deployed. Keep them separate; do not "tidy" this
-  // back into one array.
-  const updVals = [
-    record.id,                                            // $1  airtable_id
-    f["Employee"] || null,                                // $2  employee_name
-    firstLinkedId(f["Employee (Linked)"]) || null,        // $3  employee airtable id
-    f["Work Date"] || null,                               // $4  work_date
-    Number(f["Duration (Seconds)"] ?? 0),                 // $5  duration_seconds
-    f["City Taxes"] || null,                              // $6
-    f["Class"] || null,                                   // $7
-    f["Labor Type"] || null,                              // $8
-    f["Notes"] || null,                                   // $9
-    f["Billable"] === undefined ? null : f["Billable"] === true,  // $10
-    firstLinkedId(f["Job"]) || null,                      // $11 job airtable id
-    f["Job Name (Text)"] || null,                         // $12
-    f["Labor Reviewed"] === true,                         // $13
-  ];
-  const insVals = [...updVals, f["Source"] || "Manual"];  // $14, insert only
-
-  // Prefer an exact airtable_id hit; otherwise adopt an unclaimed row matching the
-  // natural key. `source` is NOT in the SET list — a TSheets row edited here must
-  // stay marked TSheets.
-  const upd = await neonQuery(
-    `UPDATE time_entries t SET
-       airtable_id = $1, employee_name = $2,
-       employee_id = COALESCE((SELECT id FROM employees WHERE airtable_id = $3), t.employee_id),
-       work_date = $4::date, duration_seconds = $5::numeric,
-       city_taxes = $6, class = $7, labor_type = $8, notes = $9, billable = $10,
-       job_id = COALESCE((SELECT id FROM jobs WHERE airtable_id = $11), t.job_id),
-       job_name = $12, labor_reviewed = $13
-     WHERE t.id = (
-       SELECT id FROM time_entries
-        WHERE airtable_id = $1
-           OR (airtable_id IS NULL
-               AND work_date = $4::date
-               AND duration_seconds = $5::numeric
-               AND lower(coalesce(employee_name,'')) = lower(coalesce($2,'')))
-        ORDER BY (airtable_id = $1) DESC NULLS LAST
-        LIMIT 1)
-     RETURNING t.id`,
-    updVals
-  );
-  if (upd?.rows?.length) return;
-  // NEVER swallow this. An earlier version returned silently here with a comment
-  // claiming neonQuery logs it — neonQuery does NOT log, it returns the error. That
-  // is how a parameter-count bug stayed invisible while every mirror write failed.
-  // Fail soft means not breaking the caller's request; it does not mean saying nothing.
-  if (upd?.error) {
-    console.error(`mirrorTimeEntryToNeon UPDATE failed for ${record.id}: ${upd.error}`);
-    return;
-  }
-
-  await neonExec("timeEntry.insert",
-    `INSERT INTO time_entries
-       (airtable_id, employee_name, employee_id, work_date, duration_seconds,
-        city_taxes, class, labor_type, notes, billable, job_id, job_name,
-        labor_reviewed, source, airtable_created_at)
-     VALUES ($1, $2, (SELECT id FROM employees WHERE airtable_id = $3), $4::date, $5::numeric,
-             $6, $7, $8, $9, $10, (SELECT id FROM jobs WHERE airtable_id = $11), $12,
-             $13, $14, now())
-     ON CONFLICT (airtable_id) DO NOTHING`,
-    insVals
-  );
+// Resolves the client's entry handle to BOTH keys. Reads return the Neon uuid, but
+// the Airtable read fallback still returns `rec…` ids BY DESIGN, so both forms have
+// to keep resolving for as long as that fallback exists. This is not a transition
+// shim and should not be removed when the payroll screen has been reloaded.
+// `id::text = $1` rather than `$1::uuid` because a `rec…` string would raise a cast
+// error rather than simply failing to match.
+async function resolveTimeEntry(entryId) {
+  const rows = await neonWrite("timeEntry.resolve",
+    `SELECT id, airtable_id FROM time_entries
+      WHERE id::text = $1 OR airtable_id = $1
+      LIMIT 1`,
+    [String(entryId)]);
+  return rows?.[0] || null;
 }
+
+// Best-effort Airtable mirror. Never throws — the authoritative write already
+// landed in Neon, so an Airtable problem must not fail the user's request. This is
+// the same fail-soft contract the Neon mirror used to have, pointed the other way.
+async function mirrorToAirtable(label, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    console.error(`mirrorToAirtable ${label} failed (ignored): ${e?.message || e}`);
+    return null;
+  }
+}
+
+// ⚠ `job_name` IS A SNAPSHOT — set it on INSERT, never recompute it on UPDATE.
+// It records the jobcode name as it stood when the entry was imported. 643 of the
+// 3,417 linked rows already disagree with their linked job's current `po_locked`:
+// PO corrections (MEC 389 → MEC 398), typo fixes (Jeanie → Jeannie), stray double
+// spaces, and a handful where the Job link was deliberately re-pointed to a
+// different job while the text was left as originally imported. Recomputing it
+// would silently rewrite history on rows people have already been paid against.
 
 // ── PAYROLL: create new time entry ─────────────────────────────────────────
 async function handleCreateTimeEntry(body) {
   const { employee, employeeId, workDate, duration, class: cls, cityTaxes, jobId } = body || {};
   if (!employee || !workDate) return resp(400, { ok: false, error: "Missing employee or workDate." });
 
+  const durationSecs = Math.round(Number(duration) || 0);
+  const klass  = cls || "Contract";
+  const taxes  = cityTaxes || "A No Tax";
+  const jobRec = (jobId      && String(jobId).startsWith("rec"))      ? String(jobId)      : null;
+  const empRec = (employeeId && String(employeeId).startsWith("rec")) ? String(employeeId) : null;
+
+  // NEON FIRST — this row is the record from here on, whatever Airtable does.
+  // `source = 'Manual'` is not decoration: the te_has_a_key CHECK requires a row to
+  // name its origin, and a Neon-native row has neither an Airtable nor a QB id at
+  // insert time. It is also what tells the reconciler this row is app-owned.
+  // job_name comes from the job's CURRENT po_locked because that is what an import
+  // today would record — see the snapshot warning above.
+  const rows = await neonWrite("timeEntry.insert",
+    `INSERT INTO time_entries
+       (employee_name, employee_id, work_date, duration_seconds, city_taxes, class,
+        job_id, job_name, labor_reviewed, source)
+     VALUES ($1,
+             (SELECT id FROM employees WHERE airtable_id = $2),
+             $3::date, $4::numeric, $5, $6,
+             (SELECT id        FROM jobs WHERE airtable_id = $7),
+             (SELECT po_locked FROM jobs WHERE airtable_id = $7),
+             false, 'Manual')
+     RETURNING id`,
+    [employee, empRec, workDate, durationSecs, taxes, klass, jobRec]);
+  const neonId = rows?.[0]?.id;
+
   const fields = {};
   fields[TE.employee]   = employee;
-  if (employeeId && String(employeeId).startsWith("rec")) {
-    fields[TE.employeeLink] = [String(employeeId)];
-  }
+  if (empRec) fields[TE.employeeLink] = [empRec];
   fields[TE.workDate]   = workDate;
-  fields[TE.duration]   = Math.round(Number(duration) || 0);
-  fields[TE.class]      = cls || "Contract";
-  fields[TE.cityTaxes]  = cityTaxes || "A No Tax";
-  if (jobId && String(jobId).startsWith("rec")) {
-    fields[TE.jobLink] = [String(jobId)];
-  }
+  fields[TE.duration]   = durationSecs;
+  fields[TE.class]      = klass;
+  fields[TE.cityTaxes]  = taxes;
+  if (jobRec) fields[TE.jobLink] = [jobRec];
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  // Mirror to Neon using Airtable's OWN response, so computed fields (notably
-  // "Job Name (Text)") carry the value Airtable actually stored rather than a guess.
-  await mirrorTimeEntryToNeon(data);
-  return resp(200, { ok: true, id: data.id });
+  const data = await mirrorToAirtable("createTimeEntry", () =>
+    atFetch(`${encodeURIComponent(TABLES.timeEntries)}`, {
+      method: "POST",
+      body: JSON.stringify({ fields, typecast: true })
+    }));
+
+  // Stamp the Airtable id back so the two systems agree on this row's identity.
+  // If the mirror failed, the row simply stays unlinked and the linker picks it up.
+  if (data?.id && neonId) {
+    await mirrorToAirtable("createTimeEntry.stamp", () =>
+      neonWrite("timeEntry.stampAirtableId",
+        `UPDATE time_entries SET airtable_id = $2 WHERE id = $1`, [neonId, data.id]));
+  }
+  // `id` is now the NEON uuid. The client treats it as opaque and hands it back on
+  // edit, where resolveTimeEntry accepts either form.
+  return resp(200, { ok: true, id: neonId, airtableId: data?.id || null });
 }
 
 // ── PAYROLL: update time entry (duration + other fields) ───────────────────
@@ -867,24 +867,48 @@ async function handleUpdateTimeEntryPayroll(body) {
   const { entryId, duration, workDate, class: cls, cityTaxes, jobId, reviewed } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
 
-  const fields = {};
-  if (duration  !== undefined && duration  !== null) fields[TE.duration]  = Math.round(Number(duration));
-  if (workDate  !== undefined) fields[TE.workDate]  = workDate;
-  if (cls       !== undefined) fields[TE.class]     = cls;
-  if (cityTaxes !== undefined) fields[TE.cityTaxes] = cityTaxes;
-  if (reviewed  !== undefined) fields[TE.reviewed]  = reviewed === true;
+  const target = await resolveTimeEntry(entryId);
+  if (!target) return resp(404, { ok: false, error: "Time entry not found." });
+
+  // Only the fields the client actually sent go into the SET list, so an omitted
+  // field is left alone rather than nulled. Note job_name is absent even when jobId
+  // changes — re-pointing a link does not rewrite the imported name (snapshot rule).
+  const sets = [], vals = [target.id];
+  const put = (col, v, cast = "") => { vals.push(v); sets.push(`${col} = $${vals.length}${cast}`); };
+  if (duration  !== undefined && duration !== null) put("duration_seconds", Math.round(Number(duration)), "::numeric");
+  if (workDate  !== undefined) put("work_date", workDate, "::date");
+  if (cls       !== undefined) put("class", cls);
+  if (cityTaxes !== undefined) put("city_taxes", cityTaxes);
+  if (reviewed  !== undefined) put("labor_reviewed", reviewed === true);
   if (jobId !== undefined) {
-    fields[TE.jobLink] = (jobId && String(jobId).startsWith("rec")) ? [String(jobId)] : [];
+    const rec = (jobId && String(jobId).startsWith("rec")) ? String(jobId) : null;
+    vals.push(rec);
+    sets.push(`job_id = (SELECT id FROM jobs WHERE airtable_id = $${vals.length})`);
   }
+  if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
 
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+  await neonWrite("timeEntry.updatePayroll",
+    `UPDATE time_entries SET ${sets.join(", ")} WHERE id = $1`, vals);
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields })
-  });
-  await mirrorTimeEntryToNeon(data);
-  return resp(200, { ok: true, updatedId: data.id });
+  // Airtable mirror. Skipped when the row has no Airtable twin — after Step 3 that
+  // is every new row, and it is not an error.
+  if (target.airtable_id) {
+    const fields = {};
+    if (duration  !== undefined && duration  !== null) fields[TE.duration]  = Math.round(Number(duration));
+    if (workDate  !== undefined) fields[TE.workDate]  = workDate;
+    if (cls       !== undefined) fields[TE.class]     = cls;
+    if (cityTaxes !== undefined) fields[TE.cityTaxes] = cityTaxes;
+    if (reviewed  !== undefined) fields[TE.reviewed]  = reviewed === true;
+    if (jobId !== undefined) {
+      fields[TE.jobLink] = (jobId && String(jobId).startsWith("rec")) ? [String(jobId)] : [];
+    }
+    await mirrorToAirtable("updateTimeEntryPayroll", () =>
+      atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${target.airtable_id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields })
+      }));
+  }
+  return resp(200, { ok: true, updatedId: target.id });
 }
 
 // ── BACKFILL: reconcile Employee text + Employee (Linked) on Time Entries ──
@@ -2748,12 +2772,15 @@ async function handleUpdateScissorLift(body) {
 async function handleDeleteTimeEntry(body) {
   const { entryId } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
-  await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, { method: "DELETE" });
-  // Tombstone rather than DELETE, matching the ETL and the puller: dropping payroll
-  // history silently is exactly what you want a record of. Only reaches rows this app
-  // has touched (airtable_id set) — a QB-owned row deleted in QuickBooks is the
-  // puller's /timesheets_deleted poll to handle.
-  await neonExec("timeEntry.delete",
+
+  const target = await resolveTimeEntry(entryId);
+  if (!target) return resp(404, { ok: false, error: "Time entry not found." });
+
+  // NEON FIRST, and tombstoned rather than dropped — matching the ETL and the
+  // puller. Silently losing payroll history is exactly the thing you want a record
+  // of. Keyed on the Neon id now, so it also covers rows that never reached
+  // Airtable, which is every new row once Make is retired.
+  await neonWrite("timeEntry.delete",
     `WITH gone AS (
        INSERT INTO time_entries_deleted
          (airtable_id, qb_timesheet_id, employee_name, employee_id, work_date,
@@ -2762,28 +2789,49 @@ async function handleDeleteTimeEntry(body) {
        SELECT airtable_id, qb_timesheet_id, employee_name, employee_id, work_date,
               duration_seconds, city_taxes, class, labor_type, source, notes, billable,
               job_id, job_name, labor_reviewed, airtable_created_at, now()
-         FROM time_entries WHERE airtable_id = $1
+         FROM time_entries WHERE id = $1
        RETURNING airtable_id)
-     DELETE FROM time_entries WHERE airtable_id IN (SELECT airtable_id FROM gone)`,
-    [entryId]);
-  return resp(200, { ok: true, deleted: entryId });
+     DELETE FROM time_entries WHERE id = $1`,
+    [target.id]);
+
+  if (target.airtable_id) {
+    await mirrorToAirtable("deleteTimeEntry", () =>
+      atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${target.airtable_id}`, { method: "DELETE" }));
+  }
+  return resp(200, { ok: true, deleted: target.id });
 }
 
 async function handleUpdateTimeEntry(body) {
   const { entryId, reviewed, duration, notes } = body || {};
   if (!entryId) return resp(400, { ok: false, error: "Missing entryId." });
-  const fields = {};
-  if (reviewed !== undefined) fields["fldQn7d06doEkrGBv"] = reviewed === true;
-  if (duration !== undefined && duration !== null) fields["fld9mz6As3099VPVp"] = Number(duration);
-  if (notes    !== undefined) fields["Notes"]            = String(notes || "");
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
-  const data = await atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${entryId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
-  // This is the path that sets Labor Reviewed. The QB puller deliberately EXCLUDES
-  // that column from its updates so it can't wipe the flag — which only works if the
-  // flag reaches Neon in the first place. Without this mirror, reviewing a timesheet
-  // would appear to do nothing once payroll reads come from Neon.
-  await mirrorTimeEntryToNeon(data);
-  return resp(200, { ok: true, updatedId: data.id });
+
+  const target = await resolveTimeEntry(entryId);
+  if (!target) return resp(404, { ok: false, error: "Time entry not found." });
+
+  // This is the path that sets Labor Reviewed, from the per-job Time Entries tab.
+  // The QB puller deliberately EXCLUDES that column from its updates so a re-sync
+  // can't wipe the flag — which only works if the flag lands in Neon in the first
+  // place. It now does so directly rather than via an Airtable round-trip.
+  const sets = [], vals = [target.id];
+  const put = (col, v, cast = "") => { vals.push(v); sets.push(`${col} = $${vals.length}${cast}`); };
+  if (reviewed !== undefined) put("labor_reviewed", reviewed === true);
+  if (duration !== undefined && duration !== null) put("duration_seconds", Number(duration), "::numeric");
+  if (notes    !== undefined) put("notes", String(notes || ""));
+  if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  await neonWrite("timeEntry.update",
+    `UPDATE time_entries SET ${sets.join(", ")} WHERE id = $1`, vals);
+
+  if (target.airtable_id) {
+    const fields = {};
+    if (reviewed !== undefined) fields["fldQn7d06doEkrGBv"] = reviewed === true;
+    if (duration !== undefined && duration !== null) fields["fld9mz6As3099VPVp"] = Number(duration);
+    if (notes    !== undefined) fields["Notes"]            = String(notes || "");
+    await mirrorToAirtable("updateTimeEntry", () =>
+      atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${target.airtable_id}`,
+        { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) }));
+  }
+  return resp(200, { ok: true, updatedId: target.id });
 }
 
 // NEON-FIRST since slice 5 phase A. Airtable is the fallback.
@@ -2805,7 +2853,7 @@ async function handleTimeEntries(params) {
 
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT t.airtable_id                     AS id,
+      `SELECT t.id::text                        AS id,
               t.work_date::text                 AS work_date,
               t.employee_name, t.class, t.city_taxes, t.notes,
               t.hours::float8                   AS hours,
@@ -2822,7 +2870,7 @@ async function handleTimeEntries(params) {
     );
     if (q?.rows) {
       const entries = q.rows.map(r => ({
-        id:              r.id,                       // Airtable rec id — the UI edits by it
+        id:              r.id,                       // Neon uuid — the UI edits by it
         workDate:        r.work_date || "",
         employee:        r.employee_name || "",
         class:           r.class || "",

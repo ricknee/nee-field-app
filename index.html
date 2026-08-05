@@ -375,6 +375,12 @@
       width: 1em;
       color: var(--muted);
     }
+    /* Search hit on the Expenses tab. The :hover rule above also sets td
+       background, so the hover twin is required or the highlight vanishes
+       under the cursor — exactly when you're trying to read the row. */
+    .expense-table tr.exp-row-hit td,
+    .expense-table tr.exp-row-hit:hover td { background: #fff3bf; }
+    .expense-table tr.exp-row-hit td:first-child { border-left: 4px solid #f59e0b; }
     .expense-status-pill {
       display: inline-block;
       padding: 2px 8px;
@@ -6285,9 +6291,22 @@
   // delete (which rebuild the table from scratch).
   window.__expGroupCollapsed = window.__expGroupCollapsed || new Set();
 
+  // "Did I already enter this?" search on the Expenses tab. Same window-scope
+  // reason as the collapse Set: a search re-renders through loadExpenses, so
+  // the terms have to outlive the rebuild. focus = which of the two inputs to
+  // put the caret back in afterwards.
+  window.__expSearch = window.__expSearch ||
+    { vendor: "", cost: "", focus: "", jump: false, jobId: null };
+
   // ── EXPENSES (admin) ──
   async function loadExpenses(jobId) {
     const el = $("expensesList");
+    // Search terms are per-job — carrying "Home Depot / 128.44" into the next
+    // job you open would answer the wrong question. Re-renders for the SAME job
+    // (approve, delete, group collapse) keep the terms, which is the point.
+    if (window.__expSearch.jobId !== jobId) {
+      window.__expSearch = { vendor: "", cost: "", focus: "", jump: false, jobId };
+    }
     el.innerHTML = `<div class="loading-msg">Loading expenses...</div>`;
     try {
       const d = await apiGet("expenses", { jobId });
@@ -6307,6 +6326,45 @@
       const byDateDesc = (a, b) => (b.date || "").localeCompare(a.date || "");
       reviewed.sort(byDateDesc);
       pending.sort(byDateDesc);
+
+      // ── Search: vendor and/or total cost ──────────────────────────────
+      // Matches against the fetched array, not the rendered DOM, so it finds
+      // rows sitting inside a collapsed vendor group and on whichever sub-tab
+      // they landed on — the whole point is answering "did I enter this yet?"
+      // without hand-scanning both tabs.
+      const S = window.__expSearch;
+      const qVendor  = (S.vendor || "").trim().toLowerCase();
+      // Tolerate what people actually type: "$1,284.10", " 1284.10 ".
+      const qCostRaw = (S.cost || "").trim().replace(/[$,\s]/g, "");
+      const qCostNum = qCostRaw === "" ? null : Number(qCostRaw);
+      const costBad  = qCostRaw !== "" && !Number.isFinite(qCostNum);
+      const qCost    = costBad ? null : qCostNum;
+      const searchOn = !!qVendor || qCost != null;
+
+      const hitIds = new Set();
+      let hitsPending = 0, hitsReviewed = 0;
+      if (searchOn) {
+        const isHit = (e) => {
+          if (qVendor) {
+            // Description is included so expenses filed without a vendor (the
+            // "⚠️ (no vendor)" bucket) are still findable by what they say.
+            const hay = ((e.vendor || "") + " " + (e.description || "")).toLowerCase();
+            if (!hay.includes(qVendor)) return false;
+          }
+          if (qCost != null) {
+            if (e.totalCost == null) return false;
+            if (Math.abs(e.totalCost - qCost) > 0.005) return false;  // to the cent
+          }
+          return true;
+        };
+        for (const e of pending)  if (isHit(e)) { hitIds.add(e.id); hitsPending++; }
+        for (const e of reviewed) if (isHit(e)) { hitIds.add(e.id); hitsReviewed++; }
+      }
+
+      const searchTerms = [
+        qVendor  ? `vendor “${S.vendor.trim()}”` : "",
+        qCost != null ? `total ${fmtCurrency(qCost)}` : "",
+      ].filter(Boolean).join(" + ");
 
       // Bucket rows by vendor name (e.vendor is already a string from the
       // handler; "" = no vendor). Returns groups in display order:
@@ -6339,7 +6397,7 @@
 
       function expenseRow(e, showActions) {
         const markup = e.jobMarkupPct != null ? Math.round(e.jobMarkupPct * 100) + "%" : "—";
-        return `<tr>
+        return `<tr${hitIds.has(e.id) ? ` class="exp-row-hit"` : ""}>
           <td style="white-space:nowrap;">${esc(fmtDate(e.date))}</td>
           <td>${esc(e.vendor || "—")}</td>
           <td>${esc(e.description || "—")}${e.submittedBy ? `<div style="font-size:10px; color:var(--muted); margin-top:2px;">👤 ${esc(e.submittedBy)}</div>` : ""}</td>
@@ -6359,10 +6417,15 @@
         </tr>`;
       }
 
+      // A group the user collapsed still opens while it holds a search hit —
+      // otherwise the highlighted row would be hidden inside it.
+      const isCollapsed = (g) =>
+        window.__expGroupCollapsed.has(g.key) && !g.rows.some(r => hitIds.has(r.id));
+
       // colSpec: "pending" → 10-col table (3|1|1|1|4)
       //          "reviewed" → 8-col table (3|1|1|1|2)
       function groupHeaderRow(group, colSpec) {
-        const collapsed = window.__expGroupCollapsed.has(group.key);
+        const collapsed = isCollapsed(group);
         const chev      = collapsed ? "▸" : "▾";
         const countWord = group.count === 1 ? "entry" : "entries";
         const trailingSpan = colSpec === "pending" ? 4 : 2;
@@ -6380,7 +6443,7 @@
         const groups = groupByVendor(list);
         const body = groups.map(g => {
           const header = groupHeaderRow(g, "pending");
-          const rows   = window.__expGroupCollapsed.has(g.key)
+          const rows   = isCollapsed(g)
             ? ""
             : g.rows.map(e => expenseRow(e, true)).join("");
           return header + rows;
@@ -6401,7 +6464,7 @@
         const groups = groupByVendor(list);
         const body = groups.map(g => {
           const header = groupHeaderRow(g, "reviewed");
-          const rows   = window.__expGroupCollapsed.has(g.key)
+          const rows   = isCollapsed(g)
             ? ""
             : g.rows.map(e => expenseRow(e, false)).join("");
           return header + rows;
@@ -6427,6 +6490,37 @@
           <span style="font-size:13px; color:var(--red); font-weight:600;">⬜ Pending: ${fmtCurrency(totalPend)}</span>
           ${allPendingExpIds.length ? `<button id="exp-approve-all-btn" class="btn btn-sm" style="margin-left:auto; background:var(--green); color:white; border:none; font-size:12px; padding:6px 14px;">✅ Approve All (${allPendingExpIds.length})</button>` : ""}
         </div>
+        <!-- Find an expense (searches BOTH sub-tabs) -->
+        <div style="margin-bottom:14px;">
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+            <input id="exp-search-vendor" class="edit-input" type="text" autocomplete="off"
+                   placeholder="Vendor (or description)" value="${esc(S.vendor || "")}"
+                   style="flex:1 1 200px; min-width:150px; font-size:13px;" />
+            <input id="exp-search-cost" class="edit-input" type="text" inputmode="decimal" autocomplete="off"
+                   placeholder="Total cost, e.g. 128.44" value="${esc(S.cost || "")}"
+                   style="flex:0 1 180px; min-width:140px; font-size:13px;" />
+            <button id="exp-search-btn" class="btn btn-sm" type="button" style="font-size:12px; padding:6px 14px;">🔍 Find</button>
+            ${searchOn || costBad ? `<button id="exp-search-clear" class="btn btn-sm" type="button" style="font-size:12px; padding:6px 12px;">✕ Clear</button>` : ""}
+          </div>
+          ${costBad ? `
+          <div style="margin-top:8px; font-size:13px; font-weight:600; color:var(--red);">
+            ⚠️ “${esc(S.cost.trim())}” isn't a number — enter a total cost like 128.44.
+          </div>` : ""}
+          ${searchOn && hitIds.size ? `
+          <div style="margin-top:8px; font-size:13px; font-weight:600; color:var(--green);">
+            ✅ Found ${hitIds.size} ${hitIds.size === 1 ? "match" : "matches"} for ${esc(searchTerms)}
+            <span style="color:var(--muted); font-weight:500;">
+              — ${hitsPending} in ⬜ Not Reviewed, ${hitsReviewed} in ✅ Reviewed (highlighted below)
+            </span>
+          </div>` : ""}
+          ${searchOn && !hitIds.size ? `
+          <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+            <span style="font-size:13px; font-weight:600; color:var(--red);">
+              ❌ Not found — no expense on this job matches ${esc(searchTerms)}
+            </span>
+            ${isAdmin() ? `<button id="exp-search-add" class="btn btn-sm btn-primary" type="button" style="font-size:12px; padding:6px 14px;">➕ Enter it now</button>` : ""}
+          </div>` : ""}
+        </div>
         <!-- Sub-tabs -->
         <div style="display:flex; gap:0; margin-bottom:14px; border-bottom:2px solid var(--line);">
           <button id="exp-tab-pending" onclick="expShowTab('pending')" style="padding:8px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; border-bottom:3px solid var(--accent); color:var(--accent); margin-bottom:-2px;">⬜ Not Reviewed (${pending.length})</button>
@@ -6434,6 +6528,61 @@
         </div>
         <div id="exp-pending-content" style="overflow-x:auto;">${renderPendingTab(pending)}</div>
         <div id="exp-reviewed-content" style="overflow-x:auto; display:none;">${renderReviewedTab(reviewed)}</div>`;
+
+      // Wire the search box. Every search round-trips through loadExpenses so
+      // the tables rebuild with the hit class and any collapsed group holding a
+      // hit re-opens — same re-render path the group chevrons already use.
+      const expSearchVendor = $("exp-search-vendor");
+      const expSearchCost   = $("exp-search-cost");
+      const runExpSearch = (focusField) => {
+        window.__expSearch.vendor = expSearchVendor.value;
+        window.__expSearch.cost   = expSearchCost.value;
+        window.__expSearch.focus  = focusField || "";
+        window.__expSearch.jump   = true;
+        loadExpenses(jobId);
+      };
+      $("exp-search-btn").addEventListener("click", () => runExpSearch(""));
+      [["vendor", expSearchVendor], ["cost", expSearchCost]].forEach(([name, inp]) => {
+        inp.addEventListener("keydown", ev => {
+          if (ev.key !== "Enter") return;
+          ev.preventDefault();
+          runExpSearch(name);
+        });
+      });
+      const expSearchClear = $("exp-search-clear");
+      if (expSearchClear) expSearchClear.addEventListener("click", () => {
+        window.__expSearch.vendor = "";
+        window.__expSearch.cost   = "";
+        window.__expSearch.focus  = "vendor";
+        loadExpenses(jobId);
+      });
+
+      // Not found → open the Add Expense form with the searched terms already in.
+      const expSearchAdd = $("exp-search-add");
+      if (expSearchAdd) expSearchAdd.addEventListener("click", () => {
+        openGeneralExpenseForm({ vendor: S.vendor.trim(), amount: qCost });
+      });
+
+      // The re-render above wipes focus; put the caret back where it was so
+      // searching twice in a row doesn't mean re-clicking the field. Both this
+      // and the jump below are one-shot — they belong to the search that just
+      // ran, not to the next approve/delete/collapse re-render.
+      if (S.focus) {
+        const f = S.focus === "cost" ? expSearchCost : expSearchVendor;
+        f.focus();
+        try { f.setSelectionRange(f.value.length, f.value.length); } catch (_) {}
+        S.focus = "";
+      }
+
+      // Jump to the sub-tab holding the hits (scrollIntoView is a no-op on the
+      // hidden one) and bring the first highlighted row into view.
+      if (S.jump && searchOn && hitIds.size) {
+        const targetTab = hitsPending ? "pending" : "reviewed";
+        if (targetTab === "reviewed") window.expShowTab("reviewed");
+        const firstHit = el.querySelector(`#exp-${targetTab}-content tr.exp-row-hit`);
+        if (firstHit) firstHit.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+      S.jump = false;
 
       // Wire Approve All expenses (global)
       const expApproveAllBtn = $("exp-approve-all-btn");
@@ -9191,6 +9340,40 @@
 
   // ── EVENTS ──
   // ── GENERAL EXPENSE ──
+
+  // Opens the inline "Add Expense" panel on the job's Expenses tab. Shared by
+  // the toolbar button and by the search box's not-found prompt, which passes
+  // { vendor, amount } so the thing you just searched for is already typed in.
+  // The prefill has to land AFTER the await: populateVendorDropdown() calls
+  // resetVendorPicker(), which would wipe anything written before it resolves.
+  // Vendor is prefilled as *search text only* — the hidden id stays empty on
+  // purpose, so saving still requires picking a real vendor record.
+  async function openGeneralExpenseForm(prefill) {
+    $("generalExpensePanel").style.display = "";
+    $("liftExpensePanel").style.display = "none";
+    const bp = $("bucketExpensePanel"); if (bp) bp.style.display = "none";
+    $("expenseActionBtns").style.display = "none";
+    // Set today's date
+    $("genExpDate").value = new Date().toISOString().slice(0,10);
+    // Init/refresh the Vendor picker (lazy-loads vendor list on first open;
+    // resets hidden id + search input on every open).
+    await populateVendorDropdown();
+
+    if (!prefill) return;
+    if (prefill.amount != null && Number.isFinite(prefill.amount) && prefill.amount > 0) {
+      $("genExpAmount").value = prefill.amount.toFixed(2);
+    }
+    const vSearch = $("genExpVendorSearch");
+    if (prefill.vendor && vSearch) {
+      vSearch.value = prefill.vendor;
+      // Fire the picker's own input handler so the matching-vendor dropdown
+      // opens — one click from a real selection.
+      vSearch.dispatchEvent(new Event("input", { bubbles: true }));
+      vSearch.focus();
+    }
+    $("generalExpensePanel").scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   async function saveGeneralExpense() {
     const job = state.selected;
     if (!job) return;
@@ -9680,17 +9863,7 @@
 
     // General Expense
     const btnAddGen = $("btnAddGeneralExpense");
-    if (btnAddGen) btnAddGen.addEventListener("click", () => {
-      $("generalExpensePanel").style.display = "";
-      $("liftExpensePanel").style.display = "none";
-      const bp = $("bucketExpensePanel"); if (bp) bp.style.display = "none";
-      $("expenseActionBtns").style.display = "none";
-      // Set today's date
-      $("genExpDate").value = new Date().toISOString().slice(0,10);
-      // Init/refresh the Vendor picker (lazy-loads vendor list on first open;
-      // resets hidden id + search input on every open).
-      populateVendorDropdown();
-    });
+    if (btnAddGen) btnAddGen.addEventListener("click", () => openGeneralExpenseForm(null));
     const genExpCancel = $("genExpCancelBtn");
     if (genExpCancel) genExpCancel.addEventListener("click", () => {
       $("generalExpensePanel").style.display = "none";

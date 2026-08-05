@@ -11270,6 +11270,123 @@
   }
   window.closeScissorLifts = closeScissorLifts;
 
+  // ── Lift photos (R2) ──────────────────────────────────────────────────────
+  // The photos moved out of Airtable because its attachment URLs expire after a
+  // couple of hours — see db/schema/009_scissor_lifts.sql. `lift.photos` is the
+  // full list from R2; `lift.photoUrl` is still photos[0] so nothing that only
+  // wanted one picture had to change.
+  //
+  // Everyone sees them. Only admin/office can add or remove, matching the
+  // backend's authz — a crew moving a lift between jobs is a field action,
+  // curating the equipment record is not.
+  function renderLiftPhotos(lift) {
+    const photos = lift.photos || (lift.photoUrl ? [{ url: lift.photoUrl, key: "" }] : []);
+    const canEdit = isAdmin();
+    if (!photos.length && !canEdit) return "";
+    const strip = photos.map(p => `
+      <div class="sl-photo" style="position:relative; flex:0 0 auto;">
+        <img src="${esc(p.url)}" alt="${esc(lift.name)}"
+             style="width:104px; height:78px; object-fit:cover; border-radius:6px; display:block;" />
+        ${canEdit && p.key ? `<button class="sl-photo-del" data-lift-id="${esc(lift.id)}" data-key="${esc(p.key)}"
+          title="Remove this photo"
+          style="position:absolute; top:2px; right:2px; width:20px; height:20px; line-height:18px;
+                 border-radius:50%; border:none; background:rgba(0,0,0,0.6); color:#fff;
+                 font-size:13px; cursor:pointer; padding:0;">&times;</button>` : ""}
+      </div>`).join("");
+    // A label wrapping a hidden input is the whole "upload" control — no button
+    // wiring, and it works the same on a phone's camera roll.
+    const adder = canEdit ? `
+      <label class="sl-photo-add" style="flex:0 0 auto; width:104px; height:78px; border-radius:6px;
+             border:1px dashed var(--line-2); display:flex; align-items:center; justify-content:center;
+             cursor:pointer; font-size:11px; color:var(--muted); text-align:center;">
+        + Photo
+        <input type="file" accept="image/*" data-lift-id="${esc(lift.id)}"
+               class="sl-photo-input" style="display:none;" />
+      </label>` : "";
+    return `<div class="sl-photo-strip" style="display:flex; gap:6px; overflow-x:auto; margin-bottom:10px;">${strip}${adder}</div>`;
+  }
+
+  function wireLiftPhotoControls() {
+    $("slGrid").querySelectorAll(".sl-photo-input").forEach(input => {
+      input.addEventListener("change", async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        const liftId = input.dataset.liftId;
+        const label = input.closest(".sl-photo-add");
+        const prev = label.firstChild.nodeValue;
+        label.firstChild.nodeValue = "…";
+        try {
+          // Presigned PUT: the bytes go browser → R2 directly and never through
+          // the function, so there is no 4.5 MB payload ceiling. Same path the
+          // jobsite photos use.
+          const { putUrl, contentType } = await apiPost("liftPhotoUploadUrl",
+            { liftId, contentType: file.type || "image/jpeg" });
+          const put = await fetch(putUrl, { method: "PUT", body: file,
+            headers: { "content-type": contentType } });
+          if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+          await loadScissorLifts();
+        } catch (e) {
+          alert("Couldn't add the photo: " + e.message);
+          label.firstChild.nodeValue = prev;
+          input.value = "";
+        }
+      });
+    });
+
+    $("slGrid").querySelectorAll(".sl-photo-del").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Remove this photo? This cannot be undone.")) return;
+        btn.disabled = true;
+        try {
+          await apiPost("deleteLiftPhoto", { liftId: btn.dataset.liftId, key: btn.dataset.key });
+          await loadScissorLifts();
+        } catch (e) {
+          alert("Couldn't remove the photo: " + e.message);
+          btn.disabled = false;
+        }
+      });
+    });
+  }
+
+  // Retiring a SOLD lift. Deletes the record and every photo with it — the
+  // owner's rule — so it asks twice: once plainly, once with the name typed
+  // back, because there is no undo and no recycle bin.
+  function wireLiftRetire() {
+    $("slGrid").querySelectorAll(".sl-retire-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const name = btn.dataset.liftName;
+        if (!confirm(`Retire ${name}?\n\nThis removes the lift and all of its photos for good. Use this when a lift has been sold.`)) return;
+        const typed = prompt(`This cannot be undone.\n\nType the lift name to confirm:`, "");
+        if (typed === null) return;
+        if (typed.trim().toLowerCase() !== String(name).trim().toLowerCase()) {
+          alert("That didn't match — nothing was removed.");
+          return;
+        }
+        btn.disabled = true; btn.textContent = "...";
+        try {
+          const d = await apiPost("deleteScissorLift", { liftId: btn.dataset.liftId });
+          await loadScissorLifts();
+          alert(`${name} retired.` + (d.photosDeleted ? ` ${d.photosDeleted} photo(s) removed.` : ""));
+        } catch (e) {
+          alert("Couldn't retire the lift: " + e.message);
+          btn.disabled = false; btn.textContent = "Retire";
+        }
+      });
+    });
+  }
+
+  async function addScissorLift() {
+    const name = prompt("New lift name (e.g. Lift #11):", "");
+    if (name === null) return;
+    if (!name.trim()) { alert("A name is required."); return; }
+    try {
+      await apiPost("createScissorLift", { name: name.trim(), status: "Available" });
+      await loadScissorLifts();
+    } catch (e) {
+      alert("Couldn't add the lift: " + e.message);
+    }
+  }
+
   async function loadScissorLifts() {
     $("slGrid").innerHTML = `<div class="loading-msg">Loading lifts...</div>`;
     $("slSummaryBar").innerHTML = "";
@@ -11286,6 +11403,14 @@
         <span style="color:#854d0e;">🟡 On Job: ${onJob}</span>
         <span style="color:var(--red);">🔴 Needs Service: ${service}</span>`;
 
+      // Wired once, here rather than at open, because loadScissorLifts is also
+      // the refresh path — re-binding on every load would stack listeners.
+      const addBtn = $("slAddBtn");
+      if (addBtn) {
+        addBtn.style.display = isAdmin() ? "" : "none";
+        if (!addBtn._wired) { addBtn._wired = true; addBtn.addEventListener("click", addScissorLift); }
+      }
+
       // Render cards
       $("slGrid").innerHTML = lifts.map(lift => {
         const statusClass = lift.status === "Available" ? "available" : lift.status === "On Job" ? "on-job" : "needs-service";
@@ -11295,7 +11420,7 @@
               <span class="sl-card-title">${esc(lift.name)}</span>
               <span class="sl-status-pill ${statusClass}">${esc(lift.status || "—")}</span>
             </div>
-            ${lift.photoUrl ? `<img src="${esc(lift.photoUrl)}" alt="${esc(lift.name)}" style="width:100%; height:120px; object-fit:cover; border-radius:6px; margin-bottom:10px;" />` : ""}
+            ${renderLiftPhotos(lift)}
             <div class="sl-field">
               <label>Status</label>
               <select data-lift-id="${esc(lift.id)}" class="sl-status-sel">
@@ -11344,9 +11469,15 @@
             <div class="sl-save-row">
               <button data-lift-id="${esc(lift.id)}" class="sl-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save</button>
               <span data-lift-id="${esc(lift.id)}" class="sl-save-msg">✓ Saved</span>
+              ${isAdmin() ? `<button data-lift-id="${esc(lift.id)}" data-lift-name="${esc(lift.name)}"
+                class="sl-retire-btn btn btn-sm" style="font-size:11px; margin-left:auto; color:var(--red);"
+                title="Remove this lift and its photos — for when one is sold">Retire</button>` : ""}
             </div>
           </div>`;
       }).join("");
+
+      wireLiftPhotoControls();
+      wireLiftRetire();
 
       // Wire save buttons
       $("slGrid").querySelectorAll(".sl-save-btn").forEach(btn => {
@@ -19414,7 +19545,12 @@
   <div class="sl-modal">
     <div class="sl-modal-header">
       <h2>🏗 Scissor Lift Tracker</h2>
-      <button onclick="closeScissorLifts()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <!-- Admin/office only, wired in loadScissorLifts. Adding equipment to the
+             books is not a field action; marking a lift on/off a job still is. -->
+        <button id="slAddBtn" class="btn btn-primary btn-sm" style="display:none; font-size:12px;">+ Add Lift</button>
+        <button onclick="closeScissorLifts()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+      </div>
     </div>
     <div class="sl-modal-body">
       <div id="slSummaryBar" style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding:10px 14px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; font-size:13px; font-weight:600;"></div>

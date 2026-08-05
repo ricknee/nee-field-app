@@ -17,7 +17,9 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Jobs master data** | ✅ In Neon (112 jobs), read by 4 app endpoints. Identity columns refresh **hourly** since 2026-08-05; the other ~22 master columns still need a hand-run ETL. |
 | **Payroll reads** | ✅ **Served by Neon — confirmed on production 2026-08-05.** All three of `handlePayrollHoursRollup` (`_ms` 90), `handleMyHoursRollup` (65) and `handlePayrollEntries` (60) returned `_source:"neon"`, with the rollup figures matching Neon exactly. |
 | **Job list / GP** | 🟨 Whole GP layer ported to Neon views and diffed to **zero** mismatches — but `handleJobs` still reads Airtable, so none of it serves the app yet. ~1 h to flip. |
-| **Everything else** (estimates, invoices, expenses, fleet, generators, inspections) | ⬜ Still Airtable |
+| **Crew Schedule** | ✅ In Neon since 2026-08-05 (Step 4a) — reads, writes and the crew picker |
+| **Fleet + Lifts** | ✅ In Neon since 2026-08-05 (Step 4b), **photos in R2** — off Airtable's expiring attachment URLs |
+| **Everything else** (estimates, invoices, expenses, generators, inspections) | ⬜ Still Airtable |
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
 | **Inventory app** | ⬜ Still Airtable, still coupled to the main base via the Jobs mirror |
 
@@ -254,7 +256,7 @@ before it's used on something that can.
 | # | Domain | Why here | Rough size |
 |---|---|---|---|
 | **4a** | **Schedule** ⬅ *owner's chosen next project (2026-08-05)* | **The smallest slice in the app, and the best place to prove the pattern.** One table, **7 fields, 64 rows** (Title, Job, Start/End Date, Crew, Notes, Entry Type). No money, no formulas, no rollups, no Make. Its only two links — **Job and Employee — are already in Neon**, so the FKs resolve on day one. | ~2 h |
-| **4b** | **Fleet + Lifts** — 🟨 **LIFTS DONE 2026-08-05**, Fleet Vehicles remains | ✅ Lifts: table + 10 rows in Neon, **9 photos moved to R2**, natural sort fixed, and three capabilities that never existed — add a lift, retire a sold one (row + photos), add/remove a photo. Owner-confirmed working. ⬜ Fleet Vehicles (23 fields) has the **identical expiring-photo problem** and the same fix; also `Fleet Maintenance`, `Fleet Mileage Log`, `Job Vehicle Trips`. | ~2 h done, ~3 h left |
+| **4b** | ✅ **Fleet + Lifts — DONE 2026-08-05** | **Lifts**: 10 rows, 9 photos in R2, natural sort, plus three capabilities that never existed (add a lift, retire a sold one with its photos, add/remove a photo). **Fleet**: 11 vehicles + 91 service records + 8 mileage entries, 9 photos in R2. Service history now hangs off a **real FK** instead of Airtable's unescaped `{Vehicle}="<name>"` filter, and logging mileage is **atomic** instead of two round-trips that could half-succeed. `Job Vehicle Trips` skipped — 0 rows, no handler reads it. | done |
 | **4c** | **Inspections, Generators, Warranties** | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. **The job service visit log (`PLAN-job-warranty-service-log.md` §3) belongs here** — build it Neon-native as part of this slice rather than in Airtable first. | ~4-5 h + ~4-6 h |
 | **4d** | **Expenses** | Money, but plain arithmetic rather than rollup formulas. Already has the `Push ID` idempotency pattern. Receipts (`PLAN-expense-receipts.md`) land here, so do them together if receipts hasn't shipped by then. | ~4-6 h |
 | **4e** | **Estimates + Invoices** | **LAST, deliberately.** These carry the GP and live-profit formulas — the numbers the business runs on. | large |

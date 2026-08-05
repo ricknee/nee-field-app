@@ -11293,9 +11293,15 @@
                  border-radius:50%; border:none; background:rgba(0,0,0,0.6); color:#fff;
                  font-size:13px; cursor:pointer; padding:0;">&times;</button>` : ""}
       </div>`).join("");
-    // A label wrapping a hidden input is the whole "upload" control — no button
-    // wiring, and it works the same on a phone's camera roll.
-    const adder = canEdit ? `
+    // The photo is set ONCE, when the lift is added — owner's call, a lift gets
+    // one picture and never needs another. So there is no "+ Photo" sitting on
+    // every card. It reappears only on a lift with NO photo, which is the one
+    // case that would otherwise be a dead end: remove a bad picture and the only
+    // way back would be retiring the lift and re-adding it.
+    //
+    // A label wrapping a hidden input is the whole control — no button wiring,
+    // and on a phone it opens the camera roll.
+    const adder = (canEdit && !photos.length) ? `
       <label class="sl-photo-add" style="flex:0 0 auto; width:104px; height:78px; border-radius:6px;
              border:1px dashed var(--line-2); display:flex; align-items:center; justify-content:center;
              cursor:pointer; font-size:11px; color:var(--muted); text-align:center;">
@@ -11375,16 +11381,56 @@
     });
   }
 
+  // Add a lift, then take its photo in the same breath — a lift gets one picture
+  // when it joins the fleet and never needs another, so this is the only place
+  // photos are normally added.
+  //
+  // The lift is created FIRST and the photo is a follow-up, not a precondition:
+  // the record is the thing that matters, and a cancelled or failed upload must
+  // still leave you with a lift rather than nothing. It just shows a "+ Photo"
+  // slot until you add one.
   async function addScissorLift() {
     const name = prompt("New lift name (e.g. Lift #11):", "");
     if (name === null) return;
     if (!name.trim()) { alert("A name is required."); return; }
+
+    let liftId;
     try {
-      await apiPost("createScissorLift", { name: name.trim(), status: "Available" });
-      await loadScissorLifts();
+      const d = await apiPost("createScissorLift", { name: name.trim(), status: "Available" });
+      liftId = d.id;
     } catch (e) {
       alert("Couldn't add the lift: " + e.message);
+      return;
     }
+
+    // Reuse the same hidden-input trick as the card control rather than adding
+    // markup: create it, click it, clean it up.
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = "image/*";
+    picker.style.display = "none";
+    document.body.appendChild(picker);
+    const done = async () => {
+      const file = picker.files?.[0];
+      picker.remove();
+      if (file) {
+        try {
+          const { putUrl, contentType } = await apiPost("liftPhotoUploadUrl",
+            { liftId, contentType: file.type || "image/jpeg" });
+          const put = await fetch(putUrl, { method: "PUT", body: file,
+            headers: { "content-type": contentType } });
+          if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+        } catch (e) {
+          alert(`${name.trim()} was added, but the photo didn't upload: ${e.message}\n\nYou can add it from the lift's card.`);
+        }
+      }
+      await loadScissorLifts();
+    };
+    picker.addEventListener("change", done, { once: true });
+    // If the picker is dismissed without choosing anything, `change` never
+    // fires — so the list still has to refresh to show the new lift.
+    picker.addEventListener("cancel", async () => { picker.remove(); await loadScissorLifts(); }, { once: true });
+    picker.click();
   }
 
   async function loadScissorLifts() {

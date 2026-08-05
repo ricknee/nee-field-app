@@ -111,6 +111,50 @@ returns no billing fields, so the labor-billing layer isn't involved.
 > 🛑 **STOP POINT.** All time reads served by Neon, writes still Airtable-first. Fully reversible —
 > the fallbacks stay in place.
 
+### 💰 TRUE LABOR COST — built 2026-08-05, owner-approved, not yet on screen
+
+Owner's call, verbatim: *"I want true profit numbers."* Airtable's labor costing is wrong in
+four ways, and `db/schema/006_true_labor_cost.sql` replaces it by computing from the time
+entries directly. **Owner reviewed the numbers 2026-08-05 and confirmed them correct.**
+
+| | Airtable today | True |
+|---|---|---|
+| Labor cost counted at closeout | **$89,406** | **$268,721** (approved only) |
+| Total labor cost, 56 jobs | — | **$336,440** |
+| Overtime hours | — | 1,340.52 |
+
+**The ~$179,000 hole:** `Reviewed Labor Cost = IF(Reviewed, cost, 0)`, where `Reviewed` is a
+**manual checkbox on Job Labor Allocation that nothing ever ticks** — approving hours writes
+`Labor Reviewed` on the TIME ENTRY, a different record. So `Total Labor Cost (Final)` was 0 on
+31 of 55 jobs and final GP was overstated by the whole labor cost of each.
+
+**The allocation rows also silently miss hours** — Shop Work 581.5 real vs 252.25 allocated
+(329.25 h ≈ $10,300 never costed), Adena DG 412.5 vs 396.5, Cambridge 488.75 vs 478.75.
+
+**And old work was priced at today's wage** (the rate lookup filters to *current*), so the
+2025-12-30 raise from $25 → $26 retroactively rewrote finished jobs. Now joined per week.
+
+> **The overtime maths is UNCHANGED and was never wrong.** Hours over 40 in the week, spread
+> across that week's jobs in proportion to hours, at 1.5×. Reproduced exactly and validated
+> against Airtable's own weekly rollup: **297 of 304 employee-weeks match to the cent**. Of the
+> 7 that differ, 5 are hours Make missed and the puller caught, 1 is same-day activity before
+> Make's 21:00 run, and 1 is Airtable's rollup disagreeing with its own time entries (Miles
+> Unruh, week 2026-03-09 — rollup 40.5, entries 36.5).
+
+> ⚠ **Migration dependency:** the OT denominator was `Employee Weekly Time`, **maintained by
+> Make**. Retiring Make at Step 3 would have silently degraded labor cost. The new view computes
+> it from the entries, so that trap is now closed rather than pending.
+
+**Known, accepted, do not re-raise:** 3 employees have no wage history for part of 2025 —
+Patrick Gingerich and Scott Koehn (rates start 2025-12-01, working since January) and Nicholas
+Stoltzfus (starts 2025-10-01, working since August). 1,314.5 h / **$42,386** across 12 jobs is
+priced at each person's *earliest known* rate. Wages rise, so this **overstates** cost — the true
+profit on those jobs is slightly better than shown. Owner saw the list and accepted it. Fixing it
+is data entry in Airtable's **Labor Cost Rates**, not code; the view prefers an exact rate match
+automatically and flags every fallback row via `used_earliest_rate_fallback`.
+
+⬜ **Views only — nothing reads them yet.** They go live with the `handleJobs` flip below.
+
 ### ✅ Step 2 — Payroll writes move to Neon — **DONE + SMOKE-VERIFIED ON PROD 2026-08-05**
 
 All four write paths (`handleCreateTimeEntry`, `handleUpdateTimeEntryPayroll`,

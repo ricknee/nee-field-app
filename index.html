@@ -3206,8 +3206,12 @@
                  form stays open and keeps date/type/vendor; only the amount,
                  credit and description clear. -->
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
-              <button id="genExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1 1 160px; font-size:13px;">Save &amp; add another</button>
-              <button id="genExpSaveCloseBtn" class="btn btn-sm" type="button" style="flex:0 1 auto; font-size:13px;">Save &amp; close</button>
+              <!-- Equal basis of 0 on both, so the two Save buttons come out the
+                   same width whatever their labels say. min-width is what makes
+                   them wrap onto separate lines on a narrow phone rather than
+                   squashing the longer label. -->
+              <button id="genExpSaveBtn" class="btn btn-primary btn-sm" type="button" style="flex:1 1 0; min-width:125px; font-size:13px;">Save &amp; add another</button>
+              <button id="genExpSaveCloseBtn" class="btn btn-sm" type="button" style="flex:1 1 0; min-width:125px; font-size:13px;">Save &amp; close</button>
               <button id="genExpCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
             </div>
             <div id="genExpMsg" style="display:none; margin-top:8px; font-size:12px; color:var(--green);">✓ Expense saved!</div>

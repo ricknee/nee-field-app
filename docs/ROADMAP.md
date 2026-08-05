@@ -61,8 +61,9 @@ No building. Confirms what shipped on 2026-07-30 actually works before anything 
   boundary: 14,590 rows and 51,570.25 h on both sides, 0 bucket mismatches, 0 field-level drift.
   **No double-counting.** Getting there took fixing check 5 — see the job-link bug in `3f3048a`.
   Keep running it; this is the gate for retiring Make.
-- ⬜ **Watch the write mirror** on the next real time-entry add or Labor-Reviewed tick — it shipped
-  alongside a broken driver and has never been exercised.
+- ✅ **Write mirror exercised — DONE 2026-08-05.** Closed by the Step 2 smoke test, which ran all
+  four write paths on production and confirmed each in Neon. It had been open since the mirror
+  shipped alongside the broken driver.
 
 > 🛑 **STOP POINT — and a good one.** Everything works, Make is intact, nothing is half-done in a
 > way that decays. This state is stable indefinitely.
@@ -110,7 +111,7 @@ returns no billing fields, so the labor-billing layer isn't involved.
 > 🛑 **STOP POINT.** All time reads served by Neon, writes still Airtable-first. Fully reversible —
 > the fallbacks stay in place.
 
-### ✅ Step 2 — Payroll writes move to Neon — **BUILT 2026-08-05, awaiting smoke test**
+### ✅ Step 2 — Payroll writes move to Neon — **DONE + SMOKE-VERIFIED ON PROD 2026-08-05**
 
 All four write paths (`handleCreateTimeEntry`, `handleUpdateTimeEntryPayroll`,
 `handleUpdateTimeEntry`, `handleDeleteTimeEntry`) now write **Neon first**; Airtable is the
@@ -144,9 +145,23 @@ stubbed — 28 checks, all passing, every statement actually executed.
 **Schema:** `te_has_a_key` relaxed to accept `source = 'Manual'` as a third origin — it required
 an Airtable or QB id, which a Neon-native row does not have at insert time (`002_qb_puller.sql`).
 
-**⚠ Still owed before this counts as done:** a real smoke test on production — add a time entry,
-edit one, tick Labor Reviewed, delete one, and confirm each lands in Neon. Code-complete is not
-serving; that is the whole lesson of Step 1.
+**✅ Smoke-tested on production 2026-08-05.** All four paths exercised on the live payroll screen
+and each confirmed in Neon by direct SQL, not by what the screen said:
+
+- **create** → `840e3efb-c93d-41d6-84f4-6058ef7dca56`, Rick Unruh 2026-08-05, 9000 s = 2.5 h.
+  **The first time entry in the system's history born in Neon rather than copied into it.** It
+  carries a uuid id, `airtable_id` stamped back from a successful mirror, `source = 'Manual'`
+  (without today's constraint change this insert would have been rejected), `job_name` snapshotted
+  from `po_locked`, and the generated `hours` column correct.
+- **delete** → tombstoned into `time_entries_deleted` at 11:11:39, not silently dropped.
+- **Labor Reviewed** and **edit hours** → both persisted across a refresh.
+
+Totals reconcile exactly: 14,590 rows before and after (−1 delete, +1 create), hours
+51,570.25 → 51,571.25 = −2.0 deleted + 2.5 added + 0.5 from the edit. `unmirrored` is 0, so
+Airtable is fully in step.
+
+**This also finally closes the "watch the write mirror" item** that had been open in §3 NOW since
+the mirror shipped alongside the broken driver and had never been exercised.
 
 > 🛑 **STOP POINT.** Neon authoritative for time. Airtable still written, still correct, still a
 > working fallback.
@@ -260,10 +275,21 @@ done** — payroll reads confirmed served by Neon on production, and the four wr
 Neon-first and verified on a branch. The §2 gate is therefore **cleared**: time has left Airtable
 in both directions.
 
-**The next thing is a smoke test, not a build.** Exercise the four write paths on production
-(add / edit / Labor-Reviewed / delete) and confirm each lands in Neon. That also finally covers
-the "watch the write mirror" item that has been sitting in §3 NOW since it shipped alongside the
-broken driver. After a few clean reconciler days, **Step 3 retires Make** — the original goal.
+**Both are smoke-verified on production.** The next thing is **soak, then Step 3 — retire Make**,
+the original goal of this whole migration. Run the reconciler (no flags — `--repair` is disabled)
+for several consecutive days first; that is the gate, and it is the only thing standing between
+here and turning off scenario `4546051`.
+
+⚠ **What the reconciler will do during the soak.** App-created rows still reach Airtable — the
+mirror ran and stamped `airtable_id` on the smoke-test entry, and `unmirrored` is currently 0 — so
+both sides stay in step and the checks should stay green. Neon only runs ahead when a mirror
+*fails*, which is now the signal worth investigating rather than something to repair away.
+
+**But plan for the reconciler to stop being meaningful at Step 3.** Once Make is off, the puller
+writes QB timesheets to Neon and *nothing* writes them to Airtable, so Neon goes permanently and
+correctly ahead — by every new timesheet. Comparing whole-table totals against Airtable stops
+being a useful check at that moment. Decide then whether it is reworked to reconcile against
+**QuickBooks** instead (the actual upstream source) or simply retired with Make.
 
 The remaining jobs-flip work, for when you come back to it:
 

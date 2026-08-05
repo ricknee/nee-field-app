@@ -219,7 +219,15 @@ the schema in §3 already has the columns.
    - `poles` is stored on the **head circuit only** (2 on circuit 1 means it also occupies 3), and
      the covered circuits are **blanked** on save. Store the span on every member instead and two
      adjacent 2-poles become an unreadable 4-pole.
-   - Runs are **capped at 3**. Without the cap, ticking four in a row silently gangs them all.
+   - **The PANEL's phase decides the biggest gang, not the number of ticks in a row.** A
+     single-phase panel only ever carries 1- and 2-pole breakers; 3-pole needs three phases to land
+     on. So a run of ticks is cut into repeated breaker-sized gangs: on 1-phase, 1,3,5,7 is **two
+     2-poles**, and it keeps pairing down the side. (Fixed 2026-08-05 on owner feedback — the first
+     build greedily made 1,3,5 one 3-pole and stranded 7, which is not a breaker that exists on a
+     single-phase panel.) The cap is read live off the voltage field, so switching a panel to
+     1-phase re-splits any 3-pole immediately.
+   - **A run never strands a single circuit** where pairing avoids it: on 3-phase a run of four is
+     two 2-poles, not a 3-pole plus a lone 1-pole. Five splits 3 + 2; six is two 3-poles.
    - Unticking a *merged* cell breaks the whole gang, since a merged cell shows only one box —
      that click is the only way out of a 3-pole.
    - The grid sets `grid-row`/`grid-column` **explicitly**. Auto-placement pushes the *other*

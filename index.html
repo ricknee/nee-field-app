@@ -5872,6 +5872,10 @@
     ["panelFieldName", "panelFieldVoltage", "panelFieldLocation", "panelFieldFedFrom"].forEach(id => {
       $(id).addEventListener("input", () => markPanelDirty());
     });
+    // Phase decides the biggest gang allowed, so changing the voltage re-splits
+    // the grid — a 3-pole on a panel just switched to single-phase is not a
+    // thing. Only #panelGrid is rebuilt, so the caret stays in the voltage box.
+    $("panelFieldVoltage").addEventListener("input", () => { renderPanelGrid(); updateFilledCount(); });
     $("panelFieldCircuits").addEventListener("change", () => resizePanel(Number($("panelFieldCircuits").value)));
     $("panelEditBody").querySelectorAll(".panel-size-chip").forEach(chip => {
       chip.onclick = () => resizePanel(Number(chip.dataset.size));
@@ -5899,23 +5903,57 @@
    * without the cap two adjacent 2-pole breakers ticked back to back would
    * silently become one 4-pole.
    */
+  // How many spaces one breaker may occupy, decided by the PANEL, not by how
+  // many boxes happen to be ticked in a row. A single-phase panel only ever
+  // carries 1- and 2-pole breakers; 3-pole needs three phases to land on.
+  // Read live off the voltage field so switching 120/208V 3-Phase → 120/240V
+  // 1-Phase immediately re-splits any 3-pole that is no longer possible.
+  function panelMaxPoles() {
+    const el = $("panelFieldVoltage");
+    const v = el ? el.value : ((panelState.panel && panelState.panel.voltage) || "");
+    return /3\s*-?\s*(phase|ph\b)|three\s*phase/i.test(v) ? 3 : 2;
+  }
+
+  // Splits a run of N consecutive ticked circuits into breaker-sized gangs.
+  // Ticking 1,3,5,7 on a single-phase panel is TWO 2-pole breakers, not one
+  // 4-pole and not a 3-pole plus an orphan — that was the original bug.
+  // Full-size gangs are preferred, except where that would strand a single
+  // circuit: on a 3-phase panel a run of four is two 2-poles far more often
+  // than a 3-pole next to a lone 1-pole.
+  function chunkRun(len, cap) {
+    const out = [];
+    let left = len;
+    while (left > 0) {
+      let take = Math.min(cap, left);
+      if (take > 2 && left - take === 1) take = 2;
+      out.push(take);
+      left -= take;
+    }
+    return out;
+  }
+
   function panelBlocks() {
     const tied = panelState.tied;
-    const max = panelState.panel ? panelState.panel.circuits : 0;
+    const last = panelState.panel ? panelState.panel.circuits : 0;
+    const cap = panelMaxPoles();
     const blocks = [];
     const covered = new Set();
     for (const c of panelState.circuits) {
       if (covered.has(c.number)) continue;
-      const members = [c.number];
-      if (tied.has(c.number)) {
-        let next = c.number + 2;
-        while (tied.has(next) && next <= max && members.length < 3) {
-          members.push(next);
-          next += 2;
-        }
+      if (!tied.has(c.number)) { blocks.push({ members: [c.number], poles: 1 }); continue; }
+
+      // The whole unbroken run of ticks on this side, then cut into gangs.
+      const run = [c.number];
+      let next = c.number + 2;
+      while (tied.has(next) && next <= last) { run.push(next); next += 2; }
+
+      let i = 0;
+      for (const size of chunkRun(run.length, cap)) {
+        const members = run.slice(i, i + size);
+        i += size;
+        members.forEach(n => covered.add(n));
+        blocks.push({ members, poles: members.length });
       }
-      if (members.length > 1) members.forEach(n => covered.add(n));
-      blocks.push({ members, poles: members.length });
     }
     return blocks;
   }
@@ -5944,7 +5982,7 @@
         <input class="panel-desc${v ? " has-val" : ""}${merged ? " merged" : ""}" data-ckt="${first}" value="${esc(v)}"
                placeholder="spare" autocomplete="off" enterkeyhint="next" />
         <input type="checkbox" class="panel-tie" data-ckt="${first}" ${panelState.tied.has(first) ? "checked" : ""}
-               title="Tick this and the next circuit on this side to gang them into one breaker" />
+               title="Tick two in a row on this side to gang them into one breaker (three on a 3-phase panel)" />
         <button type="button" class="panel-fill" data-ckt="${first}" title="Copy this down the rest of this side">↓</button>
       </div>`;
     }).join("");
@@ -6055,7 +6093,12 @@
     for (const b of panelBlocks()) if (filledHeads.has(b.members[0])) n += b.members.length;
     const total = panelState.panel ? panelState.panel.circuits : 0;
     const gangs = panelBlocks().filter(b => b.members.length > 1).length;
-    el.textContent = `${n} of ${total} circuits filled in${gangs ? ` · ${gangs} ganged breaker${gangs === 1 ? "" : "s"}` : ""}`;
+    // Say what the tie box will do on THIS panel — the answer changes with the
+    // voltage, and it is not guessable from a bare checkbox.
+    const cap = panelMaxPoles();
+    el.textContent = `${n} of ${total} circuits filled in`
+      + (gangs ? ` · ${gangs} ganged breaker${gangs === 1 ? "" : "s"}` : "")
+      + ` · ties make ${cap === 3 ? "2- or 3-pole" : "2-pole"} breakers`;
   }
 
   // Copies this circuit's description into every EMPTY circuit below it on the

@@ -4575,9 +4575,70 @@ async function handleAddGeneratorService(body) {
   if (!generatorId) return resp(400, { ok: false, error: "Missing generatorId." });
   if (!serviceDate) return resp(400, { ok: false, error: "Missing serviceDate." });
 
+  // ── NEON-FIRST (migration Step 4c), writes fail CLOSED ───────────────────
+  // Accepts BOTH id forms and always will: handleGenerator returns a Neon uuid
+  // on its primary path and an Airtable rec id when it falls back, so the client
+  // legitimately holds either. This is the same permanent contract time entries
+  // took at Step 2 — not a shim.
+  const idStr = String(generatorId).trim();
+  const isUuid = /^[0-9a-f-]{36}$/i.test(idStr);
+  if (!isUuid && !idStr.startsWith("rec")) {
+    return resp(400, { ok: false, error: `Invalid generatorId: ${idStr}` });
+  }
+
+  // ⚠ THE WHITELIST IS NEW ON THIS PATH, AND IT MATTERS MORE HERE.
+  // Airtable wrote Service Type with typecast:true and NO validation, so a stray
+  // client value silently created a new single-select option — the exact failure
+  // CLAUDE.md warns about. handleCommissionGenerator already validates against
+  // SERVICE_TYPE_OPTS; this one never did. Postgres has no typecast guard at all
+  // (text accepts anything), so the check has to move into the code or the column
+  // becomes free-text by accident.
+  const svcTypeSafe = SERVICE_TYPE_OPTS.includes(serviceType) ? serviceType : null;
+
+  const b = (v) => (v === undefined ? false : v === true);
+  const n = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+  const jobRec = jobId && String(jobId).startsWith("rec") ? String(jobId) : null;
+
+  const rows = await neonWrite("generatorService.insert",
+    `INSERT INTO generator_service
+       (generator_id, job_airtable_id, job_id, service_date, service_type, technician,
+        service_plan_visit, oil_changed, oil_filter_changed, air_filter_changed,
+        spark_plugs_changed, battery_tested, battery_replaced, load_test_performed,
+        firmware_checked, exercise_checked, trouble_codes, work_performed_notes,
+        parts_used, labor_hours, generator_hours)
+     SELECT g.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2),
+            $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+            $16, $17, $18, $19, $20
+       FROM generators g
+      WHERE g.id::text = $1 OR g.airtable_id = $1
+     RETURNING id, generator_id`,
+    [idStr, jobRec, serviceDate, svcTypeSafe, technician || null,
+     b(servicePlanVisit), b(oilChanged), b(oilFilterChanged), b(airFilterChanged),
+     b(sparkPlugsChanged), b(batteryTested), b(batteryReplaced), b(loadTestPerformed),
+     b(firmwareChecked), b(exerciseChecked),
+     troubleCodesFound ? String(troubleCodesFound) : null,
+     workNotes ? String(workNotes) : null, partsUsed ? String(partsUsed) : null,
+     n(laborHours), n(generatorHours)]);
+
+  const neonId = rows?.[0]?.id;
+  // No row inserted means the SELECT matched no generator. That is a real error,
+  // not a reason to write Airtable anyway: a service record that exists only in
+  // the mirror is invisible to every read on the primary path. A generator
+  // created by hand directly in Airtable needs db/etl/inspections-generators.mjs
+  // re-run before service can be logged against it — narrow, because
+  // commissioning goes through the app.
+  if (!neonId) {
+    return resp(404, { ok: false, error: `No generator found for id ${idStr}.` });
+  }
+
+  // Resolve the generator's Airtable id for the mirror — the client may have
+  // handed us a uuid, which Airtable's linked-record field cannot accept.
+  const genAt = (await neonQuery(
+    `SELECT airtable_id FROM generators WHERE id = $1`, [rows[0].generator_id]))?.rows?.[0]?.airtable_id || null;
+
   // Build by name — typecast: true handles single-select option creation.
   const fields = {};
-  fields["Generator"]   = [generatorId];
+  if (genAt) fields["Generator"] = [genAt];
   if (jobId)            fields["Job"] = [jobId];
   fields["Service Date"] = serviceDate;
   if (serviceType)      fields["Service Type"] = serviceType;
@@ -4604,12 +4665,26 @@ async function handleAddGeneratorService(body) {
   if (generatorHours !== undefined && generatorHours !== null && generatorHours !== "")
     fields["Generator Hours @ Service"] = Number(generatorHours);
 
-  const data = await atFetch(`${encodeURIComponent("Generator Service")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  return resp(200, { ok: true, id: data.id });
+  // Best-effort mirror. Never throws and never changes the outcome — the
+  // authoritative row is already in Neon, and a failed mirror leaves Airtable
+  // stale rather than losing the service record. Same contract as time entries.
+  const data = await mirrorToAirtable("addGeneratorService", () =>
+    atFetch(`${encodeURIComponent("Generator Service")}`, {
+      method: "POST",
+      body: JSON.stringify({ fields, typecast: true })
+    }));
+
+  // Stamp the Airtable id back so the two sides agree on this row's identity —
+  // and so the ETL's ON CONFLICT (airtable_id) updates this row rather than
+  // inserting a duplicate on the next hand-run.
+  if (data?.id) {
+    await mirrorToAirtable("addGeneratorService.stamp", () =>
+      neonWrite("generatorService.stampAirtableId",
+        `UPDATE generator_service SET airtable_id = $2 WHERE id = $1`, [neonId, data.id]));
+  }
+
+  // `id` is the NEON uuid. The client treats it as opaque.
+  return resp(200, { ok: true, id: neonId, airtableId: data?.id || null });
 }
 
 // Builds the filterByFormula for Warranty Templates lookup, used by both

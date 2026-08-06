@@ -508,6 +508,40 @@ await test("writes still require a non-viewer role before any of this runs", asy
   eq(lastFetch, null, "nothing written");
 });
 
+// ── Generators (migration Step 4c) ────────────────────────────────────────
+// Same offline limits as the schedule block below: no DATABASE_URL means the SQL
+// never runs, so what is locked here is the contract at the boundary. The SQL
+// itself is proven against the live branch.
+await test("addGeneratorService: fails CLOSED when Neon is unreachable", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = {};
+  lastFetch = null;
+  const res = await POST("addGeneratorService",
+    { generatorId: "recG1", serviceDate: "2026-08-06", serviceType: "Annual Service" });
+  eq(res.statusCode, 500, "500 rather than logging service only into the mirror");
+  // A service record that exists ONLY in Airtable is invisible to handleGenerator's
+  // primary path — worse than no record, because the tech believes it was logged.
+  eq(lastFetch, null, "and nothing written to Airtable");
+  delete process.env.DATABASE_URL;
+});
+
+await test("addGeneratorService: rejects an id that is neither a rec id nor a uuid", async () => {
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  lastFetch = null;
+  // Guards the fleet bug in the other direction: the check must accept BOTH forms
+  // (handleGenerator returns a uuid on the Neon path, a rec id on the fallback),
+  // so it can only reject values that are neither.
+  const res = await POST("addGeneratorService",
+    { generatorId: "Betty Huber", serviceDate: "2026-08-06" });
+  eq(res.statusCode, 400, "garbage id refused before any write");
+  eq(lastFetch, null, "nothing written");
+
+  lastFetch = null;
+  eq((await POST("addGeneratorService", { generatorId: "recG1" })).statusCode, 400, "missing serviceDate");
+  eq(lastFetch, null, "still nothing written");
+});
+
 // ── Schedule (migration Step 4a) — same fail-closed contract as time entries ──
 // The Neon path cannot be exercised offline (no DATABASE_URL means the SQL never
 // runs), so what is locked here is the contract at the boundary: a write that

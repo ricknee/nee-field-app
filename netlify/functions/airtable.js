@@ -4942,9 +4942,73 @@ async function handleCommissionGenerator(body) {
   const svcType = SERVICE_TYPE_OPTS.includes(COMM_TYPE) ? COMM_TYPE : SERVICE_TYPE_OPTS[0];
 
   let assetIdForLookup = "";
+  let neonGeneratorId = null;
   try {
     const genRec = await atFetch(`${encodeURIComponent(TABLES.generators)}/${resolvedGeneratorId}`);
     assetIdForLookup = genRec?.fields?.[F.gen.assetId] || "";
+
+    // ── COPY THE ASSET INTO NEON (migration Step 4c) ──────────────────────
+    // This handler stays AIRTABLE-AUTHORITATIVE for now — deliberately the
+    // opposite of addGeneratorService. Steps 2 and 3 below key their dup checks
+    // off Airtable's computed Generator Asset ID formula, and warranties have
+    // not migrated at all, so inverting step 1 alone would leave the orchestrator
+    // straddling two sources of truth mid-transaction.
+    //
+    // But addGeneratorService IS Neon-authoritative and resolves its FK there, so
+    // a generator that exists only in Airtable makes every later service log
+    // 404. Copying it across here closes that hole without rewriting the
+    // orchestrator. Reuses the record just fetched — no extra round trip.
+    //
+    // ON CONFLICT (airtable_id) so this is safe on the RE-COMMISSIONING path
+    // (asset exists, is being PATCHed) and cannot duplicate against the hand-run
+    // ETL either.
+    const gf = genRec?.fields || {};
+    const gnum = (v) => (v === undefined || v === "" || v === null ? null : Number(v));
+    const gday = (v) => (v ? String(v).slice(0, 10) : null);
+    const gsel = (v) => (v && typeof v === "object" ? v.name : (v === "" ? null : v ?? null));
+    const glook = (v) => (Array.isArray(v) ? (v[0] ?? null) : (v === "" ? null : v ?? null));
+    const gr = await neonQuery(
+      `INSERT INTO generators
+         (airtable_id, job_airtable_id, job_id, customer_name, brand, model, kw,
+          serial_number, transfer_switch_model, transfer_switch_serial, fuel_type,
+          install_date, service_plan_active, service_interval_months,
+          warranty_expiration, status, notes, battery_install_date, synced_at)
+       VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2),$3,$4,$5,$6,$7,$8,$9,$10,
+               $11::date,$12,$13,$14::date,$15,$16,$17::date, now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
+         customer_name=EXCLUDED.customer_name, brand=EXCLUDED.brand, model=EXCLUDED.model,
+         kw=EXCLUDED.kw, serial_number=EXCLUDED.serial_number,
+         transfer_switch_model=EXCLUDED.transfer_switch_model,
+         transfer_switch_serial=EXCLUDED.transfer_switch_serial,
+         fuel_type=EXCLUDED.fuel_type, install_date=EXCLUDED.install_date,
+         service_plan_active=EXCLUDED.service_plan_active,
+         service_interval_months=EXCLUDED.service_interval_months,
+         warranty_expiration=EXCLUDED.warranty_expiration, status=EXCLUDED.status,
+         notes=EXCLUDED.notes, battery_install_date=EXCLUDED.battery_install_date,
+         synced_at=now()
+       RETURNING id`,
+      [resolvedGeneratorId, jobId,
+       // F.gen.customer is "Customer NAME" — the FORMULA field, and the F map was
+       // already right about this. The raw Airtable field called `Customer` is a
+       // LOOKUP, and over the API a lookup into a linked table returns RECORD IDS.
+       // Reading it directly is what put "recGDL5n6zXHshAdq - 20KW Cummins" on
+       // every generator in the first ETL run. Go through F, not the field name.
+       glook(gf[F.gen.customer]),
+       gsel(gf[F.gen.brand]), gsel(gf[F.gen.model]), gnum(gf[F.gen.kw]),
+       gsel(gf[F.gen.serialNumber]), gsel(gf[F.gen.transferSwitchModel]),
+       gsel(gf[F.gen.transferSwitchSerial]), gsel(gf[F.gen.fuelType]),
+       gday(gf[F.gen.installDate]), gf[F.gen.servicePlanActive] === true,
+       gnum(gf[F.gen.serviceIntervalMonths]), gday(gf[F.gen.warrantyExpiration]),
+       gsel(gf[F.gen.status]), gsel(gf[F.gen.notes]), gday(gf[F.gen.batteryInstallDate])]);
+    neonGeneratorId = gr?.rows?.[0]?.id || null;
+    if (!neonGeneratorId) {
+      // Fail SOFT, not closed: Airtable already holds the commissioned asset and
+      // is authoritative on this path, so refusing here would undo a successful
+      // commissioning over a copy failure. Surfaced as a warning because the
+      // consequence is real and specific.
+      warnings.push("Generator was not copied into Neon — logging service against it will fail until db/etl/inspections-generators.mjs is re-run.");
+    }
   } catch (err) {
     warnings.push(`Could not re-read generator for dup-checks: ${err.message}`);
   }

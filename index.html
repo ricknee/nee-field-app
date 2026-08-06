@@ -4853,6 +4853,7 @@
     bar.innerHTML = `
       <span style="font-size:13px; font-weight:600;">${n} selected</span>
       <button type="button" id="phAll" class="btn btn-sm" style="font-size:13px; padding:6px 14px;">${allShown ? "Select none" : `Select all ${shown}`}</button>
+      <button type="button" id="phShare" class="btn btn-sm" style="font-size:13px; padding:6px 14px;" ${n ? "" : "disabled"}>↗ Share</button>
       <button type="button" id="phMove" class="btn btn-sm" style="font-size:13px; padding:6px 14px;" ${n ? "" : "disabled"}>Move to album</button>
       ${canDeletePhotos() ? `<button type="button" id="phDelete" class="btn btn-sm" style="font-size:13px; padding:6px 14px; color:var(--red);" ${n ? "" : "disabled"}>Delete</button>` : ""}
       <button type="button" id="phCancelSel" class="btn btn-sm" style="font-size:13px; padding:6px 14px;">Cancel</button>`;
@@ -4870,6 +4871,7 @@
       jobPhotoState.selected.clear();
       renderJobPhotos();
     };
+    if ($("phShare"))  $("phShare").onclick  = shareSelectedPhotos;
     if ($("phMove"))   $("phMove").onclick   = moveSelectedPhotos;
     if ($("phDelete")) $("phDelete").onclick = deleteSelectedPhotos;
   }
@@ -5119,6 +5121,7 @@
     const dl = $("jobPhotoDownload");
     dl.href     = p.url;
     dl.download = p.name || "photo.jpg";
+    warmShare(p);   // start the download now, not when Share is tapped — see note 2 below
   }
 
   function openJobPhotoLightbox(i) {
@@ -5132,6 +5135,9 @@
     $("jobPhotoLightbox").style.display = "none";
     // Drop the src so a large image isn't held in memory behind the gallery.
     $("jobPhotoLightboxImg").src = "";
+    // Same reason: a warmed or armed share is a whole JPEG sitting in memory.
+    warmedShare = { key: null, task: null };
+    armedShare  = null;
   };
 
   window.stepJobPhoto = function(delta) {
@@ -5139,6 +5145,189 @@
     if (!n) return;
     showLightbox((jobPhotoState.index + delta + n) % n);
   };
+
+  /* ── Sharing photos to WhatsApp / Signal / email ──────────────────────────
+   * There is no per-app integration here and there cannot be one: a web page
+   * cannot launch a named app. navigator.share hands the FILES to the OS and
+   * the OS shows its own sheet — WhatsApp, Signal, Mail, Messages, AirDrop,
+   * whatever that phone has installed. Same handoff as triggerPrintDownload,
+   * different verb. Nothing is added or removed by us when the sheet changes.
+   *
+   * Four things this has to survive, all of them learned the hard way:
+   *
+   * 1. R2 IS A DIFFERENT ORIGIN. The tiles render through <img src>, which
+   *    needs no CORS at all — but sharing needs the BYTES, and fetch() does.
+   *    If the bucket's CORS policy doesn't allow GET from this origin the
+   *    fetch throws before anything else runs. That's bucket config, not code
+   *    and not env, so this FAILS SOFT to a link share (the same contract
+   *    _r2.js itself keeps) instead of leaving a dead button. The tell is a
+   *    share that silently becomes "sent a link instead" on every photo.
+   *
+   * 2. iOS SPENDS THE USER GESTURE. navigator.share needs transient
+   *    activation, and awaiting a fetch uses it up — share() then throws
+   *    NotAllowedError on a real iPhone while working fine in desktop Chrome.
+   *    Two defences: warmShare() downloads the open photo BEFORE the tap, and
+   *    if it still trips we keep the files and ask for one more tap, which
+   *    then awaits nothing.
+   *
+   * 3. NOT EVERY BROWSER CAN SHARE FILES. Desktop Firefox has no Web Share at
+   *    all. The fallback is the signed link, and it SAYS the link expires,
+   *    because presigned URLs die after six hours (_r2.js VIEW_URL_TTL_SECONDS
+   *    — fine for a coworker this afternoon, useless for a customer next week).
+   *
+   * 4. TEXT ALONGSIDE FILES DROPS THE FILES. Several Android targets take the
+   *    text and discard the attachment when both are present. We send files +
+   *    title only; a photo that arrives with no caption beats a caption that
+   *    arrives with no photo.
+   */
+
+  // How many go in one share. Every file is a separate download first, and
+  // both WhatsApp and Mail start refusing somewhere past this — the same
+  // reasoning as BULK_PHOTO_CHUNK, one tier lower because these are full-size.
+  const SHARE_MAX = 10;
+
+  // The photo currently open in the lightbox, downloaded ahead of the tap.
+  let warmedShare = { key: null, task: null };
+
+  // Files we downloaded but couldn't hand over because the browser judged the
+  // tap stale (note 2). Held so the retry tap goes straight through.
+  let armedShare = null;
+
+  // R2 keys are paths and the share sheet shows whatever we name the file, so
+  // send the leaf. An extension matters more than it looks: WhatsApp decides
+  // "photo" vs "document" partly on it.
+  function photoFileName(p) {
+    const leaf = String(p.name || "").split("/").pop().trim() || "photo.jpg";
+    return /\.[A-Za-z0-9]{2,5}$/.test(leaf) ? leaf : `${leaf}.jpg`;
+  }
+
+  async function photoAsFile(p) {
+    try {
+      const r = await fetch(p.url);
+      if (!r.ok) return null;
+      const blob = await r.blob();
+      if (!blob.size) return null;
+      return new File([blob], photoFileName(p), { type: blob.type || "image/jpeg" });
+    } catch {
+      return null;   // CORS closed for GET, or no signal — caller falls back to a link
+    }
+  }
+
+  // Never rejects, so an un-awaited warm can't raise an unhandled rejection.
+  function warmShare(p) {
+    if (!p || warmedShare.key === p.key) return;
+    warmedShare = { key: p.key, task: photoAsFile(p) };
+  }
+
+  function photoFile(p) {
+    return (warmedShare.key === p.key && warmedShare.task) ? warmedShare.task : photoAsFile(p);
+  }
+
+  async function gatherShareFiles(photos, progress) {
+    const status = $("jobPhotosStatus");
+    const files = [];
+    for (let i = 0; i < photos.length; i++) {
+      if (progress && status) status.textContent = `Preparing ${i + 1} of ${photos.length}…`;
+      const f = await photoFile(photos[i]);
+      if (f) files.push(f);
+    }
+    return files;
+  }
+
+  function canShareFiles(files) {
+    try {
+      return !!(files.length && navigator.canShare && navigator.canShare({ files }));
+    } catch { return false; }
+  }
+
+  // Fallback path: send the signed links instead of the images.
+  async function sharePhotoLinks(photos, title) {
+    const note = "\n\n(These links stop working in about 6 hours.)";
+    const body = `${title}\n\n${photos.map(p => p.url).join("\n")}${note}`;
+
+    if (navigator.share) {
+      try { await navigator.share({ title, text: body }); return; }
+      catch (e) { if (e && e.name === "AbortError") return; }
+    }
+    try {
+      await navigator.clipboard.writeText(body);
+      showAppToast("Link copied — paste it into WhatsApp, Signal or email", { kind: "warn" });
+      return;
+    } catch { /* clipboard blocked — fall through to the mail app */ }
+
+    // A signed URL is ~500 characters and mailto dies somewhere near 2000, so
+    // this last resort takes three at most rather than silently truncating.
+    const few = photos.slice(0, 3);
+    const short = `${title}\n\n${few.map(p => p.url).join("\n")}`
+      + (photos.length > few.length ? `\n\n(${photos.length - few.length} more not included)` : "")
+      + note;
+    window.location.href = `mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(short)}`;
+  }
+
+  async function sharePhotos(photos, opts) {
+    const { progress = false, onSent } = opts || {};
+    if (!photos || !photos.length) return;
+    if (photos.length > SHARE_MAX) {
+      showAppToast(`Share up to ${SHARE_MAX} at a time — sending the first ${SHARE_MAX}`, { kind: "warn" });
+      photos = photos.slice(0, SHARE_MAX);
+    }
+
+    const stamp = photos.map(p => p.key).join("|");
+    const title = `${jobPhotoState.jobName || "Job"} — ${photos.length === 1
+      ? (photos[0].name || "photo")
+      : `${photos.length} photos`}`;
+
+    // Retry of an armed share reuses the downloaded files; anything else
+    // invalidates them, so drop them either way.
+    const armed = (armedShare && armedShare.stamp === stamp) ? armedShare.files : null;
+    armedShare = null;
+
+    const files = armed || (navigator.share ? await gatherShareFiles(photos, progress) : []);
+    if (progress) renderJobPhotos();   // repaint over the "Preparing…" line
+
+    if (!canShareFiles(files)) {
+      // Zero files with a share-capable browser is the CORS signature (note 1).
+      if (navigator.share && !files.length) {
+        showAppToast("Couldn't attach the photo — sending a link instead", { kind: "warn" });
+      }
+      await sharePhotoLinks(photos, title);
+      return;
+    }
+
+    try {
+      await navigator.share({ files, title });
+      showAppToast(files.length === 1 ? "Shared ✓" : `Shared ${files.length} photos ✓`);
+      if (onSent) onSent();
+    } catch (e) {
+      if (e && e.name === "AbortError") return;   // backed out of the sheet — not an error
+      if (e && e.name === "NotAllowedError") {
+        armedShare = { stamp, files };            // note 2 — everything is downloaded now
+        showAppToast("Ready — tap Share once more to send", { kind: "warn" });
+        return;
+      }
+      showAppToast(`Couldn't share: ${e.message}`, { kind: "error" });
+    }
+  }
+
+  window.shareCurrentPhoto = function() {
+    const p = currentPhotoList()[jobPhotoState.index];
+    if (p) sharePhotos([p], {});
+  };
+
+  async function shareSelectedPhotos() {
+    // Ordered by what's on screen, not by tap order, so a set arrives in the
+    // sequence it was shot.
+    const chosen = jobPhotoState.visible.filter(p => jobPhotoState.selected.has(p.key));
+    if (!chosen.length) return;
+    await sharePhotos(chosen, {
+      progress: true,
+      onSent: () => {
+        jobPhotoState.selecting = false;
+        jobPhotoState.selected.clear();
+        renderJobPhotos();
+      },
+    });
+  }
 
   // Fills each expense row's receipt button with what that expense actually
   // has: a thumbnail if it's a photo, 📄 if it's a scan, and a muted "—" when
@@ -20101,6 +20290,7 @@
   <div style="position:absolute; top:0; left:0; right:0; display:flex; align-items:center; justify-content:space-between; padding:10px 14px; gap:10px;">
     <span id="jobPhotoLightboxName" style="color:#fff; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
     <span style="display:flex; gap:8px; flex:0 0 auto;">
+      <button id="jobPhotoShare" onclick="shareCurrentPhoto()" class="btn btn-sm" style="font-size:13px; padding:6px 12px;">↗ Share</button>
       <a id="jobPhotoDownload" class="btn btn-sm" style="font-size:13px; padding:6px 12px;" download>⬇ Save</a>
       <button onclick="closeJobPhotoLightbox()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 12px;">&times;</button>
     </span>

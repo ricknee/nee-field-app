@@ -557,9 +557,17 @@ if (!LOAD) {
   if (!fixes.length) {
     console.log("drift: none — Airtable and Neon agree field-by-field on every row in scope");
   } else if (!REPAIR) {
+    // ⛔ DO NOT restore the old "re-run with --repair" advice that used to print
+    // here. Since Step 2, NEON IS AUTHORITATIVE — drift means the AIRTABLE mirror
+    // is stale, and --repair updates Neon *from* Airtable, i.e. it would overwrite
+    // correct payroll data with the stale value. It is disabled at the flag guard;
+    // this message was still recommending it, which is how a soak-time operator
+    // ends up running the one command that breaks the thing being soaked.
     console.log(`drift: ${fixes.length} row(s) differ —`,
       [...reasons.entries()].map(([k, v]) => `${k}:${v}`).join(" "),
-      `\n       re-run with --repair to correct them (UPDATE-only, cannot duplicate)`);
+      `\n       NEON IS AUTHORITATIVE — this means the Airtable mirror is stale, not Neon.`,
+      `\n       Do NOT run --repair (disabled; it points Airtable -> Neon). Investigate the`,
+      `\n       mirror write for these rows instead.`);
   } else {
     console.log(`repair: updating ${fixes.length} drifted row(s) —`,
       [...reasons.entries()].map(([k, v]) => `${k}:${v}`).join(" "));

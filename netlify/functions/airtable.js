@@ -353,7 +353,15 @@ const TE = {
   cityTaxes:  "flddCniABjh4Xib1c",
   class:      "fld4MG0FcFDnqYmtW",
   jobLink:    "fldmGwS0qXMdC7FlA",   // Job (linked record)
-  reviewed:   "fldQn7d06doEkrGBv"
+  reviewed:   "fldQn7d06doEkrGBv",
+  // Job Name (Text) — the STATIC job-name snapshot. Written on create only, never
+  // on update (re-pointing a link must not rewrite an imported name).
+  // It was missing from the Step 2 mirror, which is not merely untidy: the Airtable
+  // fallback in handleJobTimeEntries PREFILTERS on FIND(name, {Job Name (Text)}),
+  // and a blank can never match a FIND — so a Neon-native entry vanished from the
+  // job's Time Entries tab entirely whenever that fallback served. Found by the
+  // reconciler 2026-08-06.
+  jobName:    "fldsemB5S5PivoZjd"
 };
 
 // Payroll Archive — Payroll Runs table
@@ -891,9 +899,13 @@ async function handleCreateTimeEntry(body) {
              (SELECT id        FROM jobs WHERE airtable_id = $7),
              (SELECT po_locked FROM jobs WHERE airtable_id = $7),
              false, 'Manual')
-     RETURNING id`,
+     RETURNING id, job_name`,
     [employee, empRec, workDate, durationSecs, taxes, klass, jobRec]);
   const neonId = rows?.[0]?.id;
+  // Returned from the INSERT rather than re-derived in JS, so the mirror carries
+  // BYTE-IDENTICAL text to the authoritative row. Re-querying po_locked here would
+  // introduce a second source for the same string, which is how the two sides drift.
+  const jobName = rows?.[0]?.job_name || null;
 
   const fields = {};
   fields[TE.employee]   = employee;
@@ -903,6 +915,7 @@ async function handleCreateTimeEntry(body) {
   fields[TE.class]      = klass;
   fields[TE.cityTaxes]  = taxes;
   if (jobRec) fields[TE.jobLink] = [jobRec];
+  if (jobName) fields[TE.jobName] = jobName;
 
   const data = await mirrorToAirtable("createTimeEntry", () =>
     atFetch(`${encodeURIComponent(TABLES.timeEntries)}`, {

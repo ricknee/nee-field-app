@@ -4745,13 +4745,73 @@ async function handleGetWarrantyTemplates(params) {
 // generator's primary text (Generator Asset ID) and use the same
 // FIND(..., ARRAYJOIN({Generator})) trick the Generator Service lookup
 // uses (see handleGenerator).
+// ⚠ THE ID THIS RECEIVES CAN BE EITHER FORM — and getting that wrong shipped a
+// live regression. handleGenerator went Neon-first, so `generator.id` became a
+// uuid, and index.html:7601 passes it straight here as genIdForWarranties. The
+// old body handed it to atFetch(generators/<id>), which 404s on a uuid, so every
+// generator view showed "Warranty lookup failed".
+//
+// The `startsWith("rec")` sweep did NOT catch this: this handler never validated
+// the id, it just forwarded it. The real rule is broader than that grep —
+// EVERY handler receiving an id minted by a read that has been flipped needs
+// checking, whether or not it validates. Apply that at 4d/4e.
+async function resolveGeneratorIds(rawId) {
+  const id = String(rawId || "").trim();
+  if (!id) return { rec: null, neon: null };
+  const isUuid = /^[0-9a-f-]{36}$/i.test(id);
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT id, airtable_id FROM generators WHERE id::text = $1 OR airtable_id = $1`, [id]);
+    const r = q?.rows?.[0];
+    if (r) return { rec: r.airtable_id || null, neon: r.id };
+  }
+  // Neon unavailable or the generator is Airtable-only (created by hand, ETL not
+  // re-run). A rec id still works against Airtable; a uuid has nowhere to go.
+  return { rec: isUuid ? null : id, neon: isUuid ? id : null };
+}
+
 async function handleGetWarranties(params) {
   const generatorId = (params?.generatorId || "").trim();
   if (!generatorId) return resp(400, { ok: false, error: "Missing generatorId." });
 
+  const ids = await resolveGeneratorIds(generatorId);
+
+  if (ids.neon && neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT w.id, w.airtable_id, w.name, w.warranty_type, w.start_date::text AS start_date,
+              w.end_date::text AS end_date, w.duration_months, w.source, w.voided,
+              w.voided_reason, w.notes, w.template_id
+         FROM warranties w
+        WHERE w.generator_id = $1
+        ORDER BY w.end_date ASC NULLS LAST`, [ids.neon]);
+    if (q?.rows?.length) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      return resp(200, {
+        ok: true,
+        warranties: q.rows.map(r => ({
+          id: r.id, name: s(r.name), warrantyType: s(r.warranty_type),
+          startDate: s(r.start_date), endDate: s(r.end_date),
+          durationMonths: r.duration_months === null ? null : Number(r.duration_months),
+          source: s(r.source), voided: r.voided === true,
+          voidedReason: s(r.voided_reason), notes: s(r.notes),
+          templateId: r.template_id || null
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    // Zero rows is ambiguous — genuinely no warranties, or warranties that
+    // commissioning step 3 wrote to Airtable only (it has not migrated). Fall
+    // through when a rec id is available; Airtable answers both correctly.
+    if (q?.error) console.error(`getWarranties: Neon read failed, falling back: ${q.error}`);
+  }
+
+  // A uuid with no Neon row cannot be looked up in Airtable at all — say so
+  // rather than 404ing as "Generator not found", which it isn't.
+  if (!ids.rec) return resp(200, { ok: true, warranties: [], _source: "neon-empty" });
+
   let assetId = "";
   try {
-    const genRec = await atFetch(`${encodeURIComponent(TABLES.generators)}/${generatorId}`);
+    const genRec = await atFetch(`${encodeURIComponent(TABLES.generators)}/${ids.rec}`);
     assetId = genRec?.fields?.[F.gen.assetId] || "";
   } catch (err) {
     return resp(404, { ok: false, error: "Generator not found." });
@@ -4880,7 +4940,12 @@ async function handleCommissionGenerator(body) {
     assetFields[F.gen.serviceIntervalMonths] = String(serviceIntervalMonths);
   if (assetNotes && String(assetNotes).trim())           assetFields[F.gen.notes] = String(assetNotes);
 
-  let resolvedGeneratorId = generatorId || null;
+  // ⚠ SAME UUID TRAP AS getWarranties. index.html:13354 sends `gen.id`, which
+  // handleGenerator now mints as a Neon uuid — and step 1 below PATCHes
+  // Airtable by this id, so a uuid would 404 and the RE-COMMISSIONING path
+  // would silently fall through to CREATING A SECOND GENERATOR on the job.
+  // Normalise to the Airtable rec id before anything uses it.
+  let resolvedGeneratorId = (await resolveGeneratorIds(generatorId)).rec || null;
 
   // If caller didn't supply a generatorId, look for one already linked to
   // the Job before falling back to creating a fresh asset. This keeps the

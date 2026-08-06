@@ -4720,6 +4720,40 @@ async function handleGetWarrantyTemplates(params) {
   const model = (params?.model || "").trim();
   if (!brand) return resp(400, { ok: false, error: "Missing brand." });
 
+  // SAFE TO FLIP, unlike the other warranty reads. This endpoint is standalone:
+  // commissioning step 3 runs its OWN fetchAll against Warranty Templates and
+  // never calls this handler, so minting uuids here cannot reach the Airtable
+  // linked-record write that b79b9a0 was about. The only consumer is the
+  // frontend picker, whose templateId goes to addWarranty — which resolves
+  // either form on both sides.
+  if (neonEnabled()) {
+    // Mirrors buildWarrantyTemplateFilter exactly: active only, brand matched
+    // case-insensitively, and a BLANK model on the template means "applies to
+    // every model of this brand" (the seeded Cummins whole-house templates rely
+    // on that). With no model supplied, only blank-model templates match.
+    const q = await neonQuery(
+      `SELECT id, template_name, brand, model, warranty_type, duration_months, notes, active
+         FROM warranty_templates
+        WHERE active
+          AND lower(coalesce(brand,'')) = lower($1)
+          AND ( coalesce(model,'') = ''
+                OR ($2 <> '' AND lower(model) = lower($2)) )
+        ORDER BY duration_months NULLS LAST`, [brand, model]);
+    if (q?.rows?.length) {
+      return resp(200, {
+        ok: true,
+        templates: q.rows.map(r => ({
+          id: r.id, name: r.template_name || "", brand: r.brand || "",
+          model: r.model || "", warrantyType: r.warranty_type || "",
+          durationMonths: r.duration_months === null ? null : Number(r.duration_months),
+          notes: r.notes || "", active: r.active === true
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`getWarrantyTemplates: Neon read failed, falling back: ${q.error}`);
+  }
+
   const filter = buildWarrantyTemplateFilter(brand, model);
   const records = await fetchAll(TABLES.warrantyTemplates, { filter });
   const templates = records.map(r => {
@@ -4914,12 +4948,18 @@ async function handleAddWarranty(body) {
   // Source whitelist (singleSelect) — fallback "Standard" is the default
   // for warranties created from manufacturer templates.
   fields[F.warranty.source]         = wSource;
-  // templateId still comes from getWarrantyTemplates, which is NOT flipped, so
-  // it is a rec id. Guarded anyway: if that read is ever flipped this would
-  // otherwise put a uuid into a linked-record field, which is the exact bug
-  // b79b9a0 fixed.
-  if (templateId && String(templateId).startsWith("rec"))
-    fields[F.warranty.createdFromTemplate] = [String(templateId)];
+  // getWarrantyTemplates IS now Neon-first, so templateId arrives as a uuid on
+  // the primary path and a rec id on the fallback. Resolve back to the Airtable
+  // id for the mirror rather than just guarding on the prefix — a bare guard
+  // would silently DROP `Created From Template` from every mirrored warranty,
+  // which is the quiet half of the b79b9a0 bug rather than the loud half.
+  if (templateId) {
+    const tRec = String(templateId).startsWith("rec")
+      ? String(templateId)
+      : (await neonQuery(`SELECT airtable_id FROM warranty_templates WHERE id::text = $1`,
+          [String(templateId)]))?.rows?.[0]?.airtable_id || null;
+    if (tRec) fields[F.warranty.createdFromTemplate] = [tRec];
+  }
   if (notes && String(notes).trim()) fields[F.warranty.notes] = String(notes);
 
   // Mirror when Neon holds the row; a direct write when it does not.

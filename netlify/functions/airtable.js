@@ -2344,9 +2344,88 @@ async function handleJobById(params) {
   return resp(200, { ok: true, job: mapJob(records[0]), _source: "airtable" });
 }
 
+// ── GENERATOR — NEON-FIRST as of migration Step 4c ─────────────────────────
+// The Airtable path below needs THREE round trips (job -> generator -> service
+// history) and reaches the service records through the generator's ASSET ID
+// STRING, with the newline-delimited FIND dance to stop "GEN-1" matching
+// "GEN-10". Neon answers the whole thing in one query across a real FK, so that
+// entire class of substring bug simply does not exist on this path.
+//
+// ⚠ FALL THROUGH ON A MISS, deliberately — same reasoning as handleJobById.
+// Nothing syncs these tables yet (the ETL is hand-run), so a generator added in
+// Airtable in the last hour is genuinely absent from Neon. Zero rows is
+// therefore AMBIGUOUS — "no generator on this job" or "not copied over yet" —
+// and Airtable answers both correctly. Do NOT tighten this to `if (q?.rows)`
+// until the writes flip; that is what makes zero rows authoritative, and it
+// would hide every Airtable-created generator behind an empty screen.
 async function handleGenerator(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT g.airtable_id, g.id, g.asset_id, g.customer_name, g.brand, g.model, g.kw,
+              g.serial_number, g.transfer_switch_model, g.transfer_switch_serial,
+              g.fuel_type, g.install_date::text AS install_date, g.service_plan_active,
+              g.service_interval_months, g.next_service_due::text AS next_service_due,
+              g.warranty_expiration::text AS warranty_expiration, g.status,
+              g.battery_install_date::text AS battery_install_date, g.battery_age_years,
+              g.service_status, g.notes,
+              COALESCE(j.customer_phone, '') AS customer_phone,
+              COALESCE(j.address_full, '') AS site_address,
+              COALESCE((
+                SELECT json_agg(s ORDER BY s.service_date DESC NULLS LAST)
+                FROM (
+                  SELECT gs.id, gs.airtable_id, gs.service_date::text AS service_date,
+                         gs.service_type, gs.technician, gs.service_plan_visit,
+                         gs.oil_changed, gs.oil_filter_changed, gs.air_filter_changed,
+                         gs.spark_plugs_changed, gs.battery_tested, gs.battery_replaced,
+                         gs.load_test_performed, gs.firmware_checked, gs.exercise_checked,
+                         gs.trouble_codes, gs.work_performed_notes, gs.parts_used,
+                         gs.labor_hours, gs.generator_hours
+                  FROM generator_service gs WHERE gs.generator_id = g.id
+                ) s
+              ), '[]'::json) AS service_records
+         FROM v_generators g
+         LEFT JOIN jobs j ON j.id = g.job_id
+        WHERE g.job_airtable_id = $1
+        LIMIT 1`, [jobId]);
+    if (q?.rows?.length) {
+      const r = q.rows[0];
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      const generator = {
+        id: r.id, assetId: s(r.asset_id), customer: s(r.customer_name),
+        customerPhone: s(r.customer_phone), siteAddress: s(r.site_address),
+        brand: s(r.brand), model: s(r.model), kw: s(r.kw),
+        serialNumber: s(r.serial_number), transferSwitchModel: s(r.transfer_switch_model),
+        transferSwitchSerial: s(r.transfer_switch_serial), fuelType: s(r.fuel_type),
+        installDate: s(r.install_date), servicePlanActive: r.service_plan_active === true,
+        serviceIntervalMonths: s(r.service_interval_months),
+        nextServiceDue: s(r.next_service_due), warrantyExpiration: s(r.warranty_expiration),
+        status: s(r.status), batteryInstallDate: s(r.battery_install_date),
+        batteryAge: s(r.battery_age_years), serviceStatus: s(r.service_status),
+        notes: s(r.notes)
+      };
+      const serviceRecords = (r.service_records || []).map(sr => ({
+        id: sr.id, serviceRecordId: s(sr.airtable_id), serviceNumber: "",
+        serviceDate: s(sr.service_date), serviceType: s(sr.service_type),
+        technician: s(sr.technician), servicePlanVisit: sr.service_plan_visit === true,
+        oilChanged: sr.oil_changed === true, oilFilterChanged: sr.oil_filter_changed === true,
+        airFilterChanged: sr.air_filter_changed === true,
+        sparkPlugsChanged: sr.spark_plugs_changed === true,
+        batteryTested: sr.battery_tested === true, batteryReplaced: sr.battery_replaced === true,
+        loadTestPerformed: sr.load_test_performed === true,
+        firmwareChecked: sr.firmware_checked === true,
+        exerciseChecked: sr.exercise_checked === true,
+        troubleCodesFound: s(sr.trouble_codes), workNotes: s(sr.work_performed_notes),
+        partsUsed: s(sr.parts_used), laborHours: s(sr.labor_hours),
+        generatorHours: s(sr.generator_hours)
+      }));
+      return resp(200, { ok: true, generator, serviceRecords, _source: "neon", _ms: q.ms });
+    }
+    if (q?.error) console.error(`generator: Neon read failed, falling back to Airtable: ${q.error}`);
+  }
+
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, generator: null, serviceRecords: [] });
   const jobName = jobRecords[0].fields[F.job.name] || "";

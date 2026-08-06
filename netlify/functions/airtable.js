@@ -4867,29 +4867,78 @@ async function handleAddWarranty(body) {
   if (!Number.isFinite(months) || months <= 0)
     return resp(400, { ok: false, error: "durationMonths must be a positive number." });
 
+  // ⚠ END DATE STAYS A JS COMPUTATION, deliberately. JS and Postgres disagree
+  // about month addition (Jan 31 + 1 month) — see PLAN-job-warranty-service-log
+  // §2. Computing it ONCE here and storing the same string in both places means
+  // the two can never disagree; deriving it again in SQL is what would let them.
   const endDate = addMonthsToDateStr(startDate, months);
   if (!endDate) return resp(400, { ok: false, error: "Invalid startDate format (need YYYY-MM-DD)." });
 
+  // Both ids can arrive in either form — same trap that broke getWarranties.
+  const ids = await resolveGeneratorIds(generatorId);
+  if (!ids.neon && !ids.rec) return resp(400, { ok: false, error: `Invalid generatorId: ${generatorId}` });
+
+  const wType   = WARRANTY_TYPE_OPTS.includes(warrantyType) ? warrantyType : "Limited";
+  const wSource = WARRANTY_SOURCE_OPTS.includes(source) ? source : "Standard";
+
+  // ── NEON-FIRST, fails CLOSED — same contract as addGeneratorService ───────
+  let neonId = null;
+  if (ids.neon) {
+    const rows = await neonWrite("warranty.insert",
+      `INSERT INTO warranties
+         (generator_id, template_id, warranty_type, start_date, end_date,
+          duration_months, source, notes)
+       VALUES ($1,
+               (SELECT id FROM warranty_templates
+                 WHERE id::text = $2 OR airtable_id = $2),
+               $3, $4::date, $5::date, $6, $7, $8)
+       RETURNING id`,
+      [ids.neon, templateId ? String(templateId) : null, wType, startDate, endDate,
+       months, wSource, notes && String(notes).trim() ? String(notes) : null]);
+    neonId = rows?.[0]?.id;
+    if (!neonId) return resp(500, { ok: false, error: "Warranty was not written to Neon." });
+  }
+  // No Neon row for this generator means it is Airtable-only (created by hand,
+  // ETL not re-run). Fall back to the Airtable-only write rather than refusing —
+  // unlike a service record, a warranty on an unmigrated generator is still read
+  // correctly, because getWarranties falls through for exactly that case.
+
   const fields = {};
-  fields[F.warranty.generator]      = [generatorId];
+  if (ids.rec) fields[F.warranty.generator] = [ids.rec];
   // Warranty Type whitelist (singleSelect) — fallback "Limited" is the most
   // conservative coverage choice if a stray value somehow arrives.
-  fields[F.warranty.warrantyType]   = WARRANTY_TYPE_OPTS.includes(warrantyType) ? warrantyType : "Limited";
+  fields[F.warranty.warrantyType]   = wType;
   fields[F.warranty.startDate]      = startDate;
   fields[F.warranty.endDate]        = endDate;
   fields[F.warranty.durationMonths] = months;
   // Source whitelist (singleSelect) — fallback "Standard" is the default
   // for warranties created from manufacturer templates.
-  fields[F.warranty.source]         = WARRANTY_SOURCE_OPTS.includes(source) ? source : "Standard";
-  if (templateId)                    fields[F.warranty.createdFromTemplate] = [templateId];
+  fields[F.warranty.source]         = wSource;
+  // templateId still comes from getWarrantyTemplates, which is NOT flipped, so
+  // it is a rec id. Guarded anyway: if that read is ever flipped this would
+  // otherwise put a uuid into a linked-record field, which is the exact bug
+  // b79b9a0 fixed.
+  if (templateId && String(templateId).startsWith("rec"))
+    fields[F.warranty.createdFromTemplate] = [String(templateId)];
   if (notes && String(notes).trim()) fields[F.warranty.notes] = String(notes);
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.warranties)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  return resp(200, { ok: true, id: data.id });
+  // Mirror when Neon holds the row; a direct write when it does not.
+  const data = neonId
+    ? await mirrorToAirtable("addWarranty", () =>
+        atFetch(`${encodeURIComponent(TABLES.warranties)}`, {
+          method: "POST", body: JSON.stringify({ fields, typecast: true })
+        }))
+    : await atFetch(`${encodeURIComponent(TABLES.warranties)}`, {
+        method: "POST", body: JSON.stringify({ fields, typecast: true })
+      });
+
+  if (neonId && data?.id) {
+    await mirrorToAirtable("addWarranty.stamp", () =>
+      neonWrite("warranty.stampAirtableId",
+        `UPDATE warranties SET airtable_id = $2 WHERE id = $1`, [neonId, data.id]));
+  }
+  if (!neonId && data?.error) return resp(400, { ok: false, error: data.error });
+  return resp(200, { ok: true, id: neonId || data.id, airtableId: data?.id || null });
 }
 
 // ── COMMISSION GENERATOR (orchestrator) ─────────────────────────────────
@@ -5193,6 +5242,38 @@ ${safe}
           body: JSON.stringify({ fields: wFields, typecast: true })
         });
         warrantyIds.push(wData.id);
+
+        // ── COPY INTO NEON — this one prevents PARTIAL RESULTS ─────────────
+        // Not just tidiness. getWarranties reads Neon first and only falls
+        // through to Airtable when it finds ZERO rows. handleAddWarranty now
+        // writes to Neon, so a generator carrying both an ad-hoc warranty AND
+        // these commissioned ones would return a NON-empty Neon result, never
+        // fall through, and silently show only half its coverage — the ad-hoc
+        // one, hiding the manufacturer warranties. Half a warranty list is
+        // worse than none, because it looks complete.
+        //
+        // ON CONFLICT (airtable_id) keeps it idempotent against re-commissioning
+        // and the hand-run ETL alike. Fail-soft, like the asset copy above.
+        if (neonGeneratorId) {
+          const wr = await neonQuery(
+            `INSERT INTO warranties
+               (airtable_id, generator_id, template_id, warranty_type, start_date,
+                end_date, duration_months, source, synced_at)
+             VALUES ($1, $2,
+                     (SELECT id FROM warranty_templates WHERE airtable_id = $3),
+                     $4, $5::date, $6::date, $7, 'Standard', now())
+             ON CONFLICT (airtable_id) DO UPDATE SET
+               generator_id=EXCLUDED.generator_id, template_id=EXCLUDED.template_id,
+               warranty_type=EXCLUDED.warranty_type, start_date=EXCLUDED.start_date,
+               end_date=EXCLUDED.end_date, duration_months=EXCLUDED.duration_months,
+               source=EXCLUDED.source, synced_at=now()
+             RETURNING id`,
+            [wData.id, neonGeneratorId, t.id, wFields[F.warranty.warrantyType],
+             installDate, wEnd, months]);
+          if (!wr?.rows?.length) {
+            warnings.push(`Warranty "${tName}" was created in Airtable but not copied into Neon — re-run db/etl/inspections-generators.mjs.`);
+          }
+        }
       } catch (err) {
         warnings.push(`Failed to create warranty from template "${tName}": ${err.message}`);
       }

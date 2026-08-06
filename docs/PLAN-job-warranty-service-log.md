@@ -29,27 +29,34 @@ roadmap's own rule (§8: *"Should I do X first? → if X is in §7, no"*), this 
 
 Two specifics sharpen it:
 
-- **Warranties are already scheduled for migration.** Roadmap §3 Step **4b** is
+- **Warranties are already scheduled for migration.** Roadmap §3 Step **4c** is
   *"Inspections, Generators, Warranties"* — this feature lands squarely inside a domain that
   already has a migration slot. Anything built in Airtable now is built **twice**: once here,
-  once again when 4b runs.
+  once again when 4c runs.
 - **The two halves have very different cost profiles.**
 
 | Part | Build cost | Double-work if built in Airtable now |
 |---|---|---|
 | **Part 1** — warranty dates + badge | ~1-1.5 h | **Near zero.** Neon's `jobs` table already exists and already carries `finish_date`. The Neon side is 2 columns + 2 ETL lines. |
-| **Part 2** — service visit log | ~4-6 h | **Full.** An entire new Airtable table, 3-4 handlers, a new tab — all of which 4b then migrates. |
+| **Part 2** — service visit log | ~4-6 h | **Full.** An entire new Airtable table, 3-4 handlers, a new tab — all of which 4c then migrates. |
 
 **Recommendation: split them.**
 
 - **Part 1 can be done any time** it's wanted. It's an hour, it's two fields on a table that is
   already mirrored, and it closes a live liability question. It barely registers as a detour.
-- **Part 2 should be built as part of Step 4b, Neon-native.** Building it there costs roughly
-  what building it in Airtable costs today — and skips the migration entirely. The only price of
-  waiting is time-to-value, and Step 4b sits behind roughly 12-15 hours of roadmap work
-  (Steps 1, 2, 3, 4a).
+- **Part 2 should be built as part of Step 4c, Neon-native.** Building it there costs roughly
+  what building it in Airtable costs today — and skips the migration entirely.
 
-If service notes are urgently needed before 4b, the cheap stopgap is a dated, initialled entry
+> **⚠ TWO UPDATES SINCE THIS WAS WRITTEN (2026-08-06).**
+>
+> 1. **Every "4b" in this file has been rewritten to "4c."** Step 4 was re-lettered on
+>    2026-08-05 when Schedule was inserted at 4a, pushing every later letter along one. The
+>    slice this feature belongs to did not change — only its label.
+> 2. **The wait is over.** This section's "Step 4c sits behind roughly 12-15 hours of roadmap
+>    work" is stale: Steps 1, 2, 4a and 4b have all landed, and **4c started 2026-08-06**. Part 2
+>    is now slice **4c-4** in `PLAN-4c-inspections-generators-warranties.md` §7 — build it there.
+
+If service notes are urgently needed before 4c, the cheap stopgap is a dated, initialled entry
 appended to the job `Notes` field — ugly, but zero build and zero migration debt.
 
 ---
@@ -155,7 +162,7 @@ matter by hand.
 
 ---
 
-## 3. Part 2 — the service visit log (build at Step 4b)
+## 3. Part 2 — the service visit log (build at Step 4c)
 
 ### Not an extension of `Generator Service`
 
@@ -171,7 +178,7 @@ Checking `Start Service Call` fires the Make scenario "Service Call Trigger"
 billable return trip and far too heavy for "stopped by, tightened a lug, 20 minutes." This log is
 the lightweight complement, not a replacement.
 
-### Shape — Neon-native at 4b, or Airtable mirroring this DDL if built sooner
+### Shape — Neon-native at 4c, or Airtable mirroring this DDL if built sooner
 
 `001_time_entries.sql` states the rule this follows: *"keep BOTH job_id (nullable FK) AND job_name
 (static text)... the text snapshot IS the history. Never derive job_name from job_id."*
@@ -245,7 +252,7 @@ on our dime or theirs.
 | 0 | Airtable by hand: `Warranty Months` field | none | with slice 1 |
 | 1 | Finish Date + warranty end + header badge; `addMonthsClamped()` + tests | `airtable.js`, `index.html` | any time |
 | 2 | Neon: `006_job_warranty.sql` + 2 ETL lines | `db/` | any time after 1 |
-| 3 | Service visit log — table, handlers, Service tab | both | **Step 4b** |
+| 3 | Service visit log — table, handlers, Service tab | both | **Step 4c** |
 | 4 | Optional: expiring-in-60-days job filter, open-follow-ups list, photos on a visit | both | after 3 |
 
 Tests go in `tests/handlers.test.mjs` per the house rule: the clamped month-add edges
@@ -261,4 +268,4 @@ verification.
    "until approved"; a service note has no approval state to key off.
 3. **Does the Service tab show generator service records read-only** alongside the log when the
    job has a generator? (Recommended, but it's extra work in slice 3.)
-4. **Part 1 now, or hold everything for 4b?** (§1 — recommend Part 1 now, Part 2 at 4b.)
+4. **Part 1 now, or hold everything for 4c?** (§1 — recommend Part 1 now, Part 2 at 4c.)

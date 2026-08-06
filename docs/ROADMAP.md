@@ -257,7 +257,7 @@ before it's used on something that can.
 |---|---|---|---|
 | **4a** | **Schedule** ⬅ *owner's chosen next project (2026-08-05)* | **The smallest slice in the app, and the best place to prove the pattern.** One table, **7 fields, 64 rows** (Title, Job, Start/End Date, Crew, Notes, Entry Type). No money, no formulas, no rollups, no Make. Its only two links — **Job and Employee — are already in Neon**, so the FKs resolve on day one. | ~2 h |
 | **4b** | ✅ **Fleet + Lifts — DONE 2026-08-05** | **Lifts**: 10 rows, 9 photos in R2, natural sort, plus three capabilities that never existed (add a lift, retire a sold one with its photos, add/remove a photo). **Fleet**: 11 vehicles + 91 service records + 8 mileage entries, 9 photos in R2. Service history now hangs off a **real FK** instead of Airtable's unescaped `{Vehicle}="<name>"` filter, and logging mileage is **atomic** instead of two round-trips that could half-succeed. `Job Vehicle Trips` skipped — 0 rows, no handler reads it. | done |
-| **4c** | **Inspections, Generators, Warranties** | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. **The job service visit log (`PLAN-job-warranty-service-log.md` §3) belongs here** — build it Neon-native as part of this slice rather than in Airtable first. | ~4-5 h + ~4-6 h |
+| **4c** | **Inspections, Generators, Warranties** ⬅ *STARTED 2026-08-06, during the Step 3 soak* | Reference-shaped data with dates and links. Still no GP maths. Generators carry the service history, so slightly more relational. **The job service visit log (`PLAN-job-warranty-service-log.md` §3) belongs here** — build it Neon-native as part of this slice rather than in Airtable first. **Plan: `docs/PLAN-4c-inspections-generators-warranties.md`.** ⚠ **First slice with a Make entanglement** — Inspection Agencies and Inspection Contacts feed Google contact sync, which §5 keeps permanently. | ~4-5 h + ~4-6 h |
 | **4d** | **Expenses** | Money, but plain arithmetic rather than rollup formulas. Already has the `Push ID` idempotency pattern. Receipts (`PLAN-expense-receipts.md`) land here, so do them together if receipts hasn't shipped by then. | ~4-6 h |
 | **4e** | **Estimates + Invoices** | **LAST, deliberately.** These carry the GP and live-profit formulas — the numbers the business runs on. | large |
 
@@ -273,10 +273,19 @@ thing from the crew Schedule above — it is the electrical panel/circuit layout
 503 if Neon is unavailable. Built Neon-native from day one like the jobsite photos, so it never
 needs migrating. Both tables are still empty; nobody has used it yet.
 
-**Can 4a start before Step 3?** Technically yes — Schedule has nothing to do with the time path
-or Make, and both its foreign keys are already migrated. But it would mean two half-migrated
-domains at once, which is the same argument that puts the inventory app after the field app (§6).
-Finish the time track first; it's one sitting away.
+**Can a Step 4 slice start before Step 3?** This file used to say no — two half-migrated domains
+at once, the same argument that puts the inventory app after the field app (§6). **That was
+written about 4a, before Steps 1 and 2 landed, and it no longer holds.** Time is now on Neon in
+both directions and nothing about it is half-done; Step 3 is gated on *soak days*, which is
+waiting rather than working — exactly the condition under which §6 already allows inventory C3
+to fill quiet days.
+
+**So 4c started 2026-08-06, mid-soak.** It also has a positive reason to go first: 10 of the ~35
+`mapJob` keys blocking the `handleJobs` flip are the inspection block, and 4c builds precisely
+those dimension tables.
+
+**The one carry-over caution:** if the reconciler goes red, time data wins. Keep 4c in reviewable
+chunks so it can be set down, and never let it block a Step 3 go-ahead when the gate clears.
 
 ---
 

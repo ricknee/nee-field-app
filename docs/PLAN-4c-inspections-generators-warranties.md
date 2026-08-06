@@ -178,6 +178,75 @@ the **link**; the lookup is its shadow.
 
 ---
 
+## 6b. Commissioning → Neon: the SQL is proven, the wiring is not
+
+*2026-08-06. Owner's chosen next task: finish `handleCommissionGenerator` so the generator
+domain is actually complete rather than half-migrated.*
+
+**Why it's worth doing beyond tidiness:** commissioning is currently three sequential Airtable
+writes that can half-succeed — which is the whole reason the handler carries a `warnings[]`
+array. In Neon it is **one statement**, and a data-modifying CTE is atomic by definition. Two of
+the three steps also get *simpler*: the dup checks currently match by **asset-ID string** with
+the newline-`FIND` dance, and become plain FK tests.
+
+**VERIFIED ON BRANCH `br-aged-cake-ap0h78yk`, 2026-08-06.** First run created 1 generator,
+1 commissioning service record and 2 warranties with correct end dates (24 mo → 2028-08-06,
+60 mo → 2031-08-06). Re-running the same commissioning updated in place and created **zero**
+duplicate service rows and **zero** duplicate warranties. Totals after cleanup: 11 / 8 / 12.
+
+```sql
+WITH existing AS (
+  SELECT id FROM generators
+   WHERE ($1 <> '' AND (id::text = $1 OR airtable_id = $1))
+      OR ($1 =  '' AND job_airtable_id = $2)
+   LIMIT 1
+), upd AS (
+  UPDATE generators g SET /* asset fields */ …
+    FROM existing e WHERE g.id = e.id
+  RETURNING g.id
+), ins AS (
+  INSERT INTO generators (job_airtable_id, …)
+  SELECT $2, … WHERE NOT EXISTS (SELECT 1 FROM existing)
+  RETURNING id
+), gen AS (SELECT id FROM upd UNION ALL SELECT id FROM ins),
+svc AS (
+  INSERT INTO generator_service (generator_id, job_airtable_id, service_date, service_type)
+  SELECT gen.id, $2, $3::date, 'Install / Commissioning' FROM gen
+   WHERE NOT EXISTS (SELECT 1 FROM generator_service gs, gen
+                      WHERE gs.generator_id = gen.id
+                        AND gs.service_type = 'Install / Commissioning')
+  RETURNING id
+), war AS (
+  INSERT INTO warranties (generator_id, template_id, warranty_type, start_date,
+                          end_date, duration_months, source)
+  SELECT gen.id, t.id, t.warranty_type, $4::date,
+         ($4::date + make_interval(months => t.duration_months))::date,
+         t.duration_months, 'Standard'
+    FROM gen CROSS JOIN warranty_templates t
+   WHERE t.active
+     AND lower(coalesce(t.brand,'')) = lower($5)
+     AND (coalesce(t.model,'') = '' OR lower(t.model) = lower($6))
+     AND NOT EXISTS (SELECT 1 FROM warranties w, gen
+                      WHERE w.generator_id = gen.id AND w.template_id = t.id)
+  RETURNING id
+)
+SELECT (SELECT id FROM gen) AS generator_id,
+       (SELECT count(*) FROM svc) AS service_rows,
+       (SELECT count(*) FROM war) AS warranty_rows;
+```
+
+> ⚠ **The `war` CTE computes the end date in SQL** (`make_interval`), where every other path in
+> this codebase computes it in JS via `addMonthsToDateStr`. **Reconcile these before wiring it
+> in** — §5 already warns that JS and Postgres disagree about month addition. The seeded
+> templates are 24 and 60 months, which land on the same day-of-month either way, so the branch
+> test could not have caught a divergence. A 1-month template would expose it.
+
+**What remains:** replacing ~200 lines of the handler and turning its Airtable side into a pure
+mirror (uuid → rec id resolution for the Job, Generator and Created From Template links, then
+stamping `airtable_id` back onto all three row types). Deliberately not attempted at the end of
+the 2026-08-06 session: it is mechanical but long, it creates records customers are billed
+against, and a regression had already shipped that day.
+
 ## 7. Slices
 
 | # | What | Depends on | Size |

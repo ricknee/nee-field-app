@@ -6060,19 +6060,64 @@ async function handleUpdateJobInfo(body) {
     body: JSON.stringify({ fields, typecast: true })
   });
 
-  // ⚠ WRITE NEON TOO, or the change appears to be ignored for up to an hour.
+  // ⚠ WRITE NEON TOO, or the edit silently reverts for up to an hour.
   // handleJobs and handleJobById are BOTH Neon-first, and Neon's `jobs` is a
-  // one-way mirror refreshed hourly by _jobs-sync.js. Writing only Airtable —
-  // which is what this handler used to do — means the next refresh re-reads the
-  // STALE Neon row and the edit silently reverts on screen. Found the hard way:
-  // ticking Generator Installed in Airtable did nothing visible in the app.
+  // one-way mirror refreshed HOURLY by _jobs-sync.js. Writing only Airtable —
+  // which is what this handler did for every field until 2026-08-07 — means the
+  // next refresh re-reads the STALE Neon row and the change disappears. It
+  // LOOKED fine because the frontend patches local state after saving, so the
+  // value survives until you reload. Found via Generator Installed, where there
+  // was no local patch to hide it and the tick simply did nothing.
   //
-  // Safe against the sync precisely BECAUSE Airtable is written first: the
-  // hourly job re-derives the same value rather than clobbering this one.
-  if (generatorInstalled !== undefined) {
-    await neonWrite("job.setGeneratorInstalled",
-      `UPDATE jobs SET generator_installed = $2 WHERE airtable_id = $1`,
-      [jobId, generatorInstalled === true]).catch(() => {});
+  // Safe against the hourly sync precisely BECAUSE Airtable is written first:
+  // the sync re-derives the same value rather than clobbering this one.
+  const nSets = [], nVals = [jobId];
+  const put = (col, v, cast = "") => { nVals.push(v); nSets.push(`${col} = $${nVals.length}${cast}`); };
+  if (customerStreet !== undefined) put("address_street",  customerStreet || null);
+  if (customerCity   !== undefined) put("address_city",    customerCity   || null);
+  if (customerState  !== undefined) put("address_state",   customerState  || null);
+  if (customerZip    !== undefined) put("address_zip",     customerZip    || null);
+  if (customerPhone  !== undefined) put("customer_phone",  customerPhone  || null);
+  if (customerEmail  !== undefined) put("customer_email",  customerEmail  || null);
+  if (notes          !== undefined) put("notes",           notes          || null);
+  if (birdDate       !== undefined) put("bird_date",       birdDate || null, "::date");
+  if (generatorInstalled !== undefined) put("generator_installed", generatorInstalled === true);
+
+  // `address_full` is a FORMULA in Airtable, so Airtable recomputes it itself.
+  // Neon's copy is a plain synced column and will not — leaving the job card
+  // showing the old address beside the new parts.
+  //
+  // ⚠ REPRODUCE AIRTABLE'S FORMULA, NOT buildJobAddress FROM index.html.
+  // They are not the same. Airtable is a LITERAL concat that keeps its
+  // separators even when parts are blank; buildJobAddress filters empties. On a
+  // job with only a state that is ", , OH" vs "OH" — verified against all 112
+  // jobs, where the literal form matches 112/112 and the filtered form 104/112.
+  // Using the prettier one here would make Neon disagree with Airtable, and the
+  // hourly sync would then revert it — reintroducing exactly the flicker this
+  // whole change exists to remove. Neon mirrors; it does not improve.
+  //
+  // (index.html's client-side version still shows the tidier string until the
+  // next refresh. Cosmetic, pre-existing, and not worth diverging the data for.)
+  const touchedAddress = [customerStreet, customerCity, customerState, customerZip]
+    .some(v => v !== undefined);
+  if (touchedAddress) {
+    const cur = (await neonQuery(
+      `SELECT address_street, address_city, address_state, address_zip
+         FROM jobs WHERE airtable_id = $1`, [jobId]))?.rows?.[0] || {};
+    const street = customerStreet !== undefined ? customerStreet : (cur.address_street || "");
+    const city   = customerCity   !== undefined ? customerCity   : (cur.address_city   || "");
+    const state  = customerState  !== undefined ? customerState  : (cur.address_state  || "");
+    const zip    = customerZip    !== undefined ? customerZip    : (cur.address_zip    || "");
+    put("address_full",
+      `${street || ""}, ${city || ""}, ${state || ""} ${zip || ""}`.trim() || null);
+  }
+
+  if (nSets.length) {
+    // Fail-soft: Airtable already holds the authoritative write for these
+    // fields, so a Neon hiccup must not fail an edit the user watched succeed.
+    // The hourly sync repairs it.
+    await neonWrite("job.updateInfo",
+      `UPDATE jobs SET ${nSets.join(", ")} WHERE airtable_id = $1`, nVals).catch(() => {});
   }
 
   return resp(200, { ok: true, updatedId: data.id });

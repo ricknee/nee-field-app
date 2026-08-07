@@ -184,6 +184,13 @@ const expenses   = await fetchAll("Expenses");
 const invoices   = await fetchAll("Invoices");
 const wireWeighs = await fetchAll("Wire Weigh-Ins");
 const pipeUsage  = await fetchAll("Pipe Usage");
+// The three child tables that were BLOCKING the estimate and invoice slices —
+// see db/schema/014. Material Billing Allocations in particular is what makes
+// invoice revenue computable at all, and is the same rollup that 4d had to
+// leave ETL-copied on expenses.billed_material_amount.
+const sentEstPdfs = await fetchAll("Sent Estimate PDFs");
+const estTemplates = await fetchAll("Estimate Templates");
+const matAllocs   = await fetchAll("Material Billing Allocations");
 console.log(`extracted: ${employees.length} employees, ${jobs.length} jobs, ${entries.length} time entries`);
 
 // ── Airtable-side truth, computed BEFORE loading ──────────────────────────
@@ -409,6 +416,55 @@ await upsertBatch("jobs",
       num(r.fields["Manual Labor $"]), num(r.fields["Manual Material $"]),
       num(r.fields["Percent to Bill"]), r.fields["Auto Allocate?"] === true,
       num(r.fields["Invoice Display #"]), now]), "airtable_id", 200);
+
+  // ── The three child tables (schema 014) ──────────────────────────────────
+  // Loaded AFTER invoices and expenses, because material_billing_allocations
+  // carries real FKs to both and resolving them needs the parents present.
+  const link1 = (v) => (Array.isArray(v) ? (v[0] ?? null) : (v ?? null));
+
+  await upsertBatch("sent_estimate_pdfs",
+    // ⚠ J(r) yields [job_id, job_airtable_id] IN THAT ORDER — same as the
+    // invoices upsert above. Listing them the other way round sends a `rec…`
+    // string into the uuid column and the load dies on the first row.
+    ["airtable_id", "job_id", "job_airtable_id", "estimate_airtable_id", "estimate_id",
+     "display_number", "estimate_date", "total", "snapshot", "synced_at"],
+    sentEstPdfs.map(r => [r.id, ...J(r),
+      link1(r.fields["Job Estimate"]),
+      null, // estimate_id resolved below — the FK needs job_estimates loaded
+      num(r.fields["Estimate Display #"]), nul(r.fields["Estimate Date"]),
+      num(r.fields["Total"]), nul(r.fields["Snapshot"]), now]), "airtable_id", 200);
+
+  await upsertBatch("estimate_templates",
+    ["airtable_id", "template_name", "contractor_airtable_id", "active", "scope_of_work",
+     "exclusions", "standard_terms", "base_price", "default_labor_hours",
+     "default_material_cost", "internal_notes", "synced_at"],
+    estTemplates.map(r => [r.id, r.fields["Template Name"] || "(unnamed)",
+      link1(r.fields["Contractor"]), r.fields["Active"] === true,
+      nul(r.fields["Scope of Work"]), nul(r.fields["Exclusions"]),
+      nul(r.fields["Standard Terms"]), num(r.fields["Base Price"]),
+      num(r.fields["Default Labor Hours"]), num(r.fields["Default Material Cost"]),
+      nul(r.fields["Internal Notes"]), now]), "airtable_id", 200);
+
+  // Only three fields here are real; the other seven on the Airtable table are
+  // lookups and formulas derived from these.
+  await upsertBatch("material_billing_allocations",
+    ["airtable_id", "expense_airtable_id", "invoice_airtable_id", "allocated_amount", "synced_at"],
+    matAllocs.map(r => [r.id, link1(r.fields["Expense"]), link1(r.fields["Invoice"]),
+      num(r.fields["Allocated Material Amount $"]), now]), "airtable_id", 200);
+
+  // Resolve the uuid FKs now that every parent row exists. Kept as a separate
+  // pass rather than a subquery per row: 252 + 25 correlated subqueries would
+  // be 277 extra round trips for what is two statements.
+  await sql`UPDATE sent_estimate_pdfs s SET estimate_id = e.id
+              FROM job_estimates e WHERE e.airtable_id = s.estimate_airtable_id
+               AND s.estimate_id IS DISTINCT FROM e.id`;
+  await sql`UPDATE material_billing_allocations m SET expense_id = e.id
+              FROM expenses e WHERE e.airtable_id = m.expense_airtable_id
+               AND m.expense_id IS DISTINCT FROM e.id`;
+  await sql`UPDATE material_billing_allocations m SET invoice_id = i.id
+              FROM invoices i WHERE i.airtable_id = m.invoice_airtable_id
+               AND m.invoice_id IS DISTINCT FROM i.id`;
+  console.log(`children: ${sentEstPdfs.length} sent-estimate PDFs, ${estTemplates.length} templates, ${matAllocs.length} material allocations`);
 
   await upsertBatch("wire_weigh_ins",
     ["airtable_id", "job_id", "job_airtable_id", "weigh_in_date", "net_weight", "footage_used",

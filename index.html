@@ -2853,6 +2853,7 @@
           </div>
 
           <div style="display:flex; gap:10px; flex-wrap:wrap; margin: 16px 0 8px;">
+            <button type="button" id="btnEditGen" class="action-btn" style="font-size:13px; cursor:pointer; display:none;">✏ Edit Generator</button>
             <button type="button" id="btnCommissionGen" class="action-btn warning" style="font-size:13px; cursor:pointer;">⚡ Generator Startup / Commissioning</button>
             <button type="button" id="btnServiceGen" class="action-btn photo-add" style="font-size:13px; cursor:pointer;">🔧 New Service Record</button>
           </div>
@@ -2862,6 +2863,39 @@
                which auto-creates the Generators record if needed, posts the
                Install / Commissioning service event, and creates one Warranty
                per matching active Warranty Template. -->
+          <!-- Edit the generator ASSET. Separate from commissioning on purpose:
+               commissioning also creates a service event and a set of
+               warranties, so it is the wrong tool for fixing a typo'd serial. -->
+          <div id="genEditPanel" style="display:none; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <div style="font-weight:700; font-size:14px;">✏ Edit Generator</div>
+              <button type="button" onclick="document.getElementById('genEditPanel').style.display='none'" style="background:none; border:none; cursor:pointer; color:var(--muted); font-size:18px;">×</button>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px;">
+              <div><label class="edit-label">Brand</label><input id="geBrand" class="edit-input" type="text" /></div>
+              <div><label class="edit-label">Model</label><input id="geModel" class="edit-input" type="text" /></div>
+              <div><label class="edit-label">KW</label><input id="geKw" class="edit-input" type="number" step="0.1" /></div>
+              <div><label class="edit-label">Serial Number</label><input id="geSerial" class="edit-input" type="text" /></div>
+              <div><label class="edit-label">Transfer Switch Model</label><input id="geTsModel" class="edit-input" type="text" /></div>
+              <div><label class="edit-label">Transfer Switch Serial</label><input id="geTsSerial" class="edit-input" type="text" /></div>
+              <div><label class="edit-label">Fuel Type</label><input id="geFuel" class="edit-input" type="text" /></div>
+              <div><label class="edit-label">Install Date</label><input id="geInstall" class="edit-input" type="date" /></div>
+              <div><label class="edit-label">Service Interval (months)</label><input id="geInterval" class="edit-input" type="number" /></div>
+              <div><label class="edit-label">Battery Install Date</label><input id="geBattery" class="edit-input" type="date" /></div>
+              <div><label class="edit-label">Status</label><input id="geStatus" class="edit-input" type="text" /></div>
+              <div style="display:flex; align-items:flex-end; gap:8px; padding-bottom:6px;">
+                <input id="geServicePlan" type="checkbox" style="width:18px; height:18px;" />
+                <label for="geServicePlan" class="edit-label" style="margin:0;">Service Plan Active</label>
+              </div>
+            </div>
+            <div style="margin-top:10px;"><label class="edit-label">Notes</label>
+              <textarea id="geNotes" class="edit-input" style="min-height:70px; resize:vertical;"></textarea></div>
+            <div style="display:flex; gap:10px; align-items:center; margin-top:12px;">
+              <button type="button" id="geSave" class="btn btn-primary btn-sm" style="font-size:13px;">Save Changes</button>
+              <span id="geMsg" style="font-size:12px; display:none;"></span>
+            </div>
+          </div>
+
           <div id="commPanel" style="display:none; background:var(--panel); border:1px solid var(--accent); border-radius:10px; padding:14px 16px; margin-bottom:16px;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
               <div style="font-weight:700; font-size:14px; color:var(--accent);">⚡ Generator Startup / Commissioning</div>
@@ -7878,6 +7912,65 @@
         `;
       } else {
         $("genInfoGrid").innerHTML = `<div class="empty-msg">No generator record linked to this job yet.</div>`;
+      }
+
+      // ── Edit Generator — only once an asset exists ──────────────────────
+      // Editing used to mean re-running commissioning with corrected values,
+      // which also creates a service event and warranties. Wrong tool for a
+      // typo'd serial number.
+      const editBtn = $("btnEditGen"), editPanel = $("genEditPanel");
+      if (editBtn && editPanel) {
+        editBtn.style.display = gen ? "" : "none";
+        editBtn.onclick = () => {
+          const open = editPanel.style.display !== "none";
+          editPanel.style.display = open ? "none" : "block";
+          if (open) return;
+          $("commPanel").style.display = "none";   // never both at once
+          $("geMsg").style.display = "none";
+          $("geBrand").value    = gen.brand || "";
+          $("geModel").value    = gen.model || "";
+          $("geKw").value       = gen.kw || "";
+          $("geSerial").value   = gen.serialNumber || "";
+          $("geTsModel").value  = gen.transferSwitchModel || "";
+          $("geTsSerial").value = gen.transferSwitchSerial || "";
+          $("geFuel").value     = gen.fuelType || "";
+          $("geInstall").value  = (gen.installDate || "").slice(0, 10);
+          $("geInterval").value = gen.serviceIntervalMonths || "";
+          $("geBattery").value  = (gen.batteryInstallDate || "").slice(0, 10);
+          $("geStatus").value   = gen.status || "";
+          $("geNotes").value    = gen.notes || "";
+          $("geServicePlan").checked = gen.servicePlanActive === true;
+        };
+        $("geSave").onclick = async () => {
+          const btn = $("geSave"), msg = $("geMsg");
+          btn.disabled = true; btn.textContent = "Saving…";
+          msg.style.display = "none";
+          try {
+            await apiPost("updateGenerator", {
+              generatorId: gen.id,
+              brand: $("geBrand").value, model: $("geModel").value, kw: $("geKw").value,
+              serialNumber: $("geSerial").value,
+              transferSwitchModel: $("geTsModel").value,
+              transferSwitchSerial: $("geTsSerial").value,
+              fuelType: $("geFuel").value, installDate: $("geInstall").value,
+              serviceIntervalMonths: $("geInterval").value,
+              batteryInstallDate: $("geBattery").value,
+              status: $("geStatus").value, notes: $("geNotes").value,
+              servicePlanActive: $("geServicePlan").checked
+            });
+            // Refetch rather than patch local state: asset id, next service due
+            // and service status are all DERIVED in a Neon view, so guessing
+            // them here would put stale values on screen next to fresh ones.
+            editPanel.style.display = "none";
+            await loadGeneratorData(jobId);
+          } catch (e) {
+            msg.textContent = e.message;
+            msg.style.color = "#ff8b7e";
+            msg.style.display = "";
+          } finally {
+            btn.disabled = false; btn.textContent = "Save Changes";
+          }
+        };
       }
 
       // Service Records

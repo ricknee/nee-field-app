@@ -4672,6 +4672,72 @@ async function handleSaveInvoice(body) {
   return resp(200, { ok: true, id: data.id, updated: !!invoiceId });
 }
 
+// ── UPDATE GENERATOR ASSET ──────────────────────────────────────────────
+// Editing an asset used to mean RE-RUNNING COMMISSIONING with corrected values,
+// because that was the only write path that touched these fields. That is a
+// workaround, not a workflow: commissioning also creates a service event and a
+// set of warranties, so "fix a typo in the serial number" went through a code
+// path whose job is to bring a generator into service.
+//
+// Neon-first, fails CLOSED, mirrors to Airtable. Accepts either id form.
+// Only the fields actually sent are touched, so a partial edit never nulls the
+// rest — same rule as handleUpdateTimeEntryPayroll.
+async function handleUpdateGenerator(body) {
+  const { generatorId } = body || {};
+  if (!generatorId) return resp(400, { ok: false, error: "Missing generatorId." });
+
+  const ids = await resolveGeneratorIds(generatorId);
+  if (!ids.neon && !ids.rec) return resp(400, { ok: false, error: `Invalid generatorId: ${generatorId}` });
+
+  // column, body key, Airtable field id, coercion
+  const MAP = [
+    ["brand",                   "brand",                 F.gen.brand,                 "sel"],
+    ["model",                   "model",                 F.gen.model,                 "str"],
+    ["kw",                      "kw",                    F.gen.kw,                    "num"],
+    ["serial_number",           "serialNumber",          F.gen.serialNumber,          "str"],
+    ["transfer_switch_model",   "transferSwitchModel",   F.gen.transferSwitchModel,   "str"],
+    ["transfer_switch_serial",  "transferSwitchSerial",  F.gen.transferSwitchSerial,  "str"],
+    ["fuel_type",               "fuelType",              F.gen.fuelType,              "sel"],
+    ["install_date",            "installDate",           F.gen.installDate,           "date"],
+    ["service_plan_active",     "servicePlanActive",     F.gen.servicePlanActive,     "bool"],
+    ["service_interval_months", "serviceIntervalMonths", F.gen.serviceIntervalMonths, "num"],
+    ["battery_install_date",    "batteryInstallDate",    F.gen.batteryInstallDate,    "date"],
+    ["warranty_expiration",     "warrantyExpiration",    F.gen.warrantyExpiration,    "date"],
+    ["status",                  "status",                F.gen.status,                "sel"],
+    ["notes",                   "notes",                 F.gen.notes,                 "str"],
+  ];
+
+  const sets = [], vals = [ids.neon || ids.rec], fields = {};
+  for (const [col, key, atField, kind] of MAP) {
+    if (body[key] === undefined) continue;
+    let v = body[key];
+    if (kind === "num")  v = (v === "" || v === null) ? null : Number(v);
+    if (kind === "bool") v = v === true;
+    if (kind === "str" || kind === "sel") v = (v === null || String(v).trim() === "") ? null : String(v).trim();
+    if (kind === "date") v = (v === "" || v === null) ? null : String(v).slice(0, 10);
+    vals.push(v);
+    sets.push(`${col} = $${vals.length}${kind === "date" ? "::date" : ""}`);
+    // Airtable wants "" to clear a text field and null to clear a date; a
+    // singleSelect takes the value straight through with typecast.
+    fields[atField] = (kind === "date") ? v : (v === null ? "" : v);
+  }
+  if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
+
+  const rows = await neonWrite("generator.update",
+    `UPDATE generators SET ${sets.join(", ")}
+      WHERE id::text = $1 OR airtable_id = $1
+      RETURNING id, airtable_id`, vals);
+  if (!rows?.length) return resp(404, { ok: false, error: `No generator found for id ${generatorId}.` });
+
+  const atId = rows[0].airtable_id || ids.rec;
+  if (atId) {
+    await mirrorToAirtable("updateGenerator", () =>
+      atFetch(`${encodeURIComponent(TABLES.generators)}/${atId}`,
+        { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) }));
+  }
+  return resp(200, { ok: true, id: rows[0].id, _source: "neon" });
+}
+
 // ── ADD GENERATOR SERVICE RECORD (quick-log from Generator tab) ─────────
 // Keep it lightweight: no truck/parts inventory, no labor billing, just the
 // observable facts a tech in the field would log on a service stop.
@@ -7202,6 +7268,7 @@ export async function handler(event) {
       if (body.action === "markInvoicePaid")      return await handleMarkInvoicePaid(body);
       if (body.action === "setInvoiceStatus")     return await handleSetInvoiceStatus(body);
       if (body.action === "addGeneratorService")  return await handleAddGeneratorService(body);
+      if (body.action === "updateGenerator")      return await handleUpdateGenerator(body);
       if (body.action === "addWarranty")          return await handleAddWarranty(body);
       if (body.action === "commissionGenerator")  return await handleCommissionGenerator(body);
       if (body.action === "addScheduleEntry")     return await handleAddScheduleEntry(body);

@@ -5,7 +5,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 
 **This file is the running order.** If something isn't on it, it's a detour — see §7.
 
-*Last updated 2026-08-05.*
+*Last updated 2026-08-07.*
 
 ---
 
@@ -351,6 +351,7 @@ because they're next:
 | Offline photo upload queue | ? | Wait until crews actually hit it |
 | Unify estimates bet | large | `docs/BET-unify-estimates.md`. Blocked on GP formulas reaching Neon |
 | Conduit assemblies | — | Two rollup fields need adding by hand in Airtable first |
+| **Time clock in the app** | ~10-14 h | Owner idea 2026-08-07, and **explicitly parked behind the migration** — owner's words: *finish migrating first, then we'll look at time.* `docs/PLAN-time-clock.md`. Smaller than it sounds (Neon already authoritative for time writes, `createTimeEntry` already Neon-first and already employee-writable), but it needs a decision first — **does the app replace QuickBooks Time or feed it?** — and that question is much clearer once Step 3 is done and QB is the only thing left upstream. Building it *before* Step 3 puts a third writer of hours into the soak that is meant to prove the reconciler clean. |
 
 ---
 

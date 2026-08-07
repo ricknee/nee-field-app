@@ -446,12 +446,23 @@ await upsertBatch("jobs",
       num(r.fields["Estimate Display #"]), nul(r.fields["Estimate Date"]),
       num(r.fields["Total"]), nul(r.fields["Snapshot"]), now]), "airtable_id", 200);
 
+  // handleEstimateTemplates filters by contractor NAME, but the Airtable link
+  // only yields rec ids and Companies is not migrated. Resolving the name once
+  // here is far cheaper than migrating a whole table for one filter — and it is
+  // the same "store the name, not the link" rule already used for job_name and
+  // vendor_name.
+  const companies = await fetchAll("Companies");
+  const companyName = new Map(companies.map(c =>
+    [c.id, c.fields?.["Company Name"] || c.fields?.["Name"] || null]));
+
   await upsertBatch("estimate_templates",
-    ["airtable_id", "template_name", "contractor_airtable_id", "active", "scope_of_work",
-     "exclusions", "standard_terms", "base_price", "default_labor_hours",
+    ["airtable_id", "template_name", "contractor_airtable_id", "contractor_name", "active",
+     "scope_of_work", "exclusions", "standard_terms", "base_price", "default_labor_hours",
      "default_material_cost", "internal_notes", "synced_at"],
     estTemplates.map(r => [r.id, r.fields["Template Name"] || "(unnamed)",
-      link1(r.fields["Contractor"]), r.fields["Active"] === true,
+      link1(r.fields["Contractor"]),
+      companyName.get(link1(r.fields["Contractor"])) ?? null,
+      r.fields["Active"] === true,
       nul(r.fields["Scope of Work"]), nul(r.fields["Exclusions"]),
       nul(r.fields["Standard Terms"]), num(r.fields["Base Price"]),
       num(r.fields["Default Labor Hours"]), num(r.fields["Default Material Cost"]),

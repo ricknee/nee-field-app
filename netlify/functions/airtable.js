@@ -3166,6 +3166,46 @@ async function handleEstimateTemplates(params) {
   // No in-memory id verification here, unlike the job sites: the caller passes a
   // contractor NAME, not a record id, so there is nothing to verify against.
   // Exact-per-element matching is the whole fix available.
+  // ── NEON-FIRST (migration Step 4e) ──────────────────────────────────────
+  // The contractor match becomes an EXACT equality on a stored name rather than
+  // a newline-delimited FIND over a joined link field. The bug the Airtable
+  // comment describes — "Case Farms" also matching "Case Farms North" — cannot
+  // occur here at all. Worth noting the live data has exactly that shape: two
+  // separate "Case Farms" templates, which is what made the collision real.
+  //
+  // contractor_name is stored rather than joined because Companies is not
+  // migrated, and resolving one name in the ETL is far cheaper than migrating a
+  // table for a single filter. Same rule as job_name and vendor_name.
+  if (neonEnabled()) {
+    const want = String(contractor || "").trim();
+    const q = await neonQuery(
+      `SELECT airtable_id, template_name, contractor_airtable_id, active, scope_of_work,
+              exclusions, standard_terms, base_price, default_labor_hours,
+              default_material_cost, internal_notes
+         FROM estimate_templates
+        WHERE active AND ($1 = '' OR lower(coalesce(contractor_name,'')) = lower($1))
+        ORDER BY template_name ASC`, [want]);
+    if (q?.rows?.length) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      const n = (v) => (v === null || v === undefined ? null : Number(v));
+      return resp(200, {
+        ok: true,
+        templates: q.rows.map(r => ({
+          id: r.airtable_id, name: s(r.template_name),
+          // Kept an ARRAY to match the Airtable shape the frontend expects.
+          contractorIds: r.contractor_airtable_id ? [r.contractor_airtable_id] : [],
+          active: r.active === true, scopeOfWork: s(r.scope_of_work),
+          exclusions: s(r.exclusions), standardTerms: s(r.standard_terms),
+          basePrice: n(r.base_price), defaultLaborHours: n(r.default_labor_hours),
+          defaultMaterialCost: n(r.default_material_cost),
+          internalNotes: s(r.internal_notes),
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`estimateTemplates: Neon read failed, falling back: ${q.error}`);
+  }
+
   const safeContractor = escapeFormulaString((contractor || "").trim());
   const filter = safeContractor
     ? `AND({Active}=TRUE(), FIND("\n${safeContractor}\n", "\n" & ARRAYJOIN({Contractor}, "\n") & "\n"))`

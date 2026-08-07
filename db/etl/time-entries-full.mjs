@@ -368,11 +368,18 @@ await upsertBatch("jobs",
       num(r.fields["Calculated Estimated Total"]), nul(r.fields["Estimate Date"]),
       nul(r.fields["Notes"]), now]), "airtable_id", 200);
 
+  // ⚠ submitted_by_at_id IS AN AUTHORIZATION FIELD, not decoration.
+  // handleExpenses scopes by it: admin/office see every expense on a job, an
+  // EMPLOYEE sees only their own. This ETL was written for GP aggregation, where
+  // who submitted a row is irrelevant, so it never carried the field — and a
+  // Neon-first read without it would either break that scope or leak every
+  // employee's expenses to every employee. Added at Step 4d (2026-08-07).
+  // Stored as the Airtable EMPLOYEE REC ID because that is what authUser.id is.
   await upsertBatch("expenses",
     ["airtable_id", "job_id", "job_airtable_id", "expense_type", "expense_status", "expense_date",
      "total_cost_actual", "reviewed", "reviewed_expenses", "billable", "billable_material_amount",
      "billed_material_amount", "unbilled_material_amount", "manual_material_cost", "material_credit",
-     "vendor_name", "description", "push_id", "synced_at"],
+     "vendor_name", "description", "push_id", "submitted_by_at_id", "submitted_by_name", "synced_at"],
     expenses.map(r => [r.id, ...J(r), nul(r.fields["Expense Type"]), nul(r.fields["Expense Status"]),
       nul(r.fields["Expense Date"]), num(r.fields["Total Cost (Actual)"]),
       r.fields["Reviewed"] === true, num(r.fields["Reviewed Expenses"]),
@@ -381,7 +388,16 @@ await upsertBatch("jobs",
       num(r.fields["Manual Material Cost"]), num(r.fields["Material Credit"]),
       // Lookup -> array; the vendor NAME is the durable snapshot, same rule as job_name.
       (Array.isArray(r.fields["Vendor Name (from Vendor)"]) ? r.fields["Vendor Name (from Vendor)"][0] : null) ?? null,
-      nul(r.fields["Description"]), nul(r.fields["Push ID"]), now]), "airtable_id", 200);
+      nul(r.fields["Description"]), nul(r.fields["Push ID"]),
+      // Submitted By is a LINK (array of employee rec ids); Submitted By Name is
+      // its lookup. Blank on legacy rows entered before the field existed —
+      // those are pre-self-service and belong to no employee, which is correct:
+      // an employee should not see them, and a manager sees everything anyway.
+      (Array.isArray(r.fields["Submitted By"]) ? r.fields["Submitted By"][0] : null) ?? null,
+      (Array.isArray(r.fields["Submitted By Name"])
+        ? r.fields["Submitted By Name"].filter(Boolean).join(", ")
+        : (r.fields["Submitted By Name"] || null)) || null,
+      now]), "airtable_id", 200);
 
   await upsertBatch("invoices",
     ["airtable_id", "job_id", "job_airtable_id", "invoice_number", "invoice_status", "invoice_type",

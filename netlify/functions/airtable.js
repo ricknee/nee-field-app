@@ -3847,6 +3847,66 @@ async function handleUnlinkedLaborAllocations(params) {
 async function handleExpenses(params, authUser) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const isMgrScope = authUser && (authUser.role === "admin" || authUser.role === "office");
+
+  // ── NEON-FIRST (migration Step 4d) ──────────────────────────────────────
+  // Replaces two Airtable round trips (fetch the job for its name, then FIND
+  // that name inside ARRAYJOIN({Job}) and re-verify in memory) with one query.
+  //
+  // ⚠ THE SCOPE BELOW IS AN AUTHORIZATION BOUNDARY, NOT A FILTER.
+  // admin/office see every expense on the job; an EMPLOYEE sees only their own.
+  // The ETL did not carry `Submitted By` until 2026-08-07 — it was written for
+  // GP aggregation, where who submitted a row is irrelevant — so flipping this
+  // read before adding submitted_by_at_id would have leaked every employee's
+  // expenses to every employee. Legacy rows have a NULL submitter and are
+  // therefore invisible to employees, exactly as the Airtable path behaves
+  // (`Submitted By` includes <id> is false when the field is empty).
+  //
+  // The money columns come from v_expenses, whose derivations are diffed to the
+  // cent against Airtable — see db/schema/013_expense_derived_amounts.sql.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      // ⚠ COALESCE(airtable_id, id) — this read returns the AIRTABLE REC ID.
+      // Every expense consumer does atFetch("Expenses/<id>"): guardExpenseMutation,
+      // delete, approve, update, and all six receipt handlers. Worse, R2 receipt
+      // keys are built FROM this id, so switching to a uuid would 404 the writes
+      // AND orphan every existing receipt. The id contract stays rec-shaped until
+      // the writes and receipts move together. Same reasoning as the inspection
+      // pickers in 4c-2.
+      `SELECT COALESCE(e.airtable_id, e.id::text) AS id, e.expense_date::text AS expense_date, e.description,
+              e.vendor_name, e.expense_type, e.expense_status, e.billable, e.reviewed,
+              e.total_cost_actual_calc          AS total_cost,
+              e.billable_material_amount_calc   AS billable_material,
+              e.unbilled_material_amount_calc   AS unbilled_material,
+              e.submitted_by_name,
+              j.markup_pct
+         FROM v_expenses e
+         LEFT JOIN jobs j ON j.id = e.job_id
+        WHERE e.job_airtable_id = $1
+          AND ($2 OR e.submitted_by_at_id = $3)
+        ORDER BY e.expense_date DESC NULLS LAST`,
+      [jobId, isMgrScope, authUser?.id || null]);
+    if (q?.rows?.length) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      const n = (v) => (v === null || v === undefined ? null : Number(v));
+      return resp(200, {
+        ok: true,
+        expenses: q.rows.map(r => ({
+          id: r.id, date: s(r.expense_date), description: s(r.description),
+          vendor: s(r.vendor_name), expenseType: s(r.expense_type),
+          totalCost: n(r.total_cost), expenseStatus: s(r.expense_status),
+          billable: r.billable === true, jobMarkupPct: n(r.markup_pct),
+          billableMaterial: n(r.billable_material), reviewed: r.reviewed === true,
+          unbilledMaterial: n(r.unbilled_material) ?? 0,
+          submittedBy: s(r.submitted_by_name)
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`expenses: Neon read failed, falling back: ${q.error}`);
+  }
+
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, expenses: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";

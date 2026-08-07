@@ -2896,6 +2896,48 @@ async function fetchSentEstimatePDFsForJob(jobId) {
   }
 }
 
+// ── KEEP NEON IN STEP AFTER AN ESTIMATE WRITE (migration Step 4e) ─────────
+// handleJobEstimates reads Neon first and only falls through on ZERO rows, so on
+// any job that already has an estimate an Airtable-only write would simply never
+// appear. Same trap as the warranties at 83e022c and the expenses at 6ee42b5.
+//
+// Airtable stays the identity authority here, as it does for expenses: the id
+// contract is rec-shaped, Sent Estimate PDFs back-link to the rec id, and
+// estimate PDFs live in R2 under keys derived from it.
+//
+// Fed the record Airtable just RETURNED, so Estimated Labor Cost and Calculated
+// Estimated Total arrive already computed — identical to what the ETL loads.
+async function syncEstimateToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const n = (v) => { if (Array.isArray(v)) v = v[0]; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const s = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "" || x === null) ? null : String(x); };
+  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : s(v));
+  await neonWrite("estimate.sync",
+    `INSERT INTO job_estimates
+       (airtable_id, job_airtable_id, job_id, estimate_type, status, actual_estimate_sent,
+        estimated_labor_hours, estimated_labor_cost, estimated_material_cost,
+        calculated_estimated_total, estimate_date, notes, display_number,
+        estimate_snapshot, synced_at)
+     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
+       estimate_type=EXCLUDED.estimate_type, status=EXCLUDED.status,
+       actual_estimate_sent=EXCLUDED.actual_estimate_sent,
+       estimated_labor_hours=EXCLUDED.estimated_labor_hours,
+       estimated_labor_cost=EXCLUDED.estimated_labor_cost,
+       estimated_material_cost=EXCLUDED.estimated_material_cost,
+       calculated_estimated_total=EXCLUDED.calculated_estimated_total,
+       estimate_date=EXCLUDED.estimate_date, notes=EXCLUDED.notes,
+       display_number=EXCLUDED.display_number, estimate_snapshot=EXCLUDED.estimate_snapshot,
+       synced_at=now()`,
+    [rec.id, s(f["Job"]), sel(f["Estimate Type"]), sel(f["Status"]),
+     n(f["Actual Estimate Sent"]), n(f["Estimated Labor Hours"]),
+     n(f["Estimated Labor Cost"]), n(f["Estimated Material Cost"]),
+     n(f["Calculated Estimated Total"]), s(f["Estimate Date"]), s(f["Notes"]),
+     n(f["Estimate Display #"]), s(f["Estimate Snapshot"])]).catch(() => {});
+}
+
 async function handleUpdateEstimate(body) {
   const { estimateId, actualEstimate, laborHours, materialCost } = body || {};
   if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
@@ -2905,6 +2947,7 @@ async function handleUpdateEstimate(body) {
   if (materialCost   !== undefined && materialCost   !== null) fields["fldDEUGzVrfA56aBq"] = Number(materialCost);
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
   const data = await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, { method: "PATCH", body: JSON.stringify({ fields }) });
+  await syncEstimateToNeon(data);
   return resp(200, { ok: true, updatedId: data.id });
 }
 
@@ -2917,6 +2960,7 @@ async function handleUpdateEstimateStatus(body) {
     method: "PATCH",
     body: JSON.stringify({ fields, typecast: true })
   });
+  await syncEstimateToNeon(data);
   return resp(200, { ok: true, updatedId: data.id });
 }
 
@@ -2999,6 +3043,34 @@ async function handleSaveEstimate(body) {
       });
     }
     if (data.error) return resp(400, { ok: false, error: data.error });
+
+    // ⚠ KEEP NEON IN STEP — handleJobEstimates' snapshot cascade now reads
+    // sent_estimate_pdfs FROM NEON. Without this, saving an estimate would
+    // write the scope text to Airtable and the app would keep showing the
+    // previous snapshot, or none. The cascade is the whole reason this table
+    // matters; leaving it Airtable-only would hollow out the read flip.
+    {
+      const sf = data.fields || {};
+      const sn = (v) => { if (Array.isArray(v)) v = v[0]; const x = Number(v); return Number.isFinite(x) ? x : null; };
+      const ss = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "" || x === null) ? null : String(x); };
+      await neonWrite("sentEstimatePdf.sync",
+        `INSERT INTO sent_estimate_pdfs
+           (airtable_id, job_airtable_id, job_id, estimate_airtable_id, estimate_id,
+            display_number, estimate_date, total, snapshot, synced_at)
+         VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,
+                 (SELECT id FROM job_estimates WHERE airtable_id=$3),
+                 $4,$5::date,$6,$7, now())
+         ON CONFLICT (airtable_id) DO UPDATE SET
+           job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
+           estimate_airtable_id=EXCLUDED.estimate_airtable_id,
+           estimate_id=EXCLUDED.estimate_id, display_number=EXCLUDED.display_number,
+           estimate_date=EXCLUDED.estimate_date, total=EXCLUDED.total,
+           snapshot=EXCLUDED.snapshot, synced_at=now()`,
+        [data.id, ss(sf["Job"]), ss(sf["Job Estimate"]),
+         sn(sf["Estimate Display #"]), ss(sf["Estimate Date"]),
+         sn(sf["Total"]), ss(sf["Snapshot"])]).catch(() => {});
+    }
+
     return resp(200, { ok: true, id: data.id, updated: !!estimateId });
   } catch (e) {
     const msg = String(e?.message || e || "");
@@ -3159,6 +3231,7 @@ async function handleCreateJobEstimate(body) {
     method: "POST",
     body: JSON.stringify({ fields, typecast: true })
   });
+  await syncEstimateToNeon(data);
   return resp(200, { ok: true, id: data.id });
 }
 

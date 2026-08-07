@@ -20,7 +20,9 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Crew Schedule** | ✅ In Neon since 2026-08-05 (Step 4a) — reads, writes and the crew picker |
 | **Fleet + Lifts** | ✅ In Neon since 2026-08-05 (Step 4b), **photos in R2** — off Airtable's expiring attachment URLs |
 | **Generators, Warranties, Inspections** | ✅ **In Neon since 2026-08-07 (Step 4c-1 + 4c-2)** — reads and writes. Commissioning is now **one atomic statement**; you can **edit** a generator instead of re-commissioning it; the Generator pill toggles the tab on. |
-| **Everything else** (estimates, invoices, expenses) | ⬜ Still Airtable |
+| **Expenses** | ✅ **In Neon since 2026-08-07 (Step 4d)** — read (with the employee authz scope) and all five write paths. The four Airtable money formulas are ported and diffed **to the cent**. ⚠ Airtable stays the **identity** authority: R2 receipt keys are built from the expense rec id. |
+| **Estimates** | ✅ **In Neon since 2026-08-07 (Step 4e, estimates half)** — read + all four writes, templates, sent-estimate PDFs, and the snapshot cascade. **Estimate PDFs are in R2**, off Airtable's expiring URLs. |
+| **Invoices** | ⬜ **The last field-app slice.** The blockers are gone — `material_billing_allocations` is migrated and `Invoice Material Amount` reproduces on 51/51 — but the **contract-billing chain is not ported**. See §3 Step 4e. |
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
 | **Inventory app** | ⬜ Still Airtable, still coupled to the main base via the Jobs mirror |
 
@@ -291,8 +293,8 @@ before it's used on something that can.
 | **4a** | **Schedule** ⬅ *owner's chosen next project (2026-08-05)* | **The smallest slice in the app, and the best place to prove the pattern.** One table, **7 fields, 64 rows** (Title, Job, Start/End Date, Crew, Notes, Entry Type). No money, no formulas, no rollups, no Make. Its only two links — **Job and Employee — are already in Neon**, so the FKs resolve on day one. | ~2 h |
 | **4b** | ✅ **Fleet + Lifts — DONE 2026-08-05** | **Lifts**: 10 rows, 9 photos in R2, natural sort, plus three capabilities that never existed (add a lift, retire a sold one with its photos, add/remove a photo). **Fleet**: 11 vehicles + 91 service records + 8 mileage entries, 9 photos in R2. Service history now hangs off a **real FK** instead of Airtable's unescaped `{Vehicle}="<name>"` filter, and logging mileage is **atomic** instead of two round-trips that could half-succeed. `Job Vehicle Trips` skipped — 0 rows, no handler reads it. | done |
 | **4c** | ✅ **Inspections, Generators, Warranties — DONE 2026-08-07** | 4c-1 + 4c-2 shipped and smoke-tested on prod: generators, generator service, **atomic** commissioning, warranties, templates, job inspections, inspection agencies + contacts — all read and write Neon. Also gained an **Edit Generator** form (editing used to mean re-running commissioning) and an admin toggle on the Generator pill (the tab was previously unreachable). ⬜ **4c-3** (one generic Neon→Google contact sync replacing 5 Make scenarios) and ⬜ **4c-4** (job service visit log) remain — both deferred on purpose, see §8. | done |
-| **4d** | **Expenses** ⬅ ***RECOMMENDED NEXT — see §8*** | Money, but plain arithmetic rather than rollup formulas. Already has the `Push ID` idempotency pattern. **More than a slice:** `expenses` is one of the hand-loaded dimension tables feeding the Neon GP views, so migrating it properly is what stops GP revenue going stale between manual ETL runs. | ~4-6 h |
-| **4e** | **Estimates + Invoices** | **LAST, deliberately.** These carry the GP and live-profit formulas — the numbers the business runs on. | large |
+| **4d** | ✅ **Expenses — DONE 2026-08-07** | Read (with the employee authz scope preserved) and all five write paths on Neon. ⚠ The roadmap used to call this *"plain arithmetic rather than rollup formulas"* — **wrong**: 14 of 33 Airtable fields are derived and `Total Cost (Actual)` sits inside a 4-level chain. It only collapsed to plain arithmetic because the **wire/pipe path is dead** (owner, 2026-08-07 — that data comes from the inventory app now; last wire 2026-04-14). All four money formulas ported and diffed **to the cent** across 386 rows. | done |
+| **4e** | 🟨 **Estimates + Invoices — ESTIMATES DONE 2026-08-07, INVOICES NOT STARTED** | **Estimates ✅** read + 4 writes, templates, sent-estimate PDFs, snapshot cascade, and PDFs moved to **R2**. **Invoices ⬜** — the last field-app slice. Blockers are cleared (`material_billing_allocations` migrated; `Invoice Material Amount` reproduces 51/51), but the **contract-billing chain** — `Contract Invoice Amount` → `Contract Remaining` → `Final Contract Invoice Amount` → `Remaining Percent to Bill` — is the deepest formula chain in the system and decides what customers are billed on contract jobs. Give it a fresh session and the `013` diff treatment. | ~4-6 h |
 
 > ⛔ **Hard constraint on 4e:** every GP and live-profit formula must be reproduced as Neon views
 > and reconciled against Airtable *before* anything Airtable-side is retired. Not after, not
@@ -367,6 +369,15 @@ never reads.
 both apps, and that is the moment Airtable actually goes dark. The plaintext-PIN compare should be
 hashed in the same pass rather than moved twice.
 
+> **Interacts with the People screen** (§7, `docs/PLAN-employee-admin.md`). That screen writes
+> `active`/role/PIN to **Airtable** on purpose, because that is where both `handleLogin`s read —
+> and because `db/etl/time-entries-full.mjs:241-247` is a **live dimension load** that overwrites
+> Neon `employees.name/username/role/active` from Airtable on every run. Writing `active` to Neon
+> before this login flip retires that load gets it silently erased. Its *new* columns
+> (`hired_on`, `terminated_on`, `token_valid_from`, `last_login_at`) are safe — the upsert names
+> its columns explicitly. **When login flips, drop the Airtable half of those writes and retire
+> the dimension load in the same commit.**
+
 ---
 
 ## 5. What stays on Make.com — permanently
@@ -415,6 +426,7 @@ because they're next:
 | Offline photo upload queue | ? | Wait until crews actually hit it |
 | Unify estimates bet | large | `docs/BET-unify-estimates.md`. Blocked on GP formulas reaching Neon |
 | Conduit assemblies | — | Two rollup fields need adding by hand in Airtable first |
+| **Employee admin ("People" screen)** | ~8-12 h, **but Slice 1 is ~3-4 h** | Owner idea 2026-08-07. `docs/PLAN-employee-admin.md`. There is **no employee screen in either app today** — every hire, raise, role and leaver is done in the Airtable grid. Wanted: a roster with an Active/Former toggle so a leaver loses app access. ⚠ **Slice 1 is a real security gap, not a convenience feature:** session tokens are stateless HMAC with a **30-day TTL** and `verifyToken` reads no database (`_auth.js:18,49`), so unchecking `Active` blocks a *new* login and does **nothing** to a phone already logged in — a quitter keeps full field-app access for up to a month. Needs a `token_valid_from` column + a 60 s-cached revocation check. The rest (hire/term dates, wage history off `labor_cost_rates`, add-an-employee) is ordinary feature work and can wait. Scoping also turned up two live bugs to fix in the same pass: the two apps read **different role fields** (`Role` vs `Role New`), and `F.emp.email` names a column that doesn't exist (`Primary Email`), so **email login has never worked**. |
 | **Time clock in the app** | ~10-14 h | Owner idea 2026-08-07, and **explicitly parked behind the migration** — owner's words: *finish migrating first, then we'll look at time.* `docs/PLAN-time-clock.md`. Smaller than it sounds (Neon already authoritative for time writes, `createTimeEntry` already Neon-first and already employee-writable), but it needs a decision first — **does the app replace QuickBooks Time or feed it?** — and that question is much clearer once Step 3 is done and QB is the only thing left upstream. Building it *before* Step 3 puts a third writer of hours into the soak that is meant to prove the reconciler clean. |
 
 ---
@@ -453,22 +465,51 @@ negotiable.**
 > correctly ahead of a frozen Airtable table, so it will read red for the rest of time. Either
 > repoint it at **QuickBooks** (the real upstream) or retire it. Until then its output is noise.
 
-## Then build: ▶ Step 4d — Expenses
+## Then build: ▶ Step 4e — INVOICES (the last field-app slice)
 
-**This is the recommended next build, and it is not just "the next slice on the list".**
+**Everything else in the field app is done.** Steps 1-3, 4a, 4b, 4c, 4d, and the estimates half
+of 4e all shipped. Invoices are what remain.
 
-`handleJobs` already serves GP and true labor cost from Neon views. But those views read
-`expenses`, `job_estimates`, `invoices`, `wire_weigh_ins` and `pipe_usage` — dimension tables
-loaded by a **hand-run ETL**. So **GP revenue is only as fresh as the last time somebody ran a
-script.** The owner's stated goal was *"I want true profit numbers"*; the labor half is now
-correct and live, and this is what still undermines the other half.
+**The hard dependencies are already cleared:** `material_billing_allocations` is migrated, and
+`Invoice Material Amount` reproduces on **51 of 51** invoices. So this is no longer excavation —
+it is porting a formula chain whose inputs are all present.
 
-Migrating expenses properly — Neon-native writes, not a hand-loaded copy — removes one of those
-stale inputs permanently. 4e does the same for estimates and invoices. **The migration path and
-the GP-freshness problem are the same work**, which is why 4d beats the alternatives.
+**What makes it the last one, and worth a fresh head:** the contract-billing chain —
+`Contract Invoice Amount` → `Contract Remaining` → `Final Contract Invoice Amount` →
+`Remaining Percent to Bill` — is the deepest chain in the system, each formula consuming the
+previous plus job-level lookups, and it decides **what a customer actually gets billed on a
+contract job.** Give it the `013` treatment: port, then diff every row against Airtable, before
+anything reads it.
 
-Expenses is also the right size: money, but plain arithmetic rather than rollup formulas, and it
-already has the `Push ID` idempotency pattern.
+---
+
+## ✅ Step 4d — Expenses — DONE 2026-08-07
+
+Shipped: read (with the employee authz scope preserved) and all five write paths.
+
+**The reason it was picked, which still applies to 4e:** `handleJobs` serves GP from Neon views,
+but those views read `expenses`, `job_estimates`, `invoices`, `wire_weigh_ins` and `pipe_usage` —
+dimension tables loaded by a **hand-run ETL**. So GP revenue is only as fresh as the last time
+somebody ran a script. Migrating each one to Neon-native writes removes a stale input permanently.
+**The migration path and the GP-freshness problem are the same work.**
+
+> ⚠ **Two corrections this slice produced, both worth carrying to 4e:**
+>
+> 1. **"Plain arithmetic rather than rollup formulas" was wrong.** 14 of 33 Airtable fields on
+>    Expenses are derived, and `Total Cost (Actual)` sits inside a 4-level chain. It only
+>    collapsed to plain arithmetic because the **wire/pipe path is dead** — that data comes from
+>    the inventory app now (owner, 2026-08-07; last wire-costed expense 2026-04-14, last pipe
+>    2026-02-18, all 362 since are manual). `legacy_material_cost` preserves the 24 pre-April
+>    rows, and **any cleanup of those Airtable tables must keep that fallback** or they recompute
+>    to a different number.
+> 2. **Money needs more than 2 decimal places.** Wire costs carry sub-cent precision (weight ×
+>    price), and storing at `numeric(14,2)` threw 4 rows off by a cent. Round only the final
+>    result. And Airtable computes in IEEE-754: five expenses hit an exact half-cent residue and
+>    it reported 0.00 on four, 0.01 on the fifth, from identical inputs. `013` treats a sub-cent
+>    residue as fully billed rather than emulating that.
+
+Estimates followed the same reasoning and shipped the same day. Invoices are the one input still
+loaded rather than written.
 
 ## Explicitly NOT next, and why
 

@@ -446,7 +446,7 @@ const _ADMIN_POSTS = new Set([
   // One-off migration action, admin only. Gated by role rather than by
   // ADMIN_BACKFILL_TOKEN: it is idempotent, copies rather than mutates, and the
   // token is itself a write-only Netlify secret nobody has a copy of.
-  "copyLiftPhotosToR2", "copyFleetPhotosToR2",
+  "copyLiftPhotosToR2", "copyFleetPhotosToR2", "copyEstimatePdfsToR2",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -3528,7 +3528,25 @@ async function handleCopyFleetPhotosToR2() {
   });
 }
 
-async function copyAirtablePhotosToR2({ table, neonTable, kind, nameField }) {
+// Estimate PDFs have the identical problem to lift and fleet photos: Airtable
+// serves attachments on SIGNED URLS THAT EXPIRE, so the moment estimates are
+// read from Neon those 15 links die — silently, and they would have looked fine
+// in testing because a fresh Airtable read always returns a fresh URL.
+//
+// The only differences from the equipment copies are the table and the
+// attachment field, which is why the helper below took an attachmentField
+// parameter rather than a third near-duplicate of it.
+async function handleCopyEstimatePdfsToR2() {
+  return copyAirtablePhotosToR2({
+    table: "Job Estimates", neonTable: "job_estimates",
+    kind: "estimates", nameField: "Estimate Name",
+    attachmentField: "Estimate PDF",
+  });
+}
+
+// attachmentField defaults to "Photo" so the two equipment callers are
+// unchanged; estimates pass "Estimate PDF".
+async function copyAirtablePhotosToR2({ table, neonTable, kind, nameField, attachmentField = "Photo" }) {
   if (!r2Enabled()) return resp(503, { ok: false, error: "R2 is not configured." });
   if (!neonEnabled()) return resp(503, { ok: false, error: "Neon is not configured." });
 
@@ -3550,7 +3568,7 @@ async function copyAirtablePhotosToR2({ table, neonTable, kind, nameField }) {
       report.details.push(`unmatched: ${rec.fields?.[nameField] || rec.id}`);
       continue;
     }
-    for (const att of (rec.fields?.["Photo"] || [])) {
+    for (const att of (rec.fields?.[attachmentField] || [])) {
       // Keyed on the ATTACHMENT id, not the filename: two records can both
       // have "photo.jpg", and a rename in Airtable must not orphan the copy.
       const ext = (att.filename?.match(/\.[a-z0-9]+$/i) || [".jpg"])[0].toLowerCase();
@@ -7573,6 +7591,7 @@ export async function handler(event) {
       if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);
       if (body.action === "copyLiftPhotosToR2")   return await handleCopyLiftPhotosToR2();
       if (body.action === "copyFleetPhotosToR2")  return await handleCopyFleetPhotosToR2();
+      if (body.action === "copyEstimatePdfsToR2") return await handleCopyEstimatePdfsToR2();
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);

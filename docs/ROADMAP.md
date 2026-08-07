@@ -13,7 +13,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 
 | System | State |
 |---|---|
-| **Time entries** | ✅ In Neon, and **authoritative for writes since 2026-08-05** — all four app write paths are Neon-first, Airtable is the mirror. QB Time pulls straight in. |
+| **Time entries** | ✅ **DONE — Make left the time path 2026-08-07 (Step 3).** In Neon, authoritative for writes since 2026-08-05. QB → Neon → app, no Airtable and no Make. The Airtable table is now a frozen historical copy. ⚠ The **QB Time puller is the only writer of time data now** — if it stops, nothing catches it. |
 | **Jobs master data** | ✅ In Neon (112 jobs), read by 4 app endpoints. Identity columns refresh **hourly** since 2026-08-05; the other ~22 master columns still need a hand-run ETL. |
 | **Payroll reads** | ✅ **Served by Neon — confirmed on production 2026-08-05.** All three of `handlePayrollHoursRollup` (`_ms` 90), `handleMyHoursRollup` (65) and `handlePayrollEntries` (60) returned `_source:"neon"`, with the rollup figures matching Neon exactly. |
 | **Job list / GP** | 🟨 Whole GP layer ported to Neon views and diffed to **zero** mismatches — but `handleJobs` still reads Airtable, so none of it serves the app yet. ~1 h to flip. |
@@ -233,14 +233,39 @@ the mirror shipped alongside the broken driver and had never been exercised.
 > 🛑 **STOP POINT.** Neon authoritative for time. Airtable still written, still correct, still a
 > working fallback.
 
-### Step 3 — Make leaves the time path (~2 h) 🎉
+### ✅ Step 3 — Make leaves the time path — **DONE 2026-08-07** 🎉
 
-Only after **several consecutive clean reconciler days.** Turn off scenario `4546051`. Keep the
-Airtable table and Make's other ~69 scenarios. Rotate the QB `tsheets` credentials once it's off —
-rotating sooner breaks Make.
+**Scenario `4546051` ("QB Time, airtable (copy)") is deactivated.** Time data now flows
+QB → Neon → app, with no Airtable and no Make in the path. **This was the original goal of the
+whole migration.**
 
-> 🛑 **STOP POINT — the original goal of this whole migration.** Time data flows QB → Neon → app,
-> with no Airtable and no Make in the path.
+Verified before switching off: the other four QB Time → Airtable scenarios (`4484414`, `4484649`,
+`351560`, `2036155`) were all already **inactive**, so `4546051` really was the only live pipe.
+The Airtable Time Entries table stays as a frozen historical copy; Make's other ~69 scenarios are
+untouched.
+
+> ⛔ **DO NOT ROTATE THE QB `tsheets` CREDENTIALS. This file used to say to — that instruction was
+> wrong and has been removed.**
+>
+> It assumed the credential was exclusive to the retired scenario. It is not: connection **24601
+> "My TSheets connection"** is shared by **eight** scenarios, including `4509804` *Airtable – Job
+> Awarded* (a §5 **permanent** keep), `4545219` *Airtable – Service Call* and `4512438`
+> *Airtable → Trello*. Revoking or deleting it **breaks scenarios that are meant to run forever**.
+>
+> Worse, regenerating the underlying QuickBooks Time token risks invalidating **`QB_TIME_TOKEN`**
+> — the Netlify env var the puller uses. Since 2026-08-07 the puller is the **only** thing writing
+> time data anywhere: no Airtable copy, no Make. If it dies it is **silent**, and the reconciler
+> will not catch it, because the Airtable side it compares against is now frozen by design.
+
+> ⚠ **The reconciler stops being meaningful from today.** Nothing writes QB timesheets to Airtable
+> any more, so Neon runs permanently and correctly ahead — the same shape as the Larry Unruh 6.5 h
+> discrepancy on 2026-08-07, but growing daily. Whole-table comparison is no longer a health
+> check. Decide whether to repoint it at **QuickBooks** (the actual upstream) or retire it.
+>
+> **What replaces it as the thing to watch:** that new timesheets are still reaching Neon. A dead
+> puller now has no second copy to fall back on.
+
+> 🛑 **STOP POINT — the original goal of this whole migration, reached.**
 
 ### Step 4 — The remaining field-app domains
 
@@ -293,15 +318,46 @@ chunks so it can be set down, and never let it block a Step 3 go-ahead when the 
 
 Independent of §3 once C3 lands. Don't start until field-app Step 3 is done — see §6.
 
+**Detail: `docs/PLAN-inventory-to-neon.md`** (written 2026-08-07). Letters below match that plan;
+don't re-letter. Rough total **~23-32 h** plus soaks, plus a shared login step owned by neither app.
+
 ### Step A — Drop the Jobs mirror, Step C3 (~1 h hands-on, 3-4 days of soaks)
 
 Plan: `docs/BET-drop-jobs-mirror-C3.md`. Removes the only hard coupling between the two Airtable
 bases, so inventory can migrate on its own timeline. Irreversible — needs a deliberate go-ahead.
 
-### Step B — Reference data (Vendors, Locations, Inventory Items)
-### Step C — The ledger (Inventory Transactions; Stock Levels becomes a view, not a table)
-### Step D — Estimating (Estimates, Templates, Conduit Assemblies)
-### Step E — The expense push **last** — it's the only path that writes across bases
+### Step B0 — The cross-base reads (~1-2 h) — **independent, can go NOW**
+The five main-base `Jobs` reads + `handleEmployees`. That data is **already in Neon**, so this
+touches no inventory table and needs no schema. **Not gated on the field-app `handleJobs` flip** —
+verified 2026-08-07, the four handlers need only name/PO/status/tax status/contractor and Neon
+`jobs` carries all five. The field-app flip is blocked on ~35 *other* `mapJob` keys inventory
+never reads.
+> ⚠⚠ Must return **`airtable_id` as `id`**, not the Neon uuid — the id flows cart → `Job ID (Main)`
+> → a *linked-record field* on main-base Expenses (`inventory.js:1116`). Uuids there write garbage
+> into an Airtable link. Resolves at Step E, not before.
+
+### Step B — Reference data (Vendors, Vendor Pricing, Locations, Inventory Items) (~5-7 h)
+### Step C — The ledger (Inventory Transactions + Stock Levels) (~6-8 h)
+> **Correction to the old line here:** Stock Levels does **not** become a pure view. It carries
+> `Reorder Point` and `Notes`, which are real user data — it splits into a small `stock_settings`
+> table plus a `v_stock_on_hand` view. Also: `Quantity On Hand` is an Airtable-automation-maintained
+> **cache**, and `Inventory Items` derives the same number a second, independent way. Check whether
+> they agree before migrating — a disagreement is a live data bug, not a migration detail.
+
+### Step D — Estimating (Estimates, Templates, Material Orders, Conduit Assemblies) (~6-8 h)
+> ⚠ Neon already has `job_estimates` — the **main base's** estimates, which feed the GP views. The
+> inventory base's `Estimates` is a different thing. Name them `material_estimates`.
+
+### Step E — The expense push **last** — it's the only path that writes across bases (~4-6 h)
+> ⚠⚠ **Gated on field-app Step 4d.** Neon's `expenses` table is a full-reload one-way mirror from
+> Airtable — an expense written there early is silently erased by the next ETL run. Same trap as the
+> pCloud folder ids: flip *inside* the field-app expenses flip, never before it.
+
+### (Shared, last) — Login
+`handleLogin` lives in **both** functions and both read the main base's `Employees`. Neon's
+`employees` has no PIN and no email, so it can't flip as an inventory slice — it moves once, for
+both apps, and that is the moment Airtable actually goes dark. The plaintext-PIN compare should be
+hashed in the same pass rather than moved twice.
 
 ---
 

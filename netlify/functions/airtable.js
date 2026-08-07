@@ -3597,7 +3597,12 @@ async function copyAirtablePhotosToR2({ table, neonTable, kind, nameField, attac
   }
 
   const after = (await listByPrefix(kind + "/")).length;
-  const expected = records.reduce((n, r) => n + (r.fields?.["Photo"]?.length || 0), 0);
+  // ⚠ attachmentField, NOT a hardcoded "Photo" — this line was missed when the
+  // helper was parameterised for estimate PDFs, so `expected` came back 0 while
+  // R2 correctly held 15, and the run reported ok:false on a copy that had
+  // completely succeeded. The guard behaved correctly (it refuses to bless a
+  // flip until the two sides agree); it was being fed the wrong number.
+  const expected = records.reduce((n, r) => n + (r.fields?.[attachmentField]?.length || 0), 0);
   return resp(200, {
     ok: report.failed === 0 && report.unmatched === 0 && after === expected,
     ...report,

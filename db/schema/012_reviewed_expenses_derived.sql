@@ -1,0 +1,59 @@
+-- ── GP stops depending on an AIRTABLE-COMPUTED column ──────────────────────
+-- Applied to the DEFAULT branch of damp-silence-99074350 on 2026-08-07, after
+-- being proven a no-op on branch br-aged-cake-ap0h78yk.
+--
+-- ── THE PROBLEM ────────────────────────────────────────────────────────────
+-- All four GP views (v_job_financials, v_job_financials_true, v_job_rollups,
+-- v_job_rollups_true) ultimately read ONE expression, in v_job_rollups:
+--
+--     COALESCE((SELECT sum(x.reviewed_expenses) FROM expenses x
+--                WHERE x.job_id = j.id), 0)::numeric(14,2)
+--
+-- `expenses.reviewed_expenses` is NOT app-maintained. It is an AIRTABLE formula
+-- column, copied into Neon by the hand-run ETL. Verified on all 386 rows:
+--
+--     reviewed_expenses = CASE WHEN reviewed THEN total_cost_actual ELSE 0 END
+--     386 of 386 match, 0 differ.
+--
+-- That is fine WHILE Airtable owns expenses. It stops being fine at Step 4d, the
+-- moment expense writes go Neon-first: Airtable is no longer the thing computing
+-- that column for new or edited rows, so GP would drift on live money numbers —
+-- SILENTLY, because nothing errors and the number still looks plausible.
+--
+-- ⚠ THIS IS THE THIRD TIME THIS PATTERN HAS BITTEN. `Reviewed` on Job Labor
+-- Allocation hid a ~$179k hole (006_true_labor_cost.sql). `address_full` on jobs
+-- reverted edits for an hour. Now this. **Airtable formula/rollup columns that
+-- GP depends on are the recurring hazard of this migration** — and Step 4e
+-- (estimates + invoices) is where the GP formulas actually live, so it will be
+-- dense with them. Audit for this shape BEFORE flipping any write.
+--
+-- ── THE FIX ────────────────────────────────────────────────────────────────
+-- Compute it in the view instead of trusting the stored copy. Deliberately NOT
+-- a generated column: four views depend on `reviewed_expenses`, so converting it
+-- would mean DROP + recreate of all of them against production GP. Replacing one
+-- expression via CREATE OR REPLACE touches nothing else and cannot reorder or
+-- retype a single output column.
+--
+-- The stored `expenses.reviewed_expenses` column is now VESTIGIAL. Leave it: the
+-- ETL still populates it harmlessly, and it is useful as a cross-check against
+-- Airtable for as long as Airtable still computes it. Drop it at 4d cleanup.
+--
+-- ── VERIFICATION (both branch and production) ──────────────────────────────
+--   occurrences of the target expression: exactly 1 (guarded — script aborts otherwise)
+--   112 jobs, 0 rows differing
+--   total reviewed expenses  before 814366.55  after 814366.55
+-- A provable no-op today, which is the point: it changes nothing now and
+-- prevents a silent divergence later.
+--
+-- Applied by rewriting v_job_rollups in place, substituting only:
+--     sum(x.reviewed_expenses)
+--   ->
+--     sum(CASE WHEN x.reviewed THEN COALESCE(x.total_cost_actual, 0::numeric)
+--              ELSE 0::numeric END)
+--
+-- Reproduce with:
+--   CREATE OR REPLACE VIEW v_job_rollups AS <current def, that one swap applied>;
+-- The full body is not duplicated here on purpose — it is long, it changes for
+-- other reasons, and a stale copy in this file would be worse than none. Read
+-- the live definition with:
+--   SELECT pg_get_viewdef('v_job_rollups'::regclass, true);

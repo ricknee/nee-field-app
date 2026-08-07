@@ -2573,6 +2573,45 @@ async function handleScissorLiftsByJob(params) {
 async function handleJobInspections(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // ── NEON-FIRST (migration Step 4c) ──────────────────────────────────────
+  // Replaces two Airtable round trips (fetch the job for its name, then FIND
+  // that name inside ARRAYJOIN({Job}) and re-verify the link in memory) with one
+  // query on job_airtable_id. The substring hazard the old comment describes —
+  // "Jenny Ln 1" matching "Jenny Ln 10/11/12" — cannot exist on this path.
+  //
+  // The two LOOKUP fields resolve through real joins: Permit Number off the job,
+  // and the agency phone off inspection_agencies, falling back to the job's own
+  // copy for an inspection with no agency link.
+  //
+  // Falls through on a miss — nothing syncs these tables, so an inspection added
+  // in Airtable an hour ago is genuinely absent from Neon.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT ji.id, ji.inspection_type, ji.inspection_date::text AS inspection_date,
+              ji.inspection_status, ji.notes,
+              COALESCE(j.permit_number, '') AS permit_number,
+              COALESCE(ia.phone, j.inspection_agency_phone, '') AS agency_phone
+         FROM job_inspections ji
+         LEFT JOIN jobs j                ON j.id  = ji.job_id
+         LEFT JOIN inspection_agencies ia ON ia.id = ji.agency_id
+        WHERE ji.job_airtable_id = $1
+        ORDER BY ji.inspection_date DESC NULLS LAST`, [jobId]);
+    if (q?.rows?.length) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      return resp(200, {
+        ok: true,
+        inspections: q.rows.map(r => ({
+          id: r.id, inspectionType: s(r.inspection_type), date: s(r.inspection_date),
+          status: s(r.inspection_status), notes: s(r.notes),
+          permitNumber: s(r.permit_number), agencyPhone: s(r.agency_phone)
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`jobInspections: Neon read failed, falling back: ${q.error}`);
+  }
+
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, inspections: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
@@ -3941,14 +3980,50 @@ async function handleUpdateExpense(body, authUser) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
+// ── UPDATE INSPECTION — NEON-FIRST (migration Step 4c) ────────────────────
+// Flipped in the SAME commit as handleJobInspections, deliberately. That read
+// now returns Neon uuids, and this handler PATCHed Airtable by the id it was
+// given — the exact shape of the b79b9a0 regression, where flipping a read
+// alone left a downstream write 404ing on a uuid. Read and write move together
+// or not at all.
 async function handleUpdateInspection(body) {
   const { inspectionId, status, notes } = body || {};
   if (!inspectionId) return resp(400, { ok: false, error: "Missing inspectionId." });
+
+  const idStr = String(inspectionId).trim();
+  let airtableId = idStr.startsWith("rec") ? idStr : null;
+
+  if (neonEnabled()) {
+    const sets = [], vals = [idStr];
+    if (status)            { vals.push(status); sets.push(`inspection_status = $${vals.length}`); }
+    if (notes !== undefined) { vals.push(notes); sets.push(`notes = $${vals.length}`); }
+    if (sets.length) {
+      const rows = await neonWrite("inspection.update",
+        `UPDATE job_inspections SET ${sets.join(", ")}
+          WHERE id::text = $1 OR airtable_id = $1
+          RETURNING id, airtable_id`, vals);
+      if (rows?.length) {
+        airtableId = rows[0].airtable_id || airtableId;
+      } else if (!airtableId) {
+        // A uuid that matched nothing is a genuine miss, and there is no Airtable
+        // id to fall back to. Say so rather than silently doing nothing.
+        return resp(404, { ok: false, error: `Inspection not found: ${idStr}` });
+      }
+      // A rec id that matched no Neon row still falls through to Airtable below:
+      // nothing syncs these tables, so an inspection created in Airtable an hour
+      // ago legitimately has no Neon row yet.
+    }
+  }
+
   const fields = {};
   if (status) fields["fld7kH2SEHsxaS9vz"] = status;
   if (notes !== undefined) fields["fldmz5dOw6In5OkU7"] = notes;
-  const data = await atFetch(`${encodeURIComponent("Job Inspections")}/${inspectionId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
-  return resp(200, { ok: true, updatedId: data.id });
+  if (!airtableId) return resp(200, { ok: true, updatedId: idStr, _source: "neon" });
+
+  const data = await mirrorToAirtable("updateInspection", () =>
+    atFetch(`${encodeURIComponent("Job Inspections")}/${airtableId}`,
+      { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) }));
+  return resp(200, { ok: true, updatedId: data?.id || idStr });
 }
 
 async function handleCompanies() {

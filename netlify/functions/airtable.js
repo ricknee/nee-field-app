@@ -5029,303 +5029,252 @@ async function handleCommissionGenerator(body) {
     assetFields[F.gen.serviceIntervalMonths] = String(serviceIntervalMonths);
   if (assetNotes && String(assetNotes).trim())           assetFields[F.gen.notes] = String(assetNotes);
 
-  // ⚠ SAME UUID TRAP AS getWarranties. index.html:13354 sends `gen.id`, which
-  // handleGenerator now mints as a Neon uuid — and step 1 below PATCHes
-  // Airtable by this id, so a uuid would 404 and the RE-COMMISSIONING path
-  // would silently fall through to CREATING A SECOND GENERATOR on the job.
-  // Normalise to the Airtable rec id before anything uses it.
-  let resolvedGeneratorId = (await resolveGeneratorIds(generatorId)).rec || null;
+  // ══ NEON-FIRST COMMISSIONING (migration Step 4c) ═════════════════════════
+  // Was three sequential Airtable writes that could half-succeed — which is the
+  // only reason this handler has a warnings[] array at all. It is now ONE
+  // data-modifying CTE, and a data-modifying CTE is a single statement, so it is
+  // ATOMIC: the asset, the commissioning event and the warranties all land, or
+  // none of them do. Airtable becomes the mirror.
+  //
+  // Three Airtable round trips also disappear: the job-name fetch, the
+  // FIND-inside-ARRAYJOIN scan for an existing generator, and the asset-id
+  // re-read that both dup checks needed. The dup checks are now FK tests.
+  const COMM_TYPE_NEON = "Install / Commissioning";
+  const svcTypeNeon = SERVICE_TYPE_OPTS.includes(COMM_TYPE_NEON) ? COMM_TYPE_NEON : SERVICE_TYPE_OPTS[0];
 
-  // If caller didn't supply a generatorId, look for one already linked to
-  // the Job before falling back to creating a fresh asset. This keeps the
-  // re-commissioning path (asset exists, is being PATCHed) intact even
-  // when the frontend hasn't passed the ID along.
-  if (!resolvedGeneratorId) {
-    try {
-      const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
-      const jobName = jobRecords[0]?.fields?.[F.job.name] || "";
-      if (jobName) {
-        // Cross-job filter safety — see handleGenerator. Exact-per-element match,
-        // then verify the linked record id so a same-named job can't resolve to
-        // the wrong generator and attach a service record to it.
-        const safeName = escapeFormulaString(jobName);
-        const linkedFilter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({${F.gen.job}}, "\n") & "\n")`;
-        const linkedAll = await fetchAll(TABLES.generators, { filter: linkedFilter });
-        const linked = linkedAll.filter(r =>
-          Array.isArray(r.fields?.[F.gen.job]) && r.fields[F.gen.job].includes(jobId));
-        if (linked.length) resolvedGeneratorId = linked[0].id;
-      }
-    } catch (err) {
-      // Lookup failure isn't fatal — we can still create a fresh asset below.
-      warnings.push(`Could not check for existing generator on job: ${err.message}`);
+  // ⚠ MONTH ARITHMETIC STAYS IN JS. The branch-proven CTE used make_interval,
+  // but every other path in this codebase uses addMonthsToDateStr, and §5 of the
+  // plan warns the two disagree (Jan 31 + 1 month). Both seeded templates are 24
+  // and 60 months, which land on the same day-of-month either way, so a branch
+  // test could never have exposed a divergence — a 1-month template would.
+  // Templates are READ from Neon, end dates computed here, and the computed
+  // values passed in. One definition of month addition, no second opinion.
+  const tq = await neonQuery(
+    `SELECT id, template_name, warranty_type, duration_months
+       FROM warranty_templates
+      WHERE active
+        AND lower(coalesce(brand,'')) = lower($1)
+        AND (coalesce(model,'') = '' OR ($2 <> '' AND lower(model) = lower($2)))`,
+    [brand, String(model || "").trim()]);
+  const neonTemplates = (tq?.rows || []).filter(t => {
+    const m = Number(t.duration_months);
+    if (!Number.isFinite(m) || m <= 0) {
+      warnings.push(`Template "${t.template_name || t.id}" has invalid Duration Months — skipped.`);
+      return false;
     }
+    return true;
+  });
+  if (!neonTemplates.length) {
+    warnings.push(`No active warranty templates found for brand "${brand}"${model ? ` / model "${model}"` : ""}.`);
   }
 
+  const wTid    = neonTemplates.map(t => t.id);
+  const wType   = neonTemplates.map(t => WARRANTY_TYPE_OPTS.includes(t.warranty_type) ? t.warranty_type : "Limited");
+  const wEndArr = neonTemplates.map(t => addMonthsToDateStr(installDate, Number(t.duration_months)));
+  const wMonths = neonTemplates.map(t => Number(t.duration_months));
+
+  const numOrNull = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+  const strOrNull = (v) => (v !== undefined && v !== null && String(v).trim() ? String(v).trim() : null);
+
+  const cRows = await neonWrite("commissionGenerator.atomic",
+    `WITH existing AS (
+       SELECT id, airtable_id FROM generators
+        WHERE ($1 <> '' AND (id::text = $1 OR airtable_id = $1))
+           OR ($1 =  '' AND job_airtable_id = $2)
+        LIMIT 1
+     ), upd AS (
+       UPDATE generators g SET
+         job_airtable_id = $2,
+         job_id = COALESCE((SELECT id FROM jobs WHERE airtable_id = $2), g.job_id),
+         brand = $3, model = COALESCE($4, g.model), kw = COALESCE($5, g.kw),
+         serial_number = COALESCE($6, g.serial_number),
+         transfer_switch_model = COALESCE($7, g.transfer_switch_model),
+         transfer_switch_serial = COALESCE($8, g.transfer_switch_serial),
+         fuel_type = COALESCE($9, g.fuel_type), install_date = $10::date,
+         service_plan_active = COALESCE($11, g.service_plan_active),
+         service_interval_months = COALESCE($12, g.service_interval_months),
+         battery_install_date = COALESCE($13::date, g.battery_install_date),
+         notes = COALESCE($14, g.notes)
+       FROM existing e WHERE g.id = e.id
+       RETURNING g.id, g.airtable_id
+     ), ins AS (
+       INSERT INTO generators
+         (job_airtable_id, job_id, customer_name, brand, model, kw, serial_number,
+          transfer_switch_model, transfer_switch_serial, fuel_type, install_date,
+          service_plan_active, service_interval_months, battery_install_date, notes)
+       SELECT $2, (SELECT id FROM jobs WHERE airtable_id = $2),
+              -- Snapshot the customer, exactly as the ETL does. Without it a
+              -- brand-new generator has a NULL asset_id until the hourly jobs
+              -- sync catches up, i.e. no name on screen.
+              (SELECT NULLIF(TRIM(COALESCE(customer_first_name,'') || ' ' ||
+                                  COALESCE(customer_last_name,'')), '')
+                 FROM jobs WHERE airtable_id = $2),
+              $3, $4, $5, $6, $7, $8, $9, $10::date, COALESCE($11,false), $12, $13::date, $14
+        WHERE NOT EXISTS (SELECT 1 FROM existing)
+       RETURNING id, airtable_id
+     ), gen AS (
+       SELECT id, airtable_id FROM upd UNION ALL SELECT id, airtable_id FROM ins
+     ), svc AS (
+       INSERT INTO generator_service
+         (generator_id, job_airtable_id, job_id, service_date, service_type,
+          technician, generator_hours, work_performed_notes)
+       SELECT gen.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2),
+              $15::date, $16, $17, $18, $19
+         FROM gen
+        WHERE NOT EXISTS (SELECT 1 FROM generator_service gs
+                           WHERE gs.generator_id = gen.id AND gs.service_type = $16)
+       RETURNING id
+     ), war AS (
+       INSERT INTO warranties
+         (generator_id, template_id, warranty_type, start_date, end_date,
+          duration_months, source)
+       SELECT gen.id, t.tid, t.wtype, $10::date, t.wend::date, t.months, 'Standard'
+         FROM gen
+         CROSS JOIN unnest($20::uuid[], $21::text[], $22::text[], $23::int[])
+                    AS t(tid, wtype, wend, months)
+        -- Same rule as before: skip the WHOLE step if this generator already has
+        -- any warranty, so re-commissioning never piles up duplicates.
+        WHERE NOT EXISTS (SELECT 1 FROM warranties w WHERE w.generator_id = gen.id)
+       RETURNING id, template_id
+     )
+     SELECT (SELECT id FROM gen)                      AS generator_id,
+            (SELECT airtable_id FROM gen)             AS generator_airtable_id,
+            (SELECT count(*) FROM upd)::int           AS was_update,
+            (SELECT id FROM svc)                      AS service_id,
+            COALESCE((SELECT json_agg(json_build_object('id', id, 'templateId', template_id))
+                        FROM war), '[]'::json)        AS warranties`,
+    [String(generatorId || "").trim(), jobId, brand, strOrNull(model), numOrNull(kw),
+     strOrNull(serialNumber), strOrNull(transferSwitchModel), strOrNull(transferSwitchSerial),
+     strOrNull(fuelType), installDate,
+     servicePlanActive === undefined ? null : servicePlanActive === true,
+     numOrNull(serviceIntervalMonths), strOrNull(batteryInstallDate), strOrNull(assetNotes),
+     commissioningDate || installDate, svcTypeNeon, strOrNull(technician),
+     numOrNull(generatorHours), strOrNull(commissioningNotes),
+     wTid, wType, wEndArr, wMonths]);
+
+  const c = cRows?.[0];
+  if (!c?.generator_id) {
+    return resp(500, { ok: false, error: "Commissioning was not written to Neon — nothing was created." });
+  }
+  const neonGeneratorId = c.generator_id;
+  const neonServiceId   = c.service_id || null;
+  const neonWarranties  = c.warranties || [];
+  if (!neonServiceId) warnings.push("Commissioning service record already exists — skipped re-creation.");
+  if (!neonWarranties.length && neonTemplates.length)
+    warnings.push("Warranties already existed for this generator — skipped re-creation.");
+
+  let resolvedGeneratorId = c.generator_airtable_id || null;
+
+  // ── AIRTABLE MIRROR — best-effort from here down ──────────────────────
+  // Neon already holds the whole commissioning, atomically. Every failure below
+  // is a WARNING, never a rollback and never a 500: the commissioning happened.
+  // This is the inverse of what this handler used to be.
+
+  // 1. The asset. PATCH when Neon already knew an Airtable id, POST when this is
+  //    a brand-new generator — then stamp the id back so the two sides agree and
+  //    the hand-run ETL updates this row instead of inserting a duplicate.
   if (resolvedGeneratorId) {
-    try {
-      const patched = await atFetch(`${encodeURIComponent(TABLES.generators)}/${resolvedGeneratorId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ fields: assetFields, typecast: true })
-      });
-      resolvedGeneratorId = patched.id;
-    } catch (err) {
-      return resp(500, { ok: false, error: `Failed to update generator: ${err.message}` });
-    }
+    const patched = await mirrorToAirtable("commission.patchAsset", () =>
+      atFetch(`${encodeURIComponent(TABLES.generators)}/${resolvedGeneratorId}`, {
+        method: "PATCH", body: JSON.stringify({ fields: assetFields, typecast: true })
+      }));
+    if (!patched?.id) warnings.push("Generator saved in Neon, but the Airtable mirror PATCH failed.");
   } else {
     const createFields = { ...assetFields };
     createFields[F.gen.job] = [jobId];
-    try {
-      const created = await atFetch(`${encodeURIComponent(TABLES.generators)}`, {
-        method: "POST",
-        body: JSON.stringify({ fields: createFields, typecast: true })
-      });
+    const created = await mirrorToAirtable("commission.createAsset", () =>
+      atFetch(`${encodeURIComponent(TABLES.generators)}`, {
+        method: "POST", body: JSON.stringify({ fields: createFields, typecast: true })
+      }));
+    if (created?.id) {
       resolvedGeneratorId = created.id;
-    } catch (err) {
-      return resp(500, { ok: false, error: `Failed to create generator: ${err.message}` });
+      await mirrorToAirtable("commission.stampAsset", () =>
+        neonWrite("generator.stampAirtableId",
+          `UPDATE generators SET airtable_id = $2 WHERE id = $1`, [neonGeneratorId, created.id]));
+    } else {
+      warnings.push("Generator saved in Neon, but the Airtable mirror POST failed — re-run db/etl/inspections-generators.mjs to reconcile.");
     }
   }
 
-  // ── Shared lookup for steps 2 & 3 dup checks ──────────────────────────
-  // Resolve the generator's primary text (Generator Asset ID) once and
-  // reuse it for both the commissioning-service dup check (step 2) and
-  // the warranties dup check (step 3). For just-created records the
-  // formula may not have computed yet — in that case both dup checks
-  // see no matches and we create rather than wrongly skip (matches the
-  // pre-existing warranty-path behavior).
-  const COMM_TYPE = "Install / Commissioning";
-  const svcType = SERVICE_TYPE_OPTS.includes(COMM_TYPE) ? COMM_TYPE : SERVICE_TYPE_OPTS[0];
-
-  let assetIdForLookup = "";
-  let neonGeneratorId = null;
-  try {
-    const genRec = await atFetch(`${encodeURIComponent(TABLES.generators)}/${resolvedGeneratorId}`);
-    assetIdForLookup = genRec?.fields?.[F.gen.assetId] || "";
-
-    // ── COPY THE ASSET INTO NEON (migration Step 4c) ──────────────────────
-    // This handler stays AIRTABLE-AUTHORITATIVE for now — deliberately the
-    // opposite of addGeneratorService. Steps 2 and 3 below key their dup checks
-    // off Airtable's computed Generator Asset ID formula, and warranties have
-    // not migrated at all, so inverting step 1 alone would leave the orchestrator
-    // straddling two sources of truth mid-transaction.
-    //
-    // But addGeneratorService IS Neon-authoritative and resolves its FK there, so
-    // a generator that exists only in Airtable makes every later service log
-    // 404. Copying it across here closes that hole without rewriting the
-    // orchestrator. Reuses the record just fetched — no extra round trip.
-    //
-    // ON CONFLICT (airtable_id) so this is safe on the RE-COMMISSIONING path
-    // (asset exists, is being PATCHed) and cannot duplicate against the hand-run
-    // ETL either.
-    const gf = genRec?.fields || {};
-    const gnum = (v) => (v === undefined || v === "" || v === null ? null : Number(v));
-    const gday = (v) => (v ? String(v).slice(0, 10) : null);
-    const gsel = (v) => (v && typeof v === "object" ? v.name : (v === "" ? null : v ?? null));
-    const glook = (v) => (Array.isArray(v) ? (v[0] ?? null) : (v === "" ? null : v ?? null));
-    const gr = await neonQuery(
-      `INSERT INTO generators
-         (airtable_id, job_airtable_id, job_id, customer_name, brand, model, kw,
-          serial_number, transfer_switch_model, transfer_switch_serial, fuel_type,
-          install_date, service_plan_active, service_interval_months,
-          warranty_expiration, status, notes, battery_install_date, synced_at)
-       VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2),$3,$4,$5,$6,$7,$8,$9,$10,
-               $11::date,$12,$13,$14::date,$15,$16,$17::date, now())
-       ON CONFLICT (airtable_id) DO UPDATE SET
-         job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
-         customer_name=EXCLUDED.customer_name, brand=EXCLUDED.brand, model=EXCLUDED.model,
-         kw=EXCLUDED.kw, serial_number=EXCLUDED.serial_number,
-         transfer_switch_model=EXCLUDED.transfer_switch_model,
-         transfer_switch_serial=EXCLUDED.transfer_switch_serial,
-         fuel_type=EXCLUDED.fuel_type, install_date=EXCLUDED.install_date,
-         service_plan_active=EXCLUDED.service_plan_active,
-         service_interval_months=EXCLUDED.service_interval_months,
-         warranty_expiration=EXCLUDED.warranty_expiration, status=EXCLUDED.status,
-         notes=EXCLUDED.notes, battery_install_date=EXCLUDED.battery_install_date,
-         synced_at=now()
-       RETURNING id`,
-      [resolvedGeneratorId, jobId,
-       // F.gen.customer is "Customer NAME" — the FORMULA field, and the F map was
-       // already right about this. The raw Airtable field called `Customer` is a
-       // LOOKUP, and over the API a lookup into a linked table returns RECORD IDS.
-       // Reading it directly is what put "recGDL5n6zXHshAdq - 20KW Cummins" on
-       // every generator in the first ETL run. Go through F, not the field name.
-       glook(gf[F.gen.customer]),
-       gsel(gf[F.gen.brand]), gsel(gf[F.gen.model]), gnum(gf[F.gen.kw]),
-       gsel(gf[F.gen.serialNumber]), gsel(gf[F.gen.transferSwitchModel]),
-       gsel(gf[F.gen.transferSwitchSerial]), gsel(gf[F.gen.fuelType]),
-       gday(gf[F.gen.installDate]), gf[F.gen.servicePlanActive] === true,
-       gnum(gf[F.gen.serviceIntervalMonths]), gday(gf[F.gen.warrantyExpiration]),
-       gsel(gf[F.gen.status]), gsel(gf[F.gen.notes]), gday(gf[F.gen.batteryInstallDate])]);
-    neonGeneratorId = gr?.rows?.[0]?.id || null;
-    if (!neonGeneratorId) {
-      // Fail SOFT, not closed: Airtable already holds the commissioned asset and
-      // is authoritative on this path, so refusing here would undo a successful
-      // commissioning over a copy failure. Surfaced as a warning because the
-      // consequence is real and specific.
-      warnings.push("Generator was not copied into Neon — logging service against it will fail until db/etl/inspections-generators.mjs is re-run.");
-    }
-  } catch (err) {
-    warnings.push(`Could not re-read generator for dup-checks: ${err.message}`);
-  }
-
-  // ── Step 2: POST the commissioning Generator Service event ────────────
-  // Idempotent: if an Install / Commissioning record already exists for
-  // this generator, reuse its ID rather than piling up duplicate
-  // commissioning rows on re-runs (matches step 3's warranty idempotency).
-  // Service Type is server-set rather than client-passed, but still
-  // validated against SERVICE_TYPE_OPTS so the typecast guard is
-  // consistent with other handlers.
-  let serviceRecordId = null;
-  let existingCommissioningRecord = null;
-  if (assetIdForLookup) {
-    try {
-      const safe = escapeFormulaString(assetIdForLookup);
-      // Exact-per-element: a substring hit here makes the DUPLICATE CHECK fire on
-      // another generator, silently skipping a service record that should exist.
-      const dupFilter = `AND(FIND("
-${safe}
-", "
-" & ARRAYJOIN({${F.svc.generator}}, "
-") & "
-"), {${F.svc.serviceType}}="${svcType}")`;
-      const existing = await fetchAll(TABLES.generatorService, { filter: dupFilter });
-      if (existing.length) existingCommissioningRecord = existing[0];
-    } catch (err) {
-      warnings.push(`Could not check for existing commissioning record: ${err.message}`);
-    }
-  }
-
-  if (existingCommissioningRecord) {
-    serviceRecordId = existingCommissioningRecord.id;
-    warnings.push("Commissioning service record already exists — skipped re-creation.");
-  } else {
+  // 2. The commissioning service event — mirrored ONLY when Neon actually
+  //    created one. If Neon skipped it as a duplicate, there is nothing to
+  //    mirror, and the old code's separate Airtable dup check is gone with it.
+  const serviceRecordId = neonServiceId;
+  if (neonServiceId && resolvedGeneratorId) {
     const svcFields = {};
     svcFields[F.svc.generator]   = [resolvedGeneratorId];
     svcFields[F.svc.job]         = [jobId];
     svcFields[F.svc.serviceDate] = commissioningDate || installDate;
-    svcFields[F.svc.serviceType] = svcType;
-    if (technician)         svcFields[F.svc.technician] = String(technician);
+    svcFields[F.svc.serviceType] = svcTypeNeon;
+    if (technician) svcFields[F.svc.technician] = String(technician);
     if (generatorHours !== undefined && generatorHours !== null && generatorHours !== "")
       svcFields[F.svc.generatorHours] = Number(generatorHours);
     if (commissioningNotes && String(commissioningNotes).trim())
       svcFields[F.svc.workNotes] = String(commissioningNotes);
 
-    try {
-      const svcData = await atFetch(`${encodeURIComponent(TABLES.generatorService)}`, {
-        method: "POST",
-        body: JSON.stringify({ fields: svcFields, typecast: true })
-      });
-      serviceRecordId = svcData.id;
-    } catch (err) {
-      warnings.push(`Failed to create commissioning service record: ${err.message}`);
+    const svcData = await mirrorToAirtable("commission.createService", () =>
+      atFetch(`${encodeURIComponent(TABLES.generatorService)}`, {
+        method: "POST", body: JSON.stringify({ fields: svcFields, typecast: true })
+      }));
+    if (svcData?.id) {
+      await mirrorToAirtable("commission.stampService", () =>
+        neonWrite("generatorService.stampAirtableId",
+          `UPDATE generator_service SET airtable_id = $2 WHERE id = $1`, [neonServiceId, svcData.id]));
+    } else {
+      warnings.push("Commissioning service record saved in Neon, but the Airtable mirror failed.");
     }
   }
 
-  // ── Step 3: Create one Warranty per matching Warranty Template ────────
-  // Idempotency: skip the whole step if any warranties already exist on
-  // this generator, so re-commissioning doesn't pile up duplicates.
+  // 3. Warranties — one POST per row Neon created, each stamped back.
   const warrantyIds = [];
+  for (const w of neonWarranties) {
+    if (!resolvedGeneratorId) break;
+    const tpl    = neonTemplates.find(t => t.id === w.templateId);
+    const months = tpl ? Number(tpl.duration_months) : null;
 
-  let existingWarrantyCount = 0;
-  if (assetIdForLookup) {
-    try {
-      const safe = escapeFormulaString(assetIdForLookup);
-      // Exact-per-element — this count decides whether warranties get created.
-      const existingFilter = `FIND("
-${safe}
-", "
-" & ARRAYJOIN({${F.warranty.generator}}, "
-") & "
-")`;
-      const existing = await fetchAll(TABLES.warranties, { filter: existingFilter });
-      existingWarrantyCount = existing.length;
-    } catch (err) {
-      warnings.push(`Could not check existing warranties: ${err.message}`);
+    const wFields = {};
+    wFields[F.warranty.generator]    = [resolvedGeneratorId];
+    wFields[F.warranty.warrantyType] = (tpl && WARRANTY_TYPE_OPTS.includes(tpl.warranty_type))
+      ? tpl.warranty_type : "Limited";
+    wFields[F.warranty.startDate]    = installDate;
+    if (months) {
+      // Same JS computation Neon was given — not a second derivation.
+      wFields[F.warranty.endDate]        = addMonthsToDateStr(installDate, months);
+      wFields[F.warranty.durationMonths] = months;
+    }
+    wFields[F.warranty.source] = "Standard";
+    // Resolve the template back to its Airtable id. A uuid in a linked-record
+    // field is exactly the b79b9a0 bug, in its quiet form: no error, the link
+    // just never gets written.
+    const tRec = (await neonQuery(
+      `SELECT airtable_id FROM warranty_templates WHERE id = $1`, [w.templateId]))?.rows?.[0]?.airtable_id;
+    if (tRec) wFields[F.warranty.createdFromTemplate] = [tRec];
+
+    const wData = await mirrorToAirtable("commission.createWarranty", () =>
+      atFetch(`${encodeURIComponent(TABLES.warranties)}`, {
+        method: "POST", body: JSON.stringify({ fields: wFields, typecast: true })
+      }));
+    if (wData?.id) {
+      warrantyIds.push(wData.id);
+      await mirrorToAirtable("commission.stampWarranty", () =>
+        neonWrite("warranty.stampAirtableId",
+          `UPDATE warranties SET airtable_id = $2 WHERE id = $1`, [w.id, wData.id]));
+    } else {
+      warnings.push("A warranty saved in Neon did not mirror to Airtable — re-run the ETL to reconcile.");
     }
   }
 
-  if (existingWarrantyCount > 0) {
-    warnings.push("Warranties already existed for this generator — skipped re-creation.");
-  } else {
-    let templates = [];
-    try {
-      const tFilter = buildWarrantyTemplateFilter(brand, model);
-      templates = await fetchAll(TABLES.warrantyTemplates, { filter: tFilter });
-    } catch (err) {
-      warnings.push(`Could not look up warranty templates: ${err.message}`);
-    }
-
-    if (!templates.length) {
-      warnings.push(`No active warranty templates found for brand "${brand}"${model ? ` / model "${model}"` : ""}.`);
-    }
-
-    for (const t of templates) {
-      const tf = t.fields || {};
-      const months = Number(tf[F.warrantyTemplate.durationMonths]);
-      const wType  = tf[F.warrantyTemplate.warrantyType];
-      const tName  = tf[F.warrantyTemplate.name] || t.id;
-      if (!Number.isFinite(months) || months <= 0) {
-        warnings.push(`Template "${tName}" has invalid Duration Months — skipped.`);
-        continue;
-      }
-      const wEnd = addMonthsToDateStr(installDate, months);
-      const wFields = {};
-      wFields[F.warranty.generator]           = [resolvedGeneratorId];
-      wFields[F.warranty.warrantyType]        = WARRANTY_TYPE_OPTS.includes(wType) ? wType : "Limited";
-      wFields[F.warranty.startDate]           = installDate;
-      wFields[F.warranty.endDate]             = wEnd;
-      wFields[F.warranty.durationMonths]      = months;
-      wFields[F.warranty.source]              = "Standard";
-      wFields[F.warranty.createdFromTemplate] = [t.id];
-      try {
-        const wData = await atFetch(`${encodeURIComponent(TABLES.warranties)}`, {
-          method: "POST",
-          body: JSON.stringify({ fields: wFields, typecast: true })
-        });
-        warrantyIds.push(wData.id);
-
-        // ── COPY INTO NEON — this one prevents PARTIAL RESULTS ─────────────
-        // Not just tidiness. getWarranties reads Neon first and only falls
-        // through to Airtable when it finds ZERO rows. handleAddWarranty now
-        // writes to Neon, so a generator carrying both an ad-hoc warranty AND
-        // these commissioned ones would return a NON-empty Neon result, never
-        // fall through, and silently show only half its coverage — the ad-hoc
-        // one, hiding the manufacturer warranties. Half a warranty list is
-        // worse than none, because it looks complete.
-        //
-        // ON CONFLICT (airtable_id) keeps it idempotent against re-commissioning
-        // and the hand-run ETL alike. Fail-soft, like the asset copy above.
-        if (neonGeneratorId) {
-          const wr = await neonQuery(
-            `INSERT INTO warranties
-               (airtable_id, generator_id, template_id, warranty_type, start_date,
-                end_date, duration_months, source, synced_at)
-             VALUES ($1, $2,
-                     (SELECT id FROM warranty_templates WHERE airtable_id = $3),
-                     $4, $5::date, $6::date, $7, 'Standard', now())
-             ON CONFLICT (airtable_id) DO UPDATE SET
-               generator_id=EXCLUDED.generator_id, template_id=EXCLUDED.template_id,
-               warranty_type=EXCLUDED.warranty_type, start_date=EXCLUDED.start_date,
-               end_date=EXCLUDED.end_date, duration_months=EXCLUDED.duration_months,
-               source=EXCLUDED.source, synced_at=now()
-             RETURNING id`,
-            [wData.id, neonGeneratorId, t.id, wFields[F.warranty.warrantyType],
-             installDate, wEnd, months]);
-          if (!wr?.rows?.length) {
-            warnings.push(`Warranty "${tName}" was created in Airtable but not copied into Neon — re-run db/etl/inspections-generators.mjs.`);
-          }
-        }
-      } catch (err) {
-        warnings.push(`Failed to create warranty from template "${tName}": ${err.message}`);
-      }
-    }
-  }
-
+  // `generatorId` is the NEON uuid now, matching what handleGenerator returns —
+  // the client holds one id form for a generator, not two depending on which
+  // endpoint it came from. Every consumer resolves either form anyway.
   return resp(200, {
     ok: true,
-    generatorId:    resolvedGeneratorId,
+    generatorId:    neonGeneratorId,
+    airtableGeneratorId: resolvedGeneratorId || null,
     serviceRecordId,
     warrantyIds,
-    warnings
+    warnings,
+    _source: "neon"
   });
 }
 

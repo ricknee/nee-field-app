@@ -2518,6 +2518,57 @@ async function handleCompleteServiceCall(body) {
 // (admin/office) may mutate any expense; an employee may mutate ONLY their own
 // AND only while it is still "Not Reviewed" (approval locks it). Returns
 // { ok:true, record } or { ok:false, resp } with the right 400/403.
+// ── KEEP NEON IN STEP AFTER AN EXPENSE WRITE (migration Step 4d) ──────────
+// handleExpenses reads Neon first and only falls through on ZERO rows, so on any
+// job that already has an expense an Airtable-only write would simply never
+// appear. Same partial-results trap as the warranties at 83e022c.
+//
+// AIRTABLE STAYS THE IDENTITY AUTHORITY for expenses, deliberately: R2 receipt
+// keys are built from the rec id and receipts can be attached at create time, so
+// the record has to exist in Airtable before anything else can reference it.
+// Neon is kept in step rather than made authoritative. Invert this only when
+// receipts move too.
+//
+// Fed the record Airtable just RETURNED, so every derived field (Total Cost,
+// Billable, Unbilled, Reviewed Expenses) arrives already computed — identical to
+// what the ETL loads, so the two can't disagree about the same row.
+async function syncExpenseToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const n = (v) => { if (Array.isArray(v)) v = v[0]; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const s = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "" || x === null) ? null : String(x); };
+  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : s(v));
+  await neonWrite("expense.sync",
+    `INSERT INTO expenses
+       (airtable_id, job_airtable_id, job_id, expense_type, expense_status, expense_date,
+        total_cost_actual, reviewed, reviewed_expenses, billable, billable_material_amount,
+        billed_material_amount, unbilled_material_amount, manual_material_cost, material_credit,
+        vendor_name, description, push_id, submitted_by_at_id, submitted_by_name, synced_at)
+     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5::date,$6,$7,$8,$9,$10,
+             $11,$12,$13,$14,$15,$16,$17,$18,$19, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
+       expense_type=EXCLUDED.expense_type, expense_status=EXCLUDED.expense_status,
+       expense_date=EXCLUDED.expense_date, total_cost_actual=EXCLUDED.total_cost_actual,
+       reviewed=EXCLUDED.reviewed, reviewed_expenses=EXCLUDED.reviewed_expenses,
+       billable=EXCLUDED.billable, billable_material_amount=EXCLUDED.billable_material_amount,
+       billed_material_amount=EXCLUDED.billed_material_amount,
+       unbilled_material_amount=EXCLUDED.unbilled_material_amount,
+       manual_material_cost=EXCLUDED.manual_material_cost, material_credit=EXCLUDED.material_credit,
+       vendor_name=EXCLUDED.vendor_name, description=EXCLUDED.description,
+       push_id=EXCLUDED.push_id, submitted_by_at_id=EXCLUDED.submitted_by_at_id,
+       submitted_by_name=EXCLUDED.submitted_by_name, synced_at=now()`,
+    [rec.id, s(f["Job"]), sel(f["Expense Type"]), sel(f["Expense Status"]), s(f["Expense Date"]),
+     n(f["Total Cost (Actual)"]), f["Reviewed"] === true, n(f["Reviewed Expenses"]),
+     f["Billable?"] === true, n(f["Billable Material Amount $"]),
+     n(f["Billed Material Amount $"]), n(f["Unbilled Material Amount $"]),
+     n(f["Manual Material Cost"]), n(f["Material Credit"]),
+     s(f["Vendor Name (from Vendor)"]), s(f["Description"]), s(f["Push ID"]),
+     s(f["Submitted By"]),
+     (Array.isArray(f["Submitted By Name"]) ? f["Submitted By Name"].filter(Boolean).join(", ")
+                                            : s(f["Submitted By Name"]))]).catch(() => {});
+}
+
 async function guardExpenseMutation(expenseId, authUser) {
   if (!expenseId) return { ok: false, resp: resp(400, { ok: false, error: "Missing expenseId." }) };
   const rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`);
@@ -2537,6 +2588,7 @@ async function handleDeleteExpense(body, authUser) {
   const guard = await guardExpenseMutation(expenseId, authUser);
   if (!guard.ok) return guard.resp;
   await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "DELETE" });
+  await neonWrite("expense.delete", `DELETE FROM expenses WHERE airtable_id = $1`, [expenseId]).catch(() => {});
   return resp(200, { ok: true, deleted: expenseId });
 }
 
@@ -2544,6 +2596,7 @@ async function handleApproveExpense(body) {
   const { expenseId } = body || {};
   if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
   const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldwSsga6eashzJsw": true } }) });
+  await syncExpenseToNeon(data);
   return resp(200, { ok: true, updatedId: data.id });
 }
 
@@ -4022,6 +4075,7 @@ async function handleAddLiftExpense(body, authUser) {
   if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
   if (date) fields["fldCCPYdyWAOGchWb"] = date;
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
+  await syncExpenseToNeon(data);
   return resp(200, { ok: true, id: data.id });
 }
 
@@ -4049,6 +4103,7 @@ async function handleAddGeneralExpense(body, authUser) {
   // This is what lets employees see/edit only their own expenses.
   if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
   const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
+  await syncExpenseToNeon(data);
   return resp(200, { ok: true, id: data.id });
 }
 
@@ -4077,6 +4132,7 @@ async function handleUpdateExpense(body, authUser) {
   if (vendorId !== undefined)    fields["fldlTUL8hsPkReBAB"] = (vendorId && String(vendorId).startsWith("rec")) ? [String(vendorId)] : [];
 
   const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
+  await syncExpenseToNeon(data);
   return resp(200, { ok: true, updatedId: data.id });
 }
 

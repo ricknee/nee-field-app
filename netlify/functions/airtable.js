@@ -3083,9 +3083,58 @@ async function handleSaveEstimate(body) {
 
 // ── LIST SAVED ESTIMATE PDF SNAPSHOTS FOR A JOB ──────────────────────────
 // Backs the Estimate History panel. Reads from Sent Estimate PDFs only.
+// Builds the friendly label from the snapshot JSON. Shared so the Neon and
+// Airtable paths cannot drift into naming the same estimate differently.
+function sentEstimateName(snapshot, displayNumber) {
+  const num = displayNumber ? `#${displayNumber} — ` : "";
+  try {
+    const s = JSON.parse(snapshot || "{}");
+    const first = (s.lines || [])[0]?.description || "";
+    const head  = first ? first.split(/\r?\n/)[0].trim().slice(0, 80) : (s.jobName || "");
+    return `${num}${head}`.trim() || "Estimate";
+  } catch { return `#${displayNumber || ""}`.trim() || "Estimate"; }
+}
+
 async function handleSentEstimatePDFs(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // ── NEON-FIRST (migration Step 4e) ──────────────────────────────────────
+  // The Airtable path below pages the ENTIRE table and filters in memory,
+  // because filterByFormula on a linked-record field is unreliable. Here it is
+  // a WHERE clause on an indexed column — the whole reason job_airtable_id is
+  // stored alongside the FK.
+  //
+  // Writes already sync (saveEstimate → sent_estimate_pdfs at 08438f3), so this
+  // read flip is complete on its own and cannot go stale behind a save.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, display_number, estimate_date::text AS estimate_date,
+              total, snapshot
+         FROM sent_estimate_pdfs
+        WHERE job_airtable_id = $1
+        ORDER BY estimate_date DESC NULLS LAST, display_number DESC NULLS LAST`, [jobId]);
+    if (q?.rows?.length) {
+      return resp(200, {
+        ok: true,
+        estimates: q.rows.map(r => {
+          const total = Number(r.total ?? 0);
+          return {
+            id: r.airtable_id, displayNumber: r.display_number ?? null,
+            date: r.estimate_date || "", total,
+            snapshot: r.snapshot || "",
+            name: sentEstimateName(r.snapshot, r.display_number),
+            // Constant on this path, as on the Airtable one: a row in this table
+            // exists because an estimate was sent.
+            status: "Sent",
+            actualEstimate: total, calculatedTotal: total,
+          };
+        }),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`sentEstimatePDFs: Neon read failed, falling back: ${q.error}`);
+  }
 
   let records = [];
   try {
@@ -3129,16 +3178,9 @@ async function handleSentEstimatePDFs(params) {
       date:           f["Estimate Date"] || "",
       total:          Number(f["Total"] || 0),
       snapshot:       f["Snapshot"] || "",
-      // Derive a friendly name from the snapshot JSON if available
-      name:           (() => {
-        try {
-          const s = JSON.parse(f["Snapshot"] || "{}");
-          const first = (s.lines || [])[0]?.description || "";
-          const head  = first ? first.split(/\r?\n/)[0].trim().slice(0, 80) : (s.jobName || "");
-          const num   = f["Estimate Display #"] ? `#${f["Estimate Display #"]} — ` : "";
-          return `${num}${head}`.trim() || "Estimate";
-        } catch { return `#${f["Estimate Display #"] || ""}`.trim() || "Estimate"; }
-      })(),
+      // Same helper the Neon path uses — one definition, so the two cannot name
+      // the same estimate differently.
+      name:           sentEstimateName(f["Snapshot"], f["Estimate Display #"]),
       // Status is implicit for saved PDFs; surface "Sent" for the history UI
       status:         "Sent",
       actualEstimate: Number(f["Total"] || 0),

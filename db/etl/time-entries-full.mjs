@@ -368,12 +368,24 @@ await upsertBatch("jobs",
   await upsertBatch("job_estimates",
     ["airtable_id", "job_id", "job_airtable_id", "estimate_type", "status", "actual_estimate_sent",
      "estimated_labor_hours", "estimated_labor_cost", "estimated_material_cost",
-     "calculated_estimated_total", "estimate_date", "notes", "synced_at"],
+     "calculated_estimated_total", "estimate_date", "notes",
+     // ⚠ display_number and estimate_snapshot are carried but are ALWAYS NULL,
+     // verified directly against Airtable: 0 of 83 estimates populate either.
+     // Both live on Sent Estimate PDFs instead — Save Estimate writes there and
+     // never back to the master record, exactly as handleJobEstimates' own
+     // comment says. Kept in the load only so the columns cannot silently
+     // diverge if Airtable ever starts populating them.
+     //
+     // Consequence worth knowing: handleJobEstimates' `onlySaved` filter tests
+     // displayNumber != null, so it can only ever return an EMPTY list. It has
+     // no caller in the frontend either. Dead parameter, dead filter.
+     "display_number", "estimate_snapshot", "synced_at"],
     estimates.map(r => [r.id, ...J(r), nul(r.fields["Estimate Type"]), nul(r.fields["Status"]),
       num(r.fields["Actual Estimate Sent"]), num(r.fields["Estimated Labor Hours"]),
       num(r.fields["Estimated Labor Cost"]), num(r.fields["Estimated Material Cost"]),
       num(r.fields["Calculated Estimated Total"]), nul(r.fields["Estimate Date"]),
-      nul(r.fields["Notes"]), now]), "airtable_id", 200);
+      nul(r.fields["Notes"]), num(r.fields["Estimate Display #"]),
+      nul(r.fields["Estimate Snapshot"]), now]), "airtable_id", 200);
 
   // ⚠ submitted_by_at_id IS AN AUTHORIZATION FIELD, not decoration.
   // handleExpenses scopes by it: admin/office see every expense on a job, an

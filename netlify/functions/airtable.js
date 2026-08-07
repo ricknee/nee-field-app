@@ -2738,6 +2738,84 @@ async function handleCreateInspection(body) {
 async function handleJobEstimates(params) {
   const { jobId, onlySaved } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // ── NEON-FIRST (migration Step 4e) ──────────────────────────────────────
+  // Replaces three Airtable round trips — job lookup, the FIND-inside-ARRAYJOIN
+  // estimate scan, and a full Sent Estimate PDFs fetch — with one query.
+  //
+  // The snapshot CASCADE moves into SQL unchanged: prefer the Sent PDF that
+  // back-links to this estimate, else the most recent same-job PDF whose Total
+  // equals the master's Actual Estimate Sent. That fallback is not hypothetical
+  // — 5 of 25 sent PDFs carry no back-link, so a plain join would lose them.
+  //
+  // Matching on actual_estimate_sent, NOT calculated_estimated_total: the former
+  // is the user-entered figure, the latter a formula that can drift on rounding.
+  // That distinction is inherited from the Airtable path and is deliberate.
+  //
+  // PDFs come from R2, not Airtable. Airtable serves attachments on signed URLs
+  // that expire, so a Neon read returning stored links would break within hours.
+  // Copied by the admin action copyEstimatePdfsToR2 — 15 objects, reconciled.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT e.id, e.airtable_id, e.estimate_type, e.status,
+              e.estimate_date::text AS estimate_date, e.actual_estimate_sent,
+              e.estimated_labor_hours, e.estimated_material_cost,
+              e.calculated_estimated_total, e.notes, e.display_number,
+              COALESCE(back.snapshot, bytotal.snapshot, e.estimate_snapshot, '') AS snapshot,
+              j.name AS job_name
+         FROM job_estimates e
+         LEFT JOIN jobs j ON j.id = e.job_id
+         LEFT JOIN LATERAL (
+           SELECT s.snapshot FROM sent_estimate_pdfs s
+            WHERE s.estimate_airtable_id = e.airtable_id
+            ORDER BY s.estimate_date DESC NULLS LAST, s.display_number DESC NULLS LAST
+            LIMIT 1
+         ) back ON true
+         LEFT JOIN LATERAL (
+           SELECT s.snapshot FROM sent_estimate_pdfs s
+            WHERE back.snapshot IS NULL
+              AND s.job_airtable_id = e.job_airtable_id
+              AND e.actual_estimate_sent IS NOT NULL
+              AND s.total = e.actual_estimate_sent
+            ORDER BY s.estimate_date DESC NULLS LAST, s.display_number DESC NULLS LAST
+            LIMIT 1
+         ) bytotal ON true
+        WHERE e.job_airtable_id = $1
+        ORDER BY e.estimate_date DESC NULLS LAST`, [jobId]);
+    if (q?.rows?.length) {
+      // One R2 listing for the whole job rather than one per estimate.
+      let pdfsById = new Map();
+      try {
+        const objs = await listByPrefix("estimates/");
+        for (const o of objs) {
+          const m = /^estimates\/([^/]+)\/(.+)$/.exec(o.key);
+          if (!m) continue;
+          if (!pdfsById.has(m[1])) pdfsById.set(m[1], []);
+          pdfsById.get(m[1]).push({
+            url: await presignGet(o.key), filename: m[2], size: o.size ?? null,
+          });
+        }
+      } catch { /* R2 unavailable — estimates still render, just without links */ }
+
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      const n = (v) => (v === null || v === undefined ? null : Number(v));
+      let estimates = q.rows.map(r => ({
+        id: r.airtable_id || r.id,
+        // `Estimate Name` is an Airtable formula: {Estimate Type} & " – " & {Job}
+        name: [s(r.estimate_type), s(r.job_name)].filter(Boolean).join(" – "),
+        estimateType: s(r.estimate_type), status: s(r.status),
+        date: s(r.estimate_date), actualEstimate: n(r.actual_estimate_sent),
+        laborHours: n(r.estimated_labor_hours), materialCost: n(r.estimated_material_cost),
+        calculatedTotal: n(r.calculated_estimated_total), notes: s(r.notes),
+        displayNumber: r.display_number ?? null, snapshot: s(r.snapshot),
+        pdfs: pdfsById.get(r.id) || [],
+      }));
+      if (onlySaved) estimates = estimates.filter(e => e.displayNumber != null);
+      return resp(200, { ok: true, estimates, _source: "neon", _ms: q.ms });
+    }
+    if (q?.error) console.error(`jobEstimates: Neon read failed, falling back: ${q.error}`);
+  }
+
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, estimates: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";

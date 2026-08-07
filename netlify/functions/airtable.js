@@ -4281,7 +4281,55 @@ async function handleCreateContact(body) {
   });
 }
 
+// Either-form id resolvers for the two inspection dimension tables, same shape
+// and same reason as resolveGeneratorIds: once a read is Neon-first the client
+// legitimately holds a uuid, but every Airtable linked-record write still needs
+// the rec id. Returning BOTH lets a handler write both stores from one lookup.
+async function resolveInspectionIds(table, rawId) {
+  const id = String(rawId || "").trim();
+  if (!id) return { rec: null, neon: null };
+  const isUuid = /^[0-9a-f-]{36}$/i.test(id);
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT id, airtable_id FROM ${table} WHERE id::text = $1 OR airtable_id = $1`, [id]);
+    const r = q?.rows?.[0];
+    if (r) return { rec: r.airtable_id || null, neon: r.id };
+  }
+  return { rec: isUuid ? null : id, neon: isUuid ? id : null };
+}
+const resolveAgencyIds    = (id) => resolveInspectionIds("inspection_agencies", id);
+const resolveInspectorIds = (id) => resolveInspectionIds("inspection_contacts", id);
+
 async function handleGetInspectionAgencies() {
+  // NOTE: no Active filter, matching the Airtable path exactly. `Active` on
+  // these tables is the Make contact-sync trigger, not a "show in picker" flag,
+  // so filtering on it here would quietly hide agencies from the picker.
+  // ⚠ RETURNS THE AIRTABLE REC ID, NOT THE NEON UUID — deliberately, and it is
+  // the opposite of what every other flip in this slice does.
+  //
+  // This picker's output is consumed by handleUpdateJobInspection, which writes
+  // it into the JOBS table as an Airtable LINKED RECORD. Jobs has not migrated.
+  // And mapJobFromNeon already hands the job's currently-selected agency back as
+  // `inspection_agency_at_id` — a rec id. Emit uuids here and the picker's
+  // options stop matching the job's stored value, so nothing preselects.
+  //
+  // So: read from Neon (fast, no substring matching), keep rec ids as the id
+  // CURRENCY until Jobs itself moves. Falls back to the uuid only for an agency
+  // with no Airtable twin, which can only be one created since the last mirror.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT COALESCE(airtable_id, id::text) AS id, name FROM inspection_agencies
+        WHERE coalesce(name,'') <> '' ORDER BY name ASC`);
+    if (q?.rows?.length) {
+      return resp(200, {
+        ok: true,
+        agencies: q.rows.map(r => ({ id: r.id, name: r.name })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`getInspectionAgencies: Neon read failed, falling back: ${q.error}`);
+  }
+
   const records = await fetchAll(TABLES.inspectionAgencies, { sortField: "Inspection Agency Name", sortDir: "asc" });
   const agencies = records
     .map(r => ({ id: r.id, name: r.fields["Inspection Agency Name"] || "" }))
@@ -4307,15 +4355,38 @@ async function handleCreateInspectionAgency(body) {
   if (schedulingLink && String(schedulingLink).trim()) fields["fld9Ym5pNfp43spbs"] = String(schedulingLink).trim();
   if (notes          && String(notes).trim())          fields["fldtlCyjRD3XJGjFH"] = String(notes);
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.inspectionAgencies)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields })
-  });
+  // ── NEON-FIRST, fails CLOSED ──────────────────────────────────────────
+  // getInspectionAgencies reads Neon and there are already 15 rows there, so it
+  // never falls through — an Airtable-only agency would simply never appear in
+  // the picker.
+  const rows = await neonWrite("inspectionAgency.insert",
+    `INSERT INTO inspection_agencies (name, phone, email, scheduling_link, notes, active)
+     VALUES ($1, $2, $3, $4, $5, true) RETURNING id`,
+    [trimmedName,
+     phone          && String(phone).trim()          ? String(phone).trim()          : null,
+     email          && String(email).trim()          ? String(email).trim()          : null,
+     schedulingLink && String(schedulingLink).trim() ? String(schedulingLink).trim() : null,
+     notes          && String(notes).trim()          ? String(notes)                 : null]);
+  const neonAgencyId = rows?.[0]?.id;
+  if (!neonAgencyId) return resp(500, { ok: false, error: "Agency was not written to Neon." });
+
+  const data = await mirrorToAirtable("createInspectionAgency", () =>
+    atFetch(`${encodeURIComponent(TABLES.inspectionAgencies)}`,
+      { method: "POST", body: JSON.stringify({ fields }) }));
+
+  if (data?.id) {
+    await mirrorToAirtable("createInspectionAgency.stamp", () =>
+      neonWrite("inspectionAgency.stampAirtableId",
+        `UPDATE inspection_agencies SET airtable_id = $2 WHERE id = $1`, [neonAgencyId, data.id]));
+  }
+
   return resp(200, {
     ok: true,
     agency: {
-      id:   data.id,
-      name: data.fields?.[F.agency.name] || trimmedName
+      // Rec id when the mirror succeeded, so the new agency matches the id
+      // currency the picker and handleUpdateJobInspection use.
+      id:   data?.id || neonAgencyId,
+      name: data?.fields?.[F.agency.name] || trimmedName
     }
   });
 }
@@ -4332,6 +4403,43 @@ async function handleGetInspectorsForAgency(params) {
   const trimmedId   = String(agencyId   || "").trim();
   if (!trimmedName && !trimmedId) {
     return resp(400, { ok: false, error: "Missing agencyName or agencyId." });
+  }
+
+  // ── NEON-FIRST ────────────────────────────────────────────────────────
+  // The Airtable path matches the agency by NAME via FIND (a substring test) and
+  // re-verifies the link id in memory when it has one. Here the id path is plain
+  // FK equality and the name path an exact match, so the substring collision
+  // cannot happen on either.
+  if (neonEnabled()) {
+    const ids = trimmedId ? await resolveAgencyIds(trimmedId) : { neon: null };
+    // ⚠ An agencyId that resolves to nothing must NOT widen to "every active
+    // inspector" — that would offer inspectors belonging to other agencies.
+    // Only take the name path when no id was supplied at all.
+    if (!trimmedId || ids.neon) {
+      // Rec id as the id currency here too — same reason as the agency picker:
+      // the chosen inspector is written into JOBS as an Airtable linked record.
+      const q = await neonQuery(
+        `SELECT COALESCE(c.airtable_id, c.id::text) AS id, c.inspector_name, c.phone, c.email
+           FROM inspection_contacts c
+           LEFT JOIN inspection_agencies a ON a.id = c.agency_id
+          WHERE c.active
+            AND coalesce(c.inspector_name,'') <> ''
+            AND ( ($1::uuid IS NOT NULL AND c.agency_id = $1::uuid)
+               OR ($1::uuid IS NULL AND ($2 = '' OR lower(a.name) = lower($2))) )
+          ORDER BY c.inspector_name ASC`,
+        [ids.neon, trimmedName]);
+      if (q?.rows?.length) {
+        return resp(200, {
+          ok: true,
+          inspectors: q.rows.map(r => ({
+            id: r.id, name: r.inspector_name || "",
+            phone: r.phone || "", email: r.email || ""
+          })),
+          _source: "neon", _ms: q.ms
+        });
+      }
+      if (q?.error) console.error(`inspectorsForAgency: Neon read failed, falling back: ${q.error}`);
+    }
   }
 
   let records;
@@ -4377,30 +4485,65 @@ async function handleCreateInspectionContact(body) {
   const trimmedLast  = String(lastName  || "").trim();
   const trimmedAgency = String(agencyId || "").trim();
 
-  if (!trimmedAgency.startsWith("rec")) return resp(400, { ok: false, error: "Missing or invalid agencyId." });
+  // ⚠ WAS `startsWith("rec")`, which rejected every uuid the moment
+  // getInspectionAgencies went Neon-first — the fleet/handleLogMileage bug
+  // exactly. Resolve both forms instead.
+  const agencyIds = await resolveAgencyIds(trimmedAgency);
+  if (!agencyIds.neon && !agencyIds.rec) return resp(400, { ok: false, error: "Missing or invalid agencyId." });
   if (!trimmedFirst) return resp(400, { ok: false, error: "First Name is required." });
   if (!trimmedLast)  return resp(400, { ok: false, error: "Last Name is required." });
+
+  // ── NEON-FIRST, fails CLOSED ──────────────────────────────────────────
+  // inspectorsForAgency now reads Neon and only falls through on ZERO rows, so
+  // an Airtable-only contact would be invisible on any agency that already has
+  // one — the same partial-results trap as the warranties at 83e022c.
+  let neonContactId = null;
+  if (agencyIds.neon) {
+    const rows = await neonWrite("inspectionContact.insert",
+      `INSERT INTO inspection_contacts (agency_id, first_name, last_name, phone, email, active)
+       VALUES ($1, $2, $3, $4, $5, true)
+       RETURNING id`,
+      [agencyIds.neon, trimmedFirst, trimmedLast,
+       phone && String(phone).trim() ? String(phone).trim() : null,
+       email && String(email).trim() ? String(email).trim() : null]);
+    neonContactId = rows?.[0]?.id;
+    if (!neonContactId) return resp(500, { ok: false, error: "Inspector was not written to Neon." });
+  }
 
   const fields = {};
   fields["fldbLNgj4Msf7SeCu"] = trimmedFirst;            // First Name
   fields["fld1BOsbSTi6BkEa7"] = trimmedLast;             // Last Name
-  fields["fldC6CpQmQ12ABY0z"] = [trimmedAgency];         // Inspection Agency (linked)
+  if (agencyIds.rec) fields["fldC6CpQmQ12ABY0z"] = [agencyIds.rec];  // Inspection Agency (linked)
   fields["fldF0zIEONjKdtAIR"] = true;                     // Active (Make.com sync trigger)
   if (phone && String(phone).trim()) fields["fldh8oOPBJO0O305Y"] = String(phone).trim();
   if (email && String(email).trim()) fields["fld9auKwBoqGJIRL3"] = String(email).trim();
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.inspectionContacts)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields })
-  });
-  const f = data.fields || {};
+  // Mirror when Neon holds the row; a direct write when the agency is
+  // Airtable-only (created by hand, ETL not re-run).
+  const data = neonContactId
+    ? await mirrorToAirtable("createInspectionContact", () =>
+        atFetch(`${encodeURIComponent(TABLES.inspectionContacts)}`,
+          { method: "POST", body: JSON.stringify({ fields }) }))
+    : await atFetch(`${encodeURIComponent(TABLES.inspectionContacts)}`,
+        { method: "POST", body: JSON.stringify({ fields }) });
+
+  if (neonContactId && data?.id) {
+    await mirrorToAirtable("createInspectionContact.stamp", () =>
+      neonWrite("inspectionContact.stampAirtableId",
+        `UPDATE inspection_contacts SET airtable_id = $2 WHERE id = $1`, [neonContactId, data.id]));
+  }
+
+  const f = data?.fields || {};
   return resp(200, {
     ok: true,
     inspector: {
-      id:   data.id,
+      // The NEON id when Neon holds the row, so the picker hands back a form
+      // updateJobInspection can resolve. inspector_name is a generated column
+      // there, so the fallback below is only for the Airtable-only path.
+      id:   data?.id || neonContactId,
       name: f[F.inspector.nameFormula] || `${trimmedFirst} ${trimmedLast}`.trim(),
-      phone: f[F.inspector.phone] || "",
-      email: f[F.inspector.email] || ""
+      phone: f[F.inspector.phone] || (phone ? String(phone).trim() : ""),
+      email: f[F.inspector.email] || (email ? String(email).trim() : "")
     }
   });
 }
@@ -6008,15 +6151,18 @@ async function handleUpdateJobInspection(body) {
   if (!jobId || !String(jobId).startsWith("rec")) {
     return resp(400, { ok: false, error: "Missing or invalid jobId." });
   }
+  // Resolve BOTH forms. The pickers emit rec ids by design (see
+  // handleGetInspectionAgencies), but a agency or inspector created since the
+  // last mirror can still arrive as a uuid, and this writes Airtable LINKED
+  // RECORD fields, which only accept rec ids.
+  const ag  = await resolveAgencyIds(agencyId);
+  const ins = await resolveInspectorIds(inspectorId);
+
   const fields = {};
-  const hasAgency = !!agencyId && String(agencyId).startsWith("rec");
-  fields["fldyKKACyUqt9tcEL"] = hasAgency ? [agencyId] : [];
+  const hasAgency = !!ag.rec;
+  fields["fldyKKACyUqt9tcEL"] = hasAgency ? [ag.rec] : [];
   // Inspector belongs to an agency — if no agency, force-clear the inspector.
-  if (hasAgency && inspectorId && String(inspectorId).startsWith("rec")) {
-    fields["fld9ApvXJqPhuDcm4"] = [inspectorId];
-  } else {
-    fields["fld9ApvXJqPhuDcm4"] = [];
-  }
+  fields["fld9ApvXJqPhuDcm4"] = (hasAgency && ins.rec) ? [ins.rec] : [];
   fields["fldDKGllmOyyyf9qo"] = permitNumber || "";
   fields["fldQ5VJgOYcQBxmCr"] = !!inspectionNotRequired;
 
@@ -6024,6 +6170,31 @@ async function handleUpdateJobInspection(body) {
     method: "PATCH",
     body: JSON.stringify({ fields })
   });
+
+  // ⚠ WRITE NEON TOO — same bug 10b6e04 fixed in updateJobInfo, same cause.
+  // handleJobs and handleJobById are Neon-first and Neon's `jobs` is refreshed
+  // HOURLY, so an Airtable-only write here reverts on the next refresh. The
+  // denormalised name/phone/email columns are Airtable LOOKUPS through these
+  // links, so they are refreshed from the record Airtable just returned rather
+  // than recomputed — whatever the lookup resolved to is the truth.
+  const jf = data?.fields || {};
+  const look = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "") ? null : x; };
+  await neonWrite("job.updateInspection",
+    `UPDATE jobs SET
+       inspection_agency_at_id = $2, inspection_agency = $3,
+       inspection_agency_phone = $4, inspection_agency_email = $5,
+       inspection_scheduling_link = $6,
+       inspector_at_id = $7, inspector_name = $8,
+       inspector_phone = $9, inspector_email = $10,
+       permit_number = $11, inspection_not_required = $12
+     WHERE airtable_id = $1`,
+    [jobId, hasAgency ? ag.rec : null, look(jf[F.job.inspectionAgency]),
+     look(jf[F.job.inspectionAgencyPhone]), look(jf[F.job.inspectionAgencyEmail]),
+     look(jf[F.job.inspectionSchedulingLink]),
+     (hasAgency && ins.rec) ? ins.rec : null, look(jf[F.job.inspectionContacts]),
+     look(jf[F.job.inspectorPhone]), look(jf[F.job.inspectorEmail]),
+     permitNumber || null, !!inspectionNotRequired]).catch(() => {});
+
   return resp(200, { ok: true, job: mapJob(data) });
 }
 

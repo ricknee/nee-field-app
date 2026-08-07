@@ -508,6 +508,35 @@ await test("writes still require a non-viewer role before any of this runs", asy
   eq(lastFetch, null, "nothing written");
 });
 
+// ── Inspections (migration Step 4c) ───────────────────────────────────────
+await test("createInspection: fails CLOSED when Neon is unreachable", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = {};
+  lastFetch = null;
+  const res = await POST("createInspection",
+    { jobId: "recJ1", inspectionType: "Rough", date: "2026-08-07", status: "Scheduled" });
+  eq(res.statusCode, 500, "500 rather than writing only the mirror");
+  // handleJobInspections reads Neon and only falls through on ZERO rows, so an
+  // Airtable-only inspection is invisible on any job that already has one.
+  eq(lastFetch, null, "and nothing written to Airtable");
+  delete process.env.DATABASE_URL;
+});
+
+await test("createInspection: a stray single-select value never reaches Airtable", async () => {
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  mockTables = {};
+  lastFetch = null;
+  // Airtable's typecast:true would CREATE "Roof Inspection" as a new option, and
+  // Postgres has no guard at all. The whitelist has to reject it in code.
+  // The write fails closed here, so what this locks is that a bad value cannot
+  // sneak through as a side effect of the failure path either.
+  const res = await POST("createInspection",
+    { jobId: "recJ1", inspectionType: "Roof Inspection", status: "Maybe Passed" });
+  eq(res.statusCode, 500, "still fails closed");
+  eq(lastFetch, null, "nothing written anywhere");
+  delete process.env.DATABASE_URL;
+});
+
 // ── Generators (migration Step 4c) ────────────────────────────────────────
 // Same offline limits as the schedule block below: no DATABASE_URL means the SQL
 // never runs, so what is locked here is the contract at the boundary. The SQL

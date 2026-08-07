@@ -2629,17 +2629,57 @@ async function handleJobInspections(params) {
   return resp(200, { ok: true, inspections });
 }
 
+// Job Inspections single-select whitelists, read out of the base 2026-08-07.
+// Airtable's typecast:true would silently CREATE a new option from a stray
+// client value; Postgres has no such guard at all, so once the write is
+// Neon-first the check has to live here or the columns become free text.
+// Unknown values fall back to null rather than a guessed default — an
+// inspection with no type is honest, one mislabelled "Rough" is not.
+const INSPECTION_TYPE_OPTS   = ["Rough", "Service", "Temp", "Final", "Other"];
+const INSPECTION_STATUS_OPTS = ["Scheduled", "Passed", "Failed", "Re-Inspect Needed"];
+
+// ── CREATE INSPECTION — NEON-FIRST (migration Step 4c) ────────────────────
+// handleJobInspections already reads Neon, so this has to write there or a new
+// inspection would be invisible: that read only falls through to Airtable when
+// it finds ZERO rows, and every one of the 22 existing inspections is in Neon.
+// On any job that already has one, an Airtable-only write would simply never
+// appear. Same partial-results trap as the warranties at 83e022c.
 async function handleCreateInspection(body) {
   const { jobId, inspectionType, date, status, notes } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  const typeSafe   = INSPECTION_TYPE_OPTS.includes(inspectionType) ? inspectionType : null;
+  const statusSafe = INSPECTION_STATUS_OPTS.includes(status) ? status : null;
+
+  const rows = await neonWrite("inspection.insert",
+    `INSERT INTO job_inspections
+       (job_airtable_id, job_id, inspection_type, inspection_date, inspection_status, notes)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3::date, $4, $5)
+     RETURNING id`,
+    [String(jobId), typeSafe, date || null, statusSafe, notes || null]);
+  const neonId = rows?.[0]?.id;
+  if (!neonId) return resp(500, { ok: false, error: "Inspection was not written to Neon." });
+
   const fields = {};
   fields["fldqk2pA5w3TSN3q8"] = [String(jobId)];
-  if (inspectionType) fields["fldR2IQkaeRHXytsR"] = inspectionType;
-  if (date)           fields["fldPblyNOIryMLFB6"] = date;
-  if (status)         fields["fld7kH2SEHsxaS9vz"] = status;
-  if (notes)          fields["fldmz5dOw6In5OkU7"] = notes;
-  const data = await atFetch(`${encodeURIComponent("Job Inspections")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
-  return resp(200, { ok: true, id: data.id });
+  if (typeSafe)   fields["fldR2IQkaeRHXytsR"] = typeSafe;
+  if (date)       fields["fldPblyNOIryMLFB6"] = date;
+  if (statusSafe) fields["fld7kH2SEHsxaS9vz"] = statusSafe;
+  if (notes)      fields["fldmz5dOw6In5OkU7"] = notes;
+
+  const data = await mirrorToAirtable("createInspection", () =>
+    atFetch(`${encodeURIComponent("Job Inspections")}`,
+      { method: "POST", body: JSON.stringify({ fields, typecast: true }) }));
+
+  // Stamp the Airtable id back so handleUpdateInspection can mirror edits to it
+  // and the hand-run ETL updates this row instead of inserting a duplicate.
+  if (data?.id) {
+    await mirrorToAirtable("createInspection.stamp", () =>
+      neonWrite("inspection.stampAirtableId",
+        `UPDATE job_inspections SET airtable_id = $2 WHERE id = $1`, [neonId, data.id]));
+  }
+
+  return resp(200, { ok: true, id: neonId, airtableId: data?.id || null });
 }
 
 async function handleJobEstimates(params) {

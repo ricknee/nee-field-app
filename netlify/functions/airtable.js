@@ -5927,10 +5927,15 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, birdDate } = body || {};
+  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, birdDate, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
+  // Generator Installed — the flag that reveals the Generator tab, and until now
+  // it had NO WRITE PATH ANYWHERE. It could only be ticked by hand in Airtable,
+  // which made the whole commissioning workflow unreachable from the app: the
+  // thing that CREATES a generator was gated behind a flag saying one exists.
+  if (generatorInstalled !== undefined) fields["fldANNxuzBUrI9aI8"] = generatorInstalled === true;
   if (customerStreet !== undefined) fields["fldFBJrw64SYC1WdB"] = customerStreet || "";
   if (customerCity   !== undefined) fields["fld46JMp1z6E2DhJt"] = customerCity   || "";
   if (customerState  !== undefined) fields["fldktee97zx5QUPmd"] = customerState  || "";
@@ -5948,6 +5953,22 @@ async function handleUpdateJobInfo(body) {
     method: "PATCH",
     body: JSON.stringify({ fields, typecast: true })
   });
+
+  // ⚠ WRITE NEON TOO, or the change appears to be ignored for up to an hour.
+  // handleJobs and handleJobById are BOTH Neon-first, and Neon's `jobs` is a
+  // one-way mirror refreshed hourly by _jobs-sync.js. Writing only Airtable —
+  // which is what this handler used to do — means the next refresh re-reads the
+  // STALE Neon row and the edit silently reverts on screen. Found the hard way:
+  // ticking Generator Installed in Airtable did nothing visible in the app.
+  //
+  // Safe against the sync precisely BECAUSE Airtable is written first: the
+  // hourly job re-derives the same value rather than clobbering this one.
+  if (generatorInstalled !== undefined) {
+    await neonWrite("job.setGeneratorInstalled",
+      `UPDATE jobs SET generator_installed = $2 WHERE airtable_id = $1`,
+      [jobId, generatorInstalled === true]).catch(() => {});
+  }
+
   return resp(200, { ok: true, updatedId: data.id });
 }
 

@@ -4016,6 +4016,60 @@
       gp.className = "pill gen-no";
     }
 
+    // ── The pill is a TOGGLE for admins ───────────────────────────────────
+    // Generator Installed gates the whole Generator tab, and it had no write
+    // path anywhere in the app — it could only be ticked by hand in Airtable.
+    // That made commissioning unreachable: the action that CREATES a generator
+    // was hidden behind a flag asserting one already existed.
+    if (isAdmin()) {
+      gp.style.cursor = "pointer";
+      gp.title = job.generatorInstalled
+        ? "Click to mark this job as having no generator"
+        : "Click to mark a generator as installed (reveals the Generator tab)";
+      let genPillBusy = false;
+      gp.onclick = async () => {
+        // A busy FLAG, not `onclick = null` — nulling it would leave the pill
+        // permanently dead after the first toggle, since nothing rewires it
+        // until the job is re-selected.
+        if (genPillBusy) return;
+        const next = !job.generatorInstalled;
+        if (job.generatorInstalled && !confirm(
+          "Mark this job as having NO generator?\n\nThe Generator tab will be hidden. Nothing is deleted — the asset, its service history and its warranties all stay."
+        )) return;
+        const prev = gp.textContent;
+        genPillBusy = true;
+        gp.textContent = "Saving…";
+        try {
+          await apiPost("updateJobInfo", { jobId: job.id, generatorInstalled: next });
+          job.generatorInstalled = next;
+          // Update the pill, the Project Info row and the TAB in place rather
+          // than re-running selectJob — that would re-render the whole list and
+          // scroll the page on mobile for what is a one-field change.
+          gp.textContent = next ? "⚡ Generator Installed" : "No Generator";
+          gp.className   = next ? "pill gen-yes" : "pill gen-no";
+          const piGen = $("piGenerator");
+          if (piGen) piGen.textContent = next ? "✅ Yes" : "No";
+          const genTab = $("genTabBtn");
+          if (genTab) {
+            genTab.style.display = next ? "" : "none";
+            if (next) { loadGeneratorData(job.id); switchTab("generator"); }
+            else if (document.querySelector(".tab-btn.active")?.dataset?.tab === "generator") {
+              switchTab("project");
+            }
+          }
+        } catch (e) {
+          gp.textContent = prev;
+          alert(`Could not update: ${e.message}`);
+        } finally {
+          genPillBusy = false;
+        }
+      };
+    } else {
+      gp.style.cursor = "";
+      gp.title = "";
+      gp.onclick = null;
+    }
+
     // Action Buttons
     // Photos now go to Cloudflare R2 and are viewed in-app — no JotForm, no
     // Make, no pCloud login. See docs/PLAN-job-photos.md.

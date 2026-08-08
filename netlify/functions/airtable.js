@@ -467,6 +467,9 @@ const _ADMIN_POSTS = new Set([
   "setEmployeePin",
   // Editing a person includes their ROLE, which is an authorization change.
   "updateEmployee",
+  // Creating a person mints a working login. Rate writes move GP on every job
+  // that person has ever booked hours to — as money-critical as it gets here.
+  "createEmployee", "addEmployeeRaise", "correctEmployeeRate",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -526,7 +529,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `employeePin` returns a live credential — strict admin, never office, and
 // deliberately its own action rather than a field on `people` so one tap
 // reveals one person instead of shipping every PIN on every screen open.
-const _ADMIN_READS = new Set(["r2Status", "people", "employeePin"]);
+const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates"]);
 
 // Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
 // so listing must match the actions available on what's listed:
@@ -2121,10 +2124,21 @@ async function handlePeople() {
   // paging it or splitting roster/detail into two actions would be complexity
   // bought with nothing. The client filters Active vs Former in memory.
   const byAirtableId = new Map();
+  // Current cost rate now comes from Neon, NOT Airtable's "Current True Cost
+  // Rate" rollup. It used to read the rollup because that was live and Neon's
+  // mirror was ETL-stale — that is now inverted: the app writes rates to Neon,
+  // so the Airtable rollup is the stale one. Reading it would show an admin the
+  // old number right after they'd given someone a raise.
   const q = await neonQuery(
-    `SELECT airtable_id, hired_on, terminated_on, termination_note,
-            token_valid_from, last_login_at
-       FROM employees`, []);
+    `SELECT e.airtable_id, e.hired_on, e.terminated_on, e.termination_note,
+            e.token_valid_from, e.last_login_at,
+            r.true_cost_rate, r.base_hourly_wage, r.payroll_burden_pct
+       FROM employees e
+       LEFT JOIN LATERAL (
+              SELECT true_cost_rate, base_hourly_wage, payroll_burden_pct
+                FROM labor_cost_rates
+               WHERE employee_id = e.id AND effective_end_date IS NULL
+               ORDER BY effective_start_date DESC LIMIT 1) r ON true`, []);
   if (q && !q.error && Array.isArray(q.rows)) {
     for (const r of q.rows) byAirtableId.set(String(r.airtable_id), r);
   }
@@ -2147,11 +2161,12 @@ async function handlePeople() {
       role:        normalize(g(f, F.emp.role) || "") || "employee",
       active:      gBool(f, F.emp.active),
       laborType:   g(f, "Default Labor Type") || "",
-      // The live Airtable rollup of Labor Cost Rates. Deliberately NOT read
-      // from Neon's labor_cost_rates mirror, which is refreshed by a hand-run
-      // ETL and so can be stale — a wrong wage on screen is worse than no
-      // screen. Slice 3 moves this when it brings the full rate history.
-      currentRate: gNum(f, "Current True Cost Rate"),
+      // From Neon (see the query above). Falls back to Airtable's rollup only
+      // when Neon is unreachable, so the card shows a number rather than a dash
+      // during an outage — flagged by `neonOk` either way.
+      currentRate: n.true_cost_rate != null ? Number(n.true_cost_rate) : gNum(f, "Current True Cost Rate"),
+      currentWage: n.base_hourly_wage   != null ? Number(n.base_hourly_wage)   : null,
+      currentBurdenPct: n.payroll_burden_pct != null ? Number(n.payroll_burden_pct) * 100 : null,
       notes:       g(f, "Notes") || "",
       // Neon half — null when Neon is unreachable, or simply not set yet.
       hiredOn:         n.hired_on         ? String(n.hired_on).slice(0, 10) : null,
@@ -2202,6 +2217,261 @@ async function handleEmployeePin(params) {
   // PIN is not cosmetic, handleLogin refuses to match one, so the person
   // genuinely cannot log in until it is set.
   return resp(200, { ok: true, employeeId, pin, hasPin: pin !== "" });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// COST RATES — what an hour of someone's time costs the company
+// ══════════════════════════════════════════════════════════════════
+// The chain, verified against all 14 live rate rows:
+//
+//   base_hourly_wage × (1 + payroll_burden_pct) = true_cost_rate
+//        ↓
+//   v_job_labor_cost_true   regular hrs × rate + OT hrs × rate × 1.5
+//        ↓
+//   v_job_financials_true → the GP on the job list
+//
+// So $26.00 + 25% = $32.50/hr, and that is what every hour booked to a job
+// costs. This is real money on the screen the business runs on.
+//
+// ── RATES ARE EFFECTIVE-DATED, AND THAT IS THE WHOLE SUBTLETY ─────────────
+// v_job_labor_cost_true picks the rate that was in force DURING THAT WEEK, not
+// the current one. So there are two genuinely different operations, and
+// conflating them silently rewrites history:
+//
+//   A RAISE       new row from a date forward, old row closed the day before.
+//                 Past weeks keep the old rate. Finished jobs don't move.
+//   A CORRECTION  the stored number was wrong. Edit in place, and every week
+//                 that used it recalculates — which is right, because the old
+//                 figure was a lie. But it MUST be deliberate.
+//
+// The UI asks which. Do not merge them into a single "save".
+//
+// ── NEON IS THE SOURCE OF TRUTH FOR RATES, AS OF THIS CHANGE ──────────────
+// GP reads Neon, so Neon is what has to be correct. Airtable's Labor Cost
+// Rates table becomes historical, exactly like expenses and invoices did.
+// `db/etl/time-entries-full.mjs` MUST no longer reload this table — see the
+// comment there. If it did, an app-written rate would be overwritten by the
+// stale Airtable copy on the next run, and job costs would silently revert.
+//
+// `airtable_id` is NOT NULL on this table, so app-created rows carry a
+// deterministic synthetic key: `app:<employee rec id>:<start date>`. That makes
+// a retry idempotent (ON CONFLICT DO UPDATE) instead of inserting a second
+// overlapping row, which would leave two open rates and let the view pick one
+// arbitrarily.
+function appRateKey(employeeId, startDate) {
+  return `app:${employeeId}:${startDate}`;
+}
+
+async function handleEmployeeRates(params) {
+  const { employeeId } = params || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const q = await neonQuery(
+    `SELECT r.airtable_id, r.labor_type, r.effective_start_date, r.effective_end_date,
+            r.base_hourly_wage, r.payroll_burden_pct, r.true_cost_rate, r.notes
+       FROM labor_cost_rates r
+       JOIN employees e ON e.id = r.employee_id
+      WHERE e.airtable_id = $1
+      ORDER BY r.effective_start_date DESC`, [employeeId]);
+  if (!q || q.error || !Array.isArray(q.rows)) {
+    return resp(503, { ok: false, error: "Can't read rates right now (database unreachable)." });
+  }
+  const ymd = (v) => (v ? String(new Date(v).toISOString()).slice(0, 10) : null);
+  return resp(200, {
+    ok: true,
+    rates: q.rows.map(r => ({
+      id:        r.airtable_id,
+      laborType: r.labor_type || "",
+      startDate: ymd(r.effective_start_date),
+      endDate:   ymd(r.effective_end_date),
+      wage:      r.base_hourly_wage  == null ? null : Number(r.base_hourly_wage),
+      burden:    r.payroll_burden_pct == null ? null : Number(r.payroll_burden_pct),
+      trueCost:  r.true_cost_rate    == null ? null : Number(r.true_cost_rate),
+      notes:     r.notes || "",
+      current:   r.effective_end_date === null,
+    })),
+  });
+}
+
+// Shared validation. Burden arrives as a PERCENT from the UI (25), and is
+// stored as a FRACTION (0.25) because that is what the Airtable column held and
+// what every existing row uses — getting this backwards would multiply every
+// job's labor cost by 25.
+function parseRateInput(body) {
+  const wage   = Number(body?.wage);
+  const burden = Number(body?.burdenPct);
+  if (!Number.isFinite(wage) || wage <= 0 || wage > 500) {
+    return { error: "Hourly wage must be a number between 0 and 500." };
+  }
+  if (!Number.isFinite(burden) || burden < 0 || burden > 200) {
+    return { error: "Burden must be a percentage between 0 and 200." };
+  }
+  const laborType = _LABOR_OPTS.includes(String(body?.laborType || "")) ? String(body.laborType) : "Regular";
+  return { wage, burdenFrac: burden / 100, laborType, notes: String(body?.notes ?? "").trim() };
+}
+
+// A RAISE. Closes the open row the day before the new start date and inserts
+// the new one — in ONE statement, so there is never a moment with two open
+// rates or none.
+async function handleAddEmployeeRaise(body) {
+  const { employeeId, startDate } = body || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startDate || ""))) {
+    return resp(400, { ok: false, error: "Need an effective date (YYYY-MM-DD)." });
+  }
+  const p = parseRateInput(body);
+  if (p.error) return resp(400, { ok: false, error: p.error });
+
+  const rows = await neonWrite("employeeRaise",
+    `WITH emp AS (SELECT id FROM employees WHERE airtable_id = $1),
+        closed AS (
+          UPDATE labor_cost_rates
+             SET effective_end_date = ($2::date - 1)
+           WHERE employee_id = (SELECT id FROM emp)
+             AND effective_end_date IS NULL
+             AND effective_start_date < $2::date
+       RETURNING id)
+     INSERT INTO labor_cost_rates
+            (airtable_id, employee_id, labor_type, effective_start_date,
+             base_hourly_wage, payroll_burden_pct, true_cost_rate, notes, synced_at)
+     SELECT $3, emp.id, $4, $2::date, $5::numeric, $6::numeric,
+            round($5::numeric * (1 + $6::numeric), 2), NULLIF($7::text, ''), now()
+       FROM emp
+     ON CONFLICT (airtable_id) DO UPDATE
+            SET labor_type           = EXCLUDED.labor_type,
+                effective_start_date = EXCLUDED.effective_start_date,
+                base_hourly_wage     = EXCLUDED.base_hourly_wage,
+                payroll_burden_pct   = EXCLUDED.payroll_burden_pct,
+                true_cost_rate       = EXCLUDED.true_cost_rate,
+                notes                = EXCLUDED.notes,
+                synced_at            = now()
+       RETURNING id, true_cost_rate`,
+    [employeeId, startDate, appRateKey(employeeId, startDate),
+     p.laborType, p.wage, p.burdenFrac, p.notes]);
+
+  // Zero rows means the employee isn't in Neon — the INSERT selects FROM emp,
+  // so an unknown employee writes nothing and reports nothing. Silent no-ops
+  // on a money table are exactly what must not happen.
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error(`employeeRaise: no rate written for ${employeeId} — not found in Neon`);
+  }
+  return resp(200, { ok: true, trueCost: Number(rows[0].true_cost_rate) });
+}
+
+// A CORRECTION. Edits one existing row in place, which DOES move historical job
+// costs — that is the point, and the UI says so before it calls this.
+async function handleCorrectEmployeeRate(body) {
+  const { rateId } = body || {};
+  if (!rateId) return resp(400, { ok: false, error: "Missing rateId." });
+  const p = parseRateInput(body);
+  if (p.error) return resp(400, { ok: false, error: p.error });
+
+  const rows = await neonWrite("correctRate",
+    `UPDATE labor_cost_rates
+        SET labor_type         = $2,
+            base_hourly_wage   = $3::numeric,
+            payroll_burden_pct = $4::numeric,
+            true_cost_rate     = round($3::numeric * (1 + $4::numeric), 2),
+            notes              = NULLIF($5::text, ''),
+            synced_at          = now()
+      WHERE airtable_id = $1
+  RETURNING id, true_cost_rate`,
+    [rateId, p.laborType, p.wage, p.burdenFrac, p.notes]);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return resp(404, { ok: false, error: "No such rate row." });
+  }
+  return resp(200, { ok: true, trueCost: Number(rows[0].true_cost_rate) });
+}
+
+// Add a person. Airtable record first — its rec id IS the identity every other
+// table keys on, so it has to exist before anything can reference it.
+//
+// ⚠ A starting rate is not optional for anyone who will book hours. An employee
+// with NO rate row contributes NOTHING to job labor cost: v_job_labor_cost_true
+// left-joins the rate, so their hours come through at NULL and simply vanish
+// from GP. Their work would look free. The UI defaults the rate on and warns.
+async function handleCreateEmployee(body) {
+  const { name, username, role, pin, phone, email, employeeNo,
+          laborType, hiredOn, withRate, wage, burdenPct } = body || {};
+  const cleanName = String(name ?? "").trim();
+  if (!cleanName) return resp(400, { ok: false, error: "Name is required." });
+  const nextRole = _ROLE_OPTS.includes(String(role || "").toLowerCase())
+    ? String(role).toLowerCase() : null;
+  if (!nextRole) return resp(400, { ok: false, error: `Role must be one of: ${_ROLE_OPTS.join(", ")}.` });
+  const cleanPin = String(pin ?? "").trim();
+  if (!/^\d{4,8}$/.test(cleanPin)) return resp(400, { ok: false, error: "PIN must be 4 to 8 digits." });
+
+  const all = await fetchAll(TABLES.employees);
+  // Same rule as handleSetEmployeePin: login matches identifier + PIN, so two
+  // people sharing a PIN lets either log in as the other.
+  const clash = all.find(r => String(r.fields?.[F.emp.pin] ?? "").trim() === cleanPin);
+  if (clash) {
+    return resp(409, { ok: false, error: `That PIN is already used by ${g(clash.fields, F.emp.name) || "another employee"}. Pick a different one.` });
+  }
+  if (all.some(r => normalize(g(r.fields, F.emp.name)) === normalize(cleanName))) {
+    return resp(409, { ok: false, error: `There is already an employee called ${cleanName}.` });
+  }
+
+  const nextLabor = _LABOR_OPTS.includes(String(laborType || "")) ? String(laborType) : "Regular";
+  const created = await atFetch(encodeURIComponent(TABLES.employees), {
+    method: "POST",
+    body: JSON.stringify({ fields: {
+      [_EMP_FLD.name]:       cleanName,
+      [_EMP_FLD.username]:   String(username ?? "").trim(),
+      [_EMP_FLD.pin]:        cleanPin,
+      [_EMP_FLD.role]:       nextRole,
+      [_EMP_FLD.active]:     true,
+      [_EMP_FLD.phone]:      String(phone ?? "").trim(),
+      [_EMP_FLD.email]:      String(email ?? "").trim(),
+      [_EMP_FLD.employeeNo]: String(employeeNo ?? "").trim(),
+      [_EMP_FLD.laborType]:  nextLabor,
+    } }),
+  });
+  const newId = created?.id;
+  if (!newId) return resp(502, { ok: false, error: "Airtable did not return a record id." });
+
+  const ymd = (v) => {
+    const s = String(v ?? "").trim();
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  };
+  // Login reads Neon now, so this row is what actually lets them in. It must
+  // land, hence neonWrite rather than a best-effort mirror.
+  await neonWrite("createEmployee",
+    `INSERT INTO employees (airtable_id, name, username, role, active, pin,
+                            email, phone, employee_no, labor_type, hired_on)
+          VALUES ($1,$2,$3,$4,true,$5,$6,$7,$8,$9,$10::date)
+     ON CONFLICT (airtable_id) DO UPDATE
+            SET name=EXCLUDED.name, username=EXCLUDED.username, role=EXCLUDED.role,
+                active=true, pin=EXCLUDED.pin, email=EXCLUDED.email, phone=EXCLUDED.phone,
+                employee_no=EXCLUDED.employee_no, labor_type=EXCLUDED.labor_type,
+                hired_on=EXCLUDED.hired_on`,
+    [newId, cleanName, String(username ?? "").trim(), nextRole, cleanPin,
+     String(email ?? "").trim(), String(phone ?? "").trim(),
+     String(employeeNo ?? "").trim(), nextLabor, ymd(hiredOn)]);
+
+  if (withRate) {
+    const start = ymd(hiredOn) || new Date().toISOString().slice(0, 10);
+    const p = parseRateInput({ wage, burdenPct, laborType: nextLabor });
+    if (p.error) {
+      // The person exists and can log in; only the rate failed. Say exactly
+      // that, rather than implying nothing happened.
+      return resp(200, { ok: true, employeeId: newId, rateWarning: p.error });
+    }
+    await neonWrite("createEmployeeRate",
+      `INSERT INTO labor_cost_rates
+              (airtable_id, employee_id, labor_type, effective_start_date,
+               base_hourly_wage, payroll_burden_pct, true_cost_rate, synced_at)
+       SELECT $2, e.id, $3, $4::date, $5::numeric, $6::numeric,
+              round($5::numeric * (1 + $6::numeric), 2), now()
+         FROM employees e WHERE e.airtable_id = $1
+       ON CONFLICT (airtable_id) DO NOTHING`,
+      [newId, appRateKey(newId, start), p.laborType, start, p.wage, p.burdenFrac]);
+  }
+
+  return resp(200, { ok: true, employeeId: newId });
 }
 
 // Edit a person. Slice 2 — until this existed the People screen was read-only
@@ -8380,6 +8650,7 @@ export async function handler(event) {
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "people")             return await handlePeople();
       if (action === "employeePin")        return await handleEmployeePin(params);
+      if (action === "employeeRates")      return await handleEmployeeRates(params);
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
       if (action === "jobPrints")          return await handleJobPrints(params);
@@ -8509,6 +8780,9 @@ export async function handler(event) {
       if (body.action === "setEmployeeActive")    return await handleSetEmployeeActive(body, authUser);
       if (body.action === "setEmployeePin")       return await handleSetEmployeePin(body);
       if (body.action === "updateEmployee")       return await handleUpdateEmployee(body, authUser);
+      if (body.action === "createEmployee")       return await handleCreateEmployee(body);
+      if (body.action === "addEmployeeRaise")     return await handleAddEmployeeRaise(body);
+      if (body.action === "correctEmployeeRate")  return await handleCorrectEmployeeRate(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
       if (body.action === "createInspectionAgency") return await handleCreateInspectionAgency(body);
       if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);

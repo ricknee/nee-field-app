@@ -11671,6 +11671,8 @@
     if (tabA && !tabA._wired)   { tabA._wired = true;   tabA.addEventListener("click", () => { peopleShowFormer = false; renderPeople(); }); }
     if (tabF && !tabF._wired)   { tabF._wired = true;   tabF.addEventListener("click", () => { peopleShowFormer = true;  renderPeople(); }); }
     if (search && !search._wired) { search._wired = true; search.addEventListener("input", renderPeople); }
+    const add = $("peopleAddBtn");
+    if (add && !add._wired) { add._wired = true; add.addEventListener("click", addPerson); }
   }
 
   async function loadPeople() {
@@ -11747,6 +11749,9 @@
             <button class="people-edit-btn" data-id="${esc(p.id)}" type="button"
               style="background:none; border:none; padding:0; margin-left:14px; color:var(--accent);
                      font-weight:600; font-size:12px; cursor:pointer;">Edit</button>
+            <button class="people-rates-btn" data-id="${esc(p.id)}" data-name="${esc(p.name)}" type="button"
+              style="background:none; border:none; padding:0; margin-left:14px; color:var(--accent);
+                     font-weight:600; font-size:12px; cursor:pointer;">Cost rate</button>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; font-size:12px; margin-bottom:10px;">
             <div><div style="color:var(--muted);">Cost rate</div><div style="font-weight:600;">${rate}</div></div>
@@ -11793,6 +11798,9 @@
     $("peopleList").querySelectorAll(".people-edit-btn").forEach(btn => {
       btn.addEventListener("click", () => openPersonEditor(btn.dataset.id));
     });
+    $("peopleList").querySelectorAll(".people-rates-btn").forEach(btn => {
+      btn.addEventListener("click", () => openRatePanel(btn.dataset.id, btn.dataset.name));
+    });
   }
 
   // Fetched per person on tap, never with the roster — otherwise every
@@ -11821,6 +11829,138 @@
       btn.disabled = false;
       btn.textContent = "Show PIN";
       alert(`Couldn't read that PIN.\n\n${e.message}`);
+    }
+  }
+
+  // ── COST RATES ────────────────────────────────────────────────────────────
+  // base wage × (1 + burden) = true cost rate, and that rate is what every hour
+  // booked to a job costs the company. It flows straight into GP:
+  //   v_job_labor_cost_true → v_job_financials_true → the GP on the job list.
+  //
+  // The rate is EFFECTIVE-DATED and the GP view picks the rate in force during
+  // each week. So there are two different operations and the UI must not blur
+  // them: a RAISE leaves finished jobs alone, a CORRECTION deliberately moves
+  // them. Both are offered, separately labelled, and the correction warns.
+  const money = (n) => (n == null ? "—" : `$${Number(n).toFixed(2)}`);
+
+  async function openRatePanel(id, name) {
+    const card = $("peopleList").querySelector(`.people-rates-btn[data-id="${CSS.escape(id)}"]`)?.closest(".sl-card");
+    if (!card || card.querySelector(".people-rates")) return;
+    card.insertAdjacentHTML("beforeend",
+      `<div class="people-rates" style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
+         <div class="loading-msg" style="padding:6px 0;">Loading rates...</div></div>`);
+    const panel = card.querySelector(".people-rates");
+    let rates = [];
+    try {
+      rates = (await apiGet("employeeRates", { employeeId: id })).rates || [];
+    } catch (e) {
+      panel.innerHTML = `<div style="font-size:12px; color:var(--red);">Couldn't load rates: ${esc(e.message)}</div>`;
+      return;
+    }
+    const cur = rates.find(r => r.current);
+    const hist = rates.map(r => `
+      <tr style="${r.current ? "font-weight:700;" : "color:var(--muted);"}">
+        <td style="padding:3px 8px 3px 0;">${esc(r.startDate || "—")}${r.endDate ? ` – ${esc(r.endDate)}` : " – now"}</td>
+        <td style="padding:3px 8px 3px 0;">${money(r.wage)}</td>
+        <td style="padding:3px 8px 3px 0;">${r.burden == null ? "—" : (r.burden * 100).toFixed(0) + "%"}</td>
+        <td style="padding:3px 0;">${money(r.trueCost)}</td>
+      </tr>`).join("");
+
+    panel.innerHTML = `
+      <div style="font-size:12px; margin-bottom:8px;">
+        <b>Cost to the company:</b> ${money(cur?.trueCost)}/hr
+        ${cur ? `<span style="color:var(--muted);"> — ${money(cur.wage)} + ${(cur.burden * 100).toFixed(0)}% burden</span>` : `<span style="color:var(--red);"> — no rate set, so their hours cost this company nothing on any job.</span>`}
+      </div>
+      ${rates.length ? `<table style="font-size:11px; margin-bottom:10px; border-collapse:collapse;">
+        <tr style="color:var(--muted);"><td style="padding-right:8px;">Period</td><td style="padding-right:8px;">Wage</td><td style="padding-right:8px;">Burden</td><td>Cost/hr</td></tr>
+        ${hist}</table>` : ""}
+      <div style="display:flex; gap:14px; flex-wrap:wrap;">
+        <button class="rate-raise btn btn-sm btn-primary" type="button" style="font-size:12px;">Give a raise</button>
+        ${cur ? `<button class="rate-fix btn btn-sm" type="button" style="font-size:12px;">Correct current rate</button>` : ""}
+        <button class="rate-close btn btn-sm" type="button" style="font-size:12px;">Close</button>
+      </div>`;
+
+    panel.querySelector(".rate-close").addEventListener("click", renderPeople);
+    panel.querySelector(".rate-raise").addEventListener("click", () => submitRate(id, name, cur, "raise"));
+    panel.querySelector(".rate-fix")?.addEventListener("click", () => submitRate(id, name, cur, "correct"));
+  }
+
+  async function submitRate(id, name, cur, mode) {
+    const burdenDefault = cur?.burden != null ? (cur.burden * 100).toFixed(0) : "25";
+    const wage = prompt(
+      mode === "raise"
+        ? `New hourly wage for ${name}.\n\nFinished jobs keep their old cost — only work from the effective date forward is charged at the new rate.`
+        : `Correct ${name}'s CURRENT hourly wage.\n\n⚠ This rewrites history: every job they have booked hours to since ${cur?.startDate || "this rate started"} will be recosted, and GP on those jobs will move.\n\nUse "Give a raise" instead if the old rate was correct at the time.`,
+      cur?.wage != null ? String(cur.wage) : "");
+    if (wage === null) return;
+    const burdenPct = prompt(`Burden % for ${name} (payroll tax, insurance, etc).\n\n${wage} + burden = what the hour actually costs.`, burdenDefault);
+    if (burdenPct === null) return;
+
+    const preview = (Number(wage) * (1 + Number(burdenPct) / 100));
+    if (!Number.isFinite(preview)) { alert("Those need to be numbers."); return; }
+
+    const body = { wage, burdenPct, laborType: "Regular" };
+    if (mode === "raise") {
+      const start = prompt(
+        `Effective from which date? (YYYY-MM-DD)\n\n${name}: $${Number(wage).toFixed(2)} + ${burdenPct}% = $${preview.toFixed(2)}/hr\n\nWork before this date stays at the old rate.`,
+        new Date().toISOString().slice(0, 10));
+      if (start === null) return;
+      body.employeeId = id; body.startDate = start;
+    } else {
+      if (!confirm(`Recost ${name} at $${preview.toFixed(2)}/hr for the whole current period?\n\nGP will move on every job they've worked since ${cur?.startDate || "then"}.`)) return;
+      body.rateId = cur.id;
+    }
+    try {
+      const d = await apiPost(mode === "raise" ? "addEmployeeRaise" : "correctEmployeeRate", body);
+      alert(`${name} now costs $${Number(d.trueCost).toFixed(2)}/hr.`);
+      await loadPeople();
+    } catch (e) {
+      alert(`Couldn't save that rate.\n\n${e.message}\n\nNothing was changed.`);
+    }
+  }
+
+  // ── ADD A PERSON ──────────────────────────────────────────────────────────
+  // ⚠ The starting rate is not a nicety. An employee with no rate row
+  // contributes NOTHING to job labor cost — v_job_labor_cost_true left-joins the
+  // rate, so their hours come through NULL and vanish from GP. Their work looks
+  // free. Hence the rate prompt is part of the flow, not an afterthought.
+  async function addPerson() {
+    const name = prompt("New employee's full name:", "");
+    if (name === null || !name.trim()) return;
+    const username = prompt(`Username for ${name} — what they'll type to log in:`, name.trim().split(" ")[0].toLowerCase());
+    if (username === null) return;
+    const role = prompt(`Role for ${name}?\n\nOne of: ${PEOPLE_ROLES.join(", ")}`, "employee");
+    if (role === null) return;
+    const pin = prompt(`PIN for ${name} (4-8 digits).\n\nA random one is suggested:`, String(Math.floor(1000 + Math.random() * 9000)));
+    if (pin === null) return;
+    const phone = prompt(`Mobile number for ${name} (optional, but it's what a future "forgot PIN" would text):`, "");
+    if (phone === null) return;
+    const hiredOn = prompt("Hired on? (YYYY-MM-DD)", new Date().toISOString().slice(0, 10));
+    if (hiredOn === null) return;
+
+    const body = { name, username, role, pin, phone, hiredOn, laborType: "Regular", withRate: false };
+    const wage = prompt(
+      `Hourly wage for ${name}.\n\nLeave BLANK only for office/salaried staff who never book hours to a job — anyone who does needs a rate, or their time costs nothing against job profit.`, "");
+    if (wage === null) return;
+    if (wage.trim()) {
+      const burdenPct = prompt(`Burden % (payroll tax, insurance, etc):`, "25");
+      if (burdenPct === null) return;
+      const preview = Number(wage) * (1 + Number(burdenPct) / 100);
+      if (!Number.isFinite(preview)) { alert("Wage and burden need to be numbers."); return; }
+      if (!confirm(`Add ${name}?\n\nRole: ${role}\nLogin: ${username} / PIN ${pin}\nCost: $${Number(wage).toFixed(2)} + ${burdenPct}% = $${preview.toFixed(2)}/hr`)) return;
+      Object.assign(body, { withRate: true, wage, burdenPct });
+    } else {
+      if (!confirm(`Add ${name} with NO cost rate?\n\nTheir hours will not add any labor cost to a job. Only do this for office or salaried staff.`)) return;
+    }
+
+    try {
+      const d = await apiPost("createEmployee", body);
+      alert(d.rateWarning
+        ? `${name} added and can log in, but the rate wasn't saved: ${d.rateWarning}\n\nSet it with "Cost rate" on their card.`
+        : `${name} added. They can log in as "${username}" with PIN ${pin}.`);
+      await loadPeople();
+    } catch (e) {
+      alert(`Couldn't add ${name}.\n\n${e.message}\n\nNothing was created.`);
     }
   }
 
@@ -20324,7 +20464,10 @@
   <div class="sl-modal">
     <div class="sl-modal-header">
       <h2>👥 People</h2>
-      <button onclick="closePeople()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="peopleAddBtn" class="btn btn-primary btn-sm" type="button" style="font-size:12px;">+ Add Person</button>
+        <button onclick="closePeople()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+      </div>
     </div>
     <div class="sl-modal-body">
       <div id="peopleNeonWarn" style="display:none; margin-bottom:12px; padding:8px 12px; border-radius:8px;

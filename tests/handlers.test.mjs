@@ -1608,6 +1608,41 @@ await test("updateEmployee: admin only, and you can't change your own role", asy
   ok(selfSameRole.statusCode !== 400, "same-role self edit passes the self guard");
 });
 
+await test("rates + createEmployee: admin only, and validated", async () => {
+  mockTables = { Employees: [{ id: "recA", fields: { "Employee Name": "Larry Unruh", PIN: "1184" } }] };
+  eq((await GET("employeeRates", { employeeId: "recA" }, OFFICE_TOK)).statusCode, 403, "office can't read wages");
+  eq((await POST("addEmployeeRaise", { employeeId: "recA", startDate: "2026-01-01", wage: 30, burdenPct: 25 }, OFFICE_TOK)).statusCode, 403, "office can't set rates");
+  eq((await POST("createEmployee", { name: "X", role: "employee", pin: "1111" }, OFFICE_TOK)).statusCode, 403, "office can't create people");
+
+  // Burden arrives as a PERCENT (25) and is stored as a FRACTION (0.25).
+  // Getting that backwards would multiply every job's labor cost by 25, so the
+  // bounds are deliberately tight.
+  eq((await POST("addEmployeeRaise", { employeeId: "recA", startDate: "2026-01-01", wage: 0, burdenPct: 25 })).statusCode, 400, "zero wage refused");
+  eq((await POST("addEmployeeRaise", { employeeId: "recA", startDate: "2026-01-01", wage: 30, burdenPct: 900 })).statusCode, 400, "absurd burden refused");
+  eq((await POST("addEmployeeRaise", { employeeId: "recA", startDate: "not-a-date", wage: 30, burdenPct: 25 })).statusCode, 400, "bad date refused");
+
+  eq((await POST("createEmployee", { name: "", role: "employee", pin: "1111" })).statusCode, 400, "empty name refused");
+  eq((await POST("createEmployee", { name: "New Guy", role: "wizard", pin: "1111" })).statusCode, 400, "bogus role refused");
+  eq((await POST("createEmployee", { name: "New Guy", role: "employee", pin: "12" })).statusCode, 400, "short PIN refused");
+  // Login matches identifier + PIN, so a duplicate PIN is a working credential
+  // for someone else's account — same guard as setEmployeePin.
+  const dup = await POST("createEmployee", { name: "New Guy", role: "employee", pin: "1184" });
+  eq(dup.statusCode, 409, "duplicate PIN refused on create");
+  ok(/Larry Unruh/.test(json(dup).error), "names who holds it");
+  eq((await POST("createEmployee", { name: "larry unruh", role: "employee", pin: "5555" })).statusCode, 409, "duplicate name refused");
+});
+
+await test("rates: a rate write with Neon down fails CLOSED", async () => {
+  // These numbers drive GP on every job the person has booked hours to. A rate
+  // write that silently didn't land is worse than an error.
+  mockTables = { Employees: [{ id: "recA", fields: { "Employee Name": "Larry Unruh" } }] };
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  ok((await POST("addEmployeeRaise", { employeeId: "recA", startDate: "2026-01-01", wage: 30, burdenPct: 25 })).statusCode >= 500, "raise fails closed");
+  ok((await POST("correctEmployeeRate", { rateId: "app:recA:2026-01-01", wage: 30, burdenPct: 25 })).statusCode >= 500, "correction fails closed");
+  eq((await GET("employeeRates", { employeeId: "recA" })).statusCode, 503, "reading rates says so rather than showing none");
+  delete process.env.DATABASE_URL;
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

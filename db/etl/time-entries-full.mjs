@@ -172,7 +172,10 @@ const entries   = await fetchAll("Time Entries");
 const rates     = await fetchAll("Labor Billable Rates");
 const billAllocs = await fetchAll("Labor Billing Allocations");
 // Phase B — the labor COST chain.
-const costRates  = await fetchAll("Labor Cost Rates");
+// "Labor Cost Rates" is NO LONGER fetched: Neon owns cost rates as of
+// 2026-08-08 (the People screen writes them), so pulling the Airtable copy
+// would only tempt someone into re-enabling the upsert further down. See the
+// long note there before changing this.
 const weeklyTime = await fetchAll("Employee Weekly Time");
 const jobAllocs  = await fetchAll("Job Labor Allocation");
 // Phase C — the remaining sources every Jobs rollup reads from. Wire and Pipe are
@@ -314,16 +317,25 @@ await upsertBatch("jobs",
   const jobMapAt = new Map((await sql.query(`SELECT id, airtable_id FROM jobs`)).map(r => [r.airtable_id, r.id]));
   const now = new Date().toISOString();
 
-  await upsertBatch("labor_cost_rates",
-    ["airtable_id", "employee_id", "employee_airtable_id", "labor_type", "effective_start_date",
-     "effective_end_date", "base_hourly_wage", "payroll_burden_pct", "true_cost_rate", "notes", "synced_at"],
-    costRates.map(r => {
-      const e = firstId(r.fields["Employee"]);
-      return [r.id, empMapAt.get(e) ?? null, e, nul(r.fields["Labor Type"]),
-              nul(r.fields["Effective Start Date"]), nul(r.fields["Effective End Date"]),
-              num(r.fields["Base Hourly Wage"]), num(r.fields["Payroll Burden %"]),
-              num(r.fields["True Cost Rate"]), nul(r.fields["Notes"]), now];
-    }), "airtable_id");
+  // ⚠⚠ labor_cost_rates IS NO LONGER LOADED HERE — 2026-08-08. DO NOT RESTORE.
+  //
+  // The app now writes cost rates directly to Neon (handleAddEmployeeRaise /
+  // handleCorrectEmployeeRate / handleCreateEmployee, via the People screen), so
+  // NEON IS THE SOURCE OF TRUTH for this table and Airtable's copy is historical.
+  //
+  // Re-enabling this upsert would overwrite every app-written rate with the stale
+  // Airtable row on the next run. That is not a cosmetic revert: true_cost_rate
+  // drives v_job_labor_cost_true, which drives GP on every job the employee has
+  // ever booked hours to. A raise entered in the app would silently disappear and
+  // every job's labor cost would jump back to the old number.
+  //
+  // It is also why app-created rate rows carry a synthetic `app:<rec>:<date>`
+  // airtable_id: they have no Airtable counterpart to be keyed against.
+  //
+  // Same shape as the decision already taken for expenses, estimates and
+  // invoices — Airtable keeps identity, Neon answers the question.
+  //
+  // (Historical rows loaded before this date are already in Neon and unaffected.)
 
   await upsertBatch("employee_weekly_time",
     ["airtable_id", "employee_id", "employee_airtable_id", "week_start_date", "weekly_hours", "employee_week_key", "synced_at"],

@@ -2337,6 +2337,10 @@
       <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
       <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
       <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
+      <!-- strict-admin-only, not admin-only: the roster shows every person's
+           true cost rate, so office is excluded here exactly as it is in the
+           backend's _ADMIN tier for `people`/`setEmployeeActive`. -->
+      <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
       <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
       <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ My Hours</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
@@ -11603,6 +11607,142 @@
     }
   }
 
+  // ── PEOPLE (admin employee roster) ────────────────────────────────────────
+  // Slice 1 of docs/PLAN-employee-admin.md. Before this, there was no employee
+  // screen in either app — every hire, raise, role change and leaver meant
+  // opening the Airtable grid.
+  //
+  // The point of the screen is the access toggle. Unchecking `Active` in
+  // Airtable only ever blocked a NEW login: session tokens are stateless with a
+  // 30-day life, so a leaver's phone kept working for up to a month. The
+  // backend now stamps a revocation alongside the Airtable write, and apiGet/
+  // apiPost already call clearUser() on a 401 — so a revoked device bounces
+  // itself to the login screen with no extra client code.
+  //
+  // strict-admin-only, matching the backend's _ADMIN tier: the roster carries
+  // every person's true cost rate, and office is deliberately excluded.
+  let peopleCache = [];
+  let peopleShowFormer = false;
+
+  async function openPeople() {
+    $("peopleModal").style.display = "flex";
+    pushBackEntry("people", () => { $("peopleModal").style.display = "none"; });
+    await loadPeople();
+  }
+
+  function closePeople() {
+    popBackEntry("people");
+    $("peopleModal").style.display = "none";
+  }
+  window.closePeople = closePeople;
+
+  async function loadPeople() {
+    $("peopleList").innerHTML = `<div class="loading-msg">Loading people...</div>`;
+    try {
+      const d = await apiGet("people");
+      peopleCache = d.people || [];
+      // Not decoration: without this, a roster where every hire date happens to
+      // be blank looks exactly like one where the database is unreachable.
+      $("peopleNeonWarn").style.display = d.neonOk ? "none" : "";
+      renderPeople();
+    } catch (e) {
+      $("peopleList").innerHTML = `<div class="loading-msg">Couldn't load people: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderPeople() {
+    const q = ($("peopleSearch").value || "").trim().toLowerCase();
+    const rows = peopleCache
+      .filter(p => (peopleShowFormer ? !p.active : p.active))
+      .filter(p => !q || `${p.name} ${p.username} ${p.email}`.toLowerCase().includes(q));
+
+    $("peopleTabActive").classList.toggle("active", !peopleShowFormer);
+    $("peopleTabFormer").classList.toggle("active", peopleShowFormer);
+    $("peopleTabActive").textContent = `Active (${peopleCache.filter(p => p.active).length})`;
+    $("peopleTabFormer").textContent = `Former (${peopleCache.filter(p => !p.active).length})`;
+
+    if (!rows.length) {
+      $("peopleList").innerHTML = `<div class="loading-msg">${q ? "Nobody matches that search." : (peopleShowFormer ? "No former employees." : "Nobody active.")}</div>`;
+      return;
+    }
+
+    const meId = state.user?.id;
+    $("peopleList").innerHTML = rows.map(p => {
+      const isMe = p.id === meId;
+      const rate = p.currentRate != null ? `$${Number(p.currentRate).toFixed(2)}/hr` : "—";
+      // An inactive person whose sessions were never revoked is the one
+      // half-failed state that matters: the box is unticked, so they can't log
+      // in again, but whatever they were already signed in on still works.
+      // Surfacing it is the whole reason the backend returns the flag.
+      const halfOff = !p.active && !p.sessionsRevoked;
+      const meta = [
+        p.username ? `@${esc(p.username)}` : "",
+        p.email ? esc(p.email) : "",
+        p.phone ? esc(p.phone) : "",
+      ].filter(Boolean).join(" · ");
+
+      return `
+        <div class="sl-card">
+          <div class="sl-card-header">
+            <span class="sl-card-title">${esc(p.name)}${isMe ? ` <span style="font-weight:400; color:var(--muted); font-size:12px;">(you)</span>` : ""}</span>
+            <span class="sl-status-pill ${p.active ? "available" : "needs-service"}">${esc(p.role)}</span>
+          </div>
+          ${meta ? `<div style="font-size:12px; color:var(--muted); margin-bottom:8px;">${meta}</div>` : ""}
+          <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; font-size:12px; margin-bottom:10px;">
+            <div><div style="color:var(--muted);">Cost rate</div><div style="font-weight:600;">${rate}</div></div>
+            <div><div style="color:var(--muted);">Hired</div><div style="font-weight:600;">${p.hiredOn ? esc(p.hiredOn) : "—"}</div></div>
+            ${p.active
+              ? `<div><div style="color:var(--muted);">Last login</div><div style="font-weight:600;">${p.lastLoginAt ? esc(p.lastLoginAt.slice(0,10)) : "—"}</div></div>`
+              : `<div><div style="color:var(--muted);">Left</div><div style="font-weight:600;">${p.terminatedOn ? esc(p.terminatedOn) : "—"}</div></div>`}
+          </div>
+          ${!p.active && p.terminationNote ? `<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">Note: ${esc(p.terminationNote)}</div>` : ""}
+          ${halfOff ? `<div style="font-size:12px; color:var(--red); font-weight:600; margin-bottom:10px;">⚠ Access is off, but their signed-in devices were never ended. Turn access on and off again to fix.</div>` : ""}
+          ${isMe
+            ? `<div style="font-size:12px; color:var(--muted);">You can't change your own access — ask another admin.</div>`
+            : `<button class="btn btn-sm ${p.active ? "btn-danger-sm" : "btn-primary"} people-toggle"
+                 data-id="${esc(p.id)}" data-name="${esc(p.name)}" data-active="${p.active ? "1" : "0"}"
+                 type="button" style="font-size:12px;">${p.active ? "Turn off access" : "Restore access"}</button>`}
+        </div>`;
+    }).join("");
+
+    $("peopleList").querySelectorAll(".people-toggle").forEach(btn => {
+      btn.addEventListener("click", () => togglePersonAccess(btn));
+    });
+  }
+
+  async function togglePersonAccess(btn) {
+    const id = btn.dataset.id, name = btn.dataset.name;
+    const turningOff = btn.dataset.active === "1";
+
+    let note = "";
+    if (turningOff) {
+      // One dialog doing both jobs: prompt() returns null on Cancel, so this is
+      // the confirmation AND the reason capture. The wording states the real
+      // effect, because "deactivate" reads as a checkbox and this is not one.
+      const r = prompt(
+        `Turn off app access for ${name}?\n\n` +
+        `They will be signed out on every device within a minute, and won't be able to log back in.\n\n` +
+        `Reason (optional):`, "");
+      if (r === null) return;
+      note = r;
+    } else {
+      if (!confirm(`Restore app access for ${name}?\n\nThey'll be able to log in again with their existing PIN.`)) return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = turningOff ? "Turning off..." : "Restoring...";
+    try {
+      await apiPost("setEmployeeActive", { employeeId: id, active: !turningOff, note });
+      await loadPeople();
+    } catch (e) {
+      // Deliberately loud. The backend fails CLOSED on this path precisely so
+      // that a revocation it couldn't record is never reported as done — so a
+      // silent failure here would undo the point of the whole feature.
+      alert(`Couldn't change access for ${name}.\n\n${e.message}\n\nNothing was changed. Please try again.`);
+      renderPeople();
+    }
+  }
+
   // ── SCISSOR LIFTS ──
   const SL_EMPLOYEES = ["Jeff Koehn","Scott Koehn","Patrick Gingerich","Nicholas Stoltzfus","Miles Unruh","Larry Unruh","Rick Unruh"];
 
@@ -12458,6 +12598,14 @@
     if (allInvBtn) allInvBtn.addEventListener("click", openAllInvoices);
     const schBtn = $("btnSchedule");
     if (schBtn) schBtn.addEventListener("click", openSchedule);
+    const peopleBtn = $("btnPeople");
+    if (peopleBtn) peopleBtn.addEventListener("click", openPeople);
+    const peopleSearchEl = $("peopleSearch");
+    if (peopleSearchEl) peopleSearchEl.addEventListener("input", renderPeople);
+    const pTabA = $("peopleTabActive");
+    if (pTabA) pTabA.addEventListener("click", () => { peopleShowFormer = false; renderPeople(); });
+    const pTabF = $("peopleTabFormer");
+    if (pTabF) pTabF.addEventListener("click", () => { peopleShowFormer = true;  renderPeople(); });
     const mySchBtn = $("btnMySchedule");
     if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
     const myHoursBtn = $("btnMyHours");
@@ -19935,6 +20083,37 @@
 </div>
 
 </body>
+<!-- ── PEOPLE MODAL ────────────────────────────────────────────────────────
+     Admin employee roster. See docs/PLAN-employee-admin.md — this is the first
+     place in either app where an employee can be seen or changed without
+     opening the Airtable grid. strict-admin-only: the roster carries wages. -->
+<div id="peopleModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal">
+    <div class="sl-modal-header">
+      <h2>👥 People</h2>
+      <button onclick="closePeople()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <div id="peopleNeonWarn" style="display:none; margin-bottom:12px; padding:8px 12px; border-radius:8px;
+           background:var(--panel-2); border:1px solid var(--line); font-size:12px; color:var(--muted);">
+        ⚠ Hire dates, leave dates and last-login can't be read right now (the database is unreachable).
+        Names, roles, rates and access status below are still accurate — and turning access on or off
+        will fail rather than half-work.
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:14px;">
+        <button id="peopleTabActive" class="tab-btn active" type="button">Active</button>
+        <button id="peopleTabFormer" class="tab-btn" type="button">Former</button>
+        <input id="peopleSearch" type="text" placeholder="Search name, username, email..."
+               style="flex:1 1 180px; min-width:0; padding:6px 10px; border-radius:7px;
+                      border:1px solid var(--line-2); background:var(--panel-2); color:var(--text); font-size:13px;" />
+      </div>
+      <div id="peopleList" class="sl-grid">
+        <div class="loading-msg">Loading people...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="slModal" class="sl-modal-backdrop" style="display:none;">
   <div class="sl-modal">
     <div class="sl-modal-header">

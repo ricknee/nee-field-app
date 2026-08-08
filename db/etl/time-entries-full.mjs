@@ -421,13 +421,17 @@ await upsertBatch("jobs",
   await upsertBatch("invoices",
     ["airtable_id", "job_id", "job_airtable_id", "invoice_number", "invoice_status", "invoice_type",
      "billing_mode", "invoice_stage", "invoice_date", "snapshot_total", "invoice_total",
-     "manual_labor", "manual_material", "percent_to_bill", "auto_allocate", "invoice_display_no", "synced_at"],
+     // invoice_notes and invoice_snapshot are returned by handleGetJobInvoices;
+     // without them a Neon-first read drops the notes and the saved snapshot.
+     "manual_labor", "manual_material", "percent_to_bill", "auto_allocate", "invoice_display_no",
+     "invoice_notes", "invoice_snapshot", "synced_at"],
     invoices.map(r => [r.id, ...J(r), nul(r.fields["Invoice Number"]), nul(r.fields["Invoice Status"]),
       nul(r.fields["Invoice Type"]), nul(r.fields["Billing Mode"]), nul(r.fields["Invoice Stage"]),
       nul(r.fields["Invoice Date"]), num(r.fields["Snapshot Total"]), num(r.fields["Invoice Total"]),
       num(r.fields["Manual Labor $"]), num(r.fields["Manual Material $"]),
       num(r.fields["Percent to Bill"]), r.fields["Auto Allocate?"] === true,
-      num(r.fields["Invoice Display #"]), now]), "airtable_id", 200);
+      num(r.fields["Invoice Display #"]),
+      nul(r.fields["Invoice Notes"]), nul(r.fields["Invoice Snapshot"]), now]), "airtable_id", 200);
 
   // ── The three child tables (schema 014) ──────────────────────────────────
   // Loaded AFTER invoices and expenses, because material_billing_allocations

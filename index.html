@@ -11708,11 +11708,22 @@
     $("peopleList").innerHTML = rows.map(p => {
       const isMe = p.id === meId;
       const rate = p.currentRate != null ? `$${Number(p.currentRate).toFixed(2)}/hr` : "—";
-      // An inactive person whose sessions were never revoked is the one
-      // half-failed state that matters: the box is unticked, so they can't log
-      // in again, but whatever they were already signed in on still works.
-      // Surfacing it is the whole reason the backend returns the flag.
-      const halfOff = !p.active && !p.sessionsRevoked;
+      // Two states, and the first version of this flagged the WRONG one.
+      //
+      // REACHABLE FAILURE — active AND revoked. setEmployeeActive writes Neon
+      // first (fails closed) and Airtable second, so the only way to half-fail
+      // is the Airtable PATCH throwing after the revocation landed: their
+      // devices are signed out, but the account is live again and they can log
+      // straight back in. That is worth shouting about, and it is fixed by
+      // running "Turn off access" again.
+      //
+      // NOT A FAILURE — inactive AND never revoked. That is simply everyone
+      // switched off in the Airtable grid before this screen existed. Nothing
+      // went wrong, their 30-day tokens have long since expired, and the old
+      // copy told an admin to turn a former employee's access back ON to "fix"
+      // it. Now a calm note plus a button that revokes WITHOUT reactivating.
+      const brokenHalfOff = p.active && p.sessionsRevoked;
+      const neverRevoked  = !p.active && !p.sessionsRevoked;
       const meta = [
         p.username ? `@${esc(p.username)}` : "",
         p.email ? esc(p.email) : "",
@@ -11734,7 +11745,14 @@
               : `<div><div style="color:var(--muted);">Left</div><div style="font-weight:600;">${p.terminatedOn ? esc(p.terminatedOn) : "—"}</div></div>`}
           </div>
           ${!p.active && p.terminationNote ? `<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">Note: ${esc(p.terminationNote)}</div>` : ""}
-          ${halfOff ? `<div style="font-size:12px; color:var(--red); font-weight:600; margin-bottom:10px;">⚠ Access is off, but their signed-in devices were never ended. Turn access on and off again to fix.</div>` : ""}
+          ${brokenHalfOff ? `<div style="font-size:12px; color:var(--red); font-weight:600; margin-bottom:10px;">⚠ Their devices were signed out, but the account is active again — they can log back in. Run "Turn off access" again to finish it.</div>` : ""}
+          ${neverRevoked ? `<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+              Switched off in Airtable before this screen existed, so their devices were never signed out.
+              Any session they had has since expired on its own — but you can end them now to be certain.
+              <button class="people-signout" data-id="${esc(p.id)}" data-name="${esc(p.name)}" type="button"
+                style="display:block; margin-top:6px; background:none; border:none; padding:0;
+                       color:var(--accent); font-weight:600; font-size:12px; cursor:pointer;">Sign out their devices</button>
+            </div>` : ""}
           ${isMe
             ? `<div style="font-size:12px; color:var(--muted);">You can't change your own access — ask another admin.</div>`
             : `<button class="btn btn-sm ${p.active ? "btn-danger-sm" : "btn-primary"} people-toggle"
@@ -11746,6 +11764,29 @@
     $("peopleList").querySelectorAll(".people-toggle").forEach(btn => {
       btn.addEventListener("click", () => togglePersonAccess(btn));
     });
+    // Revoke without reactivating. This is just setEmployeeActive(false) on
+    // someone already inactive: the Neon half stamps token_valid_from, and the
+    // Airtable half re-writes Active=false, which it already is. No new
+    // endpoint, and crucially no moment where a former employee is switched
+    // back on. terminated_on is COALESCEd server-side, so an existing leave
+    // date is not overwritten.
+    $("peopleList").querySelectorAll(".people-signout").forEach(btn => {
+      btn.addEventListener("click", () => signOutPersonDevices(btn));
+    });
+  }
+
+  async function signOutPersonDevices(btn) {
+    const id = btn.dataset.id, name = btn.dataset.name;
+    if (!confirm(`End any signed-in device for ${name}?\n\nTheir access stays off — this only makes sure nothing they were already signed in on still works.`)) return;
+    btn.disabled = true;
+    btn.textContent = "Signing out...";
+    try {
+      await apiPost("setEmployeeActive", { employeeId: id, active: false });
+      await loadPeople();
+    } catch (e) {
+      alert(`Couldn't sign out ${name}'s devices.\n\n${e.message}\n\nNothing was changed.`);
+      renderPeople();
+    }
   }
 
   async function togglePersonAccess(btn) {

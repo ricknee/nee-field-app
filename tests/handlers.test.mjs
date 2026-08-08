@@ -1388,6 +1388,129 @@ await test('checklists: without DATABASE_URL they fail CLOSED, not soft', async 
   eq((await POST('deleteChecklist', { listId: 'l1' })).statusCode, 503, 'delete 503s');
 });
 
+// ── session revocation: "deactivate" must mean "logged out" ──
+// Slice 1 of docs/PLAN-employee-admin.md. Tokens are stateless with a 30-day
+// TTL and verifyToken reads no database, so before this existed, unchecking
+// `Active` blocked only a NEW login — the leaver's phone kept working for up
+// to a month. These lock the contract in both directions, because BOTH
+// directions are dangerous: too loose and a leaver keeps access, too tight and
+// a Neon blip logs out every crew member in the field.
+const { primeRevocationCache, clearRevocationCache } =
+  await import("../netlify/functions/_revocation.js");
+
+await test("revocation: a token issued BEFORE the stamp is rejected", async () => {
+  mockTables = { Employees: [] };
+  const t0 = Date.now();
+  const stale = signToken({ id: "recGone", role: "employee" }, t0 - 60_000);
+  primeRevocationCache([["recGone", t0]]);
+  const res = await GET("jobs", {}, stale);
+  eq(res.statusCode, 401, "revoked session is refused");
+  ok(/turned off/i.test(json(res).error), "and says why, so the client can bounce to login");
+  clearRevocationCache();
+});
+
+await test("revocation: a token issued AFTER the stamp still works", async () => {
+  // The re-hire / undo case. A revocation must not be permanent for the person,
+  // only for the sessions that predate it.
+  mockTables = { Employees: [] };
+  const t0 = Date.now();
+  const fresh = signToken({ id: "recGone", role: "admin" }, t0 + 60_000);
+  primeRevocationCache([["recGone", t0]]);
+  ok((await GET("jobs", {}, fresh)).statusCode !== 401, "newer token survives");
+  clearRevocationCache();
+});
+
+await test("revocation: everyone else is untouched", async () => {
+  // The regression that would take the whole app down. Only listed ids revoke.
+  mockTables = { Employees: [] };
+  primeRevocationCache([["recSomeoneElse", Date.now()]]);
+  ok((await GET("jobs", {}, ADMIN_TOK)).statusCode !== 401, "unrelated session unaffected");
+  clearRevocationCache();
+});
+
+await test("revocation: unreachable Neon FAILS SOFT — requests still serve", async () => {
+  // Deliberately the opposite of the write path below. Rejecting everyone when
+  // the revocation list can't be read would trade a leaver (who already can't
+  // log in) for the entire field crew.
+  mockTables = { Employees: [] };
+  clearRevocationCache();
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  ok((await GET("jobs", {}, ADMIN_TOK)).statusCode !== 401, "Neon down must not log people out");
+  delete process.env.DATABASE_URL;
+  clearRevocationCache();
+});
+
+await test("setEmployeeActive: admin only, and never yourself", async () => {
+  mockTables = { Employees: [] };
+  eq((await POST("setEmployeeActive", { employeeId: "recX", active: false }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("setEmployeeActive", { employeeId: "recX", active: false }, OFFICE_TOK)).statusCode, 403, "office refused — access is not a money op");
+  eq((await POST("setEmployeeActive", { employeeId: "recX", active: false }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  // recAdmin is the id inside ADMIN_TOK. Locking yourself out bricks the only
+  // screen that could undo it.
+  const self = await POST("setEmployeeActive", { employeeId: "recAdmin", active: false });
+  eq(self.statusCode, 400, "admin cannot deactivate themselves");
+});
+
+await test("setEmployeeActive: fails CLOSED when Neon is unreachable", async () => {
+  // The read fails soft; this must not. An admin who is told "deactivated"
+  // while the leaver's phone still works is the exact failure this feature
+  // exists to remove — so a revocation we cannot record must not report success.
+  mockTables = { Employees: [{ id: "recGone", fields: { "Employee Name": "Ex Employee", Active: true } }] };
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  const res = await POST("setEmployeeActive", { employeeId: "recGone", active: false });
+  ok(res.statusCode >= 500, `expected a server error, got ${res.statusCode}`);
+  delete process.env.DATABASE_URL;
+});
+
+await test("setEmployeeActive: an employee Neon doesn't have never reports success", async () => {
+  // The risk: an UPDATE matching zero rows is a SUCCESSFUL query, so without
+  // the explicit RETURNING row-check in the handler this would answer
+  // "deactivated" while recording no revocation — the leaver's phone keeps
+  // working and the screen says it doesn't. Reachable for real, since anyone
+  // hired since the last ETL run is in Airtable but not yet in Neon.
+  //
+  // ⚠ HONEST SCOPE: offline, this fails at the CONNECTION, so it does not
+  // actually exercise the zero-row branch — it proves the endpoint can't
+  // report success without a working Neon write, which is the outer guarantee.
+  // The row-check itself needs a live-Neon test against a branch, the same gap
+  // already noted for the createTimeEntry write path above. Do not read this
+  // green tick as proof that mustHaveMatched() fires.
+  mockTables = { Employees: [{ id: "recNotInNeon", fields: { "Employee Name": "New Hire", Active: true } }] };
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  const res = await POST("setEmployeeActive", { employeeId: "recNotInNeon", active: false });
+  ok(res.statusCode >= 500, `expected a server error, got ${res.statusCode}`);
+  delete process.env.DATABASE_URL;
+});
+
+await test("people: admin only", async () => {
+  mockTables = { Employees: [] };
+  eq((await GET("people", {}, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await GET("people", {}, OFFICE_TOK)).statusCode, 403, "office refused — the roster carries wages");
+  eq((await GET("people", {}, VIEWER_TOK)).statusCode, 403, "viewer refused");
+});
+
+await test("people: renders off Airtable when Neon is unavailable", async () => {
+  // Fail-soft read. A roster missing hire dates beats an error page.
+  mockTables = { Employees: [
+    { id: "recE9", fields: {
+      "Employee Name": "Pat Gingerich", "Username": "pat", "Role": "employee",
+      "Role New": "employee", "Active": true, "Primary Email": "pat@example.com",
+      "Current True Cost Rate": 42.5,
+    } },
+  ] };
+  const b = json(await GET("people"));
+  eq(b.ok, true, "still answers");
+  eq(b.neonOk, false, "and admits the Neon half is missing rather than showing blanks as fact");
+  eq(b.people.length, 1, "one person");
+  eq(b.people[0].name, "Pat Gingerich", "name");
+  eq(b.people[0].active, true, "active flag");
+  eq(b.people[0].currentRate, 42.5, "rate off the live Airtable rollup");
+  // "Primary Email" — NOT "Email". F.emp.email names a column that does not
+  // exist, which is why login-by-email has never worked (plan problem 3).
+  eq(b.people[0].email, "pat@example.com", "reads the real email column");
+  eq(b.people[0].hiredOn, null, "Neon-owned column is null, not invented");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

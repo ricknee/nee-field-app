@@ -2,6 +2,7 @@
 // NEE Inventory App v2 — Netlify Proxy
 // Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
+import { isSessionRevoked } from "./_revocation.js";
 import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
@@ -2924,6 +2925,12 @@ export async function handler(event) {
     if (reqAction !== "login") {
       const authUser = authedUser(event);
       if (!authUser) return resp(401, { ok: false, error: "Not signed in. Please log in again." });
+      // Revocation is shared: a token issued by either function validates in
+      // both, so turning someone off in the field app must lock them out of
+      // inventory too. Same _revocation.js, same 60s cache. See that file.
+      if (await isSessionRevoked(authUser)) {
+        return resp(401, { ok: false, error: "Your access has been turned off. Please log in again." });
+      }
       if (!hasRole(authUser.role, authzFor(event.httpMethod, reqAction))) {
         return resp(403, { ok: false, error: "You don't have permission to do that." });
       }

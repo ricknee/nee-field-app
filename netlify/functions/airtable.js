@@ -2,6 +2,7 @@
 // Northeastern Electric Field App — Netlify Proxy
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
+import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
@@ -447,6 +448,9 @@ const _ADMIN_POSTS = new Set([
   // ADMIN_BACKFILL_TOKEN: it is idempotent, copies rather than mutates, and the
   // token is itself a write-only Netlify secret nobody has a copy of.
   "copyLiftPhotosToR2", "copyFleetPhotosToR2", "copyEstimatePdfsToR2",
+  // Turning a person's app access on or off. Admin only — this is the action
+  // that kills live sessions, and office manages money, not access.
+  "setEmployeeActive",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -501,7 +505,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // that shouldn't be readable by every signed-in field tech.
 // Strict-admin reads. Diagnostics only — r2Status echoes bucket/account detail
 // and R2's own error text, which no field tech needs.
-const _ADMIN_READS = new Set(["r2Status"]);
+// `people` is admin-only, NOT admin+office: the roster carries each person's
+// true cost rate. Office is deliberately excluded from wages.
+const _ADMIN_READS = new Set(["r2Status", "people"]);
 
 // Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
 // so listing must match the actions available on what's listed:
@@ -1994,6 +2000,173 @@ async function handleLogin(body) {
   const user = { id: match.id, name: f[F.emp.name]||"Unknown", role };
   // Issue a signed session token the client attaches to every later request.
   return resp(200, { ok: true, user, token: signToken({ id: user.id, role: user.role }) });
+}
+
+// ══════════════════════════════════════════════════════════════════
+// PEOPLE — the admin employee roster. Slice 1 of docs/PLAN-employee-admin.md.
+// ══════════════════════════════════════════════════════════════════
+// Until this shipped there was no employee screen in either app: every hire,
+// raise, role change and leaver was done by opening the Airtable grid.
+//
+// ── WHY THIS READS TWO PLACES ──────────────────────────────────────────────
+// The app is half-migrated, so employee data is split on purpose:
+//
+//   Airtable owns  name, username, role, ACTIVE, PIN, phone, email, labor type
+//                  — because that is what both handleLogin's read. A deactivation
+//                    recorded anywhere else would not stop a login.
+//   Neon owns      hired_on, terminated_on, termination_note, token_valid_from,
+//                  last_login_at — columns Airtable simply does not have.
+//
+// ⚠⚠ Do NOT "tidy" this by moving `active` into Neon. db/etl/time-entries-full.mjs
+// is a LIVE dimension load that overwrites employees.name/username/role/active
+// from Airtable on every run; an active=false written to Neon is erased by the
+// next one. See db/schema/014_employee_admin.sql. That inverts at the login
+// flip (ROADMAP §4) and not before.
+//
+// The Neon half FAILS SOFT: if it can't be read the roster still renders off
+// Airtable with those five columns null. A screen that shows most of the truth
+// beats a screen that shows an error.
+// Write sites use field IDs inline (repo convention — F.* is for reads only).
+// Only `Active` is written in slice 1; identity/contact/PIN writes arrive with
+// slice 2. The termination NOTE is a Neon column, not Airtable's `Notes` — that
+// field is free-text an admin already uses for other things, and a deactivation
+// must not overwrite it.
+const _EMP_FLD = {
+  active: "fldJbQBEweYfoo5nz",
+};
+
+async function handlePeople() {
+  const records = await fetchAll(TABLES.employees);
+
+  // Everyone in one call. This table is ~24 rows and never grows fast, so
+  // paging it or splitting roster/detail into two actions would be complexity
+  // bought with nothing. The client filters Active vs Former in memory.
+  const byAirtableId = new Map();
+  const q = await neonQuery(
+    `SELECT airtable_id, hired_on, terminated_on, termination_note,
+            token_valid_from, last_login_at
+       FROM employees`, []);
+  if (q && !q.error && Array.isArray(q.rows)) {
+    for (const r of q.rows) byAirtableId.set(String(r.airtable_id), r);
+  }
+
+  const people = records.map(r => {
+    const f = r.fields || {};
+    const n = byAirtableId.get(r.id) || {};
+    return {
+      id:          r.id,
+      name:        g(f, F.emp.name) || "",
+      firstName:   g(f, "First Name") || "",
+      lastName:    g(f, "Last Name") || "",
+      username:    g(f, F.emp.username) || "",
+      employeeNo:  g(f, "Employee ID") || "",
+      phone:       g(f, "Primary Phone") || "",
+      // ⚠ "Primary Email", not "Email". F.emp.email names a column that does
+      // not exist on this table, which is why login-by-email has never worked
+      // in this app — see docs/PLAN-employee-admin.md problem 3. Slice 2 fixes
+      // the login path; this read uses the real column name from day one.
+      email:       g(f, "Primary Email") || "",
+      role:        normalize(g(f, "Role New") || g(f, F.emp.role) || "") || "employee",
+      active:      gBool(f, F.emp.active),
+      laborType:   g(f, "Default Labor Type") || "",
+      // The live Airtable rollup of Labor Cost Rates. Deliberately NOT read
+      // from Neon's labor_cost_rates mirror, which is refreshed by a hand-run
+      // ETL and so can be stale — a wrong wage on screen is worse than no
+      // screen. Slice 3 moves this when it brings the full rate history.
+      currentRate: gNum(f, "Current True Cost Rate"),
+      notes:       g(f, "Notes") || "",
+      // Neon half — null when Neon is unreachable, or simply not set yet.
+      hiredOn:         n.hired_on         ? String(n.hired_on).slice(0, 10) : null,
+      terminatedOn:    n.terminated_on    ? String(n.terminated_on).slice(0, 10) : null,
+      terminationNote: n.termination_note || "",
+      lastLoginAt:     n.last_login_at    ? new Date(n.last_login_at).toISOString() : null,
+      // Surfaced so the UI can distinguish "switched off" from "switched off
+      // AND their sessions were killed" — they come apart if a deactivation
+      // half-failed, and hiding that would hide the one failure that matters.
+      sessionsRevoked: !!n.token_valid_from,
+    };
+  });
+
+  people.sort((a, b) => a.name.localeCompare(b.name));
+  // `neonOk` is not decoration: without it a roster where every hire date is
+  // blank looks identical to one where Neon is down. The client says so.
+  return resp(200, { ok: true, people, neonOk: !!(q && !q.error) });
+}
+
+// Turn an employee's access on or off. THE point of the screen.
+//
+// ── ORDER MATTERS, AND SO DOES WHICH HALF FAILS CLOSED ─────────────────────
+// Two writes: revoke live sessions (Neon) and block future logins (Airtable).
+// Neon goes FIRST and THROWS on failure (neonWrite), which is deliberately the
+// opposite of the fail-soft read in _revocation.js:
+//
+//   * Neon fails      -> 500, nothing changed, admin retries. Better than
+//                        reporting success while the leaver's phone still works.
+//   * Airtable fails  -> sessions are already dead; they could log in again
+//                        with their PIN. Recoverable by retrying, and strictly
+//                        the safer way round to half-fail.
+//
+// Doing it the other way — Airtable first — produces the one outcome with no
+// tell: the box is unticked, the screen says done, and the phone keeps working.
+async function handleSetEmployeeActive(body, authUser) {
+  const { employeeId, active, note } = body || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  if (typeof active !== "boolean") {
+    return resp(400, { ok: false, error: "Missing `active` (true or false)." });
+  }
+  // No self-lockout. Deactivating yourself while you are the only admin bricks
+  // the screen that would undo it, and there is no recovery path in the app.
+  if (authUser && employeeId === authUser.id) {
+    return resp(400, { ok: false, error: "You can't change your own access. Ask another admin." });
+  }
+
+  // ⚠ Every branch below MUST verify a row was actually matched. An UPDATE that
+  // hits nothing is a SUCCESSFUL query — neonWrite would not throw — so without
+  // this check, deactivating someone who is in Airtable but not yet in Neon
+  // (a new hire, or any gap since the last ETL run) would report success while
+  // recording no revocation at all. That is precisely the silent lie this whole
+  // feature exists to remove, so it is checked rather than assumed.
+  const mustHaveMatched = (rows) => {
+    if (!Array.isArray(rows) || rows.length === 0) {
+      throw new Error(`employee ${employeeId} is not in Neon yet — cannot record a session revocation for them`);
+    }
+  };
+
+  const nowIso = new Date().toISOString();
+  if (active === false) {
+    // token_valid_from stamped from THIS clock, so it is compared against a
+    // token `iat` from the same family of clock rather than Postgres now().
+    // terminated_on uses COALESCE so re-deactivating someone doesn't move the
+    // date they actually left.
+    mustHaveMatched(await neonWrite("revokeEmployee",
+      `UPDATE employees
+          SET token_valid_from = $2,
+              terminated_on    = COALESCE(terminated_on, $2::date),
+              termination_note = COALESCE(NULLIF($3, ''), termination_note)
+        WHERE airtable_id = $1
+    RETURNING airtable_id`, [employeeId, nowIso, String(note || "").trim()]));
+  } else {
+    mustHaveMatched(await neonWrite("restoreEmployee",
+      `UPDATE employees
+          SET token_valid_from = NULL,
+              terminated_on    = NULL,
+              termination_note = NULL
+        WHERE airtable_id = $1
+    RETURNING airtable_id`, [employeeId]));
+  }
+  // This instance stops honouring the dead token now instead of up to 60s from
+  // now. Other instances still take up to REVOCATION_TTL_MS — ≤60s is the real
+  // guarantee, this is a courtesy to whoever is doing the clicking.
+  clearRevocationCache();
+
+  await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { [_EMP_FLD.active]: active } }),
+  });
+
+  return resp(200, { ok: true, employeeId, active });
 }
 
 // Shared mapper — used by handleJobs (list) and handleJobById (single).
@@ -7752,6 +7925,13 @@ export async function handler(event) {
     if (reqAction !== "login") {
       authUser = authedUser(event);
       if (!authUser) return resp(401, { ok: false, error: "Not signed in. Please log in again." });
+      // A valid signature is not the same as a live session. Tokens last 30 days
+      // and carry no server state, so deactivating someone used to leave their
+      // phone working until the token expired. See _revocation.js — this is the
+      // check that makes the People screen's Active toggle mean anything.
+      if (await isSessionRevoked(authUser)) {
+        return resp(401, { ok: false, error: "Your access has been turned off. Please log in again." });
+      }
       if (!hasRole(authUser.role, authzFor(event.httpMethod, reqAction))) {
         return resp(403, { ok: false, error: "You don't have permission to do that." });
       }
@@ -7763,6 +7943,7 @@ export async function handler(event) {
       if (action === "jobs")               return await handleJobs();
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status(params);
+      if (action === "people")             return await handlePeople();
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
       if (action === "jobPrints")          return await handleJobPrints(params);
@@ -7887,6 +8068,9 @@ export async function handler(event) {
       if (body.action === "purgeJobPrints")       return await handlePurgeJobPrints(body);
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
+      // authUser is passed so the handler can refuse a self-lockout — the
+      // signed identity, never a client-supplied one.
+      if (body.action === "setEmployeeActive")    return await handleSetEmployeeActive(body, authUser);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
       if (body.action === "createInspectionAgency") return await handleCreateInspectionAgency(body);
       if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);

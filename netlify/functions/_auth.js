@@ -44,8 +44,13 @@ export function signToken({ id, role }, nowMs = Date.now()) {
   return `${p}.${sign(p)}`;
 }
 
-// Verify a raw token string. Returns { id, role } on success, or null on ANY
-// failure (missing, malformed, bad signature, expired). Never throws to callers.
+// Verify a raw token string. Returns { id, role, iat } on success, or null on
+// ANY failure (missing, malformed, bad signature, expired). Never throws.
+//
+// `iat` is carried out because signature+expiry alone cannot answer "has this
+// session been revoked since it was issued?" — see _revocation.js, which
+// compares it against the owner's token_valid_from stamp. Every token has
+// always had an iat; this only stopped discarding it.
 export function verifyToken(token, nowMs = Date.now()) {
   if (!token || typeof token !== "string") return null;
   const i = token.indexOf(".");
@@ -61,7 +66,15 @@ export function verifyToken(token, nowMs = Date.now()) {
   try { payload = JSON.parse(fromB64url(p).toString("utf8")); } catch { return null; }
   if (!payload || !payload.id || typeof payload.exp !== "number") return null;
   if (nowMs >= payload.exp) return null;
-  return { id: payload.id, role: payload.role || "employee" };
+  return {
+    id: payload.id,
+    role: payload.role || "employee",
+    // Number(...) rather than a bare read: iat comes from JSON a client could
+    // have tampered with. The signature already makes tampering impossible, but
+    // a non-numeric iat must not silently become NaN inside a `<` comparison
+    // that decides access — NaN compares false and would quietly grant.
+    iat: Number(payload.iat) || 0,
+  };
 }
 
 // Pull the bearer token out of a Netlify event. Same-origin browser calls send

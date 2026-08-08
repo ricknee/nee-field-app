@@ -2436,6 +2436,13 @@
     </div>
     <div class="topbar-row2">
       <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ New Project</button>
+      <!-- ⏱ My Hours sits here, second, because admin reads this row in DOM order
+           (no `order` applies to them) and this is a button an admin reaches for
+           daily. Moving it does NOT disturb employees: they get an explicit
+           `body.role-employee #btnMyHours { order: 2 }` in the CSS above, which
+           overrides DOM position entirely. Office and viewer never see it —
+           .payroll-eligible-only is admin + employee. -->
+      <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ My Hours</button>
       <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
       <!-- Fleet is intentionally ungated (like ⛽ Mileage below): crews service
            the trucks, so every signed-in role gets it. The backend already
@@ -2451,7 +2458,6 @@
            backend's _ADMIN tier for `people`/`setEmployeeActive`. -->
       <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
       <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
-      <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ My Hours</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>

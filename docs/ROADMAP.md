@@ -38,9 +38,11 @@ expenses, estimates and invoices (R2 receipt keys, sent-PDF back-links and billi
 all key on rec ids), and every write still mirrors to it. What changed is that **nothing reads
 Airtable to answer a question any more** unless Neon fails.
 
-**What is left is no longer the field app:** the inventory track (§4, not started), the
-`handleJobs` full flip (~35 of `mapJob`'s 89 keys still have no Neon source), and deciding what
-the hand-run ETL becomes now that the GP inputs are Neon-written rather than loaded.
+**What is left is no longer the field app:** the inventory track (§4, not started), and giving
+the billing allocations a write path in the app — the only thing still requiring anyone to open
+Airtable in normal operation. The hourly sync (2026-08-08) covers them meanwhile.
+
+*The `handleJobs` full flip that used to be listed here is **already done** — see §8.*
 
 ---
 
@@ -492,7 +494,7 @@ negotiable.**
 | Option | Size | Why / why not |
 |---|---|---|
 | **Smoke-test what shipped** | ~20 min | ⬅ **Do this first.** Invoices went live today with no prod exercise. See the list below. |
-| **`handleJobs` full flip** | 4-6 h | ~35 of `mapJob`'s 89 keys have no Neon source: the power-company block (8), inspections (10), 7 external refs, customer mailing address (4), and the `all*Reviewed` formula bools. Buys migration progress, **not speed** — `handleJobs` already pages 112 records in 2 requests. |
+| ~~**`handleJobs` full flip**~~ | ✅ **ALREADY DONE** | **This file was wrong.** It claimed ~35 of `mapJob`'s 89 keys had no Neon source. Checked 2026-08-08: `mapJob` returns **87** keys and `mapJobFromNeon` returns **87** — the two apparent differences were comment text, not keys. `handleJobs` is Neon-first and the mapper is complete. Nothing to do. |
 | **Decide the ETL's future** | ~1 h thought | GP inputs are now Neon-**written** rather than loaded, so the hand-run ETL is mostly redundant for them — but it still backfills, and it is the only thing that would catch a mirror that silently stopped. Schedule it, shrink it, or retire it deliberately. |
 | **Inventory track** | ~23-32 h | `docs/PLAN-inventory-to-neon.md`. Gated on Step A / C3 dropping the Jobs mirror, which is mostly soak time. |
 | **Employee admin slices 2-4** | — | Separate track, and it carries **two live bugs**: `Role` vs `Role New` differing per app, and email login that has never worked (`Email` ≠ `Primary Email`). |
@@ -545,7 +547,7 @@ loaded rather than written.
 |---|---|
 | **4c-3** Google contact sync | Blocked on **you** creating a Google Cloud project + OAuth consent + refresh token before any code can be written. And it replaces two scenarios that have **never once fired** — an Airtable trigger nobody wired, not a broken integration. Nothing is currently working that would stop working. Low urgency. |
 | **4c-4** Job service visit log | A genuinely new feature (~4-6 h), not a migration. Nothing depends on it. Do it when it's wanted, not because it's listed. |
-| **`handleJobs` full flip** | Re-priced at **4-6 h, not the "~1 h" this file used to claim** — ~35 of `mapJob`'s 89 keys have no Neon source. It buys migration progress, not speed: `handleJobs` pages 112 records in 2 requests. |
+| ~~**`handleJobs` full flip**~~ ✅ **DONE — ignore the rest of this row** (checked 2026-08-08: `mapJobFromNeon` returns all 87 keys). Historical: | Re-priced at **4-6 h, not the "~1 h" this file used to claim** — ~35 of `mapJob`'s 89 keys have no Neon source. It buys migration progress, not speed: `handleJobs` pages 112 records in 2 requests. |
 | **Inventory track** | Independent, and §6's "never two half-migrated systems" argument is now weaker since the field app's time track is finished. Still lower value than 4d. |
 
 ## The rules that were learned the hard way — apply them at 4d and 4e

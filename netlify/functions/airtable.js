@@ -2205,15 +2205,36 @@ async function handleUpdateEmployee(body, authUser) {
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
   };
 
+  // Mirrors EVERY edited attribute into Neon, not just the dates. Stage 1 of
+  // the login flip (db/schema/017_employees_full.sql): Neon has to hold a
+  // complete, current employee record before anything can read it, and an
+  // attribute that only updates on the next hand-run ETL is not current.
+  //
+  // ⚠ `termination_note` is deliberately NOT written here. It is "why they
+  // left", set by the deactivate dialog — and an earlier version of this
+  // statement wrote the general Notes field into it, so editing someone's
+  // notes silently overwrote the reason they were let go. General notes now
+  // have their own column.
   const rows = await neonWrite("updateEmployee",
-    `INSERT INTO employees (airtable_id, name, hired_on, terminated_on, termination_note)
-          VALUES ($1, $2, $3::date, $4::date, NULLIF($5::text, ''))
+    `INSERT INTO employees (airtable_id, name, username, role, email, phone,
+                            employee_no, labor_type, notes, hired_on, terminated_on)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11::date)
      ON CONFLICT (airtable_id) DO UPDATE
-            SET hired_on         = EXCLUDED.hired_on,
-                terminated_on    = EXCLUDED.terminated_on,
-                termination_note = EXCLUDED.termination_note
+            SET name          = EXCLUDED.name,
+                username      = EXCLUDED.username,
+                role          = EXCLUDED.role,
+                email         = EXCLUDED.email,
+                phone         = EXCLUDED.phone,
+                employee_no   = EXCLUDED.employee_no,
+                labor_type    = EXCLUDED.labor_type,
+                notes         = EXCLUDED.notes,
+                hired_on      = EXCLUDED.hired_on,
+                terminated_on = EXCLUDED.terminated_on
        RETURNING airtable_id`,
-    [employeeId, cleanName, ymd(hiredOn), ymd(terminatedOn), String(notes ?? "").trim()]);
+    [employeeId, cleanName, String(username ?? "").trim(), nextRole,
+     String(email ?? "").trim(), String(phone ?? "").trim(),
+     String(employeeNo ?? "").trim(), nextLabor, String(notes ?? "").trim(),
+     ymd(hiredOn), ymd(terminatedOn)]);
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error(`updateEmployee: no row written for ${employeeId}`);
   }
@@ -2282,11 +2303,14 @@ async function handleSetEmployeePin(body) {
   // alive would be exactly the wrong thing to report as done. Note this
   // statement touches ONLY token_valid_from — it must never set terminated_on,
   // which would file a working employee as having left.
+  // Writes the PIN to Neon as well, so the two stores can't drift apart before
+  // login flips. Plaintext by owner decision — see db/schema/017_employees_full.sql.
   const rows = await neonWrite("repinEmployee",
     `UPDATE employees
-        SET token_valid_from = $2::timestamptz
+        SET token_valid_from = $2::timestamptz,
+            pin              = $3::text
       WHERE airtable_id = $1
-  RETURNING airtable_id`, [employeeId, new Date().toISOString()]);
+  RETURNING airtable_id`, [employeeId, new Date().toISOString(), next]);
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error(`employee ${employeeId} is not in Neon yet — cannot sign out their devices`);
   }
@@ -2315,6 +2339,21 @@ async function handleSetEmployeePin(body) {
 //
 // Doing it the other way — Airtable first — produces the one outcome with no
 // tell: the box is unticked, the screen says done, and the phone keeps working.
+//
+// ── `active` IS NOW MIRRORED TO NEON, AND THAT IS A CHANGE ────────────────
+// The standing warning was: never write `active` to Neon, because the ETL
+// dimension load (db/etl/time-entries-full.mjs) overwrites it from Airtable on
+// every run, so a Neon-only deactivation is silently erased.
+//
+// That still holds — the point is that this is no longer Neon-ONLY. Both
+// stores are written here, so the ETL rewrites the same value it finds, and
+// the two agree. It is required for the login flip (Stage 1,
+// db/schema/017_employees_full.sql): Neon cannot become the login authority
+// while its `active` column is a guess.
+//
+// If the Airtable half fails after Neon succeeded, the next ETL run flips Neon
+// back to active — which is the correct recovery, because Airtable is still
+// the authority until login moves. Do not "fix" that by dropping the mirror.
 async function handleSetEmployeeActive(body, authUser) {
   const { employeeId, active, note } = body || {};
   if (!employeeId || !String(employeeId).startsWith("rec")) {
@@ -2358,6 +2397,7 @@ async function handleSetEmployeeActive(body, authUser) {
     mustHaveMatched(await neonWrite("revokeEmployee",
       `UPDATE employees
           SET token_valid_from = $2::timestamptz,
+              active           = false,
               terminated_on    = COALESCE(terminated_on, ($2::timestamptz)::date),
               termination_note = COALESCE(NULLIF($3::text, ''), termination_note)
         WHERE airtable_id = $1
@@ -2366,6 +2406,7 @@ async function handleSetEmployeeActive(body, authUser) {
     mustHaveMatched(await neonWrite("restoreEmployee",
       `UPDATE employees
           SET token_valid_from = NULL,
+              active           = true,
               terminated_on    = NULL,
               termination_note = NULL
         WHERE airtable_id = $1

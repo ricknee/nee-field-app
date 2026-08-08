@@ -5,7 +5,7 @@ Written 2026-08-07 at the owner's request.
 **Size:** ~8-12 h across 4 slices. Slice 1 (~3-4 h) delivers the thing that was actually asked
 for: *turn someone off and they can't get back into the app.*
 
-> **Slice 1, as shipped:** `db/schema/014_employee_admin.sql` (applied to Neon 2026-08-08 —
+> **Slice 1, as shipped:** `db/schema/016_employee_admin.sql` (applied to Neon 2026-08-08 —
 > 12 employees, 0 revoked, so behaviour is unchanged until the toggle is used) ·
 > `netlify/functions/_revocation.js` · `verifyToken` now returns `iat` · the check wired into
 > **both** dispatchers · `handlePeople` + `handleSetEmployeeActive` · the `👥 People` tab in
@@ -194,7 +194,7 @@ nobody has used in a year, which is exactly the account worth turning off.
 
 | # | What | Size |
 |---|---|---|
-| **1** | ✅ **BUILT 2026-08-08**, ⬜ needs prod smoke. `db/schema/014_employee_admin.sql` · `isSessionRevoked` in a new `_revocation.js` + 60 s cache (kept OUT of `_auth.js` so that file stays pure crypto with no I/O, and stays trivially testable) · wired into both functions' authz path · `handlePeople` · `handleSetEmployeeActive` (Neon revoke first and fails closed, then Airtable `Active`; self-lockout guard) · `👥 People` tab with the Active/Former toggle. **Answers the original ask.** | ~3-4 h |
+| **1** | ✅ **BUILT 2026-08-08**, ⬜ needs prod smoke. `db/schema/016_employee_admin.sql` · `isSessionRevoked` in a new `_revocation.js` + 60 s cache (kept OUT of `_auth.js` so that file stays pure crypto with no I/O, and stays trivially testable) · wired into both functions' authz path · `handlePeople` · `handleSetEmployeeActive` (Neon revoke first and fails closed, then Airtable `Active`; self-lockout guard) · `👥 People` tab with the Active/Former toggle. **Answers the original ask.** | ~3-4 h |
 | **2** | Edit identity/contact/role/labor type · Set PIN · hire + termination dates · `last_login_at` write · **converge `Role`/`Role New`** · fix `F.emp.email` → `Primary Email` · Force logout button | ~2-3 h |
 | **3** | Wage history: read-only table first, then "add a raise" — which must **close the current row's `effective_end_date` and insert the new row in one transaction.** Get this wrong and every job's historical labor cost moves. Money-critical; see the true-labor-cost notes. | ~2-3 h |
 | **4** | Add a new employee end-to-end (Airtable record + Neon row + first wage rate + PIN) | ~1-2 h |

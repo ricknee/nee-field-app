@@ -2020,7 +2020,7 @@ async function handleLogin(body) {
 // ⚠⚠ Do NOT "tidy" this by moving `active` into Neon. db/etl/time-entries-full.mjs
 // is a LIVE dimension load that overwrites employees.name/username/role/active
 // from Airtable on every run; an active=false written to Neon is erased by the
-// next one. See db/schema/014_employee_admin.sql. That inverts at the login
+// next one. See db/schema/016_employee_admin.sql. That inverts at the login
 // flip (ROADMAP §4) and not before.
 //
 // The Neon half FAILS SOFT: if it can't be read the roster still renders off
@@ -6161,6 +6161,7 @@ async function handleSetInvoiceStatus(body) {
     body: JSON.stringify({ fields, typecast: true })
   });
   if (data.error) return resp(400, { ok: false, error: data.error });
+  await syncInvoiceToNeon(data);
   return resp(200, { ok: true, id: data.id });
 }
 
@@ -6622,9 +6623,94 @@ async function handleGetAllInvoices() {
   return resp(200, { ok: true, invoices });
 }
 
+// ── KEEP NEON IN STEP AFTER AN INVOICE WRITE (migration Step 4e) ──────────
+// handleGetJobInvoices reads Neon first and only falls through on ZERO rows, so
+// on any job that already has an invoice an Airtable-only write would simply
+// never appear. Same trap as the warranties, expenses and estimates.
+//
+// Airtable stays the identity authority: the id contract is rec-shaped because
+// every consumer does atFetch("Invoices/<id>"), and the billing allocations
+// link to invoices by rec id.
+//
+// ⚠ snapshot_total matters more here than anywhere else in this migration. It
+// is what `Jobs.Total Contract Billed` rolls up, which becomes
+// `Previous Contract Billing`, which sets `Contract Remaining` — the cap on what
+// the NEXT contract invoice may bill. A stale snapshot_total in Neon does not
+// just misreport one invoice; it changes what the customer can be charged.
+// See db/schema/015_invoice_contract_chain.sql.
+async function syncInvoiceToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const n = (v) => { if (Array.isArray(v)) v = v[0]; const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const s = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "" || x === null) ? null : String(x); };
+  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : s(v));
+  await neonWrite("invoice.sync",
+    `INSERT INTO invoices
+       (airtable_id, job_airtable_id, job_id, invoice_number, invoice_status, invoice_type,
+        billing_mode, invoice_stage, invoice_date, snapshot_total, invoice_total,
+        manual_labor, manual_material, percent_to_bill, auto_allocate, invoice_display_no,
+        invoice_notes, invoice_snapshot, synced_at)
+     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5,$6,$7,$8::date,$9,$10,
+             $11,$12,$13,$14,$15,$16,$17, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
+       invoice_number=EXCLUDED.invoice_number, invoice_status=EXCLUDED.invoice_status,
+       invoice_type=EXCLUDED.invoice_type, billing_mode=EXCLUDED.billing_mode,
+       invoice_stage=EXCLUDED.invoice_stage, invoice_date=EXCLUDED.invoice_date,
+       snapshot_total=EXCLUDED.snapshot_total, invoice_total=EXCLUDED.invoice_total,
+       manual_labor=EXCLUDED.manual_labor, manual_material=EXCLUDED.manual_material,
+       percent_to_bill=EXCLUDED.percent_to_bill, auto_allocate=EXCLUDED.auto_allocate,
+       invoice_display_no=EXCLUDED.invoice_display_no, invoice_notes=EXCLUDED.invoice_notes,
+       invoice_snapshot=EXCLUDED.invoice_snapshot, synced_at=now()`,
+    [rec.id, s(f["Job"]), s(f["Invoice Number"]), sel(f["Invoice Status"]), sel(f["Invoice Type"]),
+     sel(f["Billing Mode"]), sel(f["Invoice Stage"]), s(f["Invoice Date"]),
+     n(f["Snapshot Total"]), n(f["Invoice Total"]), n(f["Manual Labor $"]),
+     n(f["Manual Material $"]), n(f["Percent to Bill"]), f["Auto Allocate?"] === true,
+     n(f["Invoice Display #"]), s(f["Invoice Notes"]), s(f["Invoice Snapshot"])]).catch(() => {});
+}
+
 async function handleGetJobInvoices(body) {
   const { jobId } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // ── NEON-FIRST (migration Step 4e) ──────────────────────────────────────
+  // Replaces paging the ENTIRE Invoices table and filtering in memory with a
+  // WHERE clause. Money fields come from v_invoices, whose whole chain was
+  // diffed against Airtable at 51/51 on every field before this read was wired.
+  //
+  // ⚠ `total` serves invoice_total_calc, the COMPUTED figure — not the stored
+  // copy. That is the point of 015: the stored one goes stale the moment an
+  // allocation changes, whereas the computed one cannot.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT COALESCE(airtable_id, id::text) AS id, invoice_display_no, invoice_number,
+              invoice_date::text AS invoice_date, invoice_status, billing_mode, invoice_type,
+              invoice_total_calc, snapshot_total, percent_to_bill,
+              contract_invoice_amount, invoice_notes, invoice_snapshot, invoice_stage
+         FROM v_invoices
+        WHERE job_airtable_id = $1
+        ORDER BY invoice_date DESC NULLS LAST`, [jobId]);
+    if (q?.rows?.length) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      return resp(200, {
+        ok: true,
+        invoices: q.rows.map(r => ({
+          id: r.id, displayNumber: r.invoice_display_no ?? null,
+          invoiceNumber: s(r.invoice_number), date: s(r.invoice_date),
+          status: s(r.invoice_status), billingMode: s(r.billing_mode),
+          invoiceType: s(r.invoice_type),
+          total: Number(r.invoice_total_calc ?? 0),
+          snapshotTotal: Number(r.snapshot_total ?? 0),
+          percentToBill: r.percent_to_bill === null ? null : Number(r.percent_to_bill),
+          contractAmount: Number(r.contract_invoice_amount ?? 0),
+          notes: s(r.invoice_notes), snapshot: s(r.invoice_snapshot),
+          stage: s(r.invoice_stage),
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`getJobInvoices: Neon read failed, falling back: ${q.error}`);
+  }
 
   // Fetch all invoices, paginated, and filter client-side by job link.
   // filterByFormula on linked records is unreliable (ARRAYJOIN returns primary

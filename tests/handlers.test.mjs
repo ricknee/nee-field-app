@@ -1742,6 +1742,21 @@ await test("clock: a phone with a wrong clock can't file hours into a closed pay
   delete process.env.TIME_CLOCK;
 });
 
+await test("clock: breaks obey the same switch and the same roles as punching", async () => {
+  delete process.env.TIME_CLOCK;
+  eq((await POST("clockBreak", { start: true, at: new Date().toISOString() }, EMP_TOK)).statusCode, 403,
+     "no breaks while the clock is off");
+  process.env.TIME_CLOCK = "on";
+  eq((await POST("clockBreak", { start: true, at: new Date().toISOString() }, VIEWER_TOK)).statusCode, 403,
+     "viewers can't take a break they can't be on");
+  // A break carries a client timestamp for the same reason a punch does — it may
+  // replay late — so it gets the same ±36h sanity window.
+  const skewed = await POST("clockBreak",
+    { start: true, at: new Date(Date.now() - 400 * 24 * 3600 * 1000).toISOString() }, EMP_TOK);
+  eq(skewed.statusCode, 400, "an out-of-range break time is refused");
+  delete process.env.TIME_CLOCK;
+});
+
 await test("clock: punches can't become payroll hours while TIME_CLOCK_PAYROLL is off", async () => {
   delete process.env.TIME_CLOCK_PAYROLL;
   const r = await POST("promoteClockPunches", { confirm: "YES" }, ADMIN_TOK);

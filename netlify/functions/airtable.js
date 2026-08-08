@@ -459,7 +459,7 @@ const _TIME_SELF_WRITES = new Set([
   // Punching is writing your own time, which is exactly what this tier is for. The
   // handlers narrow it further while the feature is being built (TIME_CLOCK=admin),
   // and they take the employee from the token, so nobody can punch anybody else.
-  "clockIn", "clockOut",
+  "clockIn", "clockOut", "clockBreak",
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
@@ -1085,15 +1085,20 @@ async function handleClockStatus(params, authUser) {
                        warning: "No employee record found for this login." });
   }
 
+  // break_started_at is the whole "am I on break" state — non-NULL means on break
+  // since that instant. break_seconds is what has already been taken and closed.
+  // The client needs both to show a frozen timer plus a running break.
   const open = await neonQuery(
-    `SELECT started_at, job_name, class, city_taxes, notes, client_punch_id
+    `SELECT started_at, job_name, job_id, class, city_taxes, notes, client_punch_id,
+            break_seconds::float8 AS break_seconds, break_started_at
        FROM open_punches WHERE employee_id = $1`, [me.id]);
 
   // Last 14 days. Enough to answer "did I forget to clock out on Tuesday" without
   // shipping a person's whole history to a phone on every open.
   const recent = await neonQuery(
     `SELECT id, started_at, ended_at, work_date, duration_seconds::float8 AS duration_seconds,
-            job_name, class, (time_entry_id IS NOT NULL) AS counted
+            break_seconds::float8 AS break_seconds,
+            job_name, class, city_taxes, (time_entry_id IS NOT NULL) AS counted
        FROM clock_punches
       WHERE employee_id = $1 AND work_date >= (CURRENT_DATE - 14)
       ORDER BY started_at DESC`, [me.id]);
@@ -1187,6 +1192,53 @@ async function handleClockIn(body, authUser) {
   });
 }
 
+// ── CLOCK: start / end a break ─────────────────────────────────────────────
+// Lunch, in other words. The clock keeps running in wall-clock terms — the shift
+// still started when it started — but break time is deducted from what gets paid.
+//
+// Modelled as "one running break plus a total", not as interval rows. See the note
+// at the top of db/schema/019_time_clock_breaks.sql for why.
+async function handleClockBreak(body, authUser) {
+  if (!canUseTimeClock(authUser)) {
+    return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
+  }
+  const { start, at } = body || {};
+  const stamp = clampPunchTime(at);
+  if (!stamp) return resp(400, { ok: false, error: "Invalid or out-of-range break time." });
+
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+
+  // The WHERE clause carries the guard, so starting a break twice or ending one
+  // that isn't running updates zero rows instead of corrupting the total. Same
+  // principle as the ON CONFLICT on punch-in: let the database refuse it.
+  const sql = start
+    ? `UPDATE open_punches
+          SET break_started_at = $2::timestamptz
+        WHERE employee_id = $1 AND break_started_at IS NULL
+        RETURNING started_at, break_seconds::float8 AS break_seconds, break_started_at`
+    // GREATEST(0, …) clamps a backwards clock rather than SUBTRACTING time from the
+    // running total, which is what a naive interval add would do to a phone whose
+    // clock jumped. Breaks can only ever grow.
+    : `UPDATE open_punches
+          SET break_seconds    = break_seconds
+                               + GREATEST(0, EXTRACT(EPOCH FROM ($2::timestamptz - break_started_at))),
+              break_started_at = NULL
+        WHERE employee_id = $1 AND break_started_at IS NOT NULL
+        RETURNING started_at, break_seconds::float8 AS break_seconds, break_started_at`;
+
+  const rows = await neonWrite(start ? "clock.breakStart" : "clock.breakEnd", sql, [me.id, stamp]);
+  if (rows?.length) return resp(200, { ok: true, open: rows[0] });
+
+  // Nothing updated. Say which of the two reasons it was, because "couldn't start
+  // a break" is useless to someone standing in a parking lot.
+  const cur = await neonQuery(
+    `SELECT break_started_at FROM open_punches WHERE employee_id = $1`, [me.id]);
+  if (!cur?.rows?.length) return resp(409, { ok: false, error: "You're not clocked in." });
+  return resp(409, { ok: false,
+    error: start ? "You're already on a break." : "You're not on a break." });
+}
+
 // ── CLOCK: punch out ───────────────────────────────────────────────────────
 async function handleClockOut(body, authUser) {
   if (!canUseTimeClock(authUser)) {
@@ -1229,23 +1281,42 @@ async function handleClockOut(body, authUser) {
   const rows = await neonWrite("clock.out",
     `WITH shift AS (
        DELETE FROM open_punches WHERE employee_id = $1 RETURNING *
+     ), calc AS (
+       -- Computed once here rather than inlined twice below, because the break
+       -- total is needed both as its own column and as the subtrahend in the paid
+       -- duration, and two copies of this expression would eventually disagree.
+       SELECT s.*,
+              GREATEST($3::timestamptz, s.started_at) AS ended,
+              -- Closed breaks, PLUS a break still running at punch-out. Clocking out
+              -- while on lunch is a normal thing to do and must not silently pay for
+              -- the lunch, so the open break is closed inline here.
+              s.break_seconds
+                + CASE WHEN s.break_started_at IS NOT NULL
+                       THEN GREATEST(0, EXTRACT(EPOCH FROM
+                              (GREATEST($3::timestamptz, s.started_at) - s.break_started_at)))
+                       ELSE 0 END AS total_break
+         FROM shift s
      )
      INSERT INTO clock_punches
        (employee_id, employee_name, started_at, ended_at, work_date, duration_seconds,
-        job_id, job_name, class, city_taxes, notes,
+        break_seconds, job_id, job_name, class, city_taxes, notes,
         start_lat, start_lon, end_lat, end_lon, client_punch_id)
-     SELECT s.employee_id, $2, s.started_at,
-            GREATEST($3::timestamptz, s.started_at),
-            (s.started_at AT TIME ZONE 'America/New_York')::date,
-            EXTRACT(EPOCH FROM (GREATEST($3::timestamptz, s.started_at) - s.started_at))::numeric,
-            COALESCE(j.id, s.job_id), COALESCE(j.po_locked, s.job_name),
-            COALESCE($5, s.class), COALESCE($6, s.city_taxes), COALESCE($7, s.notes),
-            s.start_lat, s.start_lon, $8::numeric, $9::numeric,
-            COALESCE(s.client_punch_id, $10)
-       FROM shift s
+     SELECT c.employee_id, $2, c.started_at, c.ended,
+            (c.started_at AT TIME ZONE 'America/New_York')::date,
+            -- ⚠ NET worked time — elapsed MINUS breaks. This is what gets promoted
+            -- into time_entries and paid. Floored at zero so a long break on a short
+            -- shift can't produce negative hours.
+            GREATEST(0, EXTRACT(EPOCH FROM (c.ended - c.started_at)) - c.total_break)::numeric,
+            c.total_break::numeric,
+            COALESCE(j.id, c.job_id), COALESCE(j.po_locked, c.job_name),
+            COALESCE($5, c.class), COALESCE($6, c.city_taxes), COALESCE($7, c.notes),
+            c.start_lat, c.start_lon, $8::numeric, $9::numeric,
+            COALESCE(c.client_punch_id, $10)
+       FROM calc c
        LEFT JOIN jobs j ON j.airtable_id = $4
      RETURNING id, work_date, started_at, ended_at,
-               duration_seconds::float8 AS duration_seconds, job_name`,
+               duration_seconds::float8 AS duration_seconds,
+               break_seconds::float8 AS break_seconds, job_name`,
     [me.id, me.name || null, ended, jobRec, cls || null, cityTaxes || null,
      notes || null, numOrNull(lat), numOrNull(lon), clientPunchId]);
 
@@ -9055,6 +9126,7 @@ export async function handler(event) {
       if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);
       if (body.action === "clockIn")              return await handleClockIn(body, authUser);
       if (body.action === "clockOut")             return await handleClockOut(body, authUser);
+      if (body.action === "clockBreak")           return await handleClockBreak(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
       if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);

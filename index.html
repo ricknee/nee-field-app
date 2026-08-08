@@ -170,9 +170,35 @@
       width: 100%; padding: 16px; font-size: 17px; font-weight: 700;
       border: none; border-radius: 10px; color: #fff; cursor: pointer;
     }
-    .clock-btn-in  { background: #16a34a; }
-    .clock-btn-out { background: #dc2626; }
+    .clock-btn-in     { background: #16a34a; }
+    .clock-btn-out    { background: #dc2626; }
+    .clock-btn-break  { background: #d97706; }
+    .clock-btn-resume { background: #16a34a; }
     .clock-btn:disabled { opacity: .55; cursor: default; }
+    /* Break and Clock Out share a row; Clock Out is not the bigger target of the
+       two, because ending a shift by accident is the more expensive mistake. */
+    .clock-btn-row { display: flex; gap: 10px; }
+    .clock-btn-row .clock-btn { flex: 1; }
+    /* A paused timer must not look like a running one that's stuck. */
+    .clock-elapsed.is-paused { color: var(--muted); }
+    .clock-pill.is-break {
+      background: #fef3c7; color: #92400e; border-color: #fcd34d;
+    }
+    .clock-pill.is-break .clock-dot { background: #d97706; animation: none; }
+
+    .clock-job-list {
+      max-height: 220px; overflow-y: auto;
+      border: 1px solid var(--line); border-radius: 8px;
+    }
+    .clock-job {
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+      width: 100%; text-align: left; background: none; border: none;
+      border-bottom: 1px solid var(--line); padding: 10px 12px;
+      font-size: 14px; cursor: pointer; color: inherit;
+    }
+    .clock-job:last-child { border-bottom: none; }
+    .clock-job.is-on { background: #dcfce7; font-weight: 700; }
+    .clock-job-status { font-size: 11px; color: var(--muted); flex: none; }
     .clock-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
     .clock-field { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
     .clock-field select, .clock-field input {
@@ -17253,13 +17279,41 @@
     return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   }
 
+  // Is the shift currently paused for lunch? break_started_at is the ONLY thing
+  // that says so — one nullable column, no boolean to disagree with it.
+  function onBreak() { return !!clockState.open?.break_started_at; }
+
+  // WORKED time — elapsed minus every break, including one running right now. This
+  // is what the timer shows and what payroll would be paid, so it must match the
+  // server's arithmetic in handleClockOut exactly. If you change one, change both.
+  function workedMs() {
+    const o = clockState.open; if (!o) return 0;
+    const started = Date.parse(o.started_at);
+    if (!Number.isFinite(started)) return 0;
+    let ms = Date.now() - started;
+    ms -= (Number(o.break_seconds) || 0) * 1000;
+    if (o.break_started_at) {
+      const bs = Date.parse(o.break_started_at);
+      if (Number.isFinite(bs)) ms -= (Date.now() - bs);
+    }
+    return Math.max(0, ms);
+  }
+
+  // How long the CURRENT break has been running (0 when working).
+  function breakMs() {
+    const bs = Date.parse(clockState.open?.break_started_at || "");
+    return Number.isFinite(bs) ? Math.max(0, Date.now() - bs) : 0;
+  }
+
   function renderClockPill() {
     const pill = $("clockPill"), txt = $("clockPillText");
     if (!pill || !txt) return;
     if (!clockState.enabled || !clockState.open) { pill.classList.add("hidden"); return; }
     pill.classList.remove("hidden");
-    const started = Date.parse(clockState.open.started_at);
-    txt.textContent = Number.isFinite(started) ? fmtElapsed(Date.now() - started) : "On the clock";
+    // On lunch the pill says so and shows the BREAK running, not the worked total —
+    // the worked figure is frozen, and a frozen timer in a top bar reads as broken.
+    pill.classList.toggle("is-break", onBreak());
+    txt.textContent = onBreak() ? `Lunch ${fmtElapsed(breakMs())}` : fmtElapsed(workedMs());
   }
 
   // One interval drives both the pill and the panel. It only runs while a shift
@@ -17270,9 +17324,13 @@
     clockTicker = setInterval(() => {
       renderClockPill();
       const el = $("clockElapsed");
-      if (el) {
-        const started = Date.parse(clockState.open?.started_at);
-        if (Number.isFinite(started)) el.textContent = fmtElapsed(Date.now() - started);
+      if (el) el.textContent = fmtElapsed(workedMs());
+      const bl = $("clockBreakLine");
+      if (bl) {
+        const taken = (Number(clockState.open?.break_seconds) || 0) * 1000 + breakMs();
+        bl.textContent = onBreak()
+          ? `On lunch — ${fmtElapsed(breakMs())}`
+          : (taken > 0 ? `Breaks today: ${fmtElapsed(taken)}` : "");
       }
     }, 1000);
   }
@@ -17296,12 +17354,107 @@
     });
   }
 
-  function clockJobOptions(selectedId) {
-    const jobs = (state.jobs || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    return `<option value="">— No job —</option>` + jobs.map(j =>
-      `<option value="${esc(j.id)}" ${j.id === selectedId ? "selected" : ""}>${esc(j.name || j.id)}</option>`
-    ).join("");
+  // ── City tax ────────────────────────────────────────────────────────────
+  // ⚠ PR_CITY_TAXES carries QuickBooks Time's OWN spellings — "Massilon",
+  // "New Philadephia", "N Canton". They are wrong as English and right as data:
+  // the stored value must match QB verbatim or it falls back to "A No Tax". So
+  // this maps REAL city names (as they appear on a job's address) onto QB's
+  // spellings. Never fix the spellings on the right-hand side.
+  const CLOCK_CITY_ALIASES = {
+    massillon: "Massilon Tax",
+    northcanton: "N Canton",
+    ncanton: "N Canton",
+    newphiladelphia: "New Philadephia",
+    newphilly: "New Philadephia",
+  };
+  const clockNormCity = s => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+
+  // Best-guess city tax for a job, from its site address. Returns null when there
+  // is no confident match — the caller then leaves the picker on its default
+  // rather than guessing a jurisdiction, because a wrong city tax is a payroll
+  // error, not a cosmetic one.
+  function cityTaxForJob(job) {
+    const city = clockNormCity(job?.customerCity);
+    if (!city) return null;
+    if (CLOCK_CITY_ALIASES[city]) return CLOCK_CITY_ALIASES[city];
+    // Otherwise match against the list with the " Tax" / " City Tax" suffix removed,
+    // so "Canton" finds "Canton Tax" and "Ashland" finds "Ashland City Tax".
+    const hit = PR_CITY_TAXES.find(t =>
+      clockNormCity(t.replace(/\s*(city\s*)?tax$/i, "")) === city);
+    return hit || null;
   }
+
+  // ── The job picker ──────────────────────────────────────────────────────
+  // Awarded jobs first and alone by default: that is what a crew is standing in.
+  // Everything else is one checkbox away, because a job whose status hasn't caught
+  // up yet still has people working on it, and "I can't find my job" is how a punch
+  // ends up on the wrong one.
+  let clockPick = { jobId: "", search: "", allStatuses: false };
+
+  function clockJobPool() {
+    const jobs = (state.jobs || []).filter(j => j && j.id);
+    const awarded = jobs.filter(j => String(j.status || "").toLowerCase() === "awarded");
+    // If nothing is Awarded (a fresh base, or every job moved on), fall back to the
+    // full list rather than showing an empty picker with no explanation.
+    if (clockPick.allStatuses || !awarded.length) return { jobs, showingAll: true };
+    return { jobs: awarded, showingAll: false };
+  }
+
+  function renderClockJobList() {
+    const box = $("clockJobList"); if (!box) return;
+    const { jobs, showingAll } = clockJobPool();
+    const q = clockPick.search.trim().toLowerCase();
+    const matched = (q
+      ? jobs.filter(j => `${j.name || ""} ${j.po || ""}`.toLowerCase().includes(q))
+      : jobs
+    ).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+    const cap = 60;   // long lists are scrolled past, not read
+    const shown = matched.slice(0, cap);
+    const chosen = clockPick.jobId;
+
+    box.innerHTML = shown.length ? shown.map(j => `
+      <button type="button" class="clock-job${j.id === chosen ? " is-on" : ""}"
+              onclick="clockPickJob('${esc(j.id)}')">
+        <span>${esc(j.name || j.id)}</span>
+        ${j.status && showingAll ? `<span class="clock-job-status">${esc(j.status)}</span>` : ""}
+      </button>`).join("")
+      : `<div class="clock-note">No ${showingAll ? "" : "awarded "}jobs match “${esc(clockPick.search)}”.
+         ${showingAll ? "" : "Tick “all statuses” to widen the search."}</div>`;
+
+    if (matched.length > cap) {
+      box.innerHTML += `<div class="clock-note">${matched.length - cap} more — keep typing to narrow it.</div>`;
+    }
+  }
+  window.renderClockJobList = renderClockJobList;
+
+  function clockSearchJobs(v) { clockPick.search = v; renderClockJobList(); }
+  window.clockSearchJobs = clockSearchJobs;
+
+  function clockToggleAllJobs(on) {
+    clockPick.allStatuses = !!on;
+    renderClockJobList();
+  }
+  window.clockToggleAllJobs = clockToggleAllJobs;
+
+  // Picking a job also proposes its city tax — the single most useful thing the
+  // app knows that the person punching would otherwise have to remember.
+  function clockPickJob(id) {
+    clockPick.jobId = (clockPick.jobId === id) ? "" : id;
+    const job = (state.jobs || []).find(j => j.id === clockPick.jobId);
+    const tax = job ? cityTaxForJob(job) : null;
+    const sel = $("clockCity");
+    if (sel && tax) sel.value = tax;
+    const hint = $("clockCityHint");
+    if (hint) {
+      hint.textContent = job
+        ? (tax ? `From ${job.customerCity || "the job"} — change it if that's not where you worked.`
+               : `No city on this job — pick the right one.`)
+        : "";
+    }
+    renderClockJobList();
+  }
+  window.clockPickJob = clockPickJob;
 
   function renderClockPanel() {
     const el = $("clockPanel");
@@ -17333,23 +17486,79 @@
       const started = Date.parse(clockState.open.started_at);
       const startedTxt = Number.isFinite(started)
         ? new Date(started).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
+      const takenMs = (Number(clockState.open.break_seconds) || 0) * 1000 + breakMs();
+      const breakLine = onBreak()
+        ? `On lunch — ${fmtElapsed(breakMs())}`
+        : (takenMs > 0 ? `Breaks today: ${fmtElapsed(takenMs)}` : "");
+
       el.innerHTML = `
-        <div style="font-size:12px; color:var(--muted);">On the clock since ${esc(startedTxt)}</div>
-        <div id="clockElapsed" class="clock-elapsed">${Number.isFinite(started) ? fmtElapsed(Date.now() - started) : "—"}</div>
+        <div style="font-size:12px; color:var(--muted);">
+          On the clock since ${esc(startedTxt)}${onBreak() ? " · paused" : ""}
+        </div>
+        <div id="clockElapsed" class="clock-elapsed${onBreak() ? " is-paused" : ""}">${fmtElapsed(workedMs())}</div>
+        <div id="clockBreakLine" class="clock-note" style="margin-top:0;">${esc(breakLine)}</div>
         <div style="font-size:13px; margin:6px 0 14px;">${esc(clockState.open.job_name || "No job")}</div>
-        <button class="clock-btn clock-btn-out" onclick="clockOutPrompt()">Clock Out</button>
+
+        <!-- Break first and full width when you're ON one: getting back on the
+             clock is the urgent action, and hunting for it is how lunch ends up
+             an hour long on paper. -->
+        ${onBreak()
+          ? `<button class="clock-btn clock-btn-resume" onclick="clockBreak(false)">▶ Back to Work</button>
+             <div class="clock-note">Your worked time is paused. It isn't counting right now.</div>`
+          : `<div class="clock-btn-row">
+               <button class="clock-btn clock-btn-break" onclick="clockBreak(true)">⏸ Lunch / Break</button>
+               <button class="clock-btn clock-btn-out" onclick="clockOutSheet()">Clock Out</button>
+             </div>`}
+
+        <div id="clockOutSheet" class="hidden" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;">
+          <label class="clock-field">City tax
+            <select id="clockOutCity">${PR_CITY_TAXES.map(t =>
+              `<option value="${esc(t)}" ${t === (clockState.open.city_taxes || "") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+          </label>
+          <label class="clock-field">Class
+            <select id="clockOutClass">${PR_CLASSES.map(c =>
+              `<option value="${esc(c)}" ${c === (clockState.open.class || "") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+          </label>
+          <label class="clock-field">Note (optional)
+            <input id="clockOutNote" type="text" placeholder="What did you work on?" />
+          </label>
+          <div style="height:10px;"></div>
+          <button class="clock-btn clock-btn-out" onclick="clockOutConfirm()">Confirm Clock Out</button>
+        </div>
+
         ${countsHtml}${queuedHtml}
         <div class="clock-note">Hours are rounded to the nearest quarter hour on payroll.</div>
       `;
     } else {
-      // Default the job to whatever the user is already standing in — the job
-      // they have open — then the job they last punched against.
-      const defJob = state.selected?.id || clockState.recent?.[0]?.job_id || "";
+      // Default the job to whatever the user is already standing in — the job they
+      // have open — then the job they last punched against.
+      if (!clockPick.jobId) {
+        clockPick.jobId = state.selected?.id || clockState.recent?.[0]?.job_id || "";
+      }
+      const preJob = (state.jobs || []).find(j => j.id === clockPick.jobId);
+      const preTax = preJob ? cityTaxForJob(preJob) : null;
+
       el.innerHTML = `
         <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">You're clocked out.</div>
-        <label class="clock-field">Job
-          <select id="clockJob">${clockJobOptions(defJob)}</select>
+
+        <label class="clock-field">Job</label>
+        <input id="clockJobSearch" type="text" placeholder="Search jobs…" autocomplete="off"
+               value="${esc(clockPick.search)}" oninput="clockSearchJobs(this.value)" />
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
+          <input type="checkbox" id="clockJobAll" ${clockPick.allStatuses ? "checked" : ""}
+                 onchange="clockToggleAllJobs(this.checked)" />
+          Show all statuses (not just awarded)
         </label>
+        <div id="clockJobList" class="clock-job-list"></div>
+
+        <label class="clock-field">City tax
+          <select id="clockCity">${PR_CITY_TAXES.map(t =>
+            `<option value="${esc(t)}" ${t === (preTax || "A No Tax") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+        </label>
+        <div id="clockCityHint" class="clock-note" style="margin-top:4px;">${
+          preJob ? (preTax ? `From ${esc(preJob.customerCity || "the job")} — change it if that's not where you worked.`
+                           : "No city on this job — pick the right one.") : ""}</div>
+
         <label class="clock-field">Class
           <select id="clockClass">${PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
         </label>
@@ -17357,6 +17566,7 @@
         <button class="clock-btn clock-btn-in" onclick="clockIn()">Clock In</button>
         ${countsHtml}${queuedHtml}
       `;
+      renderClockJobList();
     }
 
     const recent = clockState.recent || [];
@@ -17380,8 +17590,9 @@
     if (clockBusy) return;
     clockBusy = true;
     try {
-      const jobId = $("clockJob")?.value || "";
+      const jobId = clockPick.jobId || "";
       const cls   = $("clockClass")?.value || PR_CLASSES[0];
+      const city  = $("clockCity")?.value || "A No Tax";
       const job   = (state.jobs || []).find(j => j.id === jobId);
       const pos   = await punchPosition();
 
@@ -17392,6 +17603,7 @@
         startedAt: new Date().toISOString(),
         jobId: jobId || null,
         class: cls,
+        cityTaxes: city,
         lat: pos.lat, lon: pos.lon,
       };
 
@@ -17399,7 +17611,8 @@
       // makes it, this is what keeps the pill running and the elapsed timer honest.
       const localOpen = {
         started_at: body.startedAt, job_name: job?.name || null,
-        class: cls, client_punch_id: body.clientPunchId,
+        class: cls, city_taxes: city, break_seconds: 0, break_started_at: null,
+        client_punch_id: body.clientPunchId,
       };
 
       try {
@@ -17419,17 +17632,59 @@
   }
   window.clockIn = clockIn;
 
-  // The punch-out sheet is deliberately short — it stands between a person and
-  // going home. Job and class are already known from the punch-in; this only
-  // asks for what genuinely can't be inferred, and everything is optional.
-  function clockOutPrompt() {
-    const note = prompt("Any note for this shift? (optional — leave blank to just clock out)", "");
-    if (note === null) return;   // cancelled
-    clockOut(note.trim());
+  // ── Break / lunch ───────────────────────────────────────────────────────
+  // Pauses the WORKED total; the shift itself keeps running. Queued offline like
+  // any other punch, with the timestamp taken at the tap — a lunch break that
+  // replays an hour late must still be the half hour it actually was.
+  async function clockBreak(start) {
+    if (clockBusy || !clockState.open) return;
+    clockBusy = true;
+    try {
+      const body = { start: !!start, at: new Date().toISOString() };
+      try {
+        const d = await apiPost("clockBreak", body);
+        if (d.open) Object.assign(clockState.open, d.open);
+      } catch (e) {
+        if (e?.status) { alert(e.message || "Couldn't change your break."); await refreshClock(); return; }
+        // Offline: apply it locally with the same arithmetic the server uses, so
+        // the timer on screen matches what will land when the queue drains.
+        const q = clockQueue(); q.push({ action: "clockBreak", body }); clockQueueSave(q);
+        if (start) {
+          clockState.open.break_started_at = body.at;
+        } else if (clockState.open.break_started_at) {
+          const took = Math.max(0, Date.parse(body.at) - Date.parse(clockState.open.break_started_at));
+          clockState.open.break_seconds = (Number(clockState.open.break_seconds) || 0) + took / 1000;
+          clockState.open.break_started_at = null;
+        }
+        clockLocalSave(clockState.open);
+      }
+      renderClockPill(); renderClockPanel(); tickClock();
+    } finally { clockBusy = false; }
   }
-  window.clockOutPrompt = clockOutPrompt;
+  window.clockBreak = clockBreak;
 
-  async function clockOut(notes) {
+  // The punch-out sheet is deliberately short — it stands between a person and
+  // going home. Job and class carry over from the punch-in, so this only confirms
+  // the two things that genuinely change (where you worked, and what on) plus an
+  // optional note. Revealed in place rather than as another modal, so the mobile
+  // back button keeps meaning "close My Hours".
+  function clockOutSheet() {
+    const s = $("clockOutSheet"); if (!s) return;
+    s.classList.toggle("hidden");
+    if (!s.classList.contains("hidden")) s.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  window.clockOutSheet = clockOutSheet;
+
+  function clockOutConfirm() {
+    clockOut(
+      ($("clockOutNote")?.value || "").trim(),
+      $("clockOutCity")?.value || null,
+      $("clockOutClass")?.value || null
+    );
+  }
+  window.clockOutConfirm = clockOutConfirm;
+
+  async function clockOut(notes, cityTaxes, cls) {
     if (clockBusy) return;
     clockBusy = true;
     try {
@@ -17440,6 +17695,8 @@
         clientPunchId: clockState.open?.client_punch_id || newPunchId(),
         endedAt: new Date().toISOString(),
         notes: notes || null,
+        cityTaxes: cityTaxes || null,
+        class: cls || null,
         lat: pos.lat, lon: pos.lon,
       };
       try {

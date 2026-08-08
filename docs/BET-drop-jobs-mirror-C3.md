@@ -79,9 +79,10 @@ Deliberately reversible for as long as possible. Nothing before step 4 destroys 
 2. **Snapshot the mirror.** Export `Jobs` (`tblBWsMk3Gmv7bdCu`) to CSV and keep it with the
    other backups. It is a derived copy, but the export costs a minute and removes the "what did
    it hold?" question forever.
-3. **Turn OFF the Airtable sync** on the mirror, leaving the table in place. Stop the flow before
-   removing the vessel — if anything unexpected depended on fresh data, it surfaces now, while
-   everything is still recoverable.
+3. **Turn OFF the sync** on the mirror, leaving the table in place. Stop the flow before removing the
+   vessel — if anything unexpected depended on fresh data, it surfaces now, while everything is
+   still recoverable. ⚠ There are **three** sync sources, not one, and the right move is the
+   Update-method toggle rather than removing sources — see §9 for the exact option to pick.
 4. **Soak 48 hours.** Do a real inventory push and a real submitCart in that window. Confirm the
    expense push still groups correctly and `Job ID (Main)` still resolves.
 5. **Delete the `Job` link field** on `Inventory Transactions`. Irreversible.
@@ -190,9 +191,43 @@ Barkan (7), Ryan Yoder (6), Lance Koehn (4). The other 22 are inert copies.
 
 ### ⬜ Step 3 — NEXT, and it is an owner action
 
-Turn the Airtable sync **OFF** on the mirror, leaving the table in place. This is a **synced-table
-setting in the Airtable UI** — there is no API for it, so it cannot be done from here. Then soak 48 h
-(§5 step 4) with a real inventory push and a real `submitCart` before anything is deleted.
+Turn the sync **OFF** on the mirror, leaving the table in place. This is a **synced-table setting in
+the Airtable UI** — Airtable exposes **no API for sync configuration**, so neither the MCP nor a
+script can do it. Then soak 48 h (§5 step 4) with a real inventory push and a real `submitCart`
+before anything is deleted.
+
+> ⚠ **CORRECTION — the mirror has THREE sync sources, not one.** This file said "the Airtable sync"
+> throughout; the Synced table settings dialog shows **Sources: Active 3**, all from
+> *Northeastern Electric, Inc.*:
+> **Project is Awarded** · **Service Calls** · **Project is Complete (Ready to Invoice)**.
+>
+> Those are exactly the three choices of the mirror's `Sync Source` field (`fldK8ZPItP6sXCp5N`,
+> type `externalSyncSource`), so each row records which source view it arrived through. **Anything
+> written assuming a single sync is wrong** — including step 3 of §5 as originally worded.
+
+**How to actually stop it — Settings → "Automatically sync changes at regular intervals" → Change,
+then pick the FIRST option:**
+
+| Update method | Use? |
+|---|---|
+| **Only sync changes when requested** | ✅ **This one.** Freezes all three sources at once. Table stays a synced table, data and schema intact, reversible in one click. |
+| Automatically sync changes at regular intervals | the current setting — what we're leaving |
+| Stop syncing changes and convert to unsynced table | ⛔ **Not now.** A structural conversion, not a pause: the table stops being synced and `Sync Source` stops being an `externalSyncSource`. Rebuilding means re-creating all three source syncs. Doing this *before* the soak throws away the recoverability the soak exists to provide. |
+
+> **Do NOT "remove source" on the three sources either** — removing a source can take its rows with
+> it. Four of the 26 rows carry the 116 transaction links. Freeze, don't remove.
+
+Residual risk of the chosen option: someone can still click **Sync now** and restart the flow by
+hand. During a soak that is a feature, not a risk. Confirmation it took: the *"last synced N minutes
+ago"* line stops advancing.
+
+> 💡 **Park this for step 7.** "Convert to unsynced table" is a genuine **alternative to deleting the
+> mirror** — it keeps the 26 rows as a plain historical table instead. Not today's decision, but
+> don't let it get made by accident now.
+
+**⬜ Unconfirmed at the time of writing:** whether the Update-method change was actually saved. Check
+the dialog before starting the 48 h soak clock — the soak only counts from when the sync is genuinely
+frozen.
 
 ---
 

@@ -1,10 +1,26 @@
 # Plan — Employee admin ("People" screen)
 
-**Status:** **Slice 1 BUILT 2026-08-08 — ⬜ needs the prod smoke test below.** Slices 2-4 not started.
+**Status:** ✅ **Slices 1 + 2 SHIPPED and SMOKE-VERIFIED on production 2026-08-08.** Slice 3 dropped
+(owner: employees see wages on their pay stubs). Slices 4-5 open.
+**And login itself has moved to Neon** — see the box below.
 Written 2026-08-07 at the owner's request.
 **Size:** ~8-12 h across 4 slices. Slice 1 (~3-4 h) delivers the thing that was actually asked
 for: *turn someone off and they can't get back into the app.*
 
+> ## ✅ Verified on production, 2026-08-08
+>
+> **Revocation, end to end — the one thing that had never been proven.** Nicholas was restored,
+> logged in at **20:34:57**, and was revoked at **20:35:08**. His token predates the stamp, so
+> every request is rejected; `active=false` means he cannot log back in either. **Both halves.**
+>
+> **Login serves from Neon in both apps.** `_source:"neon"`, `id:"recxH3WzXlvhl7z9u"` — the
+> **Airtable** rec id, not the Neon uuid — `Rick Unruh` / `admin`, and `last_login_at` moving in
+> Neon seconds later. Every downstream call (`jobs`, `listContractors`, `items`, `locations`,
+> `reorderAlerts`, `ordersCount`) returned 200 on the issued token.
+>
+> **Roll back in ~30 s, no code revert:**
+> `netlify env:unset LOGIN_SOURCE && netlify deploy --build --prod`
+>
 > **Slice 1, as shipped:** `db/schema/016_employee_admin.sql` (applied to Neon 2026-08-08 —
 > 12 employees, 0 revoked, so behaviour is unchanged until the toggle is used) ·
 > `netlify/functions/_revocation.js` · `verifyToken` now returns `iat` · the check wired into

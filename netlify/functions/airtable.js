@@ -5357,6 +5357,7 @@ async function handleSaveInvoice(body) {
     });
   }
   if (data.error) return resp(400, { ok: false, error: data.error });
+  await syncInvoiceToNeon(data);
   return resp(200, { ok: true, id: data.id, updated: !!invoiceId });
 }
 

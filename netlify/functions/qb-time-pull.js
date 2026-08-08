@@ -48,6 +48,7 @@
 //    drift — INSERT_FLOOR_DATE keeps it out of closed pay periods.
 import { neon } from "@neondatabase/serverless";
 import { syncJobs, backfillJobLinks } from "./_jobs-sync.js";
+import { syncBillingTables } from "./_billing-sync.js";
 
 const QB = "https://rest.tsheets.com/api/v1";
 
@@ -368,13 +369,21 @@ export const handler = async () => {
   else console.error("qb-time-pull: jobs sync skipped — AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset");
   const linkReport = await backfillJobLinks(sql);
 
+  // ⚠ The billing allocations and estimate templates have NO WRITE PATH in the
+  // app — they are created inside Airtable — and invoice totals are computed
+  // FROM the allocations. Before this ran hourly, invoicing a job left Neon's
+  // total reading LOW until somebody remembered to run the ETL by hand. Fails
+  // soft: a stale allocation is a smaller problem than a missed timesheet.
+  let billingReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
+  if (atKey && atBase) billingReport = await syncBillingTables(sql, atKey, atBase);
+
   const [state] = await sql.query(`SELECT watermark FROM sync_state WHERE key = 'qb_timesheets'`);
   const since = state?.watermark
     ? new Date(new Date(state.watermark).getTime() - WATERMARK_OVERLAP_MS)
     : new Date(Date.now() - COLD_START_LOOKBACK_MS);
 
   try {
-    const report = { ...(await runPull({ sql, token, since })), jobsSync: jobsReport, jobLinks: linkReport };
+    const report = { ...(await runPull({ sql, token, since })), jobsSync: jobsReport, jobLinks: linkReport, billingSync: billingReport };
     console.log("qb-time-pull", JSON.stringify(report));
     return { statusCode: 200, body: JSON.stringify(report) };
   } catch (e) {

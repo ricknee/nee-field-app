@@ -1665,6 +1665,99 @@ await test("people: renders off Airtable when Neon is unavailable", async () => 
   eq(b.people[0].hiredOn, null, "Neon-owned column is null, not invented");
 });
 
+// ── TIME CLOCK (docs/PLAN-time-clock.md, db/schema/018_time_clock.sql) ──────
+// The clock ships INERT and stays that way until two separate env switches are
+// thrown. These cases exist mostly to prove the OFF state really is off: while
+// QuickBooks Time is still the book of record, a punch that reaches payroll by
+// accident is double-paid hours, which is the one failure here that costs money.
+//
+// Note what these can and can't cover. There is no Neon in this harness, so the
+// SQL itself is exercised against a real branch by hand (PREPARE + a full punch
+// cycle) — offline tests die at the connection and would pass over broken SQL.
+// What IS covered here is every decision made before the database is touched:
+// the switches, the roles, and the punch validation.
+
+await test("clock: ships INERT — TIME_CLOCK unset means the clock doesn't exist", async () => {
+  delete process.env.TIME_CLOCK;
+  const b = json(await GET("clockStatus", {}, EMP_TOK));
+  eq(b.ok, true, "still answers cleanly");
+  eq(b.enabled, false, "but reports itself off");
+  eq(b.open, null, "and nobody is on a clock that isn't running");
+});
+
+await test("clock: punching while switched off → 403, not a silent no-op", async () => {
+  delete process.env.TIME_CLOCK;
+  const r = await POST("clockIn", { clientPunchId: "p1", startedAt: new Date().toISOString() }, EMP_TOK);
+  eq(r.statusCode, 403, "clockIn refused");
+  const r2 = await POST("clockOut", { clientPunchId: "p1", endedAt: new Date().toISOString() }, EMP_TOK);
+  eq(r2.statusCode, 403, "clockOut refused");
+});
+
+await test("clock: TIME_CLOCK=admin keeps the crew out while it's being built", async () => {
+  process.env.TIME_CLOCK = "admin";
+  const emp = await POST("clockIn", { clientPunchId: "p2", startedAt: new Date().toISOString() }, EMP_TOK);
+  eq(emp.statusCode, 403, "an employee cannot punch yet");
+  const empStatus = json(await GET("clockStatus", {}, EMP_TOK));
+  eq(empStatus.enabled, false, "and isn't shown a clock they can't use");
+  // Admin gets PAST the gate — it fails later, on the absent Neon employee row,
+  // which is exactly how far this harness can follow it.
+  const adm = await POST("clockIn", { clientPunchId: "p3", startedAt: new Date().toISOString() }, ADMIN_TOK);
+  ok(adm.statusCode !== 403, "admin is past the audience gate");
+  delete process.env.TIME_CLOCK;
+});
+
+await test("clock: office and viewer are not payroll roles — 403 from authzFor", async () => {
+  process.env.TIME_CLOCK = "on";
+  eq((await GET("clockStatus", {}, OFFICE_TOK)).statusCode, 403, "office has no hours to read");
+  eq((await GET("clockStatus", {}, VIEWER_TOK)).statusCode, 403, "viewer is read-only");
+  eq((await POST("clockIn", { clientPunchId: "p4" }, VIEWER_TOK)).statusCode, 403, "viewer cannot punch");
+  delete process.env.TIME_CLOCK;
+});
+
+await test("clock: a punch with no clientPunchId is refused — replay safety is not optional", async () => {
+  process.env.TIME_CLOCK = "on";
+  const r = await POST("clockIn", { startedAt: new Date().toISOString() }, EMP_TOK);
+  eq(r.statusCode, 400, "rejected");
+  ok(/clientPunchId/.test(json(r).error), "and says why");
+  delete process.env.TIME_CLOCK;
+});
+
+await test("clock: a phone with a wrong clock can't file hours into a closed pay period", async () => {
+  process.env.TIME_CLOCK = "on";
+  // The punch timestamp is deliberately trusted from the CLIENT (that is what
+  // makes offline replay honest), so the ±36h window is the only thing standing
+  // between a device with a wrong year and someone else's payroll.
+  const lastYear = new Date(Date.now() - 400 * 24 * 3600 * 1000).toISOString();
+  const r = await POST("clockIn", { clientPunchId: "p5", startedAt: lastYear }, EMP_TOK);
+  eq(r.statusCode, 400, "out-of-range punch refused");
+  const nonsense = await POST("clockIn", { clientPunchId: "p6", startedAt: "not-a-date" }, EMP_TOK);
+  eq(nonsense.statusCode, 400, "unparseable punch refused");
+  // An overnight replay a few hours late is NORMAL and must still be accepted.
+  // Asserted on the MESSAGE, not the status: with no Neon in this harness the
+  // punch still 400s a step later on the employee lookup, so a status check here
+  // would pass for the wrong reason and keep passing if the window ever narrowed.
+  const lateButFine = new Date(Date.now() - 10 * 3600 * 1000).toISOString();
+  const okPunch = json(await POST("clockIn", { clientPunchId: "p7", startedAt: lateButFine }, EMP_TOK));
+  ok(!/out-of-range/.test(okPunch.error || ""), "a genuinely late replay is not rejected as out of range");
+  delete process.env.TIME_CLOCK;
+});
+
+await test("clock: punches can't become payroll hours while TIME_CLOCK_PAYROLL is off", async () => {
+  delete process.env.TIME_CLOCK_PAYROLL;
+  const r = await POST("promoteClockPunches", { confirm: "YES" }, ADMIN_TOK);
+  eq(r.statusCode, 400, "promotion refused outright");
+  ok(/TIME_CLOCK_PAYROLL/.test(json(r).error), "and names the switch that's holding it");
+});
+
+await test("clock: promoting punches into payroll is admin-only, and needs confirmation", async () => {
+  eq((await POST("promoteClockPunches", { confirm: "YES" }, EMP_TOK)).statusCode, 403, "employee cannot");
+  eq((await POST("promoteClockPunches", { confirm: "YES" }, OFFICE_TOK)).statusCode, 403, "office cannot");
+  process.env.TIME_CLOCK_PAYROLL = "on";
+  const noConfirm = await POST("promoteClockPunches", {}, ADMIN_TOK);
+  eq(noConfirm.statusCode, 400, "admin still has to say YES");
+  delete process.env.TIME_CLOCK_PAYROLL;
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

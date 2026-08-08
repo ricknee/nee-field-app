@@ -5,7 +5,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 
 **This file is the running order.** If something isn't on it, it's a detour — see §7.
 
-*Last updated 2026-08-07.*
+*Last updated 2026-08-08.*
 
 ---
 
@@ -24,7 +24,9 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Estimates** | ✅ **In Neon since 2026-08-07 (Step 4e, estimates half)** — read + all four writes, templates, sent-estimate PDFs, and the snapshot cascade. **Estimate PDFs are in R2**, off Airtable's expiring URLs. |
 | **Invoices** | ✅ **In Neon since 2026-08-08 (Step 4e)** — both reads (job tab + the all-invoices view) and both write paths. The **contract-billing chain is ported and reproduces 51/51 on every field** (`db/schema/015`). Totals serve the **computed** figure, not the stored copy that goes stale when an allocation changes. |
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
-| **Inventory app** | ⬜ Still Airtable, still coupled to the main base via the Jobs mirror |
+| **Employees + LOGIN** | ✅ **In Neon since 2026-08-08 — both apps.** `LOGIN_SOURCE=neon` is an env-var **kill switch** (rollback in ~30 s, no code revert). Verified on prod: `_source:"neon"`, the **Airtable rec id** not the Neon uuid, right person and role. Employees were the last Airtable-owned dimension. **Cost rates are Neon's too** — the ETL no longer loads `labor_cost_rates`. ⬜ ~16 secondary read sites still hit Airtable (cleanup, §4). |
+| **People admin** | ✅ **New 2026-08-08** — there was no employee screen in either app. `👥 People`: Active/Former roster, **access toggle that actually ends live sessions** (30-day stateless tokens meant unchecking `Active` did nothing to a signed-in phone — a leaver kept access for a month), Show/Change PIN, full edit, add a person, and cost-rate history with raise-vs-correct. `docs/PLAN-employee-admin.md` |
+| **Inventory app** | ⬜ Still Airtable. **Step A (drop the Jobs mirror) is IN FLIGHT since 2026-08-08** — pre-flight checks done and passed, nothing destroyed. The coupling is still there until the sync is frozen and the link field deleted. See §4 Step A. |
 
 ## 🎉 THE FIELD-APP MIGRATION IS COMPLETE — 2026-08-08
 
@@ -339,15 +341,51 @@ chunks so it can be set down, and never let it block a Step 3 go-ahead when the 
 
 ## 4. The path — inventory app
 
-Independent of §3 once C3 lands. Don't start until field-app Step 3 is done — see §6.
+**The §6 gate is fully open.** It said don't start until field-app Step 3 was done; the *whole* field
+app finished on 2026-08-08, so there is no half-migrated system to collide with any more. **This is
+now the main track, not the one waiting its turn.**
 
 **Detail: `docs/PLAN-inventory-to-neon.md`** (written 2026-08-07). Letters below match that plan;
 don't re-letter. Rough total **~23-32 h** plus soaks, plus a shared login step owned by neither app.
 
-### Step A — Drop the Jobs mirror, Step C3 (~1 h hands-on, 3-4 days of soaks)
+### 🟨 Step A — Drop the Jobs mirror, Step C3 — **IN FLIGHT since 2026-08-08**
 
-Plan: `docs/BET-drop-jobs-mirror-C3.md`. Removes the only hard coupling between the two Airtable
-bases, so inventory can migrate on its own timeline. Irreversible — needs a deliberate go-ahead.
+Plan: `docs/BET-drop-jobs-mirror-C3.md`, execution log in its §9. Removes the only hard coupling
+between the two Airtable bases, so inventory can migrate on its own timeline.
+
+**Pre-flight (order-of-operations steps 1-2) is DONE and PASSED. Nothing has been destroyed and
+every step so far is reversible.**
+
+- ✅ **Make audit re-run — 0 references** to `appfsLJwfow4CepCw` or the mirror table. 70 scenarios,
+  **18 active**; the 22 that use an `airtable` or `http` module (the only ways to reach a base) all
+  had their **blueprints** fetched and grepped. Every one points at the main base.
+  > ⚠⚠ **`isPaused` is NOT Make's activation flag — `isActive` is.** `isPaused` is `false` on all 70,
+  > including retired scenarios. Any audit filtering on it reports every scenario as live.
+- ✅ **Orphan check — 0.** **116** transactions carry the legacy `Job` link and **all 116** also carry
+  `Job ID (Main)`, every value a well-formed `rec…` id. **Deleting the link field loses no job
+  history.** (The filter was proved to discriminate, not silently return nothing.)
+- ✅ **Snapshot taken** — 26 rows, to `C:\Users\irick\projects\nee-backups\`. **Not in the repo**:
+  netlify publishes the repo root, so a CSV committed there is served publicly. Verified rather than
+  trusted — the Jobs-side link count reconciles exactly with the Transactions side.
+
+**⏭ NEXT — and it is an owner action, not code.** Airtable exposes **no API for sync configuration**,
+so this cannot be done from a script or the MCP.
+
+> ⚠ **The mirror has THREE sync sources, not one** — *Project is Awarded*, *Service Calls*,
+> *Project is Complete (Ready to Invoice)*, matching the three choices of its `Sync Source` field.
+> Anything in older notes assuming a single sync is wrong.
+>
+> **Freeze them with Settings → "Automatically sync changes at regular intervals" → Change →
+> "Only sync changes when requested".** Do **not** pick *"convert to unsynced table"* (a structural
+> change that must be rebuilt source by source) and do **not** remove the sources (that can take
+> their rows with them — 4 of the 26 rows carry the 116 links).
+
+Then **soak 48 h** with a real inventory push and a real `submitCart`. **Only after that** do steps
+5-7 (delete the `Job` link field, then the mirror table) — those are **irreversible and need a
+deliberate go-ahead**.
+
+⬜ **Open:** confirm the update-method change actually saved. The soak clock starts when the sync is
+genuinely frozen, not before.
 
 ### Step B0 — The cross-base reads (~1-2 h) — **independent, can go NOW**
 The five main-base `Jobs` reads + `handleEmployees`. That data is **already in Neon**, so this
@@ -376,20 +414,58 @@ never reads.
 > Airtable — an expense written there early is silently erased by the next ETL run. Same trap as the
 > pCloud folder ids: flip *inside* the field-app expenses flip, never before it.
 
-### (Shared, last) — Login
-`handleLogin` lives in **both** functions and both read the main base's `Employees`. Neon's
-`employees` has no PIN and no email, so it can't flip as an inventory slice — it moves once, for
-both apps, and that is the moment Airtable actually goes dark. The plaintext-PIN compare should be
-hashed in the same pass rather than moved twice.
+### ✅ (Shared) — Login — **DONE 2026-08-08. Both apps serve from Neon.**
 
-> **Interacts with the People screen** (§7, `docs/PLAN-employee-admin.md`). That screen writes
-> `active`/role/PIN to **Airtable** on purpose, because that is where both `handleLogin`s read —
-> and because `db/etl/time-entries-full.mjs:241-247` is a **live dimension load** that overwrites
-> Neon `employees.name/username/role/active` from Airtable on every run. Writing `active` to Neon
-> before this login flip retires that load gets it silently erased. Its *new* columns
-> (`hired_on`, `terminated_on`, `token_valid_from`, `last_login_at`) are safe — the upsert names
-> its columns explicitly. **When login flips, drop the Airtable half of those writes and retire
-> the dimension load in the same commit.**
+*This section used to say login was "the last step, and the moment Airtable actually goes dark."
+It happened, out of order, because the People screen needed it. Kept in §4 because it is still
+shared by both apps — but it is no longer a gate on anything.*
+
+**`LOGIN_SOURCE` is an env-var KILL SWITCH, not a code path.** `neon` = Neon decides with an
+Airtable fallback when Neon is unreachable; unset/`airtable` = the old behaviour with Neon shadowing
+and logging disagreements. Production runs `neon`.
+
+```
+netlify env:unset LOGIN_SOURCE && netlify deploy --build --prod   # rollback, ~30 s, no revert
+```
+
+**Verified on production**, not just by the `_source` label: `_source:"neon"` on both apps,
+`id:"recxH3WzXlvhl7z9u"` — the **Airtable rec id, never the Neon uuid** — correct name and role, and
+`last_login_at` moving in Neon seconds later. Every downstream call succeeded on the issued token.
+
+Sequence used, and worth reusing for any change with this blast radius:
+**1** widen + backfill (inert) → **2** shadow every real login and log disagreements → **3** flip
+behind a switch that ships OFF → turn on → verify.
+
+> ⚠⚠ **The two apps had never agreed on how to match a login.** Field app took
+> name|username|email; inventory took name|**first name**|username. So `patrick` logged into one and
+> not the other, unnoticed because everyone uses their username. The rule is now the **union** of
+> both (a union can only accept logins that already worked somewhere). **Ambiguity is REFUSED** —
+> Airtable's `Array.find()` silently took the first match, which with first-name matching would hand
+> one person another's session. All 24 combinations (8 active × 3 identifier forms) verified to
+> resolve to exactly one, correct person.
+
+> ⚠ **PINs are stored PLAINTEXT in Neon, by owner decision 2026-08-08.** The plan was to hash in
+> this pass; the owner uses the People screen's *Show PIN* to read a forgotten PIN back to someone,
+> and a hash cannot be un-hashed. Not a downgrade — they were already plaintext in Airtable. To hash
+> later: add `pin_hash`, migrate on next login or reset, drop `pin`, retire `handleEmployeePin`.
+
+**What moved with it:** `db/schema/017_employees_full.sql` gave Neon a complete employee record
+(pin, email, phone, employee_no, labor_type, notes, names) on top of `016`'s admin columns
+(`hired_on`, `terminated_on`, `token_valid_from`, `last_login_at`). All 11 employees backfilled;
+Neon and Airtable agree exactly (11 rows, 8 active) after deleting a phantom `Viewer` row that
+had been deleted from Airtable but left in Neon.
+
+> ⚠⚠ **Neon now owns `labor_cost_rates`, and `db/etl/time-entries-full.mjs` NO LONGER LOADS IT.**
+> The People screen writes cost rates directly. Re-enabling that upsert would overwrite every
+> app-entered rate with the stale Airtable row — and `true_cost_rate` drives `v_job_labor_cost_true`,
+> so a raise would vanish and **every job's labor cost would jump back to the old number**. App-created
+> rate rows carry a synthetic `app:<rec>:<date>` id because they have no Airtable counterpart.
+
+**⬜ Still open (cleanup, not risk):**
+- **Stage 4** — the ~16 remaining Airtable `Employees` read sites (crew pickers, scheduling picker,
+  payroll rollups, bonus lists). All have Neon data already; mechanical.
+- **Stage 5** — retire the `employees` dimension load in the ETL and drop the Airtable half of the
+  People writes, in one commit. Until then both stores are written together and agree.
 
 ---
 
@@ -440,7 +516,7 @@ because they're next:
 | Unify estimates bet | large | `docs/BET-unify-estimates.md`. Blocked on GP formulas reaching Neon |
 | Conduit assemblies | — | Two rollup fields need adding by hand in Airtable first |
 | **Employee admin ("People" screen)** | Slice 1 ✅ **built 2026-08-08**, ⬜ needs prod smoke; slices 2-4 ~5-8 h | Owner idea 2026-08-07. `docs/PLAN-employee-admin.md`. **Slice 1 shipped the security half**: a `👥 People` tab (strict-admin) with an Active/Former roster and an access toggle that actually ends live sessions — `token_valid_from` in Neon, checked against the token's `iat` behind a 60 s cache, in **both** functions. Schema applied 2026-08-08; 0 revoked, so it is inert until used. Slices 2-4 (editing, hire/term dates, wage history, add-an-employee) are ordinary feature work and can wait. **Show PIN / Change PIN shipped 2026-08-08** on owner's request — Change PIN refuses duplicates, which closed a live privilege escalation (an admin and two office users all shared one PIN, so either office user could log in as the admin). **Slice 5, self-service "forgot PIN", is deferred by the owner and blocked on data, not code:** all 11 employee records have an empty Primary Email *and* Primary Phone, so a reset code has nowhere to go. Fill those in during onboarding and the blocker clears itself; best done at/after the PIN-hashing pass. Original scoping notes follow. There was **no employee screen in either app** — every hire, raise, role and leaver is done in the Airtable grid. Wanted: a roster with an Active/Former toggle so a leaver loses app access. ⚠ **Slice 1 is a real security gap, not a convenience feature:** session tokens are stateless HMAC with a **30-day TTL** and `verifyToken` reads no database (`_auth.js:18,49`), so unchecking `Active` blocks a *new* login and does **nothing** to a phone already logged in — a quitter keeps full field-app access for up to a month. Needs a `token_valid_from` column + a 60 s-cached revocation check. The rest (hire/term dates, wage history off `labor_cost_rates`, add-an-employee) is ordinary feature work and can wait. Scoping also turned up two live bugs to fix in the same pass: the two apps read **different role fields** (`Role` vs `Role New`), and `F.emp.email` names a column that doesn't exist (`Primary Email`), so **email login has never worked**. |
-| **Time clock in the app** | ~10-14 h | Owner idea 2026-08-07, and **explicitly parked behind the migration** — owner's words: *finish migrating first, then we'll look at time.* `docs/PLAN-time-clock.md`. Smaller than it sounds (Neon already authoritative for time writes, `createTimeEntry` already Neon-first and already employee-writable), but it needs a decision first — **does the app replace QuickBooks Time or feed it?** — and that question is much clearer once Step 3 is done and QB is the only thing left upstream. Building it *before* Step 3 puts a third writer of hours into the soak that is meant to prove the reconciler clean. |
+| **Time clock in the app** | ~~~10-14 h~~ **BUILT 2026-08-08, shipped INERT** | The park is over — its gate (Step 3) cleared 2026-08-07. Owner's call 2026-08-08: *"just build the app and replace qb time later on. not going to use time tracking in the app until its complete and ready for use."* So it is built and **switched off**: `TIME_CLOCK` and `TIME_CLOCK_PAYROLL` both default off, QB Time is still the book of record, and nothing counts until someone decides it does. `db/schema/018_time_clock.sql`, `docs/PLAN-time-clock.md` §11 (the operating manual + what diverged from the draft). ⬜ **Needs a browser smoke test** — no UI path has been exercised, and the offline queue has never met a real phone losing signal. **The §3 fork is still open and is now the only thing left to decide: does the app REPLACE QuickBooks Time, or FEED it?** |
 
 ---
 
@@ -529,7 +605,7 @@ They are the only reason anyone still has to touch Airtable in normal operation.
 | **Smoke-test what shipped** | ~20 min | ⬅ **Do this first.** Invoices went live today with no prod exercise. See the list below. |
 | ~~**`handleJobs` full flip**~~ | ✅ **ALREADY DONE** | **This file was wrong.** It claimed ~35 of `mapJob`'s 89 keys had no Neon source. Checked 2026-08-08: `mapJob` returns **87** keys and `mapJobFromNeon` returns **87** — the two apparent differences were comment text, not keys. `handleJobs` is Neon-first and the mapper is complete. Nothing to do. |
 | **Decide the ETL's future** | ~1 h thought | GP inputs are now Neon-**written** rather than loaded, so the hand-run ETL is mostly redundant for them — but it still backfills, and it is the only thing that would catch a mirror that silently stopped. Schedule it, shrink it, or retire it deliberately. |
-| **Inventory track** | ~23-32 h | `docs/PLAN-inventory-to-neon.md`. Gated on Step A / C3 dropping the Jobs mirror, which is mostly soak time. |
+| **Inventory track** | ~23-32 h | `docs/PLAN-inventory-to-neon.md`. **Step A is already in flight** — pre-flight passed 2026-08-08, waiting on you to freeze the sync then soak 48 h (§4 Step A). **Step B0 (~1-2 h) needs nothing from Step A** and can go any time. ⚠ First get a **PAT scoped to the inventory base** — neither PAT in `.env` can read it (both 403), and B/C/D all need one. |
 | **Employee admin slices 2-4** | — | Separate track, and it carries **two live bugs**: `Role` vs `Role New` differing per app, and email login that has never worked (`Email` ≠ `Primary Email`). |
 
 ## ⬜ Owed smoke tests — things that shipped without being exercised on prod

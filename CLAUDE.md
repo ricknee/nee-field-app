@@ -81,6 +81,17 @@ answers, just slowly. It went unnoticed for three days.
   the riskiest switch in the migration — and flipping it back takes seconds with no rebuild.
   Only turn it on once the shadow logs are clean. `_source` on the login response says which
   store actually answered. See `netlify/functions/_employees.js`.
+- `TIME_CLOCK` / `TIME_CLOCK_PAYROLL` — **optional; the in-app time clock's two kill switches.**
+  Both default to off, and the clock ships **inert**: unset, `clockStatus` answers
+  `enabled:false`, the UI renders nothing and `clockIn`/`clockOut` 403.
+  `TIME_CLOCK` = `admin` | `on` controls **who can punch** (admin only, for shaking it out on
+  prod; then all payroll-eligible roles). `TIME_CLOCK_PAYROLL` = `on` controls whether a punch
+  **becomes payroll hours** — off, punches land only in Neon's `clock_punches` ledger, which
+  nothing else reads, so the clock cannot touch payroll by construction.
+  They are two vars, not one, because QuickBooks Time keeps running until the cutover: the
+  dangerous half isn't letting people punch, it's letting a punch turn into money while QB is
+  also being paid from. Rollback is exact — `DELETE FROM time_entries WHERE source = 'Clock'`.
+  See `docs/PLAN-time-clock.md` §11 and `db/schema/018_time_clock.sql`.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

@@ -446,12 +446,20 @@ const _PAYROLL_READS = new Set([
   "payrollHoursRollup", "payrollHoursBreakdown", "payrollBonusesRollup",
   "payrollEmployeeBonusHistory", "myHoursRollup", "myHoursBreakdown",
   "hoursByJob",
+  // The clock reads your own punches and nobody else's — the employee is taken from
+  // the token inside the handler, so _PAYROLL (admin + employee) is the whole
+  // audience. Office and viewers have no punches to read.
+  "clockStatus",
 ]);
 const _READ_LIKE_POSTS = new Set([
   "getNextEstimateNumber", "getNextInvoiceNumber", "getJobInvoices", "calculateMileage",
 ]);
 const _TIME_SELF_WRITES = new Set([
   "createTimeEntry", "updateTimeEntry", "deleteTimeEntry",
+  // Punching is writing your own time, which is exactly what this tier is for. The
+  // handlers narrow it further while the feature is being built (TIME_CLOCK=admin),
+  // and they take the employee from the token, so nobody can punch anybody else.
+  "clockIn", "clockOut",
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
@@ -470,6 +478,9 @@ const _ADMIN_POSTS = new Set([
   // Creating a person mints a working login. Rate writes move GP on every job
   // that person has ever booked hours to — as money-critical as it gets here.
   "createEmployee", "addEmployeeRaise", "correctEmployeeRate",
+  // Counting previously-uncounted punches as payroll hours. Admin only — this is the
+  // action that turns the time clock into money.
+  "promoteClockPunches",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -1010,6 +1021,334 @@ async function handleUpdateTimeEntryPayroll(body) {
       }));
   }
   return resp(200, { ok: true, updatedId: target.id });
+}
+
+// ══ TIME CLOCK ═══════════════════════════════════════════════════════════════
+// Punch in and out from the phone, against a job. See docs/PLAN-time-clock.md.
+//
+// TWO SWITCHES, both defaulting to the safe answer, because the owner's decision on
+// 2026-08-08 was "build the app and replace QB Time later on — not going to use time
+// tracking in the app until it's complete and ready for use". QuickBooks Time keeps
+// running and keeps being the book of record throughout the build, so the clock must
+// be able to exist on production without being reachable and without being counted.
+//
+//   TIME_CLOCK          off (default) | admin | on     — WHO can punch
+//   TIME_CLOCK_PAYROLL  off (default) | on             — do punches BECOME payroll hours
+//
+// They are separate on purpose. The dangerous half is not letting people punch, it is
+// letting a punch turn into money while QB Time is also being paid from. Keeping them
+// apart means the whole path — punch, offline replay, promotion, the payroll row — can
+// be exercised end to end by an admin, and switched to the crew, and only then made to
+// count. Reversing the last step is `DELETE FROM time_entries WHERE source = 'Clock'`,
+// which is exact precisely because 018 gave clock rows their own source value.
+function timeClockAudience() {
+  const v = String(process.env.TIME_CLOCK || "").trim().toLowerCase();
+  return (v === "on" || v === "admin") ? v : "off";
+}
+function timeClockFeedsPayroll() {
+  return String(process.env.TIME_CLOCK_PAYROLL || "").trim().toLowerCase() === "on";
+}
+// Whether THIS person may punch right now. Role is already checked by authzFor
+// (_TIME_SELF_WRITES -> _PAYROLL = admin + employee); this narrows it further while
+// the feature is being built.
+function canUseTimeClock(authUser) {
+  const mode = timeClockAudience();
+  if (mode === "off") return false;
+  if (mode === "admin") return (authUser?.role || "").toLowerCase() === "admin";
+  return true;
+}
+
+// The punching employee ALWAYS comes from the signed token, never from the request
+// body. There is no code path here that takes an employee id from the client, so
+// there is nothing to forge — one person cannot punch another in or out.
+// authUser.id is the AIRTABLE rec id (login deliberately still returns that, not the
+// Neon uuid), which is why this resolves through employees.airtable_id.
+async function clockEmployee(authUser) {
+  const q = await neonQuery(
+    `SELECT id, name FROM employees WHERE airtable_id = $1`, [authUser?.id || null]);
+  return q?.rows?.[0] || null;
+}
+
+// ── CLOCK: current state ───────────────────────────────────────────────────
+// Answers three things in one round trip, because the phone asks on every app open:
+// is the clock available to me, am I on it, and what have I punched lately.
+async function handleClockStatus(params, authUser) {
+  const enabled = canUseTimeClock(authUser);
+  if (!enabled) return resp(200, { ok: true, enabled: false, open: null, recent: [] });
+
+  const me = await clockEmployee(authUser);
+  if (!me) {
+    // Signed in, but with no Neon employee row to hang a punch on. Reported rather
+    // than treated as "clocked out", because the two look identical on screen and
+    // this one will not fix itself by tapping the button again.
+    return resp(200, { ok: true, enabled: true, open: null, recent: [],
+                       warning: "No employee record found for this login." });
+  }
+
+  const open = await neonQuery(
+    `SELECT started_at, job_name, class, city_taxes, notes, client_punch_id
+       FROM open_punches WHERE employee_id = $1`, [me.id]);
+
+  // Last 14 days. Enough to answer "did I forget to clock out on Tuesday" without
+  // shipping a person's whole history to a phone on every open.
+  const recent = await neonQuery(
+    `SELECT id, started_at, ended_at, work_date, duration_seconds::float8 AS duration_seconds,
+            job_name, class, (time_entry_id IS NOT NULL) AS counted
+       FROM clock_punches
+      WHERE employee_id = $1 AND work_date >= (CURRENT_DATE - 14)
+      ORDER BY started_at DESC`, [me.id]);
+
+  return resp(200, {
+    ok: true,
+    enabled: true,
+    // Tells the UI whether to say "these hours count" or "not counted yet" — while
+    // QB Time is still the book of record, implying otherwise would be a lie.
+    countsTowardPayroll: timeClockFeedsPayroll(),
+    open: open?.rows?.[0] || null,
+    recent: recent?.rows || [],
+  });
+}
+
+// ── CLOCK: punch in ────────────────────────────────────────────────────────
+async function handleClockIn(body, authUser) {
+  if (!canUseTimeClock(authUser)) {
+    return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
+  }
+  const {
+    jobId, class: cls, cityTaxes, notes, lat, lon, clientPunchId, startedAt
+  } = body || {};
+
+  // Cheap validation BEFORE the employee lookup, so a malformed punch is rejected
+  // without a database round trip (and stays reachable in the offline test harness,
+  // where there is no Neon to resolve an employee against).
+  if (!clientPunchId) {
+    // Not optional. It is the only thing that makes an offline replay safe, and a
+    // punch without one would duplicate every time the queue retried.
+    return resp(400, { ok: false, error: "Missing clientPunchId." });
+  }
+
+  // ⚠ THE TIMESTAMP COMES FROM THE PUNCH, NOT FROM THE SERVER.
+  // A punch made in a basement is queued on the phone and replayed when signal
+  // returns — possibly hours later. Stamping it server-side would record the moment
+  // the connection came back, which is not when the person started work. This is the
+  // one deliberate divergence in the whole feature; see the fail-closed note on
+  // punch-out below. Bounded to a day either side so a phone with a badly wrong clock
+  // cannot file a punch in the middle of last year's payroll.
+  const started = clampPunchTime(startedAt);
+  if (!started) return resp(400, { ok: false, error: "Invalid or out-of-range startedAt." });
+
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+
+  const jobRec = (jobId && String(jobId).startsWith("rec")) ? String(jobId) : null;
+
+  // Replay guard #1: this punch cycle already ran to completion. The queue is retrying
+  // a clock-in whose clock-out has ALREADY been recorded, so re-opening a shift here
+  // would put the person back on a clock they finished with.
+  const done = await neonQuery(
+    `SELECT id FROM clock_punches WHERE client_punch_id = $1`, [clientPunchId]);
+  if (done?.rows?.length) {
+    return resp(200, { ok: true, alreadyComplete: true, open: null });
+  }
+
+  // job_name is the job's CURRENT po_locked, snapshotted at punch time — the same
+  // rule as handleCreateTimeEntry, and never recomputed later.
+  // ON CONFLICT (employee_id) is what enforces one open shift per person; the
+  // uniqueness lives in the database, so two rapid taps cannot both win.
+  const rows = await neonWrite("clock.in",
+    `INSERT INTO open_punches
+       (employee_id, started_at, job_id, job_name, class, city_taxes, notes,
+        start_lat, start_lon, client_punch_id)
+     SELECT $1, $2::timestamptz, j.id, j.po_locked, $4, $5, $6,
+            $7::numeric, $8::numeric, $9
+       FROM (SELECT 1) _
+       LEFT JOIN jobs j ON j.airtable_id = $3
+     ON CONFLICT (employee_id) DO NOTHING
+     RETURNING started_at, job_name, class, city_taxes, notes, client_punch_id`,
+    [me.id, started, jobRec, cls || null, cityTaxes || null, notes || null,
+     numOrNull(lat), numOrNull(lon), clientPunchId]);
+
+  if (rows?.length) return resp(200, { ok: true, open: rows[0] });
+
+  // Nothing inserted => already on the clock. Replay guard #2: if it is the SAME
+  // punch id, the first attempt actually succeeded and the phone just never heard
+  // back, so this is a success, not a conflict.
+  const cur = await neonQuery(
+    `SELECT started_at, job_name, class, city_taxes, notes, client_punch_id
+       FROM open_punches WHERE employee_id = $1`, [me.id]);
+  const openRow = cur?.rows?.[0] || null;
+  if (openRow && openRow.client_punch_id === clientPunchId) {
+    return resp(200, { ok: true, open: openRow });
+  }
+  return resp(409, {
+    ok: false,
+    error: "You're already clocked in.",
+    open: openRow,
+  });
+}
+
+// ── CLOCK: punch out ───────────────────────────────────────────────────────
+async function handleClockOut(body, authUser) {
+  if (!canUseTimeClock(authUser)) {
+    return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
+  }
+  const { jobId, class: cls, cityTaxes, notes, lat, lon, clientPunchId, endedAt } = body || {};
+  if (!clientPunchId) return resp(400, { ok: false, error: "Missing clientPunchId." });
+
+  const ended = clampPunchTime(endedAt);
+  if (!ended) return resp(400, { ok: false, error: "Invalid or out-of-range endedAt." });
+
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+
+  // Replay guard: the punch-out already landed and the phone is retrying. Return the
+  // row it created rather than erroring — from the user's side the punch worked, and
+  // it did.
+  const done = await neonQuery(
+    `SELECT id, work_date, duration_seconds::float8 AS duration_seconds,
+            (time_entry_id IS NOT NULL) AS counted
+       FROM clock_punches WHERE client_punch_id = $1`, [clientPunchId]);
+  if (done?.rows?.length) {
+    return resp(200, { ok: true, punch: done.rows[0], replayed: true });
+  }
+
+  const jobRec = (jobId && String(jobId).startsWith("rec")) ? String(jobId) : null;
+
+  // ONE STATEMENT, so closing the shift and recording it cannot half-happen. If the
+  // insert fails the delete rolls back with it and the person is still on the clock —
+  // which is recoverable. The reverse (shift closed, punch lost) is not.
+  //
+  // GREATEST(ended, started) clamps a backwards punch instead of rejecting it. Phone
+  // clocks drift and daylight-saving lands mid-shift; the clock_punch_ordered CHECK
+  // would otherwise reject the row, roll back the delete, and strand someone on the
+  // clock with no way off it. A zero-length punch is a far better failure than that.
+  //
+  // work_date is the LOCAL date the shift STARTED — the overnight rule, decided in
+  // db/schema/018_time_clock.sql. The zone is named explicitly because Neon's pooler
+  // connects in UTC, which would otherwise file every evening punch under tomorrow.
+  const rows = await neonWrite("clock.out",
+    `WITH shift AS (
+       DELETE FROM open_punches WHERE employee_id = $1 RETURNING *
+     )
+     INSERT INTO clock_punches
+       (employee_id, employee_name, started_at, ended_at, work_date, duration_seconds,
+        job_id, job_name, class, city_taxes, notes,
+        start_lat, start_lon, end_lat, end_lon, client_punch_id)
+     SELECT s.employee_id, $2, s.started_at,
+            GREATEST($3::timestamptz, s.started_at),
+            (s.started_at AT TIME ZONE 'America/New_York')::date,
+            EXTRACT(EPOCH FROM (GREATEST($3::timestamptz, s.started_at) - s.started_at))::numeric,
+            COALESCE(j.id, s.job_id), COALESCE(j.po_locked, s.job_name),
+            COALESCE($5, s.class), COALESCE($6, s.city_taxes), COALESCE($7, s.notes),
+            s.start_lat, s.start_lon, $8::numeric, $9::numeric,
+            COALESCE(s.client_punch_id, $10)
+       FROM shift s
+       LEFT JOIN jobs j ON j.airtable_id = $4
+     RETURNING id, work_date, started_at, ended_at,
+               duration_seconds::float8 AS duration_seconds, job_name`,
+    [me.id, me.name || null, ended, jobRec, cls || null, cityTaxes || null,
+     notes || null, numOrNull(lat), numOrNull(lon), clientPunchId]);
+
+  const punch = rows?.[0];
+  if (!punch) return resp(409, { ok: false, error: "You're not clocked in." });
+
+  // Promotion into payroll hours. Deliberately AFTER the ledger write and in its own
+  // statement: clock_punches is durable either way, so a promotion that fails leaves a
+  // recorded punch flagged unpromoted, which promoteClockPunches picks up. Losing the
+  // punch to a payroll problem would be the wrong trade.
+  let counted = false;
+  if (timeClockFeedsPayroll()) {
+    try {
+      const p = await promoteClockPunch(punch.id);
+      counted = !!p;
+    } catch (e) {
+      console.error(`clock.promote failed (punch ${punch.id} recorded, not counted): ${e?.message || e}`);
+    }
+  }
+
+  return resp(200, { ok: true, punch: { ...punch, counted } });
+}
+
+// Turn one recorded punch into a payroll row. Idempotent: the `time_entry_id IS NULL`
+// guard means a second call is a no-op rather than a double-count.
+//
+// source = 'Clock' is required, not cosmetic — te_has_a_key rejects a row that names
+// no origin, and a clock row has neither an Airtable nor a QB id (see 018).
+//
+// NO AIRTABLE MIRROR, unlike handleCreateTimeEntry. Make left the time path at Step 3
+// and the Airtable Time Entries table is a frozen historical copy; writing punches
+// into it would put new rows in something nothing reads and everything treats as
+// closed. The clock is Neon-native from birth.
+async function promoteClockPunch(punchId) {
+  const rows = await neonWrite("clock.promote",
+    `WITH p AS (
+       SELECT * FROM clock_punches WHERE id = $1 AND time_entry_id IS NULL
+     ), ins AS (
+       INSERT INTO time_entries
+         (employee_name, employee_id, work_date, duration_seconds, city_taxes, class,
+          job_id, job_name, labor_reviewed, source, started_at, ended_at)
+       SELECT p.employee_name, p.employee_id, p.work_date, p.duration_seconds,
+              COALESCE(p.city_taxes, 'A No Tax'), COALESCE(p.class, 'Contract'),
+              p.job_id, p.job_name, false, 'Clock', p.started_at, p.ended_at
+         FROM p
+       RETURNING id
+     )
+     UPDATE clock_punches c
+        SET time_entry_id = (SELECT id FROM ins), promoted_at = now()
+      WHERE c.id = $1 AND EXISTS (SELECT 1 FROM ins)
+      RETURNING c.time_entry_id`,
+    [punchId]);
+  return rows?.[0]?.time_entry_id || null;
+}
+
+// ── CLOCK: admin backfill at cutover ───────────────────────────────────────
+// Everything punched while TIME_CLOCK_PAYROLL was off sits in clock_punches with
+// time_entry_id NULL. This is what counts it, once, when the switch is thrown.
+// Admin only, and it refuses to run while the switch is still off so it can't be used
+// to sneak hours into payroll ahead of the decision.
+async function handlePromoteClockPunches(body) {
+  if (!timeClockFeedsPayroll()) {
+    return resp(400, { ok: false,
+      error: "TIME_CLOCK_PAYROLL is off. Turn it on before promoting punches." });
+  }
+  if (body?.confirm !== "YES") {
+    return resp(400, { ok: false, error: 'Missing confirmation. Pass {"confirm":"YES"}.' });
+  }
+  const from = typeof body?.from === "string" ? body.from : null;
+
+  const pending = await neonQuery(
+    `SELECT id FROM clock_punches
+      WHERE time_entry_id IS NULL AND ($1::date IS NULL OR work_date >= $1::date)
+      ORDER BY started_at`, [from]);
+
+  const ids = (pending?.rows || []).map(r => r.id);
+  let promoted = 0;
+  const failed = [];
+  for (const id of ids) {
+    try { if (await promoteClockPunch(id)) promoted++; }
+    catch (e) { failed.push({ id, error: String(e?.message || e).slice(0, 200) }); }
+  }
+  return resp(200, { ok: true, pending: ids.length, promoted, failed });
+}
+
+// Accepts an ISO timestamp from the client and rejects anything absurd. Returns an
+// ISO string, or null if unusable.
+//
+// The window is ±36 h around now. It has to be wide enough for a genuinely late
+// replay (a phone that stayed in a basement all day, an overnight shift) and tight
+// enough that a device with a wrong year cannot file hours into a closed pay period.
+function clampPunchTime(iso) {
+  const t = iso ? Date.parse(iso) : Date.now();
+  if (!Number.isFinite(t)) return null;
+  const now = Date.now();
+  const WINDOW = 36 * 60 * 60 * 1000;
+  if (t > now + WINDOW || t < now - WINDOW) return null;
+  return new Date(t).toISOString();
+}
+
+function numOrNull(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 // ── BACKFILL: reconcile Employee text + Employee (Linked) on Time Entries ──
@@ -8677,6 +9016,7 @@ export async function handler(event) {
       if (action === "payrollHoursBreakdown")       return await handlePayrollHoursBreakdown(params);
       if (action === "payrollBonusesRollup")        return await handlePayrollBonusesRollup(params);
       if (action === "payrollEmployeeBonusHistory") return await handlePayrollEmployeeBonusHistory(params);
+      if (action === "clockStatus")                 return await handleClockStatus(params, authUser);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();
@@ -8713,6 +9053,9 @@ export async function handler(event) {
       if (body.action === "updateTimeEntry")      return await handleUpdateTimeEntry(body);
       if (body.action === "updateTimeEntryPayroll") return await handleUpdateTimeEntryPayroll(body);
       if (body.action === "createTimeEntry")      return await handleCreateTimeEntry(body);
+      if (body.action === "clockIn")              return await handleClockIn(body, authUser);
+      if (body.action === "clockOut")             return await handleClockOut(body, authUser);
+      if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
       if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);
       if (body.action === "copyLiftPhotosToR2")   return await handleCopyLiftPhotosToR2();

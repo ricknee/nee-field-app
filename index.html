@@ -135,6 +135,60 @@
     body.role-employee #refreshBtn    { order: 5; }
     body.role-employee #logoutBtn     { order: 6; }
 
+    /* ── TIME CLOCK ──
+       The pill is a live state, so it pulses. Anything permanently animated in a
+       top bar is obnoxious, which is why it only ever renders while a shift is
+       actually open — the hidden class is the normal state. */
+    .clock-pill {
+      display: inline-flex; align-items: center; gap: 7px;
+      background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5;
+      border-radius: 999px; padding: 4px 12px; margin-left: 10px;
+      font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+      cursor: pointer; white-space: nowrap;
+    }
+    .clock-pill.hidden { display: none; }
+    .clock-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #dc2626; flex: none;
+      animation: clockPulse 2s ease-in-out infinite;
+    }
+    @keyframes clockPulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+    /* Respect the OS setting — a pulsing dot is a vestibular trigger for some
+       people, and the pill still reads fine standing still. */
+    @media (prefers-reduced-motion: reduce) { .clock-dot { animation: none; } }
+
+    .clock-panel {
+      border: 1px solid var(--line); border-radius: 12px;
+      padding: 14px; margin-bottom: 16px;
+    }
+    .clock-panel.is-in { background: #fef2f2; border-color: #fca5a5; }
+    .clock-elapsed {
+      font-size: 34px; font-weight: 800; font-variant-numeric: tabular-nums;
+      letter-spacing: 1px; line-height: 1.1;
+    }
+    .clock-btn {
+      width: 100%; padding: 16px; font-size: 17px; font-weight: 700;
+      border: none; border-radius: 10px; color: #fff; cursor: pointer;
+    }
+    .clock-btn-in  { background: #16a34a; }
+    .clock-btn-out { background: #dc2626; }
+    .clock-btn:disabled { opacity: .55; cursor: default; }
+    .clock-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .clock-field { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+    .clock-field select, .clock-field input {
+      width: 100%; padding: 9px 10px; font-size: 14px;
+      border: 1px solid var(--line); border-radius: 8px;
+    }
+    .clock-queued {
+      background: #fffbeb; border: 1px solid #fcd34d; color: #92400e;
+      border-radius: 8px; padding: 8px 10px; font-size: 12px; margin-top: 10px;
+    }
+    .clock-row {
+      display: flex; justify-content: space-between; gap: 10px;
+      padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px;
+    }
+    .clock-row:last-child { border-bottom: none; }
+
     #statusChangeRow:not(.hidden) { display: flex; }
     #piSaveBar:not(.hidden) { display: flex; }
 
@@ -2343,6 +2397,16 @@
         </div>
       </div>
       <span id="userBadge" class="user-badge">—</span>
+      <!-- ON-THE-CLOCK INDICATOR. Deliberately in row1 beside the badge rather than
+           in the row2 button strip: row2 is reordered per-role with flexbox `order`
+           (see the CSS note up top), and a running-state pill that lands in a
+           different place depending on who you are is exactly the thing you stop
+           noticing. This is also the answer to the classic failure of every clock
+           app — being accidentally on the clock overnight. It is visible from every
+           screen, not just My Hours, because that is the whole point of it. -->
+      <button id="clockPill" class="clock-pill hidden" type="button" onclick="openMyHours()">
+        <span class="clock-dot"></span><span id="clockPillText">—</span>
+      </button>
     </div>
     <div class="topbar-row2">
       <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ New Project</button>
@@ -3786,6 +3850,14 @@
       // in the CSS). A class rather than reordered markup so admin/office/
       // viewer keep the DOM order.
       document.body.classList.toggle("role-employee", isEmployeeRole);
+
+      // Ask the clock where we stand as soon as a role is known — on login and on
+      // every restored session. This is what puts the on-the-clock pill in the top
+      // bar without anyone opening My Hours, which is the entire point of it: you
+      // find out you're still on the clock by seeing it, not by going looking.
+      // Fire-and-forget; when the clock is off the call answers { enabled:false }
+      // and nothing renders.
+      if (typeof refreshClock === "function") refreshClock().catch(() => {});
 
       // Hide financial tabs from viewers
       if (isViewer()) {
@@ -17040,6 +17112,7 @@
     $("myHoursModal").style.display = "flex";
     pushBackEntry("myHours", () => { $("myHoursModal").style.display = "none"; });
     fetchAndRenderMyHoursTiles();
+    refreshClock().catch(() => {});
   }
   window.openMyHours = openMyHours;
 
@@ -17048,6 +17121,350 @@
     $("myHoursModal").style.display = "none";
   }
   window.closeMyHours = closeMyHours;
+
+  // ═══ TIME CLOCK ═══════════════════════════════════════════════════════════
+  // Punch in and out against a job. Backend: clockStatus / clockIn / clockOut.
+  // Plan: docs/PLAN-time-clock.md. Schema: db/schema/018_time_clock.sql.
+  //
+  // The feature ships INERT: the backend's TIME_CLOCK env var defaults to "off",
+  // clockStatus then answers { enabled:false }, and everything below renders
+  // nothing. Turning it on is a Netlify env change, no deploy.
+
+  const CLOCK_QUEUE_KEY = "nee_clock_queue";   // punches awaiting replay
+  const CLOCK_LOCAL_KEY = "nee_clock_local";   // this phone's own view of the shift
+
+  let clockState  = { enabled: false, countsTowardPayroll: false, open: null, recent: [] };
+  let clockTicker = null;
+  let clockBusy   = false;
+
+  // ── The offline queue ───────────────────────────────────────────────────
+  // ⚠ THIS IS THE ONE PLACE THE APP DELIBERATELY DIVERGES FROM THE FAIL-CLOSED
+  // CONTRACT, and it must stay that way. Neon writes fail closed everywhere else
+  // (see neonWrite in _neon.js) because a payroll edit that half-lands is worse
+  // than one that errors. A PUNCH is the opposite case: crews work in basements
+  // and a shop where signal dies, and "your clock-out failed, try again" means a
+  // person cannot go home and their hours are gone. Nobody stands in a parking
+  // lot retrying.
+  //
+  // So a punch is recorded on the phone FIRST and replayed later, and the
+  // timestamp travels with it — see startedAt/endedAt in the bodies below. If you
+  // are tempted to "fix" this back to a synchronous write, read §6 of the plan
+  // first; removing it silently reintroduces lost punches.
+  function clockQueue() {
+    try { return JSON.parse(localStorage.getItem(CLOCK_QUEUE_KEY) || "[]"); }
+    catch { return []; }
+  }
+  function clockQueueSave(q) {
+    try { localStorage.setItem(CLOCK_QUEUE_KEY, JSON.stringify(q)); } catch {}
+  }
+  function clockLocal() {
+    try { return JSON.parse(localStorage.getItem(CLOCK_LOCAL_KEY) || "null"); }
+    catch { return null; }
+  }
+  function clockLocalSave(v) {
+    try {
+      if (v) localStorage.setItem(CLOCK_LOCAL_KEY, JSON.stringify(v));
+      else   localStorage.removeItem(CLOCK_LOCAL_KEY);
+    } catch {}
+  }
+
+  // Idempotency key for a whole punch CYCLE — the same id rides on the clock-in
+  // and the matching clock-out, which is what lets the server collapse a replay
+  // onto the row it already wrote instead of opening a second shift.
+  function newPunchId() {
+    if (crypto?.randomUUID) return crypto.randomUUID();
+    return "p-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+  }
+
+  // Replays queued punches IN ORDER and stops at the first one that can't go
+  // through. Order is not optional: a clock-out replayed before its clock-in
+  // would be rejected as "not clocked in" and the shift would be lost.
+  async function flushClockQueue() {
+    let q = clockQueue();
+    if (!q.length) return false;
+    let changed = false;
+
+    while (q.length) {
+      const item = q[0];
+      try {
+        await apiPost(item.action, item.body);
+        q.shift(); clockQueueSave(q); changed = true;
+      } catch (e) {
+        if (e?.status) {
+          // The server answered and refused. Retrying will never change that
+          // (403 clock is off, 409 genuine conflict, 400 bad punch), so drop it
+          // rather than wedging the queue behind a punch that can never land.
+          console.warn("clock: dropping unreplayable punch", item.action, e.status, e.message);
+          q.shift(); clockQueueSave(q); changed = true;
+          continue;
+        }
+        // No status = the request never reached the server. Still offline; keep
+        // everything and try again on the next online/focus/open event.
+        return changed;
+      }
+    }
+    // Queue fully drained, so the server's view is authoritative again.
+    clockLocalSave(null);
+    return changed;
+  }
+
+  // ── Status ──────────────────────────────────────────────────────────────
+  async function refreshClock() {
+    if (!state.user) return;
+    // Only admin and employee can punch; asking as anyone else just 403s.
+    const role = (state.user.role || "").toLowerCase();
+    if (role !== "admin" && role !== "employee") { clockState.enabled = false; renderClockPill(); return; }
+
+    try { await flushClockQueue(); } catch {}
+
+    try {
+      const d = await apiGet("clockStatus");
+      clockState = {
+        enabled: !!d.enabled,
+        countsTowardPayroll: !!d.countsTowardPayroll,
+        open: d.open || null,
+        recent: Array.isArray(d.recent) ? d.recent : [],
+        warning: d.warning || null,
+      };
+      // A punch still sitting in the queue outranks the server: the server has
+      // not heard about it yet, so its "you are clocked out" is simply stale.
+      if (clockQueue().length) {
+        const local = clockLocal();
+        clockState.open = local ? local : clockState.open;
+      } else {
+        clockLocalSave(null);
+      }
+    } catch {
+      // Offline or erroring — fall back to what this phone knows. Do NOT flip
+      // enabled to false here, or a dropped connection would make the clock
+      // vanish mid-shift with a shift still open.
+      const local = clockLocal();
+      if (local) clockState.open = local;
+    }
+    renderClockPill();
+    renderClockPanel();
+    tickClock();
+  }
+  window.refreshClock = refreshClock;
+
+  function fmtElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+    return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  }
+
+  function renderClockPill() {
+    const pill = $("clockPill"), txt = $("clockPillText");
+    if (!pill || !txt) return;
+    if (!clockState.enabled || !clockState.open) { pill.classList.add("hidden"); return; }
+    pill.classList.remove("hidden");
+    const started = Date.parse(clockState.open.started_at);
+    txt.textContent = Number.isFinite(started) ? fmtElapsed(Date.now() - started) : "On the clock";
+  }
+
+  // One interval drives both the pill and the panel. It only runs while a shift
+  // is open, so a clocked-out phone does no repeating work at all.
+  function tickClock() {
+    if (clockTicker) { clearInterval(clockTicker); clockTicker = null; }
+    if (!clockState.enabled || !clockState.open) return;
+    clockTicker = setInterval(() => {
+      renderClockPill();
+      const el = $("clockElapsed");
+      if (el) {
+        const started = Date.parse(clockState.open?.started_at);
+        if (Number.isFinite(started)) el.textContent = fmtElapsed(Date.now() - started);
+      }
+    }, 1000);
+  }
+
+  // ── One-shot position at the punch ──────────────────────────────────────
+  // NOT geofencing, and it cannot be: iOS Safari has no background geolocation
+  // and a PWA gets no reliable wake-up, so QB Time's auto-punch-on-arrival is not
+  // reproducible on this stack — don't promise it. Never blocks the punch:
+  // a denied permission or a slow fix resolves empty and the punch goes anyway.
+  function punchPosition() {
+    return new Promise(resolve => {
+      if (!navigator.geolocation) return resolve({});
+      let done = false;
+      const finish = v => { if (!done) { done = true; resolve(v); } };
+      setTimeout(() => finish({}), 4000);
+      navigator.geolocation.getCurrentPosition(
+        p => finish({ lat: p.coords.latitude, lon: p.coords.longitude }),
+        () => finish({}),
+        { enableHighAccuracy: false, timeout: 4000, maximumAge: 60000 }
+      );
+    });
+  }
+
+  function clockJobOptions(selectedId) {
+    const jobs = (state.jobs || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    return `<option value="">— No job —</option>` + jobs.map(j =>
+      `<option value="${esc(j.id)}" ${j.id === selectedId ? "selected" : ""}>${esc(j.name || j.id)}</option>`
+    ).join("");
+  }
+
+  function renderClockPanel() {
+    const el = $("clockPanel");
+    if (!el) return;
+    if (!clockState.enabled) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+    el.classList.remove("hidden");
+    el.classList.toggle("is-in", !!clockState.open);
+
+    const queued = clockQueue().length;
+    const queuedHtml = queued
+      ? `<div class="clock-queued">📶 ${queued} punch${queued > 1 ? "es" : ""} saved on this phone,
+           waiting for signal. Your times are recorded — they'll send themselves.</div>`
+      : "";
+
+    // Says plainly whether these hours count yet. While QB Time is still the book
+    // of record they do not, and implying otherwise would be a lie people would
+    // discover on payday.
+    const countsHtml = clockState.countsTowardPayroll
+      ? ""
+      : `<div class="clock-note">⚠ Testing mode — punches are recorded but do
+           <strong>not</strong> count toward payroll yet. Keep using QuickBooks Time.</div>`;
+
+    if (clockState.warning) {
+      el.innerHTML = `<div class="clock-note">⚠ ${esc(clockState.warning)}</div>`;
+      return;
+    }
+
+    if (clockState.open) {
+      const started = Date.parse(clockState.open.started_at);
+      const startedTxt = Number.isFinite(started)
+        ? new Date(started).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
+      el.innerHTML = `
+        <div style="font-size:12px; color:var(--muted);">On the clock since ${esc(startedTxt)}</div>
+        <div id="clockElapsed" class="clock-elapsed">${Number.isFinite(started) ? fmtElapsed(Date.now() - started) : "—"}</div>
+        <div style="font-size:13px; margin:6px 0 14px;">${esc(clockState.open.job_name || "No job")}</div>
+        <button class="clock-btn clock-btn-out" onclick="clockOutPrompt()">Clock Out</button>
+        ${countsHtml}${queuedHtml}
+        <div class="clock-note">Hours are rounded to the nearest quarter hour on payroll.</div>
+      `;
+    } else {
+      // Default the job to whatever the user is already standing in — the job
+      // they have open — then the job they last punched against.
+      const defJob = state.selected?.id || clockState.recent?.[0]?.job_id || "";
+      el.innerHTML = `
+        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">You're clocked out.</div>
+        <label class="clock-field">Job
+          <select id="clockJob">${clockJobOptions(defJob)}</select>
+        </label>
+        <label class="clock-field">Class
+          <select id="clockClass">${PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+        </label>
+        <div style="height:12px;"></div>
+        <button class="clock-btn clock-btn-in" onclick="clockIn()">Clock In</button>
+        ${countsHtml}${queuedHtml}
+      `;
+    }
+
+    const recent = clockState.recent || [];
+    if (recent.length) {
+      el.innerHTML += `
+        <div style="margin-top:16px; font-size:12px; color:var(--muted);">Recent punches</div>
+        ${recent.slice(0, 8).map(r => {
+          const hrs = (Number(r.duration_seconds) / 3600);
+          const d = r.work_date ? String(r.work_date).slice(0, 10) : "—";
+          return `<div class="clock-row">
+                    <span>${esc(d)} · ${esc(r.job_name || "No job")}</span>
+                    <span>${hrs.toFixed(2)} h${r.counted ? "" : " <span style='color:var(--muted)'>(not counted)</span>"}</span>
+                  </div>`;
+        }).join("")}
+      `;
+    }
+  }
+
+  // ── Punching ────────────────────────────────────────────────────────────
+  async function clockIn() {
+    if (clockBusy) return;
+    clockBusy = true;
+    try {
+      const jobId = $("clockJob")?.value || "";
+      const cls   = $("clockClass")?.value || PR_CLASSES[0];
+      const job   = (state.jobs || []).find(j => j.id === jobId);
+      const pos   = await punchPosition();
+
+      const body = {
+        clientPunchId: newPunchId(),
+        // The moment the button was pressed, taken here and carried through any
+        // replay. Never re-stamped on send.
+        startedAt: new Date().toISOString(),
+        jobId: jobId || null,
+        class: cls,
+        lat: pos.lat, lon: pos.lon,
+      };
+
+      // Optimistic local shift, written BEFORE the request. If the request never
+      // makes it, this is what keeps the pill running and the elapsed timer honest.
+      const localOpen = {
+        started_at: body.startedAt, job_name: job?.name || null,
+        class: cls, client_punch_id: body.clientPunchId,
+      };
+
+      try {
+        const d = await apiPost("clockIn", body);
+        clockState.open = d.open || localOpen;
+        clockLocalSave(null);
+      } catch (e) {
+        if (e?.status === 409) { await refreshClock(); return; }   // already on the clock
+        if (e?.status) { alert(e.message || "Couldn't clock in."); return; }
+        // Offline: queue it and carry on as if it worked, because it will.
+        const q = clockQueue(); q.push({ action: "clockIn", body }); clockQueueSave(q);
+        clockLocalSave(localOpen);
+        clockState.open = localOpen;
+      }
+      renderClockPill(); renderClockPanel(); tickClock();
+    } finally { clockBusy = false; }
+  }
+  window.clockIn = clockIn;
+
+  // The punch-out sheet is deliberately short — it stands between a person and
+  // going home. Job and class are already known from the punch-in; this only
+  // asks for what genuinely can't be inferred, and everything is optional.
+  function clockOutPrompt() {
+    const note = prompt("Any note for this shift? (optional — leave blank to just clock out)", "");
+    if (note === null) return;   // cancelled
+    clockOut(note.trim());
+  }
+  window.clockOutPrompt = clockOutPrompt;
+
+  async function clockOut(notes) {
+    if (clockBusy) return;
+    clockBusy = true;
+    try {
+      const pos = await punchPosition();
+      const body = {
+        // Reuses the open shift's cycle id so the server can match a replayed
+        // punch-out to the shift it closes.
+        clientPunchId: clockState.open?.client_punch_id || newPunchId(),
+        endedAt: new Date().toISOString(),
+        notes: notes || null,
+        lat: pos.lat, lon: pos.lon,
+      };
+      try {
+        await apiPost("clockOut", body);
+        clockState.open = null;
+        clockLocalSave(null);
+        await refreshClock();
+      } catch (e) {
+        if (e?.status) { alert(e.message || "Couldn't clock out."); await refreshClock(); return; }
+        const q = clockQueue(); q.push({ action: "clockOut", body }); clockQueueSave(q);
+        clockLocalSave(null);
+        clockState.open = null;
+        renderClockPill(); renderClockPanel(); tickClock();
+      }
+    } finally { clockBusy = false; }
+  }
+  window.clockOut = clockOut;
+
+  // Replay triggers. `online` is the direct one; `visibilitychange` covers the
+  // common real case where the phone regained signal while the screen was off and
+  // no online event ever fired.
+  window.addEventListener("online", () => { refreshClock().catch(() => {}); });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.user) refreshClock().catch(() => {});
+  });
 
   // ─── Hours by Job: all-time hours grouped by static job name ────────────
   // Read-only management view (admin). Backed by the hoursByJob rollup — the
@@ -20190,6 +20607,11 @@
       <button onclick="closeMyHours()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
     </div>
     <div class="payroll-modal-body">
+      <!-- The clock sits ABOVE the tiles: punching is the thing you opened this
+           screen to do in a hurry, and the rollups are what you browse afterwards.
+           Rendered entirely from JS and hidden outright when the clock is off, so
+           this markup costs nothing while the feature is dormant. -->
+      <div id="clockPanel" class="clock-panel hidden"></div>
       <div id="mhTiles" class="mh-tiles"></div>
     </div>
   </div>

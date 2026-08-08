@@ -1,8 +1,17 @@
 # Plan: a time clock in the field app
 
-**Status:** **NOT BUILT — parked deliberately.** Owner's call 2026-08-07: *finish the migration
-first, then look at time.* Nothing here should start before §3 Step 3 of `ROADMAP.md` (Make leaves
-the time path). Written down now so it is costed and the reasoning survives.
+**Status:** **BUILT 2026-08-08 — shipped INERT, not in use.** The gate this was parked behind
+cleared: Step 3 landed 2026-08-07 and the field-app migration completed 2026-08-08.
+
+Owner's call on building it, 2026-08-08: *"right now just build the app and replace qb time later
+on. not going to use time tracking in the app until its complete and ready for use."*
+
+So it is built and switched **off**. QuickBooks Time keeps running and keeps being the book of
+record. Nothing below happens to anyone until two env vars are set — see **§11 Switching it on**,
+which is also the record of what was actually built and where it differs from the original draft.
+
+*Original status, kept for the reasoning: NOT BUILT — parked deliberately. Owner's call 2026-08-07:
+finish the migration first, then look at time.*
 
 **One-line:** Punch in and out from the phone that is already in the electrician's hand, against a
 job, and have it become a time entry in Neon — where time entries already live.
@@ -179,3 +188,80 @@ Assuming the **replace** arm and after Step 3:
 
 **~10-14 h**, of which the offline queue is the part that can overrun. The "feed" arm adds a QB
 Time write path on top and is not costed here.
+
+---
+
+## 11. What was actually built — and switching it on
+
+Built 2026-08-08. Everything above still describes the intent; this section records where the
+build **diverged** from the draft, and is the operating manual.
+
+### The one real design change: punches do not go straight into `time_entries`
+
+§4 drew punch-out as an insert into `time_entries` with `source = 'Clock'`. That is the right end
+state, but it is unsafe as the *starting* state given the owner's decision to keep QB Time running
+throughout. `handlePayrollHoursRollup` sums `time_entries` with no source filter, and so do seven
+other reader sites plus the labor-cost views in `004`/`006` — so a punch landing there is a punch
+landing in payroll, against hours QB Time is also being paid for.
+
+Filtering `'Clock'` out of all eight readers would fail **open**: miss one and money is wrong.
+So the clock got its own ledger instead, and promotion became a separate, switched step:
+
+```
+punch  ->  clock_punches (always)  ->  time_entries (only when TIME_CLOCK_PAYROLL=on)
+```
+
+Nothing existing reads `clock_punches`, so while the switch is off the clock cannot touch payroll
+**by construction** rather than by remembering to filter — and zero existing readers were edited.
+Same shadow-then-flip shape as the login migration.
+
+### The two switches
+
+| Var | Values | Meaning |
+|---|---|---|
+| `TIME_CLOCK` | unset/`off` (default), `admin`, `on` | **Who can punch.** `off` = the feature does not exist: `clockStatus` answers `enabled:false`, the UI renders nothing, `clockIn`/`clockOut` 403. `admin` = admins only, for shaking it out on prod. `on` = all payroll-eligible roles (admin + employee). |
+| `TIME_CLOCK_PAYROLL` | unset/`off` (default), `on` | **Do punches become payroll hours.** Off = recorded in `clock_punches` only, and the UI says so in as many words. On = each punch-out also writes a `time_entries` row with `source = 'Clock'`. |
+
+They are separate because the dangerous half is not letting people punch — it is letting a punch
+turn into money while QB Time is still being paid from. Keeping them apart means the whole path
+can be exercised end to end before any of it counts.
+
+**Suggested order:** `TIME_CLOCK=admin` → punch a few real shifts yourself → `TIME_CLOCK=on` for
+the crew, still not counting → decide the §3 fork → `TIME_CLOCK_PAYROLL=on` → run
+`promoteClockPunches` once to count everything punched before the flip.
+
+**Rollback is exact:** `DELETE FROM time_entries WHERE source = 'Clock'` removes everything the
+clock ever contributed to payroll and leaves every punch intact in `clock_punches`. That precision
+is the whole reason `'Clock'` is its own source value rather than reused `'Manual'`.
+
+### Decisions the plan left open, now made
+
+- **Overnight rule (§8):** a shift belongs to the **local date it started**. 22:00 Tue → 02:00 Wed
+  is a Tuesday shift, all of it. Keeps one shift inside one pay week. Verified against the real
+  pooler: a 22:30 EDT punch files under the 11th, not the 12th, and `week_start_date` lands on the
+  correct Monday.
+- **Timezone:** `America/New_York`, named explicitly in SQL. This is the first timestamp→date
+  conversion in the whole schema — every other date arrived pre-made from QuickBooks — and Neon's
+  pooler connects in UTC, which would otherwise file every evening punch under tomorrow.
+- **`source = 'Clock'`**, not `'Manual'` (§8's open question). `te_has_a_key` was extended in `018`
+  to accept it; without that, promotion fails on every row.
+- **No Airtable mirror.** `handleCreateTimeEntry` still mirrors; the clock does not. Make left the
+  time path at Step 3 and the Airtable Time Entries table is a frozen historical copy — writing new
+  punches into it would put rows in something nothing reads.
+- **Clock skew:** a punch-out earlier than its punch-in is **clamped** to zero, not rejected. The
+  `clock_punch_ordered` CHECK would otherwise roll back the shift-closing delete and strand someone
+  on the clock with no way off it. A zero-length punch is a far better failure.
+- **Punch window:** client timestamps are trusted (that is what makes offline replay honest) but
+  bounded to **±36 h**, wide enough for a genuinely late replay and tight enough that a device with
+  a wrong year cannot file hours into a closed pay period.
+
+### Verification done
+
+- Backend: 9 new cases in `tests/handlers.test.mjs` (126 pass, 0 fail) covering the off state, the
+  admin gate, role authz, replay-key validation and the punch window.
+- SQL: exercised by hand on a Neon branch, because **offline tests die at the connection and would
+  pass over broken SQL**. `PREPARE` on all three parameterised writes deduces clean parameter types;
+  a full cycle — punch in, double-punch refused, overnight punch out, promote, re-promote — behaves
+  correctly, including quarter-hour rounding (3 h 47 m → 3.75 h) and idempotent promotion.
+- ⬜ **Not done: a browser smoke test.** Nothing has been exercised through the actual UI, and the
+  offline queue in particular has never been tested on a real phone losing signal.

@@ -11741,6 +11741,9 @@
             <button class="people-pin-btn" data-id="${esc(p.id)}" type="button"
               style="background:none; border:none; padding:0; color:var(--accent);
                      font-weight:600; font-size:12px; cursor:pointer;">Show PIN</button>
+            <button class="people-repin-btn" data-id="${esc(p.id)}" data-name="${esc(p.name)}" type="button"
+              style="background:none; border:none; padding:0; margin-left:14px; color:var(--accent);
+                     font-weight:600; font-size:12px; cursor:pointer;">Change PIN</button>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; font-size:12px; margin-bottom:10px;">
             <div><div style="color:var(--muted);">Cost rate</div><div style="font-weight:600;">${rate}</div></div>
@@ -11781,6 +11784,9 @@
     $("peopleList").querySelectorAll(".people-pin-btn").forEach(btn => {
       btn.addEventListener("click", () => revealPin(btn));
     });
+    $("peopleList").querySelectorAll(".people-repin-btn").forEach(btn => {
+      btn.addEventListener("click", () => changePin(btn));
+    });
   }
 
   // Fetched per person on tap, never with the roster — otherwise every
@@ -11809,6 +11815,44 @@
       btn.disabled = false;
       btn.textContent = "Show PIN";
       alert(`Couldn't read that PIN.\n\n${e.message}`);
+    }
+  }
+
+  // Admin-driven PIN reset. There is no self-service "forgot PIN" and there
+  // can't be one yet — no employee record has an email or a phone number, so a
+  // reset code has nowhere to go.
+  //
+  // One prompt() pre-filled with a random suggestion covers both paths at once:
+  // take the generated PIN, or type your own over it. Beats a Generate button
+  // plus a field plus a confirm on a phone.
+  async function changePin(btn) {
+    const id = btn.dataset.id, name = btn.dataset.name;
+    const isMe = id === state.user?.id;
+    const suggested = String(Math.floor(1000 + Math.random() * 9000));
+    const entered = prompt(
+      `New PIN for ${name} — 4 to 8 digits.\n\n` +
+      (isMe
+        ? `This is you: you'll be signed out and will need to log back in with the new PIN.\n\n`
+        : `This also signs them out of any device they're on right now.\n\n`) +
+      `A random one is suggested — keep it, or type your own:`, suggested);
+    if (entered === null) return;
+    const next = String(entered).trim();
+    // Checked here as well as on the server so a typo costs no round trip.
+    if (!/^\d{4,8}$/.test(next)) { alert("A PIN must be 4 to 8 digits, numbers only."); return; }
+
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    try {
+      await apiPost("setEmployeePin", { employeeId: id, pin: next });
+      // Read it back before claiming success. Nothing else on this screen
+      // matters if the number an admin is about to read out is wrong.
+      alert(`${name}'s PIN is now ${next}.` + (isMe ? `\n\nYou'll be asked to log in again.` : ``));
+      await loadPeople();
+    } catch (e) {
+      // The 409 duplicate message names who already has it — worth showing
+      // verbatim rather than flattening to "failed".
+      alert(`Couldn't change ${name}'s PIN.\n\n${e.message}\n\nNothing was changed.`);
+      renderPeople();
     }
   }
 

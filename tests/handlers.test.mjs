@@ -1508,6 +1508,34 @@ await test("employeePin: strict admin only, and reports a missing PIN as missing
   eq((await GET("employeePin", {})).statusCode, 400, "no employeeId → 400");
 });
 
+await test("setEmployeePin: admin only, digits only, and no duplicates", async () => {
+  mockTables = { Employees: [
+    { id: "recA", fields: { "Employee Name": "Larry Unruh", PIN: "1184" } },
+    { id: "recB", fields: { "Employee Name": "Tisha",       PIN: "2222" } },
+  ] };
+  eq((await POST("setEmployeePin", { employeeId: "recB", pin: "4321" }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("setEmployeePin", { employeeId: "recB", pin: "4321" }, OFFICE_TOK)).statusCode, 403, "office refused");
+  eq((await POST("setEmployeePin", { employeeId: "recB", pin: "12" }, ADMIN_TOK)).statusCode, 400, "too short");
+  eq((await POST("setEmployeePin", { employeeId: "recB", pin: "abcd" }, ADMIN_TOK)).statusCode, 400, "not digits");
+  // The live bug this guard exists for: Larry (admin) and two office users all
+  // had 1184, so either office user could log in as `larry` and get admin.
+  // Login matches identifier + PIN, so a shared PIN IS a working credential
+  // for someone else's account.
+  const dup = await POST("setEmployeePin", { employeeId: "recB", pin: "1184" }, ADMIN_TOK);
+  eq(dup.statusCode, 409, "duplicate PIN refused");
+  ok(/Larry Unruh/.test(json(dup).error), "and names who already has it");
+});
+
+await test("setEmployeePin: a PIN change signs the person out, and fails closed", async () => {
+  // Same contract as setEmployeeActive: Neon first, and a change we could not
+  // record as a sign-out is not reported as done.
+  mockTables = { Employees: [{ id: "recA", fields: { "Employee Name": "Larry Unruh", PIN: "1184" } }] };
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  const res = await POST("setEmployeePin", { employeeId: "recA", pin: "5678" }, ADMIN_TOK);
+  ok(res.statusCode >= 500, `expected a server error, got ${res.statusCode}`);
+  delete process.env.DATABASE_URL;
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

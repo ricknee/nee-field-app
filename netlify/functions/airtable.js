@@ -451,6 +451,8 @@ const _ADMIN_POSTS = new Set([
   // Turning a person's app access on or off. Admin only — this is the action
   // that kills live sessions, and office manages money, not access.
   "setEmployeeActive",
+  // Resetting a credential, and it signs the person out. Admin only.
+  "setEmployeePin",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -2036,6 +2038,7 @@ async function handleLogin(body) {
 // must not overwrite it.
 const _EMP_FLD = {
   active: "fldJbQBEweYfoo5nz",
+  pin:    "fld4vnd5aFyrIajM9",
 };
 
 async function handlePeople() {
@@ -2127,6 +2130,67 @@ async function handleEmployeePin(params) {
   // PIN is not cosmetic, handleLogin refuses to match one, so the person
   // genuinely cannot log in until it is set.
   return resp(200, { ok: true, employeeId, pin, hasPin: pin !== "" });
+}
+
+// Set a new PIN. Admin-driven reset — there is no self-service "forgot PIN"
+// and there cannot be one today: not a single employee record carries a
+// Primary Email or Primary Phone, so a reset code has nowhere to go.
+//
+// ── DUPLICATES ARE REFUSED, AND THAT IS NOT PEDANTRY ───────────────────────
+// Login matches identifier + PIN, so two people sharing a PIN means either can
+// log in AS the other by typing the other's username. Found live on 2026-08-08:
+// Larry (admin), Tisha (office) and Arlene (office) all had 1184, which handed
+// both office users a working admin login. Refusing duplicates stops that
+// being recreated. The check covers INACTIVE employees too — a former employee
+// can be restored, and would collide the moment they were.
+//
+// Unlike setEmployeeActive there is no self guard: changing your own PIN is
+// safe and useful. It will sign you out, which is correct and expected.
+async function handleSetEmployeePin(body) {
+  const { employeeId, pin } = body || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const next = String(pin ?? "").trim();
+  // Digits only: the login screen is a numeric keypad on a phone, so anything
+  // else is a PIN nobody can actually type in the field.
+  if (!/^\d{4,8}$/.test(next)) {
+    return resp(400, { ok: false, error: "PIN must be 4 to 8 digits." });
+  }
+
+  const all = await fetchAll(TABLES.employees);
+  const target = all.find(r => r.id === employeeId);
+  if (!target) return resp(404, { ok: false, error: "No such employee." });
+
+  const clash = all.find(r => r.id !== employeeId && String(r.fields?.[F.emp.pin] ?? "").trim() === next);
+  if (clash) {
+    return resp(409, {
+      ok: false,
+      error: `That PIN is already used by ${g(clash.fields, F.emp.name) || "another employee"}. Two people sharing a PIN lets either log in as the other — pick a different one.`,
+    });
+  }
+
+  // Neon first and fails CLOSED, same shape and same reasoning as
+  // handleSetEmployeeActive: a PIN change that silently left old sessions
+  // alive would be exactly the wrong thing to report as done. Note this
+  // statement touches ONLY token_valid_from — it must never set terminated_on,
+  // which would file a working employee as having left.
+  const rows = await neonWrite("repinEmployee",
+    `UPDATE employees
+        SET token_valid_from = $2::timestamptz
+      WHERE airtable_id = $1
+  RETURNING airtable_id`, [employeeId, new Date().toISOString()]);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error(`employee ${employeeId} is not in Neon yet — cannot sign out their devices`);
+  }
+  clearRevocationCache();
+
+  await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: { [_EMP_FLD.pin]: next } }),
+  });
+
+  return resp(200, { ok: true, employeeId, name: g(target.fields, F.emp.name) || "" });
 }
 
 // Turn an employee's access on or off. THE point of the screen.
@@ -8251,6 +8315,7 @@ export async function handler(event) {
       // authUser is passed so the handler can refuse a self-lockout — the
       // signed identity, never a client-supplied one.
       if (body.action === "setEmployeeActive")    return await handleSetEmployeeActive(body, authUser);
+      if (body.action === "setEmployeePin")       return await handleSetEmployeePin(body);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
       if (body.action === "createInspectionAgency") return await handleCreateInspectionAgency(body);
       if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);

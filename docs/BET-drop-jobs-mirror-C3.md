@@ -1,6 +1,8 @@
 # Drop the Jobs mirror — Step C3 (the irreversible part)
 
-**Status:** Planned 2026-08-03, not executed. Needs an explicit go-ahead.
+**Status:** **IN FLIGHT 2026-08-08.** §5 steps 1 and 2 are DONE and passed (execution log in §9).
+Next action is **step 3 — turn the Airtable sync OFF**, which is a UI action only the owner can do.
+Nothing has been destroyed; everything so far is reversible.
 **Steps A, B, C1, C2 are done, pushed and smoke-verified.** The bet's goal is already met: the
 app reads the mirror nowhere. C3 is cleanup, not function.
 
@@ -135,7 +137,66 @@ Inventory Items), then the ledger (Inventory Transactions, Stock Levels as a vie
 maintained table), then estimating (Estimates, Templates, Assemblies). The expense push is the
 seam to the main base and should move last, because it is the only path that writes across.
 
-## 9. Honest assessment of value
+## 9. Execution log
+
+### ✅ Step 1 — Make audit re-run — **PASSED 2026-08-08**
+
+The §4 gap ("the 2026-06-06 audit is two months old") is closed. Checked **blueprints**, not the
+scenarios list, because the list endpoint carries no base ids.
+
+- Team 6575 has **70 scenarios; 18 are active.** ⚠ **`isPaused` is NOT the activation flag** — it
+  is `false` on all 70. The real flag is **`isActive`**. Anything auditing Make scenarios must use
+  `isActive` or it will read every retired scenario as live.
+- **22 scenarios use an `airtable` or `http` module** (the only two ways to reach an Airtable base);
+  the other 48 use neither and were excluded on that basis. **All 22 blueprints were fetched and
+  grepped.**
+- **Result: 0 references to `appfsLJwfow4CepCw` and 0 to `tblBWsMk3Gmv7bdCu`.** Every Airtable
+  scenario points at the main base `appiqWg6SvKcGfMAu`. (One inactive 2022 scenario, `351560`,
+  points at a long-dead base `apptaMAETfGqbbT7N` — neither ours nor relevant.)
+- Confirmed in passing: **`4546051` has `isActive: false`**, so Step 3 of the roadmap is still
+  holding, and the mirror's `Sync Source` field is type **`externalSyncSource`** — re-verifying that
+  this is an Airtable-native sync, not a Make scenario.
+
+Audit script: `scratchpad/c3-make-audit.mjs` (throwaway; re-derivable from the notes above).
+
+### ✅ Step 2 — orphan check + snapshot — **PASSED 2026-08-08**
+
+**2a — the risk row in §6, cleared.** Transactions with a `Job` link (`fld7OG04Sgkp88JsU`) but
+**no** `Job ID (Main)` (`fldePDNz1zc2bmNkk`): **0**. The filter was proved to discriminate rather
+than silently return nothing — **116** transactions carry the legacy `Job` link, and all 116 also
+carry a `Job ID (Main)`, every value a well-formed `rec…` id. **Deleting the link field loses no
+job association.**
+
+**2b — snapshot taken.** 26 rows × 19 columns, written **outside the repo** to
+`C:\Users\irick\projects\nee-backups\inventory-jobs-mirror_tblBWsMk3Gmv7bdCu_2026-08-08.csv`
+(+ a `.json` alongside).
+
+> ⚠ **Deliberately not in the repo.** `netlify.toml` publishes the repo **root**, so a CSV committed
+> there would be served publicly on the live site.
+
+> ⚠ **Neither PAT in `.env` can read the inventory base** — `AIRTABLE_PROD_READ_PAT` and
+> `AIRTABLE_API_KEY` both return **403** on `appfsLJwfow4CepCw` (they are scoped to the main and
+> sandbox bases). The snapshot was taken through the Airtable MCP connection instead. **Anyone
+> scripting against the inventory base needs a different credential** — worth knowing before Steps
+> B/C/D of `PLAN-inventory-to-neon.md`, which will all need one.
+
+The snapshot was verified rather than trusted: the Jobs-side link count reconciles **exactly** with
+the Transactions side (4 jobs holding 116 links total, vs the 116 found independently), and all four
+quantity rollups match the live read (Lance Koehn 8.3 · Ryan Yoder 19 · Kenny Barkan 11.5 ·
+Bethel School 5670.39).
+
+**Only 4 of the 26 mirror rows have ever held a transaction link** — Bethel School (99), Kenny
+Barkan (7), Ryan Yoder (6), Lance Koehn (4). The other 22 are inert copies.
+
+### ⬜ Step 3 — NEXT, and it is an owner action
+
+Turn the Airtable sync **OFF** on the mirror, leaving the table in place. This is a **synced-table
+setting in the Airtable UI** — there is no API for it, so it cannot be done from here. Then soak 48 h
+(§5 step 4) with a real inventory push and a real `submitCart` before anything is deleted.
+
+---
+
+## 10. Honest assessment of value
 
 The bet's original goal — the app no longer depends on the mirror — was achieved at Step C2. On
 its own, C3 removes a stale duplicate that no longer updates anything and nothing reads.

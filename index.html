@@ -2678,6 +2678,13 @@
             <div id="piNotesText" style="white-space:pre-wrap; font-size:13px; color:var(--text); line-height:1.5;">—</div>
           </div>
 
+          <!-- City tax for work on this job. Admin/office, populated by
+               refreshJobCityTaxView() on every job switch. It lives here rather
+               than in the edit panel because it is not part of the customer
+               record — it's a payroll setting that happens to hang off a job,
+               and it saves on its own like the billable rate does. -->
+          <div class="admin-only hidden" id="piCityTaxView" style="margin-top:14px;"></div>
+
           <!-- Bird move-in date (poultry new-construction). Admin-only read-only
                view; hidden during edit mode where the date input takes over.
                Only rendered when a date is set (toggled in refreshBirdDateView). -->
@@ -8439,6 +8446,66 @@
     `;
   }
 
+  // ── Per-job city tax ────────────────────────────────────────────────────
+  // The site address CANNOT determine this — a Columbiana mailing address can sit
+  // outside Columbiana's limits, and that job owes nothing. So it's a decision a
+  // human makes once, here, and the clock then applies it to every punch.
+  //
+  // "Not set" is shown as its own state rather than silently reading as "no tax",
+  // because an undecided job and a decided-no-tax job look identical on a payroll
+  // report and only one of them still needs someone to look at it.
+  function renderJobCityTaxBar(job) {
+    const cur = job.cityTax;
+    const curLabel = cur == null ? "not set" : cur;
+    return `
+      <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
+        <span style="font-size:13px; font-weight:700; color:var(--text);">🏛 City Tax:</span>
+        <span style="font-size:12px; color:var(--muted);">Current:</span>
+        <span id="jobCityTaxCurrent" style="font-size:13px; font-weight:600; color:${cur == null ? "var(--muted)" : "var(--accent)"};">${esc(curLabel)}</span>
+        <select id="jobCityTaxSelect" class="edit-input" style="min-width:220px; font-size:13px; margin-left:8px;">
+          <option value="">— Not set —</option>
+          ${PR_CITY_TAXES.map(t => `<option value="${esc(t)}" ${t === cur ? "selected" : ""}>${esc(t)}</option>`).join("")}
+        </select>
+        <button id="jobCityTaxSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
+        <span id="jobCityTaxSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+        <span id="jobCityTaxSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
+        <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
+          Where work on this job is taxed. The mailing address doesn't decide it — a job can be
+          outside city limits and owe nothing. Travel time is always “A No Tax”.
+        </span>
+      </div>
+    `;
+  }
+
+  function wireJobCityTaxBar(job) {
+    const sel = $("jobCityTaxSelect");
+    const btn = $("jobCityTaxSaveBtn");
+    if (!sel || !btn) return;
+    btn.onclick = async () => {
+      const msg = $("jobCityTaxSaveMsg"), err = $("jobCityTaxSaveErr");
+      msg.style.display = "none"; err.style.display = "none";
+      btn.disabled = true;
+      try {
+        const value = sel.value || null;
+        await apiPost("updateJobCityTax", { jobId: job.id, cityTax: value });
+        // Keep the in-memory job in step so the clock picks it up without a reload.
+        job.cityTax = value;
+        const idx = (state.jobs || []).findIndex(j => j.id === job.id);
+        if (idx >= 0) state.jobs[idx].cityTax = value;
+        const cur = $("jobCityTaxCurrent");
+        if (cur) {
+          cur.textContent = value == null ? "not set" : value;
+          cur.style.color = value == null ? "var(--muted)" : "var(--accent)";
+        }
+        msg.style.display = "inline";
+        setTimeout(() => { msg.style.display = "none"; }, 2500);
+      } catch (e) {
+        err.textContent = e.message || "Couldn't save";
+        err.style.display = "inline";
+      } finally { btn.disabled = false; }
+    };
+  }
+
   async function wireBillableRateBar(job) {
     const sel = $("jobRateSelect");
     if (!sel) return;
@@ -10012,6 +10079,19 @@
   // Bird move-in date read-only display. Admin-only, and only shown when a
   // date is actually set (blank on every non-poultry job). Called from
   // exitEditMode, which runs on each job switch and after Save.
+  // Renders and wires the per-job city tax control. Called alongside
+  // refreshBirdDateView from exitEditMode, which runs on every job switch — so the
+  // control always reflects the job actually on screen.
+  function refreshJobCityTaxView() {
+    const host = $("piCityTaxView");
+    if (!host) return;
+    const job = state.selected;
+    if (!job || !isAdmin()) { host.classList.add("hidden"); host.innerHTML = ""; return; }
+    host.innerHTML = renderJobCityTaxBar(job);
+    host.classList.remove("hidden");
+    wireJobCityTaxBar(job);
+  }
+
   function refreshBirdDateView() {
     const view = $("piBirdDateView");
     if (!view) return;
@@ -10092,6 +10172,7 @@
     const notesView = $("piNotesView");
     if (notesView) notesView.classList.remove("hidden");
     refreshBirdDateView();
+    refreshJobCityTaxView();
     const editBtn = $("piEditBtn");
     if (editBtn) {
       editBtn.textContent = "✏ Edit";
@@ -17493,20 +17574,58 @@
   // It deliberately does not touch the city-tax picker — see the warning above.
   function clockPickJob(id) {
     clockPick.jobId = (clockPick.jobId === id) ? "" : id;
-    const job = (state.jobs || []).find(j => j.id === clockPick.jobId);
-    const hint = $("clockCityHint");
-    if (hint) hint.textContent = clockCityHintText(job);
+    clockSyncCityTax();
     renderClockJobList();
   }
   window.clockPickJob = clockPickJob;
 
   function clockCityHintText(job) {
-    const city = job ? cityTaxHintForJob(job) : null;
     if (!job) return "Pick where the work actually happened.";
+    if (job.cityTax) return `Set on this job: ${job.cityTax}.`;
+    const city = cityTaxHintForJob(job);
     return city
-      ? `Job mails as ${city} — that's the postal address, not necessarily the tax district. Pick where the work actually happened.`
-      : "No address on this job — pick where the work actually happened.";
+      ? `No city tax set for this job. It mails as ${city}, but that's the postal address, not the tax district — an admin can set it in Project Info.`
+      : "No city tax set for this job — an admin can set it in Project Info.";
   }
+
+  // ⚠ TRAVEL IS ALWAYS UNTAXED. Owner, 2026-08-08: "travel is always no city tax."
+  // A company-wide rule, so it lives here in one place rather than as a per-job
+  // column that could be set inconsistently across 112 jobs.
+  const CLOCK_TRAVEL_CLASS = "Travel";
+
+  // What the city-tax picker should read, given the job and the class chosen.
+  // Job setting wins; Travel overrides everything; "A No Tax" is the floor. The
+  // address is never consulted — see the warning above cityTaxHintForJob.
+  function clockDefaultCityTax(job, cls) {
+    if (cls === CLOCK_TRAVEL_CLASS) return "A No Tax";
+    return job?.cityTax || "A No Tax";
+  }
+
+  // Re-applies the default when either input changes, and locks the picker for
+  // travel so it can't be set to something that would then be wrong.
+  function clockSyncCityTax() {
+    const sel = $("clockCity");
+    if (!sel) return;
+    const job = (state.jobs || []).find(j => j.id === clockPick.jobId);
+    const cls = $("clockClass")?.value || "";
+    sel.value = clockDefaultCityTax(job, cls);
+    const travel = cls === CLOCK_TRAVEL_CLASS;
+    sel.disabled = travel;
+    const hint = $("clockCityHint");
+    if (hint) hint.textContent = travel ? "Travel is always untaxed." : clockCityHintText(job);
+  }
+  window.clockSyncCityTax = clockSyncCityTax;
+
+  // Same travel rule on the way out: switching a finished shift to Travel must
+  // force the tax to none, or a punch could be booked as travel AND taxed.
+  function clockOutSyncCityTax() {
+    const sel = $("clockOutCity");
+    if (!sel) return;
+    const travel = ($("clockOutClass")?.value || "") === CLOCK_TRAVEL_CLASS;
+    if (travel) sel.value = "A No Tax";
+    sel.disabled = travel;
+  }
+  window.clockOutSyncCityTax = clockOutSyncCityTax;
 
   function renderClockPanel() {
     const el = $("clockPanel");
@@ -17563,13 +17682,13 @@
              </div>`}
 
         <div id="clockOutSheet" class="hidden" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;">
-          <label class="clock-field">City tax
-            <select id="clockOutCity">${PR_CITY_TAXES.map(t =>
-              `<option value="${esc(t)}" ${t === (clockState.open.city_taxes || "") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
-          </label>
           <label class="clock-field">Class
-            <select id="clockOutClass">${clockClasses(clockState.open.class).map(c =>
+            <select id="clockOutClass" onchange="clockOutSyncCityTax()">${clockClasses(clockState.open.class).map(c =>
               `<option value="${esc(c)}" ${c === (clockState.open.class || "") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+          </label>
+          <label class="clock-field">City tax
+            <select id="clockOutCity" ${clockState.open.class === CLOCK_TRAVEL_CLASS ? "disabled" : ""}>${PR_CITY_TAXES.map(t =>
+              `<option value="${esc(t)}" ${t === (clockState.open.city_taxes || "A No Tax") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
           </label>
           <label class="clock-field">Note (optional)
             <input id="clockOutNote" type="text" placeholder="What did you work on?" />
@@ -17602,20 +17721,24 @@
         </label>
         <div id="clockJobList" class="clock-job-list"></div>
 
+        <label class="clock-field">Class
+          <select id="clockClass" onchange="clockSyncCityTax()">${
+            clockClasses().map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+        </label>
+
         <label class="clock-field">City tax
           <select id="clockCity">${PR_CITY_TAXES.map(t =>
-            `<option value="${esc(t)}" ${t === "A No Tax" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+            `<option value="${esc(t)}" ${t === clockDefaultCityTax(preJob, PR_CLASSES[0]) ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
         </label>
         <div id="clockCityHint" class="clock-note" style="margin-top:4px;">${esc(clockCityHintText(preJob))}</div>
-
-        <label class="clock-field">Class
-          <select id="clockClass">${clockClasses().map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
-        </label>
         <div style="height:12px;"></div>
         <button class="clock-btn clock-btn-in" onclick="clockIn()">Clock In</button>
         ${countsHtml}${queuedHtml}
       `;
       renderClockJobList();
+      // Apply the job/class rules to the freshly-built picker — this is what sets
+      // the disabled state when the default class is Travel.
+      clockSyncCityTax();
     }
 
     const recent = clockState.recent || [];

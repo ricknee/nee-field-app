@@ -1742,6 +1742,22 @@ await test("clock: a phone with a wrong clock can't file hours into a closed pay
   delete process.env.TIME_CLOCK;
 });
 
+await test("job city tax: admin+office may set it, the crew may not, and the value is whitelisted", async () => {
+  eq((await POST("updateJobCityTax", { jobId: "recJ1", cityTax: "Canton Tax" }, EMP_TOK)).statusCode, 403,
+     "an employee cannot change what a job is taxed at");
+  eq((await POST("updateJobCityTax", { jobId: "recJ1", cityTax: "Canton Tax" }, VIEWER_TOK)).statusCode, 403,
+     "nor a viewer");
+  eq((await POST("updateJobCityTax", { cityTax: "Canton Tax" }, ADMIN_TOK)).statusCode, 400,
+     "a write with no job is refused");
+  // ⚠ The whitelist is the guard that matters. These strings are written verbatim
+  // into a time entry's free-text city_taxes, and anything QuickBooks doesn't
+  // recognise silently degrades to "A No Tax" — the exact failure this feature
+  // exists to prevent. A typo must fail loudly here, not quietly downstream.
+  const bad = await POST("updateJobCityTax", { jobId: "recJ1", cityTax: "Massillon Tax" }, ADMIN_TOK);
+  eq(bad.statusCode, 400, "the CORRECT spelling of Massillon is rejected — QB stores 'Massilon Tax'");
+  ok(/Unknown city tax/.test(json(bad).error), "and says so plainly");
+});
+
 await test("clock: the roster and punching others are STRICT admin — office is out", async () => {
   process.env.TIME_CLOCK = "on";
   // clockRoster shows where every person is and backs a screen that starts and

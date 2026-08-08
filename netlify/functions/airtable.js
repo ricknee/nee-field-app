@@ -493,6 +493,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // to _NON_VIEWER with in-handler owner/status enforcement.
   "approveExpense", "markInvoicePaid", "setInvoiceStatus",
   "updateJobBillableRate", "createVendor",
+  // Which city tax applies to a job's work. Same tier as the billable rate: a job
+  // setting that moves money, so admin+office, not the whole crew.
+  "updateJobCityTax",
   // Lifts became employee-editable on 2026-08-03 (see the fleet parity change),
   // so updateScissorLift stays _NON_VIEWER — a crew marks a lift on/off a job.
   // But adding equipment to the books, and RETIRING a sold one along with its
@@ -708,6 +711,23 @@ const SERVICE_TYPE_OPTS = [
 // Warranties.Warranty Type — fallback "Limited" is the most conservative
 // (least coverage) choice if a stray value arrives.
 const WARRANTY_TYPE_OPTS = ["Parts & Labor", "Parts Only", "Extended", "Limited"];
+
+// ⚠ MUST STAY IDENTICAL TO PR_CITY_TAXES IN index.html, character for character.
+// These strings carry QuickBooks Time's OWN spellings — "Massilon", "New
+// Philadephia", "N Canton", and "Hayesville" with no "Tax" suffix. They are wrong
+// as English and correct as data: the value is stored as free text on a time entry
+// and anything that doesn't match verbatim silently falls back to "A No Tax"
+// downstream. Do NOT tidy the spellings on either side.
+const PR_CITY_TAX_OPTS = [
+  "A No Tax", "Alliance Tax", "Amherst Tax", "Ashland City Tax", "Austintown Tax",
+  "Canton Tax", "Carrollton City Tax", "Cleveland Tax", "Columbiana Tax",
+  "Cuyahoga Falls Tax", "Dennison City Tax", "Grafton Tax", "Green Tax",
+  "Hartville Tax", "Hayesville", "Madison City Tax", "Massilon Tax", "Medina Tax",
+  "Millersburg City Tax", "Minerva Tax", "N Canton", "New Philadephia",
+  "Orrville City Tax", "Rita Tax", "Salem Tax", "Sebring Tax", "Steubenville Tax",
+  "Streetsboro Tax", "Strongsville Tax", "Utica Tax", "Wadsworth Tax", "Akron Tax",
+  "Other",
+];
 
 // Warranties.Source — fallback "Standard" is the default for warranties
 // created from manufacturer templates at commissioning time.
@@ -1382,6 +1402,41 @@ async function promoteClockPunch(punchId) {
       RETURNING c.time_entry_id`,
     [punchId]);
   return rows?.[0]?.time_entry_id || null;
+}
+
+// ── JOB SETTING: which city tax applies to work on this job ────────────────
+// Set once per job by a human, because the site address genuinely cannot answer
+// it — see the header of db/schema/020_job_city_tax.sql for the reasoning and the
+// owner's own example (a Columbiana mailing address outside Columbiana's limits).
+//
+// Neon-only: there is no Airtable twin, so there is nothing to mirror. That is
+// safe precisely because the column is absent from _jobs-sync.js's FIELDS list;
+// adding it there would make the hourly sync overwrite this with Airtable's NULL.
+//
+// Travel is NOT settable here. "Travel is always no city tax" is a company rule,
+// so it lives in one place in the clock rather than as a column that could be set
+// inconsistently across 112 jobs.
+async function handleUpdateJobCityTax(body) {
+  const { jobId, cityTax } = body || {};
+  if (!jobId || !String(jobId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid jobId." });
+  }
+  // null/"" clears it back to "not yet decided", which is a legitimate state and
+  // distinct from "A No Tax". Anything else must be a known option — a stray value
+  // here would be written verbatim into payroll's city_taxes and silently fall back
+  // to "A No Tax" downstream, which is the failure this whole feature exists to stop.
+  const raw = cityTax == null ? null : String(cityTax).trim();
+  const value = (raw === "" ? null : raw);
+  if (value !== null && !PR_CITY_TAX_OPTS.includes(value)) {
+    return resp(400, { ok: false, error: `Unknown city tax: ${value}` });
+  }
+
+  const rows = await neonWrite("job.setCityTax",
+    `UPDATE jobs SET city_tax = $2 WHERE airtable_id = $1 RETURNING airtable_id, city_tax`,
+    [String(jobId), value]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
+
+  return resp(200, { ok: true, jobId, cityTax: rows[0].city_tax ?? null });
 }
 
 // ══ WHO'S WORKING — the admin roster ═════════════════════════════════════════
@@ -3444,6 +3499,8 @@ const JOB_SELECT = `
          j.pcloud_photo_folder_id, j.pcloud_invoices_sent_id, j.trello_card_id,
          j.tax_status, j.billing_method, j.customer_first_name, j.customer_last_name,
          j.address_street, j.address_city, j.address_state, j.address_zip,
+         -- App-owned, Neon-only (no Airtable twin). See db/schema/020.
+         j.city_tax,
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.bird_date::text AS bird_date, j.workflow_status, j.billable_hourly_rate,
@@ -3524,6 +3581,9 @@ function mapJobFromNeon(r) {
     billingMethod: s(r.billing_method),
     baseContractAmount: n(r.base_contract_amount), totalContractBilled: n(r.total_contract_billed),
     customerFirstName: s(r.customer_first_name), customerLastName: s(r.customer_last_name),
+    // NULL deliberately survives as null rather than becoming "" — "not yet
+    // decided" and "decided: no tax" are different answers and the UI shows both.
+    cityTax: r.city_tax ?? null,
     customerStreet: s(r.address_street), customerCity: s(r.address_city),
     customerState: s(r.address_state), customerZip: s(r.address_zip),
     customerPhone: s(r.customer_phone), customerEmail: s(r.customer_email),
@@ -9267,6 +9327,7 @@ export async function handler(event) {
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);
+      if (body.action === "updateJobCityTax")     return await handleUpdateJobCityTax(body);
       if (body.action === "addFleetService")      return await handleAddFleetService(body);
       if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);

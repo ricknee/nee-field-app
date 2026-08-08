@@ -3,7 +3,7 @@
 // Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
-import { shadowLoginCheck } from "./_employees.js";
+import { shadowLoginCheck, neonLoginCandidate, loginSource } from "./_employees.js";
 import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
@@ -111,6 +111,26 @@ async function handleLogin(body) {
   const { identifier, pin } = body || {};
   if (!identifier || !pin) return resp(400, { ok: false, error: "Missing name or PIN." });
 
+  // Stage 3, gated by LOGIN_SOURCE — see _employees.js and airtable.js's
+  // handleLogin, which this mirrors exactly. It has to: one token validates in
+  // BOTH apps, so if these two disagreed about who a login belongs to, a
+  // session minted here would carry the wrong identity over there.
+  if (loginSource() === "neon") {
+    const r = await neonLoginCandidate(identifier, pin);
+    if (r.ok) {
+      if (r.ambiguous) {
+        console.warn(`login[inventory]: refusing ambiguous identifier — ${r.n} employees match.`);
+        return resp(401, { ok: false, error: "That name matches more than one person. Use your username." });
+      }
+      if (!r.user) return resp(401, { ok: false, error: "Invalid name or PIN." });
+      return resp(200, {
+        ok: true, user: r.user, _source: "neon",
+        token: signToken({ id: r.user.id, role: r.user.role }),
+      });
+    }
+    console.warn("login[inventory]: Neon unavailable, falling back to Airtable.");
+  }
+
   const records = await fetchAll(API_ROOT_MAIN, "Employees", { filter: `{Active}=1` });
   const id = normalize(identifier);
 
@@ -149,7 +169,7 @@ async function handleLogin(body) {
   // because this app's matching rule is NOT the field app's — it accepts a
   // first name and ignores email. See _employees.js.
   await shadowLoginCheck("inventory", identifier, pin, user);
-  return resp(200, { ok: true, user, token: signToken({ id: user.id, role: user.role }) });
+  return resp(200, { ok: true, user, _source: "airtable", token: signToken({ id: user.id, role: user.role }) });
 }
 
 // ── EMPLOYEES (for name picker) ────────────────────────────

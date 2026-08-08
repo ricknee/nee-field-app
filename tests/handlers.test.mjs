@@ -1555,6 +1555,40 @@ await test("login: the Neon shadow cannot affect the answer", async () => {
   delete process.env.DATABASE_URL;
 });
 
+await test("login: LOGIN_SOURCE defaults OFF — the flip ships inert", async () => {
+  // Stage 3 lands in production switched off. If this ever fails, the flip has
+  // taken effect without anyone deciding to enable it.
+  delete process.env.LOGIN_SOURCE;
+  mockTables = { Employees: [
+    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
+  ] };
+  const res = await POST("login", { identifier: "rick nee", pin: "1234" });
+  eq(res.statusCode, 200, "login works");
+  eq(json(res)._source, "airtable", "Airtable answered, not Neon");
+});
+
+await test("login: with the flip ON and Neon dead, Airtable still lets you in", async () => {
+  // The property the whole kill-switch design exists for. Neon having no
+  // opinion — unset OR unreachable — must fall back, never refuse: a database
+  // blip that locks out every crew member is far worse than the stale-copy
+  // risk it would be avoiding.
+  mockTables = { Employees: [
+    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
+  ] };
+  process.env.LOGIN_SOURCE = "neon";
+  for (const url of [undefined, "not-a-valid-connection-string"]) {
+    if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
+    const res = await POST("login", { identifier: "rick nee", pin: "1234" });
+    eq(res.statusCode, 200, `fallback login succeeds (DATABASE_URL=${url})`);
+    eq(json(res)._source, "airtable", "and reports honestly which store answered");
+    eq(json(res).user.role, "admin", "role intact");
+    // A wrong PIN must still be refused on the fallback path.
+    eq((await POST("login", { identifier: "rick nee", pin: "9999" })).statusCode, 401, "bad PIN still refused");
+  }
+  delete process.env.DATABASE_URL;
+  delete process.env.LOGIN_SOURCE;
+});
+
 await test("updateEmployee: admin only, and you can't change your own role", async () => {
   mockTables = { Employees: [{ id: "recAdmin", fields: { "Employee Name": "Rick Unruh", Role: "admin" } }] };
   const base = { employeeId: "recX", name: "X", role: "employee" };

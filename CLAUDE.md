@@ -73,6 +73,14 @@ answers, just slowly. It went unnoticed for three days.
   has been down for months, so no API token can be issued (its native login demands a second factor
   under an undocumented parameter). Make.com still reaches pCloud only because Make registered its
   own app years ago. Don't wire these back up without re-reading `docs/PLAN-job-photos.md`.
+- `LOGIN_SOURCE` — **optional; the employees/login migration kill switch.** Unset or
+  `airtable` (the default) = Airtable decides a login, with Neon running as a shadow that only
+  logs disagreements (`login-shadow` in the function logs). `neon` = Neon decides, falling back
+  to Airtable whenever Neon is unreachable, so a database blip can't stop the crew logging in.
+  It is an env var rather than a code path because it moves login for **both** apps at once —
+  the riskiest switch in the migration — and flipping it back takes seconds with no rebuild.
+  Only turn it on once the shadow logs are clean. `_source` on the login response says which
+  store actually answered. See `netlify/functions/_employees.js`.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

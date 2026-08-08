@@ -3,7 +3,7 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
-import { shadowLoginCheck } from "./_employees.js";
+import { shadowLoginCheck, neonLoginCandidate, loginSource } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
@@ -1999,6 +1999,41 @@ async function handleMyHoursBreakdown(params) {
 async function handleLogin(body) {
   const { identifier, pin } = body || {};
   if (!identifier || !pin) return resp(400, { ok: false, error: "Missing identifier or PIN." });
+
+  // ── Stage 3: Neon decides, but ONLY when switched on ────────────────────
+  // Gated by LOGIN_SOURCE (see _employees.js). Unset — the default, and what
+  // production runs until the shadow logs are proven clean — skips this block
+  // entirely and behaves exactly as before.
+  //
+  // `_source` is echoed on the response for the same reason the payroll reads
+  // do it: it is the only way to confirm on production which store actually
+  // answered. Reconcile the ANSWER too, not just the label.
+  if (loginSource() === "neon") {
+    const r = await neonLoginCandidate(identifier, pin);
+    if (r.ok) {
+      if (r.ambiguous) {
+        // Authoritative refusal, deliberately NOT a fallback. Falling through
+        // to Airtable here would hand the login to Array.find()'s arbitrary
+        // first match — the exact behaviour the ambiguity guard exists to stop.
+        console.warn(`login[field]: refusing ambiguous identifier — ${r.n} employees match.`);
+        return resp(401, { ok: false, error: "That name matches more than one person. Use your username." });
+      }
+      if (!r.user) return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
+      await neonExec("login.lastSeen",
+        `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1`, [r.user.id]);
+      return resp(200, {
+        ok: true, user: r.user, _source: "neon",
+        token: signToken({ id: r.user.id, role: r.user.role }),
+      });
+    }
+    // r.ok === false means Neon had no opinion — unset, unreachable, timed out.
+    // Fall through to Airtable rather than refuse: a database blip must not
+    // stop the crew logging in. The honest cost is that during a Neon outage,
+    // an employee deactivated in Neon-but-not-Airtable could get back in —
+    // the same fail-soft trade the revocation check makes, for the same reason.
+    console.warn("login[field]: Neon unavailable, falling back to Airtable.");
+  }
+
   const records = await fetchAll(TABLES.employees);
   const match = records.find(r => {
     const f = r.fields || {};
@@ -2033,7 +2068,7 @@ async function handleLogin(body) {
   await neonExec("login.lastSeen",
     `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1`, [match.id]);
   // Issue a signed session token the client attaches to every later request.
-  return resp(200, { ok: true, user, token: signToken({ id: user.id, role: user.role }) });
+  return resp(200, { ok: true, user, _source: "airtable", token: signToken({ id: user.id, role: user.role }) });
 }
 
 // ══════════════════════════════════════════════════════════════════

@@ -4,6 +4,10 @@
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource } from "./_employees.js";
+// neonExec only — fail-soft by contract, for the last-login stamp below. This
+// function has no other Neon dependency; the driver is lazy-imported so the
+// offline test suites stay install-free.
+import { neonExec } from "./_neon.js";
 import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
@@ -106,7 +110,20 @@ async function fetchAll(root, table, opts = {}) {
   return records;
 }
 
-// ── LOGIN ──────────────────────────────────────────────────
+// ── LOGIN ──────────────────────────────────────────────
+// The People screen shows "Last login", and it has to mean the last login to
+// EITHER app. Only airtable.js stamped it at first, so anyone who lives in the
+// inventory app looked dormant — which is exactly backwards, since a dormant
+// account is the one you'd want to switch off.
+//
+// neonExec, NOT neonWrite: this is cosmetic and a login must never fail
+// because Neon is unreachable. Called on both the Neon and Airtable paths, so
+// it keeps working if LOGIN_SOURCE is switched back.
+async function stampLastLogin(airtableId) {
+  await neonExec("login.lastSeen",
+    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1`, [airtableId]);
+}
+
 async function handleLogin(body) {
   const { identifier, pin } = body || {};
   if (!identifier || !pin) return resp(400, { ok: false, error: "Missing name or PIN." });
@@ -123,6 +140,7 @@ async function handleLogin(body) {
         return resp(401, { ok: false, error: "That name matches more than one person. Use your username." });
       }
       if (!r.user) return resp(401, { ok: false, error: "Invalid name or PIN." });
+      await stampLastLogin(r.user.id);
       return resp(200, {
         ok: true, user: r.user, _source: "neon",
         token: signToken({ id: r.user.id, role: r.user.role }),
@@ -169,6 +187,7 @@ async function handleLogin(body) {
   // because this app's matching rule is NOT the field app's — it accepts a
   // first name and ignores email. See _employees.js.
   await shadowLoginCheck("inventory", identifier, pin, user);
+  await stampLastLogin(user.id);
   return resp(200, { ok: true, user, _source: "airtable", token: signToken({ id: user.id, role: user.role }) });
 }
 

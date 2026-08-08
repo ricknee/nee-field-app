@@ -1029,6 +1029,25 @@
     .tab-btn:hover { color: var(--text); }
     .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
 
+    /* People roster Active/Former switch. Looks like .tab-btn but is NOT one:
+       switchTab() does `querySelectorAll(".tab-btn")` and toggles `active` by
+       `dataset.tab`, so a .tab-btn outside the job-detail strip has its
+       highlight stripped every time a job tab is clicked. Own class, own CSS. */
+    .people-tab {
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      cursor: pointer;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .people-tab:hover { color: var(--text); }
+    .people-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
     .tab-content { display: none; padding: 20px 24px; }
     .tab-content.active { display: block; }
 
@@ -11636,7 +11655,26 @@
   }
   window.closePeople = closePeople;
 
+  // ⚠ These controls CANNOT be wired in wireEvents(). init() calls it from a
+  // script block around line 12730, but the People modal's markup sits near the
+  // bottom of <body> — so at wire time $("peopleTabFormer") is still null and
+  // the listener is silently never attached. That is exactly what shipped: the
+  // modal opened (its button is in the top bar, parsed early) and the
+  // Active/Former tabs were dead.
+  //
+  // Same reason slAddBtn is wired inside loadScissorLifts, and the same class
+  // of problem as the openNewProjectModal arrow-wrapper note in wireEvents.
+  // The _wired guard matters because loadPeople() is also the refresh path —
+  // without it every toggle would stack another listener.
+  function wirePeopleControls() {
+    const tabA = $("peopleTabActive"), tabF = $("peopleTabFormer"), search = $("peopleSearch");
+    if (tabA && !tabA._wired)   { tabA._wired = true;   tabA.addEventListener("click", () => { peopleShowFormer = false; renderPeople(); }); }
+    if (tabF && !tabF._wired)   { tabF._wired = true;   tabF.addEventListener("click", () => { peopleShowFormer = true;  renderPeople(); }); }
+    if (search && !search._wired) { search._wired = true; search.addEventListener("input", renderPeople); }
+  }
+
   async function loadPeople() {
+    wirePeopleControls();
     $("peopleList").innerHTML = `<div class="loading-msg">Loading people...</div>`;
     try {
       const d = await apiGet("people");
@@ -12598,14 +12636,11 @@
     if (allInvBtn) allInvBtn.addEventListener("click", openAllInvoices);
     const schBtn = $("btnSchedule");
     if (schBtn) schBtn.addEventListener("click", openSchedule);
+    // Only the top-bar button is wired here. The People modal's own controls
+    // CANNOT be — see wirePeopleControls(). btnPeople lives in .topbar-row2,
+    // which the parser has long since reached by the time init() runs.
     const peopleBtn = $("btnPeople");
     if (peopleBtn) peopleBtn.addEventListener("click", openPeople);
-    const peopleSearchEl = $("peopleSearch");
-    if (peopleSearchEl) peopleSearchEl.addEventListener("input", renderPeople);
-    const pTabA = $("peopleTabActive");
-    if (pTabA) pTabA.addEventListener("click", () => { peopleShowFormer = false; renderPeople(); });
-    const pTabF = $("peopleTabFormer");
-    if (pTabF) pTabF.addEventListener("click", () => { peopleShowFormer = true;  renderPeople(); });
     const mySchBtn = $("btnMySchedule");
     if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
     const myHoursBtn = $("btnMyHours");
@@ -20101,8 +20136,8 @@
         will fail rather than half-work.
       </div>
       <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:14px;">
-        <button id="peopleTabActive" class="tab-btn active" type="button">Active</button>
-        <button id="peopleTabFormer" class="tab-btn" type="button">Former</button>
+        <button id="peopleTabActive" class="people-tab active" type="button">Active</button>
+        <button id="peopleTabFormer" class="people-tab" type="button">Former</button>
         <input id="peopleSearch" type="text" placeholder="Search name, username, email..."
                style="flex:1 1 180px; min-width:0; padding:6px 10px; border-radius:7px;
                       border:1px solid var(--line-2); background:var(--panel-2); color:var(--text); font-size:13px;" />

@@ -17387,34 +17387,53 @@
     });
   }
 
-  // ── City tax ────────────────────────────────────────────────────────────
-  // ⚠ PR_CITY_TAXES carries QuickBooks Time's OWN spellings — "Massilon",
-  // "New Philadephia", "N Canton". They are wrong as English and right as data:
-  // the stored value must match QB verbatim or it falls back to "A No Tax". So
-  // this maps REAL city names (as they appear on a job's address) onto QB's
-  // spellings. Never fix the spellings on the right-hand side.
-  const CLOCK_CITY_ALIASES = {
-    massillon: "Massilon Tax",
-    northcanton: "N Canton",
-    ncanton: "N Canton",
-    newphiladelphia: "New Philadephia",
-    newphilly: "New Philadephia",
-  };
-  const clockNormCity = s => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+  // ── Class ───────────────────────────────────────────────────────────────
+  // Business Development and Admin/Office are office activities — an electrician
+  // punching in on site has no use for them, and every extra option in a list you
+  // scroll past at 6am is a chance to pick the wrong one. Admin keeps the full set,
+  // because admins genuinely do book time to both.
+  const CLOCK_CLASSES_OFFICE_ONLY = ["Business Development", "Admin/Office"];
+  function clockClasses(keepCurrent) {
+    const role = (state.user?.role || "").toLowerCase();
+    const list = (role === "admin")
+      ? PR_CLASSES.slice()
+      : PR_CLASSES.filter(c => !CLOCK_CLASSES_OFFICE_ONLY.includes(c));
+    // Never silently rewrite a class already on an open shift just because the
+    // current role can't pick it — that would change what someone is booked to
+    // without them touching it.
+    if (keepCurrent && !list.includes(keepCurrent)) list.push(keepCurrent);
+    return list;
+  }
 
-  // Best-guess city tax for a job, from its site address. Returns null when there
-  // is no confident match — the caller then leaves the picker on its default
-  // rather than guessing a jurisdiction, because a wrong city tax is a payroll
-  // error, not a cosmetic one.
-  function cityTaxForJob(job) {
-    const city = clockNormCity(job?.customerCity);
-    if (!city) return null;
-    if (CLOCK_CITY_ALIASES[city]) return CLOCK_CITY_ALIASES[city];
-    // Otherwise match against the list with the " Tax" / " City Tax" suffix removed,
-    // so "Canton" finds "Canton Tax" and "Ashland" finds "Ashland City Tax".
-    const hit = PR_CITY_TAXES.find(t =>
-      clockNormCity(t.replace(/\s*(city\s*)?tax$/i, "")) === city);
-    return hit || null;
+  // ── City tax ────────────────────────────────────────────────────────────
+  // ⚠⚠ DO NOT REINSTATE AUTO-SELECTION FROM THE JOB ADDRESS.
+  //
+  // This used to pick the city tax automatically from jobs.address_city. It was
+  // removed on 2026-08-08 after looking at the real data, and the reason matters
+  // because the idea is an obvious one that will occur to someone again:
+  //
+  //   THE POSTAL CITY IS NOT THE TAXING JURISDICTION.
+  //
+  // 19 live jobs carry an "Alliance" mailing address, and the guess stamped
+  // "Alliance Tax" on every one — but an address that MAILS as Alliance is very
+  // often in Lexington Township, which levies no municipal income tax at all. Same
+  // around Canton and Massillon. The guess was therefore confidently wrong in the
+  // direction that costs money, and nobody punching in could tell which jobs were
+  // the wrong ones. (Ohio JEDDs/JEDZs make even a proper geocoder insufficient —
+  // township land taxed at a city rate by agreement. No lookup catches those.)
+  //
+  // The source data is also dirty in ways no matcher survives: "Colombiana" for
+  // Columbiana, "Beliot" for Beloit, "Roberstville", two spellings of
+  // Fredericksburg. Those all fell through to A No Tax silently.
+  //
+  // The real fix is a per-JOB city tax an admin sets once and a human confirms —
+  // see docs/PLAN-time-clock.md. Until that exists, the honest default is
+  // "A No Tax" plus an explicit choice, and the address is shown as CONTEXT only.
+  //
+  // Kept (unused for selection) purely so the address can be displayed as a hint.
+  function cityTaxHintForJob(job) {
+    const city = String(job?.customerCity || "").trim();
+    return city || null;
   }
 
   // ── The job picker ──────────────────────────────────────────────────────
@@ -17470,24 +17489,24 @@
   }
   window.clockToggleAllJobs = clockToggleAllJobs;
 
-  // Picking a job also proposes its city tax — the single most useful thing the
-  // app knows that the person punching would otherwise have to remember.
+  // Picking a job shows its mailing address as CONTEXT and changes nothing else.
+  // It deliberately does not touch the city-tax picker — see the warning above.
   function clockPickJob(id) {
     clockPick.jobId = (clockPick.jobId === id) ? "" : id;
     const job = (state.jobs || []).find(j => j.id === clockPick.jobId);
-    const tax = job ? cityTaxForJob(job) : null;
-    const sel = $("clockCity");
-    if (sel && tax) sel.value = tax;
     const hint = $("clockCityHint");
-    if (hint) {
-      hint.textContent = job
-        ? (tax ? `From ${job.customerCity || "the job"} — change it if that's not where you worked.`
-               : `No city on this job — pick the right one.`)
-        : "";
-    }
+    if (hint) hint.textContent = clockCityHintText(job);
     renderClockJobList();
   }
   window.clockPickJob = clockPickJob;
+
+  function clockCityHintText(job) {
+    const city = job ? cityTaxHintForJob(job) : null;
+    if (!job) return "Pick where the work actually happened.";
+    return city
+      ? `Job mails as ${city} — that's the postal address, not necessarily the tax district. Pick where the work actually happened.`
+      : "No address on this job — pick where the work actually happened.";
+  }
 
   function renderClockPanel() {
     const el = $("clockPanel");
@@ -17549,7 +17568,7 @@
               `<option value="${esc(t)}" ${t === (clockState.open.city_taxes || "") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
           </label>
           <label class="clock-field">Class
-            <select id="clockOutClass">${PR_CLASSES.map(c =>
+            <select id="clockOutClass">${clockClasses(clockState.open.class).map(c =>
               `<option value="${esc(c)}" ${c === (clockState.open.class || "") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
           </label>
           <label class="clock-field">Note (optional)
@@ -17569,7 +17588,6 @@
         clockPick.jobId = state.selected?.id || clockState.recent?.[0]?.job_id || "";
       }
       const preJob = (state.jobs || []).find(j => j.id === clockPick.jobId);
-      const preTax = preJob ? cityTaxForJob(preJob) : null;
 
       el.innerHTML = `
         <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">You're clocked out.</div>
@@ -17586,14 +17604,12 @@
 
         <label class="clock-field">City tax
           <select id="clockCity">${PR_CITY_TAXES.map(t =>
-            `<option value="${esc(t)}" ${t === (preTax || "A No Tax") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+            `<option value="${esc(t)}" ${t === "A No Tax" ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
         </label>
-        <div id="clockCityHint" class="clock-note" style="margin-top:4px;">${
-          preJob ? (preTax ? `From ${esc(preJob.customerCity || "the job")} — change it if that's not where you worked.`
-                           : "No city on this job — pick the right one.") : ""}</div>
+        <div id="clockCityHint" class="clock-note" style="margin-top:4px;">${esc(clockCityHintText(preJob))}</div>
 
         <label class="clock-field">Class
-          <select id="clockClass">${PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+          <select id="clockClass">${clockClasses().map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
         </label>
         <div style="height:12px;"></div>
         <button class="clock-btn clock-btn-in" onclick="clockIn()">Clock In</button>

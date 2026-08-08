@@ -223,8 +223,47 @@ nobody has used in a year, which is exactly the account worth turning off.
 | **2** | Edit identity/contact/role/labor type · Set PIN · hire + termination dates · `last_login_at` write · **converge `Role`/`Role New`** · fix `F.emp.email` → `Primary Email` · Force logout button | ~2-3 h |
 | **3** | Wage history: read-only table first, then "add a raise" — which must **close the current row's `effective_end_date` and insert the new row in one transaction.** Get this wrong and every job's historical labor cost moves. Money-critical; see the true-labor-cost notes. | ~2-3 h |
 | **4** | Add a new employee end-to-end (Airtable record + Neon row + first wage rate + PIN) | ~1-2 h |
+| **5** | ⏸ **Self-service "forgot PIN"** — owner's intent 2026-08-08, *later*. See below. | ~5-6 h + setup |
 
 Slices 2-4 are optional and independent. Slice 1 stands alone.
+
+---
+
+## Slice 5 (later) — self-service "forgot PIN"
+
+Owner's stated intent 2026-08-08: *"later on I'll add [that] change with phone numbers or email."*
+Deliberately deferred, not rejected. Admin reset (shipped) covers the need for a crew of 8 where
+the owner is usually on site.
+
+> ### ⚠ The blocker is data, not code
+> **Not one of the 11 employee records has a Primary Email or a Primary Phone.** Both fields exist
+> on the Airtable table and both are empty on every row, verified 2026-08-08. A reset flow has
+> nowhere to send a code, so **populating those fields is the prerequisite** — and it is free,
+> needs no code, and can be done in the Airtable grid today or through slice 2's edit form.
+>
+> Until they are filled in, this slice cannot start. Fill them in as people are onboarded and the
+> blocker clears itself.
+
+Then, roughly:
+
+1. **Pick the channel. SMS beats email here** — field crew live on their phones and several have
+   no work email at all. Cost is per-message and small at this volume.
+2. Provider + env vars (Twilio or similar), added to `ensureEnv()`'s *optional* group like the R2
+   keys — **fail soft**, so an unconfigured provider disables the "Forgot PIN" link rather than
+   breaking login.
+3. A `password_resets` table in Neon: single-use token, short TTL (10 min), tied to an employee id,
+   consumed on use. Never reuse `token_valid_from` for this.
+4. "Forgot PIN" on the login screen → matches identifier → texts a code → verify → set a new PIN
+   through the **same** `handleSetEmployeePin` path, so the duplicate-PIN refusal and the
+   sign-out-everywhere behaviour come along for free.
+5. **Rate-limit it.** This is the first unauthenticated write the app would have; without a limit
+   it is a free SMS pump and an account-enumeration oracle. Respond identically whether or not the
+   identifier matched.
+
+> **Do this at, or after, the PIN-hashing pass** (ROADMAP §4, login flip). A reset flow that writes
+> plaintext PINs would have to be rewritten immediately afterwards, and hashing makes this slice
+> *easier* — a reset is the natural way to set a hashed PIN, and `employeePin` (reveal) has to be
+> retired at that point anyway since a hash cannot be un-hashed.
 
 ---
 

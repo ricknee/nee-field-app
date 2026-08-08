@@ -22,14 +22,25 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Generators, Warranties, Inspections** | ✅ **In Neon since 2026-08-07 (Step 4c-1 + 4c-2)** — reads and writes. Commissioning is now **one atomic statement**; you can **edit** a generator instead of re-commissioning it; the Generator pill toggles the tab on. |
 | **Expenses** | ✅ **In Neon since 2026-08-07 (Step 4d)** — read (with the employee authz scope) and all five write paths. The four Airtable money formulas are ported and diffed **to the cent**. ⚠ Airtable stays the **identity** authority: R2 receipt keys are built from the expense rec id. |
 | **Estimates** | ✅ **In Neon since 2026-08-07 (Step 4e, estimates half)** — read + all four writes, templates, sent-estimate PDFs, and the snapshot cascade. **Estimate PDFs are in R2**, off Airtable's expiring URLs. |
-| **Invoices** | ⬜ **The last field-app slice.** The blockers are gone — `material_billing_allocations` is migrated and `Invoice Material Amount` reproduces on 51/51 — but the **contract-billing chain is not ported**. See §3 Step 4e. |
+| **Invoices** | ✅ **In Neon since 2026-08-08 (Step 4e)** — both reads (job tab + the all-invoices view) and both write paths. The **contract-billing chain is ported and reproduces 51/51 on every field** (`db/schema/015`). Totals serve the **computed** figure, not the stored copy that goes stale when an allocation changes. |
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
 | **Inventory app** | ⬜ Still Airtable, still coupled to the main base via the Jobs mirror |
 
-**The time track is FINISHED.** One system holds time data now — Neon — and the reconciler that
-kept the two honest has done its job and is retired as a health check (see §8). What remains in
-the field app is money: expenses, then estimates and invoices. The inventory track has not
-started.
+## 🎉 THE FIELD-APP MIGRATION IS COMPLETE — 2026-08-08
+
+**Steps 1-3 and 4a-4e are all done.** Time, payroll, schedule, fleet, lifts, generators,
+warranties, inspections, expenses, estimates and invoices all read and write Neon. Make is off
+the time path. Every money formula that moved was **diffed row by row against Airtable before
+anything read it** — `db/schema/012`, `013`, `014`, `015`.
+
+**Airtable is not gone, and was never meant to be.** It remains the *identity* authority for
+expenses, estimates and invoices (R2 receipt keys, sent-PDF back-links and billing allocations
+all key on rec ids), and every write still mirrors to it. What changed is that **nothing reads
+Airtable to answer a question any more** unless Neon fails.
+
+**What is left is no longer the field app:** the inventory track (§4, not started), the
+`handleJobs` full flip (~35 of `mapJob`'s 89 keys still have no Neon source), and deciding what
+the hand-run ETL becomes now that the GP inputs are Neon-written rather than loaded.
 
 ---
 
@@ -474,21 +485,29 @@ negotiable.**
 > correctly ahead of a frozen Airtable table, so it will read red for the rest of time. Either
 > repoint it at **QuickBooks** (the real upstream) or retire it. Until then its output is noise.
 
-## Then build: ▶ Step 4e — INVOICES (the last field-app slice)
+## ✅ Step 4e — invoices — DONE 2026-08-08. The field app is finished.
 
-**Everything else in the field app is done.** Steps 1-3, 4a, 4b, 4c, 4d, and the estimates half
-of 4e all shipped. Invoices are what remain.
+## Then pick one — nothing is forced any more
 
-**The hard dependencies are already cleared:** `material_billing_allocations` is migrated, and
-`Invoice Material Amount` reproduces on **51 of 51** invoices. So this is no longer excavation —
-it is porting a formula chain whose inputs are all present.
+| Option | Size | Why / why not |
+|---|---|---|
+| **Smoke-test what shipped** | ~20 min | ⬅ **Do this first.** Invoices went live today with no prod exercise. See the list below. |
+| **`handleJobs` full flip** | 4-6 h | ~35 of `mapJob`'s 89 keys have no Neon source: the power-company block (8), inspections (10), 7 external refs, customer mailing address (4), and the `all*Reviewed` formula bools. Buys migration progress, **not speed** — `handleJobs` already pages 112 records in 2 requests. |
+| **Decide the ETL's future** | ~1 h thought | GP inputs are now Neon-**written** rather than loaded, so the hand-run ETL is mostly redundant for them — but it still backfills, and it is the only thing that would catch a mirror that silently stopped. Schedule it, shrink it, or retire it deliberately. |
+| **Inventory track** | ~23-32 h | `docs/PLAN-inventory-to-neon.md`. Gated on Step A / C3 dropping the Jobs mirror, which is mostly soak time. |
+| **Employee admin slices 2-4** | — | Separate track, and it carries **two live bugs**: `Role` vs `Role New` differing per app, and email login that has never worked (`Email` ≠ `Primary Email`). |
 
-**What makes it the last one, and worth a fresh head:** the contract-billing chain —
-`Contract Invoice Amount` → `Contract Remaining` → `Final Contract Invoice Amount` →
-`Remaining Percent to Bill` — is the deepest chain in the system, each formula consuming the
-previous plus job-level lookups, and it decides **what a customer actually gets billed on a
-contract job.** Give it the `013` treatment: port, then diff every row against Airtable, before
-anything reads it.
+## ⬜ Owed smoke tests — things that shipped without being exercised on prod
+
+- **Invoices (2026-08-08)** — the job **Invoice** tab and the **Invoices** top-bar view. Check
+  totals, and that invoices on **archived/completed** jobs still appear: 32 of 51 are, and a
+  status filter would have hidden them.
+- **Contract invoices specifically** — the chain caps a contract invoice at
+  `MIN(ContractRemaining, ExpectedRevenue × PercentToBill)`. Josh Astorino has three.
+- **Estimate + expense writes** — edit, save, then **hard-refresh**. Before the write flips these
+  reverted on reload.
+- **Employee admin People tab** — needs a two-device check (a session must end when someone is
+  deactivated).
 
 ---
 

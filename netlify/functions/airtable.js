@@ -481,6 +481,10 @@ const _ADMIN_POSTS = new Set([
   // Counting previously-uncounted punches as payroll hours. Admin only — this is the
   // action that turns the time clock into money.
   "promoteClockPunches",
+  // Punching somebody ELSE in or out. Deliberately separate actions from clockIn/
+  // clockOut so the self-service path keeps the property that the employee can only
+  // come from the token — the privilege is what's gated, not a parameter.
+  "adminClockIn", "adminClockOut",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -540,7 +544,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `employeePin` returns a live credential — strict admin, never office, and
 // deliberately its own action rather than a field on `people` so one tap
 // reveals one person instead of shipping every PIN on every screen open.
-const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates"]);
+// `clockRoster` is strict admin, NOT admin+office, for the same reason `people`
+// is: it reports where every person is right now, and it backs a screen that can
+// start and stop their paid time. Office is excluded from payroll throughout.
+const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates", "clockRoster"]);
 
 // Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
 // so listing must match the actions available on what's listed:
@@ -1115,7 +1122,11 @@ async function handleClockStatus(params, authUser) {
 }
 
 // ── CLOCK: punch in ────────────────────────────────────────────────────────
-async function handleClockIn(body, authUser) {
+// `targetEmp` is the ADMIN path punching somebody else (see handleAdminClockIn).
+// When absent — every self-service call — the employee still comes from the token
+// and there is nothing a client could forge. Resolving the target is the admin
+// wrapper's job, and it is gated by _ADMIN in authzFor before it ever gets here.
+async function handleClockIn(body, authUser, targetEmp) {
   if (!canUseTimeClock(authUser)) {
     return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
   }
@@ -1142,7 +1153,7 @@ async function handleClockIn(body, authUser) {
   const started = clampPunchTime(startedAt);
   if (!started) return resp(400, { ok: false, error: "Invalid or out-of-range startedAt." });
 
-  const me = await clockEmployee(authUser);
+  const me = targetEmp || await clockEmployee(authUser);
   if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
 
   const jobRec = (jobId && String(jobId).startsWith("rec")) ? String(jobId) : null;
@@ -1240,7 +1251,8 @@ async function handleClockBreak(body, authUser) {
 }
 
 // ── CLOCK: punch out ───────────────────────────────────────────────────────
-async function handleClockOut(body, authUser) {
+// `targetEmp`: the admin path. See the note on handleClockIn.
+async function handleClockOut(body, authUser, targetEmp) {
   if (!canUseTimeClock(authUser)) {
     return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
   }
@@ -1250,7 +1262,7 @@ async function handleClockOut(body, authUser) {
   const ended = clampPunchTime(endedAt);
   if (!ended) return resp(400, { ok: false, error: "Invalid or out-of-range endedAt." });
 
-  const me = await clockEmployee(authUser);
+  const me = targetEmp || await clockEmployee(authUser);
   if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
 
   // Replay guard: the punch-out already landed and the phone is retrying. Return the
@@ -1370,6 +1382,107 @@ async function promoteClockPunch(punchId) {
       RETURNING c.time_entry_id`,
     [punchId]);
   return rows?.[0]?.time_entry_id || null;
+}
+
+// ══ WHO'S WORKING — the admin roster ═════════════════════════════════════════
+// Owner's ask, 2026-08-08: see who is clocked in, and be able to punch people in
+// and out. Editing and adding time deliberately stays in Payroll, which already
+// does it properly — this screen is about the LIVE picture, not corrections.
+//
+// Strict admin (_ADMIN), not admin+office: this reads where every person is right
+// now and can start or stop their paid time. Office is already excluded from
+// payroll everywhere else in this file and stays excluded here.
+async function handleClockRoster(params) {
+  if (timeClockAudience() === "off") {
+    return resp(200, { ok: true, enabled: false, onClock: [], offClock: [], today: [] });
+  }
+
+  // Everyone currently on the clock. employees is joined rather than trusting the
+  // punch's own snapshot, because this view is about who is working NOW — the
+  // current name is the right one to show.
+  const onClock = await neonQuery(
+    `SELECT e.airtable_id AS employee_id, e.name,
+            o.started_at, o.job_name, o.class, o.city_taxes,
+            o.break_seconds::float8 AS break_seconds, o.break_started_at
+       FROM open_punches o
+       JOIN employees e ON e.id = o.employee_id
+      ORDER BY o.started_at`);
+
+  // Who COULD be clocked in: active, payroll-eligible, not already on the clock.
+  // Office and viewers are excluded — they have no hours, so offering to punch
+  // them in would be offering to create a payroll row that shouldn't exist.
+  const offClock = await neonQuery(
+    `SELECT e.airtable_id AS employee_id, e.name
+       FROM employees e
+      WHERE e.active IS TRUE
+        AND lower(coalesce(e.role, '')) IN ('admin', 'employee')
+        AND NOT EXISTS (SELECT 1 FROM open_punches o WHERE o.employee_id = e.id)
+      ORDER BY e.name`);
+
+  // Everything already finished today, so a glance answers "has Dave been in yet"
+  // and not just "is Dave here this second". Same local-date rule as the punch
+  // itself — see the overnight note in db/schema/018_time_clock.sql.
+  const today = await neonQuery(
+    `SELECT e.airtable_id AS employee_id, e.name,
+            c.started_at, c.ended_at,
+            c.duration_seconds::float8 AS duration_seconds,
+            c.break_seconds::float8 AS break_seconds,
+            c.job_name, (c.time_entry_id IS NOT NULL) AS counted
+       FROM clock_punches c
+       JOIN employees e ON e.id = c.employee_id
+      WHERE c.work_date = (now() AT TIME ZONE 'America/New_York')::date
+      ORDER BY c.ended_at DESC`);
+
+  return resp(200, {
+    ok: true,
+    enabled: true,
+    countsTowardPayroll: timeClockFeedsPayroll(),
+    onClock:  onClock?.rows  || [],
+    offClock: offClock?.rows || [],
+    today:    today?.rows    || [],
+    _source: "neon",
+  });
+}
+
+// Resolve the person an admin is acting ON. Airtable rec id, because that is what
+// every other people-facing action in this file takes and what the client holds.
+async function clockEmployeeById(employeeId) {
+  if (!employeeId || !String(employeeId).startsWith("rec")) return null;
+  const q = await neonQuery(
+    `SELECT id, name FROM employees WHERE airtable_id = $1`, [String(employeeId)]);
+  return q?.rows?.[0] || null;
+}
+
+// Admin punching somebody else in / out. These are SEPARATE actions rather than an
+// optional employeeId on clockIn/clockOut, deliberately: the self-service handlers
+// keep the property that the employee can only ever come from the token, so there
+// is no parameter on them that a field phone could abuse. The privilege lives in
+// its own action with its own _ADMIN tier.
+//
+// No clientPunchId is required from the caller — an admin at a desk has no offline
+// replay queue — so one is minted here to satisfy the same replay guards.
+async function handleAdminClockIn(body, authUser) {
+  const emp = await clockEmployeeById(body?.employeeId);
+  if (!emp) return resp(400, { ok: false, error: "Pick a person to clock in." });
+  return await handleClockIn(
+    { ...body, clientPunchId: body?.clientPunchId || `admin-${randomId()}` },
+    authUser, emp);
+}
+
+async function handleAdminClockOut(body, authUser) {
+  const emp = await clockEmployeeById(body?.employeeId);
+  if (!emp) return resp(400, { ok: false, error: "Pick a person to clock out." });
+  // The open shift's own client_punch_id wins inside handleClockOut (COALESCE on
+  // the shift row), so this fallback only matters for a shift that somehow has
+  // none. Clocking out someone who is on a break closes the break first — that is
+  // handled in the punch-out statement, not here.
+  return await handleClockOut(
+    { ...body, clientPunchId: body?.clientPunchId || `admin-${randomId()}` },
+    authUser, emp);
+}
+
+function randomId() {
+  return (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
 }
 
 // ── CLOCK: admin backfill at cutover ───────────────────────────────────────
@@ -9088,6 +9201,7 @@ export async function handler(event) {
       if (action === "payrollBonusesRollup")        return await handlePayrollBonusesRollup(params);
       if (action === "payrollEmployeeBonusHistory") return await handlePayrollEmployeeBonusHistory(params);
       if (action === "clockStatus")                 return await handleClockStatus(params, authUser);
+      if (action === "clockRoster")                 return await handleClockRoster(params);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();
@@ -9127,6 +9241,8 @@ export async function handler(event) {
       if (body.action === "clockIn")              return await handleClockIn(body, authUser);
       if (body.action === "clockOut")             return await handleClockOut(body, authUser);
       if (body.action === "clockBreak")           return await handleClockBreak(body, authUser);
+      if (body.action === "adminClockIn")         return await handleAdminClockIn(body, authUser);
+      if (body.action === "adminClockOut")        return await handleAdminClockOut(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
       if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);

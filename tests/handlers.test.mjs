@@ -1742,6 +1742,23 @@ await test("clock: a phone with a wrong clock can't file hours into a closed pay
   delete process.env.TIME_CLOCK;
 });
 
+await test("clock: the roster and punching others are STRICT admin — office is out", async () => {
+  process.env.TIME_CLOCK = "on";
+  // clockRoster shows where every person is and backs a screen that starts and
+  // stops paid time, so it sits with `people` in _ADMIN, not admin+office.
+  eq((await GET("clockRoster", {}, OFFICE_TOK)).statusCode, 403, "office can't see the roster");
+  eq((await GET("clockRoster", {}, EMP_TOK)).statusCode, 403, "employees can't see the roster");
+  eq((await POST("adminClockIn", { employeeId: "recE9" }, EMP_TOK)).statusCode, 403,
+     "an employee cannot punch somebody else in");
+  eq((await POST("adminClockOut", { employeeId: "recE9" }, OFFICE_TOK)).statusCode, 403,
+     "nor can office punch anyone out");
+  // Admin gets through the tier, and is refused for a MISSING person rather than
+  // being allowed to punch a blank one.
+  const noWho = await POST("adminClockIn", {}, ADMIN_TOK);
+  eq(noWho.statusCode, 400, "admin still has to say who");
+  delete process.env.TIME_CLOCK;
+});
+
 await test("clock: breaks obey the same switch and the same roles as punching", async () => {
   delete process.env.TIME_CLOCK;
   eq((await POST("clockBreak", { start: true, at: new Date().toISOString() }, EMP_TOK)).statusCode, 403,

@@ -199,6 +199,26 @@
     .clock-job:last-child { border-bottom: none; }
     .clock-job.is-on { background: #dcfce7; font-weight: 700; }
     .clock-job-status { font-size: 11px; color: var(--muted); flex: none; }
+
+    /* ── WHO'S WORKING ── */
+    .ww-head {
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .04em; color: var(--muted); margin-bottom: 8px;
+    }
+    .ww-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+      margin-bottom: 8px; background: #f0fdf4;
+    }
+    .ww-row.is-paused { background: #fffbeb; }
+    .ww-elapsed {
+      font-variant-numeric: tabular-nums; font-weight: 800; font-size: 16px;
+    }
+    .ww-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .ww-input {
+      flex: 1; min-width: 140px; padding: 9px 10px; font-size: 14px;
+      border: 1px solid var(--line); border-radius: 8px;
+    }
     .clock-note { font-size: 12px; color: var(--muted); margin-top: 8px; }
     .clock-field { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
     .clock-field select, .clock-field input {
@@ -2457,6 +2477,11 @@
            true cost rate, so office is excluded here exactly as it is in the
            backend's _ADMIN tier for `people`/`setEmployeeActive`. -->
       <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
+      <!-- strict-admin-only, matching the backend's _ADMIN tier on clockRoster:
+           this shows where every person is right now and can start or stop their
+           paid time. Office is excluded from payroll everywhere else, so it is
+           excluded here. -->
+      <button id="btnWhosWorking" class="btn btn-sm strict-admin-only hidden" type="button">🟢 Who's Working</button>
       <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
@@ -13083,6 +13108,8 @@
     // which the parser has long since reached by the time init() runs.
     const peopleBtn = $("btnPeople");
     if (peopleBtn) peopleBtn.addEventListener("click", openPeople);
+    const wwBtn = $("btnWhosWorking");
+    if (wwBtn) wwBtn.addEventListener("click", openWhosWorking);
     const mySchBtn = $("btnMySchedule");
     if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
     const myHoursBtn = $("btnMyHours");
@@ -17721,6 +17748,168 @@
   }
   window.clockOut = clockOut;
 
+  // ═══ WHO'S WORKING — admin roster ════════════════════════════════════════
+  // Live view of who is on the clock, with the ability to punch someone in or out.
+  // Editing and adding time is NOT here on purpose — Payroll already does that, and
+  // duplicating it would give two screens that disagree about the same row.
+  let wwData = null;
+  let wwTicker = null;
+
+  async function openWhosWorking() {
+    $("whosWorkingModal").style.display = "flex";
+    pushBackEntry("whosWorking", () => { $("whosWorkingModal").style.display = "none"; stopWwTicker(); });
+    await loadWhosWorking();
+    // Ticks every second so the elapsed times move, but only re-FETCHES every 30.
+    // Crucially it updates the timer spans in place rather than re-rendering the
+    // body — a full re-render would reset the "clock someone in" dropdowns while
+    // an admin was halfway through choosing.
+    stopWwTicker();
+    let ticks = 0;
+    wwTicker = setInterval(() => {
+      wwTickElapsed();
+      if (++ticks % 30 === 0 && !document.hidden) loadWhosWorking(true).catch(() => {});
+    }, 1000);
+  }
+  window.openWhosWorking = openWhosWorking;
+
+  function closeWhosWorking() {
+    popBackEntry("whosWorking");
+    $("whosWorkingModal").style.display = "none";
+    stopWwTicker();
+  }
+  window.closeWhosWorking = closeWhosWorking;
+
+  function stopWwTicker() { if (wwTicker) { clearInterval(wwTicker); wwTicker = null; } }
+
+  // Surgical per-second update: touches only the timer spans, leaving the rest of
+  // the DOM (and any half-made dropdown selection) alone.
+  function wwTickElapsed() {
+    if (!wwData?.onClock) return;
+    document.querySelectorAll("#wwBody .ww-elapsed").forEach(sp => {
+      const row = wwData.onClock.find(r => r.employee_id === sp.dataset.emp);
+      if (row) sp.textContent = fmtElapsed(wwWorkedMs(row));
+    });
+  }
+
+  async function loadWhosWorking(quiet) {
+    try {
+      const d = await apiGet("clockRoster");
+      wwData = d;
+      renderWhosWorking();
+    } catch (e) {
+      if (!quiet) $("wwBody").innerHTML = `<div class="clock-note">Couldn't load: ${esc(e.message)}</div>`;
+    }
+  }
+
+  // Worked-so-far for someone else's open shift. Same arithmetic as workedMs() for
+  // your own — elapsed minus closed breaks minus any running one.
+  function wwWorkedMs(r) {
+    const started = Date.parse(r.started_at);
+    if (!Number.isFinite(started)) return 0;
+    let ms = Date.now() - started - (Number(r.break_seconds) || 0) * 1000;
+    if (r.break_started_at) {
+      const bs = Date.parse(r.break_started_at);
+      if (Number.isFinite(bs)) ms -= (Date.now() - bs);
+    }
+    return Math.max(0, ms);
+  }
+
+  function renderWhosWorking() {
+    const el = $("wwBody"); if (!el || !wwData) return;
+    if (!wwData.enabled) {
+      el.innerHTML = `<div class="clock-note">The time clock is switched off (TIME_CLOCK).</div>`;
+      return;
+    }
+    const on  = wwData.onClock  || [];
+    const off = wwData.offClock || [];
+    const today = wwData.today  || [];
+
+    const notCounting = wwData.countsTowardPayroll ? "" :
+      `<div class="clock-note">⚠ Punches are recorded but do <strong>not</strong> count toward
+        payroll yet — QuickBooks Time is still the book of record.</div>`;
+
+    const onHtml = on.length ? on.map(r => {
+      const paused = !!r.break_started_at;
+      const since = new Date(Date.parse(r.started_at)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      return `
+        <div class="ww-row${paused ? " is-paused" : ""}">
+          <div style="min-width:0;">
+            <div style="font-weight:700;">${esc(r.name)}${paused ? " <span style='font-weight:400;color:#92400e;'>· on lunch</span>" : ""}</div>
+            <div style="font-size:12px; color:var(--muted);">
+              ${esc(r.job_name || "No job")} · in at ${esc(since)}${r.city_taxes ? " · " + esc(r.city_taxes) : ""}
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px; flex:none;">
+            <span class="ww-elapsed" data-emp="${esc(r.employee_id)}">${fmtElapsed(wwWorkedMs(r))}</span>
+            <button class="btn btn-danger-sm" onclick="wwClockOut('${esc(r.employee_id)}','${esc(r.name)}')">Clock Out</button>
+          </div>
+        </div>`;
+    }).join("") : `<div class="clock-note">Nobody is on the clock right now.</div>`;
+
+    // Clocking someone IN needs a job, so the picker is the same awarded-first list
+    // the crew sees — deliberately, so an admin punching someone in can't put them
+    // somewhere the crew's own picker wouldn't have offered.
+    const offHtml = off.length ? `
+      <select id="wwWho" class="ww-input">
+        <option value="">— Who? —</option>
+        ${off.map(p => `<option value="${esc(p.employee_id)}">${esc(p.name)}</option>`).join("")}
+      </select>
+      <select id="wwJob" class="ww-input">
+        <option value="">— No job —</option>
+        ${(state.jobs || [])
+            .filter(j => clockPick.allStatuses || String(j.status || "").toLowerCase() === "awarded")
+            .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+            .map(j => `<option value="${esc(j.id)}">${esc(j.name || j.id)}</option>`).join("")}
+      </select>
+      <select id="wwClass" class="ww-input">
+        ${PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="wwClockIn()">Clock In</button>
+    ` : `<div class="clock-note">Everyone eligible is already on the clock.</div>`;
+
+    const todayHtml = today.length ? today.map(r => `
+      <div class="clock-row">
+        <span>${esc(r.name)} · ${esc(r.job_name || "No job")}</span>
+        <span>${(Number(r.duration_seconds) / 3600).toFixed(2)} h${
+          Number(r.break_seconds) > 0 ? ` <span style="color:var(--muted)">(−${fmtElapsed(Number(r.break_seconds) * 1000)} break)</span>` : ""
+        }</span>
+      </div>`).join("") : `<div class="clock-note">No finished shifts today yet.</div>`;
+
+    el.innerHTML = `
+      ${notCounting}
+      <div class="ww-head">On the clock — ${on.length}</div>
+      ${onHtml}
+      <div class="ww-head" style="margin-top:18px;">Clock someone in</div>
+      <div class="ww-form">${offHtml}</div>
+      <div class="ww-head" style="margin-top:18px;">Finished today</div>
+      ${todayHtml}
+    `;
+  }
+
+  async function wwClockIn() {
+    const employeeId = $("wwWho")?.value || "";
+    if (!employeeId) { alert("Pick a person."); return; }
+    try {
+      await apiPost("adminClockIn", {
+        employeeId,
+        jobId: $("wwJob")?.value || null,
+        class: $("wwClass")?.value || PR_CLASSES[0],
+        startedAt: new Date().toISOString(),
+      });
+      await loadWhosWorking();
+    } catch (e) { alert(e.message || "Couldn't clock them in."); }
+  }
+  window.wwClockIn = wwClockIn;
+
+  async function wwClockOut(employeeId, name) {
+    if (!confirm(`Clock ${name} out now?`)) return;
+    try {
+      await apiPost("adminClockOut", { employeeId, endedAt: new Date().toISOString() });
+      await loadWhosWorking();
+    } catch (e) { alert(e.message || "Couldn't clock them out."); }
+  }
+  window.wwClockOut = wwClockOut;
+
   // Replay triggers. `online` is the direct one; `visibilitychange` covers the
   // common real case where the phone regained signal while the screen was off and
   // no online event ever fired.
@@ -20876,6 +21065,21 @@
            this markup costs nothing while the feature is dormant. -->
       <div id="clockPanel" class="clock-panel hidden"></div>
       <div id="mhTiles" class="mh-tiles"></div>
+    </div>
+  </div>
+</div>
+
+<!-- WHO'S WORKING — live admin roster off the time clock. Read-mostly: the only
+     writes are punching someone in or out. Corrections stay in Payroll, which
+     already edits and adds time properly. -->
+<div id="whosWorkingModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width:720px;">
+    <div class="payroll-modal-header">
+      <h2>🟢 Who's Working</h2>
+      <button onclick="closeWhosWorking()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div id="wwBody">Loading…</div>
     </div>
   </div>
 </div>

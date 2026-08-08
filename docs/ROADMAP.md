@@ -489,7 +489,40 @@ negotiable.**
 
 ## ✅ Step 4e — invoices — DONE 2026-08-08. The field app is finished.
 
-## Then pick one — nothing is forced any more
+## ▶ The one real piece of work left: give allocations a write path
+
+**Scoped 2026-08-08, deliberately not started. ~4-6 h.** This is **feature work, not migration
+work** — nothing is broken, and the hourly sync covers it meanwhile.
+
+**The gap:** the app has no write path for billing allocations. It *reads* unlinked ones so the
+invoice builder can compose a draft, but nothing creates or links one. **Four deployed Airtable
+automations do that**, and `v_invoices.invoice_total_calc` is computed *from* those allocations.
+They are the only reason anyone still has to touch Airtable in normal operation.
+
+| id | fires when | does |
+|---|---|---|
+| `wflTwXb6dG32FFv9s` | Time Entry: billable, hours > 0, unallocated, **Labor Reviewed ✓** | creates labor allocation |
+| `wflNmJsnIhWtSjUlL` | Expense: billable, unbilled > 0, unallocated, **Reviewed ✓** | creates material allocation |
+| `wflOcxtmkzdxKMVQW` | Invoice saved, **Auto Allocate? ✓** | links unlinked labor allocations |
+| `wfl7bzJpZY9kcJ27i` | Invoice saved, **Auto Allocate? ✓** | links unlinked material allocations |
+
+**What to build:**
+
+1. **Create on review** — `handleUpdateTimeEntryPayroll` and `handleApproveExpense` already write
+   exactly those fields. Add the allocation insert to the same write; the values are already known.
+2. **Attach on invoice save** — `handleSaveInvoice` with `autoAllocate` claims the job's unlinked
+   allocations. The frontend **already fetches that exact list** to build the draft.
+3. Turn the four automations off. `_billing-sync.js` becomes a safety net rather than a dependency.
+
+> ⚠ **Idempotency is the trap.** Review → un-review → re-review must not create a second
+> allocation. Airtable guards on "allocation link is empty"; Neon needs the same guard or a unique
+> constraint. Allocations decide what a customer is billed — give it the `013`/`015` diff treatment.
+>
+> ⚠ **Doing it synchronously kills a real lag.** `index.html` carries a documented fallback for
+> "brief automation lag between Review and allocation row creation". Writing allocations in the
+> same transaction removes that lag — and makes the fallback dead code to delete deliberately.
+
+## Or pick one of these — nothing is forced any more
 
 | Option | Size | Why / why not |
 |---|---|---|

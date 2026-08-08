@@ -6557,6 +6557,54 @@ async function handleListEmployeesForScheduling() {
 }
 
 async function handleGetAllInvoices() {
+  // ── NEON-FIRST (migration Step 4e) ──────────────────────────────────────
+  // The Airtable path below pages TWO entire tables — every invoice and every
+  // job — then joins them in memory. Here it is one query with a join.
+  //
+  // Deliberately does NOT filter by job status: an invoice on a now-archived
+  // job must still be visible, which is why the Airtable path fetches jobs raw
+  // rather than through the status-filtering helper. Same behaviour preserved.
+  //
+  // `total` serves invoice_total_calc — the computed figure, diffed 51/51
+  // against Airtable at 015 — not the stored copy that goes stale when an
+  // allocation changes.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT COALESCE(v.airtable_id, v.id::text) AS id, v.invoice_display_no, v.invoice_number,
+              v.invoice_date::text AS invoice_date, v.invoice_status, v.billing_mode,
+              v.invoice_type, v.invoice_total_calc, v.snapshot_total,
+              v.contract_invoice_amount, v.invoice_notes, v.invoice_snapshot, v.invoice_stage,
+              v.job_airtable_id,
+              j.name AS job_name, j.contractor_name, j.address_full, j.status AS job_status,
+              NULLIF(TRIM(COALESCE(j.customer_first_name,'') || ' ' ||
+                          COALESCE(j.customer_last_name,'')), '') AS customer
+         FROM v_invoices v
+         LEFT JOIN jobs j ON j.id = v.job_id
+        ORDER BY v.invoice_date DESC NULLS LAST`);
+    if (q?.rows?.length) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      return resp(200, {
+        ok: true,
+        invoices: q.rows.map(r => ({
+          id: r.id, displayNumber: r.invoice_display_no ?? null,
+          invoiceNumber: s(r.invoice_number), date: s(r.invoice_date),
+          status: s(r.invoice_status), billingMode: s(r.billing_mode),
+          invoiceType: s(r.invoice_type),
+          total: Number(r.invoice_total_calc ?? 0),
+          snapshotTotal: Number(r.snapshot_total ?? 0),
+          contractAmount: Number(r.contract_invoice_amount ?? 0),
+          notes: s(r.invoice_notes), snapshot: s(r.invoice_snapshot),
+          stage: s(r.invoice_stage),
+          jobId: s(r.job_airtable_id), jobName: s(r.job_name),
+          contractor: s(r.contractor_name), customer: s(r.customer),
+          address: s(r.address_full), jobStatus: s(r.job_status),
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    if (q?.error) console.error(`getAllInvoices: Neon read failed, falling back: ${q.error}`);
+  }
+
   // 1. Pull all invoices, paginated
   const allInvoices = [];
   let offset = undefined;

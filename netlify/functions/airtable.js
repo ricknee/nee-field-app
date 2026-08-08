@@ -3,6 +3,7 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
+import { shadowLoginCheck } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
@@ -2005,7 +2006,12 @@ async function handleLogin(body) {
     const savedPin=String(f[F.emp.pin]||"").trim(),active=gBool(f,F.emp.active),id=normalize(identifier);
     return [name,username,email].includes(id)&&savedPin!==""&&savedPin===String(pin).trim()&&active;
   });
-  if (!match) return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
+  if (!match) {
+    // Shadow the refusal too — a flip that would ALLOW someone Airtable turns
+    // away is the more dangerous direction, and it only shows up here.
+    await shadowLoginCheck("field", identifier, pin, null);
+    return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
+  }
   const f = match.fields || {};
   // Recognize four roles: admin, office, viewer, employee. Office acts like
   // admin on the field-app side but is filtered out of inventory + crew pickers.
@@ -2016,6 +2022,9 @@ async function handleLogin(body) {
   else if (rawRole === "viewer") role = "viewer";
   else                            role = "employee";
   const user = { id: match.id, name: f[F.emp.name]||"Unknown", role };
+  // Stage 2 of the login flip: Airtable still decides, Neon is checked
+  // alongside and only logs when the two disagree. See _employees.js.
+  await shadowLoginCheck("field", identifier, pin, user);
   // Stamp the last login for the People screen. neonExec, NOT neonWrite — this
   // is cosmetic and a login must never fail because Neon is unreachable. It is
   // also deliberately not awaited for its result beyond the fail-soft wrapper:

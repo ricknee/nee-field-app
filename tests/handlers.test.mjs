@@ -1536,6 +1536,25 @@ await test("setEmployeePin: a PIN change signs the person out, and fails closed"
   delete process.env.DATABASE_URL;
 });
 
+await test("login: the Neon shadow cannot affect the answer", async () => {
+  // Stage 2 contract. Airtable decides; the shadow only logs. A broken or
+  // absent Neon must leave both the allow and the refuse path untouched —
+  // this is login, so the blast radius of getting it wrong is everybody.
+  mockTables = { Employees: [
+    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
+  ] };
+  for (const url of [undefined, "not-a-valid-connection-string"]) {
+    if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
+    const good = await POST("login", { identifier: "rick nee", pin: "1234" });
+    eq(good.statusCode, 200, `login still succeeds (DATABASE_URL=${url})`);
+    eq(json(good).user.role, "admin", "role unchanged by the shadow");
+    ok(json(good).token, "token still issued");
+    const bad = await POST("login", { identifier: "rick nee", pin: "9999" });
+    eq(bad.statusCode, 401, `wrong PIN still refused (DATABASE_URL=${url})`);
+  }
+  delete process.env.DATABASE_URL;
+});
+
 await test("updateEmployee: admin only, and you can't change your own role", async () => {
   mockTables = { Employees: [{ id: "recAdmin", fields: { "Employee Name": "Rick Unruh", Role: "admin" } }] };
   const base = { employeeId: "recX", name: "X", role: "employee" };

@@ -3,6 +3,7 @@
 // Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
+import { shadowLoginCheck } from "./_employees.js";
 import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
@@ -124,7 +125,10 @@ async function handleLogin(body) {
       && savedPin === String(pin).trim();
   });
 
-  if (!match) return resp(401, { ok: false, error: "Invalid name or PIN." });
+  if (!match) {
+    await shadowLoginCheck("inventory", identifier, pin, null);
+    return resp(401, { ok: false, error: "Invalid name or PIN." });
+  }
 
   const f       = match.fields || {};
   // `Role` only. This used to read `Role New || Role`, which the field app
@@ -141,6 +145,10 @@ async function handleLogin(body) {
   else if (rawRole === "viewer") role = "viewer";
   else                            role = "employee";
   const user = { id: match.id, name: f["Employee Name"] || "Unknown", role };
+  // Stage 2 of the login flip. Shadowed here too, and separately labelled,
+  // because this app's matching rule is NOT the field app's — it accepts a
+  // first name and ignores email. See _employees.js.
+  await shadowLoginCheck("inventory", identifier, pin, user);
   return resp(200, { ok: true, user, token: signToken({ id: user.id, role: user.role }) });
 }
 

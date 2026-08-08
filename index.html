@@ -11744,6 +11744,9 @@
             <button class="people-repin-btn" data-id="${esc(p.id)}" data-name="${esc(p.name)}" type="button"
               style="background:none; border:none; padding:0; margin-left:14px; color:var(--accent);
                      font-weight:600; font-size:12px; cursor:pointer;">Change PIN</button>
+            <button class="people-edit-btn" data-id="${esc(p.id)}" type="button"
+              style="background:none; border:none; padding:0; margin-left:14px; color:var(--accent);
+                     font-weight:600; font-size:12px; cursor:pointer;">Edit</button>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; font-size:12px; margin-bottom:10px;">
             <div><div style="color:var(--muted);">Cost rate</div><div style="font-weight:600;">${rate}</div></div>
@@ -11787,6 +11790,9 @@
     $("peopleList").querySelectorAll(".people-repin-btn").forEach(btn => {
       btn.addEventListener("click", () => changePin(btn));
     });
+    $("peopleList").querySelectorAll(".people-edit-btn").forEach(btn => {
+      btn.addEventListener("click", () => openPersonEditor(btn.dataset.id));
+    });
   }
 
   // Fetched per person on tap, never with the roster — otherwise every
@@ -11815,6 +11821,76 @@
       btn.disabled = false;
       btn.textContent = "Show PIN";
       alert(`Couldn't read that PIN.\n\n${e.message}`);
+    }
+  }
+
+  // Inline edit form, rendered into the person's own card. A modal on top of a
+  // modal is miserable on a phone, and the card already holds the context.
+  const PEOPLE_ROLES  = ["admin", "office", "viewer", "employee"];
+  const PEOPLE_LABORS = ["Regular", "Prevailing Wage", "Service Rate"];
+
+  function openPersonEditor(id) {
+    const p = peopleCache.find(x => x.id === id);
+    if (!p) return;
+    const card = $("peopleList").querySelector(`.people-edit-btn[data-id="${CSS.escape(id)}"]`)?.closest(".sl-card");
+    if (!card) return;
+    const isMe = id === state.user?.id;
+    const fld = (label, key, value, type = "text") => `
+      <label style="display:block; margin-bottom:8px;">
+        <span style="display:block; color:var(--muted); font-size:11px; margin-bottom:2px;">${label}</span>
+        <input data-k="${key}" type="${type}" value="${esc(value ?? "")}"
+          style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:6px;
+                 border:1px solid var(--line-2); background:var(--panel-2); color:var(--text); font-size:13px;" />
+      </label>`;
+    const sel = (label, key, value, opts, disabled) => `
+      <label style="display:block; margin-bottom:8px;">
+        <span style="display:block; color:var(--muted); font-size:11px; margin-bottom:2px;">${label}</span>
+        <select data-k="${key}" ${disabled ? "disabled" : ""}
+          style="width:100%; box-sizing:border-box; padding:6px 8px; border-radius:6px;
+                 border:1px solid var(--line-2); background:var(--panel-2); color:var(--text); font-size:13px;">
+          ${opts.map(o => `<option value="${esc(o)}" ${o === value ? "selected" : ""}>${esc(o)}</option>`).join("")}
+        </select>
+        ${disabled ? `<span style="color:var(--muted); font-size:11px;">You can't change your own role.</span>` : ""}
+      </label>`;
+
+    card.insertAdjacentHTML("beforeend", `
+      <div class="people-editor" style="margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
+        ${fld("Name", "name", p.name)}
+        ${fld("Username", "username", p.username)}
+        ${fld("Employee ID", "employeeNo", p.employeeNo)}
+        ${fld("Phone", "phone", p.phone, "tel")}
+        ${fld("Email", "email", p.email, "email")}
+        ${sel("Role", "role", p.role, PEOPLE_ROLES, isMe)}
+        ${sel("Default labor type", "laborType", p.laborType || "Regular", PEOPLE_LABORS, false)}
+        ${fld("Hired on", "hiredOn", p.hiredOn, "date")}
+        ${fld("Left on", "terminatedOn", p.terminatedOn, "date")}
+        ${fld("Notes", "notes", p.notes)}
+        <div style="display:flex; gap:8px; margin-top:6px;">
+          <button class="people-save btn btn-sm btn-primary" data-id="${esc(id)}" type="button" style="font-size:12px;">Save</button>
+          <button class="people-cancel btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+        </div>
+      </div>`);
+
+    card.querySelector(".people-edit-btn").style.display = "none";
+    card.querySelector(".people-cancel").addEventListener("click", renderPeople);
+    card.querySelector(".people-save").addEventListener("click", (e) => savePerson(e.currentTarget));
+  }
+
+  async function savePerson(btn) {
+    const editor = btn.closest(".people-editor");
+    const body = { employeeId: btn.dataset.id };
+    editor.querySelectorAll("[data-k]").forEach(el => { body[el.dataset.k] = el.value; });
+    // A disabled <select> still reads its value, but the server refuses a role
+    // change on yourself anyway — send what's there and let it be authoritative.
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    try {
+      await apiPost("updateEmployee", body);
+      await loadPeople();
+    } catch (e) {
+      alert(`Couldn't save.\n\n${e.message}\n\nNothing was changed.`);
+      btn.disabled = false;
+      btn.textContent = "Save";
     }
   }
 

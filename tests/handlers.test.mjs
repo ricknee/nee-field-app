@@ -1536,6 +1536,25 @@ await test("setEmployeePin: a PIN change signs the person out, and fails closed"
   delete process.env.DATABASE_URL;
 });
 
+await test("updateEmployee: admin only, and you can't change your own role", async () => {
+  mockTables = { Employees: [{ id: "recAdmin", fields: { "Employee Name": "Rick Unruh", Role: "admin" } }] };
+  const base = { employeeId: "recX", name: "X", role: "employee" };
+  eq((await POST("updateEmployee", base, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("updateEmployee", base, OFFICE_TOK)).statusCode, 403, "office refused — role edits are authz changes");
+  eq((await POST("updateEmployee", { ...base, name: "" })).statusCode, 400, "empty name refused");
+  // Whitelisted, so a stray value can't trip Airtable typecast into inventing
+  // a new single-select option (CLAUDE.md).
+  eq((await POST("updateEmployee", { ...base, role: "superuser" })).statusCode, 400, "unknown role refused");
+  // recAdmin is the id inside ADMIN_TOK. Demoting yourself locks you out of the
+  // only screen that could undo it.
+  const self = await POST("updateEmployee", { employeeId: "recAdmin", name: "Rick Unruh", role: "employee" });
+  eq(self.statusCode, 400, "can't demote yourself");
+  // ...but editing your own non-role fields is fine, so this must NOT 400 on
+  // the self check (it fails later, at the unreachable Neon write).
+  const selfSameRole = await POST("updateEmployee", { employeeId: "recAdmin", name: "Rick U", role: "admin" });
+  ok(selfSameRole.statusCode !== 400, "same-role self edit passes the self guard");
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

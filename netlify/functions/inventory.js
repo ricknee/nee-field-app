@@ -127,7 +127,12 @@ async function handleLogin(body) {
   if (!match) return resp(401, { ok: false, error: "Invalid name or PIN." });
 
   const f       = match.fields || {};
-  const rawRole = normalize(f["Role New"] || f["Role"] || "");
+  // `Role` only. This used to read `Role New || Role`, which the field app
+  // never did — so the same person could be a different role depending on which
+  // app they opened. Worse, `Role New`'s options are employee/admin/viewer with
+  // **no `office`**, so a populated `Role New` would silently demote the office
+  // staff. `Role New` is empty on every record today; both apps now agree.
+  const rawRole = normalize(f["Role"] || "");
   // Return the full canonical role (admin/office/viewer/employee) — both the
   // picker and the server-side authz need the real role, not a collapsed one.
   let role;
@@ -149,7 +154,7 @@ async function handleEmployees() {
   const employees = records.map(r => ({
     id:   r.id,
     name: r.fields["Employee Name"] || "",
-    role: normalize(r.fields["Role New"] || r.fields["Role"] || "")
+    role: normalize(r.fields["Role"] || "")   // `Role` only — see handleLogin
   }));
   return resp(200, { ok: true, employees });
 }

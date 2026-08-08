@@ -120,8 +120,19 @@ const F = {
   emp: {
     name:     "Employee Name",
     username: "Username",
-    email:    "Email",
+    // ⚠ FIXED 2026-08-08 — this said "Email", and no such column exists on the
+    // Employees table. `f["Email"]` was undefined, normalize() turned it into
+    // "", and since `identifier` is required non-empty the email branch of
+    // handleLogin could never match. **Logging in by email had never worked.**
+    // (No employee has an address on file yet either, so nothing changes today
+    // beyond the code no longer being a lie.)
+    email:    "Primary Email",
     pin:      "PIN",
+    // `Role` is the single source of truth. There is also a `Role New` column,
+    // which inventory.js used to prefer — but its options are only
+    // employee/admin/viewer, with **no `office`**, so preferring it would
+    // silently demote the two office users. Both apps now read `Role` only,
+    // and the People editor blanks `Role New` on save so it can't drift back.
     role:     "Role",
     active:   "Active"
   },
@@ -453,6 +464,8 @@ const _ADMIN_POSTS = new Set([
   "setEmployeeActive",
   // Resetting a credential, and it signs the person out. Admin only.
   "setEmployeePin",
+  // Editing a person includes their ROLE, which is an authorization change.
+  "updateEmployee",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -2003,6 +2016,13 @@ async function handleLogin(body) {
   else if (rawRole === "viewer") role = "viewer";
   else                            role = "employee";
   const user = { id: match.id, name: f[F.emp.name]||"Unknown", role };
+  // Stamp the last login for the People screen. neonExec, NOT neonWrite — this
+  // is cosmetic and a login must never fail because Neon is unreachable. It is
+  // also deliberately not awaited for its result beyond the fail-soft wrapper:
+  // the only way to spot an account nobody has used in a year is to record this,
+  // but nobody should be locked out if it doesn't land.
+  await neonExec("login.lastSeen",
+    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1`, [match.id]);
   // Issue a signed session token the client attaches to every later request.
   return resp(200, { ok: true, user, token: signToken({ id: user.id, role: user.role }) });
 }
@@ -2037,8 +2057,17 @@ async function handleLogin(body) {
 // field is free-text an admin already uses for other things, and a deactivation
 // must not overwrite it.
 const _EMP_FLD = {
-  active: "fldJbQBEweYfoo5nz",
-  pin:    "fld4vnd5aFyrIajM9",
+  active:     "fldJbQBEweYfoo5nz",
+  pin:        "fld4vnd5aFyrIajM9",
+  name:       "fld9dg0JJjfLqPZ8w",
+  username:   "fldvEUEkYeR2yI4rm",
+  employeeNo: "fldvsUs0s8CCwrfIN",
+  phone:      "fld3S8pHiOF892mPq",
+  email:      "fldE8bsEr8CMzscJg",   // "Primary Email" — NOT "Email", which doesn't exist
+  role:       "fldLfzy63tqP8nnHQ",
+  roleNew:    "fldtqCXIDd9EuE1O5",   // blanked on save; see handleUpdateEmployee
+  laborType:  "fldSFlrFRZy3yXHyU",
+  notes:      "fldL3LQ7DwqYxwbny",
 };
 
 async function handlePeople() {
@@ -2067,12 +2096,11 @@ async function handlePeople() {
       username:    g(f, F.emp.username) || "",
       employeeNo:  g(f, "Employee ID") || "",
       phone:       g(f, "Primary Phone") || "",
-      // ⚠ "Primary Email", not "Email". F.emp.email names a column that does
-      // not exist on this table, which is why login-by-email has never worked
-      // in this app — see docs/PLAN-employee-admin.md problem 3. Slice 2 fixes
-      // the login path; this read uses the real column name from day one.
-      email:       g(f, "Primary Email") || "",
-      role:        normalize(g(f, "Role New") || g(f, F.emp.role) || "") || "employee",
+      // F.emp.email is now "Primary Email" — it used to say "Email", a column
+      // that does not exist here, which is why login-by-email never worked.
+      // Fixed at the F map, so this and handleLogin agree by construction.
+      email:       g(f, F.emp.email) || "",
+      role:        normalize(g(f, F.emp.role) || "") || "employee",
       active:      gBool(f, F.emp.active),
       laborType:   g(f, "Default Labor Type") || "",
       // The live Airtable rollup of Labor Cost Rates. Deliberately NOT read
@@ -2130,6 +2158,85 @@ async function handleEmployeePin(params) {
   // PIN is not cosmetic, handleLogin refuses to match one, so the person
   // genuinely cannot log in until it is set.
   return resp(200, { ok: true, employeeId, pin, hasPin: pin !== "" });
+}
+
+// Edit a person. Slice 2 — until this existed the People screen was read-only
+// plus the access toggle, and changing anyone's name, role or contact details
+// meant opening the Airtable grid.
+//
+// Writes BOTH stores, because employee data is split (see handlePeople):
+// identity/contact/role/labor type live in Airtable, the employment dates live
+// in Neon. Neon goes first and fails closed, same contract as the other two
+// write handlers — a save reported as done must actually be done.
+//
+// The Neon half is an UPSERT, unlike the revoke path's bare UPDATE. A new hire
+// exists in Airtable the moment they're added but only reaches Neon on the next
+// ETL run, and refusing to let anyone edit them until then would be a silly
+// place to fail. On conflict it touches ONLY the three columns this screen
+// owns — name/active/role stay Airtable's, managed by the ETL dimension load.
+const _ROLE_OPTS  = ["admin", "office", "viewer", "employee"];
+const _LABOR_OPTS = ["Regular", "Prevailing Wage", "Service Rate"];
+
+async function handleUpdateEmployee(body, authUser) {
+  const { employeeId, name, username, employeeNo, phone, email,
+          role, laborType, hiredOn, terminatedOn, notes } = body || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const cleanName = String(name ?? "").trim();
+  if (!cleanName) return resp(400, { ok: false, error: "Name can't be empty." });
+
+  // Same self guard as the access toggle, for the same reason: demoting
+  // yourself out of admin locks you out of the only screen that could undo it.
+  // Editing your own name or phone is fine — only the role is refused.
+  const nextRole = _ROLE_OPTS.includes(String(role || "").toLowerCase())
+    ? String(role).toLowerCase() : null;
+  if (!nextRole) return resp(400, { ok: false, error: `Role must be one of: ${_ROLE_OPTS.join(", ")}.` });
+  if (authUser && employeeId === authUser.id && nextRole !== authUser.role) {
+    return resp(400, { ok: false, error: "You can't change your own role. Ask another admin." });
+  }
+
+  // Whitelisted rather than passed through with typecast, so a stray client
+  // value can't quietly create a new single-select option (see CLAUDE.md).
+  const nextLabor = _LABOR_OPTS.includes(String(laborType || "")) ? String(laborType) : null;
+
+  const ymd = (v) => {
+    const s = String(v ?? "").trim();
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+  };
+
+  const rows = await neonWrite("updateEmployee",
+    `INSERT INTO employees (airtable_id, name, hired_on, terminated_on, termination_note)
+          VALUES ($1, $2, $3::date, $4::date, NULLIF($5::text, ''))
+     ON CONFLICT (airtable_id) DO UPDATE
+            SET hired_on         = EXCLUDED.hired_on,
+                terminated_on    = EXCLUDED.terminated_on,
+                termination_note = EXCLUDED.termination_note
+       RETURNING airtable_id`,
+    [employeeId, cleanName, ymd(hiredOn), ymd(terminatedOn), String(notes ?? "").trim()]);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error(`updateEmployee: no row written for ${employeeId}`);
+  }
+
+  await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: {
+      [_EMP_FLD.name]:       cleanName,
+      [_EMP_FLD.username]:   String(username ?? "").trim(),
+      [_EMP_FLD.employeeNo]: String(employeeNo ?? "").trim(),
+      [_EMP_FLD.phone]:      String(phone ?? "").trim(),
+      [_EMP_FLD.email]:      String(email ?? "").trim(),
+      [_EMP_FLD.role]:       nextRole,
+      [_EMP_FLD.laborType]:  nextLabor,
+      [_EMP_FLD.notes]:      String(notes ?? "").trim(),
+      // Blanked on every save. `Role New` can only express employee/admin/
+      // viewer — it has no `office` — so a value left sitting there is a
+      // demotion waiting to happen if any reader ever prefers it again.
+      [_EMP_FLD.roleNew]:    null,
+    } }),
+  });
+
+  return resp(200, { ok: true, employeeId });
 }
 
 // Set a new PIN. Admin-driven reset — there is no self-service "forgot PIN"
@@ -8316,6 +8423,7 @@ export async function handler(event) {
       // signed identity, never a client-supplied one.
       if (body.action === "setEmployeeActive")    return await handleSetEmployeeActive(body, authUser);
       if (body.action === "setEmployeePin")       return await handleSetEmployeePin(body);
+      if (body.action === "updateEmployee")       return await handleUpdateEmployee(body, authUser);
       if (body.action === "updateJobInspection")  return await handleUpdateJobInspection(body);
       if (body.action === "createInspectionAgency") return await handleCreateInspectionAgency(body);
       if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);

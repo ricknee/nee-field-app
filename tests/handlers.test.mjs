@@ -1489,6 +1489,25 @@ await test("people: admin only", async () => {
   eq((await GET("people", {}, VIEWER_TOK)).statusCode, 403, "viewer refused");
 });
 
+await test("employeePin: strict admin only, and reports a missing PIN as missing", async () => {
+  // A live credential. Office is excluded exactly as it is from `people`.
+  mockTables = { Employees: [
+    { id: "recHasPin", fields: { "Employee Name": "Has Pin", PIN: "4821" } },
+    { id: "recNoPin",  fields: { "Employee Name": "No Pin" } },
+  ] };
+  eq((await GET("employeePin", { employeeId: "recHasPin" }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await GET("employeePin", { employeeId: "recHasPin" }, OFFICE_TOK)).statusCode, 403, "office refused");
+  eq((await GET("employeePin", { employeeId: "recHasPin" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  const b = json(await GET("employeePin", { employeeId: "recHasPin" }));
+  eq(b.pin, "4821", "admin gets the PIN");
+  eq(b.hasPin, true, "hasPin true");
+  // An empty PIN is not cosmetic — handleLogin refuses to match one, so the
+  // screen has to say so rather than render a blank.
+  const n = json(await GET("employeePin", { employeeId: "recNoPin" }));
+  eq(n.hasPin, false, "missing PIN reported as missing, not as an empty string");
+  eq((await GET("employeePin", {})).statusCode, 400, "no employeeId → 400");
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

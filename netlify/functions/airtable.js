@@ -507,7 +507,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // and R2's own error text, which no field tech needs.
 // `people` is admin-only, NOT admin+office: the roster carries each person's
 // true cost rate. Office is deliberately excluded from wages.
-const _ADMIN_READS = new Set(["r2Status", "people"]);
+// `employeePin` returns a live credential — strict admin, never office, and
+// deliberately its own action rather than a field on `people` so one tap
+// reveals one person instead of shipping every PIN on every screen open.
+const _ADMIN_READS = new Set(["r2Status", "people", "employeePin"]);
 
 // Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
 // so listing must match the actions available on what's listed:
@@ -2093,6 +2096,39 @@ async function handlePeople() {
   return resp(200, { ok: true, people, neonOk: !!(q && !q.error) });
 }
 
+// Reveal one employee's PIN, on explicit request, for an admin who needs to
+// tell someone what theirs is.
+//
+// ── WHY THIS IS A SEPARATE ACTION AND NOT A FIELD ON handlePeople ──────────
+// Folding the PIN into the roster would put EVERY employee's PIN into one JSON
+// response every time the screen opens — sitting in browser memory, devtools
+// and any network log, whether or not anyone asked. One person, one deliberate
+// tap, one response is the same information with a much smaller blast radius.
+//
+// ── AND WHY IT'S OK TO SHOW AT ALL ────────────────────────────────────────
+// The PIN is stored in PLAINTEXT in Airtable (a known, deliberate gap — see
+// _auth.js:12-13), so any admin can already read it by opening the grid. This
+// adds no exposure that doesn't already exist; it saves a trip to Airtable.
+// Owner asked for it explicitly 2026-08-08.
+//
+//   ⚠ When PINs are hashed at the login flip (ROADMAP §4), this action CANNOT
+//   survive — a hash cannot be un-hashed. It must be replaced by "set a new
+//   PIN" at that point, not ported. That is the cost the plan was trying to
+//   avoid by never reading PINs; it is accepted, and written down here so it
+//   is found at the right moment.
+async function handleEmployeePin(params) {
+  const { employeeId } = params || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const rec = await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, { method: "GET" });
+  const pin = String(rec?.fields?.[F.emp.pin] ?? "").trim();
+  // hasPin distinguishes "no PIN on record" from "couldn't read it" — an empty
+  // PIN is not cosmetic, handleLogin refuses to match one, so the person
+  // genuinely cannot log in until it is set.
+  return resp(200, { ok: true, employeeId, pin, hasPin: pin !== "" });
+}
+
 // Turn an employee's access on or off. THE point of the screen.
 //
 // ── ORDER MATTERS, AND SO DOES WHICH HALF FAILS CLOSED ─────────────────────
@@ -2140,11 +2176,19 @@ async function handleSetEmployeeActive(body, authUser) {
     // token `iat` from the same family of clock rather than Postgres now().
     // terminated_on uses COALESCE so re-deactivating someone doesn't move the
     // date they actually left.
+    // ⚠ $2 is cast EXPLICITLY in both places, and the date is derived from the
+    // timestamptz rather than re-casting the parameter. Postgres deduces ONE
+    // type per parameter across the whole statement, so the earlier form —
+    // `token_valid_from = $2` next to `$2::date` — asked it to be timestamptz
+    // and date at once and failed with "inconsistent types deduced for
+    // parameter $2". It failed on every single revocation; the offline tests
+    // could not catch it because they die at the connection before Postgres
+    // ever parses the SQL.
     mustHaveMatched(await neonWrite("revokeEmployee",
       `UPDATE employees
-          SET token_valid_from = $2,
-              terminated_on    = COALESCE(terminated_on, $2::date),
-              termination_note = COALESCE(NULLIF($3, ''), termination_note)
+          SET token_valid_from = $2::timestamptz,
+              terminated_on    = COALESCE(terminated_on, ($2::timestamptz)::date),
+              termination_note = COALESCE(NULLIF($3::text, ''), termination_note)
         WHERE airtable_id = $1
     RETURNING airtable_id`, [employeeId, nowIso, String(note || "").trim()]));
   } else {
@@ -8079,6 +8123,7 @@ export async function handler(event) {
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "people")             return await handlePeople();
+      if (action === "employeePin")        return await handleEmployeePin(params);
       if (action === "jobPhotos")          return await handleJobPhotos(params);
       if (action === "jobPhotosDeleted")   return await handleJobPhotosDeleted(params);
       if (action === "jobPrints")          return await handleJobPrints(params);

@@ -22,6 +22,31 @@ for: *turn someone off and they can't get back into the app.*
 > success without a working Neon write; it does **not** prove `mustHaveMatched()` fires. Real
 > coverage needs a live-Neon test against a branch — the same gap already noted for
 > `createTimeEntry`.
+>
+> ### ⚠⚠ That gap bit immediately — and here is the 10-second check that closes it
+>
+> **Every revocation failed on production**, with
+> `revokeEmployee: inconsistent types deduced for parameter $2`. Postgres deduces **one type per
+> parameter for the whole statement**, and the original SQL used `token_valid_from = $2` beside
+> `COALESCE(terminated_on, $2::date)` — asking `$2` to be timestamptz and date at once. The
+> offline suite cannot catch this class of bug at all: it dies at the connection before Postgres
+> ever parses the SQL, so the write path stays green while being categorically broken.
+>
+> (The fail-closed design did work exactly as intended — nothing was written and the admin was
+> told. Restoring access kept working throughout, because that statement has no `$2`.)
+>
+> **Before shipping ANY new parameterised Neon write, `PREPARE` it against Neon and read back the
+> deduced types.** No parameters needed, no data touched:
+>
+> ```sql
+> PREPARE chk AS <the exact SQL, $1/$2/... untouched>;
+> SELECT parameter_types::text FROM pg_prepared_statements WHERE name='chk';
+> DEALLOCATE chk;
+> ```
+>
+> The fixed statement reports `{text, timestamp with time zone, text}`; the old one raises the
+> production error verbatim. Casting **every** use of a parameter explicitly (`$2::timestamptz`,
+> and deriving the date as `($2::timestamptz)::date`) is what makes deduction unambiguous.
 
 ---
 

@@ -458,8 +458,17 @@ negotiable.**
 > because the Airtable side it compares against is frozen by design.
 >
 > ```sql
-> SELECT max(work_date), count(*) FROM time_entries WHERE work_date > CURRENT_DATE - 3;
+> SELECT key, updated_at, watermark, note FROM sync_state WHERE key = 'qb_timesheets';
 > ```
+>
+> **`updated_at` is the heartbeat — that is the number to look at.** The puller runs `@hourly`
+> (`netlify.toml`), so anything older than ~2 hours means it is not running. `note` reports what
+> the last run did, e.g. `fetched=1 upserted=1 deleted=0`.
+>
+> ⚠ **Do NOT health-check this by counting rows or reading `max(work_date)`.** That was the
+> original advice here and it is WRONG: it cannot tell a quiet day from a dead puller, which is
+> the entire failure mode being watched for. A day with no new timesheets looks identical to a
+> puller that stopped a week ago. `sync_state` distinguishes them.
 >
 > **Do NOT keep running the old reconciler as a health check.** Neon now runs permanently and
 > correctly ahead of a frozen Airtable table, so it will read red for the rest of time. Either

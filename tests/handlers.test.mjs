@@ -1643,6 +1643,61 @@ await test("rates: a rate write with Neon down fails CLOSED", async () => {
   delete process.env.DATABASE_URL;
 });
 
+// ── Stage 4: the secondary employee reads move to Neon ──
+// These handlers now read Neon first and fall back to Airtable. The contract
+// worth pinning is the FALLBACK, because the failure mode is silent: a null
+// from Neon must mean "ask Airtable", never "there are no employees". An empty
+// employee list in a payroll rollup drops people from a pay period without
+// erroring anywhere.
+await test("payroll reads: unreachable Neon falls back, nobody vanishes", async () => {
+  mockTables = {
+    Employees: [
+      { id: "recEmp1", fields: { "Employee Name": "Jeff Koehn", Role: "employee", Active: true } },
+      { id: "recOff1", fields: { "Employee Name": "Tisha",      Role: "office",   Active: true } },
+    ],
+    "Time Entries": [], Bonuses: [], "Payroll Runs": [],
+  };
+  for (const url of [undefined, "not-a-valid-connection-string"]) {
+    if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
+    for (const a of ["payrollBonusesRollup", "payrollHoursBreakdown"]) {
+      const res = await GET(a, { today: "2026-08-09" });
+      ok(res.statusCode < 500, `${a} survives (DATABASE_URL=${url}) — got ${res.statusCode}`);
+    }
+    // Office is not payroll-eligible and must stay refused on the fallback path
+    // too — the role gate travels with the record, whichever store answered.
+    //
+    // Single-row fixture on purpose: the mock does NOT apply filterByFormula,
+    // it returns every row for the table. With both employees present the
+    // fallback's RECORD_ID() filter is a no-op and [0] is whoever is listed
+    // first, so a two-row fixture would test the fixture, not the gate.
+    const both = mockTables;
+    mockTables = { ...both, Employees: [both.Employees[1]] };   // office only
+    eq((await GET("myHoursRollup", { employeeId: "recOff1", today: "2026-08-09" })).statusCode, 403, "office refused");
+    mockTables = { ...both, Employees: [] };
+    eq((await GET("myHoursRollup", { employeeId: "recNope", today: "2026-08-09" })).statusCode, 404, "unknown employee 404s");
+    mockTables = both;
+  }
+  delete process.env.DATABASE_URL;
+});
+
+await test("createVendor: gated by the signed token, not a body field", async () => {
+  // The handler used to re-read the employee from Airtable and check their role
+  // — weaker than it looked, since `employeeId` came from the request body and
+  // any caller could send an admin's id. authzFor already gates this at
+  // admin+office on the SIGNED token, so the guard is gone and employeeId is
+  // ignored. It must still work when the client doesn't send one.
+  mockTables = { Vendors: [], Employees: [] };
+  eq((await POST("createVendor", { name: "New Vendor Co" }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("createVendor", { name: "New Vendor Co" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  ok((await POST("createVendor", { name: "New Vendor Co" }, OFFICE_TOK)).statusCode < 400, "office allowed with no employeeId");
+});
+
+await test("backfillTimeEntryEmployeeLinks is gone, not just unlisted", async () => {
+  // Deleted in Stage 4 — it repaired the Airtable Time Entries table, which has
+  // been a frozen historical copy since Step 3. An unknown action must 400.
+  eq((await POST("backfillTimeEntryEmployeeLinks", { confirm: "YES" })).statusCode, 400, "unknown action");
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

@@ -3,7 +3,7 @@
 // Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
-import { shadowLoginCheck, neonLoginCandidate, loginSource } from "./_employees.js";
+import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from "./_employees.js";
 // neonExec only — fail-soft by contract, for the last-login stamp below. This
 // function has no other Neon dependency; the driver is lazy-imported so the
 // offline test suites stay install-free.
@@ -193,6 +193,18 @@ async function handleLogin(body) {
 
 // ── EMPLOYEES (for name picker) ────────────────────────────
 async function handleEmployees() {
+  // Neon-first (Stage 4 of the employees migration). Ids stay AIRTABLE rec ids —
+  // they flow into the cart and onto `Job ID (Main)`-style fields, so a Neon
+  // uuid here would write garbage downstream.
+  const neon = await neonEmployees(true);
+  if (neon) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      employees: neon.map(e => ({ id: e.id, name: e.name, role: e.role })),
+    });
+  }
+  // null means Neon had no opinion, never "nobody works here" — an empty picker
+  // would look like a working screen with no staff.
   const records = await fetchAll(API_ROOT_MAIN, "Employees", {
     filter: `{Active}=1`,
     sortField: "Employee Name",
@@ -203,7 +215,7 @@ async function handleEmployees() {
     name: r.fields["Employee Name"] || "",
     role: normalize(r.fields["Role"] || "")   // `Role` only — see handleLogin
   }));
-  return resp(200, { ok: true, employees });
+  return resp(200, { ok: true, _source: "airtable", employees });
 }
 
 // ── JOBS (from inventory base synced Jobs table) ──────────

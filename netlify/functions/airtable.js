@@ -3,7 +3,8 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
-import { shadowLoginCheck, neonLoginCandidate, loginSource } from "./_employees.js";
+import { shadowLoginCheck, neonLoginCandidate, loginSource,
+         neonEmployees, neonEmployeeById } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
@@ -58,8 +59,7 @@ import {
  *   JOBS ......... jobs 1513, jobById 1524, createJob 3780, updateJobStatus 1550,
  *                  updateJobInfo 3736, updateJobNotes 3690
  *   TIME ENTRIES . timeEntries 2163, createTimeEntry 495, updateTimeEntry 2151,
- *                  updateTimeEntryPayroll 520, deleteTimeEntry 2144,
- *                  backfillTimeEntryEmployeeLinks 550 (ADMIN_BACKFILL_TOKEN-gated)
+ *                  updateTimeEntryPayroll 520, deleteTimeEntry 2144
  *   PAYROLL ...... payrollEntries 437, findMatchingPayrollRun 715, payrollRunCreate 748,
  *                  payrollRunsList 886, payrollHoursRollup 972, payrollBonusesRollup 1025,
  *                  payrollEmployeeBonusHistory 1078, payrollHoursBreakdown 1128,
@@ -475,7 +475,7 @@ const _TIME_SELF_WRITES = new Set([
   "requestPto", "cancelPtoRequest",
 ]);
 const _ADMIN_POSTS = new Set([
-  "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
+  "updateTimeEntryPayroll", "payrollRunCreate",
   "addScheduleEntry", "updateScheduleEntry", "deleteScheduleEntry",
   // One-off migration action, admin only. Gated by role rather than by
   // ADMIN_BACKFILL_TOKEN: it is idempotent, copies rather than mutates, and the
@@ -2637,153 +2637,17 @@ function numOrNull(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
-
-// ── BACKFILL: reconcile Employee text + Employee (Linked) on Time Entries ──
-// One-shot admin endpoint. Idempotent — second run reports zero fixes.
-// Auth: ADMIN_BACKFILL_TOKEN env var + body.confirm === "YES".
-// Behavior: for each Time Entry, fill in whichever employee field is empty
-// when the other side is populated AND the missing side resolves via the
-// Employees table. Never overwrites a populated field; text↔link mismatches
-// are surfaced as a count + ID list, not silently corrected.
-async function handleBackfillTimeEntryEmployeeLinks(body) {
-  const token = body?.token;
-  if (!token || token !== process.env.ADMIN_BACKFILL_TOKEN) {
-    return resp(401, { ok: false, error: "Invalid or missing token." });
-  }
-  if (body?.confirm !== "YES") {
-    return resp(400, { ok: false, error: 'Missing confirmation. Pass {"confirm":"YES"} to proceed.' });
-  }
-
-  // Cap how many batched PATCHes run per invocation so a large historical
-  // backfill can't blow Netlify's 60s function timeout. Caller re-runs
-  // until the response reports complete: true.
-  const rawMax = body?.maxBatches;
-  const maxBatches = (Number.isInteger(rawMax) && rawMax > 0) ? rawMax : 20;
-
-  const [entries, employees] = await Promise.all([
-    // Narrow the scan to rows that might need fixing: Work Date in 2025+
-    // AND (text empty OR link empty). The unfiltered fetch on production
-    // data (~2500 rows) consumed ~50s before any PATCH could run and hit
-    // Netlify's idle timeout; even after dropping bothPopulated rows the
-    // scan returned 7600+ rows going back to 2021, dominated by historical
-    // typos and departed-staff names with no matching Employees record.
-    // Pre-2025 entries are out of scope — they don't affect any current
-    // reporting and can be cleaned up manually with Airtable find-and-
-    // replace if ever needed. Trade-off: rows with both fields populated-
-    // but-disagreeing won't appear in the mismatch count via this scan.
-    fetchAll(TABLES.timeEntries, { filter: `AND(DATESTR({Work Date})>="2025-01-01",OR({Employee} = BLANK(), {Employee (Linked)} = BLANK()))` }),
-    fetchAll(TABLES.employees)
-  ]);
-
-  // name → recId and recId → name. Includes inactive employees so historical
-  // entries for departed staff are also linkable.
-  const nameToId = new Map();
-  const idToName = new Map();
-  for (const e of employees) {
-    const n = (e.fields?.[F.emp.name] || "").trim();
-    if (n) nameToId.set(n, e.id);
-    idToName.set(e.id, n);
-  }
-
-  let bothPopulated = 0, mismatch = 0, bothEmpty = 0;
-  let textOnlyFixed = 0, linkOnlyFixed = 0;
-  let textOnlyUnresolved = 0, linkOnlyUnresolved = 0;
-  const mismatchIds = [];
-  const bothEmptyIds = [];
-  const unresolvedTextNamesSet = new Set();
-  const unresolvedLinkIdsSet = new Set();
-  const patches = [];
-
-  for (const r of entries) {
-    const f = r.fields || {};
-    const text = (f["Employee"] || "").trim();
-    const linkedId = firstLinkedId(f["Employee (Linked)"]);
-    const hasText = !!text;
-    const hasLink = !!linkedId;
-
-    if (hasText && hasLink) {
-      const linkedName = (idToName.get(linkedId) || "").trim();
-      if (linkedName && linkedName !== text) {
-        mismatch++;
-        mismatchIds.push(r.id);
-      } else {
-        bothPopulated++;
-      }
-      continue;
-    }
-    if (!hasText && !hasLink) {
-      bothEmpty++;
-      bothEmptyIds.push(r.id);
-      continue;
-    }
-    if (hasText && !hasLink) {
-      const recId = nameToId.get(text);
-      if (recId) {
-        patches.push({ id: r.id, fields: { [TE.employeeLink]: [recId] } });
-      } else {
-        textOnlyUnresolved++;
-        unresolvedTextNamesSet.add(text);
-      }
-      continue;
-    }
-    // hasLink && !hasText
-    const name = idToName.get(linkedId);
-    if (name) {
-      patches.push({ id: r.id, fields: { [TE.employee]: name } });
-    } else {
-      linkOnlyUnresolved++;
-      unresolvedLinkIdsSet.add(linkedId);
-    }
-  }
-
-  // Apply batched PATCHes (10 records per call, Airtable cap). Tally fixed
-  // counts only after a successful batch write so the response reflects
-  // actual mutations. A failed batch doesn't abort — push the error and
-  // continue so a single transient failure can't block the rest of the run.
-  const errors = [];
-  let batchesProcessed = 0;
-  for (let i = 0; i < patches.length; i += 10) {
-    if (batchesProcessed >= maxBatches) break;
-    const chunk = patches.slice(i, i + 10);
-    try {
-      await atFetch(`${encodeURIComponent(TABLES.timeEntries)}`, {
-        method: "PATCH",
-        body: JSON.stringify({ records: chunk, typecast: true })
-      });
-      for (const p of chunk) {
-        if (p.fields[TE.employeeLink]) textOnlyFixed++;
-        else if (p.fields[TE.employee] !== undefined) linkOnlyFixed++;
-      }
-    } catch (err) {
-      console.error("[backfillTimeEntryEmployeeLinks] batch failed:", err);
-      errors.push(err.message || String(err));
-    }
-    batchesProcessed++;
-  }
-
-  const pendingPatches = Math.max(0, patches.length - batchesProcessed * 10);
-  const complete = pendingPatches === 0;
-
-  return resp(200, {
-    ok: true,
-    scanned: entries.length,
-    bothPopulated,
-    textOnlyFixed,
-    linkOnlyFixed,
-    mismatch,
-    bothEmpty,
-    textOnlyUnresolved,
-    linkOnlyUnresolved,
-    mismatchIds,
-    bothEmptyIds,
-    unresolvedTextNames: [...unresolvedTextNamesSet],
-    unresolvedLinkIds: [...unresolvedLinkIdsSet],
-    batchesProcessed,
-    pendingPatches,
-    complete,
-    errors
-  });
-}
+// ── REMOVED 2026-08-09: handleBackfillTimeEntryEmployeeLinks (139 lines) ──
+// A one-shot repair that reconciled Employee text vs Employee (Linked) on the
+// AIRTABLE Time Entries table. Dead since Step 3 (2026-08-07): time entries are
+// fully Neon and that Airtable table is a frozen historical copy, so the rows it
+// existed to fix are no longer read by anything. Nothing in either SPA ever
+// called it — it was token-gated and run by hand.
+//
+// Deleted rather than ported to Neon during Stage 4 of the employees migration.
+// If a link-repair is ever needed again it belongs in db/etl/, not in a request
+// handler with a 10-second budget — the original had to narrow its scan to 2025+
+// just to avoid Netlify timing out.
 
 // ── PAYROLL ARCHIVE: upload an attachment to an existing record ────────────
 // Airtable's content-host endpoint accepts a base64 file payload directly,
@@ -3263,6 +3127,33 @@ async function hoursByJobFromAirtable() {
 // Office and viewer roles never appear in payroll views — office staff are
 // admin support and don't get tracked, viewer is a trial/test account. Blank
 // or unrecognized roles default to eligible to match the login fallback.
+// ── Stage 4: employee reads move to Neon ──────────────────────────────────
+// These return records shaped EXACTLY like Airtable's — `{ id, fields }` keyed
+// by the same field names — on purpose. Every caller below is payroll code that
+// does `isPayrollEligibleRole(e.fields)` or `gBool(f, "Active")`, and this is
+// real money: the safest migration of a money path is one where the logic diff
+// is empty and only the data source moves. Adapt at the boundary, don't rewrite
+// the arithmetic.
+//
+// Returns null when Neon can't answer, and callers MUST fall back to Airtable.
+// null is never "no employees" — an empty employee list in a payroll rollup
+// silently drops people from a pay period, which is the worst outcome here.
+function _airtableShape(rows) {
+  return rows.map(e => ({
+    id: e.id,
+    fields: { [F.emp.name]: e.name, [F.emp.username]: e.username,
+              [F.emp.role]: e.role, [F.emp.active]: e.active },
+  }));
+}
+async function employeesForPayroll(activeOnly = false) {
+  const rows = await neonEmployees(activeOnly);
+  return rows ? _airtableShape(rows) : null;
+}
+async function employeeRecordById(airtableId) {
+  const e = await neonEmployeeById(airtableId);
+  return e ? _airtableShape([e])[0] : null;
+}
+
 function isPayrollEligibleRole(empFields) {
   const role = normalize(empFields?.[F.emp.role]);
   return role !== "office" && role !== "viewer";
@@ -3277,7 +3168,7 @@ async function handlePayrollBonusesRollup(params) {
   const yearStart = `${year}-01-01`;
 
   const [employees, allRuns] = await Promise.all([
-    fetchAll(TABLES.employees),
+    employeesForPayroll().then(r => r ?? fetchAll(TABLES.employees)),
     fetchAll(PR_RUNS.table)
   ]);
   const supersededRunIds = new Set();
@@ -3335,7 +3226,7 @@ async function handlePayrollEmployeeBonusHistory(params) {
   const [allRuns, allBonuses, empRecs] = await Promise.all([
     fetchAll(PR_RUNS.table),
     fetchAll(PR_BONUSES.table, { sortField: "Pay Period End", sortDir: "desc" }),
-    fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` })
+    employeeRecordById(employeeId).then(r => r ? [r] : fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }))
   ]);
   // Defensive: if the employeeId belongs to office/viewer (or was constructed
   // by hand against a non-eligible role), don't leak any bonus history.
@@ -3406,7 +3297,7 @@ async function handlePayrollHoursBreakdown(params) {
       sortField: "Work Date",
       sortDir: "asc"
     }),
-    fetchAll(TABLES.employees)
+    employeesForPayroll().then(r => r ?? fetchAll(TABLES.employees))
   ]);
 
   const eligibleEmps = employees.filter(e => isPayrollEligibleRole(e.fields));
@@ -3468,8 +3359,10 @@ async function handleMyHoursRollup(params) {
   const today = ymdToDate(todayStr);
   if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
 
-  const empRecs = await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` });
-  const emp = empRecs[0];
+  // Neon-first, Airtable fallback (Stage 4). employeeRecordById returns an
+  // Airtable-shaped record so the eligibility check below is unchanged.
+  const emp = (await employeeRecordById(employeeId))
+           ?? (await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }))[0];
   if (!emp) return resp(404, { ok: false, error: "Employee not found." });
   if (!isPayrollEligibleRole(emp.fields)) {
     return resp(403, { ok: false, error: "Employee role is not payroll-eligible." });
@@ -3567,8 +3460,10 @@ async function handleMyHoursBreakdown(params) {
   const today = ymdToDate(todayStr);
   if (!today) return resp(400, { ok: false, error: "Invalid today (expected YYYY-MM-DD)." });
 
-  const empRecs = await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` });
-  const emp = empRecs[0];
+  // Neon-first, Airtable fallback (Stage 4). employeeRecordById returns an
+  // Airtable-shaped record so the eligibility check below is unchanged.
+  const emp = (await employeeRecordById(employeeId))
+           ?? (await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }))[0];
   if (!emp) return resp(404, { ok: false, error: "Employee not found." });
   if (!isPayrollEligibleRole(emp.fields)) {
     return resp(403, { ok: false, error: "Employee role is not payroll-eligible." });
@@ -3864,8 +3759,14 @@ async function handleEmployeePin(params) {
   if (!employeeId || !String(employeeId).startsWith("rec")) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
-  const rec = await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, { method: "GET" });
-  const pin = String(rec?.fields?.[F.emp.pin] ?? "").trim();
+  // Neon holds the PIN now (db/schema/017), and the People screen writes both
+  // stores, so read the one that login actually uses. Airtable is the fallback.
+  const q = await neonQuery(`SELECT pin FROM employees WHERE airtable_id = $1`, [employeeId]);
+  let pin = (q && !q.error && q.rows?.length) ? String(q.rows[0].pin ?? "").trim() : null;
+  if (pin === null) {
+    const rec = await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, { method: "GET" });
+    pin = String(rec?.fields?.[F.emp.pin] ?? "").trim();
+  }
   // hasPin distinguishes "no PIN on record" from "couldn't read it" — an empty
   // PIN is not cosmetic, handleLogin refuses to match one, so the person
   // genuinely cannot log in until it is set.
@@ -6891,18 +6792,19 @@ async function handleVendors() {
 async function handleCreateVendor(body) {
   const { employeeId, name, phone, email, chargesSalesTax } = body || {};
 
-  // ── Admin guard (trust-the-frontend, mirrors airtable.js:1210–1224) ──
-  const empId = String(employeeId || "").trim();
-  if (!empId.startsWith("rec")) {
-    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
-  }
-  const empRecs = await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${empId}"` });
-  const emp = empRecs[0];
-  if (!emp) return resp(404, { ok: false, error: "Employee not found." });
-  const role = String(emp.fields[F.emp.role] || "").toLowerCase();
-  if (role !== "admin" && role !== "office") {
-    return resp(403, { ok: false, error: "Admin role required to create vendors." });
-  }
+  // ── The role guard that used to live here is GONE, 2026-08-09 ──────────
+  // It re-read the employee from Airtable and refused anyone who wasn't
+  // admin/office. That predates server-side authz: `createVendor` is now in
+  // `_ADMIN_OFFICE_POSTS`, so the dispatcher has already verified the SIGNED
+  // token's role before this function is entered. The check was not just
+  // redundant, it was weaker — it trusted a `employeeId` from the request
+  // body, which any caller could have set to an admin's id.
+  //
+  // `employeeId` is still accepted and ignored so an older cached client
+  // sending it doesn't 400. Nothing reads it.
+  //
+  // This also removes one of the Airtable Employees reads that Stage 4 of the
+  // employees migration would otherwise have had to port.
 
   // ── Validate ──
   const trimmedName = String(name || "").trim();
@@ -8533,7 +8435,10 @@ async function handleGetScheduleEntries(params) {
 
   const records = await fetchAll(TABLES.scheduleEntries);
   const jobs = await fetchAll(TABLES.jobs);
-  const employees = await fetchAll(TABLES.employees);
+  // Names for the crew chips. Neon-first (Stage 4); a null means Neon couldn't
+  // answer, not that nobody works here, so fall back rather than render a
+  // schedule with every crew name blank.
+  const employees = (await employeesForPayroll()) ?? (await fetchAll(TABLES.employees));
   const jobById = {};
   jobs.forEach(j => {
     const f = j.fields || {};
@@ -10395,7 +10300,6 @@ export async function handler(event) {
       if (body.action === "adminClockOut")        return await handleAdminClockOut(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);
       if (body.action === "deleteTimeEntry")      return await handleDeleteTimeEntry(body);
-      if (body.action === "backfillTimeEntryEmployeeLinks") return await handleBackfillTimeEntryEmployeeLinks(body);
       if (body.action === "copyLiftPhotosToR2")   return await handleCopyLiftPhotosToR2();
       if (body.action === "copyFleetPhotosToR2")  return await handleCopyFleetPhotosToR2();
       if (body.action === "copyEstimatePdfsToR2") return await handleCopyEstimatePdfsToR2();

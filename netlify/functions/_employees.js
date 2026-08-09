@@ -97,6 +97,50 @@ export async function neonLoginCandidate(identifier, pin) {
   return { ok: true, user: { id: r.airtable_id, name: r.name || "", role: normalizeRole(r.role) } };
 }
 
+// ── Stage 4 readers: the secondary employee lookups ───────────────────────
+// Everything that isn't login but still needed the Airtable Employees table —
+// payroll rollups, the crew pickers, my-hours. All of them want the same two
+// shapes, so they share these instead of each growing its own query.
+//
+// Both return null on ANY failure, which callers must treat as "ask Airtable"
+// and NEVER as "no employees". The difference matters: an empty crew picker is
+// an annoyance, but an empty employee list in a payroll rollup silently drops
+// people from a pay period.
+//
+// Ids are AIRTABLE rec ids throughout, not Neon uuids — same contract as login,
+// and for the same reason: every caller passes them straight back to code that
+// expects rec ids.
+export async function neonEmployeeById(airtableId) {
+  const id = String(airtableId || "").trim();
+  if (!id) return null;
+  const q = await neonQuery(
+    `SELECT airtable_id, name, username, role, active, labor_type
+       FROM employees WHERE airtable_id = $1`, [id]);
+  if (!q || q.error || !Array.isArray(q.rows) || q.rows.length === 0) return null;
+  const r = q.rows[0];
+  return {
+    id: r.airtable_id, name: r.name || "", username: r.username || "",
+    role: normalizeRole(r.role), active: r.active === true, laborType: r.labor_type || "",
+  };
+}
+
+// `activeOnly` mirrors each caller's existing Airtable filter. The payroll
+// rollups deliberately pass false: they union active staff with anyone who had
+// hours or a bonus in the period, so a leaver still appears on the pay run they
+// worked. Filtering them out here would look tidy and quietly underpay someone.
+export async function neonEmployees(activeOnly = true) {
+  const q = await neonQuery(
+    `SELECT airtable_id, name, username, role, active, labor_type
+       FROM employees
+      ${activeOnly ? "WHERE active" : ""}
+      ORDER BY name`, []);
+  if (!q || q.error || !Array.isArray(q.rows)) return null;
+  return q.rows.map(r => ({
+    id: r.airtable_id, name: r.name || "", username: r.username || "",
+    role: normalizeRole(r.role), active: r.active === true, laborType: r.labor_type || "",
+  }));
+}
+
 // Compares what Airtable decided against what Neon would have, and logs only
 // when they differ. Never throws, never returns anything the caller acts on —
 // this must not be able to affect a login while Airtable is authoritative.

@@ -1886,6 +1886,25 @@ await test("clock: the roster and punching others are STRICT admin — office is
   delete process.env.TIME_CLOCK;
 });
 
+await test("clock switch: gated, and validated before it touches anything", async () => {
+  delete process.env.TIME_CLOCK;
+  eq((await POST("clockSwitch", { class: "Contract", clientPunchId: "s1" }, EMP_TOK)).statusCode, 403,
+     "no switching while the clock is off");
+
+  process.env.TIME_CLOCK = "on";
+  eq((await POST("clockSwitch", { clientPunchId: "s1" }, EMP_TOK)).statusCode, 400,
+     "it needs to know what you're switching to");
+  eq((await POST("clockSwitch", { class: "Contract" }, EMP_TOK)).statusCode, 400,
+     "and a replay key, like every other punch");
+  // Switching sets the city tax on the new segment, so it gets the same whitelist
+  // guard as everywhere else — a bad value would land verbatim in payroll.
+  const bad = await POST("clockSwitch",
+    { class: "Contract", clientPunchId: "s2", cityTaxes: "Massillon Tax" }, EMP_TOK);
+  eq(bad.statusCode, 400, "the correct spelling is still the wrong data");
+  ok(/Unknown city tax/.test(json(bad).error), "and says so");
+  delete process.env.TIME_CLOCK;
+});
+
 await test("clock: breaks obey the same switch and the same roles as punching", async () => {
   delete process.env.TIME_CLOCK;
   eq((await POST("clockBreak", { start: true, at: new Date().toISOString() }, EMP_TOK)).statusCode, 403,

@@ -463,6 +463,8 @@ const _TIME_SELF_WRITES = new Set([
   // handlers narrow it further while the feature is being built (TIME_CLOCK=admin),
   // and they take the employee from the token, so nobody can punch anybody else.
   "clockIn", "clockOut", "clockBreak",
+  // Changing class mid-shift without leaving the job — travel, then arrive.
+  "clockSwitch",
   // Correcting your own start/stop times. The handler enforces own-until-counted
   // (the same rule as expenses); admins may correct anyone's.
   "clockEditTimes",
@@ -2270,6 +2272,109 @@ async function handleClockReconcile(params) {
       clockHours: Math.round(totals.reduce((s, t) => s + t.clockHours, 0) * 100) / 100,
     },
     _source: "neon",
+  });
+}
+
+// ── CLOCK: switch class without leaving the job ────────────────────────────
+// The QuickBooks Time workflow the crew already has: clock in on Travel, arrive,
+// hit Switch, carry on against the SAME job as Contract / Rough & Service /
+// Finish. Without it the only way to change class is to clock out and back in,
+// which everyone eventually forgets to do — and then the whole day is Travel.
+//
+// A switch is a segment boundary, not an edit: the travel time is closed and
+// banked as its own punch, and a fresh one opens at the same instant. Two rows,
+// touching exactly, so the hours are unchanged and each carries its own class.
+//
+// ⚠ ONE STATEMENT, and the order matters. The DELETE, the closing INSERT and the
+// re-opening INSERT are a single atomic step. If this were three calls, a failure
+// between them would leave someone clocked OUT mid-shift with no way to tell —
+// far worse than the switch simply failing.
+async function handleClockSwitch(body, authUser) {
+  if (!canUseTimeClock(authUser)) {
+    return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
+  }
+  const { class: cls, cityTaxes, clientPunchId, at } = body || {};
+  if (!cls) return resp(400, { ok: false, error: "Pick what you're switching to." });
+  if (!clientPunchId) return resp(400, { ok: false, error: "Missing clientPunchId." });
+  if (cityTaxes != null && !PR_CITY_TAX_OPTS.includes(String(cityTaxes))) {
+    return resp(400, { ok: false, error: `Unknown city tax: ${cityTaxes}` });
+  }
+  const stamp = clampPunchTime(at);
+  if (!stamp) return resp(400, { ok: false, error: "Invalid or out-of-range switch time." });
+
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+
+  // Replay guard, same as punch-out: the switch already landed and the phone is
+  // retrying, so the segment it closed already exists.
+  const done = await neonQuery(
+    `SELECT id FROM clock_punches WHERE client_punch_id = $1`, [clientPunchId]);
+  if (done?.rows?.length) {
+    const cur = await neonQuery(
+      `SELECT started_at, job_name, class, city_taxes, client_punch_id,
+              break_seconds::float8 AS break_seconds, break_started_at
+         FROM open_punches WHERE employee_id = $1`, [me.id]);
+    return resp(200, { ok: true, replayed: true, open: cur?.rows?.[0] || null });
+  }
+
+  const rows = await neonWrite("clock.switch",
+    `WITH shift AS (
+       -- break_started_at IS NULL: you cannot switch mid-lunch. What that would
+       -- even mean is ambiguous, and guessing would silently mis-bank the break.
+       DELETE FROM open_punches
+        WHERE employee_id = $1 AND break_started_at IS NULL
+        RETURNING *
+     ), calc AS (
+       SELECT s.*, GREATEST($3::timestamptz, s.started_at) AS boundary FROM shift s
+     ), closed AS (
+       INSERT INTO clock_punches
+         (employee_id, employee_name, started_at, ended_at, work_date, duration_seconds,
+          break_seconds, job_id, job_name, class, city_taxes, notes,
+          start_lat, start_lon, client_punch_id,
+          original_started_at, edited_at, edited_by)
+       SELECT c.employee_id, $2, c.started_at, c.boundary,
+              (c.started_at AT TIME ZONE 'America/New_York')::date,
+              GREATEST(0, EXTRACT(EPOCH FROM (c.boundary - c.started_at)) - c.break_seconds)::numeric,
+              c.break_seconds, c.job_id, c.job_name, c.class, c.city_taxes, c.notes,
+              c.start_lat, c.start_lon, c.client_punch_id,
+              c.original_started_at, c.edited_at, c.edited_by
+         FROM calc c
+       RETURNING id, class, duration_seconds
+     ), reopened AS (
+       -- The new segment starts exactly where the old one ended: no gap, no
+       -- overlap, and the same job carried across — switching is about the CLASS.
+       INSERT INTO open_punches
+         (employee_id, started_at, job_id, job_name, class, city_taxes,
+          start_lat, start_lon, client_punch_id)
+       SELECT c.employee_id, c.boundary, c.job_id, c.job_name, $4,
+              COALESCE($5, c.city_taxes), c.start_lat, c.start_lon, $6
+         FROM calc c
+       RETURNING started_at, job_name, class, city_taxes, client_punch_id,
+                 break_seconds::float8 AS break_seconds, break_started_at
+     )
+     SELECT (SELECT class FROM closed) AS closed_class,
+            (SELECT duration_seconds::float8 FROM closed) AS closed_seconds,
+            r.* FROM reopened r`,
+    [me.id, me.name || null, stamp, String(cls),
+     cityTaxes == null ? null : String(cityTaxes), clientPunchId]);
+
+  const out = rows?.[0];
+  if (!out) {
+    // Nothing switched. Say which of the two reasons it was.
+    const cur = await neonQuery(
+      `SELECT break_started_at FROM open_punches WHERE employee_id = $1`, [me.id]);
+    if (!cur?.rows?.length) return resp(409, { ok: false, error: "You're not clocked in." });
+    return resp(409, { ok: false, error: "You're on a break — come back from that first." });
+  }
+
+  return resp(200, {
+    ok: true,
+    closed: { class: out.closed_class, seconds: Number(out.closed_seconds) || 0 },
+    open: {
+      started_at: out.started_at, job_name: out.job_name, class: out.class,
+      city_taxes: out.city_taxes, client_punch_id: out.client_punch_id,
+      break_seconds: 0, break_started_at: null,
+    },
   });
 }
 
@@ -10239,6 +10344,7 @@ export async function handler(event) {
       if (body.action === "clockIn")              return await handleClockIn(body, authUser);
       if (body.action === "clockOut")             return await handleClockOut(body, authUser);
       if (body.action === "clockBreak")           return await handleClockBreak(body, authUser);
+      if (body.action === "clockSwitch")          return await handleClockSwitch(body, authUser);
       if (body.action === "clockEditTimes")       return await handleClockEditTimes(body, authUser);
       if (body.action === "clockDeletePunch")     return await handleClockDeletePunch(body, authUser);
       if (body.action === "requestPto")           return await handleRequestPto(body, authUser);

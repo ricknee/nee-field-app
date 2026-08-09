@@ -174,6 +174,7 @@
     .clock-btn-out    { background: #dc2626; }
     .clock-btn-break  { background: #d97706; }
     .clock-btn-resume { background: #16a34a; }
+    .clock-btn-switch { background: #2563eb; }
     .clock-btn:disabled { opacity: .55; cursor: default; }
     /* Break and Clock Out share a row; Clock Out is not the bigger target of the
        two, because ending a shift by accident is the more expensive mistake. */
@@ -17771,10 +17772,36 @@
         ${onBreak()
           ? `<button class="clock-btn clock-btn-resume" onclick="clockBreak(false)">▶ Back to Work</button>
              <div class="clock-note">Your worked time is paused. It isn't counting right now.</div>`
-          : `<div class="clock-btn-row">
+          : `<!-- Switch gets its own full-width row above the others: arriving on
+                  site happens every single day, and it must not be the button you
+                  have to hunt for. -->
+             <button class="clock-btn clock-btn-switch" onclick="clockSwitchSheet()">🔄 Switch — I'm on site</button>
+             <div class="clock-btn-row" style="margin-top:10px;">
                <button class="clock-btn clock-btn-break" onclick="clockBreak(true)">⏸ Lunch / Break</button>
                <button class="clock-btn clock-btn-out" onclick="clockOutSheet()">Clock Out</button>
              </div>`}
+
+        <div id="clockSwitchSheet" class="hidden" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;">
+          <div class="clock-note" style="margin-top:0;">
+            Banks your <strong>${esc(clockState.open.class || "current")}</strong> time and carries on
+            against the same job. You stay clocked in.
+          </div>
+          <label class="clock-field">Switch to
+            <select id="clockSwitchClass" onchange="clockSwitchSyncCity()">${
+              clockClasses(clockState.open.class)
+                .filter(c => c !== clockState.open.class)
+                .map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
+          </label>
+          <label class="clock-field">City tax
+            <select id="clockSwitchCity">${PR_CITY_TAXES.map(t =>
+              `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+          </label>
+          <div class="clock-btn-row" style="margin-top:10px;">
+            <button class="clock-btn clock-btn-out" onclick="clockSwitchSheet()">Cancel</button>
+            <button class="clock-btn clock-btn-in" onclick="clockSwitchGo()">Switch</button>
+          </div>
+          <div id="clockSwitchErr" class="clock-note" style="color:#b91c1c;"></div>
+        </div>
 
         <div id="clockOutSheet" class="hidden" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;">
           <label class="clock-field">Class
@@ -18086,6 +18113,69 @@
     } finally { clockBusy = false; }
   }
   window.clockBreak = clockBreak;
+
+  // ── Switch ──────────────────────────────────────────────────────────────
+  // The everyday move: clocked in on Travel, arrive, switch to Contract on the
+  // same job. Banks the travel time as its own segment and opens a new one at the
+  // same instant — you never leave the clock.
+  function clockSwitchSheet() {
+    const s = $("clockSwitchSheet");
+    if (!s) return;
+    s.classList.toggle("hidden");
+    if (!s.classList.contains("hidden")) {
+      clockSwitchSyncCity();
+      s.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+  window.clockSwitchSheet = clockSwitchSheet;
+
+  // Same rule as everywhere else: Travel is untaxed, otherwise the job's setting.
+  function clockSwitchSyncCity() {
+    const sel = $("clockSwitchCity");
+    if (!sel) return;
+    const cls = $("clockSwitchClass")?.value || "";
+    // The open shift knows its job by name only, so find it for the city default.
+    const job = (state.jobs || []).find(j => (j.name || "") === (clockState.open?.job_name || ""));
+    sel.value = clockDefaultCityTax(job, cls);
+    const travel = cls === CLOCK_TRAVEL_CLASS;
+    sel.disabled = travel;
+  }
+  window.clockSwitchSyncCity = clockSwitchSyncCity;
+
+  async function clockSwitchGo() {
+    if (clockBusy || !clockState.open) return;
+    clockBusy = true;
+    const err = $("clockSwitchErr");
+    try {
+      const body = {
+        class: $("clockSwitchClass")?.value,
+        cityTaxes: $("clockSwitchCity")?.value || null,
+        // A NEW cycle id: the segment being closed keeps the old one, and the
+        // segment being opened needs its own so a later punch-out matches it.
+        clientPunchId: newPunchId(),
+        at: new Date().toISOString(),
+      };
+      try {
+        const d = await apiPost("clockSwitch", body);
+        if (d.open) clockState.open = { ...d.open };
+        showAppToast(`${d.closed?.class || "Time"} banked — now on ${d.open?.class || body.class}.`);
+        clockLocalSave(null);
+      } catch (e) {
+        if (e?.status) { if (err) err.textContent = e.message || "Couldn't switch."; return; }
+        // Offline: queue it and apply the same effect locally, so the screen shows
+        // the class they're actually on rather than the one they've left.
+        const q = clockQueue(); q.push({ action: "clockSwitch", body }); clockQueueSave(q);
+        clockState.open = {
+          ...clockState.open,
+          started_at: body.at, class: body.class, city_taxes: body.cityTaxes,
+          client_punch_id: body.clientPunchId, break_seconds: 0, break_started_at: null,
+        };
+        clockLocalSave(clockState.open);
+      }
+      renderClockPill(); renderClockPanel(); tickClock();
+    } finally { clockBusy = false; }
+  }
+  window.clockSwitchGo = clockSwitchGo;
 
   // The punch-out sheet is deliberately short — it stands between a person and
   // going home. Job and class carry over from the punch-in, so this only confirms

@@ -17665,6 +17665,12 @@
       el.innerHTML = `
         <div style="font-size:12px; color:var(--muted);">
           On the clock since ${esc(startedTxt)}${onBreak() ? " · paused" : ""}
+          ${clockState.open.original_started_at
+            ? ` · <span title="Punched at ${esc(new Date(Date.parse(clockState.open.original_started_at)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}">adjusted</span>`
+            : ""}
+          ${clockEdit.target !== "open"
+            ? `· <a href="#" onclick="event.preventDefault();clockEditOpen('open')" style="color:var(--accent);">adjust</a>`
+            : ""}
         </div>
         <div id="clockElapsed" class="clock-elapsed${onBreak() ? " is-paused" : ""}">${fmtElapsed(workedMs())}</div>
         <div id="clockBreakLine" class="clock-note" style="margin-top:0;">${esc(breakLine)}</div>
@@ -17697,6 +17703,7 @@
           <button class="clock-btn clock-btn-out" onclick="clockOutConfirm()">Confirm Clock Out</button>
         </div>
 
+        ${clockEdit.target === "open" ? renderClockStartEditor() : ""}
         ${countsHtml}${queuedHtml}
         <div class="clock-note">Hours are rounded to the nearest quarter hour on payroll.</div>
       `;
@@ -17746,16 +17753,105 @@
       el.innerHTML += `
         <div style="margin-top:16px; font-size:12px; color:var(--muted);">Recent punches</div>
         ${recent.slice(0, 8).map(r => {
+          if (clockEdit.target === r.id) return renderPunchEditor(r);
           const hrs = (Number(r.duration_seconds) / 3600);
           const d = r.work_date ? String(r.work_date).slice(0, 10) : "—";
+          // Editing is offered only while a shift hasn't gone to payroll — past
+          // that, Payroll owns it, and the server refuses anyway.
+          const canEdit = !r.counted;
           return `<div class="clock-row">
-                    <span>${esc(d)} · ${esc(r.job_name || "No job")}</span>
-                    <span>${hrs.toFixed(2)} h${r.counted ? "" : " <span style='color:var(--muted)'>(not counted)</span>"}</span>
+                    <span>${esc(d)} · ${esc(r.job_name || "No job")}${
+                      r.edited ? ` <span style="color:var(--muted); font-size:11px;">· adjusted</span>` : ""}</span>
+                    <span>${hrs.toFixed(2)} h${r.counted ? "" : " <span style='color:var(--muted)'>(not counted)</span>"}${
+                      canEdit ? ` · <a href="#" onclick="event.preventDefault();clockEditOpen('${esc(r.id)}')" style="color:var(--accent);">edit</a>` : ""}</span>
                   </div>`;
         }).join("")}
       `;
     }
   }
+
+  // ── Adjusting times ─────────────────────────────────────────────────────
+  // "I got there at 7 and forgot to clock in until 8." Editing is allowed on your
+  // OWN punches until they count toward payroll — the same rule as expenses. The
+  // server enforces it; this is only the UI for it.
+  let clockEdit = { target: null };   // null | "open" | <punch id>
+
+  // datetime-local <-> ISO. `new Date("2026-08-18T07:00")` parses as LOCAL time,
+  // which is what we want: the person is typing the time they were standing there.
+  function toLocalInput(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    const p = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+  }
+  function fromLocalInput(v) {
+    const d = new Date(v);
+    return isNaN(d) ? null : d.toISOString();
+  }
+
+  function clockEditOpen(target) { clockEdit.target = target; renderClockPanel(); }
+  window.clockEditOpen = clockEditOpen;
+  function clockEditCancel() { clockEdit.target = null; renderClockPanel(); }
+  window.clockEditCancel = clockEditCancel;
+
+  // The editor for the shift you're currently on — start time only, because the
+  // end hasn't happened yet.
+  function renderClockStartEditor() {
+    const o = clockState.open;
+    return `
+      <div style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px;">
+        <label class="clock-field">I actually started at
+          <input id="clockEditStart" type="datetime-local" value="${esc(toLocalInput(o.started_at))}" />
+        </label>
+        <div class="clock-note">The original punch time is kept on the record either way.</div>
+        <div class="clock-btn-row" style="margin-top:10px;">
+          <button class="clock-btn clock-btn-out" onclick="clockEditCancel()">Cancel</button>
+          <button class="clock-btn clock-btn-in" onclick="clockEditSave()">Save Time</button>
+        </div>
+        <div id="clockEditErr" class="clock-note" style="color:#b91c1c;"></div>
+      </div>`;
+  }
+
+  // The editor for a finished shift — start and end.
+  function renderPunchEditor(p) {
+    return `
+      <div style="border:1px solid var(--line); border-radius:8px; padding:10px; margin:6px 0;">
+        <label class="clock-field">Started
+          <input id="clockEditStart" type="datetime-local" value="${esc(toLocalInput(p.started_at))}" />
+        </label>
+        <label class="clock-field">Ended
+          <input id="clockEditEnd" type="datetime-local" value="${esc(toLocalInput(p.ended_at))}" />
+        </label>
+        ${Number(p.break_seconds) > 0
+          ? `<div class="clock-note">${fmtElapsed(Number(p.break_seconds) * 1000)} of break stays deducted.</div>` : ""}
+        <div class="clock-btn-row" style="margin-top:10px;">
+          <button class="clock-btn clock-btn-out" onclick="clockEditCancel()">Cancel</button>
+          <button class="clock-btn clock-btn-in" onclick="clockEditSave('${esc(p.id)}')">Save</button>
+        </div>
+        <div id="clockEditErr" class="clock-note" style="color:#b91c1c;"></div>
+      </div>`;
+  }
+
+  async function clockEditSave(punchId) {
+    const err = $("clockEditErr");
+    const startedAt = fromLocalInput($("clockEditStart")?.value || "");
+    const endedEl = $("clockEditEnd");
+    const endedAt = endedEl ? fromLocalInput(endedEl.value || "") : undefined;
+    if (!startedAt) { if (err) err.textContent = "That start time isn't valid."; return; }
+    if (endedEl && !endedAt) { if (err) err.textContent = "That end time isn't valid."; return; }
+    try {
+      const body = punchId ? { punchId, startedAt, endedAt } : { startedAt };
+      await apiPost("clockEditTimes", body);
+      clockEdit.target = null;
+      await refreshClock();
+    } catch (e) {
+      // Shown inline rather than as an alert: the server's messages here are
+      // specific and actionable ("that start time is after your break began"),
+      // and an alert would dismiss the form they need to correct.
+      if (err) err.textContent = e.message || "Couldn't save that time.";
+    }
+  }
+  window.clockEditSave = clockEditSave;
 
   // ── Punching ────────────────────────────────────────────────────────────
   async function clockIn() {

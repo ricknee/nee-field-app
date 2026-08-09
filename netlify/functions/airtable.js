@@ -460,6 +460,9 @@ const _TIME_SELF_WRITES = new Set([
   // handlers narrow it further while the feature is being built (TIME_CLOCK=admin),
   // and they take the employee from the token, so nobody can punch anybody else.
   "clockIn", "clockOut", "clockBreak",
+  // Correcting your own start/stop times. The handler enforces own-until-counted
+  // (the same rule as expenses); admins may correct anyone's.
+  "clockEditTimes",
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
@@ -1117,7 +1120,8 @@ async function handleClockStatus(params, authUser) {
   // The client needs both to show a frozen timer plus a running break.
   const open = await neonQuery(
     `SELECT started_at, job_name, job_id, class, city_taxes, notes, client_punch_id,
-            break_seconds::float8 AS break_seconds, break_started_at
+            break_seconds::float8 AS break_seconds, break_started_at,
+            original_started_at
        FROM open_punches WHERE employee_id = $1`, [me.id]);
 
   // Last 14 days. Enough to answer "did I forget to clock out on Tuesday" without
@@ -1125,7 +1129,8 @@ async function handleClockStatus(params, authUser) {
   const recent = await neonQuery(
     `SELECT id, started_at, ended_at, work_date, duration_seconds::float8 AS duration_seconds,
             break_seconds::float8 AS break_seconds,
-            job_name, class, city_taxes, (time_entry_id IS NOT NULL) AS counted
+            job_name, class, city_taxes, (time_entry_id IS NOT NULL) AS counted,
+            (edited_at IS NOT NULL) AS edited
        FROM clock_punches
       WHERE employee_id = $1 AND work_date >= (CURRENT_DATE - 14)
       ORDER BY started_at DESC`, [me.id]);
@@ -1332,7 +1337,10 @@ async function handleClockOut(body, authUser, targetEmp) {
      INSERT INTO clock_punches
        (employee_id, employee_name, started_at, ended_at, work_date, duration_seconds,
         break_seconds, job_id, job_name, class, city_taxes, notes,
-        start_lat, start_lon, end_lat, end_lon, client_punch_id)
+        start_lat, start_lon, end_lat, end_lon, client_punch_id,
+        -- ⚠ Carried over, not dropped: a start time adjusted WHILE clocked in must
+        -- keep its audit trail past the end of the shift. See db/schema/021.
+        original_started_at, edited_at, edited_by)
      SELECT c.employee_id, $2, c.started_at, c.ended,
             (c.started_at AT TIME ZONE 'America/New_York')::date,
             -- ⚠ NET worked time — elapsed MINUS breaks. This is what gets promoted
@@ -1343,7 +1351,8 @@ async function handleClockOut(body, authUser, targetEmp) {
             COALESCE(j.id, c.job_id), COALESCE(j.po_locked, c.job_name),
             COALESCE($5, c.class), COALESCE($6, c.city_taxes), COALESCE($7, c.notes),
             c.start_lat, c.start_lon, $8::numeric, $9::numeric,
-            COALESCE(c.client_punch_id, $10)
+            COALESCE(c.client_punch_id, $10),
+            c.original_started_at, c.edited_at, c.edited_by
        FROM calc c
        LEFT JOIN jobs j ON j.airtable_id = $4
      RETURNING id, work_date, started_at, ended_at,
@@ -1370,6 +1379,129 @@ async function handleClockOut(body, authUser, targetEmp) {
   }
 
   return resp(200, { ok: true, punch: { ...punch, counted } });
+}
+
+// ── CLOCK: adjust the times on a punch ─────────────────────────────────────
+// "I arrived at 7 and forgot to clock in until 8." The commonest failure of any
+// time clock. Refusing to support it doesn't make the data honest — it makes
+// people keep the hour on paper instead, which is worse.
+//
+// WHO MAY EDIT, and it is deliberately the same rule as expenses
+// (guardExpenseMutation): your OWN punches, until they count. Once a punch has
+// been promoted into payroll (time_entry_id IS NOT NULL) it is refused here and
+// belongs in Payroll, which already edits time entries properly. That keeps one
+// row from having two editors that can disagree.
+//
+// Every edit keeps the ORIGINAL punch timestamps (see db/schema/021) so the real
+// tap time stays answerable, plus who changed it and when.
+async function handleClockEditTimes(body, authUser) {
+  if (!canUseTimeClock(authUser)) {
+    return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
+  }
+  const { punchId, startedAt, endedAt } = body || {};
+  if (startedAt === undefined && endedAt === undefined) {
+    return resp(400, { ok: false, error: "Nothing to change." });
+  }
+
+  const isAdmin = (authUser?.role || "").toLowerCase() === "admin";
+
+  // Times are validated against the wall clock, not the ±36h punch window: a
+  // correction is made deliberately at a keyboard, so it gets a wider berth than a
+  // punch replayed from a phone. Still bounded — nothing in the future, nothing
+  // ancient enough to land in a closed pay period.
+  const bound = (iso, label) => {
+    if (iso === undefined) return { skip: true };
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return { error: `${label} isn't a valid time.` };
+    if (t > Date.now() + 5 * 60 * 1000) return { error: `${label} can't be in the future.` };
+    if (t < Date.now() - 14 * 24 * 3600 * 1000) return { error: `${label} is too far in the past to change here — use Payroll.` };
+    return { iso: new Date(t).toISOString() };
+  };
+  const s = bound(startedAt, "Start time");
+  const e = bound(endedAt, "End time");
+  if (s.error) return resp(400, { ok: false, error: s.error });
+  if (e.error) return resp(400, { ok: false, error: e.error });
+
+  // Resolved only after the times are known to be sane — a malformed edit should
+  // say what's wrong with the time, not report a database lookup that never
+  // mattered. (Also what keeps the bounds reachable in the offline test harness.)
+  const me = await clockEmployee(authUser);
+  if (!me && !isAdmin) return resp(400, { ok: false, error: "No employee record found for this login." });
+
+  // ── An OPEN shift: only the start exists to be wrong ──
+  if (!punchId) {
+    if (s.skip) return resp(400, { ok: false, error: "Pick a new start time." });
+    if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+    // COALESCE keeps the FIRST original, so editing twice doesn't erase the real
+    // punch time behind the first edit.
+    const rows = await neonWrite("clock.editOpen",
+      `UPDATE open_punches
+          SET original_started_at = COALESCE(original_started_at, started_at),
+              started_at = $2::timestamptz,
+              edited_at = now(), edited_by = $3
+        WHERE employee_id = $1
+        RETURNING started_at, original_started_at, break_seconds::float8 AS break_seconds,
+                  break_started_at, job_name, class, city_taxes, client_punch_id`,
+      [me.id, s.iso, me.id]);
+    const open = rows?.[0];
+    if (!open) return resp(409, { ok: false, error: "You're not clocked in." });
+    // A start moved later than a break that has already been taken would make the
+    // worked total negative. Cheap to catch, confusing to debug later.
+    if (open.break_started_at && Date.parse(open.break_started_at) < Date.parse(open.started_at)) {
+      return resp(400, { ok: false, error: "That start time is after your break began." });
+    }
+    return resp(200, { ok: true, open });
+  }
+
+  // ── A COMPLETED punch ──
+  const cur = await neonQuery(
+    `SELECT c.id, c.employee_id, c.started_at, c.ended_at, c.break_seconds::float8 AS break_seconds,
+            c.time_entry_id, e.airtable_id AS emp_airtable_id
+       FROM clock_punches c JOIN employees e ON e.id = c.employee_id
+      WHERE c.id = $1`, [String(punchId)]);
+  const punch = cur?.rows?.[0];
+  if (!punch) return resp(404, { ok: false, error: "Punch not found." });
+
+  if (!isAdmin) {
+    if (punch.emp_airtable_id !== authUser?.id) {
+      return resp(403, { ok: false, error: "You can only change your own punches." });
+    }
+    if (punch.time_entry_id) {
+      return resp(403, { ok: false, error: "This shift has already gone to payroll and can't be changed here." });
+    }
+  }
+
+  const newStart = s.skip ? punch.started_at : s.iso;
+  const newEnd   = e.skip ? punch.ended_at   : e.iso;
+  if (Date.parse(newEnd) < Date.parse(newStart)) {
+    return resp(400, { ok: false, error: "The end time can't be before the start time." });
+  }
+  // Breaks are preserved as-is and re-deducted. duration_seconds stays NET — see
+  // the warning in db/schema/019; recomputing it from the timestamps alone would
+  // silently start paying people for lunch.
+  const span = (Date.parse(newEnd) - Date.parse(newStart)) / 1000;
+  if (span - (Number(punch.break_seconds) || 0) < 0) {
+    return resp(400, { ok: false, error: "That's shorter than the break already recorded on it." });
+  }
+
+  const rows = await neonWrite("clock.editPunch",
+    `UPDATE clock_punches
+        SET original_started_at = COALESCE(original_started_at, started_at),
+            original_ended_at   = COALESCE(original_ended_at,   ended_at),
+            started_at = $2::timestamptz,
+            ended_at   = $3::timestamptz,
+            duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM ($3::timestamptz - $2::timestamptz)) - break_seconds)::numeric,
+            -- work_date follows the START, same overnight rule as the punch itself.
+            work_date = ($2::timestamptz AT TIME ZONE 'America/New_York')::date,
+            edited_at = now(), edited_by = $4
+      WHERE id = $1
+      RETURNING id, work_date, started_at, ended_at,
+                duration_seconds::float8 AS duration_seconds,
+                break_seconds::float8 AS break_seconds,
+                original_started_at, original_ended_at`,
+    [punch.id, newStart, newEnd, me?.id || null]);
+
+  return resp(200, { ok: true, punch: rows?.[0] || null });
 }
 
 // Turn one recorded punch into a payroll row. Idempotent: the `time_entry_id IS NULL`
@@ -9301,6 +9433,7 @@ export async function handler(event) {
       if (body.action === "clockIn")              return await handleClockIn(body, authUser);
       if (body.action === "clockOut")             return await handleClockOut(body, authUser);
       if (body.action === "clockBreak")           return await handleClockBreak(body, authUser);
+      if (body.action === "clockEditTimes")       return await handleClockEditTimes(body, authUser);
       if (body.action === "adminClockIn")         return await handleAdminClockIn(body, authUser);
       if (body.action === "adminClockOut")        return await handleAdminClockOut(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);

@@ -1742,6 +1742,38 @@ await test("clock: a phone with a wrong clock can't file hours into a closed pay
   delete process.env.TIME_CLOCK;
 });
 
+await test("clock edit: bounded, and refused outright when the clock is off", async () => {
+  delete process.env.TIME_CLOCK;
+  eq((await POST("clockEditTimes", { startedAt: new Date().toISOString() }, EMP_TOK)).statusCode, 403,
+     "no edits while the clock is off");
+
+  process.env.TIME_CLOCK = "on";
+  eq((await POST("clockEditTimes", {}, EMP_TOK)).statusCode, 400, "an empty edit is refused");
+
+  // A correction is made deliberately at a keyboard, so it gets a wider berth than
+  // a punch replayed from a phone — but it is still bounded at both ends.
+  const future = await POST("clockEditTimes",
+    { startedAt: new Date(Date.now() + 3 * 3600 * 1000).toISOString() }, EMP_TOK);
+  eq(future.statusCode, 400, "you cannot start a shift in the future");
+  ok(/future/.test(json(future).error), "and it says why");
+
+  const ancient = await POST("clockEditTimes",
+    { startedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString() }, EMP_TOK);
+  eq(ancient.statusCode, 400, "nor reach back into a closed pay period");
+  ok(/Payroll/.test(json(ancient).error), "and it points at where that belongs");
+
+  eq((await POST("clockEditTimes", { startedAt: "not-a-time" }, EMP_TOK)).statusCode, 400,
+     "garbage is refused");
+  // The realistic case — "I got here an hour before I punched" — must NOT be
+  // rejected by the bounds. It fails later on the absent Neon shift, which is as
+  // far as this harness can follow it.
+  const realistic = json(await POST("clockEditTimes",
+    { startedAt: new Date(Date.now() - 3600 * 1000).toISOString() }, EMP_TOK));
+  ok(!/future|Payroll|valid/.test(realistic.error || ""),
+     "an hour ago is a normal correction, not a bounds violation");
+  delete process.env.TIME_CLOCK;
+});
+
 await test("job city tax: admin+office may set it, the crew may not, and the value is whitelisted", async () => {
   eq((await POST("updateJobCityTax", { jobId: "recJ1", cityTax: "Canton Tax" }, EMP_TOK)).statusCode, 403,
      "an employee cannot change what a job is taxed at");

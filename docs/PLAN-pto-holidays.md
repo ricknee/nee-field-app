@@ -54,26 +54,37 @@ worked**, and two places compute overtime from hours:
    This is structurally the same failure as the manual `Reviewed` checkbox that produced a ~$179k
    hole in closeout: a denominator that quietly stopped meaning what the formula assumed.
 
-## 4. What is LEFT to build
+## 4. Also BUILT (2026-08-08, second pass)
 
-1. **Exclude PTO/Holiday from the payroll PDF's OT split** (§3 item 1). Money-critical; do first.
-2. **Report PTO and Paid Holiday hours on the payroll PDF** — the accountant's actual ask. Per
-   employee, per week, alongside Reg/OT.
-3. **Add `PTO` and `Paid Holiday` to the class list** — and note they must NOT be offered as clock
-   classes (you don't punch a holiday); they're payroll-entry classes.
-4. **Holiday auto-fill** — an action that materialises 8 h `Paid Holiday` entries for eligible
-   employees on each `company_holidays` date. Must be idempotent (re-running creates nothing new)
-   and must skip anyone who actually worked that day.
-5. **PTO balance UI** — remaining hours on ⏱ My Hours for the employee; allowance editing on the
-   People screen for admin.
-6. **Seed the data** — the 6 holiday dates for 2026 (⬜ owner has not yet said *which* six), and
-   `pto_years` rows for Jeff and Patrick.
-7. **Year-end rollover** — an admin action creating next year's `pto_years` rows with
-   `carried_in_hours` = this year's remaining. Deliberately manual and explicit. Not needed until
-   December.
+- ✅ **PTO/Holiday excluded from the payroll PDF's OT split.** Reg/OT now compute on *worked*
+  hours; `Total Hrs` adds PTO and holiday back, because the total is what the person is paid.
+  40 worked + 8 holiday → Reg 40, **no OT**, Holiday 8, Total 48.
+- ✅ **PTO and Paid Holiday hours reported on the PDF**, per employee per week, only when non-zero
+  (a "PTO 0.00" line on every normal week trains people to skip the block).
+- ✅ **`PTO` / `Paid Holiday` added as classes** — recordable in Payroll, and filtered *out* of the
+  clock's class picker for everyone including admin. You don't punch in for a holiday.
+- ✅ **The 6 holidays seeded for 2026** (confirmed by the owner): New Year's Day 01-01, Memorial Day
+  05-25, Independence Day 07-04, Labor Day 09-07, Thanksgiving 11-26, Christmas Day 12-25.
 
-## 5. Open question
+**PTO is therefore usable now** — record a PTO or Paid Holiday day in Payroll like any other entry
+and it is reported correctly and never earns overtime. What's left is convenience and balances.
 
-**Which six dates?** The usual set for a contractor here would be New Year's Day, Memorial Day,
-Independence Day, Labor Day, Thanksgiving, Christmas — but that is a guess and it decides what
-people get paid, so it needs confirming rather than assuming.
+## 5. What is STILL left
+
+1. **Holiday auto-fill** — materialise 8 h `Paid Holiday` entries for eligible employees on each
+   `company_holidays` date. Must be idempotent, and must skip anyone who actually worked that day.
+   ⚠⚠ **Forward-only.** Three of 2026's six holidays (New Year's, Memorial Day, Independence Day)
+   are already past **and were already paid through QuickBooks Time**. Filling those retroactively
+   would create duplicate paid hours. The action needs an explicit `from` date and must refuse to
+   run without one.
+2. **PTO balance UI** — remaining hours on ⏱ My Hours; allowance editing on the People screen.
+3. **Seed `pto_years`** for Jeff and Patrick (allowance + any carry-in from 2025).
+4. **Year-end rollover** — admin action creating next year's rows with `carried_in_hours` =
+   this year's remaining. Deliberately manual. Not needed until December.
+
+## 6. Open question — future years
+
+**2027 has two holidays on a weekend:** Independence Day falls on a Sunday and Christmas Day on a
+Saturday. (2026's Independence Day was a Saturday too, but it has already passed.) Whether the
+company observes the adjacent Friday/Monday is a policy question nobody has answered, and it
+decides what people are paid — so the calendar is seeded for 2026 only, on purpose.

@@ -16636,7 +16636,9 @@
     return [r,g,b];
   }
   const SALARIED = ["Larry Unruh", "Miles Unruh", "Rick Unruh"];
-  const PR_CLASSES = ["Contract","Extra's","Rough & Service","Travel","Shop Work","Business Development","Admin/Office","Vehicle and Equipment Maintenance"];
+  // "PTO" and "Paid Holiday" are recordable in PAYROLL but never on the clock —
+  // you don't punch in for a holiday. clockClasses() filters them back out.
+  const PR_CLASSES = ["Contract","Extra's","Rough & Service","Travel","Shop Work","Business Development","Admin/Office","Vehicle and Equipment Maintenance","PTO","Paid Holiday"];
   // Free-text field in Airtable Time Entries — these strings must match the stored
   // text EXACTLY (incl. spellings / missing "Tax" suffix) or the dropdown can't
   // pre-select an existing entry's value and silently shows the first option.
@@ -17488,9 +17490,12 @@
   const CLOCK_CLASSES_OFFICE_ONLY = ["Business Development", "Admin/Office"];
   function clockClasses(keepCurrent) {
     const role = (state.user?.role || "").toLowerCase();
+    // PTO and Paid Holiday are never punchable by anyone, admin included — they're
+    // payroll entries, not shifts. Recorded in Payroll or auto-filled.
+    const base = PR_CLASSES.filter(c => !NONWORKED_CLASSES.includes(c));
     const list = (role === "admin")
-      ? PR_CLASSES.slice()
-      : PR_CLASSES.filter(c => !CLOCK_CLASSES_OFFICE_ONLY.includes(c));
+      ? base
+      : base.filter(c => !CLOCK_CLASSES_OFFICE_ONLY.includes(c));
     // Never silently rewrite a class already on an open shift just because the
     // current role can't pick it — that would change what someone is booked to
     // without them touching it.
@@ -19796,6 +19801,26 @@
   //
   // max() ensures the paid figure is never below EITHER the exact logged time or
   // the sum of the per-entry values shown on screen, so the PDF always adds up.
+  // ⚠⚠ PTO AND PAID HOLIDAYS ARE HOURS, BUT NOT HOURS *WORKED*.
+  //
+  // Overtime is owed on work. A week of 40 worked + 8 holiday is 40 regular + 8
+  // holiday — NOT 40 regular + 8 overtime. Without this split the PDF would pay
+  // time-and-a-half on every holiday week, for everyone, silently.
+  //
+  // The same distinction is enforced database-side in the GP figures
+  // (db/schema/024) — that view's overtime denominator excludes these classes too.
+  // If you add a third non-worked class, both places need it.
+  const NONWORKED_CLASSES = ["PTO", "Paid Holiday"];
+
+  function splitWorked(entries) {
+    const list = entries || [];
+    return {
+      worked:       list.filter(e => !NONWORKED_CLASSES.includes(e.class)),
+      ptoHours:     sumOtherHours(list.filter(e => e.class === "PTO")),
+      holidayHours: sumOtherHours(list.filter(e => e.class === "Paid Holiday")),
+    };
+  }
+
   function weekHoursPaid(entries) {
     const list  = entries || [];
     const secs  = list.reduce((s, e) => s + (Number(e.duration) || 0), 0);
@@ -21224,14 +21249,21 @@
       const bonus = prBonuses[emp] || 0;
       // PAID weekly totals — rounded UP once for the week (see weekHoursPaid), so
       // Reg/OT below is split on the figure actually paid, not on a lower one.
-      const wk1Total = weekHoursPaid(wk1);
-      const wk2Total = weekHoursPaid(wk2);
-      const wk1Adj   = weekRoundingAdj(wk1);
-      const wk2Adj   = weekRoundingAdj(wk2);
-      const wk1Reg = Math.min(wk1Total, 40);
-      const wk1OT  = Math.max(0, wk1Total - 40);
-      const wk2Reg = Math.min(wk2Total, 40);
-      const wk2OT  = Math.max(0, wk2Total - 40);
+      //
+      // ⚠ Reg/OT are computed on WORKED hours only. PTO and paid holidays are paid
+      // but never earn overtime — see NONWORKED_CLASSES. `Total Hrs` then adds them
+      // back, because the total is what the person is paid for.
+      const s1 = splitWorked(wk1), s2 = splitWorked(wk2);
+      const wk1Worked = weekHoursPaid(s1.worked);
+      const wk2Worked = weekHoursPaid(s2.worked);
+      const wk1Adj   = weekRoundingAdj(s1.worked);
+      const wk2Adj   = weekRoundingAdj(s2.worked);
+      const wk1Reg = Math.min(wk1Worked, 40);
+      const wk1OT  = Math.max(0, wk1Worked - 40);
+      const wk2Reg = Math.min(wk2Worked, 40);
+      const wk2OT  = Math.max(0, wk2Worked - 40);
+      const wk1Total = wk1Worked + s1.ptoHours + s1.holidayHours;
+      const wk2Total = wk2Worked + s2.ptoHours + s2.holidayHours;
 
       checkSpace(200);
       nameBar(emp + (isSalaried ? "  (Salaried)" : ""), col);
@@ -21249,6 +21281,10 @@
         // The adjustment is still computed — it feeds the city-tax allocation below and
         // is recorded as `roundingAdjustment` in the archived JSON for auditability.
         sumRow(`Reg Hrs  ${fmtHrs(wk1Reg)}${wk1OT > 0 ? `     OT Hrs  ${fmtHrs(wk1OT)}` : ""}`);
+        // Broken out for the accountant, and only when there are any — a "PTO 0.00"
+        // line on every normal week is noise that trains people to skip the block.
+        if (s1.ptoHours > 0)     sumRow(`PTO Hrs  ${fmtHrs(s1.ptoHours)}`);
+        if (s1.holidayHours > 0) sumRow(`Paid Holiday Hrs  ${fmtHrs(s1.holidayHours)}`);
         sumRow(`Total Hrs  ${fmtHrs(wk1Total)}`);
         cityTaxSection(taxBreakdown(wk1, wk1Adj), col);
 
@@ -21256,6 +21292,8 @@
         wkLabel("Week #2", wk2Label, col);
         dataRow("Weekly Hours", fmtHrs(wk2Total), false);
         sumRow(`Reg Hrs  ${fmtHrs(wk2Reg)}${wk2OT > 0 ? `     OT Hrs  ${fmtHrs(wk2OT)}` : ""}`);
+        if (s2.ptoHours > 0)     sumRow(`PTO Hrs  ${fmtHrs(s2.ptoHours)}`);
+        if (s2.holidayHours > 0) sumRow(`Paid Holiday Hrs  ${fmtHrs(s2.holidayHours)}`);
         sumRow(`Total Hrs  ${fmtHrs(wk2Total)}`);
         cityTaxSection(taxBreakdown(wk2, wk2Adj), col);
       } else {

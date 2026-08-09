@@ -18404,10 +18404,58 @@
         ${missing.map(m => `<a href="#" onclick="event.preventDefault();ptoSetAllowance('${esc(m.airtable_id)}','${esc(m.name)}',80,0)" style="color:var(--accent);">set ${esc(m.name)}</a>`).join(" · ")}
       </div>` : "";
 
+    // Booking PTO that already happened — the normal case while the clock is new,
+    // and the answer to "they forgot to request it".
+    const addHtml = `
+      <div class="ww-head" style="margin-top:14px;">Book time off directly</div>
+      <div class="ww-form">
+        <select id="wwPtoWho" class="ww-input">
+          <option value="">— Who? —</option>
+          ${bals.map(b => `<option value="${esc(b.airtable_id)}">${esc(b.name)}</option>`).join("")}
+        </select>
+        <input id="wwPtoFrom"  type="date"   class="ww-input" />
+        <input id="wwPtoTo"    type="date"   class="ww-input" />
+        <input id="wwPtoHours" type="number" class="ww-input" min="0.5" max="24" step="0.5" value="8" title="Hours per day" />
+        <button class="btn btn-primary btn-sm" onclick="ptoAdminAdd()">Book</button>
+      </div>
+      <div class="clock-note">Backdated is fine. Weekends and company holidays are skipped, and it
+        refuses if they already logged hours that day.</div>`;
+
     return `${pendHtml}
       ${bals.length ? `<div class="ww-head" style="margin-top:14px;">Balances ${wwPto.year}</div>${balHtml}` : ""}
-      ${missHtml}`;
+      ${missHtml}
+      ${bals.length ? addHtml : ""}`;
   }
+
+  async function ptoAdminAdd() {
+    const employeeId = $("wwPtoWho")?.value;
+    const startDate  = $("wwPtoFrom")?.value;
+    if (!employeeId) { alert("Pick a person."); return; }
+    if (!startDate)  { alert("Pick a first day."); return; }
+    const payload = {
+      employeeId, startDate,
+      endDate: $("wwPtoTo")?.value || startDate,
+      hoursPerDay: Number($("wwPtoHours")?.value) || 8,
+    };
+    try {
+      const d = await apiPost("adminAddPto", payload);
+      showAppToast(`Booked ${d.entriesCreated} PTO day${d.entriesCreated === 1 ? "" : "s"}.`);
+      await loadPtoAdmin();
+    } catch (e) {
+      // A clash is a question, not a dead end: the message names the days, so the
+      // override is an informed choice rather than a shrug.
+      if (e.status === 409 && confirm(`${e.message}\n\nBook it anyway?`)) {
+        try {
+          const d = await apiPost("adminAddPto", { ...payload, force: true });
+          showAppToast(`Booked ${d.entriesCreated} PTO day${d.entriesCreated === 1 ? "" : "s"}.`);
+          await loadPtoAdmin();
+        } catch (e2) { alert(e2.message || "Couldn't book it."); }
+        return;
+      }
+      if (e.status !== 409) alert(e.message || "Couldn't book it.");
+    }
+  }
+  window.ptoAdminAdd = ptoAdminAdd;
 
   async function ptoDecide(requestId, approve) {
     let note = "";
@@ -18420,7 +18468,19 @@
       const d = await apiPost("decidePtoRequest", { requestId, approve, note });
       if (approve) showAppToast(`Approved — ${d.entriesCreated} PTO day${d.entriesCreated === 1 ? "" : "s"} booked.`);
       await loadPtoAdmin();
-    } catch (e) { alert(e.message || "Couldn't record that decision."); }
+    } catch (e) {
+      // Same override as booking directly: the days that clash are named, so
+      // approving anyway is a decision rather than a guess.
+      if (e.status === 409 && confirm(`${e.message}\n\nApprove anyway?`)) {
+        try {
+          const d = await apiPost("decidePtoRequest", { requestId, approve, note, force: true });
+          showAppToast(`Approved — ${d.entriesCreated} PTO day${d.entriesCreated === 1 ? "" : "s"} booked.`);
+          await loadPtoAdmin();
+        } catch (e2) { alert(e2.message || "Couldn't record that decision."); }
+        return;
+      }
+      if (e.status !== 409) alert(e.message || "Couldn't record that decision.");
+    }
   }
   window.ptoDecide = ptoDecide;
 

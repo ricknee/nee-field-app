@@ -499,6 +499,8 @@ const _ADMIN_POSTS = new Set([
   // Granting time off, and setting how much someone gets. Both turn into paid
   // hours, so admin only — office manages money, not people's leave.
   "decidePtoRequest", "setPtoAllowance",
+  // Booking PTO for someone directly, for time off that already happened.
+  "adminAddPto",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -1834,6 +1836,28 @@ async function handlePtoRequests(params) {
   });
 }
 
+// ⚠ DOUBLE-BOOKING GUARD — the thing that makes backfilling safe.
+//
+// Booking PTO for a day somebody already logged hours on pays them twice for that
+// day. It is a live risk precisely because backdated PTO is the normal case: you
+// are filling in a day that has already been and gone, and the worked entries for
+// that week already exist.
+//
+// Returns the clashing days so the message can name them, rather than a bare
+// refusal the person then has to go hunting to explain.
+async function ptoConflicts(requestId) {
+  const q = await neonQuery(
+    `SELECT to_char(t.work_date, 'YYYY-MM-DD') AS day,
+            round(sum(t.hours), 2)::float8 AS hours
+       FROM v_pto_request_days d
+       JOIN time_entries t
+         ON t.employee_id = d.employee_id AND t.work_date = d.work_date
+      WHERE d.request_id = $1
+        AND coalesce(t.pto_request_id::text, '') <> $1
+      GROUP BY 1 ORDER BY 1`, [String(requestId)]);
+  return q?.rows || [];
+}
+
 // Approve or decline. Approving WRITES THE HOURS — one time entry per eligible
 // day — in the same statement that flips the status, so a request can never be
 // marked approved without the hours existing (or vice versa).
@@ -1851,6 +1875,18 @@ async function handleDecidePtoRequest(body, authUser) {
         RETURNING id`, [String(requestId), me?.id || null, String(note || "").trim()]);
     if (!rows?.length) return resp(409, { ok: false, error: "That request isn't pending any more." });
     return resp(200, { ok: true, declinedId: rows[0].id });
+  }
+
+  // Refuse rather than skip. Silently dropping the clashing days would approve a
+  // week and book four days of it, with nothing on screen saying so.
+  const clashes = await ptoConflicts(requestId);
+  if (clashes.length && body?.force !== true) {
+    return resp(409, {
+      ok: false,
+      conflicts: clashes,
+      error: `Already has hours logged on ${clashes.map(c => `${c.day} (${c.hours} h)`).join(", ")}. ` +
+             `Approving would pay those days twice.`,
+    });
   }
 
   // ⚠ ONE STATEMENT. The status flip and the hours are written together; there is
@@ -1885,6 +1921,84 @@ async function handleDecidePtoRequest(body, authUser) {
   const out = rows?.[0];
   if (!out?.approved_id) return resp(409, { ok: false, error: "That request isn't pending any more." });
   return resp(200, { ok: true, approvedId: out.approved_id, entriesCreated: out.entries_created });
+}
+
+// ── ADMIN: book PTO directly, no request ───────────────────────────────────
+// For time off that already happened and nobody logged — the normal case when a
+// clock is new. Deliberately built ON TOP of the request machinery rather than
+// beside it: it creates a request and approves it in the same breath, so a
+// hand-booked day is indistinguishable downstream from a requested one, carries
+// the same pto_request_id link, and stays just as reversible.
+async function handleAdminAddPto(body, authUser) {
+  const { employeeId, startDate, endDate, hoursPerDay, note } = body || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Pick a person." });
+  }
+  const dOk = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+  const from = startDate, to = endDate || startDate;
+  if (!dOk(from) || !dOk(to)) return resp(400, { ok: false, error: "Need a start and end date." });
+  if (to < from) return resp(400, { ok: false, error: "The end date is before the start date." });
+  const hrs = hoursPerDay == null ? 8 : Number(hoursPerDay);
+  if (!Number.isFinite(hrs) || hrs <= 0 || hrs > 24) {
+    return resp(400, { ok: false, error: "Hours per day must be between 0 and 24." });
+  }
+
+  const emp = await clockEmployeeById(employeeId);
+  if (!emp) return resp(404, { ok: false, error: "Employee not found." });
+  const me = await clockEmployee(authUser);
+
+  // Created pending first so the day-expansion and conflict views can see it;
+  // it is approved (or removed) below. A pending row briefly existing is
+  // harmless — it books no hours.
+  const made = await neonWrite("pto.adminAdd",
+    `INSERT INTO pto_requests (employee_id, start_date, end_date, hours_per_day, note)
+     VALUES ($1, $2::date, $3::date, $4::numeric, NULLIF($5, ''))
+     RETURNING id`,
+    [emp.id, from, to, hrs, String(note || "").trim()]);
+  const id = made?.[0]?.id;
+
+  const cleanup = async () => { await neonWrite("pto.adminAdd.undo",
+    `DELETE FROM pto_requests WHERE id = $1`, [id]); };
+
+  const info = await neonQuery(
+    `SELECT days, total_hours::float8 FROM v_pto_requests WHERE id = $1`, [id]);
+  if (Number(info?.rows?.[0]?.days || 0) === 0) {
+    await cleanup();
+    return resp(400, { ok: false,
+      error: "Those dates are all weekend or company holidays — no PTO needed." });
+  }
+
+  const clashes = await ptoConflicts(id);
+  if (clashes.length && body?.force !== true) {
+    await cleanup();
+    return resp(409, { ok: false, conflicts: clashes,
+      error: `${emp.name} already has hours on ${clashes.map(c => `${c.day} (${c.hours} h)`).join(", ")}. ` +
+             `Booking PTO there would pay those days twice.` });
+  }
+
+  const rows = await neonWrite("pto.adminAdd.approve",
+    `WITH req AS (
+       UPDATE pto_requests
+          SET status = 'approved', decided_by = $2, decided_at = now(),
+              decision_note = 'Booked by admin'
+        WHERE id = $1 AND status = 'pending'
+        RETURNING id, employee_id
+     ), ins AS (
+       INSERT INTO time_entries
+         (employee_name, employee_id, work_date, duration_seconds, city_taxes, class,
+          labor_reviewed, source, pto_request_id)
+       SELECT e.name, d.employee_id, d.work_date, d.hours * 3600, 'A No Tax', 'PTO',
+              false, 'Manual', d.request_id
+         FROM v_pto_request_days d
+         JOIN req ON req.id = d.request_id
+         JOIN employees e ON e.id = d.employee_id
+       RETURNING id
+     )
+     SELECT (SELECT id FROM req) AS id, (SELECT count(*)::int FROM ins) AS entries_created`,
+    [id, me?.id || null]);
+
+  const out = rows?.[0];
+  return resp(200, { ok: true, id: out?.id, entriesCreated: out?.entries_created ?? 0 });
 }
 
 // ── ADMIN: set someone's yearly allowance ──────────────────────────────────
@@ -9961,6 +10075,7 @@ export async function handler(event) {
       if (body.action === "cancelPtoRequest")     return await handleCancelPtoRequest(body, authUser);
       if (body.action === "decidePtoRequest")     return await handleDecidePtoRequest(body, authUser);
       if (body.action === "setPtoAllowance")      return await handleSetPtoAllowance(body);
+      if (body.action === "adminAddPto")          return await handleAdminAddPto(body, authUser);
       if (body.action === "adminClockIn")         return await handleAdminClockIn(body, authUser);
       if (body.action === "adminClockOut")        return await handleAdminClockOut(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);

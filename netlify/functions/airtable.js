@@ -3291,6 +3291,46 @@ async function handlePayrollHoursBreakdown(params) {
   // the bucket window extends into the future (matches the rollup's behavior).
   const sumEnd = today < bucketEnd ? today : bucketEnd;
 
+  // ── NEON-FIRST (fixed 2026-08-09) ────────────────────────────────────────
+  // This read the AIRTABLE Time Entries table, which Step 3 FROZE on
+  // 2026-08-07. The rollup tile above it has served Neon since Step 1, so
+  // tapping a tile opened a drill-down built from a copy that stopped being
+  // updated — matching on the day of the freeze and drifting further every
+  // day since. Nothing errored; the numbers just quietly stopped agreeing.
+  //
+  // Same union rule as before, expressed in SQL: keep every active eligible
+  // employee (so a $0 active still renders) plus inactive eligible employees
+  // with hours in the bucket (so someone who left mid-year still appears in
+  // YTD). Inactive 0-hour leavers stay hidden.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT e.airtable_id, e.name, e.active,
+              round(coalesce(sum(t.hours), 0), 2)::float8 AS hours
+         FROM employees e
+         LEFT JOIN time_entries t
+                ON t.employee_id = e.id
+               AND t.work_date >= $1::date AND t.work_date <= $2::date
+        WHERE lower(coalesce(e.role, 'employee')) NOT IN ('office','viewer')
+        GROUP BY e.airtable_id, e.name, e.active
+       HAVING e.active OR coalesce(sum(t.hours), 0) > 0
+        ORDER BY e.name`,
+      [dateToYmd(bucketStart), dateToYmd(sumEnd)]);
+    if (q?.rows) {
+      const r2n = (n) => Math.round(n * 100) / 100;
+      const employeesOut = q.rows.map(r => ({
+        id: r.airtable_id, name: r.name || "Unknown", hours: Number(r.hours) || 0,
+      }));
+      return resp(200, {
+        ok: true, bucket,
+        range: { start: dateToYmd(bucketStart), end: dateToYmd(bucketEnd) },
+        employees: employeesOut,
+        total: r2n(employeesOut.reduce((s, e) => s + e.hours, 0)),
+        _source: "neon", _ms: q.ms,
+      });
+    }
+    console.error(`payrollHoursBreakdown: Neon read failed, falling back to Airtable (FROZEN table — figures will be stale): ${q?.error || "no rows"}`);
+  }
+
   const [records, employees] = await Promise.all([
     fetchAll(TABLES.timeEntries, {
       filter: `AND(DATESTR({Work Date})>="${dateToYmd(bucketStart)}",DATESTR({Work Date})<="${dateToYmd(sumEnd)}")`,
@@ -3479,6 +3519,49 @@ async function handleMyHoursBreakdown(params) {
   // Clip the fetch at today — entries beyond today aren't real yet (matches
   // the admin breakdown's behavior for forward-leaning Pay Period).
   const sumEnd = today < bucketEnd ? today : bucketEnd;
+
+  // ── NEON-FIRST (fixed 2026-08-09) ────────────────────────────────────────
+  // Same bug as the admin breakdown: this paged the AIRTABLE Time Entries
+  // table, frozen by Step 3 on 2026-08-07, while the My Hours tiles above it
+  // served Neon. An employee tapping a tile saw a list that stopped growing on
+  // the day of the freeze — and the total under it disagreed with the tile.
+  //
+  // The old version fetched EVERY entry in the window and filtered to this
+  // employee in JS; here the employee is a join condition, so Postgres reads
+  // only their rows via time_entries_employee_idx.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT coalesce(t.airtable_id, t.id::text) AS entry_id,
+              t.work_date, t.job_name, t.hours::float8 AS hours,
+              j.airtable_id AS job_airtable_id
+         FROM time_entries t
+         JOIN employees e ON e.id = t.employee_id
+         LEFT JOIN jobs j ON j.id = t.job_id
+        WHERE e.airtable_id = $1
+          AND t.work_date >= $2::date AND t.work_date <= $3::date
+        ORDER BY t.work_date`,
+      [employeeId, dateToYmd(bucketStart), dateToYmd(sumEnd)]);
+    if (q?.rows) {
+      const r2n = (n) => Math.round(n * 100) / 100;
+      const entries = q.rows.map(r => ({
+        id:       r.entry_id,
+        // date, not timestamp — slice rather than toISOString, which would
+        // shift the day backwards for anyone west of UTC.
+        workDate: r.work_date ? String(r.work_date).slice(0, 10) : "",
+        jobId:    r.job_airtable_id || null,
+        jobName:  r.job_name || "",
+        hours:    r2n(Number(r.hours) || 0),
+      }));
+      return resp(200, {
+        ok: true, employeeId, bucket,
+        range: { start: dateToYmd(bucketStart), end: dateToYmd(bucketEnd) },
+        entries,
+        total: r2n(entries.reduce((s, e) => s + e.hours, 0)),
+        _source: "neon", _ms: q.ms,
+      });
+    }
+    console.error(`myHoursBreakdown: Neon read failed, falling back to Airtable (FROZEN table — figures will be stale): ${q?.error || "no rows"}`);
+  }
 
   const records = await fetchAll(TABLES.timeEntries, {
     filter: `AND(DATESTR({Work Date})>="${dateToYmd(bucketStart)}",DATESTR({Work Date})<="${dateToYmd(sumEnd)}")`,

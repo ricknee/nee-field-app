@@ -1698,6 +1698,31 @@ await test("backfillTimeEntryEmployeeLinks is gone, not just unlisted", async ()
   eq((await POST("backfillTimeEntryEmployeeLinks", { confirm: "YES" })).statusCode, 400, "unknown action");
 });
 
+await test("hours breakdowns: fall back cleanly when Neon is unreachable", async () => {
+  // These two served the AIRTABLE Time Entries table, frozen by Step 3 on
+  // 2026-08-07, while the rollup tiles above them served Neon — so the
+  // drill-down disagreed with the tile it opened from, and drifted daily.
+  // They are Neon-first now. The fallback still exists and still works; it
+  // just reads a frozen table, which is why the log line says so out loud.
+  mockTables = {
+    Employees: [{ id: "recEmp1", fields: { "Employee Name": "Jeff Koehn", Role: "employee", Active: true } }],
+    "Time Entries": [], "Payroll Runs": [],
+  };
+  for (const url of [undefined, "not-a-valid-connection-string"]) {
+    if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
+    const a = await GET("payrollHoursBreakdown", { bucket: "ytd", today: "2026-08-09" });
+    eq(a.statusCode, 200, `admin breakdown answers (DATABASE_URL=${url})`);
+    ok(Array.isArray(json(a).employees), "employees array present");
+    const m = await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "ytd", today: "2026-08-09" });
+    eq(m.statusCode, 200, `my breakdown answers (DATABASE_URL=${url})`);
+    ok(Array.isArray(json(m).entries), "entries array present");
+  }
+  delete process.env.DATABASE_URL;
+  // Bucket validation must survive ahead of either data path.
+  eq((await GET("payrollHoursBreakdown", { bucket: "lastTuesday" })).statusCode, 400, "bad bucket refused");
+  eq((await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "nope" })).statusCode, 400, "bad bucket refused");
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

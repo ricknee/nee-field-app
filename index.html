@@ -2489,6 +2489,11 @@
            paid time. Office is excluded from payroll everywhere else, so it is
            excluded here. -->
       <button id="btnWhosWorking" class="btn btn-sm strict-admin-only hidden" type="button">🟢 Who's Working</button>
+      <!-- Its own button rather than a section inside Who's Working: that screen is
+           "who is on site right now", which is not the same question as "decisions
+           about time off". The badge is the point — a pending request you only see
+           if you happen to open the right screen is a request that sits for a week. -->
+      <button id="btnTimeOff" class="btn btn-sm strict-admin-only hidden" type="button">🌴 Time Off<span id="timeOffBadge"></span></button>
       <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
       <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
@@ -3929,6 +3934,9 @@
       // Fire-and-forget; when the clock is off the call answers { enabled:false }
       // and nothing renders.
       if (typeof refreshClock === "function") refreshClock().catch(() => {});
+      // Pending-request count on the 🌴 Time Off button, so a request waiting on
+      // you is visible without opening anything. Strict admin only.
+      if (typeof refreshTimeOffBadge === "function") refreshTimeOffBadge().catch(() => {});
 
       // Hide financial tabs from viewers
       if (isViewer()) {
@@ -11993,6 +12001,30 @@
           </div>
           ${p.pto ? `<div class="pto-bar" style="margin:-4px 0 10px;"><div class="pto-bar-fill" style="width:${
             p.pto.entitled > 0 ? Math.max(0, Math.min(100, (p.pto.used / p.pto.entitled) * 100)) : 0}%;"></div></div>` : ""}
+          ${p.active && (p.role === "employee" || p.pto) ? `
+            <div class="people-pin-row" style="font-size:12px; margin-bottom:8px;">
+              <a href="#" onclick="event.preventDefault();ptoSetAllowance('${esc(p.id)}','${esc(p.name)}',${p.pto ? p.pto.entitled - (p.pto.carriedIn || 0) : 80},0)"
+                 style="color:var(--accent); font-weight:600;">${p.pto ? "Edit allowance" : "Set PTO allowance"}</a>
+              ${p.pto ? `
+                <a href="#" onclick="event.preventDefault();ptoToggleAdd('${esc(p.id)}')"
+                   style="color:var(--accent); font-weight:600; margin-left:14px;">Book time off</a>
+                <a href="#" onclick="event.preventDefault();ptoToggleHistory('${esc(p.id)}')"
+                   style="color:var(--accent); font-weight:600; margin-left:14px;">History</a>` : ""}
+            </div>
+            <div id="ptoAdd-${esc(p.id)}" class="hidden" style="border:1px solid var(--line); border-radius:8px; padding:10px; margin-bottom:10px;">
+              <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                <input id="ptoAddFrom-${esc(p.id)}" type="date"   class="ww-input" style="min-width:130px;" />
+                <input id="ptoAddTo-${esc(p.id)}"   type="date"   class="ww-input" style="min-width:130px;" />
+                <input id="ptoAddHrs-${esc(p.id)}"  type="number" class="ww-input" style="min-width:80px;"
+                       min="0.5" max="24" step="0.5" value="8" title="Hours per day" />
+                <button class="btn btn-primary btn-sm" onclick="ptoAdminAdd('${esc(p.id)}')">Book</button>
+              </div>
+              <div style="font-size:11px; color:var(--muted); margin-top:6px;">
+                Backdating is fine. Weekends and paid holidays are skipped, and it refuses if they
+                already logged hours that day.
+              </div>
+            </div>
+            <div id="ptoHist-${esc(p.id)}" class="hidden" style="margin-bottom:10px;"></div>` : ""}
           ${!p.active && p.terminationNote ? `<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">Note: ${esc(p.terminationNote)}</div>` : ""}
           ${brokenHalfOff ? `<div style="font-size:12px; color:var(--red); font-weight:600; margin-bottom:10px;">⚠ Their devices were signed out, but the account is active again — they can log back in. Run "Turn off access" again to finish it.</div>` : ""}
           ${neverRevoked ? `<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
@@ -13214,6 +13246,8 @@
     if (peopleBtn) peopleBtn.addEventListener("click", openPeople);
     const wwBtn = $("btnWhosWorking");
     if (wwBtn) wwBtn.addEventListener("click", openWhosWorking);
+    const toBtn = $("btnTimeOff");
+    if (toBtn) toBtn.addEventListener("click", openTimeOff);
     const mySchBtn = $("btnMySchedule");
     if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
     const myHoursBtn = $("btnMyHours");
@@ -18216,7 +18250,6 @@
     $("whosWorkingModal").style.display = "flex";
     pushBackEntry("whosWorking", () => { $("whosWorkingModal").style.display = "none"; stopWwTicker(); });
     await loadWhosWorking();
-    loadPtoAdmin().catch(() => {});
     // Ticks every second so the elapsed times move, but only re-FETCHES every 30.
     // Crucially it updates the timer spans in place rather than re-rendering the
     // body — a full re-render would reset the "clock someone in" dropdowns while
@@ -18347,11 +18380,6 @@
       <div class="ww-head" style="margin-top:18px;">Finished today</div>
       ${todayHtml}
 
-      <div class="ww-head" style="margin-top:22px;">
-        Time off${(wwPto?.pending?.length) ? ` — ${wwPto.pending.length} waiting` : ""}
-      </div>
-      <div id="wwPtoOut">${renderPtoAdmin()}</div>
-
       <div class="ww-head" style="margin-top:22px;">QuickBooks vs the clock</div>
       <div class="ww-form">
         <input id="wwRecFrom" type="date" class="ww-input" value="${esc(wwWeekStart())}" />
@@ -18364,14 +18392,50 @@
     `;
   }
 
-  // ── PTO, admin side ─────────────────────────────────────────────────────
+  // ── 🌴 TIME OFF — the admin queue and the bulk actions ────────────────────
+  // Deliberately NOT on People: approving is queue work, done top-to-bottom, and
+  // holiday fill / rollover span everybody. Per-person allowance and booking live
+  // on the People card, where the person is already in front of you.
   let wwPto = null;
+
+  async function openTimeOff() {
+    $("timeOffModal").style.display = "flex";
+    pushBackEntry("timeOff", () => { $("timeOffModal").style.display = "none"; });
+    await loadPtoAdmin();
+  }
+  window.openTimeOff = openTimeOff;
+
+  function closeTimeOff() {
+    popBackEntry("timeOff");
+    $("timeOffModal").style.display = "none";
+  }
+  window.closeTimeOff = closeTimeOff;
 
   async function loadPtoAdmin() {
     try { wwPto = await apiGet("ptoRequests"); } catch { wwPto = null; }
-    const host = $("wwPtoOut");
+    const host = $("timeOffBody");
     if (host) host.innerHTML = renderPtoAdmin();
+    renderTimeOffBadge();
   }
+
+  // The badge is the whole reason this is a top-bar button. A request nobody sees
+  // is a request that sits for a week.
+  function renderTimeOffBadge() {
+    const el = $("timeOffBadge");
+    if (!el) return;
+    const n = wwPto?.pending?.length || 0;
+    el.textContent = n ? ` (${n})` : "";
+    el.style.color = n ? "#b91c1c" : "";
+    el.style.fontWeight = n ? "800" : "";
+  }
+
+  // Checked once when a role is applied, so the count is right without opening
+  // anything. Strict admin only — nobody else can act on it.
+  async function refreshTimeOffBadge() {
+    if ((state.user?.role || "").toLowerCase() !== "admin") return;
+    try { wwPto = await apiGet("ptoRequests"); renderTimeOffBadge(); } catch {}
+  }
+  window.refreshTimeOffBadge = refreshTimeOffBadge;
 
   function renderPtoAdmin() {
     if (!wwPto) return `<div class="clock-note">Loading…</div>`;
@@ -18404,38 +18468,17 @@
         </div>`;
     }).join("") : `<div class="clock-note">Nothing waiting.</div>`;
 
-    const balHtml = bals.map(b => `
-      <div class="clock-row">
-        <span>${esc(b.name)}</span>
-        <span>${Number(b.remaining_hours).toFixed(1)} h left
-          <span style="color:var(--muted); font-size:11px;">of ${Number(b.entitled_hours).toFixed(1)}</span>
-          · <a href="#" onclick="event.preventDefault();ptoSetAllowance('${esc(b.airtable_id)}','${esc(b.name)}',${Number(b.allowance_hours)},${Number(b.carried_in_hours)})" style="color:var(--accent);">edit</a></span>
-      </div>`).join("");
-
-    // Anyone hourly with no allowance row would otherwise simply never appear, and
-    // nobody would notice they'd been missed.
+    // Balances and per-person booking are NOT here — they're on each person's card
+    // on the People screen, where the person is already in front of you. Anyone
+    // hourly with no allowance row is still called out, because nobody would
+    // otherwise notice they'd been missed.
     const missHtml = missing.length ? `
       <div class="clock-note" style="color:#92400e;">
-        No allowance set for ${missing.map(m => esc(m.name)).join(", ")} —
-        ${missing.map(m => `<a href="#" onclick="event.preventDefault();ptoSetAllowance('${esc(m.airtable_id)}','${esc(m.name)}',80,0)" style="color:var(--accent);">set ${esc(m.name)}</a>`).join(" · ")}
+        ⚠ No PTO allowance set for ${missing.map(m => esc(m.name)).join(", ")} —
+        set it on their card in 👥 People.
       </div>` : "";
 
-    // Booking PTO that already happened — the normal case while the clock is new,
-    // and the answer to "they forgot to request it".
     const addHtml = `
-      <div class="ww-head" style="margin-top:14px;">Book time off directly</div>
-      <div class="ww-form">
-        <select id="wwPtoWho" class="ww-input">
-          <option value="">— Who? —</option>
-          ${bals.map(b => `<option value="${esc(b.airtable_id)}">${esc(b.name)}</option>`).join("")}
-        </select>
-        <input id="wwPtoFrom"  type="date"   class="ww-input" />
-        <input id="wwPtoTo"    type="date"   class="ww-input" />
-        <input id="wwPtoHours" type="number" class="ww-input" min="0.5" max="24" step="0.5" value="8" title="Hours per day" />
-        <button class="btn btn-primary btn-sm" onclick="ptoAdminAdd()">Book</button>
-      </div>
-      <div class="clock-note">Backdated is fine. Weekends and company holidays are skipped, and it
-        refuses if they already logged hours that day.</div>
 
       <div class="ww-head" style="margin-top:18px;">Paid holidays</div>
       <div class="ww-form">
@@ -18459,26 +18502,26 @@
         twice — existing years are never overwritten.</div>
       <div id="wwRollOut" class="clock-note"></div>`;
 
-    return `${pendHtml}
-      ${bals.length ? `<div class="ww-head" style="margin-top:14px;">Balances ${wwPto.year}</div>${balHtml}` : ""}
-      ${missHtml}
-      ${bals.length ? addHtml : ""}`;
+    return `${missHtml}
+      <div class="ww-head">Waiting on you${pend.length ? ` — ${pend.length}` : ""}</div>
+      ${pendHtml}
+      ${addHtml}`;
   }
 
-  async function ptoAdminAdd() {
-    const employeeId = $("wwPtoWho")?.value;
-    const startDate  = $("wwPtoFrom")?.value;
+  // Books PTO for one person, from the form on their People card.
+  async function ptoAdminAdd(employeeId) {
+    const startDate = $(`ptoAddFrom-${employeeId}`)?.value;
     if (!employeeId) { alert("Pick a person."); return; }
     if (!startDate)  { alert("Pick a first day."); return; }
     const payload = {
       employeeId, startDate,
-      endDate: $("wwPtoTo")?.value || startDate,
-      hoursPerDay: Number($("wwPtoHours")?.value) || 8,
+      endDate: $(`ptoAddTo-${employeeId}`)?.value || startDate,
+      hoursPerDay: Number($(`ptoAddHrs-${employeeId}`)?.value) || 8,
     };
     try {
       const d = await apiPost("adminAddPto", payload);
       showAppToast(`Booked ${d.entriesCreated} PTO day${d.entriesCreated === 1 ? "" : "s"}.`);
-      await loadPtoAdmin();
+      await loadPeople();
     } catch (e) {
       // A clash is a question, not a dead end: the message names the days, so the
       // override is an informed choice rather than a shrug.
@@ -18486,7 +18529,7 @@
         try {
           const d = await apiPost("adminAddPto", { ...payload, force: true });
           showAppToast(`Booked ${d.entriesCreated} PTO day${d.entriesCreated === 1 ? "" : "s"}.`);
-          await loadPtoAdmin();
+          await loadPeople();
         } catch (e2) { alert(e2.message || "Couldn't book it."); }
         return;
       }
@@ -18572,6 +18615,38 @@
   }
   window.ptoDecide = ptoDecide;
 
+  function ptoToggleAdd(id)     { $(`ptoAdd-${id}`)?.classList.toggle("hidden"); }
+  window.ptoToggleAdd = ptoToggleAdd;
+
+  // A person's own request history, fetched on demand — the roster doesn't carry
+  // everybody's requests just so one card might show a handful.
+  async function ptoToggleHistory(id) {
+    const box = $(`ptoHist-${id}`);
+    if (!box) return;
+    box.classList.toggle("hidden");
+    if (box.classList.contains("hidden")) return;
+    box.innerHTML = `<div class="clock-note">Loading…</div>`;
+    try {
+      const d = await apiGet("ptoRequests", { employeeId: id });
+      const h = d.history || [];
+      box.innerHTML = h.length ? h.map(r => {
+        const label = r.start_date === r.end_date
+          ? String(r.start_date).slice(0, 10)
+          : `${String(r.start_date).slice(0, 10)} → ${String(r.end_date).slice(0, 10)}`;
+        const tone = { approved: "var(--green)", declined: "#b91c1c",
+                       cancelled: "var(--muted)", pending: "#92400e" }[r.status] || "var(--muted)";
+        return `<div class="clock-row">
+          <span>${esc(label)} · ${Number(r.total_hours).toFixed(1)} h${
+            r.note ? ` <span style="color:var(--muted); font-size:11px;">“${esc(r.note)}”</span>` : ""}</span>
+          <span style="color:${tone}; font-weight:700;">${esc(r.status)}</span>
+        </div>`;
+      }).join("") : `<div class="clock-note">No time off recorded yet.</div>`;
+    } catch (e) {
+      box.innerHTML = `<div class="clock-note">Couldn't load: ${esc(e.message)}</div>`;
+    }
+  }
+  window.ptoToggleHistory = ptoToggleHistory;
+
   async function ptoSetAllowance(employeeId, name, curAllowance, curCarry) {
     const a = prompt(`${name} — PTO hours for the year (2 weeks = 80):`, String(curAllowance ?? 80));
     if (a === null) return;
@@ -18581,7 +18656,9 @@
       await apiPost("setPtoAllowance", {
         employeeId, allowanceHours: Number(a), carriedInHours: Number(c),
       });
-      await loadPtoAdmin();
+      // Called from the People card now, so refresh that. The Time Off screen
+      // picks the change up next time it opens.
+      await loadPeople();
     } catch (e) { alert(e.message || "Couldn't save that allowance."); }
   }
   window.ptoSetAllowance = ptoSetAllowance;
@@ -21874,6 +21951,21 @@
     </div>
     <div class="payroll-modal-body">
       <div id="wwBody">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- TIME OFF — the approval queue and the two bulk actions. Per-person allowance
+     editing and booking live on the People screen instead, because those are
+     properties of a person; this screen is the things that span everybody. -->
+<div id="timeOffModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width:720px;">
+    <div class="payroll-modal-header">
+      <h2>🌴 Time Off</h2>
+      <button onclick="closeTimeOff()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div id="timeOffBody">Loading…</div>
     </div>
   </div>
 </div>

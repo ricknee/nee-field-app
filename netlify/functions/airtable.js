@@ -1802,6 +1802,20 @@ async function handleCancelPtoRequest(body, authUser) {
 async function handlePtoRequests(params) {
   const year = Number(params?.year) || PTO_YEAR();
 
+  // One person's full history, for their card on the People screen. Returned on
+  // its own so the roster doesn't have to carry everybody's requests just so one
+  // card can show a handful.
+  if (params?.employeeId) {
+    const hist = await neonQuery(
+      `SELECT r.id, r.start_date, r.end_date, r.hours_per_day::float8, r.days,
+              r.total_hours::float8, r.status, r.note, r.decision_note,
+              r.requested_at, r.decided_at
+         FROM v_pto_requests r
+        WHERE r.employee_airtable_id = $1
+        ORDER BY r.start_date DESC LIMIT 40`, [String(params.employeeId)]);
+    return resp(200, { ok: true, employeeId: params.employeeId, history: hist?.rows || [], _source: "neon" });
+  }
+
   const pending = await neonQuery(
     `SELECT id, employee_airtable_id, employee_name, start_date, end_date,
             hours_per_day::float8, days, total_hours::float8, note, requested_at

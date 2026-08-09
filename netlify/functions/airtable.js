@@ -517,6 +517,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // Which city tax applies to a job's work. Same tier as the billable rate: a job
   // setting that moves money, so admin+office, not the whole crew.
   "updateJobCityTax",
+  // Whether a job shows on the clock. Same tier — it decides where people's hours
+  // can land, which is a money question even though it looks like a display one.
+  "updateJobClockVisibility",
   // Lifts became employee-editable on 2026-08-03 (see the fleet parity change),
   // so updateScissorLift stays _NON_VIEWER — a crew marks a lift on/off a job.
   // But adding equipment to the books, and RETIRING a sold one along with its
@@ -2444,6 +2447,32 @@ async function handleUpdateJobCityTax(body) {
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
 
   return resp(200, { ok: true, jobId, cityTax: rows[0].city_tax ?? null });
+}
+
+// ── JOB SETTING: does this job appear on the time clock ────────────────────
+// Overhead buckets — Shop Work, Office Work — are jobs only because the clock has
+// to pick something. Deciding their visibility from STATUS meant a routine tidy-up
+// (marking Shop Work Completed) would silently drop it from every employee's
+// picker, and ~500 h/yr would start landing elsewhere unnoticed. This says it out
+// loud instead. See db/schema/027.
+const CLOCK_VIS_OPTS = ["all", "admin", "hidden"];
+
+async function handleUpdateJobClockVisibility(body) {
+  const { jobId, visibility } = body || {};
+  if (!jobId || !String(jobId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid jobId." });
+  }
+  const raw = visibility == null ? null : String(visibility).trim();
+  const value = (raw === "" ? null : raw);   // null = back to status-driven
+  if (value !== null && !CLOCK_VIS_OPTS.includes(value)) {
+    return resp(400, { ok: false, error: `Unknown clock visibility: ${value}` });
+  }
+
+  const rows = await neonWrite("job.setClockVisibility",
+    `UPDATE jobs SET clock_visibility = $2 WHERE airtable_id = $1
+     RETURNING airtable_id, clock_visibility`, [String(jobId), value]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
+  return resp(200, { ok: true, jobId, clockVisibility: rows[0].clock_visibility ?? null });
 }
 
 // ══ WHO'S WORKING — the admin roster ═════════════════════════════════════════
@@ -4539,8 +4568,8 @@ const JOB_SELECT = `
          j.pcloud_photo_folder_id, j.pcloud_invoices_sent_id, j.trello_card_id,
          j.tax_status, j.billing_method, j.customer_first_name, j.customer_last_name,
          j.address_street, j.address_city, j.address_state, j.address_zip,
-         -- App-owned, Neon-only (no Airtable twin). See db/schema/020.
-         j.city_tax,
+         -- App-owned, Neon-only (no Airtable twin). See db/schema/020 and 027.
+         j.city_tax, j.clock_visibility,
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.bird_date::text AS bird_date, j.workflow_status, j.billable_hourly_rate,
@@ -4624,6 +4653,8 @@ function mapJobFromNeon(r) {
     // NULL deliberately survives as null rather than becoming "" — "not yet
     // decided" and "decided: no tax" are different answers and the UI shows both.
     cityTax: r.city_tax ?? null,
+    // null = the job's status decides, as normal. See db/schema/027.
+    clockVisibility: r.clock_visibility ?? null,
     customerStreet: s(r.address_street), customerCity: s(r.address_city),
     customerState: s(r.address_state), customerZip: s(r.address_zip),
     customerPhone: s(r.customer_phone), customerEmail: s(r.customer_email),
@@ -10381,6 +10412,7 @@ export async function handler(event) {
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);
       if (body.action === "updateJobCityTax")     return await handleUpdateJobCityTax(body);
+      if (body.action === "updateJobClockVisibility") return await handleUpdateJobClockVisibility(body);
       if (body.action === "addFleetService")      return await handleAddFleetService(body);
       if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);

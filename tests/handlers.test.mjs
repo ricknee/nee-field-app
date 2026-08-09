@@ -1886,6 +1886,16 @@ await test("clock: the roster and punching others are STRICT admin — office is
   delete process.env.TIME_CLOCK;
 });
 
+await test("job clock visibility: admin+office, whitelisted, and clearable", async () => {
+  eq((await POST("updateJobClockVisibility", { jobId: "recJ1", visibility: "all" }, EMP_TOK)).statusCode, 403,
+     "the crew can't decide which jobs they're offered");
+  eq((await POST("updateJobClockVisibility", { visibility: "all" }, ADMIN_TOK)).statusCode, 400,
+     "needs a job");
+  const bad = await POST("updateJobClockVisibility", { jobId: "recJ1", visibility: "sometimes" }, ADMIN_TOK);
+  eq(bad.statusCode, 400, "an unknown value is refused");
+  ok(/Unknown clock visibility/.test(json(bad).error), "and says so");
+});
+
 await test("clock switch: gated, and validated before it touches anything", async () => {
   delete process.env.TIME_CLOCK;
   eq((await POST("clockSwitch", { class: "Contract", clientPunchId: "s1" }, EMP_TOK)).statusCode, 403,

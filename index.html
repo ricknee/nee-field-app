@@ -8490,6 +8490,23 @@
           outside city limits and owe nothing. Travel time is always “A No Tax”.
         </span>
       </div>
+      <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
+        <span style="font-size:13px; font-weight:700; color:var(--text);">⏱ On the clock:</span>
+        <select id="jobClockVisSelect" class="edit-input" style="min-width:240px; font-size:13px;">
+          <option value=""       ${!job.clockVisibility ? "selected" : ""}>Normal — the job's status decides</option>
+          <option value="all"    ${job.clockVisibility === "all"    ? "selected" : ""}>Overhead — always show, everyone</option>
+          <option value="admin"  ${job.clockVisibility === "admin"  ? "selected" : ""}>Overhead — always show, admin only</option>
+          <option value="hidden" ${job.clockVisibility === "hidden" ? "selected" : ""}>Never show on the clock</option>
+        </select>
+        <button id="jobClockVisSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
+        <span id="jobClockVisMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+        <span id="jobClockVisErr" style="font-size:12px; color:var(--red); display:none;"></span>
+        <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
+          For overhead buckets like Shop Work and Office Work, which are jobs only because the clock
+          has to pick something. Setting this means their status no longer decides whether the crew
+          can find them.
+        </span>
+      </div>
     `;
   }
 
@@ -8520,6 +8537,30 @@
         err.style.display = "inline";
       } finally { btn.disabled = false; }
     };
+
+    const visSel = $("jobClockVisSelect");
+    const visBtn = $("jobClockVisSaveBtn");
+    if (visSel && visBtn) {
+      visBtn.onclick = async () => {
+        const msg = $("jobClockVisMsg"), verr = $("jobClockVisErr");
+        msg.style.display = "none"; verr.style.display = "none";
+        visBtn.disabled = true;
+        try {
+          const value = visSel.value || null;
+          await apiPost("updateJobClockVisibility", { jobId: job.id, visibility: value });
+          // Keep the in-memory job in step so the clock picker reflects it without
+          // a reload — otherwise you'd set it and it wouldn't appear to work.
+          job.clockVisibility = value;
+          const idx = (state.jobs || []).findIndex(j => j.id === job.id);
+          if (idx >= 0) state.jobs[idx].clockVisibility = value;
+          msg.style.display = "inline";
+          setTimeout(() => { msg.style.display = "none"; }, 2500);
+        } catch (e) {
+          verr.textContent = e.message || "Couldn't save";
+          verr.style.display = "inline";
+        } finally { visBtn.disabled = false; }
+      };
+    }
   }
 
   async function wireBillableRateBar(job) {
@@ -17602,12 +17643,26 @@
 
   let clockPick = { jobId: "", search: "", allStatuses: false };
 
+  // An explicit clockVisibility ALWAYS beats status. That's the whole point: the
+  // overhead buckets (Shop Work, Office Work) are jobs only because the clock has
+  // to pick something, and deciding their fate from a status nobody should touch
+  // meant a routine tidy-up could silently empty them out of the picker.
+  //   null     status decides, as normal — every real job
+  //   'all'    always, everyone
+  //   'admin'  always, admins only
+  //   'hidden' never
   function clockJobActive(j) {
+    const vis = j?.clockVisibility || null;
+    if (vis === "hidden") return false;
+    if (vis === "all")    return true;
+    if (vis === "admin")  return (state.user?.role || "").toLowerCase() === "admin";
     return CLOCK_JOB_STATUSES.includes(String(j?.status || "").toLowerCase());
   }
 
   function clockJobPool() {
-    const jobs = (state.jobs || []).filter(j => j && j.id);
+    // 'hidden' is absolute — it stays out even behind "show every job", or the
+    // setting would only be a suggestion.
+    const jobs = (state.jobs || []).filter(j => j && j.id && j.clockVisibility !== "hidden");
     const live = jobs.filter(clockJobActive);
     // If nothing matches (a fresh base, or every job in some other state), fall
     // back to the full list rather than showing an empty picker with no
@@ -17624,6 +17679,9 @@
     // Completed jobs outnumber awarded ones 50 to 15 here, so a plain A-Z sort
     // would bury every live job under a wall of finished ones.
     const rank = j => {
+      // Overhead first: Shop Work alone takes ~500 h a year, so burying it below
+      // 15 awarded jobs would be backwards.
+      if (j.clockVisibility === "all" || j.clockVisibility === "admin") return -1;
       const s = String(j.status || "").toLowerCase();
       return s === "awarded" ? 0 : s === "ready to invoice" ? 1 : s === "completed" ? 2 : 3;
     };
@@ -17640,7 +17698,9 @@
       <button type="button" class="clock-job${j.id === chosen ? " is-on" : ""}"
               onclick="clockPickJob('${esc(j.id)}')">
         <span>${esc(j.name || j.id)}</span>
-        ${j.status ? `<span class="clock-job-status">${esc(j.status)}</span>` : ""}
+        <span class="clock-job-status">${
+          j.clockVisibility === "all" || j.clockVisibility === "admin"
+            ? "overhead" : esc(j.status || "")}</span>
       </button>`).join("")
       : `<div class="clock-note">No ${showingAll ? "" : "active "}jobs match “${esc(clockPick.search)}”.
          ${showingAll ? "" : "Tick the box above to search every job."}</div>`;
@@ -18458,7 +18518,7 @@
       <select id="wwJob" class="ww-input">
         <option value="">— No job —</option>
         ${(state.jobs || [])
-            .filter(j => clockPick.allStatuses || clockJobActive(j))
+            .filter(j => j.clockVisibility !== "hidden" && (clockPick.allStatuses || clockJobActive(j)))
             .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
             .map(j => `<option value="${esc(j.id)}">${esc(j.name || j.id)}</option>`).join("")}
       </select>

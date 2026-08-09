@@ -17692,16 +17692,13 @@
       : jobs
     ).sort((a, b) => rank(a) - rank(b) || (a.name || "").localeCompare(b.name || ""));
 
-    // ⚠ Overhead is EXEMPT from the cap. It sorts last (owner's call), the default
-    // pool is ~76 jobs and the cap is 60 — so without this, Shop Work would fall
-    // off the end and simply not exist for the crew, which is the exact failure
-    // clock_visibility was added to prevent.
-    const isOverhead = j => j.clockVisibility === "all" || j.clockVisibility === "admin";
-    const cap = 60;   // long lists are scrolled past, not read
-    const capped   = matched.filter(j => !isOverhead(j)).slice(0, cap);
-    const overhead = matched.filter(isOverhead);
-    const shown    = [...capped, ...overhead];
-    const hiddenCount = matched.filter(j => !isOverhead(j)).length - capped.length;
+    // NO CAP, deliberately. There used to be a 60-row limit here; it was removed
+    // because at ~112 jobs it protected against nothing a phone struggles with,
+    // while creating a real failure mode: a job that exists but cannot be found by
+    // scrolling. It also nearly hid Shop Work when overhead moved to the bottom.
+    // If this list ever gets genuinely long, the answer is better search — not a
+    // silent truncation that gives no clue which jobs are missing.
+    const shown  = matched;
     const chosen = clockPick.jobId;
 
     box.innerHTML = shown.length ? shown.map(j => `
@@ -17715,9 +17712,6 @@
       : `<div class="clock-note">No ${showingAll ? "" : "active "}jobs match “${esc(clockPick.search)}”.
          ${showingAll ? "" : "Tick the box above to search every job."}</div>`;
 
-    if (hiddenCount > 0) {
-      box.innerHTML += `<div class="clock-note">${hiddenCount} more — keep typing to narrow it.</div>`;
-    }
   }
   window.renderClockJobList = renderClockJobList;
 

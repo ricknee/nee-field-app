@@ -2210,6 +2210,12 @@ async function handleClockReconcile(params) {
           -- Everything that is NOT the app's own clock counts as "the old way":
           -- QB-imported rows and the handful of hand-typed Manual ones.
           AND coalesce(source, '') <> 'Clock'
+          -- ⚠ But NOT leave. PTO and paid holidays are source='Manual', so without
+          -- this they'd land in the QuickBooks column and every approved PTO day
+          -- would read as an 8-hour shortfall against a clock that correctly has
+          -- nothing for it. This screen compares HOURS WORKED; the clock never
+          -- produces leave, so neither side should count it.
+          AND coalesce(class, '') NOT IN ('PTO', 'Paid Holiday')
         GROUP BY 1, 2
      ), ck AS (
        SELECT employee_id, work_date,

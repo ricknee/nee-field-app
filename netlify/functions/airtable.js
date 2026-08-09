@@ -446,6 +446,9 @@ const _PAYROLL_READS = new Set([
   "payrollHoursRollup", "payrollHoursBreakdown", "payrollBonusesRollup",
   "payrollEmployeeBonusHistory", "myHoursRollup", "myHoursBreakdown",
   "hoursByJob",
+  // Your own PTO balance and your own requests — the employee is taken from the
+  // token inside the handler, so admin+employee is the whole audience.
+  "ptoBalance",
   // The clock reads your own punches and nobody else's — the employee is taken from
   // the token inside the handler, so _PAYROLL (admin + employee) is the whole
   // audience. Office and viewers have no punches to read.
@@ -465,6 +468,9 @@ const _TIME_SELF_WRITES = new Set([
   "clockEditTimes",
   // Removing a shift that shouldn't exist. Own-or-admin, enforced in the handler.
   "clockDeletePunch",
+  // Asking for time off, and withdrawing your own request. Both take the employee
+  // from the token; approving is a separate _ADMIN action.
+  "requestPto", "cancelPtoRequest",
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
@@ -490,6 +496,9 @@ const _ADMIN_POSTS = new Set([
   // clockOut so the self-service path keeps the property that the employee can only
   // come from the token — the privilege is what's gated, not a parameter.
   "adminClockIn", "adminClockOut",
+  // Granting time off, and setting how much someone gets. Both turn into paid
+  // hours, so admin only — office manages money, not people's leave.
+  "decidePtoRequest", "setPtoAllowance",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -558,7 +567,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
 const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates",
-                              "clockRoster", "clockReconcile"]);
+                              "clockRoster", "clockReconcile",
+                              // The approval queue + everyone's leave balances.
+                              "ptoRequests"]);
 
 // Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
 // so listing must match the actions available on what's listed:
@@ -1667,6 +1678,244 @@ async function handleClockDeletePunch(body, authUser) {
   }
   return resp(200, { ok: true, deletedId: punch.id,
                      payrollRowsDeleted: out?.payroll_rows_deleted ?? 0 });
+}
+
+// ══ PTO ══════════════════════════════════════════════════════════════════════
+// Employees request, an admin approves, and only on approval does a request turn
+// into hours. See db/schema/023 and 025.
+//
+// PTO is tracked for EMPLOYEES ONLY — the salaried people are the owners and take
+// time off without it counting against anything (owner's decision 2026-08-08).
+
+const PTO_YEAR = () => new Date().getFullYear();
+
+// The employee's own view: what they have left, and what they've asked for.
+async function handlePtoBalance(params, authUser) {
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(200, { ok: true, tracked: false, reason: "No employee record for this login." });
+
+  const year = Number(params?.year) || PTO_YEAR();
+
+  const bal = await neonQuery(
+    `SELECT allowance_hours::float8, carried_in_hours::float8, entitled_hours::float8,
+            used_hours::float8, remaining_hours::float8
+       FROM v_pto_balances WHERE employee_id = $1 AND year = $2`, [me.id, year]);
+
+  // Hours already asked for but not yet decided. Shown SEPARATELY from remaining
+  // rather than deducted: nothing has been granted yet, and quietly reducing the
+  // balance for a request that might be declined would misreport what they have.
+  const pend = await neonQuery(
+    `SELECT coalesce(sum(total_hours), 0)::float8 AS hours
+       FROM v_pto_requests
+      WHERE employee_id = $1 AND status = 'pending'`, [me.id]);
+
+  const mine = await neonQuery(
+    `SELECT id, start_date, end_date, hours_per_day::float8, days, total_hours::float8,
+            status, note, decision_note, requested_at, decided_at
+       FROM v_pto_requests
+      WHERE employee_id = $1 AND end_date >= (CURRENT_DATE - 400)
+      ORDER BY start_date DESC LIMIT 25`, [me.id]);
+
+  const b = bal?.rows?.[0] || null;
+  return resp(200, {
+    ok: true,
+    // No allowance row means nobody has set one — reported as untracked rather
+    // than as a zero balance, which would read as "you've used it all".
+    tracked: !!b,
+    year,
+    balance: b || null,
+    pendingHours: Number(pend?.rows?.[0]?.hours) || 0,
+    requests: mine?.rows || [],
+    _source: "neon",
+  });
+}
+
+// Employee asks for time off. The employee is the token's, never the body's.
+async function handleRequestPto(body, authUser) {
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+
+  const { startDate, endDate, hoursPerDay, note } = body || {};
+  const dOk = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+  if (!dOk(startDate) || !dOk(endDate)) {
+    return resp(400, { ok: false, error: "Need a start and end date." });
+  }
+  if (endDate < startDate) return resp(400, { ok: false, error: "The end date is before the start date." });
+  const hrs = hoursPerDay == null ? 8 : Number(hoursPerDay);
+  if (!Number.isFinite(hrs) || hrs <= 0 || hrs > 24) {
+    return resp(400, { ok: false, error: "Hours per day must be between 0 and 24." });
+  }
+
+  // Overlapping an existing live request is almost always a double-submit or a
+  // forgotten one, and two approvals would book the same day twice.
+  const clash = await neonQuery(
+    `SELECT id FROM pto_requests
+      WHERE employee_id = $1 AND status IN ('pending', 'approved')
+        AND (start_date, end_date + 1) OVERLAPS ($2::date, $3::date + 1)
+      LIMIT 1`, [me.id, startDate, endDate]);
+  if (clash?.rows?.length) {
+    return resp(409, { ok: false, error: "You already have a request covering some of those days." });
+  }
+
+  const rows = await neonWrite("pto.request",
+    `INSERT INTO pto_requests (employee_id, start_date, end_date, hours_per_day, note)
+     VALUES ($1, $2::date, $3::date, $4::numeric, NULLIF($5, ''))
+     RETURNING id`, [me.id, startDate, endDate, hrs, String(note || "").trim()]);
+
+  const id = rows?.[0]?.id;
+  const info = await neonQuery(
+    `SELECT days, total_hours::float8 FROM v_pto_requests WHERE id = $1`, [id]);
+  const d = info?.rows?.[0];
+  if (d && Number(d.days) === 0) {
+    // Weekends and company holidays are excluded, so a request can legitimately
+    // come to nothing. Say so rather than leaving a 0-hour request in the queue.
+    await neonWrite("pto.requestEmpty", `DELETE FROM pto_requests WHERE id = $1`, [id]);
+    return resp(400, { ok: false,
+      error: "Those dates are all weekend or company holidays — no PTO needed." });
+  }
+  return resp(200, { ok: true, id, days: d?.days ?? null, totalHours: Number(d?.total_hours) || 0 });
+}
+
+// Withdrawing your own request, while it is still undecided.
+async function handleCancelPtoRequest(body, authUser) {
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+  const id = body?.requestId;
+  if (!id) return resp(400, { ok: false, error: "Missing requestId." });
+
+  const rows = await neonWrite("pto.cancel",
+    `UPDATE pto_requests SET status = 'cancelled'
+      WHERE id = $1 AND employee_id = $2 AND status = 'pending'
+      RETURNING id`, [String(id), me.id]);
+  if (!rows?.length) {
+    return resp(409, { ok: false, error: "That request is no longer pending, or isn't yours." });
+  }
+  return resp(200, { ok: true, cancelledId: rows[0].id });
+}
+
+// ── ADMIN: the queue, and deciding ─────────────────────────────────────────
+async function handlePtoRequests(params) {
+  const year = Number(params?.year) || PTO_YEAR();
+
+  const pending = await neonQuery(
+    `SELECT id, employee_airtable_id, employee_name, start_date, end_date,
+            hours_per_day::float8, days, total_hours::float8, note, requested_at
+       FROM v_pto_requests WHERE status = 'pending' ORDER BY start_date`);
+
+  const recent = await neonQuery(
+    `SELECT id, employee_name, start_date, end_date, days, total_hours::float8,
+            status, decided_at, decision_note
+       FROM v_pto_requests
+      WHERE status <> 'pending' AND end_date >= (CURRENT_DATE - 120)
+      ORDER BY decided_at DESC NULLS LAST LIMIT 30`);
+
+  // Balances for everyone who has an allowance, so a decision can be made with
+  // the remaining figure in view rather than from memory.
+  const balances = await neonQuery(
+    `SELECT airtable_id, name, allowance_hours::float8, carried_in_hours::float8,
+            entitled_hours::float8, used_hours::float8, remaining_hours::float8
+       FROM v_pto_balances WHERE year = $1 ORDER BY name`, [year]);
+
+  // Anyone payroll-eligible and hourly with NO allowance row — otherwise they
+  // simply never appear and nobody notices they were missed.
+  const missing = await neonQuery(
+    `SELECT e.airtable_id, e.name FROM employees e
+      WHERE e.active IS TRUE AND lower(coalesce(e.role,'')) = 'employee'
+        AND NOT EXISTS (SELECT 1 FROM pto_years p WHERE p.employee_id = e.id AND p.year = $1)
+      ORDER BY e.name`, [year]);
+
+  return resp(200, {
+    ok: true, year,
+    pending:  pending?.rows  || [],
+    recent:   recent?.rows   || [],
+    balances: balances?.rows || [],
+    missingAllowance: missing?.rows || [],
+    _source: "neon",
+  });
+}
+
+// Approve or decline. Approving WRITES THE HOURS — one time entry per eligible
+// day — in the same statement that flips the status, so a request can never be
+// marked approved without the hours existing (or vice versa).
+async function handleDecidePtoRequest(body, authUser) {
+  const { requestId, approve, note } = body || {};
+  if (!requestId) return resp(400, { ok: false, error: "Missing requestId." });
+  const me = await clockEmployee(authUser);
+
+  if (approve !== true) {
+    const rows = await neonWrite("pto.decline",
+      `UPDATE pto_requests
+          SET status = 'declined', decided_by = $2, decided_at = now(),
+              decision_note = NULLIF($3, '')
+        WHERE id = $1 AND status = 'pending'
+        RETURNING id`, [String(requestId), me?.id || null, String(note || "").trim()]);
+    if (!rows?.length) return resp(409, { ok: false, error: "That request isn't pending any more." });
+    return resp(200, { ok: true, declinedId: rows[0].id });
+  }
+
+  // ⚠ ONE STATEMENT. The status flip and the hours are written together; there is
+  // no path where a request reads "approved" but no PTO was booked, which is the
+  // failure that would quietly cost someone their time off.
+  //
+  // `source = 'Manual'` because te_has_a_key requires a row to declare an origin
+  // and these have neither an Airtable nor a QB id. class 'PTO' is what the
+  // payroll PDF and v_pto_balances key on. No job: PTO is never costed to work.
+  const rows = await neonWrite("pto.approve",
+    `WITH req AS (
+       UPDATE pto_requests
+          SET status = 'approved', decided_by = $2, decided_at = now(),
+              decision_note = NULLIF($3, '')
+        WHERE id = $1 AND status = 'pending'
+        RETURNING id, employee_id
+     ), ins AS (
+       INSERT INTO time_entries
+         (employee_name, employee_id, work_date, duration_seconds, city_taxes, class,
+          labor_reviewed, source, pto_request_id)
+       SELECT e.name, d.employee_id, d.work_date, d.hours * 3600, 'A No Tax', 'PTO',
+              false, 'Manual', d.request_id
+         FROM v_pto_request_days d
+         JOIN req  ON req.id = d.request_id
+         JOIN employees e ON e.id = d.employee_id
+       RETURNING id
+     )
+     SELECT (SELECT id FROM req) AS approved_id,
+            (SELECT count(*)::int FROM ins) AS entries_created`,
+    [String(requestId), me?.id || null, String(note || "").trim()]);
+
+  const out = rows?.[0];
+  if (!out?.approved_id) return resp(409, { ok: false, error: "That request isn't pending any more." });
+  return resp(200, { ok: true, approvedId: out.approved_id, entriesCreated: out.entries_created });
+}
+
+// ── ADMIN: set someone's yearly allowance ──────────────────────────────────
+async function handleSetPtoAllowance(body) {
+  const { employeeId, year, allowanceHours, carriedInHours, note } = body || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  const yr  = Number(year) || PTO_YEAR();
+  const all = Number(allowanceHours);
+  const car = carriedInHours == null ? 0 : Number(carriedInHours);
+  if (!Number.isFinite(all) || all < 0 || all > 2000) {
+    return resp(400, { ok: false, error: "Allowance must be between 0 and 2000 hours." });
+  }
+  if (!Number.isFinite(car) || car < 0 || car > 2000) {
+    return resp(400, { ok: false, error: "Carry-over must be between 0 and 2000 hours." });
+  }
+
+  const rows = await neonWrite("pto.setAllowance",
+    `INSERT INTO pto_years (employee_id, year, allowance_hours, carried_in_hours, note, updated_at)
+     SELECT e.id, $2, $3::numeric, $4::numeric, NULLIF($5, ''), now()
+       FROM employees e WHERE e.airtable_id = $1
+     ON CONFLICT (employee_id, year) DO UPDATE
+        SET allowance_hours  = EXCLUDED.allowance_hours,
+            carried_in_hours = EXCLUDED.carried_in_hours,
+            note             = EXCLUDED.note,
+            updated_at       = now()
+     RETURNING year, allowance_hours::float8, carried_in_hours::float8`,
+    [String(employeeId), yr, all, car, String(note || "").trim()]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Employee not found." });
+  return resp(200, { ok: true, employeeId, ...rows[0] });
 }
 
 // ══ RECONCILE: the app's clock vs QuickBooks Time ════════════════════════════
@@ -9665,6 +9914,8 @@ export async function handler(event) {
       if (action === "clockStatus")                 return await handleClockStatus(params, authUser);
       if (action === "clockRoster")                 return await handleClockRoster(params);
       if (action === "clockReconcile")              return await handleClockReconcile(params);
+      if (action === "ptoBalance")                  return await handlePtoBalance(params, authUser);
+      if (action === "ptoRequests")                 return await handlePtoRequests(params);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();
@@ -9706,6 +9957,10 @@ export async function handler(event) {
       if (body.action === "clockBreak")           return await handleClockBreak(body, authUser);
       if (body.action === "clockEditTimes")       return await handleClockEditTimes(body, authUser);
       if (body.action === "clockDeletePunch")     return await handleClockDeletePunch(body, authUser);
+      if (body.action === "requestPto")           return await handleRequestPto(body, authUser);
+      if (body.action === "cancelPtoRequest")     return await handleCancelPtoRequest(body, authUser);
+      if (body.action === "decidePtoRequest")     return await handleDecidePtoRequest(body, authUser);
+      if (body.action === "setPtoAllowance")      return await handleSetPtoAllowance(body);
       if (body.action === "adminClockIn")         return await handleAdminClockIn(body, authUser);
       if (body.action === "adminClockOut")        return await handleAdminClockOut(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);

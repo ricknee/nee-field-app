@@ -212,6 +212,12 @@
     }
     .ww-row.is-paused { background: #fffbeb; }
     .ww-row.is-stale  { background: #fef2f2; border-color: #fca5a5; }
+
+    .pto-bar {
+      height: 8px; border-radius: 999px; background: var(--line);
+      overflow: hidden; margin: 8px 0 4px;
+    }
+    .pto-bar-fill { height: 100%; background: #0ea5e9; }
     .ww-elapsed {
       font-variant-numeric: tabular-nums; font-weight: 800; font-size: 16px;
     }
@@ -17256,6 +17262,7 @@
     pushBackEntry("myHours", () => { $("myHoursModal").style.display = "none"; });
     fetchAndRenderMyHoursTiles();
     refreshClock().catch(() => {});
+    refreshPto().catch(() => {});
   }
   window.openMyHours = openMyHours;
 
@@ -18067,6 +18074,121 @@
   }
   window.clockOut = clockOut;
 
+  // ═══ PTO — the employee's own view ═══════════════════════════════════════
+  // Balance, and asking for time off. Approval is the admin's screen.
+  let ptoData = null;
+  let ptoShowForm = false;
+
+  async function refreshPto() {
+    const el = $("ptoPanel");
+    if (!el || !state.user) return;
+    const role = (state.user.role || "").toLowerCase();
+    if (role !== "admin" && role !== "employee") { el.classList.add("hidden"); return; }
+    try {
+      ptoData = await apiGet("ptoBalance");
+      renderPtoPanel();
+    } catch { el.classList.add("hidden"); }
+  }
+  window.refreshPto = refreshPto;
+
+  function renderPtoPanel() {
+    const el = $("ptoPanel");
+    if (!el || !ptoData) return;
+    // No allowance set = not tracked (the salaried owners). Show nothing at all
+    // rather than a zero balance, which would read as "you've used it all".
+    if (!ptoData.tracked) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+    el.classList.remove("hidden");
+
+    const b = ptoData.balance || {};
+    const remaining = Number(b.remaining_hours) || 0;
+    const entitled  = Number(b.entitled_hours) || 0;
+    const used      = Number(b.used_hours) || 0;
+    const pending   = Number(ptoData.pendingHours) || 0;
+    const pct = entitled > 0 ? Math.max(0, Math.min(100, (used / entitled) * 100)) : 0;
+
+    const reqs = (ptoData.requests || []).slice(0, 6).map(r => {
+      const label = r.start_date === r.end_date
+        ? String(r.start_date).slice(0, 10)
+        : `${String(r.start_date).slice(0, 10)} → ${String(r.end_date).slice(0, 10)}`;
+      const tone = { approved: "var(--green)", declined: "#b91c1c",
+                     cancelled: "var(--muted)", pending: "#92400e" }[r.status] || "var(--muted)";
+      return `<div class="clock-row">
+        <span>${esc(label)} · ${Number(r.total_hours).toFixed(1)} h
+          ${r.decision_note ? `<span style="color:var(--muted); font-size:11px;">· ${esc(r.decision_note)}</span>` : ""}</span>
+        <span style="color:${tone}; font-weight:700;">${esc(r.status)}${
+          r.status === "pending"
+            ? ` · <a href="#" onclick="event.preventDefault();ptoCancel('${esc(r.id)}')" style="color:var(--muted); font-weight:400;">cancel</a>`
+            : ""}</span>
+      </div>`;
+    }).join("");
+
+    el.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">
+        <div style="font-size:12px; color:var(--muted);">🌴 Paid time off · ${ptoData.year}</div>
+        <div style="font-size:12px; color:var(--muted);">${used.toFixed(1)} of ${entitled.toFixed(1)} h used</div>
+      </div>
+      <div class="clock-elapsed">${remaining.toFixed(1)} <span style="font-size:15px; font-weight:600;">hours left</span></div>
+      <div class="pto-bar"><div class="pto-bar-fill" style="width:${pct}%;"></div></div>
+      ${pending > 0
+        ? `<div class="clock-note">${pending.toFixed(1)} h awaiting approval — not deducted until it's approved.</div>`
+        : ""}
+
+      ${ptoShowForm ? `
+        <div style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px;">
+          <label class="clock-field">First day
+            <input id="ptoStart" type="date" />
+          </label>
+          <label class="clock-field">Last day
+            <input id="ptoEnd" type="date" />
+          </label>
+          <label class="clock-field">Hours per day
+            <input id="ptoHours" type="number" min="0.5" max="24" step="0.5" value="8" />
+          </label>
+          <label class="clock-field">Note (optional)
+            <input id="ptoNote" type="text" placeholder="Anything your boss should know" />
+          </label>
+          <div class="clock-note">Weekends and company holidays are skipped automatically.</div>
+          <div class="clock-btn-row" style="margin-top:10px;">
+            <button class="clock-btn clock-btn-out" onclick="ptoToggleForm(false)">Cancel</button>
+            <button class="clock-btn clock-btn-in" onclick="ptoSubmit()">Send Request</button>
+          </div>
+          <div id="ptoErr" class="clock-note" style="color:#b91c1c;"></div>
+        </div>`
+        : `<button class="clock-btn clock-btn-in" style="margin-top:12px;" onclick="ptoToggleForm(true)">Request Time Off</button>`}
+
+      ${reqs ? `<div style="margin-top:14px; font-size:12px; color:var(--muted);">Your requests</div>${reqs}` : ""}
+    `;
+  }
+
+  function ptoToggleForm(on) { ptoShowForm = !!on; renderPtoPanel(); }
+  window.ptoToggleForm = ptoToggleForm;
+
+  async function ptoSubmit() {
+    const err = $("ptoErr");
+    const startDate = $("ptoStart")?.value, endDate = $("ptoEnd")?.value || $("ptoStart")?.value;
+    if (!startDate) { if (err) err.textContent = "Pick a first day."; return; }
+    try {
+      const d = await apiPost("requestPto", {
+        startDate, endDate,
+        hoursPerDay: Number($("ptoHours")?.value) || 8,
+        note: $("ptoNote")?.value || "",
+      });
+      ptoShowForm = false;
+      await refreshPto();
+      showAppToast(`Requested ${d.days} day${d.days === 1 ? "" : "s"} — ${d.totalHours} h. Waiting on approval.`);
+    } catch (e) {
+      if (err) err.textContent = e.message || "Couldn't send that request.";
+    }
+  }
+  window.ptoSubmit = ptoSubmit;
+
+  async function ptoCancel(id) {
+    if (!confirm("Withdraw this request?")) return;
+    try { await apiPost("cancelPtoRequest", { requestId: id }); await refreshPto(); }
+    catch (e) { alert(e.message || "Couldn't withdraw it."); }
+  }
+  window.ptoCancel = ptoCancel;
+
   // ═══ WHO'S WORKING — admin roster ════════════════════════════════════════
   // Live view of who is on the clock, with the ability to punch someone in or out.
   // Editing and adding time is NOT here on purpose — Payroll already does that, and
@@ -18078,6 +18200,7 @@
     $("whosWorkingModal").style.display = "flex";
     pushBackEntry("whosWorking", () => { $("whosWorkingModal").style.display = "none"; stopWwTicker(); });
     await loadWhosWorking();
+    loadPtoAdmin().catch(() => {});
     // Ticks every second so the elapsed times move, but only re-FETCHES every 30.
     // Crucially it updates the timer spans in place rather than re-rendering the
     // body — a full re-render would reset the "clock someone in" dropdowns while
@@ -18208,6 +18331,11 @@
       <div class="ww-head" style="margin-top:18px;">Finished today</div>
       ${todayHtml}
 
+      <div class="ww-head" style="margin-top:22px;">
+        Time off${(wwPto?.pending?.length) ? ` — ${wwPto.pending.length} waiting` : ""}
+      </div>
+      <div id="wwPtoOut">${renderPtoAdmin()}</div>
+
       <div class="ww-head" style="margin-top:22px;">QuickBooks vs the clock</div>
       <div class="ww-form">
         <input id="wwRecFrom" type="date" class="ww-input" value="${esc(wwWeekStart())}" />
@@ -18219,6 +18347,96 @@
       </div>
     `;
   }
+
+  // ── PTO, admin side ─────────────────────────────────────────────────────
+  let wwPto = null;
+
+  async function loadPtoAdmin() {
+    try { wwPto = await apiGet("ptoRequests"); } catch { wwPto = null; }
+    const host = $("wwPtoOut");
+    if (host) host.innerHTML = renderPtoAdmin();
+  }
+
+  function renderPtoAdmin() {
+    if (!wwPto) return `<div class="clock-note">Loading…</div>`;
+    const pend = wwPto.pending || [], bals = wwPto.balances || [], missing = wwPto.missingAllowance || [];
+
+    const pendHtml = pend.length ? pend.map(r => {
+      // The remaining figure is shown ON the decision, so approving doesn't mean
+      // remembering what someone has left.
+      const bal = bals.find(b => b.airtable_id === r.employee_airtable_id);
+      const left = bal ? Number(bal.remaining_hours) : null;
+      const over = left != null && Number(r.total_hours) > left;
+      const label = r.start_date === r.end_date
+        ? String(r.start_date).slice(0, 10)
+        : `${String(r.start_date).slice(0, 10)} → ${String(r.end_date).slice(0, 10)}`;
+      return `
+        <div class="ww-row${over ? " is-stale" : ""}">
+          <div style="min-width:0;">
+            <div style="font-weight:700;">${esc(r.employee_name)}</div>
+            <div style="font-size:12px; color:var(--muted);">
+              ${esc(label)} · ${r.days} day${r.days === 1 ? "" : "s"} · ${Number(r.total_hours).toFixed(1)} h
+              ${left != null ? ` · ${left.toFixed(1)} h left` : ""}
+              ${over ? ` <strong style="color:#b91c1c;">· more than they have</strong>` : ""}
+            </div>
+            ${r.note ? `<div style="font-size:12px;">“${esc(r.note)}”</div>` : ""}
+          </div>
+          <div style="display:flex; gap:8px; flex:none;">
+            <button class="btn btn-sm" onclick="ptoDecide('${esc(r.id)}',false)">Decline</button>
+            <button class="btn btn-primary btn-sm" onclick="ptoDecide('${esc(r.id)}',true)">Approve</button>
+          </div>
+        </div>`;
+    }).join("") : `<div class="clock-note">Nothing waiting.</div>`;
+
+    const balHtml = bals.map(b => `
+      <div class="clock-row">
+        <span>${esc(b.name)}</span>
+        <span>${Number(b.remaining_hours).toFixed(1)} h left
+          <span style="color:var(--muted); font-size:11px;">of ${Number(b.entitled_hours).toFixed(1)}</span>
+          · <a href="#" onclick="event.preventDefault();ptoSetAllowance('${esc(b.airtable_id)}','${esc(b.name)}',${Number(b.allowance_hours)},${Number(b.carried_in_hours)})" style="color:var(--accent);">edit</a></span>
+      </div>`).join("");
+
+    // Anyone hourly with no allowance row would otherwise simply never appear, and
+    // nobody would notice they'd been missed.
+    const missHtml = missing.length ? `
+      <div class="clock-note" style="color:#92400e;">
+        No allowance set for ${missing.map(m => esc(m.name)).join(", ")} —
+        ${missing.map(m => `<a href="#" onclick="event.preventDefault();ptoSetAllowance('${esc(m.airtable_id)}','${esc(m.name)}',80,0)" style="color:var(--accent);">set ${esc(m.name)}</a>`).join(" · ")}
+      </div>` : "";
+
+    return `${pendHtml}
+      ${bals.length ? `<div class="ww-head" style="margin-top:14px;">Balances ${wwPto.year}</div>${balHtml}` : ""}
+      ${missHtml}`;
+  }
+
+  async function ptoDecide(requestId, approve) {
+    let note = "";
+    if (!approve) {
+      const r = prompt("Reason (optional) — the employee sees this:", "");
+      if (r === null) return;
+      note = r.trim();
+    }
+    try {
+      const d = await apiPost("decidePtoRequest", { requestId, approve, note });
+      if (approve) showAppToast(`Approved — ${d.entriesCreated} PTO day${d.entriesCreated === 1 ? "" : "s"} booked.`);
+      await loadPtoAdmin();
+    } catch (e) { alert(e.message || "Couldn't record that decision."); }
+  }
+  window.ptoDecide = ptoDecide;
+
+  async function ptoSetAllowance(employeeId, name, curAllowance, curCarry) {
+    const a = prompt(`${name} — PTO hours for the year (2 weeks = 80):`, String(curAllowance ?? 80));
+    if (a === null) return;
+    const c = prompt(`${name} — hours carried over from last year:`, String(curCarry ?? 0));
+    if (c === null) return;
+    try {
+      await apiPost("setPtoAllowance", {
+        employeeId, allowanceHours: Number(a), carriedInHours: Number(c),
+      });
+      await loadPtoAdmin();
+    } catch (e) { alert(e.message || "Couldn't save that allowance."); }
+  }
+  window.ptoSetAllowance = ptoSetAllowance;
 
   // Monday of the current week — the unit payroll is actually grouped by.
   function wwWeekStart() {
@@ -21488,6 +21706,10 @@
            Rendered entirely from JS and hidden outright when the clock is off, so
            this markup costs nothing while the feature is dormant. -->
       <div id="clockPanel" class="clock-panel hidden"></div>
+      <!-- PTO: balance + request. Below the clock (punching is the urgent thing)
+           but above the rollups. Hidden entirely when nobody has set an allowance,
+           so it costs nothing for the salaried owners who don't track PTO. -->
+      <div id="ptoPanel" class="clock-panel hidden"></div>
       <div id="mhTiles" class="mh-tiles"></div>
     </div>
   </div>

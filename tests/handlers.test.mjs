@@ -1742,6 +1742,36 @@ await test("clock: a phone with a wrong clock can't file hours into a closed pay
   delete process.env.TIME_CLOCK;
 });
 
+await test("pto: requesting is self-service, approving and allowances are admin", async () => {
+  // Asking for time off is a _PAYROLL self-write; granting it creates PAID HOURS,
+  // so it sits at _ADMIN. Office is excluded from both — they manage money, not
+  // people's leave.
+  eq((await POST("requestPto", { startDate: "2026-09-14", endDate: "2026-09-18" }, VIEWER_TOK)).statusCode, 403,
+     "viewers have no leave to request");
+  eq((await POST("decidePtoRequest", { requestId: "x", approve: true }, EMP_TOK)).statusCode, 403,
+     "an employee cannot approve their own time off");
+  eq((await POST("decidePtoRequest", { requestId: "x", approve: true }, OFFICE_TOK)).statusCode, 403,
+     "nor can office");
+  eq((await POST("setPtoAllowance", { employeeId: "recE9", allowanceHours: 80 }, EMP_TOK)).statusCode, 403,
+     "nor set their own allowance");
+  eq((await GET("ptoRequests", {}, EMP_TOK)).statusCode, 403, "the queue is admin-only");
+  eq((await GET("ptoRequests", {}, OFFICE_TOK)).statusCode, 403, "including for office");
+  // ...but reading YOUR OWN balance is not admin-gated.
+  ok((await GET("ptoBalance", {}, EMP_TOK)).statusCode !== 403, "employees can read their own balance");
+});
+
+await test("pto: a request has to make sense before it reaches the queue", async () => {
+  eq((await POST("requestPto", { startDate: "2026-09-18", endDate: "2026-09-14" }, EMP_TOK)).statusCode, 400,
+     "end before start is refused");
+  eq((await POST("requestPto", { startDate: "nope" }, EMP_TOK)).statusCode, 400, "garbage dates refused");
+  const badHrs = await POST("requestPto",
+    { startDate: "2026-09-14", endDate: "2026-09-14", hoursPerDay: 30 }, EMP_TOK);
+  eq(badHrs.statusCode, 400, "a 30-hour day is refused");
+  // Allowances are bounded too — a typo'd 8000 would silently grant four years off.
+  eq((await POST("setPtoAllowance", { employeeId: "recE9", allowanceHours: 8000 }, ADMIN_TOK)).statusCode, 400,
+     "an absurd allowance is refused");
+});
+
 await test("clock delete + reconcile: gated like everything else", async () => {
   delete process.env.TIME_CLOCK;
   eq((await POST("clockDeletePunch", { punchId: "x" }, EMP_TOK)).statusCode, 403,

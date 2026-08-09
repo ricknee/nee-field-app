@@ -271,6 +271,20 @@ run it for real.
 
 Roughly an hour. Do it **before** flipping `TIME_CLOCK_PAYROLL`, not after.
 
+### If the job picker gets long — filter by year (owner, 2026-08-09, "not now")
+
+The picker renders every job in the pool (~76 of 112 today) with no cap. A 60-row
+cap existed briefly and was removed: at this scale it protected against nothing, and it
+twice created a job that existed but could not be found by scrolling.
+
+When the list does become unwieldy, **filter by year — not by truncating**. `jobs.job_year`
+already exists and the main sidebar's year filter is the pattern to copy. Truncation is the
+wrong tool because it gives no clue which jobs are missing; a year filter is visible, and the
+person choosing it knows what they excluded.
+
+⚠ Whatever gets added, **overhead jobs must stay exempt** (`clock_visibility` in `027`). They
+have no meaningful year and Shop Work alone carries ~500 h/yr.
+
 ### Verification done
 
 - Backend: 9 new cases in `tests/handlers.test.mjs` (126 pass, 0 fail) covering the off state, the

@@ -3615,11 +3615,38 @@ async function handlePeople() {
     for (const r of q.rows) byAirtableId.set(String(r.airtable_id), r);
   }
 
+  // Leave, for the current year. Its own query rather than another LATERAL on the
+  // one above: only the hourly employees have an allowance row at all, so joining
+  // it in would push a second nullable shape onto every roster row for the benefit
+  // of two of them. Fails soft — no PTO figures is a worse screen, not a broken one.
+  const ptoByAirtableId = new Map();
+  const pq = await neonQuery(
+    `SELECT airtable_id, allowance_hours::float8, carried_in_hours::float8,
+            entitled_hours::float8, used_hours::float8, remaining_hours::float8,
+            holiday_hours::float8, year
+       FROM v_pto_balances WHERE year = EXTRACT(YEAR FROM CURRENT_DATE)::int`, []);
+  if (pq && !pq.error && Array.isArray(pq.rows)) {
+    for (const r of pq.rows) ptoByAirtableId.set(String(r.airtable_id), r);
+  }
+
   const people = records.map(r => {
     const f = r.fields || {};
     const n = byAirtableId.get(r.id) || {};
+    const pt = ptoByAirtableId.get(r.id) || null;
     return {
       id:          r.id,
+      // null for anyone with no allowance row — the salaried owners, who don't
+      // track PTO. The client hides the tiles entirely rather than showing zeros,
+      // which would read as "used it all".
+      pto: pt ? {
+        year:      pt.year,
+        entitled:  Number(pt.entitled_hours)  || 0,
+        used:      Number(pt.used_hours)      || 0,
+        remaining: Number(pt.remaining_hours) || 0,
+        // Reporting only — holidays are given, not drawn from the allowance, so
+        // this is deliberately NOT subtracted from `remaining`.
+        holiday:   Number(pt.holiday_hours)   || 0,
+      } : null,
       name:        g(f, F.emp.name) || "",
       firstName:   g(f, "First Name") || "",
       lastName:    g(f, "Last Name") || "",

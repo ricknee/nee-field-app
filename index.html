@@ -11976,7 +11976,23 @@
             ${p.active
               ? `<div><div style="color:var(--muted);">Last login</div><div style="font-weight:600;">${p.lastLoginAt ? esc(p.lastLoginAt.slice(0,10)) : "—"}</div></div>`
               : `<div><div style="color:var(--muted);">Left</div><div style="font-weight:600;">${p.terminatedOn ? esc(p.terminatedOn) : "—"}</div></div>`}
+            ${p.pto ? `
+              <div>
+                <div style="color:var(--muted);">PTO left ${p.pto.year}</div>
+                <div style="font-weight:600;">${p.pto.remaining.toFixed(1)} h
+                  <span style="font-weight:400; color:var(--muted);">of ${p.pto.entitled.toFixed(1)}</span></div>
+              </div>
+              <div>
+                <div style="color:var(--muted);">PTO used</div>
+                <div style="font-weight:600;">${p.pto.used.toFixed(1)} h</div>
+              </div>
+              <div>
+                <div style="color:var(--muted);">Paid holidays</div>
+                <div style="font-weight:600;">${p.pto.holiday.toFixed(1)} h</div>
+              </div>` : ""}
           </div>
+          ${p.pto ? `<div class="pto-bar" style="margin:-4px 0 10px;"><div class="pto-bar-fill" style="width:${
+            p.pto.entitled > 0 ? Math.max(0, Math.min(100, (p.pto.used / p.pto.entitled) * 100)) : 0}%;"></div></div>` : ""}
           ${!p.active && p.terminationNote ? `<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">Note: ${esc(p.terminationNote)}</div>` : ""}
           ${brokenHalfOff ? `<div style="font-size:12px; color:var(--red); font-weight:600; margin-bottom:10px;">⚠ Their devices were signed out, but the account is active again — they can log back in. Run "Turn off access" again to finish it.</div>` : ""}
           ${neverRevoked ? `<div style="font-size:12px; color:var(--muted); margin-bottom:10px;">

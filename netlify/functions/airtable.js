@@ -501,6 +501,9 @@ const _ADMIN_POSTS = new Set([
   "decidePtoRequest", "setPtoAllowance",
   // Booking PTO for someone directly, for time off that already happened.
   "adminAddPto",
+  // Both create paid hours or next year's entitlement in bulk. Admin only, and
+  // both refuse to run without an explicit confirmation.
+  "fillHolidays", "ptoRollover",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
@@ -1999,6 +2002,132 @@ async function handleAdminAddPto(body, authUser) {
 
   const out = rows?.[0];
   return resp(200, { ok: true, id: out?.id, entriesCreated: out?.entries_created ?? 0 });
+}
+
+// ── ADMIN: fill in the paid holidays ───────────────────────────────────────
+// Creates 8 h 'Paid Holiday' entries for the eligible employees on each date in
+// company_holidays.
+//
+// ⚠⚠ FORWARD-ONLY, AND `from` IS REQUIRED. Three of 2026's six holidays had
+// already passed when this was written, and they were ALREADY PAID through
+// QuickBooks Time. Filling those retroactively would pay them a second time. So
+// there is no "fill everything" button — you have to say from when, and the sane
+// answer is the date the app took over payroll.
+//
+// Idempotent by construction: a holiday is skipped for anyone who already has ANY
+// hours that day. That single rule covers both re-running this (the holiday entry
+// is already there) and someone who actually worked the holiday (they should be
+// paid for the work; whether they ALSO get holiday pay is a policy call, so it is
+// surfaced rather than assumed).
+async function handleFillHolidays(body) {
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(body?.from || "")) ? String(body.from) : null;
+  if (!from) {
+    return resp(400, { ok: false,
+      error: "Need a 'from' date (YYYY-MM-DD). Holidays before it were paid through QuickBooks." });
+  }
+  const dryRun = body?.dryRun === true;
+  if (!dryRun && body?.confirm !== "YES") {
+    return resp(400, { ok: false, error: 'Missing confirmation. Pass {"confirm":"YES"}.' });
+  }
+
+  // Who WOULD be filled, and who is being skipped and why — computed the same way
+  // for the dry run and the real thing, so the preview cannot disagree with what
+  // the write then does.
+  const plan = await neonQuery(
+    `SELECT h.holiday_date, h.name AS holiday, h.hours::float8,
+            e.airtable_id, e.name AS employee,
+            EXISTS (SELECT 1 FROM time_entries t
+                     WHERE t.employee_id = e.id AND t.work_date = h.holiday_date) AS has_hours
+       FROM company_holidays h
+       CROSS JOIN employees e
+      WHERE h.holiday_date >= $1::date
+        AND e.active IS TRUE
+        AND lower(coalesce(e.role, '')) = 'employee'
+      ORDER BY h.holiday_date, e.name`, [from]);
+
+  const rows = (plan?.rows || []).map(r => ({
+    date: String(r.holiday_date).slice(0, 10),
+    holiday: r.holiday,
+    employee: r.employee,
+    hours: Number(r.hours),
+    skip: r.has_hours === true,
+  }));
+  const toCreate = rows.filter(r => !r.skip);
+  const skipped  = rows.filter(r => r.skip);
+
+  if (dryRun) {
+    return resp(200, { ok: true, dryRun: true, from,
+      wouldCreate: toCreate.length,
+      hours: toCreate.reduce((s, r) => s + r.hours, 0),
+      creates: toCreate, skipped });
+  }
+
+  const made = await neonWrite("pto.fillHolidays",
+    `INSERT INTO time_entries
+       (employee_name, employee_id, work_date, duration_seconds, city_taxes, class,
+        labor_reviewed, source)
+     SELECT e.name, e.id, h.holiday_date, h.hours * 3600, 'A No Tax', 'Paid Holiday',
+            false, 'Manual'
+       FROM company_holidays h
+       CROSS JOIN employees e
+      WHERE h.holiday_date >= $1::date
+        AND e.active IS TRUE
+        AND lower(coalesce(e.role, '')) = 'employee'
+        AND NOT EXISTS (SELECT 1 FROM time_entries t
+                         WHERE t.employee_id = e.id AND t.work_date = h.holiday_date)
+     RETURNING id`, [from]);
+
+  return resp(200, { ok: true, from, created: made?.length || 0, skipped: skipped.length, skips: skipped });
+}
+
+// ── ADMIN: roll PTO into the next year ─────────────────────────────────────
+// Creates next year's allowance rows, carrying each person's unused hours in.
+// Deliberately an explicit action rather than something that happens by itself on
+// 1 January: the carried figure is a number someone should look at and be willing
+// to sign off, not one that appears overnight.
+//
+// Existing rows are never overwritten — running it twice is safe and changes
+// nothing the second time.
+async function handlePtoRollover(body) {
+  const toYear = Number(body?.toYear) || (new Date().getFullYear() + 1);
+  const fromYear = toYear - 1;
+  const dryRun = body?.dryRun === true;
+  if (!dryRun && body?.confirm !== "YES") {
+    return resp(400, { ok: false, error: 'Missing confirmation. Pass {"confirm":"YES"}.' });
+  }
+
+  const preview = await neonQuery(
+    `SELECT b.name, b.allowance_hours::float8, b.remaining_hours::float8,
+            EXISTS (SELECT 1 FROM pto_years p2
+                     WHERE p2.employee_id = b.employee_id AND p2.year = $2) AS exists_already
+       FROM v_pto_balances b
+      WHERE b.year = $1 ORDER BY b.name`, [fromYear, toYear]);
+
+  const rows = (preview?.rows || []).map(r => ({
+    employee: r.name,
+    allowance: Number(r.allowance_hours),
+    // Carried AS-IS, including a negative. Someone who took more than they had
+    // genuinely starts the year down, and zeroing that would quietly forgive it —
+    // which is a decision for a person, not a default.
+    carryIn: Number(r.remaining_hours),
+    alreadyHasYear: r.exists_already === true,
+  }));
+
+  if (dryRun) {
+    return resp(200, { ok: true, dryRun: true, fromYear, toYear,
+      wouldCreate: rows.filter(r => !r.alreadyHasYear).length, rows });
+  }
+
+  const made = await neonWrite("pto.rollover",
+    `INSERT INTO pto_years (employee_id, year, allowance_hours, carried_in_hours, note, updated_at)
+     SELECT b.employee_id, $2, b.allowance_hours, b.remaining_hours,
+            'Carried over from ' || $1::text, now()
+       FROM v_pto_balances b
+      WHERE b.year = $1
+     ON CONFLICT (employee_id, year) DO NOTHING
+     RETURNING employee_id`, [fromYear, toYear]);
+
+  return resp(200, { ok: true, fromYear, toYear, created: made?.length || 0, rows });
 }
 
 // ── ADMIN: set someone's yearly allowance ──────────────────────────────────
@@ -10076,6 +10205,8 @@ export async function handler(event) {
       if (body.action === "decidePtoRequest")     return await handleDecidePtoRequest(body, authUser);
       if (body.action === "setPtoAllowance")      return await handleSetPtoAllowance(body);
       if (body.action === "adminAddPto")          return await handleAdminAddPto(body, authUser);
+      if (body.action === "fillHolidays")         return await handleFillHolidays(body);
+      if (body.action === "ptoRollover")          return await handlePtoRollover(body);
       if (body.action === "adminClockIn")         return await handleAdminClockIn(body, authUser);
       if (body.action === "adminClockOut")        return await handleAdminClockOut(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);

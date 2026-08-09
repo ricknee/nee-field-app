@@ -69,7 +69,30 @@ worked**, and two places compute overtime from hours:
 **PTO is therefore usable now** — record a PTO or Paid Holiday day in Payroll like any other entry
 and it is reported correctly and never earns overtime. What's left is convenience and balances.
 
-## 5. What is STILL left
+## 5. ✅ COMPLETE as of 2026-08-09
+
+Everything below was built. Both bulk actions **preview before they write**, and the preview is
+computed by the same code as the write, so it cannot disagree with what then happens.
+
+- **Requests** — employee asks, admin approves, hours are written only on approval. Past dates are
+  allowed, which is how "they forgot to request it" is handled.
+- **Direct booking** (`adminAddPto`) — for time off already taken. Creates a request and approves it
+  in one breath, so a hand-booked day is identical downstream to a requested one.
+- **Double-booking guard** — approving or booking PTO on a day that already has hours is refused,
+  with the clashing days named. `force: true` overrides after a confirm. This is what makes
+  backfilling safe, since backdated PTO lands on weeks whose worked entries already exist.
+- **Holiday auto-fill** (`fillHolidays`) — ⚠ forward-only, `from` is **required**. Skips anyone who
+  already has hours that day, which covers both re-runs and someone who worked the holiday.
+  Verified: from 2026-08-09 it offers only Labor Day, Thanksgiving and Christmas — the three
+  already paid through QuickBooks are excluded.
+- **Year-end rollover** (`ptoRollover`) — creates next year's rows carrying unused hours in.
+  Never overwrites an existing year, so running it twice is safe. Verified: 80 allowance − 32 used
+  → 48 carried into 2027 (128 available); second run created nothing. Carries a **negative**
+  balance as-is rather than zeroing it — forgiving an overdraw is a decision for a person.
+
+**Balances are live:** Jeff and Patrick both have 80 h for 2026, 0 carried in.
+
+## 6. Old list — what was left before 2026-08-09
 
 1. **Holiday auto-fill** — materialise 8 h `Paid Holiday` entries for eligible employees on each
    `company_holidays` date. Must be idempotent, and must skip anyone who actually worked that day.

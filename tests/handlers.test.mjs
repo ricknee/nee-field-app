@@ -1760,6 +1760,25 @@ await test("pto: requesting is self-service, approving and allowances are admin"
   ok((await GET("ptoBalance", {}, EMP_TOK)).statusCode !== 403, "employees can read their own balance");
 });
 
+await test("pto: bulk actions are admin-only and refuse to run blind", async () => {
+  eq((await POST("fillHolidays", { from: "2026-08-09", confirm: "YES" }, EMP_TOK)).statusCode, 403,
+     "employees can't fill holidays");
+  eq((await POST("ptoRollover", { toYear: 2027, confirm: "YES" }, OFFICE_TOK)).statusCode, 403,
+     "nor can office roll the year over");
+
+  // ⚠ The `from` date is REQUIRED, and this is the guard that matters: three of
+  // 2026's holidays had already been paid through QuickBooks, so a "fill
+  // everything" button would pay them a second time.
+  const noFrom = await POST("fillHolidays", { confirm: "YES" }, ADMIN_TOK);
+  eq(noFrom.statusCode, 400, "no blanket fill");
+  ok(/QuickBooks/.test(json(noFrom).error), "and it says why the date is needed");
+
+  eq((await POST("fillHolidays", { from: "2026-08-09" }, ADMIN_TOK)).statusCode, 400,
+     "and it still wants confirmation");
+  eq((await POST("ptoRollover", { toYear: 2027 }, ADMIN_TOK)).statusCode, 400,
+     "so does the rollover");
+});
+
 await test("pto: a request has to make sense before it reaches the queue", async () => {
   eq((await POST("requestPto", { startDate: "2026-09-18", endDate: "2026-09-14" }, EMP_TOK)).statusCode, 400,
      "end before start is refused");

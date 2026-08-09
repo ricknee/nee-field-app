@@ -18419,7 +18419,29 @@
         <button class="btn btn-primary btn-sm" onclick="ptoAdminAdd()">Book</button>
       </div>
       <div class="clock-note">Backdated is fine. Weekends and company holidays are skipped, and it
-        refuses if they already logged hours that day.</div>`;
+        refuses if they already logged hours that day.</div>
+
+      <div class="ww-head" style="margin-top:18px;">Paid holidays</div>
+      <div class="ww-form">
+        <input id="wwHolFrom" type="date" class="ww-input" title="Fill holidays on or after this date" />
+        <button class="btn btn-sm" onclick="ptoFillHolidays(true)">Preview</button>
+        <button class="btn btn-primary btn-sm" onclick="ptoFillHolidays(false)">Fill</button>
+      </div>
+      <div class="clock-note">⚠ Forward-only. Holidays before this date were already paid through
+        QuickBooks — filling those would pay them twice. Anyone who already has hours that day is
+        skipped.</div>
+      <div id="wwHolOut" class="clock-note"></div>
+
+      <div class="ww-head" style="margin-top:18px;">Year-end rollover</div>
+      <div class="ww-form">
+        <input id="wwRollYear" type="number" class="ww-input" min="2026" max="2099"
+               value="${new Date().getFullYear() + 1}" title="Year to create" />
+        <button class="btn btn-sm" onclick="ptoRollover(true)">Preview</button>
+        <button class="btn btn-primary btn-sm" onclick="ptoRollover(false)">Roll Over</button>
+      </div>
+      <div class="clock-note">Creates next year's allowances, carrying unused hours in. Safe to run
+        twice — existing years are never overwritten.</div>
+      <div id="wwRollOut" class="clock-note"></div>`;
 
     return `${pendHtml}
       ${bals.length ? `<div class="ww-head" style="margin-top:14px;">Balances ${wwPto.year}</div>${balHtml}` : ""}
@@ -18456,6 +18478,56 @@
     }
   }
   window.ptoAdminAdd = ptoAdminAdd;
+
+  // Both of these write in bulk, so both preview first. The preview and the write
+  // are computed the same way server-side, so what you see is what you get.
+  async function ptoFillHolidays(dryRun) {
+    const out = $("wwHolOut");
+    const from = $("wwHolFrom")?.value;
+    if (!from) { out.textContent = "Pick a date to fill from."; return; }
+    out.textContent = "Working…";
+    try {
+      const d = await apiPost("fillHolidays",
+        dryRun ? { from, dryRun: true } : { from, confirm: "YES" });
+      if (dryRun) {
+        const lines = (d.creates || []).map(c =>
+          `<div class="clock-row"><span>${esc(c.date)} · ${esc(c.holiday)}</span><span>${esc(c.employee)} · ${c.hours} h</span></div>`).join("");
+        out.innerHTML = d.wouldCreate
+          ? `<div><strong>Would add ${d.wouldCreate} holiday day${d.wouldCreate === 1 ? "" : "s"}
+               (${d.hours} h).</strong></div>${lines}
+             ${d.skipped?.length ? `<div class="clock-note">Skipping ${d.skipped.length} — already has hours that day.</div>` : ""}`
+          : `<div>Nothing to add — everyone already has hours on those days.</div>`;
+      } else {
+        out.innerHTML = `<div><strong>Added ${d.created} holiday day${d.created === 1 ? "" : "s"}.</strong>
+          ${d.skipped ? ` Skipped ${d.skipped} that already had hours.` : ""}</div>`;
+        await loadPtoAdmin();
+      }
+    } catch (e) { out.textContent = e.message || "Couldn't do that."; }
+  }
+  window.ptoFillHolidays = ptoFillHolidays;
+
+  async function ptoRollover(dryRun) {
+    const out = $("wwRollOut");
+    const toYear = Number($("wwRollYear")?.value);
+    if (!toYear) { out.textContent = "Pick a year."; return; }
+    out.textContent = "Working…";
+    try {
+      const d = await apiPost("ptoRollover",
+        dryRun ? { toYear, dryRun: true } : { toYear, confirm: "YES" });
+      const lines = (d.rows || []).map(r =>
+        `<div class="clock-row">
+           <span>${esc(r.employee)}${r.alreadyHasYear ? ` <span style="color:var(--muted); font-size:11px;">· already set up</span>` : ""}</span>
+           <span>${r.allowance.toFixed(1)} h + ${r.carryIn.toFixed(1)} carried${
+             r.carryIn < 0 ? ` <strong style="color:#b91c1c;">(overdrawn)</strong>` : ""}</span>
+         </div>`).join("");
+      out.innerHTML = dryRun
+        ? `<div><strong>Would create ${d.wouldCreate} allowance row${d.wouldCreate === 1 ? "" : "s"}
+             for ${d.toYear}.</strong></div>${lines}`
+        : `<div><strong>Created ${d.created} allowance row${d.created === 1 ? "" : "s"} for ${d.toYear}.</strong></div>${lines}`;
+      if (!dryRun) await loadPtoAdmin();
+    } catch (e) { out.textContent = e.message || "Couldn't do that."; }
+  }
+  window.ptoRollover = ptoRollover;
 
   async function ptoDecide(requestId, approve) {
     let note = "";

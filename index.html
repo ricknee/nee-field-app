@@ -17758,7 +17758,9 @@
           const d = r.work_date ? String(r.work_date).slice(0, 10) : "—";
           // Editing is offered only while a shift hasn't gone to payroll — past
           // that, Payroll owns it, and the server refuses anyway.
-          const canEdit = !r.counted;
+          // Every own punch is editable now, counted or not — the server corrects
+          // the payroll row alongside it.
+          const canEdit = true;
           return `<div class="clock-row">
                     <span>${esc(d)} · ${esc(r.job_name || "No job")}${
                       r.edited ? ` <span style="color:var(--muted); font-size:11px;">· adjusted</span>` : ""}</span>
@@ -17824,6 +17826,9 @@
         </label>
         ${Number(p.break_seconds) > 0
           ? `<div class="clock-note">${fmtElapsed(Number(p.break_seconds) * 1000)} of break stays deducted.</div>` : ""}
+        ${p.counted
+          ? `<div class="clock-queued">⚠ This shift has already gone to payroll.
+               Changing it here updates your payroll hours too.</div>` : ""}
         <div class="clock-btn-row" style="margin-top:10px;">
           <button class="clock-btn clock-btn-out" onclick="clockEditCancel()">Cancel</button>
           <button class="clock-btn clock-btn-in" onclick="clockEditSave('${esc(p.id)}')">Save</button>

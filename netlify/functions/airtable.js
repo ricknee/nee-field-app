@@ -1386,11 +1386,22 @@ async function handleClockOut(body, authUser, targetEmp) {
 // time clock. Refusing to support it doesn't make the data honest — it makes
 // people keep the hour on paper instead, which is worse.
 //
-// WHO MAY EDIT, and it is deliberately the same rule as expenses
-// (guardExpenseMutation): your OWN punches, until they count. Once a punch has
-// been promoted into payroll (time_entry_id IS NOT NULL) it is refused here and
-// belongs in Payroll, which already edits time entries properly. That keeps one
-// row from having two editors that can disagree.
+// WHO MAY EDIT — owner's call 2026-08-08, "all people need to be able to edit
+// time": your OWN punches, with NO payroll cutoff. An employee can fix a shift
+// that has already been counted. Nobody can touch a coworker's; admins may
+// correct anyone's.
+//
+// ⚠⚠ THE CONSEQUENCE, AND THE WHOLE REASON THIS IS DELICATE.
+// Editing a punch that has already been PROMOTED must also correct the
+// time_entries row it produced, or the clock and payroll quietly disagree about
+// the same shift and only one of them is what people get paid from. So the two
+// updates happen in ONE statement below — they cannot half-apply. This is the
+// opposite of the expenses rule (own-until-approved), and it is a deliberate
+// departure: expenses freeze on approval because someone else has signed them
+// off, whereas a wrong clock-in is wrong whenever it's noticed.
+//
+// The 14-day bound is what stops this reaching into a genuinely closed pay
+// period; past that the answer is Payroll, which can see the whole run.
 //
 // Every edit keeps the ORIGINAL punch timestamps (see db/schema/021) so the real
 // tap time stays answerable, plus who changed it and when.
@@ -1462,13 +1473,10 @@ async function handleClockEditTimes(body, authUser) {
   const punch = cur?.rows?.[0];
   if (!punch) return resp(404, { ok: false, error: "Punch not found." });
 
-  if (!isAdmin) {
-    if (punch.emp_airtable_id !== authUser?.id) {
-      return resp(403, { ok: false, error: "You can only change your own punches." });
-    }
-    if (punch.time_entry_id) {
-      return resp(403, { ok: false, error: "This shift has already gone to payroll and can't be changed here." });
-    }
+  // Ownership is the ONLY restriction now. A promoted punch is still editable by
+  // its owner — the payroll row is corrected alongside it, below.
+  if (!isAdmin && punch.emp_airtable_id !== authUser?.id) {
+    return resp(403, { ok: false, error: "You can only change your own punches." });
   }
 
   const newStart = s.skip ? punch.started_at : s.iso;
@@ -1484,24 +1492,58 @@ async function handleClockEditTimes(body, authUser) {
     return resp(400, { ok: false, error: "That's shorter than the break already recorded on it." });
   }
 
+  // ⚠⚠ ONE STATEMENT, TWO TABLES, ON PURPOSE.
+  // If this punch was already promoted, the time_entries row it created is what
+  // payroll pays from. Correcting the ledger without correcting the payroll row
+  // would leave two records of one shift that disagree, with the wrong one being
+  // the one that counts. Doing both in a single statement means there is no
+  // window — and no error path — where only half the correction landed.
+  //
+  // time_entries.hours and .week_start_date are GENERATED columns, so they follow
+  // duration_seconds and work_date automatically. In particular the quarter-hour
+  // rounding re-applies itself; do not try to set `hours` here.
   const rows = await neonWrite("clock.editPunch",
-    `UPDATE clock_punches
-        SET original_started_at = COALESCE(original_started_at, started_at),
-            original_ended_at   = COALESCE(original_ended_at,   ended_at),
-            started_at = $2::timestamptz,
-            ended_at   = $3::timestamptz,
-            duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM ($3::timestamptz - $2::timestamptz)) - break_seconds)::numeric,
-            -- work_date follows the START, same overnight rule as the punch itself.
-            work_date = ($2::timestamptz AT TIME ZONE 'America/New_York')::date,
-            edited_at = now(), edited_by = $4
-      WHERE id = $1
-      RETURNING id, work_date, started_at, ended_at,
-                duration_seconds::float8 AS duration_seconds,
-                break_seconds::float8 AS break_seconds,
-                original_started_at, original_ended_at`,
+    `WITH upd AS (
+       UPDATE clock_punches
+          SET original_started_at = COALESCE(original_started_at, started_at),
+              original_ended_at   = COALESCE(original_ended_at,   ended_at),
+              started_at = $2::timestamptz,
+              ended_at   = $3::timestamptz,
+              duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM ($3::timestamptz - $2::timestamptz)) - break_seconds)::numeric,
+              -- work_date follows the START, same overnight rule as the punch itself.
+              work_date = ($2::timestamptz AT TIME ZONE 'America/New_York')::date,
+              edited_at = now(), edited_by = $4
+        WHERE id = $1
+        RETURNING id, time_entry_id, work_date, started_at, ended_at,
+                  duration_seconds, break_seconds,
+                  original_started_at, original_ended_at
+     ), te AS (
+       UPDATE time_entries t
+          SET started_at       = u.started_at,
+              ended_at         = u.ended_at,
+              duration_seconds = u.duration_seconds,
+              work_date        = u.work_date
+         FROM upd u
+        WHERE t.id = u.time_entry_id
+        RETURNING t.id
+     )
+     SELECT u.id, u.work_date, u.started_at, u.ended_at,
+            u.duration_seconds::float8 AS duration_seconds,
+            u.break_seconds::float8 AS break_seconds,
+            u.original_started_at, u.original_ended_at,
+            (u.time_entry_id IS NOT NULL) AS counted,
+            (SELECT count(*)::int FROM te) AS payroll_rows_updated
+       FROM upd u`,
     [punch.id, newStart, newEnd, me?.id || null]);
 
-  return resp(200, { ok: true, punch: rows?.[0] || null });
+  const out = rows?.[0] || null;
+  // Loud in the logs: a promoted punch whose payroll row did NOT move is exactly
+  // the drift this statement exists to prevent, so it must never pass silently.
+  if (out?.counted && out.payroll_rows_updated !== 1) {
+    console.error(`clock.editPunch: punch ${punch.id} is promoted but updated ` +
+                  `${out.payroll_rows_updated} payroll rows — clock and payroll may disagree.`);
+  }
+  return resp(200, { ok: true, punch: out });
 }
 
 // Turn one recorded punch into a payroll row. Idempotent: the `time_entry_id IS NULL`

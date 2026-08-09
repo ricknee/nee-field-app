@@ -15,11 +15,22 @@
 -- Editing your own start time moves your own pay. Three things keep that honest,
 -- and none of them is "trust":
 --
---   1. WHO. An employee may only edit their OWN punches, and only while they have
---      not been counted toward payroll (clock_punches.time_entry_id IS NULL). Once
---      counted, corrections belong in Payroll, which already does them properly.
---      This is deliberately the same rule as expenses — see guardExpenseMutation:
---      own, until approved. Admin may edit anyone's, any time.
+--   1. WHO. An employee may edit their OWN punches, and nobody else's. Admin may
+--      edit anyone's.
+--
+--      ⚠ There is NO payroll cutoff — owner's call, "all people need to be able to
+--      edit time". An employee can correct a shift that has already been counted.
+--      This deliberately DIFFERS from the expenses rule (own-until-approved):
+--      expenses freeze on approval because someone else signed them off, whereas a
+--      wrong clock-in is wrong whenever it is noticed.
+--
+--      The consequence is that editing a promoted punch MUST also correct the
+--      time_entries row it produced, in the SAME statement — otherwise the clock
+--      and payroll hold two versions of one shift and the wrong one is what people
+--      are paid from. See handleClockEditTimes; it is one statement over two
+--      tables for exactly this reason, and it logs loudly if the payroll row did
+--      not move. The 14-day bound is what stops any of this reaching a genuinely
+--      closed pay period.
 --
 --   2. WHAT IT LOOKED LIKE BEFORE. The columns below keep the ORIGINAL punch
 --      timestamps forever, set once on the first edit and never overwritten after.

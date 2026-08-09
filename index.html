@@ -17592,29 +17592,44 @@
   }
 
   // ── The job picker ──────────────────────────────────────────────────────
-  // Awarded jobs first and alone by default: that is what a crew is standing in.
-  // Everything else is one checkbox away, because a job whose status hasn't caught
-  // up yet still has people working on it, and "I can't find my job" is how a punch
-  // ends up on the wrong one.
+  // The statuses a crew can actually be standing on. Not just Awarded: a job that
+  // is Ready to Invoice still has punch-list work, and a Completed one still gets
+  // warranty callbacks — hiding those behind a checkbox is how a punch lands on
+  // the wrong job. Everything else (New Lead, Estimating, Not Awarded, Service
+  // Call Scheduled) is still one tick away.
+  const CLOCK_JOB_STATUSES = ["awarded", "ready to invoice", "completed"];
+
   let clockPick = { jobId: "", search: "", allStatuses: false };
+
+  function clockJobActive(j) {
+    return CLOCK_JOB_STATUSES.includes(String(j?.status || "").toLowerCase());
+  }
 
   function clockJobPool() {
     const jobs = (state.jobs || []).filter(j => j && j.id);
-    const awarded = jobs.filter(j => String(j.status || "").toLowerCase() === "awarded");
-    // If nothing is Awarded (a fresh base, or every job moved on), fall back to the
-    // full list rather than showing an empty picker with no explanation.
-    if (clockPick.allStatuses || !awarded.length) return { jobs, showingAll: true };
-    return { jobs: awarded, showingAll: false };
+    const live = jobs.filter(clockJobActive);
+    // If nothing matches (a fresh base, or every job in some other state), fall
+    // back to the full list rather than showing an empty picker with no
+    // explanation.
+    if (clockPick.allStatuses || !live.length) return { jobs, showingAll: true };
+    return { jobs: live, showingAll: false };
   }
 
   function renderClockJobList() {
     const box = $("clockJobList"); if (!box) return;
     const { jobs, showingAll } = clockJobPool();
     const q = clockPick.search.trim().toLowerCase();
+    // Ordered by how likely you are to be standing on it, not alphabetically.
+    // Completed jobs outnumber awarded ones 50 to 15 here, so a plain A-Z sort
+    // would bury every live job under a wall of finished ones.
+    const rank = j => {
+      const s = String(j.status || "").toLowerCase();
+      return s === "awarded" ? 0 : s === "ready to invoice" ? 1 : s === "completed" ? 2 : 3;
+    };
     const matched = (q
       ? jobs.filter(j => `${j.name || ""} ${j.po || ""}`.toLowerCase().includes(q))
       : jobs
-    ).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    ).sort((a, b) => rank(a) - rank(b) || (a.name || "").localeCompare(b.name || ""));
 
     const cap = 60;   // long lists are scrolled past, not read
     const shown = matched.slice(0, cap);
@@ -17624,10 +17639,10 @@
       <button type="button" class="clock-job${j.id === chosen ? " is-on" : ""}"
               onclick="clockPickJob('${esc(j.id)}')">
         <span>${esc(j.name || j.id)}</span>
-        ${j.status && showingAll ? `<span class="clock-job-status">${esc(j.status)}</span>` : ""}
+        ${j.status ? `<span class="clock-job-status">${esc(j.status)}</span>` : ""}
       </button>`).join("")
-      : `<div class="clock-note">No ${showingAll ? "" : "awarded "}jobs match “${esc(clockPick.search)}”.
-         ${showingAll ? "" : "Tick “all statuses” to widen the search."}</div>`;
+      : `<div class="clock-note">No ${showingAll ? "" : "active "}jobs match “${esc(clockPick.search)}”.
+         ${showingAll ? "" : "Tick the box above to search every job."}</div>`;
 
     if (matched.length > cap) {
       box.innerHTML += `<div class="clock-note">${matched.length - cap} more — keep typing to narrow it.</div>`;
@@ -17801,7 +17816,7 @@
         <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
           <input type="checkbox" id="clockJobAll" ${clockPick.allStatuses ? "checked" : ""}
                  onchange="clockToggleAllJobs(this.checked)" />
-          Show all statuses (not just awarded)
+          Show every job (not just awarded / ready to invoice / completed)
         </label>
         <div id="clockJobList" class="clock-job-list"></div>
 
@@ -18353,7 +18368,7 @@
       <select id="wwJob" class="ww-input">
         <option value="">— No job —</option>
         ${(state.jobs || [])
-            .filter(j => clockPick.allStatuses || String(j.status || "").toLowerCase() === "awarded")
+            .filter(j => clockPick.allStatuses || clockJobActive(j))
             .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
             .map(j => `<option value="${esc(j.id)}">${esc(j.name || j.id)}</option>`).join("")}
       </select>

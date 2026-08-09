@@ -17679,9 +17679,11 @@
     // Completed jobs outnumber awarded ones 50 to 15 here, so a plain A-Z sort
     // would bury every live job under a wall of finished ones.
     const rank = j => {
-      // Overhead first: Shop Work alone takes ~500 h a year, so burying it below
-      // 15 awarded jobs would be backwards.
-      if (j.clockVisibility === "all" || j.clockVisibility === "admin") return -1;
+      // Overhead LAST — owner's call. Customer work is what you're normally
+      // looking for, and the overhead buckets are few, always in the same place,
+      // and easy to find by name. Putting them on top made the list open on the
+      // two jobs you least often want.
+      if (j.clockVisibility === "all" || j.clockVisibility === "admin") return 9;
       const s = String(j.status || "").toLowerCase();
       return s === "awarded" ? 0 : s === "ready to invoice" ? 1 : s === "completed" ? 2 : 3;
     };
@@ -17690,8 +17692,16 @@
       : jobs
     ).sort((a, b) => rank(a) - rank(b) || (a.name || "").localeCompare(b.name || ""));
 
+    // ⚠ Overhead is EXEMPT from the cap. It sorts last (owner's call), the default
+    // pool is ~76 jobs and the cap is 60 — so without this, Shop Work would fall
+    // off the end and simply not exist for the crew, which is the exact failure
+    // clock_visibility was added to prevent.
+    const isOverhead = j => j.clockVisibility === "all" || j.clockVisibility === "admin";
     const cap = 60;   // long lists are scrolled past, not read
-    const shown = matched.slice(0, cap);
+    const capped   = matched.filter(j => !isOverhead(j)).slice(0, cap);
+    const overhead = matched.filter(isOverhead);
+    const shown    = [...capped, ...overhead];
+    const hiddenCount = matched.filter(j => !isOverhead(j)).length - capped.length;
     const chosen = clockPick.jobId;
 
     box.innerHTML = shown.length ? shown.map(j => `
@@ -17705,8 +17715,8 @@
       : `<div class="clock-note">No ${showingAll ? "" : "active "}jobs match “${esc(clockPick.search)}”.
          ${showingAll ? "" : "Tick the box above to search every job."}</div>`;
 
-    if (matched.length > cap) {
-      box.innerHTML += `<div class="clock-note">${matched.length - cap} more — keep typing to narrow it.</div>`;
+    if (hiddenCount > 0) {
+      box.innerHTML += `<div class="clock-note">${hiddenCount} more — keep typing to narrow it.</div>`;
     }
   }
   window.renderClockJobList = renderClockJobList;

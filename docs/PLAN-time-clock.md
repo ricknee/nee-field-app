@@ -255,6 +255,22 @@ is the whole reason `'Clock'` is its own source value rather than reused `'Manua
   bounded to **±36 h**, wide enough for a genuinely late replay and tight enough that a device with
   a wrong year cannot file hours into a closed pay period.
 
+### ⬜ TODO BEFORE CUTOVER — a dry run for `promoteClockPunches`
+
+**Not built. Deferred deliberately on 2026-08-08** ("make a note to remember 5"), because it is
+only needed on the day the switch is thrown, and that day hasn't come.
+
+`promoteClockPunches` is the single riskiest action in this feature: it turns recorded punches into
+payable hours, in bulk, for everyone at once, and it has only ever run on a Neon test branch. It
+currently offers no way to see what it would do first.
+
+**What to build:** a `dryRun: true` option that reports *"this would create 47 entries totalling
+312.5 hours across 5 people, earliest 2026-08-11"* — grouped by person, writing nothing. Read the
+output, agree it matches what the reconciliation screen has been showing all along, and only then
+run it for real.
+
+Roughly an hour. Do it **before** flipping `TIME_CLOCK_PAYROLL`, not after.
+
 ### Verification done
 
 - Backend: 9 new cases in `tests/handlers.test.mjs` (126 pass, 0 fail) covering the off state, the

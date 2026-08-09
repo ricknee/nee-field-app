@@ -1742,6 +1742,36 @@ await test("clock: a phone with a wrong clock can't file hours into a closed pay
   delete process.env.TIME_CLOCK;
 });
 
+await test("clock delete + reconcile: gated like everything else", async () => {
+  delete process.env.TIME_CLOCK;
+  eq((await POST("clockDeletePunch", { punchId: "x" }, EMP_TOK)).statusCode, 403,
+     "no deleting while the clock is off");
+  process.env.TIME_CLOCK = "on";
+  eq((await POST("clockDeletePunch", {}, EMP_TOK)).statusCode, 400, "and it needs a punch");
+  eq((await POST("clockDeletePunch", { punchId: "x" }, VIEWER_TOK)).statusCode, 403,
+     "viewers have no punches to delete");
+  // Reconciliation reads everyone's hours across both systems — strict admin,
+  // same tier as the roster.
+  eq((await GET("clockReconcile", { from: "2026-08-01", to: "2026-08-08" }, OFFICE_TOK)).statusCode, 403,
+     "office can't read it");
+  eq((await GET("clockReconcile", { from: "2026-08-01", to: "2026-08-08" }, EMP_TOK)).statusCode, 403,
+     "nor employees");
+  const noRange = await GET("clockReconcile", {}, ADMIN_TOK);
+  eq(noRange.statusCode, 400, "admin must give a date range");
+  delete process.env.TIME_CLOCK;
+});
+
+await test("clock edit: a corrected city tax is whitelisted too", async () => {
+  process.env.TIME_CLOCK = "on";
+  // Same guard as the per-job setting: an unrecognised string would be written
+  // verbatim into payroll and degrade silently to "A No Tax".
+  const bad = await POST("clockEditTimes",
+    { punchId: "00000000-0000-0000-0000-000000000000", cityTaxes: "Massillon Tax" }, EMP_TOK);
+  eq(bad.statusCode, 400, "the correct spelling is still the wrong data");
+  ok(/Unknown city tax/.test(json(bad).error), "and says so");
+  delete process.env.TIME_CLOCK;
+});
+
 await test("clock edit: bounded, and refused outright when the clock is off", async () => {
   delete process.env.TIME_CLOCK;
   eq((await POST("clockEditTimes", { startedAt: new Date().toISOString() }, EMP_TOK)).statusCode, 403,

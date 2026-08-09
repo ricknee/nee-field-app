@@ -463,6 +463,8 @@ const _TIME_SELF_WRITES = new Set([
   // Correcting your own start/stop times. The handler enforces own-until-counted
   // (the same rule as expenses); admins may correct anyone's.
   "clockEditTimes",
+  // Removing a shift that shouldn't exist. Own-or-admin, enforced in the handler.
+  "clockDeletePunch",
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate", "backfillTimeEntryEmployeeLinks",
@@ -553,7 +555,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `clockRoster` is strict admin, NOT admin+office, for the same reason `people`
 // is: it reports where every person is right now, and it backs a screen that can
 // start and stop their paid time. Office is excluded from payroll throughout.
-const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates", "clockRoster"]);
+// `clockReconcile` compares everyone's hours across two systems — a payroll-wide
+// read, so it sits with the roster at strict admin.
+const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates",
+                              "clockRoster", "clockReconcile"]);
 
 // Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
 // so listing must match the actions available on what's listed:
@@ -1075,6 +1080,14 @@ function timeClockAudience() {
   const v = String(process.env.TIME_CLOCK || "").trim().toLowerCase();
   return (v === "on" || v === "admin") ? v : "off";
 }
+// A shift running longer than this is treated as a forgotten clock-out and shown
+// as a warning, on the person's own screen and on the admin roster.
+//
+// It deliberately only FLAGS. Auto-closing at a cutoff would invent an end time
+// nobody worked, and then that invented time is what gets paid — a human deciding
+// is both more honest and, at this company's size, entirely practical.
+const LONG_SHIFT_HOURS = 12;
+
 function timeClockFeedsPayroll() {
   return String(process.env.TIME_CLOCK_PAYROLL || "").trim().toLowerCase() === "on";
 }
@@ -1133,6 +1146,7 @@ async function handleClockStatus(params, authUser) {
             (edited_at IS NOT NULL) AS edited
        FROM clock_punches
       WHERE employee_id = $1 AND work_date >= (CURRENT_DATE - 14)
+        AND deleted_at IS NULL
       ORDER BY started_at DESC`, [me.id]);
 
   return resp(200, {
@@ -1141,6 +1155,7 @@ async function handleClockStatus(params, authUser) {
     // Tells the UI whether to say "these hours count" or "not counted yet" — while
     // QB Time is still the book of record, implying otherwise would be a lie.
     countsTowardPayroll: timeClockFeedsPayroll(),
+    longShiftHours: LONG_SHIFT_HOURS,
     open: open?.rows?.[0] || null,
     recent: recent?.rows || [],
   });
@@ -1409,9 +1424,13 @@ async function handleClockEditTimes(body, authUser) {
   if (!canUseTimeClock(authUser)) {
     return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
   }
-  const { punchId, startedAt, endedAt } = body || {};
-  if (startedAt === undefined && endedAt === undefined) {
+  const { punchId, startedAt, endedAt, jobId, class: cls, cityTaxes } = body || {};
+  if (startedAt === undefined && endedAt === undefined &&
+      jobId === undefined && cls === undefined && cityTaxes === undefined) {
     return resp(400, { ok: false, error: "Nothing to change." });
+  }
+  if (cityTaxes !== undefined && cityTaxes !== null && !PR_CITY_TAX_OPTS.includes(String(cityTaxes))) {
+    return resp(400, { ok: false, error: `Unknown city tax: ${cityTaxes}` });
   }
 
   const isAdmin = (authUser?.role || "").toLowerCase() === "admin";
@@ -1469,7 +1488,7 @@ async function handleClockEditTimes(body, authUser) {
     `SELECT c.id, c.employee_id, c.started_at, c.ended_at, c.break_seconds::float8 AS break_seconds,
             c.time_entry_id, e.airtable_id AS emp_airtable_id
        FROM clock_punches c JOIN employees e ON e.id = c.employee_id
-      WHERE c.id = $1`, [String(punchId)]);
+      WHERE c.id = $1 AND c.deleted_at IS NULL`, [String(punchId)]);
   const punch = cur?.rows?.[0];
   if (!punch) return resp(404, { ok: false, error: "Punch not found." });
 
@@ -1492,6 +1511,26 @@ async function handleClockEditTimes(body, authUser) {
     return resp(400, { ok: false, error: "That's shorter than the break already recorded on it." });
   }
 
+  // ⚠ OVERLAP GUARD. Without this, moving a start time backwards over an earlier
+  // shift produces two punches covering the same hour for the same person — which
+  // is double-paid time, and completely invisible once both are promoted. Postgres
+  // range overlap (`OVERLAPS`) rather than hand-rolled comparisons, because the
+  // hand-rolled version of this is famously easy to get wrong at the boundaries.
+  // Touching ends are fine: 07:00-12:00 and 12:00-16:00 do not overlap.
+  const clash = await neonQuery(
+    `SELECT id, started_at, ended_at FROM clock_punches
+      WHERE employee_id = $1 AND id <> $2 AND deleted_at IS NULL
+        AND (started_at, ended_at) OVERLAPS ($3::timestamptz, $4::timestamptz)
+      LIMIT 1`,
+    [punch.employee_id, punch.id, newStart, newEnd]);
+  if (clash?.rows?.length) {
+    const c = clash.rows[0];
+    const t = iso => new Date(Date.parse(iso)).toLocaleString("en-US",
+      { timeZone: "America/New_York", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    return resp(409, { ok: false,
+      error: `That overlaps another shift you already have (${t(c.started_at)} – ${t(c.ended_at)}).` });
+  }
+
   // ⚠⚠ ONE STATEMENT, TWO TABLES, ON PURPOSE.
   // If this punch was already promoted, the time_entries row it created is what
   // payroll pays from. Correcting the ledger without correcting the payroll row
@@ -1502,27 +1541,58 @@ async function handleClockEditTimes(body, authUser) {
   // time_entries.hours and .week_start_date are GENERATED columns, so they follow
   // duration_seconds and work_date automatically. In particular the quarter-hour
   // rounding re-applies itself; do not try to set `hours` here.
+  // Job / class / city corrections. `$5 IS NULL` means "not sent, leave alone";
+  // sending an explicit empty string clears the job.
+  //
+  // ⚠ job_name MOVES WITH job_id here, which is the OPPOSITE of the snapshot rule
+  // in handleUpdateTimeEntryPayroll. That rule protects imported history: 643 rows
+  // disagree with their job's current po_locked because of PO corrections and typo
+  // fixes, and recomputing would rewrite history people were paid against. This is
+  // a different act — someone is saying "this shift was on the wrong job entirely",
+  // and leaving the name pointing at the old job would produce a row linked to one
+  // job and labelled another, which is worse than either.
+  const jobRecEdit = (jobId === undefined) ? null
+    : (jobId && String(jobId).startsWith("rec") ? String(jobId) : "");
+
   const rows = await neonWrite("clock.editPunch",
-    `WITH upd AS (
-       UPDATE clock_punches
-          SET original_started_at = COALESCE(original_started_at, started_at),
-              original_ended_at   = COALESCE(original_ended_at,   ended_at),
+    `WITH j AS (
+       SELECT id, po_locked FROM jobs WHERE airtable_id = NULLIF($5, '')
+     ), upd AS (
+       UPDATE clock_punches c
+          SET original_started_at = COALESCE(c.original_started_at, c.started_at),
+              original_ended_at   = COALESCE(c.original_ended_at,   c.ended_at),
               started_at = $2::timestamptz,
               ended_at   = $3::timestamptz,
-              duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM ($3::timestamptz - $2::timestamptz)) - break_seconds)::numeric,
+              duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM ($3::timestamptz - $2::timestamptz)) - c.break_seconds)::numeric,
               -- work_date follows the START, same overnight rule as the punch itself.
-              work_date = ($2::timestamptz AT TIME ZONE 'America/New_York')::date,
+              work_date  = ($2::timestamptz AT TIME ZONE 'America/New_York')::date,
+              job_id     = CASE WHEN $5 IS NULL THEN c.job_id
+                                WHEN $5 = ''    THEN NULL
+                                ELSE (SELECT id FROM j) END,
+              job_name   = CASE WHEN $5 IS NULL THEN c.job_name
+                                WHEN $5 = ''    THEN NULL
+                                ELSE (SELECT po_locked FROM j) END,
+              class      = COALESCE($6, c.class),
+              city_taxes = COALESCE($7, c.city_taxes),
               edited_at = now(), edited_by = $4
-        WHERE id = $1
-        RETURNING id, time_entry_id, work_date, started_at, ended_at,
-                  duration_seconds, break_seconds,
-                  original_started_at, original_ended_at
+        WHERE c.id = $1
+        RETURNING c.id, c.time_entry_id, c.work_date, c.started_at, c.ended_at,
+                  c.duration_seconds, c.break_seconds, c.job_id, c.job_name,
+                  c.class, c.city_taxes, c.original_started_at, c.original_ended_at
      ), te AS (
+       -- The promoted payroll row moves with it, in the same statement. See the
+       -- warning above handleClockEditTimes: two records of one shift that
+       -- disagree is the failure mode, and the payroll one is what people are paid
+       -- from. hours/week_start_date are GENERATED and follow automatically.
        UPDATE time_entries t
           SET started_at       = u.started_at,
               ended_at         = u.ended_at,
               duration_seconds = u.duration_seconds,
-              work_date        = u.work_date
+              work_date        = u.work_date,
+              job_id           = u.job_id,
+              job_name         = u.job_name,
+              class            = u.class,
+              city_taxes       = u.city_taxes
          FROM upd u
         WHERE t.id = u.time_entry_id
         RETURNING t.id
@@ -1530,11 +1600,14 @@ async function handleClockEditTimes(body, authUser) {
      SELECT u.id, u.work_date, u.started_at, u.ended_at,
             u.duration_seconds::float8 AS duration_seconds,
             u.break_seconds::float8 AS break_seconds,
+            u.job_name, u.class, u.city_taxes,
             u.original_started_at, u.original_ended_at,
             (u.time_entry_id IS NOT NULL) AS counted,
             (SELECT count(*)::int FROM te) AS payroll_rows_updated
        FROM upd u`,
-    [punch.id, newStart, newEnd, me?.id || null]);
+    [punch.id, newStart, newEnd, me?.id || null, jobRecEdit,
+     cls === undefined ? null : (cls || null),
+     cityTaxes === undefined ? null : (cityTaxes || null)]);
 
   const out = rows?.[0] || null;
   // Loud in the logs: a promoted punch whose payroll row did NOT move is exactly
@@ -1544,6 +1617,154 @@ async function handleClockEditTimes(body, authUser) {
                   `${out.payroll_rows_updated} payroll rows — clock and payroll may disagree.`);
   }
   return resp(200, { ok: true, punch: out });
+}
+
+// ── CLOCK: delete a punch ──────────────────────────────────────────────────
+// For a shift that should not exist at all — clocked in by mistake, or twice on
+// two devices. Editing times cannot express that.
+//
+// Same ownership rule as editing: your own, admin anyone's. SOFT on the clock
+// ledger (see db/schema/022) so a deletion isn't the one clock action with no
+// trace, but the promoted payroll row is HARD deleted in the same statement —
+// payroll has no concept of a soft-deleted entry, and leaving it behind would pay
+// for a shift the clock says never happened.
+async function handleClockDeletePunch(body, authUser) {
+  if (!canUseTimeClock(authUser)) {
+    return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
+  }
+  const punchId = body?.punchId;
+  if (!punchId) return resp(400, { ok: false, error: "Missing punchId." });
+
+  const isAdmin = (authUser?.role || "").toLowerCase() === "admin";
+  const me = await clockEmployee(authUser);
+
+  const cur = await neonQuery(
+    `SELECT c.id, c.time_entry_id, e.airtable_id AS emp_airtable_id
+       FROM clock_punches c JOIN employees e ON e.id = c.employee_id
+      WHERE c.id = $1 AND c.deleted_at IS NULL`, [String(punchId)]);
+  const punch = cur?.rows?.[0];
+  if (!punch) return resp(404, { ok: false, error: "Punch not found." });
+  if (!isAdmin && punch.emp_airtable_id !== authUser?.id) {
+    return resp(403, { ok: false, error: "You can only remove your own shifts." });
+  }
+
+  const rows = await neonWrite("clock.deletePunch",
+    `WITH del AS (
+       UPDATE clock_punches
+          SET deleted_at = now(), deleted_by = $2, time_entry_id = NULL
+        WHERE id = $1
+        RETURNING id, time_entry_id AS cleared, $3::uuid AS te_id
+     ), te AS (
+       DELETE FROM time_entries WHERE id = $3::uuid RETURNING id
+     )
+     SELECT d.id, (SELECT count(*)::int FROM te) AS payroll_rows_deleted FROM del d`,
+    [punch.id, me?.id || null, punch.time_entry_id]);
+
+  const out = rows?.[0];
+  if (punch.time_entry_id && out?.payroll_rows_deleted !== 1) {
+    console.error(`clock.deletePunch: punch ${punch.id} was promoted but removed ` +
+                  `${out?.payroll_rows_deleted} payroll rows — payroll may still hold it.`);
+  }
+  return resp(200, { ok: true, deletedId: punch.id,
+                     payrollRowsDeleted: out?.payroll_rows_deleted ?? 0 });
+}
+
+// ══ RECONCILE: the app's clock vs QuickBooks Time ════════════════════════════
+// The point of running both systems in parallel. Without this, a soak only proves
+// the app didn't crash — not that the hours AGREE, which is the actual gate for
+// retiring QuickBooks.
+//
+// Both sides are keyed to the same person: QB entries arrive in time_entries with
+// source 'TSheets' (via the puller, matched on employees.qb_user_id), and clock
+// punches carry employee_id directly. So the comparison is per person per day.
+//
+// ⚠ Clock punches are compared at FULL precision converted to hours, while QB's
+// side reads the `hours` column, which is rounded to the quarter hour. A small
+// residual difference is therefore EXPECTED and is not drift — see the note on
+// `roundedClockHours` below, which applies the same rounding so the two are
+// compared like for like.
+async function handleClockReconcile(params) {
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(params?.from || "")) ? String(params.from) : null;
+  const to   = /^\d{4}-\d{2}-\d{2}$/.test(String(params?.to   || "")) ? String(params.to)   : null;
+  if (!from || !to) {
+    return resp(400, { ok: false, error: "Need from and to dates (YYYY-MM-DD)." });
+  }
+
+  const q = await neonQuery(
+    `WITH qb AS (
+       SELECT employee_id, work_date, sum(hours)::float8 AS hours, count(*)::int AS entries
+         FROM time_entries
+        WHERE work_date BETWEEN $1::date AND $2::date
+          AND employee_id IS NOT NULL
+          -- Everything that is NOT the app's own clock counts as "the old way":
+          -- QB-imported rows and the handful of hand-typed Manual ones.
+          AND coalesce(source, '') <> 'Clock'
+        GROUP BY 1, 2
+     ), ck AS (
+       SELECT employee_id, work_date,
+              -- Same quarter-hour rule the payroll column applies, so the two
+              -- sides are compared like for like rather than differing by rounding.
+              (round((sum(duration_seconds) / 3600.0) * 4) / 4)::float8 AS hours,
+              count(*)::int AS punches
+         FROM clock_punches
+        WHERE work_date BETWEEN $1::date AND $2::date
+          AND deleted_at IS NULL
+        GROUP BY 1, 2
+     )
+     SELECT e.name AS employee, e.airtable_id AS employee_id,
+            coalesce(qb.work_date, ck.work_date) AS work_date,
+            coalesce(qb.hours, 0)   AS qb_hours,
+            coalesce(ck.hours, 0)   AS clock_hours,
+            coalesce(ck.hours, 0) - coalesce(qb.hours, 0) AS diff,
+            coalesce(qb.entries, 0) AS qb_entries,
+            coalesce(ck.punches, 0) AS clock_punches
+       FROM qb
+       FULL OUTER JOIN ck
+         ON qb.employee_id = ck.employee_id AND qb.work_date = ck.work_date
+       JOIN employees e ON e.id = coalesce(qb.employee_id, ck.employee_id)
+      ORDER BY e.name, coalesce(qb.work_date, ck.work_date)`,
+    [from, to]);
+
+  const rows = (q?.rows || []).map(r => ({
+    employee: r.employee,
+    employeeId: r.employee_id,
+    workDate: r.work_date ? String(r.work_date).slice(0, 10) : null,
+    qbHours: Number(r.qb_hours) || 0,
+    clockHours: Number(r.clock_hours) || 0,
+    diff: Number(r.diff) || 0,
+    qbEntries: r.qb_entries,
+    clockPunches: r.clock_punches,
+  }));
+
+  // Per-person totals, which is what the "can we switch yet" decision is made on.
+  const byEmployee = {};
+  for (const r of rows) {
+    const k = r.employee;
+    byEmployee[k] ||= { employee: k, qbHours: 0, clockHours: 0, days: 0, daysDiffering: 0 };
+    byEmployee[k].qbHours    += r.qbHours;
+    byEmployee[k].clockHours += r.clockHours;
+    byEmployee[k].days++;
+    // A quarter hour is the smallest unit payroll can express, so anything under
+    // it is not a real disagreement.
+    if (Math.abs(r.diff) >= 0.25) byEmployee[k].daysDiffering++;
+  }
+  const totals = Object.values(byEmployee).map(t => ({
+    ...t,
+    qbHours: Math.round(t.qbHours * 100) / 100,
+    clockHours: Math.round(t.clockHours * 100) / 100,
+    diff: Math.round((t.clockHours - t.qbHours) * 100) / 100,
+  })).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  return resp(200, {
+    ok: true, from, to,
+    rows: rows.filter(r => Math.abs(r.diff) >= 0.25),   // only the days that disagree
+    totals,
+    grand: {
+      qbHours:    Math.round(totals.reduce((s, t) => s + t.qbHours, 0) * 100) / 100,
+      clockHours: Math.round(totals.reduce((s, t) => s + t.clockHours, 0) * 100) / 100,
+    },
+    _source: "neon",
+  });
 }
 
 // Turn one recorded punch into a payroll row. Idempotent: the `time_entry_id IS NULL`
@@ -1560,6 +1781,7 @@ async function promoteClockPunch(punchId) {
   const rows = await neonWrite("clock.promote",
     `WITH p AS (
        SELECT * FROM clock_punches WHERE id = $1 AND time_entry_id IS NULL
+                                     AND deleted_at IS NULL
      ), ins AS (
        INSERT INTO time_entries
          (employee_name, employee_id, work_date, duration_seconds, city_taxes, class,
@@ -1660,12 +1882,17 @@ async function handleClockRoster(params) {
        FROM clock_punches c
        JOIN employees e ON e.id = c.employee_id
       WHERE c.work_date = (now() AT TIME ZONE 'America/New_York')::date
+        AND c.deleted_at IS NULL
       ORDER BY c.ended_at DESC`);
 
   return resp(200, {
     ok: true,
     enabled: true,
     countsTowardPayroll: timeClockFeedsPayroll(),
+    // Hours after which a shift is almost certainly a forgotten clock-out rather
+    // than a long day. Sent from the server so the roster and each person's own
+    // screen can't drift apart on what counts as "too long".
+    longShiftHours: LONG_SHIFT_HOURS,
     onClock:  onClock?.rows  || [],
     offClock: offClock?.rows || [],
     today:    today?.rows    || [],
@@ -1732,6 +1959,7 @@ async function handlePromoteClockPunches(body) {
   const pending = await neonQuery(
     `SELECT id FROM clock_punches
       WHERE time_entry_id IS NULL AND ($1::date IS NULL OR work_date >= $1::date)
+        AND deleted_at IS NULL
       ORDER BY started_at`, [from]);
 
   const ids = (pending?.rows || []).map(r => r.id);
@@ -9436,6 +9664,7 @@ export async function handler(event) {
       if (action === "payrollEmployeeBonusHistory") return await handlePayrollEmployeeBonusHistory(params);
       if (action === "clockStatus")                 return await handleClockStatus(params, authUser);
       if (action === "clockRoster")                 return await handleClockRoster(params);
+      if (action === "clockReconcile")              return await handleClockReconcile(params);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();
@@ -9476,6 +9705,7 @@ export async function handler(event) {
       if (body.action === "clockOut")             return await handleClockOut(body, authUser);
       if (body.action === "clockBreak")           return await handleClockBreak(body, authUser);
       if (body.action === "clockEditTimes")       return await handleClockEditTimes(body, authUser);
+      if (body.action === "clockDeletePunch")     return await handleClockDeletePunch(body, authUser);
       if (body.action === "adminClockIn")         return await handleAdminClockIn(body, authUser);
       if (body.action === "adminClockOut")        return await handleAdminClockOut(body, authUser);
       if (body.action === "promoteClockPunches")  return await handlePromoteClockPunches(body);

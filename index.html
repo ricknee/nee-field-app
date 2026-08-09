@@ -211,6 +211,7 @@
       margin-bottom: 8px; background: #f0fdf4;
     }
     .ww-row.is-paused { background: #fffbeb; }
+    .ww-row.is-stale  { background: #fef2f2; border-color: #fca5a5; }
     .ww-elapsed {
       font-variant-numeric: tabular-nums; font-weight: 800; font-size: 16px;
     }
@@ -17397,6 +17398,17 @@
   // that says so — one nullable column, no boolean to disagree with it.
   function onBreak() { return !!clockState.open?.break_started_at; }
 
+  // A shift running past the server's threshold is almost certainly a forgotten
+  // clock-out. Flagged, never auto-closed — inventing an end time nobody worked
+  // and then paying it is worse than asking a person to fix it.
+  function clockLongShift() {
+    const o = clockState.open; if (!o) return false;
+    const started = Date.parse(o.started_at);
+    if (!Number.isFinite(started)) return false;
+    const limit = (clockState.longShiftHours || 12) * 3600 * 1000;
+    return (Date.now() - started) > limit;
+  }
+
   // WORKED time — elapsed minus every break, including one running right now. This
   // is what the timer shows and what payroll would be paid, so it must match the
   // server's arithmetic in handleClockOut exactly. If you change one, change both.
@@ -17703,6 +17715,9 @@
           <button class="clock-btn clock-btn-out" onclick="clockOutConfirm()">Confirm Clock Out</button>
         </div>
 
+        ${clockLongShift() ? `<div class="clock-queued">⚠ You've been on the clock over
+           ${clockState.longShiftHours || 12} hours. If you forgot to clock out, adjust the
+           times above rather than leaving it running.</div>` : ""}
         ${clockEdit.target === "open" ? renderClockStartEditor() : ""}
         ${countsHtml}${queuedHtml}
         <div class="clock-note">Hours are rounded to the nearest quarter hour on payroll.</div>
@@ -17814,8 +17829,11 @@
       </div>`;
   }
 
-  // The editor for a finished shift — start and end.
+  // The editor for a finished shift — times, and the things that were wrong at
+  // punch time: the job, what it was, and where it was taxed. Wrong-job matters
+  // beyond tidiness — those hours get costed to the wrong project's GP.
   function renderPunchEditor(p) {
+    const jobs = (state.jobs || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     return `
       <div style="border:1px solid var(--line); border-radius:8px; padding:10px; margin:6px 0;">
         <label class="clock-field">Started
@@ -17823,6 +17841,23 @@
         </label>
         <label class="clock-field">Ended
           <input id="clockEditEnd" type="datetime-local" value="${esc(toLocalInput(p.ended_at))}" />
+        </label>
+        <label class="clock-field">Job
+          <select id="clockEditJob">
+            <option value="">— No job —</option>
+            ${jobs.map(j => `<option value="${esc(j.id)}" ${
+              (j.name || "") === (p.job_name || "") ? "selected" : ""}>${esc(j.name || j.id)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="clock-field">Class
+          <select id="clockEditClass" onchange="clockEditSyncCity()">${
+            clockClasses(p.class).map(c =>
+              `<option value="${esc(c)}" ${c === (p.class || "") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+        </label>
+        <label class="clock-field">City tax
+          <select id="clockEditCity" ${p.class === CLOCK_TRAVEL_CLASS ? "disabled" : ""}>${
+            PR_CITY_TAXES.map(t =>
+              `<option value="${esc(t)}" ${t === (p.city_taxes || "A No Tax") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
         </label>
         ${Number(p.break_seconds) > 0
           ? `<div class="clock-note">${fmtElapsed(Number(p.break_seconds) * 1000)} of break stays deducted.</div>` : ""}
@@ -17834,8 +17869,40 @@
           <button class="clock-btn clock-btn-in" onclick="clockEditSave('${esc(p.id)}')">Save</button>
         </div>
         <div id="clockEditErr" class="clock-note" style="color:#b91c1c;"></div>
+        <div style="margin-top:10px; text-align:center;">
+          <a href="#" onclick="event.preventDefault();clockDeletePunch('${esc(p.id)}')"
+             style="font-size:12px; color:#b91c1c;">Remove this shift</a>
+        </div>
       </div>`;
   }
+
+  function clockEditSyncCity() {
+    const sel = $("clockEditCity");
+    if (!sel) return;
+    const travel = ($("clockEditClass")?.value || "") === CLOCK_TRAVEL_CLASS;
+    if (travel) sel.value = "A No Tax";
+    sel.disabled = travel;
+  }
+  window.clockEditSyncCity = clockEditSyncCity;
+
+  // A shift that shouldn't exist at all — clocked in by mistake, or twice on two
+  // devices. Confirmed hard, because if it had reached payroll those hours go too.
+  async function clockDeletePunch(punchId) {
+    const p = (clockState.recent || []).find(r => r.id === punchId);
+    const warn = p?.counted
+      ? "\n\nThis shift has already gone to payroll — those hours will be removed too."
+      : "";
+    if (!confirm(`Remove this shift completely?${warn}`)) return;
+    try {
+      await apiPost("clockDeletePunch", { punchId });
+      clockEdit.target = null;
+      await refreshClock();
+    } catch (e) {
+      const err = $("clockEditErr");
+      if (err) err.textContent = e.message || "Couldn't remove that shift.";
+    }
+  }
+  window.clockDeletePunch = clockDeletePunch;
 
   async function clockEditSave(punchId) {
     const err = $("clockEditErr");
@@ -17845,7 +17912,14 @@
     if (!startedAt) { if (err) err.textContent = "That start time isn't valid."; return; }
     if (endedEl && !endedAt) { if (err) err.textContent = "That end time isn't valid."; return; }
     try {
-      const body = punchId ? { punchId, startedAt, endedAt } : { startedAt };
+      const body = punchId
+        ? { punchId, startedAt, endedAt,
+            // Sent only for a completed punch — an open shift has no editor for
+            // these, and sending undefined leaves each field untouched server-side.
+            jobId: $("clockEditJob")?.value ?? undefined,
+            class: $("clockEditClass")?.value ?? undefined,
+            cityTaxes: $("clockEditCity")?.value ?? undefined }
+        : { startedAt };
       await apiPost("clockEditTimes", body);
       clockEdit.target = null;
       await refreshClock();
@@ -18068,13 +18142,18 @@
       `<div class="clock-note">⚠ Punches are recorded but do <strong>not</strong> count toward
         payroll yet — QuickBooks Time is still the book of record.</div>`;
 
+    const limitMs = (wwData.longShiftHours || 12) * 3600 * 1000;
     const onHtml = on.length ? on.map(r => {
       const paused = !!r.break_started_at;
+      // Almost certainly a forgotten clock-out. Flagged for a human, never
+      // auto-closed — see LONG_SHIFT_HOURS in airtable.js.
+      const stale  = (Date.now() - Date.parse(r.started_at)) > limitMs;
       const since = new Date(Date.parse(r.started_at)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
       return `
-        <div class="ww-row${paused ? " is-paused" : ""}">
+        <div class="ww-row${paused ? " is-paused" : ""}${stale ? " is-stale" : ""}">
           <div style="min-width:0;">
-            <div style="font-weight:700;">${esc(r.name)}${paused ? " <span style='font-weight:400;color:#92400e;'>· on lunch</span>" : ""}</div>
+            <div style="font-weight:700;">${esc(r.name)}${paused ? " <span style='font-weight:400;color:#92400e;'>· on lunch</span>" : ""}${
+              stale ? " <span style='font-weight:400;color:#b91c1c;'>· forgot to clock out?</span>" : ""}</div>
             <div style="font-size:12px; color:var(--muted);">
               ${esc(r.job_name || "No job")} · in at ${esc(since)}${r.city_taxes ? " · " + esc(r.city_taxes) : ""}
             </div>
@@ -18123,17 +18202,84 @@
       <div class="ww-form">${offHtml}</div>
       <div class="ww-head" style="margin-top:18px;">Finished today</div>
       ${todayHtml}
+
+      <div class="ww-head" style="margin-top:22px;">QuickBooks vs the clock</div>
+      <div class="ww-form">
+        <input id="wwRecFrom" type="date" class="ww-input" value="${esc(wwWeekStart())}" />
+        <input id="wwRecTo"   type="date" class="ww-input" value="${esc(wwToday())}" />
+        <button class="btn btn-sm" onclick="wwReconcile()">Compare</button>
+      </div>
+      <div id="wwRecOut" class="clock-note">
+        The soak only proves something if the two agree. Pick a range and compare.
+      </div>
     `;
   }
+
+  // Monday of the current week — the unit payroll is actually grouped by.
+  function wwWeekStart() {
+    const d = new Date();
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    return toLocalInput(d).slice(0, 10);
+  }
+  function wwToday() { return toLocalInput(new Date()).slice(0, 10); }
+
+  // ── Reconciliation ──────────────────────────────────────────────────────
+  // Puts QuickBooks' hours and the clock's hours side by side for the same people
+  // over the same days. This is the gate for retiring QB: not "did the app work"
+  // but "do the numbers agree".
+  async function wwReconcile() {
+    const out = $("wwRecOut");
+    out.textContent = "Comparing…";
+    try {
+      const d = await apiGet("clockReconcile", {
+        from: $("wwRecFrom")?.value, to: $("wwRecTo")?.value,
+      });
+      const totals = d.totals || [], rows = d.rows || [];
+      if (!totals.length) { out.innerHTML = `<div class="clock-note">No hours on either side in that range.</div>`; return; }
+
+      const sign = n => (n > 0 ? "+" : "") + n.toFixed(2);
+      out.innerHTML = `
+        <div class="clock-row" style="font-weight:700;">
+          <span>Everyone</span>
+          <span>QB ${d.grand.qbHours.toFixed(2)} h · clock ${d.grand.clockHours.toFixed(2)} h</span>
+        </div>
+        ${totals.map(t => `
+          <div class="clock-row">
+            <span>${esc(t.employee)}${t.daysDiffering ? ` <span style="color:var(--muted); font-size:11px;">· ${t.daysDiffering} day${t.daysDiffering === 1 ? "" : "s"} differ</span>` : ""}</span>
+            <span>QB ${t.qbHours.toFixed(2)} · clock ${t.clockHours.toFixed(2)}
+              <strong style="color:${Math.abs(t.diff) >= 0.25 ? "#b91c1c" : "var(--green)"};">${sign(t.diff)}</strong></span>
+          </div>`).join("")}
+        ${rows.length ? `
+          <div class="ww-head" style="margin-top:14px;">Days that disagree</div>
+          ${rows.map(r => `
+            <div class="clock-row">
+              <span>${esc(r.workDate)} · ${esc(r.employee)}</span>
+              <span>QB ${r.qbHours.toFixed(2)} · clock ${r.clockHours.toFixed(2)}
+                <strong style="color:#b91c1c;">${sign(r.diff)}</strong></span>
+            </div>`).join("")}`
+          : `<div class="clock-note">✓ Every day matches to the quarter hour.</div>`}
+        <div class="clock-note">Both sides rounded to the quarter hour, the way payroll pays.</div>
+      `;
+    } catch (e) {
+      out.textContent = "Couldn't compare: " + e.message;
+    }
+  }
+  window.wwReconcile = wwReconcile;
 
   async function wwClockIn() {
     const employeeId = $("wwWho")?.value || "";
     if (!employeeId) { alert("Pick a person."); return; }
     try {
+      // City tax follows the same rules as a self-punch: the job's setting, with
+      // Travel always untaxed. Without this an admin-created punch recorded NO
+      // city tax and would silently fall back to "A No Tax" at promotion,
+      // ignoring whatever the job says.
+      const jobId = $("wwJob")?.value || null;
+      const cls   = $("wwClass")?.value || PR_CLASSES[0];
+      const job   = (state.jobs || []).find(j => j.id === jobId);
       await apiPost("adminClockIn", {
-        employeeId,
-        jobId: $("wwJob")?.value || null,
-        class: $("wwClass")?.value || PR_CLASSES[0],
+        employeeId, jobId, class: cls,
+        cityTaxes: clockDefaultCityTax(job, cls),
         startedAt: new Date().toISOString(),
       });
       await loadWhosWorking();

@@ -3610,11 +3610,29 @@ async function handleLogin(body) {
 //   Neon owns      hired_on, terminated_on, termination_note, token_valid_from,
 //                  last_login_at — columns Airtable simply does not have.
 //
-// ⚠⚠ Do NOT "tidy" this by moving `active` into Neon. db/etl/time-entries-full.mjs
-// is a LIVE dimension load that overwrites employees.name/username/role/active
-// from Airtable on every run; an active=false written to Neon is erased by the
-// next one. See db/schema/016_employee_admin.sql. That inverts at the login
-// flip (ROADMAP §4) and not before.
+// ── STAGE 5 (2026-08-09): THE AIRTABLE WRITES BELOW ARE DELIBERATELY KEPT ──
+// The plan said Stage 5 would drop them. It doesn't, and the reason is the
+// login kill switch.
+//
+// `LOGIN_SOURCE=airtable` is the documented rollback for the riskiest change in
+// this whole migration, and it resolves logins against Airtable's Employees
+// table. That escape hatch is only worth having while the data behind it is
+// current. Stop mirroring, and within a week Airtable is missing new hires,
+// holding old PINs, and showing leavers as active — so throwing the switch
+// would let a leaver back in and lock a new hire out, which is worse than the
+// problem it exists to solve.
+//
+// Airtable's own Employees records also remain the parents of Labor Cost Rates,
+// Bonuses, Job Labor Allocation and Employee Weekly Time. Those tables are
+// still there.
+//
+// So these writes are no longer a dual-authority — Neon is authoritative and
+// every read comes from it. They are **fallback maintenance**. Drop them in the
+// same commit that retires `LOGIN_SOURCE`, not before, and not separately.
+//
+// (The old warning here said never to write `active` to Neon because the ETL
+// dimension load would erase it. That load is RETIRED as of 2026-08-09 — see
+// db/etl/time-entries-full.mjs. Writing Neon is now the whole point.)
 //
 // The Neon half FAILS SOFT: if it can't be read the roster still renders off
 // Airtable with those five columns null. A screen that shows most of the truth
@@ -3639,8 +3657,6 @@ const _EMP_FLD = {
 };
 
 async function handlePeople() {
-  const records = await fetchAll(TABLES.employees);
-
   // Everyone in one call. This table is ~24 rows and never grows fast, so
   // paging it or splitting roster/detail into two actions would be complexity
   // bought with nothing. The client filters Active vs Former in memory.
@@ -3650,8 +3666,14 @@ async function handlePeople() {
   // mirror was ETL-stale — that is now inverted: the app writes rates to Neon,
   // so the Airtable rollup is the stale one. Reading it would show an admin the
   // old number right after they'd given someone a raise.
+  // Stage 5: the ROSTER itself is Neon's now, not just the extra columns. Neon
+  // holds every attribute since db/schema/017, the People screen writes it, and
+  // the ETL dimension load that used to overwrite it is retired — so Airtable's
+  // copy is the mirror, and reading it here would show stale names and roles.
   const q = await neonQuery(
-    `SELECT e.airtable_id, e.hired_on, e.terminated_on, e.termination_note,
+    `SELECT e.airtable_id, e.name, e.username, e.role, e.active, e.email, e.phone,
+            e.employee_no, e.labor_type, e.notes, e.first_name, e.last_name,
+            e.hired_on, e.terminated_on, e.termination_note,
             e.token_valid_from, e.last_login_at,
             r.true_cost_rate, r.base_hourly_wage, r.payroll_burden_pct
        FROM employees e
@@ -3659,10 +3681,26 @@ async function handlePeople() {
               SELECT true_cost_rate, base_hourly_wage, payroll_burden_pct
                 FROM labor_cost_rates
                WHERE employee_id = e.id AND effective_end_date IS NULL
-               ORDER BY effective_start_date DESC LIMIT 1) r ON true`, []);
-  if (q && !q.error && Array.isArray(q.rows)) {
+               ORDER BY effective_start_date DESC LIMIT 1) r ON true
+      ORDER BY e.name`, []);
+  const neonOk = !!(q && !q.error && Array.isArray(q.rows));
+  if (neonOk) {
     for (const r of q.rows) byAirtableId.set(String(r.airtable_id), r);
   }
+
+  // Airtable-record shape either way, so the projection below is unchanged by
+  // this flip. Falling back rather than erroring: a roster is more useful than
+  // a blank screen, and `neonOk` already tells the client the Neon-only columns
+  // (hire dates, last login, cost rate) are missing.
+  const records = neonOk
+    ? q.rows.map(r => ({ id: r.airtable_id, fields: {
+        [F.emp.name]: r.name || "", [F.emp.username]: r.username || "",
+        [F.emp.role]: r.role || "", [F.emp.active]: r.active === true,
+        [F.emp.email]: r.email || "", "Primary Phone": r.phone || "",
+        "Employee ID": r.employee_no || "", "Default Labor Type": r.labor_type || "",
+        "Notes": r.notes || "", "First Name": r.first_name || "", "Last Name": r.last_name || "",
+      } }))
+    : await fetchAll(TABLES.employees);
 
   // Leave, for the current year. Its own query rather than another LATERAL on the
   // one above: only the hourly employees have an allowance row at all, so joining
@@ -3731,7 +3769,7 @@ async function handlePeople() {
   people.sort((a, b) => a.name.localeCompare(b.name));
   // `neonOk` is not decoration: without it a roster where every hire date is
   // blank looks identical to one where Neon is down. The client says so.
-  return resp(200, { ok: true, people, neonOk: !!(q && !q.error) });
+  return resp(200, { ok: true, people, neonOk });
 }
 
 // Reveal one employee's PIN, on explicit request, for an admin who needs to

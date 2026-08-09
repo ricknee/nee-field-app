@@ -140,7 +140,9 @@ async function fetchAll(table, params = {}) {
 }
 
 console.log(`extracting from ${BASE} (read-only) ...`);
-const employees = await fetchAll("Employees");
+// "Employees" is NOT fetched any more — the dimension load that consumed it is
+// retired (see the long note further down). Pulling it would only tempt someone
+// into wiring the upsert back up.
 // Field coercers for the tables THIS script still maps itself (allocations, rates,
 // weekly time, GP sources). The jobs coercers moved to _jobs-sync.js along with
 // JOB_FIELDS; `bool` went with them and is no longer referenced here.
@@ -194,7 +196,7 @@ const pipeUsage  = await fetchAll("Pipe Usage");
 const sentEstPdfs = await fetchAll("Sent Estimate PDFs");
 const estTemplates = await fetchAll("Estimate Templates");
 const matAllocs   = await fetchAll("Material Billing Allocations");
-console.log(`extracted: ${employees.length} employees, ${jobs.length} jobs, ${entries.length} time entries`);
+console.log(`extracted: ${jobs.length} jobs, ${entries.length} time entries (employees no longer loaded)`);
 
 // ── Airtable-side truth, computed BEFORE loading ──────────────────────────
 // These are the acceptance numbers. Airtable's own `Hours` field is the
@@ -253,11 +255,33 @@ async function upsertBatch(table, cols, rows, conflict, batch = 300) {
 // one writer, and cannot double-count — unlike time_entries, which after the QB puller
 // goes live has two independent writers and must never be ETL-loaded again.
 console.log("loading dimensions ...");
-await upsertBatch("employees", ["airtable_id", "name", "username", "role", "active", "qb_user_id"],
-  employees.map(e => [e.id, e.fields["Employee Name"] || "(unnamed)", nul(e.fields["Username"]),
-                      nul(e.fields["Role"]), e.fields["Active"] === true,
-                      // QB Time user id — the puller's employee lookup key.
-                      nul(e.fields["Employee ID"])]), "airtable_id");
+// ⚠⚠ THE EMPLOYEES DIMENSION LOAD IS RETIRED — 2026-08-09. DO NOT RESTORE.
+//
+// Neon is the source of truth for employees. Login resolves against Neon in BOTH
+// apps (LOGIN_SOURCE=neon since 2026-08-08) and the People screen is the only
+// thing that creates or edits a person. Airtable's Employees table is now a
+// mirror kept for the login fallback and for the Airtable-side tables that still
+// link to it — it is not an input.
+//
+// Re-enabling this upsert would overwrite Neon from that mirror, and the damage
+// is not cosmetic:
+//   * `active`  — a leaver reactivated. They can log in again, and because
+//                 `token_valid_from` is untouched the People screen would still
+//                 show them as revoked. Silent.
+//   * `role`    — a demotion undone, or an admin demoted out of the People screen.
+//   * `name`/`username` — a rename reverted, which changes what someone types to
+//                 log in.
+// It would also drop anyone hired through the app, since they exist in Airtable
+// only if that half of the write succeeded.
+//
+// Note this upsert never carried pin/email/phone/hired_on either, so restoring it
+// would leave Neon internally inconsistent as well as stale.
+//
+// `qb_user_id` was the one column Airtable owned that Neon needed. It is
+// unchanged by this — nothing writes it today, and the QB puller reads it from
+// Neon. If QB user ids ever need re-syncing, do it as its own targeted script
+// that touches ONLY that column, never a whole-row upsert.
+console.log("  employees: dimension load RETIRED (Neon is authoritative) — skipping");
 
 // Billable rates BEFORE jobs — jobs carry an FK to them.
 await upsertBatch("labor_billable_rates",
@@ -838,12 +862,60 @@ chk("per-job hour buckets matching", 0, bucketDiffs);
 // being silently corrected — see the note above the drift block.
 if (!LOAD) chk("rows with field-level drift", 0, driftCount);
 
+// ── ⚠ THESE CHECKS CHANGED MEANING AT STEP 3 (Make off, 2026-08-07) ────────
+// They were built to prove Neon matched Airtable while BOTH were being written.
+// Make no longer imports QB timesheets into Airtable, so that table is a FROZEN
+// historical copy while the puller keeps adding to Neon hourly. Neon therefore
+// runs permanently — and CORRECTLY — ahead, and every count-based check below
+// reads red for the rest of time.
+//
+// A red signal nobody can act on is worse than no signal: it trains you to
+// ignore the output, and then a real failure goes unnoticed. So the COUNT checks
+// are now reported as EXPECTED-DIVERGENT rather than failures.
+//
+// What still means something is FIELD-LEVEL DRIFT: a row present on both sides
+// that disagrees about class / labor_type / employee_name / job_name. That has
+// nothing to do with Make and stays a hard failure.
+//
+// Pass --strict to restore the old behaviour (every check fatal), which is only
+// meaningful when comparing against a window Make actually imported — i.e. work
+// dated on or before 2026-08-07.
+const STRICT = process.argv.includes("--strict");
+const COUNT_CHECKS = new Set([
+  "row count", "total hours", "first work date", "last work date",
+  "blank job_name", "no job link", "distinct job_name",
+  "per-job hour buckets matching",
+]);
+
 console.log("\n== ACCEPTANCE CHECKS (Airtable vs Neon) ==");
 console.table(checks);
 
 const failed = checks.filter(c => !c.ok);
-if (failed.length) {
-  console.error(`\nFAILED ${failed.length} check(s) — Neon copy is NOT verified.`);
+const expected = STRICT ? [] : failed.filter(c => COUNT_CHECKS.has(c.check));
+const real     = failed.filter(c => !expected.includes(c));
+
+if (expected.length) {
+  console.log(
+    `\nℹ ${expected.length} count check(s) differ — EXPECTED since Step 3.\n` +
+    `  Airtable's Time Entries table has been frozen since Make left the time path\n` +
+    `  (2026-08-07); the QB puller keeps writing to Neon hourly, so Neon is ahead by\n` +
+    `  design. This is not drift. Re-run with --strict to treat them as failures.`);
+}
+if (real.length) {
+  console.error(`\nFAILED ${real.length} check(s) — Neon copy is NOT verified.`);
   process.exit(1);
 }
-console.log("\nAll checks passed — Neon copy verified against production Airtable.");
+console.log(expected.length
+  ? "\nNo field-level drift — the rows both systems share still agree."
+  : "\nAll checks passed — Neon copy verified against production Airtable.");
+
+// ── ⚠ THE REAL HEALTH CHECK IS NO LONGER THIS SCRIPT ───────────────────────
+// Since Step 3 the QB puller is the ONLY writer of time data — no Airtable copy,
+// no Make — and it fails SILENTLY. Counting rows here cannot tell a quiet day
+// from a dead puller, which is the whole failure mode worth watching. Use the
+// puller's own heartbeat instead:
+//
+//   SELECT key, updated_at, watermark, note FROM sync_state WHERE key='qb_timesheets';
+//
+// It runs @hourly (netlify.toml), so an updated_at older than ~2 h means it has
+// stopped. See ROADMAP §8.

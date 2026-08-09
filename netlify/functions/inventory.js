@@ -4,10 +4,10 @@
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from "./_employees.js";
-// neonExec only — fail-soft by contract, for the last-login stamp below. This
-// function has no other Neon dependency; the driver is lazy-imported so the
-// offline test suites stay install-free.
-import { neonExec } from "./_neon.js";
+// Both fail-soft by contract: neonExec for the last-login stamp, neonQuery for
+// the main-base job reads (Step B0). The driver is lazy-imported so the offline
+// test suites stay install-free.
+import { neonExec, neonQuery } from "./_neon.js";
 import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
@@ -218,7 +218,78 @@ async function handleEmployees() {
   return resp(200, { ok: true, _source: "airtable", employees });
 }
 
-// ── JOBS (from inventory base synced Jobs table) ──────────
+// ── Main-base job reads, served from Neon (Step B0) ─────────────────────────
+// The handlers below used to page the main NEE base's Jobs table over the
+// Airtable API. Neon's `jobs` is a complete mirror of it (112 rows, identity
+// columns refreshed hourly) and carries every column they need, so they read
+// Neon first and keep Airtable as the fallback.
+//
+// ⚠⚠ These return `airtable_id` AS `id` — never the Neon uuid. That id flows
+// picker → cart → `submitCart` stamps it onto `Job ID (Main)` → the expense push
+// writes it into a **linked-record field** on main-base Expenses. A uuid there
+// writes garbage into an Airtable link. This is deliberate and stays this way
+// until Step E moves the push itself.
+//
+// ⚠ Display name uses `po`, NOT `po_locked`. The PO only locks when a job is
+// awarded, so `po_locked` is blank on all 13 New Lead jobs — and those are in
+// the estimating picker. Using it would silently drop them, and a short list
+// looks exactly like a complete one.
+const JOB_STATUS_AWARDED    = ["Awarded", "Service Call Scheduled", "Ready to Invoice"];
+const JOB_STATUS_ESTIMATING = ["New Lead", "Estimating", ...JOB_STATUS_AWARDED];
+
+function mapNeonJob(r) {
+  return {
+    id:         r.airtable_id,
+    name:       (r.po || r.name || "").trim(),
+    status:     r.status || "",
+    taxable:    (r.tax_status || "") === "Taxable",
+    contractor: (r.contractor_name || "").trim(),
+  };
+}
+
+// Returns an array on success, or null meaning "Neon had no opinion" so the
+// caller falls back to Airtable. `statuses` omitted = every job.
+//
+// The guard is `q?.rows` — the query SUCCEEDING — not `rows.length`. Falling
+// back on an empty result would be wrong twice over: an empty status set is a
+// legitimate answer (nothing is "Service Call Scheduled" today), and a
+// length-based guard is what serves half a list when only some rows match.
+async function neonJobs(statuses) {
+  const filtered = Array.isArray(statuses);
+  const q = await neonQuery(
+    `SELECT airtable_id, name, po, status, tax_status, contractor_name
+       FROM jobs
+      WHERE COALESCE(airtable_id, '') <> ''
+        ${filtered ? "AND status = ANY($1::text[])" : ""}
+      ORDER BY name ASC`,
+    filtered ? [statuses] : []
+  );
+  return q?.rows ? q.rows.map(mapNeonJob) : null;
+}
+
+// Every main-base job indexed by its Airtable record id, as
+// { id, taxable, display }. Used by the expense push to resolve the
+// `Job ID (Main)` text each transaction carries. Neon-first, Airtable fallback;
+// the shape is identical either way so the caller can't tell them apart.
+async function mainJobIndex() {
+  const index = {};
+  const neon = await neonJobs();
+  if (neon) {
+    neon.forEach(j => { index[j.id] = { id: j.id, taxable: j.taxable, display: j.name }; });
+    return { index, source: "neon" };
+  }
+  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {});
+  records.forEach(r => {
+    const f = r.fields || {};
+    index[r.id] = {
+      id: r.id,
+      taxable: (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable",
+      display: (f["Job PO"] || f["Job Name"] || "").trim(),
+    };
+  });
+  return { index, source: "airtable" };
+}
+
 // ── JOBS (the "log materials USED" cart picker) ──────────────
 // Reads the AWARDED set from the main NEE base (Awarded + Service Call
 // Scheduled + Ready to Invoice) — same filter/shape as handleAwardedJobs —
@@ -228,13 +299,21 @@ async function handleEmployees() {
 // (Drop-Jobs-mirror bet, Step B). Kept separate from handleAwardedJobs so the
 // two pickers can diverge later without coupling.
 async function handleJobs() {
+  const neon = await neonJobs(JOB_STATUS_AWARDED);
+  if (neon) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      jobs: neon.map(j => ({ id: j.id, name: j.name })).filter(j => j.name),
+    });
+  }
+
   const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
     filter: `OR({Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
     sortField: "Job Name",
     sortDir: "asc"
   });
   return resp(200, {
-    ok: true,
+    ok: true, _source: "airtable",
     jobs: records
       .map(r => {
         const f = r.fields || {};
@@ -255,6 +334,11 @@ async function handleJobs() {
 // change-order or correction needs to go on a job that's already been
 // flagged complete).
 async function handleEstimatingJobs() {
+  const neon = await neonJobs(JOB_STATUS_ESTIMATING);
+  if (neon) {
+    return resp(200, { ok: true, _source: "neon", jobs: neon.filter(j => j.name) });
+  }
+
   // Everything we need lives on the main NEE base Jobs table: the status filter,
   // the "Name (PO)" display, tax status, and the contractor name. "Contractor Name
   // (Text)" (= ARRAYJOIN({Contractor})) replaces the old "Contractor (Combined)"
@@ -267,7 +351,7 @@ async function handleEstimatingJobs() {
   });
 
   return resp(200, {
-    ok: true,
+    ok: true, _source: "airtable",
     jobs: mainRecs
       .map(r => {
         const f       = r.fields || {};
@@ -293,14 +377,23 @@ async function handleEstimatingJobs() {
 // by the Templates list filter pills. Reads "Contractor Name (Text)" off the
 // main base Jobs table (no longer the synced inventory-base Jobs mirror).
 async function handleTemplateContractors() {
+  const dedupe = (names) =>
+    [...new Set(names.map(c => (c || "").trim()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+
+  const neon = await neonJobs();          // every job, not just a status set
+  if (neon) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      contractors: dedupe(neon.map(j => j.contractor)),
+    });
+  }
+
   const records = await fetchAll(API_ROOT_MAIN, "Jobs", {});
-  const set = {};
-  records.forEach(r => {
-    const c = (r.fields?.["Contractor Name (Text)"] || "").trim();
-    if (c) set[c] = true;
+  return resp(200, {
+    ok: true, _source: "airtable",
+    contractors: dedupe(records.map(r => r.fields?.["Contractor Name (Text)"])),
   });
-  const contractors = Object.keys(set).sort((a, b) => a.localeCompare(b));
-  return resp(200, { ok: true, contractors });
 }
 
 // ── AWARDED JOBS ONLY (for employee-side material ordering) ──
@@ -309,13 +402,21 @@ async function handleTemplateContractors() {
 // service calls AND can still order last-minute supplies for jobs that
 // have been flagged ready-to-invoice but aren't fully wrapped yet.
 async function handleAwardedJobs() {
+  const neon = await neonJobs(JOB_STATUS_AWARDED);
+  if (neon) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      jobs: neon.map(j => ({ id: j.id, name: j.name })).filter(j => j.name),
+    });
+  }
+
   const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
     filter: `OR({Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
     sortField: "Job Name",
     sortDir: "asc"
   });
   return resp(200, {
-    ok: true,
+    ok: true, _source: "airtable",
     jobs: records
       .map(r => {
         const f = r.fields || {};
@@ -599,14 +700,14 @@ async function handlePendingExpenses() {
   // No longer reads the inventory-base Jobs *mirror* — transactions carry the
   // main-base job id directly in "Job ID (Main)" (Drop-Jobs-mirror bet, Step C;
   // legacy link-only rows were backfilled, so the name-match path is gone).
-  const [txRecords, itemRecords, mainJobRecords] = await Promise.all([
+  const [txRecords, itemRecords, mainJobs] = await Promise.all([
     fetchAll(API_ROOT_INV, "Inventory Transactions", {
       filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`,
       sortField: "Transaction Date",
       sortDir: "asc"
     }),
     fetchAll(API_ROOT_INV, "Inventory Items", {}),
-    fetchAll(API_ROOT_MAIN, "Jobs", {})
+    mainJobIndex()
   ]);
 
   const itemMap = {};
@@ -614,16 +715,11 @@ async function handlePendingExpenses() {
     itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0, wireFtPerLb: r.fields["Wire ft/lb"] || 0 };
   });
 
-  // Index main-base jobs by record ID. Transactions carry the main-base job id
+  // Main-base jobs indexed by record ID. Transactions carry the main-base job id
   // in "Job ID (Main)" text, so taxable/display resolve straight from it — no
-  // cross-base mirror, no name matching (Drop-Jobs-mirror bet, Step C).
-  const mainJobById = {};
-  mainJobRecords.forEach(r => {
-    const f       = r.fields || {};
-    const taxable = (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable";
-    const display = (f["Job PO"] || f["Job Name"] || "").trim();
-    mainJobById[r.id] = { id: r.id, taxable, display };
-  });
+  // cross-base mirror, no name matching (Drop-Jobs-mirror bet, Step C). The index
+  // comes from Neon now, keyed on the same Airtable rec ids (Step B0).
+  const mainJobById = mainJobs.index;
 
   // Build per-job, per-item accumulations using cost-per-transaction so that
   // multiple transactions at different snapshot prices are weighted correctly.

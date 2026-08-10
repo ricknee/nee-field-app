@@ -245,20 +245,36 @@ Slices 2-4 are optional and independent. Slice 1 stands alone.
 
 ---
 
+## ✅ CLOSED — Scott Koehn's 8 unlinked hours
+
+The YTD hours tile and its drill-down differ by exactly **8.00 h**: one entry (Scott Koehn,
+2026-05-18, class `Contract`) has `employee_name` filled in but `employee_id` NULL, so the
+drill-down skips it — exactly as the Airtable version always did.
+
+**Owner's decision 2026-08-10: leave it. Scott no longer works here.** Do not "fix" this by
+back-linking the row; the small tile-vs-drill-down gap is accepted and should not be re-raised.
+It is a broken link, not a code bug, and nothing downstream depends on it — the entry has no
+job, so it never reached job labor cost or GP.
+
+---
+
 ## Slice 5 (later) — self-service "forgot PIN"
 
 Owner's stated intent 2026-08-08: *"later on I'll add [that] change with phone numbers or email."*
 Deliberately deferred, not rejected. Admin reset (shipped) covers the need for a crew of 8 where
 the owner is usually on site.
 
-> ### ⚠ The blocker is data, not code
-> **Not one of the 11 employee records has a Primary Email or a Primary Phone.** Both fields exist
-> on the Airtable table and both are empty on every row, verified 2026-08-08. A reset flow has
-> nowhere to send a code, so **populating those fields is the prerequisite** — and it is free,
-> needs no code, and can be done in the Airtable grid today or through slice 2's edit form.
+> ### ✅ UNBLOCKED 2026-08-09 — owner deferred the build, not the prerequisite
+> The blocker was data, not code: no employee record had a phone or an email, so a reset code had
+> nowhere to go. **All seven real staff now have mobile numbers**, entered through slice 2's edit
+> form — Jeff, Larry, Miles, Patrick, Rick, Tisha, Arlene.
 >
-> Until they are filled in, this slice cannot start. Fill them in as people are onboarded and the
-> blocker clears itself.
+> `backup` and `Sam W` are **test accounts** (owner, 2026-08-09) and deliberately have none.
+> Exclude them from any "does everyone have X" check. Nobody has an email; **SMS is the plan.**
+>
+> **Owner's call 2026-08-09: build it later.** Nothing blocks it now. For a crew of seven,
+> Change PIN on the People screen is usually faster than an SMS round-trip, so this is a
+> convenience feature, not a gap.
 
 Then, roughly:
 

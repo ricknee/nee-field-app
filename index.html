@@ -169,6 +169,10 @@
     .clock-btn {
       width: 100%; padding: 16px; font-size: 17px; font-weight: 700;
       border: none; border-radius: 10px; color: #fff; cursor: pointer;
+      /* Let the label wrap rather than set the button's minimum width. A button's
+         text is a single unbreakable run otherwise, which is what let these push
+         the panel sideways on a narrow screen. */
+      white-space: normal; overflow-wrap: anywhere;
     }
     .clock-btn-in     { background: #16a34a; }
     .clock-btn-out    { background: #dc2626; }
@@ -179,7 +183,10 @@
     /* Break and Clock Out share a row; Clock Out is not the bigger target of the
        two, because ending a shift by accident is the more expensive mistake. */
     .clock-btn-row { display: flex; gap: 10px; }
-    .clock-btn-row .clock-btn { flex: 1; }
+    /* Same min-width:auto trap — without this, "⏸ Lunch / Break" and "Clock Out"
+       each hold their full text width and together push the panel wider than the
+       phone rather than wrapping. */
+    .clock-btn-row .clock-btn { flex: 1; min-width: 0; }
     /* A paused timer must not look like a running one that's stuck. */
     .clock-elapsed.is-paused { color: var(--muted); }
     .clock-pill.is-break {
@@ -1536,6 +1543,16 @@
       max-height: calc(100dvh - 40px);
       overflow-y: auto; box-shadow: 0 8px 48px rgba(0,0,0,0.32);
       display: flex; flex-direction: column;
+      /* ⚠ THE ONE THAT MADE MODALS WIDER THAN THE PHONE.
+         The backdrop is display:flex, so this is a FLEX ITEM, and flex items
+         default to min-width:auto — they refuse to shrink below their content's
+         minimum width. That makes `width: 98%` merely a suggestion: any child
+         that can't shrink (two buttons side by side, a long unbroken string)
+         drags the whole modal past the screen edge, taking the close button and
+         half the content with it.
+         min-width:0 restores the obvious behaviour — the box obeys its width and
+         the content wraps or scrolls inside it. */
+      min-width: 0;
     }
     .payroll-modal-header {
       padding: 16px 22px 12px; border-bottom: 1px solid var(--line);

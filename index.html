@@ -298,10 +298,14 @@
       letter-spacing: .04em; color: var(--muted); margin-bottom: 8px;
     }
     .ww-row {
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
-      margin-bottom: 8px; background: #f0fdf4;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px;
+      margin-bottom: 6px; background: #f0fdf4;
     }
+    /* Same flex trap as everywhere else in this file — a long job name would
+       otherwise widen the row instead of truncating inside it. */
+    .ww-row > div:first-child { min-width: 0; }
+    .ww-row > div:first-child > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ww-row.is-paused { background: #fffbeb; }
     .ww-row.is-stale  { background: #fef2f2; border-color: #fca5a5; }
 
@@ -19088,7 +19092,11 @@
     let ticks = 0;
     wwTicker = setInterval(() => {
       wwTickElapsed();
-      if (++ticks % 30 === 0 && !document.hidden) loadWhosWorking(true).catch(() => {});
+      // Only auto-refresh the LIVE tab. A refresh re-renders the panel, which
+      // would wipe a reconciliation you just ran 29 seconds ago.
+      if (++ticks % 30 === 0 && !document.hidden && wwTab === "onclock") {
+        loadWhosWorking(true).catch(() => {});
+      }
     }, 1000);
   }
   window.openWhosWorking = openWhosWorking;
@@ -19191,7 +19199,7 @@
         ${PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
       </select>
       <button class="btn btn-primary btn-sm" onclick="wwClockIn()">Clock In</button>
-    ` : `<div class="clock-note">Everyone eligible is already on the clock.</div>`;
+    ` : "";   // the "everyone is already on" case is handled by the caller
 
     const todayHtml = today.length ? today.map(r => `
       <div class="clock-row">
@@ -19201,26 +19209,53 @@
         }</span>
       </div>`).join("") : `<div class="clock-note">No finished shifts today yet.</div>`;
 
+    // Same shape as My Hours: tabs, and the live view first. Everything used to
+    // be stacked on one screen — roster, a clock-someone-in form, today's
+    // finished shifts and a reconciliation tool — which is a lot to scroll past
+    // to answer "who is on site".
     el.innerHTML = `
+      <div class="mh-tabs">
+        <button type="button" data-tab="onclock"   class="${wwTab === "onclock"   ? "is-on" : ""}" onclick="wwSetTab('onclock')">On the clock${on.length ? ` (${on.length})` : ""}</button>
+        <button type="button" data-tab="today"     class="${wwTab === "today"     ? "is-on" : ""}" onclick="wwSetTab('today')">Today</button>
+        <button type="button" data-tab="reconcile" class="${wwTab === "reconcile" ? "is-on" : ""}" onclick="wwSetTab('reconcile')">vs QuickBooks</button>
+      </div>
       ${notCounting}
-      <div class="ww-head">On the clock — ${on.length}</div>
-      ${onHtml}
-      <div class="ww-head" style="margin-top:18px;">Clock someone in</div>
-      <div class="ww-form">${offHtml}</div>
-      <div class="ww-head" style="margin-top:18px;">Finished today</div>
-      ${todayHtml}
 
-      <div class="ww-head" style="margin-top:22px;">QuickBooks vs the clock</div>
-      <div class="ww-form">
-        <input id="wwRecFrom" type="date" class="ww-input" value="${esc(wwWeekStart())}" />
-        <input id="wwRecTo"   type="date" class="ww-input" value="${esc(wwToday())}" />
-        <button class="btn btn-sm" onclick="wwReconcile()">Compare</button>
-      </div>
-      <div id="wwRecOut" class="clock-note">
-        The soak only proves something if the two agree. Pick a range and compare.
-      </div>
+      ${wwTab === "onclock" ? `
+        ${onHtml}
+        <div style="margin-top:14px;">
+          ${off.length ? `
+            <a href="#" onclick="event.preventDefault();wwToggleAdd()"
+               style="color:var(--accent); font-size:13px; font-weight:600;">
+              ${wwAddShown ? "− Cancel" : "+ Clock someone in"}</a>
+            <div class="${wwAddShown ? "" : "hidden"}" style="margin-top:10px;">
+              <div class="ww-form">${offHtml}</div>
+            </div>`
+          : `<div class="clock-note">Everyone eligible is already on the clock.</div>`}
+        </div>` : ""}
+
+      ${wwTab === "today" ? todayHtml : ""}
+
+      ${wwTab === "reconcile" ? `
+        <div class="ww-form">
+          <input id="wwRecFrom" type="date" class="ww-input" value="${esc(wwWeekStart())}" />
+          <input id="wwRecTo"   type="date" class="ww-input" value="${esc(wwToday())}" />
+          <button class="btn btn-primary btn-sm" onclick="wwReconcile()">Compare</button>
+        </div>
+        <div id="wwRecOut" class="clock-note">
+          The soak only proves something if the two agree. Pick a range and compare.
+        </div>` : ""}
     `;
   }
+
+  let wwTab = "onclock";
+  let wwAddShown = false;
+
+  function wwSetTab(t) { wwTab = t; renderWhosWorking(); }
+  window.wwSetTab = wwSetTab;
+
+  function wwToggleAdd() { wwAddShown = !wwAddShown; renderWhosWorking(); }
+  window.wwToggleAdd = wwToggleAdd;
 
   // ── 🌴 TIME OFF — the admin queue and the bulk actions ────────────────────
   // Deliberately NOT on People: approving is queue work, done top-to-bottom, and

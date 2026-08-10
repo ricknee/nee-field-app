@@ -1,17 +1,49 @@
 # Plan: a time clock in the field app
 
-**Status:** **BUILT 2026-08-08 — shipped INERT, not in use.** The gate this was parked behind
-cleared: Step 3 landed 2026-08-07 and the field-app migration completed 2026-08-08.
+**Status: ✅ BUILT AND IN DAILY USE — soaking alongside QuickBooks Time. Feature work closed
+2026-08-10** at the owner's call: *"ive completed what ive set out to do until i find something
+else i dont like."*
 
-Owner's call on building it, 2026-08-08: *"right now just build the app and replace qb time later
-on. not going to use time tracking in the app until its complete and ready for use."*
+| | |
+|---|---|
+| **On production** | `TIME_CLOCK=on` — every payroll-eligible role can punch |
+| **Counting toward pay** | **No.** `TIME_CLOCK_PAYROLL` is unset. **QuickBooks Time is still the book of record.** |
+| **In use since** | 2026-08-10 — Jeff Koehn and Patrick Gingerich punching daily |
+| **Schema** | `db/schema/018` → `028` |
+| **Crew must still** | keep doing QuickBooks Time. This is double entry until cutover. |
 
-So it is built and switched **off**. QuickBooks Time keeps running and keeps being the book of
-record. Nothing below happens to anyone until two env vars are set — see **§11 Switching it on**,
-which is also the record of what was actually built and where it differs from the original draft.
+### What exists
 
-*Original status, kept for the reasoning: NOT BUILT — parked deliberately. Owner's call 2026-08-07:
-finish the migration first, then look at time.*
+Punch in/out · **breaks** (deducted, never paid) · **Switch** class mid-shift without leaving the
+job · adjust start/stop times, job, class and city tax · delete a shift · **offline queue** ·
+per-job **city tax** (travel always untaxed) · **overhead jobs** pinned into the picker
+independent of status · **PTO**: request → approve → hours, backdating, balances in days, paid
+holidays on top of the allowance, holiday auto-fill, year-end rollover · **payroll PDF** reports
+Worked / Reg / OT / Paid Vacation / Paid Holiday and never pays overtime on leave · **Who's
+Working** roster with admin punch in/out · **QB-vs-clock reconciliation** · home-screen install
+with one-tap punch shortcuts · a revocable per-person **widget endpoint**.
+
+### ⬜ Before the switch is thrown — the whole list
+
+1. **`promoteClockPunches` dry run** (§ below, ~1 h). The riskiest action in the feature and it has
+   only ever run on a test branch.
+2. **The salaried name list.** `SALARIED = ["Larry Unruh","Miles Unruh","Rick Unruh"]`, hardcoded
+   in `index.html`. Rename any of them in Airtable and that person is silently paid **hourly with
+   overtime** on the next run. A live hazard, independent of the clock. ~30 min.
+3. **Open-shift overlap guard** (§ below). Adjusting an open shift's start backwards over an
+   earlier punch double-counts. Harmless until punches become pay.
+4. **Weeks of clean reconciliation.** The gate is the numbers agreeing, not time passing — and
+   that needs the crew punching *consistently*, not occasionally.
+5. **The §3 fork:** replace QuickBooks Time, or feed it. Still undecided, still the owner's.
+
+### ⬜ Never tested
+
+The **offline queue on a real phone losing signal**. Everything else has been exercised on
+production or against a Neon branch; this one hasn't, and crews work in basements.
+
+*Earlier statuses, kept for the reasoning: BUILT 2026-08-08, shipped inert — "build the app and
+replace qb time later on". Before that: NOT BUILT, parked 2026-08-07 — "finish migrating first,
+then we'll look at time."*
 
 **One-line:** Punch in and out from the phone that is already in the electrician's hand, against a
 job, and have it become a time entry in Neon — where time entries already live.

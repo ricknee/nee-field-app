@@ -81,7 +81,13 @@ answers, just slowly. It went unnoticed for three days.
   the riskiest switch in the migration — and flipping it back takes seconds with no rebuild.
   Only turn it on once the shadow logs are clean. `_source` on the login response says which
   store actually answered. See `netlify/functions/_employees.js`.
-- `TIME_CLOCK` / `TIME_CLOCK_PAYROLL` — **optional; the in-app time clock's two kill switches.**
+- `TIME_CLOCK` / `TIME_CLOCK_PAYROLL` — **the in-app time clock's two kill switches.**
+  **Production today: `TIME_CLOCK=on`, `TIME_CLOCK_PAYROLL` UNSET.** So the crew punches, and
+  **nothing they punch counts** — QuickBooks Time is still the book of record and the crew is
+  double-entering until cutover. Feature work closed 2026-08-10; the clock has been in daily use
+  since. Before flipping `TIME_CLOCK_PAYROLL`, work the checklist at the top of
+  `docs/PLAN-time-clock.md` — it includes a `promoteClockPunches` dry run that does not exist yet
+  and the hardcoded `SALARIED` name list, which is a live payroll hazard on its own.
   Both default to off, and the clock ships **inert**: unset, `clockStatus` answers
   `enabled:false`, the UI renders nothing and `clockIn`/`clockOut` 403.
   `TIME_CLOCK` = `admin` | `on` controls **who can punch** (admin only, for shaking it out on

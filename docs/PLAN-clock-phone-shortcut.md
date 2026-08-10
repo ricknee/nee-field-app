@@ -1,8 +1,38 @@
 # Plan: clock in/out from a phone shortcut
 
-**Status:** **NOT BUILT — planned only.** Owner's idea 2026-08-08, while first trying the time
-clock: *"can i make a shortcut on my phone to clock in out and somehow?? just another thing to plan
-for dont build."*
+**Status: Layer 1 ✅ BUILT AND LIVE. Layer 2 ⏸ PARKED 2026-08-10** — owner: *"mark the widget for
+later, i dont hav to hav it and its taking time i need for other stuff."*
+
+### ✅ Layer 1 — done, in production
+
+- `manifest.json` (there was none), `apple-touch-icon`, theme colour — the app installs properly
+  to a home screen instead of showing a blurry page screenshot as its icon.
+- Android **long-press shortcuts**: Clock In / Clock Out / My Hours.
+- `?clock=in`, `?clock=out`, `?open=myhours` deep links, which punch and then land on My Hours.
+- Service worker cache bumped to v2 so the manifest and icon resolve offline.
+
+### ⏸ Layer 2 — the widget: server side DONE, phone side NOT
+
+**The backend is finished and live.** Only the widget-host setup remains, and that is
+configuration on a phone rather than code here.
+
+- `clockWidget` endpoint, unauthenticated by design and carrying its own signed token — one read
+  action, one person's own clock state, revocable via `employees.widget_key` without signing them
+  out. See the long note above `handleClockWidget`.
+- `widgetLink` mints and rotates a person's URL; the link is on ⏱ My Hours → Timesheets.
+- `?fmt=text` returns ONE LINE (`3h 51m · Sullivan Pullet (AVS 272)`), plus `&f=today|job|state`,
+  specifically so a widget host doesn't have to parse JSON.
+
+**What's left is entirely on the phone:** point KWGT (or Tasker) at the URL. The known unknown is
+whether **KWGT's free tier allows network calls at all** — Kustom gates some features behind Pro,
+and `wg()` may be one. If it is, Tasker does the same job without the ambiguity.
+
+⚠ A widget can never tick live. iOS and Android refresh widgets on their own schedule, so it shows
+"3h 51m as of 11:20", not a running clock. The live timer stays in the app and on the red banner.
+
+*Original status, kept for the reasoning: NOT BUILT — planned only. Owner's idea 2026-08-08, while
+first trying the time clock: "can i make a shortcut on my phone to clock in out and somehow?? just
+another thing to plan for dont build."*
 
 **One-line:** Punch in or out without opening the app, hunting for ⏱ My Hours, and tapping a button
 — because the whole value of a clock is that using it is faster than not bothering.

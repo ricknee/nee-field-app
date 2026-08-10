@@ -204,7 +204,11 @@
     .clock-btn:disabled { opacity: .55; cursor: default; }
     /* Break and Clock Out share a row; Clock Out is not the bigger target of the
        two, because ending a shift by accident is the more expensive mistake. */
-    .clock-btn-row { display: flex; gap: 10px; }
+    .clock-btn-row { display: flex; gap: 8px; }
+    /* Switch and Lunch are secondary to Clock Out — smaller type and less
+       padding, and Clock Out keeps the larger share of the row. */
+    .clock-btn-sm { flex: 0 1 auto; font-size: 14px; padding: 12px 10px; }
+    .clock-btn-row .clock-btn-out { flex: 1.4; }
     /* Same min-width:auto trap — without this, "⏸ Lunch / Break" and "Clock Out"
        each hold their full text width and together push the panel wider than the
        phone rather than wrapping. */
@@ -257,6 +261,20 @@
       background: var(--line); color: var(--muted); font-size: 12px;
     }
     .clock-setting-chev { color: var(--muted); font-size: 20px; line-height: 1; }
+
+    /* ── My Hours tabs ── */
+    .mh-tabs {
+      display: flex; gap: 0; margin: 14px 0 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .mh-tabs.hidden { display: none; }
+    .mh-tabs button {
+      flex: 1; min-width: 0; background: none; border: none; cursor: pointer;
+      padding: 10px 8px; font-family: inherit; font-size: 14px; font-weight: 600;
+      color: var(--muted); border-bottom: 3px solid transparent; margin-bottom: -1px;
+    }
+    .mh-tabs button.is-on { color: var(--accent); border-bottom-color: var(--accent); }
+    .mh-tabs button.hidden { display: none; }
 
     .clock-drill-head {
       display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
@@ -18107,7 +18125,9 @@
 
     // A picker takes over the whole panel — nothing else on screen while you're
     // choosing. Only reachable from the clocked-out form.
-    if (!clockState.open && clockDrill) { renderClockDrill(el); return; }
+    // Early return, so the chrome has to be synced here too — otherwise the tabs
+    // and history stay on screen behind a picker that is meant to take over.
+    if (!clockState.open && clockDrill) { renderClockDrill(el); mhSyncChrome(); return; }
 
     if (clockState.open) {
       const started = Date.parse(clockState.open.started_at);
@@ -18138,12 +18158,12 @@
         ${onBreak()
           ? `<button class="clock-btn clock-btn-resume" onclick="clockBreak(false)">▶ Back to Work</button>
              <div class="clock-note">Your worked time is paused. It isn't counting right now.</div>`
-          : `<!-- Switch gets its own full-width row above the others: arriving on
-                  site happens every single day, and it must not be the button you
-                  have to hunt for. -->
-             <button class="clock-btn clock-btn-switch" onclick="clockSwitchSheet()">🔄 Switch — I'm on site</button>
-             <div class="clock-btn-row" style="margin-top:10px;">
-               <button class="clock-btn clock-btn-break" onclick="clockBreak(true)">⏸ Lunch / Break</button>
+          : `<!-- Switch is small and shares the row now. It was a full-width bar
+                  reading "Switch — I'm on site", which took as much space as
+                  Clock Out for something you tap once a day. -->
+             <div class="clock-btn-row">
+               <button class="clock-btn clock-btn-switch clock-btn-sm" onclick="clockSwitchSheet()">Switch</button>
+               <button class="clock-btn clock-btn-break clock-btn-sm" onclick="clockBreak(true)">Lunch</button>
                <button class="clock-btn clock-btn-out" onclick="clockOutSheet()">Clock Out</button>
              </div>`}
 
@@ -18218,10 +18238,24 @@
       `;
     }
 
+    // History lives in the Timesheets tab now, not stacked under the clock.
+    renderClockRecent();
+    mhSyncChrome();
+  }
+
+  // ── Timesheets tab: your recent punches ─────────────────────────────────
+  function renderClockRecent() {
+    const el = $("clockRecent");
+    if (!el) return;
     const recent = clockState.recent || [];
-    if (recent.length) {
-      el.innerHTML += `
-        <div style="margin-top:16px; font-size:12px; color:var(--muted);">Recent punches</div>
+    if (!clockState.enabled || !recent.length) {
+      el.innerHTML = clockState.enabled
+        ? `<div class="clock-note">No punches in the last 14 days.</div>` : "";
+      return;
+    }
+    {
+      el.innerHTML = `
+        <div style="margin-top:4px; font-size:12px; color:var(--muted);">Recent punches</div>
         ${recent.slice(0, 8).map(r => {
           if (clockEdit.target === r.id) return renderPunchEditor(r);
           const hrs = (Number(r.duration_seconds) / 3600);
@@ -18241,24 +18275,46 @@
       `;
     }
 
-    // Outside the clocked-in/out branches on purpose. It lived inside the
-    // clocked-IN one, so anyone setting up a widget while clocked out simply
-    // could not find it — and setting up a widget is exactly the sort of thing
-    // you do sitting down, not mid-shift.
-    el.innerHTML += `
-      <div class="clock-note" style="margin-top:14px;">
-        <a href="#" onclick="event.preventDefault();clockWidgetLink(false)"
-           style="color:var(--accent);">Home-screen widget link</a>
-      </div>
-      <div id="clockWidgetOut"></div>`;
-
-    // Any editor on screen hosts the "edit"-scope picker, so draw its list after
-    // this innerHTML lands — same as the clocked-out branch does for its own.
-    if (clockEdit.target) {
+    // A punch editor lives inside this list, and it hosts the "edit"-scope job
+    // picker — so its list has to be drawn after this innerHTML lands.
+    if (clockEdit.target && clockEdit.target !== "open") {
       renderClockJobList("edit");
-      clockEditOpenSyncCity();   // open-shift editor; no-ops elsewhere
-      clockEditSyncCity();       // finished-punch editor; no-ops elsewhere
+      clockEditSyncCity();
     }
+  }
+
+  // ── My Hours tabs ───────────────────────────────────────────────────────
+  // Timesheets (history + rollups) and Time off. The clock itself is not a tab —
+  // it stays above them, because it is the reason the screen gets opened.
+  let mhTab = "timesheets";
+
+  function mhSetTab(tab) {
+    mhTab = tab;
+    mhSyncChrome();
+  }
+  window.mhSetTab = mhSetTab;
+
+  function mhSyncChrome() {
+    const tabs = $("mhTabs"), ts = $("mhTabTimesheets"), to = $("mhTabTimeoff");
+    if (!tabs || !ts || !to) return;
+    // While a picker has taken over the panel, everything below it is noise.
+    const drilling = !!clockDrill && !clockState.open;
+
+    // No allowance means no PTO for this person (the salaried owners), so the
+    // tab would open onto nothing. Hide it and pin them to Timesheets rather
+    // than offering a dead end.
+    const hasPto = !!(ptoData && ptoData.tracked);
+    const btnTo = tabs.querySelector('button[data-tab="timeoff"]');
+    if (btnTo) btnTo.classList.toggle("hidden", !hasPto);
+    if (!hasPto && mhTab === "timeoff") mhTab = "timesheets";
+
+    // With only one tab left there is nothing to switch between, so the bar
+    // itself is noise.
+    tabs.classList.toggle("hidden", drilling || !hasPto);
+    ts.classList.toggle("hidden", drilling || mhTab !== "timesheets");
+    to.classList.toggle("hidden", drilling || mhTab !== "timeoff");
+    tabs.querySelectorAll("button").forEach(b =>
+      b.classList.toggle("is-on", b.dataset.tab === mhTab));
   }
 
   // ── Adjusting times ─────────────────────────────────────────────────────
@@ -18706,8 +18762,9 @@
     if (!el || !ptoData) return;
     // No allowance set = not tracked (the salaried owners). Show nothing at all
     // rather than a zero balance, which would read as "you've used it all".
-    if (!ptoData.tracked) { el.classList.add("hidden"); el.innerHTML = ""; return; }
+    if (!ptoData.tracked) { el.classList.add("hidden"); el.innerHTML = ""; mhSyncChrome(); return; }
     el.classList.remove("hidden");
+    mhSyncChrome();   // the Time off tab only exists once there's an allowance
 
     const b = ptoData.balance || {};
     const remaining = Number(b.remaining_hours) || 0;
@@ -22621,12 +22678,31 @@
            screen to do in a hurry, and the rollups are what you browse afterwards.
            Rendered entirely from JS and hidden outright when the clock is off, so
            this markup costs nothing while the feature is dormant. -->
+      <!-- The clock stays put at the top — it is why the screen gets opened.
+           Everything you only sometimes want (history, rollups, time off) lives
+           behind the tabs below it, rather than stacked underneath forever. -->
       <div id="clockPanel" class="clock-panel hidden"></div>
-      <!-- PTO: balance + request. Below the clock (punching is the urgent thing)
-           but above the rollups. Hidden entirely when nobody has set an allowance,
-           so it costs nothing for the salaried owners who don't track PTO. -->
-      <div id="ptoPanel" class="clock-panel hidden"></div>
-      <div id="mhTiles" class="mh-tiles"></div>
+
+      <div id="mhTabs" class="mh-tabs hidden">
+        <button type="button" data-tab="timesheets" onclick="mhSetTab('timesheets')">Timesheets</button>
+        <button type="button" data-tab="timeoff"    onclick="mhSetTab('timeoff')">Time off</button>
+      </div>
+
+      <div id="mhTabTimesheets">
+        <div id="clockRecent"></div>
+        <div id="mhTiles" class="mh-tiles"></div>
+        <div id="clockWidgetWrap" class="clock-note" style="margin-top:14px;">
+          <a href="#" onclick="event.preventDefault();clockWidgetLink(false)"
+             style="color:var(--accent);">Home-screen widget link</a>
+        </div>
+        <div id="clockWidgetOut"></div>
+      </div>
+
+      <!-- Hidden entirely when nobody has set an allowance, so it costs nothing
+           for the salaried owners who don't track PTO. -->
+      <div id="mhTabTimeoff" class="hidden">
+        <div id="ptoPanel" class="clock-panel hidden"></div>
+      </div>
     </div>
   </div>
 </div>

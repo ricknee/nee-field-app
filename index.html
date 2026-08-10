@@ -7480,10 +7480,23 @@
       y += ROW_H;
     }
 
-    // Filename carries the panel and the job, because these get emailed.
+    // Filename carries the panel and the job, because these get emailed — and
+    // the DATE, because it did not and that cost an afternoon.
+    //
+    // Every download used to land on the same filename. Android keeps the first
+    // file and quietly saves the next as "… (1).pdf", so tapping the entry in
+    // Downloads opens the ORIGINAL — a schedule captured days earlier, reading
+    // almost entirely "spare". It looks exactly like the PDF builder dropping
+    // the descriptions, and there is nothing on the page to tell you otherwise.
+    // Dating the file makes the newest one obvious in a download list, and the
+    // status line names it so you know what you are looking for.
     const safe = (s) => String(s || "").replace(/[\\/:*?"<>|]/g, "").trim();
-    doc.save(`Panel ${safe(p.name)}${jobName ? ` - ${safe(jobName)}` : ""}.pdf`);
-    setPanelStatus("PDF downloaded.");
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const filename = `Panel ${safe(p.name)}${jobName ? ` - ${safe(jobName)}` : ""} ${stamp}.pdf`;
+    doc.save(filename);
+    setPanelStatus(`Downloaded ${filename}`);
   }
 
   // Only managers can delete, so only they need the bin fetched.

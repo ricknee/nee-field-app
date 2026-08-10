@@ -26,7 +26,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
 | **Employees + LOGIN** | ✅ **In Neon since 2026-08-08 — both apps.** `LOGIN_SOURCE=neon` is an env-var **kill switch** (rollback in ~30 s, no code revert). Verified on prod: `_source:"neon"`, the **Airtable rec id** not the Neon uuid, right person and role. Employees were the last Airtable-owned dimension. **Cost rates are Neon's too** — the ETL no longer loads `labor_cost_rates`. ⬜ ~16 secondary read sites still hit Airtable (cleanup, §4). |
 | **People admin** | ✅ **New 2026-08-08** — there was no employee screen in either app. `👥 People`: Active/Former roster, **access toggle that actually ends live sessions** (30-day stateless tokens meant unchecking `Active` did nothing to a signed-in phone — a leaver kept access for a month), Show/Change PIN, full edit, add a person, and cost-rate history with raise-vs-correct. `docs/PLAN-employee-admin.md` |
-| **Inventory app** | 🟨 Still Airtable, but **decoupled from the main base since 2026-08-10** — Step A (drop the Jobs mirror) is ✅ **DONE**, and **Step B0** ✅ (the five main-base `Jobs` reads serve from Neon). B/C/D/E not started. ⚠ **Step E is now urgent, not last** — see the note under §4 Step E. |
+| **Inventory app** | 🟨 **Decoupled from the main base and money-correct since 2026-08-10.** ✅ Step A (Jobs mirror dropped), ✅ Step B0 (job reads serve from Neon), ✅ Step E (the push writes Neon, fails closed, prod-verified — Airtable 393 = Neon 393). ⬜ **B, C, D remain** — reference data, the ledger, estimating. Its own tables are still entirely Airtable. |
 
 ## 🎉 THE FIELD-APP MIGRATION IS COMPLETE — 2026-08-08
 
@@ -418,12 +418,42 @@ never reads.
 > ⚠ Neon already has `job_estimates` — the **main base's** estimates, which feed the GP views. The
 > inventory base's `Estimates` is a different thing. Name them `material_estimates`.
 
-### 🔴 Step E — The expense push (~4-6 h) — **NO LONGER LAST. This is a LIVE GAP.**
+### ✅ Step E — The expense push — **DONE + PROD-VERIFIED 2026-08-10** (`ef223d2`)
 
-**Found 2026-08-10 by pushing an expense and looking for it in the field app. It wasn't there.**
+The push writes every expense it creates into Neon and **fails closed** if that doesn't land.
+Airtable stays the identity authority; the mapping is shared with the field app in
+`netlify/functions/_expenses.js`.
 
-The inventory push writes the expense to **Airtable only**. The field app has read expenses from
-**Neon** since Step 4d (2026-08-07). Nothing connects the two:
+**Verified on production, not just in tests:** a real push created `recht3zljWtEABRPj`
+($10.70 → $11.77 billable, *"Inventory materials — 3/4" EMT PIPE ×10"*, job FK resolved) and it
+appeared in Neon **written by the app itself**, four minutes after the backfill. **Airtable 393 =
+Neon 393.**
+
+Three things that mattered more than the wiring:
+
+1. **Failing closed needed more than throwing.** A push whose Airtable write landed and whose Neon
+   write didn't would, on retry, short-circuit as *"already pushed"* and stay invisible forever —
+   the same bug wearing a different hat. **Guard #1 now re-syncs** the expenses for that push id,
+   and failures are collected and reported at the end rather than aborting mid-loop and stranding
+   later groups. The 502 tells the user to push again; the idempotency guard makes that free.
+2. **The sync re-reads each expense** rather than trusting the create response — `Total Cost
+   (Actual)` and the billable amounts are Airtable formulas that feed GP, and syncing before they
+   compute writes zeros into the money columns.
+3. **The push suite had been passing because the sync silently did nothing.**
+   `syncExpenseToNeon` early-returns on a record with no `id` — right for a fail-soft caller, wrong
+   for this one. A re-read that returns something unexpected now fails. Also: `description` mapped
+   only `Description`, but the push writes its text into **`Notes`** — both fields exist, no record
+   has both, and every pushed expense would have synced blank.
+
+**Backfill:** `db/etl/expenses-backfill.mjs` — discovers what Neon is missing rather than taking a
+list, and syncs it through the same code path. Safe to re-run. It also has to name the **production**
+base explicitly, because `.env`'s `AIRTABLE_BASE_ID` is the **sandbox**.
+
+---
+
+**The gap it closed, kept for the record.** Found by pushing $7.50 of pipe and looking for it on the
+job. It wasn't there. The push wrote **Airtable only**; the field app has read expenses from **Neon**
+since Step 4d (2026-08-07). Nothing connected the two:
 
 - Airtable Expenses: **392**. Neon `expenses`: **390**. The two missing are the only pushes since
   the last load.
@@ -437,12 +467,11 @@ not reach the field app or GP at all**, and won't until someone hand-runs a load
 with the books today only because the two affected pushes were $7.76 of testing — the next real
 one would vanish just as silently.
 
-**The fix is Step E itself:** make the push write Neon in the same transaction it writes Airtable,
-the same Neon-first pattern every other slice uses. Its old blocker (field-app 4d) cleared on
-2026-08-07.
-
-> ⚠⚠ **Do not hand-insert the missing rows into Neon as a stopgap.** `expenses` is a full-reload
-> mirror; anything written ahead of a reload is erased, silently. Same trap as the pCloud folder ids.
+**The lesson, which outlives the fix:** this was found by *using the feature and looking for the
+result*, not by reading code. Both apps were individually correct — the push wrote Airtable
+faithfully, the field app read Neon faithfully — and the whole was broken. **Flipping a read in one
+app silently orphans every writer in the other**, and there was no test, type or grep that would
+have caught it.
 
 ### ✅ (Shared) — Login — **DONE 2026-08-08. Both apps serve from Neon.**
 
@@ -659,7 +688,7 @@ They are the only reason anyone still has to touch Airtable in normal operation.
 | **Smoke-test what shipped** | ~20 min | ⬅ **Do this first.** Invoices went live today with no prod exercise. See the list below. |
 | ~~**`handleJobs` full flip**~~ | ✅ **ALREADY DONE** | **This file was wrong.** It claimed ~35 of `mapJob`'s 89 keys had no Neon source. Checked 2026-08-08: `mapJob` returns **87** keys and `mapJobFromNeon` returns **87** — the two apparent differences were comment text, not keys. `handleJobs` is Neon-first and the mapper is complete. Nothing to do. |
 | **Decide the ETL's future** | ~1 h thought | GP inputs are now Neon-**written** rather than loaded, so the hand-run ETL is mostly redundant for them — but it still backfills, and it is the only thing that would catch a mirror that silently stopped. Schedule it, shrink it, or retire it deliberately. |
-| **Inventory track** | ~19-26 h left | `docs/PLAN-inventory-to-neon.md`. **Step A ✅ and Step B0 ✅ both done 2026-08-10.** 🔴 **Step E is the one to do next** — not because it's next in the letters, but because it's a live gap: inventory pushes never reach the field app or GP (§4 Step E). Then B/C/D. ⚠ B/C/D need a **PAT scoped to the inventory base** — neither PAT in `.env` can read it (both 403). |
+| **Inventory track** | ~17-23 h left | `docs/PLAN-inventory-to-neon.md`. **A, B0 and E all done 2026-08-10** — the two apps now agree about money, and nothing is blocked. What remains is **B** (reference data ~5-7 h), **C** (the ledger ~6-8 h), **D** (estimating ~6-8 h) — the inventory base's own tables. ⚠ **All three need a PAT scoped to the inventory base** — neither PAT in `.env` can read it (both 403), which already forced workarounds twice. Get it before starting a slice. |
 | **Employee admin slices 2-4** | — | Separate track, and it carries **two live bugs**: `Role` vs `Role New` differing per app, and email login that has never worked (`Email` ≠ `Primary Email`). |
 
 ## ⬜ Owed smoke tests — things that shipped without being exercised on prod

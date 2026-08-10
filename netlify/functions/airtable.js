@@ -2522,8 +2522,8 @@ async function handleClockSwitch(body, authUser) {
        RETURNING id, class, duration_seconds
      ), reopened AS (
        -- The new segment starts exactly where the old one ended — at the rounded
-       -- minute computed in `calc`. See the note there for why that beats the
-       -- one-minute gap this replaced.
+       -- minute computed in the calc CTE above. See the note there for why that
+       -- beats the one-minute gap this replaced.
        --
        -- The JOB can change here too, not just the class: the real move is
        -- office in the morning, then out to a site.

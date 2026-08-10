@@ -59,7 +59,15 @@
       justify-content: space-between;
       gap: 8px;
       margin-bottom: 5px;
+      /* This row has no wrapping and is the width of the screen. Anything added
+         here that refuses to shrink pushes the whole DOCUMENT into horizontal
+         overflow — which is what a running clock timer did, and it made every
+         modal in the app look broken on a phone. */
+      flex-wrap: wrap; min-width: 0;
     }
+    .topbar-row1 > * { min-width: 0; }
+    .brand-text { min-width: 0; overflow: hidden; }
+    .brand-text h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     .topbar-row2 {
       display: flex;
@@ -139,11 +147,14 @@
        The pill is a live state, so it pulses. Anything permanently animated in a
        top bar is obnoxious, which is why it only ever renders while a shift is
        actually open — the hidden class is the normal state. */
+    /* Full-width banner, not a pill in the top bar — see the markup comment.
+       A row that cannot wrap must never contain something that grows. */
     .clock-pill {
-      display: inline-flex; align-items: center; gap: 7px;
-      background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5;
-      border-radius: 999px; padding: 4px 12px; margin-left: 10px;
-      font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; border: none; border-bottom: 1px solid #fca5a5;
+      background: #fee2e2; color: #991b1b;
+      padding: 7px 12px;
+      font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums;
       cursor: pointer; white-space: nowrap;
     }
     .clock-pill.hidden { display: none; }
@@ -2510,16 +2521,6 @@
         </div>
       </div>
       <span id="userBadge" class="user-badge">—</span>
-      <!-- ON-THE-CLOCK INDICATOR. Deliberately in row1 beside the badge rather than
-           in the row2 button strip: row2 is reordered per-role with flexbox `order`
-           (see the CSS note up top), and a running-state pill that lands in a
-           different place depending on who you are is exactly the thing you stop
-           noticing. This is also the answer to the classic failure of every clock
-           app — being accidentally on the clock overnight. It is visible from every
-           screen, not just My Hours, because that is the whole point of it. -->
-      <button id="clockPill" class="clock-pill hidden" type="button" onclick="openMyHours()">
-        <span class="clock-dot"></span><span id="clockPillText">—</span>
-      </button>
     </div>
     <div class="topbar-row2">
       <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ New Project</button>
@@ -2560,6 +2561,21 @@
       <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
     </div>
   </div>
+
+  <!-- ON-THE-CLOCK BANNER — its own full-width strip under the top bar.
+       It used to sit in topbar-row1 beside the user badge. That row is
+       justify-content:space-between with no wrapping, so on a phone the brand,
+       the name badge and a running timer together were wider than the screen —
+       which pushed the WHOLE PAGE into horizontal overflow. That is why the
+       modals looked too wide and why pinch-zooming shrank the app behind them:
+       the document itself was too wide, not the modal.
+       Full width can't overflow, it reads as the status banner it is, and it is
+       still visible from every screen — which is the point, because being
+       accidentally on the clock overnight is the classic failure of every clock
+       app. -->
+  <button id="clockPill" class="clock-pill hidden" type="button" onclick="openMyHours()">
+    <span class="clock-dot"></span><span id="clockPillText">—</span>
+  </button>
 
   <!-- MAIN LAYOUT -->
   <div class="app-wrap">

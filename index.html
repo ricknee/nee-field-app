@@ -21883,7 +21883,12 @@
       if (!isSalaried) {
         // Week 1
         wkLabel("Week #1", wk1Label, col);
-        dataRow("Weekly Hours", fmtHrs(wk1Total), false);
+        // ⚠ WORKED hours, not the grand total. Reg/OT are computed from this
+        // figure, so showing the total here made the block unreconcilable: "Weekly
+        // Hours 49" directly above "Reg 40 OT 1" reads as eight hours vanishing,
+        // and you have to find the PTO line below to make it add up. On a week with
+        // no leave this is the same number it always was.
+        dataRow("Worked Hours", fmtHrs(wk1Worked), false);
         // NO rounding-adjustment line here, deliberately (owner decision 2026-07-31).
         // This PDF is the FINISHED document that goes to the accountant, not a working
         // one. Payroll is reconciled against QuickBooks Time on screen first and any
@@ -21893,18 +21898,23 @@
         // The adjustment is still computed — it feeds the city-tax allocation below and
         // is recorded as `roundingAdjustment` in the archived JSON for auditability.
         sumRow(`Reg Hrs  ${fmtHrs(wk1Reg)}${wk1OT > 0 ? `     OT Hrs  ${fmtHrs(wk1OT)}` : ""}`);
-        // Broken out for the accountant, and only when there are any — a "PTO 0.00"
+        // Broken out for the accountant, and only when there are any — a "0.00"
         // line on every normal week is noise that trains people to skip the block.
-        if (s1.ptoHours > 0)     sumRow(`PTO Hrs  ${fmtHrs(s1.ptoHours)}`);
+        //
+        // ⚠ "Paid Vacation" is the PRINTED WORDING only. The stored class stays
+        // 'PTO' — v_pto_balances, the overtime exclusions in the payroll maths and
+        // in db/schema/024, and the reconciliation all key on that exact string.
+        // Renaming the data would break every one of them silently.
+        if (s1.ptoHours > 0)     sumRow(`Paid Vacation Hrs  ${fmtHrs(s1.ptoHours)}`);
         if (s1.holidayHours > 0) sumRow(`Paid Holiday Hrs  ${fmtHrs(s1.holidayHours)}`);
         sumRow(`Total Hrs  ${fmtHrs(wk1Total)}`);
         cityTaxSection(taxBreakdown(wk1, wk1Adj), col);
 
         // Week 2
         wkLabel("Week #2", wk2Label, col);
-        dataRow("Weekly Hours", fmtHrs(wk2Total), false);
+        dataRow("Worked Hours", fmtHrs(wk2Worked), false);
         sumRow(`Reg Hrs  ${fmtHrs(wk2Reg)}${wk2OT > 0 ? `     OT Hrs  ${fmtHrs(wk2OT)}` : ""}`);
-        if (s2.ptoHours > 0)     sumRow(`PTO Hrs  ${fmtHrs(s2.ptoHours)}`);
+        if (s2.ptoHours > 0)     sumRow(`Paid Vacation Hrs  ${fmtHrs(s2.ptoHours)}`);
         if (s2.holidayHours > 0) sumRow(`Paid Holiday Hrs  ${fmtHrs(s2.holidayHours)}`);
         sumRow(`Total Hrs  ${fmtHrs(wk2Total)}`);
         cityTaxSection(taxBreakdown(wk2, wk2Adj), col);

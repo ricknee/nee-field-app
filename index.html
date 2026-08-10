@@ -317,6 +317,33 @@
     .ww-elapsed {
       font-variant-numeric: tabular-nums; font-weight: 800; font-size: 16px;
     }
+    /* ── Timesheets: person → week → day → punches ── */
+    .ts-person { margin-bottom: 16px; }
+    .ts-person-head {
+      display: flex; justify-content: space-between; gap: 10px;
+      font-size: 15px; font-weight: 800; padding: 8px 0 6px;
+      border-bottom: 2px solid var(--accent);
+    }
+    .ts-week {
+      display: flex; justify-content: space-between; gap: 10px; width: 100%;
+      background: var(--panel-2); border: none; border-bottom: 1px solid var(--line);
+      padding: 9px 10px; font-family: inherit; font-size: 13px; font-weight: 700;
+      color: inherit; cursor: pointer; text-align: left;
+    }
+    .ts-day {
+      display: flex; justify-content: space-between; gap: 10px;
+      padding: 7px 10px 4px; font-size: 12px; font-weight: 700; color: var(--muted);
+    }
+    .ts-punch {
+      display: flex; justify-content: space-between; gap: 10px;
+      padding: 5px 10px 7px 20px; font-size: 13px;
+      border-bottom: 1px solid var(--line);
+    }
+    .ts-punch.is-clash { background: #fef2f2; }
+    .ts-punch-l { min-width: 0; }
+    .ts-job  { font-size: 11px; color: var(--muted); }
+    .ts-flag { font-size: 11px; color: #b91c1c; font-weight: 700; display: block; }
+
     .ww-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     .ww-input {
       flex: 1; min-width: 140px; padding: 9px 10px; font-size: 14px;
@@ -19234,7 +19261,13 @@
           : `<div class="clock-note">Everyone eligible is already on the clock.</div>`}
         </div>` : ""}
 
-      ${wwTab === "today" ? todayHtml : ""}
+      ${wwTab === "today" ? `
+        <div class="ww-form">
+          <input id="wwTsFrom" type="date" class="ww-input" value="${esc(wwTsFrom || wwWeekStart())}" />
+          <input id="wwTsTo"   type="date" class="ww-input" value="${esc(wwTsTo || wwToday())}" />
+          <button class="btn btn-primary btn-sm" onclick="wwLoadTimesheets()">Show</button>
+        </div>
+        <div id="wwTsOut">${renderTimesheets()}</div>` : ""}
 
       ${wwTab === "reconcile" ? `
         <div class="ww-form">
@@ -19250,6 +19283,108 @@
 
   let wwTab = "onclock";
   let wwAddShown = false;
+
+  // ── Timesheets: person → week → day → punches ───────────────────────────
+  // Grouped rather than a flat list, because Switch means a person now has four
+  // or five segments a day and a flat list repeats their name on every one.
+  let wwTs = null;                 // last fetched rows
+  let wwTsFrom = "", wwTsTo = "";
+  let wwTsOpen = {};               // which weeks are expanded, keyed person|week
+
+  async function wwLoadTimesheets() {
+    wwTsFrom = $("wwTsFrom")?.value || wwWeekStart();
+    wwTsTo   = $("wwTsTo")?.value   || wwToday();
+    const box = $("wwTsOut");
+    if (box) box.innerHTML = `<div class="clock-note">Loading…</div>`;
+    try {
+      const d = await apiGet("clockPunches", { from: wwTsFrom, to: wwTsTo });
+      wwTs = d.rows || [];
+      // Open the most recent week for each person; older ones start collapsed so
+      // a fortnight doesn't arrive as one long wall.
+      wwTsOpen = {};
+      const seen = new Set();
+      wwTs.forEach(r => {
+        if (!seen.has(r.employee)) { seen.add(r.employee); wwTsOpen[`${r.employee}|${r.weekStart}`] = true; }
+      });
+      if (box) box.innerHTML = renderTimesheets();
+    } catch (e) {
+      if (box) box.innerHTML = `<div class="clock-note">Couldn't load: ${esc(e.message)}</div>`;
+    }
+  }
+  window.wwLoadTimesheets = wwLoadTimesheets;
+
+  function wwTsToggle(key) {
+    wwTsOpen[key] = !wwTsOpen[key];
+    const box = $("wwTsOut");
+    if (box) box.innerHTML = renderTimesheets();
+  }
+  window.wwTsToggle = wwTsToggle;
+
+  const wwHrs = n => (Math.round((n + Number.EPSILON) * 100) / 100).toFixed(2);
+  const wwDayName = ymd => {
+    const [y, m, d] = ymd.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  };
+
+  function renderTimesheets() {
+    if (!wwTs) return `<div class="clock-note">Pick a range and tap Show.</div>`;
+    if (!wwTs.length) return `<div class="clock-note">No punches in that range.</div>`;
+
+    // person -> week -> day -> [punches], each level carrying its own total.
+    const people = {};
+    for (const r of wwTs) {
+      const p = (people[r.employee] ||= { hours: 0, weeks: {} });
+      const w = (p.weeks[r.weekStart] ||= { hours: 0, days: {} });
+      const d = (w.days[r.workDate] ||= { hours: 0, rows: [] });
+      p.hours += r.hours; w.hours += r.hours; d.hours += r.hours;
+      d.rows.push(r);
+    }
+
+    return Object.keys(people).sort().map(name => {
+      const p = people[name];
+      const weeks = Object.keys(p.weeks).sort().reverse();   // newest week first
+      return `
+        <div class="ts-person">
+          <div class="ts-person-head">
+            <span>${esc(name)}</span><span>${wwHrs(p.hours)} h</span>
+          </div>
+          ${weeks.map(ws => {
+            const w = p.weeks[ws];
+            const key = `${name}|${ws}`;
+            const open = !!wwTsOpen[key];
+            const days = Object.keys(w.days).sort().reverse();
+            return `
+              <button type="button" class="ts-week" onclick="wwTsToggle('${esc(key)}')">
+                <span>${open ? "▾" : "▸"} Week of ${esc(wwDayName(ws))}</span>
+                <span>${wwHrs(w.hours)} h</span>
+              </button>
+              ${open ? days.map(dk => {
+                const d = w.days[dk];
+                return `
+                  <div class="ts-day">
+                    <span>${esc(wwDayName(dk))}</span><span>${wwHrs(d.hours)} h</span>
+                  </div>
+                  ${d.rows.map(r => `
+                    <div class="ts-punch${r.overlaps ? " is-clash" : ""}">
+                      <span class="ts-punch-l">
+                        ${esc(wwTimeOf(r.startedAt))}–${esc(wwTimeOf(r.endedAt))} ·
+                        ${esc(r.class || "—")}<br>
+                        <span class="ts-job">${esc(r.job || "No job")}</span>
+                        ${r.overlaps ? `<span class="ts-flag">overlaps another punch</span>` : ""}
+                        ${r.breakMins ? `<span class="ts-job"> · ${r.breakMins}m break</span>` : ""}
+                      </span>
+                      <span>${wwHrs(r.hours)} h</span>
+                    </div>`).join("")}`;
+              }).join("") : ""}`;
+          }).join("")}
+        </div>`;
+    }).join("");
+  }
+
+  const wwTimeOf = iso => {
+    const d = new Date(iso);
+    return isNaN(d) ? "—" : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  };
 
   function wwSetTab(t) { wwTab = t; renderWhosWorking(); }
   window.wwSetTab = wwSetTab;

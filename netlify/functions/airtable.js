@@ -582,7 +582,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
 const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates",
-                              "clockRoster", "clockReconcile",
+                              "clockRoster", "clockReconcile", "clockPunches",
                               // The approval queue + everyone's leave balances.
                               "ptoRequests"]);
 
@@ -2712,6 +2712,68 @@ async function handleClockRoster(params) {
     today:    today?.rows    || [],
     _source: "neon",
   });
+}
+
+// ── ADMIN: punches over a range, for the timesheet view ────────────────────
+// The roster answers "who is on site now". This answers "what did everyone
+// actually work", which needs weeks rather than today — grouping is done in the
+// client, so this stays a flat, cheap read.
+async function handleClockPunches(params) {
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(params?.from || "")) ? String(params.from) : null;
+  const to   = /^\d{4}-\d{2}-\d{2}$/.test(String(params?.to   || "")) ? String(params.to)   : null;
+  if (!from || !to) return resp(400, { ok: false, error: "Need from and to dates (YYYY-MM-DD)." });
+
+  const q = await neonQuery(
+    `SELECT c.id, e.name AS employee, e.airtable_id AS employee_id,
+            c.work_date,
+            -- Monday of that week. Matches time_entries.week_start_date, which is
+            -- what payroll groups on, so a week here is the same week there.
+            (c.work_date - (EXTRACT(ISODOW FROM c.work_date)::int - 1)) AS week_start,
+            c.started_at, c.ended_at, c.class, c.job_name,
+            c.duration_seconds::float8 AS duration_seconds,
+            c.break_seconds::float8    AS break_seconds,
+            (c.time_entry_id IS NOT NULL) AS counted,
+            (c.edited_at IS NOT NULL)     AS edited
+       FROM clock_punches c
+       JOIN employees e ON e.id = c.employee_id
+      WHERE c.deleted_at IS NULL
+        AND c.work_date BETWEEN $1::date AND $2::date
+      ORDER BY e.name, c.work_date DESC, c.started_at`,
+    [from, to]);
+
+  const rows = (q?.rows || []).map(r => ({
+    id: r.id,
+    employee: r.employee,
+    employeeId: r.employee_id,
+    workDate:  String(r.work_date).slice(0, 10),
+    weekStart: String(r.week_start).slice(0, 10),
+    startedAt: r.started_at,
+    endedAt:   r.ended_at,
+    class:     r.class || "",
+    job:       r.job_name || "",
+    hours:     Math.round(((Number(r.duration_seconds) || 0) / 3600) * 100) / 100,
+    breakMins: Math.round((Number(r.break_seconds) || 0) / 60),
+    counted:   r.counted === true,
+    edited:    r.edited === true,
+  }));
+
+  // Overlaps are computed here rather than in the browser: it is a per-person
+  // pairwise check, and this is the screen where a double-counted shift should
+  // be visible instead of only turning up when someone queries the database.
+  const byEmp = {};
+  for (const r of rows) (byEmp[r.employee] ||= []).push(r);
+  const overlapping = new Set();
+  for (const list of Object.values(byEmp)) {
+    const sorted = list.slice().sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+    for (let i = 1; i < sorted.length; i++) {
+      if (Date.parse(sorted[i].startedAt) < Date.parse(sorted[i - 1].endedAt)) {
+        overlapping.add(sorted[i].id); overlapping.add(sorted[i - 1].id);
+      }
+    }
+  }
+  rows.forEach(r => { r.overlaps = overlapping.has(r.id); });
+
+  return resp(200, { ok: true, from, to, rows, _source: "neon" });
 }
 
 // Resolve the person an admin is acting ON. Airtable rec id, because that is what
@@ -10520,6 +10582,7 @@ export async function handler(event) {
       if (action === "clockStatus")                 return await handleClockStatus(params, authUser);
       if (action === "clockRoster")                 return await handleClockRoster(params);
       if (action === "clockReconcile")              return await handleClockReconcile(params);
+      if (action === "clockPunches")                return await handleClockPunches(params);
       if (action === "ptoBalance")                  return await handlePtoBalance(params, authUser);
       if (action === "ptoRequests")                 return await handlePtoRequests(params);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);

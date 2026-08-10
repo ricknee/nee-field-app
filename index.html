@@ -18024,11 +18024,6 @@
         ${clockEdit.target === "open" ? renderClockStartEditor() : ""}
         ${countsHtml}${queuedHtml}
         <div class="clock-note">Hours are rounded to the nearest quarter hour on payroll.</div>
-        <div class="clock-note">
-          <a href="#" onclick="event.preventDefault();clockWidgetLink(false)"
-             style="color:var(--accent);">Home-screen widget link</a>
-        </div>
-        <div id="clockWidgetOut"></div>
       `;
     } else {
       // Default the job to whatever the user is already standing in — the job they
@@ -18093,6 +18088,17 @@
         }).join("")}
       `;
     }
+
+    // Outside the clocked-in/out branches on purpose. It lived inside the
+    // clocked-IN one, so anyone setting up a widget while clocked out simply
+    // could not find it — and setting up a widget is exactly the sort of thing
+    // you do sitting down, not mid-shift.
+    el.innerHTML += `
+      <div class="clock-note" style="margin-top:14px;">
+        <a href="#" onclick="event.preventDefault();clockWidgetLink(false)"
+           style="color:var(--accent);">Home-screen widget link</a>
+      </div>
+      <div id="clockWidgetOut"></div>`;
   }
 
   // ── Adjusting times ─────────────────────────────────────────────────────

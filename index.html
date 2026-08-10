@@ -197,6 +197,12 @@
       border-bottom: 1px solid var(--line); padding: 10px 12px;
       font-size: 14px; cursor: pointer; color: inherit;
     }
+    /* A flex item will not shrink below its content unless told to. Without this a
+       long job name pushes the row wider than the panel, and on a phone that
+       becomes the whole screen scrolling sideways. */
+    .clock-job > span:first-child {
+      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     .clock-job:last-child { border-bottom: none; }
     .clock-job.is-on { background: #dcfce7; font-weight: 700; }
     .clock-job-status { font-size: 11px; color: var(--muted); flex: none; }
@@ -240,7 +246,11 @@
     .clock-row {
       display: flex; justify-content: space-between; gap: 10px;
       padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px;
+      /* Same flex trap as .clock-job: a long job name or a request note would
+         otherwise widen the row rather than wrap inside it. */
+      flex-wrap: wrap;
     }
+    .clock-row > span { min-width: 0; overflow-wrap: anywhere; }
     .clock-row:last-child { border-bottom: none; }
 
     #statusChangeRow:not(.hidden) { display: flex; }
@@ -1536,7 +1546,10 @@
       font-family: 'Rajdhani', sans-serif; font-size: 20px; font-weight: 700;
       color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px;
     }
-    .payroll-modal-body { padding: 18px 22px; }
+    /* Backstop. Individual overflows are fixed at their source above, but a modal
+       must never be able to scroll sideways — on a phone that reads as "the app is
+       broken", and the cause is always some flex child refusing to shrink. */
+    .payroll-modal-body { padding: 18px 22px; overflow-x: hidden; min-width: 0; }
     .pr-period-bar {
       display: grid; grid-template-columns: 1fr 1fr auto; gap: 12px;
       align-items: end; margin-bottom: 18px; padding: 14px 16px;
@@ -22222,7 +22235,10 @@
 
 <!-- MY HOURS MODAL (employee/admin self-service hour view) -->
 <div id="myHoursModal" class="payroll-modal-backdrop" style="display:none;">
-  <div class="payroll-modal" style="max-width:680px;">
+  <!-- Narrower than the other modals on purpose: this one is read one-handed on a
+       phone far more often than on a desktop, and a 680px column of clock controls
+       reads as a wall. On a phone the width rule is the 98% below anyway. -->
+  <div class="payroll-modal" style="max-width:560px;">
     <div class="payroll-modal-header">
       <h2>⏱ My Hours</h2>
       <button onclick="closeMyHours()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>

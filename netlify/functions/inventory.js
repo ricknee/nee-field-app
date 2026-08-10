@@ -57,6 +57,7 @@ const _ADMIN_WRITES = new Set([
   "updateItemCost", "createItem", "syncItemCostToVendor", // catalog / pricing
   "delete",              // transaction deletion
   "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
+  "loadInventoryReference",  // bulk-loads Neon reference tables (Step B)
 ]);
 
 function authzFor(method, action) {
@@ -1449,6 +1450,133 @@ async function handlePushExpenses(body) {
   }
 
   return resp(200, { ok: true, ...summary });
+}
+
+// ── STEP B: LOAD THE REFERENCE TABLES INTO NEON (admin action) ─────────────
+// Locations, Vendors, Inventory Items, Vendor Pricing → Neon (029 schema).
+//
+// WHY THIS RUNS IN THE FUNCTION rather than as a script in db/etl/. Nothing on
+// a dev machine can read the inventory base: both PATs in `.env` return 403 on
+// `appfsLJwfow4CepCw` (one is main-base scoped, the other points at the
+// sandbox). The deployed function holds the credential that can. Same reason
+// `copyAirtablePhotosToR2` runs here — the credential lives where the function
+// does, not where the developer does.
+//
+// Idempotent: every table upserts ON CONFLICT (airtable_id), so re-running
+// refreshes rather than duplicating. Safe to run as often as you like, and it
+// is the catch-up path until the write handlers move in a later slice.
+//
+//   POST { action: "loadInventoryReference" }        (admin only)
+async function handleLoadInventoryReference() {
+  // Chunked multi-row upsert. 866 items in one statement would build a
+  // parameter list Postgres rejects; 100 keeps it comfortable.
+  async function upsertChunked(label, table, cols, rows, updateCols) {
+    let written = 0;
+    for (let i = 0; i < rows.length; i += 100) {
+      const chunk = rows.slice(i, i + 100);
+      const params = [];
+      const tuples = chunk.map(r => {
+        const ph = cols.map(c => { params.push(r[c] ?? null); return `$${params.length}`; });
+        return `(${ph.join(",")}, now())`;
+      });
+      const q = await neonQuery(
+        `INSERT INTO ${table} (${cols.join(",")}, synced_at) VALUES ${tuples.join(",")}
+         ON CONFLICT (airtable_id) DO UPDATE SET
+           ${updateCols.map(c => `${c}=EXCLUDED.${c}`).join(", ")}, synced_at=now()`,
+        params
+      );
+      if (!q?.rows) throw new Error(`${label}: ${q?.error || "Neon unavailable"}`);
+      written += chunk.length;
+    }
+    return written;
+  }
+
+  const bool = (v) => v === true;
+  const sel  = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
+  const num  = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const lnk  = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
+  const date = (v) => (v ? String(v).slice(0, 10) : null);
+
+  const [locs, vends, items, pricing] = await Promise.all([
+    fetchAll(API_ROOT_INV, "Locations", {}),
+    fetchAll(API_ROOT_INV, "Vendors", {}),
+    fetchAll(API_ROOT_INV, "Inventory Items", {}),
+    fetchAll(API_ROOT_INV, "Vendor Pricing", {}),
+  ]);
+
+  const counts = {};
+
+  counts.locations = await upsertChunked("locations", "locations",
+    ["airtable_id", "name", "location_type", "active", "notes"],
+    locs.map(r => ({ airtable_id: r.id, name: r.fields?.["Location Name"] || "",
+      location_type: sel(r.fields?.["Location Type"]), active: bool(r.fields?.["Active Location"]),
+      notes: r.fields?.["Notes"] ?? null })),
+    ["name", "location_type", "active", "notes"]);
+
+  counts.vendors = await upsertChunked("vendors", "vendors",
+    ["airtable_id", "name", "vendor_type", "account_number", "phone", "email", "website",
+     "address", "primary_contact", "payment_terms", "active", "notes"],
+    vends.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      name: f["Vendor Name"] || "", vendor_type: sel(f["Vendor Type"]),
+      account_number: f["Account Number"] ?? null, phone: f["Phone"] ?? null,
+      email: f["Email"] ?? null, website: f["Website"] ?? null, address: f["Address"] ?? null,
+      primary_contact: f["Primary Contact"] ?? null, payment_terms: sel(f["Payment Terms"]),
+      active: bool(f["Active"]), notes: f["Notes"] ?? null }; }),
+    ["name", "vendor_type", "account_number", "phone", "email", "website", "address",
+     "primary_contact", "payment_terms", "active", "notes"]);
+
+  counts.items = await upsertChunked("inventory_items", "inventory_items",
+    ["airtable_id", "name", "category", "product_size", "unit_of_measure", "barcode",
+     "alternate_barcodes", "default_unit_cost", "wire_ft_per_lb", "reorder_point", "active", "notes"],
+    items.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      name: f["Item Name"] || "", category: sel(f["Category"]), product_size: sel(f["Product Size"]),
+      unit_of_measure: sel(f["Unit of Measure"]), barcode: f["Barcode Value"] ?? null,
+      alternate_barcodes: f["Alternate Barcodes"] ?? null,
+      default_unit_cost: num(f["Default Unit Cost"]), wire_ft_per_lb: num(f["Wire ft/lb"]),
+      reorder_point: num(f["Reorder Point"]), active: bool(f["Active Item"]),
+      notes: f["Notes"] ?? null }; }),
+    ["name", "category", "product_size", "unit_of_measure", "barcode", "alternate_barcodes",
+     "default_unit_cost", "wire_ft_per_lb", "reorder_point", "active", "notes"]);
+
+  counts.vendorPricing = await upsertChunked("vendor_pricing", "vendor_pricing",
+    ["airtable_id", "item_airtable_id", "vendor_airtable_id", "active", "preferred", "unit_cost",
+     "unit_of_measure", "vendor_part_number", "min_order_qty", "lead_time_days",
+     "last_price_update", "price_valid_until", "notes"],
+    pricing.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      item_airtable_id: lnk(f["Inventory Item"]), vendor_airtable_id: lnk(f["Vendor"]),
+      active: bool(f["Active"]), preferred: bool(f["Preferred for This Item"]),
+      unit_cost: num(f["Unit Cost"]), unit_of_measure: sel(f["Unit of Measure"]),
+      vendor_part_number: f["Vendor Part Number"] ?? null, min_order_qty: num(f["Min Order Qty"]),
+      lead_time_days: num(f["Lead Time (days)"]), last_price_update: date(f["Last Price Update"]),
+      price_valid_until: date(f["Price Valid Until"]), notes: f["Notes"] ?? null }; }),
+    ["item_airtable_id", "vendor_airtable_id", "active", "preferred", "unit_cost",
+     "unit_of_measure", "vendor_part_number", "min_order_qty", "lead_time_days",
+     "last_price_update", "price_valid_until", "notes"]);
+
+  // Resolve the real FKs from the Airtable ids. Done as a second pass because
+  // the parents have to exist first, and re-run each time so a pricing row
+  // loaded before its item still ends up linked.
+  const fk = await neonQuery(
+    `UPDATE vendor_pricing p SET
+       item_id   = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id),
+       vendor_id = (SELECT v.id FROM vendors v         WHERE v.airtable_id = p.vendor_airtable_id)
+     WHERE p.item_id IS DISTINCT FROM (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id)
+        OR p.vendor_id IS DISTINCT FROM (SELECT v.id FROM vendors v      WHERE v.airtable_id = p.vendor_airtable_id)`);
+  if (!fk?.rows) throw new Error(`vendor_pricing FK resolve: ${fk?.error || "Neon unavailable"}`);
+
+  // Report anything that couldn't be linked rather than leaving it silent — an
+  // unlinked pricing row is invisible to v_item_live_cost.
+  const orphan = await neonQuery(
+    `SELECT count(*)::int AS n FROM vendor_pricing
+      WHERE (item_airtable_id IS NOT NULL AND item_id IS NULL)
+         OR (vendor_airtable_id IS NOT NULL AND vendor_id IS NULL)`);
+
+  return resp(200, {
+    ok: true,
+    airtable: { locations: locs.length, vendors: vends.length, items: items.length, vendorPricing: pricing.length },
+    written: counts,
+    unlinkedPricingRows: orphan?.rows?.[0]?.n ?? null,
+  });
 }
 
 // ── ADJUSTMENT ─────────────────────────────────────────────
@@ -3209,6 +3337,7 @@ export async function handler(event) {
       if (body.action === "receive")         return await handleReceive(body);
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);
+      if (body.action === "loadInventoryReference") return await handleLoadInventoryReference();
       if (body.action === "pushExpenses")    return await handlePushExpenses(body);
       if (body.action === "jobDocUploadUrl") return await handleJobDocUploadUrl(body);
       if (body.action === "createItem")        return await handleCreateItem(body);

@@ -2090,7 +2090,7 @@ async function handleFillHolidays(body) {
   // for the dry run and the real thing, so the preview cannot disagree with what
   // the write then does.
   const plan = await neonQuery(
-    `SELECT h.holiday_date, h.name AS holiday, h.hours::float8,
+    `SELECT to_char(h.holiday_date,'YYYY-MM-DD') AS holiday_date, h.name AS holiday, h.hours::float8,
             e.airtable_id, e.name AS employee,
             EXISTS (SELECT 1 FROM time_entries t
                      WHERE t.employee_id = e.id AND t.work_date = h.holiday_date) AS has_hours
@@ -2102,7 +2102,7 @@ async function handleFillHolidays(body) {
       ORDER BY h.holiday_date, e.name`, [from]);
 
   const rows = (plan?.rows || []).map(r => ({
-    date: String(r.holiday_date).slice(0, 10),
+    date: r.holiday_date,
     holiday: r.holiday,
     employee: r.employee,
     hours: Number(r.hours),
@@ -2385,7 +2385,7 @@ async function handleClockReconcile(params) {
         GROUP BY 1, 2
      )
      SELECT e.name AS employee, e.airtable_id AS employee_id,
-            coalesce(qb.work_date, ck.work_date) AS work_date,
+            to_char(coalesce(qb.work_date, ck.work_date),'YYYY-MM-DD') AS work_date,
             coalesce(qb.hours, 0)   AS qb_hours,
             coalesce(ck.hours, 0)   AS clock_hours,
             coalesce(ck.hours, 0) - coalesce(qb.hours, 0) AS diff,
@@ -2401,7 +2401,7 @@ async function handleClockReconcile(params) {
   const rows = (q?.rows || []).map(r => ({
     employee: r.employee,
     employeeId: r.employee_id,
-    workDate: r.work_date ? String(r.work_date).slice(0, 10) : null,
+    workDate: r.work_date || null,
     qbHours: Number(r.qb_hours) || 0,
     clockHours: Number(r.clock_hours) || 0,
     diff: Number(r.diff) || 0,
@@ -2734,11 +2734,16 @@ async function handleClockPunches(params) {
   if (!from || !to) return resp(400, { ok: false, error: "Need from and to dates (YYYY-MM-DD)." });
 
   const q = await neonQuery(
+    // ⚠ Dates are formatted by POSTGRES, not stringified in JS. The driver hands
+    // back a DATE column as a JS Date, so String(d).slice(0,10) produced
+    // "Mon Aug 10" — which the client then split on "-" and got NaN from, hence
+    // "Week of Invalid Date". to_char removes the guesswork about the wire format.
     `SELECT c.id, e.name AS employee, e.airtable_id AS employee_id,
-            c.work_date,
+            to_char(c.work_date, 'YYYY-MM-DD') AS work_date,
             -- Monday of that week. Matches time_entries.week_start_date, which is
             -- what payroll groups on, so a week here is the same week there.
-            (c.work_date - (EXTRACT(ISODOW FROM c.work_date)::int - 1)) AS week_start,
+            to_char(c.work_date - (EXTRACT(ISODOW FROM c.work_date)::int - 1),
+                    'YYYY-MM-DD') AS week_start,
             c.started_at, c.ended_at, c.class, c.job_name,
             c.duration_seconds::float8 AS duration_seconds,
             c.break_seconds::float8    AS break_seconds,
@@ -2755,8 +2760,8 @@ async function handleClockPunches(params) {
     id: r.id,
     employee: r.employee,
     employeeId: r.employee_id,
-    workDate:  String(r.work_date).slice(0, 10),
-    weekStart: String(r.week_start).slice(0, 10),
+    workDate:  r.work_date,      // already 'YYYY-MM-DD' from to_char
+    weekStart: r.week_start,
     startedAt: r.started_at,
     endedAt:   r.ended_at,
     class:     r.class || "",
@@ -3772,7 +3777,7 @@ async function handleMyHoursBreakdown(params) {
   if (neonEnabled()) {
     const q = await neonQuery(
       `SELECT coalesce(t.airtable_id, t.id::text) AS entry_id,
-              t.work_date, t.job_name, t.hours::float8 AS hours,
+              to_char(t.work_date,'YYYY-MM-DD') AS work_date, t.job_name, t.hours::float8 AS hours,
               j.airtable_id AS job_airtable_id
          FROM time_entries t
          JOIN employees e ON e.id = t.employee_id
@@ -3785,9 +3790,10 @@ async function handleMyHoursBreakdown(params) {
       const r2n = (n) => Math.round(n * 100) / 100;
       const entries = q.rows.map(r => ({
         id:       r.entry_id,
-        // date, not timestamp — slice rather than toISOString, which would
-        // shift the day backwards for anyone west of UTC.
-        workDate: r.work_date ? String(r.work_date).slice(0, 10) : "",
+        // Formatted by Postgres. It used to be String().slice(0,10), which is
+        // wrong twice over: the driver hands back a JS Date, and toISOString
+        // would shift the day backwards for anyone west of UTC.
+        workDate: r.work_date || "",
         jobId:    r.job_airtable_id || null,
         jobName:  r.job_name || "",
         hours:    r2n(Number(r.hours) || 0),

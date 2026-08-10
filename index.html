@@ -17776,7 +17776,21 @@
   // Call Scheduled) is still one tick away.
   const CLOCK_JOB_STATUSES = ["awarded", "ready to invoice", "completed"];
 
-  let clockPick = { jobId: "", search: "", allStatuses: false };
+  // TWO independent pickers, not one shared state.
+  //   "in"   the clock-in form, shown only while clocked OUT
+  //   "edit" any editor — adjusting the open shift, or editing a finished punch
+  //
+  // ⚠ They must be separate. The recent-punches list renders in BOTH the
+  // clocked-in and clocked-out branches, so editing a past punch while clocked
+  // out puts an editor on screen alongside the clock-in form. One shared state
+  // would have them fighting over the selected job, and one shared container id
+  // would mean two #clockJobList elements with $() returning whichever came
+  // first — the list would render into the wrong panel.
+  let clockPick     = { jobId: "", search: "", allStatuses: false };
+  let clockEditPick = { jobId: "", search: "", allStatuses: false };
+
+  const clockPickState  = scope => (scope === "edit" ? clockEditPick : clockPick);
+  const clockPickListId = scope => (scope === "edit" ? "clockJobListEdit" : "clockJobList");
 
   // An explicit clockVisibility ALWAYS beats status. That's the whole point: the
   // overhead buckets (Shop Work, Office Work) are jobs only because the clock has
@@ -17794,7 +17808,7 @@
     return CLOCK_JOB_STATUSES.includes(String(j?.status || "").toLowerCase());
   }
 
-  function clockJobPool() {
+  function clockJobPool(scope = "in") {
     // 'hidden' is absolute — it stays out even behind "show every job", or the
     // setting would only be a suggestion.
     const jobs = (state.jobs || []).filter(j => j && j.id && j.clockVisibility !== "hidden");
@@ -17802,14 +17816,15 @@
     // If nothing matches (a fresh base, or every job in some other state), fall
     // back to the full list rather than showing an empty picker with no
     // explanation.
-    if (clockPick.allStatuses || !live.length) return { jobs, showingAll: true };
+    if (clockPickState(scope).allStatuses || !live.length) return { jobs, showingAll: true };
     return { jobs: live, showingAll: false };
   }
 
-  function renderClockJobList() {
-    const box = $("clockJobList"); if (!box) return;
-    const { jobs, showingAll } = clockJobPool();
-    const q = clockPick.search.trim().toLowerCase();
+  function renderClockJobList(scope = "in") {
+    const pick = clockPickState(scope);
+    const box = $(clockPickListId(scope)); if (!box) return;
+    const { jobs, showingAll } = clockJobPool(scope);
+    const q = pick.search.trim().toLowerCase();
     // Ordered by how likely you are to be standing on it, not alphabetically.
     // Completed jobs outnumber awarded ones 50 to 15 here, so a plain A-Z sort
     // would bury every live job under a wall of finished ones.
@@ -17834,39 +17849,45 @@
     // If this list ever gets genuinely long, the answer is better search — not a
     // silent truncation that gives no clue which jobs are missing.
     const shown  = matched;
-    const chosen = clockPick.jobId;
+    const chosen = pick.jobId;
 
     box.innerHTML = shown.length ? shown.map(j => `
       <button type="button" class="clock-job${j.id === chosen ? " is-on" : ""}"
-              onclick="clockPickJob('${esc(j.id)}')">
+              onclick="clockPickJob('${esc(j.id)}','${esc(scope)}')">
         <span>${esc(j.name || j.id)}</span>
         <span class="clock-job-status">${
           j.clockVisibility === "all" || j.clockVisibility === "admin"
             ? "overhead" : esc(j.status || "")}</span>
       </button>`).join("")
-      : `<div class="clock-note">No ${showingAll ? "" : "active "}jobs match “${esc(clockPick.search)}”.
+      : `<div class="clock-note">No ${showingAll ? "" : "active "}jobs match “${esc(pick.search)}”.
          ${showingAll ? "" : "Tick the box above to search every job."}</div>`;
 
   }
   window.renderClockJobList = renderClockJobList;
 
-  function clockSearchJobs(v) { clockPick.search = v; renderClockJobList(); }
+  function clockSearchJobs(v, scope = "in") {
+    clockPickState(scope).search = v;
+    renderClockJobList(scope);
+  }
   window.clockSearchJobs = clockSearchJobs;
 
-  function clockToggleAllJobs(on) {
-    clockPick.allStatuses = !!on;
-    renderClockJobList();
+  function clockToggleAllJobs(on, scope = "in") {
+    clockPickState(scope).allStatuses = !!on;
+    renderClockJobList(scope);
   }
   window.clockToggleAllJobs = clockToggleAllJobs;
 
   // Picking a job shows its mailing address as CONTEXT and changes nothing else.
   // It deliberately does not touch the city-tax picker — see the warning above.
-  function clockPickJob(id) {
-    clockPick.jobId = (clockPick.jobId === id) ? "" : id;
-    // Whichever picker is on screen; each no-ops when its own field is absent.
-    clockSyncCityTax();          // the clocked-out clock-in form
-    clockEditOpenSyncCity();     // the open-shift adjust editor
-    renderClockJobList();
+  function clockPickJob(id, scope = "in") {
+    const pick = clockPickState(scope);
+    // Tapping the highlighted job again clears it — that is how you reach
+    // "no job" now that the dropdowns are gone.
+    pick.jobId = (pick.jobId === id) ? "" : id;
+    // Whichever city-tax field is on screen; each no-ops when its own is absent.
+    if (scope === "in") clockSyncCityTax();
+    else { clockEditOpenSyncCity(); clockEditSyncCity(); }
+    renderClockJobList(scope);
   }
   window.clockPickJob = clockPickJob;
 
@@ -18102,11 +18123,12 @@
       </div>
       <div id="clockWidgetOut"></div>`;
 
-    // The open-shift editor now hosts the shared job picker, so its list has to
-    // be drawn after this innerHTML lands — same as the clocked-out branch does.
-    if (clockEdit.target === "open") {
-      renderClockJobList();
-      clockEditOpenSyncCity();
+    // Any editor on screen hosts the "edit"-scope picker, so draw its list after
+    // this innerHTML lands — same as the clocked-out branch does for its own.
+    if (clockEdit.target) {
+      renderClockJobList("edit");
+      clockEditOpenSyncCity();   // open-shift editor; no-ops elsewhere
+      clockEditSyncCity();       // finished-punch editor; no-ops elsewhere
     }
   }
 
@@ -18133,11 +18155,17 @@
     clockEdit.target = target;
     // Seed the shared picker with the shift's current job so the editor opens
     // showing what you're actually on, and clear any stale search text.
+    // Seed the EDIT picker with whatever the thing being edited is currently on,
+    // and clear stale search text. Never touches the clock-in picker.
     if (target === "open") {
       const cur = (state.jobs || []).find(j => (j.name || "") === (clockState.open?.job_name || ""));
-      clockPick.jobId = cur?.id || "";
-      clockPick.search = "";
+      clockEditPick.jobId = cur?.id || "";
+    } else if (target) {
+      const p = (clockState.recent || []).find(r => r.id === target);
+      const cur = (state.jobs || []).find(j => (j.name || "") === (p?.job_name || ""));
+      clockEditPick.jobId = cur?.id || "";
     }
+    clockEditPick.search = "";
     renderClockPanel();
   }
   window.clockEditOpen = clockEditOpen;
@@ -18171,14 +18199,14 @@
     return `
       <div style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px;">
         <label class="clock-field">Job</label>
-        <input id="clockJobSearch" type="text" placeholder="Search jobs…" autocomplete="off"
-               value="${esc(clockPick.search)}" oninput="clockSearchJobs(this.value)" />
+        <input type="text" placeholder="Search jobs…" autocomplete="off"
+               value="${esc(clockEditPick.search)}" oninput="clockSearchJobs(this.value,'edit')" />
         <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
-          <input type="checkbox" id="clockJobAll" ${clockPick.allStatuses ? "checked" : ""}
-                 onchange="clockToggleAllJobs(this.checked)" />
+          <input type="checkbox" ${clockEditPick.allStatuses ? "checked" : ""}
+                 onchange="clockToggleAllJobs(this.checked,'edit')" />
           Show every job (not just awarded / ready to invoice / completed)
         </label>
-        <div id="clockJobList" class="clock-job-list"></div>
+        <div id="clockJobListEdit" class="clock-job-list"></div>
         <div class="clock-note">Tap the highlighted job again to clear it.</div>
         <label class="clock-field">Class
           <select id="clockEditOpenClass" onchange="clockEditOpenSyncCity()">${
@@ -18206,7 +18234,6 @@
   // punch time: the job, what it was, and where it was taxed. Wrong-job matters
   // beyond tidiness — those hours get costed to the wrong project's GP.
   function renderPunchEditor(p) {
-    const jobs = (state.jobs || []).slice().sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     return `
       <div style="border:1px solid var(--line); border-radius:8px; padding:10px; margin:6px 0;">
         <label class="clock-field">Started
@@ -18215,13 +18242,16 @@
         <label class="clock-field">Ended
           <input id="clockEditEnd" type="datetime-local" value="${esc(toLocalInput(p.ended_at))}" />
         </label>
-        <label class="clock-field">Job
-          <select id="clockEditJob">
-            <option value="">— No job —</option>
-            ${jobs.map(j => `<option value="${esc(j.id)}" ${
-              (j.name || "") === (p.job_name || "") ? "selected" : ""}>${esc(j.name || j.id)}</option>`).join("")}
-          </select>
+        <label class="clock-field">Job</label>
+        <input type="text" placeholder="Search jobs…" autocomplete="off"
+               value="${esc(clockEditPick.search)}" oninput="clockSearchJobs(this.value,'edit')" />
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
+          <input type="checkbox" ${clockEditPick.allStatuses ? "checked" : ""}
+                 onchange="clockToggleAllJobs(this.checked,'edit')" />
+          Show every job (not just awarded / ready to invoice / completed)
         </label>
+        <div id="clockJobListEdit" class="clock-job-list"></div>
+        <div class="clock-note">Tap the highlighted job again to clear it.</div>
         <label class="clock-field">Class
           <select id="clockEditClass" onchange="clockEditSyncCity()">${
             clockClasses(p.class).map(c =>
@@ -18252,9 +18282,12 @@
   function clockEditSyncCity() {
     const sel = $("clockEditCity");
     if (!sel) return;
-    const travel = ($("clockEditClass")?.value || "") === CLOCK_TRAVEL_CLASS;
-    if (travel) sel.value = "A No Tax";
-    sel.disabled = travel;
+    const cls = $("clockEditClass")?.value || "";
+    // Follows the picked job like every other city-tax field, rather than only
+    // reacting to Travel — a corrected job should bring its tax district with it.
+    const job = (state.jobs || []).find(j => j.id === (clockEditPick.jobId || ""));
+    sel.value = clockDefaultCityTax(job, cls);
+    sel.disabled = (cls === CLOCK_TRAVEL_CLASS);
   }
   window.clockEditSyncCity = clockEditSyncCity;
 
@@ -18287,7 +18320,7 @@
     try {
       const body = punchId
         ? { punchId, startedAt, endedAt,
-            jobId: $("clockEditJob")?.value ?? undefined,
+            jobId: clockEditPick.jobId ?? undefined,
             class: $("clockEditClass")?.value ?? undefined,
             cityTaxes: $("clockEditCity")?.value ?? undefined }
         // The OPEN shift carries the same fields, from its own editor. Sending

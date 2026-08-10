@@ -2292,6 +2292,30 @@ async function handleClockWidget(params) {
                     : fmtHm(worked);
   }
 
+  // ?fmt=text returns ONE LINE of plain text instead of JSON. Widget hosts like
+  // KWGT can place a string but parsing JSON in their formula language is fiddly
+  // and, on some tiers, network+JSON isn't available at all. This makes the whole
+  // setup "fetch this URL, show the result".
+  //   ?fmt=text        "3h 51m · Sullivan Pullet (AVS 272)"
+  //   ?fmt=text&f=today "5h 14m"
+  if (String(params?.fmt || "").toLowerCase() === "text") {
+    const field = String(params?.f || "").toLowerCase();
+    const line =
+      field === "today" ? fmtHm(todaySecs)
+    : field === "job"   ? (o?.job_name || "")
+    : field === "state" ? state
+    : (o ? `${label}${o.job_name ? ` · ${o.job_name}` : ""}` : label);
+    return {
+      statusCode: 200,
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+      },
+      body: line,
+    };
+  }
+
   return resp(200, {
     ok: true,
     state,                       // working | break | out

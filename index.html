@@ -17863,7 +17863,9 @@
   // It deliberately does not touch the city-tax picker — see the warning above.
   function clockPickJob(id) {
     clockPick.jobId = (clockPick.jobId === id) ? "" : id;
-    clockSyncCityTax();
+    // Whichever picker is on screen; each no-ops when its own field is absent.
+    clockSyncCityTax();          // the clocked-out clock-in form
+    clockEditOpenSyncCity();     // the open-shift adjust editor
     renderClockJobList();
   }
   window.clockPickJob = clockPickJob;
@@ -18099,6 +18101,13 @@
            style="color:var(--accent);">Home-screen widget link</a>
       </div>
       <div id="clockWidgetOut"></div>`;
+
+    // The open-shift editor now hosts the shared job picker, so its list has to
+    // be drawn after this innerHTML lands — same as the clocked-out branch does.
+    if (clockEdit.target === "open") {
+      renderClockJobList();
+      clockEditOpenSyncCity();
+    }
   }
 
   // ── Adjusting times ─────────────────────────────────────────────────────
@@ -18120,7 +18129,17 @@
     return isNaN(d) ? null : d.toISOString();
   }
 
-  function clockEditOpen(target) { clockEdit.target = target; renderClockPanel(); }
+  function clockEditOpen(target) {
+    clockEdit.target = target;
+    // Seed the shared picker with the shift's current job so the editor opens
+    // showing what you're actually on, and clear any stale search text.
+    if (target === "open") {
+      const cur = (state.jobs || []).find(j => (j.name || "") === (clockState.open?.job_name || ""));
+      clockPick.jobId = cur?.id || "";
+      clockPick.search = "";
+    }
+    renderClockPanel();
+  }
   window.clockEditOpen = clockEditOpen;
 
   // Same travel rule as everywhere: Travel is untaxed, otherwise the chosen job's
@@ -18129,7 +18148,7 @@
     const sel = $("clockEditOpenCity");
     if (!sel) return;
     const cls = $("clockEditOpenClass")?.value || "";
-    const job = (state.jobs || []).find(j => j.id === ($("clockEditOpenJob")?.value || ""));
+    const job = (state.jobs || []).find(j => j.id === (clockPick.jobId || ""));
     sel.value = clockDefaultCityTax(job, cls);
     sel.disabled = (cls === CLOCK_TRAVEL_CLASS);
   }
@@ -18144,18 +18163,23 @@
     // Job, class and city tax are editable here too, not just the start time.
     // Clocking in with the wrong job — or none — used to be fixable only by
     // clocking out, which destroys the shift you were trying to keep.
-    const jobs = (state.jobs || [])
-      .filter(j => j && j.id && j.clockVisibility !== "hidden" && (clockJobActive(j) || (j.name || "") === (o.job_name || "")))
-      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    // The SAME searchable, status-filtered picker as clock-in — reusing
+    // clockPick and #clockJobList, which is safe because the two are never on
+    // screen together (this editor only exists while clocked in, the clock-in
+    // form only while clocked out). A plain dropdown here was a step backwards
+    // from the picker people already know.
     return `
       <div style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px;">
-        <label class="clock-field">Job
-          <select id="clockEditOpenJob" onchange="clockEditOpenSyncCity()">
-            <option value="">— No job —</option>
-            ${jobs.map(j => `<option value="${esc(j.id)}" ${
-              (j.name || "") === (o.job_name || "") ? "selected" : ""}>${esc(j.name || j.id)}</option>`).join("")}
-          </select>
+        <label class="clock-field">Job</label>
+        <input id="clockJobSearch" type="text" placeholder="Search jobs…" autocomplete="off"
+               value="${esc(clockPick.search)}" oninput="clockSearchJobs(this.value)" />
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
+          <input type="checkbox" id="clockJobAll" ${clockPick.allStatuses ? "checked" : ""}
+                 onchange="clockToggleAllJobs(this.checked)" />
+          Show every job (not just awarded / ready to invoice / completed)
         </label>
+        <div id="clockJobList" class="clock-job-list"></div>
+        <div class="clock-note">Tap the highlighted job again to clear it.</div>
         <label class="clock-field">Class
           <select id="clockEditOpenClass" onchange="clockEditOpenSyncCity()">${
             clockClasses(o.class).map(c =>
@@ -18269,8 +18293,10 @@
         // The OPEN shift carries the same fields, from its own editor. Sending
         // undefined leaves a field untouched server-side, so an empty string is
         // the only way to clear the job — which is what "— No job —" sends.
+        // The open shift's job comes from the shared picker (clockPick), not a
+        // dropdown. "" clears it, which is what tapping the highlighted job does.
         : { startedAt,
-            jobId: $("clockEditOpenJob")?.value ?? undefined,
+            jobId: clockPick.jobId ?? undefined,
             class: $("clockEditOpenClass")?.value ?? undefined,
             cityTaxes: $("clockEditOpenCity")?.value ?? undefined };
       await apiPost("clockEditTimes", body);

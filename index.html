@@ -12096,16 +12096,18 @@
             ${p.pto ? `
               <div>
                 <div style="color:var(--muted);">PTO left ${p.pto.year}</div>
-                <div style="font-weight:600;">${p.pto.remaining.toFixed(1)} h
-                  <span style="font-weight:400; color:var(--muted);">of ${p.pto.entitled.toFixed(1)}</span></div>
+                <div style="font-weight:600;">${ptoDaysLabel(p.pto.remaining)}
+                  <span style="font-weight:400; color:var(--muted);">of ${ptoDays(p.pto.entitled)} · ${p.pto.remaining.toFixed(1)} h</span></div>
               </div>
               <div>
                 <div style="color:var(--muted);">PTO used</div>
-                <div style="font-weight:600;">${p.pto.used.toFixed(1)} h</div>
+                <div style="font-weight:600;">${ptoDaysLabel(p.pto.used)}
+                  <span style="font-weight:400; color:var(--muted);">${p.pto.used.toFixed(1)} h</span></div>
               </div>
               <div>
                 <div style="color:var(--muted);">Paid holidays</div>
-                <div style="font-weight:600;">${p.pto.holiday.toFixed(1)} h</div>
+                <div style="font-weight:600;">${ptoDaysLabel(p.pto.holiday)}
+                  <span style="font-weight:400; color:var(--muted);">${p.pto.holiday.toFixed(1)} h</span></div>
               </div>` : ""}
           </div>
           ${p.pto ? `<div class="pto-bar" style="margin:-4px 0 10px;"><div class="pto-bar-fill" style="width:${
@@ -18404,6 +18406,20 @@
   let ptoData = null;
   let ptoShowForm = false;
 
+  // Nobody thinks "I have 62 hours off". They think "I have about eight days".
+  // Payroll still works in hours — and has to, because half days are real — so
+  // days lead and hours stay alongside rather than replacing them.
+  const PTO_HOURS_PER_DAY = 8;
+  function ptoDays(hours) {
+    // Round to 2dp then stringify, so 80→"10", 44→"5.5", 74→"9.25" — no trailing
+    // zeros, and a half day never silently becomes a whole one.
+    return String(Math.round(((Number(hours) || 0) / PTO_HOURS_PER_DAY) * 100) / 100);
+  }
+  function ptoDaysLabel(hours) {
+    const d = ptoDays(hours);
+    return `${d} day${d === "1" ? "" : "s"}`;
+  }
+
   async function refreshPto() {
     const el = $("ptoPanel");
     if (!el || !state.user) return;
@@ -18438,7 +18454,7 @@
       const tone = { approved: "var(--green)", declined: "#b91c1c",
                      cancelled: "var(--muted)", pending: "#92400e" }[r.status] || "var(--muted)";
       return `<div class="clock-row">
-        <span>${esc(label)} · ${Number(r.total_hours).toFixed(1)} h
+        <span>${esc(label)} · ${ptoDaysLabel(r.total_hours)}
           ${r.decision_note ? `<span style="color:var(--muted); font-size:11px;">· ${esc(r.decision_note)}</span>` : ""}</span>
         <span style="color:${tone}; font-weight:700;">${esc(r.status)}${
           r.status === "pending"
@@ -18450,12 +18466,13 @@
     el.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">
         <div style="font-size:12px; color:var(--muted);">🌴 Paid time off · ${ptoData.year}</div>
-        <div style="font-size:12px; color:var(--muted);">${used.toFixed(1)} of ${entitled.toFixed(1)} h used</div>
+        <div style="font-size:12px; color:var(--muted);">${ptoDaysLabel(used)} of ${ptoDaysLabel(entitled)} used</div>
       </div>
-      <div class="clock-elapsed">${remaining.toFixed(1)} <span style="font-size:15px; font-weight:600;">hours left</span></div>
+      <div class="clock-elapsed">${ptoDays(remaining)} <span style="font-size:15px; font-weight:600;">days left</span></div>
+      <div style="font-size:12px; color:var(--muted); margin-top:-2px;">${remaining.toFixed(1)} hours</div>
       <div class="pto-bar"><div class="pto-bar-fill" style="width:${pct}%;"></div></div>
       ${pending > 0
-        ? `<div class="clock-note">${pending.toFixed(1)} h awaiting approval — not deducted until it's approved.</div>`
+        ? `<div class="clock-note">${ptoDaysLabel(pending)} awaiting approval — not deducted until it's approved.</div>`
         : ""}
 
       ${ptoShowForm ? `
@@ -18731,7 +18748,7 @@
             <div style="font-weight:700;">${esc(r.employee_name)}</div>
             <div style="font-size:12px; color:var(--muted);">
               ${esc(label)} · ${r.days} day${r.days === 1 ? "" : "s"} · ${Number(r.total_hours).toFixed(1)} h
-              ${left != null ? ` · ${left.toFixed(1)} h left` : ""}
+              ${left != null ? ` · ${ptoDaysLabel(left)} left` : ""}
               ${over ? ` <strong style="color:#b91c1c;">· more than they have</strong>` : ""}
             </div>
             ${r.note ? `<div style="font-size:12px;">“${esc(r.note)}”</div>` : ""}
@@ -18911,7 +18928,7 @@
         const tone = { approved: "var(--green)", declined: "#b91c1c",
                        cancelled: "var(--muted)", pending: "#92400e" }[r.status] || "var(--muted)";
         return `<div class="clock-row">
-          <span>${esc(label)} · ${Number(r.total_hours).toFixed(1)} h${
+          <span>${esc(label)} · ${ptoDaysLabel(r.total_hours)}${
             r.note ? ` <span style="color:var(--muted); font-size:11px;">“${esc(r.note)}”</span>` : ""}</span>
           <span style="color:${tone}; font-weight:700;">${esc(r.status)}</span>
         </div>`;

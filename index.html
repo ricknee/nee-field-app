@@ -4028,7 +4028,11 @@
       // at page load so it runs AFTER login — otherwise a tap on an expired
       // session would silently do nothing and the person would walk away
       // believing they were on the clock.
-      if (typeof handleClockDeepLink === "function") handleClockDeepLink().catch(() => {});
+      // Errors are LOGGED, not swallowed. A silent catch here hid a null-element
+      // crash that made the home-screen shortcuts look like they did nothing.
+      if (typeof handleClockDeepLink === "function") {
+        handleClockDeepLink().catch(e => console.error("clock deep link failed:", e));
+      }
 
       // Hide financial tabs from viewers
       if (isViewer()) {
@@ -19109,6 +19113,17 @@
     // login AND on every restored session, so without the flag a re-render could
     // punch twice. The URL is also stripped below, which covers a manual refresh.
     if (clockLinkDone || !state.user) return;
+
+    // ⚠ WAIT FOR THE DOM. This is called from the role-applying code, which runs
+    // inside the FIRST script block (~line 4030). Every modal in this file is
+    // markup that comes AFTER that block closes (~22190), so on a restored
+    // session #myHoursModal does not exist yet and openMyHours() throws on a null
+    // element — silently, because the caller is fire-and-forget. That is exactly
+    // the "it just opens the main app" symptom.
+    if (document.readyState === "loading") {
+      await new Promise(r => document.addEventListener("DOMContentLoaded", r, { once: true }));
+    }
+
     const params = new URLSearchParams(location.search);
     const want = (params.get("clock") || "").toLowerCase();
     const open = (params.get("open") || "").toLowerCase();

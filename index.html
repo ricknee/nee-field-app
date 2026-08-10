@@ -236,6 +236,41 @@
     .clock-job.is-on { background: #dcfce7; font-weight: 700; }
     .clock-job-status { font-size: 11px; color: var(--muted); flex: none; }
 
+    /* ── Tap-in setting rows ── */
+    .clock-setting {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      width: 100%; min-width: 0; text-align: left; cursor: pointer;
+      background: none; border: none; border-bottom: 1px solid var(--line);
+      padding: 11px 2px; color: inherit; font-family: inherit;
+    }
+    .clock-setting-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .clock-setting-label { font-size: 12px; color: var(--muted); }
+    .clock-setting-value {
+      font-size: 15px; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .clock-setting-value.is-muted { color: var(--muted); font-weight: 500; }
+    .clock-setting-r { display: flex; align-items: center; gap: 10px; flex: none; }
+    .clock-setting-x {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 50%;
+      background: var(--line); color: var(--muted); font-size: 12px;
+    }
+    .clock-setting-chev { color: var(--muted); font-size: 20px; line-height: 1; }
+
+    .clock-drill-head {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
+      font-size: 14px; font-weight: 700;
+    }
+    .clock-drill-back {
+      background: none; border: none; color: var(--accent);
+      font-size: 14px; font-weight: 600; cursor: pointer; padding: 0;
+    }
+    .clock-drill-head input, .clock-panel input[type="text"] {
+      width: 100%; padding: 9px 10px; font-size: 14px;
+      border: 1px solid var(--line); border-radius: 8px;
+    }
+
     /* ── WHO'S WORKING ── */
     .ww-head {
       font-size: 12px; font-weight: 700; text-transform: uppercase;
@@ -17884,9 +17919,14 @@
     // Tapping the highlighted job again clears it — that is how you reach
     // "no job" now that the dropdowns are gone.
     pick.jobId = (pick.jobId === id) ? "" : id;
-    // Whichever city-tax field is on screen; each no-ops when its own is absent.
-    if (scope === "in") clockSyncCityTax();
-    else { clockEditOpenSyncCity(); clockEditSyncCity(); }
+    if (scope === "in") {
+      // Picking from the drill-in closes it and returns to the rows, the way the
+      // crew's existing app behaves — you chose, so the picker's job is done.
+      clockSyncDraftCity();
+      clockDrill = null;
+      renderClockPanel();
+      return;
+    } else { clockEditOpenSyncCity(); clockEditSyncCity(); }
     renderClockJobList(scope);
   }
   window.clockPickJob = clockPickJob;
@@ -17913,20 +17953,9 @@
     return job?.cityTax || "A No Tax";
   }
 
-  // Re-applies the default when either input changes, and locks the picker for
-  // travel so it can't be set to something that would then be wrong.
-  function clockSyncCityTax() {
-    const sel = $("clockCity");
-    if (!sel) return;
-    const job = (state.jobs || []).find(j => j.id === clockPick.jobId);
-    const cls = $("clockClass")?.value || "";
-    sel.value = clockDefaultCityTax(job, cls);
-    const travel = cls === CLOCK_TRAVEL_CLASS;
-    sel.disabled = travel;
-    const hint = $("clockCityHint");
-    if (hint) hint.textContent = travel ? "Travel is always untaxed." : clockCityHintText(job);
-  }
-  window.clockSyncCityTax = clockSyncCityTax;
+  // (clockSyncCityTax lived here. It drove the clock-in form's <select> pair,
+  // which the tap-in rows replaced — clockSyncDraftCity does the same job against
+  // clockDraft now. Removed rather than left dead.)
 
   // Same travel rule on the way out: switching a finished shift to Travel must
   // force the tax to none, or a punch could be booked as travel AND taxed.
@@ -17938,6 +17967,117 @@
     sel.disabled = travel;
   }
   window.clockOutSyncCityTax = clockOutSyncCityTax;
+
+  // ── The clock-in form as tap-in rows ────────────────────────────────────
+  // Modelled on how the crew's existing time app works: a short list of rows
+  // showing what is currently chosen, each opening a focused picker. Everything
+  // fits on one screen and the Clock In button is always visible.
+  //
+  // clockDraft holds the choices between the row list and the pickers, because
+  // the panel is re-rendered from scratch each time and a <select>'s value would
+  // not survive that. clockPick.jobId still owns the job — this only carries the
+  // two that used to live in dropdowns.
+  let clockDraft = { cls: "", city: "" };
+  let clockDrill = null;              // null | "job" | "class" | "city"
+  let clockDrillSearch = "";
+
+  function clockRow(label, value, kind, clearable, muted) {
+    return `
+      <button type="button" class="clock-setting" onclick="clockDrillOpen('${kind}')">
+        <span class="clock-setting-l">
+          <span class="clock-setting-label">${esc(label)}</span>
+          <span class="clock-setting-value${muted ? " is-muted" : ""}">${esc(value || "—")}</span>
+        </span>
+        <span class="clock-setting-r">
+          ${clearable ? `<span class="clock-setting-x"
+             onclick="event.stopPropagation();clockRowClear('${kind}')">✕</span>` : ""}
+          <span class="clock-setting-chev">›</span>
+        </span>
+      </button>`;
+  }
+
+  function clockDrillOpen(kind) {
+    // Travel is always untaxed, so opening the city picker there would offer a
+    // choice that gets overridden the moment you clock in.
+    if (kind === "city" && (clockDraft.cls || clockClasses()[0]) === CLOCK_TRAVEL_CLASS) return;
+    clockDrill = kind;
+    clockDrillSearch = "";
+    renderClockPanel();
+  }
+  window.clockDrillOpen = clockDrillOpen;
+
+  function clockDrillClose() { clockDrill = null; renderClockPanel(); }
+  window.clockDrillClose = clockDrillClose;
+
+  function clockRowClear(kind) {
+    if (kind === "job") clockPick.jobId = "";
+    clockSyncDraftCity();
+    renderClockPanel();
+  }
+  window.clockRowClear = clockRowClear;
+
+  // Keeps the city in step with the job and class, the same rule as everywhere:
+  // Travel forces "A No Tax", otherwise the job's setting.
+  function clockSyncDraftCity() {
+    const job = (state.jobs || []).find(j => j.id === clockPick.jobId);
+    clockDraft.city = clockDefaultCityTax(job, clockDraft.cls || clockClasses()[0]);
+  }
+
+  function clockDrillPick(kind, value) {
+    if (kind === "class") { clockDraft.cls = value; clockSyncDraftCity(); }
+    if (kind === "city")  clockDraft.city = value;
+    clockDrill = null;
+    renderClockPanel();
+  }
+  window.clockDrillPick = clockDrillPick;
+
+  function clockDrillSearchSet(v) { clockDrillSearch = v; renderClockDrillList(); }
+  window.clockDrillSearchSet = clockDrillSearchSet;
+
+  // The list inside a class/city picker. The job picker reuses the richer
+  // renderClockJobList, which already does statuses, overhead and ordering.
+  function renderClockDrillList() {
+    const box = $("clockDrillList"); if (!box) return;
+    const q = clockDrillSearch.trim().toLowerCase();
+    const all = clockDrill === "class" ? clockClasses() : PR_CITY_TAXES;
+    const cur = clockDrill === "class" ? (clockDraft.cls || clockClasses()[0])
+                                       : (clockDraft.city || "A No Tax");
+    const hits = q ? all.filter(v => v.toLowerCase().includes(q)) : all;
+    box.innerHTML = hits.length ? hits.map(v => `
+      <button type="button" class="clock-job${v === cur ? " is-on" : ""}"
+              onclick="clockDrillPick('${esc(clockDrill)}','${esc(v)}')">
+        <span>${esc(v)}</span>
+      </button>`).join("")
+      : `<div class="clock-note">Nothing matches “${esc(clockDrillSearch)}”.</div>`;
+  }
+
+  function renderClockDrill(el) {
+    const title = clockDrill === "job" ? "Choose a job"
+                : clockDrill === "class" ? "Choose a class" : "Choose a city tax";
+    const isJob = clockDrill === "job";
+    el.innerHTML = `
+      <div class="clock-drill-head">
+        <button type="button" class="clock-drill-back" onclick="clockDrillClose()">‹ Back</button>
+        <span>${esc(title)}</span>
+      </div>
+      ${clockDrill === "city"
+        ? `<div class="clock-note" style="margin-top:0;">${
+             esc(clockCityHintText((state.jobs || []).find(j => j.id === clockPick.jobId)))}</div>`
+        : ""}
+      <input type="text" placeholder="Search…" autocomplete="off"
+             value="${esc(isJob ? clockPick.search : clockDrillSearch)}"
+             oninput="${isJob ? "clockSearchJobs(this.value)" : "clockDrillSearchSet(this.value)"}" />
+      ${isJob ? `
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:8px 0;">
+          <input type="checkbox" ${clockPick.allStatuses ? "checked" : ""}
+                 onchange="clockToggleAllJobs(this.checked)" />
+          Show every job
+        </label>
+        <div id="clockJobList" class="clock-job-list" style="max-height:46vh;"></div>`
+      : `<div id="clockDrillList" class="clock-job-list" style="max-height:46vh; margin-top:8px;"></div>`}
+    `;
+    if (isJob) renderClockJobList(); else renderClockDrillList();
+  }
 
   function renderClockPanel() {
     const el = $("clockPanel");
@@ -17964,6 +18104,10 @@
       el.innerHTML = `<div class="clock-note">⚠ ${esc(clockState.warning)}</div>`;
       return;
     }
+
+    // A picker takes over the whole panel — nothing else on screen while you're
+    // choosing. Only reachable from the clocked-out form.
+    if (!clockState.open && clockDrill) { renderClockDrill(el); return; }
 
     if (clockState.open) {
       const started = Date.parse(clockState.open.started_at);
@@ -18056,37 +18200,22 @@
       }
       const preJob = (state.jobs || []).find(j => j.id === clockPick.jobId);
 
+      // Compact tap-in rows rather than every control open at once. The job list
+      // alone is 76 entries; leaving it expanded buried the Clock In button below
+      // the fold and made the panel feel like a form to fill in rather than a
+      // button to press.
+      const cls  = clockDraft.cls  || clockClasses()[0];
+      const city = clockDraft.city || clockDefaultCityTax(preJob, cls);
       el.innerHTML = `
-        <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">You're clocked out.</div>
-
-        <label class="clock-field">Job</label>
-        <input id="clockJobSearch" type="text" placeholder="Search jobs…" autocomplete="off"
-               value="${esc(clockPick.search)}" oninput="clockSearchJobs(this.value)" />
-        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
-          <input type="checkbox" id="clockJobAll" ${clockPick.allStatuses ? "checked" : ""}
-                 onchange="clockToggleAllJobs(this.checked)" />
-          Show every job (not just awarded / ready to invoice / completed)
-        </label>
-        <div id="clockJobList" class="clock-job-list"></div>
-
-        <label class="clock-field">Class
-          <select id="clockClass" onchange="clockSyncCityTax()">${
-            clockClasses().map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
-        </label>
-
-        <label class="clock-field">City tax
-          <select id="clockCity">${PR_CITY_TAXES.map(t =>
-            `<option value="${esc(t)}" ${t === clockDefaultCityTax(preJob, PR_CLASSES[0]) ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
-        </label>
-        <div id="clockCityHint" class="clock-note" style="margin-top:4px;">${esc(clockCityHintText(preJob))}</div>
-        <div style="height:12px;"></div>
+        <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">You're clocked out.</div>
+        ${clockRow("Job", preJob ? (preJob.name || "") : "Tap to choose", "job", !!preJob)}
+        ${clockRow("Class", cls, "class", false)}
+        ${clockRow("City tax", city + (cls === CLOCK_TRAVEL_CLASS ? " · travel is always untaxed" : ""),
+                   "city", false, cls === CLOCK_TRAVEL_CLASS)}
+        <div style="height:14px;"></div>
         <button class="clock-btn clock-btn-in" onclick="clockIn()">Clock In</button>
         ${countsHtml}${queuedHtml}
       `;
-      renderClockJobList();
-      // Apply the job/class rules to the freshly-built picker — this is what sets
-      // the disabled state when the default class is Travel.
-      clockSyncCityTax();
     }
 
     const recent = clockState.recent || [];
@@ -18349,9 +18478,13 @@
     if (clockBusy) return;
     clockBusy = true;
     try {
+      // From clockDraft, not from dropdowns — the form is tap-in rows now, and a
+      // <select> would not survive the panel being re-rendered anyway.
       const jobId = clockPick.jobId || "";
-      const cls   = $("clockClass")?.value || PR_CLASSES[0];
-      const city  = $("clockCity")?.value || "A No Tax";
+      const cls   = clockDraft.cls || clockClasses()[0];
+      const city  = (cls === CLOCK_TRAVEL_CLASS) ? "A No Tax"
+                  : (clockDraft.city || clockDefaultCityTax(
+                      (state.jobs || []).find(j => j.id === jobId), cls));
       const job   = (state.jobs || []).find(j => j.id === jobId);
       const pos   = await punchPosition();
 

@@ -1,0 +1,39 @@
+{
+  "name": "Northeastern Electric Field App",
+  "short_name": "NEE Field",
+  "description": "Jobs, time, expenses and inventory for Northeastern Electric crews.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#1e3a5f",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/assets/NEE-Gray-Logo-400.png",
+      "sizes": "400x400",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Clock In",
+      "short_name": "Clock In",
+      "description": "Start a shift on the job you last worked",
+      "url": "/?clock=in"
+    },
+    {
+      "name": "Clock Out",
+      "short_name": "Clock Out",
+      "description": "End the shift you're on",
+      "url": "/?clock=out"
+    },
+    {
+      "name": "My Hours",
+      "short_name": "My Hours",
+      "description": "Your clock, PTO and hours",
+      "url": "/?open=myhours"
+    }
+  ]
+}

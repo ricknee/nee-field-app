@@ -1,12 +1,20 @@
 // sw.js — Northeastern Electric Field App Service Worker
 // Caches the app shell so it loads instantly even with no signal
 
-const CACHE_NAME = 'nee-app-v1';
+// Bumped when the shell list changes, so the activate handler drops the old
+// cache. Without a bump, a phone that already installed v1 keeps serving the old
+// shell list and never picks up the manifest or the icon.
+const CACHE_NAME = 'nee-app-v2';
 
 // Files to cache on install (the app shell)
+// The manifest and icon are here so "Add to Home Screen" and the Android
+// long-press shortcuts still resolve with no signal — a home-screen icon that
+// only works online is worse than none, because it looks broken.
 const APP_SHELL = [
   '/',
-  '/index.html'
+  '/index.html',
+  '/manifest.json',
+  '/assets/NEE-Gray-Logo-400.png'
 ];
 
 // Install — cache the app shell

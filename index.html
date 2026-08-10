@@ -4,6 +4,17 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Northeastern Electric Field App</title>
+  <!-- Home-screen install. The manifest's `shortcuts` give Android a long-press
+       menu on the app icon with Clock In / Clock Out; iOS ignores shortcuts, so
+       there the win is the icon itself plus the ?clock= links below.
+       apple-touch-icon is what iOS uses for Add to Home Screen — without it you
+       get a blurry screenshot of the page as the icon. -->
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="apple-touch-icon" href="/assets/NEE-Gray-Logo-400.png" />
+  <link rel="icon" href="/assets/NEE-Gray-Logo-400.png" />
+  <meta name="theme-color" content="#1e3a5f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="NEE Field" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
@@ -4013,6 +4024,11 @@
       // Pending-request count on the 🌴 Time Off button, so a request waiting on
       // you is visible without opening anything. Strict admin only.
       if (typeof refreshTimeOffBadge === "function") refreshTimeOffBadge().catch(() => {});
+      // Acts on ?clock=in / ?clock=out from the home-screen icon. Here rather than
+      // at page load so it runs AFTER login — otherwise a tap on an expired
+      // session would silently do nothing and the person would walk away
+      // believing they were on the clock.
+      if (typeof handleClockDeepLink === "function") handleClockDeepLink().catch(() => {});
 
       // Hide financial tabs from viewers
       if (isViewer()) {
@@ -19081,6 +19097,61 @@
     } catch (e) { alert(e.message || "Couldn't clock them out."); }
   }
   window.wwClockOut = wwClockOut;
+
+  // ═══ HOME-SCREEN DEEP LINKS ══════════════════════════════════════════════
+  // /?clock=in, /?clock=out, /?open=myhours — the targets behind the home-screen
+  // icon and Android's long-press shortcuts. One tap from the home screen to a
+  // punch, without hunting through the app.
+  let clockLinkDone = false;
+
+  async function handleClockDeepLink() {
+    // ⚠ ONCE PER PAGE LOAD. This runs from the role-applying code, which fires on
+    // login AND on every restored session, so without the flag a re-render could
+    // punch twice. The URL is also stripped below, which covers a manual refresh.
+    if (clockLinkDone || !state.user) return;
+    const params = new URLSearchParams(location.search);
+    const want = (params.get("clock") || "").toLowerCase();
+    const open = (params.get("open") || "").toLowerCase();
+    if (!want && open !== "myhours") return;
+    clockLinkDone = true;
+
+    // Strip the parameter immediately so a refresh, a back-navigation or a
+    // restored tab can never replay the punch.
+    params.delete("clock"); params.delete("open");
+    const qs = params.toString();
+    history.replaceState({}, "", location.pathname + (qs ? "?" + qs : ""));
+
+    openMyHours();
+    if (!want) return;
+
+    // ⚠ NEVER PUNCH SILENTLY. If the session had expired, the user has just
+    // logged in and may not remember what the tap was for; and a punch you can't
+    // see is a punch you don't trust. openMyHours() above means the result is
+    // always on screen, and every path below says what happened.
+    await refreshClock().catch(() => {});
+
+    if (want === "in") {
+      if (clockState.open) {
+        showAppToast("You were already clocked in — nothing changed.");
+        return;
+      }
+      // The job you last punched against, because that is nearly always today's
+      // job too. Named in the toast so a wrong one is obvious immediately, and
+      // Switch is one tap away on the screen that just opened.
+      const last = (clockState.recent || [])[0];
+      const job  = last?.job_id ? (state.jobs || []).find(j => j.id === last.job_id) : null;
+      clockPick.jobId = job?.id || "";
+      await clockIn();
+      showAppToast(job ? `Clocked in on ${job.name}.` : "Clocked in — no job set, tap Switch to pick one.");
+    } else if (want === "out") {
+      if (!clockState.open) {
+        showAppToast("You weren't clocked in — nothing changed.");
+        return;
+      }
+      await clockOut("", null, null);
+      showAppToast("Clocked out.");
+    }
+  }
 
   // Replay triggers. `online` is the direct one; `visibilitychange` covers the
   // common real case where the phone regained signal while the screen was off and

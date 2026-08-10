@@ -26,7 +26,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
 | **Employees + LOGIN** | ✅ **In Neon since 2026-08-08 — both apps.** `LOGIN_SOURCE=neon` is an env-var **kill switch** (rollback in ~30 s, no code revert). Verified on prod: `_source:"neon"`, the **Airtable rec id** not the Neon uuid, right person and role. Employees were the last Airtable-owned dimension. **Cost rates are Neon's too** — the ETL no longer loads `labor_cost_rates`. ⬜ ~16 secondary read sites still hit Airtable (cleanup, §4). |
 | **People admin** | ✅ **New 2026-08-08** — there was no employee screen in either app. `👥 People`: Active/Former roster, **access toggle that actually ends live sessions** (30-day stateless tokens meant unchecking `Active` did nothing to a signed-in phone — a leaver kept access for a month), Show/Change PIN, full edit, add a person, and cost-rate history with raise-vs-correct. `docs/PLAN-employee-admin.md` |
-| **Inventory app** | ⬜ Still Airtable. **Step A (drop the Jobs mirror) is IN FLIGHT since 2026-08-08** — pre-flight checks done and passed, nothing destroyed. The coupling is still there until the sync is frozen and the link field deleted. See §4 Step A. |
+| **Inventory app** | 🟨 Still Airtable, but **decoupled from the main base since 2026-08-10** — Step A (drop the Jobs mirror) is ✅ **DONE**, and **Step B0** ✅ (the five main-base `Jobs` reads serve from Neon). B/C/D/E not started. ⚠ **Step E is now urgent, not last** — see the note under §4 Step E. |
 
 ## 🎉 THE FIELD-APP MIGRATION IS COMPLETE — 2026-08-08
 
@@ -348,13 +348,22 @@ now the main track, not the one waiting its turn.**
 **Detail: `docs/PLAN-inventory-to-neon.md`** (written 2026-08-07). Letters below match that plan;
 don't re-letter. Rough total **~23-32 h** plus soaks, plus a shared login step owned by neither app.
 
-### 🟨 Step A — Drop the Jobs mirror, Step C3 — **IN FLIGHT since 2026-08-08**
+### ✅ Step A — Drop the Jobs mirror (C3) — **DONE 2026-08-10**
 
-Plan: `docs/BET-drop-jobs-mirror-C3.md`, execution log in its §9. Removes the only hard coupling
-between the two Airtable bases, so inventory can migrate on its own timeline.
+Plan: `docs/BET-drop-jobs-mirror-C3.md`, execution log in its §9. **The `Job` link field and the
+mirror table are both deleted.** The only hard coupling between the two Airtable bases is gone, so
+inventory now migrates on its own timeline. The inventory base drops from **17 tables to 16**.
 
-**Pre-flight (order-of-operations steps 1-2) is DONE and PASSED. Nothing has been destroyed and
-every step so far is reversible.**
+Proven after the deletes, not assumed: a real push created main-base expense `recgkGpRDCONTGjbQ`
+on the right job at the right markup, with the link field gone.
+
+> ⚠ **The lesson worth carrying: a field/rollup sweep is NOT a dependency sweep.** The delete dialog
+> reported 5 dependencies, two of them **Airtable Interface elements** the audit never considered —
+> two forgotten "Use Material" forms. They happened to be already-dead, but that was luck.
+> `list_pages_for_base` answers it in one call. **Check Interfaces before any irreversible Airtable
+> delete.**
+
+**Pre-flight record (all passed):**
 
 - ✅ **Make audit re-run — 0 references** to `appfsLJwfow4CepCw` or the mirror table. 70 scenarios,
   **18 active**; the 22 that use an `airtable` or `http` module (the only ways to reach a base) all
@@ -368,27 +377,27 @@ every step so far is reversible.**
   netlify publishes the repo root, so a CSV committed there is served publicly. Verified rather than
   trusted — the Jobs-side link count reconciles exactly with the Transactions side.
 
-**⏭ NEXT — and it is an owner action, not code.** Airtable exposes **no API for sync configuration**,
-so this cannot be done from a script or the MCP.
+**Execution, 2026-08-08 → 2026-08-10:** sync frozen (the mirror had **three** sync sources, not one
+— *Project is Awarded* / *Service Calls* / *Project is Complete*) → soaked with a real `submitCart`
+and push → `Job` link field deleted → soaked again with a second real push → mirror table deleted.
+Both deletes verified by API `422`.
 
-> ⚠ **The mirror has THREE sync sources, not one** — *Project is Awarded*, *Service Calls*,
-> *Project is Complete (Ready to Invoice)*, matching the three choices of its `Sync Source` field.
-> Anything in older notes assuming a single sync is wrong.
->
-> **Freeze them with Settings → "Automatically sync changes at regular intervals" → Change →
-> "Only sync changes when requested".** Do **not** pick *"convert to unsynced table"* (a structural
-> change that must be rebuilt source by source) and do **not** remove the sources (that can take
-> their rows with them — 4 of the 26 rows carry the 116 links).
+### ✅ Step B0 — The cross-base reads — **DONE 2026-08-10** (`1b9a84d`)
+Five handlers now serve from Neon with Airtable as fallback: `handleJobs`, `handleEstimatingJobs`,
+`handleTemplateContractors`, `handleAwardedJobs`, and the job index inside `handlePendingExpenses`.
+`handleEmployees` was already Neon-first from the login flip. Smoke-verified on prod: the USE cart
+shows 26 jobs, the estimates picker 43, and the New Lead jobs are present.
 
-Then **soak 48 h** with a real inventory push and a real `submitCart`. **Only after that** do steps
-5-7 (delete the `Job` link field, then the mirror table) — those are **irreversible and need a
-deliberate go-ahead**.
+> ⚠ **Display name reads `po`, NOT `po_locked`.** The PO only locks at award time, so `po_locked`
+> is blank on **all 13 New Lead jobs** — exactly the ones the estimating picker exists to show.
+> Reading it would have dropped them, and a short list looks identical to a complete one.
 
-⬜ **Open:** confirm the update-method change actually saved. The soak clock starts when the sync is
-genuinely frozen, not before.
+> ⚠ **Offline tests cannot reach the Neon path** — `_neon.js` lazy-imports the driver, so with no
+> `DATABASE_URL` they only ever prove the Airtable fallback. The suite now mocks the driver's HTTP
+> transport (rows must be **value arrays**, not objects). The SQL was also checked against the real
+> database, because a parse-time type error is invisible offline.
 
-### Step B0 — The cross-base reads (~1-2 h) — **independent, can go NOW**
-The five main-base `Jobs` reads + `handleEmployees`. That data is **already in Neon**, so this
+*Original scope, for reference:* the five main-base `Jobs` reads + `handleEmployees`. That data is **already in Neon**, so this
 touches no inventory table and needs no schema. **Not gated on the field-app `handleJobs` flip** —
 verified 2026-08-07, the four handlers need only name/PO/status/tax status/contractor and Neon
 `jobs` carries all five. The field-app flip is blocked on ~35 *other* `mapJob` keys inventory
@@ -409,10 +418,31 @@ never reads.
 > ⚠ Neon already has `job_estimates` — the **main base's** estimates, which feed the GP views. The
 > inventory base's `Estimates` is a different thing. Name them `material_estimates`.
 
-### Step E — The expense push **last** — it's the only path that writes across bases (~4-6 h)
-> ⚠⚠ **Gated on field-app Step 4d.** Neon's `expenses` table is a full-reload one-way mirror from
-> Airtable — an expense written there early is silently erased by the next ETL run. Same trap as the
-> pCloud folder ids: flip *inside* the field-app expenses flip, never before it.
+### 🔴 Step E — The expense push (~4-6 h) — **NO LONGER LAST. This is a LIVE GAP.**
+
+**Found 2026-08-10 by pushing an expense and looking for it in the field app. It wasn't there.**
+
+The inventory push writes the expense to **Airtable only**. The field app has read expenses from
+**Neon** since Step 4d (2026-08-07). Nothing connects the two:
+
+- Airtable Expenses: **392**. Neon `expenses`: **390**. The two missing are the only pushes since
+  the last load.
+- All 390 Neon rows share **one** `synced_at` (2026-08-09 19:37) — a hand-run snapshot, not a feed.
+- **Nothing reloads it on a schedule.** The only `@hourly` function is the QB time pull;
+  `_billing-sync.js` handles allocations, not expenses; there is no expenses loader in `db/etl/`.
+  The only code that writes Neon `expenses` is `airtable.js` — the field app's own write paths.
+
+So this is **not** "stale until the next sync". **Material cost pushed from the inventory app does
+not reach the field app or GP at all**, and won't until someone hand-runs a load. Nothing is wrong
+with the books today only because the two affected pushes were $7.76 of testing — the next real
+one would vanish just as silently.
+
+**The fix is Step E itself:** make the push write Neon in the same transaction it writes Airtable,
+the same Neon-first pattern every other slice uses. Its old blocker (field-app 4d) cleared on
+2026-08-07.
+
+> ⚠⚠ **Do not hand-insert the missing rows into Neon as a stopgap.** `expenses` is a full-reload
+> mirror; anything written ahead of a reload is erased, silently. Same trap as the pCloud folder ids.
 
 ### ✅ (Shared) — Login — **DONE 2026-08-08. Both apps serve from Neon.**
 
@@ -531,6 +561,30 @@ because they're next:
 
 # ▶ START HERE — what's next (2026-08-07)
 
+> ## 📋 READ `docs/AUDIT-airtable-remaining.md` FIRST — added 2026-08-09
+>
+> A live audit of the code, the Neon schema, all 39 Airtable automations and all 70 Make
+> scenarios. **It corrects this file in four places** and carries the ordered work list.
+>
+> 1. ~~**A live bug.**~~ ✅ **FIXED same day (`26d14c4`).** `handlePayrollHoursBreakdown` +
+>    `handleMyHoursBreakdown` were reading the Airtable Time Entries table — the one Step 3 *froze*
+>    on 2026-08-07 — while the tiles above them served Neon. Both Neon-first now, and the other
+>    four readers of that table were checked and are legitimate fallbacks, so the **bug class** is
+>    closed. ⚠ **Freezing a table does not find its readers for you** — remember this at step 10.
+> 2. **Six domains were never on this file.** Payroll Runs + Bonuses, Companies + Contacts,
+>    Vendors, Power Companies + Contacts, Labor Billable Rates, and **job creation** — which is
+>    still a pure Airtable write with no Neon leg at all. "The field-app migration is complete"
+>    below is therefore **wrong**; ~22-31 h remain.
+> 3. ⚠⚠ **The Airtable mirror writes are the Make trigger bus.** All ten Airtable-touching Make
+>    scenarios fire from *Airtable record changes*. Drop the mirror writes before replumbing the
+>    hooks and pCloud folders, Trello cards, QB Time jobs and Google contact sync all stop —
+>    **silently**. Replumb each hook *before* removing its mirror write, never after.
+> 4. **34 Airtable automations are deployed; §8 tracks 4.** Nine hold job-lifecycle logic
+>    including PO number assignment (job identity). Four are the dead wire/pipe path.
+>
+> Also in there: a **~2 h path to unblock 4c-3** that needs no Google Cloud project, and the two
+> ten-minute owner actions (inventory-base PAT, Jobs-mirror sync freeze) gating ~25 h of work.
+
 ## The migration's original goal is DONE.
 
 Steps 1, 2 and 3 are complete. **Make has left the time path.** Time flows QB → Neon → app.
@@ -605,7 +659,7 @@ They are the only reason anyone still has to touch Airtable in normal operation.
 | **Smoke-test what shipped** | ~20 min | ⬅ **Do this first.** Invoices went live today with no prod exercise. See the list below. |
 | ~~**`handleJobs` full flip**~~ | ✅ **ALREADY DONE** | **This file was wrong.** It claimed ~35 of `mapJob`'s 89 keys had no Neon source. Checked 2026-08-08: `mapJob` returns **87** keys and `mapJobFromNeon` returns **87** — the two apparent differences were comment text, not keys. `handleJobs` is Neon-first and the mapper is complete. Nothing to do. |
 | **Decide the ETL's future** | ~1 h thought | GP inputs are now Neon-**written** rather than loaded, so the hand-run ETL is mostly redundant for them — but it still backfills, and it is the only thing that would catch a mirror that silently stopped. Schedule it, shrink it, or retire it deliberately. |
-| **Inventory track** | ~23-32 h | `docs/PLAN-inventory-to-neon.md`. **Step A is already in flight** — pre-flight passed 2026-08-08, waiting on you to freeze the sync then soak 48 h (§4 Step A). **Step B0 (~1-2 h) needs nothing from Step A** and can go any time. ⚠ First get a **PAT scoped to the inventory base** — neither PAT in `.env` can read it (both 403), and B/C/D all need one. |
+| **Inventory track** | ~19-26 h left | `docs/PLAN-inventory-to-neon.md`. **Step A ✅ and Step B0 ✅ both done 2026-08-10.** 🔴 **Step E is the one to do next** — not because it's next in the letters, but because it's a live gap: inventory pushes never reach the field app or GP (§4 Step E). Then B/C/D. ⚠ B/C/D need a **PAT scoped to the inventory base** — neither PAT in `.env` can read it (both 403). |
 | **Employee admin slices 2-4** | — | Separate track, and it carries **two live bugs**: `Role` vs `Role New` differing per app, and email login that has never worked (`Email` ≠ `Primary Email`). |
 
 ## ⬜ Owed smoke tests — things that shipped without being exercised on prod

@@ -1,10 +1,17 @@
 # Drop the Jobs mirror — Step C3 (the irreversible part)
 
-**Status:** **IN FLIGHT 2026-08-08.** §5 steps 1 and 2 are DONE and passed (execution log in §9).
-Next action is **step 3 — turn the Airtable sync OFF**, which is a UI action only the owner can do.
-Nothing has been destroyed; everything so far is reversible.
-**Steps A, B, C1, C2 are done, pushed and smoke-verified.** The bet's goal is already met: the
-app reads the mirror nowhere. C3 is cleanup, not function.
+**Status: ✅ CLOSED 2026-08-10. The Jobs mirror no longer exists.** Every step of §5 executed and
+verified — execution log in §9. The `Job` link field and the mirror table are both deleted, and
+the two Airtable bases are structurally decoupled: nothing in the inventory base reaches the main
+base except the expense push, which runs on `Job ID (Main)` text.
+
+**Verified after the fact, not assumed:** the API now returns `422 Could not find a field` for
+`fld7OG04Sgkp88JsU` and `422 Could not find a table` for `tblBWsMk3Gmv7bdCu`; all 501 transactions
+still carry `Job ID (Main)`; and a real push run *after* both deletes created main-base expense
+`recgkGpRDCONTGjbQ` on the right job with the right markup.
+
+Table deletion revert handle: `actEuOPZfW1yT1YQ0` (Airtable best-effort — treat as permanent; the
+CSV in `nee-backups` is the real backup).
 
 ---
 
@@ -189,7 +196,26 @@ Bethel School 5670.39).
 **Only 4 of the 26 mirror rows have ever held a transaction link** — Bethel School (99), Kenny
 Barkan (7), Ryan Yoder (6), Lance Koehn (4). The other 22 are inert copies.
 
-### ⬜ Step 3 — NEXT, and it is an owner action
+### ✅ Steps 3-7 — DONE 2026-08-08 → 2026-08-10
+
+- **Step 3 — sync frozen 2026-08-08.** Update method set to *"Only sync changes when requested"*.
+- **Step 4 — first soak.** A real `submitCart` (`TX-20260809-155855`) and a real expense push
+  ($0.26, Bethel School) on 2026-08-09, with the sync frozen. The push grouped correctly off
+  `Job ID (Main)`.
+- **Step 5 — `Job` link field DELETED 2026-08-10.** ⚠ The delete dialog reported **5 dependencies**,
+  and two of them were **interface elements the audit had never looked at** — §4 covered code, Make
+  and base fields, but not Airtable **Interfaces**. They turned out to be two forgotten "Use Material"
+  forms, both on `Inventory Transactions`. **They were already dead**: a form can set the `Job` link
+  but cannot set `Job ID (Main)`, and `handlePendingExpenses` has resolved only by that text since C2,
+  so anything logged through them never reached a push. Owner confirmed nobody uses them.
+  > **Lesson for the next irreversible Airtable delete: check Interfaces.** `list_pages_for_base`
+  > answers it in one call. A field/rollup/formula sweep is not a dependency sweep.
+- **Step 6 — second soak.** A real push *after* the field delete: `TX-20260810-105119` → main-base
+  expense `recgkGpRDCONTGjbQ`, Bethel School, $7.50 → $8.25 billable (10% markup), tax-exempt
+  inherited, push id matching. End to end, with the link gone.
+- **Step 7 — mirror table DELETED 2026-08-10** via the Airtable MCP (`actEuOPZfW1yT1YQ0`).
+
+### Historical — what step 3 involved
 
 Turn the sync **OFF** on the mirror, leaving the table in place. This is a **synced-table setting in
 the Airtable UI** — Airtable exposes **no API for sync configuration**, so neither the MCP nor a

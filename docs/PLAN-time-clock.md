@@ -285,6 +285,21 @@ person choosing it knows what they excluded.
 ⚠ Whatever gets added, **overhead jobs must stay exempt** (`clock_visibility` in `027`). They
 have no meaningful year and Shop Work alone carries ~500 h/yr.
 
+### ⬜ KNOWN GAP — adjusting an OPEN shift's start has no overlap check
+
+Found in real use 2026-08-10, deliberately left unfixed for now (owner: "just leave it all").
+
+Editing a **completed** punch checks for overlap with the person's other punches and refuses,
+naming the clashing days. Adjusting an **open** shift's start time does not. So moving a start
+backwards over an earlier completed punch silently creates two punches covering the same minutes.
+
+Seen live: Patrick has a 13-second Contract punch at 06:30:12 sitting inside a Travel punch of
+06:00–09:44, because the Travel shift's start was adjusted back to 06:00 over the top of it.
+
+Harmless while `TIME_CLOCK_PAYROLL` is off — nothing is promoted. **Not harmless afterwards:**
+both punches would become paid hours. The fix is the existing `ptoConflicts`-style check applied
+to the open-shift branch of `handleClockEditTimes`, ~15 min.
+
 ### Verification done
 
 - Backend: 9 new cases in `tests/handlers.test.mjs` (126 pass, 0 fail) covering the off state, the

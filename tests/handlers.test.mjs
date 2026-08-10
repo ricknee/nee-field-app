@@ -1976,6 +1976,33 @@ await test("job clock visibility: admin+office, whitelisted, and clearable", asy
   ok(/Unknown clock visibility/.test(json(bad).error), "and says so");
 });
 
+await test("widget: the unauthenticated endpoint refuses everything it should", async () => {
+  // ⚠ This is the ONE action that skips the bearer check, so its refusals matter
+  // more than most. It must never leak whether a person or a token exists.
+  const noArgs = await GET("clockWidget", {}, null);
+  eq(noArgs.statusCode, 200, "answers 200 so a widget host doesn't show an error box");
+  eq(json(noArgs).ok, false, "but refuses");
+  eq(json(noArgs).state, "error", "with a state a widget can render");
+
+  const forged = await GET("clockWidget", { e: "recE9", t: "999999999999.abcdef" }, null);
+  eq(json(forged).ok, false, "a forged signature is refused");
+  // Identical shape for "no such person" and "bad token" — otherwise this becomes
+  // an oracle for probing which employee ids exist.
+  const unknown = await GET("clockWidget", { e: "recNOPE", t: "999999999999.abcdef" }, null);
+  eq(JSON.stringify(json(unknown)), JSON.stringify(json(forged)),
+     "unknown person and bad token are indistinguishable");
+});
+
+await test("widget: minting a link is self-service and never for someone else", async () => {
+  eq((await POST("widgetLink", {}, VIEWER_TOK)).statusCode, 403,
+     "viewers have no clock, so no widget");
+  // There is deliberately NO employeeId parameter — the person comes from the
+  // token — so passing one must not change who the link is for.
+  const r = await POST("widgetLink", { employeeId: "recSOMEONEELSE" }, EMP_TOK);
+  ok(!/recSOMEONEELSE/.test(JSON.stringify(json(r))),
+     "a supplied employeeId is ignored, not honoured");
+});
+
 await test("clock switch: gated, and validated before it touches anything", async () => {
   delete process.env.TIME_CLOCK;
   eq((await POST("clockSwitch", { class: "Contract", clientPunchId: "s1" }, EMP_TOK)).statusCode, 403,

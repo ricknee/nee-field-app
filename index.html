@@ -18024,6 +18024,11 @@
         ${clockEdit.target === "open" ? renderClockStartEditor() : ""}
         ${countsHtml}${queuedHtml}
         <div class="clock-note">Hours are rounded to the nearest quarter hour on payroll.</div>
+        <div class="clock-note">
+          <a href="#" onclick="event.preventDefault();clockWidgetLink(false)"
+             style="color:var(--accent);">Home-screen widget link</a>
+        </div>
+        <div id="clockWidgetOut"></div>
       `;
     } else {
       // Default the job to whatever the user is already standing in — the job they
@@ -18567,6 +18572,57 @@
       ${reqs ? `<div style="margin-top:14px; font-size:12px; color:var(--muted);">Your requests</div>${reqs}` : ""}
     `;
   }
+
+  // ── Home-screen widget link ─────────────────────────────────────────────
+  // Produces the URL a widget host (KWGT/Tasker on Android, Scriptable on iOS)
+  // polls. Shown on demand rather than sitting on screen, because it is a
+  // credential and most people will set it up once and never look again.
+  async function clockWidgetLink(regenerate) {
+    if (regenerate && !confirm(
+      "Make a new widget link?\n\nAny widget you've already set up will stop " +
+      "updating until you paste the new one in.")) return;
+    const box = $("clockWidgetOut");
+    if (box) box.textContent = "Working…";
+    try {
+      const d = await apiPost("widgetLink", regenerate ? { regenerate: true } : {});
+      const url = location.origin + d.path;
+      if (box) {
+        box.innerHTML = `
+          <div class="clock-note" style="margin-top:0;">
+            Paste this into your widget app. It shows your clock only, and nothing else —
+            but treat it like a password: anyone with the link can see your shift.
+          </div>
+          <textarea readonly onclick="this.select()"
+            style="width:100%; height:64px; font-size:11px; font-family:monospace;
+                   padding:8px; border:1px solid var(--line); border-radius:8px;">${esc(url)}</textarea>
+          <div class="clock-btn-row" style="margin-top:8px;">
+            <button class="clock-btn clock-btn-out" style="font-size:13px; padding:10px;"
+                    onclick="clockWidgetLink(true)">New link</button>
+            <button class="clock-btn clock-btn-in" style="font-size:13px; padding:10px;"
+                    onclick="clockWidgetCopy(this)">Copy</button>
+          </div>`;
+      }
+    } catch (e) {
+      if (box) box.textContent = e.message || "Couldn't make a link.";
+    }
+  }
+  window.clockWidgetLink = clockWidgetLink;
+
+  async function clockWidgetCopy(btn) {
+    const ta = $("clockWidgetOut")?.querySelector("textarea");
+    if (!ta) return;
+    try {
+      await navigator.clipboard.writeText(ta.value);
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = "Copy"; }, 2000);
+    } catch {
+      // Clipboard needs a secure context and a user gesture; selecting the text
+      // is the fallback that always works.
+      ta.select();
+      btn.textContent = "Selected — copy it";
+    }
+  }
+  window.clockWidgetCopy = clockWidgetCopy;
 
   function ptoToggleForm(on) { ptoShowForm = !!on; renderPtoPanel(); }
   window.ptoToggleForm = ptoToggleForm;

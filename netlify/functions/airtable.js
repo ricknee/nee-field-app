@@ -1,7 +1,7 @@
 // netlify/functions/airtable.js
 // Northeastern Electric Field App — Netlify Proxy
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
-import { signToken, authedUser, hasRole } from "./_auth.js";
+import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource,
          neonEmployees, neonEmployeeById } from "./_employees.js";
@@ -475,6 +475,9 @@ const _TIME_SELF_WRITES = new Set([
   // Asking for time off, and withdrawing your own request. Both take the employee
   // from the token; approving is a separate _ADMIN action.
   "requestPto", "cancelPtoRequest",
+  // Minting your OWN home-screen widget link. Self-service — the employee comes
+  // from the token, so nobody can create a link that watches somebody else.
+  "widgetLink",
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate",
@@ -2212,6 +2215,125 @@ async function handleSetPtoAllowance(body) {
     [String(employeeId), yr, all, car, String(note || "").trim()]);
   if (!rows?.length) return resp(404, { ok: false, error: "Employee not found." });
   return resp(200, { ok: true, employeeId, ...rows[0] });
+}
+
+// ══ HOME-SCREEN WIDGET ═══════════════════════════════════════════════════════
+// A widget host (Scriptable, KWGT, Tasker) polls a URL every so often and draws
+// the result. It has no session, and several hosts cannot set request headers at
+// all — so this one action authenticates from a signed token in the query string.
+//
+// ⚠ THIS IS THE BEARER-CHECK BYPASS THE NOTE ABOVE _ADMIN_READS WARNS ABOUT.
+// That note says not to reintroduce one "without a case that genuinely can't be
+// served by a presigned URL". This is that case: there is nothing to presign,
+// because the thing being fetched is live state rather than a stored object, and
+// the caller is a widget host that cannot carry a header. What keeps it narrow:
+//
+//   • ONE read action. The token authorises nothing else — not even other reads.
+//   • It returns only that person's own clock state. No pay, no rates, no
+//     roster, no money, nothing about anyone else.
+//   • Per person, so a leaked URL exposes one person's shift.
+//   • Revocable on its own (employees.widget_key, db/schema/028) without
+//     touching their login.
+//
+// If you extend this action to return anything beyond one person's clock, that
+// list stops being true and the bypass stops being justified.
+const WIDGET_TTL_MS = 365 * 24 * 60 * 60 * 1000;   // a year; revoke by key, not expiry
+
+function widgetScopeParts(airtableId, key) {
+  return ["clockwidget", String(airtableId), String(key)];
+}
+
+// Short, pre-formatted strings: a widget host like KWGT can only place text, it
+// cannot do arithmetic or date maths.
+function fmtHm(totalSeconds) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+async function handleClockWidget(params) {
+  const employeeId = String(params?.e || "");
+  const token      = String(params?.t || "");
+  // Deliberately vague on failure. This endpoint is unauthenticated by design, so
+  // it must not become a way to test whether a person or token exists.
+  const deny = () => resp(200, { ok: false, state: "error", label: "—", today: "—" });
+  if (!employeeId || !token) return deny();
+
+  const q = await neonQuery(
+    `SELECT id, name, widget_key FROM employees WHERE airtable_id = $1`, [employeeId]);
+  const emp = q?.rows?.[0];
+  if (!emp?.widget_key) return deny();
+  if (!verifyScope(token, widgetScopeParts(employeeId, emp.widget_key))) return deny();
+
+  const open = await neonQuery(
+    `SELECT started_at, job_name, class, break_seconds::float8 AS break_seconds, break_started_at
+       FROM open_punches WHERE employee_id = $1`, [emp.id]);
+  const o = open?.rows?.[0] || null;
+
+  // Everything already banked today, so "today" is the whole day rather than just
+  // the shift in progress — which is what the number on a widget should mean.
+  const done = await neonQuery(
+    `SELECT coalesce(sum(duration_seconds), 0)::float8 AS secs
+       FROM clock_punches
+      WHERE employee_id = $1 AND deleted_at IS NULL
+        AND work_date = (now() AT TIME ZONE 'America/New_York')::date`, [emp.id]);
+  let todaySecs = Number(done?.rows?.[0]?.secs) || 0;
+
+  let state = "out", label = "Clocked out";
+  if (o) {
+    const started = Date.parse(o.started_at);
+    const onBreak = !!o.break_started_at;
+    let worked = (Date.now() - started) / 1000 - (Number(o.break_seconds) || 0);
+    if (onBreak) worked -= (Date.now() - Date.parse(o.break_started_at)) / 1000;
+    worked = Math.max(0, worked);
+    todaySecs += worked;
+    state = onBreak ? "break" : "working";
+    label = onBreak ? `Lunch ${fmtHm((Date.now() - Date.parse(o.break_started_at)) / 1000)}`
+                    : fmtHm(worked);
+  }
+
+  return resp(200, {
+    ok: true,
+    state,                       // working | break | out
+    label,                       // "3h 51m" / "Lunch 24m" / "Clocked out"
+    job: o?.job_name || "",
+    class: o?.class || "",
+    today: fmtHm(todaySecs),
+    name: emp.name || "",
+    // So a widget can show "as of 11:20" and be honest that it isn't ticking.
+    asOf: new Date().toLocaleTimeString("en-US",
+      { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }),
+  });
+}
+
+// Mint (or re-mint) your own widget URL. Self-service: the employee is taken from
+// the token, so nobody can create a link that watches somebody else.
+async function handleWidgetLink(body, authUser) {
+  const me = await clockEmployee(authUser);
+  if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
+
+  // `regenerate` is the revoke button: a new key invalidates every URL ever
+  // issued to this person, while leaving their phone signed in.
+  const rotate = body?.regenerate === true;
+  const rows = await neonWrite("widget.mint",
+    `UPDATE employees
+        SET widget_key = CASE WHEN widget_key IS NULL OR $2 THEN gen_random_uuid()
+                              ELSE widget_key END
+      WHERE id = $1
+      RETURNING airtable_id, widget_key`, [me.id, rotate]);
+
+  const r = rows?.[0];
+  if (!r) return resp(404, { ok: false, error: "Employee not found." });
+
+  const token = signScope(widgetScopeParts(r.airtable_id, r.widget_key), WIDGET_TTL_MS);
+  return resp(200, {
+    ok: true,
+    // Path only — the client prepends its own origin, so this stays correct on
+    // any domain without the function needing to know where it is deployed.
+    path: `/.netlify/functions/airtable?action=clockWidget` +
+          `&e=${encodeURIComponent(r.airtable_id)}&t=${encodeURIComponent(token)}`,
+    rotated: rotate,
+  });
 }
 
 // ══ RECONCILE: the app's clock vs QuickBooks Time ════════════════════════════
@@ -10323,6 +10445,15 @@ export async function handler(event) {
       : safeBodyAction(event);
     // Hoisted so expense handlers can scope/authorize by the signed-in user
     // (see-own, edit/delete-until-approved). Null only for the login action.
+    // ⚠ The ONE action that skips the bearer check. A home-screen widget host has
+    // no session and often cannot set headers, so `clockWidget` carries its own
+    // signed, per-person, single-purpose token in the query string and verifies
+    // it itself. See the long note above handleClockWidget for why this is narrow
+    // enough to be safe, and what would stop making it so.
+    if (event.httpMethod === "GET" && reqAction === "clockWidget") {
+      return await handleClockWidget(event.queryStringParameters || {});
+    }
+
     let authUser = null;
     if (reqAction !== "login") {
       authUser = authedUser(event);
@@ -10421,6 +10552,7 @@ export async function handler(event) {
       if (body.action === "clockSwitch")          return await handleClockSwitch(body, authUser);
       if (body.action === "clockEditTimes")       return await handleClockEditTimes(body, authUser);
       if (body.action === "clockDeletePunch")     return await handleClockDeletePunch(body, authUser);
+      if (body.action === "widgetLink")           return await handleWidgetLink(body, authUser);
       if (body.action === "requestPto")           return await handleRequestPto(body, authUser);
       if (body.action === "cancelPtoRequest")     return await handleCancelPtoRequest(body, authUser);
       if (body.action === "decidePtoRequest")     return await handleDecidePtoRequest(body, authUser);

@@ -40,18 +40,58 @@ function resetState(txIds) {
   state.expenses = [];
   state.expSeq = 0;
   state.pushHdrSeq = 0;
+  neonWrites.length = 0;
+  neonDown = false;
 }
+
+// Neon mock (Step E). The push now writes every expense it creates into Neon
+// and FAILS CLOSED if that doesn't land, so the suite has to model it or every
+// push test fails for the wrong reason. Driver contract: POST {query, params}
+// to /sql, expects {fields, rows} back with rows as VALUE ARRAYS.
+// `neonDown = true` simulates the database being unreachable.
+process.env.DATABASE_URL = "postgresql://u:p@fake.neon.tech/db";
+let neonDown = false;
+const neonWrites = [];          // every expense airtable_id upserted
 
 globalThis.fetch = async (url, opts = {}) => {
   const method = opts.method || "GET";
-  const m = String(url).match(/\/v0\/([^/]+)\/([^?]+)/);
-  const base  = m ? m[1] : "";
-  const table = m ? decodeURIComponent(m[2]) : "";
   const body  = opts.body ? JSON.parse(opts.body) : null;
   const ok = (records) => ({ ok: true, status: 200, text: async () => JSON.stringify({ records }) });
 
+  if (String(url).includes("/sql")) {
+    if (neonDown) return { ok: false, status: 500, text: async () => "neon down" };
+    if (/INSERT INTO expenses/i.test(body?.query || "")) neonWrites.push(body.params?.[0]);
+    const payload = { command: "INSERT", rowCount: 1, rowAsArray: false, fields: [], rows: [] };
+    return { ok: true, status: 200, headers: { get: () => "application/json" },
+             text: async () => JSON.stringify(payload), json: async () => payload };
+  }
+
+  // Split "Table" from "Table/recXXX" — the push re-reads each created expense
+  // by id before syncing it, so the single-record form has to be modelled.
+  const m = String(url).match(/\/v0\/([^/]+)\/([^/?]+)(?:\/([^?]+))?/);
+  const base     = m ? m[1] : "";
+  const table    = m ? decodeURIComponent(m[2]) : "";
+  const recordId = m && m[3] ? decodeURIComponent(m[3]) : null;
+
   // ── Reads (GET) ──
   if (method === "GET") {
+    // Single-expense re-read before the Neon sync. Returns the derived money
+    // fields too — the reason the handler re-reads instead of trusting the
+    // create response is that those are Airtable formulas.
+    if (table === "Expenses" && recordId) {
+      const e = state.expenses.find(x => x.id === recordId);
+      if (!e) return { ok: false, status: 404, text: async () => JSON.stringify({ error: { message: "Not found" } }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({
+        id: e.id,
+        fields: {
+          "Push ID": e.pushId, "Job": e.jobId, "Expense Type": "Materials",
+          "Expense Status": "Not Reviewed", "Expense Date": "2026-08-10",
+          "Total Cost (Actual)": e.amount, "Billable?": true,
+          "Billable Material Amount $": e.amount, "Unbilled Material Amount $": e.amount,
+          "Description": e.description,
+        },
+      }) };
+    }
     if (table === "Inventory Transactions") {
       // Mirrors the pending filter: only transactions not yet pushed.
       const recs = Object.entries(state.txns)
@@ -76,7 +116,13 @@ globalThis.fetch = async (url, opts = {}) => {
     const created = (body.records || []).map(r => {
       const id = `recExp${++state.expSeq}`;
       const pushId = r.fields?.[EXP_PUSH_ID_FIELD] || null;
-      state.expenses.push({ id, pushId });
+      // Keep enough to answer the single-record re-read the sync performs.
+      state.expenses.push({
+        id, pushId,
+        jobId:       r.fields?.["fldPNFIzq1grsdxYi"]?.[0] || null,
+        amount:      r.fields?.["fldotVu0jhqmh4A4h"] ?? r.fields?.["fldZyi6nVUHzshIaT"] ?? 0,
+        description: r.fields?.["fldnSQEOnyq3sho5g"] || "",
+      });
       return { id, fields: r.fields };
     });
     return ok(created);
@@ -161,6 +207,52 @@ await test("taxable push creates materials + tax expense, both stamped", async (
   eq(r.created, 1, "one group charged");
   eq(r.count, 2, "materials + tax expense");
   eq(state.expenses.every(e => e.pushId === "pid-tax"), true, "both expenses stamped");
+});
+
+// ── Step E: the push keeps Neon in step, and fails closed if it can't ────────
+// The field app reads expenses from Neon, so an Airtable-only push is invisible
+// on the job and absent from GP. These cover the three states that matter.
+
+await test("E: every created expense is written to Neon", async () => {
+  resetState(["tx1"]);
+  const g = group("pid-neon", ["tx1"]); g.taxable = true;
+  const r = json(await PUSH([g]));
+  eq(r.ok, true, "ok");
+  eq(r.count, 2, "materials + tax");
+  eq(neonWrites.length, 2, "BOTH expenses synced — not just the materials one");
+  eq(neonWrites.every(id => state.expenses.some(e => e.id === id)), true,
+     "synced the real Airtable rec ids");
+});
+
+await test("E: Neon unreachable → push FAILS CLOSED, and says how to fix it", async () => {
+  resetState(["tx1"]);
+  neonDown = true;
+  const res = await PUSH([group("pid-fail", ["tx1"])]);
+  const r = json(res);
+  eq(res.statusCode, 502, "not a 200 — reporting success would be a lie");
+  eq(r.ok, false, "ok:false");
+  eq(r.neonSyncFailures.length, 1, "the unsynced expense is named");
+  eq(/push again/i.test(r.error), true, "tells the user the retry is safe");
+  // The Airtable side still happened — that's why the message says "pushed",
+  // and why the retry must not charge again.
+  eq(state.expenses.length, 1, "the expense DOES exist in Airtable");
+});
+
+await test("E: retrying a half-failed push heals it without charging twice", async () => {
+  resetState(["tx1"]);
+  neonDown = true;
+  eq(json(await PUSH([group("pid-heal", ["tx1"])])).ok, false, "first attempt fails closed");
+  eq(state.expenses.length, 1, "one expense in Airtable");
+  eq(neonWrites.length, 0, "nothing reached Neon");
+
+  neonDown = false;                       // database comes back
+  const r = json(await PUSH([group("pid-heal", ["tx1"])]));
+  eq(r.ok, true, "retry succeeds");
+  eq(r.created, 0, "guard #1: nothing freshly charged");
+  eq(r.alreadyPushed, 1, "recognised as already pushed");
+  eq(state.expenses.length, 1, "STILL one expense — no double charge");
+  eq(neonWrites.length, 1, "and the stranded expense finally reached Neon");
+  eq(neonWrites[0], state.expenses[0].id, "the same record, healed");
 });
 
 // ── report ──

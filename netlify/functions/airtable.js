@@ -7,6 +7,8 @@ import { shadowLoginCheck, neonLoginCandidate, loginSource,
          neonEmployees, neonEmployeeById } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
+// Shared with inventory.js — the materials push writes expenses too (Step E).
+import { syncExpenseToNeon as syncExpenseToNeonShared } from "./_expenses.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
 // pCloud lost the store decision when its app-registration page turned out to
@@ -4989,41 +4991,18 @@ async function handleCompleteServiceCall(body) {
 // Fed the record Airtable just RETURNED, so every derived field (Total Cost,
 // Billable, Unbilled, Reviewed Expenses) arrives already computed — identical to
 // what the ETL loads, so the two can't disagree about the same row.
+//
+// The mapping itself moved to `_expenses.js` at Step E, because the INVENTORY
+// app's materials push writes expenses too and had no Neon leg at all — the
+// duplicate that would have created sits on a money path, so it is shared
+// rather than copied. Read that file's header for why the two callers handle
+// failure differently.
+//
+// This caller SWALLOWS: handleExpenses falls back to Airtable, so the user still
+// sees the row and a failed sync is cosmetic here. The inventory push does not
+// have that luxury and fails closed.
 async function syncExpenseToNeon(rec) {
-  if (!rec?.id) return;
-  const f = rec.fields || {};
-  const n = (v) => { if (Array.isArray(v)) v = v[0]; const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const s = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "" || x === null) ? null : String(x); };
-  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : s(v));
-  await neonWrite("expense.sync",
-    `INSERT INTO expenses
-       (airtable_id, job_airtable_id, job_id, expense_type, expense_status, expense_date,
-        total_cost_actual, reviewed, reviewed_expenses, billable, billable_material_amount,
-        billed_material_amount, unbilled_material_amount, manual_material_cost, material_credit,
-        vendor_name, description, push_id, submitted_by_at_id, submitted_by_name, synced_at)
-     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5::date,$6,$7,$8,$9,$10,
-             $11,$12,$13,$14,$15,$16,$17,$18,$19, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
-       expense_type=EXCLUDED.expense_type, expense_status=EXCLUDED.expense_status,
-       expense_date=EXCLUDED.expense_date, total_cost_actual=EXCLUDED.total_cost_actual,
-       reviewed=EXCLUDED.reviewed, reviewed_expenses=EXCLUDED.reviewed_expenses,
-       billable=EXCLUDED.billable, billable_material_amount=EXCLUDED.billable_material_amount,
-       billed_material_amount=EXCLUDED.billed_material_amount,
-       unbilled_material_amount=EXCLUDED.unbilled_material_amount,
-       manual_material_cost=EXCLUDED.manual_material_cost, material_credit=EXCLUDED.material_credit,
-       vendor_name=EXCLUDED.vendor_name, description=EXCLUDED.description,
-       push_id=EXCLUDED.push_id, submitted_by_at_id=EXCLUDED.submitted_by_at_id,
-       submitted_by_name=EXCLUDED.submitted_by_name, synced_at=now()`,
-    [rec.id, s(f["Job"]), sel(f["Expense Type"]), sel(f["Expense Status"]), s(f["Expense Date"]),
-     n(f["Total Cost (Actual)"]), f["Reviewed"] === true, n(f["Reviewed Expenses"]),
-     f["Billable?"] === true, n(f["Billable Material Amount $"]),
-     n(f["Billed Material Amount $"]), n(f["Unbilled Material Amount $"]),
-     n(f["Manual Material Cost"]), n(f["Material Credit"]),
-     s(f["Vendor Name (from Vendor)"]), s(f["Description"]), s(f["Push ID"]),
-     s(f["Submitted By"]),
-     (Array.isArray(f["Submitted By Name"]) ? f["Submitted By Name"].filter(Boolean).join(", ")
-                                            : s(f["Submitted By Name"]))]).catch(() => {});
+  await syncExpenseToNeonShared(rec).catch(() => {});
 }
 
 async function guardExpenseMutation(expenseId, authUser) {

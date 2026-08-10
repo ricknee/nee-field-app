@@ -8,6 +8,11 @@ import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from
 // the main-base job reads (Step B0). The driver is lazy-imported so the offline
 // test suites stay install-free.
 import { neonExec, neonQuery } from "./_neon.js";
+// Step E. The materials push writes Expenses into the MAIN base, and the field
+// app has read expenses from Neon since Step 4d — so an Airtable-only write is
+// invisible over there. Shared with airtable.js; see _expenses.js for why this
+// caller fails closed and that one doesn't.
+import { syncExpenseToNeon } from "./_expenses.js";
 import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
@@ -1201,12 +1206,52 @@ async function handlePushExpenses(body) {
   //     safe charset ([0-9a-f-]) so they need no formula escaping.
   const reqPushIds = [...new Set(pending.map(g => g && g.pushId).filter(Boolean))];
   const pushIdsWithExpenses = new Set();
+  // The records themselves, kept so guard #1 can RE-SYNC them to Neon on a
+  // retry (Step E). Without this, a push whose Airtable write landed but whose
+  // Neon write failed could never be healed: the retry would short-circuit as
+  // "already pushed" and the expense would stay invisible to the field app
+  // forever — which is the exact bug Step E exists to close.
+  const existingByPushId = new Map();
   if (reqPushIds.length) {
     const clauses = reqPushIds.map(id => `{Push ID}='${id}'`);
     const existing = await fetchAll(API_ROOT_MAIN, "Expenses", {
       filter: clauses.length === 1 ? clauses[0] : `OR(${clauses.join(",")})`
     });
-    existing.forEach(r => { const pid = r.fields?.["Push ID"]; if (pid) pushIdsWithExpenses.add(pid); });
+    existing.forEach(r => {
+      const pid = r.fields?.["Push ID"];
+      if (!pid) return;
+      pushIdsWithExpenses.add(pid);
+      if (!existingByPushId.has(pid)) existingByPushId.set(pid, []);
+      existingByPushId.get(pid).push(r);
+    });
+  }
+
+  // Expenses that reached Airtable but not Neon. Collected rather than thrown
+  // mid-loop: the Airtable records already exist, so aborting would strand the
+  // groups after this one too. Reported at the end, and the push answers
+  // ok:false so the caller retries — which heals via guard #1 above.
+  const neonSyncFailures = [];
+
+  // Re-read the record before syncing instead of trusting the create response.
+  // `Total Cost (Actual)`, `Billable Material Amount $` and `Unbilled Material
+  // Amount $` are Airtable formulas/rollups and they feed GP; syncing a record
+  // whose derived fields haven't been computed yet would write zeros into the
+  // money columns, which is worse than the gap this closes. One extra GET per
+  // expense (1-2 per job) is a cheap price for not having to trust that.
+  async function syncCreatedExpense(expenseId, label) {
+    try {
+      const rec = await atFetch(API_ROOT_MAIN, `${encodeURIComponent("Expenses")}/${expenseId}`);
+      // Assert the read came back as the record we asked for. syncExpenseToNeon
+      // early-returns on a record with no `id`, which is right for a fail-soft
+      // caller and WRONG here — it would turn "the re-read returned something
+      // unexpected" into a silent success and strand the expense, which is the
+      // whole failure mode this step exists to remove.
+      if (rec?.id !== expenseId) throw new Error(`re-read returned ${rec?.id || "no record"}`);
+      await syncExpenseToNeon(rec);
+    } catch (e) {
+      console.error(`Push: expense ${expenseId} (${label}) did NOT reach Neon: ${e.message}`);
+      neonSyncFailures.push(expenseId);
+    }
   }
 
   // Look up the "Receipt / Document" field ID once if PDFs are provided
@@ -1237,6 +1282,17 @@ async function handlePushExpenses(body) {
       if (txList.length) {
         try { await markTransactionsPushed(txList, pushId); txMarked += txList.length; }
         catch (e) { console.warn("Idempotent re-mark failed (non-fatal):", e.message); }
+      }
+      // Re-sync to Neon as well (Step E). Marking transactions was the original
+      // reason for this retry path; a Neon write that failed last time is the
+      // other, and it is the one that would otherwise be unfixable. The upsert
+      // is ON CONFLICT so re-syncing an already-synced expense is a no-op.
+      for (const rec of existingByPushId.get(pushId) || []) {
+        try { await syncExpenseToNeon(rec); }
+        catch (e) {
+          console.error(`Push: re-sync of ${rec.id} still failing: ${e.message}`);
+          neonSyncFailures.push(rec.id);
+        }
       }
       alreadyPushed++;
       continue;
@@ -1293,6 +1349,7 @@ async function handlePushExpenses(body) {
     if (matExpenseId) {
       expenseIds.push(matExpenseId);
       jobExpenseIds.push(matExpenseId);
+      await syncCreatedExpense(matExpenseId, `materials — ${jobName}`);
 
       // Upload PDF receipt if provided
       const pdfBase64 = pdfs?.[i];
@@ -1333,6 +1390,7 @@ async function handlePushExpenses(body) {
       if (taxExpenseId) {
         expenseIds.push(taxExpenseId);
         jobExpenseIds.push(taxExpenseId);
+        await syncCreatedExpense(taxExpenseId, `tax — ${jobName}`);
       }
     }
 
@@ -1362,8 +1420,7 @@ async function handlePushExpenses(body) {
     created++;
   }
 
-  return resp(200, {
-    ok: true,
+  const summary = {
     count:           expenseIds.length,
     created,
     alreadyPushed,
@@ -1371,7 +1428,27 @@ async function handlePushExpenses(body) {
     txCount:         txMarked,
     pdfUploads,
     pushHistoryIds
-  });
+  };
+
+  // ── FAIL CLOSED if anything didn't reach Neon (Step E) ────────────────────
+  // The expense exists in Airtable and the money is right there, but the field
+  // app reads expenses from Neon — so an unsynced expense is invisible on the
+  // job and absent from GP. Reporting success would be a lie of exactly the
+  // kind that hid this for three days.
+  //
+  // Safe to tell the user to retry: the push is idempotent on `Push ID`, so the
+  // retry re-hits guard #1, creates nothing new, and re-runs only the sync.
+  if (neonSyncFailures.length) {
+    return resp(502, {
+      ok: false,
+      error: `Pushed to Airtable, but ${neonSyncFailures.length} expense(s) did not reach the ` +
+             `database, so they won't show on the job yet. Push again to finish — it won't charge twice.`,
+      neonSyncFailures,
+      ...summary
+    });
+  }
+
+  return resp(200, { ok: true, ...summary });
 }
 
 // ── ADJUSTMENT ─────────────────────────────────────────────

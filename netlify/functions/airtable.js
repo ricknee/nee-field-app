@@ -2458,7 +2458,7 @@ async function handleClockSwitch(body, authUser) {
   if (!canUseTimeClock(authUser)) {
     return resp(403, { ok: false, error: "The time clock isn't switched on yet." });
   }
-  const { class: cls, cityTaxes, clientPunchId, at } = body || {};
+  const { class: cls, cityTaxes, clientPunchId, at, jobId } = body || {};
   if (!cls) return resp(400, { ok: false, error: "Pick what you're switching to." });
   if (!clientPunchId) return resp(400, { ok: false, error: "Missing clientPunchId." });
   if (cityTaxes != null && !PR_CITY_TAX_OPTS.includes(String(cityTaxes))) {
@@ -2506,14 +2506,25 @@ async function handleClockSwitch(body, authUser) {
          FROM calc c
        RETURNING id, class, duration_seconds
      ), reopened AS (
-       -- The new segment starts exactly where the old one ended: no gap, no
-       -- overlap, and the same job carried across — switching is about the CLASS.
+       -- ⚠ THE NEW SEGMENT STARTS ONE MINUTE AFTER THE OLD ONE ENDS.
+       -- Owner's call: "start that time stamp one minute after the last one
+       -- stops, so we do not have double time... overlapping time stamps."
+       -- Postgres already treats touching ends as non-overlapping and the
+       -- durations never double-counted, but two rows sharing an instant look
+       -- like double time to a human reading a timesheet, and this record has to
+       -- survive being read by an accountant. The cost is one unpaid minute per
+       -- switch, which the quarter-hour rounding almost always absorbs.
+       --
+       -- The JOB can change here too, not just the class: the real move is
+       -- office in the morning, then out to a site.
        INSERT INTO open_punches
          (employee_id, started_at, job_id, job_name, class, city_taxes,
           start_lat, start_lon, client_punch_id)
-       SELECT c.employee_id, c.boundary, c.job_id, c.job_name, $4,
+       SELECT c.employee_id, c.boundary + INTERVAL '1 minute',
+              COALESCE(j.id, c.job_id), COALESCE(j.po_locked, c.job_name), $4,
               COALESCE($5, c.city_taxes), c.start_lat, c.start_lon, $6
          FROM calc c
+         LEFT JOIN jobs j ON j.airtable_id = NULLIF($7::text, '')
        RETURNING started_at, job_name, class, city_taxes, client_punch_id,
                  break_seconds::float8 AS break_seconds, break_started_at
      )
@@ -2521,7 +2532,8 @@ async function handleClockSwitch(body, authUser) {
             (SELECT duration_seconds::float8 FROM closed) AS closed_seconds,
             r.* FROM reopened r`,
     [me.id, me.name || null, stamp, String(cls),
-     cityTaxes == null ? null : String(cityTaxes), clientPunchId]);
+     cityTaxes == null ? null : String(cityTaxes), clientPunchId,
+     (jobId && String(jobId).startsWith("rec")) ? String(jobId) : ""]);
 
   const out = rows?.[0];
   if (!out) {

@@ -207,8 +207,11 @@
     .clock-btn-row { display: flex; gap: 8px; }
     /* Switch and Lunch are secondary to Clock Out — smaller type and less
        padding, and Clock Out keeps the larger share of the row. */
-    .clock-btn-sm { flex: 0 1 auto; font-size: 14px; padding: 12px 10px; }
-    .clock-btn-row .clock-btn-out { flex: 1.4; }
+    /* nowrap is what keeps the row SHORT. "Clock Out" was wrapping to two lines,
+       which set the height of all three and turned them into big squares. */
+    .clock-btn-row .clock-btn { padding: 11px 8px; font-size: 14px; white-space: nowrap; }
+    .clock-btn-sm { flex: 0 1 auto; }
+    .clock-btn-row .clock-btn-out { flex: 1.2; }
     /* Same min-width:auto trap — without this, "⏸ Lunch / Break" and "Clock Out"
        each hold their full text width and together push the panel wider than the
        phone rather than wrapping. */
@@ -17998,6 +18001,7 @@
   let clockDraft = { cls: "", city: "" };
   let clockDrill = null;              // null | "job" | "class" | "city"
   let clockDrillSearch = "";
+  let clockSwitchShown = false;       // the Switch sheet, while clocked in
 
   function clockRow(label, value, kind, clearable, muted) {
     return `
@@ -18167,11 +18171,17 @@
                <button class="clock-btn clock-btn-out" onclick="clockOutSheet()">Clock Out</button>
              </div>`}
 
-        <div id="clockSwitchSheet" class="hidden" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;">
-          <div class="clock-note" style="margin-top:0;">
-            Banks your <strong>${esc(clockState.open.class || "current")}</strong> time and carries on
-            against the same job. You stay clocked in.
-          </div>
+        <div id="clockSwitchSheet" class="${clockSwitchShown ? "" : "hidden"}" style="margin-top:12px; border-top:1px solid var(--line); padding-top:10px;">
+          ${clockSwitchShown ? `
+          <label class="clock-field">Job</label>
+          <input type="text" placeholder="Search jobs…" autocomplete="off"
+                 value="${esc(clockEditPick.search)}" oninput="clockSearchJobs(this.value,'edit')" />
+          <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); margin:7px 0;">
+            <input type="checkbox" ${clockEditPick.allStatuses ? "checked" : ""}
+                   onchange="clockToggleAllJobs(this.checked,'edit')" />
+            Show every job
+          </label>
+          <div id="clockJobListEdit" class="clock-job-list" style="max-height:34vh;"></div>` : ""}
           <label class="clock-field">Switch to
             <select id="clockSwitchClass" onchange="clockSwitchSyncCity()">${
               clockClasses(clockState.open.class)
@@ -18183,9 +18193,10 @@
               `<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
           </label>
           <div class="clock-btn-row" style="margin-top:10px;">
-            <button class="clock-btn clock-btn-out" onclick="clockSwitchSheet()">Cancel</button>
+            <button class="clock-btn clock-btn-out clock-btn-sm" onclick="clockSwitchSheet()">Cancel</button>
             <button class="clock-btn clock-btn-in" onclick="clockSwitchGo()">Switch</button>
           </div>
+          <div class="clock-note">Banks your ${esc(clockState.open.class || "current")} time. You stay clocked in.</div>
           <div id="clockSwitchErr" class="clock-note" style="color:#b91c1c;"></div>
         </div>
 
@@ -18238,6 +18249,15 @@
       `;
     }
 
+    // The adjust editor and the Switch sheet both host the "edit"-scope picker
+    // and are mutually exclusive, so either one needs its list drawn after this
+    // innerHTML lands.
+    if (clockEdit.target === "open" || clockSwitchShown) {
+      renderClockJobList("edit");
+      clockEditOpenSyncCity();   // adjust editor; no-ops when absent
+      clockSwitchSyncCity();     // switch sheet;  no-ops when absent
+    }
+
     // History lives in the Timesheets tab now, not stacked under the clock.
     renderClockRecent();
     mhSyncChrome();
@@ -18286,7 +18306,9 @@
   // ── My Hours tabs ───────────────────────────────────────────────────────
   // Timesheets (history + rollups) and Time off. The clock itself is not a tab —
   // it stays above them, because it is the reason the screen gets opened.
-  let mhTab = "timesheets";
+  // Defaults to the clock: opening this screen should show the thing you came to
+  // press, and nothing else.
+  let mhTab = "clock";
 
   function mhSetTab(tab) {
     mhTab = tab;
@@ -18295,22 +18317,22 @@
   window.mhSetTab = mhSetTab;
 
   function mhSyncChrome() {
-    const tabs = $("mhTabs"), ts = $("mhTabTimesheets"), to = $("mhTabTimeoff");
-    if (!tabs || !ts || !to) return;
-    // While a picker has taken over the panel, everything below it is noise.
-    const drilling = !!clockDrill && !clockState.open;
+    const tabs = $("mhTabs"), ck = $("mhTabClock"),
+          ts = $("mhTabTimesheets"), to = $("mhTabTimeoff");
+    if (!tabs || !ck || !ts || !to) return;
 
-    // No allowance means no PTO for this person (the salaried owners), so the
-    // tab would open onto nothing. Hide it and pin them to Timesheets rather
-    // than offering a dead end.
+    // No allowance means no PTO for this person (the salaried owners), so that
+    // tab would open onto nothing. Hide the button rather than offer a dead end.
     const hasPto = !!(ptoData && ptoData.tracked);
     const btnTo = tabs.querySelector('button[data-tab="timeoff"]');
     if (btnTo) btnTo.classList.toggle("hidden", !hasPto);
-    if (!hasPto && mhTab === "timeoff") mhTab = "timesheets";
+    if (!hasPto && mhTab === "timeoff") mhTab = "clock";
 
-    // With only one tab left there is nothing to switch between, so the bar
-    // itself is noise.
-    tabs.classList.toggle("hidden", drilling || !hasPto);
+    // A picker takes over the panel, so the tab bar goes with everything else —
+    // but the clock pane stays, because that is what the picker renders into.
+    const drilling = !!clockDrill && !clockState.open;
+    tabs.classList.toggle("hidden", drilling);
+    ck.classList.toggle("hidden", !drilling && mhTab !== "clock");
     ts.classList.toggle("hidden", drilling || mhTab !== "timesheets");
     to.classList.toggle("hidden", drilling || mhTab !== "timeoff");
     tabs.querySelectorAll("button").forEach(b =>
@@ -18338,6 +18360,7 @@
 
   function clockEditOpen(target) {
     clockEdit.target = target;
+    if (target) clockSwitchShown = false;   // never both — see clockSwitchSheet
     // Seed the shared picker with the shift's current job so the editor opens
     // showing what you're actually on, and clear any stale search text.
     // Seed the EDIT picker with whatever the thing being edited is currently on,
@@ -18615,14 +18638,20 @@
   // The everyday move: clocked in on Travel, arrive, switch to Contract on the
   // same job. Banks the travel time as its own segment and opens a new one at the
   // same instant — you never leave the clock.
+  // State-driven rather than a DOM toggle, so the panel can guarantee that the
+  // switch sheet and the adjust editor are never open together — they would
+  // otherwise both render an #clockJobListEdit and the picker would draw into
+  // whichever came first.
   function clockSwitchSheet() {
-    const s = $("clockSwitchSheet");
-    if (!s) return;
-    s.classList.toggle("hidden");
-    if (!s.classList.contains("hidden")) {
-      clockSwitchSyncCity();
-      s.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    clockSwitchShown = !clockSwitchShown;
+    if (clockSwitchShown) {
+      clockEdit.target = null;                       // close the adjust editor
+      const cur = (state.jobs || []).find(j => (j.name || "") === (clockState.open?.job_name || ""));
+      clockEditPick.jobId = cur?.id || "";           // start on the job you're on
+      clockEditPick.search = "";
     }
+    renderClockPanel();
+    if (clockSwitchShown) $("clockSwitchSheet")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
   window.clockSwitchSheet = clockSwitchSheet;
 
@@ -18631,8 +18660,9 @@
     const sel = $("clockSwitchCity");
     if (!sel) return;
     const cls = $("clockSwitchClass")?.value || "";
-    // The open shift knows its job by name only, so find it for the city default.
-    const job = (state.jobs || []).find(j => (j.name || "") === (clockState.open?.job_name || ""));
+    // The job you're switching TO, from the picker — so moving from the office to
+    // a site brings that site's tax district with it.
+    const job = (state.jobs || []).find(j => j.id === (clockEditPick.jobId || ""));
     sel.value = clockDefaultCityTax(job, cls);
     const travel = cls === CLOCK_TRAVEL_CLASS;
     sel.disabled = travel;
@@ -18646,6 +18676,8 @@
     try {
       const body = {
         class: $("clockSwitchClass")?.value,
+        // The job you're moving to — office in the morning, site after.
+        jobId: clockEditPick.jobId || null,
         cityTaxes: $("clockSwitchCity")?.value || null,
         // A NEW cycle id: the segment being closed keeps the old one, and the
         // segment being opened needs its own so a later punch-out matches it.
@@ -18655,6 +18687,7 @@
       try {
         const d = await apiPost("clockSwitch", body);
         if (d.open) clockState.open = { ...d.open };
+        clockSwitchShown = false;
         showAppToast(`${d.closed?.class || "Time"} banked — now on ${d.open?.class || body.class}.`);
         clockLocalSave(null);
       } catch (e) {
@@ -22678,17 +22711,21 @@
            screen to do in a hurry, and the rollups are what you browse afterwards.
            Rendered entirely from JS and hidden outright when the clock is off, so
            this markup costs nothing while the feature is dormant. -->
-      <!-- The clock stays put at the top — it is why the screen gets opened.
-           Everything you only sometimes want (history, rollups, time off) lives
-           behind the tabs below it, rather than stacked underneath forever. -->
-      <div id="clockPanel" class="clock-panel hidden"></div>
-
-      <div id="mhTabs" class="mh-tabs hidden">
+      <!-- Tabs first, and the CLOCK IS ONE OF THEM — the shape of the app the
+           crew already uses. It defaults to Time clock, so opening this screen
+           shows the clock and nothing else; history and rollups are a tap away
+           instead of stacked underneath forever. -->
+      <div id="mhTabs" class="mh-tabs">
+        <button type="button" data-tab="clock"      onclick="mhSetTab('clock')">Time clock</button>
         <button type="button" data-tab="timesheets" onclick="mhSetTab('timesheets')">Timesheets</button>
         <button type="button" data-tab="timeoff"    onclick="mhSetTab('timeoff')">Time off</button>
       </div>
 
-      <div id="mhTabTimesheets">
+      <div id="mhTabClock">
+        <div id="clockPanel" class="clock-panel hidden"></div>
+      </div>
+
+      <div id="mhTabTimesheets" class="hidden">
         <div id="clockRecent"></div>
         <div id="mhTiles" class="mh-tiles"></div>
         <div id="clockWidgetWrap" class="clock-note" style="margin-top:14px;">

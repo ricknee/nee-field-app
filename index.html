@@ -982,8 +982,10 @@
     /* ── PANEL SCHEDULES (docs/PLAN-panel-schedules.md) ── */
     /* The grid is two columns of circuits, odd left and even right, because that
        is how the breakers are physically arranged in the panel. Below 640px it
-       becomes ONE column in circuit order (1,2,3,4…) rather than two unusably
-       narrow ones — see the media query at the bottom of this block. */
+       becomes ONE column rather than two unusably narrow ones: the WHOLE odd
+       side first (1,3,5…), then the whole even side under it (2,4,6…), so each
+       half still reads as the column it is in the panel — see the media query at
+       the bottom of this block. */
     .panel-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1093,19 +1095,31 @@
     }
     .panel-list-row:hover { border-color: var(--accent); }
 
+    /* Column headings say "Ckt — what it feeds" side by side on a wide screen,
+       where which side is which is obvious from the position. Stacked on a
+       phone it is not obvious, so each heading swaps to naming its side. */
+    .panel-col-head .ph-mob { display: none; }
+
     @media (max-width: 640px) {
       .panel-grid { grid-template-columns: 1fr; }
-      /* The right column's header would otherwise repeat mid-list once the two
-         columns stack. */
-      .panel-col-head.right { display: none; }
+      .panel-col-head .ph-wide { display: none; }
+      .panel-col-head .ph-mob  { display: inline; }
       /* Rows carry explicit grid-row/grid-column so a merged breaker can span
          two rows of ONE side (see renderPanelGrid). Stacked to a single column
          those coordinates would punch holes in the list, so they are dropped
-         and DOM order — which is circuit order — takes over again. */
+         and `order` takes over: every odd circuit, then the even heading, then
+         every even circuit. `order` is set per row in renderPanelGrid.
+         Ordering by SIDE and not by circuit number is deliberate — walking a
+         panel means going down one bus at a time, and a merged 2-pole (1+3)
+         stays a contiguous cell instead of being split around circuit 2. */
       .panel-grid > * {
         grid-column: 1 !important;
         grid-row: auto !important;
+        order: var(--panel-ord, 0);
       }
+      /* The even heading needs air above it — it lands mid-list now, not at the
+         top of a column, and it is the only thing marking where the side changes. */
+      .panel-col-head.right { margin-top: 18px; }
     }
 
     /* ── TABS ── */
@@ -6997,11 +7011,28 @@
     return blocks;
   }
 
-  // Circuit order in the DOM (1,2,3,4…), NOT column order — that is what makes
-  // the mobile single-column stack read 1,2,3,4 instead of every odd followed
-  // by every even. Row and column are then set EXPLICITLY rather than left to
-  // auto-placement, because a merged breaker spans two rows of one side and
-  // auto-flow would push the other side's rows down with it.
+  // Is the grid stacked into one column? Same 640px breakpoint as the CSS, and
+  // it has to stay the same one — this is only ever used to make the keyboard
+  // agree with what is on the screen.
+  function panelStacked() {
+    return window.matchMedia("(max-width: 640px)").matches;
+  }
+  // The stacked reading order of one circuit: odds 1,2,3… then evens 1001,1002…
+  // Mirrors the `--panel-ord` written into each row below.
+  function panelStackOrd(inp) {
+    const n = Number(inp.dataset.ckt);
+    return n % 2 === 1 ? (n + 1) / 2 : 1000 + n / 2;
+  }
+
+  // Row and column are set EXPLICITLY rather than left to auto-placement,
+  // because a merged breaker spans two rows of one side and auto-flow would
+  // push the other side's rows down with it.
+  //
+  // `--panel-ord` is the phone-only stacking order, and it is the ONLY thing
+  // that decides it: the media query drops the explicit row/column and stacks
+  // by `order` instead. Odds get 1,2,3… and evens 1001,1002…, so the single
+  // column reads 1,3,5…83 then 2,4,6…84 — one bus at a time, the way a panel is
+  // actually walked. The two headings sit at 0 and 1000 and separate the halves.
   function renderPanelGrid() {
     const grid = $("panelGrid");
     const descOf = new Map(panelState.circuits.map(c => [c.number, c.description || ""]));
@@ -7009,14 +7040,16 @@
     const body = panelBlocks().map(b => {
       const first = b.members[0];
       const v = descOf.get(first) || "";
-      const col = first % 2 === 1 ? 1 : 2;
+      const odd = first % 2 === 1;
+      const col = odd ? 1 : 2;
       // +2 for the two header cells occupying grid row 1.
       const row = Math.ceil(first / 2) + 1;
+      const ord = odd ? (first + 1) / 2 : 1000 + first / 2;
       const merged = b.members.length > 1;
       const ckt = merged
         ? `<span class="panel-ckt stack">${b.members.map(n => `<span>${n}</span>`).join("")}</span>`
         : `<span class="panel-ckt">${first}</span>`;
-      return `<div class="panel-row${merged ? " merged" : ""}" style="grid-column:${col}; grid-row:${row} / span ${b.members.length};">
+      return `<div class="panel-row${merged ? " merged" : ""}" style="grid-column:${col}; grid-row:${row} / span ${b.members.length}; --panel-ord:${ord};">
         ${ckt}
         <input class="panel-desc${v ? " has-val" : ""}${merged ? " merged" : ""}" data-ckt="${first}" value="${esc(v)}"
                placeholder="spare" autocomplete="off" enterkeyhint="next" />
@@ -7027,8 +7060,8 @@
     }).join("");
 
     grid.innerHTML =
-      `<div class="panel-col-head" style="grid-column:1; grid-row:1;">Ckt — what it feeds</div>` +
-      `<div class="panel-col-head right" style="grid-column:2; grid-row:1;">Ckt — what it feeds</div>` +
+      `<div class="panel-col-head" style="grid-column:1; grid-row:1; --panel-ord:0;"><span class="ph-wide">Ckt — what it feeds</span><span class="ph-mob">Odd circuits — 1, 3, 5…</span></div>` +
+      `<div class="panel-col-head right" style="grid-column:2; grid-row:1; --panel-ord:1000;"><span class="ph-wide">Ckt — what it feeds</span><span class="ph-mob">Even circuits — 2, 4, 6…</span></div>` +
       body;
 
     grid.querySelectorAll(".panel-tie").forEach(box => {
@@ -7042,12 +7075,18 @@
         updateFilledCount();
       });
       // Enter moves to the next circuit rather than submitting anything —
-      // filling a panel is one long run of typing.
+      // filling a panel is one long run of typing. "Next" is what the EYE sees
+      // next, not what is next in the DOM: stacked on a phone the odd side runs
+      // to the bottom before the even side starts, so DOM order would fire the
+      // keyboard half a screen away from where the caret appears to be.
       inp.addEventListener("keydown", (e) => {
         if (e.key !== "Enter") return;
         e.preventDefault();
         const all = [...grid.querySelectorAll(".panel-desc")];
-        const next = all[all.indexOf(inp) + 1];
+        const seq = panelStacked()
+          ? all.slice().sort((a, b) => panelStackOrd(a) - panelStackOrd(b))
+          : all;
+        const next = seq[seq.indexOf(inp) + 1];
         if (next) { next.focus(); next.select(); }
       });
     });

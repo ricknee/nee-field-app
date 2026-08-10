@@ -2490,7 +2490,22 @@ async function handleClockSwitch(body, authUser) {
         WHERE employee_id = $1 AND break_started_at IS NULL
         RETURNING *
      ), calc AS (
-       SELECT s.*, GREATEST($3::timestamptz, s.started_at) AS boundary FROM shift s
+       -- ⚠ THE BOUNDARY IS ROUNDED UP TO THE NEXT WHOLE MINUTE, and both segments
+       -- meet there exactly. This is what QuickBooks Time does, so the crew reads
+       -- the same shape of timesheet they already know.
+       --
+       -- It replaced a one-minute GAP (end 09:44:23, restart 09:45:23), which
+       -- avoided a shared timestamp but quietly cost a minute of pay on every
+       -- switch. Meeting at a rounded minute costs nothing: Postgres treats
+       -- touching ends as non-overlapping, durations cannot double-count, and the
+       -- up-to-59-seconds of rounding lands in the employee's favour — the same
+       -- direction as the weekly round-up elsewhere in payroll.
+       SELECT s.*,
+              (SELECT CASE WHEN date_trunc('minute', b) = b THEN b
+                           ELSE date_trunc('minute', b) + INTERVAL '1 minute' END
+                 FROM (SELECT GREATEST($3::timestamptz, s.started_at) AS b) _r
+              ) AS boundary
+         FROM shift s
      ), closed AS (
        INSERT INTO clock_punches
          (employee_id, employee_name, started_at, ended_at, work_date, duration_seconds,
@@ -2506,21 +2521,16 @@ async function handleClockSwitch(body, authUser) {
          FROM calc c
        RETURNING id, class, duration_seconds
      ), reopened AS (
-       -- ⚠ THE NEW SEGMENT STARTS ONE MINUTE AFTER THE OLD ONE ENDS.
-       -- Owner's call: "start that time stamp one minute after the last one
-       -- stops, so we do not have double time... overlapping time stamps."
-       -- Postgres already treats touching ends as non-overlapping and the
-       -- durations never double-counted, but two rows sharing an instant look
-       -- like double time to a human reading a timesheet, and this record has to
-       -- survive being read by an accountant. The cost is one unpaid minute per
-       -- switch, which the quarter-hour rounding almost always absorbs.
+       -- The new segment starts exactly where the old one ended — at the rounded
+       -- minute computed in `calc`. See the note there for why that beats the
+       -- one-minute gap this replaced.
        --
        -- The JOB can change here too, not just the class: the real move is
        -- office in the morning, then out to a site.
        INSERT INTO open_punches
          (employee_id, started_at, job_id, job_name, class, city_taxes,
           start_lat, start_lon, client_punch_id)
-       SELECT c.employee_id, c.boundary + INTERVAL '1 minute',
+       SELECT c.employee_id, c.boundary,
               COALESCE(j.id, c.job_id), COALESCE(j.po_locked, c.job_name), $4,
               COALESCE($5, c.city_taxes), c.start_lat, c.start_lon, $6
          FROM calc c

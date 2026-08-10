@@ -17565,6 +17565,13 @@
 
   const CLOCK_QUEUE_KEY = "nee_clock_queue";   // punches awaiting replay
   const CLOCK_LOCAL_KEY = "nee_clock_local";   // this phone's own view of the shift
+  // ⚠ Whether the clock EXISTS for this person, remembered across restarts.
+  // Without it a cold start with no signal renders nothing at all: clockStatus
+  // can't be reached, `enabled` is still its initial false, and the panel hides
+  // itself — so someone who punched in, went into a basement and reopened the app
+  // saw no clock and no way to clock out, even though the punch was safely in
+  // localStorage the whole time. That is the "doesn't fully reload" case.
+  const CLOCK_META_KEY = "nee_clock_meta";
 
   let clockState  = { enabled: false, countsTowardPayroll: false, open: null, recent: [] };
   let clockTicker = null;
@@ -17599,6 +17606,13 @@
       if (v) localStorage.setItem(CLOCK_LOCAL_KEY, JSON.stringify(v));
       else   localStorage.removeItem(CLOCK_LOCAL_KEY);
     } catch {}
+  }
+  function clockMeta() {
+    try { return JSON.parse(localStorage.getItem(CLOCK_META_KEY) || "null"); }
+    catch { return null; }
+  }
+  function clockMetaSave(m) {
+    try { localStorage.setItem(CLOCK_META_KEY, JSON.stringify(m)); } catch {}
   }
 
   // Idempotency key for a whole punch CYCLE — the same id rides on the clock-in
@@ -17636,8 +17650,10 @@
         return changed;
       }
     }
-    // Queue fully drained, so the server's view is authoritative again.
-    clockLocalSave(null);
+    // Queue drained, so the server is authoritative again. The cached shift is
+    // deliberately NOT cleared — refreshClock refreshes it from the response a
+    // moment later, and clearing it here would leave a window with no local copy
+    // if the connection dropped again in between.
     return changed;
   }
 
@@ -17648,6 +17664,21 @@
     const role = (state.user.role || "").toLowerCase();
     if (role !== "admin" && role !== "employee") { clockState.enabled = false; renderClockPill(); return; }
 
+    // Seed from what this phone already knows BEFORE going near the network, so a
+    // cold start with no signal still renders a working clock. The fetch below
+    // overwrites all of it when it succeeds.
+    const meta = clockMeta();
+    if (meta) {
+      clockState.enabled = !!meta.enabled;
+      clockState.countsTowardPayroll = !!meta.countsTowardPayroll;
+      clockState.longShiftHours = meta.longShiftHours || 12;
+      const seeded = clockLocal();
+      if (seeded && !clockState.open) clockState.open = seeded;
+      // Draw immediately rather than waiting on a request that may hang until it
+      // times out — offline, that wait is the whole "app didn't load" experience.
+      renderClockPill(); renderClockPanel(); tickClock();
+    }
+
     try { await flushClockQueue(); } catch {}
 
     try {
@@ -17657,16 +17688,28 @@
         countsTowardPayroll: !!d.countsTowardPayroll,
         open: d.open || null,
         recent: Array.isArray(d.recent) ? d.recent : [],
+        longShiftHours: d.longShiftHours || 12,
         warning: d.warning || null,
       };
+      // Remember the shape of the feature, not the shift — this is what lets a
+      // cold offline start render a clock at all.
+      clockMetaSave({
+        enabled: clockState.enabled,
+        countsTowardPayroll: clockState.countsTowardPayroll,
+        longShiftHours: clockState.longShiftHours,
+      });
       // A punch still sitting in the queue outranks the server: the server has
       // not heard about it yet, so its "you are clocked out" is simply stale.
       if (clockQueue().length) {
         const local = clockLocal();
         clockState.open = local ? local : clockState.open;
-      } else {
-        clockLocalSave(null);
       }
+      // ⚠ Cache the open shift ALWAYS, not only when something is queued.
+      // clockLocal used to mean "unsynced work"; it now means "the last shift
+      // this phone knows about", and the QUEUE alone signals unsynced. Without
+      // this, a shift started ONLINE and then continued offline vanished on a
+      // cold start — nothing had ever written it to this device.
+      clockLocalSave(clockState.open || null);
     } catch {
       // Offline or erroring — fall back to what this phone knows. Do NOT flip
       // enabled to false here, or a dropped connection would make the clock
@@ -18668,7 +18711,10 @@
       try {
         const d = await apiPost("clockIn", body);
         clockState.open = d.open || localOpen;
-        clockLocalSave(null);
+        // Cache it even though this succeeded online — clock in at the shop,
+        // drive into a basement, kill the app, reopen: this is the only record
+        // the phone has.
+        clockLocalSave(clockState.open);
         // Back to "Now" for the next shift — a start time left over from this
         // morning would silently backdate tomorrow's punch.
         clockDraft.startedAt = "";
@@ -18771,7 +18817,7 @@
         if (d.open) clockState.open = { ...d.open };
         clockSwitchShown = false;
         showAppToast(`${d.closed?.class || "Time"} banked — now on ${d.open?.class || body.class}.`);
-        clockLocalSave(null);
+        clockLocalSave(clockState.open);   // the NEW segment is now the open shift
       } catch (e) {
         if (e?.status) { if (err) err.textContent = e.message || "Couldn't switch."; return; }
         // Offline: queue it and apply the same effect locally, so the screen shows

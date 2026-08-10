@@ -1507,8 +1507,8 @@ async function handleClockEditTimes(body, authUser) {
                                          THEN original_started_at
                                          ELSE COALESCE(original_started_at, started_at) END,
               -- ⚠ $3::text is not decoration. Postgres cannot infer the type from
-              -- `IS NULL` and `= ''` alone and refuses to prepare the statement:
-              -- "could not determine data type of parameter $3".
+              -- an IS NULL / = '' comparison alone and refuses to prepare the
+              -- statement: "could not determine data type of parameter $3".
               job_id   = CASE WHEN $3::text IS NULL THEN job_id
                               WHEN $3::text = ''    THEN NULL
                               ELSE (SELECT id FROM jobs WHERE airtable_id = $3::text) END,

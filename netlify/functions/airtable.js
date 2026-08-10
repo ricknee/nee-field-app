@@ -1479,21 +1479,53 @@ async function handleClockEditTimes(body, authUser) {
   const me = await clockEmployee(authUser);
   if (!me && !isAdmin) return resp(400, { ok: false, error: "No employee record found for this login." });
 
-  // ── An OPEN shift: only the start exists to be wrong ──
+  // ── An OPEN shift ──
+  // Start time, and also the job / class / city tax. Clocking in with the wrong
+  // job — or none, which is what prompted this — was previously only fixable by
+  // clocking out, and someone who does that loses the shift boundary they were
+  // trying to preserve.
   if (!punchId) {
-    if (s.skip) return resp(400, { ok: false, error: "Pick a new start time." });
     if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
-    // COALESCE keeps the FIRST original, so editing twice doesn't erase the real
-    // punch time behind the first edit.
+
+    // ⚠ FIXED statement, not a built-up SET list. Every parameter is referenced on
+    // every call, because Postgres rejects a bind that supplies more parameters
+    // than the statement uses — so sending only a job (3 placeholders, 6 params)
+    // would have failed at runtime, where the offline tests cannot see it.
+    //
+    // NULL means "not sent, leave alone" for each field. For the job specifically,
+    // an empty string is how you CLEAR it — that is what "— No job —" sends, and
+    // it's why the job needs three branches where the others need one.
+    const jobRecOpen = (jobId === undefined) ? null
+      : (jobId && String(jobId).startsWith("rec") ? String(jobId) : "");
+
     const rows = await neonWrite("clock.editOpen",
       `UPDATE open_punches
-          SET original_started_at = COALESCE(original_started_at, started_at),
-              started_at = $2::timestamptz,
-              edited_at = now(), edited_by = $3
+          SET started_at = COALESCE($4::timestamptz, started_at),
+              -- Only stamp the original when the start actually moves, so editing
+              -- the job doesn't mark the shift as time-adjusted.
+              original_started_at = CASE WHEN $4::timestamptz IS NULL
+                                         THEN original_started_at
+                                         ELSE COALESCE(original_started_at, started_at) END,
+              -- ⚠ $3::text is not decoration. Postgres cannot infer the type from
+              -- `IS NULL` and `= ''` alone and refuses to prepare the statement:
+              -- "could not determine data type of parameter $3".
+              job_id   = CASE WHEN $3::text IS NULL THEN job_id
+                              WHEN $3::text = ''    THEN NULL
+                              ELSE (SELECT id FROM jobs WHERE airtable_id = $3::text) END,
+              -- job_name follows job_id for the same reason as on a completed
+              -- punch: this is "I picked the wrong job", not a historical snapshot.
+              job_name = CASE WHEN $3::text IS NULL THEN job_name
+                              WHEN $3::text = ''    THEN NULL
+                              ELSE (SELECT po_locked FROM jobs WHERE airtable_id = $3::text) END,
+              class      = COALESCE($5, class),
+              city_taxes = COALESCE($6, city_taxes),
+              edited_at = now(), edited_by = $2
         WHERE employee_id = $1
         RETURNING started_at, original_started_at, break_seconds::float8 AS break_seconds,
                   break_started_at, job_name, class, city_taxes, client_punch_id`,
-      [me.id, s.iso, me.id]);
+      [me.id, me.id, jobRecOpen, s.skip ? null : s.iso,
+       cls === undefined ? null : (cls || null),
+       cityTaxes === undefined ? null : (cityTaxes || null)]);
     const open = rows?.[0];
     if (!open) return resp(409, { ok: false, error: "You're not clocked in." });
     // A start moved later than a break that has already been taken would make the

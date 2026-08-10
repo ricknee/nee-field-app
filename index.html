@@ -18028,6 +18028,18 @@
 
   function clockEditOpen(target) { clockEdit.target = target; renderClockPanel(); }
   window.clockEditOpen = clockEditOpen;
+
+  // Same travel rule as everywhere: Travel is untaxed, otherwise the chosen job's
+  // setting. Runs when either the job or the class changes in the open-shift editor.
+  function clockEditOpenSyncCity() {
+    const sel = $("clockEditOpenCity");
+    if (!sel) return;
+    const cls = $("clockEditOpenClass")?.value || "";
+    const job = (state.jobs || []).find(j => j.id === ($("clockEditOpenJob")?.value || ""));
+    sel.value = clockDefaultCityTax(job, cls);
+    sel.disabled = (cls === CLOCK_TRAVEL_CLASS);
+  }
+  window.clockEditOpenSyncCity = clockEditOpenSyncCity;
   function clockEditCancel() { clockEdit.target = null; renderClockPanel(); }
   window.clockEditCancel = clockEditCancel;
 
@@ -18035,8 +18047,31 @@
   // end hasn't happened yet.
   function renderClockStartEditor() {
     const o = clockState.open;
+    // Job, class and city tax are editable here too, not just the start time.
+    // Clocking in with the wrong job — or none — used to be fixable only by
+    // clocking out, which destroys the shift you were trying to keep.
+    const jobs = (state.jobs || [])
+      .filter(j => j && j.id && j.clockVisibility !== "hidden" && (clockJobActive(j) || (j.name || "") === (o.job_name || "")))
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     return `
       <div style="margin-top:12px; border-top:1px solid var(--line); padding-top:12px;">
+        <label class="clock-field">Job
+          <select id="clockEditOpenJob" onchange="clockEditOpenSyncCity()">
+            <option value="">— No job —</option>
+            ${jobs.map(j => `<option value="${esc(j.id)}" ${
+              (j.name || "") === (o.job_name || "") ? "selected" : ""}>${esc(j.name || j.id)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="clock-field">Class
+          <select id="clockEditOpenClass" onchange="clockEditOpenSyncCity()">${
+            clockClasses(o.class).map(c =>
+              `<option value="${esc(c)}" ${c === (o.class || "") ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+        </label>
+        <label class="clock-field">City tax
+          <select id="clockEditOpenCity" ${o.class === CLOCK_TRAVEL_CLASS ? "disabled" : ""}>${
+            PR_CITY_TAXES.map(t =>
+              `<option value="${esc(t)}" ${t === (o.city_taxes || "A No Tax") ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+        </label>
         <label class="clock-field">I actually started at
           <input id="clockEditStart" type="datetime-local" value="${esc(toLocalInput(o.started_at))}" />
         </label>
@@ -18134,12 +18169,16 @@
     try {
       const body = punchId
         ? { punchId, startedAt, endedAt,
-            // Sent only for a completed punch — an open shift has no editor for
-            // these, and sending undefined leaves each field untouched server-side.
             jobId: $("clockEditJob")?.value ?? undefined,
             class: $("clockEditClass")?.value ?? undefined,
             cityTaxes: $("clockEditCity")?.value ?? undefined }
-        : { startedAt };
+        // The OPEN shift carries the same fields, from its own editor. Sending
+        // undefined leaves a field untouched server-side, so an empty string is
+        // the only way to clear the job — which is what "— No job —" sends.
+        : { startedAt,
+            jobId: $("clockEditOpenJob")?.value ?? undefined,
+            class: $("clockEditOpenClass")?.value ?? undefined,
+            cityTaxes: $("clockEditOpenCity")?.value ?? undefined };
       await apiPost("clockEditTimes", body);
       clockEdit.target = null;
       await refreshClock();

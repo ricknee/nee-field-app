@@ -191,6 +191,15 @@ globalThis.fetch = async (url, opts = {}) => {
     return { ok: true, status: 200, text: async () => JSON.stringify({
       id: recId, fields: { "Estimate Line Items": ["recOldLine"] } }) };
   }
+  // The template header + its lines, read by createEstimateFromTemplate.
+  if (recId && table === "Estimate Templates") {
+    return { ok: true, status: 200, text: async () => JSON.stringify({
+      id: recId, fields: { "Description": "Standard shop", "Estimate Template Lines": ["recTL1"] } }) };
+  }
+  if (table === "Estimate Template Lines") {
+    return ok([{ id: "recTL1",
+                 fields: { "Quantity": 3, "Inventory Item": ["recItemA"], "Notes": "from template" } }]);
+  }
   if (method === "DELETE") return ok([{ id: recId, deleted: true }]);
   if (method === "PATCH") return ok([{ id: recId, fields: {} }]);
   if (recId && table === "Inventory Items") {
@@ -477,6 +486,19 @@ await test("D: creating an estimate writes the HEADER before the lines", async (
   // Order matters: a line resolves estimate_id by looking its parent up, so a
   // line written first lands with a null FK and never counts toward the total.
   eq(estWrites[0], "recNewEst", "the header is the estimate just created");
+});
+
+await test("D: an estimate built FROM A TEMPLATE syncs too — the path that 404'd on prod", async () => {
+  reset();
+  const r = json(await POST({ action: "createEstimateFromTemplate", templateId: "recTmpl1",
+                              jobName: "Aaron McLauglin (MIA 274)", createdBy: "Rick" }));
+  eq(r.ok, true, "ok");
+  eq(r.lineCount, 1, "the template line cloned into the new estimate");
+  // This is the SECOND handler that creates an estimate, and it shipped without
+  // either sync — so the estimate existed in Airtable, was missing from Neon,
+  // and the app 404'd the moment it opened the thing it had just created.
+  eq(estWrites[0], "recNewEst", "header synced — without this, estimateGet 404s");
+  eq(estLineWrites.length, 1, "line synced — without this, the total reads 0");
 });
 
 await test("D: replacing lines removes the old ones from Neon too", async () => {

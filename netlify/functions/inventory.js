@@ -3475,6 +3475,14 @@ async function handleCreateEstimateFromTemplate(body) {
   const newId = created.records?.[0]?.id;
   if (!newId) return resp(500, { ok: false, error: "Failed to create estimate." });
 
+  // This is the SECOND path that creates an estimate, and it was missed when
+  // the estimate reads flipped to Neon — so a template-built estimate existed
+  // in Airtable, was absent from Neon, and the app 404'd the moment it opened
+  // the thing it had just created. Header before lines, same as
+  // handleEstimateCreate: a line resolves its estimate_id by looking the
+  // parent up, and one written first lands with a null FK.
+  await syncEstimateToNeon(created.records[0]);
+
   // Bulk-insert the cloned lines. We can't reuse createLineItems for these
   // because it gates Description on isMisc — for clones we want template
   // notes carried into the Description column on the new estimate line.
@@ -3492,8 +3500,9 @@ async function handleCreateEstimateFromTemplate(body) {
         }
         return { fields };
       });
+      let made;
       try {
-        await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+        made = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
           method: "POST",
           body: JSON.stringify({ records: batch, typecast: true })
         });
@@ -3506,7 +3515,7 @@ async function handleCreateEstimateFromTemplate(body) {
             delete f.Description;
             return { fields: f };
           });
-          await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+          made = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
             method: "POST",
             body: JSON.stringify({ records: retryBatch, typecast: true })
           });
@@ -3514,6 +3523,10 @@ async function handleCreateEstimateFromTemplate(body) {
           throw err;
         }
       }
+      // Mirrored per batch, not once at the end — the retry path above swaps in
+      // a different record set, so the response is the only reliable source of
+      // what actually landed.
+      await syncEstimateLinesToNeon(made?.records);
     }
   }
 

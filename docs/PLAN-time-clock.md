@@ -27,9 +27,12 @@ with one-tap punch shortcuts · a revocable per-person **widget endpoint**.
 
 1. **`promoteClockPunches` dry run** (§ below, ~1 h). The riskiest action in the feature and it has
    only ever run on a test branch.
-2. **The salaried name list.** `SALARIED = ["Larry Unruh","Miles Unruh","Rick Unruh"]`, hardcoded
-   in `index.html`. Rename any of them in Airtable and that person is silently paid **hourly with
-   overtime** on the next run. A live hazard, independent of the clock. ~30 min.
+2. ~~**The salaried name list.**~~ ✅ **DONE 2026-08-11 (`b72ac7a`).** It is
+   `employees.salaried` now (`db/schema/031`), with a **Pay type** toggle on the People card and
+   the pay basis shown on the card. ⚠ `labor_type` could not be reused — it reads `"Regular"`
+   for all three salaried owners, so repurposing it would have flipped every hourly employee onto
+   salary and stopped paying the crew overtime. `SALARIED_FALLBACK` remains in `index.html`
+   **on purpose**, used only when Neon is unreachable; do not "clean it up".
 3. **Open-shift overlap guard** (§ below). Adjusting an open shift's start backwards over an
    earlier punch double-counts. Harmless until punches become pay.
 4. **Weeks of clean reconciliation.** The gate is the numbers agreeing, not time passing — and

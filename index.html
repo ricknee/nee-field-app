@@ -12249,9 +12249,19 @@
             <button class="people-rates-btn" data-id="${esc(p.id)}" data-name="${esc(p.name)}" type="button"
               style="background:none; border:none; padding:0; margin-left:14px; color:var(--accent);
                      font-weight:600; font-size:12px; cursor:pointer;">Cost rate</button>
+            <button class="people-salaried-btn" data-id="${esc(p.id)}" data-name="${esc(p.name)}"
+              data-salaried="${p.salaried ? "1" : "0"}" type="button"
+              style="background:none; border:none; padding:0; margin-left:14px; color:var(--accent);
+                     font-weight:600; font-size:12px; cursor:pointer;">Pay type</button>
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; font-size:12px; margin-bottom:10px;">
             <div><div style="color:var(--muted);">Cost rate</div><div style="font-weight:600;">${rate}</div></div>
+            <!-- Not decoration. This is what decides whether payroll splits the
+                 person's hours into Regular/Overtime, and it used to be a
+                 hardcoded name list nobody could see. Shown on the card so it is
+                 checkable at a glance rather than discoverable only by testing a
+                 payroll run. -->
+            <div><div style="color:var(--muted);">Pay</div><div style="font-weight:600;">${p.salaried ? "Salary" : "Hourly"}</div></div>
             <div><div style="color:var(--muted);">Hired</div><div style="font-weight:600;">${p.hiredOn ? esc(p.hiredOn) : "—"}</div></div>
             ${p.active
               ? `<div><div style="color:var(--muted);">Last login</div><div style="font-weight:600;">${p.lastLoginAt ? esc(p.lastLoginAt.slice(0,10)) : "—"}</div></div>`
@@ -12336,6 +12346,9 @@
     });
     $("peopleList").querySelectorAll(".people-edit-btn").forEach(btn => {
       btn.addEventListener("click", () => openPersonEditor(btn.dataset.id));
+    });
+    $("peopleList").querySelectorAll(".people-salaried-btn").forEach(btn => {
+      btn.addEventListener("click", () => togglePersonSalaried(btn));
     });
     $("peopleList").querySelectorAll(".people-rates-btn").forEach(btn => {
       btn.addEventListener("click", () => openRatePanel(btn.dataset.id, btn.dataset.name));
@@ -12621,6 +12634,39 @@
       await loadPeople();
     } catch (e) {
       alert(`Couldn't sign out ${name}'s devices.\n\n${e.message}\n\nNothing was changed.`);
+      renderPeople();
+    }
+  }
+
+  // Salary vs hourly. This is a PAY decision, not a label: on the payroll screen
+  // and in the payroll PDF, a salaried person's hours are reported but never
+  // split into Regular/Overtime, so switching someone to Hourly starts paying
+  // them time-and-a-half over 40. The dialog says so in those words rather than
+  // "change pay type", because the consequence is the whole point.
+  //
+  // Until 2026-08-11 this was not editable at all — it was a hardcoded list of
+  // three names in this file, matched against the employee's name, so renaming
+  // someone on this very screen quietly moved them onto hourly pay.
+  async function togglePersonSalaried(btn) {
+    const id = btn.dataset.id, name = btn.dataset.name;
+    const isSalaried = btn.dataset.salaried === "1";
+    const next = !isSalaried;
+
+    const msg = next
+      ? `Set ${name} to SALARY?\n\nTheir hours will still be reported, but payroll will stop splitting them into Regular and Overtime — no time-and-a-half over 40.`
+      : `Set ${name} to HOURLY?\n\nPayroll will start splitting their hours into Regular and Overtime, and pay time-and-a-half over 40.`;
+    if (!confirm(msg)) return;
+
+    btn.disabled = true;
+    btn.textContent = "Saving...";
+    try {
+      await apiPost("setEmployeeSalaried", { employeeId: id, salaried: next });
+      await loadPeople();
+    } catch (e) {
+      // Loud, same as access. The write fails closed server-side, so an error
+      // here means nothing changed — and quietly leaving the card showing the
+      // new state would be a lie about how someone gets paid.
+      alert(`Couldn't change the pay type for ${name}.\n\n${e.message}\n\nNothing was changed.`);
       renderPeople();
     }
   }
@@ -16965,7 +17011,24 @@
     const b = parseInt(hex.slice(5,7),16);
     return [r,g,b];
   }
-  const SALARIED = ["Larry Unruh", "Miles Unruh", "Rick Unruh"];
+  // ⚠ FALLBACK ONLY — do not read this directly, use isSalariedEmp().
+  //
+  // The live answer is `employees.salaried` (db/schema/031) and rides in on the
+  // payrollEntries response. This list is used only when that key is ABSENT,
+  // which means Neon was unreachable and payroll fell back to Airtable — which
+  // has no such column.
+  //
+  // It cannot just be deleted. Defaulting to "nobody is salaried" during an
+  // outage would split the owners' hours into Regular/Overtime and pay them
+  // time-and-a-half. Briefly stale is strictly safer than empty.
+  //
+  // Until 2026-08-11 this list was the ONLY source, matched on the employee
+  // NAME — so renaming one of these three on the People screen silently moved
+  // them onto hourly pay with overtime, with no error anywhere. That is the
+  // hazard db/schema/031 removes; this remnant is the outage net, nothing more.
+  const SALARIED_FALLBACK = ["Larry Unruh", "Miles Unruh", "Rick Unruh"];
+  let salariedNames = new Set(SALARIED_FALLBACK);
+  const isSalariedEmp = (name) => salariedNames.has(name);
   // "PTO" and "Paid Holiday" are recordable in PAYROLL but never on the clock —
   // you don't punch in for a holiday. clockClasses() filters them back out.
   const PR_CLASSES = ["Contract","Extra's","Rough & Service","Travel","Shop Work","Business Development","Admin/Office","Vehicle and Equipment Maintenance","PTO","Paid Holiday"];
@@ -21393,6 +21456,13 @@
     try {
       const d = await apiGet("payrollEntries", { startDate: dateStr(prWk1Start), endDate: dateStr(prWk2End) });
       prEntries = (d.entries || []).map(e => ({ ...e, isNew: false }));
+      // Who is on a salary, straight from the server. ABSENT and EMPTY mean
+      // different things on purpose (see the handler): absent = no answer, so
+      // SALARIED_FALLBACK stays in place; an empty array is authoritative and
+      // correctly means nobody. `Array.isArray` is the test, not truthiness —
+      // `[]` is truthy in JS but `if (d.salaried)` reads fine and would be wrong
+      // the other way round, so this is deliberate rather than incidental.
+      if (Array.isArray(d.salaried)) salariedNames = new Set(d.salaried);
       // Hydrate bonuses from localStorage cache for this period. Loaded values
       // are clean — no data-dirty marking. The user re-typing makes them dirty
       // and the next saveAll() writes them back to localStorage.
@@ -21671,7 +21741,7 @@
 
   function renderEmpBlock(emp, weeks) {
     const col = PR_COLORS[emp] || { hdr: "#444", light: "#eee" };
-    const isSalaried = SALARIED.includes(emp);
+    const isSalaried = isSalariedEmp(emp);
     const bonus = prBonuses[emp] || 0;
 
     const wk1Total = sumWeekHours(weeks.wk1);
@@ -21813,7 +21883,7 @@
     table.querySelectorAll('tr[data-entry-id]').forEach(r => { total += rowHoursValue(r); });
     const block = table.closest('.pr-emp-block');
     const wkNum = table.dataset.week;
-    const isSalaried = SALARIED.includes(block?.dataset.emp);
+    const isSalaried = isSalariedEmp(block?.dataset.emp);
     const totalEl = block?.querySelector(`.pr-week-total[data-week="${wkNum}"]`);
     if (totalEl) totalEl.textContent = `${fmtHrs(total)} hrs${isSalaried ? ' (Salaried — city tax hrs shown)' : ''}`;
     return total;
@@ -22762,7 +22832,7 @@
 
     empNames.forEach(emp => {
       const col = PR_COLORS[emp] || { hdr: "#444", light: "#ddd" };
-      const isSalaried = SALARIED.includes(emp);
+      const isSalaried = isSalariedEmp(emp);
       const wk1 = flattenDays(empMap[emp]?.wk1?.days);
       const wk2 = flattenDays(empMap[emp]?.wk2?.days);
       const bonus = prBonuses[emp] || 0;

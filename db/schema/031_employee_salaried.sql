@@ -1,0 +1,70 @@
+-- ── employees.salaried — who is paid a salary, in the database ─────────────
+-- Applied BARE to the production branch via the Neon MCP 2026-08-11; this file is
+-- the annotated source of truth.
+--
+-- ⚠⚠ THIS CLOSES A LIVE PAYROLL HAZARD. It is not a feature.
+--
+-- ── WHAT WAS WRONG ─────────────────────────────────────────────────────────
+-- Whether payroll splits somebody's hours into Regular and Overtime was decided
+-- by a hardcoded list of NAMES in the frontend:
+--
+--     const SALARIED = ["Larry Unruh", "Miles Unruh", "Rick Unruh"];   // index.html
+--
+-- matched with `SALARIED.includes(employeeName)` at three sites — the payroll
+-- screen header, the running week total, and the payroll PDF.
+--
+-- **Rename any of those three and they are silently paid hourly, WITH OVERTIME,
+-- on the next payroll run.** No error, no warning, nothing in the UI suggesting
+-- the name was load-bearing. And since 2026-08-08 there is a People screen with
+-- an Edit form that invites exactly that edit — the hazard got easier to trigger
+-- the moment employee admin shipped. Payroll comes out of this app and is
+-- reconciled to the cent, so this is real money, not a display bug.
+--
+-- ── WHY NOT REUSE labor_type ───────────────────────────────────────────────
+-- Because it does not mean this. `employees.labor_type` reads **"Regular"** for
+-- all three of the salaried owners — it is the default labour classification,
+-- not a pay basis. Repurposing it would have flipped every hourly employee onto
+-- salary and stopped paying the crew overtime. Checked before assuming, and it
+-- is the reason this is a new column rather than a five-minute read swap.
+--
+-- ── THE BACKFILL MATCHES ON NAME, ONCE, ON PURPOSE ─────────────────────────
+-- The name is the only mapping that exists at this point, so the migration uses
+-- it to seed the column and then the name stops mattering forever. Verified to
+-- hit exactly 3 rows, the right 3, before anything read the column.
+--
+-- ── WHERE IT IS READ ───────────────────────────────────────────────────────
+--   handlePayrollEntries  returns `salaried: [names]` alongside the entries
+--   handlePeople          returns `salaried` per person (card + Pay type toggle)
+--   handleSetEmployeeSalaried  the write, _ADMIN only
+--
+-- NEON ONLY — no Airtable mirror, unlike `active`. There is no Airtable column
+-- for this; the flag was invented here, and employees have been Neon-owned since
+-- Stage 5 retired the ETL dimension load. An Airtable twin would be a second
+-- copy with no reader and one more thing to drift.
+--
+-- ⚠ THE FRONTEND FALLBACK IS DELIBERATE AND MUST NOT BE "CLEANED UP".
+-- `SALARIED_FALLBACK` still holds the three names. It is used only when the
+-- payroll response carries NO `salaried` key at all — i.e. Neon was unreachable
+-- and the read fell back to Airtable, which has no such column. Defaulting to
+-- "nobody is salaried" during an outage would split the owners' hours and pay
+-- them time-and-a-half. Briefly stale is strictly safer than empty.
+--
+-- ABSENT and EMPTY are therefore different answers on this endpoint, on purpose:
+-- absent = no answer, keep the fallback; `[]` = authoritative, nobody is
+-- salaried. Collapsing them would either make the toggle unable to clear the
+-- last salaried person, or let one failed query quietly pay overtime to owners.
+--
+-- Parameter types were checked with PREPARE before shipping (deduced
+-- {text, boolean}), per the lesson from the `revokeEmployee` type-deduction bug
+-- in 016 — the offline suite cannot catch that class of error at all.
+--
+-- ── ROLLBACK ───────────────────────────────────────────────────────────────
+--   ALTER TABLE employees DROP COLUMN salaried;
+-- The frontend then falls back to SALARIED_FALLBACK and behaves exactly as it
+-- did before 2026-08-11. Nothing else depends on the column.
+ALTER TABLE employees ADD COLUMN IF NOT EXISTS salaried boolean NOT NULL DEFAULT false;
+
+-- Seed from the list this replaces. Ran with RETURNING and confirmed 3 rows:
+-- Larry Unruh, Miles Unruh, Rick Unruh — all admin, all active.
+UPDATE employees SET salaried = true
+ WHERE name IN ('Larry Unruh', 'Miles Unruh', 'Rick Unruh');

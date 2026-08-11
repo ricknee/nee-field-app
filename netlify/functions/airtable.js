@@ -489,6 +489,10 @@ const _ADMIN_POSTS = new Set([
   // Turning a person's app access on or off. Admin only — this is the action
   // that kills live sessions, and office manages money, not access.
   "setEmployeeActive",
+  // Deciding whether someone is paid a salary or hourly-with-overtime. That is a
+  // pay decision, so it sits with payroll runs at admin — office manages money
+  // that has already been earned, not what somebody earns.
+  "setEmployeeSalaried",
   // Resetting a credential, and it signs the person out. Admin only.
   "setEmployeePin",
   // Editing a person includes their ROLE, which is an authorization change.
@@ -855,7 +859,24 @@ async function handlePayrollEntries(params) {
       // behind. Expect it to be permanently non-zero after Step 3 retires Make.
       const unlinked = q.rows.filter(r => !r.airtable_id).length;
       if (unlinked) console.warn(`payrollEntries: ${unlinked} row(s) not yet mirrored to Airtable`);
-      return resp(200, { ok: true, entries, _source: "neon", _ms: q.ms, ...(unlinked ? { unlinked } : {}) });
+
+      // Who is on a salary. Returned as NAMES because the payroll screen and the
+      // payroll PDF key every block, total and colour by employee name — this
+      // replaces a hardcoded constant in index.html, not a lookup the client
+      // already has. See db/schema/031.
+      //
+      // ⚠ ABSENT and EMPTY mean different things, deliberately. A failed query
+      // omits the key entirely and the client falls back to its old hardcoded
+      // list, i.e. today's behaviour. An empty ARRAY is authoritative — it means
+      // nobody is salaried, which is a legitimate answer once the toggle exists.
+      // Collapsing the two would either make the toggle unable to clear the last
+      // salaried person, or let one bad query quietly pay the owners overtime.
+      const sq = await neonQuery(`SELECT name FROM employees WHERE salaried`);
+      const salaried = sq?.rows ? sq.rows.map(r => r.name).filter(Boolean) : null;
+      if (!sq?.rows) console.error(`payrollEntries: salaried lookup failed, client will use its fallback list: ${sq?.error || "no rows"}`);
+
+      return resp(200, { ok: true, entries, _source: "neon", _ms: q.ms,
+        ...(unlinked ? { unlinked } : {}), ...(salaried ? { salaried } : {}) });
     }
     console.error(`payrollEntries: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
   }
@@ -4027,7 +4048,7 @@ async function handlePeople() {
     `SELECT e.airtable_id, e.name, e.username, e.role, e.active, e.email, e.phone,
             e.employee_no, e.labor_type, e.notes, e.first_name, e.last_name,
             e.hired_on, e.terminated_on, e.termination_note,
-            e.token_valid_from, e.last_login_at,
+            e.token_valid_from, e.last_login_at, e.salaried,
             r.true_cost_rate, r.base_hourly_wage, r.payroll_burden_pct
        FROM employees e
        LEFT JOIN LATERAL (
@@ -4116,6 +4137,13 @@ async function handlePeople() {
       // AND their sessions were killed" — they come apart if a deactivation
       // half-failed, and hiding that would hide the one failure that matters.
       sessionsRevoked: !!n.token_valid_from,
+      // Paid a salary, so the payroll screen and PDF must not split their hours
+      // into Regular/Overtime. This REPLACED a hardcoded name list in index.html
+      // (`SALARIED = ["Larry Unruh", ...]`) — renaming one of them on this very
+      // screen silently moved them onto hourly pay with overtime on the next run.
+      // Neon-only: false during a Neon outage, which is why the client keeps the
+      // old name list as a last-resort fallback rather than trusting an empty set.
+      salaried: n.salaried === true,
     };
   });
 
@@ -4682,6 +4710,48 @@ async function handleSetEmployeeActive(body, authUser) {
   });
 
   return resp(200, { ok: true, employeeId, active });
+}
+
+// Mark someone as paid a salary, so payroll never splits their hours into
+// Regular/Overtime.
+//
+// ── WHY THIS EXISTS ────────────────────────────────────────────────────────
+// It replaced `const SALARIED = ["Larry Unruh", "Miles Unruh", "Rick Unruh"]`,
+// hardcoded in index.html and matched against the employee NAME. Renaming any
+// of those three — on the People screen, which exists and invites exactly that
+// — dropped them out of the list silently and paid them hourly WITH OVERTIME on
+// the next payroll run. A live money hazard with no error and no warning, and
+// nothing about the name list said it was load-bearing.
+//
+// NEON ONLY, no Airtable mirror — unlike handleSetEmployeeActive above. There is
+// no Airtable column for this; the flag was invented here (db/schema/031), and
+// employees have been Neon-owned since Stage 5 retired the ETL dimension load.
+// Adding an Airtable twin would create a second copy with no reader.
+//
+// `labor_type` is NOT this flag and must not be repurposed as one: it reads
+// "Regular" for all three of the salaried owners.
+async function handleSetEmployeeSalaried(body) {
+  const { employeeId, salaried } = body || {};
+  if (!employeeId || !String(employeeId).startsWith("rec")) {
+    return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  }
+  if (typeof salaried !== "boolean") {
+    return resp(400, { ok: false, error: "salaried must be true or false." });
+  }
+
+  // Same reasoning as mustHaveMatched in handleSetEmployeeActive: a zero-row
+  // UPDATE is a SUCCESSFUL query. Without this, setting the flag on anyone not
+  // in Neon would report success and change nothing — and the screen would show
+  // the toggle in its new position, which is the silent lie to avoid on a
+  // setting that decides whether someone is paid overtime.
+  const rows = await neonWrite("setEmployeeSalaried",
+    `UPDATE employees SET salaried = $2 WHERE airtable_id = $1
+      RETURNING airtable_id, name, salaried`, [employeeId, salaried]);
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return resp(404, { ok: false, error: `Employee ${employeeId} is not in Neon — nothing was changed.` });
+  }
+
+  return resp(200, { ok: true, employeeId, salaried: rows[0].salaried === true, name: rows[0].name });
 }
 
 // Shared mapper — used by handleJobs (list) and handleJobById (single).
@@ -10744,6 +10814,7 @@ export async function handler(event) {
       // authUser is passed so the handler can refuse a self-lockout — the
       // signed identity, never a client-supplied one.
       if (body.action === "setEmployeeActive")    return await handleSetEmployeeActive(body, authUser);
+      if (body.action === "setEmployeeSalaried")  return await handleSetEmployeeSalaried(body);
       if (body.action === "setEmployeePin")       return await handleSetEmployeePin(body);
       if (body.action === "updateEmployee")       return await handleUpdateEmployee(body, authUser);
       if (body.action === "createEmployee")       return await handleCreateEmployee(body);

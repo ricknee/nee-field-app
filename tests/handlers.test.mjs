@@ -1482,6 +1482,44 @@ await test("setEmployeeActive: an employee Neon doesn't have never reports succe
   delete process.env.DATABASE_URL;
 });
 
+await test("setEmployeeSalaried: admin only — it decides how someone is paid", async () => {
+  // Office is refused deliberately. Office handles money already earned
+  // (approving expenses, marking invoices paid); this decides whether a person
+  // earns time-and-a-half over 40, which sits with payroll runs at admin.
+  mockTables = { Employees: [] };
+  eq((await POST("setEmployeeSalaried", { employeeId: "recX", salaried: true }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("setEmployeeSalaried", { employeeId: "recX", salaried: true }, OFFICE_TOK)).statusCode, 403, "office refused — this is a pay decision");
+  eq((await POST("setEmployeeSalaried", { employeeId: "recX", salaried: true }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+});
+
+await test("setEmployeeSalaried: refuses anything that isn't an explicit true/false", async () => {
+  // `typeof salaried !== "boolean"` rather than a truthiness check, and this is
+  // the test that keeps it that way. A missing field, "false", or 0 must not be
+  // coerced: every one of those would silently answer a question about somebody's
+  // pay that the caller never actually asked.
+  mockTables = { Employees: [] };
+  eq((await POST("setEmployeeSalaried", { salaried: true })).statusCode, 400, "no employeeId → 400");
+  eq((await POST("setEmployeeSalaried", { employeeId: "notarec", salaried: true })).statusCode, 400, "malformed id → 400");
+  eq((await POST("setEmployeeSalaried", { employeeId: "recX" })).statusCode, 400, "missing salaried → 400");
+  eq((await POST("setEmployeeSalaried", { employeeId: "recX", salaried: "false" })).statusCode, 400, "string not coerced");
+  eq((await POST("setEmployeeSalaried", { employeeId: "recX", salaried: 0 })).statusCode, 400, "number not coerced");
+});
+
+await test("setEmployeeSalaried: fails CLOSED when Neon is unreachable", async () => {
+  // Neon-only, no Airtable mirror, so there is nowhere else this could have
+  // landed. Reporting success on a write that didn't happen would leave the
+  // People card showing "Salary" for someone payroll still treats as hourly.
+  //
+  // ⚠ HONEST SCOPE: offline this fails at the CONNECTION, so it proves the
+  // endpoint cannot report success without a working Neon write — NOT that the
+  // zero-row 404 branch fires. Same gap as setEmployeeActive above.
+  mockTables = { Employees: [{ id: "recSal", fields: { "Employee Name": "Someone", Active: true } }] };
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  const res = await POST("setEmployeeSalaried", { employeeId: "recSal", salaried: true });
+  ok(res.statusCode >= 400, `expected an error, got ${res.statusCode}`);
+  delete process.env.DATABASE_URL;
+});
+
 await test("people: admin only", async () => {
   mockTables = { Employees: [] };
   eq((await GET("people", {}, EMP_TOK)).statusCode, 403, "employee refused");

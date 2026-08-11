@@ -1,7 +1,14 @@
 # Plan — a real GP audit: can the numbers be trusted?
 
-**Status: NOT STARTED. Owner's ask, 2026-08-10:** *"some day we'll need to do a real gp audit to
-see if all the numbers really make sense. i want to know if i can trust them."*
+**Status: ✅ SLICES 1 + 2 RUN 2026-08-11 → `docs/AUDIT-gp-findings.md`. ⬜ Slice 3 needs an
+owner QuickBooks export.** Owner's ask, 2026-08-10: *"some day we'll need to do a real gp audit
+to see if all the numbers really make sense. i want to know if i can trust them."*
+
+> **Answer so far: the arithmetic is trustworthy, the inputs are not complete, and every gap
+> found pushes profit UP.** $34,584.50 of real labor never reaches final GP because the hours
+> were never approved; $362,471.95 of revenue sits on jobs with zero recorded material cost;
+> Shop Work invents $38,155 of revenue nobody was invoiced. Read the findings file, not this
+> plan, for the current picture.
 
 **Size: ~8-10 h across three slices.** Slice 3 needs the owner (a QuickBooks export) and is the
 only one that actually answers the question.

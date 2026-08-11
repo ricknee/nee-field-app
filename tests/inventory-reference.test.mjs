@@ -37,6 +37,12 @@ let neonHistory = [];    // inventory_transactions joined to items/locations
 const neonWrites = [];   // every INSERT INTO inventory_items airtable_id
 const txnWrites  = [];   // every INSERT INTO inventory_transactions airtable_id
 const txnDeletes = [];   // every DELETE FROM inventory_transactions airtable_id
+let neonEstimates   = [];  // material_estimates joined to the totals view
+let neonEstimateGet = [];  // one estimate joined to its lines
+const estWrites      = [];
+const estLineWrites  = [];
+const estDeletes     = [];
+const estLineDeletes = [];
 
 // Column types are INFERRED from the sample values rather than all declared as
 // text. The driver parses by dataTypeID, so declaring a boolean column as text
@@ -45,6 +51,16 @@ const txnDeletes = [];   // every DELETE FROM inventory_transactions airtable_id
 // boolean for a boolean column, and this mock has to do the same or it tests a
 // fiction. (numeric stays text on purpose: pg really does return numerics as
 // strings, which is why the handler wraps them in Number().)
+// An array bind does NOT arrive as a JS array. The driver serialises it to the
+// Postgres array LITERAL — ["a","b"] goes out as the string '{a,b}' — so a mock
+// that spreads params[0] spreads a string into characters and silently matches
+// nothing. Same class of trap as booleans arriving as "t"/"f".
+const pgArray = (v) =>
+  Array.isArray(v) ? v
+  : typeof v === "string" && v.startsWith("{")
+    ? v.slice(1, -1).split(",").map(s => s.replace(/^"|"$/g, "")).filter(Boolean)
+    : [];
+
 const OID = { bool: 16, int4: 23, text: 25 };
 function neonReply(cols, rows) {
   const typeOf = (c) => {
@@ -94,6 +110,27 @@ globalThis.fetch = async (url, opts = {}) => {
     } else if (/DELETE FROM inventory_transactions/i.test(sql)) {
       txnDeletes.push(body.params?.[0]);
       payload = neonReply([], []);
+    } else if (/INSERT INTO material_estimates/i.test(sql)) {
+      estWrites.push(body.params?.[0]);
+      payload = neonReply([], []);
+    } else if (/INSERT INTO material_estimate_lines/i.test(sql)) {
+      // The real statement builds one tuple per line, so every 7th param is an id.
+      for (let i = 0; i < (body.params || []).length; i += 7) estLineWrites.push(body.params[i]);
+      payload = neonReply([], []);
+    } else if (/DELETE FROM material_estimate_lines/i.test(sql)) {
+      estLineDeletes.push(...pgArray(body.params?.[0]));
+      payload = neonReply([], []);
+    } else if (/DELETE FROM material_estimates/i.test(sql)) {
+      estDeletes.push(body.params?.[0]);
+      payload = neonReply([], []);
+    } else if (/FROM material_estimates e\s+LEFT JOIN material_estimate_lines/i.test(sql)) {
+      payload = neonReply(["est_id", "job_name", "job_airtable_id", "created_at", "created_by",
+                           "status", "notes", "total", "line_id", "line_number",
+                           "item_airtable_id", "description", "quantity", "unit_cost_at_estimate",
+                           "item_name", "unit_of_measure", "category"], neonEstimateGet);
+    } else if (/FROM material_estimates e/i.test(sql)) {
+      payload = neonReply(["airtable_id", "job_name", "job_airtable_id", "created_at",
+                           "created_by", "status", "notes", "total", "line_count"], neonEstimates);
     } else if (/FROM v_stock_levels/i.test(sql)) {
       let rows = neonStock;
       // handleStockLevels scopes to one item; honouring the bind matters, or the
@@ -143,6 +180,18 @@ globalThis.fetch = async (url, opts = {}) => {
   if (method === "POST" && table === "Inventory Transactions") {
     return ok([{ id: "recNewTxn", fields: body.records[0].fields }]);
   }
+  if (method === "POST" && table === "Estimates") {
+    return ok([{ id: "recNewEst", fields: body.records[0].fields }]);
+  }
+  if (method === "POST" && table === "Estimate Line Items") {
+    return ok((body.records || []).map((rec, i) => ({ id: `recNewLine${i + 1}`, fields: rec.fields })));
+  }
+  // The estimate read that estimateUpdate/Delete use to find existing line ids.
+  if (recId && table === "Estimates") {
+    return { ok: true, status: 200, text: async () => JSON.stringify({
+      id: recId, fields: { "Estimate Line Items": ["recOldLine"] } }) };
+  }
+  if (method === "DELETE") return ok([{ id: recId, deleted: true }]);
   if (method === "PATCH") return ok([{ id: recId, fields: {} }]);
   if (recId && table === "Inventory Items") {
     const hit = atItems.find(i => i.id === recId);
@@ -190,6 +239,27 @@ function reset() {
       location_airtable_id: "recLoc1", location_name: "Shop #1", qty_on_hand: "-1434.0000",
       default_unit_cost: "0.7500", total_value: "-1075.5000", reorder_point: "0.0000",
       wire_ft_per_lb: "0.0000", wire_ft: "0.0000" },
+  ];
+  estWrites.length = 0; estLineWrites.length = 0;
+  estDeletes.length = 0; estLineDeletes.length = 0;
+  neonEstimates = [
+    { airtable_id: "recEst1", job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
+      created_at: "2026-07-17T11:39:54.000Z", created_by: "Rick", status: "Estimating",
+      notes: null, total: "16420.9900", line_count: 47 },
+  ];
+  neonEstimateGet = [
+    // A real item line…
+    { est_id: "recEst1", job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
+      created_at: "2026-07-17T11:39:54.000Z", created_by: "Rick", status: "Estimating", notes: null,
+      total: "16420.9900", line_id: "recL1", line_number: 1, item_airtable_id: "recItemA",
+      description: null, quantity: "10.0000", unit_cost_at_estimate: "0.7500",
+      item_name: "1/2\" EMT PIPE", unit_of_measure: "ft", category: "Conduit" },
+    // …and a Misc line, which carries text instead of an item link.
+    { est_id: "recEst1", job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
+      created_at: "2026-07-17T11:39:54.000Z", created_by: "Rick", status: "Estimating", notes: null,
+      total: "16420.9900", line_id: "recL2", line_number: 2, item_airtable_id: null,
+      description: "Rental — trencher", quantity: "1.0000", unit_cost_at_estimate: "250.0000",
+      item_name: null, unit_of_measure: null, category: null },
   ];
   neonHistory = [
     { airtable_id: "recTx1", txn_date: "2026-08-10T14:51:19.000Z", quantity: "10.0000",
@@ -372,7 +442,61 @@ await test("C: deleting a transaction removes it from Neon, or on-hand keeps cou
   // Airtable no longer has.
 });
 
-console.log("\ninventory.js reference tables — Steps B + C\n" + "-".repeat(46));
+// ── Step D: estimates ────────────────────────────────────────────────────────
+
+await test("D: the estimates list totals come from the view, not a stored rollup", async () => {
+  reset();
+  const r = json(await GET("estimatesList"));
+  eq(r._source, "neon", "served from Neon");
+  eq(r.estimates[0].id, "recEst1", "Airtable rec id");
+  eq(r.estimates[0].total, 16420.99, "total from v_material_estimate_totals");
+  eq(r.estimates[0].lineCount, 47, "line count from the same view");
+});
+
+await test("D: an estimate's lines come back with Misc lines intact", async () => {
+  reset();
+  const r = json(await GET("estimateGet", { id: "recEst1" }));
+  eq(r._source, "neon", "served from Neon");
+  eq(r.estimate.lines.length, 2, "both lines");
+  const item = r.estimate.lines[0], misc = r.estimate.lines[1];
+  eq(item.itemName, "1/2\" EMT PIPE", "item line names from the item");
+  eq(item.isMisc, false, "not misc");
+  eq(item.lineTotal, 7.5, "10 x 0.75 — computed, never stored");
+  eq(misc.isMisc, true, "a line with no item link is Misc");
+  eq(misc.itemName, "Rental — trencher", "Misc lines fall back to their own text");
+  eq(misc.lineTotal, 250, "1 x 250");
+});
+
+await test("D: creating an estimate writes the HEADER before the lines", async () => {
+  reset();
+  const r = json(await POST({ action: "estimateCreate", jobName: "Test Job", createdBy: "Rick",
+                              lines: [{ itemId: "recItemA", qty: 2, unitCost: 0.75 }] }));
+  eq(r.ok, true, "ok");
+  eq(estWrites.length, 1, "header synced");
+  eq(estLineWrites.length, 1, "line synced");
+  // Order matters: a line resolves estimate_id by looking its parent up, so a
+  // line written first lands with a null FK and never counts toward the total.
+  eq(estWrites[0], "recNewEst", "the header is the estimate just created");
+});
+
+await test("D: replacing lines removes the old ones from Neon too", async () => {
+  reset();
+  const r = json(await POST({ action: "estimateUpdate", id: "recEst1", replaceLines: true,
+                              lines: [{ itemId: "recItemA", qty: 5, unitCost: 0.75 }] }));
+  eq(r.ok, true, "ok");
+  eq(estLineDeletes.includes("recOldLine"), true,
+     "the replaced line is gone — nothing repairs a missed delete, and it would keep counting");
+  eq(estLineWrites.length, 1, "the new line landed");
+});
+
+await test("D: deleting an estimate removes it from Neon, lines cascade", async () => {
+  reset();
+  const r = json(await POST({ action: "estimateDelete", id: "recEst1" }));
+  eq(r.ok, true, "ok");
+  eq(estDeletes[0], "recEst1", "estimate removed — otherwise it keeps showing on the list");
+});
+
+console.log("\ninventory.js reference tables — Steps B + C + D\n" + "-".repeat(46));
 for (const [mark, name] of log) console.log(` ${mark} ${name}`);
 console.log("-".repeat(46));
 console.log(`${pass} passed, ${fail} failed\n`);

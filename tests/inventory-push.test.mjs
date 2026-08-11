@@ -80,7 +80,12 @@ globalThis.fetch = async (url, opts = {}) => {
       };
 
     } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
-      for (const id of (body.params?.[0] || [])) {
+      // An array bind arrives as the Postgres LITERAL '{a,b}', not a JS array —
+      // iterating params[0] directly walks the string character by character.
+      const ids = typeof body.params?.[0] === "string"
+        ? body.params[0].slice(1, -1).split(",").map(s => s.replace(/^"|"$/g, "")).filter(Boolean)
+        : (body.params?.[0] || []);
+      for (const id of ids) {
         const t = state.txns[id] || (state.txns[id] = { pushed: false, pushId: null });
         t.pushed = true; t.pushId = body.params?.[1] || null;
       }

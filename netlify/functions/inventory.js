@@ -608,6 +608,77 @@ async function deleteTxnFromNeon(airtableId) {
   if (!q?.rows) console.error(`deleteTxnFromNeon ${airtableId} FAILED — on-hand still counts this transaction: ${q?.error || "Neon unavailable"}`);
 }
 
+// ── KEEP NEON IN STEP AFTER AN ESTIMATE WRITE (Step D) ─────────────────────
+// Same fail-soft contract as the ledger: every read here keeps a live Airtable
+// fallback and the loader repairs anything missed, so breaking "save an
+// estimate" over a database blip would cost more than the staleness.
+//
+// ⚠ Deletes are again the exception the loader cannot repair — it upserts and
+// never removes — so an estimate or line deleted in Airtable but left in Neon
+// would keep showing on the list and keep counting toward the total.
+async function syncEstimateToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
+  const q = await neonQuery(
+    `INSERT INTO material_estimates
+       (airtable_id, job_name, job_airtable_id, status, created_by, created_at, notes, synced_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       job_name=EXCLUDED.job_name, job_airtable_id=EXCLUDED.job_airtable_id,
+       status=EXCLUDED.status, created_by=EXCLUDED.created_by,
+       created_at=COALESCE(material_estimates.created_at, EXCLUDED.created_at),
+       notes=EXCLUDED.notes, synced_at=now()`,
+    [rec.id, f["Job Name"] ?? null, f["Job ID"] ?? null, sel(f["Status"]),
+     f["Created By"] ?? null, f["Date Created"] ?? rec.createdTime ?? null, f["Notes"] ?? null]);
+  if (!q?.rows) console.error(`syncEstimateToNeon ${rec.id} failed (stale until loader): ${q?.error || "Neon unavailable"}`);
+}
+
+// Lines arrive in batches of 10 from createLineItems, so this takes an array.
+async function syncEstimateLinesToNeon(recs) {
+  const list = (recs || []).filter(r => r?.id);
+  if (!list.length) return;
+  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
+  const params = [];
+  const tuples = list.map(r => {
+    const f = r.fields || {};
+    const vals = [r.id, num(f["Line ID"]), lnk(f["Estimate"]), lnk(f["Inventory Item"]),
+                  num(f["Quantity"]) ?? 0, num(f["Unit Cost at Time of Estimate"]),
+                  f["Description"] ?? null];
+    const ph = vals.map(v => { params.push(v); return `$${params.length}`; });
+    // FKs resolve inline so a new line is immediately visible to the totals view.
+    return `(${ph[0]},${ph[1]},${ph[2]},(SELECT id FROM material_estimates WHERE airtable_id=${ph[2]}),` +
+           `${ph[3]},(SELECT id FROM inventory_items WHERE airtable_id=${ph[3]}),${ph[4]},${ph[5]},${ph[6]}, now())`;
+  });
+  const q = await neonQuery(
+    `INSERT INTO material_estimate_lines
+       (airtable_id, line_number, estimate_airtable_id, estimate_id, item_airtable_id, item_id,
+        quantity, unit_cost_at_estimate, description, synced_at)
+     VALUES ${tuples.join(",")}
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       line_number=EXCLUDED.line_number, estimate_airtable_id=EXCLUDED.estimate_airtable_id,
+       estimate_id=EXCLUDED.estimate_id, item_airtable_id=EXCLUDED.item_airtable_id,
+       item_id=EXCLUDED.item_id, quantity=EXCLUDED.quantity,
+       unit_cost_at_estimate=EXCLUDED.unit_cost_at_estimate,
+       description=EXCLUDED.description, synced_at=now()`, params);
+  if (!q?.rows) console.error(`syncEstimateLinesToNeon (${list.length} lines) failed: ${q?.error || "Neon unavailable"}`);
+}
+
+async function deleteEstimateLinesFromNeon(ids) {
+  const list = (ids || []).filter(Boolean);
+  if (!list.length) return;
+  const q = await neonQuery(`DELETE FROM material_estimate_lines WHERE airtable_id = ANY($1::text[])`, [list]);
+  if (!q?.rows) console.error(`deleteEstimateLinesFromNeon failed — the estimate total still counts them: ${q?.error || "Neon unavailable"}`);
+}
+
+// The FK is ON DELETE CASCADE, so this takes the lines with it.
+async function deleteEstimateFromNeon(airtableId) {
+  if (!airtableId) return;
+  const q = await neonQuery(`DELETE FROM material_estimates WHERE airtable_id = $1`, [airtableId]);
+  if (!q?.rows) console.error(`deleteEstimateFromNeon ${airtableId} failed — it will keep showing on the list: ${q?.error || "Neon unavailable"}`);
+}
+
 // Reorder point / notes. Same fail-soft reasoning; these are settings, not money.
 async function syncStockSettingToNeon(rec) {
   if (!rec?.id) return;
@@ -2489,6 +2560,33 @@ const F_LINE_UNIT_COST  = "fldkTzFNJydVX1iK3";
 
 // ── ESTIMATES LIST ─────────────────────────────────────────
 async function handleEstimatesList(params) {
+  // `total` and `lineCount` come from v_material_estimate_totals rather than
+  // Airtable's rollup and link-array length. The view was reconciled against
+  // that rollup on all 14 estimates before this flipped — agreeing to the cent,
+  // with 591 lines counted on both sides.
+  const q = await neonQuery(
+    `SELECT e.airtable_id, e.job_name, e.job_airtable_id, e.created_at, e.created_by,
+            e.status, e.notes, t.total, t.line_count
+       FROM material_estimates e
+       LEFT JOIN v_material_estimate_totals t ON t.estimate_id = e.id
+      ORDER BY e.created_at DESC NULLS LAST`);
+  if (q?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      estimates: q.rows.map(r => ({
+        id:          r.airtable_id,
+        jobName:     r.job_name || "",
+        jobId:       r.job_airtable_id || "",
+        dateCreated: r.created_at ? new Date(r.created_at).toISOString() : "",
+        createdBy:   r.created_by || "",
+        status:      r.status || "Draft",
+        notes:       r.notes || "",
+        total:       Number(r.total ?? 0),
+        lineCount:   Number(r.line_count ?? 0),
+      })),
+    });
+  }
+
   const records = await fetchAll(API_ROOT_INV, "Estimates", {
     sortField: "Date Created",
     sortDir: "desc"
@@ -2509,13 +2607,69 @@ async function handleEstimatesList(params) {
     };
   });
 
-  return resp(200, { ok: true, estimates });
+  return resp(200, { ok: true, _source: "airtable", estimates });
 }
 
 // ── GET ONE ESTIMATE WITH LINES ────────────────────────────
 async function handleEstimateGet(params) {
   const { id } = params || {};
   if (!id) return resp(400, { ok: false, error: "Missing estimate id." });
+
+  // One query instead of "fetch the estimate, read its link array, then fetch
+  // EVERY line item and filter in JS" — which is what the Airtable branch below
+  // has to do, because a linked-record filter needs FIND(ARRAYJOIN()).
+  //
+  // ⚠ `lineTotal` is computed here (qty × unit cost). In Airtable it was a
+  // formula field; storing it would be the Stock Levels mistake in miniature.
+  const nq = await neonQuery(
+    `SELECT e.airtable_id AS est_id, e.job_name, e.job_airtable_id, e.created_at,
+            e.created_by, e.status, e.notes,
+            (SELECT total FROM v_material_estimate_totals v WHERE v.estimate_id = e.id) AS total,
+            l.airtable_id AS line_id, l.line_number, l.item_airtable_id, l.description,
+            l.quantity, l.unit_cost_at_estimate,
+            i.name AS item_name, i.unit_of_measure, i.category
+       FROM material_estimates e
+       LEFT JOIN material_estimate_lines l ON l.estimate_id = e.id
+       LEFT JOIN inventory_items i         ON i.id = l.item_id
+      WHERE e.airtable_id = $1
+      ORDER BY l.line_number ASC NULLS LAST`, [id]);
+
+  if (nq?.rows) {
+    if (!nq.rows.length) return resp(404, { ok: false, error: "Estimate not found." });
+    const h = nq.rows[0];
+    return resp(200, {
+      ok: true, _source: "neon",
+      estimate: {
+        id:          h.est_id,
+        jobName:     h.job_name || "",
+        jobId:       h.job_airtable_id || "",
+        dateCreated: h.created_at ? new Date(h.created_at).toISOString() : "",
+        createdBy:   h.created_by || "",
+        status:      h.status || "Draft",
+        notes:       h.notes || "",
+        total:       Number(h.total ?? 0),
+        // LEFT JOIN gives one null-line row for an estimate with no lines.
+        lines: nq.rows.filter(r => r.line_id).map(r => {
+          const qty  = Number(r.quantity ?? 0);
+          const cost = Number(r.unit_cost_at_estimate ?? 0);
+          return {
+            id:          r.line_id,
+            lineNum:     Number(r.line_number ?? 0),
+            itemId:      r.item_airtable_id || "",
+            // A "Misc" line has no item link and carries its own text.
+            itemName:    r.item_name || r.description || "",
+            uom:         r.unit_of_measure || "",
+            category:    r.category || "",
+            isMisc:      !r.item_airtable_id,
+            description: r.description || "",
+            qty,
+            unitCost:    cost,
+            lineTotal:   Math.round(qty * cost * 10000) / 10000,
+          };
+        }),
+      },
+    });
+  }
 
   // Fetch estimate
   const estData = await atFetch(
@@ -2602,6 +2756,11 @@ async function handleEstimateCreate(body) {
   const newId = created.records?.[0]?.id;
   if (!newId) return resp(500, { ok: false, error: "Failed to create estimate." });
 
+  // The header has to reach Neon BEFORE the lines: each line resolves its
+  // estimate_id by looking the parent up, and a line whose parent isn't there
+  // yet lands with a null FK and never counts toward the total.
+  await syncEstimateToNeon(created.records[0]);
+
   // Create line items if provided (in batches of 10)
   if (lines && lines.length) {
     await createLineItems(newId, lines);
@@ -2623,10 +2782,11 @@ async function handleEstimateUpdate(body) {
   if (jobId   !== undefined) headerFields[F_EST_JOB_ID]   = String(jobId || "");
 
   if (Object.keys(headerFields).length) {
-    await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimates")}/${id}`, {
+    const patched = await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimates")}/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ fields: headerFields, typecast: true })
     });
+    await syncEstimateToNeon(patched);
   }
 
   // If replaceLines is true, delete existing lines and add new ones.
@@ -2648,6 +2808,10 @@ async function handleEstimateUpdate(body) {
       await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Line Items")}?${qs}`, {
         method: "DELETE"
       });
+      // Nothing repairs a missed delete — the loader only upserts — so a line
+      // left behind here would keep counting toward the estimate's total after
+      // the user replaced it.
+      await deleteEstimateLinesFromNeon(batch);
     }
 
     // Create new lines
@@ -2687,6 +2851,9 @@ async function handleEstimateDelete(body) {
   await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimates")}/${id}`, {
     method: "DELETE"
   });
+  // ON DELETE CASCADE takes the lines with it, so the loop above only needs to
+  // mirror Airtable's own line deletions, not clean up after this one.
+  await deleteEstimateFromNeon(id);
 
   return resp(200, { ok: true, deleted: id });
 }
@@ -2711,8 +2878,9 @@ async function createLineItems(estimateId, lines) {
       return { fields };
     });
 
+    let created;
     try {
-      await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+      created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
         method: "POST",
         body: JSON.stringify({ records: batch, typecast: true })
       });
@@ -2724,7 +2892,7 @@ async function createLineItems(estimateId, lines) {
           delete f.Description;
           return { fields: f };
         });
-        await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
+        created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
           method: "POST",
           body: JSON.stringify({ records: retryBatch, typecast: true })
         });
@@ -2732,6 +2900,10 @@ async function createLineItems(estimateId, lines) {
         throw err;
       }
     }
+    // Mirror each batch as it lands rather than collecting and syncing at the
+    // end: a failure partway through then leaves Neon holding the batches that
+    // did succeed, which is what the estimate actually contains.
+    await syncEstimateLinesToNeon(created?.records);
   }
 }
 

@@ -19288,15 +19288,18 @@
         <option value="">— Who? —</option>
         ${off.map(p => `<option value="${esc(p.employee_id)}">${esc(p.name)}</option>`).join("")}
       </select>
-      <select id="wwJob" class="ww-input">
+      <select id="wwJob" class="ww-input" onchange="wwSyncCity()">
         <option value="">— No job —</option>
         ${(state.jobs || [])
             .filter(j => j.clockVisibility !== "hidden" && (clockPick.allStatuses || clockJobActive(j)))
             .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
             .map(j => `<option value="${esc(j.id)}">${esc(j.name || j.id)}</option>`).join("")}
       </select>
-      <select id="wwClass" class="ww-input">
-        ${PR_CLASSES.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+      <select id="wwClass" class="ww-input" onchange="wwSyncCity()">
+        ${clockClasses().map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+      </select>
+      <select id="wwCity" class="ww-input">
+        ${PR_CITY_TAXES.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join("")}
       </select>
       <button class="btn btn-primary btn-sm" onclick="wwClockIn()">Clock In</button>
     ` : "";   // the "everyone is already on" case is handled by the caller
@@ -19462,7 +19465,14 @@
   function wwSetTab(t) { wwTab = t; renderWhosWorking(); }
   window.wwSetTab = wwSetTab;
 
-  function wwToggleAdd() { wwAddShown = !wwAddShown; renderWhosWorking(); }
+  function wwToggleAdd() {
+    wwAddShown = !wwAddShown;
+    renderWhosWorking();
+    // Seed the city tax from the job/class the form opens on — the panel is
+    // rebuilt from scratch, so without this it shows whatever PR_CITY_TAXES
+    // lists first rather than what the job says.
+    if (wwAddShown) wwSyncCity();
+  }
   window.wwToggleAdd = wwToggleAdd;
 
   // ── 🌴 TIME OFF — the admin queue and the bulk actions ────────────────────
@@ -19787,20 +19797,37 @@
   }
   window.wwReconcile = wwReconcile;
 
+  // Keeps the city tax in step with the job and class, exactly as the crew's own
+  // clock-in form does: the job's setting, and Travel always untaxed. Updates the
+  // select in place rather than re-rendering, or picking a job would wipe the
+  // person and class already chosen.
+  function wwSyncCity() {
+    const sel = $("wwCity");
+    if (!sel) return;
+    const cls = $("wwClass")?.value || "";
+    const job = (state.jobs || []).find(j => j.id === ($("wwJob")?.value || ""));
+    sel.value = clockDefaultCityTax(job, cls);
+    sel.disabled = (cls === CLOCK_TRAVEL_CLASS);
+  }
+  window.wwSyncCity = wwSyncCity;
+
   async function wwClockIn() {
     const employeeId = $("wwWho")?.value || "";
     if (!employeeId) { alert("Pick a person."); return; }
     try {
-      // City tax follows the same rules as a self-punch: the job's setting, with
-      // Travel always untaxed. Without this an admin-created punch recorded NO
-      // city tax and would silently fall back to "A No Tax" at promotion,
-      // ignoring whatever the job says.
       const jobId = $("wwJob")?.value || null;
-      const cls   = $("wwClass")?.value || PR_CLASSES[0];
-      const job   = (state.jobs || []).find(j => j.id === jobId);
+      const cls   = $("wwClass")?.value || clockClasses()[0];
+      // Whatever is ON THE FORM. It used to be computed here and never shown, so
+      // an admin could see no city tax and had no way to override the default —
+      // which is the one thing the job's address genuinely cannot decide.
+      // Travel stays forced, since the picker is disabled for it.
+      const city  = (cls === CLOCK_TRAVEL_CLASS)
+        ? "A No Tax"
+        : ($("wwCity")?.value || clockDefaultCityTax(
+            (state.jobs || []).find(j => j.id === jobId), cls));
       await apiPost("adminClockIn", {
         employeeId, jobId, class: cls,
-        cityTaxes: clockDefaultCityTax(job, cls),
+        cityTaxes: city,
         startedAt: new Date().toISOString(),
       });
       await loadWhosWorking();

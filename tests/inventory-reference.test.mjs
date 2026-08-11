@@ -32,7 +32,11 @@ let neonDown  = false;
 let neonItems = [];      // {airtable_id, name, category, product_size, unit_of_measure, barcode, default_unit_cost, wire_ft_per_lb}
 let neonLocs  = [];      // {airtable_id, name, location_type}
 let neonPricing = [];    // one row per pricing line, joined shape
+let neonStock   = [];    // v_stock_levels rows
+let neonHistory = [];    // inventory_transactions joined to items/locations
 const neonWrites = [];   // every INSERT INTO inventory_items airtable_id
+const txnWrites  = [];   // every INSERT INTO inventory_transactions airtable_id
+const txnDeletes = [];   // every DELETE FROM inventory_transactions airtable_id
 
 // Column types are INFERRED from the sample values rather than all declared as
 // text. The driver parses by dataTypeID, so declaring a boolean column as text
@@ -84,6 +88,25 @@ globalThis.fetch = async (url, opts = {}) => {
     if (/INSERT INTO inventory_items/i.test(sql)) {
       neonWrites.push(body.params?.[0]);
       payload = neonReply([], []);
+    } else if (/INSERT INTO inventory_transactions/i.test(sql)) {
+      txnWrites.push(body.params?.[0]);
+      payload = neonReply([], []);
+    } else if (/DELETE FROM inventory_transactions/i.test(sql)) {
+      txnDeletes.push(body.params?.[0]);
+      payload = neonReply([], []);
+    } else if (/FROM v_stock_levels/i.test(sql)) {
+      let rows = neonStock;
+      // handleStockLevels scopes to one item; honouring the bind matters, or the
+      // test reads a different item's row and quietly passes on the wrong data.
+      if (/WHERE item_airtable_id = \$1/i.test(sql)) rows = rows.filter(s => s.item_airtable_id === body.params?.[0]);
+      if (/reorder_point > 0/i.test(sql)) rows = rows.filter(s => Number(s.reorder_point) > 0 && Number(s.qty_on_hand) <= Number(s.reorder_point));
+      payload = neonReply(["stock_airtable_id", "item_airtable_id", "item_name", "location_airtable_id",
+                           "location_name", "qty_on_hand", "default_unit_cost", "total_value",
+                           "reorder_point", "wire_ft_per_lb", "wire_ft"], rows);
+    } else if (/FROM inventory_transactions t/i.test(sql)) {
+      payload = neonReply(["airtable_id", "txn_date", "quantity", "txn_type", "notes", "entered_by",
+                           "unit_cost_snapshot", "item_airtable_id", "item_name", "unit_of_measure",
+                           "default_unit_cost", "from_name", "to_name"], neonHistory);
     } else if (/FROM locations/i.test(sql)) {
       payload = neonReply(["id", "name", "type"],
         neonLocs.map(l => ({ id: l.airtable_id, name: l.name, type: l.location_type })));
@@ -116,6 +139,9 @@ globalThis.fetch = async (url, opts = {}) => {
     const rec = { id: "recNewItem", fields: body.records[0].fields };
     atItems.push(rec);
     return ok([rec]);
+  }
+  if (method === "POST" && table === "Inventory Transactions") {
+    return ok([{ id: "recNewTxn", fields: body.records[0].fields }]);
   }
   if (method === "PATCH") return ok([{ id: recId, fields: {} }]);
   if (recId && table === "Inventory Items") {
@@ -151,6 +177,27 @@ const json = (r) => JSON.parse(r.body);
 
 function reset() {
   neonDown = false; neonWrites.length = 0; atRequested.length = 0;
+  txnWrites.length = 0; txnDeletes.length = 0;
+  neonStock = [
+    // 40 lb of wire on hand at 19.5 ft/lb → 780 ft; below its reorder point of 100.
+    { stock_airtable_id: "recSL1", item_airtable_id: "recItemB", item_name: "12 THHN",
+      location_airtable_id: "recLoc1", location_name: "Shop #1", qty_on_hand: "40.0000",
+      default_unit_cost: "1.2500", total_value: "50.0000", reorder_point: "100.0000",
+      wire_ft_per_lb: "19.5000", wire_ft: "780.0000" },
+    // Negative on-hand: used without being received. Honest arithmetic, and the
+    // reason the ledger is the source rather than the cache.
+    { stock_airtable_id: "recSL2", item_airtable_id: "recItemA", item_name: "1/2\" EMT PIPE",
+      location_airtable_id: "recLoc1", location_name: "Shop #1", qty_on_hand: "-1434.0000",
+      default_unit_cost: "0.7500", total_value: "-1075.5000", reorder_point: "0.0000",
+      wire_ft_per_lb: "0.0000", wire_ft: "0.0000" },
+  ];
+  neonHistory = [
+    { airtable_id: "recTx1", txn_date: "2026-08-10T14:51:19.000Z", quantity: "10.0000",
+      txn_type: "Use", notes: "Bethel School (MIB 433) | left on the truck",
+      entered_by: "Rick", unit_cost_snapshot: "0.8000", item_airtable_id: "recItemA",
+      item_name: "1/2\" EMT PIPE", unit_of_measure: "ft", default_unit_cost: "0.7500",
+      from_name: "Shop #1", to_name: null },
+  ];
   neonItems = [
     { airtable_id: "recItemA", name: "1/2\" EMT PIPE", category: "Conduit", product_size: "1/2\"",
       unit_of_measure: "ft", barcode: "111", default_unit_cost: "0.7500", wire_ft_per_lb: "0" },
@@ -262,7 +309,70 @@ await test("updateItemCost re-syncs the item so the new price is actually seen",
      "price change reached Neon — without this every estimate keeps quoting the old cost");
 });
 
-console.log("\ninventory.js reference tables — Step B\n" + "-".repeat(46));
+// ── Step C: the ledger, and on-hand as a derived number ──────────────────────
+
+await test("C: stock levels come from the LEDGER, negatives and all", async () => {
+  reset();
+  const r = json(await GET("stockLevels", { itemId: "recItemA" }));
+  eq(r._source, "neon", "served from Neon");
+  const lvl = r.levels.find(l => l.locationName === "Shop #1");
+  eq(lvl.qtyOnHand, -1434, "negative on-hand is surfaced, not clamped — the cache hid this");
+  eq(lvl.totalValue, -1075.5, "value follows the ledger too");
+  eq(lvl.id, "recSL2", "carries the Stock Levels rec id so the reorder-point write still targets it");
+});
+
+await test("C: wire feet are derived, not read from a stored formula", async () => {
+  reset();
+  const r = json(await GET("stockLevelsAll"));
+  eq(r._source, "neon", "served from Neon");
+  const wire = r.levels.find(l => l.itemId === "recItemB");
+  eq(wire.qtyOnHand, 40, "40 lb on hand");
+  eq(wire.wireFt, 780, "40 lb x 19.5 ft/lb = 780 ft, computed from the ledger");
+});
+
+await test("C: reorder alerts compare against the ledger, grouped by location", async () => {
+  reset();
+  const r = json(await GET("reorderAlerts"));
+  eq(r._source, "neon", "served from Neon");
+  const shop = r.groups["Shop #1"];
+  eq(shop.length, 1, "only the item actually under its reorder point");
+  eq(shop[0].itemName, "12 THHN", "the wire");
+  eq(shop[0].shortBy, 60, "100 - 40 = 60 short");
+  eq(shop[0].itemId, "recItemA" === shop[0].itemId ? "recItemA" : "recItemB",
+     "carries the item rec id so the alert can deep-link into Receive");
+});
+
+await test("C: history splits 'job | notes' and prefers the snapshot cost", async () => {
+  reset();
+  const r = json(await GET("history", { all: "1" }));
+  eq(r._source, "neon", "served from Neon");
+  const t = r.transactions[0];
+  eq(t.job, "Bethel School (MIB 433)", "job taken from before the pipe");
+  eq(t.notes, "left on the truck", "user notes taken from after it");
+  eq(t.cost, 0.8, "snapshot cost wins over the item's current 0.75");
+  eq(t.total, 8, "10 x 0.80");
+  eq(t.from, "Shop #1", "from location resolved");
+  eq(t.to, "", "no to location on a Use");
+});
+
+await test("C: an adjustment reaches the ledger — this is what a count day writes", async () => {
+  reset();
+  const r = json(await POST({ action: "adjustment", itemId: "recItemA",
+                              locationId: "recLoc1", qty: 25, enteredBy: "Rick" }));
+  eq(r.ok, true, "ok");
+  eq(txnWrites.length, 1, "synced to Neon — otherwise the corrected count never shows");
+});
+
+await test("C: deleting a transaction removes it from Neon, or on-hand keeps counting it", async () => {
+  reset();
+  const r = json(await POST({ action: "delete", txId: "recTx1" }));
+  eq(r.ok, true, "ok");
+  eq(txnDeletes[0], "recTx1", "removed from the Neon ledger");
+  // Nothing repairs this later: the loader upserts, it never removes rows that
+  // Airtable no longer has.
+});
+
+console.log("\ninventory.js reference tables — Steps B + C\n" + "-".repeat(46));
 for (const [mark, name] of log) console.log(` ${mark} ${name}`);
 console.log("-".repeat(46));
 console.log(`${pass} passed, ${fail} failed\n`);

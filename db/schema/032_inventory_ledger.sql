@@ -122,26 +122,44 @@ GROUP BY leg.item_id, leg.location_id;
 
 -- Reorder alerts and the stock screen both want on-hand beside the settings and
 -- the item, so the join lives here once rather than in three handlers.
-CREATE OR REPLACE VIEW v_stock_levels AS
-SELECT i.id                        AS item_id,
-       i.airtable_id               AS item_airtable_id,
-       i.name                      AS item_name,
+--
+-- ⚠ The pair list is the UNION of "has transactions" and "has a reorder point".
+-- Driving it from on-hand alone would drop any item+location where somebody set
+-- a reorder point but nothing has moved yet — the row would vanish from the
+-- screen that exists to configure it. Airtable showed those rows because Stock
+-- Levels IS the row; here the row has to be reassembled from both sides.
+--
+-- `wire_ft` reproduces the `Wire (Ft.)` formula (on-hand × ft-per-lb) and
+-- `total_value` reproduces `Total Value`; both were Airtable formulas over the
+-- cache, so they follow the ledger now instead.
+CREATE VIEW v_stock_levels AS
+WITH pairs AS (
+  SELECT item_id, location_id FROM v_stock_on_hand
+  UNION
+  SELECT item_id, location_id FROM stock_settings
+   WHERE item_id IS NOT NULL AND location_id IS NOT NULL
+)
+SELECT i.id                                    AS item_id,
+       i.airtable_id                           AS item_airtable_id,
+       i.name                                  AS item_name,
        i.category,
        i.product_size,
        i.unit_of_measure,
-       i.wire_ft_per_lb,
-       i.default_unit_cost,
-       l.id                        AS location_id,
-       l.airtable_id               AS location_airtable_id,
-       l.name                      AS location_name,
-       COALESCE(oh.qty_on_hand, 0) AS qty_on_hand,
-       ss.airtable_id              AS stock_airtable_id,
+       COALESCE(i.wire_ft_per_lb, 0)::numeric(14,4)    AS wire_ft_per_lb,
+       COALESCE(i.default_unit_cost, 0)::numeric(14,4) AS default_unit_cost,
+       l.id                                    AS location_id,
+       l.airtable_id                           AS location_airtable_id,
+       l.name                                  AS location_name,
+       COALESCE(oh.qty_on_hand, 0)::numeric(14,4)      AS qty_on_hand,
+       ss.airtable_id                          AS stock_airtable_id,
        ss.reorder_point,
        ss.notes,
-       COALESCE(oh.qty_on_hand, 0) * COALESCE(i.default_unit_cost, 0) AS total_value
-FROM v_stock_on_hand oh
-JOIN inventory_items i ON i.id = oh.item_id
-JOIN locations       l ON l.id = oh.location_id
-LEFT JOIN stock_settings ss ON ss.item_id = oh.item_id AND ss.location_id = oh.location_id;
+       (COALESCE(oh.qty_on_hand,0) * COALESCE(i.default_unit_cost,0))::numeric(14,4) AS total_value,
+       (COALESCE(oh.qty_on_hand,0) * COALESCE(i.wire_ft_per_lb,0))::numeric(14,4)    AS wire_ft
+FROM pairs p
+JOIN inventory_items i ON i.id = p.item_id
+JOIN locations       l ON l.id = p.location_id
+LEFT JOIN v_stock_on_hand oh ON oh.item_id = p.item_id AND oh.location_id = p.location_id
+LEFT JOIN stock_settings  ss ON ss.item_id = p.item_id AND ss.location_id = p.location_id;
 
 COMMIT;

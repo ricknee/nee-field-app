@@ -52,6 +52,14 @@ globalThis.fetch = async (url, opts) => {
   if (String(url).includes("/sql")) {
     try { neonQueries.push(JSON.parse(opts?.body || "{}")); } catch { /* ignore */ }
     if (neonFail) return { ok: false, status: 500, text: async () => "neon exploded" };
+    // This suite is about the JOB reads. Step C moved the ledger to Neon too,
+    // but the transaction fixtures here are the Airtable ones, so let the
+    // ledger query fail and fall back — otherwise pendingExpenses would read an
+    // empty Neon ledger and the job-index assertions would never be reached.
+    // The Neon ledger path is covered in tests/inventory-push.test.mjs.
+    if (/inventory_transactions/i.test(String(opts?.body || ""))) {
+      return { ok: false, status: 500, text: async () => "ledger not modelled in this suite" };
+    }
     const payload = {
       command: "SELECT", rowCount: neonRows.length, rowAsArray: false,
       fields: NEON_COLS.map((n, i) => ({

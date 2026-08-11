@@ -546,6 +546,88 @@ async function syncItemToNeon(rec) {
   if (!q?.rows) console.error(`syncItemToNeon ${rec.id} failed (item will be stale until the next loader run): ${q?.error || "Neon unavailable"}`);
 }
 
+// ── KEEP NEON IN STEP AFTER A LEDGER WRITE (Step C) ────────────────────────
+// On-hand is DERIVED in Neon (v_stock_on_hand), so a transaction that doesn't
+// reach the ledger doesn't just go missing — it silently changes the stock
+// figure for that item and location.
+//
+// ⚠ These fail SOFT, and that is a deliberate trade rather than an oversight.
+// The expense push fails closed because it is idempotent on `Push ID`, so a
+// retry is free. `submitCart` has NO idempotency key: telling the user to
+// retry would risk logging the same material out of stock twice, which is
+// worse than an on-hand figure that is briefly stale and repairable. The
+// loader (`loadInventoryReference`) upserts on `airtable_id`, so re-running it
+// heals anything this misses. Failures are logged loudly for that reason.
+//
+// Give it the record Airtable returned from the create.
+async function syncTxnToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
+  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
+  const q = await neonQuery(
+    `INSERT INTO inventory_transactions
+       (airtable_id, txn_name, txn_date, item_airtable_id, item_id, quantity, txn_type,
+        from_location_airtable_id, from_location_id, to_location_airtable_id, to_location_id,
+        unit_cost_snapshot, notes, entered_by, job_airtable_id, job_name,
+        expense_created, push_id, synced_at)
+     VALUES ($1,$2,$3,$4,(SELECT id FROM inventory_items WHERE airtable_id=$4),$5,$6,
+             $7,(SELECT id FROM locations WHERE airtable_id=$7),
+             $8,(SELECT id FROM locations WHERE airtable_id=$8),
+             $9,$10,$11,$12,$13,$14,$15, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       txn_name=EXCLUDED.txn_name, txn_date=EXCLUDED.txn_date,
+       item_airtable_id=EXCLUDED.item_airtable_id, item_id=EXCLUDED.item_id,
+       quantity=EXCLUDED.quantity, txn_type=EXCLUDED.txn_type,
+       from_location_airtable_id=EXCLUDED.from_location_airtable_id,
+       from_location_id=EXCLUDED.from_location_id,
+       to_location_airtable_id=EXCLUDED.to_location_airtable_id,
+       to_location_id=EXCLUDED.to_location_id,
+       unit_cost_snapshot=EXCLUDED.unit_cost_snapshot, notes=EXCLUDED.notes,
+       entered_by=EXCLUDED.entered_by, job_airtable_id=EXCLUDED.job_airtable_id,
+       job_name=EXCLUDED.job_name, expense_created=EXCLUDED.expense_created,
+       push_id=EXCLUDED.push_id, synced_at=now()`,
+    // `Name` is an Airtable formula and may be absent from a create response;
+    // it is a display string ("TX-20260810-105119") that nothing computes from,
+    // and the loader fills it in on the next run.
+    [rec.id, f["Name"] ?? null, f["Transaction Date"] ?? null, lnk(f["Inventory Item"]),
+     num(f["Quantity"]) ?? 0, sel(f["Transaction Type"]),
+     lnk(f["From Location"]), lnk(f["To Location"]),
+     num(f["Unit Cost (Snapshot)"]), f["Notes"] ?? null, f["Entered By"] ?? null,
+     f["Job ID (Main)"] ?? null, f["Job Name"] ?? null,
+     f["Expense Created?"] === true, f["Push ID"] ?? null]);
+  if (!q?.rows) console.error(`syncTxnToNeon ${rec.id} FAILED — on-hand is now stale for this item until the loader re-runs: ${q?.error || "Neon unavailable"}`);
+}
+
+// A transaction deleted in Airtable must leave the Neon ledger too, or
+// v_stock_on_hand keeps counting stock that was never really there.
+async function deleteTxnFromNeon(airtableId) {
+  if (!airtableId) return;
+  const q = await neonQuery(`DELETE FROM inventory_transactions WHERE airtable_id = $1`, [airtableId]);
+  if (!q?.rows) console.error(`deleteTxnFromNeon ${airtableId} FAILED — on-hand still counts this transaction: ${q?.error || "Neon unavailable"}`);
+}
+
+// Reorder point / notes. Same fail-soft reasoning; these are settings, not money.
+async function syncStockSettingToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
+  const q = await neonQuery(
+    `INSERT INTO stock_settings
+       (airtable_id, item_airtable_id, item_id, location_airtable_id, location_id,
+        reorder_point, notes, synced_at)
+     VALUES ($1,$2,(SELECT id FROM inventory_items WHERE airtable_id=$2),
+             $3,(SELECT id FROM locations WHERE airtable_id=$3),$4,$5, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       item_airtable_id=EXCLUDED.item_airtable_id, item_id=EXCLUDED.item_id,
+       location_airtable_id=EXCLUDED.location_airtable_id, location_id=EXCLUDED.location_id,
+       reorder_point=EXCLUDED.reorder_point, notes=EXCLUDED.notes, synced_at=now()`,
+    [rec.id, lnk(f["Item"]), lnk(f["Location"]), num(f["Reorder Point"]), f["Notes"] ?? null]);
+  if (!q?.rows) console.error(`syncStockSettingToNeon ${rec.id} failed (stale until loader): ${q?.error || "Neon unavailable"}`);
+}
+
 // Re-read the item from Airtable and sync it. Used by the cost writers, which
 // PATCH a single field and so don't have a full record in hand.
 async function syncItemToNeonById(itemId) {
@@ -705,7 +787,9 @@ async function handleSubmitCart(body) {
       method: "POST",
       body: JSON.stringify({ records: [{ fields }], typecast: true })
     });
-    results.push(data.records?.[0]?.id);
+    const created = data.records?.[0];
+    results.push(created?.id);
+    await syncTxnToNeon(created);      // or on-hand silently ignores this usage
   }
 
   return resp(200, { ok: true, ids: results });
@@ -738,12 +822,15 @@ async function handleReceive(body) {
     body: JSON.stringify({ records: [{ fields }], typecast: true })
   });
 
+  await syncTxnToNeon(data.records?.[0]);
+
   // Update unit cost on item if provided
   if (unitCost && Number(unitCost) > 0) {
     await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, {
       method: "PATCH",
       body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": Number(unitCost) } })
     });
+    await syncItemToNeonById(itemId);   // receiving can move the item's cost too
   }
 
   return resp(200, { ok: true, id: data.records?.[0]?.id });
@@ -772,12 +859,66 @@ async function handleTransfer(body) {
     body: JSON.stringify({ records: [{ fields }], typecast: true })
   });
 
+  // A transfer is the one type that moves stock in TWO places at once, so a
+  // missed sync skews both the source and the destination.
+  await syncTxnToNeon(data.records?.[0]);
+
   return resp(200, { ok: true, id: data.records?.[0]?.id });
 }
 
 // ── HISTORY ────────────────────────────────────────────────
 async function handleHistory(params) {
   const { enteredBy, all } = params || {};
+
+  // Neon path. The date string, the "job | notes" split and the
+  // snapshot-cost-else-current-cost rule are all reproduced from the Airtable
+  // branch below rather than reinvented — this feeds a screen people read.
+  const nq = await neonQuery(
+    `SELECT t.airtable_id, t.txn_date, t.quantity, t.txn_type, t.notes, t.entered_by,
+            t.unit_cost_snapshot, t.item_airtable_id,
+            i.name AS item_name, i.unit_of_measure, i.default_unit_cost,
+            fl.name AS from_name, tl.name AS to_name
+       FROM inventory_transactions t
+       LEFT JOIN inventory_items i ON i.id = t.item_id
+       LEFT JOIN locations fl     ON fl.id = t.from_location_id
+       LEFT JOIN locations tl     ON tl.id = t.to_location_id
+      WHERE ($1::text IS NULL OR t.entered_by = $1)
+      ORDER BY t.txn_date DESC NULLS LAST
+      LIMIT 200`,
+    [all === "1" ? null : (enteredBy || null)]);
+
+  if (nq?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      transactions: nq.rows.map(r => {
+        let dateStr = "";
+        try {
+          dateStr = new Date(r.txn_date).toLocaleDateString("en-US",
+            { month: "short", day: "numeric", year: "numeric" });
+        } catch { /* leave blank, same as the Airtable branch */ }
+        const parts = String(r.notes || "").split(" | ");
+        const qty   = Number(r.quantity ?? 0);
+        const snap  = Number(r.unit_cost_snapshot ?? 0);
+        const cost  = snap > 0 ? snap : Number(r.default_unit_cost ?? 0);
+        return {
+          id:        r.airtable_id,
+          date:      dateStr,
+          item:      r.item_name || r.item_airtable_id || "",
+          itemId:    r.item_airtable_id || "",
+          uom:       r.unit_of_measure || "",
+          cost,
+          total:     Math.round(cost * qty * 100) / 100,
+          from:      r.from_name || "",
+          to:        r.to_name || "",
+          qty,
+          type:      r.txn_type || "",
+          job:       parts[0] || "",
+          notes:     parts.slice(1).join(" | "),
+          enteredBy: r.entered_by || "",
+        };
+      }),
+    });
+  }
 
   const [txRecords, itemRecords, locRecords] = await Promise.all([
     fetchAll(API_ROOT_INV, "Inventory Transactions", {
@@ -854,12 +995,37 @@ async function handlePendingExpenses() {
   // No longer reads the inventory-base Jobs *mirror* — transactions carry the
   // main-base job id directly in "Job ID (Main)" (Drop-Jobs-mirror bet, Step C;
   // legacy link-only rows were backfilled, so the name-match path is gone).
+  // Pull the pending rows from Neon, SHAPED LIKE AIRTABLE RECORDS. The grouping,
+  // wire maths and tax logic below are the money path and are left untouched;
+  // adapting at the edge keeps this flip to a data-source swap rather than a
+  // rewrite of the part that decides what a customer is charged.
+  const pendingFromNeon = async () => {
+    const q = await neonQuery(
+      `SELECT airtable_id, item_airtable_id, quantity, txn_type, unit_cost_snapshot,
+              job_airtable_id, job_name
+         FROM inventory_transactions
+        WHERE expense_created = false AND txn_type IN ('Use','Return')
+        ORDER BY txn_date ASC NULLS LAST`);
+    if (!q?.rows) return null;
+    return q.rows.map(r => ({
+      id: r.airtable_id,
+      fields: {
+        "Inventory Item":      r.item_airtable_id ? [r.item_airtable_id] : [],
+        "Quantity":            Number(r.quantity ?? 0),
+        "Transaction Type":    r.txn_type || "",
+        "Unit Cost (Snapshot)": r.unit_cost_snapshot === null ? undefined : Number(r.unit_cost_snapshot),
+        "Job ID (Main)":       r.job_airtable_id || undefined,
+        "Job Name":            r.job_name || undefined,
+      },
+    }));
+  };
+
   const [txRecords, itemRecords, mainJobs] = await Promise.all([
-    fetchAll(API_ROOT_INV, "Inventory Transactions", {
+    pendingFromNeon().then(rows => rows ?? fetchAll(API_ROOT_INV, "Inventory Transactions", {
       filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`,
       sortField: "Transaction Date",
       sortDir: "asc"
-    }),
+    })),
     itemIndex(),
     mainJobIndex()
   ]);
@@ -1321,6 +1487,15 @@ async function markTransactionsPushed(txIds, pushId) {
       method: "PATCH",
       body: JSON.stringify({ records: batch })
     });
+    // Mirror the same two columns. `expense_created` is what the pending-expenses
+    // read filters on, so leaving Neon un-marked would offer the same materials
+    // for pushing again — the double-charge these guards exist to prevent.
+    const q = await neonQuery(
+      `UPDATE inventory_transactions
+          SET expense_created = true, push_id = $2, synced_at = now()
+        WHERE airtable_id = ANY($1::text[])`,
+      [batch.map(b => b.id), String(pushId || "")]);
+    if (!q?.rows) console.error(`markTransactionsPushed: Neon not marked (${batch.length} txns may be re-offered until the loader runs): ${q?.error || "Neon unavailable"}`);
   }
 }
 
@@ -1343,9 +1518,19 @@ async function handlePushExpenses(body) {
   // (a) The set of transactions that are *genuinely* still pending right now.
   //     The client's `pending` payload can be stale; this re-read decides what
   //     is actually chargeable — a transaction already marked can't re-charge.
-  const freshTx = await fetchAll(API_ROOT_INV, "Inventory Transactions", {
-    filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`
-  });
+  // This read decides what is chargeable, so it must see the same world the
+  // marking writes to. Now that markTransactionsPushed sets `expense_created`
+  // in Neon, reading it from Airtable while marking both would let a
+  // Neon-marked transaction look pending again — guard #2 would then refuse a
+  // legitimate push, or worse, an un-marked one would re-charge.
+  const nqFresh = await neonQuery(
+    `SELECT airtable_id FROM inventory_transactions
+      WHERE expense_created = false AND txn_type IN ('Use','Return')`);
+  const freshTx = nqFresh?.rows
+    ? nqFresh.rows.map(r => ({ id: r.airtable_id }))
+    : await fetchAll(API_ROOT_INV, "Inventory Transactions", {
+        filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`
+      });
   const stillPending = new Set(freshTx.map(r => r.id));
 
   // (b) Which of this request's push IDs already produced Expenses. UUIDs are a
@@ -1808,6 +1993,10 @@ async function handleAdjustment(body) {
     body: JSON.stringify({ records: [{ fields }], typecast: true })
   });
 
+  // This is the write the counting day runs on: an Adjustment is how a physical
+  // count becomes truth. If it misses Neon, the corrected figure never appears.
+  await syncTxnToNeon(data.records?.[0]);
+
   return resp(200, { ok: true, id: data.records?.[0]?.id });
 }
 
@@ -1892,6 +2081,10 @@ async function handleDelete(body) {
   const { txId } = body || {};
   if (!txId) return resp(400, { ok: false, error: "Missing txId." });
   await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Transactions")}/${txId}`, { method: "DELETE" });
+  // Must reach Neon, or v_stock_on_hand keeps counting stock that no longer has
+  // a transaction behind it — and unlike a missed insert, nothing later repairs
+  // this: the loader upserts, it never removes rows Airtable no longer has.
+  await deleteTxnFromNeon(txId);
   return resp(200, { ok: true, deleted: txId });
 }
 
@@ -1906,6 +2099,34 @@ const F_SL_REORDER_POINT = "fldy08kLJ1YH7lMVG";
 async function handleStockLevels(params) {
   const { itemId, itemName } = params || {};
   if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+
+  // ⚠ On-hand is DERIVED here, not stored. The Airtable branch below reads
+  // `Quantity On Hand`, a cache that disagreed with the raw ledger on 237 of
+  // 269 pairs; this reads v_stock_on_hand, which reproduces the ledger exactly.
+  // Numbers WILL differ from what this screen used to show, and the ledger is
+  // the one that is right. See db/schema/032.
+  const q = await neonQuery(
+    `SELECT stock_airtable_id, location_name, qty_on_hand, default_unit_cost,
+            total_value, reorder_point, wire_ft_per_lb, wire_ft
+       FROM v_stock_levels WHERE item_airtable_id = $1
+      ORDER BY location_name ASC`, [itemId]);
+  if (q?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      levels: q.rows.map(r => ({
+        // May be null when a pair has transactions but no Stock Levels row —
+        // the frontend uses this to decide update-vs-create for a reorder point.
+        id:           r.stock_airtable_id || null,
+        locationName: r.location_name || "",
+        qtyOnHand:    Number(r.qty_on_hand ?? 0),
+        unitCost:     Number(r.default_unit_cost ?? 0),
+        totalValue:   Number(r.total_value ?? 0),
+        reorderPoint: Number(r.reorder_point ?? 0),
+        wireWeight:   Number(r.wire_ft_per_lb ?? 0),
+        wireFt:       Number(r.wire_ft ?? 0),
+      })),
+    });
+  }
 
   // Fetch ALL stock level records and filter in JavaScript by item record ID.
   // This is reliable regardless of how the item name appears in the Stock ID formula.
@@ -1948,6 +2169,27 @@ async function handleStockLevels(params) {
 // Returns every stock level record with its linked item ID so the
 // client can group by item and show per-location breakdowns.
 async function handleStockLevelsAll() {
+  const q = await neonQuery(
+    `SELECT stock_airtable_id, item_airtable_id, location_name, qty_on_hand,
+            default_unit_cost, total_value, reorder_point, wire_ft_per_lb, wire_ft
+       FROM v_stock_levels ORDER BY item_name ASC, location_name ASC`);
+  if (q?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      levels: q.rows.map(r => ({
+        id:           r.stock_airtable_id || null,
+        itemId:       r.item_airtable_id || "",
+        locationName: r.location_name || "",
+        qtyOnHand:    Number(r.qty_on_hand ?? 0),
+        unitCost:     Number(r.default_unit_cost ?? 0),
+        totalValue:   Number(r.total_value ?? 0),
+        reorderPoint: Number(r.reorder_point ?? 0),
+        wireWeight:   Number(r.wire_ft_per_lb ?? 0),
+        wireFt:       Number(r.wire_ft ?? 0),
+      })),
+    });
+  }
+
   const allRecords = await fetchAll(API_ROOT_INV, "Stock Levels", {});
 
   const levels = allRecords.map(r => {
@@ -1988,6 +2230,33 @@ async function handleStockLevelsAll() {
 
 // ── REORDER ALERTS ────────────────────────────────────────
 async function handleReorderAlerts() {
+  // The Airtable filter compares against the CACHED quantity. This compares
+  // against the ledger, so expect more alerts than before — the ones the stale
+  // cache was hiding.
+  const q = await neonQuery(
+    `SELECT item_airtable_id, item_name, location_airtable_id, location_name,
+            qty_on_hand, reorder_point, wire_ft_per_lb, wire_ft
+       FROM v_stock_levels
+      WHERE reorder_point > 0 AND qty_on_hand <= reorder_point
+      ORDER BY location_name ASC, item_name ASC`);
+  if (q?.rows) {
+    const g = {};
+    for (const r of q.rows) {
+      const loc = r.location_name || "Unknown";
+      (g[loc] = g[loc] || []).push({
+        itemId:       r.item_airtable_id || "",
+        itemName:     r.item_name || "",
+        locationId:   r.location_airtable_id || "",
+        qtyOnHand:    Number(r.qty_on_hand ?? 0),
+        reorderPoint: Number(r.reorder_point ?? 0),
+        shortBy:      Number(r.reorder_point ?? 0) - Number(r.qty_on_hand ?? 0),
+        wireWeight:   Number(r.wire_ft_per_lb ?? 0),
+        wireFt:       Number(r.wire_ft ?? 0),
+      });
+    }
+    return resp(200, { ok: true, _source: "neon", groups: g });
+  }
+
   const records = await fetchAll(API_ROOT_INV, "Stock Levels", {
     filter: `AND({Reorder Point} > 0, {Quantity On Hand} <= {Reorder Point})`
   });
@@ -2050,6 +2319,11 @@ async function handleUpdateReorderPoint(body) {
     method: "PATCH",
     body: JSON.stringify({ fields: { [F_SL_REORDER_POINT]: Number(reorderPoint) } })
   });
+  // Reorder point drives the alerts screen, which reads Neon now.
+  const q = await neonQuery(
+    `UPDATE stock_settings SET reorder_point = $2, synced_at = now() WHERE airtable_id = $1`,
+    [stockLevelId, Number(reorderPoint)]);
+  if (!q?.rows) console.error(`updateReorderPoint: Neon not updated for ${stockLevelId} (stale until loader): ${q?.error || "Neon unavailable"}`);
   return resp(200, { ok: true });
 }
 
@@ -2079,6 +2353,10 @@ async function handleCreateStockLevel(body) {
 
   const recordId = created.records?.[0]?.id;
   if (!recordId) return resp(500, { ok: false, error: "Failed to create stock level." });
+  // Note the QoH=0 written above is Airtable's cache column, which Neon does not
+  // carry at all — on-hand there is derived from the ledger. Only the reorder
+  // point and the item/location pairing come across.
+  await syncStockSettingToNeon(created.records[0]);
   return resp(200, { ok: true, recordId });
 }
 

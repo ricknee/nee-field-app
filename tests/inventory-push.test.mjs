@@ -60,8 +60,32 @@ globalThis.fetch = async (url, opts = {}) => {
 
   if (String(url).includes("/sql")) {
     if (neonDown) return { ok: false, status: 500, text: async () => "neon down" };
-    if (/INSERT INTO expenses/i.test(body?.query || "")) neonWrites.push(body.params?.[0]);
-    const payload = { command: "INSERT", rowCount: 1, rowAsArray: false, fields: [], rows: [] };
+    const sql = String(body?.query || "");
+    let payload = { command: "INSERT", rowCount: 0, rowAsArray: false, fields: [], rows: [] };
+
+    if (/INSERT INTO expenses/i.test(sql)) {
+      neonWrites.push(body.params?.[0]);
+
+    // Step C: the push now decides what is chargeable by reading Neon, and
+    // marks Neon when it charges. `state.txns` is the single source both the
+    // Airtable mock and this one answer from, so the two cannot drift apart
+    // mid-test the way they would if the ledger were mocked separately.
+    } else if (/SELECT airtable_id FROM inventory_transactions/i.test(sql)) {
+      const pending = Object.entries(state.txns).filter(([, t]) => !t.pushed).map(([id]) => ({ airtable_id: id }));
+      payload = {
+        command: "SELECT", rowCount: pending.length, rowAsArray: false,
+        fields: [{ name: "airtable_id", dataTypeID: 25, tableID: 0, columnID: 1,
+                   dataTypeSize: -1, dataTypeModifier: -1, format: "text" }],
+        rows: pending.map(p => [p.airtable_id]),
+      };
+
+    } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
+      for (const id of (body.params?.[0] || [])) {
+        const t = state.txns[id] || (state.txns[id] = { pushed: false, pushId: null });
+        t.pushed = true; t.pushId = body.params?.[1] || null;
+      }
+    }
+
     return { ok: true, status: 200, headers: { get: () => "application/json" },
              text: async () => JSON.stringify(payload), json: async () => payload };
   }

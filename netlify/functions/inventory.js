@@ -728,6 +728,78 @@ async function deleteTemplateFromNeon(airtableId) {
   if (!q?.rows) console.error(`deleteTemplateFromNeon ${airtableId} failed — it will keep showing in the picker: ${q?.error || "Neon unavailable"}`);
 }
 
+async function syncOrderToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
+  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
+  const q = await neonQuery(
+    `INSERT INTO material_orders
+       (airtable_id, order_number, estimate_airtable_id, estimate_id, job_name,
+        vendor_notes, status, order_type, created_by, created_at, synced_at)
+     VALUES ($1,$2,$3,(SELECT id FROM material_estimates WHERE airtable_id=$3),$4,$5,$6,$7,$8,$9, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       order_number=COALESCE(EXCLUDED.order_number, material_orders.order_number),
+       estimate_airtable_id=EXCLUDED.estimate_airtable_id, estimate_id=EXCLUDED.estimate_id,
+       job_name=EXCLUDED.job_name, vendor_notes=EXCLUDED.vendor_notes,
+       status=EXCLUDED.status, order_type=EXCLUDED.order_type, created_by=EXCLUDED.created_by,
+       created_at=COALESCE(material_orders.created_at, EXCLUDED.created_at), synced_at=now()`,
+    // `Order ID` is an Airtable autonumber and is absent from the create
+    // response, which is why the handler re-fetches for it. COALESCE above keeps
+    // whatever is already stored rather than nulling it on a later update.
+    [rec.id, num(f["Order ID"]), lnk(f["Estimate"]), f["Job Name"] ?? null,
+     f["Vendor / Notes"] ?? null, sel(f["Status"]), sel(f["Order Type"]),
+     f["Created By"] ?? null, f["Date Created"] ?? rec.createdTime ?? null]);
+  if (!q?.rows) console.error(`syncOrderToNeon ${rec.id} failed (stale until loader): ${q?.error || "Neon unavailable"}`);
+}
+
+async function syncOrderLinesToNeon(recs) {
+  const list = (recs || []).filter(r => r?.id);
+  if (!list.length) return;
+  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
+  const params = [];
+  const tuples = list.map(r => {
+    const f = r.fields || {};
+    const vals = [r.id, num(f["Line Item ID"]), lnk(f["Material Order"]), lnk(f["Inventory Item"]),
+                  f["Description"] ?? null, num(f["Quantity Ordered"]) ?? 0,
+                  num(f["Unit Cost at Time of Order"]), num(f["Line Total"]),
+                  f["Received"] === true, f["Notes"] ?? null];
+    const ph = vals.map(v => { params.push(v); return `$${params.length}`; });
+    return `(${ph[0]},${ph[1]},${ph[2]},(SELECT id FROM material_orders WHERE airtable_id=${ph[2]}),` +
+           `${ph[3]},(SELECT id FROM inventory_items WHERE airtable_id=${ph[3]}),` +
+           `${ph[4]},${ph[5]},${ph[6]},${ph[7]},${ph[8]},${ph[9]}, now())`;
+  });
+  const q = await neonQuery(
+    `INSERT INTO material_order_lines
+       (airtable_id, line_number, order_airtable_id, order_id, item_airtable_id, item_id,
+        description, quantity_ordered, unit_cost_at_order, line_total_stored, received, notes, synced_at)
+     VALUES ${tuples.join(",")}
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       line_number=COALESCE(EXCLUDED.line_number, material_order_lines.line_number),
+       order_airtable_id=EXCLUDED.order_airtable_id, order_id=EXCLUDED.order_id,
+       item_airtable_id=EXCLUDED.item_airtable_id, item_id=EXCLUDED.item_id,
+       description=EXCLUDED.description, quantity_ordered=EXCLUDED.quantity_ordered,
+       unit_cost_at_order=EXCLUDED.unit_cost_at_order,
+       line_total_stored=EXCLUDED.line_total_stored, received=EXCLUDED.received,
+       notes=EXCLUDED.notes, synced_at=now()`, params);
+  if (!q?.rows) console.error(`syncOrderLinesToNeon (${list.length}) failed: ${q?.error || "Neon unavailable"}`);
+}
+
+async function deleteOrderLinesFromNeon(ids) {
+  const list = (ids || []).filter(Boolean);
+  if (!list.length) return;
+  const q = await neonQuery(`DELETE FROM material_order_lines WHERE airtable_id = ANY($1::text[])`, [list]);
+  if (!q?.rows) console.error(`deleteOrderLinesFromNeon failed — the order still lists them: ${q?.error || "Neon unavailable"}`);
+}
+
+async function deleteOrderFromNeon(airtableId) {
+  if (!airtableId) return;
+  const q = await neonQuery(`DELETE FROM material_orders WHERE airtable_id = $1`, [airtableId]);
+  if (!q?.rows) console.error(`deleteOrderFromNeon ${airtableId} failed — it keeps showing on the list: ${q?.error || "Neon unavailable"}`);
+}
+
 async function deleteEstimateLinesFromNeon(ids) {
   const list = (ids || []).filter(Boolean);
   if (!list.length) return;
@@ -3746,6 +3818,35 @@ async function handleOrdersList(params) {
                : filters.length === 1 ? filters[0]
                : `AND(${filters.join(",")})`;
 
+  // The Airtable path hand-escapes a name into a formula string; here it is a
+  // bind, so a created-by containing a quote can't reshape the query.
+  const q = await neonQuery(
+    `SELECT o.airtable_id, o.order_number, o.job_name, o.vendor_notes, o.status,
+            o.created_at, o.created_by, v.line_count
+       FROM material_orders o
+       LEFT JOIN v_material_order_totals v ON v.order_id = o.id
+      WHERE ($1::boolean IS TRUE OR o.status = 'Active')
+        AND ($2::text IS NULL OR o.created_by = $2)
+      ORDER BY o.created_at DESC NULLS LAST`,
+    [!!showComplete, createdBy || null]);
+  if (q?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      orders: q.rows.map(r => ({
+        id:          r.airtable_id,
+        orderId:     Number(r.order_number ?? 0),
+        jobName:     r.job_name || "",
+        vendor:      r.vendor_notes || "",
+        status:      r.status || "Active",
+        dateCreated: r.created_at ? new Date(r.created_at).toISOString() : "",
+        createdBy:   r.created_by || "",
+        lineCount:   Number(r.line_count ?? 0),
+        // `Total Items` in Airtable is a COUNT of lines, not a sum of quantities.
+        totalItems:  Number(r.line_count ?? 0),
+      })),
+    });
+  }
+
   const records = await fetchAll(API_ROOT_INV, "Material Orders", {
     filter,
     sortField: "Date Created",
@@ -3774,6 +3875,56 @@ async function handleOrdersList(params) {
 async function handleOrderGet(params) {
   const { id } = params || {};
   if (!id) return resp(400, { ok: false, error: "Missing order id." });
+
+  const nq = await neonQuery(
+    `SELECT o.airtable_id AS order_id, o.order_number, o.job_name, o.vendor_notes,
+            o.status, o.created_at, o.created_by,
+            l.airtable_id AS line_id, l.line_number, l.item_airtable_id,
+            l.description, l.quantity_ordered,
+            i.name AS item_name, i.unit_of_measure, i.category
+       FROM material_orders o
+       LEFT JOIN material_order_lines l ON l.order_id = o.id
+       LEFT JOIN inventory_items i      ON i.id = l.item_id
+      WHERE o.airtable_id = $1
+      ORDER BY l.line_number ASC NULLS LAST`, [id]);
+
+  if (nq?.rows) {
+    if (!nq.rows.length) return resp(404, { ok: false, error: "Order not found." });
+    const h = nq.rows[0];
+    // A " [BOX]" suffix on the description is a marker, not text — it means the
+    // line was ordered by the box rather than the each. Stripping it has to
+    // happen here too, or the marker leaks onto the printed order.
+    const BOX_MARKER = " [BOX]";
+    return resp(200, {
+      ok: true, _source: "neon",
+      order: {
+        id:          h.order_id,
+        orderId:     Number(h.order_number ?? 0),
+        jobName:     h.job_name || "",
+        vendor:      h.vendor_notes || "",
+        status:      h.status || "Active",
+        dateCreated: h.created_at ? new Date(h.created_at).toISOString() : "",
+        createdBy:   h.created_by || "",
+        lines: nq.rows.filter(r => r.line_id).map(r => {
+          let rawDesc = r.description || "";
+          let isBox = false;
+          if (rawDesc.endsWith(BOX_MARKER)) { isBox = true; rawDesc = rawDesc.slice(0, -BOX_MARKER.length); }
+          return {
+            id:          r.line_id,
+            lineNum:     Number(r.line_number ?? 0),
+            itemId:      r.item_airtable_id || "",
+            itemName:    r.item_name || rawDesc || "",
+            uom:         r.unit_of_measure || "",
+            category:    r.category || "",
+            description: rawDesc,
+            qty:         Number(r.quantity_ordered ?? 0),
+            isMisc:      !r.item_airtable_id,
+            isBox,
+          };
+        }),
+      },
+    });
+  }
 
   const orderData = await atFetch(
     API_ROOT_INV,
@@ -3869,6 +4020,9 @@ async function handleOrderCreate(body) {
   const newId = created.records?.[0]?.id;
   if (!newId) return resp(500, { ok: false, error: "Failed to create order." });
 
+  // Header first — lines resolve order_id by looking the parent up.
+  await syncOrderToNeon(created.records[0]);
+
   // Create order lines in batches of 10
   if (lines && lines.length) {
     await createOrderLinesHelper(newId, lines);
@@ -3883,6 +4037,9 @@ async function handleOrderCreate(body) {
       { method: "GET" }
     );
     orderId = refreshed.fields?.["Order ID"] || null;
+    // Re-sync now that the autonumber exists — the create response has no
+    // `Order ID`, so without this the order shows as #0 on every screen.
+    await syncOrderToNeon(refreshed);
   } catch(e) {
     console.warn("Failed to fetch new order autonumber:", e.message);
   }
@@ -3916,10 +4073,11 @@ async function createOrderLinesHelper(orderId, lines) {
       return { fields };
     });
 
-    await atFetch(API_ROOT_INV, encodeURIComponent("Material Order Lines"), {
+    const madeLines = await atFetch(API_ROOT_INV, encodeURIComponent("Material Order Lines"), {
       method: "POST",
       body: JSON.stringify({ records: batch, typecast: true })
     });
+    await syncOrderLinesToNeon(madeLines?.records);
   }
 }
 
@@ -3939,6 +4097,7 @@ async function deleteOrderLines(orderId) {
     await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Order Lines")}?${qs}`, {
       method: "DELETE"
     });
+    await deleteOrderLinesFromNeon(batch);
   }
 }
 
@@ -3953,10 +4112,13 @@ async function handleOrderUpdate(body) {
 
   // Header fields — only patch if we have any
   if (Object.keys(fields).length) {
-    await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
+    const patched = await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ fields, typecast: true })
     });
+    // Status is what the list filters on, so an unsynced "Complete" would leave
+    // the order sitting in the active list.
+    await syncOrderToNeon(patched);
   }
 
   // Line editing
@@ -3995,22 +4157,31 @@ async function handleOrderDelete(body) {
     await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Order Lines")}?${qs}`, {
       method: "DELETE"
     });
+    await deleteOrderLinesFromNeon(batch);
   }
 
   // Delete the order
   await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
     method: "DELETE"
   });
+  // ON DELETE CASCADE clears the lines; nothing else would ever remove this row.
+  await deleteOrderFromNeon(id);
 
   return resp(200, { ok: true, deleted: id });
 }
 
 // ── ACTIVE ORDERS COUNT (for badge on home button) ────────
 async function handleOrdersCount() {
+  // A badge on the home screen, so it runs on nearly every page load — one
+  // COUNT beats paging the whole table to call .length on it.
+  const q = await neonQuery(
+    `SELECT count(*)::int AS n FROM material_orders WHERE status = 'Active'`);
+  if (q?.rows) return resp(200, { ok: true, _source: "neon", count: q.rows[0]?.n ?? 0 });
+
   const records = await fetchAll(API_ROOT_INV, "Material Orders", {
     filter: `{Status}='Active'`
   });
-  return resp(200, { ok: true, count: records.length });
+  return resp(200, { ok: true, _source: "airtable", count: records.length });
 }
 
 // ═══════════════════════════════════════════════════════════

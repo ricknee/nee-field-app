@@ -80,9 +80,21 @@ Failure modes under that ordering:
 - Airtable succeeds, Neon insert fails → row exists in Airtable only; **the hourly sync adopts it**
   within the hour. Self-healing, and the invoice total is briefly low rather than wrong forever.
 
-The alternative — teaching `_billing-sync.js` to spare app-created rows — is strictly worse: it
-would have to distinguish "app created this" from "Airtable deleted this", which is the exact
-ambiguity the delete pass exists to resolve.
+> ### ⚠ THIS SECTION WAS WRONG, AND IT WAS FIXED THE SAME DAY — see `db/schema/033`
+>
+> It used to end: *"The alternative — teaching `_billing-sync.js` to spare app-created rows — is
+> strictly worse: it would have to distinguish 'app created this' from 'Airtable deleted this',
+> which is the exact ambiguity the delete pass exists to resolve."*
+>
+> **That reasoning was sound and the conclusion was still wrong**, because it assumed the
+> ambiguity was real. It is not: a row with a **NULL `airtable_id`** can never have been deleted
+> in Airtable, because it was never there. `airtable_id IS NOT NULL` separates the two cases
+> exactly, with no heuristic.
+>
+> The cost of believing it: the first version refused to allocate any entry without an Airtable
+> twin — which, from the week of 2026-08-10, is **100% of them**. Ten minutes after cutover the
+> owner reviewed two real entries and got nothing. Allocations are Neon-native now, and the
+> hourly delete pass carries the one-line guard.
 
 ## 3. ⚠⚠ The deployment sequence, which is riskier than the code
 

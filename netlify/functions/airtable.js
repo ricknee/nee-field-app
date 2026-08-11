@@ -6849,7 +6849,28 @@ async function handleUpdateTimeEntry(body) {
       atFetch(`${encodeURIComponent(TABLES.timeEntries)}/${target.airtable_id}`,
         { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) }));
   }
-  return resp(200, { ok: true, updatedId: target.id });
+
+  // ⚠ THIS is the review path the UI actually uses — `apiPost("updateTimeEntry",
+  // { entryId, reviewed: true })` from the per-job Time Entries tab
+  // (index.html:8987, :9005, :9021). The allocation hook first went into
+  // handleUpdateTimeEntryPayroll ONLY, because that handler accepts `reviewed`
+  // and the plan assumed it was where review happened. It is not: the payroll
+  // screen's save payload carries entryId/duration/workDate/class/cityTaxes/
+  // jobId and no `reviewed` at all, so the hook never fired and the first live
+  // review after cutover created nothing.
+  //
+  // Both handlers carry it now. Accepting `reviewed` is what decides whether the
+  // hook belongs, not which screen happens to call it today.
+  let allocation;
+  if (reviewed === true) {
+    try {
+      allocation = await createLaborAllocation(atFetch, target.id, target.airtable_id);
+    } catch (e) {
+      console.error(`updateTimeEntry: allocation failed — ${e?.message || e}`);
+      allocation = { created: 0, error: String(e?.message || e) };
+    }
+  }
+  return resp(200, { ok: true, updatedId: target.id, ...(allocation ? { allocation } : {}) });
 }
 
 // NEON-FIRST since slice 5 phase A. Airtable is the fallback.

@@ -3,7 +3,9 @@
 **Status: scoped, not started. 2026-08-11.** Ordered **most important first**.
 Companion to `docs/PLAN-inventory-to-neon.md`, which moved the **reads**. This moves the **writes**.
 
-> **Total: ~14-18 hours remaining** (slice 0 done), plus soak time between slices.
+> **Total: ~11-14 hours remaining** (slices 0 and 1 done), plus soak time between slices.
+> ⚠⚠ **Known defect carried forward: the Adjustment button subtracts instead of setting** — see
+> §Slice 1. Pre-existing, deferred by the owner, and it blocks any counting day.
 > ✅ **Owner confirmed 2026-08-11: nobody uses Airtable for anything — the app is the only way this
 > data is seen.** So this is a full retirement: no reverse mirror, and the base gets archived at
 > slice 8. The §6 decision is closed.
@@ -35,7 +37,7 @@ them. Ending that gets four things:
 | # | Slice | Writes | Time | Why it ranks here |
 |---|---|---|---|---|
 | ~~0~~ | ✅ **Formula/rollup sweep + delete the dead form — DONE 2026-08-11** | — | ~~~1 h~~ | Came back clean (§3). No formula to reproduce. Interface `pbdc6kzAEV7yzXHfD` deleted; base now has **zero interfaces and zero forms** (revert handle `actXs5D93HDtPDCk8`). |
-| **1** | **Ledger** — Inventory Transactions | 6 | **~3-4 h** | Daily crew use, and wrong here means **wrong stock**. Fixes the half-submitted cart. |
+| ~~1~~ | ✅ **Ledger — Inventory Transactions — DONE + PROD-SMOKED 2026-08-11** (`322116e`, fix `40bc757`) | 6 | ~~~3-4 h~~ | Cart, receive, transfer, mark and push all confirmed on production. See §Slice 1 below. |
 | **2** | **Expense pushes** | 2 | **~1-1.5 h** | Money. Touches GP. |
 | **3** | **Estimates + lines** | 10 | **~2-3 h** | The domain that just shipped a live bug. Four create paths, not three. |
 | **4** | **Templates + lines** | 11 | **~2-3 h** | Biggest write count, but mechanical once 3 lands. |
@@ -53,6 +55,83 @@ them. Ending that gets four things:
 > of the whole native-write pattern.
 
 ---
+
+## Slice 1 — what it cost, and what it taught
+
+**Prod-smoked 2026-08-11.** Transactions are born in Postgres; Airtable stayed at 863 rows while
+Neon moved on. Confirmed live: a cart (one insert, `submit_id` stamped), receive (+3,000 landed on
+the to-leg), transfer (both legs moved: Shop #1 576→476, Box Trailer 55→155), the pushed-mark, and
+a full expense push. The two natively-written transactions were charged, marked `expense_created`,
+stamped with the push id, and left the pending list — 62 → 60, with **0 native rows still pending**.
+
+### ⚠⚠ The id currency has THREE readers, not two
+
+Changing the ledger's handle from the Airtable rec id to the uuid broke the push in production,
+because a **third** read still spoke the old currency: the chargeable-set guard
+(`SELECT airtable_id …` feeding `stillPending`). Every id in the request failed to match, every job
+was classed a stale snapshot, and **no job could be pushed at all**.
+
+The lesson is the same one Step D taught, one layer down: it is not enough to change the paths you
+are editing. **Grep for every query that touches the entity's id**, not just the ones in the
+handlers you have open. The three were: the pending read, the mark, and the chargeable-set guard.
+
+That it was an outage rather than a double charge is the guard failing safe, and is the only reason
+this was cheap.
+
+### The tests passed while it shipped, and why
+
+The push suite modelled **one id space** — the uuid and the rec id were the same string, so asking
+for the wrong column still matched. It now answers with whichever column the SQL actually asked
+for, with the rec id a genuinely different value. Reverting the fix fails **six of seven** cases;
+before, it failed none. Any future slice that changes an id currency should do the same: **give the
+mock two id spaces, or it cannot catch the only bug that matters.**
+
+### A contract that got stricter on purpose
+
+A push that cannot verify what is chargeable now **refuses before creating anything** (503). Step E
+let a Neon outage through — create the expense, fail at the mirror, heal on retry — because
+Airtable could still answer what was pending. It cannot any more: its copy is missing every native
+row and still reports unpushed for material already charged. Guard #2 is exactly what stops a stale
+client re-charging under a fresh push id, so with no way to run it, the push does not start. The
+heal path is kept for the narrower failure it was really about: the expense reaching Airtable while
+its Neon mirror does not.
+
+### ⚠⚠ KNOWN DEFECT, deferred by the owner: "Adjustment" subtracts instead of setting
+
+Found during this smoke, **pre-existing — not caused by slice 1**, and dating from Step C rather
+than the cutover. The UI asks *"Set 1/2" EMT PIPE at Shop #1 to 2000 units?"* and toasts *"Stock
+adjusted to 2000"*, but the handler writes the quantity on the **from** leg, which `v_stock_on_hand`
+subtracts. So counting 400 pipes and typing 400 **removes** 400.
+
+**30 adjustment rows exist, every one on the subtracting leg, 10,219 units removed** — a large part
+of why on-hand reads so negative (26,332 used against 15,039 received). The old Airtable automation
+almost certainly treated an Adjustment as *set the cache to this value*; deriving on-hand from the
+raw ledger silently turned it into *subtract*.
+
+**Until this is fixed, the Adjustment button makes stock worse, and a counting day would drive every
+figure further negative.** Receive is the only safe way to true up a count meanwhile — at the cost
+of recording stock-taking as material arriving.
+
+The fix is to make "set" real: read current on-hand, compute the difference, and post that (to-leg
+if positive, from-leg if negative). It self-heals — because the delta is computed from current
+on-hand, the first correct count fixes an item regardless of how wrong its history is, so the 30 bad
+rows need no historical repair. ~30-45 min, contained to `handleAdjustment` plus a test.
+
+**Owner deferred it 2026-08-11 ("just leave it for now").**
+
+### Smaller notes
+
+- The loader's `transactions: 4330` count does not match the 863-row table it wrote. Data is
+  correct (`upsertChunked` dedupes on `airtable_id`, and Airtable 863 = Neon 863), but the reported
+  figure is wrong and the loader counts have been trusted for reconciliation. Worth a look.
+- The **4,330** figure quoted in ROADMAP §4 and earlier in this file as a ledger row count is not
+  one — the code comment is explicit that it is the number of rollup-value comparisons Step C
+  reconciled. The ledger is **863 rows**.
+- Sales tax is deliberately its own expense record rather than folded into the materials line, so
+  the materials line stays a clean sum of what left stock. Both carry the same push id.
+- Owner wants the push to **attach its PDF automatically**. Not built: it needs the function to
+  hand the PDF to the Make webhook the way invoices and estimates already do, because pCloud's app
+  registration is dead and only Make holds a working token. A real slice, not a toggle.
 
 ## Out of scope
 

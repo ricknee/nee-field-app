@@ -438,15 +438,147 @@ async function handleAwardedJobs() {
   });
 }
 
+// ── Reference data, served from Neon (Step B) ───────────────────────────────
+// Locations, Vendors, Inventory Items and Vendor Pricing live in Neon as of
+// `db/schema/029`. Same contract as the job reads above: Neon first, Airtable
+// as the fallback, `null` meaning "Neon had no opinion".
+//
+// ⚠⚠ Ids stay AIRTABLE rec ids here too. They flow into the cart, onto
+// Inventory Transactions, into estimate and order lines, and into the expense
+// push. Airtable is still the identity authority for this slice, so every
+// query selects `airtable_id AS id`. A Neon uuid escaping into any of those is
+// the same class of bug as the job-picker trap at B0.
+//
+// ⚠ The 14 location-derived quantity fields on Inventory Items are NOT here and
+// never will be — verified 2026-08-10 that nothing reads them. On-hand comes
+// from Stock Levels, which is Step C.
+
+// Every item, indexed by Airtable rec id. This one helper replaces the
+// `fetchAll(API_ROOT_INV, "Inventory Items", {})` + build-a-map pattern that
+// appeared at ELEVEN separate call sites. They all wanted the same five fields,
+// which is what made a single index possible rather than eleven bespoke reads.
+//
+// Returns null on any Neon failure so the caller falls back to Airtable.
+async function neonItemIndex() {
+  const q = await neonQuery(
+    `SELECT airtable_id, name, category, unit_of_measure, default_unit_cost, wire_ft_per_lb
+       FROM inventory_items WHERE COALESCE(airtable_id,'') <> ''`);
+  if (!q?.rows) return null;
+  const index = {};
+  for (const r of q.rows) {
+    index[r.airtable_id] = {
+      id:          r.airtable_id,
+      // Falls back to the rec id, not "", because the call sites this replaces
+      // all did `Item Name || r.id` — a debugging tell for an unnamed item.
+      // (Nothing is unnamed today: 0 blank names across 866 rows.)
+      name:        r.name || r.airtable_id,
+      cat:         r.category || "",
+      uom:         r.unit_of_measure || "",
+      cost:        Number(r.default_unit_cost ?? 0),
+      wireFtPerLb: Number(r.wire_ft_per_lb ?? 0),
+    };
+  }
+  return index;
+}
+
+// The same index, built from Airtable. Kept beside its Neon twin so the two
+// shapes can't drift — every caller consumes one or the other interchangeably.
+async function airtableItemIndex() {
+  const records = await fetchAll(API_ROOT_INV, "Inventory Items", {});
+  const index = {};
+  for (const r of records) {
+    const f = r.fields || {};
+    index[r.id] = {
+      id:          r.id,
+      name:        f["Item Name"] || r.id,
+      cat:         f["Category"]?.name || f["Category"] || "",
+      uom:         f["Unit of Measure"]?.name || f["Unit of Measure"] || "",
+      cost:        Number(f["Default Unit Cost"] || 0),
+      wireFtPerLb: Number(f["Wire ft/lb"] || 0),
+    };
+  }
+  return index;
+}
+
+// What the eleven call sites actually use. Neon first, Airtable if Neon is down.
+async function itemIndex() {
+  return (await neonItemIndex()) || (await airtableItemIndex());
+}
+
+// ── KEEP NEON IN STEP AFTER AN ITEM WRITE ──────────────────────────────────
+// ⚠⚠ These MUST move in the same commit as the reads above, and this is not a
+// style preference — it is the bug this project has shipped THREE times. Once
+// `handleItems` and `itemIndex()` read Neon, an Airtable-only write means the
+// new cost is simply never seen: the estimate still prices at the old number,
+// the cart still snapshots the old number, and nothing errors. It is the same
+// shape as the inventory-push gap that hid material cost from the field app for
+// three days (Step E).
+//
+// Airtable stays the identity authority for this slice, so the record is
+// created/updated there FIRST and its rec id is what Neon keys on.
+//
+// Fails SOFT (logged, swallowed) rather than closed, deliberately: unlike the
+// expense push, every read here has a live Airtable fallback, and the loader
+// (`loadInventoryReference`) is an idempotent catch-up that repairs any row this
+// misses. Breaking "add an item" over a database blip would cost more than the
+// staleness it prevents.
+async function syncItemToNeon(rec) {
+  if (!rec?.id) return;
+  const f = rec.fields || {};
+  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
+  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+  const q = await neonQuery(
+    `INSERT INTO inventory_items
+       (airtable_id, name, category, product_size, unit_of_measure, barcode,
+        alternate_barcodes, default_unit_cost, wire_ft_per_lb, reorder_point, active, notes, synced_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+     ON CONFLICT (airtable_id) DO UPDATE SET
+       name=EXCLUDED.name, category=EXCLUDED.category, product_size=EXCLUDED.product_size,
+       unit_of_measure=EXCLUDED.unit_of_measure, barcode=EXCLUDED.barcode,
+       alternate_barcodes=EXCLUDED.alternate_barcodes,
+       default_unit_cost=EXCLUDED.default_unit_cost, wire_ft_per_lb=EXCLUDED.wire_ft_per_lb,
+       reorder_point=EXCLUDED.reorder_point, active=EXCLUDED.active, notes=EXCLUDED.notes,
+       synced_at=now()`,
+    [rec.id, f["Item Name"] || "", sel(f["Category"]), sel(f["Product Size"]),
+     sel(f["Unit of Measure"]), f["Barcode Value"] ?? null, f["Alternate Barcodes"] ?? null,
+     num(f["Default Unit Cost"]), num(f["Wire ft/lb"]), num(f["Reorder Point"]),
+     f["Active Item"] === true, f["Notes"] ?? null]);
+  if (!q?.rows) console.error(`syncItemToNeon ${rec.id} failed (item will be stale until the next loader run): ${q?.error || "Neon unavailable"}`);
+}
+
+// Re-read the item from Airtable and sync it. Used by the cost writers, which
+// PATCH a single field and so don't have a full record in hand.
+async function syncItemToNeonById(itemId) {
+  try {
+    const rec = await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, { method: "GET" });
+    if (rec?.id === itemId) await syncItemToNeon(rec);
+  } catch (e) {
+    console.error(`syncItemToNeonById ${itemId} failed (stale until next loader run): ${e.message}`);
+  }
+}
+
 // ── LOCATIONS ──────────────────────────────────────────────
 async function handleLocations() {
+  // The table this migration exists for. In Airtable a location is a set of
+  // field NAMES on Inventory Items; here it is a row you can insert.
+  const q = await neonQuery(
+    `SELECT airtable_id AS id, name, location_type AS type
+       FROM locations WHERE active AND COALESCE(airtable_id,'') <> ''
+      ORDER BY name ASC`);
+  if (q?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      locations: q.rows.map(r => ({ id: r.id, name: r.name || "", type: r.type || "" })),
+    });
+  }
+
   const records = await fetchAll(API_ROOT_INV, "Locations", {
     filter: `{Active Location}=1`,
     sortField: "Location Name",
     sortDir: "asc"
   });
   return resp(200, {
-    ok: true,
+    ok: true, _source: "airtable",
     locations: records.map(r => ({
       id:   r.id,
       name: r.fields["Location Name"] || "",
@@ -457,13 +589,38 @@ async function handleLocations() {
 
 // ── ITEMS ──────────────────────────────────────────────────
 async function handleItems() {
+  // 866 rows, the most-read table in the app. Note `size` (Product Size) is
+  // returned here and nowhere else, so this read carries one column more than
+  // the shared itemIndex() does — that is why it has its own query.
+  const q = await neonQuery(
+    `SELECT airtable_id AS id, name, category, product_size, unit_of_measure,
+            barcode, default_unit_cost, wire_ft_per_lb
+       FROM inventory_items
+      WHERE active AND COALESCE(airtable_id,'') <> ''
+      ORDER BY name ASC`);
+  if (q?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      items: q.rows.map(r => ({
+        id:          r.id,
+        name:        r.name || "",
+        cat:         r.category || "",
+        size:        r.product_size || "",
+        uom:         r.unit_of_measure || "",
+        barcode:     r.barcode || "",
+        cost:        Number(r.default_unit_cost ?? 0),
+        wireFtPerLb: Number(r.wire_ft_per_lb ?? 0),
+      })),
+    });
+  }
+
   const records = await fetchAll(API_ROOT_INV, "Inventory Items", {
     filter: `{Active Item}=1`,
     sortField: "Item Name",
     sortDir: "asc"
   });
   return resp(200, {
-    ok: true,
+    ok: true, _source: "airtable",
     items: records.map(r => {
       const f = r.fields || {};
       return {
@@ -493,10 +650,8 @@ async function handleSubmitCart(body) {
   // never end up as $0 unless the item itself has no cost set.
   let itemCostMap = {};
   try {
-    const itemRecords = await fetchAll(API_ROOT_INV, "Inventory Items", {});
-    itemRecords.forEach(r => {
-      itemCostMap[r.id] = Number(r.fields["Default Unit Cost"] || 0);
-    });
+    const idx = await itemIndex();
+    for (const id of Object.keys(idx)) itemCostMap[id] = idx[id].cost;
   } catch(e) {
     console.warn("Could not fetch item costs for snapshot fallback:", e.message);
   }
@@ -631,18 +786,11 @@ async function handleHistory(params) {
       sortDir: "desc",
       maxRecords: 200
     }),
-    fetchAll(API_ROOT_INV, "Inventory Items", {}),
+    itemIndex(),
     fetchAll(API_ROOT_INV, "Locations", {})
   ]);
 
-  const itemMap = {};
-  itemRecords.forEach(r => {
-    itemMap[r.id] = {
-      name: r.fields["Item Name"] || r.id,
-      cost: r.fields["Default Unit Cost"] || 0,
-      uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || ""
-    };
-  });
+  const itemMap = itemRecords;   // itemIndex() already returns { id -> {name, cost, uom, …} }
   const locMap = {};
   locRecords.forEach(r => { locMap[r.id] = r.fields["Location Name"] || r.id; });
 
@@ -712,14 +860,11 @@ async function handlePendingExpenses() {
       sortField: "Transaction Date",
       sortDir: "asc"
     }),
-    fetchAll(API_ROOT_INV, "Inventory Items", {}),
+    itemIndex(),
     mainJobIndex()
   ]);
 
-  const itemMap = {};
-  itemRecords.forEach(r => {
-    itemMap[r.id] = { name: r.fields["Item Name"] || r.id, cost: r.fields["Default Unit Cost"] || 0, wireFtPerLb: r.fields["Wire ft/lb"] || 0 };
-  });
+  const itemMap = itemRecords;   // itemIndex() already returns { id -> {name, cost, wireFtPerLb, …} }
 
   // Main-base jobs indexed by record ID. Transactions carry the main-base job id
   // in "Job ID (Main)" text, so taxable/display resolve straight from it — no
@@ -1608,14 +1753,23 @@ async function handleCreateItem(body) {
   const { name, category, productSize, uom, barcode, cost, wireFtPerLb, active } = body || {};
   if (!name || !name.trim()) return resp(400, { ok: false, error: "Item name is required." });
 
-  // Check for duplicate barcode
+  // Check for duplicate barcode. Neon-first — this is the indexed lookup the
+  // barcode index in 029 exists for — with the Airtable scan as the fallback.
+  // Note the guard must fail OPEN: if neither store can answer, creating a
+  // possible duplicate is better than blocking the add, and the duplicate is
+  // visible and fixable where a blocked add is just a dead end.
   if (barcode && barcode.trim()) {
-    const existing = await fetchAll(API_ROOT_INV, "Inventory Items", {
-      filter: `{Barcode Value}='${barcode.trim()}'`
-    });
-    if (existing.length > 0) {
-      return resp(409, { ok: false, error: `Barcode already used by: ${existing[0].fields["Item Name"] || "another item"}` });
+    const bc = barcode.trim();
+    const q = await neonQuery(
+      `SELECT name FROM inventory_items WHERE barcode = $1 LIMIT 1`, [bc]);
+    let clash = q?.rows ? (q.rows[0]?.name || null) : undefined;
+    if (clash === undefined) {
+      const existing = await fetchAll(API_ROOT_INV, "Inventory Items", {
+        filter: `{Barcode Value}='${bc}'`
+      });
+      clash = existing.length ? (existing[0].fields["Item Name"] || "another item") : null;
     }
+    if (clash) return resp(409, { ok: false, error: `Barcode already used by: ${clash}` });
   }
 
   // Use field NAMES with typecast:true — works for all field types including singleSelect
@@ -1637,6 +1791,9 @@ async function handleCreateItem(body) {
 
   const newRecord = data.records?.[0];
   if (!newRecord) throw new Error("No record returned from Airtable");
+
+  // Without this the new item is invisible to every read above.
+  await syncItemToNeon(newRecord);
 
   return resp(200, {
     ok:   true,
@@ -1661,6 +1818,9 @@ async function handleUpdateItemCost(body) {
     method: "PATCH",
     body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": Number(cost) } })
   });
+  // The reads serve from Neon now — without this the price change is invisible
+  // and estimates keep quoting the old cost.
+  await syncItemToNeonById(itemId);
   return resp(200, { ok: true });
 }
 
@@ -1926,18 +2086,10 @@ async function handleEstimateGet(params) {
   if (lineIds.length) {
     const [lineRecords, itemRecords] = await Promise.all([
       fetchAll(API_ROOT_INV, "Estimate Line Items", {}),
-      fetchAll(API_ROOT_INV, "Inventory Items", {})
+      itemIndex()
     ]);
 
-    const itemMap = {};
-    itemRecords.forEach(r => {
-      itemMap[r.id] = {
-        name: r.fields["Item Name"] || r.id,
-        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || "",
-        cost: r.fields["Default Unit Cost"] || 0,
-        cat:  r.fields["Category"]?.name || r.fields["Category"] || ""
-      };
-    });
+    const itemMap = itemRecords;
 
     lines = lineRecords
       .filter(r => lineIds.includes(r.id))
@@ -2262,18 +2414,10 @@ async function handleEstimateTemplateGet(params) {
   if (lineIds.length) {
     const [lineRecords, itemRecords] = await Promise.all([
       fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-      fetchAll(API_ROOT_INV, "Inventory Items", {})
+      itemIndex()
     ]);
 
-    const itemMap = {};
-    itemRecords.forEach(r => {
-      itemMap[r.id] = {
-        name: r.fields["Item Name"] || r.id,
-        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || "",
-        cost: Number(r.fields["Default Unit Cost"] || 0),
-        wireFtPerLb: Number(r.fields["Wire ft/lb"] || 0)
-      };
-    });
+    const itemMap = itemRecords;
 
     lines = lineRecords
       .filter(r => lineIds.includes(r.id))
@@ -2342,13 +2486,11 @@ async function handleSaveEstimateAsTemplate(body) {
 
   const [allLineRecords, allItemRecords] = await Promise.all([
     lineIds.length ? fetchAll(API_ROOT_INV, "Estimate Line Items", {}) : Promise.resolve([]),
-    fetchAll(API_ROOT_INV, "Inventory Items", {})
+    itemIndex()
   ]);
 
   const itemNameById = {};
-  allItemRecords.forEach(r => {
-    itemNameById[r.id] = r.fields?.["Item Name"] || r.id;
-  });
+  for (const [id, it] of Object.entries(allItemRecords)) itemNameById[id] = it.name;
 
   // Pull source lines, drop Misc lines (no Inventory Item link).
   const sourceLines = allLineRecords
@@ -2444,7 +2586,7 @@ async function handleCreateEstimateFromTemplate(body) {
   const [tmplData, allTemplateLines, itemRecords] = await Promise.all([
     atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
     fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-    fetchAll(API_ROOT_INV, "Inventory Items", {})
+    itemIndex()
   ]);
   if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
 
@@ -2453,9 +2595,7 @@ async function handleCreateEstimateFromTemplate(body) {
     .map(l => typeof l === "object" ? l.id : String(l));
 
   const itemCostById = {};
-  itemRecords.forEach(r => {
-    itemCostById[r.id] = Number(r.fields?.["Default Unit Cost"] || 0);
-  });
+  for (const [id, it] of Object.entries(itemRecords)) itemCostById[id] = it.cost;
 
   // Build the lines that will be inserted into the new estimate.
   // Snapshot LIVE pricing here, not the template's frozen cost.
@@ -2566,12 +2706,12 @@ async function handleEstimateTemplateUpdate(body) {
     const [tmplRec, allLines, allItems] = await Promise.all([
       atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
       fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-      fetchAll(API_ROOT_INV, "Inventory Items", {})
+      itemIndex()
     ]);
     const lineIds = (tmplRec.fields?.["Estimate Template Lines"] || [])
       .map(l => typeof l === "object" ? l.id : String(l));
     const itemNameById = {};
-    allItems.forEach(r => { itemNameById[r.id] = r.fields?.["Item Name"] || r.id; });
+    for (const [id, it] of Object.entries(allItems)) itemNameById[id] = it.name;
     const myLines = allLines.filter(r => lineIds.includes(r.id));
     const updates = myLines.map(r => {
       const f = r.fields || {};
@@ -2740,7 +2880,7 @@ async function handleRefreshTemplatePrices(body) {
   const [tmplData, allLines, allItemRecords] = await Promise.all([
     atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
     fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-    fetchAll(API_ROOT_INV, "Inventory Items", {})
+    itemIndex()
   ]);
   if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
 
@@ -2748,9 +2888,7 @@ async function handleRefreshTemplatePrices(body) {
     .map(l => typeof l === "object" ? l.id : String(l));
 
   const itemCostById = {};
-  allItemRecords.forEach(r => {
-    itemCostById[r.id] = Number(r.fields?.["Default Unit Cost"] || 0);
-  });
+  for (const [id, it] of Object.entries(allItemRecords)) itemCostById[id] = it.cost;
 
   const myLines = allLines.filter(r => lineIds.includes(r.id));
   const updates = myLines.map(r => {
@@ -2867,17 +3005,10 @@ async function handleOrderGet(params) {
   if (lineIds.length) {
     const [lineRecords, itemRecords] = await Promise.all([
       fetchAll(API_ROOT_INV, "Material Order Lines", {}),
-      fetchAll(API_ROOT_INV, "Inventory Items", {})
+      itemIndex()
     ]);
 
-    const itemMap = {};
-    itemRecords.forEach(r => {
-      itemMap[r.id] = {
-        name: r.fields["Item Name"] || r.id,
-        uom:  r.fields["Unit of Measure"]?.name || r.fields["Unit of Measure"] || "",
-        cat:  r.fields["Category"]?.name || r.fields["Category"] || ""
-      };
-    });
+    const itemMap = itemRecords;
 
     lines = lineRecords
       .filter(r => lineIds.includes(r.id))
@@ -3109,6 +3240,75 @@ async function handleItemVendorPricing(params) {
   const { itemId } = params || {};
   if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
 
+  // Neon path. The Airtable version pulls ALL pricing and ALL vendors and
+  // filters in JS, because filtering a linked record needs FIND(ARRAYJOIN()).
+  // Here it is a join on a real FK, and `Unit Cost Rollup (Live)` — which has no
+  // column, because it never was data — comes from v_item_live_cost.
+  const q = await neonQuery(
+    `SELECT i.name AS item_name,
+            i.default_unit_cost,
+            (SELECT live_unit_cost FROM v_item_live_cost lc WHERE lc.item_id = i.id) AS live_cost,
+            p.airtable_id AS pricing_id, p.unit_cost, p.preferred, p.active,
+            p.vendor_part_number, p.min_order_qty, p.lead_time_days,
+            p.last_price_update, p.price_valid_until, p.unit_of_measure, p.notes,
+            v.airtable_id AS vendor_id, v.name AS vendor_name
+       FROM inventory_items i
+       LEFT JOIN vendor_pricing p ON p.item_id = i.id
+       LEFT JOIN vendors v        ON v.id = p.vendor_id
+      WHERE i.airtable_id = $1
+      ORDER BY p.preferred DESC NULLS LAST, v.name ASC`, [itemId]);
+
+  if (q?.rows) {
+    if (!q.rows.length) return resp(404, { ok: false, error: "Item not found." });
+    const head        = q.rows[0];
+    const defaultCost = Number(head.default_unit_cost ?? 0);
+    const liveCost    = Number(head.live_cost ?? 0);
+
+    // Key names, defaults and sort below are copied from the Airtable branch on
+    // purpose — the frontend reads `partNumber`/`leadTime`/`lastUpdate`, and
+    // missing numbers are 0 rather than null. A near-miss here is a silently
+    // blank pricing panel.
+    const vendors = q.rows
+      .filter(r => r.pricing_id)     // LEFT JOIN: an item with no pricing gives one null row
+      .map(r => ({
+        id:          r.pricing_id,
+        vendorId:    r.vendor_id || "",
+        vendorName:  r.vendor_name || "",
+        unitCost:    Number(r.unit_cost ?? 0),
+        uom:         r.unit_of_measure || "",
+        partNumber:  r.vendor_part_number || "",
+        minOrderQty: Number(r.min_order_qty ?? 0),
+        leadTime:    Number(r.lead_time_days ?? 0),
+        lastUpdate:  r.last_price_update ? String(r.last_price_update).slice(0, 10) : "",
+        validUntil:  r.price_valid_until ? String(r.price_valid_until).slice(0, 10) : "",
+        preferred:   r.preferred === true,
+        active:      r.active === true,
+        notes:       r.notes || "",
+      }));
+
+    vendors.sort((a, b) => {
+      if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+      if (a.unitCost  !== b.unitCost)  return a.unitCost - b.unitCost;
+      return (a.vendorName || "").localeCompare(b.vendorName || "");
+    });
+
+    const variance = (liveCost > 0 && defaultCost > 0)
+      ? { dollar: Math.round((liveCost - defaultCost) * 10000) / 10000,
+          pct:    (liveCost - defaultCost) / defaultCost }
+      : null;
+    const preferredVendor = vendors.find(v => v.preferred);
+
+    return resp(200, {
+      ok: true, _source: "neon",
+      summary: {
+        defaultCost, liveCost, variance,
+        preferredVendor:  preferredVendor?.vendorName || "",
+        preferredUpdated: preferredVendor?.lastUpdate || "",
+      },
+      vendors,
+    });
+  }
+
   // Fetch the item record AND all Vendor Pricing records AND all Vendors in parallel.
   // Filtering Vendor Pricing by linked record on the API side requires FIND()
   // against an ARRAYJOIN, which is brittle across renames — simpler and safer to
@@ -3225,6 +3425,8 @@ async function handleSyncItemCostToVendor(body) {
     method: "PATCH",
     body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": liveCost } })
   });
+  // Same reason as updateItemCost: the reads are Neon's now.
+  await syncItemToNeonById(itemId);
 
   return resp(200, {
     ok: true,

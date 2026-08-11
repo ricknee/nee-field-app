@@ -3003,6 +3003,27 @@ async function handleFindMatchingPayrollRun(params) {
   if (!payPeriodStart || !payPeriodEnd) {
     return resp(400, { ok: false, error: "Missing payPeriodStart or payPeriodEnd." });
   }
+  // Neon-first (audit item 02). Same rule as the Airtable filter below: exact
+  // match on both period dates, non-superseded, newest first.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, generated_at, generated_by
+         FROM payroll_runs
+        WHERE pay_period_start = $1::date AND pay_period_end = $2::date AND NOT superseded
+        ORDER BY generated_at DESC NULLS LAST LIMIT 1`, [payPeriodStart, payPeriodEnd]);
+    if (q?.rows) {
+      if (!q.rows.length) return resp(200, { ok: true, runId: null, generatedAt: null, generatedBy: null });
+      const n = q.rows[0];
+      return resp(200, {
+        ok: true,
+        runId: n.airtable_id,                                     // ⚠ the AIRTABLE id — the client
+        generatedAt: n.generated_at ? new Date(n.generated_at).toISOString() : null,
+        generatedBy: n.generated_by || null,                      // passes it back as supersedesId
+      });
+    }
+    console.error(`findMatchingPayrollRun: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const start = escapeFormulaString(payPeriodStart);
   const end   = escapeFormulaString(payPeriodEnd);
   const filter = `AND(IS_SAME({Pay Period Start},"${start}","day"), IS_SAME({Pay Period End},"${end}","day"), NOT({Superseded}))`;
@@ -3152,12 +3173,75 @@ async function handlePayrollRunCreate(body) {
     }
   }
 
+  // 5. Mirror into Neon — the run, its bonuses, and the supersede flag.
+  //
+  // ⚠⚠ NOT OPTIONAL, and it ships in the SAME commit as the read flip on
+  // purpose. `computePayrollDateRanges` now reads the newest non-superseded
+  // Pay Period End from Neon, so a run that lands in Airtable and not in Neon
+  // would leave every payroll screen pointing at the PREVIOUS fortnight — a
+  // plausible wrong number, not an error. That "flip a read without its write"
+  // shape has already bitten this project three times in one day (ROADMAP §8).
+  //
+  // Airtable stays the identity authority here, as it does for expenses: the
+  // PDF and JSON attachments live on the Airtable record, so the rec id is what
+  // everything downstream keys on. Neon carries the scalars that reads need.
+  //
+  // Fails SOFT. The run, its PDF and its bonuses are already safely in Airtable
+  // by this point, and that is the artifact people are paid from. Throwing here
+  // would report a failure for work that actually succeeded; the mismatch is
+  // visible instead through `neonMirrorError` in the response.
+  let neonMirrorError = null;
+  try {
+    await neonWrite("payrollRun.mirror",
+      `INSERT INTO payroll_runs (airtable_id, pay_period_start, pay_period_end, generated_at,
+                                 generated_by, total_hours, total_bonus, superseded, notes, synced_at)
+       VALUES ($1,$2::date,$3::date,now(),$4,$5,$6,false,$7,now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         pay_period_start=EXCLUDED.pay_period_start, pay_period_end=EXCLUDED.pay_period_end,
+         generated_by=EXCLUDED.generated_by, total_hours=EXCLUDED.total_hours,
+         total_bonus=EXCLUDED.total_bonus, notes=EXCLUDED.notes, synced_at=now()`,
+      [runId, payPeriodStart, payPeriodEnd, String(generatedBy || ""),
+       Number(totalHours) || 0, Number(totalBonus) || 0, notes ? String(notes) : null]);
+
+    // Bonuses are re-read from Airtable rather than taken from `resolvedBonuses`,
+    // for the same reason the inventory push re-reads its expenses at Step E:
+    // only the created records carry their real rec ids, and without those the
+    // rows could never be reconciled against Airtable again.
+    if (resolvedBonuses.length && !bonusError) {
+      const created = await fetchAll(PR_BONUSES.table, {
+        filter: `FIND("${escapeFormulaString(runId)}", ARRAYJOIN({Payroll Run}))`
+      });
+      for (const b of created) {
+        const f = b.fields || {};
+        await neonWrite("payrollBonus.mirror",
+          `INSERT INTO payroll_bonuses (airtable_id, payroll_run_airtable_id, payroll_run_id,
+                                        employee_airtable_id, employee_name, amount, synced_at)
+           VALUES ($1,$2,(SELECT id FROM payroll_runs WHERE airtable_id=$2),$3,$4,$5,now())
+           ON CONFLICT (airtable_id) DO UPDATE SET
+             payroll_run_airtable_id=EXCLUDED.payroll_run_airtable_id,
+             payroll_run_id=EXCLUDED.payroll_run_id, amount=EXCLUDED.amount, synced_at=now()`,
+          [b.id, runId, firstLinkedId(f["Employee"]), String(f["Employee Name"] || ""),
+           Number(f["Amount"]) || 0]);
+      }
+    }
+
+    if (supersedesId && String(supersedesId).startsWith("rec") && !supersedeError) {
+      await neonWrite("payrollRun.supersede",
+        `UPDATE payroll_runs SET superseded = true, synced_at = now() WHERE airtable_id = $1`,
+        [supersedesId]);
+    }
+  } catch (err) {
+    console.error("[payrollRunCreate] Neon mirror failed:", err);
+    neonMirrorError = err?.message || String(err);
+  }
+
   return resp(200, {
     ok: true,
     runId,
     supersededId: supersedesId || null,
     bonusError,
     supersedeError,
+    neonMirrorError,
     unresolvedBonuses
   });
 }
@@ -3235,14 +3319,40 @@ async function computePayrollDateRanges(today) {
   const thisWeekStart = shiftDays(today, diffToMon);
   const thisWeekEnd   = shiftDays(thisWeekStart, 5); // Mon..Sat work week
 
-  let payPeriodStart, payPeriodEnd;
-  const recentRuns = await fetchAll(PR_RUNS.table, {
-    filter: `NOT({Superseded})`,
-    sortField: "Pay Period End",
-    sortDir: "desc"
-  });
-  if (recentRuns.length && recentRuns[0].fields?.["Pay Period End"]) {
-    const lastEnd = ymdToDate(recentRuns[0].fields["Pay Period End"]);
+  // ── NEON-FIRST (audit item 02) ────────────────────────────────────────────
+  // This ran on EVERY payroll read — all four handlers call it first — and it
+  // paged the whole Airtable Payroll Runs table to find ONE date. It is the
+  // 400-600 ms gap between `_ms` (the Neon leg) and wall time that the roadmap
+  // noticed at Step 1 and never chased down. In Neon it is an index scan on
+  // `pr_runs_open_period_idx`, which is partial on `WHERE NOT superseded` —
+  // exactly the predicate below.
+  //
+  // ⚠ The whole answer is ONE value: the newest non-superseded Pay Period End.
+  // Superseding matters and is not decoration: the period 2026-07-26 → 08-08
+  // has SIX runs, five of them superseded. Reading the wrong one moves every
+  // payroll tile by a fortnight.
+  let payPeriodStart, payPeriodEnd, lastEndYmd = null;
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT pay_period_end::text AS pay_period_end
+         FROM payroll_runs WHERE NOT superseded AND pay_period_end IS NOT NULL
+        ORDER BY pay_period_end DESC LIMIT 1`);
+    if (q?.rows?.length) lastEndYmd = q.rows[0].pay_period_end;
+    else console.error(`computePayrollDateRanges: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+  // Airtable fallback, unchanged. Kept because an empty Neon here would silently
+  // shift every payroll figure rather than fail, which is the worst shape of bug
+  // this file has: a plausible wrong number on a screen people are paid from.
+  if (!lastEndYmd) {
+    const recentRuns = await fetchAll(PR_RUNS.table, {
+      filter: `NOT({Superseded})`,
+      sortField: "Pay Period End",
+      sortDir: "desc"
+    });
+    lastEndYmd = recentRuns.length ? (recentRuns[0].fields?.["Pay Period End"] || null) : null;
+  }
+  if (lastEndYmd) {
+    const lastEnd = ymdToDate(lastEndYmd);
     payPeriodStart = shiftDays(lastEnd, 1);
     payPeriodEnd   = shiftDays(payPeriodStart, 13);
   } else {

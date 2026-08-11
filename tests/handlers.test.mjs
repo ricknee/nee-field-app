@@ -1536,6 +1536,43 @@ await test("allocations: an entry with no Neon id is refused before anything is 
   delete process.env.ALLOCATIONS_WRITE;
 });
 
+await test("allocations: the attach is BATCHED, and never touches Airtable without Neon", async () => {
+  // Regression for 2026-08-11: Bethel School's invoice carried 163 allocations,
+  // the attach did two round trips each, and the function ran past Netlify's
+  // gateway timeout. The browser alerted "Error saving invoice" over an invoice
+  // that HAD saved — and pressing Save again would have made a duplicate.
+  //
+  // The batching itself is asserted against the source, same as the billing-sync
+  // guard below: exercising it needs a live Neon (the candidate list is a Neon
+  // read) and this suite is deliberately offline. What IS behavioural here is
+  // the half that can be checked without one — a failed lookup must not leave a
+  // half-attached invoice behind it.
+  const { attachAllocationsToInvoice } = await import("../netlify/functions/_allocations.js");
+  process.env.ALLOCATIONS_WRITE = "on";
+  delete process.env.DATABASE_URL;
+  let touched = 0;
+  const boom = async () => { touched++; throw new Error("must not reach Airtable"); };
+  const r = await attachAllocationsToInvoice(boom, "recInv", "recJob");
+  eq(r.skipped, "lookup-failed", "no candidate list → refuse, don't guess");
+  eq(r.attached, 0, "nothing attached");
+  eq(touched, 0, "Airtable not called when Neon can't be read");
+  delete process.env.ALLOCATIONS_WRITE;
+
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_allocations.js", import.meta.url), "utf8");
+  const attach = src.slice(src.indexOf("export async function attachAllocationsToInvoice"));
+
+  const cap = src.match(/const AT_BATCH = (\d+)/);
+  ok(cap, "AT_BATCH is declared");
+  ok(Number(cap[1]) <= 10, `AT_BATCH is ${cap[1]}; Airtable rejects writes over 10 records`);
+
+  // A batch PATCH sends { records: [...] } to the TABLE. The per-record form —
+  // `${table}/${id}` — is what made it slow, so its absence is the assertion.
+  ok(/records: batch\.map/.test(attach), "Airtable write sends a records[] batch");
+  ok(!/\$\{table\}\/\$\{/.test(attach), "no per-record PATCH left in the attach path");
+  ok(/ANY\(\$1::uuid\[\]\)/.test(attach), "Neon commits a chunk per UPDATE, not a row");
+});
+
 await test("billing-sync: the delete pass spares Neon-native allocations", async () => {
   // ⚠⚠ THE SINGLE MOST DANGEROUS LINE IN THE BILLING PATH. The sync deletes any
   // allocation absent from the Airtable fetch, which is right for rows Airtable

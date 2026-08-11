@@ -197,10 +197,23 @@ export async function createMaterialAllocation(atFetch, expenseAirtableId) {
 // "Jenny Ln 1" and "Jenny Ln 10/11/12". The old automation matched on the Job
 // LOOKUP, which is id-based and safe; this keeps that property.
 //
-// Airtable is updated one record at a time on purpose: the automation did the
-// same (a repeatingGroup over findRecords), and a partial failure here must
-// leave the successful ones attached rather than rolling back money that is
-// already on an invoice.
+// ⚠⚠ BATCHED, AND THE BATCH SIZE IS AIRTABLE'S LIMIT, NOT A TUNING KNOB.
+// This used to PATCH one allocation at a time, mirroring the automation's
+// repeatingGroup over findRecords. That is two round trips per allocation, and
+// Bethel School's first invoice after a summer of approvals carried 163 of them:
+// the function ran past Netlify's gateway timeout, so the browser got a 504 and
+// alerted "Error saving invoice" over an invoice that had saved perfectly. That
+// is the worst failure to read, because the natural response — press Save again
+// — POSTs a SECOND invoice for the same work. Airtable takes 10 records per
+// write request and Neon takes a whole chunk in one UPDATE, so those 163
+// allocations now cost ~33 requests instead of 326.
+//
+// A partial failure still leaves earlier work attached, at a granularity of ten
+// rows rather than one. Airtable applies a batch PATCH all-or-nothing, so a
+// failed batch leaves its ten unlinked and re-attachable by saving again; it
+// never half-writes a row.
+const AT_BATCH = 10;   // Airtable's hard cap on records per write request
+
 export async function attachAllocationsToInvoice(atFetch, invoiceAirtableId, jobAirtableId) {
   if (!allocationsWriteEnabled()) return { attached: 0, skipped: "disabled" };
   if (!invoiceAirtableId || !jobAirtableId) return { attached: 0, skipped: "missing-ids" };
@@ -226,31 +239,55 @@ export async function attachAllocationsToInvoice(atFetch, invoiceAirtableId, job
 
   const failures = [];
   let attached = 0, native = 0;
-  for (const row of q.rows) {
-    const table = row.kind === "labor" ? T_LABOR : T_MATERIAL;
+
+  // Commit a chunk to Neon right after its PATCH lands, rather than once at the
+  // end: if the function dies mid-run, the window in which Airtable says "on
+  // invoice X" while Neon still says "unlinked" is ten rows wide, not the whole
+  // invoice. Rows caught in that window are re-attached by the next save —
+  // the same recovery the per-row version had.
+  const commit = async (kind, ids) => {
+    if (!ids.length) return;
+    const tbl = kind === "labor" ? "labor_billing_allocations" : "material_billing_allocations";
+    await neonWrite(`allocation.attach.${kind}`,
+      `UPDATE ${tbl} SET invoice_airtable_id = $2 WHERE id = ANY($1::uuid[])`,
+      [ids, invoiceAirtableId]);
+    attached += ids.length;
+  };
+
+  for (const kind of ["labor", "material"]) {
+    const rows = q.rows.filter(r => r.kind === kind);
+    if (!rows.length) continue;
+    const table = kind === "labor" ? T_LABOR : T_MATERIAL;
+
+    // Neon-native allocations skip Airtable entirely. One is invoiced purely in
+    // Neon — which is where v_invoices.invoice_total_calc reads from, so the
+    // total is right either way. Its Airtable counterpart does not exist to be
+    // updated, so there is nothing to batch and nothing that can fail there.
+    const nativeIds = rows.filter(r => !r.airtable_id).map(r => r.id);
+    native += nativeIds.length;
     try {
-      // Airtable only when there is something there to update. A Neon-native
-      // allocation is invoiced entirely in Neon — which is where
-      // v_invoices.invoice_total_calc reads from, so the total is right either
-      // way. Its Airtable counterpart simply does not exist to be updated.
-      if (row.airtable_id) {
-        await atFetch(`${table}/${row.airtable_id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ fields: { [F_INVOICE]: [invoiceAirtableId] } }),
-        });
-      } else {
-        native++;
-      }
-      const tbl = row.kind === "labor" ? "labor_billing_allocations" : "material_billing_allocations";
-      await neonWrite(`allocation.attach.${row.kind}`,
-        `UPDATE ${tbl} SET invoice_airtable_id = $2 WHERE id = $1::uuid`,
-        [row.id, invoiceAirtableId]);
-      attached++;
+      await commit(kind, nativeIds);
     } catch (e) {
-      // Collected, not thrown: aborting mid-loop would strand the rest while
-      // leaving the earlier ones attached — the worst of both. Same stance the
-      // inventory expense push settled on at Step E.
-      failures.push(`${row.airtable_id}: ${e?.message || e}`);
+      failures.push(`${kind} native ×${nativeIds.length}: ${e?.message || e}`);
+    }
+
+    const mirrored = rows.filter(r => r.airtable_id);
+    for (let i = 0; i < mirrored.length; i += AT_BATCH) {
+      const batch = mirrored.slice(i, i + AT_BATCH);
+      try {
+        await atFetch(table, {
+          method: "PATCH",
+          body: JSON.stringify({
+            records: batch.map(r => ({ id: r.airtable_id, fields: { [F_INVOICE]: [invoiceAirtableId] } })),
+          }),
+        });
+        await commit(kind, batch.map(r => r.id));
+      } catch (e) {
+        // Collected, not thrown: aborting mid-loop would strand the rest while
+        // leaving the earlier ones attached — the worst of both. Same stance the
+        // inventory expense push settled on at Step E.
+        failures.push(`${kind} ${batch.map(r => r.airtable_id).join(",")}: ${e?.message || e}`);
+      }
     }
   }
   if (failures.length) console.error(`allocations: ${failures.length} attach(es) failed — ${failures.join("; ")}`);

@@ -14632,6 +14632,41 @@
     if (calc) calc.textContent = `= ${fmtCurrency(amount)} (${pct}% of contract)`;
   };
 
+  // ── DID THE SAVE ACTUALLY LAND? ──
+  // A failed REQUEST is not a failed SAVE. saveInvoice POSTs the invoice record
+  // first and only then attaches billing allocations, so on a job with a big
+  // backlog of approved work the attach phase can outrun Netlify's gateway
+  // timeout: the browser gets a 504 for an invoice that saved perfectly. The
+  // old code alerted "Error saving invoice", and the natural response — press
+  // Save again — POSTs a duplicate. So ask the server what happened instead of
+  // trusting the error. Retried once because the function may still be
+  // finishing when the browser gives up.
+  async function invoiceDidLand({ invoiceId, invoiceNumber, invoiceDate, totalAmount }) {
+    const jobId = invJobRef?.id;
+    if (!jobId) return null;
+    const near = (a, b) => Math.abs(Number(a || 0) - Number(b || 0)) < 0.01;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) await new Promise(r => setTimeout(r, 2500));
+      try {
+        const list = (await apiPost("getJobInvoices", { jobId })).invoices || [];
+        const hit = invoiceId
+          // Edit mode: same record, carrying the amount we just sent.
+          ? list.find(inv => inv.id === invoiceId && near(inv.snapshotTotal, totalAmount))
+          // Create mode: the display number identifies the new record on its
+          // own; the date guards against a number that was reused earlier.
+          : list.find(inv => invoiceNumber
+              ? (String(inv.displayNumber) === String(Number(invoiceNumber)) && inv.date === invoiceDate)
+              : (inv.date === invoiceDate && near(inv.snapshotTotal, totalAmount)));
+        if (hit) return hit;
+      } catch(e) {
+        // The check itself can fail (same outage, expired session). Fall
+        // through and let the original error be reported.
+        console.warn("[invoiceDidLand] check failed", e);
+      }
+    }
+    return null;
+  }
+
   window.invSaveToAirtable = async function() {
     if (!invJobRef) return;
     const btn = event?.target;
@@ -14692,17 +14727,17 @@
       savedAt: new Date().toISOString()
     });
 
-    try {
-      const wasEditing = !!window._invEditingId;
-      const result = await apiPost("saveInvoice", body);
-      if (!result.ok) throw new Error(result.error || "Save failed");
+    const wasEditing = !!window._invEditingId;
+
+    // The post-save tail, factored out because the timeout-recovery path below
+    // has to run exactly the same steps — an invoice that landed late is still
+    // an invoice that landed.
+    function finishInvoiceSave(message, holdMs) {
       const banner = $("inv-saved-banner");
       if (banner) {
-        banner.textContent   = wasEditing
-          ? `✓ Invoice #${invoiceNumber} updated in Airtable`
-          : "✓ Invoice saved to Airtable";
+        banner.textContent   = message;
         banner.style.display = "block";
-        setTimeout(() => { banner.style.display = "none"; }, 4000);
+        setTimeout(() => { banner.style.display = "none"; }, holdMs || 4000);
       }
       // Refresh invoice history so the row reflects the new amount/lines
       if (invJobRef?.id) loadInvoiceHistory(invJobRef.id);
@@ -14724,8 +14759,25 @@
         if (inp) inp.value = "";
         autoFillInvoiceNumber();
       }
+    }
+
+    try {
+      const result = await apiPost("saveInvoice", body);
+      if (!result.ok) throw new Error(result.error || "Save failed");
+      finishInvoiceSave(wasEditing
+        ? `✓ Invoice #${invoiceNumber} updated in Airtable`
+        : "✓ Invoice saved to Airtable");
     } catch(err) {
-      alert("Error saving invoice: " + err.message);
+      // Believe the server, not the transport — see invoiceDidLand above. Held
+      // on screen longer than a normal save because "don't press it again" is
+      // the whole point of the message.
+      const landed = await invoiceDidLand(body);
+      if (landed) {
+        console.warn(`[invSave] request failed (${err.status || "no status"}: ${err.message}) but invoice ${landed.id} is saved`);
+        finishInvoiceSave("✓ Invoice saved — the request timed out, but it landed. Do NOT save again.", 12000);
+      } else {
+        alert("Error saving invoice: " + err.message);
+      }
     } finally {
       // Restore the button label only if we're not still in edit mode
       // (edit-mode kept its own "Update Invoice" label before this save call;

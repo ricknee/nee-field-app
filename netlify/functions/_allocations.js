@@ -97,6 +97,7 @@ export async function createLaborAllocation(atFetch, timeEntryNeonId, timeEntryA
   // be double-allocated because the count only looked at one of them.
   const q = await neonQuery(
     `SELECT t.airtable_id, t.hours::float8 AS hours, t.billable, t.labor_reviewed AS reviewed,
+            j.billable_hourly_rate::float8 AS job_rate,
             (t.hours - COALESCE((SELECT sum(a.allocated_hours) FROM labor_billing_allocations a
                 WHERE a.time_entry_id = t.id
                    OR (t.airtable_id IS NOT NULL AND a.time_entry_airtable_id = t.airtable_id)), 0))::float8
@@ -105,6 +106,7 @@ export async function createLaborAllocation(atFetch, timeEntryNeonId, timeEntryA
               WHERE a.time_entry_id = t.id
                  OR (t.airtable_id IS NOT NULL AND a.time_entry_airtable_id = t.airtable_id)) AS existing
        FROM time_entries t
+       LEFT JOIN jobs j ON j.id = t.job_id
       WHERE t.id = $1::uuid`, [timeEntryNeonId]);
   if (!q?.rows?.length) return skip("entry-not-found");
   const r = q.rows[0];
@@ -118,17 +120,33 @@ export async function createLaborAllocation(atFetch, timeEntryNeonId, timeEntryA
 
   // ── Neon-native: no twin to link to ──────────────────────────────────────
   if (!airtableId) {
-    // Conditional INSERT rather than check-then-insert. The gate above is a
-    // read, so two concurrent reviews of the same entry could both pass it;
-    // `WHERE NOT EXISTS` makes the create itself the guard, in one statement.
+    // ⚠ bill_rate IS WRITTEN HERE AND NOWHERE ELSE, and the asymmetry with the
+    // mirrored path below is the point. In Airtable the column is a lookup
+    // through Time Entry → Job, so Airtable fills it and the hourly sync carries
+    // the value over — which is why mirrorLaborToNeon must not guess at it. A
+    // native row has no Airtable counterpart to do that filling, so left alone
+    // it stays NULL forever, and v_invoices computes labor as
+    // sum(allocated_hours * bill_rate): a NULL rate silently values those hours
+    // at ZERO. Found on Bethel School invoice 1665 — 10.75 hours billed on the
+    // PDF, $698.75 missing from the invoice's own computed total. Since Step 3
+    // every new time entry arrives without a twin, so every one of these would
+    // have been rate-less.
+    //
+    // The job's CURRENT rate is the right value to freeze in: it is what
+    // Airtable's lookup resolves to at this moment (verified 2026-08-11 —
+    // 2,696 of 2,696 rated allocations carry exactly their job's rate), and
+    // storing it is what makes historical revenue survive a later rate change.
+    // A job with no rate still writes NULL. That is a real condition, not a
+    // gap to paper over — see the three rate-less T&M jobs in the GP audit —
+    // and inventing a number here would hide it.
     const ins = await neonWrite("allocation.labor.native",
-      `INSERT INTO labor_billing_allocations (time_entry_id, allocated_hours, synced_at)
-       SELECT $1::uuid, $2, now()
+      `INSERT INTO labor_billing_allocations (time_entry_id, allocated_hours, bill_rate, synced_at)
+       SELECT $1::uuid, $2, $3, now()
         WHERE NOT EXISTS (SELECT 1 FROM labor_billing_allocations WHERE time_entry_id = $1::uuid)
-       RETURNING id`, [timeEntryNeonId, Number(r.hours)]);
+       RETURNING id`, [timeEntryNeonId, Number(r.hours), r.job_rate ?? null]);
     if (!Array.isArray(ins) || !ins.length) return skip("already-allocated");
     return { created: 1, skipped: null, allocationId: ins[0].id,
-             hours: Number(r.hours), neonNative: true };
+             hours: Number(r.hours), billRate: r.job_rate ?? null, neonNative: true };
   }
 
   // ── Airtable-first: the entry has a twin, so keep them in step ───────────

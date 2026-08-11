@@ -1536,6 +1536,32 @@ await test("allocations: an entry with no Neon id is refused before anything is 
   delete process.env.ALLOCATIONS_WRITE;
 });
 
+await test("allocations: a Neon-native row carries its own bill rate", async () => {
+  // Regression for 2026-08-11. v_invoices computes labor as
+  // sum(allocated_hours * bill_rate). Airtable fills bill_rate through a lookup;
+  // a Neon-native allocation has nothing to fill it, so it stayed NULL — and a
+  // NULL rate makes the product NULL, which sum() skips. Bethel School invoice
+  // 1665 printed 10.75 hours it valued at $0. Every time entry since Step 3
+  // (2026-08-07) arrives without an Airtable twin, so this was every new row.
+  //
+  // Source-pinned: the INSERT needs a live Neon to run, and this suite is
+  // offline. What it protects is the asymmetry — the native write MUST set the
+  // rate, the mirror write must NOT (Airtable owns that value, and a second
+  // opinion about a number feeding Invoice Total is worse than none).
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_allocations.js", import.meta.url), "utf8");
+
+  const native = src.match(/allocation\.labor\.native[\s\S]*?RETURNING id/);
+  ok(native, "the native insert is still there");
+  ok(/INSERT INTO labor_billing_allocations \([^)]*bill_rate/.test(native[0]),
+     "native insert must write bill_rate, or its hours are billed at $0");
+
+  const mirror = src.match(/allocation\.labor\.insert[\s\S]*?EXCLUDED\.synced_at/);
+  ok(mirror, "the mirror insert is still there");
+  ok(!/bill_rate/.test(mirror[0]),
+     "mirror must NOT write bill_rate — Airtable's lookup owns it");
+});
+
 await test("allocations: the attach is BATCHED, and never touches Airtable without Neon", async () => {
   // Regression for 2026-08-11: Bethel School's invoice carried 163 allocations,
   // the attach did two round trips each, and the function ran past Netlify's

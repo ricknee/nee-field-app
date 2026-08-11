@@ -51,10 +51,20 @@ with one-tap punch shortcuts · a revocable per-person **widget endpoint**.
    that needs the crew punching *consistently*, not occasionally.
 5. **The §3 fork:** replace QuickBooks Time, or feed it. Still undecided, still the owner's.
 
-### ⬜ Never tested
+### ✅ Offline queue — TESTED ON A REAL PHONE, 2026-08-11
 
-The **offline queue on a real phone losing signal**. Everything else has been exercised on
-production or against a Neon branch; this one hasn't, and crews work in basements.
+Owner: *"i have tested offline its good for now until something else surfaces."*
+
+Both paths pass on an actual handset with airplane mode:
+
+- Punch in, take a break, punch out entirely offline → everything replays on reconnect with the
+  **times from when the buttons were tapped**, not from when signal returned.
+- Punch in, go offline, **fully close and reopen the app** → the running shift is still there and
+  can be clocked out. This one initially failed and was fixed (`8dab4e2`): the clock's own
+  existence and the open shift are now cached on the device, so a cold start with no signal renders
+  a working clock instead of nothing.
+
+That was the last untested piece of the feature.
 
 *Earlier statuses, kept for the reasoning: BUILT 2026-08-08, shipped inert — "build the app and
 replace qb time later on". Before that: NOT BUILT, parked 2026-08-07 — "finish migrating first,

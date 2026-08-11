@@ -8710,23 +8710,46 @@
           outside city limits and owe nothing. Travel time is always “A No Tax”.
         </span>
       </div>
-      <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
-        <span style="font-size:13px; font-weight:700; color:var(--text);">⏱ On the clock:</span>
-        <select id="jobClockVisSelect" class="edit-input" style="min-width:240px; font-size:13px;">
-          <option value=""       ${!job.clockVisibility ? "selected" : ""}>Normal — the job's status decides</option>
-          <option value="all"    ${job.clockVisibility === "all"    ? "selected" : ""}>Overhead — always show, everyone</option>
-          <option value="admin"  ${job.clockVisibility === "admin"  ? "selected" : ""}>Overhead — always show, admin only</option>
-          <option value="hidden" ${job.clockVisibility === "hidden" ? "selected" : ""}>Never show on the clock</option>
-        </select>
-        <button id="jobClockVisSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
-        <span id="jobClockVisMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
-        <span id="jobClockVisErr" style="font-size:12px; color:var(--red); display:none;"></span>
-        <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
-          For overhead buckets like Shop Work and Office Work, which are jobs only because the clock
-          has to pick something. Setting this means their status no longer decides whether the crew
-          can find them.
-        </span>
-      </div>
+      ${/*
+         Collapsed on a normal job, open on an overhead one.
+
+         This setting is only ever meaningful on the two or three buckets that
+         are "jobs" purely because the clock has to put shop and office time
+         somewhere — Shop Work and Office Work. On 110 of 112 jobs the only
+         correct answer is the default, so an always-open control was a widget
+         that could never do anything, sitting on a screen used all day for
+         ordinary work.
+
+         It stays OPEN when it IS set, though: a job whose clock behaviour
+         overrides its status is behaving unusually, and that is worth seeing
+         the moment you open it rather than hiding behind a disclosure.
+      */""}
+      <details id="jobClockVisBox" ${job.clockVisibility ? "open" : ""} style="margin-bottom:14px;">
+        <summary style="cursor:pointer; font-size:12px; color:${job.clockVisibility ? "var(--accent)" : "var(--muted)"}; padding:4px 2px; list-style:none;">
+          ⏱ On the clock: <b>${
+            job.clockVisibility === "all"    ? "Overhead — everyone"
+          : job.clockVisibility === "admin"  ? "Overhead — admin only"
+          : job.clockVisibility === "hidden" ? "Never shown"
+          :                                    "Normal"
+          }</b>${job.clockVisibility ? "" : " — the job's status decides"}
+        </summary>
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-top:6px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
+          <select id="jobClockVisSelect" class="edit-input" style="min-width:240px; font-size:13px;">
+            <option value=""       ${!job.clockVisibility ? "selected" : ""}>Normal — the job's status decides</option>
+            <option value="all"    ${job.clockVisibility === "all"    ? "selected" : ""}>Overhead — always show, everyone</option>
+            <option value="admin"  ${job.clockVisibility === "admin"  ? "selected" : ""}>Overhead — always show, admin only</option>
+            <option value="hidden" ${job.clockVisibility === "hidden" ? "selected" : ""}>Never show on the clock</option>
+          </select>
+          <button id="jobClockVisSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
+          <span id="jobClockVisMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+          <span id="jobClockVisErr" style="font-size:12px; color:var(--red); display:none;"></span>
+          <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
+            For overhead buckets like Shop Work and Office Work, which are jobs only because the clock
+            has to pick something. Setting this means their status no longer decides whether the crew
+            can find them.
+          </span>
+        </div>
+      </details>
     `;
   }
 
@@ -8773,6 +8796,18 @@
           job.clockVisibility = value;
           const idx = (state.jobs || []).findIndex(j => j.id === job.id);
           if (idx >= 0) state.jobs[idx].clockVisibility = value;
+          // Repaint the collapsed summary, which shows the current setting — it
+          // is rendered once and would otherwise keep announcing the old value
+          // until the next job switch, i.e. exactly when you'd be checking it.
+          const sum = document.querySelector("#jobClockVisBox > summary");
+          if (sum) {
+            const label = value === "all"    ? "Overhead — everyone"
+                        : value === "admin"  ? "Overhead — admin only"
+                        : value === "hidden" ? "Never shown"
+                        :                      "Normal";
+            sum.innerHTML = `⏱ On the clock: <b>${label}</b>${value ? "" : " — the job's status decides"}`;
+            sum.style.color = value ? "var(--accent)" : "var(--muted)";
+          }
           msg.style.display = "inline";
           setTimeout(() => { msg.style.display = "none"; }, 2500);
         } catch (e) {

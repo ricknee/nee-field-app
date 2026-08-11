@@ -1124,7 +1124,10 @@ async function handleUpdateTimeEntryPayroll(body) {
   let allocation;
   if (reviewed === true) {
     try {
-      allocation = await createLaborAllocation(atFetch, target.airtable_id);
+      // Neon uuid FIRST — it is always present, where airtable_id is NULL on
+      // every entry pulled since Step 3. The allocation goes Neon-native when
+      // there is no twin, which since 2026-08-10 is all of them.
+      allocation = await createLaborAllocation(atFetch, target.id, target.airtable_id);
     } catch (e) {
       // Reported, not thrown. The payroll edit itself succeeded and is what the
       // user asked for; failing the whole request would make the hours look

@@ -1499,7 +1499,7 @@ await test("allocations: ship INERT — ALLOCATIONS_WRITE unset writes nothing",
   let touched = 0;
   const boom = async () => { touched++; throw new Error("Airtable must not be touched while disabled"); };
 
-  eq((await createLaborAllocation(boom, "recAnything")).skipped, "disabled", "labor inert");
+  eq((await createLaborAllocation(boom, "00000000-0000-0000-0000-000000000001")).skipped, "disabled", "labor inert");
   eq((await createMaterialAllocation(boom, "recAnything")).skipped, "disabled", "material inert");
   eq((await attachAllocationsToInvoice(boom, "recInv", "recJob")).skipped, "disabled", "attach inert");
   eq(touched, 0, "Airtable was not called at all");
@@ -1515,21 +1515,46 @@ await test("allocations: ship INERT — ALLOCATIONS_WRITE unset writes nothing",
   delete process.env.ALLOCATIONS_WRITE;
 });
 
-await test("allocations: a time entry with no Airtable twin is refused, not silently skipped", async () => {
-  // 24 billable entries / 48.25 h have no Airtable twin as of 2026-08-11, and
-  // the number grows with every clock punch. An allocation's Time Entry field is
-  // an Airtable LINK, so there is nothing to point at — these CANNOT be billed
-  // by either the old automation or this code. The distinct skip reason is what
-  // makes that visible instead of looking like "nothing to do".
+await test("allocations: an entry with no Neon id is refused before anything is written", async () => {
+  // The only remaining hard refusal. A time entry ALWAYS has a Neon uuid — it is
+  // the primary key — so reaching this means the caller passed nothing, and
+  // guessing would be worse than failing.
+  //
+  // ⚠ "no Airtable twin" is NOT a refusal any more, and that reversal is the
+  // whole point of the 2026-08-11 change. It used to return "no-airtable-twin",
+  // which meant no labor logged after Step 3 (2026-08-07) could ever reach an
+  // invoice — 100% of the week of 08-10. Those now go Neon-native, and the test
+  // for that lives against a live database, because the insert is the behaviour.
   const { createLaborAllocation } = await import("../netlify/functions/_allocations.js");
   process.env.ALLOCATIONS_WRITE = "on";
   let touched = 0;
   const boom = async () => { touched++; throw new Error("must not reach Airtable"); };
   const r = await createLaborAllocation(boom, null);
-  eq(r.skipped, "no-airtable-twin", "reported as its own case");
+  eq(r.skipped, "no-entry-id", "refused for the right reason");
   eq(r.created, 0, "nothing created");
   eq(touched, 0, "Airtable not called");
   delete process.env.ALLOCATIONS_WRITE;
+});
+
+await test("billing-sync: the delete pass spares Neon-native allocations", async () => {
+  // ⚠⚠ THE SINGLE MOST DANGEROUS LINE IN THE BILLING PATH. The sync deletes any
+  // allocation absent from the Airtable fetch, which is right for rows Airtable
+  // owns and catastrophic for Neon-native ones: they are invisible to that fetch
+  // by construction, so an unguarded predicate deletes every one within the hour
+  // and the invoice total silently drops AFTER looking correct.
+  //
+  // Asserted against the source text rather than a live database, because the
+  // offline suite cannot reach Neon and this is a predicate, not a behaviour we
+  // can observe here. Crude, and far better than no check at all: if someone
+  // "tidies" the guard away, this fails.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_billing-sync.js", import.meta.url), "utf8");
+  const deletes = src.match(/DELETE FROM \w*billing_allocations[\s\S]*?RETURNING 1/g) || [];
+  eq(deletes.length, 2, "two delete statements, labor and material");
+  for (const d of deletes) {
+    ok(/airtable_id IS NOT NULL/.test(d),
+       `delete pass is missing the Neon-native guard:\n${d}`);
+  }
 });
 
 await test("setEmployeeSalaried: admin only — it decides how someone is paid", async () => {

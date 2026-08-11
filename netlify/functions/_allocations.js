@@ -69,34 +69,43 @@ const skip = (reason, extra = {}) => ({ created: 0, skipped: reason, ...extra })
 // moment only because "no allocation yet" guarantees Billed Hours is 0. Writing
 // unbilled hours instead would be identical today and wrong the first time a
 // partially-billed entry is re-reviewed.
-export async function createLaborAllocation(atFetch, timeEntryAirtableId) {
+// ⚠⚠ TWO PATHS, AND THE SECOND ONE IS NOW THE NORMAL CASE.
+//
+// Step 3 retired Make from the time path on 2026-08-07, so QB-pulled entries
+// land in Neon with NO Airtable twin. Measured 2026-08-11: 0% of the week of
+// 07-20 lacked a twin, 20% of 08-03, and **100% of the week of 08-10**.
+//
+// An allocation for such an entry cannot exist in Airtable — its Time Entry
+// field is an Airtable link with nothing to point at — so it is created
+// NEON-NATIVE, keyed on the time entry's uuid with a NULL airtable_id.
+//
+// The first version of this refused those outright and returned
+// "no-airtable-twin". That was honest but useless: it meant no labor logged
+// after 2026-08-07 could ever reach an invoice. The old Airtable automation had
+// the identical blind spot and could not even report it. Found by reviewing two
+// real entries ten minutes after cutover.
+//
+// ⚠ A Neon-native row only survives because `_billing-sync.js`'s delete pass
+// skips `airtable_id IS NULL`. Remove that guard and every one of these
+// disappears within the hour, taking the invoice total with it.
+export async function createLaborAllocation(atFetch, timeEntryNeonId, timeEntryAirtableId) {
   if (!allocationsWriteEnabled()) return skip("disabled");
-  if (!timeEntryAirtableId) {
-    // ⚠ NOT A NO-OP WORTH SWALLOWING. A time entry with no Airtable twin can
-    // never be allocated — the allocation's Time Entry field is an Airtable
-    // LINK, so there is nothing to point at. As of 2026-08-11 that is 24
-    // billable entries / 48.25 h, none reviewed yet, and it GROWS: the QB
-    // puller and the time clock both write Neon-only rows.
-    //
-    // The old automation had the same blind spot and could not even report it,
-    // because a record that is not in Airtable cannot trigger an Airtable
-    // automation. This at least says so out loud. The real fix is allocations
-    // going Neon-native, which needs `_billing-sync.js`'s delete pass to stop
-    // treating Airtable as the authority on existence. See the plan, §2.
-    console.warn("allocations: time entry has no Airtable twin — it cannot be billed");
-    return skip("no-airtable-twin");
-  }
+  if (!timeEntryNeonId) return skip("no-entry-id");
 
+  // Billed hours are counted through BOTH keys. A given allocation carries one
+  // or the other, never both, and an entry that acquires a twin later must not
+  // be double-allocated because the count only looked at one of them.
   const q = await neonQuery(
-    `SELECT t.hours::float8            AS hours,
-            t.billable                 AS billable,
-            t.labor_reviewed           AS reviewed,
-            b.unbilled_hours::float8   AS unbilled_hours,
+    `SELECT t.airtable_id, t.hours::float8 AS hours, t.billable, t.labor_reviewed AS reviewed,
+            (t.hours - COALESCE((SELECT sum(a.allocated_hours) FROM labor_billing_allocations a
+                WHERE a.time_entry_id = t.id
+                   OR (t.airtable_id IS NOT NULL AND a.time_entry_airtable_id = t.airtable_id)), 0))::float8
+              AS unbilled_hours,
             (SELECT count(*) FROM labor_billing_allocations a
-              WHERE a.time_entry_airtable_id = t.airtable_id) AS existing
+              WHERE a.time_entry_id = t.id
+                 OR (t.airtable_id IS NOT NULL AND a.time_entry_airtable_id = t.airtable_id)) AS existing
        FROM time_entries t
-       LEFT JOIN v_time_entry_billing b ON b.airtable_id = t.airtable_id
-      WHERE t.airtable_id = $1`, [timeEntryAirtableId]);
+      WHERE t.id = $1::uuid`, [timeEntryNeonId]);
   if (!q?.rows?.length) return skip("entry-not-found");
   const r = q.rows[0];
 
@@ -105,16 +114,34 @@ export async function createLaborAllocation(atFetch, timeEntryAirtableId) {
   if (Number(r.existing) > 0)     return skip("already-allocated");
   if (!(Number(r.unbilled_hours) > 0)) return skip("nothing-unbilled");
 
+  const airtableId = timeEntryAirtableId || r.airtable_id || null;
+
+  // ── Neon-native: no twin to link to ──────────────────────────────────────
+  if (!airtableId) {
+    // Conditional INSERT rather than check-then-insert. The gate above is a
+    // read, so two concurrent reviews of the same entry could both pass it;
+    // `WHERE NOT EXISTS` makes the create itself the guard, in one statement.
+    const ins = await neonWrite("allocation.labor.native",
+      `INSERT INTO labor_billing_allocations (time_entry_id, allocated_hours, synced_at)
+       SELECT $1::uuid, $2, now()
+        WHERE NOT EXISTS (SELECT 1 FROM labor_billing_allocations WHERE time_entry_id = $1::uuid)
+       RETURNING id`, [timeEntryNeonId, Number(r.hours)]);
+    if (!Array.isArray(ins) || !ins.length) return skip("already-allocated");
+    return { created: 1, skipped: null, allocationId: ins[0].id,
+             hours: Number(r.hours), neonNative: true };
+  }
+
+  // ── Airtable-first: the entry has a twin, so keep them in step ───────────
   const created = await atFetch(T_LABOR, {
     method: "POST",
     body: JSON.stringify({ fields: {
-      [F_LABOR_TIME_ENTRY]: [timeEntryAirtableId],
+      [F_LABOR_TIME_ENTRY]: [airtableId],
       [F_LABOR_HOURS]: Number(r.hours),
     } }),
   });
   if (!created?.id) throw new Error("createLaborAllocation: Airtable returned no record id");
 
-  await mirrorLaborToNeon(created.id, timeEntryAirtableId, Number(r.hours));
+  await mirrorLaborToNeon(created.id, airtableId, Number(r.hours));
   return { created: 1, skipped: null, allocationId: created.id, hours: Number(r.hours) };
 }
 
@@ -178,36 +205,46 @@ export async function attachAllocationsToInvoice(atFetch, invoiceAirtableId, job
   if (!allocationsWriteEnabled()) return { attached: 0, skipped: "disabled" };
   if (!invoiceAirtableId || !jobAirtableId) return { attached: 0, skipped: "missing-ids" };
 
+  // `a.airtable_id IS NOT NULL` is deliberately ABSENT. Neon-native allocations
+  // have no Airtable row to PATCH, but they are exactly the ones covering work
+  // logged since 2026-08-07 — excluding them would attach the old allocations to
+  // an invoice and silently leave this week's labor off it.
   const q = await neonQuery(
-    `SELECT a.airtable_id, 'labor' AS kind
+    `SELECT a.id::text AS id, a.airtable_id, 'labor' AS kind
        FROM labor_billing_allocations a
        JOIN time_entries t ON t.id = a.time_entry_id
        JOIN jobs j ON j.id = t.job_id
       WHERE j.airtable_id = $1 AND a.invoice_airtable_id IS NULL
-        AND a.airtable_id IS NOT NULL
       UNION ALL
-     SELECT a.airtable_id, 'material'
+     SELECT a.id::text, a.airtable_id, 'material'
        FROM material_billing_allocations a
        JOIN expenses e ON e.id = a.expense_id
        JOIN jobs j ON j.id = e.job_id
-      WHERE j.airtable_id = $1 AND a.invoice_airtable_id IS NULL
-        AND a.airtable_id IS NOT NULL`, [jobAirtableId]);
+      WHERE j.airtable_id = $1 AND a.invoice_airtable_id IS NULL`, [jobAirtableId]);
   if (!q?.rows) return { attached: 0, skipped: "lookup-failed" };
   if (!q.rows.length) return { attached: 0, skipped: null };
 
   const failures = [];
-  let attached = 0;
+  let attached = 0, native = 0;
   for (const row of q.rows) {
     const table = row.kind === "labor" ? T_LABOR : T_MATERIAL;
     try {
-      await atFetch(`${table}/${row.airtable_id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ fields: { [F_INVOICE]: [invoiceAirtableId] } }),
-      });
+      // Airtable only when there is something there to update. A Neon-native
+      // allocation is invoiced entirely in Neon — which is where
+      // v_invoices.invoice_total_calc reads from, so the total is right either
+      // way. Its Airtable counterpart simply does not exist to be updated.
+      if (row.airtable_id) {
+        await atFetch(`${table}/${row.airtable_id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ fields: { [F_INVOICE]: [invoiceAirtableId] } }),
+        });
+      } else {
+        native++;
+      }
       const tbl = row.kind === "labor" ? "labor_billing_allocations" : "material_billing_allocations";
       await neonWrite(`allocation.attach.${row.kind}`,
-        `UPDATE ${tbl} SET invoice_airtable_id = $2
-          WHERE airtable_id = $1`, [row.airtable_id, invoiceAirtableId]);
+        `UPDATE ${tbl} SET invoice_airtable_id = $2 WHERE id = $1::uuid`,
+        [row.id, invoiceAirtableId]);
       attached++;
     } catch (e) {
       // Collected, not thrown: aborting mid-loop would strand the rest while
@@ -217,7 +254,7 @@ export async function attachAllocationsToInvoice(atFetch, invoiceAirtableId, job
     }
   }
   if (failures.length) console.error(`allocations: ${failures.length} attach(es) failed — ${failures.join("; ")}`);
-  return { attached, skipped: null, failed: failures.length };
+  return { attached, skipped: null, failed: failures.length, neonNative: native };
 }
 
 // ── Neon mirrors ───────────────────────────────────────────────────────────

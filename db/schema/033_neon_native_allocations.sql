@@ -1,0 +1,85 @@
+-- ── Allocations can exist without an Airtable twin ─────────────────────────
+-- Applied BARE to the production branch via the Neon MCP 2026-08-11; this file
+-- is the annotated source of truth.
+--
+-- ⚠⚠ THIS UNBLOCKS BILLING FOR ALL CURRENT WORK. Without it, no labor logged
+-- after 2026-08-07 can reach an invoice — by any mechanism.
+--
+-- ── HOW IT WAS FOUND ───────────────────────────────────────────────────────
+-- Ten minutes after the allocations write path was cut over, the owner reviewed
+-- two real time entries on Shop Work. **No allocations appeared.** Both entries
+-- had `airtable_id = NULL`, so the handler correctly returned
+-- `skipped: "no-airtable-twin"` — the exact limitation flagged while building
+-- it, hit on the first live test.
+--
+-- The numbers say why it was not an edge case:
+--
+--   week of 2026-07-20    62 entries    0 without a twin       0%
+--   week of 2026-07-27    45 entries    1                    2.2%
+--   week of 2026-08-03    49 entries   10                   20.4%
+--   week of 2026-08-10    14 entries   14                    100%
+--
+-- Step 3 retired Make from the time path on 2026-08-07, so the QB puller now
+-- writes time entries straight into Neon and nothing mints an Airtable rec id
+-- for them. The allocation model was keyed on those ids.
+--
+-- **The old Airtable automation had the identical blind spot** — a record that
+-- is not in Airtable cannot trigger an Airtable automation — so this was never
+-- a regression from the cutover. Rolling back would not have restored billing;
+-- it would only have gone back to failing silently instead of reporting it.
+--
+-- ── WHAT CHANGED ───────────────────────────────────────────────────────────
+-- `airtable_id` loses NOT NULL. A Neon-native allocation is keyed on the time
+-- entry's uuid (`time_entry_id`) and carries a NULL `airtable_id`. UNIQUE stays:
+-- Postgres permits many NULLs in a unique index, so the Airtable-owned rows keep
+-- their guarantee and the native ones simply do not participate.
+--
+-- `material_billing_allocations.airtable_id` was already nullable and needs no
+-- change — expenses always have an Airtable twin, because Airtable is still the
+-- identity authority for them (R2 receipt keys are built from the rec id).
+--
+-- ── ⚠⚠ THE CODE CHANGE THAT MAKES THIS SURVIVE ─────────────────────────────
+-- `_billing-sync.js` ends its hourly run with:
+--
+--     DELETE FROM labor_billing_allocations
+--      WHERE airtable_id IS NOT NULL          <-- ADDED 2026-08-11
+--        AND NOT (airtable_id = ANY($1::text[]))
+--
+-- Without that first line the pass deletes every Neon-native row within the
+-- hour, because they are invisible to the Airtable fetch by construction. The
+-- invoice total would read correct and then silently drop at the top of the
+-- hour. **Deleting a row this sync never created is not drift correction.** A
+-- row with a NULL airtable_id can never have been deleted in Airtable, because
+-- it was never there.
+--
+-- There is a tier-1 test asserting the guard is present in the source text. It
+-- is crude — the offline suite cannot reach Neon — but it fails loudly if
+-- someone tidies the predicate away, which is the realistic way this breaks.
+--
+-- ── IDEMPOTENCY ────────────────────────────────────────────────────────────
+-- The native insert is conditional in ONE statement rather than check-then-
+-- insert, because the gate above it is a read and two concurrent reviews of the
+-- same entry could both pass it:
+--
+--     INSERT INTO labor_billing_allocations (time_entry_id, allocated_hours, synced_at)
+--     SELECT $1::uuid, $2, now()
+--      WHERE NOT EXISTS (SELECT 1 FROM labor_billing_allocations WHERE time_entry_id = $1::uuid)
+--     RETURNING id
+--
+-- Zero rows returned means somebody else got there first, which the caller
+-- reports as `already-allocated` rather than an error.
+--
+-- Billed-hours counting reads BOTH keys (`time_entry_id` OR
+-- `time_entry_airtable_id`). An allocation carries one or the other, never
+-- both, and an entry that acquires a twin later must not be double-allocated
+-- because the count only looked at one of them.
+--
+-- Parameter types checked with PREPARE before shipping: {uuid, numeric} for the
+-- insert and {uuid, text} for the attach update.
+--
+-- ── ROLLBACK ───────────────────────────────────────────────────────────────
+--   DELETE FROM labor_billing_allocations WHERE airtable_id IS NULL;  -- native rows
+--   ALTER TABLE labor_billing_allocations ALTER COLUMN airtable_id SET NOT NULL;
+-- and revert the `_billing-sync.js` guard. Only do this alongside turning
+-- ALLOCATIONS_WRITE off, or the next review will fail on the NOT NULL.
+ALTER TABLE labor_billing_allocations ALTER COLUMN airtable_id DROP NOT NULL;

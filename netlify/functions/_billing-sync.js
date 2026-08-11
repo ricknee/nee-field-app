@@ -137,13 +137,31 @@ export async function syncBillingTables(sql, apiKey, baseId) {
     // total to zero — silently, because nothing here throws. Neither table is
     // ever legitimately empty (2,606 and 252 rows), so treat empty as a failed
     // fetch and skip the delete rather than trusting it.
+    // ⚠⚠ `airtable_id IS NOT NULL` IS LOAD-BEARING, ADDED 2026-08-11. Without it
+    // this pass deletes every NEON-NATIVE allocation within the hour.
+    //
+    // Since Step 3 retired Make from the time path (2026-08-07), QB-pulled time
+    // entries land in Neon with NO Airtable twin — 100% of them by the week of
+    // 2026-08-10. An allocation for such an entry cannot exist in Airtable at
+    // all (its Time Entry field is an Airtable link with nothing to point at),
+    // so `_allocations.js` creates it Neon-native with a NULL airtable_id.
+    //
+    // Those rows are invisible to the fetch above, so the un-guarded predicate
+    // classified every one of them as "deleted upstream" and removed it. The
+    // invoice total would read correct, then silently drop at the top of the
+    // hour. Deleting a row this sync never created is not drift correction.
+    //
+    // The guard costs nothing: a row with a NULL airtable_id can never have been
+    // deleted in Airtable, because it was never there.
     let deleted = 0;
     if (labor.length && material.length) {
       const delL = await sql.query(
-        `DELETE FROM labor_billing_allocations WHERE NOT (airtable_id = ANY($1::text[])) RETURNING 1`,
+        `DELETE FROM labor_billing_allocations
+          WHERE airtable_id IS NOT NULL AND NOT (airtable_id = ANY($1::text[])) RETURNING 1`,
         [labor.map(r => r.id)]);
       const delM = await sql.query(
-        `DELETE FROM material_billing_allocations WHERE NOT (airtable_id = ANY($1::text[])) RETURNING 1`,
+        `DELETE FROM material_billing_allocations
+          WHERE airtable_id IS NOT NULL AND NOT (airtable_id = ANY($1::text[])) RETURNING 1`,
         [material.map(r => r.id)]);
       deleted = delL.length + delM.length;
     } else {

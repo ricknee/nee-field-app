@@ -9,6 +9,11 @@ import { shadowLoginCheck, neonLoginCandidate, loginSource,
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Shared with inventory.js — the materials push writes expenses too (Step E).
 import { syncExpenseToNeon as syncExpenseToNeonShared } from "./_expenses.js";
+// The switch is read inside the module, not here — every entry point gates
+// itself, so a caller can never forget to. The response's `allocation.skipped`
+// reports "disabled" when it is off, which is how the cutover is verified.
+import { createLaborAllocation, createMaterialAllocation,
+         attachAllocationsToInvoice } from "./_allocations.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
 // pCloud lost the store decision when its app-registration page turned out to
@@ -1102,7 +1107,33 @@ async function handleUpdateTimeEntryPayroll(body) {
         body: JSON.stringify({ fields })
       }));
   }
-  return resp(200, { ok: true, updatedId: target.id });
+
+  // Approving hours is what creates the labor billing allocation — the thing
+  // that makes those hours billable revenue. Until 2026-08-11 an Airtable
+  // automation did it, which is why index.html carried a fallback for the
+  // "brief automation lag between Review and allocation row creation". Doing it
+  // here, in the same request, removes the lag entirely.
+  //
+  // Inert until ALLOCATIONS_WRITE=on; see _allocations.js for why it cannot be
+  // live at the same time as the automation.
+  //
+  // Only on the way ON. `reviewed === false` deliberately does NOT delete the
+  // allocation: un-reviewing in Airtable never did either, and an allocation
+  // already attached to a sent invoice must not vanish because someone
+  // unticked a box. The "already-allocated" gate makes re-reviewing a no-op.
+  let allocation;
+  if (reviewed === true) {
+    try {
+      allocation = await createLaborAllocation(atFetch, target.airtable_id);
+    } catch (e) {
+      // Reported, not thrown. The payroll edit itself succeeded and is what the
+      // user asked for; failing the whole request would make the hours look
+      // unsaved when they are saved. The hourly billing sync is the net.
+      console.error(`updateTimeEntryPayroll: allocation failed — ${e?.message || e}`);
+      allocation = { created: 0, error: String(e?.message || e) };
+    }
+  }
+  return resp(200, { ok: true, updatedId: target.id, ...(allocation ? { allocation } : {}) });
 }
 
 // ══ TIME CLOCK ═══════════════════════════════════════════════════════════════
@@ -5339,7 +5370,27 @@ async function handleApproveExpense(body) {
   if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
   const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldwSsga6eashzJsw": true } }) });
   await syncExpenseToNeon(data);
-  return resp(200, { ok: true, updatedId: data.id });
+
+  // Approving an expense is what creates its material billing allocation —
+  // otherwise the material is a cost with no route onto an invoice. Was
+  // Airtable automation wflNmJsnIhWtSjUlL until 2026-08-11.
+  //
+  // MUST run after syncExpenseToNeon: the gate reads `unbilled_material_amount`
+  // from Neon, and that is an Airtable formula. Allocating before the sync
+  // lands would read the pre-approval value and allocate the wrong amount —
+  // the same trap the inventory push hit at Step E, where syncing before the
+  // formulas computed wrote zeros into the money columns.
+  let allocation;
+  try {
+    allocation = await createMaterialAllocation(atFetch, data.id);
+  } catch (e) {
+    // The approval itself succeeded and is what the user asked for. The hourly
+    // billing sync will adopt an Airtable-only allocation; a failed one gets
+    // created next time the expense is approved, which the gate makes free.
+    console.error(`approveExpense: allocation failed — ${e?.message || e}`);
+    allocation = { created: 0, error: String(e?.message || e) };
+  }
+  return resp(200, { ok: true, updatedId: data.id, allocation });
 }
 
 async function handleScissorLiftsByJob(params) {
@@ -7928,7 +7979,32 @@ async function handleSaveInvoice(body) {
   }
   if (data.error) return resp(400, { ok: false, error: data.error });
   await syncInvoiceToNeon(data);
-  return resp(200, { ok: true, id: data.id, updated: !!invoiceId });
+
+  // Claim the job's unlinked allocations onto this invoice. Was two Airtable
+  // automations (wflOcxtmkzdxKMVQW labor, wfl7bzJpZY9kcJ27i material), both
+  // triggered by `Auto Allocate?` being ticked.
+  //
+  // Gated on the same flag this handler just wrote rather than on billingMode,
+  // so the condition stays identical to the automation's: CONTRACT invoices set
+  // it false a few lines up, because a contract invoice bills a percentage of
+  // the contract and must NOT sweep up time-and-material allocations.
+  //
+  // Runs after syncInvoiceToNeon so the invoice row exists in Neon before
+  // anything points at it.
+  let allocations;
+  if (fields["fldejNlo5R194TGMs"] === true) {
+    try {
+      allocations = await attachAllocationsToInvoice(atFetch, data.id, jobId);
+    } catch (e) {
+      // The invoice is saved either way. An unattached allocation shows up as a
+      // total that reads LOW, which is visible and re-fixable by saving again —
+      // unlike losing the invoice, which is not.
+      console.error(`saveInvoice: allocation attach failed — ${e?.message || e}`);
+      allocations = { attached: 0, error: String(e?.message || e) };
+    }
+  }
+  return resp(200, { ok: true, id: data.id, updated: !!invoiceId,
+                     ...(allocations ? { allocations } : {}) });
 }
 
 // ── UPDATE GENERATOR ASSET ──────────────────────────────────────────────

@@ -1482,6 +1482,56 @@ await test("setEmployeeActive: an employee Neon doesn't have never reports succe
   delete process.env.DATABASE_URL;
 });
 
+await test("allocations: ship INERT — ALLOCATIONS_WRITE unset writes nothing", async () => {
+  // The most important test in this file's billing section. The four Airtable
+  // automations are still deployed, and if both they and this code are live the
+  // same time entry gets TWO allocations — which v_invoices.invoice_total_calc
+  // sums, i.e. the customer is billed twice. The switch is what keeps them from
+  // overlapping, so "off means off" has to be provable, not assumed.
+  const { allocationsWriteEnabled, createLaborAllocation, createMaterialAllocation,
+          attachAllocationsToInvoice } = await import("../netlify/functions/_allocations.js");
+
+  delete process.env.ALLOCATIONS_WRITE;
+  eq(allocationsWriteEnabled(), false, "unset → off");
+
+  // A stub that FAILS the test if it is ever called. Asserting "returned
+  // skipped" alone would pass even if we had already written to Airtable.
+  let touched = 0;
+  const boom = async () => { touched++; throw new Error("Airtable must not be touched while disabled"); };
+
+  eq((await createLaborAllocation(boom, "recAnything")).skipped, "disabled", "labor inert");
+  eq((await createMaterialAllocation(boom, "recAnything")).skipped, "disabled", "material inert");
+  eq((await attachAllocationsToInvoice(boom, "recInv", "recJob")).skipped, "disabled", "attach inert");
+  eq(touched, 0, "Airtable was not called at all");
+
+  for (const v of ["off", "OFF", "false", "1", "yes", ""]) {
+    process.env.ALLOCATIONS_WRITE = v;
+    eq(allocationsWriteEnabled(), false, `"${v}" is not "on" → still off`);
+  }
+  process.env.ALLOCATIONS_WRITE = "on";
+  eq(allocationsWriteEnabled(), true, `"on" enables it`);
+  process.env.ALLOCATIONS_WRITE = "ON";
+  eq(allocationsWriteEnabled(), true, "case-insensitive");
+  delete process.env.ALLOCATIONS_WRITE;
+});
+
+await test("allocations: a time entry with no Airtable twin is refused, not silently skipped", async () => {
+  // 24 billable entries / 48.25 h have no Airtable twin as of 2026-08-11, and
+  // the number grows with every clock punch. An allocation's Time Entry field is
+  // an Airtable LINK, so there is nothing to point at — these CANNOT be billed
+  // by either the old automation or this code. The distinct skip reason is what
+  // makes that visible instead of looking like "nothing to do".
+  const { createLaborAllocation } = await import("../netlify/functions/_allocations.js");
+  process.env.ALLOCATIONS_WRITE = "on";
+  let touched = 0;
+  const boom = async () => { touched++; throw new Error("must not reach Airtable"); };
+  const r = await createLaborAllocation(boom, null);
+  eq(r.skipped, "no-airtable-twin", "reported as its own case");
+  eq(r.created, 0, "nothing created");
+  eq(touched, 0, "Airtable not called");
+  delete process.env.ALLOCATIONS_WRITE;
+});
+
 await test("setEmployeeSalaried: admin only — it decides how someone is paid", async () => {
   // Office is refused deliberately. Office handles money already earned
   // (approving expenses, marking invoices paid); this decides whether a person

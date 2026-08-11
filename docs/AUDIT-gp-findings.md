@@ -11,13 +11,20 @@ Slice 3 (the QuickBooks reconcile) NOT run — it needs an owner export.*
 pushes profit UP, never down.**
 
 Reported total final GP across 61 finished jobs is **$998,953.10**. At least
-**$34,584.50** of that is real labor cost that was never counted, and a further
-**$362,471.95 of revenue sits on jobs with literally zero recorded material cost**,
-which on electrical contract work is not credible. The first number is exact. The
-second is the one to worry about.
+**$34,584.50** of that is real labor cost that was never counted, and **$38,155.00** is
+revenue nobody was ever invoiced. Both figures are exact.
+
+A further **$362,471.95 of revenue sits on jobs with zero recorded material cost**. The
+owner has confirmed (2026-08-11) that some of these are **deliberately incomplete
+historical records**, kept for reference from before expenses were tracked, and will not
+be corrected. That resolves it as a *defect* — it does not resolve it as a *total*, and
+it is still unknown which of the eight are pre-tracking records and which are current
+jobs genuinely missing cost.
 
 Nothing here is a calculation error. Every formula checked reproduces what it is
-meant to reproduce. What the audit found is **cost that never arrived**.
+meant to reproduce. What the audit found is **cost that never arrived** — and the single
+most useful thing to know is that **the book contains jobs that were never meant to be
+complete.** A headline GP figure is only meaningful with those excluded.
 
 ---
 
@@ -78,8 +85,25 @@ Until one of them happens, treat final GP as a **ceiling**, not a figure.
 
 ## Finding 2 — eight jobs, $362,471.95 of revenue, zero material cost
 
-**The largest and least explained gap.** Eight finished jobs with revenue over $10k
-record **no materials, no wire and no pipe at all**:
+> ### ✅ LARGELY EXPLAINED — owner, 2026-08-11. Do not re-raise as a defect.
+> *"some of the jobs on record are in here for records sake. it was before i kept track of
+> expenses so they will be wrong and im not gonna fix them."*
+>
+> These are **deliberately incomplete historical records**, kept for reference, from before
+> expenses were tracked in this system. The missing material cost is known and accepted, and
+> the jobs will not be corrected.
+>
+> **What this changes:** this stops being an open question about data integrity and becomes a
+> known property of the book. **What it does NOT change:** any total that includes these jobs
+> still overstates profit, so a headline GP figure is only meaningful with them excluded.
+>
+> ⚠ The owner said **"some"**, not "all". Eight jobs carrying $362,471.95 of revenue is a lot
+> to write off wholesale, and the two biggest — Cambridge DG and Wheeling DG — have **fully
+> reviewed labor**, which is not the profile of an untracked job. **Slice 3 should still
+> establish which of the eight are pre-tracking records and which, if any, are current jobs
+> genuinely missing cost.** That is a question for the QuickBooks reconcile, not a defect to fix.
+
+Eight finished jobs with revenue over $10k record **no materials, no wire and no pipe at all**:
 
 | Job | Revenue | Materials | COGS is entirely | GP% |
 |---|---|---|---|---|
@@ -103,7 +127,7 @@ Most likely explanations, in order, none yet confirmed:
 margins are real and the book is fine. If the third holds, GP is overstated by six
 figures.
 
-## Finding 3 — two T&M jobs bill nothing for their hours
+## Finding 3 — two T&M jobs bill nothing for their hours — ✅ FIXED by the owner 2026-08-11
 
 `Labor Revenue (T&M) = Hours Rollup × Billable Hourly Rate`, so a blank rate makes the
 revenue side zero while cost stays real. Both jobs report a loss they may not have made:
@@ -137,15 +161,33 @@ does know (Tim Yoder 18.0 h, Office Work 10.0 h, Hardwood Solutions 8.75 h acros
 spellings). ~$1,200 of labor. Tim Yoder is the only one that matters — it currently has
 **no costed hours at all** against a −$195.00 final GP.
 
-## Finding 5 — nine expenses carry impossible dates
+## Finding 5 — nine expenses carry impossible dates — ✅ FIXED 2026-08-11
 
-Eight sit at **1969-12-31** — the Unix epoch, i.e. a null timestamp that became a date —
-and all eight are the dead wire/pipe path (`"Job (PO) | 2\" PVC SCH40"`). One sits at
-**0004-03-04**, $291.74 of Materials on Bethel School with no description.
+Eight sat at **1969-12-31** — the Unix epoch, i.e. a null timestamp that became a date —
+and all eight are the dead wire/pipe path (`"Job (PO) | 2\" PVC SCH40"`). One sat at
+**0004-03-04**, $291.74 of Materials on Bethel School with no description. $1,776.12 total.
 
-$1,776.12 in total. **GP is unaffected** — it sums by job, not by date — but any
-date-filtered report misplaces them, and the year-4 row will sort to the top of
-everything forever.
+**The bad dates were in AIRTABLE, not a Neon conversion artifact.** Checked before changing
+anything: `fldCCPYdyWAOGchWb` on those records literally held `"1969-12-31"`. Neon had copied
+them faithfully, so fixing only Neon would have been undone by any re-sync.
+
+**The true date does not exist anywhere.** The upstream `Pipe Usage` rows that generated these
+expenses carry `usage_date = 1969-12-31` as well — the date was never recorded, so there was
+nothing to recover.
+
+**What was used instead: each record's own creation date** (eight at 2026-04-01, one at
+2026-05-22). That is a real, verifiable fact about the record rather than an invented date, and
+it is within days of when the cost was booked. **It is a proxy, not the purchase date** — if the
+real dates ever surface, these nine should be corrected rather than trusted.
+
+Fixed in **both stores**, Airtable first. Verified after: 0 impossible dates, 0 nulls, still 393
+expenses, and **total final GP unchanged at $998,953.10** — confirming the prediction that GP
+sums by job and never by date.
+
+> ⬜ **Still open, deliberately not done:** the **8 upstream `pipe_usage` rows** still hold
+> `1969-12-31`. Same defect, different table, and correcting them means another eight writes to
+> production Airtable (`tblgxbgpovXj6myZB`). Nothing reads `usage_date` for GP, and the wire/pipe
+> path is dead, so this is cosmetic — but a later audit will re-find it if it is left.
 
 ## Finding 6 — Strongsville DG, confirmed and still unexplained
 
@@ -178,12 +220,20 @@ profit that does not exist.** Any total that includes it is wrong by that amount
 | Reported total final GP, 61 jobs | **$998,953.10** |
 | Less labor never counted (Finding 1) | **−$34,584.50** — exact |
 | Less Shop Work phantom revenue (Finding 8) | **−$38,155.00** — exact |
-| Less unrecorded materials (Finding 2) | **unknown, up to six figures** |
-| Plus T&M revenue not billed (Finding 3) | +$8–10k — needs an owner answer |
+| Less unrecorded materials (Finding 2) | unknown; **owner-accepted** for the pre-tracking jobs, unquantified for the rest |
+| T&M revenue not billed (Finding 3) | ✅ resolved — rates set by the owner 2026-08-11 |
 
-**A defensible working figure is under $930,000 before materials are resolved**, against
-$998,953 reported. The direction is consistent: **this system reports more profit than
-the business made.**
+**A defensible working figure is under $930,000**, against $998,953 reported, and that is
+before any materials adjustment. The direction is consistent and one-way: **this system
+reports more profit than the business made.**
+
+The honest summary for anyone asking "can I trust the GP numbers?":
+
+- **Per-job, on a current job with reviewed hours and tracked expenses — yes.** Bethel
+  School checked out by hand and by diff.
+- **As a company-wide total — no, not yet.** It includes jobs that were never meant to be
+  complete, labor that was never approved, and at least one overhead job inventing revenue.
+- **Against the actual books — unknown.** That is slice 3, and nothing internal can answer it.
 
 ## What slice 3 must settle
 

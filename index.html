@@ -11658,9 +11658,15 @@
       return numA - numB;
     });
     if (!v.length) { $("fleetVehiclesGrid").innerHTML = `<div class="empty-msg">No vehicles found.</div>`; return; }
+    // loading="lazy": equipment photos are stored as FULL-SIZE originals — unlike
+    // jobsite photos and receipts, the upload path does no compressImage and writes
+    // no _thumb twin, so listEquipPhotos has nothing smaller to hand back. Every
+    // card was therefore pulling multiple MB to fill a 130px slot, times 11
+    // vehicles, on open. Lazy limits that to the cards actually on screen.
+    // The real fix is a thumbnail pipeline; delete this comment when it lands.
     $("fleetVehiclesGrid").innerHTML = v.map(veh => `
       <div class="fleet-vehicle-card" onclick="openFleetDetail('${esc(veh.id)}')">
-        ${veh.photoUrl ? `<img src="${esc(veh.photoUrl)}" alt="${esc(veh.name)}" style="width:100%; height:130px; object-fit:cover;" />` : ""}
+        ${veh.photoUrl ? `<img src="${esc(veh.photoUrl)}" alt="${esc(veh.name)}" loading="lazy" decoding="async" style="width:100%; height:130px; object-fit:cover;" />` : ""}
         <div class="fleet-vehicle-card-header">
           <span class="fleet-vehicle-card-title">${esc(veh.name)}</span>
           ${fleetTypePill(veh.type)}
@@ -11694,6 +11700,10 @@
       img.id = "fleetDetailPhoto";
       img.src = veh.photoUrl;
       img.alt = veh.name;
+      // NOT lazy — this is the picture you just asked to see, and it is in view.
+      // async decode only, so a full-size original doesn't jank the modal opening
+      // while the phone decodes it down to a 200px box.
+      img.decoding = "async";
       img.style.cssText = "width:100%; max-height:200px; object-fit:cover; border-radius:10px; margin-bottom:14px;";
       $("fleetVehicleInfo").before(img);
     }
@@ -12027,7 +12037,7 @@
       } else {
         list.innerHTML = onJob.map(l => `
           <div style="background:var(--panel); border:1px solid var(--line-2); border-radius:10px; padding:12px 14px; min-width:160px;">
-            ${l.photoUrl ? `<img src="${esc(l.photoUrl)}" alt="${esc(l.name)}" style="width:100%; height:100px; object-fit:cover; border-radius:6px; margin-bottom:8px;" />` : ""}
+            ${l.photoUrl ? `<img src="${esc(l.photoUrl)}" alt="${esc(l.name)}" loading="lazy" decoding="async" style="width:100%; height:100px; object-fit:cover; border-radius:6px; margin-bottom:8px;" />` : ""}
             <div style="font-weight:700; color:var(--accent); font-size:14px; margin-bottom:8px;">🏗 ${esc(l.name)}</div>
             ${l.assignedTo ? `<div style="font-size:12px; color:var(--muted); margin-bottom:8px;">👤 ${esc(l.assignedTo)}</div>` : ""}
             <div style="margin-bottom:6px;">
@@ -12678,7 +12688,7 @@
     if (!photos.length && !canEdit) return "";
     const strip = photos.map(p => `
       <div class="sl-photo" style="position:relative; flex:0 0 auto;">
-        <img src="${esc(p.url)}" alt="${esc(lift.name)}"
+        <img src="${esc(p.url)}" alt="${esc(lift.name)}" loading="lazy" decoding="async"
              style="width:104px; height:78px; object-fit:cover; border-radius:6px; display:block;" />
         ${canEdit && p.key ? `<button class="sl-photo-del" data-lift-id="${esc(lift.id)}" data-key="${esc(p.key)}"
           title="Remove this photo"

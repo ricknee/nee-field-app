@@ -675,10 +675,32 @@ negotiable.**
 
 ## ✅ Step 4e — invoices — DONE 2026-08-08. The field app is finished.
 
-## ▶ The one real piece of work left: give allocations a write path
+## ✅ Allocations have a write path — BUILT AND CUT OVER 2026-08-11
 
-**Scoped 2026-08-08, deliberately not started. ~4-6 h.** This is **feature work, not migration
-work** — nothing is broken, and the hourly sync covers it meanwhile.
+**All four automations are undeployed and `ALLOCATIONS_WRITE=on`.** The app creates the
+allocation when hours or an expense are reviewed, and claims unlinked ones when an invoice is
+saved with Auto Allocate. **Nobody has to open Airtable in normal operation any more.**
+Full detail: `docs/PLAN-billing-allocations.md`. Kept below for the automations' decoded logic,
+which is now the only record of it — they were undeployed, deliberately not deleted.
+
+> ### ⚠⚠ THE THING THAT CAME OUT OF IT, WHICH MATTERS MORE THAN THE FEATURE
+> Ten minutes after cutover the first real review created nothing. **Since Step 3 stopped Make
+> minting Airtable ids (2026-08-07), time entries land in Neon with no Airtable twin — 100% of
+> the week of 2026-08-10** — and the allocation model was keyed on those ids. So **no labor
+> logged after 08-07 could reach an invoice by any mechanism.** The old automation had the
+> identical blind spot and could not even report it.
+>
+> Allocations are **Neon-native** now (`db/schema/033`), and `_billing-sync.js`'s hourly delete
+> pass carries an `airtable_id IS NOT NULL` guard — **without it every native row is deleted
+> within the hour and the invoice total silently drops after looking correct.**
+>
+> The general lesson for the rest of this file: **retiring Make from a path silently stops
+> minting the Airtable ids that other paths key on.** Anything still keyed on a rec id — R2
+> receipt keys, sent-PDF back-links, the remaining mirror writes — inherits the same trap.
+
+*Original scoping, kept for the reasoning:*
+**Scoped 2026-08-08. ~4-6 h.** This was **feature work, not migration work** — nothing was
+broken, and the hourly sync covered it meanwhile.
 
 **The gap:** the app has no write path for billing allocations. It *reads* unlinked ones so the
 invoice builder can compose a draft, but nothing creates or links one. **Four deployed Airtable

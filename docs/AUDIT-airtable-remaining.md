@@ -29,8 +29,15 @@ survive until step 10 below.
 finishing the Jobs-mirror sync freeze in the Airtable UI. Neither is code. Both have been open
 since 2026-08-08.
 
-**4. Next real build — the billing-allocation write path.** The last thing that makes anyone open
-Airtable in normal operation.
+**4. ~~Next real build — the billing-allocation write path.~~ ✅ DONE + CUT OVER 2026-08-11.**
+Nobody has to open Airtable in normal operation any more.
+
+> ⚠⚠ **And it found the trap that now applies to everything else on this list.** Retiring Make
+> from a path silently stops minting the **Airtable rec ids that other paths key on**. Time
+> entries have had no twin since 2026-08-07 — 100% of the week of 08-10 — and allocations were
+> keyed on those ids, so no labor logged since could be billed by *any* mechanism, old or new.
+> **Before flipping anything else here, ask what still keys on a rec id** — R2 receipt keys,
+> sent-PDF back-links, and every remaining mirror write do.
 
 > Nothing on this list ends Airtable by itself. That is step 10, and it is gated on 04, 05 and 07
 > landing and soaking first. **The finish is a sequence, not a pile.**
@@ -187,13 +194,13 @@ Ordered by what unblocks what, then by risk. Only 01 and 02 have a real reason t
 |---|---|---|
 | ~~**01**~~ | ✅ **DONE 2026-08-09 `26d14c4`** — payroll drill-downs point at Neon. Bug class closed, not just the instance. | — |
 | **02** | **Payroll Runs + Bonuses → Neon.** Takes `computePayrollDateRanges` off the hot path with it — the last Airtable call inside every payroll read. Five handlers, no derived formulas. | 4-6 h |
-| **03** | **Billing allocations write path.** Create on review, attach on invoice save, then undeploy the four automations. Idempotency on re-review is the trap. | 4-6 h |
+| ~~**03**~~ | ✅ **DONE + CUT OVER 2026-08-11.** All four automations undeployed, `ALLOCATIONS_WRITE=on`, app owns allocations. `docs/PLAN-billing-allocations.md`. ⚠⚠ **It exposed a bigger hole than it closed:** since Step 3 stopped minting Airtable ids (2026-08-07), time entries have no twin — **100% of the week of 08-10** — and allocations were keyed on those ids, so **no labor logged after 08-07 could be billed at all**. Fixed by going Neon-native (`db/schema/033`) + an `airtable_id IS NOT NULL` guard on the sync's delete pass. **Assume the same trap anywhere else still keyed on a rec id.** | — |
 | **04** | **Replumb the four job-lifecycle webhooks.** pCloud folders, Job Awarded, Trello Completed, Service Call. **Before** touching the job mirror writes, not after. Each is a `fetch` to an existing hook with a matched payload. | 3-4 h |
 | **05** | **Job creation → Neon, with PO numbering.** Reimplements five automations. Kills the one-hour new-job lag. Gated on 04. | 3-4 h |
 | **06** | **Reference data:** Companies, Contacts, Vendors, Power Cos, Billable Rates. Five small domains, no money formulas. Billable Rates is nearly free. | 8-10 h |
 | **07** | **Replumb the five Google-contact webhooks.** Removes the last Airtable-automation triggers. | ~2 h |
-| ~~**08**~~ | ✅ **BUILT 2026-08-09 `1b9a84d`** — inventory Step B0, the cross-base reads. ⬜ Still needs a prod smoke test. ⚠ Uses `po`, not `po_locked` — the latter is blank on all 13 New Leads. | — |
-| **09** | **Inventory Steps A-E.** Get the scoped PAT and finish the sync freeze first. Step E stays last — only path that writes across bases. | 23-32 h |
+| ~~**08**~~ | ✅ **BUILT 2026-08-09 `1b9a84d`, prod-smoked** — inventory Step B0, the cross-base reads. ⚠ Uses `po`, not `po_locked` — the latter is blank on all 13 New Leads. | — |
+| **09** | **Inventory Steps A-E** — 🟨 **A, B0, B, C and E are DONE and prod-smoked (2026-08-10/11); only D (estimating) remains, ~6-8 h.** Being run in a separate session. ⚠⚠ on-hand is **derived** now: the Stock Levels cache had drifted from the ledger on 237 of 269 pairs and was deliberately NOT ported, so stock reads lower and raises more alerts — that is the correction, not a bug. Conduit assemblies not migrated (owner: build native in Neon). | ~6-8 h |
 | **10** | **Undeploy the dead wire/pipe automations, then drop the mirror writes.** Only once 04, 05 and 07 have landed *and soaked*. **This is the step that actually ends Airtable's role.** | 2-3 h |
 
 **Field app remainder: ~22-31 h. Inventory: 23-32 h on top.**

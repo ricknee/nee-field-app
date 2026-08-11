@@ -1698,6 +1698,43 @@ async function handleLoadInventoryReference() {
      "unit_of_measure", "vendor_part_number", "min_order_qty", "lead_time_days",
      "last_price_update", "price_valid_until", "notes"]);
 
+  // ── Step C: the ledger, and the settings hiding inside Stock Levels ──────
+  // ⚠⚠ `Quantity On Hand` is NOT loaded. It is an automation-maintained cache
+  // that disagrees with the raw ledger on 237 of 269 item+location pairs, while
+  // the Inventory Items rollups reproduce that ledger EXACTLY on 4,330. On-hand
+  // is therefore recomputed by `v_stock_on_hand` rather than copied — see
+  // db/schema/032. Only Reorder Point and Notes come across, because only they
+  // are things a human typed.
+  const [txns, stock] = await Promise.all([
+    fetchAll(API_ROOT_INV, "Inventory Transactions", {}),
+    fetchAll(API_ROOT_INV, "Stock Levels", {}),
+  ]);
+
+  counts.transactions = await upsertChunked("inventory_transactions", "inventory_transactions",
+    ["airtable_id", "txn_name", "txn_date", "item_airtable_id", "quantity", "txn_type",
+     "from_location_airtable_id", "to_location_airtable_id", "unit_cost_snapshot",
+     "notes", "entered_by", "job_airtable_id", "job_name", "expense_created", "push_id"],
+    txns.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      txn_name: f["Name"] ?? null, txn_date: f["Transaction Date"] ?? null,
+      item_airtable_id: lnk(f["Inventory Item"]), quantity: num(f["Quantity"]) ?? 0,
+      txn_type: sel(f["Transaction Type"]),
+      from_location_airtable_id: lnk(f["From Location"]),
+      to_location_airtable_id: lnk(f["To Location"]),
+      unit_cost_snapshot: num(f["Unit Cost (Snapshot)"]),
+      notes: f["Notes"] ?? null, entered_by: f["Entered By"] ?? null,
+      job_airtable_id: f["Job ID (Main)"] ?? null, job_name: f["Job Name"] ?? null,
+      expense_created: bool(f["Expense Created?"]), push_id: f["Push ID"] ?? null }; }),
+    ["txn_name", "txn_date", "item_airtable_id", "quantity", "txn_type",
+     "from_location_airtable_id", "to_location_airtable_id", "unit_cost_snapshot",
+     "notes", "entered_by", "job_airtable_id", "job_name", "expense_created", "push_id"]);
+
+  counts.stockSettings = await upsertChunked("stock_settings", "stock_settings",
+    ["airtable_id", "item_airtable_id", "location_airtable_id", "reorder_point", "notes"],
+    stock.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      item_airtable_id: lnk(f["Item"]), location_airtable_id: lnk(f["Location"]),
+      reorder_point: num(f["Reorder Point"]), notes: f["Notes"] ?? null }; }),
+    ["item_airtable_id", "location_airtable_id", "reorder_point", "notes"]);
+
   // Resolve the real FKs from the Airtable ids. Done as a second pass because
   // the parents have to exist first, and re-run each time so a pricing row
   // loaded before its item still ends up linked.
@@ -1709,18 +1746,44 @@ async function handleLoadInventoryReference() {
         OR p.vendor_id IS DISTINCT FROM (SELECT v.id FROM vendors v      WHERE v.airtable_id = p.vendor_airtable_id)`);
   if (!fk?.rows) throw new Error(`vendor_pricing FK resolve: ${fk?.error || "Neon unavailable"}`);
 
+  // Same second pass for the ledger and the stock settings. v_stock_on_hand
+  // groups on item_id/location_id, so a row whose FKs never resolve is simply
+  // absent from on-hand — hence the orphan report below rather than silence.
+  const fkTxn = await neonQuery(
+    `UPDATE inventory_transactions t SET
+       item_id          = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = t.item_airtable_id),
+       from_location_id = (SELECT l.id FROM locations l WHERE l.airtable_id = t.from_location_airtable_id),
+       to_location_id   = (SELECT l.id FROM locations l WHERE l.airtable_id = t.to_location_airtable_id)`);
+  if (!fkTxn?.rows) throw new Error(`inventory_transactions FK resolve: ${fkTxn?.error || "Neon unavailable"}`);
+
+  const fkStock = await neonQuery(
+    `UPDATE stock_settings s SET
+       item_id     = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = s.item_airtable_id),
+       location_id = (SELECT l.id FROM locations l WHERE l.airtable_id = s.location_airtable_id)`);
+  if (!fkStock?.rows) throw new Error(`stock_settings FK resolve: ${fkStock?.error || "Neon unavailable"}`);
+
   // Report anything that couldn't be linked rather than leaving it silent — an
   // unlinked pricing row is invisible to v_item_live_cost.
   const orphan = await neonQuery(
-    `SELECT count(*)::int AS n FROM vendor_pricing
-      WHERE (item_airtable_id IS NOT NULL AND item_id IS NULL)
-         OR (vendor_airtable_id IS NOT NULL AND vendor_id IS NULL)`);
+    `SELECT
+       (SELECT count(*) FROM vendor_pricing
+         WHERE (item_airtable_id IS NOT NULL AND item_id IS NULL)
+            OR (vendor_airtable_id IS NOT NULL AND vendor_id IS NULL))::int AS pricing,
+       (SELECT count(*) FROM inventory_transactions
+         WHERE item_airtable_id IS NOT NULL AND item_id IS NULL)::int AS txn_no_item,
+       (SELECT count(*) FROM inventory_transactions
+         WHERE from_location_id IS NULL AND to_location_id IS NULL)::int AS txn_no_location,
+       (SELECT count(*) FROM stock_settings
+         WHERE item_id IS NULL OR location_id IS NULL)::int AS stock_unlinked`);
 
   return resp(200, {
     ok: true,
-    airtable: { locations: locs.length, vendors: vends.length, items: items.length, vendorPricing: pricing.length },
+    airtable: { locations: locs.length, vendors: vends.length, items: items.length,
+                vendorPricing: pricing.length, transactions: txns.length, stockSettings: stock.length },
     written: counts,
-    unlinkedPricingRows: orphan?.rows?.[0]?.n ?? null,
+    // Rows whose FKs didn't resolve. A transaction with no location is invisible
+    // to on-hand, so this is reported rather than swallowed.
+    unlinked: orphan?.rows?.[0] ?? null,
   });
 }
 

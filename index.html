@@ -19941,13 +19941,23 @@
   // /?clock=in, /?clock=out, /?open=myhours — the targets behind the home-screen
   // icon and Android's long-press shortcuts. One tap from the home screen to a
   // punch, without hunting through the app.
-  let clockLinkDone = false;
-
+  // ⚠ THE ONCE-PER-LOAD FLAG LIVES ON `window`, AND MUST NOT BECOME A `let` HERE.
+  // It was one, and it threw on every single page load:
+  //   "Cannot access 'clockLinkDone' before initialization"
+  // handleClockDeepLink is a hoisted function declaration called from renderAuth
+  // during init(), which runs EARLIER IN THIS SAME SCRIPT BLOCK than this line —
+  // so the binding is still in its temporal dead zone when the call happens. The
+  // whole deep-link feature was dead on arrival: home-screen punch shortcuts and
+  // the widget just opened the app.
+  // `var` would hoist, but it re-initialises to false when execution finally
+  // reaches the declaration — AFTER an in-flight call has already set it — which
+  // re-opens exactly the double-punch this flag exists to prevent. A window
+  // property has no declaration to reach, so neither failure is possible.
   async function handleClockDeepLink() {
     // ⚠ ONCE PER PAGE LOAD. This runs from the role-applying code, which fires on
     // login AND on every restored session, so without the flag a re-render could
     // punch twice. The URL is also stripped below, which covers a manual refresh.
-    if (clockLinkDone || !state.user) return;
+    if (window._neeClockLinkDone || !state.user) return;
 
     // ⚠ WAIT FOR THE DOM. This is called from the role-applying code, which runs
     // inside the FIRST script block (~line 4030). Every modal in this file is
@@ -19963,7 +19973,7 @@
     const want = (params.get("clock") || "").toLowerCase();
     const open = (params.get("open") || "").toLowerCase();
     if (!want && open !== "myhours") return;
-    clockLinkDone = true;
+    window._neeClockLinkDone = true;
 
     // Strip the parameter immediately so a refresh, a back-navigation or a
     // restored tab can never replay the punch.

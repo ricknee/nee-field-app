@@ -1670,15 +1670,22 @@ async function handlePushExpenses(body) {
   // in Neon, reading it from Airtable while marking both would let a
   // Neon-marked transaction look pending again — guard #2 would then refuse a
   // legitimate push, or worse, an un-marked one would re-charge.
+  //
+  // ⚠⚠ `id`, NOT airtable_id — this is the THIRD place that speaks the ledger's
+  // id, after the pending read and the mark, and it was missed when the currency
+  // changed. The symptom was total: every id in the request failed to match a
+  // set full of rec ids, so every job was refused as a "stale snapshot" and
+  // nothing could be pushed at all. The guard failing safe is the only reason
+  // that was an outage rather than a double charge.
   const nqFresh = await neonQuery(
-    `SELECT airtable_id FROM inventory_transactions
+    `SELECT id FROM inventory_transactions
       WHERE expense_created = false AND txn_type IN ('Use','Return')`);
-  const freshTx = nqFresh?.rows
-    ? nqFresh.rows.map(r => ({ id: r.airtable_id }))
-    : await fetchAll(API_ROOT_INV, "Inventory Transactions", {
-        filter: `AND(OR({Transaction Type}='Use', {Transaction Type}='Return'), NOT({Expense Created?}=1))`
-      });
-  const stillPending = new Set(freshTx.map(r => r.id));
+  // No Airtable fallback, for the reason above it: that copy is missing every
+  // native row AND still says unpushed for material already charged.
+  if (!nqFresh?.rows) {
+    return resp(503, { ok: false, error: "Cannot verify what is still pending. Nothing was pushed — please try again." });
+  }
+  const stillPending = new Set(nqFresh.rows.map(r => r.id));
 
   // (b) Which of this request's push IDs already produced Expenses. UUIDs are a
   //     safe charset ([0-9a-f-]) so they need no formula escaping.

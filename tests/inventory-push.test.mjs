@@ -42,6 +42,7 @@ function resetState(txIds) {
   state.pushHdrSeq = 0;
   neonWrites.length = 0;
   neonDown = false;
+  neonFailExpenseWrite = false;
 }
 
 // Neon mock (Step E). The push now writes every expense it creates into Neon
@@ -51,6 +52,7 @@ function resetState(txIds) {
 // `neonDown = true` simulates the database being unreachable.
 process.env.DATABASE_URL = "postgresql://u:p@fake.neon.tech/db";
 let neonDown = false;
+let neonFailExpenseWrite = false;   // only the expense mirror fails; reads still work
 const neonWrites = [];          // every expense airtable_id upserted
 
 globalThis.fetch = async (url, opts = {}) => {
@@ -64,19 +66,38 @@ globalThis.fetch = async (url, opts = {}) => {
     let payload = { command: "INSERT", rowCount: 0, rowAsArray: false, fields: [], rows: [] };
 
     if (/INSERT INTO expenses/i.test(sql)) {
+      // Fails ONLY the expense mirror, leaving the chargeable-set read working.
+      // That separation matters since the ledger went native: a total outage is
+      // now refused up front (guard #2 cannot run), so the heal path can only be
+      // reached by this narrower failure — the expense landing in Airtable while
+      // its Neon copy does not.
+      if (neonFailExpenseWrite) return { ok: false, status: 500, text: async () => "neon write failed" };
       neonWrites.push(body.params?.[0]);
 
     // Step C: the push now decides what is chargeable by reading Neon, and
     // marks Neon when it charges. `state.txns` is the single source both the
     // Airtable mock and this one answer from, so the two cannot drift apart
     // mid-test the way they would if the ledger were mocked separately.
-    } else if (/SELECT airtable_id FROM inventory_transactions/i.test(sql)) {
-      const pending = Object.entries(state.txns).filter(([, t]) => !t.pushed).map(([id]) => ({ airtable_id: id }));
+    // ⚠⚠ TWO id spaces, deliberately. `state.txns` is keyed by the uuid — the
+    // ledger's handle since the native-write cutover — and the Airtable rec id
+    // is a DIFFERENT string ("rec-" + uuid), exactly as it is in production
+    // where a native row has no rec id at all.
+    //
+    // This mock used to answer both from one id space, which is why it let a
+    // real bug ship: the chargeable-set read still said SELECT airtable_id
+    // while the push carried uuids, so nothing matched, every job was refused
+    // as a "stale snapshot", and the push was dead on arrival. Answering with
+    // the column the SQL actually asked for is what makes that fail here.
+    } else if (/SELECT (id|airtable_id) FROM inventory_transactions/i.test(sql)) {
+      const col = /SELECT airtable_id FROM inventory_transactions/i.test(sql) ? "airtable_id" : "id";
+      const pending = Object.entries(state.txns)
+        .filter(([, t]) => !t.pushed)
+        .map(([id]) => (col === "id" ? id : `rec-${id}`));
       payload = {
         command: "SELECT", rowCount: pending.length, rowAsArray: false,
-        fields: [{ name: "airtable_id", dataTypeID: 25, tableID: 0, columnID: 1,
+        fields: [{ name: col, dataTypeID: 25, tableID: 0, columnID: 1,
                    dataTypeSize: -1, dataTypeModifier: -1, format: "text" }],
-        rows: pending.map(p => [p.airtable_id]),
+        rows: pending.map(v => [v]),
       };
 
     } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
@@ -253,28 +274,34 @@ await test("E: every created expense is written to Neon", async () => {
      "synced the real Airtable rec ids");
 });
 
-await test("E: Neon unreachable → push FAILS CLOSED, and says how to fix it", async () => {
+await test("S1: Neon unreachable → the push is REFUSED before anything is charged", async () => {
   resetState(["tx1"]);
   neonDown = true;
   const res = await PUSH([group("pid-fail", ["tx1"])]);
   const r = json(res);
-  eq(res.statusCode, 502, "not a 200 — reporting success would be a lie");
+  // Stricter than the Step E contract this replaces, and it has to be. Guard #2
+  // — "are these transactions still chargeable?" — can only be answered by Neon
+  // now that the ledger is native. Airtable's copy is missing every native row
+  // AND still reports unpushed for material already charged, so there is no
+  // second opinion to fall back on. Charging while blind to that is precisely
+  // the double-charge guard #2 exists to stop, so the push does not start.
+  eq(res.statusCode, 503, "refused, not attempted");
   eq(r.ok, false, "ok:false");
-  eq(r.neonSyncFailures.length, 1, "the unsynced expense is named");
-  eq(/push again/i.test(r.error), true, "tells the user the retry is safe");
-  // The Airtable side still happened — that's why the message says "pushed",
-  // and why the retry must not charge again.
-  eq(state.expenses.length, 1, "the expense DOES exist in Airtable");
+  eq(/nothing was pushed/i.test(r.error), true, "says plainly that nothing happened");
+  eq(state.expenses.length, 0, "NOTHING was charged — the previous design created the expense first");
 });
 
 await test("E: retrying a half-failed push heals it without charging twice", async () => {
   resetState(["tx1"]);
-  neonDown = true;
-  eq(json(await PUSH([group("pid-heal", ["tx1"])])).ok, false, "first attempt fails closed");
+  // The narrower failure that can still happen: the chargeable-set read works,
+  // the expense reaches Airtable, and only its Neon mirror fails.
+  neonFailExpenseWrite = true;
+  const first = json(await PUSH([group("pid-heal", ["tx1"])]));
+  eq(first.ok, false, "first attempt fails closed");
   eq(state.expenses.length, 1, "one expense in Airtable");
   eq(neonWrites.length, 0, "nothing reached Neon");
 
-  neonDown = false;                       // database comes back
+  neonFailExpenseWrite = false;           // the mirror comes back
   const r = json(await PUSH([group("pid-heal", ["tx1"])]));
   eq(r.ok, true, "retry succeeds");
   eq(r.created, 0, "guard #1: nothing freshly charged");

@@ -138,6 +138,13 @@ SELECT j.id AS job_id, j.airtable_id, j.name, j.po_locked,
 --   labor_cost_in_progress      -> (with the above) total_labor_cost_live
 -- Everything downstream — GP live, GP final, COGS — is derived from those. So the
 -- substitution happens ONCE, here, rather than by rewriting the GP maths.
+-- ⚠⚠ SUPERSEDED 2026-08-11 by `038_final_gp_all_labor.sql`. Owner decision:
+-- FINAL GP COUNTS ALL LABOR, reviewed or not. The two labor expressions below
+-- were replaced with `COALESCE(t.labor_cost_live, 0)` and a literal `0`, so
+-- `actual_labor_cost_reviewed` now carries the FULL labor cost despite its name.
+-- The name could not change without breaking the generated `v_job_financials_true`.
+-- **Do not restore the block below unless you intend to un-do that decision** —
+-- it is the correct ROLLBACK target, and nothing else.
 CREATE OR REPLACE VIEW v_job_rollups_true AS
 SELECT r.id, r.airtable_id, r.po,
        r.expected_revenue, r.expected_revenue_all_status, r.base_contract_amount,

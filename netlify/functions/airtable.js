@@ -7052,13 +7052,67 @@ async function handleTimeEntries(params) {
   return resp(200, { ok: true, entries, _source: "airtable" });
 }
 
-// {Job} on Labor Billing Allocations is a multipleLookupValues through Time
-// Entry → Job, so it returns the job NAME, not a record ID. We can't verify by
-// record ID here; defense-in-depth filtering by timeEntryId against the
-// reviewed Time Entry set happens on the frontend.
+// ⚠⚠ THE TWO READS BEHIND THE INVOICE DRAFT MUST SPEAK THE SAME ID FORM.
+// The draft matches these allocations against the job's reviewed time entries
+// (index.html), and `timeEntries` went Neon-first on 2026-07-31 — so it returned
+// Neon uuids while this handler still returned Airtable rec ids. The two sets
+// never intersected, the labor total summed to $0, and on a job with prior
+// invoices the hasPriorInvoices guard suppressed the hours × rate fallback that
+// would have masked it. Every T&M re-invoice since has quietly proposed
+// materials only; Bethel School's $34,937.50 of labor was typed in by hand on
+// 2026-08-11. Both id forms go out now and the client accepts either, so neither
+// store's shape can break the match again.
+//
+// Reading Neon closes a second, quieter hole: an allocation created for a
+// twinless time entry — every one since Step 3 — has no Airtable row at all, so
+// an Airtable-only read could never see it.
+//
+// The Airtable path below stays as the fallback. Its {Job} is a
+// multipleLookupValues through Time Entry → Job, so it returns the job NAME, not
+// a record ID, and cannot verify by id — hence the client-side filtering. In
+// Neon it is an FK equality on job_id, so that whole class of bug is gone.
 async function handleUnlinkedLaborAllocations(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  if (neonEnabled()) {
+    // ⚠ COALESCE(bill_rate, the job's rate). The stored rate is authoritative
+    // once Airtable's lookup has synced, but a MIRRORED allocation carries no
+    // rate until _billing-sync's hourly pass fills it, and this read is what
+    // PROPOSES the labor line. The job rate is what that lookup resolves to
+    // anyway, so without the fallback work approved minutes ago proposes $0.
+    // A job with no rate at all still yields 0 — the honest answer, and the GP
+    // audit's finding, not something to invent a number for.
+    const q = await neonQuery(
+      `SELECT COALESCE(la.airtable_id, la.id::text) AS id,
+              t.id::text                 AS time_entry_id,
+              t.airtable_id              AS time_entry_airtable_id,
+              la.allocated_hours::float8 AS allocated_hours,
+              (la.allocated_hours * COALESCE(la.bill_rate, j.billable_hourly_rate))::float8
+                                         AS allocated_revenue,
+              j.name                     AS job_name
+         FROM labor_billing_allocations la
+         JOIN time_entries t ON t.id = la.time_entry_id
+         JOIN jobs j         ON j.id = t.job_id
+        WHERE j.airtable_id = $1
+          AND la.invoice_airtable_id IS NULL`, [jobId]);
+    if (q?.rows) {
+      return resp(200, {
+        ok: true,
+        allocations: q.rows.map(r => ({
+          id: r.id,
+          allocatedHours:      Number(r.allocated_hours) || 0,
+          allocatedRevenue:    Number(r.allocated_revenue) || 0,
+          timeEntryId:         r.time_entry_id,
+          timeEntryAirtableId: r.time_entry_airtable_id || null,
+          jobName:             r.job_name || "",
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    console.error(`unlinkedLaborAllocations: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, allocations: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";
@@ -7069,15 +7123,21 @@ async function handleUnlinkedLaborAllocations(params) {
     const f = r.fields || {};
     const teArr = f["Time Entry"];
     const jobArr = f["Job"];
+    const teId = Array.isArray(teArr) ? teArr[0] : null;
     return {
       id: r.id,
       allocatedHours: f["Allocated Hours"] ?? 0,
       allocatedRevenue: f["Allocated Revenue $"] ?? 0,
-      timeEntryId: Array.isArray(teArr) ? teArr[0] : null,
+      // Both keys carry the SAME rec id on this path — Airtable has no uuid to
+      // offer. The client matches on either, so a fallback response still lines
+      // up with the entries it will be compared against (which, if Neon is down
+      // for this read, are coming from Airtable too).
+      timeEntryId: teId,
+      timeEntryAirtableId: teId,
       jobName: Array.isArray(jobArr) ? jobArr[0] : (jobArr || "")
     };
   });
-  return resp(200, { ok: true, allocations });
+  return resp(200, { ok: true, allocations, _source: "airtable" });
 }
 
 async function handleExpenses(params, authUser) {

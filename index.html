@@ -13841,9 +13841,15 @@
         // Filter to allocations whose Time Entry is in the reviewed set — also
         // handles duplicate job names since allocations carry only the job NAME
         // via lookup, not the record ID.
+        // ⚠ MATCH ON EITHER ID FORM. `entries` carries whatever shape the
+        // timeEntries read returned — a Neon uuid today, an Airtable rec id if
+        // that read fell back — and the allocations read is a separate handler
+        // that can fall back independently. Keying on one form is what silently
+        // zeroed this line for six weeks (see handleUnlinkedLaborAllocations),
+        // so accept both and let a mismatch be impossible rather than quiet.
         const reviewedTeIds = new Set(entries.map(e => e.id));
         const allocLabor = (laborAllocData.allocations || [])
-          .filter(a => reviewedTeIds.has(a.timeEntryId));
+          .filter(a => reviewedTeIds.has(a.timeEntryId) || reviewedTeIds.has(a.timeEntryAirtableId));
         const laborTotal = +allocLabor
           .reduce((s, a) => s + (a.allocatedRevenue || 0), 0)
           .toFixed(2);

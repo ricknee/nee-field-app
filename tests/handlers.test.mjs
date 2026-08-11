@@ -1536,6 +1536,42 @@ await test("allocations: an entry with no Neon id is refused before anything is 
   delete process.env.ALLOCATIONS_WRITE;
 });
 
+await test("unlinkedLaborAllocations: every response carries BOTH id forms", async () => {
+  // Regression for the six-week silent one: the invoice draft matches these
+  // allocations against the job's reviewed time entries, `timeEntries` went
+  // Neon-first on 2026-07-31 and started returning uuids, this handler kept
+  // returning Airtable rec ids, and the sets stopped intersecting. Labor summed
+  // to $0 and the hasPriorInvoices guard hid it on exactly the jobs being
+  // re-invoiced. Bethel School's $34,937.50 was typed in by hand.
+  //
+  // The fix is that BOTH keys always ship, so it cannot matter which store
+  // either read came from. Here that is exercised on the Airtable fallback (this
+  // suite is offline); the Neon branch is source-pinned below.
+  mockTables = {
+    ...TWO_JOBS,
+    tblHyJWVAcBczn3hn: [
+      { id: "recA1", fields: { Job: ["Jenny Ln 1"], "Time Entry": ["recTE1"],
+                               "Allocated Hours": 8, "Allocated Revenue $": 520 } },
+    ],
+  };
+  const b = json(await GET("unlinkedLaborAllocations", { jobId: "recJ1" }));
+  eq(b.allocations.length, 1, "the job's unlinked allocation");
+  const a = b.allocations[0];
+  eq(a.timeEntryId, "recTE1", "time entry id present");
+  eq(a.timeEntryAirtableId, "recTE1", "…and the Airtable key alongside it");
+  eq(a.allocatedRevenue, 520, "revenue carried through");
+
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleUnlinkedLaborAllocations"),
+                       src.indexOf("async function handleExpenses"));
+  ok(/t\.id::text\s+AS time_entry_id/.test(fn), "Neon branch returns the uuid");
+  ok(/t\.airtable_id\s+AS time_entry_airtable_id/.test(fn), "Neon branch returns the rec id too");
+  ok(/la\.invoice_airtable_id IS NULL/.test(fn), "still only UNLINKED allocations");
+  ok(/COALESCE\(la\.bill_rate, j\.billable_hourly_rate\)/.test(fn),
+     "a rate-less mirrored row must not propose $0 for hours approved minutes ago");
+});
+
 await test("allocations: a Neon-native row carries its own bill rate", async () => {
   // Regression for 2026-08-11. v_invoices computes labor as
   // sum(allocated_hours * bill_rate). Airtable fills bill_rate through a lookup;

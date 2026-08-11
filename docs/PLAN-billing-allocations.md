@@ -144,6 +144,40 @@ allocation row creation"*. Writing the allocation synchronously removes the lag,
 fallback dead code. **Delete it in the same commit, not later** — a fallback for a condition that
 can no longer occur is a trap for whoever reads it next.
 
+## 5a. Cutover baseline, captured 2026-08-11 before flipping anything
+
+Snapshot table `_alloc_cutover_baseline` holds per-invoice totals. Headline figures:
+
+| | |
+|---|---|
+| labor allocations | **2,606** (1,504 unlinked), 8,364.75 h |
+| material allocations | **252** (88 unlinked), $684,176.89 |
+| `sum(invoice_total_calc)` | **$1,188,617.34** |
+
+**Three fidelity checks run against the port before cutover, all clear:**
+
+- **The automation caps its find at 1,000 records; the port has no cap.** Moot in practice — the
+  largest unlinked-labor pile on any single job is **277**. Worth re-checking if a job ever gets
+  near it, since at that point the two would genuinely diverge (and the port would be the
+  *correct* one).
+- **The port resolves a job through the Neon FK; the automation used Airtable's Job lookup.**
+  0 unlinked labor allocations have a time entry with no job, so the two agree on every row.
+- **2 orphaned allocations** (one labor 0.50 h, one material $110.00) have **no parent link at
+  all** — no Time Entry, no Expense. The port skips them because it cannot resolve a job; **the
+  automation skipped them too**, because its Job lookup resolves *through* the missing parent and
+  is therefore empty. No divergence. They are unlinked, so they contribute nothing to any invoice
+  total. Junk worth deleting one day, not a blocker.
+
+## 5b. ⚠ The undeploy is an OWNER action — there is no API for it
+
+`update_automation` edits the **draft** only; its own documentation says live behaviour is
+unchanged until applied in the Airtable UI. `delete_automation` exists but deleting is exactly
+wrong here — these four are the only remaining specification of the behaviour, and §1 above is a
+transcription of them, not the original.
+
+**So step 2 of the cutover is four toggles in the Airtable UI**, same shape as the Jobs-mirror
+sync freeze in `AUDIT-airtable-remaining.md`: Airtable exposes no API for it.
+
 ## 6. The gate before it counts
 
 Allocations decide what a customer is billed. This gets the `013`/`015` treatment: after cutover,

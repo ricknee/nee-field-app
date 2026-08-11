@@ -30,8 +30,8 @@
       "url": "/?clock=out"
     },
     {
-      "name": "My Hours",
-      "short_name": "My Hours",
+      "name": "T-Sheets",
+      "short_name": "T-Sheets",
       "description": "Your clock, PTO and hours",
       "url": "/?open=myhours"
     }

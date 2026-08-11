@@ -27,7 +27,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Employees + LOGIN** | ✅ **In Neon since 2026-08-08 — both apps.** `LOGIN_SOURCE=neon` is an env-var **kill switch** (rollback in ~30 s, no code revert). Verified on prod: `_source:"neon"`, the **Airtable rec id** not the Neon uuid, right person and role. Employees were the last Airtable-owned dimension. **Cost rates are Neon's too** — the ETL no longer loads `labor_cost_rates`. ⬜ ~16 secondary read sites still hit Airtable (cleanup, §4). |
 | **People admin** | ✅ **New 2026-08-08** — there was no employee screen in either app. `👥 People`: Active/Former roster, **access toggle that actually ends live sessions** (30-day stateless tokens meant unchecking `Active` did nothing to a signed-in phone — a leaver kept access for a month), Show/Change PIN, full edit, add a person, and cost-rate history with raise-vs-correct. `docs/PLAN-employee-admin.md` |
 | **Time clock (in-app)** | ✅ **LIVE and in daily use since 2026-08-10**, soaking beside QuickBooks Time. `TIME_CLOCK=on`; **`TIME_CLOCK_PAYROLL` unset — QB Time is still the book of record**, so the crew double-enters until cutover. Punching, breaks, Switch, edits, PTO, holidays, reconciliation and payroll-PDF reporting all built. ⚠ The gate for retiring QB is the **QB-vs-clock reconciliation agreeing**, not time passing. See `docs/PLAN-time-clock.md`. |
-| **Inventory app** | 🟨 **Decoupled from the main base and money-correct since 2026-08-10.** ✅ Step A (Jobs mirror dropped), ✅ Step B0 (job reads serve from Neon), ✅ Step E (the push writes Neon, fails closed, prod-verified — Airtable 393 = Neon 393). ⬜ **B, C, D remain** — reference data, the ledger, estimating. Its own tables are still entirely Airtable. |
+| **Inventory app** | 🟨 **Mostly in Neon as of 2026-08-11.** ✅ A (Jobs mirror dropped), ✅ B0 (job reads), ✅ B (items, locations, vendors, pricing), ✅ C (the ledger — **on-hand is now derived, verified 264/264 against Airtable**), ✅ E (the push writes Neon, fails closed). ⬜ **Only D — estimating — remains.** ⚠ Stock figures now show the ledger rather than a drifted cache, so they read lower and generate more reorder alerts; that is the correction, not a fault. |
 
 ## 🎉 THE FIELD-APP MIGRATION IS COMPLETE — 2026-08-08
 
@@ -407,17 +407,42 @@ never reads.
 > → a *linked-record field* on main-base Expenses (`inventory.js:1116`). Uuids there write garbage
 > into an Airtable link. Resolves at Step E, not before.
 
-### Step B — Reference data (Vendors, Vendor Pricing, Locations, Inventory Items) (~5-7 h)
-### Step C — The ledger (Inventory Transactions + Stock Levels) (~6-8 h)
-> **Correction to the old line here:** Stock Levels does **not** become a pure view. It carries
-> `Reorder Point` and `Notes`, which are real user data — it splits into a small `stock_settings`
-> table plus a `v_stock_on_hand` view. Also: `Quantity On Hand` is an Airtable-automation-maintained
-> **cache**, and `Inventory Items` derives the same number a second, independent way. Check whether
-> they agree before migrating — a disagreement is a live data bug, not a migration detail.
+### ✅ Step B — Reference data — **DONE + PROD-SMOKED 2026-08-10/11** (`cf0a877`, `0ff2d8e`)
+Locations, Vendors, Inventory Items and Vendor Pricing (`db/schema/029`), loaded by an admin action
+because nothing local can read the inventory base. Reads flipped with the writes in the same commit:
+`handleItems`, `handleLocations`, `handleItemVendorPricing`, a shared `itemIndex()` across **11**
+call sites, and `createItem` / `updateItemCost` / `syncItemCostToVendor`.
+> ⚠ **Display name reads `po`, NOT `po_locked`** — the PO locks only at award time, so `po_locked`
+> is blank on all 13 New Lead jobs, exactly the ones the estimating picker needs.
+> ⚠ `Unit Cost Rollup (Live)` has no column because it never was data — it is `v_item_live_cost`.
 
-### Step D — Estimating (Estimates, Templates, Material Orders, Conduit Assemblies) (~6-8 h)
+### ✅ Step C — The ledger — **DONE + PROD-SMOKED 2026-08-11** (`6d269e8`, `c1a7cd8`)
+Inventory Transactions + the real user data from Stock Levels (`db/schema/032`). Six ledger writes,
+two stock writes, three ledger reads and three stock reads, all in one commit.
+
+**On-hand is DERIVED now, and the port was verified before anything read it:** `v_stock_on_hand`
+reproduces Airtable's rollups on **264 of 264** non-zero pairs, and those rollups reproduce the raw
+ledger on **4,330 of 4,330**. Raw transactions, Airtable and Neon all agree.
+
+> ⚠⚠ **`Quantity On Hand` was NOT ported, and that was the finding of the slice.** The Stock Levels
+> cache disagreed with the ledger on **237 of 269** pairs while the rollups matched it exactly — so
+> the cache had silently drifted and copying it would have rehoused the drift. Only `Reorder Point`
+> and `Notes` came across.
+> ⚠ **Expect negatives and more reorder alerts.** 26,332 used against 15,039 received: right
+> arithmetic, incomplete inputs. A counting day fixes it through Adjustments.
+> ⚠ `v_stock_levels` unions "has transactions" with "has a reorder point" — driving it from on-hand
+> alone drops any pair configured but not yet moved.
+> ⚠ Ledger writes fail **soft** (unlike the expense push) because `submitCart` has no idempotency
+> key, so a retry could log the same material out twice. **Deletes are the exception** — the loader
+> upserts and never removes, so a missed delete is repaired by nothing.
+
+### ⬜ Step D — Estimating (Estimates, Templates, Material Orders) (~6-8 h) — the last slice
 > ⚠ Neon already has `job_estimates` — the **main base's** estimates, which feed the GP views. The
 > inventory base's `Estimates` is a different thing. Name them `material_estimates`.
+> ✅ **Owner decision 2026-08-11: the three conduit-assembly tables are NOT migrated — build them
+> better, native in Neon, when D arrives.** They were built in Airtable but never wired into the
+> app, so there is no behaviour to preserve and nothing to port. Same call as panel schedules and
+> job checklists: born in Neon rather than dragged there.
 
 ### ✅ Step E — The expense push — **DONE + PROD-VERIFIED 2026-08-10** (`ef223d2`)
 
@@ -690,7 +715,7 @@ They are the only reason anyone still has to touch Airtable in normal operation.
 | **Smoke-test what shipped** | ~20 min | ⬅ **Do this first.** Invoices went live today with no prod exercise. See the list below. |
 | ~~**`handleJobs` full flip**~~ | ✅ **ALREADY DONE** | **This file was wrong.** It claimed ~35 of `mapJob`'s 89 keys had no Neon source. Checked 2026-08-08: `mapJob` returns **87** keys and `mapJobFromNeon` returns **87** — the two apparent differences were comment text, not keys. `handleJobs` is Neon-first and the mapper is complete. Nothing to do. |
 | **Decide the ETL's future** | ~1 h thought | GP inputs are now Neon-**written** rather than loaded, so the hand-run ETL is mostly redundant for them — but it still backfills, and it is the only thing that would catch a mirror that silently stopped. Schedule it, shrink it, or retire it deliberately. |
-| **Inventory track** | ~17-23 h left | `docs/PLAN-inventory-to-neon.md`. **A, B0 and E all done 2026-08-10** — the two apps now agree about money, and nothing is blocked. What remains is **B** (reference data ~5-7 h), **C** (the ledger ~6-8 h), **D** (estimating ~6-8 h) — the inventory base's own tables. ⚠ **All three need a PAT scoped to the inventory base** — neither PAT in `.env` can read it (both 403), which already forced workarounds twice. Get it before starting a slice. |
+| **Inventory track** | ~6-8 h left | `docs/PLAN-inventory-to-neon.md`. **A, B0, B, C and E are all done and prod-smoked** (2026-08-10/11). Only **D — estimating** remains, and the conduit-assembly tables are excluded from it by owner decision (build native in Neon instead). ⚠ Still worth getting a **PAT scoped to the inventory base** — nothing local can read it, so every load and reconciliation has to go through a deployed function and the browser console. |
 | **Employee admin slices 2-4** | — | Separate track, and it carries **two live bugs**: `Role` vs `Role New` differing per app, and email login that has never worked (`Email` ≠ `Primary Email`). |
 
 ## ⬜ Owed smoke tests — things that shipped without being exercised on prod

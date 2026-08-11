@@ -1920,6 +1920,85 @@ async function handleLoadInventoryReference() {
       reorder_point: num(f["Reorder Point"]), notes: f["Notes"] ?? null }; }),
     ["item_airtable_id", "location_airtable_id", "reorder_point", "notes"]);
 
+  // ── Step D: estimating ───────────────────────────────────────────────────
+  // ⚠ `material_` prefix throughout — Neon's `job_estimates` is the MAIN base's
+  // and feeds GP. See db/schema/035.
+  // ⚠ Rollups/counts/formulas are NOT loaded: Total, Line Total, Total Items and
+  // $ Current Line Total are views. A derived number that gets stored is how the
+  // Stock Levels cache drifted.
+  const [ests, estLines, tmpls, tmplLines, orders, orderLines] = await Promise.all([
+    fetchAll(API_ROOT_INV, "Estimates", {}),
+    fetchAll(API_ROOT_INV, "Estimate Line Items", {}),
+    fetchAll(API_ROOT_INV, "Estimate Templates", {}),
+    fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
+    fetchAll(API_ROOT_INV, "Material Orders", {}),
+    fetchAll(API_ROOT_INV, "Material Order Lines", {}),
+  ]);
+
+  counts.estimates = await upsertChunked("material_estimates", "material_estimates",
+    ["airtable_id", "job_name", "job_airtable_id", "status", "created_by", "created_at", "notes"],
+    ests.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      job_name: f["Job Name"] ?? null, job_airtable_id: f["Job ID"] ?? null,
+      status: sel(f["Status"]), created_by: f["Created By"] ?? null,
+      created_at: f["Date Created"] ?? r.createdTime ?? null, notes: f["Notes"] ?? null }; }),
+    ["job_name", "job_airtable_id", "status", "created_by", "created_at", "notes"]);
+
+  counts.estimateLines = await upsertChunked("material_estimate_lines", "material_estimate_lines",
+    ["airtable_id", "line_number", "estimate_airtable_id", "item_airtable_id", "quantity",
+     "unit_cost_at_estimate", "description"],
+    estLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      line_number: num(f["Line ID"]), estimate_airtable_id: lnk(f["Estimate"]),
+      item_airtable_id: lnk(f["Inventory Item"]), quantity: num(f["Quantity"]) ?? 0,
+      unit_cost_at_estimate: num(f["Unit Cost at Time of Estimate"]),
+      description: f["Description"] ?? null }; }),
+    ["line_number", "estimate_airtable_id", "item_airtable_id", "quantity",
+     "unit_cost_at_estimate", "description"]);
+
+  counts.templates = await upsertChunked("material_estimate_templates", "material_estimate_templates",
+    ["airtable_id", "name", "description", "contractor", "source_estimate_ref",
+     "total_at_save", "active", "created_by", "created_at"],
+    tmpls.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      name: f["Template Name"] || "", description: f["Description"] ?? null,
+      contractor: f["Contractor"] ?? null, source_estimate_ref: f["Source Estimate Reference"] ?? null,
+      total_at_save: num(f["Total at Save"]), active: bool(f["Active"]),
+      created_by: f["Created By"] ?? null, created_at: f["Created Date"] ?? r.createdTime ?? null }; }),
+    ["name", "description", "contractor", "source_estimate_ref", "total_at_save",
+     "active", "created_by", "created_at"]);
+
+  counts.templateLines = await upsertChunked("material_estimate_template_lines", "material_estimate_template_lines",
+    ["airtable_id", "line_title", "template_airtable_id", "item_airtable_id", "quantity",
+     "unit_cost_at_save", "notes"],
+    tmplLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      line_title: f["Line Title"] ?? null, template_airtable_id: lnk(f["Template"]),
+      item_airtable_id: lnk(f["Inventory Item"]), quantity: num(f["Quantity"]) ?? 0,
+      unit_cost_at_save: num(f["Unit Cost at Save"]), notes: f["Notes"] ?? null }; }),
+    ["line_title", "template_airtable_id", "item_airtable_id", "quantity",
+     "unit_cost_at_save", "notes"]);
+
+  counts.orders = await upsertChunked("material_orders", "material_orders",
+    ["airtable_id", "order_number", "estimate_airtable_id", "job_name", "vendor_notes",
+     "status", "order_type", "created_by", "created_at"],
+    orders.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      order_number: num(f["Order ID"]), estimate_airtable_id: lnk(f["Estimate"]),
+      job_name: f["Job Name"] ?? null, vendor_notes: f["Vendor / Notes"] ?? null,
+      status: sel(f["Status"]), order_type: sel(f["Order Type"]),
+      created_by: f["Created By"] ?? null, created_at: f["Date Created"] ?? r.createdTime ?? null }; }),
+    ["order_number", "estimate_airtable_id", "job_name", "vendor_notes", "status",
+     "order_type", "created_by", "created_at"]);
+
+  counts.orderLines = await upsertChunked("material_order_lines", "material_order_lines",
+    ["airtable_id", "line_number", "order_airtable_id", "item_airtable_id", "description",
+     "quantity_ordered", "unit_cost_at_order", "line_total_stored", "received", "notes"],
+    orderLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      line_number: num(f["Line Item ID"]), order_airtable_id: lnk(f["Material Order"]),
+      item_airtable_id: lnk(f["Inventory Item"]), description: f["Description"] ?? null,
+      quantity_ordered: num(f["Quantity Ordered"]) ?? 0,
+      unit_cost_at_order: num(f["Unit Cost at Time of Order"]),
+      line_total_stored: num(f["Line Total"]), received: bool(f["Received"]),
+      notes: f["Notes"] ?? null }; }),
+    ["line_number", "order_airtable_id", "item_airtable_id", "description", "quantity_ordered",
+     "unit_cost_at_order", "line_total_stored", "received", "notes"]);
+
   // Resolve the real FKs from the Airtable ids. Done as a second pass because
   // the parents have to exist first, and re-run each time so a pricing row
   // loaded before its item still ends up linked.
@@ -1947,6 +2026,25 @@ async function handleLoadInventoryReference() {
        location_id = (SELECT l.id FROM locations l WHERE l.airtable_id = s.location_airtable_id)`);
   if (!fkStock?.rows) throw new Error(`stock_settings FK resolve: ${fkStock?.error || "Neon unavailable"}`);
 
+  // Step D's four child tables. Parents (estimates, templates, orders, items)
+  // all exist by now, and re-running relinks anything loaded out of order.
+  for (const [label, sql] of [
+    ["material_estimate_lines", `UPDATE material_estimate_lines x SET
+        estimate_id = (SELECT e.id FROM material_estimates e WHERE e.airtable_id = x.estimate_airtable_id),
+        item_id     = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id)`],
+    ["material_estimate_template_lines", `UPDATE material_estimate_template_lines x SET
+        template_id = (SELECT t.id FROM material_estimate_templates t WHERE t.airtable_id = x.template_airtable_id),
+        item_id     = (SELECT i.id FROM inventory_items i             WHERE i.airtable_id = x.item_airtable_id)`],
+    ["material_orders", `UPDATE material_orders x SET
+        estimate_id = (SELECT e.id FROM material_estimates e WHERE e.airtable_id = x.estimate_airtable_id)`],
+    ["material_order_lines", `UPDATE material_order_lines x SET
+        order_id = (SELECT o.id FROM material_orders o    WHERE o.airtable_id = x.order_airtable_id),
+        item_id  = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id)`],
+  ]) {
+    const r = await neonQuery(sql);
+    if (!r?.rows) throw new Error(`${label} FK resolve: ${r?.error || "Neon unavailable"}`);
+  }
+
   // Report anything that couldn't be linked rather than leaving it silent — an
   // unlinked pricing row is invisible to v_item_live_cost.
   const orphan = await neonQuery(
@@ -1959,12 +2057,21 @@ async function handleLoadInventoryReference() {
        (SELECT count(*) FROM inventory_transactions
          WHERE from_location_id IS NULL AND to_location_id IS NULL)::int AS txn_no_location,
        (SELECT count(*) FROM stock_settings
-         WHERE item_id IS NULL OR location_id IS NULL)::int AS stock_unlinked`);
+         WHERE item_id IS NULL OR location_id IS NULL)::int AS stock_unlinked,
+       (SELECT count(*) FROM material_estimate_lines
+         WHERE estimate_airtable_id IS NOT NULL AND estimate_id IS NULL)::int AS est_lines_orphaned,
+       (SELECT count(*) FROM material_estimate_template_lines
+         WHERE template_airtable_id IS NOT NULL AND template_id IS NULL)::int AS tmpl_lines_orphaned,
+       (SELECT count(*) FROM material_order_lines
+         WHERE order_airtable_id IS NOT NULL AND order_id IS NULL)::int AS order_lines_orphaned`);
 
   return resp(200, {
     ok: true,
     airtable: { locations: locs.length, vendors: vends.length, items: items.length,
-                vendorPricing: pricing.length, transactions: txns.length, stockSettings: stock.length },
+                vendorPricing: pricing.length, transactions: txns.length, stockSettings: stock.length,
+                estimates: ests.length, estimateLines: estLines.length,
+                templates: tmpls.length, templateLines: tmplLines.length,
+                orders: orders.length, orderLines: orderLines.length },
     written: counts,
     // Rows whose FKs didn't resolve. A transaction with no location is invisible
     // to on-hand, so this is reported rather than swallowed.

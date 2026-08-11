@@ -1,8 +1,20 @@
 # Plan: a time clock in the field app
 
-**Status: ✅ BUILT AND IN DAILY USE — soaking alongside QuickBooks Time. Feature work closed
-2026-08-10** at the owner's call: *"ive completed what ive set out to do until i find something
-else i dont like."*
+**Status: ✅ FEATURE-COMPLETE AND SOAKING. Build paused 2026-08-11 by the owner:**
+*"so for now im complete. this needs to soak with qb time still operating and source of truth.
+ill be back to finish when i feel like its safe to do so."*
+
+> ### 🔴 DO NOT FLIP `TIME_CLOCK_PAYROLL`
+> Not on a schedule, not because the soak has "gone on long enough". **QuickBooks Time remains the
+> source of truth and the crew keeps double-entering** until the owner decides otherwise — and that
+> decision is his, not a consequence of time passing.
+>
+> The gate is the **QB-vs-clock reconciliation agreeing** (Who's Working → vs QuickBooks), which
+> needs the crew punching *consistently*, not occasionally. Work the checklist below first.
+
+**No further feature work is expected.** The next session on this should be verification, not
+building: check the reconciliation, look for red overlap flags on the Timesheets tab, and see
+whether anyone is forgetting to Switch on arrival.
 
 | | |
 |---|---|

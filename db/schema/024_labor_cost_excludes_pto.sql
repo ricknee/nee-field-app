@@ -29,6 +29,13 @@
 -- because PTO entries carry no job_id and it filters on `job_id IS NOT NULL`.
 -- Everything below the CTEs is copied from 006 unchanged; keep the two in sync by
 -- hand if 006 is ever revised.
+--
+-- ⚠ SUPERSEDED BY 030_gp_view_perf.sql, which keeps both PTO exclusions below
+-- exactly as they are and rewrites only the rate lookup for speed. This file is
+-- still the correct ROLLBACK target for 030 — 006 is not, it predates this fix.
+-- "Keep the two in sync by hand" did not survive contact with reality: 006 was
+-- never updated, and a later rewrite that started from it reinstated the bug this
+-- file exists to fix. Don't rely on that instruction; read the live view instead.
 CREATE OR REPLACE VIEW v_job_labor_cost_true AS
 WITH weekly AS (
   -- The OT denominator: all hours that week, every job, including unlinked time —

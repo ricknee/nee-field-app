@@ -41,6 +41,20 @@
 -- Validated against Airtable's own weekly rollup: 297 of 304 employee-weeks match
 -- to the cent. Of the 7 that differ, 5 are hours Make missed and the puller caught,
 -- 1 is same-day activity before Make's 21:00 run, and 1 is the stale rollup above.
+--
+-- ⚠⚠ THE VIEW BELOW IS SUPERSEDED AND MUST NOT BE COPIED. It is kept because the
+-- comments above it are the reasoning for the whole true-labor-cost design, and
+-- those are still correct. The DEFINITION is not:
+--
+--   024_labor_cost_excludes_pto.sql  keeps PTO and paid holidays out of the OT
+--                                    denominator (a GP correctness fix)
+--   030_gp_view_perf.sql             CURRENT — 024's rules, rate lookup rewritten
+--                                    set-wise, 9x faster, numbers identical
+--
+-- Rewriting from this file instead of from the live database silently reinstates
+-- the pre-024 overtime bug. That already happened once, during 030, and was caught
+-- only by a per-employee-week diff. **Start from
+-- `pg_get_viewdef('v_job_labor_cost_true'::regclass, true)`, never from here.**
 CREATE OR REPLACE VIEW v_job_labor_cost_true AS
 WITH weekly AS (
   -- The OT denominator: ALL hours that week, every job, including unlinked time.

@@ -27,7 +27,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Employees + LOGIN** | ✅ **In Neon since 2026-08-08 — both apps.** `LOGIN_SOURCE=neon` is an env-var **kill switch** (rollback in ~30 s, no code revert). Verified on prod: `_source:"neon"`, the **Airtable rec id** not the Neon uuid, right person and role. Employees were the last Airtable-owned dimension. **Cost rates are Neon's too** — the ETL no longer loads `labor_cost_rates`. ⬜ ~16 secondary read sites still hit Airtable (cleanup, §4). |
 | **People admin** | ✅ **New 2026-08-08** — there was no employee screen in either app. `👥 People`: Active/Former roster, **access toggle that actually ends live sessions** (30-day stateless tokens meant unchecking `Active` did nothing to a signed-in phone — a leaver kept access for a month), Show/Change PIN, full edit, add a person, and cost-rate history with raise-vs-correct. `docs/PLAN-employee-admin.md` |
 | **Time clock (in-app)** | ✅ **LIVE and in daily use since 2026-08-10**, soaking beside QuickBooks Time. `TIME_CLOCK=on`; **`TIME_CLOCK_PAYROLL` unset — QB Time is still the book of record**, so the crew double-enters until cutover. Punching, breaks, Switch, edits, PTO, holidays, reconciliation and payroll-PDF reporting all built. ⚠ The gate for retiring QB is the **QB-vs-clock reconciliation agreeing**, not time passing. See `docs/PLAN-time-clock.md`. |
-| **Inventory app** | 🟨 **Mostly in Neon as of 2026-08-11.** ✅ A (Jobs mirror dropped), ✅ B0 (job reads), ✅ B (items, locations, vendors, pricing), ✅ C (the ledger — **on-hand is now derived, verified 264/264 against Airtable**), ✅ E (the push writes Neon, fails closed). ⬜ **Only D — estimating — remains.** ⚠ Stock figures now show the ledger rather than a drifted cache, so they read lower and generate more reorder alerts; that is the correction, not a fault. |
+| **Inventory app** | ✅ **In Neon as of 2026-08-11.** ✅ A (Jobs mirror dropped), ✅ B0 (job reads), ✅ B (items, locations, vendors, pricing), ✅ C (the ledger — **on-hand is now derived, verified 264/264 against Airtable**), ✅ D (estimating — estimates, templates, orders; prod-smoked), ✅ E (the push writes Neon, fails closed). **All five slices done and prod-smoked.** ⚠ Stock figures now show the ledger rather than a drifted cache, so they read lower and generate more reorder alerts; that is the correction, not a fault. ⬜ Conduit assemblies remain unbuilt by decision — native in Neon, not migrated. |
 
 ## 🎉 THE FIELD-APP MIGRATION IS COMPLETE — 2026-08-08
 
@@ -41,9 +41,10 @@ expenses, estimates and invoices (R2 receipt keys, sent-PDF back-links and billi
 all key on rec ids), and every write still mirrors to it. What changed is that **nothing reads
 Airtable to answer a question any more** unless Neon fails.
 
-**What is left is no longer the field app:** the inventory track (§4, not started), and giving
-the billing allocations a write path in the app — the only thing still requiring anyone to open
-Airtable in normal operation. The hourly sync (2026-08-08) covers them meanwhile.
+**The inventory track is now done too** (§4 — A, B0, B, C, D, E all prod-smoked 2026-08-11), so
+neither app needs Airtable to answer a question. What remains is listed in §7 and the cleanup
+table: retiring the Airtable-side automations and mirror writes that other paths still trigger
+off, and the six domains never on the roadmap (`docs/AUDIT-airtable-remaining.md`).
 
 *The `handleJobs` full flip that used to be listed here is **already done** — see §8.*
 
@@ -436,13 +437,55 @@ ledger on **4,330 of 4,330**. Raw transactions, Airtable and Neon all agree.
 > key, so a retry could log the same material out twice. **Deletes are the exception** — the loader
 > upserts and never removes, so a missed delete is repaired by nothing.
 
-### ⬜ Step D — Estimating (Estimates, Templates, Material Orders) (~6-8 h) — the last slice
+### ✅ Step D — Estimating (Estimates, Templates, Material Orders) — **DONE + PROD-SMOKED 2026-08-11**
+
+Six tables (`db/schema/035_material_estimating.sql`) and three views, shipped as four commits:
+schema + loader (`6e598f7`), estimates (`1f63259`), templates (`9040169`), orders (`873f406`),
+then the fix below (`22a2e9d`). **All reads and all writes exercised on production.**
+
 > ⚠ Neon already has `job_estimates` — the **main base's** estimates, which feed the GP views. The
-> inventory base's `Estimates` is a different thing. Name them `material_estimates`.
+> inventory base's `Estimates` is a different thing, hence the `material_` prefix on all six tables.
 > ✅ **Owner decision 2026-08-11: the three conduit-assembly tables are NOT migrated — build them
-> better, native in Neon, when D arrives.** They were built in Airtable but never wired into the
-> app, so there is no behaviour to preserve and nothing to port. Same call as panel schedules and
-> job checklists: born in Neon rather than dragged there.
+> better, native in Neon, when the estimating engine gets wired in.** They were built in Airtable
+> but never wired into the app, so there is no behaviour to preserve and nothing to port. Same call
+> as panel schedules and job checklists: born in Neon rather than dragged there.
+
+**Final reconciliation, both sides:** estimates 16 = 16 · templates 3 = 3 · template lines
+149 = 149 (0 orphans) · orders 10 = 10. Totals agree to the cent; residuals ≤ 0.00005 are Airtable's
+raw float against `numeric(14,4)`.
+
+#### ⚠⚠ The bug this slice shipped, and the rule it breaks
+
+`createEstimateFromTemplate` is a **second handler that creates an estimate**, and it was missed
+when the estimate reads flipped. It wrote the header and all its lines to Airtable and synced
+neither, so the app **404'd the estimate it had just built** — hit on a real one, 45 lines and
+$16,476.99 against Aaron McLauglin. Nothing failed loudly: `syncEstimateToNeon` fails soft, so the
+create returned `ok` and the record was intact in Airtable — just invisible to every read, and
+every read now comes from Neon.
+
+**The same-commit rule is per-ROW, not per-HANDLER.** The reads and writes *did* ship together;
+"the writes" got read as *the write handlers being edited* rather than **every path that creates
+the row**. Before flipping any read, enumerate the write paths by grepping for the POST to that
+**table**, not by listing the handlers you have open. The sweep that followed found no second case
+across the other five tables.
+
+Corollary: **a fail-soft sync makes this class of bug invisible.** The only tell was a 404 on a
+screen the user had just saved. Worth a `synced_at`-freshness check after any read flip — a row
+whose stamp is still the loader's is a row nothing has written since.
+
+#### Three details that had to survive the move
+
+1. **Order ID is an Airtable autonumber** and is absent from the create response, so the order
+   syncs **twice** — once so lines have a parent, once after the re-fetch. Without the second,
+   every screen shows the order as **#0**. The upsert `COALESCE`s the number so a later update
+   can't null it back out. Verified live: the smoke created **#32**, not #0.
+2. **Templates split snapshot from live on purpose.** `total_at_save` is frozen; `wireFtPerLb`
+   reads live from the item because it is a physical property, not a price. The prod smoke showed
+   the split working: the "3 Barn 600A" template held `total_at_save` 16,420.99 against
+   `total_current` 16,476.99 — the Gary Strauss and Aaron numbers — then `refreshTemplatePrices`
+   drove it to 16,476.99 with drift 0.00, mirrored.
+3. **`Total Items` on an order is a COUNT of lines, not a sum of quantities.** It reads as though
+   it should be the latter.
 
 ### ✅ Step E — The expense push — **DONE + PROD-VERIFIED 2026-08-10** (`ef223d2`)
 
@@ -737,7 +780,7 @@ They are the only reason anyone still has to touch Airtable in normal operation.
 | **Smoke-test what shipped** | ~20 min | ⬅ **Do this first.** Invoices went live today with no prod exercise. See the list below. |
 | ~~**`handleJobs` full flip**~~ | ✅ **ALREADY DONE** | **This file was wrong.** It claimed ~35 of `mapJob`'s 89 keys had no Neon source. Checked 2026-08-08: `mapJob` returns **87** keys and `mapJobFromNeon` returns **87** — the two apparent differences were comment text, not keys. `handleJobs` is Neon-first and the mapper is complete. Nothing to do. |
 | **Decide the ETL's future** | ~1 h thought | GP inputs are now Neon-**written** rather than loaded, so the hand-run ETL is mostly redundant for them — but it still backfills, and it is the only thing that would catch a mirror that silently stopped. Schedule it, shrink it, or retire it deliberately. |
-| **Inventory track** | ~6-8 h left | `docs/PLAN-inventory-to-neon.md`. **A, B0, B, C and E are all done and prod-smoked** (2026-08-10/11). Only **D — estimating** remains, and the conduit-assembly tables are excluded from it by owner decision (build native in Neon instead). ⚠ Still worth getting a **PAT scoped to the inventory base** — nothing local can read it, so every load and reconciliation has to go through a deployed function and the browser console. |
+| **Inventory track** | ✅ **complete** | `docs/PLAN-inventory-to-neon.md`. **A, B0, B, C, D and E are all done and prod-smoked** (2026-08-10/11). The conduit-assembly tables were excluded by owner decision (build native in Neon instead) and are the only estimating work left. ⚠ Still worth getting a **PAT scoped to the inventory base** — nothing local can read it, so every load and reconciliation has to go through a deployed function and the browser console. That constraint has now forced a workaround six times. |
 | **Employee admin slices 2-4** | — | Separate track, and it carries **two live bugs**: `Role` vs `Role New` differing per app, and email login that has never worked (`Email` ≠ `Primary Email`). |
 
 ## ⬜ Owed smoke tests — things that shipped without being exercised on prod

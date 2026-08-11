@@ -35,8 +35,12 @@ let neonPricing = [];    // one row per pricing line, joined shape
 let neonStock   = [];    // v_stock_levels rows
 let neonHistory = [];    // inventory_transactions joined to items/locations
 const neonWrites = [];   // every INSERT INTO inventory_items airtable_id
-const txnWrites  = [];   // every INSERT INTO inventory_transactions airtable_id
-const txnDeletes = [];   // every DELETE FROM inventory_transactions airtable_id
+const txnWrites  = [];   // one entry per ROW inserted into inventory_transactions
+const txnInserts = [];   // one entry per INSERT STATEMENT (a cart must be exactly one)
+const txnDeletes = [];   // every DELETE FROM inventory_transactions id
+const txnMarks   = [];   // every markTransactionsPushed id-array
+let   txnReplay  = [];   // rows the replay SELECT returns for an already-submitted cart
+let   txnDeleteMisses = new Set();  // ids the DELETE should report as removing nothing
 let neonEstimates   = [];  // material_estimates joined to the totals view
 let neonEstimateGet = [];  // one estimate joined to its lines
 const estWrites      = [];
@@ -105,11 +109,36 @@ globalThis.fetch = async (url, opts = {}) => {
       neonWrites.push(body.params?.[0]);
       payload = neonReply([], []);
     } else if (/INSERT INTO inventory_transactions/i.test(sql)) {
-      txnWrites.push(body.params?.[0]);
+      // 13 binds per row: date, item, qty, type, from, to, cost, notes,
+      // enteredBy, jobId, jobName, submitId, lineNo. Counting them is how the
+      // "one statement for the whole cart" claim is actually checked — the old
+      // code would have produced N statements of one row each.
+      // Bind ORDER is item, from, to, date, qty, type, cost, notes, enteredBy,
+      // jobId, jobName, submitId, lineNo — the three link ids are pushed first
+      // because each is reused inside a FK subselect.
+      const ps = body.params || [];
+      const n  = Math.round(ps.length / 13);
+      txnInserts.push(n);
+      for (let i = 0; i < n; i++) {
+        txnWrites.push({ itemId: ps[i * 13], from: ps[i * 13 + 1], to: ps[i * 13 + 2],
+                         qty: ps[i * 13 + 4], type: ps[i * 13 + 5],
+                         submitId: ps[i * 13 + 11], lineNo: ps[i * 13 + 12] });
+      }
+      // A replay is modelled by returning FEWER rows than were sent, which is
+      // exactly what ON CONFLICT DO NOTHING does on the real thing.
+      const out = txnReplay.length ? [] : Array.from({ length: n }, (_, i) => ({ id: `txn-new-${i + 1}` }));
+      payload = neonReply(["id"], out);
+    } else if (/SELECT id FROM inventory_transactions WHERE submit_id/i.test(sql)) {
+      payload = neonReply(["id"], txnReplay);
+    } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
+      txnMarks.push(pgArray(body.params?.[0]));
       payload = neonReply([], []);
     } else if (/DELETE FROM inventory_transactions/i.test(sql)) {
       txnDeletes.push(body.params?.[0]);
-      payload = neonReply([], []);
+      // RETURNING id — an empty result is how "nothing was deleted" reaches the
+      // handler, and the handler now has to turn that into a 404.
+      payload = neonReply(["id"], txnDeleteMisses.has(body.params?.[0])
+        ? [] : [{ id: body.params?.[0] }]);
     } else if (/INSERT INTO material_estimates/i.test(sql)) {
       estWrites.push(body.params?.[0]);
       payload = neonReply([], []);
@@ -141,7 +170,8 @@ globalThis.fetch = async (url, opts = {}) => {
                            "location_name", "qty_on_hand", "default_unit_cost", "total_value",
                            "reorder_point", "wire_ft_per_lb", "wire_ft"], rows);
     } else if (/FROM inventory_transactions t/i.test(sql)) {
-      payload = neonReply(["airtable_id", "txn_date", "quantity", "txn_type", "notes", "entered_by",
+      // `id` first, not airtable_id — the ledger's handle is the uuid now.
+      payload = neonReply(["id", "txn_date", "quantity", "txn_type", "notes", "entered_by",
                            "unit_cost_snapshot", "item_airtable_id", "item_name", "unit_of_measure",
                            "default_unit_cost", "from_name", "to_name"], neonHistory);
     } else if (/FROM locations/i.test(sql)) {
@@ -236,6 +266,7 @@ const json = (r) => JSON.parse(r.body);
 function reset() {
   neonDown = false; neonWrites.length = 0; atRequested.length = 0;
   txnWrites.length = 0; txnDeletes.length = 0;
+  txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set();
   neonStock = [
     // 40 lb of wire on hand at 19.5 ft/lb → 780 ft; below its reorder point of 100.
     { stock_airtable_id: "recSL1", item_airtable_id: "recItemB", item_name: "12 THHN",
@@ -270,8 +301,11 @@ function reset() {
       description: "Rental — trencher", quantity: "1.0000", unit_cost_at_estimate: "250.0000",
       item_name: null, unit_of_measure: null, category: null },
   ];
+  // Keyed on `id`, not airtable_id — the ledger's handle is the uuid since the
+  // native-write cutover, and it is the same handle for these historical rows.
   neonHistory = [
-    { airtable_id: "recTx1", txn_date: "2026-08-10T14:51:19.000Z", quantity: "10.0000",
+    { id: "11111111-1111-4111-8111-111111111111", txn_date: "2026-08-10T14:51:19.000Z",
+      quantity: "10.0000",
       txn_type: "Use", notes: "Bethel School (MIB 433) | left on the truck",
       entered_by: "Rick", unit_cost_snapshot: "0.8000", item_airtable_id: "recItemA",
       item_name: "1/2\" EMT PIPE", unit_of_measure: "ft", default_unit_cost: "0.7500",
@@ -452,6 +486,86 @@ await test("C: deleting a transaction removes it from Neon, or on-hand keeps cou
 });
 
 // ── Step D: estimates ────────────────────────────────────────────────────────
+
+// ── Cutover slice 1: the ledger is native ──────────────────────────────────
+// Airtable is no longer written for transactions, so the tests that matter are
+// about what happens when something goes wrong rather than when it goes right.
+
+await test("S1: a cart is ONE insert, native, with no Airtable write at all", async () => {
+  reset();
+  const r = json(await POST({ action: "submitCart", locationId: "recLoc1", enteredBy: "Rick",
+    jobName: "Bethel School", jobId: "recJob1", submitId: "cart-abc",
+    lines: [{ itemId: "recItemA", qty: 10, unitCost: 0.75 },
+            { itemId: "recItemB", qty: 4,  unitCost: 1.25 }] }));
+  eq(r.ok, true, "ok");
+  eq(txnInserts.length, 1, "ONE statement — a half-written cart is no longer a state that exists");
+  eq(txnWrites.length, 2, "both lines in it");
+  eq(r.ids.length, 2, "both ids returned");
+  eq(txnWrites[0].from, "recLoc1", "Use logs against the FROM leg, which is what subtracts");
+  // Number() because binds cross the wire as strings — the same reason the
+  // handlers wrap every numeric read.
+  eq(Number(txnWrites[1].lineNo), 2, "line numbers make the cart replay-safe row by row");
+  eq(atRequested.some(u => /Inventory%20Transactions/.test(u)), false,
+     "nothing reached Airtable — the whole point of the slice");
+});
+
+await test("S1: re-submitting the same cart returns the ORIGINAL ids, not duplicates", async () => {
+  reset();
+  // Models the real hazard: the first submit landed, the response was lost, the
+  // user pressed Submit again. ON CONFLICT swallows the rows and the replay
+  // SELECT answers with what the first attempt created.
+  txnReplay = [{ id: "txn-orig-1" }, { id: "txn-orig-2" }];
+  const r = json(await POST({ action: "submitCart", locationId: "recLoc1", enteredBy: "Rick",
+    submitId: "cart-abc",
+    lines: [{ itemId: "recItemA", qty: 10 }, { itemId: "recItemB", qty: 4 }] }));
+  eq(r.ok, true, "ok");
+  eq(r.ids.join(","), "txn-orig-1,txn-orig-2",
+     "the first submission's ids — not a second set of transactions");
+});
+
+await test("S1: a cart that cannot reach Neon FAILS, rather than reporting success", async () => {
+  reset();
+  neonDown = true;
+  const r = await POST({ action: "submitCart", locationId: "recLoc1", enteredBy: "Rick",
+    lines: [{ itemId: "recItemA", qty: 10 }] });
+  eq(r.statusCode >= 400, true, "not a 200 — there is no second copy and no loader to repair it");
+});
+
+await test("S1: history speaks in uuids, because a native row has no rec id", async () => {
+  reset();
+  const h = json(await GET("history", { all: "1" }));
+  eq(h._source, "neon", "served from Neon");
+  eq(h.transactions[0].id, "11111111-1111-4111-8111-111111111111",
+     "the uuid — an airtable_id here would be null on every native row");
+});
+
+await test("S1: pending expenses refuse to fall back to Airtable", async () => {
+  reset();
+  neonDown = true;
+  const p = await GET("pendingExpenses");
+  eq(p.statusCode, 503,
+     "Airtable is wrong BOTH ways now: missing new rows, and still 'unpushed' for pushed ones");
+  eq(atRequested.some(u => /Inventory%20Transactions/.test(u)), false,
+     "it did not even ask — a fallback here would build a push list that double-charges");
+});
+
+await test("S1: history refuses to answer from Airtable when Neon is down", async () => {
+  reset();
+  neonDown = true;
+  const r = await GET("history", { all: "1" });
+  eq(r.statusCode, 503, "a history missing everything since the cutover is worse than an error");
+  eq(atRequested.some(u => /Inventory%20Transactions/.test(u)), false, "it did not even try");
+});
+
+await test("S1: deleting a transaction that removed nothing is a 404, not a success", async () => {
+  reset();
+  const ok = await POST({ action: "delete", txId: "11111111-1111-4111-8111-111111111111" });
+  eq(ok.statusCode, 200, "a real row deletes");
+  txnDeleteMisses.add("22222222-2222-4222-8222-222222222222");
+  const missing = await POST({ action: "delete", txId: "22222222-2222-4222-8222-222222222222" });
+  eq(missing.statusCode, 404,
+     "on-hand would otherwise keep counting stock the user believes they removed");
+});
 
 await test("D: the estimates list totals come from the view, not a stored rollup", async () => {
   reset();

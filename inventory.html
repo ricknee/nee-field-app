@@ -1560,8 +1560,15 @@ function renderCart() {
   if (submitBtn) submitBtn.style.display = "block";
 }
 
+// Idempotency key for ONE cart submission. Minted on the first Submit and kept
+// across retries, so pressing Submit again after a timeout re-sends the same id
+// and the backend returns the original transactions instead of logging the
+// material out of stock a second time. Cleared only once the cart is accepted.
+var cartSubmitId = null;
+
 async function submitCart() {
   if (!cart.length) { showToast("Cart is empty", true); return; }
+  if (!cartSubmitId) cartSubmitId = genPushId();
 
   // Location source depends on mode:
   //   Use / Return   → use the From Location dropdown (defaults to last-used)
@@ -1630,9 +1637,10 @@ async function submitCart() {
   });
 
   try {
-    await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: submitLocationId, enteredBy: currentUser.name });
+    await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: submitLocationId, enteredBy: currentUser.name, submitId: cartSubmitId });
     showToast("✓ " + cart.length + " item" + (cart.length>1?"s":"") + " logged!");
     cart = [];
+    cartSubmitId = null;   // accepted — the next cart is a new submission
     goHome();
   } catch(ex) {
     showToast("Error: " + ex.message, true);

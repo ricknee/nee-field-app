@@ -157,12 +157,12 @@ globalThis.fetch = async (url, opts = {}) => {
     return ok(created);
   }
   if (method === "PATCH" && table === "Inventory Transactions") {
-    (body.records || []).forEach(r => {
-      const t = state.txns[r.id] || (state.txns[r.id] = { pushed: false, pushId: null });
-      if (r.fields?.[TX_EXP_CREATED]) t.pushed = true;
-      if (r.fields?.[TX_PUSH_ID_FIELD]) t.pushId = r.fields[TX_PUSH_ID_FIELD];
-    });
-    return ok(body.records || []);
+    // Since the ledger cutover the pushed-mark is a Neon UPDATE and nothing
+    // else. This used to record the mark, which meant the suite would still
+    // have passed if the Neon half silently did nothing — the Step E trap. It
+    // now throws, so "both txns marked pushed" can only be satisfied by the
+    // statement that actually prevents the double charge.
+    throw new Error("Airtable PATCH of Inventory Transactions — the ledger is native now");
   }
   if (method === "POST" && (table === "Expense Pushes" || table === "Expense Push Lines")) {
     return ok([{ id: `recPush${++state.pushHdrSeq}`, fields: {} }]);

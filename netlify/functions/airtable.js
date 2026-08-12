@@ -7495,6 +7495,45 @@ async function handleCompanies() {
 }
 
 async function handleVendors() {
+  // ── NEON-FIRST (audit item 06) ────────────────────────────────────────────
+  // ⚠⚠ THE TABLE IS `expense_vendors`, NOT `vendors`. Neon already has a
+  // `vendors` table and it is the INVENTORY base's — supply houses, with
+  // pricing and payment terms. This is the MAIN base's expense-vendor picker,
+  // a different table serving a different question ("who did I buy this
+  // from?"), and it carries pseudo-vendors like "Other" and "NEE Inventory"
+  // that have no place in a purchasing list.
+  //
+  // The two overlap on real companies with inconsistent spellings — "Wolff
+  // Brothers" here vs "Wolff Bros" there, plus CED, Lowe's and Cummins.
+  // **Owner's decision 2026-08-12: keep them separate.** Merging is a business
+  // question, not a migration one; expenses key on the vendor NAME as text, so
+  // a merge would not join anything automatically anyway. Same naming
+  // discipline as `material_estimates` vs `job_estimates`.
+  //
+  // Sort and the "Other"-to-the-bottom rule stay in JS below so both paths
+  // order identically.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, name, phone, email, charges_sales_tax
+         FROM expense_vendors WHERE active AND coalesce(name,'') <> '' ORDER BY name`);
+    if (q?.rows?.length) {
+      const vendors = q.rows.map(r => ({
+        id: r.airtable_id,               // ⚠ the AIRTABLE id — expenses store it
+        name: r.name || "",
+        phone: r.phone || "",
+        email: r.email || "",
+        chargesSalesTax: r.charges_sales_tax === true,
+      }));
+      vendors.sort((a, b) => {
+        if (a.name === "Other") return 1;
+        if (b.name === "Other") return -1;
+        return a.name.localeCompare(b.name);
+      });
+      return resp(200, { ok: true, vendors, _source: "neon", _ms: q.ms });
+    }
+    console.error(`vendors: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const records = await fetchAll("Vendors", {
     sortField: "Vendor Name",
     sortDir: "asc",
@@ -7573,6 +7612,31 @@ async function handleCreateVendor(body) {
     method: "POST",
     body: JSON.stringify({ fields })
   });
+
+  // Mirror into Neon in the SAME commit as the read flip above — otherwise a
+  // vendor created here would be invisible to the picker that now reads Neon,
+  // which is the "flip a read without its write" trap that has bitten this
+  // project five times. Airtable stays the identity authority: expenses store
+  // the vendor's rec id, so the record has to exist there first.
+  //
+  // Fails soft. The vendor exists in Airtable and the hourly job/reference sync
+  // is not wired to this table, so the honest fallback is that a failure means
+  // the vendor is missing from the picker until someone re-adds it — which the
+  // duplicate-name guard above makes safe to do.
+  try {
+    await neonWrite("vendor.create",
+      `INSERT INTO expense_vendors (airtable_id, name, phone, email, charges_sales_tax, active, synced_at)
+       VALUES ($1,$2,$3,$4,$5,true,now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         name=EXCLUDED.name, phone=EXCLUDED.phone, email=EXCLUDED.email,
+         charges_sales_tax=EXCLUDED.charges_sales_tax, active=true, synced_at=now()`,
+      [data.id, trimmedName,
+       phone && String(phone).trim() ? String(phone).trim() : null,
+       email && String(email).trim() ? String(email).trim() : null,
+       chargesSalesTax === true]);
+  } catch (e) {
+    console.error(`createVendor: Neon mirror failed, vendor exists in Airtable only — ${e?.message || e}`);
+  }
 
   return resp(200, {
     ok: true,

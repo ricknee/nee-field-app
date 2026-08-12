@@ -7,19 +7,40 @@ live base; nothing below is inferred.
 | # | Hook | App fires it | Airtable automation | Proven by |
 |---|---|---|---|---|
 | 1 | pCloud folders (Estimating) | ✅ | ✅ **UNDEPLOYED** | WatersEdge 1 → Estimating: **one** folder, flag set |
-| 2 | Awarded → Trello + QB Time | ✅ | ⏸ **still deployed, on purpose** | ⬜ waiting on the next real award |
+| 2 | Awarded → Trello + QB Time | ✅ | ✅ **UNDEPLOYED** 2026-08-12 | WatersEdge 1 awarded — **two Make executions**, see below |
 | 3 | Completed → Trello by year | ✅ | ✅ **UNDEPLOYED** 2026-08-12 | cost of failure is cosmetic — a card doesn't move lists |
 | 4 | Service call started | ✅ | ✅ **UNDEPLOYED** 2026-08-12 | cost of failure is cosmetic — a scenario doesn't run |
 
-**3 of 4 done.** #2 is deliberately last: it creates the **QuickBooks Time job**, and QB Time is
-still the book of record for payroll — a silent failure there means the crew cannot clock to a
-newly awarded job, which is an operational problem on a live site rather than a display bug.
-Leaving it deployed costs nothing: both it and the app fire, and Make's `trelloCreated` /
-`tsheetsCreated` flags make whichever arrives second a no-op.
+## ✅ ALL FOUR DONE — 2026-08-12. No Airtable automation triggers a job webhook any more.
 
-**To finish:** award a job, confirm ONE Trello card and ONE QB Time job appear, then undeploy
-`wfl2KJpZRPK1tDz5D`. Do not force a test job through — the debris lands in three systems and QB
-Time jobs are the awkward one to remove.
+### How #2 was proven, and the reasoning trap it exposed
+
+The original plan said *"wait for a real award to prove it, then undeploy"* — **which is
+circular.** While the automation is deployed, both it and the app POST to the same hook and
+Make's flags dedupe, so a Trello card appears either way. You cannot tell which one produced it.
+The proof would only have arrived *after* the thing it was meant to justify.
+
+**Make's execution log breaks the circle.** Each POST starts its own scenario run, so both are
+visible even though only one does work. WatersEdge 1, awarded 2026-08-12:
+
+| Time | Operations | What it was |
+|---|---|---|
+| `10:03:39.545` | **8 ops**, 19 KB | did the work — Trello card + QuickBooks Time job |
+| `10:03:43.116` | **3 ops**, 6 KB | arrived 3.5 s later, no-opped on the flags |
+
+Two runs = the app's POST arrived and Make accepted it. **Use this technique for any future
+replumb**: keep the old trigger, fire the new one alongside, and count executions. It gives
+proof without a leap of faith and without test debris in Trello or QuickBooks Time.
+
+### ⚠ The bug the same award uncovered
+
+Awarding WatersEdge 1 was the first time anyone had walked the status-change path since
+`handleJobs` went Neon-first. `handleUpdateJobStatus` wrote **Airtable only**, so the status
+reverted on refresh — the fourth instance of "flip a read without its write" in this project.
+Fixed in `ff21d46`, along with `handleStartServiceCall` and `handleCompleteServiceCall`, which
+had the identical shape and had never been exercised either.
+
+**Nothing about the webhook work caused it. The webhook work is what walked the road.**
 
 **The doubled state is safe and can sit indefinitely.** While both fire, Make's own guard flags
 make the second call a no-op. So 2–4 need no test jobs forced through — undeploy each as a real

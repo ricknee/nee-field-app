@@ -42,6 +42,9 @@ const txnMarks   = [];   // every markTransactionsPushed id-array
 let   txnReplay  = [];   // rows the replay SELECT returns for an already-submitted cart
 let   txnDeleteMisses = new Set();  // ids the DELETE should report as removing nothing
 let   adjOnHand = 0;                // what v_stock_on_hand reports for the adjustment's pair
+const stockUpdates = [];            // every reorder-point UPDATE
+const stockCreates = [];            // every stock_settings upsert
+let   stockMissing = new Set();     // ids the UPDATE should report as matching nothing
 let   neonPushes = [];              // expense_pushes rows for the history list
 let   neonPushDetail = [];          // one push joined to its line snapshots
 let neonEstimates   = [];  // material_estimates joined to the totals view
@@ -141,6 +144,20 @@ globalThis.fetch = async (url, opts = {}) => {
       payload = neonReply(["id", "title", "pushed_at", "pushed_by", "job_name", "job_airtable_id",
                            "materials_total", "tax_total", "total_pushed", "tx_count", "item_count",
                            "taxable", "expense_record_ids", "description"], neonPushes);
+    } else if (/UPDATE stock_settings SET reorder_point/i.test(sql)) {
+      stockUpdates.push({ id: body.params?.[0], reorderPoint: body.params?.[1] });
+      // RETURNING id — empty means the uuid matched nothing, which the handler
+      // has to turn into a 404 rather than a cheerful ok.
+      payload = neonReply(["id"], stockMissing.has(body.params?.[0]) ? [] : [{ id: body.params?.[0] }]);
+    } else if (/INSERT INTO stock_settings/i.test(sql)) {
+      stockCreates.push({ itemId: body.params?.[0], locationId: body.params?.[1],
+                          reorderPoint: body.params?.[2] });
+      // The FK subselects resolve to NULL for an unknown item or location — the
+      // row saves but lands outside the unique index and outside v_stock_levels.
+      const known = body.params?.[0] === "recItemA" && body.params?.[1] === "recLoc1";
+      payload = neonReply(["id", "item_id", "location_id"],
+        [{ id: "5da5a5a5-9999-4999-8999-999999999999",
+           item_id: known ? "item-uuid" : null, location_id: known ? "loc-uuid" : null }]);
     } else if (/COALESCE\(s\.qty_on_hand, 0\)/i.test(sql)) {
       // The adjustment's "what is there now" read. `adjOnHand === null` models
       // an item/location pair that does not exist at all, which is a 404 rather
@@ -184,8 +201,9 @@ globalThis.fetch = async (url, opts = {}) => {
       // test reads a different item's row and quietly passes on the wrong data.
       if (/WHERE item_airtable_id = \$1/i.test(sql)) rows = rows.filter(s => s.item_airtable_id === body.params?.[0]);
       if (/reorder_point > 0/i.test(sql)) rows = rows.filter(s => Number(s.reorder_point) > 0 && Number(s.qty_on_hand) <= Number(s.reorder_point));
-      payload = neonReply(["stock_airtable_id", "item_airtable_id", "item_name", "location_airtable_id",
-                           "location_name", "qty_on_hand", "default_unit_cost", "total_value",
+      payload = neonReply(["stock_id", "stock_airtable_id", "item_airtable_id", "item_name",
+                           "location_airtable_id", "location_name", "qty_on_hand",
+                           "default_unit_cost", "total_value",
                            "reorder_point", "wire_ft_per_lb", "wire_ft"], rows);
     } else if (/FROM inventory_transactions t/i.test(sql)) {
       // `id` first, not airtable_id — the ledger's handle is the uuid now.
@@ -286,6 +304,7 @@ function reset() {
   txnWrites.length = 0; txnDeletes.length = 0;
   txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set();
   adjOnHand = 0;
+  stockUpdates.length = 0; stockCreates.length = 0; stockMissing = new Set();
   neonPushes = [
     { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "2026-08-11 — New Shop (MIN 285)",
       pushed_at: "2026-08-11T21:55:00.000Z", pushed_by: "Rick Unruh", job_name: "New Shop (MIN 285)",
@@ -303,13 +322,15 @@ function reset() {
   ];
   neonStock = [
     // 40 lb of wire on hand at 19.5 ft/lb → 780 ft; below its reorder point of 100.
-    { stock_airtable_id: "recSL1", item_airtable_id: "recItemB", item_name: "12 THHN",
+    { stock_id: "5da5a5a5-1111-4111-8111-111111111111",
+      stock_airtable_id: "recSL1", item_airtable_id: "recItemB", item_name: "12 THHN",
       location_airtable_id: "recLoc1", location_name: "Shop #1", qty_on_hand: "40.0000",
       default_unit_cost: "1.2500", total_value: "50.0000", reorder_point: "100.0000",
       wire_ft_per_lb: "19.5000", wire_ft: "780.0000" },
     // Negative on-hand: used without being received. Honest arithmetic, and the
     // reason the ledger is the source rather than the cache.
-    { stock_airtable_id: "recSL2", item_airtable_id: "recItemA", item_name: "1/2\" EMT PIPE",
+    { stock_id: "5da5a5a5-2222-4222-8222-222222222222",
+      stock_airtable_id: "recSL2", item_airtable_id: "recItemA", item_name: "1/2\" EMT PIPE",
       location_airtable_id: "recLoc1", location_name: "Shop #1", qty_on_hand: "-1434.0000",
       default_unit_cost: "0.7500", total_value: "-1075.5000", reorder_point: "0.0000",
       wire_ft_per_lb: "0.0000", wire_ft: "0.0000" },
@@ -465,7 +486,8 @@ await test("C: stock levels come from the LEDGER, negatives and all", async () =
   const lvl = r.levels.find(l => l.locationName === "Shop #1");
   eq(lvl.qtyOnHand, -1434, "negative on-hand is surfaced, not clamped — the cache hid this");
   eq(lvl.totalValue, -1075.5, "value follows the ledger too");
-  eq(lvl.id, "recSL2", "carries the Stock Levels rec id so the reorder-point write still targets it");
+  eq(lvl.id, "5da5a5a5-2222-4222-8222-222222222222",
+     "carries the stock setting's UUID — the handle the reorder-point write now targets");
 });
 
 await test("C: wire feet are derived, not read from a stored formula", async () => {
@@ -500,6 +522,54 @@ await test("C: history splits 'job | notes' and prefers the snapshot cost", asyn
   eq(t.total, 8, "10 x 0.80");
   eq(t.from, "Shop #1", "from location resolved");
   eq(t.to, "", "no to location on a Use");
+});
+
+// ── Cutover slice 3: reorder points are native ─────────────────────────────
+
+await test("S3: a reorder point is written to Neon only, keyed on the uuid", async () => {
+  reset();
+  const r = json(await POST({ action: "updateReorderPoint",
+                              stockLevelId: "5da5a5a5-2222-4222-8222-222222222222",
+                              reorderPoint: 250 }));
+  eq(r.ok, true, "ok");
+  eq(stockUpdates.length, 1, "one update");
+  eq(Number(stockUpdates[0].reorderPoint), 250, "the number the admin typed");
+  eq(atRequested.some(u => /Stock%20Levels/.test(u)), false, "Airtable untouched");
+});
+
+await test("S3: a reorder point that matched nothing is a 404, not a silent success", async () => {
+  reset();
+  stockMissing.add("5da5a5a5-0000-4000-8000-000000000000");
+  const r = await POST({ action: "updateReorderPoint",
+                         stockLevelId: "5da5a5a5-0000-4000-8000-000000000000", reorderPoint: 250 });
+  eq(r.statusCode, 404,
+     "reporting a save that did not happen means an item quietly stops warning it is low");
+});
+
+await test("S3: setting a point on a fresh pair upserts rather than duplicating", async () => {
+  reset();
+  const r = json(await POST({ action: "createStockLevel", itemId: "recItemA",
+                              locationId: "recLoc1", reorderPoint: 40 }));
+  eq(r.ok, true, "ok");
+  eq(stockCreates.length, 1, "one statement");
+  eq(atRequested.some(u => /Stock%20Levels/.test(u)), false,
+     "no Airtable record, and no QoH=0 cache row to keep in step either");
+});
+
+await test("S3: an unknown item or location is refused, not saved invisibly", async () => {
+  reset();
+  const r = await POST({ action: "createStockLevel", itemId: "recNope",
+                         locationId: "recLoc1", reorderPoint: 40 });
+  eq(r.statusCode, 404,
+     "unresolved FKs would sit outside the unique index AND outside v_stock_levels — saved and unfindable");
+});
+
+await test("S3: stock levels refuse to fall back to a frozen Airtable", async () => {
+  reset();
+  neonDown = true;
+  const r = await GET("stockLevels", { itemId: "recItemA" });
+  eq(r.statusCode, 503, "stale reorder points over a discredited on-hand cache is a wrong answer");
+  eq(atRequested.some(u => /Stock%20Levels/.test(u)), false, "it did not even try");
 });
 
 // ── Cutover slice 2: the push history ──────────────────────────────────────

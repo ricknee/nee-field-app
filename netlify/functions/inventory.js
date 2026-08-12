@@ -829,24 +829,8 @@ async function deleteEstimateFromNeon(airtableId) {
 }
 
 // Reorder point / notes. Same fail-soft reasoning; these are settings, not money.
-async function syncStockSettingToNeon(rec) {
-  if (!rec?.id) return;
-  const f = rec.fields || {};
-  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
-  const q = await neonQuery(
-    `INSERT INTO stock_settings
-       (airtable_id, item_airtable_id, item_id, location_airtable_id, location_id,
-        reorder_point, notes, synced_at)
-     VALUES ($1,$2,(SELECT id FROM inventory_items WHERE airtable_id=$2),
-             $3,(SELECT id FROM locations WHERE airtable_id=$3),$4,$5, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       item_airtable_id=EXCLUDED.item_airtable_id, item_id=EXCLUDED.item_id,
-       location_airtable_id=EXCLUDED.location_airtable_id, location_id=EXCLUDED.location_id,
-       reorder_point=EXCLUDED.reorder_point, notes=EXCLUDED.notes, synced_at=now()`,
-    [rec.id, lnk(f["Item"]), lnk(f["Location"]), num(f["Reorder Point"]), f["Notes"] ?? null]);
-  if (!q?.rows) console.error(`syncStockSettingToNeon ${rec.id} failed (stale until loader): ${q?.error || "Neon unavailable"}`);
-}
+// syncStockSettingToNeon is gone: reorder points are written straight to
+// Neon now, so there is no Airtable record to mirror from.
 
 // Re-read the item from Airtable and sync it. Used by the cost writers, which
 // PATCH a single field and so don't have a full record in hand.
@@ -2028,9 +2012,6 @@ async function handleLoadInventoryReference() {
   // is therefore recomputed by `v_stock_on_hand` rather than copied — see
   // db/schema/032. Only Reorder Point and Notes come across, because only they
   // are things a human typed.
-  const [stock] = await Promise.all([
-    fetchAll(API_ROOT_INV, "Stock Levels", {}),
-  ]);
 
   // ⚠⚠ THE LEDGER NO LONGER LOADS, AND MUST NOT. Once a domain's writes go
   // native, Neon is the authority and Airtable is a frozen snapshot — so
@@ -2045,12 +2026,9 @@ async function handleLoadInventoryReference() {
   // resurrection. Leaving the table out entirely is the actual rule:
   // **a domain leaves the loader on the day it goes native.**
 
-  counts.stockSettings = await upsertChunked("stock_settings", "stock_settings",
-    ["airtable_id", "item_airtable_id", "location_airtable_id", "reorder_point", "notes"],
-    stock.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      item_airtable_id: lnk(f["Item"]), location_airtable_id: lnk(f["Location"]),
-      reorder_point: num(f["Reorder Point"]), notes: f["Notes"] ?? null }; }),
-    ["item_airtable_id", "location_airtable_id", "reorder_point", "notes"]);
+  // stock_settings has left the loader too — same rule as the ledger and the
+  // push history: a domain stops being loaded on the day it goes native, or
+  // the next run overwrites Neon with a frozen Airtable snapshot.
 
   // ── Step D: estimating ───────────────────────────────────────────────────
   // ⚠ `material_` prefix throughout — Neon's `job_estimates` is the MAIN base's
@@ -2215,11 +2193,12 @@ async function handleLoadInventoryReference() {
     // fetch. Reporting a count for a table it no longer touches would be a
     // reassuring lie.
     airtable: { locations: locs.length, vendors: vends.length, items: items.length,
-                vendorPricing: pricing.length, stockSettings: stock.length,
+                vendorPricing: pricing.length,
                 estimates: ests.length, estimateLines: estLines.length,
                 templates: tmpls.length, templateLines: tmplLines.length,
                 orders: orders.length, orderLines: orderLines.length },
-    nativeNotLoaded: ["inventory_transactions", "expense_pushes", "expense_push_lines"],
+    nativeNotLoaded: ["inventory_transactions", "expense_pushes", "expense_push_lines",
+                      "stock_settings"],
     written: counts,
     // Rows whose FKs didn't resolve. A transaction with no location is invisible
     // to on-hand, so this is reported rather than swallowed.
@@ -2379,11 +2358,9 @@ async function handleDelete(body) {
 }
 
 // Stock Levels table fields
-const F_SL_STOCK_ID      = "fldrBCRyiuelyekGu";
-const F_SL_ITEM          = "flduTAU0KQojkrjW7";
-const F_SL_LOC           = "fldqiB4eTuEH5ebOw";
-const F_SL_QOH           = "fldYS6soPXlHkxI1V";
-const F_SL_REORDER_POINT = "fldy08kLJ1YH7lMVG";
+// The Stock Levels field ids are gone with the slice-3 cutover: reorder
+// points live in Neon, and Airtable's Quantity On Hand cache was never
+// carried across at all (on-hand is derived from the ledger).
 
 // ── STOCK LEVELS BY ITEM ──────────────────────────────────
 async function handleStockLevels(params) {
@@ -2396,7 +2373,7 @@ async function handleStockLevels(params) {
   // Numbers WILL differ from what this screen used to show, and the ledger is
   // the one that is right. See db/schema/032.
   const q = await neonQuery(
-    `SELECT stock_airtable_id, location_name, qty_on_hand, default_unit_cost,
+    `SELECT stock_id, location_name, qty_on_hand, default_unit_cost,
             total_value, reorder_point, wire_ft_per_lb, wire_ft
        FROM v_stock_levels WHERE item_airtable_id = $1
       ORDER BY location_name ASC`, [itemId]);
@@ -2404,9 +2381,12 @@ async function handleStockLevels(params) {
     return resp(200, {
       ok: true, _source: "neon",
       levels: q.rows.map(r => ({
-        // May be null when a pair has transactions but no Stock Levels row —
-        // the frontend uses this to decide update-vs-create for a reorder point.
-        id:           r.stock_airtable_id || null,
+        // The uuid, not the rec id — a reorder point set after the cutover has
+        // no Airtable record behind it, and this handle comes straight back as
+        // `stockLevelId` on the update.
+        // Still null when a pair has movements but no setting row at all; the
+        // frontend uses that to choose create-vs-update.
+        id:           r.stock_id || null,
         locationName: r.location_name || "",
         qtyOnHand:    Number(r.qty_on_hand ?? 0),
         unitCost:     Number(r.default_unit_cost ?? 0),
@@ -2418,41 +2398,13 @@ async function handleStockLevels(params) {
     });
   }
 
-  // Fetch ALL stock level records and filter in JavaScript by item record ID.
-  // This is reliable regardless of how the item name appears in the Stock ID formula.
-  const allRecords = await fetchAll(API_ROOT_INV, "Stock Levels", {});
-
-  const records = allRecords.filter(r => {
-    const itemLinks = r.fields?.["Item"] || [];
-    return itemLinks.some(link => {
-      const linkId = typeof link === "object" ? link.id : String(link);
-      return linkId === itemId;
-    });
-  });
-
-  const levels = records.map(r => {
-    const f = r.fields || {};
-    const stockId = f["Stock ID"] || "";
-    const parts   = stockId.split(" | ");
-    const locName = parts[parts.length - 1] || "";
-    const wireFtLbRaw = f["Wire ft/lb"];
-    const wireFtLb    = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
-    const wireFtRaw   = f["Wire (Ft.)"];
-    const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
-    return {
-      id:           r.id,
-      locationName: locName,
-      qtyOnHand:    f["Quantity On Hand"]      || 0,
-      unitCost:     f["Unit Cost (from Item)"] || 0,
-      totalValue:   f["Total Value"]           || 0,
-      reorderPoint: f["Reorder Point"]         || 0,
-      wireWeight:   wireFtLb,
-      wireFt:       wireFt
-    };
-  });
-
-  levels.sort((a, b) => a.locationName.localeCompare(b.locationName));
-  return resp(200, { ok: true, levels });
+  // Fail closed. Airtable's Stock Levels table stopped being written on the
+  // slice-3 cutover, so falling back to it would serve reorder points frozen
+  // at that date AND its `Quantity On Hand` cache — the very column that
+  // disagreed with the ledger on 237 of 269 pairs and was deliberately never
+  // carried across. Stale settings on top of a discredited stock figure is not
+  // a degraded answer, it is a wrong one.
+  return resp(503, { ok: false, error: "Stock levels are unavailable right now. Please try again." });
 }
 
 // ── STOCK LEVELS ALL (for Category Browse in Check Stock) ─
@@ -2460,14 +2412,14 @@ async function handleStockLevels(params) {
 // client can group by item and show per-location breakdowns.
 async function handleStockLevelsAll() {
   const q = await neonQuery(
-    `SELECT stock_airtable_id, item_airtable_id, location_name, qty_on_hand,
+    `SELECT stock_id, item_airtable_id, location_name, qty_on_hand,
             default_unit_cost, total_value, reorder_point, wire_ft_per_lb, wire_ft
        FROM v_stock_levels ORDER BY item_name ASC, location_name ASC`);
   if (q?.rows) {
     return resp(200, {
       ok: true, _source: "neon",
       levels: q.rows.map(r => ({
-        id:           r.stock_airtable_id || null,
+        id:           r.stock_id || null,
         itemId:       r.item_airtable_id || "",
         locationName: r.location_name || "",
         qtyOnHand:    Number(r.qty_on_hand ?? 0),
@@ -2480,42 +2432,13 @@ async function handleStockLevelsAll() {
     });
   }
 
-  const allRecords = await fetchAll(API_ROOT_INV, "Stock Levels", {});
-
-  const levels = allRecords.map(r => {
-    const f = r.fields || {};
-
-    // Extract the linked item record ID
-    const itemLinks = f["Item"] || [];
-    const itemId = itemLinks.length
-      ? (typeof itemLinks[0] === "object" ? itemLinks[0].id : String(itemLinks[0]))
-      : "";
-
-    // Location name is the last segment of the Stock ID formula field
-    const stockId = f["Stock ID"] || "";
-    const parts   = stockId.split(" | ");
-    const locName = parts[parts.length - 1] || "";
-
-    // Wire fields — lookup fields return arrays, normalize to number
-    const wireFtLbRaw = f["Wire ft/lb"];
-    const wireFtLb    = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
-    const wireFtRaw   = f["Wire (Ft.)"];
-    const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
-
-    return {
-      id:           r.id,
-      itemId:       itemId,
-      locationName: locName,
-      qtyOnHand:    f["Quantity On Hand"]      || 0,
-      unitCost:     f["Unit Cost (from Item)"] || 0,
-      totalValue:   f["Total Value"]           || 0,
-      reorderPoint: f["Reorder Point"]         || 0,
-      wireWeight:   wireFtLb,
-      wireFt:       wireFt
-    };
-  });
-
-  return resp(200, { ok: true, levels });
+  // Fail closed. Airtable's Stock Levels table stopped being written on the
+  // slice-3 cutover, so falling back to it would serve reorder points frozen
+  // at that date AND its `Quantity On Hand` cache — the very column that
+  // disagreed with the ledger on 237 of 269 pairs and was deliberately never
+  // carried across. Stale settings on top of a discredited stock figure is not
+  // a degraded answer, it is a wrong one.
+  return resp(503, { ok: false, error: "Stock levels are unavailable right now. Please try again." });
 }
 
 // ── REORDER ALERTS ────────────────────────────────────────
@@ -2547,57 +2470,13 @@ async function handleReorderAlerts() {
     return resp(200, { ok: true, _source: "neon", groups: g });
   }
 
-  const records = await fetchAll(API_ROOT_INV, "Stock Levels", {
-    filter: `AND({Reorder Point} > 0, {Quantity On Hand} <= {Reorder Point})`
-  });
-
-  const groups = {};
-
-  records.forEach(r => {
-    const f       = r.fields || {};
-    const stockId = f["Stock ID"] || "";
-    const parts   = stockId.split(" | ");
-    const locName  = parts[parts.length - 1] || "Unknown";
-    const itemName = parts.slice(0, -1).join(" | ") || stockId;
-    const qty      = f["Quantity On Hand"] || 0;
-    const reorder  = f["Reorder Point"]    || 0;
-    // Handle lookup field returning array
-    const wireFtLbRaw = f["Wire ft/lb"];
-    const wireWeight  = Array.isArray(wireFtLbRaw) ? (wireFtLbRaw[0] || 0) : (wireFtLbRaw || 0);
-    const wireFtRaw   = f["Wire (Ft.)"];
-    const wireFt      = Array.isArray(wireFtRaw) ? (wireFtRaw[0] || 0) : (wireFtRaw || 0);
-
-    // Pull the linked record IDs so the frontend can deep-link this alert
-    // straight into the Receive screen with item + location prefilled. Names
-    // alone aren't safe for lookup (two items could share part of a name),
-    // so we always pass IDs when they're available.
-    const itemLinks = f["Item"] || [];
-    const itemId = itemLinks.length
-      ? (typeof itemLinks[0] === "object" ? itemLinks[0].id : String(itemLinks[0]))
-      : "";
-    const locLinks = f["Location"] || [];
-    const locationId = locLinks.length
-      ? (typeof locLinks[0] === "object" ? locLinks[0].id : String(locLinks[0]))
-      : "";
-
-    if (!groups[locName]) groups[locName] = [];
-    groups[locName].push({
-      itemId,
-      itemName,
-      locationId,
-      qtyOnHand:    qty,
-      reorderPoint: reorder,
-      shortBy:      reorder - qty,
-      wireWeight,
-      wireFt
-    });
-  });
-
-  Object.keys(groups).forEach(loc => {
-    groups[loc].sort((a, b) => a.itemName.localeCompare(b.itemName));
-  });
-
-  return resp(200, { ok: true, groups });
+  // Fail closed. Airtable's Stock Levels table stopped being written on the
+  // slice-3 cutover, so falling back to it would serve reorder points frozen
+  // at that date AND its `Quantity On Hand` cache — the very column that
+  // disagreed with the ledger on 237 of 269 pairs and was deliberately never
+  // carried across. Stale settings on top of a discredited stock figure is not
+  // a degraded answer, it is a wrong one.
+  return resp(503, { ok: false, error: "Reorder alerts are unavailable right now. Please try again." });
 }
 
 // ── UPDATE REORDER POINT ──────────────────────────────────
@@ -2605,49 +2484,58 @@ async function handleUpdateReorderPoint(body) {
   const { stockLevelId, reorderPoint } = body || {};
   if (!stockLevelId) return resp(400, { ok: false, error: "Missing stockLevelId." });
   if (reorderPoint === undefined) return resp(400, { ok: false, error: "Missing reorderPoint." });
-  await atFetch(API_ROOT_INV, `${encodeURIComponent("Stock Levels")}/${stockLevelId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: { [F_SL_REORDER_POINT]: Number(reorderPoint) } })
-  });
-  // Reorder point drives the alerts screen, which reads Neon now.
-  const q = await neonQuery(
-    `UPDATE stock_settings SET reorder_point = $2, synced_at = now() WHERE airtable_id = $1`,
+
+  // Keyed on the uuid, which every row has — the historical 269 as well as
+  // anything set since. Fails closed: the reorder point drives the alerts
+  // screen, and reporting a save that did not happen means an item quietly
+  // stops warning that it is running out.
+  const rows = await neonWrite("updateReorderPoint",
+    `UPDATE stock_settings SET reorder_point = $2, synced_at = now()
+      WHERE id = $1::uuid RETURNING id`,
     [stockLevelId, Number(reorderPoint)]);
-  if (!q?.rows) console.error(`updateReorderPoint: Neon not updated for ${stockLevelId} (stale until loader): ${q?.error || "Neon unavailable"}`);
+  if (!rows.length) return resp(404, { ok: false, error: "Stock setting not found." });
   return resp(200, { ok: true });
 }
 
 // ── CREATE STOCK LEVEL ────────────────────────────────────
-// Used when an admin sets a reorder point on an item × location combo that
-// has no Stock Level record yet. Creates the row with QoH=0; the existing
-// Airtable automation keys on Item ID + Location ID and will update this row
-// (without overwriting Reorder Point) on the next transaction.
+// Used when an admin sets a reorder point on an item × location pair that has
+// no setting row yet.
+//
+// Native now, and simpler for it. The Airtable version had to create a Stock
+// Levels record carrying a `Quantity On Hand` of 0 and a "Item | Location"
+// display string, then rely on an Airtable automation to keep that cache
+// updated without clobbering the reorder point. None of that exists here:
+// on-hand is derived from the ledger by v_stock_on_hand, so the only thing
+// worth storing is the number a human chose.
+//
+// An upsert rather than an insert, on the (item_id, location_id) partial unique
+// — that pair IS the identity of a setting, and a second row for the same pair
+// would make "what is the reorder point here?" ambiguous. It also makes the
+// create/update split in the UI harmless: either path lands on the same row.
 async function handleCreateStockLevel(body) {
-  const { itemId, itemName, locationId, locationName, reorderPoint } = body || {};
+  const { itemId, locationId, reorderPoint } = body || {};
   if (!itemId)     return resp(400, { ok: false, error: "Missing itemId." });
   if (!locationId) return resp(400, { ok: false, error: "Missing locationId." });
   if (reorderPoint === undefined) return resp(400, { ok: false, error: "Missing reorderPoint." });
 
-  const fields = {
-    [F_SL_STOCK_ID]:      `${itemName || ""} | ${locationName || ""}`,
-    [F_SL_ITEM]:          [String(itemId)],
-    [F_SL_LOC]:           [String(locationId)],
-    [F_SL_QOH]:           0,
-    [F_SL_REORDER_POINT]: Number(reorderPoint)
-  };
+  const rows = await neonWrite("createStockLevel",
+    `INSERT INTO stock_settings
+       (item_airtable_id, item_id, location_airtable_id, location_id, reorder_point, synced_at)
+     VALUES ($1, (SELECT id FROM inventory_items WHERE airtable_id = $1),
+             $2, (SELECT id FROM locations WHERE airtable_id = $2), $3, now())
+     ON CONFLICT (item_id, location_id) WHERE item_id IS NOT NULL AND location_id IS NOT NULL
+       DO UPDATE SET reorder_point = EXCLUDED.reorder_point, synced_at = now()
+     RETURNING id, item_id, location_id`,
+    [String(itemId), String(locationId), Number(reorderPoint)]);
 
-  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Stock Levels"), {
-    method: "POST",
-    body: JSON.stringify({ records: [{ fields }], typecast: true })
-  });
-
-  const recordId = created.records?.[0]?.id;
-  if (!recordId) return resp(500, { ok: false, error: "Failed to create stock level." });
-  // Note the QoH=0 written above is Airtable's cache column, which Neon does not
-  // carry at all — on-hand there is derived from the ledger. Only the reorder
-  // point and the item/location pairing come across.
-  await syncStockSettingToNeon(created.records[0]);
-  return resp(200, { ok: true, recordId });
+  const made = rows[0];
+  if (!made) return resp(500, { ok: false, error: "Failed to save the reorder point." });
+  // A row whose FKs did not resolve would sit outside the (item_id, location_id)
+  // unique index and outside v_stock_levels — saved, and invisible.
+  if (!made.item_id || !made.location_id) {
+    return resp(404, { ok: false, error: "Item or location not found." });
+  }
+  return resp(200, { ok: true, recordId: made.id });
 }
 
 // ═══════════════════════════════════════════════════════════

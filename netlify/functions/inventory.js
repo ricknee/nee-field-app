@@ -1410,31 +1410,12 @@ const PUSH_TABLE_ID       = "tbl4txpj2l3pGk5E1";  // Expense Pushes
 const PUSH_LINES_TABLE_ID = "tblloWlcSE7aXAX1o";  // Expense Push Lines
 
 // Expense Pushes fields
-const F_PUSH_TITLE       = "fldtLnuQkc2DOjuLf";
-const F_PUSH_DATE        = "fldpCqWwprRsFLlWZ";
-const F_PUSH_BY          = "fld94yrSbW5Pgy3R7";
-const F_PUSH_JOB_NAME    = "flduHf59GYpd2BpY4";
-const F_PUSH_JOB_ID_MAIN = "fldEKePmtgCIbBuQi";
-const F_PUSH_MAT_TOTAL   = "fldX3sYU1i6c0nk9I";
-const F_PUSH_TAX_TOTAL   = "fldKPeCOawEogqZ0B";
-const F_PUSH_TOTAL       = "fldMmYbl7vDtcRDTc";
-const F_PUSH_TX_COUNT    = "fldorTygoGLOB0Kkv";
-const F_PUSH_ITEM_COUNT  = "fldPvphfqpuYQZhgd";
-const F_PUSH_TAXABLE     = "fldX5Drh72lqcEUvR";
-const F_PUSH_EXP_IDS     = "fldZNQLIlZbQPMF9B";
-const F_PUSH_DESCRIPTION = "fldswL4blm5aFx14G";
-const F_PUSH_PUSHID      = "fldpGddBp19KLT7dW";  // idempotency key (one per job group)
+// The Expense Pushes / Expense Push Lines field ids that stood here are gone
+// with the slice-2 cutover: the push history is written to Neon only, and the
+// Airtable tables are never touched again except by the loader reading the 34
+// historical rows.
 
-// Expense Push Lines fields
-const F_PL_TITLE     = "fld7XZyGWzWKC2H1O";
-const F_PL_PUSH      = "fldXIWYGSqLvcs2tJ";
-const F_PL_ITEM_NAME = "fldz2kyBPufNRUzuj";
-const F_PL_QTY       = "fldhzxPwqz9OPRT1i";
-const F_PL_UNIT_COST = "fldIAkYTpZFnoYIY7";
-const F_PL_LINE_TOT  = "fldzwMnfOwszQ6ozH";
-const F_PL_WIRE_FT   = "fldvpWg3Ky74GiE7q";
-
-// ── Write a Push History header + lines to the inventory base.
+// ── Write a Push History header + lines.
 // Best-effort: if either write fails we log and continue so the main
 // expense push still appears as success to the user. The Push ID is
 // returned so the caller can include it in the response.
@@ -1446,62 +1427,54 @@ async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal,
     const titleSafe = String(jobName || "Unknown").substring(0, 80);
     const title = `${dateOnly} — ${titleSafe}`;
 
-    const headerFields = {};
-    headerFields[F_PUSH_TITLE]       = title;
-    headerFields[F_PUSH_DATE]        = iso;
-    headerFields[F_PUSH_BY]          = String(pushedBy || "");
-    headerFields[F_PUSH_JOB_NAME]    = String(jobName || "");
-    headerFields[F_PUSH_JOB_ID_MAIN] = String(mainJobId || "");
-    headerFields[F_PUSH_MAT_TOTAL]   = Math.round(Number(materialsTotal || 0) * 100) / 100;
-    headerFields[F_PUSH_TAX_TOTAL]   = Math.round(Number(taxTotal || 0) * 100) / 100;
-    headerFields[F_PUSH_TOTAL]       = Math.round((Number(materialsTotal || 0) + Number(taxTotal || 0)) * 100) / 100;
-    headerFields[F_PUSH_TX_COUNT]    = Number(txCount || 0);
-    headerFields[F_PUSH_ITEM_COUNT]  = (lines || []).length;
-    headerFields[F_PUSH_TAXABLE]     = !!taxable;
-    headerFields[F_PUSH_EXP_IDS]     = (expenseIds || []).join(", ");
-    headerFields[F_PUSH_DESCRIPTION] = String(description || "");
-    if (pushId) headerFields[F_PUSH_PUSHID] = String(pushId);
+    // ON CONFLICT on push_id makes a retry a no-op instead of a duplicate
+    // history row for a charge that only happened once. RETURNING on the
+    // conflict path too, via the DO UPDATE — a bare DO NOTHING returns no row,
+    // and then the lines below would have no parent to attach to.
+    const hdr = await neonWrite("recordPushHistory.header",
+      `INSERT INTO expense_pushes
+         (push_id, title, pushed_at, pushed_by, job_name, job_airtable_id,
+          materials_total, tax_total, total_pushed, tx_count, item_count, taxable,
+          expense_record_ids, description, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())
+       ON CONFLICT (push_id) WHERE push_id IS NOT NULL DO UPDATE SET
+         expense_record_ids = EXCLUDED.expense_record_ids, synced_at = now()
+       RETURNING id`,
+      [pushId ? String(pushId) : null, title, iso, String(pushedBy || ""),
+       String(jobName || ""), String(mainJobId || ""),
+       Math.round(Number(materialsTotal || 0) * 100) / 100,
+       Math.round(Number(taxTotal || 0) * 100) / 100,
+       Math.round((Number(materialsTotal || 0) + Number(taxTotal || 0)) * 100) / 100,
+       Number(txCount || 0), (lines || []).length, !!taxable,
+       (expenseIds || []).join(", "), String(description || "")]);
 
-    const created = await atFetch(API_ROOT_INV, encodeURIComponent("Expense Pushes"), {
-      method: "POST",
-      body: JSON.stringify({ records: [{ fields: headerFields }], typecast: true })
-    });
-    const pushHeaderId = created.records?.[0]?.id;
+    const pushHeaderId = hdr[0]?.id;
     if (!pushHeaderId) {
-      console.warn("Push History: header create returned no ID");
+      console.warn("Push History: header write returned no id");
       return null;
     }
 
-    // Write line snapshots in batches of 10 — pure best-effort, errors are non-fatal
-    const lineRecords = (lines || []).map(l => {
-      const itemName = String(l.item || "Item").substring(0, 100);
-      const qty      = Number(l.qty || 0);
-      const cost     = Number(l.cost || 0);
-      const total    = Number(l.total || 0);
-      const wireFt   = Number(l.wireFt || 0);
-      const lineTitle = `${itemName} × ${qty}`.substring(0, 100);
+    // Lines in ONE statement rather than batches of ten — the batching existed
+    // for Airtable's request limit, not ours. Replacing first makes a retry
+    // idempotent: the header is reused via ON CONFLICT, so without this the
+    // same lines would accumulate underneath it.
+    if ((lines || []).length) {
+      await neonWrite("recordPushHistory.clearLines",
+        `DELETE FROM expense_push_lines WHERE expense_push_id = $1::uuid`, [pushHeaderId]);
 
-      const f = {};
-      f[F_PL_TITLE]     = lineTitle;
-      f[F_PL_PUSH]      = [String(pushHeaderId)];
-      f[F_PL_ITEM_NAME] = itemName;
-      f[F_PL_QTY]       = qty;
-      f[F_PL_UNIT_COST] = cost;
-      f[F_PL_LINE_TOT]  = total;
-      if (wireFt > 0) f[F_PL_WIRE_FT] = wireFt;
-      return { fields: f };
-    });
-
-    for (let i = 0; i < lineRecords.length; i += 10) {
-      const batch = lineRecords.slice(i, i + 10);
-      try {
-        await atFetch(API_ROOT_INV, encodeURIComponent("Expense Push Lines"), {
-          method: "POST",
-          body: JSON.stringify({ records: batch, typecast: true })
-        });
-      } catch(lineErr) {
-        console.warn("Push History: line batch write failed (non-fatal):", lineErr.message);
-      }
+      const params = [];
+      const p = (v) => { params.push(v); return `$${params.length}`; };
+      const tuples = (lines || []).map(l => {
+        const itemName = String(l.item || "Item").substring(0, 100);
+        const qty      = Number(l.qty || 0);
+        return `(${p(pushHeaderId)}, ${p(`${itemName} × ${qty}`.substring(0, 100))}, ${p(itemName)},` +
+               `${p(qty)}, ${p(Number(l.cost || 0))}, ${p(Number(l.total || 0))},` +
+               `${p(Number(l.wireFt || 0) > 0 ? Number(l.wireFt) : null)}, now())`;
+      });
+      await neonWrite("recordPushHistory.lines",
+        `INSERT INTO expense_push_lines
+           (expense_push_id, line_title, item_name, quantity, unit_cost, line_total, wire_ft, synced_at)
+         VALUES ${tuples.join(",")}`, params);
     }
 
     return pushHeaderId;
@@ -1514,33 +1487,45 @@ async function recordPushHistory({ jobName, mainJobId, materialsTotal, taxTotal,
 // ── PUSH HISTORY LIST (most recent first) ─────────────────
 async function handlePushHistory(params) {
   const limit = Math.min(Number(params?.limit || 100), 500);
-  const records = await fetchAll(API_ROOT_INV, "Expense Pushes", {
-    sortField: "Date Pushed",
-    sortDir: "desc",
-    maxRecords: limit
-  });
 
-  const pushes = records.map(r => {
-    const f = r.fields || {};
-    return {
+  // ⚠ `id` is the uuid, for the historical rows as well as the new ones. It
+  // travels to the client and comes straight back to pushHistoryDetail, and a
+  // natively-written push has no rec id to send — the same trap that broke the
+  // ledger's push in slice 1.
+  //
+  // No Airtable fallback: it no longer receives push history, so falling back
+  // would show a list missing every push since this slice and present it as
+  // complete. The audit trail is the one thing that must not quietly lie.
+  const q = await neonQuery(
+    `SELECT id, title, pushed_at, pushed_by, job_name, job_airtable_id,
+            materials_total, tax_total, total_pushed, tx_count, item_count,
+            taxable, expense_record_ids, description
+       FROM expense_pushes
+      ORDER BY pushed_at DESC NULLS LAST
+      LIMIT $1`, [limit]);
+  if (!q?.rows) {
+    return resp(503, { ok: false, error: "Push history is unavailable right now. Please try again." });
+  }
+
+  return resp(200, {
+    ok: true, _source: "neon",
+    pushes: q.rows.map(r => ({
       id:            r.id,
-      title:         f["Push Title"] || "",
-      datePushed:    f["Date Pushed"] || "",
-      pushedBy:      f["Pushed By"] || "",
-      jobName:       f["Job Name"] || "",
-      jobIdMain:     f["Job ID (Main)"] || "",
-      materialsTotal: Number(f["Materials Total"] || 0),
-      taxTotal:      Number(f["Tax Total"] || 0),
-      total:         Number(f["Total Pushed"] || 0),
-      txCount:       Number(f["Tx Count"] || 0),
-      itemCount:     Number(f["Item Count"] || 0),
-      taxable:       !!f["Taxable"],
-      expenseIds:    f["Expense Record IDs"] || "",
-      description:   f["Description"] || ""
-    };
+      title:         r.title || "",
+      datePushed:    r.pushed_at ? new Date(r.pushed_at).toISOString() : "",
+      pushedBy:      r.pushed_by || "",
+      jobName:       r.job_name || "",
+      jobIdMain:     r.job_airtable_id || "",
+      materialsTotal: Number(r.materials_total ?? 0),
+      taxTotal:      Number(r.tax_total ?? 0),
+      total:         Number(r.total_pushed ?? 0),
+      txCount:       Number(r.tx_count ?? 0),
+      itemCount:     Number(r.item_count ?? 0),
+      taxable:       r.taxable === true,
+      expenseIds:    r.expense_record_ids || "",
+      description:   r.description || ""
+    })),
   });
-
-  return resp(200, { ok: true, pushes });
 }
 
 // ── PUSH HISTORY DETAIL (one push with its line snapshots) ───
@@ -1548,57 +1533,56 @@ async function handlePushHistoryDetail(params) {
   const { id } = params || {};
   if (!id) return resp(400, { ok: false, error: "Missing push id." });
 
-  // Fetch header
-  const headerData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Expense Pushes")}/${id}`,
-    { method: "GET" }
-  );
-  if (!headerData?.id) return resp(404, { ok: false, error: "Push not found." });
-  const f = headerData.fields || {};
+  // One query instead of "fetch the header, then pull EVERY push line and
+  // filter in JS" — which is what the Airtable version had to do, because
+  // filtering a linked record needs FIND(ARRAYJOIN()).
+  //
+  // `id` is the uuid. No Airtable fallback, for the same reason as the list:
+  // its copy stops at this slice, and a partial audit trail shown as a complete
+  // one is worse than an error.
+  const q = await neonQuery(
+    `SELECT p.id, p.title, p.pushed_at, p.pushed_by, p.job_name, p.job_airtable_id,
+            p.materials_total, p.tax_total, p.total_pushed, p.tx_count, p.item_count,
+            p.taxable, p.expense_record_ids, p.description,
+            l.id AS line_id, l.item_name, l.line_title, l.quantity, l.unit_cost,
+            l.line_total, l.wire_ft
+       FROM expense_pushes p
+       LEFT JOIN expense_push_lines l ON l.expense_push_id = p.id
+      WHERE p.id = $1::uuid
+      ORDER BY l.line_total DESC NULLS LAST`, [id]);
+  if (!q?.rows) {
+    return resp(503, { ok: false, error: "Push history is unavailable right now. Please try again." });
+  }
+  if (!q.rows.length) return resp(404, { ok: false, error: "Push not found." });
 
-  // Fetch lines linked to this push — pull all lines and filter client-side
-  // (small table, simpler than building a complex formula filter)
-  const allLines = await fetchAll(API_ROOT_INV, "Expense Push Lines", {});
-  const lines = allLines
-    .filter(r => {
-      const linkArr = r.fields?.["Push"] || [];
-      return linkArr.some(link => {
-        const linkId = typeof link === "object" ? link.id : String(link);
-        return linkId === id;
-      });
-    })
-    .map(r => {
-      const lf = r.fields || {};
-      return {
-        id:        r.id,
-        itemName:  lf["Item Name"] || lf["Line Title"] || "Item",
-        qty:       Number(lf["Quantity"] || 0),
-        unitCost:  Number(lf["Unit Cost"] || 0),
-        lineTotal: Number(lf["Line Total"] || 0),
-        wireFt:    Number(lf["Wire Ft"] || 0)
-      };
-    })
-    .sort((a, b) => b.lineTotal - a.lineTotal);  // biggest dollars first
-
+  const h = q.rows[0];
   return resp(200, {
-    ok: true,
+    ok: true, _source: "neon",
     push: {
-      id:            headerData.id,
-      title:         f["Push Title"] || "",
-      datePushed:    f["Date Pushed"] || "",
-      pushedBy:      f["Pushed By"] || "",
-      jobName:       f["Job Name"] || "",
-      jobIdMain:     f["Job ID (Main)"] || "",
-      materialsTotal: Number(f["Materials Total"] || 0),
-      taxTotal:      Number(f["Tax Total"] || 0),
-      total:         Number(f["Total Pushed"] || 0),
-      txCount:       Number(f["Tx Count"] || 0),
-      itemCount:     Number(f["Item Count"] || 0),
-      taxable:       !!f["Taxable"],
-      expenseIds:    f["Expense Record IDs"] || "",
-      description:   f["Description"] || "",
-      lines
+      id:            h.id,
+      title:         h.title || "",
+      datePushed:    h.pushed_at ? new Date(h.pushed_at).toISOString() : "",
+      pushedBy:      h.pushed_by || "",
+      jobName:       h.job_name || "",
+      jobIdMain:     h.job_airtable_id || "",
+      materialsTotal: Number(h.materials_total ?? 0),
+      taxTotal:      Number(h.tax_total ?? 0),
+      total:         Number(h.total_pushed ?? 0),
+      txCount:       Number(h.tx_count ?? 0),
+      itemCount:     Number(h.item_count ?? 0),
+      taxable:       h.taxable === true,
+      expenseIds:    h.expense_record_ids || "",
+      description:   h.description || "",
+      // Biggest dollars first, done in SQL. A push with no lines yields one row
+      // of NULLs from the LEFT JOIN, which is not a line.
+      lines: q.rows.filter(r => r.line_id).map(r => ({
+        id:        r.line_id,
+        itemName:  r.item_name || r.line_title || "Item",
+        qty:       Number(r.quantity ?? 0),
+        unitCost:  Number(r.unit_cost ?? 0),
+        lineTotal: Number(r.line_total ?? 0),
+        wireFt:    Number(r.wire_ft ?? 0),
+      })),
     }
   });
 }
@@ -2160,6 +2144,40 @@ async function handleLoadInventoryReference() {
     ["line_number", "order_airtable_id", "item_airtable_id", "description", "quantity_ordered",
      "unit_cost_at_order", "line_total_stored", "received", "notes"]);
 
+  // ── Slice 2: the push history — the audit trail behind every charged dollar ──
+  const [pushes, pushLines] = await Promise.all([
+    fetchAll(API_ROOT_INV, "Expense Pushes", {}),
+    fetchAll(API_ROOT_INV, "Expense Push Lines", {}),
+  ]);
+
+  counts.expensePushes = await upsertChunked("expense_pushes", "expense_pushes",
+    ["airtable_id", "push_id", "title", "pushed_at", "pushed_by", "job_name", "job_airtable_id",
+     "materials_total", "tax_total", "total_pushed", "tx_count", "item_count", "taxable",
+     "expense_record_ids", "description"],
+    pushes.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      push_id: f["Push ID"] ?? null, title: f["Push Title"] ?? null,
+      pushed_at: f["Date Pushed"] ?? r.createdTime ?? null, pushed_by: f["Pushed By"] ?? null,
+      job_name: f["Job Name"] ?? null, job_airtable_id: f["Job ID (Main)"] ?? null,
+      materials_total: num(f["Materials Total"]), tax_total: num(f["Tax Total"]),
+      total_pushed: num(f["Total Pushed"]), tx_count: num(f["Tx Count"]),
+      item_count: num(f["Item Count"]), taxable: bool(f["Taxable"]),
+      expense_record_ids: f["Expense Record IDs"] ?? null,
+      description: f["Description"] ?? null }; }),
+    ["push_id", "title", "pushed_at", "pushed_by", "job_name", "job_airtable_id",
+     "materials_total", "tax_total", "total_pushed", "tx_count", "item_count", "taxable",
+     "expense_record_ids", "description"]);
+
+  counts.expensePushLines = await upsertChunked("expense_push_lines", "expense_push_lines",
+    ["airtable_id", "push_airtable_id", "line_title", "item_name", "quantity", "unit_cost",
+     "line_total", "wire_ft"],
+    pushLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
+      push_airtable_id: lnk(f["Push"]), line_title: f["Line Title"] ?? null,
+      item_name: f["Item Name"] ?? null, quantity: num(f["Quantity"]),
+      unit_cost: num(f["Unit Cost"]), line_total: num(f["Line Total"]),
+      wire_ft: num(f["Wire Ft"]) }; }),
+    ["push_airtable_id", "line_title", "item_name", "quantity", "unit_cost",
+     "line_total", "wire_ft"]);
+
   // Resolve the real FKs from the Airtable ids. Done as a second pass because
   // the parents have to exist first, and re-run each time so a pricing row
   // loaded before its item still ends up linked.
@@ -2201,6 +2219,13 @@ async function handleLoadInventoryReference() {
     ["material_order_lines", `UPDATE material_order_lines x SET
         order_id = (SELECT o.id FROM material_orders o    WHERE o.airtable_id = x.order_airtable_id),
         item_id  = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id)`],
+    // Slice 2. Only the historical rows need this — a natively-written line
+    // gets its parent uuid at insert time and has no push_airtable_id at all,
+    // which is why the WHERE guard matters: without it every native line would
+    // have its FK overwritten with NULL on the next loader run.
+    ["expense_push_lines", `UPDATE expense_push_lines x SET
+        expense_push_id = (SELECT p.id FROM expense_pushes p WHERE p.airtable_id = x.push_airtable_id)
+      WHERE x.push_airtable_id IS NOT NULL`],
   ]) {
     const r = await neonQuery(sql);
     if (!r?.rows) throw new Error(`${label} FK resolve: ${r?.error || "Neon unavailable"}`);

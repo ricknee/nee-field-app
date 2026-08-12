@@ -32,11 +32,16 @@ const state = {
   txns: {},        // id -> { pushed: bool, pushId: string|null }
   expenses: [],    // { id, pushId }
   expSeq: 0,
-  pushHdrSeq: 0
+  pushHdrSeq: 0,
+  // Slice 2: the push history is a Neon table now, and it is the audit trail
+  // behind every charged dollar. Keyed by push_id so a retry can be seen to
+  // reuse a header rather than mint a second one.
+  history: {},     // push_id -> { id, lineCount }
 };
 function resetState(txIds) {
   state.txns = {};
   txIds.forEach(id => { state.txns[id] = { pushed: false, pushId: null }; });
+  state.history = {};
   state.expenses = [];
   state.expSeq = 0;
   state.pushHdrSeq = 0;
@@ -65,7 +70,29 @@ globalThis.fetch = async (url, opts = {}) => {
     const sql = String(body?.query || "");
     let payload = { command: "INSERT", rowCount: 0, rowAsArray: false, fields: [], rows: [] };
 
-    if (/INSERT INTO expenses/i.test(sql)) {
+    // The push-history header. ON CONFLICT (push_id) is modelled by keying on
+    // it: a retry finds the existing header and reuses its id, which is what
+    // stops a duplicate audit row for a charge that happened once.
+    if (/INSERT INTO expense_pushes/i.test(sql)) {
+      const pushId = body.params?.[0];
+      const existing = pushId && state.history[pushId];
+      const id = existing ? existing.id : `hdr-${++state.pushHdrSeq}`;
+      state.history[pushId] = { id, lineCount: existing ? existing.lineCount : 0 };
+      payload = { command: "INSERT", rowCount: 1, rowAsArray: false,
+        fields: [{ name: "id", dataTypeID: 25, tableID: 0, columnID: 1,
+                   dataTypeSize: -1, dataTypeModifier: -1, format: "text" }],
+        rows: [[id]] };
+
+    } else if (/DELETE FROM expense_push_lines/i.test(sql)) {
+      const hdrId = body.params?.[0];
+      for (const h of Object.values(state.history)) if (h.id === hdrId) h.lineCount = 0;
+
+    } else if (/INSERT INTO expense_push_lines/i.test(sql)) {
+      const hdrId = body.params?.[0];          // 7 binds per line, parent first
+      const n = Math.round((body.params || []).length / 7);
+      for (const h of Object.values(state.history)) if (h.id === hdrId) h.lineCount += n;
+
+    } else if (/INSERT INTO expenses/i.test(sql)) {
       // Fails ONLY the expense mirror, leaving the chargeable-set read working.
       // That separation matters since the ledger went native: a total outage is
       // now refused up front (guard #2 cannot run), so the heal path can only be
@@ -186,7 +213,9 @@ globalThis.fetch = async (url, opts = {}) => {
     throw new Error("Airtable PATCH of Inventory Transactions — the ledger is native now");
   }
   if (method === "POST" && (table === "Expense Pushes" || table === "Expense Push Lines")) {
-    return ok([{ id: `recPush${++state.pushHdrSeq}`, fields: {} }]);
+    // Slice 2: the history is Neon-only. Recording the write here again would
+    // let the suite pass with the Neon half doing nothing.
+    throw new Error(`Airtable POST to ${table} — the push history is native now`);
   }
   return ok([]);
 };
@@ -230,6 +259,24 @@ await test("first push creates one expense and marks its transactions", async ()
   eq(state.expenses[0].pushId, "pid-1", "expense stamped with push id");
   eq(state.txns.tx1.pushed && state.txns.tx2.pushed, true, "both txns marked pushed");
   eq(state.txns.tx1.pushId, "pid-1", "tx stamped with push id");
+  // Slice 2: the audit trail behind the charge, and it is Neon-only now.
+  eq(!!state.history["pid-1"], true, "a push-history header was written");
+  eq(state.history["pid-1"].lineCount, 1, "with its line snapshot");
+});
+
+await test("S2: a retried push reuses its history header instead of duplicating it", async () => {
+  resetState(["tx1"]);
+  json(await PUSH([group("pid-dup", ["tx1"])]));
+  const firstId = state.history["pid-dup"].id;
+  eq(state.history["pid-dup"].lineCount, 1, "one line first time");
+
+  // Same pushId again — guard #1 recognises the charge, and ON CONFLICT means
+  // the history row is reused rather than a second audit entry appearing for a
+  // charge that only happened once.
+  json(await PUSH([group("pid-dup", ["tx1"])]));
+  eq(Object.keys(state.history).length, 1, "still ONE header");
+  eq(state.history["pid-dup"].id, firstId, "the same header");
+  eq(state.history["pid-dup"].lineCount, 1, "lines replaced, not accumulated");
 });
 
 await test("guard #1: re-push with the SAME pushId does NOT create a second expense", async () => {

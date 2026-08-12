@@ -42,6 +42,8 @@ const txnMarks   = [];   // every markTransactionsPushed id-array
 let   txnReplay  = [];   // rows the replay SELECT returns for an already-submitted cart
 let   txnDeleteMisses = new Set();  // ids the DELETE should report as removing nothing
 let   adjOnHand = 0;                // what v_stock_on_hand reports for the adjustment's pair
+let   neonPushes = [];              // expense_pushes rows for the history list
+let   neonPushDetail = [];          // one push joined to its line snapshots
 let neonEstimates   = [];  // material_estimates joined to the totals view
 let neonEstimateGet = [];  // one estimate joined to its lines
 const estWrites      = [];
@@ -129,6 +131,16 @@ globalThis.fetch = async (url, opts = {}) => {
       // exactly what ON CONFLICT DO NOTHING does on the real thing.
       const out = txnReplay.length ? [] : Array.from({ length: n }, (_, i) => ({ id: `txn-new-${i + 1}` }));
       payload = neonReply(["id"], out);
+    } else if (/FROM expense_pushes p\s+LEFT JOIN expense_push_lines/i.test(sql)) {
+      payload = neonReply(["id", "title", "pushed_at", "pushed_by", "job_name", "job_airtable_id",
+                           "materials_total", "tax_total", "total_pushed", "tx_count", "item_count",
+                           "taxable", "expense_record_ids", "description",
+                           "line_id", "item_name", "line_title", "quantity", "unit_cost",
+                           "line_total", "wire_ft"], neonPushDetail);
+    } else if (/FROM expense_pushes/i.test(sql)) {
+      payload = neonReply(["id", "title", "pushed_at", "pushed_by", "job_name", "job_airtable_id",
+                           "materials_total", "tax_total", "total_pushed", "tx_count", "item_count",
+                           "taxable", "expense_record_ids", "description"], neonPushes);
     } else if (/COALESCE\(s\.qty_on_hand, 0\)/i.test(sql)) {
       // The adjustment's "what is there now" read. `adjOnHand === null` models
       // an item/location pair that does not exist at all, which is a 404 rather
@@ -274,6 +286,21 @@ function reset() {
   txnWrites.length = 0; txnDeletes.length = 0;
   txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set();
   adjOnHand = 0;
+  neonPushes = [
+    { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "2026-08-11 — New Shop (MIN 285)",
+      pushed_at: "2026-08-11T21:55:00.000Z", pushed_by: "Rick Unruh", job_name: "New Shop (MIN 285)",
+      job_airtable_id: "recJob1", materials_total: "18.2000", tax_total: "1.3700",
+      total_pushed: "19.5700", tx_count: 2, item_count: 2, taxable: true,
+      expense_record_ids: "recExp1, recExp2", description: "1/2\" EMT PIPE x10, 3/4\" EMT PIPE x10" },
+  ];
+  neonPushDetail = [
+    { ...neonPushes[0], line_id: "bbbbbbbb-1111-4111-8111-111111111111",
+      item_name: "1/2\" EMT PIPE", line_title: "1/2\" EMT PIPE x 10", quantity: "10.0000",
+      unit_cost: "0.7500", line_total: "7.5000", wire_ft: null },
+    { ...neonPushes[0], line_id: "cccccccc-1111-4111-8111-111111111111",
+      item_name: "3/4\" EMT PIPE", line_title: "3/4\" EMT PIPE x 10", quantity: "10.0000",
+      unit_cost: "1.0700", line_total: "10.7000", wire_ft: null },
+  ];
   neonStock = [
     // 40 lb of wire on hand at 19.5 ft/lb → 780 ft; below its reorder point of 100.
     { stock_airtable_id: "recSL1", item_airtable_id: "recItemB", item_name: "12 THHN",
@@ -473,6 +500,45 @@ await test("C: history splits 'job | notes' and prefers the snapshot cost", asyn
   eq(t.total, 8, "10 x 0.80");
   eq(t.from, "Shop #1", "from location resolved");
   eq(t.to, "", "no to location on a Use");
+});
+
+// ── Cutover slice 2: the push history ──────────────────────────────────────
+
+await test("S2: push history is served from Neon, keyed on the uuid", async () => {
+  reset();
+  const r = json(await GET("pushHistory", { limit: "100" }));
+  eq(r._source, "neon", "from Neon");
+  eq(r.pushes[0].id, "aaaaaaaa-1111-4111-8111-111111111111",
+     "the uuid — a natively-written push has no rec id to send to the detail view");
+  eq(r.pushes[0].total, 19.57, "materials + tax, as charged");
+  eq(r.pushes[0].taxable, true, "booleans survive the wire as real booleans");
+});
+
+await test("S2: push detail returns the header with its line snapshots", async () => {
+  reset();
+  const r = json(await GET("pushHistoryDetail", { id: "aaaaaaaa-1111-4111-8111-111111111111" }));
+  eq(r.push.lines.length, 2, "both line snapshots");
+  eq(r.push.lines[0].itemName, "1/2\" EMT PIPE", "biggest dollars first is done in SQL");
+  eq(r.push.lines[0].lineTotal, 7.5, "the frozen line total, not a recomputation");
+});
+
+await test("S2: a push with no lines is a header, not a phantom line", async () => {
+  reset();
+  // The LEFT JOIN yields one row of NULLs when a header has no lines. Mapping
+  // that row would invent a line called "Item" with a total of 0.
+  neonPushDetail = [{ ...neonPushes[0], line_id: null, item_name: null, line_title: null,
+                      quantity: null, unit_cost: null, line_total: null, wire_ft: null }];
+  const r = json(await GET("pushHistoryDetail", { id: "aaaaaaaa-1111-4111-8111-111111111111" }));
+  eq(r.push.lines.length, 0, "no lines");
+  eq(r.push.total, 19.57, "header intact");
+});
+
+await test("S2: the audit trail refuses to answer from Airtable", async () => {
+  reset();
+  neonDown = true;
+  const list = await GET("pushHistory", {});
+  eq(list.statusCode, 503, "a history missing every push since the cutover is worse than an error");
+  eq(atRequested.some(u => /Expense%20Pushes/.test(u)), false, "it did not even try");
 });
 
 // ── Adjustment SETS the count ──────────────────────────────────────────────

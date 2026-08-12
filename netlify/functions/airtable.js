@@ -30,7 +30,8 @@ import {
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
   expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
-  listByPrefix, liftPrefix, listLiftPhotos, deleteLiftPhoto, deleteAllLiftPhotos,
+  listByPrefix, liftPrefix, fleetPrefix, presignEquipThumbPut,
+  listLiftPhotos, deleteLiftPhoto, deleteAllLiftPhotos,
   presignGet,
 } from "./_r2.js";
 
@@ -540,6 +541,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // But adding equipment to the books, and RETIRING a sold one along with its
   // photos, is not a field action. Same for removing a photo.
   "createScissorLift", "deleteScissorLift", "deleteLiftPhoto",
+  // Adding or replacing an equipment photo, and backfilling a thumbnail for one
+  // that predates them. All three write objects into the bucket, so they sit
+  // with the other equipment-photo writes rather than at _NON_VIEWER.
+  "fleetPhotoUploadUrl", "equipThumbUploadUrl",
   // Job notes became readable by every role on 2026-07-31 so crews get job
   // instructions. WRITING them stays admin/office: they can still carry
   // internal status, and until now the UI was the only thing stopping an
@@ -6698,7 +6703,15 @@ async function attachEquipPhotos(kind, records) {
     })));
     // photoUrl is kept as the first photo so the existing card/detail markup
     // keeps working unchanged; `photos` is what the new add/remove UI uses.
-    return { ...l, photos, photoUrl: photos[0]?.url || "" };
+    //
+    // ⚠ `photoThumbUrl` is what the CARDS should use — they render into a 130px
+    // (fleet) or 100px (lift) box, and photoUrl is the full-size original.
+    // Falls back to the original when no thumbnail exists, which is every photo
+    // copied over from Airtable. The DETAIL view keeps using photoUrl: it is
+    // the picture you opened the record to look at.
+    return { ...l, photos,
+      photoUrl: photos[0]?.url || "",
+      photoThumbUrl: photos[0]?.thumbUrl || photos[0]?.url || "" };
   }));
 }
 
@@ -6933,7 +6946,56 @@ async function handleLiftPhotoUploadUrl(body) {
   // Random suffix rather than the client's filename: two phones both send
   // "IMG_0001.jpg", and a client-chosen name is a key-injection surface.
   const key = `${liftPrefix(target.id)}${Date.now()}-${Math.random().toString(16).slice(2, 8)}${ext}`;
-  return resp(200, { ok: true, key, putUrl: await presignPut(key, type), contentType: type });
+  // Two presigned PUTs, matching the jobsite-photo path: the browser uploads a
+  // compressed full image AND a ~400px thumbnail. Before this, equipment photos
+  // had no thumbnail at all, so a lift card downloaded a multi-megabyte
+  // original to fill a 104x78 box.
+  return resp(200, { ok: true, key,
+    putUrl: await presignPut(key, type),
+    thumbKey: thumbKeyFor(key),
+    thumbPutUrl: await presignPut(thumbKeyFor(key), type),
+    contentType: type });
+}
+
+// Backfill a thumbnail for a photo that predates them. The browser fetches the
+// original through its presigned GET, resizes it, and PUTs the result here.
+//
+// Admin+office, matching the other equipment-photo writes: it creates an object
+// in the bucket, even though it destroys nothing. `kind` is whitelisted rather
+// than interpolated — it becomes a key prefix.
+async function handleEquipThumbUploadUrl(body) {
+  const { kind, id, key, contentType } = body || {};
+  if (kind !== "lifts" && kind !== "fleet") return resp(400, { ok: false, error: "Invalid kind." });
+  if (!id || !key) return resp(400, { ok: false, error: "Missing id or key." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage is not configured." });
+  const type = String(contentType || "image/jpeg");
+  if (!type.startsWith("image/")) return resp(400, { ok: false, error: "Thumbnails must be images." });
+  try {
+    return resp(200, { ok: true, thumbPutUrl: await presignEquipThumbPut(kind, String(id), String(key), type) });
+  } catch (e) {
+    if (e instanceof R2Error) return resp(400, { ok: false, error: e.message });
+    throw e;
+  }
+}
+
+// Fleet had NO upload handler at all — every vehicle photo in R2 arrived via the
+// one-off copyFleetPhotosToR2 migration, which means nobody could add or replace
+// one from the app. Same shape as the lift handler above, including the
+// thumbnail pair.
+async function handleFleetPhotoUploadUrl(body) {
+  const { vehicleId, contentType } = body || {};
+  if (!vehicleId) return resp(400, { ok: false, error: "Missing vehicleId." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage is not configured." });
+
+  const type = String(contentType || "image/jpeg");
+  if (!type.startsWith("image/")) return resp(400, { ok: false, error: "Photos must be images." });
+  const ext = type === "image/png" ? ".png" : type === "image/webp" ? ".webp" : ".jpg";
+  const key = `${fleetPrefix(String(vehicleId))}${Date.now()}-${Math.random().toString(16).slice(2, 8)}${ext}`;
+  return resp(200, { ok: true, key,
+    putUrl: await presignPut(key, type),
+    thumbKey: thumbKeyFor(key),
+    thumbPutUrl: await presignPut(thumbKeyFor(key), type),
+    contentType: type });
 }
 
 // ── NEW 2026-08-05: remove one photo ───────────────────────────────────────
@@ -11430,6 +11492,8 @@ export async function handler(event) {
       if (body.action === "createScissorLift")    return await handleCreateScissorLift(body);
       if (body.action === "deleteScissorLift")    return await handleDeleteScissorLift(body);
       if (body.action === "liftPhotoUploadUrl")   return await handleLiftPhotoUploadUrl(body);
+      if (body.action === "fleetPhotoUploadUrl")  return await handleFleetPhotoUploadUrl(body);
+      if (body.action === "equipThumbUploadUrl")  return await handleEquipThumbUploadUrl(body);
       if (body.action === "deleteLiftPhoto")      return await handleDeleteLiftPhoto(body);
       if (body.action === "createInspection")     return await handleCreateInspection(body);
       if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);

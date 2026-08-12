@@ -11861,6 +11861,19 @@
       const d = await apiGet("fleetVehicles");
       fleetState.vehicles = d.vehicles || [];
       renderFleetGrid();
+
+      // Same self-healing backfill as the lifts screen — see backfillEquipThumbs.
+      // Fleet is the worse case of the two: 11 vehicle cards, each rendering a
+      // full-size original into a 130px slot.
+      if (isAdmin() && fleetState.vehicles.some(v => (v.photos || []).some(p => p.needsThumb))) {
+        (async () => {
+          for (const v of fleetState.vehicles) {
+            const r = await backfillEquipThumbs("fleet", v.id, v.photos);
+            if (r.done) console.log(`[thumb-backfill] fleet/${v.id}: ${r.done} generated`);
+          }
+          loadFleetVehicles();   // repaint on the thumbnails
+        })().catch(e => console.warn("[thumb-backfill] fleet", e));
+      }
     } catch(e) {
       $("fleetVehiclesGrid").innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(e.message)}</div>`;
     }
@@ -11881,7 +11894,7 @@
     // The real fix is a thumbnail pipeline; delete this comment when it lands.
     $("fleetVehiclesGrid").innerHTML = v.map(veh => `
       <div class="fleet-vehicle-card" onclick="openFleetDetail('${esc(veh.id)}')">
-        ${veh.photoUrl ? `<img src="${esc(veh.photoUrl)}" alt="${esc(veh.name)}" loading="lazy" decoding="async" style="width:100%; height:130px; object-fit:cover;" />` : ""}
+        ${veh.photoUrl ? `<img src="${esc(veh.photoThumbUrl || veh.photoUrl)}" alt="${esc(veh.name)}" loading="lazy" decoding="async" style="width:100%; height:130px; object-fit:cover;" />` : ""}
         <div class="fleet-vehicle-card-header">
           <span class="fleet-vehicle-card-title">${esc(veh.name)}</span>
           ${fleetTypePill(veh.type)}
@@ -12252,7 +12265,7 @@
       } else {
         list.innerHTML = onJob.map(l => `
           <div style="background:var(--panel); border:1px solid var(--line-2); border-radius:10px; padding:12px 14px; min-width:160px;">
-            ${l.photoUrl ? `<img src="${esc(l.photoUrl)}" alt="${esc(l.name)}" loading="lazy" decoding="async" style="width:100%; height:100px; object-fit:cover; border-radius:6px; margin-bottom:8px;" />` : ""}
+            ${l.photoUrl ? `<img src="${esc(l.photoThumbUrl || l.photoUrl)}" alt="${esc(l.name)}" loading="lazy" decoding="async" style="width:100%; height:100px; object-fit:cover; border-radius:6px; margin-bottom:8px;" />` : ""}
             <div style="font-weight:700; color:var(--accent); font-size:14px; margin-bottom:8px;">🏗 ${esc(l.name)}</div>
             ${l.assignedTo ? `<div style="font-size:12px; color:var(--muted); margin-bottom:8px;">👤 ${esc(l.assignedTo)}</div>` : ""}
             <div style="margin-bottom:6px;">
@@ -12943,13 +12956,54 @@
   // Everyone sees them. Only admin/office can add or remove, matching the
   // backend's authz — a crew moving a lift between jobs is a field action,
   // curating the equipment record is not.
+  // ── Backfill thumbnails for equipment photos that predate them ───────────
+  // Every lift and fleet photo in R2 before 2026-08-12 was stored full-size
+  // with no thumbnail — the upload path never made one. Cards render into a
+  // 104x78 or 130px box, so each one pulled multiple megabytes to fill it.
+  //
+  // Done in the BROWSER because there is no image library in the functions and
+  // adding one to resize ~19 photos would be the wrong trade. The original is
+  // already fetchable through its presigned GET (R2 CORS allows GET — that was
+  // settled for photo sharing), so this fetches it, runs the same
+  // compressImage every other upload uses, and PUTs the result to a presigned
+  // thumbnail URL.
+  //
+  // One-off and idempotent: `needsThumb` comes from the listing, so a photo
+  // that already has one is skipped and re-running is free.
+  async function backfillEquipThumbs(kind, id, photos, onProgress) {
+    const todo = (photos || []).filter(p => p.needsThumb && p.url && p.key);
+    if (!todo.length) return { done: 0, failed: 0, skipped: true };
+    let done = 0, failed = 0;
+    for (let i = 0; i < todo.length; i++) {
+      const p = todo[i];
+      if (onProgress) onProgress(i + 1, todo.length);
+      try {
+        const blob  = await (await fetch(p.url)).blob();
+        const thumb = await compressImage(blob, 400, 0.7);
+        if (!thumb) throw new Error("could not resize");
+        const { thumbPutUrl } = await apiPost("equipThumbUploadUrl",
+          { kind, id, key: p.key, contentType: "image/jpeg" });
+        const put = await fetch(thumbPutUrl, { method: "PUT", body: thumb,
+          headers: { "content-type": "image/jpeg" } });
+        if (!put.ok) throw new Error(`PUT ${put.status}`);
+        done++;
+      } catch (e) {
+        // Per-photo, so one unreadable original does not abandon the rest —
+        // the lesson from the 28-photo upload that stopped at 0.
+        failed++;
+        console.error("[thumb-backfill]", p.key, e);
+      }
+    }
+    return { done, failed, skipped: false };
+  }
+
   function renderLiftPhotos(lift) {
     const photos = lift.photos || (lift.photoUrl ? [{ url: lift.photoUrl, key: "" }] : []);
     const canEdit = isAdmin();
     if (!photos.length && !canEdit) return "";
     const strip = photos.map(p => `
       <div class="sl-photo" style="position:relative; flex:0 0 auto;">
-        <img src="${esc(p.url)}" alt="${esc(lift.name)}" loading="lazy" decoding="async"
+        <img src="${esc(p.thumbUrl || p.url)}" alt="${esc(lift.name)}" loading="lazy" decoding="async"
              style="width:104px; height:78px; object-fit:cover; border-radius:6px; display:block;" />
         ${canEdit && p.key ? `<button class="sl-photo-del" data-lift-id="${esc(lift.id)}" data-key="${esc(p.key)}"
           title="Remove this photo"
@@ -12989,11 +13043,27 @@
           // Presigned PUT: the bytes go browser → R2 directly and never through
           // the function, so there is no 4.5 MB payload ceiling. Same path the
           // jobsite photos use.
-          const { putUrl, contentType } = await apiPost("liftPhotoUploadUrl",
+          const { putUrl, thumbPutUrl, contentType } = await apiPost("liftPhotoUploadUrl",
             { liftId, contentType: file.type || "image/jpeg" });
-          const put = await fetch(putUrl, { method: "PUT", body: file,
+          // ⚠ COMPRESS. This used to PUT the raw `file` — a 3-5 MB phone photo
+          // stored at full size and then rendered into a 104x78 box. Equipment
+          // was the only image path in the app doing that; jobsite photos and
+          // receipts have always compressed. HEIF is handled inside
+          // compressImage, so a modern Samsung or iPhone works here too.
+          const full  = await compressImage(file, 2048, 0.75);
+          const thumb = await compressImage(file, 400, 0.7);
+          const put = await fetch(putUrl, { method: "PUT", body: full,
             headers: { "content-type": contentType } });
           if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+          // A missing thumbnail is not fatal — the gallery falls back to the
+          // full image, which is what every pre-2026-08-12 equipment photo
+          // does. Losing the photo over its thumbnail would be worse.
+          if (thumbPutUrl && thumb) {
+            try {
+              await fetch(thumbPutUrl, { method: "PUT", body: thumb,
+                headers: { "content-type": contentType } });
+            } catch (e) { console.warn("[lift-photo] thumbnail upload failed", e); }
+          }
           await loadScissorLifts();
         } catch (e) {
           alert("Couldn't add the photo: " + e.message);
@@ -13079,11 +13149,27 @@
       picker.remove();
       if (file) {
         try {
-          const { putUrl, contentType } = await apiPost("liftPhotoUploadUrl",
+          const { putUrl, thumbPutUrl, contentType } = await apiPost("liftPhotoUploadUrl",
             { liftId, contentType: file.type || "image/jpeg" });
-          const put = await fetch(putUrl, { method: "PUT", body: file,
+          // ⚠ COMPRESS. This used to PUT the raw `file` — a 3-5 MB phone photo
+          // stored at full size and then rendered into a 104x78 box. Equipment
+          // was the only image path in the app doing that; jobsite photos and
+          // receipts have always compressed. HEIF is handled inside
+          // compressImage, so a modern Samsung or iPhone works here too.
+          const full  = await compressImage(file, 2048, 0.75);
+          const thumb = await compressImage(file, 400, 0.7);
+          const put = await fetch(putUrl, { method: "PUT", body: full,
             headers: { "content-type": contentType } });
           if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+          // A missing thumbnail is not fatal — the gallery falls back to the
+          // full image, which is what every pre-2026-08-12 equipment photo
+          // does. Losing the photo over its thumbnail would be worse.
+          if (thumbPutUrl && thumb) {
+            try {
+              await fetch(thumbPutUrl, { method: "PUT", body: thumb,
+                headers: { "content-type": contentType } });
+            } catch (e) { console.warn("[lift-photo] thumbnail upload failed", e); }
+          }
         } catch (e) {
           alert(`${name.trim()} was added, but the photo didn't upload: ${e.message}\n\nYou can add it from the lift's card.`);
         }
@@ -13103,6 +13189,28 @@
     try {
       const d = await apiGet("scissorLifts");
       const lifts = d.lifts || [];
+
+      // Self-healing thumbnail backfill: runs once, in the background, for any
+      // lift photo that predates thumbnails. No admin button and nothing to
+      // remember — the screen that shows the photos is the screen that fixes
+      // them, and `needsThumb` makes it idempotent so it stops on its own.
+      //
+      // Deliberately NOT awaited: it downloads full-size originals, so on a
+      // jobsite signal it must never hold up rendering the list. Admin/office
+      // only, matching the backend's authz — an employee just sees the photos.
+      if (isAdmin()) {
+        const pending = lifts.flatMap(l => (l.photos || [])
+          .filter(p => p.needsThumb).map(p => ({ liftId: l.id, p })));
+        if (pending.length) {
+          (async () => {
+            for (const l of lifts) {
+              const r = await backfillEquipThumbs("lifts", l.id, l.photos);
+              if (r.done) console.log(`[thumb-backfill] lifts/${l.id}: ${r.done} generated`);
+            }
+            loadScissorLifts();   // repaint on the new, much smaller thumbnails
+          })().catch(e => console.warn("[thumb-backfill] lifts", e));
+        }
+      }
 
       // Summary bar
       const avail   = lifts.filter(l => l.status === "Available").length;

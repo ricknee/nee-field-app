@@ -1022,18 +1022,34 @@ function assertKeyInEquip(kind, id, key) {
   return k;
 }
 
+// ⚠ Equipment photos were the ONLY images in the app with no thumbnails — the
+// upload path never made one and this listing never returned one, so a fleet
+// card pulled a full-size original to fill a 130px slot, times 11 vehicles.
+// Lazy-loading (2026-08-11) limited that to what is on screen; this removes it.
+//
+// `thumbUrl` is null for anything uploaded before thumbnails existed, or copied
+// over from Airtable by copyLiftPhotosToR2 / copyFleetPhotosToR2. The client
+// falls back to the full image, exactly as the jobsite gallery already does for
+// its own backfilled photos — so an old photo still shows, just heavily.
 async function listEquipPhotos(kind, id, timeoutMs) {
   const objects = await listByPrefix(equipPrefix(kind, id), timeoutMs);
+  const thumbs = new Set(objects.filter(o => isThumbKey(o.key)).map(o => o.key));
   return await Promise.all(
     objects
       .filter(o => !isThumbKey(o.key))
       .sort((a, b) => new Date(a.lastModified || 0) - new Date(b.lastModified || 0))
-      .map(async o => ({
-        key: o.key,
-        name: o.key.slice(o.key.lastIndexOf("/") + 1),
-        size: o.size,
-        url: await presignGet(o.key),
-      })));
+      .map(async o => {
+        const tKey = thumbKeyFor(o.key);
+        return {
+          key: o.key,
+          name: o.key.slice(o.key.lastIndexOf("/") + 1),
+          size: o.size,
+          url: await presignGet(o.key),
+          thumbUrl: thumbs.has(tKey) ? await presignGet(tKey) : null,
+          // Lets the client find what still needs one without guessing at keys.
+          needsThumb: !thumbs.has(tKey),
+        };
+      }));
 }
 
 // NO RECYCLE BIN, unlike job photos. Selling a lift or a truck removes
@@ -1051,6 +1067,21 @@ async function deleteAllEquipPhotos(kind, id, timeoutMs) {
   const objects = await listByPrefix(equipPrefix(kind, id), timeoutMs);
   for (const o of objects) await deleteObject(o.key, timeoutMs);
   return objects.length;
+}
+
+// Presigned PUT for the THUMBNAIL of an existing equipment photo, so the
+// browser can backfill one for a photo uploaded before thumbnails existed (or
+// copied over from Airtable). The bytes are resized client-side and PUT
+// directly, same as every other image path — there is no image library in the
+// functions, and adding one to resize ~19 photos would be the wrong trade.
+//
+// ⚠ Goes through assertKeyInEquip: the client supplies the key, so this is the
+// one place a caller could aim a write at another record's folder. The guard
+// refuses a key outside the named record, and one containing "..".
+export async function presignEquipThumbPut(kind, id, key, contentType = "image/jpeg", ttl = UPLOAD_URL_TTL_SECONDS) {
+  const k = assertKeyInEquip(kind, id, key);
+  if (isThumbKey(k)) throw new R2Error("That is already a thumbnail", "ALREADY_THUMB");
+  return presignPut(thumbKeyFor(k), contentType, ttl);
 }
 
 export const liftPrefix  = (id) => equipPrefix("lifts", id);

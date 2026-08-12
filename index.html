@@ -8118,20 +8118,56 @@
     const status = $("jobPhotosStatus");
     const total = files.length;
     let done = 0, failed = 0, lastFailure = "";
+    // Files the browser could not decode at all. Tracked separately from
+    // `failed` (which is an upload that didn't land) because the causes and the
+    // fixes are different: a skip is "this file has no readable bytes on this
+    // device", a failure is "the network or R2 said no".
+    const skipped = [];
+    // Caps the list at three names so the status line stays readable on a phone
+    // when someone selects a whole cloud-only album and every one of them skips.
+    const skipNote = () => !skipped.length ? "" :
+      ` ${skipped.length} skipped — couldn't be read: ${skipped.slice(0, 3).join(", ")}` +
+      `${skipped.length > 3 ? ` +${skipped.length - 3} more` : ""}.` +
+      ` Open them in your gallery first, then send again.`;
 
     try {
       for (let start = 0; start < total; start += UPLOAD_CHUNK) {
         const chunk = files.slice(start, start + UPLOAD_CHUNK);
 
         // Shrink this chunk only.
+        // ⚠⚠ ONE UNREADABLE FILE MUST NOT TAKE THE WHOLE BATCH DOWN.
+        // This loop used to throw straight out to the outer catch, abandoning
+        // every other photo BEFORE A SINGLE BYTE WAS UPLOADED. Reported from the
+        // field 2026-08-11: "Upload stopped after 0 of 28: Could not read that
+        // image" — 27 good photos dropped because of one bad one, and the
+        // message didn't even say which. The UPLOAD phase below has always
+        // tolerated per-file failure; this phase now matches it.
+        //
+        // The usual cause is a CLOUD-ONLY Google Photos item: the picker hands
+        // over a reference to something that isn't on the device, so there are
+        // no bytes to decode. A video caught by the picker does the same
+        // (`accept` is a hint on Android, not a filter), as does a HEIF frame
+        // Chrome won't decode.
         const prepared = [];
         for (let i = 0; i < chunk.length; i++) {
           status.textContent = `Preparing ${start + i + 1} of ${total}…`;
-          const full  = await compressImage(chunk[i], 2048, 0.75);
-          const thumb = await compressImage(chunk[i], 400, 0.7);
-          if (!full || !thumb) throw new Error(`Could not read "${chunk[i].name || "photo"}"`);
-          prepared.push({ full, thumb });
+          try {
+            const full  = await compressImage(chunk[i], 2048, 0.75);
+            const thumb = await compressImage(chunk[i], 400, 0.7);
+            if (!full || !thumb) throw new Error("decoded to nothing");
+            prepared.push({ full, thumb });
+          } catch (e) {
+            // NAMED, not just counted. "1 skipped" sends someone hunting through
+            // 28 photos; the filename tells them which one to open in the
+            // gallery first, which is also what forces Google Photos to
+            // download it locally so the retry works.
+            skipped.push(chunk[i].name || `photo ${start + i + 1}`);
+            console.error("[photo-upload] skipped", chunk[i].name, e);
+          }
         }
+        // Every file in this chunk was unreadable — nothing to presign or send.
+        // `continue`, not `throw`: a later chunk may be perfectly fine.
+        if (!prepared.length) continue;
 
         const d = await apiPost("jobPhotoUploadUrls", {
           jobId: job.id,
@@ -8175,7 +8211,12 @@
         // CORS rejection, and there is no way to tell them apart on a phone.
         const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
         const swNote = sw ? ` [page controlled by service worker]` : ` [no service worker]`;
-        status.textContent = `${done} uploaded, ${failed} failed. ${lastFailure || ""}${swNote}`;
+        status.textContent = `${done} uploaded, ${failed} failed.${skipNote()} ${lastFailure || ""}${swNote}`;
+      } else if (skipped.length) {
+        // Not a toast. A toast disappears, and this is the one case where the
+        // user has to act — reopen the named photo so the device downloads it,
+        // then send that one again.
+        status.textContent = `${done} uploaded.${skipNote()}`;
       } else {
         showAppToast(`${done} photo${done === 1 ? "" : "s"} uploaded ✓`);
       }

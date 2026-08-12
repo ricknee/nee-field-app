@@ -11284,6 +11284,30 @@ export async function handler(event) {
       return await handleClockWidget(event.queryStringParameters || {});
     }
 
+    // ── Warm-up: wake Neon while the browser is still parsing the app ────────
+    // Neon scales to zero after ~5 minutes idle, so the first request of the
+    // day pays a compute wake AND a cold page cache. The browser has to
+    // download and parse ~24,000 lines of index.html before it can issue a
+    // single API call, and that window is currently spent with the database
+    // asleep. Firing this from the top of <head> overlaps the two.
+    //
+    // ⚠ UNAUTHENTICATED, and that is safe here in a way it would not be for
+    // any other action: it runs BEFORE the app knows who you are (30-day
+    // tokens mean the crew never sees a login screen — boot goes straight to
+    // loadJobs), it takes no parameters, it touches no table, and it returns
+    // nothing but ok/ms. There is no data to leak because none is read.
+    //
+    // ⚠ It does NOT warm the page cache — `SELECT 1` wakes the compute and
+    // nothing more. Making it warm the cache would mean running an expensive
+    // unauthenticated query on every page load, which is a much worse trade.
+    // The query cost was dealt with separately in db/schema/030.
+    if (event.httpMethod === "GET" && reqAction === "warmup") {
+      if (!neonEnabled()) return resp(200, { ok: true, warmed: false, reason: "no-database" });
+      const t0 = Date.now();
+      const q = await neonQuery("SELECT 1 AS ok");
+      return resp(200, { ok: true, warmed: !!q?.rows?.length, ms: Date.now() - t0 });
+    }
+
     let authUser = null;
     if (reqAction !== "login") {
       authUser = authedUser(event);

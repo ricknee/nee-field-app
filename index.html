@@ -4,6 +4,30 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>Northeastern Electric Field App</title>
+  <!-- ── Wake the database while this page is still downloading ─────────────
+       Neon scales to zero after ~5 minutes idle, so the FIRST open of the day
+       pays a compute wake before the job list can answer. The browser has to
+       fetch and parse ~24,000 lines below this point before it issues a single
+       API call — that window is free, and this spends it waking Neon.
+
+       ⚠ It must stay HERE, at the top of <head>, and stay inline. Moved into
+       the main script it would fire after the parse it is meant to overlap,
+       which is the entire point and buys nothing.
+
+       Fire-and-forget on purpose: no await, no state, `.catch(()=>{})`. It must
+       never delay rendering, never block the app, and never surface an error —
+       a failed warm-up just means the first real request pays the wake it would
+       have paid anyway. keepalive so it survives the navigation.
+
+       This does NOT make queries faster; it only removes the wake from the
+       critical path. The query cost was a separate fix (db/schema/030, the job
+       list going 985ms -> 107ms). -->
+  <script>
+    try {
+      fetch("/.netlify/functions/airtable?action=warmup",
+            { method: "GET", keepalive: true, cache: "no-store" }).catch(function () {});
+    } catch (e) { /* never let a warm-up stop the app loading */ }
+  </script>
   <!-- Home-screen install. The manifest's `shortcuts` give Android a long-press
        menu on the app icon with Clock In / Clock Out; iOS ignores shortcuts, so
        there the win is the icon itself plus the ?clock= links below.

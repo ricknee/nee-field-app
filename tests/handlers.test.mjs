@@ -1519,6 +1519,25 @@ async function capturePostTo(table, fn) {
   return body;
 }
 
+await test("warmup: unauthenticated, reads nothing, and never errors", async () => {
+  // The ONLY other action besides clockWidget that skips the bearer check, so
+  // the bar is: it must be impossible to learn anything from it. It takes no
+  // parameters, touches no table, and returns ok/ms — there is no data to leak
+  // because none is read. If this ever grows a parameter or a table, it stops
+  // qualifying and must move behind auth.
+  mockTables = {};
+  const r = await GET("warmup", {}, null);   // ← no token at all
+  eq(r.statusCode, 200, "200 without a token");
+  const b = json(r);
+  eq(b.ok, true, "ok");
+  // Offline there is no DATABASE_URL, so it reports honestly rather than
+  // pretending it warmed something.
+  eq(b.warmed, false, "no database → warmed:false, not a lie");
+  eq(b.reason, "no-database", "and says why");
+  // Nothing that could identify a person or a record.
+  eq(Object.keys(b).sort().join(","), "ok,reason,warmed", "returns nothing else");
+});
+
 await test("createJob: ships INERT — Airtable still assigns the PO", async () => {
   // The automation wfltJAiEaavVLA0wB triggers on "New Lead AND Job PO Number
   // empty". While the switch is off we must NOT send that field, or the

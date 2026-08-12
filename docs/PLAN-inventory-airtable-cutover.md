@@ -309,11 +309,38 @@ One asymmetry worth knowing: **create sends only the fields you filled in; edit 
 including the blank ones.** On create an absent key means "not given"; on edit it would mean "keep
 the old value", so clearing a barcode has to be explicit.
 
-### ⬜ Still open before slice 6 archives the base — a decision, not a task
+### ✅ CLOSED — Locations, Vendors and Vendor Pricing are writable too (`c0087ba`, `621fbe0`)
 
-**Locations, Vendors and Vendor Pricing have no write path anywhere.** They were always read-only in
-this app, and nobody opens Airtable. Adding a vendor or a location is **new work**, and it is easier
-to decide while the base is still there. Items now have the edit screen; these three do not.
+The rest of the same hole. All three were read-only here because you maintained them in Airtable;
+the cutover removed that without replacing it, and the vendor-pricing panel still ended with *"Add
+a Vendor Pricing record in Airtable"* — an instruction that had become impossible to follow.
+
+Five actions, admin-only: `locationSave`, `vendorSave`, `vendorPricingSave`, `vendorPricingDelete`,
+and a **vendors list that never existed** — vendors were only ever reachable through an item's
+pricing rows. Pricing is edited inside the item's panel on the stock lookup; locations get their own
+screen; a vendor can be added from inside the pricing form so a missing supplier does not derail the
+task.
+
+> ⚠⚠ **Two constraints Airtable never enforced** (`db/schema/042`):
+> **One preferred vendor per item.** `v_item_live_cost` filters `preferred AND active` and wraps the
+> result in `MIN()` — and that `MIN` exists *because* Airtable allowed two preferred rows. It broke
+> the tie silently, by price, which is not a decision anyone made. A partial unique index makes the
+> state impossible, and the save clears the flag from the item's other rows in the same request.
+> **One price per item per vendor**, via `ON CONFLICT`. Two rows for one pair is what makes "which
+> price is current?" unanswerable.
+
+Also: `last_price_update` moves only when the cost actually changes; locations and vendors both
+refuse duplicate **names**, because both are picked and read by name and two "Shop #2"s cannot be
+told apart in a dropdown; and locations can be **retired but never deleted** — a location appears on
+every movement ever logged against it.
+
+### ⚠ Not in scope, now or later: the per-ft cost engine
+
+The three conduit-assembly tables (Labor Units, Conduit Assemblies, Assembly Components) hold **one
+labour code, one assembly and four components** — a prototype nothing reads. **Owner, 2026-08-12:
+this is a NEW BUILD in Neon after the migration is completely finished, not migration work.** Do not
+port the tables, and do not let them hold up archiving the base. The thinking is recorded in memory
+(`project_conduit_assemblies_estimating`); build from that, not from the rows.
 
 ## ✅ Everything is smoked on production (2026-08-12)
 

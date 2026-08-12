@@ -522,6 +522,22 @@ await test("S2: push detail returns the header with its line snapshots", async (
   eq(r.push.lines[0].lineTotal, 7.5, "the frozen line total, not a recomputation");
 });
 
+await test("S2: a big push returns EVERY line, not just the expensive ones", async () => {
+  reset();
+  // The real Lance Koehn push: 42 lines, biggest $1,301.69, smallest $0.00.
+  // A screen showing only the top handful would be a truncation somewhere, and
+  // this is the case that says whether the handler is the one doing it.
+  neonPushDetail = Array.from({ length: 42 }, (_, i) => ({
+    ...neonPushes[0],
+    line_id: `dddddddd-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    item_name: `ITEM ${i + 1}`, line_title: `ITEM ${i + 1} x 1`,
+    quantity: "1.0000", unit_cost: String(42 - i), line_total: String(42 - i), wire_ft: null,
+  }));
+  const r = json(await GET("pushHistoryDetail", { id: "aaaaaaaa-1111-4111-8111-111111111111" }));
+  eq(r.push.lines.length, 42, "all 42 — no cap, no LIMIT, no slice");
+  eq(r.push.lines[41].itemName, "ITEM 42", "including the cheapest one");
+});
+
 await test("S2: a push with no lines is a header, not a phantom line", async () => {
   reset();
   // The LEFT JOIN yields one row of NULLs when a header has no lines. Mapping

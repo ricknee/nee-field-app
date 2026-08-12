@@ -7,9 +7,19 @@ live base; nothing below is inferred.
 | # | Hook | App fires it | Airtable automation | Proven by |
 |---|---|---|---|---|
 | 1 | pCloud folders (Estimating) | ✅ | ✅ **UNDEPLOYED** | WatersEdge 1 → Estimating: **one** folder, flag set |
-| 2 | Awarded → Trello + QB Time | ✅ | still deployed | ⬜ needs a job reaching Awarded |
-| 3 | Completed → Trello by year | ✅ | still deployed | ⬜ needs a job reaching Completed |
-| 4 | Service call started | ✅ | still deployed | ⬜ needs a service call |
+| 2 | Awarded → Trello + QB Time | ✅ | ⏸ **still deployed, on purpose** | ⬜ waiting on the next real award |
+| 3 | Completed → Trello by year | ✅ | ✅ **UNDEPLOYED** 2026-08-12 | cost of failure is cosmetic — a card doesn't move lists |
+| 4 | Service call started | ✅ | ✅ **UNDEPLOYED** 2026-08-12 | cost of failure is cosmetic — a scenario doesn't run |
+
+**3 of 4 done.** #2 is deliberately last: it creates the **QuickBooks Time job**, and QB Time is
+still the book of record for payroll — a silent failure there means the crew cannot clock to a
+newly awarded job, which is an operational problem on a live site rather than a display bug.
+Leaving it deployed costs nothing: both it and the app fire, and Make's `trelloCreated` /
+`tsheetsCreated` flags make whichever arrives second a no-op.
+
+**To finish:** award a job, confirm ONE Trello card and ONE QB Time job appear, then undeploy
+`wfl2KJpZRPK1tDz5D`. Do not force a test job through — the debris lands in three systems and QB
+Time jobs are the awkward one to remove.
 
 **The doubled state is safe and can sit indefinitely.** While both fire, Make's own guard flags
 make the second call a no-op. So 2–4 need no test jobs forced through — undeploy each as a real

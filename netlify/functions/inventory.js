@@ -55,6 +55,7 @@ const _ADMIN_WRITES = new Set([
   "pushExpenses",        // pushes material cost into job Expenses (money)
   "jobDocUploadUrl",     // archives the materials PDF — same tier as the push it documents
   "updateItemCost", "createItem", "itemUpdate", "itemDelete",   // catalog / pricing
+  "locationSave", "vendorSave", "vendorPricingSave", "vendorPricingDelete", // reference data
   "syncItemCostToVendor",
   "delete",              // transaction deletion
   "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
@@ -625,12 +626,39 @@ async function deleteTxn(id) {
 // syncItemToNeonById() is gone with it: the cost writers UPDATE the row
 // directly rather than PATCHing Airtable and re-reading it back.
 
+// ── VENDORS ────────────────────────────────────────────────
+// For the pricing picker and the manage screen. There was no such action
+// before: vendors were only ever reached through an item's pricing rows,
+// because you added them in Airtable.
+async function handleVendors(params) {
+  const all = params?.all === "1";
+  const q = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS id, name, vendor_type, account_number,
+            phone, email, website, address, primary_contact, payment_terms, active, notes
+       FROM vendors
+      WHERE ($1::boolean OR active)
+      ORDER BY name ASC`, [all]);
+  if (!q?.rows) {
+    return resp(503, { ok: false, error: "Vendors are unavailable right now. Please try again." });
+  }
+  return resp(200, {
+    ok: true, _source: "neon",
+    vendors: q.rows.map(r => ({
+      id: r.id, name: r.name || "", type: r.vendor_type || "",
+      accountNumber: r.account_number || "", phone: r.phone || "", email: r.email || "",
+      website: r.website || "", address: r.address || "",
+      primaryContact: r.primary_contact || "", paymentTerms: r.payment_terms || "",
+      active: r.active === true, notes: r.notes || "",
+    })),
+  });
+}
+
 // ── LOCATIONS ──────────────────────────────────────────────
 async function handleLocations() {
   // The table this migration exists for. In Airtable a location is a set of
   // field NAMES on Inventory Items; here it is a row you can insert.
   const q = await neonQuery(
-    `SELECT airtable_id AS id, name, location_type AS type
+    `SELECT COALESCE(airtable_id, id::text) AS id, name, location_type AS type
        FROM locations WHERE active
       ORDER BY name ASC`);
   if (q?.rows) {
@@ -2135,6 +2163,213 @@ async function handleItemDelete(body) {
   return resp(200, { ok: true, deleted: f.name });
 }
 
+// ═══════════════════════════════════════════════════════════
+// LOCATIONS, VENDORS AND VENDOR PRICING — writable in the app
+//
+// These three were always read-only here: you maintained them in Airtable. The
+// write cutover removed that without replacing it, so there was nowhere left to
+// open a new shop, add a supplier, or record what one charges. Not part of the
+// cutover — the hole it exposed.
+// ═══════════════════════════════════════════════════════════
+
+async function handleLocationSave(body) {
+  const { locationId, name, locationType, active, notes } = body || {};
+  const nm = String(name || "").trim();
+  if (!locationId && !nm) return resp(400, { ok: false, error: "Location name is required." });
+
+  if (locationId) {
+    const rows = await neonWrite("locationSave.update",
+      `UPDATE locations SET
+         name          = COALESCE($2, name),
+         location_type = COALESCE($3, location_type),
+         active        = COALESCE($4, active),
+         notes         = COALESCE($5, notes),
+         synced_at     = now()
+       WHERE airtable_id = $1 OR id::text = $1
+       RETURNING COALESCE(airtable_id, id::text) AS id, name, location_type, active`,
+      [String(locationId), nm || null,
+       locationType === undefined ? null : (String(locationType).trim() || null),
+       active === undefined ? null : !!active,
+       notes  === undefined ? null : String(notes || "")]);
+    if (!rows.length) return resp(404, { ok: false, error: "Location not found." });
+    return resp(200, { ok: true, location: { id: rows[0].id, name: rows[0].name || "",
+      type: rows[0].location_type || "", active: rows[0].active === true } });
+  }
+
+  // Names are how a location is picked and read on every screen, so a duplicate
+  // is worse than an error — two "Shop #2"s cannot be told apart in a dropdown.
+  const clash = await neonWrite("locationSave.dupe",
+    `SELECT name FROM locations WHERE lower(name) = lower($1) LIMIT 1`, [nm]);
+  if (clash.length) return resp(409, { ok: false, error: `"${clash[0].name}" already exists.` });
+
+  const made = await neonWrite("locationSave.insert",
+    `INSERT INTO locations (name, location_type, active, notes, synced_at)
+     VALUES ($1,$2,$3,$4, now())
+     RETURNING id, name, location_type, active`,
+    [nm, locationType ? String(locationType).trim() : null,
+     active === false ? false : true, notes ? String(notes) : null]);
+  const r = made[0];
+  return resp(200, { ok: true, location: { id: r.id, name: r.name || "",
+    type: r.location_type || "", active: r.active === true } });
+}
+
+async function handleVendorSave(body) {
+  const { vendorId, name, vendorType, accountNumber, phone, email, website,
+          address, primaryContact, paymentTerms, active, notes } = body || {};
+  const nm = String(name || "").trim();
+  if (!vendorId && !nm) return resp(400, { ok: false, error: "Vendor name is required." });
+
+  const cols = [nm || null,
+    vendorType     === undefined ? null : (String(vendorType).trim() || null),
+    accountNumber  === undefined ? null : (String(accountNumber).trim() || null),
+    phone          === undefined ? null : (String(phone).trim() || null),
+    email          === undefined ? null : (String(email).trim() || null),
+    website        === undefined ? null : (String(website).trim() || null),
+    address        === undefined ? null : (String(address).trim() || null),
+    primaryContact === undefined ? null : (String(primaryContact).trim() || null),
+    paymentTerms   === undefined ? null : (String(paymentTerms).trim() || null),
+    active         === undefined ? null : !!active,
+    notes          === undefined ? null : String(notes || "")];
+
+  if (vendorId) {
+    const rows = await neonWrite("vendorSave.update",
+      `UPDATE vendors SET
+         name = COALESCE($2, name), vendor_type = COALESCE($3, vendor_type),
+         account_number = COALESCE($4, account_number), phone = COALESCE($5, phone),
+         email = COALESCE($6, email), website = COALESCE($7, website),
+         address = COALESCE($8, address), primary_contact = COALESCE($9, primary_contact),
+         payment_terms = COALESCE($10, payment_terms), active = COALESCE($11, active),
+         notes = COALESCE($12, notes), synced_at = now()
+       WHERE airtable_id = $1 OR id::text = $1
+       RETURNING COALESCE(airtable_id, id::text) AS id, name, active`,
+      [String(vendorId), ...cols]);
+    if (!rows.length) return resp(404, { ok: false, error: "Vendor not found." });
+    return resp(200, { ok: true, vendor: { id: rows[0].id, name: rows[0].name || "",
+      active: rows[0].active === true } });
+  }
+
+  const clash = await neonWrite("vendorSave.dupe",
+    `SELECT name FROM vendors WHERE lower(name) = lower($1) LIMIT 1`, [nm]);
+  if (clash.length) return resp(409, { ok: false, error: `"${clash[0].name}" already exists.` });
+
+  const made = await neonWrite("vendorSave.insert",
+    `INSERT INTO vendors (name, vendor_type, account_number, phone, email, website,
+                          address, primary_contact, payment_terms, active, notes, synced_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,true),$11, now())
+     RETURNING id, name, active`, cols);
+  const r = made[0];
+  return resp(200, { ok: true, vendor: { id: r.id, name: r.name || "", active: r.active === true } });
+}
+
+// ── VENDOR PRICING ────────────────────────────────────────
+// The money one: v_item_live_cost reads preferred+active rows here, and that
+// live cost is what an estimate quotes and what "sync cost to vendor" copies
+// into the item.
+async function handleVendorPricingSave(body) {
+  const { pricingId, itemId, vendorId, unitCost, preferred, active,
+          vendorPartNumber, minOrderQty, leadTimeDays, priceValidUntil, notes } = body || {};
+  if (!pricingId && (!itemId || !vendorId)) {
+    return resp(400, { ok: false, error: "Item and vendor are both required." });
+  }
+
+  // ⚠ Setting preferred CLEARS it from the item's other prices, in the same
+  // request. A partial unique index makes two preferred rows impossible
+  // (db/schema/042), so without this the second one would simply be rejected
+  // and the user would have to go and untick the first — for what is really one
+  // decision: "buy this from them now".
+  const clearOthers = async (itemHandle, keepId) => {
+    await neonWrite("vendorPricingSave.clearPreferred",
+      `UPDATE vendor_pricing SET preferred = false, synced_at = now()
+        WHERE preferred
+          AND ($2::uuid IS NULL OR id <> $2::uuid)
+          AND item_id = (SELECT id FROM inventory_items WHERE airtable_id = $1 OR id::text = $1)`,
+      [String(itemHandle), keepId || null]);
+  };
+
+  if (pricingId) {
+    const cur = await neonWrite("vendorPricingSave.read",
+      `SELECT p.id, COALESCE(i.airtable_id, i.id::text) AS item_handle
+         FROM vendor_pricing p JOIN inventory_items i ON i.id = p.item_id
+        WHERE p.airtable_id = $1 OR p.id::text = $1`, [String(pricingId)]);
+    if (!cur.length) return resp(404, { ok: false, error: "Vendor price not found." });
+    if (preferred === true) await clearOthers(cur[0].item_handle, cur[0].id);
+
+    const rows = await neonWrite("vendorPricingSave.update",
+      `UPDATE vendor_pricing SET
+         unit_cost          = COALESCE($2, unit_cost),
+         preferred          = COALESCE($3, preferred),
+         active             = COALESCE($4, active),
+         vendor_part_number = COALESCE($5, vendor_part_number),
+         min_order_qty      = COALESCE($6, min_order_qty),
+         lead_time_days     = COALESCE($7, lead_time_days),
+         price_valid_until  = COALESCE($8, price_valid_until),
+         notes              = COALESCE($9, notes),
+         -- The price moved, so the date it moved has to move with it, or the
+         -- panel keeps claiming a stale quote is current.
+         last_price_update  = CASE WHEN $2 IS NOT NULL AND $2 <> unit_cost
+                                   THEN CURRENT_DATE ELSE last_price_update END,
+         synced_at          = now()
+       WHERE id = $1::uuid RETURNING id`,
+      [cur[0].id,
+       unitCost         === undefined ? null : Number(unitCost),
+       preferred        === undefined ? null : !!preferred,
+       active           === undefined ? null : !!active,
+       vendorPartNumber === undefined ? null : (String(vendorPartNumber).trim() || null),
+       minOrderQty      === undefined ? null : Number(minOrderQty),
+       leadTimeDays     === undefined ? null : Number(leadTimeDays),
+       priceValidUntil  === undefined ? null : (String(priceValidUntil) || null),
+       notes            === undefined ? null : String(notes || "")]);
+    return resp(200, { ok: true, pricingId: rows[0].id });
+  }
+
+  if (preferred === true) await clearOthers(itemId, null);
+
+  // ON CONFLICT on (item_id, vendor_id): re-pricing the same supplier for the
+  // same item is an UPDATE, not a second row. Two rows for one pair is what
+  // makes "which price is current?" unanswerable.
+  const made = await neonWrite("vendorPricingSave.insert",
+    `INSERT INTO vendor_pricing
+       (item_airtable_id, item_id, vendor_airtable_id, vendor_id, unit_cost,
+        preferred, active, vendor_part_number, min_order_qty, lead_time_days,
+        price_valid_until, notes, last_price_update, synced_at)
+     VALUES ($1, (SELECT id FROM inventory_items WHERE airtable_id = $1 OR id::text = $1),
+             $2, (SELECT id FROM vendors WHERE airtable_id = $2 OR id::text = $2),
+             $3, COALESCE($4,false), COALESCE($5,true), $6, $7, $8, $9, $10, CURRENT_DATE, now())
+     ON CONFLICT (item_id, vendor_id) WHERE item_id IS NOT NULL AND vendor_id IS NOT NULL
+       DO UPDATE SET unit_cost = EXCLUDED.unit_cost, preferred = EXCLUDED.preferred,
+                     active = EXCLUDED.active, vendor_part_number = EXCLUDED.vendor_part_number,
+                     min_order_qty = EXCLUDED.min_order_qty, lead_time_days = EXCLUDED.lead_time_days,
+                     price_valid_until = EXCLUDED.price_valid_until, notes = EXCLUDED.notes,
+                     last_price_update = CURRENT_DATE, synced_at = now()
+     RETURNING id, item_id, vendor_id`,
+    [String(itemId), String(vendorId),
+     unitCost === undefined ? null : Number(unitCost),
+     preferred === undefined ? null : !!preferred,
+     active === undefined ? null : !!active,
+     vendorPartNumber ? String(vendorPartNumber).trim() : null,
+     minOrderQty === undefined ? null : Number(minOrderQty),
+     leadTimeDays === undefined ? null : Number(leadTimeDays),
+     priceValidUntil ? String(priceValidUntil) : null,
+     notes ? String(notes) : null]);
+
+  const r = made[0];
+  // An unresolved FK would save a price attached to nothing — invisible to the
+  // panel and to v_item_live_cost.
+  if (!r?.item_id || !r?.vendor_id) return resp(404, { ok: false, error: "Item or vendor not found." });
+  return resp(200, { ok: true, pricingId: r.id });
+}
+
+async function handleVendorPricingDelete(body) {
+  const { pricingId } = body || {};
+  if (!pricingId) return resp(400, { ok: false, error: "Missing pricingId." });
+  const gone = await neonWrite("vendorPricingDelete",
+    `DELETE FROM vendor_pricing WHERE airtable_id = $1 OR id::text = $1 RETURNING id`,
+    [String(pricingId)]);
+  if (!gone.length) return resp(404, { ok: false, error: "Vendor price not found." });
+  return resp(200, { ok: true, deleted: pricingId });
+}
+
+
 
 // ── DELETE ─────────────────────────────────────────────────
 async function handleDelete(body) {
@@ -3226,10 +3461,10 @@ async function handleItemVendorPricing(params) {
     `SELECT i.name AS item_name,
             i.default_unit_cost,
             (SELECT live_unit_cost FROM v_item_live_cost lc WHERE lc.item_id = i.id) AS live_cost,
-            p.airtable_id AS pricing_id, p.unit_cost, p.preferred, p.active,
+            COALESCE(p.airtable_id, p.id::text) AS pricing_id, p.unit_cost, p.preferred, p.active,
             p.vendor_part_number, p.min_order_qty, p.lead_time_days,
             p.last_price_update, p.price_valid_until, p.unit_of_measure, p.notes,
-            v.airtable_id AS vendor_id, v.name AS vendor_name
+            COALESCE(v.airtable_id, v.id::text) AS vendor_id, v.name AS vendor_name
        FROM inventory_items i
        LEFT JOIN vendor_pricing p ON p.item_id = i.id
        LEFT JOIN vendors v        ON v.id = p.vendor_id
@@ -3409,6 +3644,7 @@ export async function handler(event) {
       if (action === "estimatingJobs")    return await handleEstimatingJobs();
       if (action === "awardedJobs")       return await handleAwardedJobs();
       if (action === "locations")         return await handleLocations();
+      if (action === "vendors")           return await handleVendors(params);
       if (action === "items")             return await handleItems();
       if (action === "history")           return await handleHistory(params);
       if (action === "pendingExpenses")   return await handlePendingExpenses();
@@ -3444,6 +3680,10 @@ export async function handler(event) {
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "itemUpdate")         return await handleItemUpdate(body);
       if (body.action === "itemDelete")         return await handleItemDelete(body);
+      if (body.action === "locationSave")       return await handleLocationSave(body);
+      if (body.action === "vendorSave")         return await handleVendorSave(body);
+      if (body.action === "vendorPricingSave")   return await handleVendorPricingSave(body);
+      if (body.action === "vendorPricingDelete") return await handleVendorPricingDelete(body);
       if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);
       if (body.action === "createStockLevel")   return await handleCreateStockLevel(body);
       if (body.action === "delete")             return await handleDelete(body);

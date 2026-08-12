@@ -184,10 +184,18 @@ Fixed in **both stores**, Airtable first. Verified after: 0 impossible dates, 0 
 expenses, and **total final GP unchanged at $998,953.10** — confirming the prediction that GP
 sums by job and never by date.
 
-> ⬜ **Still open, deliberately not done:** the **8 upstream `pipe_usage` rows** still hold
-> `1969-12-31`. Same defect, different table, and correcting them means another eight writes to
-> production Airtable (`tblgxbgpovXj6myZB`). Nothing reads `usage_date` for GP, and the wire/pipe
-> path is dead, so this is cosmetic — but a later audit will re-find it if it is left.
+> ✅ **CLOSED 2026-08-12 — the 8 upstream `pipe_usage` rows are fixed too.** Airtable first
+> (`tblgxbgpovXj6myZB`), then Neon, same as the expenses.
+>
+> ⚠ **They did NOT all get the same date, and that mattered.** The first pass set all eight to
+> `2026-04-01` to match the expenses they generated — then their Airtable `createdTime` showed
+> three of them (the Harlin Smith rows) were created **2026-01-30**. The pipe was used in
+> January; the automation only turned it into an expense in April. Each row now carries **its
+> own** creation date, which is the better proxy for when the pipe was actually used.
+>
+> **Every money table is now free of impossible dates:** expenses 0, pipe_usage 0, and
+> `wire_weigh_ins` never had any (39 rows, 2026-01-01 → 2026-04-14). Total final GP unchanged at
+> **$964,332.04** either side, confirming again that GP sums by job and never by date.
 
 ## Finding 6 — Strongsville DG, confirmed and still unexplained
 

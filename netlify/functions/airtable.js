@@ -5383,6 +5383,22 @@ async function handleUpdateJobStatus(body) {
   if (!jobId || !status) return resp(400, { ok: false, error: "Missing jobId or status." });
   const VALID = ["New Lead","Estimating","Awarded","Service Call Scheduled","Ready to Invoice","Completed","Not Awarded"];
   if (!VALID.includes(status)) return resp(400, { ok: false, error: "Invalid status value." });
+  // ⚠⚠ NEON FIRST. `handleJobs` and `handleJobById` are NEON-FIRST over an
+  // hourly mirror, so an Airtable-only write here does not stick: the frontend
+  // patches local state and the card looks right, then a refresh re-reads Neon
+  // and the old status comes back. Reported from the field 2026-08-12 —
+  // WatersEdge 1 awarded, Airtable said Awarded, Neon still said Estimating.
+  //
+  // This is the FOURTH time this project has been bitten by "flip a read
+  // without its write" (ROADMAP §8 records three in one day). It hides every
+  // time for the same reason: the UI patches state after saving, so it only
+  // shows up on reload.
+  //
+  // Fails CLOSED, because Neon is what the app reads. A status change that
+  // cannot be recorded must report an error rather than appear to work.
+  await neonWrite("job.updateStatus",
+    `UPDATE jobs SET status = $2, synced_at = now() WHERE airtable_id = $1`, [jobId, status]);
+
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fld2FBMjvkOsy9Puu": status } }) });
 
   // Fire whatever this status change is supposed to fire — pCloud folders at
@@ -5437,6 +5453,11 @@ async function handleUpdatePowerCo(body) {
 async function handleStartServiceCall(body) {
   const { jobId } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Same Neon-first rule as handleUpdateJobStatus above — `start_service_call`
+  // is in JOB_SELECT, so an Airtable-only write reverts on the next refresh.
+  await neonWrite("job.startServiceCall",
+    `UPDATE jobs SET start_service_call = true, synced_at = now() WHERE airtable_id = $1`, [jobId]);
+
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldgar4OL6AL5k1S6": true } }) });
 
   // Its own hook, and its own trigger shape: not a status change but
@@ -5449,6 +5470,10 @@ async function handleStartServiceCall(body) {
 async function handleCompleteServiceCall(body) {
   const { jobId } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Neon-first, same reason as the two above: `project_complete` is in
+  // JOB_SELECT, so an Airtable-only write silently reverts on refresh.
+  await neonWrite("job.completeServiceCall",
+    `UPDATE jobs SET project_complete = true, synced_at = now() WHERE airtable_id = $1`, [jobId]);
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldZ4tEiYt6Ke8IlK": true } }) });
   return resp(200, { ok: true, updatedId: data.id });
 }

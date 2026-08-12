@@ -56,6 +56,9 @@ const estLineDeletes = [];
 const estUpdates     = [];
 let   estMissing     = new Set();   // estimate ids that should match nothing
 const EST1           = "e5717a7e-0000-4000-8000-000000000001";
+const NEW_ITEM       = "17e11111-1111-4111-8111-111111111111";
+const itemCostWrites = [];
+let   itemMissing    = new Set();
 const NEW_EST        = "e5717a7e-1111-4111-8111-111111111111";
 let   tmplCloneLines = [];          // what the from-template INSERT..SELECT copies
 
@@ -117,8 +120,18 @@ globalThis.fetch = async (url, opts = {}) => {
     const sql = String(body?.query || "");
     let payload;
     if (/INSERT INTO inventory_items/i.test(sql)) {
+      // Born here, so it returns its own row — there is no Airtable record to
+      // mirror and no rec id to hand back.
       neonWrites.push(body.params?.[0]);
-      payload = neonReply([], []);
+      payload = neonReply(["id", "name", "category", "product_size", "unit_of_measure",
+                           "barcode", "default_unit_cost", "wire_ft_per_lb"],
+        [{ id: NEW_ITEM, name: body.params?.[0], category: body.params?.[1],
+           product_size: body.params?.[2], unit_of_measure: body.params?.[3],
+           barcode: body.params?.[4], default_unit_cost: body.params?.[5],
+           wire_ft_per_lb: body.params?.[6] }]);
+    } else if (/UPDATE inventory_items SET default_unit_cost/i.test(sql)) {
+      itemCostWrites.push({ handle: body.params?.[0], cost: body.params?.[1] });
+      payload = neonReply(["id"], itemMissing.has(body.params?.[0]) ? [] : [{ id: NEW_ITEM }]);
     } else if (/INSERT INTO inventory_transactions/i.test(sql)) {
       // 13 binds per row: date, item, qty, type, from, to, cost, notes,
       // enteredBy, jobId, jobName, submitId, lineNo. Counting them is how the
@@ -361,6 +374,7 @@ function reset() {
   estWrites.length = 0; estLineWrites.length = 0;
   estDeletes.length = 0; estLineDeletes.length = 0;
   estUpdates.length = 0; estMissing = new Set();
+  itemCostWrites.length = 0; itemMissing = new Set();
   tmplCloneLines = ["recItemA", "recItemB"];
   neonEstimates = [
     { id: EST1, job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
@@ -435,14 +449,15 @@ await test("locations serve from Neon", async () => {
   eq(r.locations[0].type, "Shop", "type");
 });
 
-await test("Neon down → both reads fall back to Airtable, whole list intact", async () => {
+await test("S5: reference reads REFUSE to fall back to a frozen Airtable", async () => {
   reset(); neonDown = true;
-  const items = json(await GET("items"));
-  eq(items._source, "airtable", "fell back");
-  eq(items.items[0].name, "AIRTABLE FALLBACK ITEM", "served the Airtable row, not an empty list");
-  const locs = json(await GET("locations"));
-  eq(locs._source, "airtable", "fell back");
-  eq(locs.locations[0].name, "AIRTABLE FALLBACK LOC", "served the Airtable row");
+  // Items and locations kept an Airtable fallback right up to slice 5. It goes
+  // with the cutover: that copy is missing every item created since and every
+  // price moved since, and reference data quietly a day out of date is how an
+  // estimate gets quoted at last week's cost.
+  eq((await GET("items")).statusCode, 503, "items refuse");
+  eq((await GET("locations")).statusCode, 503, "locations refuse");
+  eq(atRequested.some(u => /Inventory%20Items|Locations/.test(u)), false, "neither even tried");
 });
 
 await test("vendor pricing: Neon shape matches the Airtable one EXACTLY", async () => {
@@ -477,13 +492,13 @@ await test("vendor pricing: an item with no pricing rows returns an empty list, 
   eq(r.summary.variance, null, "variance is null without both numbers");
 });
 
-await test("createItem writes Neon too — otherwise the new item is invisible", async () => {
+await test("S5: creating an item is native, and its handle is the uuid", async () => {
   reset();
   const r = json(await POST({ action: "createItem", name: "NEW PART", cost: 4.5, barcode: "999" }));
   eq(r.ok, true, "ok");
-  eq(r.item.id, "recNewItem", "Airtable rec id returned");
-  eq(neonWrites.includes("recNewItem"), true,
-     "synced to Neon — the reads are Neon's now, so an Airtable-only write is invisible");
+  eq(r.item.id, NEW_ITEM, "the uuid Postgres minted — a native item has no rec id");
+  eq(r.item.name, "NEW PART", "and the row it returned, not a re-read");
+  eq(atRequested.some(u => /Inventory%20Items/.test(u)), false, "nothing reached Airtable");
 });
 
 await test("createItem refuses a duplicate barcode using the Neon index", async () => {
@@ -493,13 +508,24 @@ await test("createItem refuses a duplicate barcode using the Neon index", async 
   eq(/1\/2" EMT PIPE/.test(json(r).error), true, "names the clashing item from Neon");
 });
 
-await test("updateItemCost re-syncs the item so the new price is actually seen", async () => {
+await test("S5: a cost change is one UPDATE, and accepts either handle form", async () => {
   reset();
-  atItems.push({ id: "recItemA", fields: { "Item Name": "1/2\" EMT PIPE", "Default Unit Cost": 0.99, "Active Item": true } });
   const r = json(await POST({ action: "updateItemCost", itemId: "recItemA", cost: 0.99 }));
   eq(r.ok, true, "ok");
-  eq(neonWrites.includes("recItemA"), true,
-     "price change reached Neon — without this every estimate keeps quoting the old cost");
+  eq(itemCostWrites[0].handle, "recItemA", "a historical item is still found by its rec id");
+  eq(Number(itemCostWrites[0].cost), 0.99, "the new price");
+
+  // And the other half of the dual handle: an item created since the cutover.
+  reset();
+  json(await POST({ action: "updateItemCost", itemId: NEW_ITEM, cost: 1.25 }));
+  eq(itemCostWrites[0].handle, NEW_ITEM, "a native item is found by its uuid");
+});
+
+await test("S5: a cost change that matched no item is a 404", async () => {
+  reset();
+  itemMissing.add("recGONE");
+  const r = await POST({ action: "updateItemCost", itemId: "recGONE", cost: 1 });
+  eq(r.statusCode, 404, "estimates quote this number — a silent no-op is money");
 });
 
 // ── Step C: the ledger, and on-hand as a derived number ──────────────────────

@@ -461,7 +461,8 @@ async function handleAwardedJobs() {
 // Returns null on any Neon failure so the caller falls back to Airtable.
 async function neonItemIndex() {
   const q = await neonQuery(
-    `SELECT airtable_id, name, category, unit_of_measure, default_unit_cost, wire_ft_per_lb
+    `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name, category,
+            unit_of_measure, default_unit_cost, wire_ft_per_lb
        FROM inventory_items WHERE COALESCE(airtable_id,'') <> ''`);
   if (!q?.rows) return null;
   const index = {};
@@ -483,26 +484,16 @@ async function neonItemIndex() {
 
 // The same index, built from Airtable. Kept beside its Neon twin so the two
 // shapes can't drift — every caller consumes one or the other interchangeably.
-async function airtableItemIndex() {
-  const records = await fetchAll(API_ROOT_INV, "Inventory Items", {});
-  const index = {};
-  for (const r of records) {
-    const f = r.fields || {};
-    index[r.id] = {
-      id:          r.id,
-      name:        f["Item Name"] || r.id,
-      cat:         f["Category"]?.name || f["Category"] || "",
-      uom:         f["Unit of Measure"]?.name || f["Unit of Measure"] || "",
-      cost:        Number(f["Default Unit Cost"] || 0),
-      wireFtPerLb: Number(f["Wire ft/lb"] || 0),
-    };
-  }
-  return index;
-}
+// airtableItemIndex() is gone — there is no Airtable item table to index any
+// more, and itemIndex() answers from Neon alone.
 
-// What the eleven call sites actually use. Neon first, Airtable if Neon is down.
+// What the eleven call sites actually use. Neon only now — there is no second
+// item table to fall back to, and the callers that price a cart or a template
+// would rather fail than quote from a frozen copy.
 async function itemIndex() {
-  return (await neonItemIndex()) || (await airtableItemIndex());
+  const idx = await neonItemIndex();
+  if (!idx) throw new Error("Inventory items are unavailable (Neon unreachable).");
+  return idx;
 }
 
 // ── KEEP NEON IN STEP AFTER AN ITEM WRITE ──────────────────────────────────
@@ -522,29 +513,8 @@ async function itemIndex() {
 // (`loadInventoryReference`) is an idempotent catch-up that repairs any row this
 // misses. Breaking "add an item" over a database blip would cost more than the
 // staleness it prevents.
-async function syncItemToNeon(rec) {
-  if (!rec?.id) return;
-  const f = rec.fields || {};
-  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
-  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const q = await neonQuery(
-    `INSERT INTO inventory_items
-       (airtable_id, name, category, product_size, unit_of_measure, barcode,
-        alternate_barcodes, default_unit_cost, wire_ft_per_lb, reorder_point, active, notes, synced_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       name=EXCLUDED.name, category=EXCLUDED.category, product_size=EXCLUDED.product_size,
-       unit_of_measure=EXCLUDED.unit_of_measure, barcode=EXCLUDED.barcode,
-       alternate_barcodes=EXCLUDED.alternate_barcodes,
-       default_unit_cost=EXCLUDED.default_unit_cost, wire_ft_per_lb=EXCLUDED.wire_ft_per_lb,
-       reorder_point=EXCLUDED.reorder_point, active=EXCLUDED.active, notes=EXCLUDED.notes,
-       synced_at=now()`,
-    [rec.id, f["Item Name"] || "", sel(f["Category"]), sel(f["Product Size"]),
-     sel(f["Unit of Measure"]), f["Barcode Value"] ?? null, f["Alternate Barcodes"] ?? null,
-     num(f["Default Unit Cost"]), num(f["Wire ft/lb"]), num(f["Reorder Point"]),
-     f["Active Item"] === true, f["Notes"] ?? null]);
-  if (!q?.rows) console.error(`syncItemToNeon ${rec.id} failed (item will be stale until the next loader run): ${q?.error || "Neon unavailable"}`);
-}
+// syncItemToNeon() is gone: an item is created in Postgres and updated there,
+// so there is no Airtable record to mirror from.
 
 // ── THE LEDGER IS NATIVE (cutover slice 1) ────────────────────────────────
 // Transactions are BORN here. Airtable is no longer written for the ledger at
@@ -578,7 +548,7 @@ async function insertTxns(rows, submitId = null) {
     const item = p(r.itemId ?? null);
     const from = p(r.fromLocationId ?? null);
     const to   = p(r.toLocationId ?? null);
-    return `(${p(r.txnDate)}, ${item}, (SELECT id FROM inventory_items WHERE airtable_id=${item}),` +
+    return `(${p(r.txnDate)}, ${item}, (SELECT id FROM inventory_items WHERE airtable_id=${item} OR id::text=${item}),` +
            `${p(Number(r.qty) || 0)}, ${p(r.type ?? null)},` +
            `${from}, (SELECT id FROM locations WHERE airtable_id=${from}),` +
            `${to}, (SELECT id FROM locations WHERE airtable_id=${to}),` +
@@ -651,14 +621,8 @@ async function deleteTxn(id) {
 
 // Re-read the item from Airtable and sync it. Used by the cost writers, which
 // PATCH a single field and so don't have a full record in hand.
-async function syncItemToNeonById(itemId) {
-  try {
-    const rec = await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, { method: "GET" });
-    if (rec?.id === itemId) await syncItemToNeon(rec);
-  } catch (e) {
-    console.error(`syncItemToNeonById ${itemId} failed (stale until next loader run): ${e.message}`);
-  }
-}
+// syncItemToNeonById() is gone with it: the cost writers UPDATE the row
+// directly rather than PATCHing Airtable and re-reading it back.
 
 // ── LOCATIONS ──────────────────────────────────────────────
 async function handleLocations() {
@@ -675,19 +639,11 @@ async function handleLocations() {
     });
   }
 
-  const records = await fetchAll(API_ROOT_INV, "Locations", {
-    filter: `{Active Location}=1`,
-    sortField: "Location Name",
-    sortDir: "asc"
-  });
-  return resp(200, {
-    ok: true, _source: "airtable",
-    locations: records.map(r => ({
-      id:   r.id,
-      name: r.fields["Location Name"] || "",
-      type: r.fields["Location Type"]?.name || ""
-    }))
-  });
+  // Fail closed. The Airtable copy of the reference tables is frozen at the
+  // slice-5 cutover — missing every item created since and every price moved
+  // since. Reference data quietly a day out of date is how an estimate gets
+  // quoted at last week's cost.
+  return resp(503, { ok: false, error: "Locations are unavailable right now. Please try again." });
 }
 
 // ── ITEMS ──────────────────────────────────────────────────
@@ -696,7 +652,7 @@ async function handleItems() {
   // returned here and nowhere else, so this read carries one column more than
   // the shared itemIndex() does — that is why it has its own query.
   const q = await neonQuery(
-    `SELECT airtable_id AS id, name, category, product_size, unit_of_measure,
+    `SELECT COALESCE(airtable_id, id::text) AS id, name, category, product_size, unit_of_measure,
             barcode, default_unit_cost, wire_ft_per_lb
        FROM inventory_items
       WHERE active AND COALESCE(airtable_id,'') <> ''
@@ -717,27 +673,11 @@ async function handleItems() {
     });
   }
 
-  const records = await fetchAll(API_ROOT_INV, "Inventory Items", {
-    filter: `{Active Item}=1`,
-    sortField: "Item Name",
-    sortDir: "asc"
-  });
-  return resp(200, {
-    ok: true, _source: "airtable",
-    items: records.map(r => {
-      const f = r.fields || {};
-      return {
-        id:          r.id,
-        name:        f["Item Name"] || "",
-        cat:         f["Category"]?.name || f["Category"] || "",
-        size:        f["Product Size"]?.name || f["Product Size"] || "",
-        uom:         f["Unit of Measure"]?.name || f["Unit of Measure"] || "",
-        barcode:     f["Barcode Value"] || "",
-        cost:        f["Default Unit Cost"] || 0,
-        wireFtPerLb: f["Wire ft/lb"] || 0
-      };
-    })
-  });
+  // Fail closed. The Airtable copy of the reference tables is frozen at the
+  // slice-5 cutover — missing every item created since and every price moved
+  // since. Reference data quietly a day out of date is how an estimate gets
+  // quoted at last week's cost.
+  return resp(503, { ok: false, error: "Items are unavailable right now. Please try again." });
 }
 
 // ── SUBMIT CART (multiple transactions at once) ────────────
@@ -822,16 +762,15 @@ async function handleReceive(body) {
     enteredBy:      enteredBy || "",
   }]);
 
-  // Update unit cost on the item if provided. Items are still
-  // Airtable-authoritative until slice 6, so this stays a mirror write — and it
-  // runs AFTER the ledger insert, which is now the part that cannot fail
-  // silently.
+  // Receiving at a price moves the item's default cost. Native now, and it
+  // still runs AFTER the ledger insert on purpose: the transaction is the part
+  // that must not fail silently, while a missed cost update is visible on the
+  // next screen and re-doable.
   if (unitCost && Number(unitCost) > 0) {
-    await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": Number(unitCost) } })
-    });
-    await syncItemToNeonById(itemId);   // receiving can move the item's cost too
+    await neonWrite("receive.itemCost",
+      `UPDATE inventory_items SET default_unit_cost = $2, synced_at = now()
+        WHERE airtable_id = $1 OR id::text = $1`,
+      [String(itemId), Number(unitCost)]);
   }
 
   return resp(200, { ok: true, id: txId });
@@ -973,14 +912,16 @@ async function handlePendingExpenses() {
   // and it still shows `Expense Created?` false for material that has already
   // been pushed and paid for. Falling back to it would hand the user a push
   // list that double-charges. Fail closed instead.
-  const [txRecords, itemRecords, mainJobs] = await Promise.all([
-    pendingFromNeon(),
-    itemIndex(),
-    mainJobIndex()
-  ]);
+  // The chargeable rows are fetched and checked BEFORE the two indexes, not
+  // alongside them. itemIndex() throws when Neon is unreachable (there is no
+  // second item table to fall back to), and a rejected Promise.all would skip
+  // the check below and surface as a bare 500 — losing the one message that
+  // tells the user nothing was charged.
+  const txRecords = await pendingFromNeon();
   if (!txRecords) {
     return resp(503, { ok: false, error: "Pending expenses are unavailable right now. Please try again." });
   }
+  const [itemRecords, mainJobs] = await Promise.all([itemIndex(), mainJobIndex()]);
 
   const itemMap = itemRecords;   // itemIndex() already returns { id -> {name, cost, wireFtPerLb, …} }
 
@@ -1794,18 +1735,13 @@ async function handleLoadInventoryReference() {
     ["name", "vendor_type", "account_number", "phone", "email", "website", "address",
      "primary_contact", "payment_terms", "active", "notes"]);
 
-  counts.items = await upsertChunked("inventory_items", "inventory_items",
-    ["airtable_id", "name", "category", "product_size", "unit_of_measure", "barcode",
-     "alternate_barcodes", "default_unit_cost", "wire_ft_per_lb", "reorder_point", "active", "notes"],
-    items.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      name: f["Item Name"] || "", category: sel(f["Category"]), product_size: sel(f["Product Size"]),
-      unit_of_measure: sel(f["Unit of Measure"]), barcode: f["Barcode Value"] ?? null,
-      alternate_barcodes: f["Alternate Barcodes"] ?? null,
-      default_unit_cost: num(f["Default Unit Cost"]), wire_ft_per_lb: num(f["Wire ft/lb"]),
-      reorder_point: num(f["Reorder Point"]), active: bool(f["Active Item"]),
-      notes: f["Notes"] ?? null }; }),
-    ["name", "category", "product_size", "unit_of_measure", "barcode", "alternate_barcodes",
-     "default_unit_cost", "wire_ft_per_lb", "reorder_point", "active", "notes"]);
+  // ⚠⚠ inventory_items has LEFT the loader (slice 5). Items are born in Postgres
+  // now, so re-upserting the Airtable copy would overwrite live prices and
+  // resurrect any item deleted in the app. Same rule as every domain before it.
+  //
+  // Locations, Vendors and Vendor Pricing still load below because nothing —
+  // here or in Airtable — writes them at all, so the two copies cannot diverge.
+  // Slice 6 retires the loader with them.
 
   counts.vendorPricing = await upsertChunked("vendor_pricing", "vendor_pricing",
     ["airtable_id", "item_airtable_id", "vendor_airtable_id", "active", "preferred", "unit_cost",
@@ -1941,13 +1877,13 @@ async function handleLoadInventoryReference() {
     // absent because they are Neon's now — see the note above the Stock Levels
     // fetch. Reporting a count for a table it no longer touches would be a
     // reassuring lie.
-    airtable: { locations: locs.length, vendors: vends.length, items: items.length,
+    airtable: { locations: locs.length, vendors: vends.length,
                 vendorPricing: pricing.length },
     // What the loader deliberately does NOT touch, because Neon owns it. This
     // list only grows: after slice 5 (items) the loader has nothing left to do
     // and slice 6 retires it altogether.
     nativeNotLoaded: ["inventory_transactions", "expense_pushes", "expense_push_lines",
-                      "stock_settings", "material_estimates", "material_estimate_lines",
+                      "stock_settings", "inventory_items", "material_estimates", "material_estimate_lines",
                       "material_estimate_templates", "material_estimate_template_lines",
                       "material_orders", "material_order_lines"],
     written: counts,
@@ -2025,59 +1961,50 @@ async function handleCreateItem(body) {
   const { name, category, productSize, uom, barcode, cost, wireFtPerLb, active } = body || {};
   if (!name || !name.trim()) return resp(400, { ok: false, error: "Item name is required." });
 
-  // Check for duplicate barcode. Neon-first — this is the indexed lookup the
-  // barcode index in 029 exists for — with the Airtable scan as the fallback.
-  // Note the guard must fail OPEN: if neither store can answer, creating a
-  // possible duplicate is better than blocking the add, and the duplicate is
-  // visible and fixable where a blocked add is just a dead end.
+  // Duplicate-barcode guard, now a single indexed lookup instead of Neon-then-
+  // Airtable-scan. It still fails OPEN on purpose: if the check itself cannot
+  // run, creating a possible duplicate beats blocking the add, because a
+  // duplicate is visible and fixable where a blocked add is a dead end.
   if (barcode && barcode.trim()) {
     const bc = barcode.trim();
     const q = await neonQuery(
       `SELECT name FROM inventory_items WHERE barcode = $1 LIMIT 1`, [bc]);
-    let clash = q?.rows ? (q.rows[0]?.name || null) : undefined;
-    if (clash === undefined) {
-      const existing = await fetchAll(API_ROOT_INV, "Inventory Items", {
-        filter: `{Barcode Value}='${bc}'`
-      });
-      clash = existing.length ? (existing[0].fields["Item Name"] || "another item") : null;
-    }
+    const clash = q?.rows?.[0]?.name || null;
     if (clash) return resp(409, { ok: false, error: `Barcode already used by: ${clash}` });
   }
 
-  // Use field NAMES with typecast:true — works for all field types including singleSelect
-  const fields = {
-    "Item Name":   name.trim(),
-    "Active Item": active === false ? false : true   // default true when not specified
-  };
-  if (category && category.trim())       fields["Category"]          = category.trim();
-  if (productSize && productSize.trim()) fields["Product Size"]      = productSize.trim();
-  if (uom && uom.trim())                 fields["Unit of Measure"]   = uom.trim();
-  if (barcode && barcode.trim())         fields["Barcode Value"]     = barcode.trim();
-  if (cost && Number(cost) > 0)          fields["Default Unit Cost"] = Number(cost);
-  if (wireFtPerLb && Number(wireFtPerLb) > 0) fields["Wire ft/lb"]   = Number(wireFtPerLb);
+  // Born in Postgres, so it has no rec id. Its public handle is the uuid — see
+  // db/schema/041 for why items keep a dual handle rather than moving wholesale.
+  const made = await neonWrite("createItem",
+    `INSERT INTO inventory_items
+       (name, category, product_size, unit_of_measure, barcode,
+        default_unit_cost, wire_ft_per_lb, active, synced_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+     RETURNING id, name, category, product_size, unit_of_measure, barcode,
+               default_unit_cost, wire_ft_per_lb`,
+    [name.trim(),
+     category && category.trim() ? category.trim() : null,
+     productSize && productSize.trim() ? productSize.trim() : null,
+     uom && uom.trim() ? uom.trim() : null,
+     barcode && barcode.trim() ? barcode.trim() : null,
+     cost && Number(cost) > 0 ? Number(cost) : null,
+     wireFtPerLb && Number(wireFtPerLb) > 0 ? Number(wireFtPerLb) : null,
+     active === false ? false : true]);
 
-  const data = await atFetch(API_ROOT_INV, encodeURIComponent("Inventory Items"), {
-    method: "POST",
-    body: JSON.stringify({ records: [{ fields }], typecast: true })
-  });
-
-  const newRecord = data.records?.[0];
-  if (!newRecord) throw new Error("No record returned from Airtable");
-
-  // Without this the new item is invisible to every read above.
-  await syncItemToNeon(newRecord);
+  const r = made[0];
+  if (!r) return resp(500, { ok: false, error: "Failed to create item." });
 
   return resp(200, {
     ok:   true,
     item: {
-      id:      newRecord.id,
-      name:    newRecord.fields["Item Name"] || name.trim(),
-      cat:     newRecord.fields["Category"]?.name || newRecord.fields["Category"] || category || "",
-      size:    newRecord.fields["Product Size"]?.name || newRecord.fields["Product Size"] || productSize || "",
-      uom:     newRecord.fields["Unit of Measure"]?.name || newRecord.fields["Unit of Measure"] || uom || "",
-      barcode: newRecord.fields["Barcode Value"] || barcode || "",
-      cost:    newRecord.fields["Default Unit Cost"] || cost || 0,
-      wireFtPerLb: newRecord.fields["Wire ft/lb"] || wireFtPerLb || 0
+      id:      r.id,
+      name:    r.name || "",
+      cat:     r.category || "",
+      size:    r.product_size || "",
+      uom:     r.unit_of_measure || "",
+      barcode: r.barcode || "",
+      cost:    Number(r.default_unit_cost ?? 0),
+      wireFtPerLb: Number(r.wire_ft_per_lb ?? 0)
     }
   });
 }
@@ -2086,13 +2013,14 @@ async function handleCreateItem(body) {
 async function handleUpdateItemCost(body) {
   const { itemId, cost } = body || {};
   if (!itemId || cost === undefined) return resp(400, { ok: false, error: "Missing itemId or cost." });
-  await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": Number(cost) } })
-  });
-  // The reads serve from Neon now — without this the price change is invisible
-  // and estimates keep quoting the old cost.
-  await syncItemToNeonById(itemId);
+  // Dual handle: rec id for the historical items, uuid for anything created
+  // since. Fails closed — estimates quote this number, so a price change that
+  // silently did not save is money.
+  const rows = await neonWrite("updateItemCost",
+    `UPDATE inventory_items SET default_unit_cost = $2, synced_at = now()
+      WHERE airtable_id = $1 OR id::text = $1
+     RETURNING id`, [String(itemId), Number(cost)]);
+  if (!rows.length) return resp(404, { ok: false, error: "Item not found." });
   return resp(200, { ok: true });
 }
 
@@ -2272,7 +2200,7 @@ async function handleCreateStockLevel(body) {
   const rows = await neonWrite("createStockLevel",
     `INSERT INTO stock_settings
        (item_airtable_id, item_id, location_airtable_id, location_id, reorder_point, synced_at)
-     VALUES ($1, (SELECT id FROM inventory_items WHERE airtable_id = $1),
+     VALUES ($1, (SELECT id FROM inventory_items WHERE airtable_id = $1 OR id::text = $1),
              $2, (SELECT id FROM locations WHERE airtable_id = $2), $3, now())
      ON CONFLICT (item_id, location_id) WHERE item_id IS NOT NULL AND location_id IS NOT NULL
        DO UPDATE SET reorder_point = EXCLUDED.reorder_point, synced_at = now()
@@ -2502,7 +2430,7 @@ async function createLineItems(estimateUuid, lines) {
   const tuples = lines.map((l, i) => {
     const item = p(l.itemId ? String(l.itemId) : null);
     return `(${p(estimateUuid)}, ${p(i + 1)}, ${item},` +
-           `(SELECT id FROM inventory_items WHERE airtable_id = ${item}),` +
+           `(SELECT id FROM inventory_items WHERE airtable_id = ${item} OR id::text = ${item}),` +
            `${p(Number(l.qty || 0))}, ${p(Number(l.unitCost || 0))},` +
            `${p(l.isMisc && l.description ? String(l.description).trim() : null)}, now())`;
   });
@@ -2851,7 +2779,7 @@ async function handleEstimateTemplateLineUpsert(body) {
      SELECT t.id, t.name || ' — ' || COALESCE(i.name, ''),
             i.airtable_id, i.id, $3, COALESCE(i.default_unit_cost, 0), $4, now()
        FROM material_estimate_templates t
-       JOIN inventory_items i ON i.airtable_id = $2
+       JOIN inventory_items i ON (i.airtable_id = $2 OR i.id::text = $2)
       WHERE t.id = $1::uuid
      RETURNING id`,
     [templateId, String(itemId), Number(quantity || 0),
@@ -3091,7 +3019,7 @@ async function createOrderLinesHelper(orderUuid, lines) {
     let desc = String(l.description || "").trim();
     if (l.isBox) desc = (desc || "Box order") + " [BOX]";
     return `(${p(orderUuid)}, ${p(i + 1)}, ${item},` +
-           `(SELECT id FROM inventory_items WHERE airtable_id = ${item}),` +
+           `(SELECT id FROM inventory_items WHERE airtable_id = ${item} OR id::text = ${item}),` +
            `${p(Number(l.qty || 0))}, ${p(desc || null)}, now())`;
   });
   await neonWrite("createOrderLines",
@@ -3193,8 +3121,8 @@ async function handleItemVendorPricing(params) {
        FROM inventory_items i
        LEFT JOIN vendor_pricing p ON p.item_id = i.id
        LEFT JOIN vendors v        ON v.id = p.vendor_id
-      WHERE i.airtable_id = $1
-      ORDER BY p.preferred DESC NULLS LAST, v.name ASC`, [itemId]);
+      WHERE i.airtable_id = $1 OR i.id::text = $1
+      ORDER BY p.preferred DESC NULLS LAST, v.name ASC`, [String(itemId)]);
 
   if (q?.rows) {
     if (!q.rows.length) return resp(404, { ok: false, error: "Item not found." });
@@ -3253,89 +3181,9 @@ async function handleItemVendorPricing(params) {
   // pull all (vendor pricing is a small table) and filter in JS.
   // Vendors are pulled to build an ID -> name map because the REST API returns
   // linked records as plain record IDs, not hydrated {id, name} objects.
-  const [itemData, allPricing, allVendors] = await Promise.all([
-    atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, { method: "GET" }),
-    fetchAll(API_ROOT_INV, "Vendor Pricing", {}),
-    fetchAll(API_ROOT_INV, "Vendors", {})
-  ]);
-
-  // ID -> Vendor Name
-  const vendorNameById = {};
-  allVendors.forEach(v => {
-    vendorNameById[v.id] = v.fields?.["Vendor Name"] || "";
-  });
-
-  const f           = itemData?.fields || {};
-  const defaultCost = Number(f["Default Unit Cost"] || 0);
-  // Rollup returns a number if a preferred record has Unit Cost set, else empty
-  const liveCost    = Number(f["Unit Cost Rollup (Live)"] || 0);
-
-  // Filter Vendor Pricing to this item only
-  const pricing = allPricing.filter(r => {
-    const links = r.fields?.["Inventory Item"] || [];
-    return links.some(l => {
-      const lid = typeof l === "object" ? l.id : String(l);
-      return lid === itemId;
-    });
-  });
-
-  const vendors = pricing.map(r => {
-    const pf        = r.fields || {};
-    const vendorArr = pf["Vendor"] || [];
-    const first     = vendorArr[0];
-    // Link fields come back as either plain IDs (REST API default) or {id, name}
-    // objects — handle both so this works regardless of Airtable response shape.
-    const vendorId  = first
-      ? (typeof first === "object" ? first.id : String(first))
-      : "";
-    const vendorName = vendorNameById[vendorId]
-      || (typeof first === "object" && first.name ? first.name : "")
-      || "";
-    return {
-      id:          r.id,
-      vendorId,
-      vendorName,
-      unitCost:    Number(pf["Unit Cost"] || 0),
-      uom:         pf["Unit of Measure"]?.name || pf["Unit of Measure"] || "",
-      partNumber:  pf["Vendor Part Number"] || "",
-      minOrderQty: Number(pf["Min Order Qty"] || 0),
-      leadTime:    Number(pf["Lead Time (days)"] || 0),
-      lastUpdate:  pf["Last Price Update"] || "",
-      validUntil:  pf["Price Valid Until"] || "",
-      preferred:   !!pf["Preferred for This Item"],
-      active:      !!pf["Active"],
-      notes:       pf["Notes"] || ""
-    };
-  });
-
-  // Display order: preferred first, then ascending by unit cost, then by name
-  vendors.sort((a, b) => {
-    if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
-    if (a.unitCost  !== b.unitCost)  return a.unitCost - b.unitCost;
-    return (a.vendorName || "").localeCompare(b.vendorName || "");
-  });
-
-  // Variance only meaningful when we have both a live price and a default cost
-  const variance = (liveCost > 0 && defaultCost > 0)
-    ? {
-        dollar: Math.round((liveCost - defaultCost) * 10000) / 10000,
-        pct:    (liveCost - defaultCost) / defaultCost
-      }
-    : null;
-
-  const preferredVendor = vendors.find(v => v.preferred);
-
-  return resp(200, {
-    ok: true,
-    summary: {
-      defaultCost,
-      liveCost,
-      variance,
-      preferredVendor: preferredVendor?.vendorName || "",
-      preferredUpdated: preferredVendor?.lastUpdate || ""
-    },
-    vendors
-  });
+  // Fail closed. Vendor pricing is what the live cost is computed from, so a
+  // frozen copy here would quote yesterday's price as today's.
+  return resp(503, { ok: false, error: "Vendor pricing is unavailable right now. Please try again." });
 }
 
 // ── SYNC DEFAULT UNIT COST TO LIVE VENDOR PRICE ───────────
@@ -3345,31 +3193,31 @@ async function handleSyncItemCostToVendor(body) {
   const { itemId } = body || {};
   if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
 
-  const itemData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Inventory Items")}/${itemId}`,
-    { method: "GET" }
-  );
-  const f        = itemData?.fields || {};
-  const liveCost = Number(f["Unit Cost Rollup (Live)"] || 0);
+  // `Unit Cost Rollup (Live)` was an Airtable rollup; v_item_live_cost is the
+  // view that replaced it in Step B (preferred AND active vendor price, MIN()
+  // to collapse a dual-preferred pair). Read the old cost in the same query so
+  // the response can still report what it changed from.
+  const cur = await neonWrite("syncItemCostToVendor.read",
+    `SELECT i.id, COALESCE(i.default_unit_cost, 0) AS old_cost,
+            COALESCE(v.live_unit_cost, 0) AS live_cost
+       FROM inventory_items i
+       LEFT JOIN v_item_live_cost v ON v.item_id = i.id
+      WHERE i.airtable_id = $1 OR i.id::text = $1`, [String(itemId)]);
+  if (!cur.length) return resp(404, { ok: false, error: "Item not found." });
 
+  const liveCost = Number(cur[0].live_cost || 0);
   if (!liveCost || liveCost <= 0) {
     return resp(400, { ok: false, error: "No live vendor price for this item — set a Preferred vendor with Unit Cost first." });
   }
 
-  // Default Unit Cost field ID on Inventory Items — same one used by the receive
-  // flow to write back updated costs. Using the ID (not name) for writes.
-  await atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: { "fld8aEhTzmEbqgIg4": liveCost } })
-  });
-  // Same reason as updateItemCost: the reads are Neon's now.
-  await syncItemToNeonById(itemId);
+  await neonWrite("syncItemCostToVendor.write",
+    `UPDATE inventory_items SET default_unit_cost = $2, synced_at = now() WHERE id = $1::uuid`,
+    [cur[0].id, liveCost]);
 
   return resp(200, {
     ok: true,
     newDefaultCost: liveCost,
-    oldDefaultCost: Number(f["Default Unit Cost"] || 0)
+    oldDefaultCost: Number(cur[0].old_cost || 0)
   });
 }
 

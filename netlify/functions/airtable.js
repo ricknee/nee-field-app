@@ -9913,11 +9913,78 @@ async function handleCreateJob(body) {
   if (customerEmail     && String(customerEmail    ).trim()) fields["Customer Email (Intake)"]        = String(customerEmail    ).trim();
   if (notes             && String(notes            ).trim()) fields["Notes"]                          = String(notes);
 
+  // ── PO NUMBER (audit item 05, db/schema/039) ─────────────────────────────
+  // Allocated from Neon BEFORE the Airtable POST, and written in the same POST.
+  //
+  // ⚠⚠ THAT ORDER IS THE WHOLE CUTOVER STRATEGY. The Airtable automation
+  // `wfltJAiEaavVLA0wB` triggers on "status = New Lead AND Job PO Number is
+  // EMPTY". Creating the record with the number already set makes its condition
+  // false, so it stands down on its own — no undeploy gap where a job could be
+  // created with nobody assigning a PO, and no window where both assign and the
+  // job ends up with two different numbers.
+  //
+  // ⚠ DO NOT derive the next number from the jobs table. 112 jobs run 102→436
+  // and 22 sit ABOVE the counter, because Dollar General jobs carry the general
+  // contractor's own numbering. max(po)+1 would jump to 437 and abandon 150
+  // unused numbers. The counter is the authority; the jobs table is not.
+  //
+  // Inert until JOB_CREATE_SOURCE=neon, in which case Airtable keeps assigning
+  // exactly as it does today.
+  let poNumber = null;
+  if (String(process.env.JOB_CREATE_SOURCE || "").toLowerCase() === "neon") {
+    try {
+      // One statement, so two people creating a job at the same instant cannot
+      // both read the same value — the flaw Airtable's read-then-write has
+      // always had and got away with because one person creates jobs at a time.
+      // A brand-new year starts at 100, matching the 2025/2027 counter rows.
+      const rows = await neonWrite("job.allocatePo",
+        `INSERT INTO job_po_counters (year, last_used) VALUES ($1, 100)
+         ON CONFLICT (year) DO UPDATE SET last_used = job_po_counters.last_used + 1,
+                                          synced_at = now()
+         RETURNING last_used`, [new Date().getFullYear()]);
+      poNumber = rows?.[0]?.last_used ?? null;
+      if (poNumber != null) fields["Job PO Number"] = poNumber;
+    } catch (e) {
+      // Fall through with no number: Airtable's automation still has its
+      // "PO is empty" condition satisfied and assigns one, exactly as today.
+      // A failed allocation must not block someone creating a job.
+      console.error(`createJob: PO allocation failed, leaving it to Airtable — ${e?.message || e}`);
+      poNumber = null;
+    }
+  }
+
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}`, {
     method: "POST",
     body: JSON.stringify({ fields })
   });
-  return resp(200, { ok: true, job: mapJob(data) });
+
+  // ── The job lands in Neon NOW, not up to an hour from now ────────────────
+  // `_jobs-sync.js` runs hourly, which is why a new job has shown an empty Time
+  // Entries tab for its first hour. Airtable is still created first because
+  // `jobs.airtable_id` is NOT NULL and every client-side job id is the rec id —
+  // a Neon-first job would have no id the app could use.
+  //
+  // Fails SOFT: the job exists in Airtable and the hourly sync will adopt it,
+  // so a Neon hiccup costs the old one-hour lag rather than the job itself.
+  try {
+    await neonWrite("job.create",
+      `INSERT INTO jobs (airtable_id, name, status, job_type, tax_status, billing_method,
+                         contractor_at_id, contractor_name, po_number, job_year, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         name=EXCLUDED.name, status=EXCLUDED.status, job_type=EXCLUDED.job_type,
+         tax_status=EXCLUDED.tax_status, billing_method=EXCLUDED.billing_method,
+         contractor_at_id=EXCLUDED.contractor_at_id, contractor_name=EXCLUDED.contractor_name,
+         po_number=COALESCE(EXCLUDED.po_number, jobs.po_number), synced_at=now()`,
+      [data.id, trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
+       taxStatus || "Taxable", "Contractor", trimmedContractorId,
+       contractorName ? String(contractorName).trim() : null,
+       poNumber, new Date().getFullYear()]);
+  } catch (e) {
+    console.error(`createJob: Neon insert failed, hourly sync will adopt it — ${e?.message || e}`);
+  }
+
+  return resp(200, { ok: true, job: mapJob(data), ...(poNumber != null ? { poNumber } : {}) });
 }
 
 /* ── Jobsite photos (docs/PLAN-job-photos.md, slice 1: read-only) ───────────

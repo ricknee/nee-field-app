@@ -1482,6 +1482,38 @@ await test("setEmployeeActive: an employee Neon doesn't have never reports succe
   delete process.env.DATABASE_URL;
 });
 
+await test("createJob: ships INERT — Airtable still assigns the PO", async () => {
+  // The automation wfltJAiEaavVLA0wB triggers on "New Lead AND Job PO Number
+  // empty". While the switch is off we must NOT send that field, or the
+  // automation stands down and NOTHING assigns a PO — a job with no number,
+  // which is worse than the status quo.
+  mockTables = { Jobs: [], Companies: [] };
+  delete process.env.JOB_CREATE_SOURCE;
+  const res = await POST("createJob", { jobName: "Inert Test", contractorId: "recCo1" });
+  eq(res.statusCode, 200, "job created");
+  const sent = JSON.parse(lastFetch.opts.body).fields;
+  eq(Object.prototype.hasOwnProperty.call(sent, "Job PO Number"), false,
+     "Job PO Number must be ABSENT so Airtable's automation still fires");
+  eq(json(res).poNumber, undefined, "no PO reported back");
+});
+
+await test("createJob: the PO field is only ever sent when the switch is on", async () => {
+  // Guards the switch itself rather than the allocation, which needs live Neon.
+  // Offline the allocation throws at the connection, and the handler is written
+  // to fall through to Airtable on any failure — so the job must still be
+  // created, and still carry NO number, exactly as when the switch is off.
+  mockTables = { Jobs: [], Companies: [] };
+  process.env.JOB_CREATE_SOURCE = "neon";
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  const res = await POST("createJob", { jobName: "Fallback Test", contractorId: "recCo1" });
+  eq(res.statusCode, 200, "a failed PO allocation must not block creating the job");
+  const sent = JSON.parse(lastFetch.opts.body).fields;
+  eq(Object.prototype.hasOwnProperty.call(sent, "Job PO Number"), false,
+     "allocation failed, so the field is omitted and Airtable assigns as usual");
+  delete process.env.DATABASE_URL;
+  delete process.env.JOB_CREATE_SOURCE;
+});
+
 await test("job webhooks: ship INERT — JOB_WEBHOOKS unset posts nothing", async () => {
   // The four Airtable automations are still deployed. If both they and this
   // fire, every job reaching Estimating gets TWO sets of pCloud folders and

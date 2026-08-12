@@ -258,9 +258,18 @@ globalThis.fetch = async (url, opts = {}) => {
       const hit = neonItems.find(i => i.barcode === body.params?.[0]);
       payload = neonReply(["name"], hit ? [{ name: hit.name }] : []);
     } else if (/FROM inventory_items/i.test(sql)) {            // handleItems / itemIndex
+      // ⚠ The WHERE is HONOURED here, and it has to be. A mock that returns
+      // every row regardless of the filter cannot see a query that excludes
+      // exactly the rows you care about — which is how
+      // `COALESCE(airtable_id,'') <> ''` hid every natively-created item while
+      // the tests stayed green.
+      let rows = neonItems;
+      if (/COALESCE\(airtable_id,''\) <> ''/.test(sql)) rows = rows.filter(i => i.airtable_id);
+      // The handler selects COALESCE(airtable_id, id::text) AS id — the dual
+      // handle — so a native row answers with its uuid.
       payload = neonReply(["airtable_id", "id", "name", "category", "product_size",
                            "unit_of_measure", "barcode", "default_unit_cost", "wire_ft_per_lb"],
-        neonItems.map(i => ({ ...i, id: i.airtable_id })));
+        rows.map(i => ({ ...i, airtable_id: i.airtable_id || i.id, id: i.airtable_id || i.id })));
     } else {
       payload = neonReply([], []);
     }
@@ -519,6 +528,21 @@ await test("S5: a cost change is one UPDATE, and accepts either handle form", as
   reset();
   json(await POST({ action: "updateItemCost", itemId: NEW_ITEM, cost: 1.25 }));
   eq(itemCostWrites[0].handle, NEW_ITEM, "a native item is found by its uuid");
+});
+
+await test("S5: a NATIVE item appears in the list and in the shared index", async () => {
+  reset();
+  // The item created in the app has no airtable_id. Three queries used to carry
+  // `WHERE COALESCE(airtable_id,'') <> ''` — a Step-B guard that meant "skip
+  // malformed rows" and quietly came to mean "skip every item created since the
+  // cutover". The item saved fine and then vanished on refresh, and the shared
+  // index dropped it too, so it would not have priced in a cart either.
+  neonItems.push({ airtable_id: null, id: NEW_ITEM, name: "TEST PART", category: "EMT Fittings",
+                   product_size: null, unit_of_measure: "ea", barcode: null,
+                   default_unit_cost: "0.9900", wire_ft_per_lb: null });
+  const r = json(await GET("items"));
+  eq(r.items.some(i => i.name === "TEST PART"), true, "it is in the list");
+  eq(r.items.find(i => i.name === "TEST PART").cost, 0.99, "with its price");
 });
 
 await test("S5: a cost change that matched no item is a 404", async () => {

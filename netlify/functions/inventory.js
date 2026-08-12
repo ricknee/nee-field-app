@@ -463,7 +463,7 @@ async function neonItemIndex() {
   const q = await neonQuery(
     `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name, category,
             unit_of_measure, default_unit_cost, wire_ft_per_lb
-       FROM inventory_items WHERE COALESCE(airtable_id,'') <> ''`);
+       FROM inventory_items`);
   if (!q?.rows) return null;
   const index = {};
   for (const r of q.rows) {
@@ -630,7 +630,7 @@ async function handleLocations() {
   // field NAMES on Inventory Items; here it is a row you can insert.
   const q = await neonQuery(
     `SELECT airtable_id AS id, name, location_type AS type
-       FROM locations WHERE active AND COALESCE(airtable_id,'') <> ''
+       FROM locations WHERE active
       ORDER BY name ASC`);
   if (q?.rows) {
     return resp(200, {
@@ -655,7 +655,7 @@ async function handleItems() {
     `SELECT COALESCE(airtable_id, id::text) AS id, name, category, product_size, unit_of_measure,
             barcode, default_unit_cost, wire_ft_per_lb
        FROM inventory_items
-      WHERE active AND COALESCE(airtable_id,'') <> ''
+      WHERE active
       ORDER BY name ASC`);
   if (q?.rows) {
     return resp(200, {

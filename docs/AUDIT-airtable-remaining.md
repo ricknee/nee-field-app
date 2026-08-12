@@ -12,6 +12,81 @@ https://claude.ai/code/artifact/e460eb0e-98c0-4066-8685-2858e882a1c2
 > **Progress since the audit ran (same day):** item 01 ✅ `26d14c4`, item 08 ✅ `1b9a84d`. Both
 > pushed. Everything else below still stands.
 
+---
+
+## RE-MEASURED 2026-08-12 — read this before the item table below
+
+Re-run from the code, not the doc: every dispatched action in both functions classified by what it
+actually touches, then each surprise verified by hand. The item table further down is a plan; this
+is the measurement. **Both apps are much closer to done than the "~22-31 h field / 23-32 h
+inventory" line at the end of that table suggests.**
+
+### 🔴 Live, and not a migration item: three Make scenarios are OFF with stuck queues
+
+| Scenario | Last success | Then |
+|---|---|---|
+| `4509211` Automation – New Lead → Estimating (pCloud Folders) | **2026-08-12 09:18Z** (24 ops) | ❌ 10:17:24Z `BundleValidationError` |
+| `4509804` Airtable – Job Awarded | **2026-08-12 10:03Z** (8 + 3 ops) | ❌ 10:17:24Z `BundleValidationError` |
+| `4545219` Airtable – Service Call | — | ❌ 10:17:36Z `BundleValidationError` |
+
+All three carry Make's *"Fix the error or clear the queue"* warning and are now **inactive**, so
+`JOB_WEBHOOKS=app` is firing at scenarios that cannot receive: **no pCloud job folders, no Trello
+card, no QuickBooks Time job** for anything reaching Estimating or Awarded. The failing runs stop
+after **2 operations with 5 bytes transferred** — a near-empty payload — where the successful runs
+move 15-21 KB. ⚠ The failures are **06:17 EDT, hours before any of that day's deploys**, so this is
+not a regression from the day's commits. Clearing the queue is an owner action in the Make UI.
+
+**Good news in the same data:** the 09:18Z and 10:03Z successes close the two ⬜ *"never fired since
+undeploy"* gaps on item 04 — **the replumb itself is proven**, including the contractor-name fix.
+
+### 🟠 One latent bug, same class as `createCompany`
+
+**`createPowerCompany` writes Airtable only, but `getPowerCompanies` reads Neon first, and nothing
+anywhere writes `power_companies`.** A power company added in the app is therefore invisible to the
+picker that created it — permanently, not for an hour. 9 rows in each store today, so no drift has
+happened yet; it needs the same ~20-minute treatment `createCompany` just got.
+`createPowerContact` and `createContact` are the *other* two Airtable-only writes, but both are
+**consistent** — their reads are still Airtable too — so they are unmigrated, not broken.
+
+### Measured state
+
+| | field app (`airtable.js`) | inventory app (`inventory.js`) |
+|---|---|---|
+| dispatched actions | 170 | 56 |
+| **Airtable-only writes** | **3** (the creates above) | **0** |
+| mirror writes (both stores) | 47 — *this is item 10* | 0 |
+| actions touching **no** Neon at all | 29 | 0 |
+| writes to the Airtable **inventory** base | — | **0** |
+
+The field app's 29 Airtable-only actions are **not 29 domains**:
+
+- **18 are R2 key lookups** — `jobPhotos*`, `jobPrints*`, `jobDocs`, `expenseReceipt*`. They hit
+  Airtable only to turn a job/expense id into a storage prefix. Resolve the id from Neon and they
+  are done; no data moves. ~2-3 h for all eighteen.
+- **4 are Contacts** — `listContactsByCompany`, `createContact`, `getContactsForPowerCompany`,
+  `createPowerContact`. Item 06's last slice.
+- **3 are payroll** — `payrollRunsList`, `payrollBonusesRollup`, `payrollEmployeeBonusHistory`.
+  Item 02's tail, still gated on payroll PDFs → R2.
+- **2 are next-number scans** — `getNextEstimateNumber`, `getNextInvoiceNumber`. Same shape as the
+  PO counter item 05 solved with `job_po_counters`; safe today only because estimates and invoices
+  are still created Airtable-first. ⚠ **Whichever of those goes Neon-native first breaks the
+  numbering**, exactly as allocations broke when time entries lost their twin.
+- **1 is `unlinkedMaterialAllocations`** — verified consistent: `createMaterialAllocation` is
+  Airtable-first and mirrors, so this read cannot miss rows. ⚠ It does still use the unsafe
+  `FIND(jobName, ARRAYJOIN({Job}))` cross-job pattern — one of the four sites in `docs/TODO.md`.
+- 1 is `createPowerCompany`, above.
+
+**Inventory is effectively finished.** Zero writes to the Airtable inventory base. Its one Airtable
+write is `pushExpenses`, which posts into the **main** base's Expenses table and mirrors to Neon in
+the same call. Its eight main-base reads (`jobs`, `employees`, `login`, `estimatingJobs`,
+`awardedJobs`, `templateContractors`, `pendingExpenses`, plus the push) are all **Neon-first with an
+Airtable fallback** — the fallback is a safety net, not unfinished work.
+
+**Make: 14 active scenarios, not 18.** 8 are the vendor-invoice/pCloud email robots (Home Depot,
+Lowe's, CED ×3, Wolff ×3), 5 are the Google contact syncs (item 07), 1 is the grandfathered
+browser→pCloud upload hook. **None of the four job-lifecycle scenarios is active** — see the red
+block above.
+
 ## The four things that matter most
 
 **1. ~~Do now — the payroll drill-downs serve a frozen table.~~ ✅ FIXED 2026-08-09 (`26d14c4`).**

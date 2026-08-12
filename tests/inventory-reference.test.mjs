@@ -58,6 +58,9 @@ let   estMissing     = new Set();   // estimate ids that should match nothing
 const EST1           = "e5717a7e-0000-4000-8000-000000000001";
 const NEW_ITEM       = "17e11111-1111-4111-8111-111111111111";
 const itemCostWrites = [];
+const itemEdits      = [];
+const itemDeletes    = [];
+let   itemRefs       = { txns:0, est_lines:0, tmpl_lines:0, order_lines:0, pricing:0 };
 let   itemMissing    = new Set();
 const NEW_EST        = "e5717a7e-1111-4111-8111-111111111111";
 let   tmplCloneLines = [];          // what the from-template INSERT..SELECT copies
@@ -129,6 +132,29 @@ globalThis.fetch = async (url, opts = {}) => {
            product_size: body.params?.[2], unit_of_measure: body.params?.[3],
            barcode: body.params?.[4], default_unit_cost: body.params?.[5],
            wire_ft_per_lb: body.params?.[6] }]);
+    } else if (/SELECT name FROM inventory_items[\s\S]*NOT \(airtable_id/i.test(sql)) {
+      // The edit-form barcode guard, which must exclude the item itself.
+      const hit = neonItems.find(i => i.barcode === body.params?.[0]
+        && i.airtable_id !== body.params?.[1] && i.id !== body.params?.[1]);
+      payload = neonReply(["name"], hit ? [{ name: hit.name }] : []);
+    } else if (/UPDATE inventory_items SET[\s\S]*product_size/i.test(sql)) {
+      itemEdits.push({ handle: body.params?.[0], name: body.params?.[1], active: body.params?.[8] });
+      payload = neonReply(["id", "name", "category", "product_size", "unit_of_measure",
+                           "barcode", "default_unit_cost", "wire_ft_per_lb", "active"],
+        itemMissing.has(body.params?.[0]) ? [] :
+        [{ id: body.params?.[0], name: body.params?.[1] || "TEST PART", category: body.params?.[2],
+           product_size: body.params?.[3], unit_of_measure: body.params?.[4],
+           barcode: body.params?.[5], default_unit_cost: body.params?.[6],
+           wire_ft_per_lb: body.params?.[7], active: body.params?.[8] !== false }]);
+    } else if (/FROM inventory_items i\s+WHERE i.airtable_id = \$1 OR i.id::text = \$1/i.test(sql)
+               && /inventory_transactions x/i.test(sql)) {
+      // itemDelete's reference count.
+      payload = neonReply(["id", "name", "txns", "est_lines", "tmpl_lines", "order_lines", "pricing"],
+        itemMissing.has(body.params?.[0]) ? []
+          : [{ id: NEW_ITEM, name: "TEST PART", ...itemRefs }]);
+    } else if (/DELETE FROM inventory_items/i.test(sql)) {
+      itemDeletes.push(body.params?.[0]);
+      payload = neonReply([], []);
     } else if (/UPDATE inventory_items SET default_unit_cost/i.test(sql)) {
       itemCostWrites.push({ handle: body.params?.[0], cost: body.params?.[1] });
       payload = neonReply(["id"], itemMissing.has(body.params?.[0]) ? [] : [{ id: NEW_ITEM }]);
@@ -384,6 +410,8 @@ function reset() {
   estDeletes.length = 0; estLineDeletes.length = 0;
   estUpdates.length = 0; estMissing = new Set();
   itemCostWrites.length = 0; itemMissing = new Set();
+  itemEdits.length = 0; itemDeletes.length = 0;
+  itemRefs = { txns:0, est_lines:0, tmpl_lines:0, order_lines:0, pricing:0 };
   tmplCloneLines = ["recItemA", "recItemB"];
   neonEstimates = [
     { id: EST1, job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
@@ -543,6 +571,68 @@ await test("S5: a NATIVE item appears in the list and in the shared index", asyn
   const r = json(await GET("items"));
   eq(r.items.some(i => i.name === "TEST PART"), true, "it is in the list");
   eq(r.items.find(i => i.name === "TEST PART").cost, 0.99, "with its price");
+});
+
+// ── Editing an item — new with the cutover ─────────────────────────────────
+// While Airtable was the authority you edited an item there. Once items are
+// born in Postgres and nobody opens Airtable, there was no way to fix a typo,
+// correct a cost, or retire a part at all.
+
+await test("EDIT: an item can be corrected, by either handle form", async () => {
+  reset();
+  const r = json(await POST({ action: "itemUpdate", itemId: NEW_ITEM,
+                              name: "test part", cost: 1.25, active: true }));
+  eq(r.ok, true, "ok");
+  eq(itemEdits[0].handle, NEW_ITEM, "found by uuid");
+  eq(itemEdits[0].name, "TEST PART", "names are upper-cased, same as on create");
+});
+
+await test("EDIT: nothing to update is refused rather than writing a no-op", async () => {
+  reset();
+  const r = await POST({ action: "itemUpdate", itemId: NEW_ITEM });
+  eq(r.statusCode, 400, "400");
+  eq(itemEdits.length, 0, "no statement ran");
+});
+
+await test("EDIT: a blank name is refused — it is the only required field", async () => {
+  reset();
+  const r = await POST({ action: "itemUpdate", itemId: NEW_ITEM, name: "   " });
+  eq(r.statusCode, 400, "400");
+});
+
+await test("EDIT: a barcode already on ANOTHER item is refused", async () => {
+  reset();
+  // recItemA carries barcode 111 in the fixture.
+  const r = await POST({ action: "itemUpdate", itemId: NEW_ITEM, barcode: "111" });
+  eq(r.statusCode, 409, "409 conflict");
+  eq(/1\/2" EMT PIPE/.test(json(r).error), true, "names the item holding it");
+});
+
+await test("EDIT: re-saving an item's OWN barcode is not a clash with itself", async () => {
+  reset();
+  const r = json(await POST({ action: "itemUpdate", itemId: "recItemA", barcode: "111" }));
+  eq(r.ok, true, "allowed — the guard excludes the row being edited");
+});
+
+await test("DELETE: an orphaned item is removed", async () => {
+  reset();
+  const r = json(await POST({ action: "itemDelete", itemId: NEW_ITEM }));
+  eq(r.ok, true, "ok");
+  eq(itemDeletes.length, 1, "one delete");
+});
+
+await test("DELETE: an item with history is REFUSED, and told what to do instead", async () => {
+  reset();
+  itemRefs = { txns: 4, est_lines: 2, tmpl_lines: 0, order_lines: 0, pricing: 0 };
+  const res = await POST({ action: "itemDelete", itemId: NEW_ITEM });
+  const r = json(res);
+  eq(res.statusCode, 409, "refused");
+  eq(itemDeletes.length, 0, "nothing deleted");
+  // Deleting an item on an old estimate would blank that line — history would
+  // silently change. Retiring it is the correct answer, so the error says so.
+  eq(/4 stock movement/.test(r.error), true, "counts what blocks it");
+  eq(/2 estimate line/.test(r.error), true, "all of it, not just the first");
+  eq(/Untick Active/i.test(r.error), true, "and names the alternative");
 });
 
 await test("S5: a cost change that matched no item is a 404", async () => {

@@ -54,7 +54,8 @@ const _NON_VIEWER  = ["admin", "office", "employee"];
 const _ADMIN_WRITES = new Set([
   "pushExpenses",        // pushes material cost into job Expenses (money)
   "jobDocUploadUrl",     // archives the materials PDF — same tier as the push it documents
-  "updateItemCost", "createItem", "syncItemCostToVendor", // catalog / pricing
+  "updateItemCost", "createItem", "itemUpdate", "itemDelete",   // catalog / pricing
+  "syncItemCostToVendor",
   "delete",              // transaction deletion
   "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
   "loadInventoryReference",  // bulk-loads Neon reference tables (Step B)
@@ -2024,6 +2025,117 @@ async function handleUpdateItemCost(body) {
   return resp(200, { ok: true });
 }
 
+// ── EDIT AN ITEM ──────────────────────────────────────────
+// New with the write cutover. While Airtable was the authority you edited an
+// item there; now that items are born in Postgres and nobody opens Airtable,
+// there was no way to correct a typo, retire a part, or fix a wrong cost.
+//
+// Every field is optional: an absent key means "leave it alone", which is what
+// omitting it from the old Airtable PATCH did.
+async function handleItemUpdate(body) {
+  const { itemId, name, category, productSize, uom, barcode, cost, wireFtPerLb, active } = body || {};
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+  if ([name, category, productSize, uom, barcode, cost, wireFtPerLb, active].every(v => v === undefined)) {
+    return resp(400, { ok: false, error: "Nothing to update." });
+  }
+  if (name !== undefined && !String(name).trim()) {
+    return resp(400, { ok: false, error: "Item name cannot be blank." });
+  }
+
+  // Barcodes have to stay unique or the scanner picks whichever row it finds
+  // first. Checked against OTHER items only, so re-saving an item without
+  // touching its barcode is not a clash with itself.
+  if (barcode !== undefined && String(barcode).trim()) {
+    const bc = String(barcode).trim();
+    const clash = await neonWrite("itemUpdate.barcode",
+      `SELECT name FROM inventory_items
+        WHERE barcode = $1 AND NOT (airtable_id = $2 OR id::text = $2) LIMIT 1`,
+      [bc, String(itemId)]);
+    if (clash.length) return resp(409, { ok: false, error: `Barcode already used by: ${clash[0].name}` });
+  }
+
+  const rows = await neonWrite("itemUpdate",
+    `UPDATE inventory_items SET
+       name              = COALESCE($2, name),
+       category          = COALESCE($3, category),
+       product_size      = COALESCE($4, product_size),
+       unit_of_measure   = COALESCE($5, unit_of_measure),
+       barcode           = COALESCE($6, barcode),
+       default_unit_cost = COALESCE($7, default_unit_cost),
+       wire_ft_per_lb    = COALESCE($8, wire_ft_per_lb),
+       active            = COALESCE($9, active),
+       synced_at         = now()
+     WHERE airtable_id = $1 OR id::text = $1
+     RETURNING COALESCE(airtable_id, id::text) AS id, name, category, product_size,
+               unit_of_measure, barcode, default_unit_cost, wire_ft_per_lb, active`,
+    [String(itemId),
+     name        === undefined ? null : String(name).trim().toUpperCase(),
+     category    === undefined ? null : (String(category).trim() || null),
+     productSize === undefined ? null : (String(productSize).trim() || null),
+     uom         === undefined ? null : String(uom),
+     barcode     === undefined ? null : (String(barcode).trim() || null),
+     cost        === undefined ? null : Number(cost),
+     wireFtPerLb === undefined ? null : Number(wireFtPerLb),
+     active      === undefined ? null : !!active]);
+
+  if (!rows.length) return resp(404, { ok: false, error: "Item not found." });
+  const r = rows[0];
+  return resp(200, {
+    ok: true,
+    item: {
+      id: r.id, name: r.name || "", cat: r.category || "", size: r.product_size || "",
+      uom: r.unit_of_measure || "", barcode: r.barcode || "",
+      cost: Number(r.default_unit_cost ?? 0), wireFtPerLb: Number(r.wire_ft_per_lb ?? 0),
+      active: r.active === true,
+    }
+  });
+}
+
+// ── DELETE AN ITEM ────────────────────────────────────────
+// ⚠ Refuses if anything references it, and that refusal is the point. An item
+// that appears on an old estimate or a pushed transaction cannot be deleted
+// without blanking the line it appears on — history would silently change. The
+// answer for a real part you have stopped stocking is to untick Active, which
+// hides it from the pickers and leaves every record intact.
+//
+// So delete only exists for the case it is actually safe for: something created
+// by mistake that nothing has ever used.
+async function handleItemDelete(body) {
+  const { itemId } = body || {};
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+
+  const found = await neonWrite("itemDelete.refs",
+    `SELECT i.id, i.name,
+            (SELECT count(*) FROM inventory_transactions x WHERE x.item_id = i.id)::int AS txns,
+            (SELECT count(*) FROM material_estimate_lines x WHERE x.item_id = i.id)::int AS est_lines,
+            (SELECT count(*) FROM material_estimate_template_lines x WHERE x.item_id = i.id)::int AS tmpl_lines,
+            (SELECT count(*) FROM material_order_lines x WHERE x.item_id = i.id)::int AS order_lines,
+            (SELECT count(*) FROM vendor_pricing x WHERE x.item_id = i.id)::int AS pricing
+       FROM inventory_items i
+      WHERE i.airtable_id = $1 OR i.id::text = $1`, [String(itemId)]);
+  if (!found.length) return resp(404, { ok: false, error: "Item not found." });
+
+  const f = found[0];
+  const used = ["txns", "est_lines", "tmpl_lines", "order_lines", "pricing"]
+    .reduce((n, k) => n + Number(f[k] || 0), 0);
+  if (used > 0) {
+    const parts = [];
+    if (Number(f.txns))        parts.push(`${f.txns} stock movement(s)`);
+    if (Number(f.est_lines))   parts.push(`${f.est_lines} estimate line(s)`);
+    if (Number(f.tmpl_lines))  parts.push(`${f.tmpl_lines} template line(s)`);
+    if (Number(f.order_lines)) parts.push(`${f.order_lines} order line(s)`);
+    if (Number(f.pricing))     parts.push(`${f.pricing} vendor price(s)`);
+    return resp(409, { ok: false, inUse: true,
+      error: `"${f.name}" is used by ${parts.join(", ")}. Untick Active to retire it instead — deleting would blank those records.` });
+  }
+
+  // stock_settings is NOT in the guard above: a reorder point is a setting on
+  // the item, not a record of anything that happened, and the FK cascades.
+  await neonWrite("itemDelete", `DELETE FROM inventory_items WHERE id = $1::uuid`, [f.id]);
+  return resp(200, { ok: true, deleted: f.name });
+}
+
+
 // ── DELETE ─────────────────────────────────────────────────
 async function handleDelete(body) {
   const { txId } = body || {};
@@ -3330,6 +3442,8 @@ export async function handler(event) {
       if (body.action === "jobDocUploadUrl") return await handleJobDocUploadUrl(body);
       if (body.action === "createItem")        return await handleCreateItem(body);
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
+      if (body.action === "itemUpdate")         return await handleItemUpdate(body);
+      if (body.action === "itemDelete")         return await handleItemDelete(body);
       if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);
       if (body.action === "createStockLevel")   return await handleCreateStockLevel(body);
       if (body.action === "delete")             return await handleDelete(body);

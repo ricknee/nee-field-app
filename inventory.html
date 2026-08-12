@@ -3813,7 +3813,15 @@ async function lookupStock(itemId) {
 
     // Item header
     html += '<div style="background:var(--navy-mid);border-radius:var(--r);padding:14px 16px;margin-bottom:12px;">';
-    html += '<div style="font-size:17px;font-weight:700;color:var(--gold);">' + stockItem.name + '</div>';
+    // Name row carries the Edit affordance for admins. This screen is where you
+    // already are when you notice a wrong cost or a typo, so it is where the fix
+    // belongs — there is nowhere else in the app to change an item.
+    html += '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">';
+    html += '<div style="font-size:17px;font-weight:700;color:var(--gold);flex:1;min-width:0;">' + stockItem.name + '</div>';
+    if (isAdmin) {
+      html += '<button onclick="goEditItem(\'' + stockItem.id + '\')" style="background:var(--slate);border:none;border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:5px 12px;cursor:pointer;flex-shrink:0;">✎ Edit</button>';
+    }
+    html += '</div>';
     html += '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + [stockItem.cat, stockItem.size && ('size ' + stockItem.size), stockItem.uom].filter(Boolean).join(" · ") + '</div>';
     if (isAdmin && stockItem.cost > 0) {
       html += '<div style="font-size:12px;color:var(--dim);margin-top:2px;">Unit cost: <span style="color:var(--text);">' + fmtCurrency(stockItem.cost) + '</span></div>';
@@ -4233,7 +4241,21 @@ function saveOrCreateReorderPoint(input) {
 // ═══════════════════════════════════════════════════════════
 // NEW ITEM
 // ═══════════════════════════════════════════════════════════
-function goNewItem() {
+// `editingItem` non-null puts this same screen into edit mode. Kept as ONE form
+// because the fields are identical — a second copy would be two things to keep
+// in step.
+var editingItem = null;
+
+// Opened from the stock lookup. Reads the local cache so the form fills in
+// instantly; the save goes to the server either way.
+function goEditItem(itemId) {
+  var it = (allItems || []).find(function(i){ return i.id === itemId; });
+  if (!it) { showToast("Item not found", true); return; }
+  goNewItem(it);
+}
+
+function goNewItem(editItem) {
+  editingItem = editItem || null;
   showScreen("newitem");
   var body = document.getElementById("newitem-body");
   if (!dataReady) {
@@ -4673,10 +4695,60 @@ function renderNewItemForm(prefillBarcode) {
     '<div style="font-size:12px;color:var(--dim);margin-top:2px;">Uncheck to create as inactive (hidden from pickers)</div>' +
     '</div></label></div>' +
 
-    '<button class="primary-btn" id="ni-save-btn" onclick="submitNewItem()" style="margin-top:4px;">Save Item</button>' +
+    '<button class="primary-btn" id="ni-save-btn" onclick="submitNewItem()" style="margin-top:4px;">' +
+      (editingItem ? 'Save Changes' : 'Save Item') + '</button>' +
+    // Delete is offered, not promised: the backend refuses when anything
+    // references the item, and says what to untick instead.
+    (editingItem
+      ? '<button class="primary-btn" id="ni-del-btn" onclick="deleteItemFromForm()" style="margin-top:10px;background:var(--red);">Delete Item</button>' +
+        '<div style="font-size:11px;color:var(--muted);margin-top:8px;text-align:center;line-height:1.5;">' +
+        'Deleting only works if nothing has ever used this item.<br>' +
+        'To retire a part you still have history for, untick Active.</div>'
+      : '') +
     '<div style="height:24px;"></div>';
 
+  // Fill the form from the item being edited.
+  if (editingItem) {
+    var e = editingItem;
+    var setv = function(id, v){ var el = document.getElementById(id); if (el) el.value = v; };
+    setv("ni-name", e.name || "");
+    setv("ni-barcode", e.barcode || "");
+    setv("ni-cost", e.cost || "");
+    setv("ni-wire", e.wireFtPerLb || "");
+    setv("ni-uom", e.uom || "ea");
+    if (_combos["ni-cat"])  comboCommit("ni-cat",  e.cat  || "");
+    if (_combos["ni-size"]) comboCommit("ni-size", e.size || "");
+    // An item only reaches the picker when it is active, so a missing flag
+    // means active — defaulting the other way would retire it on next save.
+    var act = document.getElementById("ni-active");
+    if (act) act.checked = (e.active === undefined ? true : !!e.active);
+  }
+
   if (prefillBarcode) setTimeout(function(){ document.getElementById("ni-name")?.focus(); }, 100);
+}
+
+// Delete from the edit form. The server decides whether it is allowed — it
+// refuses when anything references the item and explains what to do instead,
+// so the confirm here is about intent, not permission.
+async function deleteItemFromForm() {
+  if (!editingItem) return;
+  if (!confirm('Delete "' + editingItem.name + '" permanently?\n\nThis only works if nothing has ever used it. To retire a part you still have history for, untick Active instead.')) return;
+
+  var btn = document.getElementById("ni-del-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Deleting…"; }
+  try {
+    await apiPost({ action: "itemDelete", itemId: editingItem.id });
+    var idx = allItems.findIndex(function(i){ return i.id === editingItem.id; });
+    if (idx >= 0) allItems.splice(idx, 1);
+    showToast("✓ " + editingItem.name + " deleted");
+    editingItem = null;
+    goHome();
+  } catch (ex) {
+    // The in-use refusal is a full sentence naming what blocks it, so show it
+    // as-is rather than a generic failure.
+    showToast(ex.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Delete Item"; }
+  }
 }
 
 // Kept as no-ops for compatibility with any stale event bindings
@@ -4706,6 +4778,34 @@ async function submitNewItem() {
   btn.disabled = true; btn.textContent = "Saving…";
 
   try {
+    // Editing sends EVERY field, including the blanked ones. On create an
+    // absent key means "not given"; on edit it would mean "keep the old value",
+    // so clearing a barcode or a size has to be sent explicitly.
+    if (editingItem) {
+      var upd = await apiPost({
+        action:      "itemUpdate",
+        itemId:      editingItem.id,
+        name:        name,
+        category:    cat,
+        productSize: size,
+        uom:         uom,
+        barcode:     barcode,
+        cost:        isNaN(cost) ? 0 : cost,
+        wireFtPerLb: isNaN(wire) ? 0 : wire,
+        active:      active
+      });
+      var idx = allItems.findIndex(function(i){ return i.id === editingItem.id; });
+      if (idx >= 0) {
+        if (upd.item.active) allItems[idx] = upd.item;
+        else allItems.splice(idx, 1);   // inactive items leave the pickers
+        allItems.sort(function(a, b){ return a.name.localeCompare(b.name); });
+      }
+      showToast("✓ " + upd.item.name + " saved");
+      editingItem = null;
+      goHome();
+      return;
+    }
+
     var d = await apiPost({
       action: "createItem",
       name,

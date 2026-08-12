@@ -4,8 +4,9 @@
 Companion to `docs/PLAN-inventory-to-neon.md`, which moved the **reads**. This moves the **writes**.
 
 > **Total: ~11-14 hours remaining** (slices 0 and 1 done), plus soak time between slices.
-> ⚠⚠ **Known defect carried forward: the Adjustment button subtracts instead of setting** — see
-> §Slice 1. Pre-existing, deferred by the owner, and it blocks any counting day.
+> ✅ **The "Adjustment subtracts instead of setting" defect is FIXED** (`da93e4e`, 2026-08-11) — see
+> §Slice 1. The counting day is unblocked, and counting is the only thing that repairs the
+> historical figures.
 > ✅ **Owner confirmed 2026-08-11: nobody uses Airtable for anything — the app is the only way this
 > data is seen.** So this is a full retirement: no reverse mirror, and the base gets archived at
 > slice 8. The §6 decision is closed.
@@ -96,7 +97,7 @@ client re-charging under a fresh push id, so with no way to run it, the push doe
 heal path is kept for the narrower failure it was really about: the expense reaching Airtable while
 its Neon mirror does not.
 
-### ⚠⚠ KNOWN DEFECT, deferred by the owner: "Adjustment" subtracts instead of setting
+### ✅ FIXED 2026-08-11 (`da93e4e`) — "Adjustment" subtracted instead of setting
 
 Found during this smoke, **pre-existing — not caused by slice 1**, and dating from Step C rather
 than the cutover. The UI asks *"Set 1/2" EMT PIPE at Shop #1 to 2000 units?"* and toasts *"Stock
@@ -108,16 +109,25 @@ of why on-hand reads so negative (26,332 used against 15,039 received). The old 
 almost certainly treated an Adjustment as *set the cache to this value*; deriving on-hand from the
 raw ledger silently turned it into *subtract*.
 
-**Until this is fixed, the Adjustment button makes stock worse, and a counting day would drive every
-figure further negative.** Receive is the only safe way to true up a count meanwhile — at the cost
-of recording stock-taking as material arriving.
+**The fix makes "set" real:** read current on-hand, post the DIFFERENCE — to-leg if positive,
+from-leg if negative with the sign dropped. The ledger stays a pure record of movements.
 
-The fix is to make "set" real: read current on-hand, compute the difference, and post that (to-leg
-if positive, from-leg if negative). It self-heals — because the delta is computed from current
-on-hand, the first correct count fixes an item regardless of how wrong its history is, so the 30 bad
-rows need no historical repair. ~30-45 min, contained to `handleAdjustment` plus a test.
+**It self-heals, so the 30 bad rows need no repair.** The delta is measured from current on-hand, so
+the first correct count lands an item on the right number however wrong its history was. That is why
+the counting day is now the cure rather than the thing that would have made every figure worse.
 
-**Owner deferred it 2026-08-11 ("just leave it for now").**
+Three smaller decisions worth keeping: a count that **matches** writes nothing (a zero-quantity
+movement is noise in the history of an item somebody checked and found correct); an unknown
+item/location pair is a **404** rather than a phantom movement, while a pair that has simply never
+held stock still returns **0** — the `CROSS JOIN` keeps those two cases distinguishable; and it
+**fails closed**, because with no current figure there is no delta and guessing would write a
+movement nobody counted.
+
+The toast now reports the delta — *"Set to 400 (was -2424, +2824)"*. On a counting day that number
+**is** the finding, and it is also how a count entered against the wrong location shows itself.
+
+⬜ **The counting day is now unblocked.** Nothing repairs the historical figures except counting:
+each item lands on truth the first time it is counted.
 
 ### Smaller notes
 

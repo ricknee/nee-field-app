@@ -4,7 +4,7 @@
   "short_name": "NEE Inventory",
   "description": "Materials, stock, ordering and estimating for Northeastern Electric.",
   "start_url": "/inventory.html",
-  "scope": "/",
+  "scope": "/inventory.html",
   "display": "standalone",
   "background_color": "#0D1B2A",
   "theme_color": "#0D1B2A",

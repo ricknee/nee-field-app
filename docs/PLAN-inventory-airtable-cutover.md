@@ -1,11 +1,13 @@
 # Plan — retiring the Airtable inventory base as a write target
 
-**Status: 2026-08-12 — five of six slices done. ~3-4 hours left.**
+**Status: 2026-08-12 — 36 writes → ZERO. Only decommissioning is left (~1 h).**
 Companion to `docs/PLAN-inventory-to-neon.md`, which moved the **reads**. This moves the **writes**.
 
-> **Six Airtable writes remain in the whole file**, and two of those were never in scope (they go
-> to the MAIN base's `Expenses`, which belongs to `docs/AUDIT-airtable-remaining.md`). The other
-> four are on `Inventory Items` and are slice 5.
+> **The inventory base is written by nothing.** The two writes still in `inventory.js` go to the
+> **MAIN** base's `Expenses` — the expense push feeding GP — and were never in scope; see
+> `docs/AUDIT-airtable-remaining.md`. The base is now read only by the loader, for three tables
+> nothing anywhere writes.
+> ⬜ **Slice 5 (items) is deployed but NOT prod-smoked.**
 > ✅ **Owner confirmed 2026-08-11: nobody uses Airtable for anything — the app is the only way this
 > data is seen.** So this is a full retirement: no reverse mirror, and the base gets archived.
 > ✅ **The "Adjustment subtracts instead of setting" defect is FIXED** (`da93e4e`) — see §Slice 1.
@@ -59,8 +61,8 @@ Started at **36 writes across 12 tables in one file** (`netlify/functions/invent
 | 2 | **Expense pushes** — history header + lines | 2 | ✅ **DONE + PROD-VERIFIED 2026-08-12** (`d1c9d50`, `db/schema/038`). 34 headers, 415 lines, 0 orphaned, all reconciling to the cent. §Slice 2. |
 | 3 | **Stock settings** — reorder points | 2 | ✅ **DONE 2026-08-12** (`8b26747`, `db/schema/039`). Smallest domain, nothing references it — first under leaf-first. §Slice 3. |
 | 4 | **The estimating cluster** — estimates, lines, templates, template lines, orders, order lines | 15 | ✅ **DONE + PROD-SMOKED 2026-08-12** (`2932b03`, `db/schema/040`). Six tables, one slice. Order **#41** created live off a native estimate. §Slice 4. |
-| **5** | **Reference tables** — Inventory Items | **4** | ⬜ **~2-3 h.** LAST because transactions, estimate lines, template lines, order lines and vendor pricing all reference items. Also drops the remaining read fallbacks on Items, Locations, Vendors and Vendor Pricing. |
-| **6** | **Decommission** — retire the loader, archive the base | — | ⬜ **~1 h.** After slice 5 the loader has nothing left to load. |
+| 5 | **Items** — the last domain | 4 | ✅ **DONE 2026-08-12** (`39e6e86`, `db/schema/041`). **Zero Airtable writes left to the inventory base.** ⚠ Items keep a **dual handle** — see §Slice 5. ⬜ Not yet prod-smoked. |
+| **6** | **Decommission** — retire the loader, archive the base | — | ⬜ **~1 h.** The loader now only reads Locations, Vendors and Vendor Pricing, which nothing anywhere writes. |
 
 **The two writes that will still remain afterwards go to the MAIN base** (`inventory.js` Expenses,
 the expense push feeding GP). They were never in scope — see `docs/AUDIT-airtable-remaining.md`.
@@ -245,6 +247,48 @@ half-broken — which is why it is one commit and not three.
 autonumbers, but nothing outside the row ever read them — they only order lines within one parent.
 Native lines number **1..N per estimate or order**, so the column finally means what its name says,
 and there is no global counter to seed or collide.
+
+## Slice 5 — items, and the one deliberate inconsistency in the whole cutover
+
+**Done 2026-08-12.** `db/schema/041`. The last four writes. **The inventory base is now written by
+nothing** — the only writes `inventory.js` still makes go to the MAIN base's `Expenses` (the expense
+push feeding GP), which was never in scope.
+
+### ⚠⚠ ITEMS KEEP A DUAL HANDLE. Do not "tidy" this away without reading why.
+
+Slices 1-4 each moved their public id wholesale to the uuid. **Items deliberately did not.**
+
+The item id is the app's widest currency: roughly **40 backend sites and 100 in the frontend**, and
+it flows *item picker → cart → transaction → expense push*. Rewriting all of that in one slice would
+have been the largest and riskiest change of the entire cutover, for no functional gain.
+
+So an item's public handle is **its Airtable rec id if it has one, else its uuid**:
+
+- reads emit `COALESCE(airtable_id, id::text)`
+- the five child writes resolve with `airtable_id = $n OR id::text = $n`
+  (ledger, estimate lines, order lines, template lines, stock settings)
+
+Symmetric, opaque to everything downstream, and the **866 historical items keep the ids already
+sitting in transactions, estimate lines, template lines, order lines and vendor pricing**. The two
+forms cannot collide: a rec id always starts `rec` and is never a valid uuid.
+
+**This is a transition shape, not a destination.** Once the base is archived, normalising to the
+uuid is one data migration plus one read change — cleanup, not cutover, and not urgent.
+
+### Two things it surfaced
+
+- `syncItemCostToVendor` was still reading **`Unit Cost Rollup (Live)` from Airtable** — the rollup
+  `v_item_live_cost` replaced back in Step B. That handler had gone on ignoring the view ever since.
+- Making `itemIndex()` throw (there is no second item table to fall back to) exposed a real
+  regression in `handlePendingExpenses`: a rejected `Promise.all` skipped its 503 and returned a
+  bare **500**, losing the message that says nothing was charged. The chargeable rows are now
+  fetched and checked *before* the indexes.
+
+### ⬜ Before slice 6 archives the base — a decision, not a task
+
+**Locations, Vendors and Vendor Pricing now have no write path anywhere.** They were always
+read-only in this app, and nobody opens Airtable. Adding a vendor or a location is **new work**, not
+cutover work, and it is easier to decide while the base is still there.
 
 ## What still is not smoked on production
 

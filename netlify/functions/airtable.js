@@ -8093,6 +8093,35 @@ async function handleCreatePowerContact(body) {
 
 // ── LABOR BILLABLE RATES (for per-job rate selector) ──────────────────────
 async function handleLaborBillableRates() {
+  // ── NEON-FIRST (audit item 06) ────────────────────────────────────────────
+  // The table has been sitting in Neon since the ETL and was never read — the
+  // audit called this one "nearly free" and it was. Same active-rate rule as
+  // the Airtable path below: no end date, or an end date not yet passed.
+  //
+  // `rate_label` is Airtable's `Billable Rate ID`, a FORMULA rendering
+  // "Regular - 75 (2026-01-01T00:00:00.000Z)". Stored rather than re-derived:
+  // the exact string is what the picker displays, and reproducing that ISO
+  // timestamp by hand is the kind of thing that drifts silently.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, rate_label, labor_type, billable_hourly_rate::float8 AS rate,
+              effective_start_date::text AS start_date, effective_end_date::text AS end_date
+         FROM labor_billable_rates
+        WHERE effective_end_date IS NULL OR effective_end_date >= CURRENT_DATE
+        ORDER BY billable_hourly_rate ASC`);
+    if (q?.rows?.length) {
+      return resp(200, { ok: true, _source: "neon", _ms: q.ms, rates: q.rows.map(r => ({
+        id:        r.airtable_id,          // ⚠ the AIRTABLE id — handleUpdateJobBillableRate
+        label:     r.rate_label || "",     //   writes it into an Airtable LINK field
+        laborType: r.labor_type || "",
+        rate:      r.rate ?? null,
+        startDate: r.start_date || "",
+        endDate:   r.end_date || "",
+      })) });
+    }
+    console.error(`laborBillableRates: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const records = await fetchAll("Labor Billable Rates", { sortField: "Billable Hourly Rate", sortDir: "asc" });
   const today = new Date().toISOString().slice(0,10);
   const rates = records
@@ -8119,6 +8148,38 @@ async function handleUpdateJobBillableRate(body) {
   const { jobId, rateId } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   // Jobs."Labor Billable Rates" field ID = fldcCGetfLtQW2nhm (multipleRecordLinks)
+  // ⚠⚠ NEON FIRST — this had the SAME bug as handleUpdateJobStatus (`ff21d46`),
+  // and this one moves money. `labor_billable_rate_at_id` AND
+  // `billable_hourly_rate` are both in JOB_SELECT, and the rate drives
+  // `labor_revenue_tm` = hours × rate, which is T&M revenue and therefore GP.
+  //
+  // Airtable-only meant: set a job's billable rate, watch it look right, and
+  // find it reverted on the next refresh — with the job's revenue still
+  // computed at the old rate until `_jobs-sync.js` next ran.
+  //
+  // ⚠ It is a WINDOW, not permanent loss, and that distinction matters for how
+  // hard to chase this class of bug. The hourly sync carries Airtable → Neon,
+  // so the value arrives within the hour. The damage is a confusing hour in
+  // which the app shows the old rate and GP is computed from it — bad, but not
+  // the same as data disappearing.
+  //
+  // (An earlier draft of this comment blamed the GP audit's three rate-less
+  // T&M jobs on exactly this. Checked: only Andy Alleman is left and he has
+  // zero hours, because the owner had already fixed the other two. So the
+  // window is real and this was NOT its consequence. Left in as a caution
+  // against a tidy story that the data does not support.)
+  //
+  // The rate VALUE is denormalised onto the job because that is what
+  // v_job_financials reads — Airtable's lookup does the same thing, and
+  // carrying it verbatim keeps the two stores comparable.
+  await neonWrite("job.updateBillableRate",
+    `UPDATE jobs
+        SET labor_billable_rate_at_id = $2,
+            billable_hourly_rate = (SELECT billable_hourly_rate FROM labor_billable_rates
+                                     WHERE airtable_id = $2),
+            synced_at = now()
+      WHERE airtable_id = $1`, [jobId, rateId ? String(rateId) : null]);
+
   const fields = {};
   fields["fldcCGetfLtQW2nhm"] = rateId ? [String(rateId)] : [];
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {

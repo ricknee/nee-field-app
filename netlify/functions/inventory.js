@@ -2028,35 +2028,22 @@ async function handleLoadInventoryReference() {
   // is therefore recomputed by `v_stock_on_hand` rather than copied — see
   // db/schema/032. Only Reorder Point and Notes come across, because only they
   // are things a human typed.
-  const [txns, stock] = await Promise.all([
-    fetchAll(API_ROOT_INV, "Inventory Transactions", {}),
+  const [stock] = await Promise.all([
     fetchAll(API_ROOT_INV, "Stock Levels", {}),
   ]);
 
-  counts.transactions = await upsertChunked("inventory_transactions", "inventory_transactions",
-    ["airtable_id", "txn_name", "txn_date", "item_airtable_id", "quantity", "txn_type",
-     "from_location_airtable_id", "to_location_airtable_id", "unit_cost_snapshot",
-     "notes", "entered_by", "job_airtable_id", "job_name", "expense_created", "push_id"],
-    txns.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      txn_name: f["Name"] ?? null, txn_date: f["Transaction Date"] ?? null,
-      item_airtable_id: lnk(f["Inventory Item"]), quantity: num(f["Quantity"]) ?? 0,
-      txn_type: sel(f["Transaction Type"]),
-      from_location_airtable_id: lnk(f["From Location"]),
-      to_location_airtable_id: lnk(f["To Location"]),
-      unit_cost_snapshot: num(f["Unit Cost (Snapshot)"]),
-      notes: f["Notes"] ?? null, entered_by: f["Entered By"] ?? null,
-      job_airtable_id: f["Job ID (Main)"] ?? null, job_name: f["Job Name"] ?? null,
-      expense_created: bool(f["Expense Created?"]), push_id: f["Push ID"] ?? null }; }),
-    // ⚠⚠ `expense_created` and `push_id` are INSERTED but never UPDATED, and
-    // leaving them out of this list is load-bearing. Since the cutover the
-    // pushed-mark is written to Neon only, so Airtable's copy is frozen at
-    // whatever it said that day. Re-running the loader with those two in the
-    // update set would reset already-pushed transactions back to unpushed,
-    // re-offer the material on the next push, and charge the customer twice.
-    // Everything else is safe to refresh: Airtable no longer changes at all.
-    ["txn_name", "txn_date", "item_airtable_id", "quantity", "txn_type",
-     "from_location_airtable_id", "to_location_airtable_id", "unit_cost_snapshot",
-     "notes", "entered_by", "job_airtable_id", "job_name"]);
+  // ⚠⚠ THE LEDGER NO LONGER LOADS, AND MUST NOT. Once a domain's writes go
+  // native, Neon is the authority and Airtable is a frozen snapshot — so
+  // re-upserting it does not repair anything, it OVERWRITES. Two ways that
+  // bites, both real:
+  //   · a historical transaction deleted in the app has no conflicting row, so
+  //     the upsert INSERTS it straight back. Delete, re-run the loader, and the
+  //     stock movement returns from the dead.
+  //   · every column would be reset to whatever Airtable said on cutover day.
+  // Slice 1 only excluded expense_created/push_id from the UPDATE list, which
+  // stopped pushed material being re-offered but did nothing about the
+  // resurrection. Leaving the table out entirely is the actual rule:
+  // **a domain leaves the loader on the day it goes native.**
 
   counts.stockSettings = await upsertChunked("stock_settings", "stock_settings",
     ["airtable_id", "item_airtable_id", "location_airtable_id", "reorder_point", "notes"],
@@ -2145,38 +2132,8 @@ async function handleLoadInventoryReference() {
      "unit_cost_at_order", "line_total_stored", "received", "notes"]);
 
   // ── Slice 2: the push history — the audit trail behind every charged dollar ──
-  const [pushes, pushLines] = await Promise.all([
-    fetchAll(API_ROOT_INV, "Expense Pushes", {}),
-    fetchAll(API_ROOT_INV, "Expense Push Lines", {}),
-  ]);
 
-  counts.expensePushes = await upsertChunked("expense_pushes", "expense_pushes",
-    ["airtable_id", "push_id", "title", "pushed_at", "pushed_by", "job_name", "job_airtable_id",
-     "materials_total", "tax_total", "total_pushed", "tx_count", "item_count", "taxable",
-     "expense_record_ids", "description"],
-    pushes.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      push_id: f["Push ID"] ?? null, title: f["Push Title"] ?? null,
-      pushed_at: f["Date Pushed"] ?? r.createdTime ?? null, pushed_by: f["Pushed By"] ?? null,
-      job_name: f["Job Name"] ?? null, job_airtable_id: f["Job ID (Main)"] ?? null,
-      materials_total: num(f["Materials Total"]), tax_total: num(f["Tax Total"]),
-      total_pushed: num(f["Total Pushed"]), tx_count: num(f["Tx Count"]),
-      item_count: num(f["Item Count"]), taxable: bool(f["Taxable"]),
-      expense_record_ids: f["Expense Record IDs"] ?? null,
-      description: f["Description"] ?? null }; }),
-    ["push_id", "title", "pushed_at", "pushed_by", "job_name", "job_airtable_id",
-     "materials_total", "tax_total", "total_pushed", "tx_count", "item_count", "taxable",
-     "expense_record_ids", "description"]);
 
-  counts.expensePushLines = await upsertChunked("expense_push_lines", "expense_push_lines",
-    ["airtable_id", "push_airtable_id", "line_title", "item_name", "quantity", "unit_cost",
-     "line_total", "wire_ft"],
-    pushLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      push_airtable_id: lnk(f["Push"]), line_title: f["Line Title"] ?? null,
-      item_name: f["Item Name"] ?? null, quantity: num(f["Quantity"]),
-      unit_cost: num(f["Unit Cost"]), line_total: num(f["Line Total"]),
-      wire_ft: num(f["Wire Ft"]) }; }),
-    ["push_airtable_id", "line_title", "item_name", "quantity", "unit_cost",
-     "line_total", "wire_ft"]);
 
   // Resolve the real FKs from the Airtable ids. Done as a second pass because
   // the parents have to exist first, and re-run each time so a pricing row
@@ -2253,11 +2210,16 @@ async function handleLoadInventoryReference() {
 
   return resp(200, {
     ok: true,
+    // Only what the loader still reads. The ledger and the push history are
+    // absent because they are Neon's now — see the note above the Stock Levels
+    // fetch. Reporting a count for a table it no longer touches would be a
+    // reassuring lie.
     airtable: { locations: locs.length, vendors: vends.length, items: items.length,
-                vendorPricing: pricing.length, transactions: txns.length, stockSettings: stock.length,
+                vendorPricing: pricing.length, stockSettings: stock.length,
                 estimates: ests.length, estimateLines: estLines.length,
                 templates: tmpls.length, templateLines: tmplLines.length,
                 orders: orders.length, orderLines: orderLines.length },
+    nativeNotLoaded: ["inventory_transactions", "expense_pushes", "expense_push_lines"],
     written: counts,
     // Rows whose FKs didn't resolve. A transaction with no location is invisible
     // to on-hand, so this is reported rather than swallowed.

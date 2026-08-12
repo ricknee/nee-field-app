@@ -276,6 +276,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="newitem-btn" onclick="goNewItem()" style="display:none">
       <div class="ico">➕</div><div><div class="lbl">Add New Item</div><div class="sub">Create a new inventory item</div></div>
     </button>
+    <button class="big-btn" id="bulk-btn" onclick="goBulkUpload()" style="display:none">
+      <div class="ico">📄</div><div><div class="lbl">Bulk Upload</div><div class="sub">Import a spreadsheet: prices, counts or new items</div></div>
+    </button>
     <button class="big-btn" id="manageloc-btn" onclick="goManageLocations()" style="display:none">
       <div class="ico">📍</div><div><div class="lbl">Shops &amp; Trucks</div><div class="sub">Add or retire a stock location</div></div>
     </button>
@@ -297,6 +300,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
   <div id="loc-list" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;">
     <div class="loading"><div class="spinner"></div><br>Loading…</div>
   </div>
+</div>
+
+<!-- BULK UPLOAD (admin) -->
+<div id="s-bulk" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Bulk Upload</h2></div>
+  <div class="log-body" id="bulk-body"></div>
 </div>
 
 <!-- MANAGE LOCATIONS (admin) -->
@@ -1087,6 +1096,8 @@ function applyUser() {
   if (adjBtn)      adjBtn.style.display      = isAdmin ? "flex" : "none";
   if (pushBtn)     pushBtn.style.display     = isAdmin ? "flex" : "none";
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
+  var bulkBtn = document.getElementById("bulk-btn");
+  if (bulkBtn) bulkBtn.style.display = isAdmin ? "flex" : "none";
   var managelocBtn = document.getElementById("manageloc-btn");
   if (managelocBtn) managelocBtn.style.display = isAdmin ? "flex" : "none";
   var wirecostBtn = document.getElementById("wirecost-btn");
@@ -4391,6 +4402,254 @@ function saveOrCreateReorderPoint(input) {
       input.style.borderColor = "var(--red)";
       showToast("Save failed: " + ex.message, true);
     });
+}
+
+// ═══════════════════════════════════════════════════════════
+// BULK UPLOAD (admin) — a spreadsheet in, three kinds of change out
+//
+// Parsing happens HERE, not on the server: the file never leaves the browser,
+// only the parsed rows do. That keeps a 2 MB xlsx out of a 4.5 MB function
+// payload, and means a mis-read file costs nothing.
+//
+// Preview then apply, as two round trips. The preview writes nothing.
+// ═══════════════════════════════════════════════════════════
+var bulkType = "counts";
+var bulkParsed = null;      // rows as read from the file
+var bulkPreview = null;     // what the server said would happen
+
+var BULK_KINDS = {
+  counts:  { label: "Stock counts",   cols: "item (or barcode), location, counted",
+             note: "Each row becomes an Adjustment for the DIFFERENCE between what you counted and what the ledger says. Rows that already agree are left alone." },
+  pricing: { label: "Vendor pricing", cols: "item (or barcode), vendor, cost, partNumber, preferred",
+             note: "Matches an existing item and an existing vendor by name. A price for a vendor already on that item is updated, not duplicated." },
+  items:   { label: "New items",      cols: "item, category, size, uom, cost, barcode, wireFtPerLb, active",
+             note: "Adds items that do not exist yet. A row whose name or barcode already exists is skipped rather than overwriting one." },
+};
+
+function goBulkUpload() {
+  if (!currentUser || currentUser.role !== "admin") { showToast("Admin only", true); return; }
+  bulkParsed = null; bulkPreview = null;
+  showScreen("bulk");
+  renderBulk();
+}
+
+function renderBulk() {
+  var body = document.getElementById("bulk-body");
+  var k = BULK_KINDS[bulkType];
+
+  var html = '<div class="field-group"><div class="field-lbl">What are you uploading?</div>' +
+    '<select class="field-sel" id="bulk-type" onchange="bulkSetType(this.value)">' +
+    Object.keys(BULK_KINDS).map(function(t){
+      return '<option value="' + t + '"' + (t === bulkType ? ' selected' : '') + '>' + BULK_KINDS[t].label + '</option>';
+    }).join('') + '</select></div>';
+
+  html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:14px;">' +
+    '<div style="font-size:12px;color:var(--dim);line-height:1.6;">' + k.note + '</div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Columns: <span style="font-family:ui-monospace,monospace;">' + k.cols + '</span></div>' +
+    '<div style="font-size:11px;color:var(--muted);margin-top:4px;">Header row required. Extra columns are ignored. CSV or Excel.</div>' +
+    '</div>';
+
+  html += '<input type="file" id="bulk-file" accept=".csv,.xlsx,.xls" onchange="bulkFileChosen(this)" style="display:none;" />' +
+    '<button class="primary-btn" onclick="document.getElementById(\'bulk-file\').click()">📄 Choose a file</button>';
+
+  if (bulkParsed) {
+    html += '<div style="font-size:12px;color:var(--dim);margin-top:12px;">Read <b>' + bulkParsed.length + '</b> rows. ' +
+      '<button onclick="bulkRunPreview()" style="background:var(--navy-mid);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-size:12px;font-weight:700;padding:8px 14px;cursor:pointer;margin-left:6px;">Preview changes</button></div>';
+  }
+
+  html += '<div id="bulk-result" style="margin-top:14px;"></div><div style="height:24px;"></div>';
+  body.innerHTML = html;
+  if (bulkPreview) renderBulkPreview();
+}
+
+function bulkSetType(t) { bulkType = t; bulkParsed = null; bulkPreview = null; renderBulk(); }
+
+// ── Parsing ───────────────────────────────────────────────
+// CSV is handled here; .xlsx needs SheetJS, lazy-loaded from the CDN the same
+// way jsPDF and ZXing already are — it is ~400 KB and most uploads are CSV.
+function bulkParseCSV(text) {
+  // Quote-aware: a description containing a comma is common in a supplier list,
+  // and split(",") would silently shift every column after it.
+  var rows = [], row = [], cur = "", inQ = false;
+  for (var i = 0; i < text.length; i++) {
+    var c = text[i];
+    if (inQ) {
+      if (c === '"' && text[i + 1] === '"') { cur += '"'; i++; }
+      else if (c === '"') inQ = false;
+      else cur += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n") { row.push(cur); rows.push(row); row = []; cur = ""; }
+    else if (c !== "\r") cur += c;
+  }
+  if (cur !== "" || row.length) { row.push(cur); rows.push(row); }
+  return rows.filter(function(r){ return r.some(function(c){ return String(c).trim() !== ""; }); });
+}
+
+// Header names are normalised so "Unit Cost", "unit_cost" and "COST" all land
+// on the same field — a spreadsheet from a supplier will never match exactly.
+var BULK_ALIASES = {
+  item: "item", itemname: "item", name: "item", description: "item", part: "partNumber",
+  barcode: "barcode", upc: "barcode", sku: "barcode",
+  location: "location", loc: "location", shop: "location",
+  counted: "counted", count: "counted", qty: "counted", quantity: "counted", onhand: "counted",
+  vendor: "vendor", supplier: "vendor",
+  cost: "cost", unitcost: "cost", price: "cost", unitprice: "cost",
+  partnumber: "partNumber", vendorpartnumber: "partNumber", partno: "partNumber",
+  preferred: "preferred", pref: "preferred",
+  category: "category", cat: "category",
+  size: "size", productsize: "size",
+  uom: "uom", unit: "uom", unitofmeasure: "uom",
+  wireftperlb: "wireFtPerLb", wireftlb: "wireFtPerLb", ftperlb: "wireFtPerLb",
+  active: "active",
+};
+
+function bulkRowsToObjects(grid) {
+  if (!grid.length) return [];
+  var headers = grid[0].map(function(h){
+    var key = String(h || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    return BULK_ALIASES[key] || key;
+  });
+  return grid.slice(1).map(function(r){
+    var o = {};
+    headers.forEach(function(h, i){ if (h) o[h] = r[i] === undefined ? "" : String(r[i]).trim(); });
+    return o;
+  });
+}
+
+async function bulkFileChosen(input) {
+  var f = input.files && input.files[0];
+  if (!f) return;
+  bulkPreview = null;
+  try {
+    var grid;
+    if (/\.(xlsx|xls)$/i.test(f.name)) {
+      if (!window.XLSX) {
+        await new Promise(function(res, rej){
+          var s = document.createElement("script");
+          s.src = "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
+          s.onload = res; s.onerror = function(){ rej(new Error("Could not load the Excel reader")); };
+          document.head.appendChild(s);
+        });
+      }
+      var buf = await f.arrayBuffer();
+      var wb  = XLSX.read(buf, { type: "array" });
+      grid = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" });
+      grid = grid.filter(function(r){ return r.some(function(c){ return String(c).trim() !== ""; }); });
+    } else {
+      grid = bulkParseCSV(await f.text());
+    }
+    bulkParsed = bulkRowsToObjects(grid);
+    if (!bulkParsed.length) { showToast("That file has no data rows", true); return; }
+    showToast("✓ Read " + bulkParsed.length + " rows");
+  } catch (ex) {
+    showToast("Could not read the file: " + (ex.message || ex), true);
+    bulkParsed = null;
+  }
+  renderBulk();
+}
+
+// ── Preview / apply ───────────────────────────────────────
+async function bulkRunPreview() {
+  var el = document.getElementById("bulk-result");
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><br>Checking every row…</div>';
+  try {
+    bulkPreview = await apiPost({ action: "bulkPreview", type: bulkType, rows: bulkParsed });
+    renderBulkPreview();
+  } catch (ex) {
+    bulkPreview = null;
+    el.innerHTML = '<div style="color:var(--red);font-size:13px;">' + (ex.message || ex) + '</div>';
+  }
+}
+
+function renderBulkPreview() {
+  var el = document.getElementById("bulk-result");
+  if (!el || !bulkPreview) return;
+  var p = bulkPreview;
+  var willAdd = p.willAdd || 0;
+
+  var html = '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:14px;margin-bottom:12px;">';
+  html += '<div style="font-size:15px;font-weight:700;color:var(--gold);">' + willAdd + ' change' + (willAdd === 1 ? '' : 's') + ' ready</div>';
+  if (p.unchanged) html += '<div style="font-size:12px;color:var(--dim);margin-top:4px;">' + p.unchanged + ' already match — nothing will be written for those.</div>';
+  if (p.skipped && p.skipped.length) html += '<div style="font-size:12px;color:var(--red);margin-top:4px;">' + p.skipped.length + ' row' + (p.skipped.length === 1 ? '' : 's') + ' skipped.</div>';
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Nothing has been written yet.</div>';
+  html += '</div>';
+
+  // The changes, biggest first for counts — a count day's interesting rows are
+  // the ones furthest from what the ledger believed.
+  var show = (p.rows || []).filter(function(r){ return !r.noChange; });
+  if (bulkType === "counts") show.sort(function(a, b){ return Math.abs(b.delta) - Math.abs(a.delta); });
+  if (show.length) {
+    html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">What will change</div>';
+    html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;overflow:hidden;flex-shrink:0;">';
+    show.slice(0, 200).forEach(function(r, i){
+      html += '<div style="padding:9px 13px;' + (i ? 'border-top:1px solid var(--border);' : '') + 'display:flex;justify-content:space-between;gap:10px;font-size:12px;">';
+      if (bulkType === "counts") {
+        var up = r.delta > 0;
+        html += '<div style="flex:1;min-width:0;"><div style="color:var(--text);font-weight:600;">' + r.itemName + '</div>' +
+                '<div style="color:var(--muted);font-size:11px;">' + r.locationName + '</div></div>' +
+                '<div style="text-align:right;flex-shrink:0;"><div style="color:' + (up ? 'var(--green)' : 'var(--red)') + ';font-weight:700;">' + (up ? '+' : '') + r.delta + '</div>' +
+                '<div style="color:var(--muted);font-size:11px;">' + r.before + ' → ' + r.counted + '</div></div>';
+      } else if (bulkType === "pricing") {
+        html += '<div style="flex:1;min-width:0;"><div style="color:var(--text);font-weight:600;">' + r.itemName + '</div>' +
+                '<div style="color:var(--muted);font-size:11px;">' + r.vendorName + (r.preferred ? ' · 👍 preferred' : '') + '</div></div>' +
+                '<div style="color:var(--gold);font-weight:700;flex-shrink:0;">' + fmtCurrency(r.unitCost) + '</div>';
+      } else {
+        html += '<div style="flex:1;min-width:0;"><div style="color:var(--text);font-weight:600;">' + r.name + '</div>' +
+                '<div style="color:var(--muted);font-size:11px;">' + [r.category, r.productSize, r.uom].filter(Boolean).join(" · ") + (r.active ? '' : ' · inactive') + '</div></div>' +
+                '<div style="color:var(--gold);font-weight:700;flex-shrink:0;">' + fmtCurrency(r.cost) + '</div>';
+      }
+      html += '</div>';
+    });
+    if (show.length > 200) html += '<div style="padding:9px 13px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);">…and ' + (show.length - 200) + ' more. All of them will be applied.</div>';
+    html += '</div>';
+  }
+
+  if (p.skipped && p.skipped.length) {
+    html += '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;">Skipped</div>';
+    html += '<div style="background:var(--navy-mid);border:1px solid var(--border);border-radius:10px;overflow:hidden;flex-shrink:0;">';
+    p.skipped.slice(0, 100).forEach(function(s, i){
+      html += '<div style="padding:8px 13px;' + (i ? 'border-top:1px solid var(--border);' : '') + 'font-size:12px;">' +
+              '<span style="color:var(--muted);">Row ' + s.row + '</span> ' +
+              '<span style="color:var(--red);">' + s.why + '</span></div>';
+    });
+    if (p.skipped.length > 100) html += '<div style="padding:8px 13px;border-top:1px solid var(--border);font-size:11px;color:var(--muted);">…and ' + (p.skipped.length - 100) + ' more.</div>';
+    html += '</div>';
+  }
+
+  if (willAdd > 0) {
+    html += '<button class="primary-btn" onclick="bulkApplyNow()" style="margin-top:14px;">Apply ' + willAdd + ' change' + (willAdd === 1 ? '' : 's') + '</button>';
+  }
+  el.innerHTML = html;
+}
+
+async function bulkApplyNow() {
+  if (!bulkPreview) return;
+  var rows = (bulkPreview.rows || []).filter(function(r){ return !r.noChange; });
+  if (!rows.length) return;
+  if (!confirm("Apply " + rows.length + " change" + (rows.length === 1 ? "" : "s") + "?")) return;
+
+  var el = document.getElementById("bulk-result");
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><br>Applying…</div>';
+  try {
+    var d = await apiPost({ action: "bulkApply", type: bulkType, rows: rows, enteredBy: currentUser.name });
+    var msg = '<div style="background:var(--navy-lt);border:1px solid var(--green);border-radius:10px;padding:14px;">' +
+      '<div style="font-size:15px;font-weight:700;color:var(--green);">✓ ' + d.applied + ' applied</div>';
+    if (d.failed && d.failed.length) {
+      msg += '<div style="font-size:12px;color:var(--red);margin-top:8px;">' + d.failed.length + ' failed:</div>';
+      d.failed.slice(0, 20).forEach(function(f){
+        msg += '<div style="font-size:11px;color:var(--dim);margin-top:3px;">Row ' + f.row + ' — ' + f.why + '</div>';
+      });
+    }
+    msg += '</div>';
+    el.innerHTML = msg;
+    bulkParsed = null; bulkPreview = null;
+    // The catalogue and the pickers have moved underneath us.
+    try { allItems = (await apiGet("items")).items || allItems; } catch (e) {}
+    showToast("✓ " + d.applied + " applied");
+  } catch (ex) {
+    el.innerHTML = '<div style="color:var(--red);font-size:13px;">' + (ex.message || ex) + '</div>';
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -57,6 +57,7 @@ const estUpdates     = [];
 let   estMissing     = new Set();   // estimate ids that should match nothing
 const EST1           = "e5717a7e-0000-4000-8000-000000000001";
 const NEW_ITEM       = "17e11111-1111-4111-8111-111111111111";
+let   bulkOnHand     = [];
 const itemCostWrites = [];
 const itemEdits      = [];
 const itemDeletes    = [];
@@ -132,6 +133,46 @@ globalThis.fetch = async (url, opts = {}) => {
            product_size: body.params?.[2], unit_of_measure: body.params?.[3],
            barcode: body.params?.[4], default_unit_cost: body.params?.[5],
            wire_ft_per_lb: body.params?.[6] }]);
+    } else if (/COALESCE\(i\.default_unit_cost, 0\) AS cost/i.test(sql)) {
+      // bulkResolveItems — matches on barcode OR lower(name), both as arrays.
+      // ⚠ pgArray() above is the SIMPLE splitter and it is not enough here: a
+      // real item name is `1/2" EMT PIPE`, which Postgres serialises as a
+      // QUOTED, BACKSLASH-ESCAPED element. Splitting on commas and trimming
+      // quotes mangles it, every name misses, and the whole upload silently
+      // reports "no matching item" — which is exactly the failure this suite
+      // exists to catch, so the mock has to parse the literal properly.
+      const parseArr = (v) => {
+        if (Array.isArray(v)) return v;
+        if (typeof v !== "string" || !v.startsWith("{")) return [];
+        const out = []; let cur = "", inQ = false;
+        for (let i = 1; i < v.length - 1; i++) {
+          const c = v[i];
+          if (inQ) {
+            if (c === "\\") cur += v[++i];
+            else if (c === '"') inQ = false;
+            else cur += c;
+          } else if (c === '"') inQ = true;
+          else if (c === ",") { out.push(cur); cur = ""; }
+          else cur += c;
+        }
+        if (cur !== "") out.push(cur);
+        return out;
+      };
+      const bcs   = parseArr(body.params?.[0]);
+      const names = parseArr(body.params?.[1]);
+      payload = neonReply(["id", "handle", "name", "barcode", "cost", "active"],
+        neonItems
+          .filter(i => bcs.includes(i.barcode) || names.includes(String(i.name).toLowerCase()))
+          .map(i => ({ id: i.airtable_id || i.id, handle: i.airtable_id || i.id, name: i.name,
+                       barcode: i.barcode, cost: i.default_unit_cost, active: true })));
+    } else if (/SELECT id, COALESCE\(airtable_id, id::text\) AS handle, name FROM vendors/i.test(sql)) {
+      payload = neonReply(["id", "handle", "name"],
+        [{ id: "v-1", handle: "recVend1", name: "Wolff Bros" }]);
+    } else if (/SELECT id, COALESCE\(airtable_id, id::text\) AS handle, name FROM locations/i.test(sql)) {
+      payload = neonReply(["id", "handle", "name"],
+        [{ id: "l-1", handle: "recLoc1", name: "Shop #1" }]);
+    } else if (/SELECT item_id, location_id, qty_on_hand FROM v_stock_on_hand/i.test(sql)) {
+      payload = neonReply(["item_id", "location_id", "qty_on_hand"], bulkOnHand);
     } else if (/SELECT name FROM inventory_items[\s\S]*NOT \(airtable_id/i.test(sql)) {
       // The edit-form barcode guard, which must exclude the item itself.
       const hit = neonItems.find(i => i.barcode === body.params?.[0]
@@ -158,6 +199,11 @@ globalThis.fetch = async (url, opts = {}) => {
     } else if (/UPDATE inventory_items SET default_unit_cost/i.test(sql)) {
       itemCostWrites.push({ handle: body.params?.[0], cost: body.params?.[1] });
       payload = neonReply(["id"], itemMissing.has(body.params?.[0]) ? [] : [{ id: NEW_ITEM }]);
+    } else if (/'Adjustment',\s*\n?\s*\$4/.test(sql) || /\$3, 'Adjustment'/.test(sql)) {
+      // The BULK count insert: 9 binds, a different shape from insertTxns.
+      const ps = body.params || [];
+      txnWrites.push({ itemId: ps[0], qty: ps[2], from: ps[3], to: ps[5], notes: ps[7] });
+      payload = neonReply([], []);
     } else if (/INSERT INTO inventory_transactions/i.test(sql)) {
       // 13 binds per row: date, item, qty, type, from, to, cost, notes,
       // enteredBy, jobId, jobName, submitId, lineNo. Counting them is how the
@@ -206,7 +252,10 @@ globalThis.fetch = async (url, opts = {}) => {
       // The adjustment's "what is there now" read. `adjOnHand === null` models
       // an item/location pair that does not exist at all, which is a 404 rather
       // than a zero.
-      payload = neonReply(["on_hand"], adjOnHand === null ? [] : [{ on_hand: String(adjOnHand) }]);
+      // item_id/location_id are selected by the BULK apply path too, and a row
+      // missing them would insert a transaction attached to nothing.
+      payload = neonReply(["item_id", "location_id", "on_hand"], adjOnHand === null ? []
+        : [{ item_id: "recItemA", location_id: "l-1", on_hand: String(adjOnHand) }]);
     } else if (/SELECT id FROM inventory_transactions WHERE submit_id/i.test(sql)) {
       payload = neonReply(["id"], txnReplay);
     } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
@@ -410,6 +459,7 @@ function reset() {
   estDeletes.length = 0; estLineDeletes.length = 0;
   estUpdates.length = 0; estMissing = new Set();
   itemCostWrites.length = 0; itemMissing = new Set();
+  bulkOnHand = [{ item_id: "recItemA", location_id: "l-1", qty_on_hand: "40" }];
   itemEdits.length = 0; itemDeletes.length = 0;
   itemRefs = { txns:0, est_lines:0, tmpl_lines:0, order_lines:0, pricing:0 };
   tmplCloneLines = ["recItemA", "recItemB"];
@@ -571,6 +621,80 @@ await test("S5: a NATIVE item appears in the list and in the shared index", asyn
   const r = json(await GET("items"));
   eq(r.items.some(i => i.name === "TEST PART"), true, "it is in the list");
   eq(r.items.find(i => i.name === "TEST PART").cost, 0.99, "with its price");
+});
+
+// ── Bulk upload ────────────────────────────────────────────────────────────
+// This one writes hundreds of rows from a file somebody was emailed, so the
+// tests that matter are the refusals, not the happy path.
+
+await test("BULK counts: preview reports the DELTA, and writes nothing", async () => {
+  reset();
+  const r = json(await POST({ action: "bulkPreview", type: "counts",
+    rows: [{ item: "1/2\" EMT PIPE", location: "Shop #1", counted: "55" }] }));
+  eq(r.ok, true, "ok");
+  eq(r.rows[0].before, 40, "what the ledger says");
+  eq(r.rows[0].counted, 55, "what was counted");
+  eq(r.rows[0].delta, 15, "the difference — this is what gets posted");
+  eq(txnWrites.length, 0, "PREVIEW WRITES NOTHING");
+});
+
+await test("BULK counts: a row that already agrees is not a change", async () => {
+  reset();
+  const r = json(await POST({ action: "bulkPreview", type: "counts",
+    rows: [{ item: "1/2\" EMT PIPE", location: "Shop #1", counted: "40" }] }));
+  eq(r.willAdd, 0, "nothing to do");
+  eq(r.unchanged, 1, "counted separately — on a real count day most rows are these");
+});
+
+await test("BULK counts: apply RECOMPUTES the delta rather than trusting the preview", async () => {
+  reset();
+  // The preview said +15 from 40. Someone has since used 10, so on-hand is 30
+  // and the honest adjustment is +25. Carrying the preview's 15 would land on
+  // 45 and silently undo their movement.
+  adjOnHand = 30;
+  const r = json(await POST({ action: "bulkApply", type: "counts", enteredBy: "Rick",
+    rows: [{ row: 1, itemHandle: "recItemA", itemName: "1/2\" EMT PIPE",
+             locationHandle: "recLoc1", counted: 55, delta: 15, before: 40 }] }));
+  eq(r.applied, 1, "applied");
+  eq(Number(txnWrites[0].qty), 25, "posted 25, not the preview's 15");
+  eq(txnWrites[0].to, "recLoc1", "on the adding leg");
+});
+
+await test("BULK: an unmatched item is skipped with a reason, not guessed at", async () => {
+  reset();
+  const r = json(await POST({ action: "bulkPreview", type: "counts",
+    rows: [{ item: "NO SUCH PART", location: "Shop #1", counted: "5" }] }));
+  eq(r.willAdd, 0, "nothing to do");
+  eq(r.skipped.length, 1, "one skipped");
+  eq(r.skipped[0].why, "No matching item", "and it says why");
+  eq(r.skipped[0].row, 1, "with the row number, so it can be found in the file");
+});
+
+await test("BULK items: a name that already exists is refused, not duplicated", async () => {
+  reset();
+  const r = json(await POST({ action: "bulkPreview", type: "items",
+    rows: [{ item: "1/2\" EMT PIPE", cost: "1.00" },
+           { item: "GENUINELY NEW PART", cost: "2.00" }] }));
+  eq(r.willAdd, 1, "only the new one");
+  eq(/already exists/.test(r.skipped[0].why), true, "the existing name is refused");
+  eq(r.rows[0].name, "GENUINELY NEW PART", "names upper-cased, as on the single-item form");
+  eq(r.rows[0].active, true, "absent 'active' means active — a catalogue is things you stock");
+});
+
+await test("BULK pricing: an unknown vendor is refused by name", async () => {
+  reset();
+  const r = json(await POST({ action: "bulkPreview", type: "pricing",
+    rows: [{ item: "1/2\" EMT PIPE", vendor: "Nobody Ltd", cost: "1.00" }] }));
+  eq(r.willAdd, 0, "nothing to do");
+  eq(/No vendor called "Nobody Ltd"/.test(r.skipped[0].why), true, "names the vendor it could not find");
+});
+
+await test("BULK: a file bigger than the cap is refused before any work", async () => {
+  reset();
+  const rows = Array.from({ length: 5001 }, () => ({ item: "x", location: "y", counted: "1" }));
+  const r = await POST({ action: "bulkPreview", type: "counts", rows });
+  eq(r.statusCode, 400, "refused");
+  eq(/5001/.test(json(r).error), true, "says how many it saw");
 });
 
 // ── Editing an item — new with the cutover ─────────────────────────────────

@@ -62,6 +62,7 @@ const _ADMIN_WRITES = new Set([
   "jobDocUploadUrl",     // archives the materials PDF — same tier as the push it documents
   "updateItemCost", "createItem", "itemUpdate", "itemDelete",   // catalog / pricing
   "locationSave", "vendorSave", "vendorPricingSave", "vendorPricingDelete", // reference data
+  "bulkPreview", "bulkApply",   // spreadsheet upload
   "syncItemCostToVendor",
   "delete",              // transaction deletion
   "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
@@ -2164,6 +2165,272 @@ async function handleVendorPricingDelete(body) {
   return resp(200, { ok: true, deleted: pricingId });
 }
 
+// ═══════════════════════════════════════════════════════════
+// BULK UPLOAD — a spreadsheet in, three kinds of change out
+//
+// Three types, because they are the three things that arrive as a file: a
+// supplier's price list, a count sheet, and a catalogue of new items.
+//
+// PREVIEW THEN APPLY, as two separate requests. The preview writes nothing and
+// reports what WOULD change — matched, unmatched, and the before/after of every
+// number. A wrong column mapping is then something you see, rather than
+// something you discover 800 rows later.
+//
+// ⚠⚠ APPLY RE-RESOLVES EVERYTHING. It does not trust the preview's matches or
+// its arithmetic. For counts especially: if somebody logs material between the
+// preview and the confirm, a delta carried over from the preview would silently
+// undo their movement. The preview is a report, not a transaction.
+// ═══════════════════════════════════════════════════════════
+
+const BULK_MAX_ROWS = 5000;
+
+// Items are matched by BARCODE first, then by exact name (case-insensitive).
+// Barcode wins because it is the only one that is unique by intent — two items
+// can legitimately share a name in different sizes, and a scanner is what the
+// warehouse trusts.
+async function bulkResolveItems(rows) {
+  const barcodes = [...new Set(rows.map(r => String(r.barcode || "").trim()).filter(Boolean))];
+  const names    = [...new Set(rows.map(r => String(r.item || r.name || "").trim().toLowerCase()).filter(Boolean))];
+  const found = await neonWrite("bulk.resolveItems",
+    `SELECT i.id, COALESCE(i.airtable_id, i.id::text) AS handle, i.name, i.barcode,
+            COALESCE(i.default_unit_cost, 0) AS cost, i.active
+       FROM inventory_items i
+      WHERE ($1::text[] IS NOT NULL AND i.barcode = ANY($1::text[]))
+         OR ($2::text[] IS NOT NULL AND lower(i.name) = ANY($2::text[]))`,
+    [barcodes.length ? barcodes : null, names.length ? names : null]);
+
+  const byBarcode = new Map(), byName = new Map(), nameDupes = new Set();
+  for (const f of found) {
+    if (f.barcode) byBarcode.set(String(f.barcode).trim(), f);
+    const k = String(f.name || "").toLowerCase();
+    // A name that matches two rows cannot be used to identify one of them.
+    if (byName.has(k)) nameDupes.add(k); else byName.set(k, f);
+  }
+  return { byBarcode, byName, nameDupes };
+}
+
+function bulkMatchRow(r, idx) {
+  return { row: idx + 1, raw: r };
+}
+
+async function handleBulkPreview(body) {
+  const { type, rows } = body || {};
+  if (!Array.isArray(rows) || !rows.length) return resp(400, { ok: false, error: "No rows in the file." });
+  if (rows.length > BULK_MAX_ROWS) {
+    return resp(400, { ok: false, error: `That file has ${rows.length} rows; the limit is ${BULK_MAX_ROWS}.` });
+  }
+  if (!["items", "pricing", "counts"].includes(type)) {
+    return resp(400, { ok: false, error: "Unknown upload type." });
+  }
+
+  const ok = [], bad = [];
+  const num = (v) => { const x = Number(String(v ?? "").replace(/[$,\s]/g, "")); return Number.isFinite(x) ? x : null; };
+
+  if (type === "items") {
+    // Nothing to resolve — these are new. The check is for names that already
+    // exist (which would be an update in disguise) and barcodes that clash.
+    const { byBarcode, byName } = await bulkResolveItems(rows);
+    rows.forEach((r, i) => {
+      const e = bulkMatchRow(r, i);
+      const name = String(r.item || r.name || "").trim();
+      const bc   = String(r.barcode || "").trim();
+      if (!name) { bad.push({ ...e, why: "No item name" }); return; }
+      if (bc && byBarcode.has(bc)) {
+        bad.push({ ...e, why: `Barcode ${bc} already belongs to "${byBarcode.get(bc).name}"` }); return;
+      }
+      if (byName.has(name.toLowerCase())) {
+        bad.push({ ...e, why: `"${name}" already exists` }); return;
+      }
+      ok.push({ ...e, name: name.toUpperCase(), category: String(r.category || "").trim() || null,
+        productSize: String(r.size || r.productSize || "").trim() || null,
+        uom: String(r.uom || r.unit || "").trim() || "ea",
+        barcode: bc || null, cost: num(r.cost) ?? 0,
+        wireFtPerLb: num(r.wireFtPerLb ?? r.wire) ?? null,
+        // Absent means active. A catalogue upload is of things you stock.
+        active: r.active === undefined || r.active === "" ? true
+                : /^(y|yes|true|1|active)$/i.test(String(r.active).trim()) });
+    });
+    return resp(200, { ok: true, type, willAdd: ok.length, rows: ok, skipped: bad });
+  }
+
+  if (type === "pricing") {
+    const { byBarcode, byName, nameDupes } = await bulkResolveItems(rows);
+    const vend = await neonWrite("bulk.vendors",
+      `SELECT id, COALESCE(airtable_id, id::text) AS handle, name FROM vendors`, []);
+    const byVendor = new Map(vend.map(v => [String(v.name || "").toLowerCase(), v]));
+
+    rows.forEach((r, i) => {
+      const e = bulkMatchRow(r, i);
+      const bc = String(r.barcode || "").trim();
+      const nm = String(r.item || r.name || "").trim().toLowerCase();
+      const hit = (bc && byBarcode.get(bc)) || (nm && !nameDupes.has(nm) && byName.get(nm)) || null;
+      if (!hit) {
+        bad.push({ ...e, why: nameDupes.has(nm) ? `"${r.item || r.name}" matches more than one item — use a barcode`
+                                                : "No matching item" });
+        return;
+      }
+      const vname = String(r.vendor || "").trim();
+      const v = byVendor.get(vname.toLowerCase());
+      if (!v) { bad.push({ ...e, why: vname ? `No vendor called "${vname}"` : "No vendor given" }); return; }
+      const cost = num(r.cost ?? r.unitCost ?? r.price);
+      if (cost === null || cost < 0) { bad.push({ ...e, why: "No usable price" }); return; }
+      ok.push({ ...e, itemHandle: hit.handle, itemName: hit.name, vendorHandle: v.handle,
+        vendorName: v.name, unitCost: cost, wasCost: Number(hit.cost),
+        vendorPartNumber: String(r.partNumber ?? r.part ?? "").trim() || null,
+        preferred: /^(y|yes|true|1)$/i.test(String(r.preferred ?? "").trim()) });
+    });
+    return resp(200, { ok: true, type, willAdd: ok.length, rows: ok, skipped: bad });
+  }
+
+  // counts
+  const { byBarcode, byName, nameDupes } = await bulkResolveItems(rows);
+  const locs = await neonWrite("bulk.locations",
+    `SELECT id, COALESCE(airtable_id, id::text) AS handle, name FROM locations WHERE active`, []);
+  const byLoc = new Map(locs.map(l => [String(l.name || "").toLowerCase(), l]));
+
+  // Current on-hand for everything the sheet touches, in one read — the preview
+  // is worthless without the before-figure next to the after.
+  const onHand = await neonWrite("bulk.onHand",
+    `SELECT item_id, location_id, qty_on_hand FROM v_stock_on_hand`, []);
+  const ohKey = (a, b) => `${a}|${b}`;
+  const ohMap = new Map(onHand.map(o => [ohKey(o.item_id, o.location_id), Number(o.qty_on_hand)]));
+
+  rows.forEach((r, i) => {
+    const e = bulkMatchRow(r, i);
+    const bc = String(r.barcode || "").trim();
+    const nm = String(r.item || r.name || "").trim().toLowerCase();
+    const hit = (bc && byBarcode.get(bc)) || (nm && !nameDupes.has(nm) && byName.get(nm)) || null;
+    if (!hit) {
+      bad.push({ ...e, why: nameDupes.has(nm) ? `"${r.item || r.name}" matches more than one item — use a barcode`
+                                              : "No matching item" });
+      return;
+    }
+    const lname = String(r.location || r.loc || "").trim();
+    const l = byLoc.get(lname.toLowerCase());
+    if (!l) { bad.push({ ...e, why: lname ? `No location called "${lname}"` : "No location given" }); return; }
+    const counted = num(r.counted ?? r.qty ?? r.quantity ?? r.count);
+    if (counted === null) { bad.push({ ...e, why: "No usable count" }); return; }
+
+    const before = ohMap.get(ohKey(hit.id, l.id)) ?? 0;
+    const delta  = Math.round((counted - before) * 10000) / 10000;
+    ok.push({ ...e, itemHandle: hit.handle, itemName: hit.name, locationHandle: l.handle,
+      locationName: l.name, before, counted, delta, noChange: delta === 0 });
+  });
+
+  return resp(200, {
+    ok: true, type,
+    // Rows that already agree are counted separately: on a real count day most
+    // of the sheet should be no-change, and burying that in "willAdd" hides the
+    // one number that says whether the count went well.
+    willAdd: ok.filter(r => !r.noChange).length,
+    unchanged: ok.filter(r => r.noChange).length,
+    rows: ok, skipped: bad,
+  });
+}
+
+async function handleBulkApply(body) {
+  const { type, rows } = body || {};
+  if (!Array.isArray(rows) || !rows.length) return resp(400, { ok: false, error: "Nothing to apply." });
+  if (rows.length > BULK_MAX_ROWS) return resp(400, { ok: false, error: "Too many rows." });
+  if (!["items", "pricing", "counts"].includes(type)) {
+    return resp(400, { ok: false, error: "Unknown upload type." });
+  }
+
+  const enteredBy = String(body.enteredBy || "").trim() || null;
+  let applied = 0;
+  const failed = [];
+
+  if (type === "items") {
+    // One statement. ON CONFLICT on the barcode index would need a partial
+    // unique that does not exist, so duplicates were rejected at preview and
+    // this is a plain insert.
+    const params = [];
+    const pp = (v) => { params.push(v); return `$${params.length}`; };
+    const tuples = rows.map(r =>
+      `(${pp(String(r.name || "").trim().toUpperCase())}, ${pp(r.category ?? null)}, ${pp(r.productSize ?? null)},` +
+      `${pp(r.uom || "ea")}, ${pp(r.barcode ?? null)}, ${pp(Number(r.cost) || 0)},` +
+      `${pp(r.wireFtPerLb == null ? null : Number(r.wireFtPerLb))}, ${pp(r.active !== false)}, now())`);
+    const made = await neonWrite("bulkApply.items",
+      `INSERT INTO inventory_items
+         (name, category, product_size, unit_of_measure, barcode,
+          default_unit_cost, wire_ft_per_lb, active, synced_at)
+       VALUES ${tuples.join(",")} RETURNING id`, params);
+    applied = made.length;
+    return resp(200, { ok: true, type, applied, failed });
+  }
+
+  if (type === "pricing") {
+    // Row by row rather than one statement: preferred has to clear the item's
+    // other rows, and two rows in the same file can name the same item.
+    for (const r of rows) {
+      try {
+        if (r.preferred) {
+          await neonWrite("bulkApply.clearPreferred",
+            `UPDATE vendor_pricing SET preferred = false, synced_at = now()
+              WHERE preferred AND item_id = (SELECT id FROM inventory_items
+                                              WHERE airtable_id = $1 OR id::text = $1)`,
+            [String(r.itemHandle)]);
+        }
+        await neonWrite("bulkApply.pricing",
+          `INSERT INTO vendor_pricing
+             (item_airtable_id, item_id, vendor_airtable_id, vendor_id, unit_cost,
+              preferred, active, vendor_part_number, last_price_update, synced_at)
+           VALUES ($1, (SELECT id FROM inventory_items WHERE airtable_id = $1 OR id::text = $1),
+                   $2, (SELECT id FROM vendors WHERE airtable_id = $2 OR id::text = $2),
+                   $3, $4, true, $5, CURRENT_DATE, now())
+           ON CONFLICT (item_id, vendor_id) WHERE item_id IS NOT NULL AND vendor_id IS NOT NULL
+             DO UPDATE SET unit_cost = EXCLUDED.unit_cost, preferred = EXCLUDED.preferred,
+                           vendor_part_number = EXCLUDED.vendor_part_number,
+                           active = true, last_price_update = CURRENT_DATE, synced_at = now()`,
+          [String(r.itemHandle), String(r.vendorHandle), Number(r.unitCost),
+           !!r.preferred, r.vendorPartNumber ?? null]);
+        applied++;
+      } catch (e) {
+        failed.push({ row: r.row, item: r.itemName, why: String(e.message || e).slice(0, 200) });
+      }
+    }
+    return resp(200, { ok: true, type, applied, failed });
+  }
+
+  // counts — each row becomes an Adjustment for the DIFFERENCE, recomputed now.
+  for (const r of rows) {
+    try {
+      const cur = await neonWrite("bulkApply.onHand",
+        `SELECT i.id AS item_id, l.id AS location_id, COALESCE(s.qty_on_hand, 0) AS on_hand
+           FROM inventory_items i
+           CROSS JOIN locations l
+           LEFT JOIN v_stock_on_hand s ON s.item_id = i.id AND s.location_id = l.id
+          WHERE (i.airtable_id = $1 OR i.id::text = $1)
+            AND (l.airtable_id = $2 OR l.id::text = $2)`,
+        [String(r.itemHandle), String(r.locationHandle)]);
+      if (!cur.length) { failed.push({ row: r.row, item: r.itemName, why: "Item or location not found" }); continue; }
+
+      // ⚠ Recomputed HERE, not taken from the preview. If somebody logged
+      // material since, the preview's delta would undo their movement.
+      const before = Number(cur[0].on_hand || 0);
+      const delta  = Math.round((Number(r.counted) - before) * 10000) / 10000;
+      if (delta === 0) continue;
+
+      await neonWrite("bulkApply.count",
+        `INSERT INTO inventory_transactions
+           (txn_date, item_airtable_id, item_id, quantity, txn_type,
+            from_location_airtable_id, from_location_id,
+            to_location_airtable_id, to_location_id, notes, entered_by, synced_at)
+         VALUES (now(), $1, $2, $3, 'Adjustment',
+                 $4, $5, $6, $7, $8, $9, now())`,
+        [String(r.itemHandle), cur[0].item_id, Math.abs(delta),
+         delta < 0 ? String(r.locationHandle) : null, delta < 0 ? cur[0].location_id : null,
+         delta > 0 ? String(r.locationHandle) : null, delta > 0 ? cur[0].location_id : null,
+         "Bulk count", enteredBy]);
+      applied++;
+    } catch (e) {
+      failed.push({ row: r.row, item: r.itemName, why: String(e.message || e).slice(0, 200) });
+    }
+  }
+  return resp(200, { ok: true, type, applied, failed });
+}
+
+
 
 
 // ── DELETE ─────────────────────────────────────────────────
@@ -3478,6 +3745,8 @@ export async function handler(event) {
       if (body.action === "vendorSave")         return await handleVendorSave(body);
       if (body.action === "vendorPricingSave")   return await handleVendorPricingSave(body);
       if (body.action === "vendorPricingDelete") return await handleVendorPricingDelete(body);
+      if (body.action === "bulkPreview")        return await handleBulkPreview(body);
+      if (body.action === "bulkApply")          return await handleBulkApply(body);
       if (body.action === "updateReorderPoint") return await handleUpdateReorderPoint(body);
       if (body.action === "createStockLevel")   return await handleCreateStockLevel(body);
       if (body.action === "delete")             return await handleDelete(body);

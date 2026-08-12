@@ -41,6 +41,7 @@ const txnDeletes = [];   // every DELETE FROM inventory_transactions id
 const txnMarks   = [];   // every markTransactionsPushed id-array
 let   txnReplay  = [];   // rows the replay SELECT returns for an already-submitted cart
 let   txnDeleteMisses = new Set();  // ids the DELETE should report as removing nothing
+let   adjOnHand = 0;                // what v_stock_on_hand reports for the adjustment's pair
 let neonEstimates   = [];  // material_estimates joined to the totals view
 let neonEstimateGet = [];  // one estimate joined to its lines
 const estWrites      = [];
@@ -128,6 +129,11 @@ globalThis.fetch = async (url, opts = {}) => {
       // exactly what ON CONFLICT DO NOTHING does on the real thing.
       const out = txnReplay.length ? [] : Array.from({ length: n }, (_, i) => ({ id: `txn-new-${i + 1}` }));
       payload = neonReply(["id"], out);
+    } else if (/COALESCE\(s\.qty_on_hand, 0\)/i.test(sql)) {
+      // The adjustment's "what is there now" read. `adjOnHand === null` models
+      // an item/location pair that does not exist at all, which is a 404 rather
+      // than a zero.
+      payload = neonReply(["on_hand"], adjOnHand === null ? [] : [{ on_hand: String(adjOnHand) }]);
     } else if (/SELECT id FROM inventory_transactions WHERE submit_id/i.test(sql)) {
       payload = neonReply(["id"], txnReplay);
     } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
@@ -267,6 +273,7 @@ function reset() {
   neonDown = false; neonWrites.length = 0; atRequested.length = 0;
   txnWrites.length = 0; txnDeletes.length = 0;
   txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set();
+  adjOnHand = 0;
   neonStock = [
     // 40 lb of wire on hand at 19.5 ft/lb → 780 ft; below its reorder point of 100.
     { stock_airtable_id: "recSL1", item_airtable_id: "recItemB", item_name: "12 THHN",
@@ -468,12 +475,62 @@ await test("C: history splits 'job | notes' and prefers the snapshot cost", asyn
   eq(t.to, "", "no to location on a Use");
 });
 
-await test("C: an adjustment reaches the ledger — this is what a count day writes", async () => {
+// ── Adjustment SETS the count ──────────────────────────────────────────────
+// It used to write the counted number straight onto the FROM leg, which
+// v_stock_on_hand subtracts — so "set to 400" removed 400. Thirty rows and
+// 10,219 units went out that way before it was caught.
+
+await test("ADJ: counting UP posts the difference on the adding leg", async () => {
   reset();
+  adjOnHand = -2424;                       // the real Shop #1 figure that exposed this
   const r = json(await POST({ action: "adjustment", itemId: "recItemA",
-                              locationId: "recLoc1", qty: 25, enteredBy: "Rick" }));
+                              locationId: "recLoc1", qty: 400, enteredBy: "Rick" }));
   eq(r.ok, true, "ok");
-  eq(txnWrites.length, 1, "synced to Neon — otherwise the corrected count never shows");
+  eq(r.previous, -2424, "reports what was there");
+  eq(r.delta, 2824, "400 − (−2424) — the size of the error being corrected");
+  eq(txnWrites.length, 1, "one movement");
+  eq(Number(txnWrites[0].qty), 2824, "the DIFFERENCE, not the counted number");
+  eq(txnWrites[0].to, "recLoc1", "on the TO leg, which adds");
+  eq(txnWrites[0].from, null, "and not the from leg, which is what subtracted before");
+});
+
+await test("ADJ: counting DOWN posts the difference on the subtracting leg", async () => {
+  reset();
+  adjOnHand = 900;
+  const r = json(await POST({ action: "adjustment", itemId: "recItemA",
+                              locationId: "recLoc1", qty: 400, enteredBy: "Rick" }));
+  eq(r.delta, -500, "400 − 900");
+  eq(Number(txnWrites[0].qty), 500, "absolute value — the sign lives in which leg it lands on");
+  eq(txnWrites[0].from, "recLoc1", "on the FROM leg, which subtracts");
+  eq(txnWrites[0].to, null, "not the to leg");
+});
+
+await test("ADJ: a count that matches writes NOTHING", async () => {
+  reset();
+  adjOnHand = 400;
+  const r = json(await POST({ action: "adjustment", itemId: "recItemA",
+                              locationId: "recLoc1", qty: 400, enteredBy: "Rick" }));
+  eq(r.ok, true, "ok");
+  eq(r.noChange, true, "says so");
+  eq(txnWrites.length, 0, "a zero-quantity movement is just noise in the item's history");
+});
+
+await test("ADJ: an unknown item/location pair is a 404, not a phantom movement", async () => {
+  reset();
+  adjOnHand = null;                        // the pair does not exist
+  const r = await POST({ action: "adjustment", itemId: "recNope",
+                         locationId: "recLoc1", qty: 400, enteredBy: "Rick" });
+  eq(r.statusCode, 404, "refused");
+  eq(txnWrites.length, 0, "nothing written");
+});
+
+await test("ADJ: no current figure means no delta, so it FAILS rather than guessing", async () => {
+  reset();
+  neonDown = true;
+  const r = await POST({ action: "adjustment", itemId: "recItemA",
+                         locationId: "recLoc1", qty: 400, enteredBy: "Rick" });
+  eq(r.statusCode >= 400, true, "a guessed delta would be a movement nobody counted");
+  eq(txnWrites.length, 0, "nothing written");
 });
 
 await test("C: deleting a transaction removes it from Neon, or on-hand keeps counting it", async () => {

@@ -3077,7 +3077,7 @@ async function submitAdjustment() {
   btn.disabled = true; btn.textContent = "Saving…";
 
   try {
-    await apiPost({
+    var adjRes = await apiPost({
       action: "adjustment",
       itemId: adjItemData.id,
       locationId: locId,
@@ -3085,7 +3085,18 @@ async function submitAdjustment() {
       enteredBy: currentUser.name,
       notes: notes || undefined
     });
-    showToast("✓ Stock adjusted to " + qty);
+    // Say what actually moved. On a counting day the delta is the interesting
+    // number — it is the size of the error being corrected — and showing it is
+    // also how you would notice if a count were entered against the wrong
+    // location.
+    var adjMsg = "✓ Set to " + qty;
+    if (adjRes && adjRes.noChange) {
+      adjMsg = "✓ Already at " + qty + " — no change";
+    } else if (adjRes && typeof adjRes.previous === "number") {
+      adjMsg = "✓ Set to " + qty + " (was " + adjRes.previous +
+               ", " + (adjRes.delta > 0 ? "+" : "") + adjRes.delta + ")";
+    }
+    showToast(adjMsg);
     adjItemData = null;
     goHome();
   } catch(ex) {

@@ -2241,30 +2241,66 @@ async function handleLoadInventoryReference() {
 }
 
 // ── ADJUSTMENT ─────────────────────────────────────────────
+// An Adjustment SETS the count. `qty` is the number the person standing in the
+// shop just counted, not a movement — which is what the UI has always promised
+// ("Set 1/2\" EMT PIPE at Shop #1 to 400 units?").
+//
+// ⚠⚠ It did not do that. The old handler wrote `qty` on the FROM leg, and
+// v_stock_on_hand subtracts that leg — so counting 400 REMOVED 400. Thirty rows
+// and 10,219 units went out that way, which is a large part of why on-hand read
+// so negative. The bug arrived with Step C rather than the write cutover: while
+// Airtable's automation maintained the Stock Levels cache it evidently treated
+// an Adjustment as "set the cache to this", and deriving on-hand from the raw
+// ledger silently turned the same row into a subtraction.
+//
+// A set cannot be expressed as one fixed row — it depends on what is there now.
+// So: read current on-hand, post the DIFFERENCE, and let the ledger stay a pure
+// record of movements.
+//
+// It self-heals, which is why no historical repair is needed: because the delta
+// is measured from current on-hand, the first correct count lands an item on the
+// right number however wrong its history was.
 async function handleAdjustment(body) {
   const { itemId, locationId, qty, enteredBy, notes } = body || {};
   if (!itemId || !locationId || qty === undefined) return resp(400, { ok: false, error: "Missing required fields." });
 
-  // This is the write the counting day runs on: an Adjustment is how a physical
-  // count becomes truth, and it is the mechanism the owner accepted for fixing
-  // the ledger's known-incomplete history. If it fails, the corrected figure
-  // must not be reported as saved.
-  //
-  // ⚠ The location goes in FROM, not TO — deliberately, and unchanged from the
-  // Airtable version. v_stock_on_hand subtracts the from-leg, so a POSITIVE
-  // adjustment qty reduces on-hand and a negative one raises it.
+  const target = Number(qty);
+  if (!Number.isFinite(target)) return resp(400, { ok: false, error: "Count must be a number." });
+
+  // Fails CLOSED. Without the current figure there is no delta to post, and
+  // guessing would write a movement nobody counted.
+  const cur = await neonWrite("adjustment.onHand",
+    `SELECT COALESCE(s.qty_on_hand, 0) AS on_hand
+       FROM inventory_items i
+       CROSS JOIN locations l
+       LEFT JOIN v_stock_on_hand s ON s.item_id = i.id AND s.location_id = l.id
+      WHERE i.airtable_id = $1 AND l.airtable_id = $2`,
+    [String(itemId), String(locationId)]);
+  if (!cur.length) return resp(404, { ok: false, error: "Item or location not found." });
+
+  const previous = Number(cur[0].on_hand ?? 0);
+  const delta    = Math.round((target - previous) * 10000) / 10000;   // money-grade rounding, per the 4dp columns
+
+  // Already right — recording a zero-quantity movement would just be noise in
+  // the history of an item somebody counted and found correct.
+  if (delta === 0) {
+    return resp(200, { ok: true, id: null, previous, adjustedTo: target, delta: 0, noChange: true });
+  }
+
+  // Positive delta ADDS, so it goes on the to-leg; negative SUBTRACTS, so it
+  // goes on the from-leg with the sign dropped. This is the whole fix.
   const [txId] = await insertTxns([{
     txnDate:        new Date().toISOString(),
     itemId:         String(itemId),
-    qty:            Number(qty),
+    qty:            Math.abs(delta),
     type:           "Adjustment",
-    fromLocationId: String(locationId),
-    toLocationId:   null,
+    fromLocationId: delta < 0 ? String(locationId) : null,
+    toLocationId:   delta > 0 ? String(locationId) : null,
     notes:          notes || "",
     enteredBy:      enteredBy || "",
   }]);
 
-  return resp(200, { ok: true, id: txId });
+  return resp(200, { ok: true, id: txId, previous, adjustedTo: target, delta });
 }
 
 // ── CREATE NEW ITEM ───────────────────────────────────────

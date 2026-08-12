@@ -8377,6 +8377,36 @@ async function handleCreatePowerCompany(body) {
     method: "POST",
     body: JSON.stringify({ fields })
   });
+
+  // ── MIRROR TO NEON, in the same request ──────────────────────────────────
+  // Not optional, and not merely a nicety. `handleGetPowerCompanies` went
+  // Neon-first in item 06 slice 4 while this write stayed Airtable-only, and
+  // **nothing anywhere else writes `power_companies`** — no hourly sync, no
+  // loader. So a power company created here landed in Airtable and was invisible
+  // to the picker that created it, permanently, not for an hour.
+  //
+  // Caught by the 2026-08-12 re-measure, same bug the Companies flip had. It had
+  // not bitten yet only because nobody had added a utility since the flip (9 rows
+  // in each store). The ON CONFLICT makes a retry after a partial failure safe.
+  //
+  // Fails SOFT, deliberately: the record exists in Airtable either way, and
+  // refusing the request would be worse than a picker entry the user can restore
+  // by adding it again.
+  try {
+    await neonWrite("powerCompany.create",
+      `INSERT INTO power_companies (airtable_id, name, utility_region, notes, active, synced_at)
+       VALUES ($1,$2,$3,$4,$5, now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         name=EXCLUDED.name, utility_region=EXCLUDED.utility_region,
+         notes=EXCLUDED.notes, active=EXCLUDED.active, synced_at=now()`,
+      [data.id, trimmedName,
+       utilityRegion && String(utilityRegion).trim() ? String(utilityRegion).trim() : null,
+       notes         && String(notes).trim()         ? String(notes)                : null,
+       true]);
+  } catch (e) {
+    console.error(`createPowerCompany: Neon mirror failed, company exists in Airtable only — ${e?.message || e}`);
+  }
+
   return resp(200, {
     ok: true,
     company: {

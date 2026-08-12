@@ -2102,6 +2102,25 @@ await test("createCompany: same admin/office tier as createVendor, and name is r
   eq(sent.fields["fldA30AUOUbarysdp"], "Newco Construction", "name written");
 });
 
+await test("createPowerCompany: the record has to reach Neon, not just Airtable", async () => {
+  // getPowerCompanies went Neon-first in item 06 slice 4 while this write stayed
+  // Airtable-only, and NOTHING else writes power_companies — no hourly sync, no
+  // loader. A utility added here was invisible to the picker that created it,
+  // permanently. Same bug the Companies flip had; found by re-measuring on 08-12.
+  //
+  // ⚠ HONEST SCOPE: offline, the mirror fails at the CONNECTION and is swallowed
+  // on purpose (the record exists in Airtable either way). So this asserts the
+  // Airtable write and its field mapping, NOT that the row lands in Neon — that
+  // needs a live-Neon test, the same gap already noted on setEmployeeActive.
+  mockTables = { "Power Companies": [], Employees: [] };
+  // TABLES.powerCompanies is a tbl… ID, not a name — the POST URL carries the id.
+  const sent = await capturePostTo("tblgxHavdZybnuMhM", () =>
+    POST("createPowerCompany", { name: "Ohio Edison", utilityRegion: "Northeast" }, OFFICE_TOK));
+  eq(sent.fields["fldj7HRiBvKNp9DpN"], "Ohio Edison", "name written");
+  eq(sent.fields["fldFa3QqewblhWOID"], true, "Active forced on — an inactive utility is invisible");
+  eq((await POST("createPowerCompany", { name: "  " }, OFFICE_TOK)).statusCode, 400, "blank name rejected");
+});
+
 await test("createJob: an unknown contractor name omits the intake breadcrumb, not the job", async () => {
   // "Contractor (Intake)" is a singleSelect and the create POST has typecast
   // OFF, so sending a name that isn't a configured option 422s the WHOLE job.

@@ -39,12 +39,13 @@ not a regression from the day's commits. Clearing the queue is an owner action i
 **Good news in the same data:** the 09:18Z and 10:03Z successes close the two ⬜ *"never fired since
 undeploy"* gaps on item 04 — **the replumb itself is proven**, including the contractor-name fix.
 
-### 🟠 One latent bug, same class as `createCompany`
+### ✅ One latent bug, same class as `createCompany` — FIXED 2026-08-12
 
-**`createPowerCompany` writes Airtable only, but `getPowerCompanies` reads Neon first, and nothing
-anywhere writes `power_companies`.** A power company added in the app is therefore invisible to the
-picker that created it — permanently, not for an hour. 9 rows in each store today, so no drift has
-happened yet; it needs the same ~20-minute treatment `createCompany` just got.
+**`createPowerCompany` wrote Airtable only, but `getPowerCompanies` reads Neon first, and nothing
+anywhere writes `power_companies`.** A power company added in the app was therefore invisible to the
+picker that created it — permanently, not for an hour. It had not bitten only because nobody had
+added a utility since the flip (9 rows in each store). Now mirrors to Neon in the same request,
+failing soft, `ON CONFLICT` so a retry is safe.
 `createPowerContact` and `createContact` are the *other* two Airtable-only writes, but both are
 **consistent** — their reads are still Airtable too — so they are unmigrated, not broken.
 

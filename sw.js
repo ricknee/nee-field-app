@@ -14,7 +14,12 @@ const APP_SHELL = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/assets/NEE-Gray-Logo-400.png'
+  '/assets/NEE-Gray-Logo-400.png',
+  // The inventory app is a second installed app with its own manifest and icon,
+  // and the reasoning above applies to it identically.
+  '/inventory.html',
+  '/manifest-inventory.json',
+  '/assets/NEE-Orange-Logo-400.png'
 ];
 
 // Install — cache the app shell

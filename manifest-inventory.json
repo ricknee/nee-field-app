@@ -1,0 +1,20 @@
+{
+  "id": "/inventory.html",
+  "name": "Northeastern Electric Inventory",
+  "short_name": "NEE Inventory",
+  "description": "Materials, stock, ordering and estimating for Northeastern Electric.",
+  "start_url": "/inventory.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0D1B2A",
+  "theme_color": "#0D1B2A",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/assets/NEE-Orange-Logo-400.png",
+      "sizes": "400x400",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

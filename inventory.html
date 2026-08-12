@@ -4,6 +4,21 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>NEE Inventory</title>
+
+<!-- Home-screen install, mirroring index.html. Without these you get Android's
+     grey "N" letter tile with a Chrome badge on it — the giveaway that the page
+     was saved as a plain bookmark shortcut rather than installed as an app.
+     apple-touch-icon is the iOS equivalent; without it iOS uses a blurry
+     screenshot of the page.
+     Its own manifest, not the field app's: separate name, separate start_url,
+     and an explicit `id` so Android treats the two as different apps rather
+     than deduping them onto one home-screen entry. The field manifest is left
+     completely alone — changing its id would orphan the copies already
+     installed on people's phones. -->
+<link rel="manifest" href="/manifest-inventory.json" />
+<link rel="apple-touch-icon" href="/assets/NEE-Orange-Logo-400.png" />
+<link rel="icon" href="/assets/NEE-Orange-Logo-400.png" />
+<meta name="theme-color" content="#0D1B2A" />
 <style>
 :root {
   --gold:#E8651A; --gold-dk:#C4520F; --navy:#0D1B2A; --navy-mid:#162436;
@@ -8441,5 +8456,21 @@ var ESTIMATE_LOGO_GRAY_B64 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAs1U
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <!-- ZXing: barcode scanner fallback for iOS Safari (native BarcodeDetector API not supported on iPhone/iPad) -->
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+  // Same registration the field app uses, and the same sw.js — it is scoped to
+  // "/" and already treats both apps correctly: network-first for the HTML so
+  // deploys land, network-ONLY for /.netlify/ calls so nothing about stock or
+  // money is ever served from a cache.
+  //
+  // It is here for the icon as much as for offline. Android only mints a real
+  // installed app (a WebAPK, with no Chrome badge on the icon) when the page
+  // offers a manifest AND a service worker with a fetch handler; a manifest
+  // alone still gets you the badged bookmark this replaces.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => { try { reg.update(); } catch {} })
+      .catch(() => {});
+  }
+</script>
 </body>
 </html>

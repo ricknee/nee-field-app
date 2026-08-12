@@ -7481,6 +7481,29 @@ async function handleUpdateInspection(body) {
 }
 
 async function handleCompanies() {
+  // ── NEON-FIRST (audit item 06) ────────────────────────────────────────────
+  // The customer/contractor master. 35 rows, 24 of them active contractors.
+  //
+  // ⚠ Kept in sync with `handleListContractors` below, which reads the SAME
+  // table through the `active_contractor` filter. If one flips and the other
+  // does not, the job form offers a contractor the company list has never heard
+  // of — so they move together, in this commit.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, name, billing_address, primary_phone, primary_email
+         FROM companies WHERE coalesce(name,'') <> '' ORDER BY name`);
+    if (q?.rows?.length) {
+      return resp(200, { ok: true, _source: "neon", _ms: q.ms, companies: q.rows.map(r => ({
+        id:             r.airtable_id,   // ⚠ AIRTABLE id — jobs link to it
+        name:           r.name || "",
+        billingAddress: r.billing_address || "",
+        primaryPhone:   r.primary_phone || "",
+        primaryEmail:   r.primary_email || "",
+      })) });
+    }
+    console.error(`companies: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const records = await fetchAll("Companies", { sortField: "Company Name", sortDir: "asc" });
   const companies = records
     .filter(r => r.fields["Company Name"])
@@ -7651,6 +7674,24 @@ async function handleCreateVendor(body) {
 }
 
 async function handleListContractors() {
+  // Neon-first, moving with handleCompanies above — same table, same commit.
+  // ⚠ The 60-second Cache-Control stays: this backs a picker that renders on
+  // every job form, and the list changes a handful of times a year.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, name, primary_phone, primary_email
+         FROM companies WHERE active_contractor AND coalesce(name,'') <> '' ORDER BY name`);
+    if (q?.rows?.length) {
+      return resp(200, { ok: true, _source: "neon", _ms: q.ms, contractors: q.rows.map(r => ({
+        id:           r.airtable_id,
+        name:         r.name || "",
+        primaryPhone: r.primary_phone || "",
+        primaryEmail: r.primary_email || "",
+      })) }, { "Cache-Control": "public, max-age=60" });
+    }
+    console.error(`listContractors: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const records = await fetchAll("Companies", {
     filter: "{Active Contractor}=1",
     sortField: "Company Name",

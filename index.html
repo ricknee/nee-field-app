@@ -17121,6 +17121,17 @@
       return;
     }
 
+    // A contractor that doesn't exist yet has no contacts to fetch, and
+    // "__new__" is not a record id — asking the backend for its contacts
+    // would be a guaranteed-empty round trip. Show the picker with just
+    // the add-new row so the user can still enter the contact inline.
+    if (contractorId === "__new__") {
+      sel.innerHTML = `<option value="">— Pick contact —</option>` +
+                      `<option value="__new__">+ Add new contact</option>`;
+      row.style.display = "";
+      return;
+    }
+
     try {
       const res = await apiGet("listContactsByCompany", { companyId: contractorId });
       _npContacts = res.contacts || [];
@@ -17175,6 +17186,10 @@
     $("npContractor").value = "";
     $("npContact").value    = "";
     $("npContactRow").style.display = "none";
+    $("npNewContractorRow").style.display = "none";
+    $("npNewContractorName").value  = "";
+    $("npNewContractorPhone").value = "";
+    $("npNewContractorEmail").value = "";
     _npContacts = [];
 
     $("npMsg").style.display = "none";
@@ -17194,9 +17209,18 @@
       }
     }
     sel.innerHTML = `<option value="">— Pick contractor —</option>` +
+      `<option value="__new__">+ Add new contractor</option>` +
       _npContractors.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
 
-    sel.onchange = () => _npLoadContactsForContractor(sel.value);
+    sel.onchange = () => {
+      // Mirrors the contact picker's "__new__" flow one level up. The
+      // inline name row only appears on demand, so the common case (an
+      // existing GC) sees exactly the form it saw before.
+      const isNew = sel.value === "__new__";
+      $("npNewContractorRow").style.display = isNew ? "" : "none";
+      if (isNew) setTimeout(() => { try { $("npNewContractorName").focus(); } catch {} }, 0);
+      _npLoadContactsForContractor(sel.value);
+    };
 
     // Customer-field auto-fill from contact pick. Always-overwrite
     // semantics: picking a contact stamps its values onto the Customer
@@ -17259,12 +17283,24 @@
     // Contractor is now required for every new project (the redesign
     // dropped the Direct Customer / Contractor distinction — every job
     // gets a Contractor + Billing Company link on the back end).
-    const contractorId = $("npContractor").value;
+    let contractorId = $("npContractor").value;
     if (!contractorId) {
       msg.textContent = "Contractor is required.";
       msg.style.color = "var(--red)";
       msg.style.display = "block";
       try { $("npContractor").focus(); } catch {}
+      return;
+    }
+
+    // "+ Add new contractor" is a real selection, so the check above passes
+    // on a company that has no name yet. Guard it here, where the input can
+    // still take focus.
+    const newContractorName = $("npNewContractorName").value.trim();
+    if (contractorId === "__new__" && !newContractorName) {
+      msg.textContent = "New contractor name is required.";
+      msg.style.color = "var(--red)";
+      msg.style.display = "block";
+      try { $("npNewContractorName").focus(); } catch {}
       return;
     }
 
@@ -17289,17 +17325,70 @@
     // keeps writing it into the legacy "Contractor (Intake)" text field
     // until downstream Make.com readers are confirmed off it.
     const contractorSel = $("npContractor");
-    const contractorName = contractorSel.options[contractorSel.selectedIndex]?.text || "";
+    let contractorName = contractorId === "__new__"
+      ? newContractorName
+      : (contractorSel.options[contractorSel.selectedIndex]?.text || "");
 
     btn.disabled = true;
     btn.textContent = "Creating…";
     msg.style.display = "none";
 
     try {
-      // If the user chose "+ Add new contact", create the Contact first
-      // and use the returned record ID as the Job's Primary Contact.
-      // Failure aborts the Job create so we don't end up with an
-      // orphan Job pointing at a contact that never landed.
+      // "+ Add new contractor" → create the Company before anything that
+      // needs its record ID: the Contact links to it, and the Job links to
+      // it twice (Contractor + Billing Company). Ordered first for the same
+      // reason the Contact create is ordered before the Job — a failure
+      // here aborts cleanly rather than leaving a Job pointing at a
+      // contractor that never landed.
+      if (contractorId === "__new__") {
+        let companyRes;
+        try {
+          companyRes = await apiPost("createCompany", {
+            name:  newContractorName,
+            phone: $("npNewContractorPhone").value,
+            email: $("npNewContractorEmail").value
+          });
+        } catch (e) {
+          // 409 duplicate. Unlike the vendor modal's "Use existing" button,
+          // we just re-point the picker at the company that already exists
+          // and stop — the user confirms by pressing Create again. Same
+          // explicit-choice principle, one fewer control on an already
+          // long form.
+          if (e.status === 409 && e.existingId) {
+            _npContractors = [];
+            try {
+              const fresh = await apiGet("listContractors");
+              _npContractors = fresh.contractors || [];
+            } catch {}
+            contractorSel.innerHTML = `<option value="">— Pick contractor —</option>` +
+              `<option value="__new__">+ Add new contractor</option>` +
+              _npContractors.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+            contractorSel.value = e.existingId;
+            $("npNewContractorRow").style.display = "none";
+            await _npLoadContactsForContractor(e.existingId);
+            msg.textContent = `${e.message} Selected it — press Create Project again to use it.`;
+            msg.style.color = "var(--red)";
+            msg.style.display = "block";
+            btn.disabled = false;
+            btn.textContent = "Create Project";
+            return;
+          }
+          throw e;
+        }
+        if (!companyRes.ok || !companyRes.company) {
+          throw new Error(companyRes.error || "Contractor create failed");
+        }
+        contractorId   = companyRes.company.id;
+        contractorName = companyRes.company.name;
+        // Invalidate the cached list so the next New Project sees it
+        // without a page reload.
+        _npContractors = [];
+      }
+
+      // If the user chose "+ Add new contact", create the Contact next and
+      // use the returned record ID as the Job's Primary Contact. Failure
+      // aborts the Job create so we don't end up with an orphan Job
+      // pointing at a contact that never landed.
       let contactId;
       if (contactValue === "__new__") {
         const contactRes = await apiPost("createContact", {
@@ -23989,6 +24078,18 @@
         <select id="npContractor" class="edit-input">
           <option value="">— Loading contractors… —</option>
         </select>
+      </div>
+
+      <!-- Shown only when the contractor picker is on "+ Add new contractor".
+           The company is created on submit, not on pick, so a cancelled
+           New Project leaves no half-made contractor behind. -->
+      <div class="sl-field" id="npNewContractorRow" style="margin-top:6px; display:none;">
+        <label>New contractor name <span style="color:var(--red);">*</span></label>
+        <input id="npNewContractorName" class="edit-input" type="text" placeholder="Company name" autocomplete="off">
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <input id="npNewContractorPhone" class="edit-input" type="tel"   placeholder="Phone (optional)" autocomplete="off" style="flex:1 1 0; min-width:0;">
+          <input id="npNewContractorEmail" class="edit-input" type="email" placeholder="Email (optional)" autocomplete="off" style="flex:1 1 0; min-width:0;">
+        </div>
       </div>
 
       <div class="sl-field" id="npContactRow" style="margin-top:6px; display:none;">

@@ -530,6 +530,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // to _NON_VIEWER with in-handler owner/status enforcement.
   "approveExpense", "markInvoicePaid", "setInvoiceStatus",
   "updateJobBillableRate", "createVendor",
+  // Adding a contractor/customer to the master list. Same tier as createVendor
+  // for the same reason: it is reference data the whole business bills against,
+  // not a field action.
+  "createCompany",
   // Which city tax applies to a job's work. Same tier as the billable rate: a job
   // setting that moves money, so admin+office, not the whole crew.
   "updateJobCityTax",
@@ -743,6 +747,35 @@ function addMonthsToDateStr(dateStr, months) {
 // option list + fallback, so a stray client value can't trip Airtable's
 // typecast and silently create a duplicate option. Keep these in sync with
 // the singleselect choices configured on each table.
+
+// Jobs."Contractor (Intake)" — the legacy text breadcrumb handleCreateJob keeps
+// populated for downstream Make readers. It is a **singleSelect**, and the create
+// POST runs with typecast off, so writing a name that is not on this list does not
+// silently add an option — it 422s the ENTIRE job create.
+//
+// That mattered the moment `createCompany` shipped: every one of the 24 active
+// contractors happens to be on this list today, so nothing has ever hit it, but
+// the first brand-new contractor would have made their first job impossible to
+// create. The guard below omits the field instead, which is the same "safe
+// fallback" the other OPTS arrays use — the linked `Contractor` field is the real
+// data and is unaffected.
+//
+// ⚠ Do NOT fix the spellings ("Milla Construcion", "Kalmback"). They are the
+// configured option names; correcting one here just makes it fail the match.
+// ⚠ A new contractor can never be added to this list from code. Add the option in
+// Airtable if a downstream reader actually needs the breadcrumb — or finish the
+// cleanup pass noted at handleCreateJob and delete the field.
+const CONTRACTOR_INTAKE_OPTS = [
+  "3DEE Construction", "Administration", "Aviary Poultry", "Case Farms",
+  "Classical Construction", "Deerfield Construction", "Double LL Construction",
+  "Gerber Poultry", "Granite Ridge Poultry", "Hardchuck Construction",
+  "Hardwood Solutions", "Heartwood Construction", "Hosterman Development Inc",
+  "J.J.O Construction", "JC Herbert", "Justin Biery", "Kalmback Feeds",
+  "KDC Properties", "Koehn Konstruction", "Linden Ave Developers",
+  "LK Construction", "Marco Construction", "Metis Construction",
+  "Milla Construcion", "Miller Poultry", "Misc Jobs", "P&H Builders",
+  "Penntex Ventures", "Service Calls", "Shop", "Ware Construction"
+];
 
 // Generator Service.Service Type — 7 valid options. "Install / Commissioning"
 // is server-set by handleCommissionGenerator; the other six are user-selectable
@@ -7779,6 +7812,82 @@ async function handleCreateVendor(body) {
   });
 }
 
+// ── Create a company / contractor ──────────────────────────────────────────
+// Closes a real gap rather than adding a nicety. Nothing in either app could
+// create a company: `handleCompanies` and `handleListContractors` were two
+// reads and nothing else. With nobody opening Airtable any more, a new
+// contractor had NO route into the system — and `handleCreateJob` REQUIRES a
+// contractorId, so the first new customer was a hard stop on creating their job.
+// Found while moving Companies to Neon (item 06, slice 3).
+//
+// AIRTABLE FIRST, deliberately, like every other create in this file: jobs link
+// to the company by rec id (`fldWsdLkqmuZLGvfa`), so the record has to exist
+// there before anything can point at it. Neon is then kept in step in the same
+// request, because handleCompanies/handleListContractors now read Neon — an
+// Airtable-only create would be invisible to the picker that just asked for it.
+//
+// `activeContractor` defaults TRUE: the only way to reach this is the "+ Add new
+// contractor" row on the New Project form, and a contractor that does not appear
+// in the picker it was created from would be a bug, not a feature.
+async function handleCreateCompany(body) {
+  const { name, phone, email, billingAddress, activeContractor } = body || {};
+  const trimmedName = String(name || "").trim();
+  if (!trimmedName) return resp(400, { ok: false, error: "Company name is required." });
+
+  // Duplicate guard, case-insensitive, matching handleCreateVendor. Returns the
+  // existing id so the client can offer to select it instead of creating a
+  // near-duplicate — which is exactly how "Wolff Brothers" and "Wolff Bros"
+  // came to exist in two different tables.
+  const safe = escapeFormulaString(trimmedName);
+  const existing = await fetchAll("Companies", { filter: `LOWER({Company Name})=LOWER("${safe}")` });
+  if (existing.length > 0) {
+    return resp(409, {
+      ok: false,
+      error: `A company named "${existing[0].fields["Company Name"]}" already exists.`,
+      existingId: existing[0].id,
+    });
+  }
+
+  const fields = {};
+  fields["fldA30AUOUbarysdp"] = trimmedName;                       // Company Name
+  fields["fldWzDYqRUShxXUKW"] = activeContractor !== false;        // Active Contractor
+  if (phone          && String(phone).trim())          fields["fld55CKQXmThbLIAK"] = String(phone).trim();
+  if (email          && String(email).trim())          fields["fldR2oOqbKx6uZtuH"] = String(email).trim();
+  if (billingAddress && String(billingAddress).trim()) fields["fldwpTpCF10CObP35"] = String(billingAddress).trim();
+
+  const data = await atFetch(`${encodeURIComponent("Companies")}`, {
+    method: "POST",
+    body: JSON.stringify({ fields }),
+  });
+
+  // Fails soft: the company exists in Airtable either way, and the duplicate
+  // guard above makes a retry safe. Better a missing picker entry the user can
+  // fix by re-adding than a 500 over a record that was actually created.
+  try {
+    await neonWrite("company.create",
+      `INSERT INTO companies (airtable_id, name, primary_phone, primary_email,
+                              billing_address, active_contractor, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6, now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         name=EXCLUDED.name, primary_phone=EXCLUDED.primary_phone,
+         primary_email=EXCLUDED.primary_email, billing_address=EXCLUDED.billing_address,
+         active_contractor=EXCLUDED.active_contractor, synced_at=now()`,
+      [data.id, trimmedName,
+       phone          && String(phone).trim()          ? String(phone).trim()          : null,
+       email          && String(email).trim()          ? String(email).trim()          : null,
+       billingAddress && String(billingAddress).trim() ? String(billingAddress).trim() : null,
+       activeContractor !== false]);
+  } catch (e) {
+    console.error(`createCompany: Neon mirror failed, company exists in Airtable only — ${e?.message || e}`);
+  }
+
+  return resp(200, { ok: true, company: {
+    id: data.id, name: trimmedName,
+    primaryPhone: String(phone || "").trim(),
+    primaryEmail: String(email || "").trim(),
+  } });
+}
+
 async function handleListContractors() {
   // Neon-first, moving with handleCompanies above — same table, same commit.
   // ⚠ The 60-second Cache-Control stays: this backs a picker that renders on
@@ -10214,9 +10323,17 @@ async function handleCreateJob(body) {
   fields["Contractor"]      = [trimmedContractorId];
   fields["Billing Company"] = [trimmedContractorId];
 
-  // Keep the legacy text breadcrumb populated for downstream readers.
-  if (contractorName && String(contractorName).trim()) {
-    fields["Contractor (Intake)"] = String(contractorName).trim();
+  // Keep the legacy text breadcrumb populated for downstream readers — but only
+  // when the name is a configured option. It is a singleSelect and typecast is
+  // off, so an unknown value fails the whole create rather than this one field.
+  // See CONTRACTOR_INTAKE_OPTS for why omitting is the safe fallback.
+  const intakeName = String(contractorName || "").trim();
+  if (intakeName) {
+    if (CONTRACTOR_INTAKE_OPTS.includes(intakeName)) {
+      fields["Contractor (Intake)"] = intakeName;
+    } else {
+      console.log(`createJob: "${intakeName}" is not a Contractor (Intake) option — writing the linked Contractor only.`);
+    }
   }
 
   const trimmedContactId = String(contactId || "").trim();
@@ -11560,6 +11677,7 @@ export async function handler(event) {
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "createContact")        return await handleCreateContact(body);
+      if (body.action === "createCompany")        return await handleCreateCompany(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body, authUser);

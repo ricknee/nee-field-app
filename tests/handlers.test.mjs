@@ -2082,6 +2082,48 @@ await test("createVendor: gated by the signed token, not a body field", async ()
   ok((await POST("createVendor", { name: "New Vendor Co" }, OFFICE_TOK)).statusCode < 400, "office allowed with no employeeId");
 });
 
+await test("createCompany: same admin/office tier as createVendor, and name is required", async () => {
+  // Companies had no create path at all until this shipped — two reads and
+  // nothing else — while createJob REQUIRES a contractorId. So the gate here is
+  // the gate on onboarding a new customer, not on a convenience field.
+  mockTables = { Companies: [], Employees: [] };
+  eq((await POST("createCompany", { name: "Newco Construction" }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("createCompany", { name: "Newco Construction" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  eq((await POST("createCompany", { name: "   " }, OFFICE_TOK)).statusCode, 400, "blank name rejected");
+
+  // Active Contractor must default TRUE. The only caller is the New Project
+  // contractor picker, so a company that lands inactive is invisible to the
+  // very dropdown that created it — it would look like the create silently
+  // failed. fldWzDYqRUShxXUKW is Active Contractor (NOT the tax checkbox —
+  // reading those two backwards is a mistake already made once on Vendors).
+  const sent = await capturePostTo("Companies", () =>
+    POST("createCompany", { name: "Newco Construction" }, OFFICE_TOK));
+  eq(sent.fields["fldWzDYqRUShxXUKW"], true, "Active Contractor defaults on");
+  eq(sent.fields["fldA30AUOUbarysdp"], "Newco Construction", "name written");
+});
+
+await test("createJob: an unknown contractor name omits the intake breadcrumb, not the job", async () => {
+  // "Contractor (Intake)" is a singleSelect and the create POST has typecast
+  // OFF, so sending a name that isn't a configured option 422s the WHOLE job.
+  // Every contractor on file today happens to be an option, which is why this
+  // never bit — but the first company added through createCompany would have
+  // been unable to have a job created at all. The linked Contractor field is
+  // the real data and must still be written.
+  mockTables = { Jobs: [], Companies: [], Employees: [] };
+  const fresh = await capturePostTo("Jobs", () =>
+    POST("createJob", { jobName: "Watersedge 2", contractorId: "recNew1",
+                        contractorName: "Newco Construction" }, OFFICE_TOK));
+  ok(!("Contractor (Intake)" in fresh.fields), "unknown option omitted");
+  eq(fresh.fields["Contractor"][0], "recNew1", "linked Contractor still written");
+
+  // A known option must still come through, or this guard would quietly strip
+  // the breadcrumb from every job Make still reads it on.
+  const known = await capturePostTo("Jobs", () =>
+    POST("createJob", { jobName: "Watersedge 3", contractorId: "recKnown1",
+                        contractorName: "Ware Construction" }, OFFICE_TOK));
+  eq(known.fields["Contractor (Intake)"], "Ware Construction", "known option kept");
+});
+
 await test("backfillTimeEntryEmployeeLinks is gone, not just unlisted", async () => {
   // Deleted in Stage 4 — it repaired the Airtable Time Entries table, which has
   // been a frozen historical copy since Step 3. An unknown action must 400.

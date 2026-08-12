@@ -1,7 +1,14 @@
 # Plan — a real GP audit: can the numbers be trusted?
 
-**Status: ✅ SLICES 1 + 2 RUN 2026-08-11 → `docs/AUDIT-gp-findings.md`. ⬜ Slice 3 needs an
-owner QuickBooks export.** Owner's ask, 2026-08-10: *"some day we'll need to do a real gp audit
+**Status: ✅ COMPLETE 2026-08-12. Slices 1 + 2 run → `docs/AUDIT-gp-findings.md`; slice 3 is NOT
+required — the owner closed the question it existed to answer.**
+
+> **The answer, in one line: per-job figures on tracked jobs are trustworthy; the company-wide
+> total is not, and that is now a deliberate choice rather than a defect.** Finding 1 was fixed
+> (final GP counts all labor), overhead jobs are flagged out, and the eight jobs with no recorded
+> material cost are owner-accepted as-is. Nothing here is left to investigate.
+
+*Original status line:* Owner's ask, 2026-08-10: *"some day we'll need to do a real gp audit
 to see if all the numbers really make sense. i want to know if i can trust them."*
 
 > **Answer so far: the arithmetic is trustworthy, the inputs are not complete, and every gap

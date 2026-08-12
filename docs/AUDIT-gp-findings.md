@@ -85,7 +85,19 @@ Until one of them happens, treat final GP as a **ceiling**, not a figure.
 
 ## Finding 2 — eight jobs, $362,471.95 of revenue, zero material cost
 
-> ### ✅ LARGELY EXPLAINED — owner, 2026-08-11. Do not re-raise as a defect.
+> ### ✅✅ CLOSED — owner, 2026-08-12. All eight. **Do not re-raise, do not investigate.**
+> *"forget the 8 jobs with no expense. i know that. im not gonna fix em. leave em be."*
+>
+> This supersedes the "largely explained / slice 3 should still establish which" note below.
+> There is no longer a question outstanding: the owner knows which jobs these are, knows the
+> material cost was never recorded, and has decided not to correct them. **A future audit that
+> "discovers" $362,471.95 of revenue with no material cost has found a decision, not a defect.**
+>
+> What it does NOT change: any company-wide profit total that includes these eight is still
+> overstated. That is now a known property of the book rather than a gap to close — see the
+> summary at the end of this file.
+>
+> *Superseded detail from 2026-08-11, kept for the reasoning:*
 > *"some of the jobs on record are in here for records sake. it was before i kept track of
 > expenses so they will be wrong and im not gonna fix them."*
 >
@@ -187,6 +199,13 @@ sums by job and never by date.
 > ✅ **CLOSED 2026-08-12 — the 8 upstream `pipe_usage` rows are fixed too.** Airtable first
 > (`tblgxbgpovXj6myZB`), then Neon, same as the expenses.
 >
+> ⚠⚠ **`Pipe Usage` IS A DEAD TABLE — owner 2026-08-12:** *"i no longer use that, it all comes
+> from inventory as an expense so i dont need them."* Nothing will ever be added to it again.
+> **But do NOT delete it.** `pipe_cost` still feeds `actual_job_cost_cogs` for the historical
+> jobs that used it, so dropping the table silently changes the closed profit on those jobs —
+> the same trap `legacy_material_cost` exists to prevent for the 24 pre-April expenses
+> (`ROADMAP.md` §4d). Frozen history, not live data. Same applies to `wire_weigh_ins`.
+>
 > ⚠ **They did NOT all get the same date, and that mattered.** The first pass set all eight to
 > `2026-04-01` to match the expenses they generated — then their Airtable `createdTime` showed
 > three of them (the Harlin Smith rows) were created **2026-01-30**. The pipe was used in
@@ -243,7 +262,20 @@ The honest summary for anyone asking "can I trust the GP numbers?":
   complete, labor that was never approved, and at least one overhead job inventing revenue.
 - **Against the actual books — unknown.** That is slice 3, and nothing internal can answer it.
 
-## What slice 3 must settle
+## ⛔ Slice 3 is NO LONGER REQUIRED — the question it existed to answer is closed
+
+Slice 3 (the QuickBooks reconcile) was scoped to settle **Finding 2**, the eight jobs with no
+recorded material cost. The owner closed that by decision on 2026-08-12, so **there is nothing
+left for it to establish** and no export is needed.
+
+Run it only if the question ever changes from *"is the material cost missing?"* (answered: yes,
+knowingly) to *"do this system's figures agree with the books?"* — a different and much larger
+question that nobody has asked. The sample below is kept because it is still the right sample
+if that day comes.
+
+*Original scope, retained:*
+
+## What slice 3 would settle
 
 Only a QuickBooks reconcile can close Finding 2, which is the big one. Recommended
 sample, chosen to hit each failure mode rather than at random:

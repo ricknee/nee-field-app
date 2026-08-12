@@ -9958,6 +9958,24 @@ async function handleCreateJob(body) {
     body: JSON.stringify({ fields })
   });
 
+  // ⚠ RE-READ, don't trust the create response, for `Job PO`.
+  // It is an Airtable FORMULA (Contractor Code + job initial + Job PO Number),
+  // and the same trap the inventory push hit at Step E applies: a record read
+  // back before its computed fields settle hands you a blank. Writing that blank
+  // into Neon would leave the job list showing NO PO for an hour — which is the
+  // exact lag this slice exists to remove, just moved from one column to another.
+  //
+  // One extra round trip on a handful of job creations a week. Fails soft: worst
+  // case `po` stays null and the hourly sync fills it, i.e. today's behaviour.
+  let poString = null, poLocked = null;
+  try {
+    const fresh = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${data.id}`);
+    poString = fresh?.fields?.["Job PO"] || null;
+    poLocked = fresh?.fields?.["Job PO - Locked"] || null;
+  } catch (e) {
+    console.error(`createJob: PO re-read failed, hourly sync will fill it — ${e?.message || e}`);
+  }
+
   // ── The job lands in Neon NOW, not up to an hour from now ────────────────
   // `_jobs-sync.js` runs hourly, which is why a new job has shown an empty Time
   // Entries tab for its first hour. Airtable is still created first because
@@ -9969,17 +9987,21 @@ async function handleCreateJob(body) {
   try {
     await neonWrite("job.create",
       `INSERT INTO jobs (airtable_id, name, status, job_type, tax_status, billing_method,
-                         contractor_at_id, contractor_name, po_number, job_year, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+                         contractor_at_id, contractor_name, po_number, po, po_locked,
+                         job_year, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
        ON CONFLICT (airtable_id) DO UPDATE SET
          name=EXCLUDED.name, status=EXCLUDED.status, job_type=EXCLUDED.job_type,
          tax_status=EXCLUDED.tax_status, billing_method=EXCLUDED.billing_method,
          contractor_at_id=EXCLUDED.contractor_at_id, contractor_name=EXCLUDED.contractor_name,
-         po_number=COALESCE(EXCLUDED.po_number, jobs.po_number), synced_at=now()`,
+         po_number=COALESCE(EXCLUDED.po_number, jobs.po_number),
+         -- COALESCE so a failed re-read never BLANKS a PO the sync already had.
+         po=COALESCE(EXCLUDED.po, jobs.po), po_locked=COALESCE(EXCLUDED.po_locked, jobs.po_locked),
+         synced_at=now()`,
       [data.id, trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
        taxStatus || "Taxable", "Contractor", trimmedContractorId,
        contractorName ? String(contractorName).trim() : null,
-       poNumber, new Date().getFullYear()]);
+       poNumber, poString, poLocked, new Date().getFullYear()]);
   } catch (e) {
     console.error(`createJob: Neon insert failed, hourly sync will adopt it — ${e?.message || e}`);
   }

@@ -1482,6 +1482,25 @@ await test("setEmployeeActive: an employee Neon doesn't have never reports succe
   delete process.env.DATABASE_URL;
 });
 
+// Runs `fn` and returns the body of the first POST made to `table`. Exists
+// because `lastFetch` is the LAST request, and handlers increasingly do
+// something after their write — createJob re-reads the record for its formula
+// fields — so "the last request" and "the write" are no longer the same thing.
+async function capturePostTo(table, fn) {
+  const real = globalThis.fetch;
+  let body = null;
+  globalThis.fetch = async (url, opts) => {
+    const isPost = (opts?.method || "GET").toUpperCase() === "POST";
+    if (isPost && body === null && new RegExp(`/${table}$`).test(String(url).split("?")[0])) {
+      body = JSON.parse(opts.body);
+    }
+    return real(url, opts);
+  };
+  try { await fn(); } finally { globalThis.fetch = real; }
+  ok(body, `no POST to ${table} was made`);
+  return body;
+}
+
 await test("createJob: ships INERT — Airtable still assigns the PO", async () => {
   // The automation wfltJAiEaavVLA0wB triggers on "New Lead AND Job PO Number
   // empty". While the switch is off we must NOT send that field, or the
@@ -1489,12 +1508,17 @@ await test("createJob: ships INERT — Airtable still assigns the PO", async () 
   // which is worse than the status quo.
   mockTables = { Jobs: [], Companies: [] };
   delete process.env.JOB_CREATE_SOURCE;
-  const res = await POST("createJob", { jobName: "Inert Test", contractorId: "recCo1" });
-  eq(res.statusCode, 200, "job created");
-  const sent = JSON.parse(lastFetch.opts.body).fields;
+  // ⚠ Capture the POST specifically, not lastFetch. handleCreateJob RE-READS the
+  // record afterwards to pick up the `Job PO` formula, so lastFetch is that GET
+  // and has no body. This is the assertion breaking when the handler grew a
+  // round trip — which is the test doing its job, not noise.
+  const { fields: sent } = await capturePostTo("Jobs", async () => {
+    const res = await POST("createJob", { jobName: "Inert Test", contractorId: "recCo1" });
+    eq(res.statusCode, 200, "job created");
+    eq(json(res).poNumber, undefined, "no PO reported back");
+  });
   eq(Object.prototype.hasOwnProperty.call(sent, "Job PO Number"), false,
      "Job PO Number must be ABSENT so Airtable's automation still fires");
-  eq(json(res).poNumber, undefined, "no PO reported back");
 });
 
 await test("createJob: the PO field is only ever sent when the switch is on", async () => {
@@ -1505,9 +1529,10 @@ await test("createJob: the PO field is only ever sent when the switch is on", as
   mockTables = { Jobs: [], Companies: [] };
   process.env.JOB_CREATE_SOURCE = "neon";
   process.env.DATABASE_URL = "not-a-valid-connection-string";
-  const res = await POST("createJob", { jobName: "Fallback Test", contractorId: "recCo1" });
-  eq(res.statusCode, 200, "a failed PO allocation must not block creating the job");
-  const sent = JSON.parse(lastFetch.opts.body).fields;
+  const { fields: sent } = await capturePostTo("Jobs", async () => {
+    const res = await POST("createJob", { jobName: "Fallback Test", contractorId: "recCo1" });
+    eq(res.statusCode, 200, "a failed PO allocation must not block creating the job");
+  });
   eq(Object.prototype.hasOwnProperty.call(sent, "Job PO Number"), false,
      "allocation failed, so the field is omitted and Airtable assigns as usual");
   delete process.env.DATABASE_URL;

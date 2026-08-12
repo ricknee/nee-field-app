@@ -1,7 +1,28 @@
 # Plan — replumb the four job-lifecycle webhooks
 
-**Status: DECODED 2026-08-12, NOT BUILT.** Audit item 04. All four scripts read off the live
-base; nothing below is inferred.
+**Status: 🟨 BUILT AND CUT OVER 1 OF 4 — 2026-08-12.** `JOB_WEBHOOKS=app` is live
+(`f39fb22`, `netlify/functions/_job-webhooks.js`). Audit item 04. All four scripts read off the
+live base; nothing below is inferred.
+
+| # | Hook | App fires it | Airtable automation | Proven by |
+|---|---|---|---|---|
+| 1 | pCloud folders (Estimating) | ✅ | ✅ **UNDEPLOYED** | WatersEdge 1 → Estimating: **one** folder, flag set |
+| 2 | Awarded → Trello + QB Time | ✅ | still deployed | ⬜ needs a job reaching Awarded |
+| 3 | Completed → Trello by year | ✅ | still deployed | ⬜ needs a job reaching Completed |
+| 4 | Service call started | ✅ | still deployed | ⬜ needs a service call |
+
+**The doubled state is safe and can sit indefinitely.** While both fire, Make's own guard flags
+make the second call a no-op. So 2–4 need no test jobs forced through — undeploy each as a real
+job happens to hit that status. **Do not undeploy one before seeing its replacement fire.**
+
+> ⚠ **#1 has changed risk posture now.** Until today a failure meant "the automation didn't run";
+> from today it means **no pCloud folder is created at all**, because nothing else is listening.
+> The app's POST failure is logged (`job-webhook pcloud FAILED`) but does not fail the status
+> change, by design — so a silent miss looks like a job with no folder rather than an error.
+> Worth a glance the first few times.
+
+**Rollback:** `netlify env:unset JOB_WEBHOOKS` + rebuild, and re-publish `wfltqVP8ORwHh2Mnx` —
+its configuration is intact, undeployed rather than deleted.
 
 **Why it matters:** these four are the reason the Airtable mirror writes still exist. Item 10 —
 dropping the mirrors, the step that actually ends Airtable's role — is gated on them.

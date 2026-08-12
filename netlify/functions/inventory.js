@@ -1803,9 +1803,9 @@ async function handleLoadInventoryReference() {
   // loaded before its item still ends up linked.
   const fk = await neonQuery(
     `UPDATE vendor_pricing p SET
-       item_id   = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id),
+       item_id   = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id OR i.id::text = p.item_airtable_id),
        vendor_id = (SELECT v.id FROM vendors v         WHERE v.airtable_id = p.vendor_airtable_id)
-     WHERE p.item_id IS DISTINCT FROM (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id)
+     WHERE p.item_id IS DISTINCT FROM (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id OR i.id::text = p.item_airtable_id)
         OR p.vendor_id IS DISTINCT FROM (SELECT v.id FROM vendors v      WHERE v.airtable_id = p.vendor_airtable_id)`);
   if (!fk?.rows) throw new Error(`vendor_pricing FK resolve: ${fk?.error || "Neon unavailable"}`);
 
@@ -1814,14 +1814,14 @@ async function handleLoadInventoryReference() {
   // absent from on-hand — hence the orphan report below rather than silence.
   const fkTxn = await neonQuery(
     `UPDATE inventory_transactions t SET
-       item_id          = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = t.item_airtable_id),
+       item_id          = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = t.item_airtable_id OR i.id::text = t.item_airtable_id),
        from_location_id = (SELECT l.id FROM locations l WHERE l.airtable_id = t.from_location_airtable_id),
        to_location_id   = (SELECT l.id FROM locations l WHERE l.airtable_id = t.to_location_airtable_id)`);
   if (!fkTxn?.rows) throw new Error(`inventory_transactions FK resolve: ${fkTxn?.error || "Neon unavailable"}`);
 
   const fkStock = await neonQuery(
     `UPDATE stock_settings s SET
-       item_id     = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = s.item_airtable_id),
+       item_id     = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = s.item_airtable_id OR i.id::text = s.item_airtable_id),
        location_id = (SELECT l.id FROM locations l WHERE l.airtable_id = s.location_airtable_id)`);
   if (!fkStock?.rows) throw new Error(`stock_settings FK resolve: ${fkStock?.error || "Neon unavailable"}`);
 
@@ -1830,15 +1830,15 @@ async function handleLoadInventoryReference() {
   for (const [label, sql] of [
     ["material_estimate_lines", `UPDATE material_estimate_lines x SET
         estimate_id = (SELECT e.id FROM material_estimates e WHERE e.airtable_id = x.estimate_airtable_id),
-        item_id     = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id)`],
+        item_id     = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id OR i.id::text = x.item_airtable_id)`],
     ["material_estimate_template_lines", `UPDATE material_estimate_template_lines x SET
         template_id = (SELECT t.id FROM material_estimate_templates t WHERE t.airtable_id = x.template_airtable_id),
-        item_id     = (SELECT i.id FROM inventory_items i             WHERE i.airtable_id = x.item_airtable_id)`],
+        item_id     = (SELECT i.id FROM inventory_items i             WHERE i.airtable_id = x.item_airtable_id OR i.id::text = x.item_airtable_id)`],
     ["material_orders", `UPDATE material_orders x SET
         estimate_id = (SELECT e.id FROM material_estimates e WHERE e.airtable_id = x.estimate_airtable_id)`],
     ["material_order_lines", `UPDATE material_order_lines x SET
         order_id = (SELECT o.id FROM material_orders o    WHERE o.airtable_id = x.order_airtable_id),
-        item_id  = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id)`],
+        item_id  = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id OR i.id::text = x.item_airtable_id)`],
     // Slice 2. Only the historical rows need this — a natively-written line
     // gets its parent uuid at insert time and has no push_airtable_id at all,
     // which is why the WHERE guard matters: without it every native line would
@@ -1927,7 +1927,7 @@ async function handleAdjustment(body) {
        FROM inventory_items i
        CROSS JOIN locations l
        LEFT JOIN v_stock_on_hand s ON s.item_id = i.id AND s.location_id = l.id
-      WHERE i.airtable_id = $1 AND l.airtable_id = $2`,
+      WHERE (i.airtable_id = $1 OR i.id::text = $1) AND l.airtable_id = $2`,
     [String(itemId), String(locationId)]);
   if (!cur.length) return resp(404, { ok: false, error: "Item or location not found." });
 

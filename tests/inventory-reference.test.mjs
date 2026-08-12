@@ -742,6 +742,20 @@ await test("ADJ: a count that matches writes NOTHING", async () => {
   eq(txnWrites.length, 0, "a zero-quantity movement is just noise in the item's history");
 });
 
+await test("ADJ: a NATIVE item can be counted — the on-hand read takes either handle", async () => {
+  reset();
+  adjOnHand = 0;
+  // Adjusting a natively-created item 404'd with "Item or location not found":
+  // the on-hand lookup still said `i.airtable_id = $1`, so an item with no rec
+  // id matched nothing. Every OTHER item query had been moved to the dual
+  // handle; this one sat on its own line and the sweep missed it.
+  const r = json(await POST({ action: "adjustment", itemId: NEW_ITEM,
+                              locationId: "recLoc1", qty: 15, enteredBy: "Rick" }));
+  eq(r.ok, true, "counted");
+  eq(r.delta, 15, "0 → 15 posts +15");
+  eq(txnWrites[0].to, "recLoc1", "on the adding leg");
+});
+
 await test("ADJ: an unknown item/location pair is a 404, not a phantom movement", async () => {
   reset();
   adjOnHand = null;                        // the pair does not exist

@@ -1,0 +1,5 @@
+item,barcode,vendor,cost,partNumber,preferred
+"1"" Locknut",,CED,0.18,LN-100,yes
+"1"" Locknut",,Wolff Bros,0.25,WB-1LN,no
+"1/2"" EMT PIPE",,Wolff Bros,0.79,EMT-050,yes
+12 THHN,,CED,1.22,THHN12,yes

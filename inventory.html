@@ -4450,7 +4450,10 @@ function renderBulk() {
     '</div>';
 
   html += '<input type="file" id="bulk-file" accept=".csv,.xlsx,.xls" onchange="bulkFileChosen(this)" style="display:none;" />' +
-    '<button class="primary-btn" onclick="document.getElementById(\'bulk-file\').click()">📄 Choose a file</button>';
+    '<button class="primary-btn" onclick="document.getElementById(\'bulk-file\').click()">📄 Choose a file</button>' +
+    // A template beats documenting the columns: it is the columns, spelled the
+    // way the parser wants them, with a couple of real rows to copy the shape.
+    '<button onclick="bulkDownloadTemplate()" style="width:100%;margin-top:10px;background:var(--navy-mid);border:1px solid var(--border);border-radius:10px;color:var(--dim);font-family:inherit;font-size:13px;font-weight:600;padding:12px;cursor:pointer;">⬇ Download a template for this</button>';
 
   if (bulkParsed) {
     html += '<div style="font-size:12px;color:var(--dim);margin-top:12px;">Read <b>' + bulkParsed.length + '</b> rows. ' +
@@ -4463,6 +4466,40 @@ function renderBulk() {
 }
 
 function bulkSetType(t) { bulkType = t; bulkParsed = null; bulkPreview = null; renderBulk(); }
+
+// The example rows use REAL items and locations from this system, so the first
+// thing you do with the template is edit numbers rather than guess whether the
+// name has to match exactly. (It does.)
+var BULK_TEMPLATES = {
+  counts:
+    'item,location,counted\n' +
+    '"1/2"" EMT PIPE",Shop #1,400\n' +
+    '"3/4"" EMT PIPE",Shop #1,250\n' +
+    '12 THHN,Shop #1,40\n',
+  pricing:
+    'item,barcode,vendor,cost,partNumber,preferred\n' +
+    '"1"" Locknut",,CED,0.18,LN-100,yes\n' +
+    '"1"" Locknut",,Wolff Bros,0.25,WB-1LN,no\n' +
+    '"1/2"" EMT PIPE",,Wolff Bros,0.79,EMT-050,yes\n',
+  items:
+    'item,category,size,uom,cost,barcode,wireFtPerLb,active\n' +
+    '"2"" EMT COUPLING - SET SCREW",EMT Fittings,"2""",ea,4.85,,,yes\n' +
+    '10 THHN,Wire,10,lb,1.95,,32.700,yes\n',
+};
+
+function bulkDownloadTemplate() {
+  var csv = BULK_TEMPLATES[bulkType] || "";
+  // A BOM, so Excel opens it as UTF-8 and does not mangle the inch marks in
+  // item names — which are exactly the characters the matcher needs intact.
+  var blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "nee-bulk-" + bulkType + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  showToast("✓ Template downloaded");
+}
 
 // ── Parsing ───────────────────────────────────────────────
 // CSV is handled here; .xlsx needs SheetJS, lazy-loaded from the CDN the same

@@ -52,14 +52,57 @@ globalThis.fetch = async (url, opts) => {
   if (String(url).includes("/sql")) {
     try { neonQueries.push(JSON.parse(opts?.body || "{}")); } catch { /* ignore */ }
     if (neonFail) return { ok: false, status: 500, text: async () => "neon exploded" };
-    // This suite is about the JOB reads. Step C moved the ledger to Neon too,
-    // but the transaction fixtures here are the Airtable ones, so let the
-    // ledger query fail and fall back — otherwise pendingExpenses would read an
-    // empty Neon ledger and the job-index assertions would never be reached.
-    // The Neon ledger path is covered in tests/inventory-push.test.mjs.
-    if (/inventory_transactions/i.test(String(opts?.body || ""))) {
-      return { ok: false, status: 500, text: async () => "ledger not modelled in this suite" };
+
+    // ⚠ This used to FAIL the ledger query on purpose so pendingExpenses would
+    // fall back to Airtable and read this suite's transaction fixtures. That
+    // fallback is gone: since the write cutover the ledger and the item index
+    // are Neon-only, and pendingExpenses answers 503 rather than serving a
+    // frozen copy. The fixtures stay Airtable-shaped — this suite is about JOB
+    // RESOLUTION and rewriting them would lose that — so they are reshaped into
+    // Neon rows here instead.
+    const sqlText = String(opts?.body || "");
+    const reply = (cols, rows) => {
+      const p2 = {
+        command: "SELECT", rowCount: rows.length, rowAsArray: false,
+        fields: cols.map((n, i) => ({ name: n, dataTypeID: 25, tableID: 0, columnID: i + 1,
+                                      dataTypeSize: -1, dataTypeModifier: -1, format: "text" })),
+        rows: rows.map(r => cols.map(c => (c in r ? r[c] : null))),
+      };
+      return { ok: true, status: 200, headers: { get: () => "application/json" },
+               text: async () => JSON.stringify(p2), json: async () => p2 };
+    };
+
+    if (/FROM inventory_transactions/i.test(sqlText)) {
+      const lnk = (v) => Array.isArray(v) ? (typeof v[0] === "object" ? v[0]?.id : v[0]) : v;
+      const sel = (v) => (v && typeof v === "object" ? v.name : v);
+      return reply(["id", "item_airtable_id", "quantity", "txn_type", "unit_cost_snapshot",
+                    "job_airtable_id", "job_name"],
+        invTx.map(t => ({
+          id: t.id,
+          item_airtable_id: lnk(t.fields?.["Inventory Item"]),
+          quantity: String(t.fields?.["Quantity"] ?? 0),
+          txn_type: sel(t.fields?.["Transaction Type"]),
+          unit_cost_snapshot: t.fields?.["Unit Cost (Snapshot)"] == null
+            ? null : String(t.fields["Unit Cost (Snapshot)"]),
+          job_airtable_id: t.fields?.["Job ID (Main)"] ?? null,
+          job_name: t.fields?.["Job Name"] ?? null,
+        })));
     }
+
+    if (/FROM inventory_items/i.test(sqlText)) {
+      return reply(["airtable_id", "name", "category", "unit_of_measure",
+                    "default_unit_cost", "wire_ft_per_lb"],
+        invItems.map(i => ({
+          airtable_id: i.id, name: i.fields?.["Item Name"] || "",
+          category: i.fields?.["Category"] || null,
+          unit_of_measure: i.fields?.["Unit of Measure"] || null,
+          default_unit_cost: i.fields?.["Default Unit Cost"] == null
+            ? null : String(i.fields["Default Unit Cost"]),
+          wire_ft_per_lb: i.fields?.["Wire ft/lb"] == null
+            ? null : String(i.fields["Wire ft/lb"]),
+        })));
+    }
+
     const payload = {
       command: "SELECT", rowCount: neonRows.length, rowAsArray: false,
       fields: NEON_COLS.map((n, i) => ({
@@ -182,6 +225,15 @@ await test("jobs (USE cart picker) reads MAIN base only (mirror untouched)", asy
 
 await test("pendingExpenses: resolves by 'Job ID (Main)' text; never reads the mirror", async () => {
   seedMain();
+  // seedMain() ends with neonOff(), which suited the pre-B0 cases that assert
+  // the Airtable job path. pendingExpenses has no Airtable path any more — the
+  // ledger, the item index and the job index are all Neon — so it needs Neon on.
+  neonOn([
+    { airtable_id: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
+      status: "Awarded", tax_status: "Taxable", contractor_name: "Case Farms" },
+    { airtable_id: "recJobB", name: "Miller Barn", po: "",
+      status: "Estimating", tax_status: "Non-Taxable", contractor_name: "Miller Poultry" },
+  ]);
   invItems = [{ id: "recItem1", fields: { "Item Name": "12-2 Wire", "Default Unit Cost": 10 } }];
   invTx = [
     { id: "recTxA", fields: {
@@ -297,6 +349,15 @@ await test("B0 pendingExpenses: resolves the job index out of Neon", async () =>
 
 await test("pendingExpenses: stale 'Job ID (Main)' → unmatched; jobless/link-only rows → skipped (no noise)", async () => {
   seedMain();
+  // seedMain() ends with neonOff(), which suited the pre-B0 cases that assert
+  // the Airtable job path. pendingExpenses has no Airtable path any more — the
+  // ledger, the item index and the job index are all Neon — so it needs Neon on.
+  neonOn([
+    { airtable_id: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
+      status: "Awarded", tax_status: "Taxable", contractor_name: "Case Farms" },
+    { airtable_id: "recJobB", name: "Miller Barn", po: "",
+      status: "Estimating", tax_status: "Non-Taxable", contractor_name: "Miller Poultry" },
+  ]);
   invItems = [{ id: "recItem1", fields: { "Item Name": "12-2 Wire", "Default Unit Cost": 10 } }];
   invTx = [
     // stale id (job no longer in main base) → genuinely "couldn't be matched" → surfaced

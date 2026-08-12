@@ -1,6 +1,15 @@
 // netlify/functions/inventory.js
-// NEE Inventory App v2 — Netlify Proxy
-// Env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID (main NEE), INVENTORY_BASE_ID, AUTH_SECRET
+// NEE Inventory App v2 — Neon-backed, with one foot still in the main Airtable base
+//
+// Env vars: DATABASE_URL, AUTH_SECRET, and AIRTABLE_API_KEY + AIRTABLE_BASE_ID
+// for the MAIN base only.
+//
+// ⚠ INVENTORY_BASE_ID is no longer read. As of the write cutover (2026-08-12)
+// this file does not touch the Airtable INVENTORY base at all — not a read, not
+// a write, not a loader. Everything it once held lives in Neon. The only
+// Airtable calls left go to the MAIN base's `Expenses`, which is the expense
+// push feeding GP and was never part of this migration.
+// The variable can be deleted from Netlify once the base itself is archived.
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from "./_employees.js";
@@ -21,9 +30,7 @@ import { r2Enabled, jobDocsPrefix, presignPut, R2Error } from "./_r2.js";
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const MAIN_BASE_ID     = process.env.AIRTABLE_BASE_ID;
-const INV_BASE_ID      = process.env.INVENTORY_BASE_ID;
 const API_ROOT_MAIN    = `https://api.airtable.com/v0/${MAIN_BASE_ID}`;
-const API_ROOT_INV     = `https://api.airtable.com/v0/${INV_BASE_ID}`;
 
 function resp(code, body) {
   return {
@@ -41,7 +48,6 @@ function resp(code, body) {
 function ensureEnv() {
   if (!AIRTABLE_API_KEY) throw new Error("Missing AIRTABLE_API_KEY");
   if (!MAIN_BASE_ID)     throw new Error("Missing AIRTABLE_BASE_ID");
-  if (!INV_BASE_ID)      throw new Error("Missing INVENTORY_BASE_ID");
   if (!process.env.AUTH_SECRET) throw new Error("Missing AUTH_SECRET");
 }
 
@@ -59,7 +65,6 @@ const _ADMIN_WRITES = new Set([
   "syncItemCostToVendor",
   "delete",              // transaction deletion
   "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
-  "loadInventoryReference",  // bulk-loads Neon reference tables (Step B)
 ]);
 
 function authzFor(method, action) {
@@ -455,12 +460,17 @@ async function handleAwardedJobs() {
 // never will be — verified 2026-08-10 that nothing reads them. On-hand comes
 // from Stock Levels, which is Step C.
 
-// Every item, indexed by Airtable rec id. This one helper replaces the
-// `fetchAll(API_ROOT_INV, "Inventory Items", {})` + build-a-map pattern that
-// appeared at ELEVEN separate call sites. They all wanted the same five fields,
-// which is what made a single index possible rather than eleven bespoke reads.
+// Every item, indexed by its public handle. This one helper replaced a
+// fetch-all-items-and-build-a-map pattern that appeared at ELEVEN separate call
+// sites; they all wanted the same five fields, which is what made a single
+// index possible rather than eleven bespoke reads.
 //
-// Returns null on any Neon failure so the caller falls back to Airtable.
+// ⚠ The key is COALESCE(airtable_id, id::text) — the rec id for the 866 items
+// that predate the cutover, the uuid for anything created since. See
+// db/schema/041 for why items kept a dual handle where everything else moved.
+//
+// Returns null on failure; itemIndex() turns that into a thrown error, because
+// there is no second item table to fall back to any more.
 async function neonItemIndex() {
   const q = await neonQuery(
     `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name, category,
@@ -507,16 +517,10 @@ async function itemIndex() {
 // shape as the inventory-push gap that hid material cost from the field app for
 // three days (Step E).
 //
-// Airtable stays the identity authority for this slice, so the record is
-// created/updated there FIRST and its rec id is what Neon keys on.
-//
-// Fails SOFT (logged, swallowed) rather than closed, deliberately: unlike the
-// expense push, every read here has a live Airtable fallback, and the loader
-// (`loadInventoryReference`) is an idempotent catch-up that repairs any row this
-// misses. Breaking "add an item" over a database blip would cost more than the
-// staleness it prevents.
 // syncItemToNeon() is gone: an item is created in Postgres and updated there,
-// so there is no Airtable record to mirror from.
+// so there is no Airtable record to mirror from, no rec id to key on, and no
+// loader to catch up anything a mirror missed. All three of those assumptions
+// held while Airtable was the authority; none of them do now.
 
 // ── THE LEDGER IS NATIVE (cutover slice 1) ────────────────────────────────
 // Transactions are BORN here. Airtable is no longer written for the ledger at
@@ -1695,236 +1699,23 @@ async function handlePushExpenses(body) {
   return resp(200, { ok: true, ...summary });
 }
 
-// ── STEP B: LOAD THE REFERENCE TABLES INTO NEON (admin action) ─────────────
-// Locations, Vendors, Inventory Items, Vendor Pricing → Neon (029 schema).
+// ── THE LOADER IS RETIRED (cutover slice 6, 2026-08-12) ────────────────────
+// `handleLoadInventoryReference` bulk-loaded Locations, Vendors, Inventory
+// Items and Vendor Pricing from Airtable into Neon. Every table it touched has
+// since gone native, the last three on the same day this was removed — and a
+// loader that refreshes a table the app now owns does not repair anything, it
+// OVERWRITES. A renamed location would have reverted, an edited vendor price
+// would have gone back to its April figure, and a deleted row would have been
+// re-inserted, because a deleted row has nothing to conflict with.
 //
-// WHY THIS RUNS IN THE FUNCTION rather than as a script in db/etl/. Nothing on
-// a dev machine can read the inventory base: both PATs in `.env` return 403 on
-// `appfsLJwfow4CepCw` (one is main-base scoped, the other points at the
-// sandbox). The deployed function holds the credential that can. Same reason
-// `copyAirtablePhotosToR2` runs here — the credential lives where the function
-// does, not where the developer does.
+// With nothing left to load, the function goes rather than shrinks. There is
+// now no reference to the Airtable INVENTORY base anywhere in this file — not
+// a read, not a write. The two remaining atFetch calls go to the MAIN base's
+// Expenses, which is the GP expense push and was never in scope.
 //
-// Idempotent: every table upserts ON CONFLICT (airtable_id), so re-running
-// refreshes rather than duplicating. Safe to run as often as you like, and it
-// is the catch-up path until the write handlers move in a later slice.
-//
-//   POST { action: "loadInventoryReference" }        (admin only)
-async function handleLoadInventoryReference() {
-  // Chunked multi-row upsert. 866 items in one statement would build a
-  // parameter list Postgres rejects; 100 keeps it comfortable.
-  async function upsertChunked(label, table, cols, rows, updateCols) {
-    let written = 0;
-    for (let i = 0; i < rows.length; i += 100) {
-      const chunk = rows.slice(i, i + 100);
-      const params = [];
-      const tuples = chunk.map(r => {
-        const ph = cols.map(c => { params.push(r[c] ?? null); return `$${params.length}`; });
-        return `(${ph.join(",")}, now())`;
-      });
-      const q = await neonQuery(
-        `INSERT INTO ${table} (${cols.join(",")}, synced_at) VALUES ${tuples.join(",")}
-         ON CONFLICT (airtable_id) DO UPDATE SET
-           ${updateCols.map(c => `${c}=EXCLUDED.${c}`).join(", ")}, synced_at=now()`,
-        params
-      );
-      if (!q?.rows) throw new Error(`${label}: ${q?.error || "Neon unavailable"}`);
-      written += chunk.length;
-    }
-    return written;
-  }
-
-  const bool = (v) => v === true;
-  const sel  = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
-  const num  = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const lnk  = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
-  const date = (v) => (v ? String(v).slice(0, 10) : null);
-
-  const [locs, vends, items, pricing] = await Promise.all([
-    fetchAll(API_ROOT_INV, "Locations", {}),
-    fetchAll(API_ROOT_INV, "Vendors", {}),
-    fetchAll(API_ROOT_INV, "Inventory Items", {}),
-    fetchAll(API_ROOT_INV, "Vendor Pricing", {}),
-  ]);
-
-  const counts = {};
-
-  counts.locations = await upsertChunked("locations", "locations",
-    ["airtable_id", "name", "location_type", "active", "notes"],
-    locs.map(r => ({ airtable_id: r.id, name: r.fields?.["Location Name"] || "",
-      location_type: sel(r.fields?.["Location Type"]), active: bool(r.fields?.["Active Location"]),
-      notes: r.fields?.["Notes"] ?? null })),
-    ["name", "location_type", "active", "notes"]);
-
-  counts.vendors = await upsertChunked("vendors", "vendors",
-    ["airtable_id", "name", "vendor_type", "account_number", "phone", "email", "website",
-     "address", "primary_contact", "payment_terms", "active", "notes"],
-    vends.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      name: f["Vendor Name"] || "", vendor_type: sel(f["Vendor Type"]),
-      account_number: f["Account Number"] ?? null, phone: f["Phone"] ?? null,
-      email: f["Email"] ?? null, website: f["Website"] ?? null, address: f["Address"] ?? null,
-      primary_contact: f["Primary Contact"] ?? null, payment_terms: sel(f["Payment Terms"]),
-      active: bool(f["Active"]), notes: f["Notes"] ?? null }; }),
-    ["name", "vendor_type", "account_number", "phone", "email", "website", "address",
-     "primary_contact", "payment_terms", "active", "notes"]);
-
-  // ⚠⚠ inventory_items has LEFT the loader (slice 5). Items are born in Postgres
-  // now, so re-upserting the Airtable copy would overwrite live prices and
-  // resurrect any item deleted in the app. Same rule as every domain before it.
-  //
-  // Locations, Vendors and Vendor Pricing still load below because nothing —
-  // here or in Airtable — writes them at all, so the two copies cannot diverge.
-  // Slice 6 retires the loader with them.
-
-  counts.vendorPricing = await upsertChunked("vendor_pricing", "vendor_pricing",
-    ["airtable_id", "item_airtable_id", "vendor_airtable_id", "active", "preferred", "unit_cost",
-     "unit_of_measure", "vendor_part_number", "min_order_qty", "lead_time_days",
-     "last_price_update", "price_valid_until", "notes"],
-    pricing.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      item_airtable_id: lnk(f["Inventory Item"]), vendor_airtable_id: lnk(f["Vendor"]),
-      active: bool(f["Active"]), preferred: bool(f["Preferred for This Item"]),
-      unit_cost: num(f["Unit Cost"]), unit_of_measure: sel(f["Unit of Measure"]),
-      vendor_part_number: f["Vendor Part Number"] ?? null, min_order_qty: num(f["Min Order Qty"]),
-      lead_time_days: num(f["Lead Time (days)"]), last_price_update: date(f["Last Price Update"]),
-      price_valid_until: date(f["Price Valid Until"]), notes: f["Notes"] ?? null }; }),
-    ["item_airtable_id", "vendor_airtable_id", "active", "preferred", "unit_cost",
-     "unit_of_measure", "vendor_part_number", "min_order_qty", "lead_time_days",
-     "last_price_update", "price_valid_until", "notes"]);
-
-  // ── Step C: the ledger, and the settings hiding inside Stock Levels ──────
-  // ⚠⚠ `Quantity On Hand` is NOT loaded. It is an automation-maintained cache
-  // that disagrees with the raw ledger on 237 of 269 item+location pairs, while
-  // the Inventory Items rollups reproduce that ledger EXACTLY on 4,330. On-hand
-  // is therefore recomputed by `v_stock_on_hand` rather than copied — see
-  // db/schema/032. Only Reorder Point and Notes come across, because only they
-  // are things a human typed.
-
-  // ⚠⚠ THE LEDGER NO LONGER LOADS, AND MUST NOT. Once a domain's writes go
-  // native, Neon is the authority and Airtable is a frozen snapshot — so
-  // re-upserting it does not repair anything, it OVERWRITES. Two ways that
-  // bites, both real:
-  //   · a historical transaction deleted in the app has no conflicting row, so
-  //     the upsert INSERTS it straight back. Delete, re-run the loader, and the
-  //     stock movement returns from the dead.
-  //   · every column would be reset to whatever Airtable said on cutover day.
-  // Slice 1 only excluded expense_created/push_id from the UPDATE list, which
-  // stopped pushed material being re-offered but did nothing about the
-  // resurrection. Leaving the table out entirely is the actual rule:
-  // **a domain leaves the loader on the day it goes native.**
-
-  // stock_settings has left the loader too — same rule as the ledger and the
-  // push history: a domain stops being loaded on the day it goes native, or
-  // the next run overwrites Neon with a frozen Airtable snapshot.
-
-  // ── Step D: estimating ───────────────────────────────────────────────────
-  // ⚠ `material_` prefix throughout — Neon's `job_estimates` is the MAIN base's
-  // and feeds GP. See db/schema/035.
-  // ── The estimating cluster has LEFT the loader ───────────────────────────
-  // Six tables — estimates, their lines, templates, template lines, orders and
-  // order lines — all native since slice 4, and all removed together for the
-  // same reason as the ledger before them: Airtable is a frozen snapshot now,
-  // so re-upserting it would overwrite live work. Worse, a deleted estimate,
-  // template or order has no conflicting row, so the upsert would INSERT it
-  // straight back and quoted work would return from the dead.
-
-  // ── Slice 2: the push history — the audit trail behind every charged dollar ──
-
-
-
-  // Resolve the real FKs from the Airtable ids. Done as a second pass because
-  // the parents have to exist first, and re-run each time so a pricing row
-  // loaded before its item still ends up linked.
-  const fk = await neonQuery(
-    `UPDATE vendor_pricing p SET
-       item_id   = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id OR i.id::text = p.item_airtable_id),
-       vendor_id = (SELECT v.id FROM vendors v         WHERE v.airtable_id = p.vendor_airtable_id)
-     WHERE p.item_id IS DISTINCT FROM (SELECT i.id FROM inventory_items i WHERE i.airtable_id = p.item_airtable_id OR i.id::text = p.item_airtable_id)
-        OR p.vendor_id IS DISTINCT FROM (SELECT v.id FROM vendors v      WHERE v.airtable_id = p.vendor_airtable_id)`);
-  if (!fk?.rows) throw new Error(`vendor_pricing FK resolve: ${fk?.error || "Neon unavailable"}`);
-
-  // Same second pass for the ledger and the stock settings. v_stock_on_hand
-  // groups on item_id/location_id, so a row whose FKs never resolve is simply
-  // absent from on-hand — hence the orphan report below rather than silence.
-  const fkTxn = await neonQuery(
-    `UPDATE inventory_transactions t SET
-       item_id          = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = t.item_airtable_id OR i.id::text = t.item_airtable_id),
-       from_location_id = (SELECT l.id FROM locations l WHERE l.airtable_id = t.from_location_airtable_id),
-       to_location_id   = (SELECT l.id FROM locations l WHERE l.airtable_id = t.to_location_airtable_id)`);
-  if (!fkTxn?.rows) throw new Error(`inventory_transactions FK resolve: ${fkTxn?.error || "Neon unavailable"}`);
-
-  const fkStock = await neonQuery(
-    `UPDATE stock_settings s SET
-       item_id     = (SELECT i.id FROM inventory_items i WHERE i.airtable_id = s.item_airtable_id OR i.id::text = s.item_airtable_id),
-       location_id = (SELECT l.id FROM locations l WHERE l.airtable_id = s.location_airtable_id)`);
-  if (!fkStock?.rows) throw new Error(`stock_settings FK resolve: ${fkStock?.error || "Neon unavailable"}`);
-
-  // Step D's four child tables. Parents (estimates, templates, orders, items)
-  // all exist by now, and re-running relinks anything loaded out of order.
-  for (const [label, sql] of [
-    ["material_estimate_lines", `UPDATE material_estimate_lines x SET
-        estimate_id = (SELECT e.id FROM material_estimates e WHERE e.airtable_id = x.estimate_airtable_id),
-        item_id     = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id OR i.id::text = x.item_airtable_id)`],
-    ["material_estimate_template_lines", `UPDATE material_estimate_template_lines x SET
-        template_id = (SELECT t.id FROM material_estimate_templates t WHERE t.airtable_id = x.template_airtable_id),
-        item_id     = (SELECT i.id FROM inventory_items i             WHERE i.airtable_id = x.item_airtable_id OR i.id::text = x.item_airtable_id)`],
-    ["material_orders", `UPDATE material_orders x SET
-        estimate_id = (SELECT e.id FROM material_estimates e WHERE e.airtable_id = x.estimate_airtable_id)`],
-    ["material_order_lines", `UPDATE material_order_lines x SET
-        order_id = (SELECT o.id FROM material_orders o    WHERE o.airtable_id = x.order_airtable_id),
-        item_id  = (SELECT i.id FROM inventory_items i    WHERE i.airtable_id = x.item_airtable_id OR i.id::text = x.item_airtable_id)`],
-    // Slice 2. Only the historical rows need this — a natively-written line
-    // gets its parent uuid at insert time and has no push_airtable_id at all,
-    // which is why the WHERE guard matters: without it every native line would
-    // have its FK overwritten with NULL on the next loader run.
-    ["expense_push_lines", `UPDATE expense_push_lines x SET
-        expense_push_id = (SELECT p.id FROM expense_pushes p WHERE p.airtable_id = x.push_airtable_id)
-      WHERE x.push_airtable_id IS NOT NULL`],
-  ]) {
-    const r = await neonQuery(sql);
-    if (!r?.rows) throw new Error(`${label} FK resolve: ${r?.error || "Neon unavailable"}`);
-  }
-
-  // Report anything that couldn't be linked rather than leaving it silent — an
-  // unlinked pricing row is invisible to v_item_live_cost.
-  const orphan = await neonQuery(
-    `SELECT
-       (SELECT count(*) FROM vendor_pricing
-         WHERE (item_airtable_id IS NOT NULL AND item_id IS NULL)
-            OR (vendor_airtable_id IS NOT NULL AND vendor_id IS NULL))::int AS pricing,
-       (SELECT count(*) FROM inventory_transactions
-         WHERE item_airtable_id IS NOT NULL AND item_id IS NULL)::int AS txn_no_item,
-       (SELECT count(*) FROM inventory_transactions
-         WHERE from_location_id IS NULL AND to_location_id IS NULL)::int AS txn_no_location,
-       (SELECT count(*) FROM stock_settings
-         WHERE item_id IS NULL OR location_id IS NULL)::int AS stock_unlinked,
-       (SELECT count(*) FROM material_estimate_lines
-         WHERE estimate_airtable_id IS NOT NULL AND estimate_id IS NULL)::int AS est_lines_orphaned,
-       (SELECT count(*) FROM material_estimate_template_lines
-         WHERE template_airtable_id IS NOT NULL AND template_id IS NULL)::int AS tmpl_lines_orphaned,
-       (SELECT count(*) FROM material_order_lines
-         WHERE order_airtable_id IS NOT NULL AND order_id IS NULL)::int AS order_lines_orphaned`);
-
-  return resp(200, {
-    ok: true,
-    // Only what the loader still reads. The ledger and the push history are
-    // absent because they are Neon's now — see the note above the Stock Levels
-    // fetch. Reporting a count for a table it no longer touches would be a
-    // reassuring lie.
-    airtable: { locations: locs.length, vendors: vends.length,
-                vendorPricing: pricing.length },
-    // What the loader deliberately does NOT touch, because Neon owns it. This
-    // list only grows: after slice 5 (items) the loader has nothing left to do
-    // and slice 6 retires it altogether.
-    nativeNotLoaded: ["inventory_transactions", "expense_pushes", "expense_push_lines",
-                      "stock_settings", "inventory_items", "material_estimates", "material_estimate_lines",
-                      "material_estimate_templates", "material_estimate_template_lines",
-                      "material_orders", "material_order_lines"],
-    written: counts,
-    // Rows whose FKs didn't resolve. A transaction with no location is invisible
-    // to on-hand, so this is reported rather than swallowed.
-    unlinked: orphan?.rows?.[0] ?? null,
-  });
-}
+// The base itself is archived by hand in Airtable. That is deliberately a
+// separate, later decision: leaving it there costs nothing and keeps the old
+// copy readable for a few weeks.
 
 // ── ADJUSTMENT ─────────────────────────────────────────────
 // An Adjustment SETS the count. `qty` is the number the person standing in the
@@ -3677,7 +3468,6 @@ export async function handler(event) {
       if (body.action === "receive")         return await handleReceive(body);
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);
-      if (body.action === "loadInventoryReference") return await handleLoadInventoryReference();
       if (body.action === "pushExpenses")    return await handlePushExpenses(body);
       if (body.action === "jobDocUploadUrl") return await handleJobDocUploadUrl(body);
       if (body.action === "createItem")        return await handleCreateItem(body);

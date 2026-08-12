@@ -2381,7 +2381,14 @@ async function openPushHistoryDetail(id) {
     html += '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:6px;">What was billed (snapshot)</div>';
 
     if (p.lines && p.lines.length) {
-      html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;overflow:hidden;">';
+      // ⚠ flex-shrink:0 is load-bearing, not cosmetic. #push-body is a flex
+      // COLUMN, and `overflow:hidden` on a flex child changes its automatic
+      // minimum height from "as tall as my content" to ZERO — so this box got
+      // squashed into whatever space was left and silently clipped the rest of
+      // the lines. A 42-line push showed 6, with no scrollbar and nothing in
+      // the console: the data was all there, the DOM had all 42, and only the
+      // pixels were missing. The parent scrolls; this must keep its full height.
+      html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;overflow:hidden;flex-shrink:0;">';
       p.lines.forEach(function(l, idx) {
         var isLast   = idx === p.lines.length - 1;
         var isReturn = l.qty < 0;

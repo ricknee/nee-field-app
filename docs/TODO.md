@@ -71,6 +71,32 @@ airtable.js:2824 / :2851 is the reference to copy. Add a test per site.
   (compress) and ScanSnap PDFs (upload untouched, no thumbnail). Full plan, decisions and
   gotchas in `docs/PLAN-expense-receipts.md`.
 
+## ⚠ SUSPECTED: `handleUpdatePowerCo` writes Airtable only — added 2026-08-12
+
+**The same bug as `ff21d46`, unverified, ~30 min to confirm and fix.**
+
+`handleUpdateJobStatus` wrote Airtable only while `handleJobs` reads **Neon first**, so an
+awarded job reverted to its old status on refresh. Found in the field 2026-08-12 — the **fourth**
+instance of "flip a read without its write" (ROADMAP §8 records three in one day). Fixed there,
+and in `handleStartServiceCall` + `handleCompleteServiceCall`, which had the identical shape.
+
+**`handleUpdatePowerCo` has that shape too and was not swept.** It PATCHes six fields that are
+all in `JOB_SELECT` and therefore all served from Neon:
+
+`fld3fZ9isIQmcFDna` power company · `fldhKlMCFsnmHo5PH` power contact · AIC number ·
+temp work order · perm work order · meter number
+
+> **Why nobody has reported it:** these are set once during power-company setup and rarely
+> re-read in the same session, and the hourly `_jobs-sync.js` papers over it. The symptom would
+> be "I typed the meter number, it saved, and next time I looked it was blank" — hours later,
+> long after anyone would connect it to the save.
+
+**To close it:** confirm by setting a power-co field, hard-refreshing, and seeing whether it
+survives. Then add a `neonWrite` before the PATCH, Neon-first and failing closed, matching the
+three already fixed. **Sweep the other job writers in the same pass** rather than waiting for
+each to surface on its own — this class has now bitten four times, and every instance was found
+by a person hitting it rather than by a test.
+
 ## Smaller, unscheduled
 
 - **R2 lifecycle rule** to expire the photo recycle bin (`_deleted/`) at 30 days — ~15 min. Must

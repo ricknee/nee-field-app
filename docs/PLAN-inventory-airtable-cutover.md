@@ -1,17 +1,31 @@
 # Plan — retiring the Airtable inventory base as a write target
 
-**Status: scoped, not started. 2026-08-11.** Ordered **most important first**.
+**Status: 2026-08-12 — five of six slices done. ~3-4 hours left.**
 Companion to `docs/PLAN-inventory-to-neon.md`, which moved the **reads**. This moves the **writes**.
 
-> **Total: ~11-14 hours remaining** (slices 0 and 1 done), plus soak time between slices.
-> ✅ **The "Adjustment subtracts instead of setting" defect is FIXED** (`da93e4e`, 2026-08-11) — see
-> §Slice 1. The counting day is unblocked, and counting is the only thing that repairs the
-> historical figures.
+> **Six Airtable writes remain in the whole file**, and two of those were never in scope (they go
+> to the MAIN base's `Expenses`, which belongs to `docs/AUDIT-airtable-remaining.md`). The other
+> four are on `Inventory Items` and are slice 5.
 > ✅ **Owner confirmed 2026-08-11: nobody uses Airtable for anything — the app is the only way this
-> data is seen.** So this is a full retirement: no reverse mirror, and the base gets archived at
-> slice 8. The §6 decision is closed.
-> **Minimum useful subset: ~5-6 hours** (slices 0-2) — that covers everything the crew touches
-> daily and everything that touches money. The remaining ~10 h is office-side and cleanup.
+> data is seen.** So this is a full retirement: no reverse mirror, and the base gets archived.
+> ✅ **The "Adjustment subtracts instead of setting" defect is FIXED** (`da93e4e`) — see §Slice 1.
+> The counting day is unblocked, and counting is the only thing that repairs the historical figures.
+
+## ⚠⚠ The ordering changed mid-flight, and the new one is the right one
+
+This plan opened ordered **most important first** — by write count and business impact. That was
+wrong, and it broke when slice 3 (estimates) turned out to be unshippable on its own:
+`handleOrderCreate` wrote the estimate into an Airtable **linked-record field**, and
+`saveEstimateAsTemplate` fetched the estimate from Airtable **by rec id**. Flip estimates alone and
+orders and templates point at records that do not exist.
+
+**The correct ordering is LEAF-FIRST: an entity moves only after everything that references it
+already speaks the new id, or moves with it in the same slice.** Write count is a bad proxy for
+size; the real questions are *does Neon already know this entity* and *who points at it*.
+
+That reshuffled the back half: stock settings (nothing references it) went early, the six
+estimating tables became **one slice**, and items — the most-referenced entity in the base — went
+last instead of sixth.
 
 ---
 
@@ -33,27 +47,41 @@ them. Ending that gets four things:
 
 ---
 
-## The order, most important first
+## The slices
 
-| # | Slice | Writes | Time | Why it ranks here |
-|---|---|---|---|---|
-| ~~0~~ | ✅ **Formula/rollup sweep + delete the dead form — DONE 2026-08-11** | — | ~~~1 h~~ | Came back clean (§3). No formula to reproduce. Interface `pbdc6kzAEV7yzXHfD` deleted; base now has **zero interfaces and zero forms** (revert handle `actXs5D93HDtPDCk8`). |
-| ~~1~~ | ✅ **Ledger — Inventory Transactions — DONE + PROD-SMOKED 2026-08-11** (`322116e`, fix `40bc757`) | 6 | ~~~3-4 h~~ | Cart, receive, transfer, mark and push all confirmed on production. See §Slice 1 below. |
-| **2** | **Expense pushes** | 2 | **~1-1.5 h** | Money. Touches GP. |
-| **3** | **Estimates + lines** | 10 | **~2-3 h** | The domain that just shipped a live bug. Four create paths, not three. |
-| **4** | **Templates + lines** | 11 | **~2-3 h** | Biggest write count, but mechanical once 3 lands. |
-| **5** | **Orders + lines** | 6 | **~2 h** | Carries the sequence-seeding trap below. |
-| **6** | **Items** | 4 | **~1.5-2 h** | Reference data, rarely written. |
-| **7** | **Stock settings** (reorder points) | 2 | **~1 h** | Smallest. Already fully view-backed. |
-| **8** | **Decommission** — stop the loader, archive the base | — | **~1 h** | Only after a soak. |
+Started at **36 writes across 12 tables in one file** (`netlify/functions/inventory.js`).
+**Six left.**
 
-**36 writes, 12 tables, one file** (`netlify/functions/inventory.js`).
+| # | Slice | Writes | Status |
+|---|---|---|---|
+| 0 | **Formula/rollup sweep** + delete the dead form | — | ✅ **DONE 2026-08-11.** Came back clean (§3): no formula anywhere needs reproducing. Interface `pbdc6kzAEV7yzXHfD` deleted; base has **zero interfaces and zero forms** (revert handle `actXs5D93HDtPDCk8`). |
+| 1 | **Ledger** — Inventory Transactions | 6 | ✅ **DONE + PROD-SMOKED 2026-08-11** (`322116e`, fix `40bc757`). Cart, receive, transfer, mark and push all confirmed live. §Slice 1. |
+| 2 | **Expense pushes** — history header + lines | 2 | ✅ **DONE + PROD-VERIFIED 2026-08-12** (`d1c9d50`, `db/schema/038`). 34 headers, 415 lines, 0 orphaned, all reconciling to the cent. §Slice 2. |
+| 3 | **Stock settings** — reorder points | 2 | ✅ **DONE 2026-08-12** (`8b26747`, `db/schema/039`). Smallest domain, nothing references it — first under leaf-first. §Slice 3. |
+| 4 | **The estimating cluster** — estimates, lines, templates, template lines, orders, order lines | 15 | ✅ **DONE + PROD-SMOKED 2026-08-12** (`2932b03`, `db/schema/040`). Six tables, one slice. Order **#41** created live off a native estimate. §Slice 4. |
+| **5** | **Reference tables** — Inventory Items | **4** | ⬜ **~2-3 h.** LAST because transactions, estimate lines, template lines, order lines and vendor pricing all reference items. Also drops the remaining read fallbacks on Items, Locations, Vendors and Vendor Pricing. |
+| **6** | **Decommission** — retire the loader, archive the base | — | ⬜ **~1 h.** After slice 5 the loader has nothing left to load. |
 
-> ⚠ **The tension in this ordering, stated plainly.** Importance-first puts the busiest and most
-> damaging domain (the ledger) first, with no rehearsal. Risk-first would run **7 → 6 → 1** and
-> practise on two-write reference tables before touching stock. If you want the safer sequence, do
-> slice **7 (~1 h)** first as a rehearsal and then jump to 1 — it costs an hour and buys a dry run
-> of the whole native-write pattern.
+**The two writes that will still remain afterwards go to the MAIN base** (`inventory.js` Expenses,
+the expense push feeding GP). They were never in scope — see `docs/AUDIT-airtable-remaining.md`.
+
+> ⚠ **Open question for slice 5, and it is not a cutover question.** Locations, Vendors and Vendor
+> Pricing have **no write paths at all** in this app — they are read-only here. With nobody opening
+> Airtable any more, that means they are currently uneditable *anywhere*. Whether the inventory app
+> needs "add a vendor" / "add a location" is new work, not part of retiring the base.
+
+## ⚠⚠ THE RULE THAT COST THE MOST: a domain LEAVES the loader on the day it goes native
+
+Learned twice, the second time as a live defect. `loadInventoryReference` kept upserting tables Neon
+already owned. Airtable is a frozen snapshot after a cutover, so re-running the loader does not
+repair anything — it **overwrites**, and worse, **a deleted row has no conflict to hit, so the
+upsert INSERTS it straight back.** Delete a transaction in the app, run the loader, and the stock
+movement returns from the dead.
+
+Slice 1 saw only half of it and excluded `expense_created`/`push_id` from the UPDATE list — which
+stopped pushed material being re-offered but did nothing about resurrection. Fixed properly in
+`7fd7f20`; every slice since removes its tables from the loader in the same commit, and the loader
+response now lists what it deliberately does not touch.
 
 ---
 
@@ -142,6 +170,86 @@ each item lands on truth the first time it is counted.
 - Owner wants the push to **attach its PDF automatically**. Not built: it needs the function to
   hand the PDF to the Make webhook the way invoices and estimates already do, because pCloud's app
   registration is dead and only Make holds a working token. A real slice, not a toggle.
+
+## Slice 2 — the push history
+
+**Prod-verified 2026-08-12.** `db/schema/038`: `expense_pushes` + `expense_push_lines`, the audit
+trail behind every dollar the inventory app has charged to a job. 34 headers and 415 line snapshots
+carried across, **0 orphaned**, and all 34 pushes reconcile to the cent — $52,252.25 of material
+charged between 2026-04-22 and 2026-08-11.
+
+**It was scoped as "two writes, an hour" and was a whole domain.** Neon had no push tables at all,
+so it needed schema, a loader pass, an FK resolve, **both** reads flipped and the write.
+**Counting writes is a bad way to size a slice** — the question is whether Neon already knows the
+entity.
+
+- The **id currency** lesson applied up front for the first time: `pushHistory` hands ids to the
+  client which hands them back to `pushHistoryDetail`, so both moved to the uuid. Left alone, the
+  detail view would have 404'd on any push created after the cutover — the exact failure the ledger
+  shipped the night before.
+- The header write is now **idempotent on `push_id`**. A retried push used to mint a *second*
+  history row for a charge that happened once.
+- ⚠ **Deliberate deviation: `recordPushHistory` stays best-effort rather than failing closed.** It
+  runs *after* the money has moved — expenses created, transactions marked — so throwing there would
+  show an error over a push that actually succeeded and send the user to retry a charge guard #1
+  would then have to catch. A lost log line is the cheaper failure. Recorded so it is not mistaken
+  for an oversight.
+
+## Slice 3 — reorder points
+
+**Done 2026-08-12.** `db/schema/039`. Smallest domain in the base and the only one nothing
+references, which is why it went first once the ordering became leaf-first.
+
+**The write got simpler by moving.** The Airtable version created a Stock Levels record carrying a
+`Quantity On Hand` of 0 and an "Item | Location" display string, then trusted an automation to
+maintain that cache without clobbering the reorder point. None of it exists now: on-hand is derived
+from the ledger, so the only thing worth storing is the number a human chose. Create became an
+**upsert on the (item_id, location_id) partial unique** — that pair *is* the identity of a setting,
+which also makes the UI's create-vs-update split harmless.
+
+- ⚠ **The view had to move with the id currency.** `v_stock_levels` exposed only
+  `ss.airtable_id`, so a setting created after the cutover would have had no handle and the screen
+  would have offered "create" forever. It now also exposes `ss.id`, appended at the end of the
+  select list because that is what `CREATE OR REPLACE` allows — and **rebuilt from
+  `pg_get_viewdef()`, not from 032's copy**, because the `.sql` files here drift.
+- Both writes distinguish *saved* from *matched nothing*: an update hitting no row 404s, because a
+  reorder point that silently did not save means an item stops warning it is running out.
+
+## Slice 4 — the estimating cluster
+
+**Prod-smoked 2026-08-12.** `db/schema/040`. **Six tables in one slice**, for the reason at the top
+of this file: orders and templates referenced estimates by Airtable rec id, so the currency had to
+change across all of them at once. For a few commits in between, the file was genuinely
+half-broken — which is why it is one commit and not three.
+
+**Things that got smaller by moving:**
+
+- **The `#0` order bug is gone by construction.** `Order ID` was an autonumber absent from the
+  create response, so an order had to be written, re-fetched and re-synced just to learn its own
+  number — showing as **#0** if that second trip failed. A sequence hands it over in the same
+  INSERT. Live proof: the smoke created **#41**.
+- Replacing an estimate's lines is **one DELETE by FK**, where before it asked Airtable which lines
+  existed and removed them ten at a time.
+- `refreshTemplatePrices` is one `UPDATE…FROM`; `createEstimateFromTemplate` is one
+  `INSERT…SELECT` that clones quantities and prices items **live** — the split that is the whole
+  point of a template.
+- Deletes cascade instead of being walked by hand. 12 mirror helpers and 38 field-id constants
+  deleted.
+
+> ⚠⚠ **The sequence starts at 40, NOT `max()+1`.** Surviving order numbers are 13, 17, 23-25 and
+> 27-31 — every gap is an order someone saw and later deleted, and **#32 was minted and deleted
+> during the Step D smoke**. Airtable autonumbers never reclaim; `max()` does. Seeding from
+> `max()` would have reissued a number already printed on someone's order.
+
+**Line numbers deliberately did NOT become a sequence.** `Line ID` and `Line Item ID` were global
+autonumbers, but nothing outside the row ever read them — they only order lines within one parent.
+Native lines number **1..N per estimate or order**, so the column finally means what its name says,
+and there is no global counter to seed or collide.
+
+## What still is not smoked on production
+
+- A real **Adjustment** — the fix that unblocks the counting day (`da93e4e`).
+- **Deleting a line from history** — the lowest-stakes of the ledger's six paths.
 
 ## Out of scope
 

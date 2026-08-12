@@ -15,6 +15,36 @@
 -- for its first hour**. Job creation was the last write living entirely in
 -- Airtable.
 --
+-- ── WHAT A PO ACTUALLY IS (owner, 2026-08-12) ──────────────────────────────
+-- `Bethel School (MIB 433)` = **MI** contractor code + **B** first letter of the
+-- job name + **433** the autonumber. `Job PO` is an AIRTABLE FORMULA — its own
+-- description says *"Combines Job Name, Contractor Code, and Job PO Number"* —
+-- so the prefix is assembled from a stored Contractor Code, not derived here.
+--
+-- **The app supplies ONLY the number.** All prefix logic stays in Airtable and
+-- is untouched by this change. If PO formatting ever needs to move, that is its
+-- own slice and it needs the Contractor Code field to come with it.
+--
+-- ── ⚠⚠ THE YEARLY RESTART — WANTED, AND SILENTLY BROKEN IN AIRTABLE ────────
+-- Owner: *"i would like to restart that autonumber each new year. so the numbers
+-- dont get too high."*
+--
+-- **That is what this implementation does**, and it is worth being explicit
+-- about why the old one would not have. The Airtable automation's counter
+-- lookup filters on a **hardcoded literal year**:
+--
+--     findRecords(tbl8s6L1i6wotlEsn) WHERE fldtG0ZdTJBm1HBtI = "2026"
+--                                                              ^^^^^^
+--
+-- So on 1 January 2027 it would have carried on reading the **2026** row and
+-- issuing 287, 288, 289… The pre-seeded 2027 row (last_used 99) would have sat
+-- unused, and nothing would have failed loudly — somebody would simply have had
+-- to remember to edit the automation every January, forever.
+--
+-- The app derives the year with `new Date().getFullYear()`, so the restart is
+-- automatic: 2027's first job gets **100**, 2028's gets 100, and a year with no
+-- pre-seeded row creates one at 100 via the upsert. Nothing to remember.
+--
 -- ── THE COUNTER, AND THE RULE THAT MUST SURVIVE ────────────────────────────
 -- Airtable keeps a counter table (`tbl8s6L1i6wotlEsn`), one row per year, and
 -- automation `wfltJAiEaavVLA0wB` reads `next`, stamps the job, and writes it

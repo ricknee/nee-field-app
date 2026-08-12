@@ -5443,6 +5443,44 @@ async function handleUpdatePowerCo(body) {
   if (tempWorkOrder  !== undefined) fields["fldmJKSiIQfJm9zhI"] = tempWorkOrder;
   if (permWorkOrder  !== undefined) fields["fld6t3TBBz6SwJPh8"] = permWorkOrder;
   if (meterNumber    !== undefined) fields["fldWXpfslcqLlwdTQ"] = meterNumber;
+
+  // ⚠⚠ NEON FIRST — every one of these six is in JOB_SELECT, so an
+  // Airtable-only write reverts on the next refresh. Found by SWEEPING for the
+  // shape after handleUpdateJobStatus was caught (`ff21d46`); this handler had
+  // it, and so did handleCalculateMileage and handleUpdateJobNotes.
+  //
+  // It hid particularly well here: the response returns `mapJob(data)` from the
+  // Airtable record, so the card repaints with the right values immediately.
+  // Only a reload shows the old ones. These fields are set once during power-co
+  // setup and rarely re-read in the same session, so "I typed the meter number
+  // and later it was blank" would surface hours later, disconnected from the save.
+  //
+  // Only the fields the client actually sent are touched, matching the Airtable
+  // PATCH above — an omitted field must not be nulled.
+  const nSets = [], nVals = [jobId];
+  const nPut = (col, v) => { nVals.push(v); nSets.push(`${col} = $${nVals.length}`); };
+  if (powerCompanyId !== undefined) {
+    const t = String(powerCompanyId).trim() || null;
+    nPut("power_company_at_id", t);
+    // Keep the DISPLAY name in step with the link. Resolvable because
+    // power_companies moved to Neon in slice 4 of item 06.
+    nVals.push(t);
+    nSets.push(`power_company_name = (SELECT name FROM power_companies WHERE airtable_id = $${nVals.length})`);
+  }
+  // ⚠ `power_company_contact` (the contact's display name) is NOT updated: the
+  // power-contact table is still Airtable-only, so there is nothing to resolve
+  // it against yet. The link id is correct immediately and the name catches up
+  // on the hourly sync. Fix this when Contacts land — item 06's last slice.
+  if (powerContactId !== undefined) nPut("power_contact_at_id", String(powerContactId).trim() || null);
+  if (aicNumber      !== undefined) nPut("aic_number", aicNumber);
+  if (tempWorkOrder  !== undefined) nPut("temp_work_order", tempWorkOrder);
+  if (permWorkOrder  !== undefined) nPut("work_order_number", permWorkOrder);
+  if (meterNumber    !== undefined) nPut("meter_number", meterNumber);
+  if (nSets.length) {
+    await neonWrite("job.updatePowerCo",
+      `UPDATE jobs SET ${nSets.join(", ")}, synced_at = now() WHERE airtable_id = $1`, nVals);
+  }
+
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
     method: "PATCH",
     body: JSON.stringify({ fields })
@@ -7359,6 +7397,12 @@ async function handleCalculateMileage(body) {
     return resp(200, { ok: false, reason: "address_unresolved",
       error: `Could not calculate distance for this address (${element?.status || "no result"}).` });
   const miles = Math.round(element.distance.value * 0.000621371 * 10) / 10;
+  // Neon-first: `miles_from_shop` is in JOB_SELECT. Third instance found by the
+  // 2026-08-12 sweep. Mileage is calculated once per job and then read on every
+  // load, which is the worst shape for this bug — the value looks right the
+  // moment you press the button and is gone by the next visit.
+  await neonWrite("job.calculateMileage",
+    `UPDATE jobs SET miles_from_shop = $2, synced_at = now() WHERE airtable_id = $1`, [jobId, miles]);
   await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldMy1yR7aHtVko9F": miles } }) });
   return resp(200, { ok: true, miles });
 }
@@ -9893,6 +9937,11 @@ async function handleGetJobInvoices(body) {
 async function handleUpdateJobNotes(body) {
   const { jobId, notes } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  // Neon-first: `notes` is in JOB_SELECT. Second instance found by the sweep.
+  // Job notes carry crew instructions, so a note that reverts is a crew reading
+  // yesterday's plan.
+  await neonWrite("job.updateNotes",
+    `UPDATE jobs SET notes = $2, synced_at = now() WHERE airtable_id = $1`, [jobId, notes || ""]);
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldAuZAW19iYPBPxP": notes || "" } }) });
   return resp(200, { ok: true, updatedId: data.id });
 }

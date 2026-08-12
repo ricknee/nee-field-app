@@ -300,13 +300,31 @@ await test("hoursByJob: office role → 403 (payroll-eligible-only)", async () =
 // Regression for the 400 seen in the browser console on every open of a job
 // whose address Google can't geocode (e.g. "8250 Ohio 676"). A per-job data
 // quirk must not be indistinguishable from a broken Maps integration.
-await test("calculateMileage: resolvable address → 200 with miles, cached to Airtable", async () => {
+await test("calculateMileage: resolvable address → 200 with miles, cached to BOTH stores", async () => {
+  // ⚠ CONTRACT CHANGED 2026-08-12, deliberately. This used to pass with Neon
+  // unreachable, because the handler only wrote Airtable — which is exactly the
+  // bug the sweep found: `miles_from_shop` is in JOB_SELECT, so the value
+  // looked right when you pressed the button and was gone by the next visit.
+  //
+  // The Neon write fails CLOSED, matching the other five job writers. With
+  // Neon down the caller now gets an error and can retry, instead of a mileage
+  // that displays, persists to Airtable, disappears for an hour, then returns.
+  // A number that comes back from the dead is worse than one that refused.
+  //
+  // So the test must supply a working Neon. It cannot here — the offline suite
+  // has no database — hence the explicit DATABASE_URL guard: this asserts the
+  // happy path only when a real connection is available, and asserts the
+  // fail-closed contract otherwise. Both are real behaviour; neither is skipped.
   mockGoogle = { status: "OK", rows: [{ elements: [{ status: "OK", distance: { value: 48280 } }] }] };
   const r = await POST("calculateMileage", { jobId: "recJob1", address: "123 Main St" });
-  eq(r.statusCode, 200, "200");
-  const b = JSON.parse(r.body);
-  ok(b.ok, "ok true");
-  eq(b.miles, 30, "48280 m → 30.0 miles");
+  if (process.env.DATABASE_URL) {
+    eq(r.statusCode, 200, "200");
+    const b = JSON.parse(r.body);
+    ok(b.ok, "ok true");
+    eq(b.miles, 30, "48280 m → 30.0 miles");
+  } else {
+    ok(r.statusCode >= 500, `no Neon → fails closed rather than caching to Airtable alone (got ${r.statusCode})`);
+  }
 });
 
 await test("calculateMileage: unresolvable address → 200 ok:false (no console 400)", async () => {

@@ -4919,9 +4919,34 @@
     return s;
   }
 
+  // Overhead jobs — Shop Work and Office Work — are cost centres, not customer
+  // work, so gross profit is not a meaningful reading on them. Owner 2026-08-11:
+  // "shop and office work are normally overhead cost so we [don't] worry about
+  // gp on those."
+  //
+  // The numbers stay VISIBLE rather than being hidden. They are not wrong, they
+  // just are not profit: Shop Work is typed T&M with a billable rate, so
+  // hours × rate produced $38,155 of "revenue" nobody was ever invoiced and a
+  // 99.8% margin that meant nothing. Blanking them would move the confusion
+  // rather than remove it — the note explains what you are looking at.
+  //
+  // `overhead` is Neon-only (db/schema/038) and arrives undefined on the
+  // Airtable fallback path, which is falsy, so the note simply doesn't render
+  // during an outage.
+  function overheadNote(job) {
+    if (!job || job.overhead !== true) return "";
+    return `<div style="grid-column:1/-1; background:#fff8e1; border:1px solid #f0c36d;
+        border-radius:8px; padding:10px 12px; margin-bottom:10px; font-size:13px;
+        color:#7a5b00; line-height:1.45;">
+        🏭 <b>Overhead job — gross profit doesn't apply.</b> Shop and office time is a cost
+        centre, not customer work. Any "revenue" shown is hours × rate that nobody was
+        invoiced for, so this job is left out of company profit totals.
+      </div>`;
+  }
+
   function renderLivePerf(job) {
     const g = $("livePerfGrid");
-    g.innerHTML = [
+    g.innerHTML = overheadNote(job) + [
       infoBox("Total Revenue (Live)", fmtCurrency(job.totalRevenueLive), false, "info-box--green"),
       infoBox("Total Materials (Live)", fmtCurrency(job.totalMaterialsLive), false, "info-box--red"),
       infoBox("Total Labor Cost (Live)", fmtCurrency(job.totalLaborCostLive), false, "info-box--red"),
@@ -4932,7 +4957,7 @@
   }
 
   function renderCloseout(job) {
-    $("closeoutGrid").innerHTML = [
+    $("closeoutGrid").innerHTML = overheadNote(job) + [
       infoBox("Expected Revenue", fmtCurrency(job.expectedRevenue)),
       infoBox("Actual Job Cost (COGS)", fmtCurrency(job.actualJobCostCogs)),
       infoBox("Total Reviewed Costs", fmtCurrency(job.totalReviewedCosts)),

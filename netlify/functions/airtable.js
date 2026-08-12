@@ -5081,7 +5081,7 @@ const JOB_SELECT = `
          j.tax_status, j.billing_method, j.customer_first_name, j.customer_last_name,
          j.address_street, j.address_city, j.address_state, j.address_zip,
          -- App-owned, Neon-only (no Airtable twin). See db/schema/020 and 027.
-         j.city_tax, j.clock_visibility,
+         j.city_tax, j.clock_visibility, j.overhead,
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.bird_date::text AS bird_date, j.workflow_status, j.billable_hourly_rate,
@@ -5167,6 +5167,17 @@ function mapJobFromNeon(r) {
     cityTax: r.city_tax ?? null,
     // null = the job's status decides, as normal. See db/schema/027.
     clockVisibility: r.clock_visibility ?? null,
+    // Shop Work, Office Work — cost centres, not customer jobs. Owner 2026-08-11:
+    // "shop and office work are normally overhead cost so we [don't] worry about
+    // gp on those". Shop Work is typed T&M with a billable rate, so hours × rate
+    // invented $38,155 of revenue nobody was ever invoiced. See db/schema/038.
+    //
+    // ⚠ NEON ONLY, and absent from mapJob entirely — the same treatment cityTax
+    // and clockVisibility get, because Airtable has no such column. On the
+    // Airtable fallback path it arrives undefined, which is falsy, so a job
+    // shows normally. That is the right way round: during a Neon outage the app
+    // cannot know, and showing a job it shouldn't beats hiding one it should.
+    overhead: r.overhead === true,
     customerStreet: s(r.address_street), customerCity: s(r.address_city),
     customerState: s(r.address_state), customerZip: s(r.address_zip),
     customerPhone: s(r.customer_phone), customerEmail: s(r.customer_email),

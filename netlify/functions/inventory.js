@@ -630,203 +630,20 @@ async function deleteTxn(id) {
 // ⚠ Deletes are again the exception the loader cannot repair — it upserts and
 // never removes — so an estimate or line deleted in Airtable but left in Neon
 // would keep showing on the list and keep counting toward the total.
-async function syncEstimateToNeon(rec) {
-  if (!rec?.id) return;
-  const f = rec.fields || {};
-  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
-  const q = await neonQuery(
-    `INSERT INTO material_estimates
-       (airtable_id, job_name, job_airtable_id, status, created_by, created_at, notes, synced_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       job_name=EXCLUDED.job_name, job_airtable_id=EXCLUDED.job_airtable_id,
-       status=EXCLUDED.status, created_by=EXCLUDED.created_by,
-       created_at=COALESCE(material_estimates.created_at, EXCLUDED.created_at),
-       notes=EXCLUDED.notes, synced_at=now()`,
-    [rec.id, f["Job Name"] ?? null, f["Job ID"] ?? null, sel(f["Status"]),
-     f["Created By"] ?? null, f["Date Created"] ?? rec.createdTime ?? null, f["Notes"] ?? null]);
-  if (!q?.rows) console.error(`syncEstimateToNeon ${rec.id} failed (stale until loader): ${q?.error || "Neon unavailable"}`);
-}
 
 // Lines arrive in batches of 10 from createLineItems, so this takes an array.
-async function syncEstimateLinesToNeon(recs) {
-  const list = (recs || []).filter(r => r?.id);
-  if (!list.length) return;
-  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
-  const params = [];
-  const tuples = list.map(r => {
-    const f = r.fields || {};
-    const vals = [r.id, num(f["Line ID"]), lnk(f["Estimate"]), lnk(f["Inventory Item"]),
-                  num(f["Quantity"]) ?? 0, num(f["Unit Cost at Time of Estimate"]),
-                  f["Description"] ?? null];
-    const ph = vals.map(v => { params.push(v); return `$${params.length}`; });
-    // FKs resolve inline so a new line is immediately visible to the totals view.
-    return `(${ph[0]},${ph[1]},${ph[2]},(SELECT id FROM material_estimates WHERE airtable_id=${ph[2]}),` +
-           `${ph[3]},(SELECT id FROM inventory_items WHERE airtable_id=${ph[3]}),${ph[4]},${ph[5]},${ph[6]}, now())`;
-  });
-  const q = await neonQuery(
-    `INSERT INTO material_estimate_lines
-       (airtable_id, line_number, estimate_airtable_id, estimate_id, item_airtable_id, item_id,
-        quantity, unit_cost_at_estimate, description, synced_at)
-     VALUES ${tuples.join(",")}
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       line_number=EXCLUDED.line_number, estimate_airtable_id=EXCLUDED.estimate_airtable_id,
-       estimate_id=EXCLUDED.estimate_id, item_airtable_id=EXCLUDED.item_airtable_id,
-       item_id=EXCLUDED.item_id, quantity=EXCLUDED.quantity,
-       unit_cost_at_estimate=EXCLUDED.unit_cost_at_estimate,
-       description=EXCLUDED.description, synced_at=now()`, params);
-  if (!q?.rows) console.error(`syncEstimateLinesToNeon (${list.length} lines) failed: ${q?.error || "Neon unavailable"}`);
-}
 
-async function syncTemplateToNeon(rec) {
-  if (!rec?.id) return;
-  const f = rec.fields || {};
-  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const q = await neonQuery(
-    `INSERT INTO material_estimate_templates
-       (airtable_id, name, description, contractor, source_estimate_ref,
-        total_at_save, active, created_by, created_at, synced_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       name=EXCLUDED.name, description=EXCLUDED.description, contractor=EXCLUDED.contractor,
-       source_estimate_ref=EXCLUDED.source_estimate_ref, total_at_save=EXCLUDED.total_at_save,
-       active=EXCLUDED.active, created_by=EXCLUDED.created_by,
-       created_at=COALESCE(material_estimate_templates.created_at, EXCLUDED.created_at),
-       synced_at=now()`,
-    [rec.id, f["Template Name"] || "", f["Description"] ?? null, f["Contractor"] ?? null,
-     f["Source Estimate Reference"] ?? null, num(f["Total at Save"]),
-     f["Active"] === true, f["Created By"] ?? null,
-     f["Created Date"] ?? rec.createdTime ?? null]);
-  if (!q?.rows) console.error(`syncTemplateToNeon ${rec.id} failed (stale until loader): ${q?.error || "Neon unavailable"}`);
-}
 
-async function syncTemplateLinesToNeon(recs) {
-  const list = (recs || []).filter(r => r?.id);
-  if (!list.length) return;
-  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
-  const params = [];
-  const tuples = list.map(r => {
-    const f = r.fields || {};
-    const vals = [r.id, f["Line Title"] ?? null, lnk(f["Template"]), lnk(f["Inventory Item"]),
-                  num(f["Quantity"]) ?? 0, num(f["Unit Cost at Save"]), f["Notes"] ?? null];
-    const ph = vals.map(v => { params.push(v); return `$${params.length}`; });
-    return `(${ph[0]},${ph[1]},${ph[2]},(SELECT id FROM material_estimate_templates WHERE airtable_id=${ph[2]}),` +
-           `${ph[3]},(SELECT id FROM inventory_items WHERE airtable_id=${ph[3]}),${ph[4]},${ph[5]},${ph[6]}, now())`;
-  });
-  const q = await neonQuery(
-    `INSERT INTO material_estimate_template_lines
-       (airtable_id, line_title, template_airtable_id, template_id, item_airtable_id, item_id,
-        quantity, unit_cost_at_save, notes, synced_at)
-     VALUES ${tuples.join(",")}
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       line_title=EXCLUDED.line_title, template_airtable_id=EXCLUDED.template_airtable_id,
-       template_id=EXCLUDED.template_id, item_airtable_id=EXCLUDED.item_airtable_id,
-       item_id=EXCLUDED.item_id, quantity=EXCLUDED.quantity,
-       unit_cost_at_save=EXCLUDED.unit_cost_at_save, notes=EXCLUDED.notes, synced_at=now()`, params);
-  if (!q?.rows) console.error(`syncTemplateLinesToNeon (${list.length}) failed: ${q?.error || "Neon unavailable"}`);
-}
 
-async function deleteTemplateLinesFromNeon(ids) {
-  const list = (ids || []).filter(Boolean);
-  if (!list.length) return;
-  const q = await neonQuery(`DELETE FROM material_estimate_template_lines WHERE airtable_id = ANY($1::text[])`, [list]);
-  if (!q?.rows) console.error(`deleteTemplateLinesFromNeon failed — the template total still counts them: ${q?.error || "Neon unavailable"}`);
-}
 
 // FK is ON DELETE CASCADE, so the lines go with it.
-async function deleteTemplateFromNeon(airtableId) {
-  if (!airtableId) return;
-  const q = await neonQuery(`DELETE FROM material_estimate_templates WHERE airtable_id = $1`, [airtableId]);
-  if (!q?.rows) console.error(`deleteTemplateFromNeon ${airtableId} failed — it will keep showing in the picker: ${q?.error || "Neon unavailable"}`);
-}
 
-async function syncOrderToNeon(rec) {
-  if (!rec?.id) return;
-  const f = rec.fields || {};
-  const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : (v ?? null));
-  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
-  const q = await neonQuery(
-    `INSERT INTO material_orders
-       (airtable_id, order_number, estimate_airtable_id, estimate_id, job_name,
-        vendor_notes, status, order_type, created_by, created_at, synced_at)
-     VALUES ($1,$2,$3,(SELECT id FROM material_estimates WHERE airtable_id=$3),$4,$5,$6,$7,$8,$9, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       order_number=COALESCE(EXCLUDED.order_number, material_orders.order_number),
-       estimate_airtable_id=EXCLUDED.estimate_airtable_id, estimate_id=EXCLUDED.estimate_id,
-       job_name=EXCLUDED.job_name, vendor_notes=EXCLUDED.vendor_notes,
-       status=EXCLUDED.status, order_type=EXCLUDED.order_type, created_by=EXCLUDED.created_by,
-       created_at=COALESCE(material_orders.created_at, EXCLUDED.created_at), synced_at=now()`,
-    // `Order ID` is an Airtable autonumber and is absent from the create
-    // response, which is why the handler re-fetches for it. COALESCE above keeps
-    // whatever is already stored rather than nulling it on a later update.
-    [rec.id, num(f["Order ID"]), lnk(f["Estimate"]), f["Job Name"] ?? null,
-     f["Vendor / Notes"] ?? null, sel(f["Status"]), sel(f["Order Type"]),
-     f["Created By"] ?? null, f["Date Created"] ?? rec.createdTime ?? null]);
-  if (!q?.rows) console.error(`syncOrderToNeon ${rec.id} failed (stale until loader): ${q?.error || "Neon unavailable"}`);
-}
 
-async function syncOrderLinesToNeon(recs) {
-  const list = (recs || []).filter(r => r?.id);
-  if (!list.length) return;
-  const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
-  const lnk = (v) => { const a = Array.isArray(v) ? v[0] : v; return a ? (typeof a === "object" ? a.id : String(a)) : null; };
-  const params = [];
-  const tuples = list.map(r => {
-    const f = r.fields || {};
-    const vals = [r.id, num(f["Line Item ID"]), lnk(f["Material Order"]), lnk(f["Inventory Item"]),
-                  f["Description"] ?? null, num(f["Quantity Ordered"]) ?? 0,
-                  num(f["Unit Cost at Time of Order"]), num(f["Line Total"]),
-                  f["Received"] === true, f["Notes"] ?? null];
-    const ph = vals.map(v => { params.push(v); return `$${params.length}`; });
-    return `(${ph[0]},${ph[1]},${ph[2]},(SELECT id FROM material_orders WHERE airtable_id=${ph[2]}),` +
-           `${ph[3]},(SELECT id FROM inventory_items WHERE airtable_id=${ph[3]}),` +
-           `${ph[4]},${ph[5]},${ph[6]},${ph[7]},${ph[8]},${ph[9]}, now())`;
-  });
-  const q = await neonQuery(
-    `INSERT INTO material_order_lines
-       (airtable_id, line_number, order_airtable_id, order_id, item_airtable_id, item_id,
-        description, quantity_ordered, unit_cost_at_order, line_total_stored, received, notes, synced_at)
-     VALUES ${tuples.join(",")}
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       line_number=COALESCE(EXCLUDED.line_number, material_order_lines.line_number),
-       order_airtable_id=EXCLUDED.order_airtable_id, order_id=EXCLUDED.order_id,
-       item_airtable_id=EXCLUDED.item_airtable_id, item_id=EXCLUDED.item_id,
-       description=EXCLUDED.description, quantity_ordered=EXCLUDED.quantity_ordered,
-       unit_cost_at_order=EXCLUDED.unit_cost_at_order,
-       line_total_stored=EXCLUDED.line_total_stored, received=EXCLUDED.received,
-       notes=EXCLUDED.notes, synced_at=now()`, params);
-  if (!q?.rows) console.error(`syncOrderLinesToNeon (${list.length}) failed: ${q?.error || "Neon unavailable"}`);
-}
 
-async function deleteOrderLinesFromNeon(ids) {
-  const list = (ids || []).filter(Boolean);
-  if (!list.length) return;
-  const q = await neonQuery(`DELETE FROM material_order_lines WHERE airtable_id = ANY($1::text[])`, [list]);
-  if (!q?.rows) console.error(`deleteOrderLinesFromNeon failed — the order still lists them: ${q?.error || "Neon unavailable"}`);
-}
 
-async function deleteOrderFromNeon(airtableId) {
-  if (!airtableId) return;
-  const q = await neonQuery(`DELETE FROM material_orders WHERE airtable_id = $1`, [airtableId]);
-  if (!q?.rows) console.error(`deleteOrderFromNeon ${airtableId} failed — it keeps showing on the list: ${q?.error || "Neon unavailable"}`);
-}
 
-async function deleteEstimateLinesFromNeon(ids) {
-  const list = (ids || []).filter(Boolean);
-  if (!list.length) return;
-  const q = await neonQuery(`DELETE FROM material_estimate_lines WHERE airtable_id = ANY($1::text[])`, [list]);
-  if (!q?.rows) console.error(`deleteEstimateLinesFromNeon failed — the estimate total still counts them: ${q?.error || "Neon unavailable"}`);
-}
 
 // The FK is ON DELETE CASCADE, so this takes the lines with it.
-async function deleteEstimateFromNeon(airtableId) {
-  if (!airtableId) return;
-  const q = await neonQuery(`DELETE FROM material_estimates WHERE airtable_id = $1`, [airtableId]);
-  if (!q?.rows) console.error(`deleteEstimateFromNeon ${airtableId} failed — it will keep showing on the list: ${q?.error || "Neon unavailable"}`);
-}
 
 // Reorder point / notes. Same fail-soft reasoning; these are settings, not money.
 // syncStockSettingToNeon is gone: reorder points are written straight to
@@ -2033,81 +1850,13 @@ async function handleLoadInventoryReference() {
   // ── Step D: estimating ───────────────────────────────────────────────────
   // ⚠ `material_` prefix throughout — Neon's `job_estimates` is the MAIN base's
   // and feeds GP. See db/schema/035.
-  // ⚠ Rollups/counts/formulas are NOT loaded: Total, Line Total, Total Items and
-  // $ Current Line Total are views. A derived number that gets stored is how the
-  // Stock Levels cache drifted.
-  const [ests, estLines, tmpls, tmplLines, orders, orderLines] = await Promise.all([
-    fetchAll(API_ROOT_INV, "Estimates", {}),
-    fetchAll(API_ROOT_INV, "Estimate Line Items", {}),
-    fetchAll(API_ROOT_INV, "Estimate Templates", {}),
-    fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-    fetchAll(API_ROOT_INV, "Material Orders", {}),
-    fetchAll(API_ROOT_INV, "Material Order Lines", {}),
-  ]);
-
-  counts.estimates = await upsertChunked("material_estimates", "material_estimates",
-    ["airtable_id", "job_name", "job_airtable_id", "status", "created_by", "created_at", "notes"],
-    ests.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      job_name: f["Job Name"] ?? null, job_airtable_id: f["Job ID"] ?? null,
-      status: sel(f["Status"]), created_by: f["Created By"] ?? null,
-      created_at: f["Date Created"] ?? r.createdTime ?? null, notes: f["Notes"] ?? null }; }),
-    ["job_name", "job_airtable_id", "status", "created_by", "created_at", "notes"]);
-
-  counts.estimateLines = await upsertChunked("material_estimate_lines", "material_estimate_lines",
-    ["airtable_id", "line_number", "estimate_airtable_id", "item_airtable_id", "quantity",
-     "unit_cost_at_estimate", "description"],
-    estLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      line_number: num(f["Line ID"]), estimate_airtable_id: lnk(f["Estimate"]),
-      item_airtable_id: lnk(f["Inventory Item"]), quantity: num(f["Quantity"]) ?? 0,
-      unit_cost_at_estimate: num(f["Unit Cost at Time of Estimate"]),
-      description: f["Description"] ?? null }; }),
-    ["line_number", "estimate_airtable_id", "item_airtable_id", "quantity",
-     "unit_cost_at_estimate", "description"]);
-
-  counts.templates = await upsertChunked("material_estimate_templates", "material_estimate_templates",
-    ["airtable_id", "name", "description", "contractor", "source_estimate_ref",
-     "total_at_save", "active", "created_by", "created_at"],
-    tmpls.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      name: f["Template Name"] || "", description: f["Description"] ?? null,
-      contractor: f["Contractor"] ?? null, source_estimate_ref: f["Source Estimate Reference"] ?? null,
-      total_at_save: num(f["Total at Save"]), active: bool(f["Active"]),
-      created_by: f["Created By"] ?? null, created_at: f["Created Date"] ?? r.createdTime ?? null }; }),
-    ["name", "description", "contractor", "source_estimate_ref", "total_at_save",
-     "active", "created_by", "created_at"]);
-
-  counts.templateLines = await upsertChunked("material_estimate_template_lines", "material_estimate_template_lines",
-    ["airtable_id", "line_title", "template_airtable_id", "item_airtable_id", "quantity",
-     "unit_cost_at_save", "notes"],
-    tmplLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      line_title: f["Line Title"] ?? null, template_airtable_id: lnk(f["Template"]),
-      item_airtable_id: lnk(f["Inventory Item"]), quantity: num(f["Quantity"]) ?? 0,
-      unit_cost_at_save: num(f["Unit Cost at Save"]), notes: f["Notes"] ?? null }; }),
-    ["line_title", "template_airtable_id", "item_airtable_id", "quantity",
-     "unit_cost_at_save", "notes"]);
-
-  counts.orders = await upsertChunked("material_orders", "material_orders",
-    ["airtable_id", "order_number", "estimate_airtable_id", "job_name", "vendor_notes",
-     "status", "order_type", "created_by", "created_at"],
-    orders.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      order_number: num(f["Order ID"]), estimate_airtable_id: lnk(f["Estimate"]),
-      job_name: f["Job Name"] ?? null, vendor_notes: f["Vendor / Notes"] ?? null,
-      status: sel(f["Status"]), order_type: sel(f["Order Type"]),
-      created_by: f["Created By"] ?? null, created_at: f["Date Created"] ?? r.createdTime ?? null }; }),
-    ["order_number", "estimate_airtable_id", "job_name", "vendor_notes", "status",
-     "order_type", "created_by", "created_at"]);
-
-  counts.orderLines = await upsertChunked("material_order_lines", "material_order_lines",
-    ["airtable_id", "line_number", "order_airtable_id", "item_airtable_id", "description",
-     "quantity_ordered", "unit_cost_at_order", "line_total_stored", "received", "notes"],
-    orderLines.map(r => { const f = r.fields || {}; return { airtable_id: r.id,
-      line_number: num(f["Line Item ID"]), order_airtable_id: lnk(f["Material Order"]),
-      item_airtable_id: lnk(f["Inventory Item"]), description: f["Description"] ?? null,
-      quantity_ordered: num(f["Quantity Ordered"]) ?? 0,
-      unit_cost_at_order: num(f["Unit Cost at Time of Order"]),
-      line_total_stored: num(f["Line Total"]), received: bool(f["Received"]),
-      notes: f["Notes"] ?? null }; }),
-    ["line_number", "order_airtable_id", "item_airtable_id", "description", "quantity_ordered",
-     "unit_cost_at_order", "line_total_stored", "received", "notes"]);
+  // ── The estimating cluster has LEFT the loader ───────────────────────────
+  // Six tables — estimates, their lines, templates, template lines, orders and
+  // order lines — all native since slice 4, and all removed together for the
+  // same reason as the ledger before them: Airtable is a frozen snapshot now,
+  // so re-upserting it would overwrite live work. Worse, a deleted estimate,
+  // template or order has no conflicting row, so the upsert would INSERT it
+  // straight back and quoted work would return from the dead.
 
   // ── Slice 2: the push history — the audit trail behind every charged dollar ──
 
@@ -2193,12 +1942,14 @@ async function handleLoadInventoryReference() {
     // fetch. Reporting a count for a table it no longer touches would be a
     // reassuring lie.
     airtable: { locations: locs.length, vendors: vends.length, items: items.length,
-                vendorPricing: pricing.length,
-                estimates: ests.length, estimateLines: estLines.length,
-                templates: tmpls.length, templateLines: tmplLines.length,
-                orders: orders.length, orderLines: orderLines.length },
+                vendorPricing: pricing.length },
+    // What the loader deliberately does NOT touch, because Neon owns it. This
+    // list only grows: after slice 5 (items) the loader has nothing left to do
+    // and slice 6 retires it altogether.
     nativeNotLoaded: ["inventory_transactions", "expense_pushes", "expense_push_lines",
-                      "stock_settings"],
+                      "stock_settings", "material_estimates", "material_estimate_lines",
+                      "material_estimate_templates", "material_estimate_template_lines",
+                      "material_orders", "material_order_lines"],
     written: counts,
     // Rows whose FKs didn't resolve. A transaction with no location is invisible
     // to on-hand, so this is reported rather than swallowed.
@@ -2542,21 +2293,10 @@ async function handleCreateStockLevel(body) {
 // ESTIMATES — list, get, create, update, delete
 // ═══════════════════════════════════════════════════════════
 
-const EST_TABLE_ID  = "tblULCJaVsLXk4Af0";
-const LINE_TABLE_ID = "tblhRadsyvlLw5Lp5";
 
 // Estimates table fields
-const F_EST_JOB_NAME    = "fld5QDgzSOXNAZdOc";
-const F_EST_JOB_ID      = "fldId8eR0C8TeSfy4";
-const F_EST_CREATED_BY  = "fldl0xEYcPvNbs69U";
-const F_EST_STATUS      = "fldAu3oNbywGe8vBh";
-const F_EST_NOTES       = "fld7sOLbNZxEqP0zs";
 
 // Estimate Line Items table fields
-const F_LINE_ESTIMATE   = "fldCXpRJt9g3yCB9r";
-const F_LINE_ITEM       = "fld50ttitFcM2uPap";
-const F_LINE_QTY        = "fld9mDWjvdd4AfXnn";
-const F_LINE_UNIT_COST  = "fldkTzFNJydVX1iK3";
 
 // ── ESTIMATES LIST ─────────────────────────────────────────
 async function handleEstimatesList(params) {
@@ -2565,7 +2305,7 @@ async function handleEstimatesList(params) {
   // that rollup on all 14 estimates before this flipped — agreeing to the cent,
   // with 591 lines counted on both sides.
   const q = await neonQuery(
-    `SELECT e.airtable_id, e.job_name, e.job_airtable_id, e.created_at, e.created_by,
+    `SELECT e.id, e.job_name, e.job_airtable_id, e.created_at, e.created_by,
             e.status, e.notes, t.total, t.line_count
        FROM material_estimates e
        LEFT JOIN v_material_estimate_totals t ON t.estimate_id = e.id
@@ -2574,7 +2314,7 @@ async function handleEstimatesList(params) {
     return resp(200, {
       ok: true, _source: "neon",
       estimates: q.rows.map(r => ({
-        id:          r.airtable_id,
+        id:          r.id,
         jobName:     r.job_name || "",
         jobId:       r.job_airtable_id || "",
         dateCreated: r.created_at ? new Date(r.created_at).toISOString() : "",
@@ -2587,27 +2327,11 @@ async function handleEstimatesList(params) {
     });
   }
 
-  const records = await fetchAll(API_ROOT_INV, "Estimates", {
-    sortField: "Date Created",
-    sortDir: "desc"
-  });
-
-  const estimates = records.map(r => {
-    const f = r.fields || {};
-    return {
-      id:        r.id,
-      jobName:   f["Job Name"] || "",
-      jobId:     f["Job ID"] || "",
-      dateCreated: f["Date Created"] || "",
-      createdBy: f["Created By"] || "",
-      status:    f["Status"]?.name || f["Status"] || "Draft",
-      notes:     f["Notes"] || "",
-      total:     f["Total"] || 0,
-      lineCount: (f["Estimate Line Items"] || []).length
-    };
-  });
-
-  return resp(200, { ok: true, _source: "airtable", estimates });
+  // Fail closed. Airtable stopped receiving estimate writes at the slice-4
+  // cutover, so its copy is missing every estimate created since AND every
+  // edit to the ones it still has. An estimate list that silently omits work
+  // somebody quoted is worse than a screen that says it cannot load.
+  return resp(503, { ok: false, error: "Estimates are unavailable right now. Please try again." });
 }
 
 // ── GET ONE ESTIMATE WITH LINES ────────────────────────────
@@ -2622,16 +2346,16 @@ async function handleEstimateGet(params) {
   // ⚠ `lineTotal` is computed here (qty × unit cost). In Airtable it was a
   // formula field; storing it would be the Stock Levels mistake in miniature.
   const nq = await neonQuery(
-    `SELECT e.airtable_id AS est_id, e.job_name, e.job_airtable_id, e.created_at,
+    `SELECT e.id AS est_id, e.job_name, e.job_airtable_id, e.created_at,
             e.created_by, e.status, e.notes,
             (SELECT total FROM v_material_estimate_totals v WHERE v.estimate_id = e.id) AS total,
-            l.airtable_id AS line_id, l.line_number, l.item_airtable_id, l.description,
+            l.id AS line_id, l.line_number, l.item_airtable_id, l.description,
             l.quantity, l.unit_cost_at_estimate,
             i.name AS item_name, i.unit_of_measure, i.category
        FROM material_estimates e
        LEFT JOIN material_estimate_lines l ON l.estimate_id = e.id
        LEFT JOIN inventory_items i         ON i.id = l.item_id
-      WHERE e.airtable_id = $1
+      WHERE e.id = $1::uuid
       ORDER BY l.line_number ASC NULLS LAST`, [id]);
 
   if (nq?.rows) {
@@ -2671,68 +2395,11 @@ async function handleEstimateGet(params) {
     });
   }
 
-  // Fetch estimate
-  const estData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimates")}/${id}`,
-    { method: "GET" }
-  );
-  if (!estData?.id) return resp(404, { ok: false, error: "Estimate not found." });
-
-  const ef = estData.fields || {};
-  const lineIds = (ef["Estimate Line Items"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  // Fetch all line items belonging to this estimate
-  let lines = [];
-  if (lineIds.length) {
-    const [lineRecords, itemRecords] = await Promise.all([
-      fetchAll(API_ROOT_INV, "Estimate Line Items", {}),
-      itemIndex()
-    ]);
-
-    const itemMap = itemRecords;
-
-    lines = lineRecords
-      .filter(r => lineIds.includes(r.id))
-      .map(r => {
-        const f = r.fields || {};
-        const itemArr = f["Inventory Item"] || [];
-        const itemId = itemArr.length
-          ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
-          : "";
-        const itemData = itemMap[itemId] || {};
-        return {
-          id:       r.id,
-          lineNum:  f["Line ID"] || 0,
-          itemId:   itemId,
-          itemName: itemData.name || (f["Description"] || ""),
-          uom:      itemData.uom || "",
-          category: itemData.cat || "",
-          isMisc:   !itemId,
-          description: f["Description"] || "",
-          qty:      f["Quantity"] || 0,
-          unitCost: f["Unit Cost at Time of Estimate"] || 0,
-          lineTotal: f["Line Total"] || 0
-        };
-      })
-      .sort((a, b) => (a.lineNum || 0) - (b.lineNum || 0));
-  }
-
-  return resp(200, {
-    ok: true,
-    estimate: {
-      id:        estData.id,
-      jobName:   ef["Job Name"] || "",
-      jobId:     ef["Job ID"] || "",
-      dateCreated: ef["Date Created"] || "",
-      createdBy: ef["Created By"] || "",
-      status:    ef["Status"]?.name || ef["Status"] || "Draft",
-      notes:     ef["Notes"] || "",
-      total:     ef["Total"] || 0,
-      lines
-    }
-  });
+  // Fail closed. Airtable stopped receiving estimate writes at the slice-4
+  // cutover, so its copy is missing every estimate created since AND every
+  // edit to the ones it still has. An estimate list that silently omits work
+  // somebody quoted is worse than a screen that says it cannot load.
+  return resp(503, { ok: false, error: "That estimate is unavailable right now. Please try again." });
 }
 
 // ── CREATE ESTIMATE ────────────────────────────────────────
@@ -2740,28 +2407,21 @@ async function handleEstimateCreate(body) {
   const { jobName, jobId, status, notes, createdBy, lines } = body || {};
   if (!jobName || !jobName.trim()) return resp(400, { ok: false, error: "Job name is required." });
 
-  const estFields = {
-    [F_EST_JOB_NAME]:   String(jobName).trim(),
-    [F_EST_JOB_ID]:     String(jobId || "").trim(),
-    [F_EST_STATUS]:     status || "Estimating",
-    [F_EST_NOTES]:      String(notes || "").trim(),
-    [F_EST_CREATED_BY]: String(createdBy || "").trim()
-  };
+  // The header still goes first, but for a plainer reason than before: the
+  // lines need its uuid. They no longer look the parent up by rec id, so a
+  // line can't land with a null FK the way it could when the mirror lagged.
+  const made = await neonWrite("estimateCreate",
+    `INSERT INTO material_estimates
+       (job_name, job_airtable_id, status, created_by, created_at, notes, synced_at)
+     VALUES ($1,$2,$3,$4, now(), $5, now())
+     RETURNING id`,
+    [String(jobName).trim(), String(jobId || "").trim() || null,
+     status || "Estimating", String(createdBy || "").trim() || null,
+     String(notes || "").trim() || null]);
 
-  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimates"), {
-    method: "POST",
-    body: JSON.stringify({ records: [{ fields: estFields }], typecast: true })
-  });
-
-  const newId = created.records?.[0]?.id;
+  const newId = made[0]?.id;
   if (!newId) return resp(500, { ok: false, error: "Failed to create estimate." });
 
-  // The header has to reach Neon BEFORE the lines: each line resolves its
-  // estimate_id by looking the parent up, and a line whose parent isn't there
-  // yet lands with a null FK and never counts toward the total.
-  await syncEstimateToNeon(created.records[0]);
-
-  // Create line items if provided (in batches of 10)
   if (lines && lines.length) {
     await createLineItems(newId, lines);
   }
@@ -2774,50 +2434,37 @@ async function handleEstimateUpdate(body) {
   const { id, status, notes, jobName, jobId, lines, replaceLines } = body || {};
   if (!id) return resp(400, { ok: false, error: "Missing estimate id." });
 
-  // Update header fields if provided
-  const headerFields = {};
-  if (status !== undefined)  headerFields[F_EST_STATUS]   = status;
-  if (notes  !== undefined)  headerFields[F_EST_NOTES]    = String(notes || "");
-  if (jobName !== undefined) headerFields[F_EST_JOB_NAME] = String(jobName || "");
-  if (jobId   !== undefined) headerFields[F_EST_JOB_ID]   = String(jobId || "");
+  // COALESCE rather than a built field list: an absent key means "leave it
+  // alone", which is what the Airtable PATCH did by omitting the field. Passing
+  // NULL for the ones the caller didn't send keeps that behaviour in one
+  // statement instead of assembling a partial update.
+  const patched = await neonWrite("estimateUpdate",
+    `UPDATE material_estimates SET
+       status          = COALESCE($2, status),
+       notes           = COALESCE($3, notes),
+       job_name        = COALESCE($4, job_name),
+       job_airtable_id = COALESCE($5, job_airtable_id),
+       synced_at       = now()
+     WHERE id = $1::uuid RETURNING id`,
+    [id,
+     status  === undefined ? null : String(status),
+     notes   === undefined ? null : String(notes || ""),
+     jobName === undefined ? null : String(jobName || ""),
+     jobId   === undefined ? null : String(jobId || "")]);
+  if (!patched.length) return resp(404, { ok: false, error: "Estimate not found." });
 
-  if (Object.keys(headerFields).length) {
-    const patched = await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimates")}/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ fields: headerFields, typecast: true })
-    });
-    await syncEstimateToNeon(patched);
-  }
-
-  // If replaceLines is true, delete existing lines and add new ones.
-  // Otherwise, just append the new lines if provided.
   if (replaceLines && lines !== undefined) {
-    // Get existing line IDs for this estimate
-    const estData = await atFetch(
-      API_ROOT_INV,
-      `${encodeURIComponent("Estimates")}/${id}`,
-      { method: "GET" }
-    );
-    const existingIds = (estData.fields["Estimate Line Items"] || [])
-      .map(l => typeof l === "object" ? l.id : String(l));
-
-    // Delete existing lines in batches of 10
-    for (let i = 0; i < existingIds.length; i += 10) {
-      const batch = existingIds.slice(i, i + 10);
-      const qs = batch.map(rid => `records[]=${rid}`).join("&");
-      await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Line Items")}?${qs}`, {
-        method: "DELETE"
-      });
-      // Nothing repairs a missed delete — the loader only upserts — so a line
-      // left behind here would keep counting toward the estimate's total after
-      // the user replaced it.
-      await deleteEstimateLinesFromNeon(batch);
-    }
-
-    // Create new lines
+    // One DELETE for the estimate's lines instead of fetching their ids and
+    // removing them ten at a time. The old path had to ask Airtable which lines
+    // existed before it could delete them; the FK answers that here.
+    //
+    // Still the operation with no second chance: nothing repairs a line left
+    // behind, and it would keep counting toward a total the user believes they
+    // replaced.
+    await neonWrite("estimateUpdate.clearLines",
+      `DELETE FROM material_estimate_lines WHERE estimate_id = $1::uuid`, [id]);
     if (lines.length) await createLineItems(id, lines);
   } else if (lines && lines.length) {
-    // Just append
     await createLineItems(id, lines);
   }
 
@@ -2828,83 +2475,42 @@ async function handleEstimateUpdate(body) {
 async function handleEstimateDelete(body) {
   const { id } = body || {};
   if (!id) return resp(400, { ok: false, error: "Missing estimate id." });
-
-  // Get linked line items first
-  const estData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimates")}/${id}`,
-    { method: "GET" }
-  );
-  const lineIds = (estData.fields["Estimate Line Items"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  // Delete lines in batches of 10
-  for (let i = 0; i < lineIds.length; i += 10) {
-    const batch = lineIds.slice(i, i + 10);
-    const qs = batch.map(rid => `records[]=${rid}`).join("&");
-    await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Line Items")}?${qs}`, {
-      method: "DELETE"
-    });
-  }
-
-  // Delete the estimate
-  await atFetch(API_ROOT_INV, `${encodeURIComponent("Estimates")}/${id}`, {
-    method: "DELETE"
-  });
-  // ON DELETE CASCADE takes the lines with it, so the loop above only needs to
-  // mirror Airtable's own line deletions, not clean up after this one.
-  await deleteEstimateFromNeon(id);
-
+  // ON DELETE CASCADE takes the lines with it — the Airtable version had to
+  // read the link array and delete them itself first.
+  const gone = await neonWrite("estimateDelete",
+    `DELETE FROM material_estimates WHERE id = $1::uuid RETURNING id`, [id]);
+  if (!gone.length) return resp(404, { ok: false, error: "Estimate not found." });
   return resp(200, { ok: true, deleted: id });
 }
 
 // ── HELPER: Create line items in batches of 10 ─────────────
-async function createLineItems(estimateId, lines) {
-  for (let i = 0; i < lines.length; i += 10) {
-    const batch = lines.slice(i, i + 10).map(l => {
-      const fields = {
-        [F_LINE_ESTIMATE]:  [String(estimateId)],
-        [F_LINE_QTY]:       Number(l.qty || 0),
-        [F_LINE_UNIT_COST]: Number(l.unitCost || 0)
-      };
-      // Inventory item link — only for non-Misc lines
-      if (l.itemId) {
-        fields[F_LINE_ITEM] = [String(l.itemId)];
-      }
-      // Description — only attempt to set if it's a Misc line.
-      if (l.isMisc && l.description) {
-        fields["Description"] = String(l.description).trim();
-      }
-      return { fields };
-    });
-
-    let created;
-    try {
-      created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
-        method: "POST",
-        body: JSON.stringify({ records: batch, typecast: true })
-      });
-    } catch (err) {
-      // If failure is due to missing Description field, retry without it
-      if (err.message && err.message.toLowerCase().includes("description")) {
-        const retryBatch = batch.map(b => {
-          const f = { ...b.fields };
-          delete f.Description;
-          return { fields: f };
-        });
-        created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
-          method: "POST",
-          body: JSON.stringify({ records: retryBatch, typecast: true })
-        });
-      } else {
-        throw err;
-      }
-    }
-    // Mirror each batch as it lands rather than collecting and syncing at the
-    // end: a failure partway through then leaves Neon holding the batches that
-    // did succeed, which is what the estimate actually contains.
-    await syncEstimateLinesToNeon(created?.records);
-  }
+// Insert an estimate's lines in ONE statement.
+//
+// `estimateUuid` is the Neon id, not a rec id. Line numbers are the line's
+// position within THIS estimate: the old `Line ID` was a global Airtable
+// autonumber, but nothing outside the row ever read it — it only ordered lines
+// within one estimate, which is exactly what 1..N does, without a global
+// counter to seed or collide.
+//
+// Misc lines are the reason `item_airtable_id` can be null: a line with no item
+// carries its own description text instead, and the read falls back to it for
+// the display name.
+async function createLineItems(estimateUuid, lines) {
+  if (!lines || !lines.length) return;
+  const params = [];
+  const p = (v) => { params.push(v); return `$${params.length}`; };
+  const tuples = lines.map((l, i) => {
+    const item = p(l.itemId ? String(l.itemId) : null);
+    return `(${p(estimateUuid)}, ${p(i + 1)}, ${item},` +
+           `(SELECT id FROM inventory_items WHERE airtable_id = ${item}),` +
+           `${p(Number(l.qty || 0))}, ${p(Number(l.unitCost || 0))},` +
+           `${p(l.isMisc && l.description ? String(l.description).trim() : null)}, now())`;
+  });
+  await neonWrite("createLineItems",
+    `INSERT INTO material_estimate_lines
+       (estimate_id, line_number, item_airtable_id, item_id, quantity,
+        unit_cost_at_estimate, description, synced_at)
+     VALUES ${tuples.join(",")}`, params);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2919,67 +2525,31 @@ async function createLineItems(estimateId, lines) {
 // current pricing in one shot for templates that have drifted.
 // ═══════════════════════════════════════════════════════════
 
-const TMPL_TABLE_ID  = "tblpGp6Dp1PE4m9MM";
-const TLINE_TABLE_ID = "tblVKHFKMuaUM5NEA";
 
 // Estimate Templates fields
-const F_TMPL_NAME         = "fldzbsFfD6ajik3dU";
-const F_TMPL_DESC         = "fld7D2v2WGISfioNL";
-const F_TMPL_ACTIVE       = "fldUTxUGOEpZRNNAR";
-const F_TMPL_CONTRACTOR   = "fldj5vseL63A9mm4k";
-const F_TMPL_SOURCE_REF   = "fldYHyEcxQC77Jrjo";
-const F_TMPL_TOTAL        = "fldvr0xvwD6C2uDTK";
-const F_TMPL_CREATED_DATE = "fldIMzA7k09aAdS3h";
-const F_TMPL_CREATED_BY   = "fldIpnqacDhxgv5Vd";
 
 // Estimate Template Lines fields
-const F_TLINE_TITLE     = "fldCDQjNS6hBgxvFJ";
-const F_TLINE_TEMPLATE  = "fldu2l87Uq8VMMXdz";
-const F_TLINE_ITEM      = "fldtFJyAMnx2rOyxo";
-const F_TLINE_QTY       = "fldOF5tMUjud0ssGT";
-const F_TLINE_UNIT_COST = "fld8NUdErnXOCj5ak";
-const F_TLINE_TOTAL     = "fldQVInVUDuULC40O";
-const F_TLINE_NOTES     = "fldFxStyLujlmuO0N";
 
 // Inventory Items: Default Unit Cost field id (used for live pricing on clone)
 const F_ITEM_DEFAULT_COST = "fld8aEhTzmEbqgIg4";
 
 // ── HELPER: build a lineTitle for template lines ───────────
-function tlineTitle(templateName, itemName) {
-  const tn = String(templateName || "").trim() || "Template";
-  const inm = String(itemName || "").trim() || "Item";
-  return tn + " — " + inm;
-}
 
 // ── HELPER: Recompute Total at Save on a template ──────────
 // Sums Line Total at Save across the template's lines and PATCHes the
 // frozen Total at Save back. Called after any line mutation.
-async function recomputeTemplateTotal(templateId, allTemplateLines) {
-  const lines = allTemplateLines !== undefined
-    ? allTemplateLines
-    : await fetchAll(API_ROOT_INV, "Estimate Template Lines", {});
-  const myLines = lines.filter(r => {
-    const links = r.fields?.["Template"] || [];
-    return links.some(l => (typeof l === "object" ? l.id : String(l)) === templateId);
-  });
-  const total = myLines.reduce(
-    (s, r) => s + (Number(r.fields?.["Line Total at Save"] || 0)),
-    0
-  );
-  const patched = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({ fields: { [F_TMPL_TOTAL]: total }, typecast: true })
-    }
-  );
-  // `Total at Save` is a stored snapshot rather than a rollup, which is why this
-  // helper exists at all — so it has to be mirrored like any other value. Neon
-  // also derives the same figure in v_material_template_totals; carrying both
-  // means a disagreement is visible instead of assumed away.
-  await syncTemplateToNeon(patched);
-  return total;
+// Total at Save is a stored snapshot, so it has to be rewritten whenever the
+// lines beneath it change. It is NOT a rollup on purpose: the gap between it
+// and today's prices is what tells a user their template has drifted, and
+// v_material_template_totals carries both figures for exactly that comparison.
+async function recomputeTemplateTotal(templateId) {
+  await neonWrite("recomputeTemplateTotal",
+    `UPDATE material_estimate_templates SET
+       total_at_save = COALESCE((SELECT sum(l.quantity * l.unit_cost_at_save)
+                                   FROM material_estimate_template_lines l
+                                  WHERE l.template_id = $1::uuid), 0),
+       synced_at = now()
+     WHERE id = $1::uuid`, [templateId]);
 }
 
 // ── LIST TEMPLATES ─────────────────────────────────────────
@@ -2990,7 +2560,7 @@ async function handleEstimateTemplatesList(params) {
   // Filtering happens in SQL rather than in JS after pulling everything.
   // `contractor` is matched case-insensitively, the same as the JS below.
   const q = await neonQuery(
-    `SELECT t.airtable_id, t.name, t.description, t.active, t.contractor,
+    `SELECT t.id, t.name, t.description, t.active, t.contractor,
             t.source_estimate_ref, t.total_at_save, t.created_at, t.created_by,
             v.line_count
        FROM material_estimate_templates t
@@ -3003,7 +2573,7 @@ async function handleEstimateTemplatesList(params) {
     return resp(200, {
       ok: true, _source: "neon",
       templates: q.rows.map(r => ({
-        id:          r.airtable_id,
+        id:          r.id,
         name:        r.name || "",
         description: r.description || "",
         active:      r.active === true,
@@ -3017,36 +2587,11 @@ async function handleEstimateTemplatesList(params) {
     });
   }
 
-  const records = await fetchAll(API_ROOT_INV, "Estimate Templates", {
-    sortField: "Created Date",
-    sortDir: "desc"
-  });
-
-  let templates = records.map(r => {
-    const f = r.fields || {};
-    return {
-      id:           r.id,
-      name:         f["Template Name"] || "",
-      description:  f["Description"] || "",
-      active:       gBool(f, "Active"),
-      contractor:   f["Contractor"] || "",
-      sourceRef:    f["Source Estimate Reference"] || "",
-      totalAtSave:  Number(f["Total at Save"] || 0),
-      createdDate:  f["Created Date"] || "",
-      createdBy:    f["Created By"] || "",
-      lineCount:    (f["Estimate Template Lines"] || []).length
-    };
-  });
-
-  if (activeOnly) {
-    templates = templates.filter(t => t.active);
-  }
-  if (contractorRaw) {
-    const cn = contractorRaw.toLowerCase();
-    templates = templates.filter(t => (t.contractor || "").toLowerCase() === cn);
-  }
-
-  return resp(200, { ok: true, templates });
+  // Fail closed. Airtable stopped receiving template writes at the slice-4
+  // cutover, so its copy is frozen: missing templates saved since, and still
+  // showing the prices every refresh has moved on from. A picker that quietly
+  // offers stale templates would put wrong money into a new estimate.
+  return resp(503, { ok: false, error: "Templates are unavailable right now. Please try again." });
 }
 
 // ── GET ONE TEMPLATE WITH LINES ────────────────────────────
@@ -3058,15 +2603,15 @@ async function handleEstimateTemplateGet(params) {
   // physical property of the wire, not a price, so freezing it would be wrong.
   // The costs beside it are snapshots and stay snapshots.
   const nq = await neonQuery(
-    `SELECT t.airtable_id AS tmpl_id, t.name, t.description, t.active, t.contractor,
+    `SELECT t.id AS tmpl_id, t.name, t.description, t.active, t.contractor,
             t.source_estimate_ref, t.total_at_save, t.created_at, t.created_by,
-            l.airtable_id AS line_id, l.item_airtable_id, l.quantity,
+            l.id AS line_id, l.item_airtable_id, l.quantity,
             l.unit_cost_at_save, l.notes,
             i.name AS item_name, i.unit_of_measure, i.wire_ft_per_lb
        FROM material_estimate_templates t
        LEFT JOIN material_estimate_template_lines l ON l.template_id = t.id
        LEFT JOIN inventory_items i                  ON i.id = l.item_id
-      WHERE t.airtable_id = $1
+      WHERE t.id = $1::uuid
       ORDER BY i.name ASC NULLS LAST`, [templateId]);
 
   if (nq?.rows) {
@@ -3103,65 +2648,11 @@ async function handleEstimateTemplateGet(params) {
     });
   }
 
-  const tmplData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
-    { method: "GET" }
-  );
-  if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
-
-  const tf = tmplData.fields || {};
-  const lineIds = (tf["Estimate Template Lines"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  let lines = [];
-  if (lineIds.length) {
-    const [lineRecords, itemRecords] = await Promise.all([
-      fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-      itemIndex()
-    ]);
-
-    const itemMap = itemRecords;
-
-    lines = lineRecords
-      .filter(r => lineIds.includes(r.id))
-      .map(r => {
-        const f = r.fields || {};
-        const itemArr = f["Inventory Item"] || [];
-        const itemId = itemArr.length
-          ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
-          : "";
-        const itemData = itemMap[itemId] || {};
-        return {
-          id:               r.id,
-          itemId:           itemId,
-          itemName:         itemData.name || "",
-          uom:              itemData.uom || "",
-          wireFtPerLb:      itemData.wireFtPerLb || 0,
-          quantity:         Number(f["Quantity"] || 0),
-          unitCostAtSave:   Number(f["Unit Cost at Save"] || 0),
-          lineTotalAtSave:  Number(f["Line Total at Save"] || 0),
-          notes:            f["Notes"] || ""
-        };
-      })
-      .sort((a, b) => (a.itemName || "").localeCompare(b.itemName || ""));
-  }
-
-  return resp(200, {
-    ok: true,
-    template: {
-      id:           tmplData.id,
-      name:         tf["Template Name"] || "",
-      description:  tf["Description"] || "",
-      active:       gBool(tf, "Active"),
-      contractor:   tf["Contractor"] || "",
-      sourceRef:    tf["Source Estimate Reference"] || "",
-      totalAtSave:  Number(tf["Total at Save"] || 0),
-      createdDate:  tf["Created Date"] || "",
-      createdBy:    tf["Created By"] || ""
-    },
-    lines
-  });
+  // Fail closed. Airtable stopped receiving template writes at the slice-4
+  // cutover, so its copy is frozen: missing templates saved since, and still
+  // showing the prices every refresh has moved on from. A picker that quietly
+  // offers stale templates would put wrong money into a new estimate.
+  return resp(503, { ok: false, error: "That template is unavailable right now. Please try again." });
 }
 
 // ── SAVE ESTIMATE AS TEMPLATE ──────────────────────────────
@@ -3177,105 +2668,67 @@ async function handleSaveEstimateAsTemplate(body) {
   const name = String(templateName || "").trim();
   if (!name) return resp(400, { ok: false, error: "Template name is required." });
 
-  // Fetch source estimate + its lines + inventory items in parallel
-  const estData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimates")}/${estimateId}`,
-    { method: "GET" }
-  );
-  if (!estData?.id) return resp(404, { ok: false, error: "Source estimate not found." });
-  const ef = estData.fields || {};
-  const lineIds = (ef["Estimate Line Items"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
+  // Source estimate + the lines worth templating, in one read. Misc lines are
+  // excluded here rather than filtered afterwards — a line with no item has no
+  // price to re-look-up later, which is the whole point of a template.
+  // `skippedMiscCount` still has to be reported, so both counts come back.
+  const src = await neonWrite("saveAsTemplate.source",
+    `SELECT e.job_name, e.job_airtable_id,
+            count(l.id) FILTER (WHERE l.item_id IS NOT NULL)::int AS usable,
+            count(l.id)::int AS total_lines
+       FROM material_estimates e
+       LEFT JOIN material_estimate_lines l ON l.estimate_id = e.id
+      WHERE e.id = $1::uuid
+      GROUP BY e.job_name, e.job_airtable_id`, [estimateId]);
+  if (!src.length) return resp(404, { ok: false, error: "Source estimate not found." });
 
-  const [allLineRecords, allItemRecords] = await Promise.all([
-    lineIds.length ? fetchAll(API_ROOT_INV, "Estimate Line Items", {}) : Promise.resolve([]),
-    itemIndex()
-  ]);
+  const s = src[0];
+  const sourceRef = (s.job_name || "") + (s.job_airtable_id ? " (" + s.job_airtable_id + ")" : "");
+  const skippedMiscCount = Number(s.total_lines || 0) - Number(s.usable || 0);
 
-  const itemNameById = {};
-  for (const [id, it] of Object.entries(allItemRecords)) itemNameById[id] = it.name;
+  // Total at Save is a stored SNAPSHOT, not a rollup — the whole reason a
+  // template can show how far its prices have drifted since. Computed from the
+  // same lines that are about to be copied so the two cannot disagree.
+  const tmpl = await neonWrite("saveAsTemplate.header",
+    `INSERT INTO material_estimate_templates
+       (name, description, active, contractor, source_estimate_ref,
+        total_at_save, created_by, created_at, synced_at)
+     VALUES ($1,$2,true,$3,$4,
+             COALESCE((SELECT sum(l.quantity * l.unit_cost_at_estimate)
+                         FROM material_estimate_lines l
+                        WHERE l.estimate_id = $6::uuid AND l.item_id IS NOT NULL), 0),
+             $5, now(), now())
+     RETURNING id`,
+    [name, String(description || "").trim() || null, String(contractor || "").trim() || null,
+     sourceRef, String(createdBy || "").trim() || null, estimateId]);
 
-  // Pull source lines, drop Misc lines (no Inventory Item link).
-  const sourceLines = allLineRecords
-    .filter(r => lineIds.includes(r.id))
-    .map(r => {
-      const f = r.fields || {};
-      const itemArr = f["Inventory Item"] || [];
-      const itemId = itemArr.length
-        ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
-        : "";
-      return {
-        itemId,
-        qty:        Number(f["Quantity"] || 0),
-        unitCost:   Number(f["Unit Cost at Time of Estimate"] || 0),
-        notes:      f["Description"] || ""
-      };
-    })
-    .filter(l => !!l.itemId);
-
-  const skippedMiscCount = lineIds.length - sourceLines.length;
-  const totalAtSave = sourceLines.reduce(
-    (s, l) => s + (l.qty * l.unitCost),
-    0
-  );
-
-  const sourceRef = (ef["Job Name"] || "")
-    + (ef["Job ID"] ? " (" + ef["Job ID"] + ")" : "");
-
-  // Create the template record first so we have its id for line links
-  const tmplFields = {
-    [F_TMPL_NAME]:         name,
-    [F_TMPL_DESC]:         String(description || "").trim(),
-    [F_TMPL_ACTIVE]:       true,
-    [F_TMPL_CONTRACTOR]:   String(contractor || "").trim(),
-    [F_TMPL_SOURCE_REF]:   sourceRef,
-    [F_TMPL_TOTAL]:        totalAtSave,
-    [F_TMPL_CREATED_DATE]: new Date().toISOString(),
-    [F_TMPL_CREATED_BY]:   String(createdBy || "").trim()
-  };
-
-  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Templates"), {
-    method: "POST",
-    body: JSON.stringify({ records: [{ fields: tmplFields }], typecast: true })
-  });
-  const templateId = created.records?.[0]?.id;
+  const templateId = tmpl[0]?.id;
   if (!templateId) return resp(500, { ok: false, error: "Failed to create template." });
 
-  // Header before lines — each line resolves template_id by looking the parent
-  // up, so a line written first lands with a null FK and never counts.
-  await syncTemplateToNeon(created.records[0]);
-
-  // Create the template lines in batches of 10
-  if (sourceLines.length) {
-    for (let i = 0; i < sourceLines.length; i += 10) {
-      const batch = sourceLines.slice(i, i + 10).map(l => {
-        const lineTotal = (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
-        const fields = {
-          [F_TLINE_TITLE]:     tlineTitle(name, itemNameById[l.itemId] || ""),
-          [F_TLINE_TEMPLATE]:  [String(templateId)],
-          [F_TLINE_ITEM]:      [String(l.itemId)],
-          [F_TLINE_QTY]:       Number(l.qty || 0),
-          [F_TLINE_UNIT_COST]: Number(l.unitCost || 0),
-          [F_TLINE_TOTAL]:     lineTotal
-        };
-        if (l.notes && String(l.notes).trim()) {
-          fields[F_TLINE_NOTES] = String(l.notes).trim();
-        }
-        return { fields };
-      });
-      const madeLines = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
-        method: "POST",
-        body: JSON.stringify({ records: batch, typecast: true })
-      });
-      await syncTemplateLinesToNeon(madeLines?.records);
-    }
-  }
+  // Copy the lines straight across. line_title is built the same way it always
+  // was ("<template> — <item>"), which is why the item name is joined in.
+  const made = await neonWrite("saveAsTemplate.lines",
+    // No line total stored: Airtable had a "Line Total at Save" currency field,
+    // but Neon never carried it because it is quantity × unit_cost_at_save and
+    // v_material_template_totals derives it. Storing it would be the Stock
+    // Levels cache mistake in miniature.
+    `INSERT INTO material_estimate_template_lines
+       (template_id, line_title, item_airtable_id, item_id, quantity,
+        unit_cost_at_save, notes, synced_at)
+     SELECT $1::uuid,
+            $2 || ' — ' || COALESCE(i.name, ''),
+            l.item_airtable_id, l.item_id, COALESCE(l.quantity, 0),
+            COALESCE(l.unit_cost_at_estimate, 0),
+            l.description, now()
+       FROM material_estimate_lines l
+       LEFT JOIN inventory_items i ON i.id = l.item_id
+      WHERE l.estimate_id = $3::uuid AND l.item_id IS NOT NULL
+     RETURNING id`, [templateId, name, estimateId]);
 
   return resp(200, {
     ok: true,
     templateId,
-    lineCount: sourceLines.length,
+    lineCount: made.length,
     skippedMiscCount
   });
 }
@@ -3290,112 +2743,47 @@ async function handleCreateEstimateFromTemplate(body) {
   if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
   if (!jobName || !String(jobName).trim()) return resp(400, { ok: false, error: "Missing jobName." });
 
-  // Fetch the template record (for description) + its line ids + all
-  // template lines + all inventory items (for live cost lookup) in parallel.
-  const [tmplData, allTemplateLines, itemRecords] = await Promise.all([
-    atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
-    fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-    itemIndex()
-  ]);
-  if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
+  // The template's description becomes the new estimate's notes, exactly as it
+  // did before.
+  const tmpl = await neonWrite("createEstimateFromTemplate.template",
+    `SELECT id, description FROM material_estimate_templates WHERE id = $1::uuid`, [templateId]);
+  if (!tmpl.length) return resp(404, { ok: false, error: "Template not found." });
 
-  const tf = tmplData.fields || {};
-  const tmplLineIds = (tf["Estimate Template Lines"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  const itemCostById = {};
-  for (const [id, it] of Object.entries(itemRecords)) itemCostById[id] = it.cost;
-
-  // Build the lines that will be inserted into the new estimate.
-  // Snapshot LIVE pricing here, not the template's frozen cost.
-  const cloneLines = allTemplateLines
-    .filter(r => tmplLineIds.includes(r.id))
-    .map(r => {
-      const f = r.fields || {};
-      const itemArr = f["Inventory Item"] || [];
-      const itemId = itemArr.length
-        ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
-        : "";
-      return {
-        itemId,
-        qty:         Number(f["Quantity"] || 0),
-        unitCost:    Number(itemCostById[itemId] || 0),
-        description: f["Notes"] || ""
-      };
-    })
-    .filter(l => !!l.itemId);
-
-  // Create the new estimate
-  const estFields = {
-    [F_EST_JOB_NAME]:   String(jobName).trim(),
-    [F_EST_JOB_ID]:     String(jobId || "").trim(),
-    [F_EST_STATUS]:     "Draft",
-    [F_EST_NOTES]:      String(tf["Description"] || "").trim(),
-    [F_EST_CREATED_BY]: String(createdBy || "").trim()
-  };
-  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimates"), {
-    method: "POST",
-    body: JSON.stringify({ records: [{ fields: estFields }], typecast: true })
-  });
-  const newId = created.records?.[0]?.id;
+  const made = await neonWrite("createEstimateFromTemplate.header",
+    `INSERT INTO material_estimates
+       (job_name, job_airtable_id, status, created_by, created_at, notes, synced_at)
+     VALUES ($1,$2,'Draft',$3, now(), $4, now())
+     RETURNING id`,
+    [String(jobName).trim(), String(jobId || "").trim() || null,
+     String(createdBy || "").trim() || null, String(tmpl[0].description || "").trim() || null]);
+  const newId = made[0]?.id;
   if (!newId) return resp(500, { ok: false, error: "Failed to create estimate." });
 
-  // This is the SECOND path that creates an estimate, and it was missed when
-  // the estimate reads flipped to Neon — so a template-built estimate existed
-  // in Airtable, was absent from Neon, and the app 404'd the moment it opened
-  // the thing it had just created. Header before lines, same as
-  // handleEstimateCreate: a line resolves its estimate_id by looking the
-  // parent up, and one written first lands with a null FK.
-  await syncEstimateToNeon(created.records[0]);
+  // ⚠ THE WHOLE POINT OF A TEMPLATE, in one line of SQL: quantities clone from
+  // the template, prices come LIVE from the item. unit_cost_at_save on the
+  // template line is a reference snapshot and is deliberately not used here.
+  //
+  // This handler is why slice-D shipped a 404 to production: it is the SECOND
+  // path that creates an estimate, it was missed when the reads flipped, and it
+  // synced nothing. There is only one store to write to now, so that particular
+  // shape of bug cannot recur here.
+  //
+  // Lines with no item are dropped, matching the old filter(l => !!l.itemId) —
+  // a template line without an item has no price to look up.
+  const inserted = await neonWrite("createEstimateFromTemplate.lines",
+    `INSERT INTO material_estimate_lines
+       (estimate_id, line_number, item_airtable_id, item_id, quantity,
+        unit_cost_at_estimate, description, synced_at)
+     SELECT $1::uuid,
+            row_number() OVER (ORDER BY tl.line_title NULLS LAST, tl.id),
+            tl.item_airtable_id, tl.item_id, COALESCE(tl.quantity, 0),
+            COALESCE(i.default_unit_cost, 0), tl.notes, now()
+       FROM material_estimate_template_lines tl
+       LEFT JOIN inventory_items i ON i.id = tl.item_id
+      WHERE tl.template_id = $2::uuid AND tl.item_id IS NOT NULL
+     RETURNING id`, [newId, templateId]);
 
-  // Bulk-insert the cloned lines. We can't reuse createLineItems for these
-  // because it gates Description on isMisc — for clones we want template
-  // notes carried into the Description column on the new estimate line.
-  if (cloneLines.length) {
-    for (let i = 0; i < cloneLines.length; i += 10) {
-      const batch = cloneLines.slice(i, i + 10).map(l => {
-        const fields = {
-          [F_LINE_ESTIMATE]:  [String(newId)],
-          [F_LINE_ITEM]:      [String(l.itemId)],
-          [F_LINE_QTY]:       Number(l.qty || 0),
-          [F_LINE_UNIT_COST]: Number(l.unitCost || 0)
-        };
-        if (l.description && String(l.description).trim()) {
-          fields["Description"] = String(l.description).trim();
-        }
-        return { fields };
-      });
-      let made;
-      try {
-        made = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
-          method: "POST",
-          body: JSON.stringify({ records: batch, typecast: true })
-        });
-      } catch (err) {
-        // Same defensive retry as createLineItems — Description is optional
-        // and shouldn't sink the whole clone if Airtable rejects it.
-        if (err.message && err.message.toLowerCase().includes("description")) {
-          const retryBatch = batch.map(b => {
-            const f = { ...b.fields };
-            delete f.Description;
-            return { fields: f };
-          });
-          made = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Line Items"), {
-            method: "POST",
-            body: JSON.stringify({ records: retryBatch, typecast: true })
-          });
-        } else {
-          throw err;
-        }
-      }
-      // Mirrored per batch, not once at the end — the retry path above swaps in
-      // a different record set, so the response is the only reliable source of
-      // what actually landed.
-      await syncEstimateLinesToNeon(made?.records);
-    }
-  }
-
-  return resp(200, { ok: true, estimateId: newId, lineCount: cloneLines.length });
+  return resp(200, { ok: true, estimateId: newId, lineCount: inserted.length });
 }
 
 // ── UPDATE TEMPLATE METADATA ───────────────────────────────
@@ -3403,61 +2791,28 @@ async function handleCreateEstimateFromTemplate(body) {
 async function handleEstimateTemplateUpdate(body) {
   const { templateId, templateName, description, contractor, active } = body || {};
   if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
-
-  const fields = {};
-  if (templateName !== undefined) fields[F_TMPL_NAME]       = String(templateName || "").trim();
-  if (description  !== undefined) fields[F_TMPL_DESC]       = String(description  || "");
-  if (contractor   !== undefined) fields[F_TMPL_CONTRACTOR] = String(contractor   || "").trim();
-  if (active       !== undefined) fields[F_TMPL_ACTIVE]     = !!active;
-
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
-
-  const patchedTmpl = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
-    {
-      method: "PATCH",
-      body: JSON.stringify({ fields, typecast: true })
-    }
-  );
-  await syncTemplateToNeon(patchedTmpl);
-
-  // If the name changed, re-write Line Title on every line so the
-  // human-readable title stays in sync. Cheap (PATCH up to 10 per call).
-  if (templateName !== undefined) {
-    const newName = String(templateName || "").trim();
-    const [tmplRec, allLines, allItems] = await Promise.all([
-      atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
-      fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-      itemIndex()
-    ]);
-    const lineIds = (tmplRec.fields?.["Estimate Template Lines"] || [])
-      .map(l => typeof l === "object" ? l.id : String(l));
-    const itemNameById = {};
-    for (const [id, it] of Object.entries(allItems)) itemNameById[id] = it.name;
-    const myLines = allLines.filter(r => lineIds.includes(r.id));
-    const updates = myLines.map(r => {
-      const f = r.fields || {};
-      const itemArr = f["Inventory Item"] || [];
-      const itemId = itemArr.length
-        ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
-        : "";
-      return {
-        id: r.id,
-        fields: { [F_TLINE_TITLE]: tlineTitle(newName, itemNameById[itemId] || "") }
-      };
-    });
-    for (let i = 0; i < updates.length; i += 10) {
-      const batch = updates.slice(i, i + 10);
-      const patchedLines = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
-        method: "PATCH",
-        body: JSON.stringify({ records: batch, typecast: true })
-      });
-      await syncTemplateLinesToNeon(patchedLines?.records);
-    }
+  if (templateName === undefined && description === undefined &&
+      contractor === undefined && active === undefined) {
+    return resp(400, { ok: false, error: "Nothing to update." });
   }
 
-  return resp(200, { ok: true });
+  // COALESCE per field: an absent key means leave it alone, which is what
+  // omitting it from the Airtable PATCH used to do.
+  const rows = await neonWrite("templateUpdate",
+    `UPDATE material_estimate_templates SET
+       name        = COALESCE($2, name),
+       description = COALESCE($3, description),
+       contractor  = COALESCE($4, contractor),
+       active      = COALESCE($5, active),
+       synced_at   = now()
+     WHERE id = $1::uuid RETURNING id`,
+    [templateId,
+     templateName === undefined ? null : String(templateName || "").trim(),
+     description  === undefined ? null : String(description || ""),
+     contractor   === undefined ? null : String(contractor || "").trim(),
+     active       === undefined ? null : !!active]);
+  if (!rows.length) return resp(404, { ok: false, error: "Template not found." });
+  return resp(200, { ok: true, templateId });
 }
 
 // ── UPSERT TEMPLATE LINE (create or update one line) ───────
@@ -3466,99 +2821,61 @@ async function handleEstimateTemplateLineUpsert(body) {
   if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
 
   if (lineId) {
-    // PATCH existing line: update qty/notes, recompute Line Total at Save
-    const existing = await atFetch(
-      API_ROOT_INV,
-      `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
-      { method: "GET" }
-    );
-    const ef = existing.fields || {};
-    const newQty  = quantity !== undefined ? Number(quantity || 0) : Number(ef["Quantity"] || 0);
-    const cost    = Number(ef["Unit Cost at Save"] || 0);
-    const total   = newQty * cost;
-    const fields  = {
-      [F_TLINE_QTY]:   newQty,
-      [F_TLINE_TOTAL]: total
-    };
-    if (notes !== undefined) fields[F_TLINE_NOTES] = String(notes || "");
-
-    const patchedLine = await atFetch(
-      API_ROOT_INV,
-      `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
-      {
-        method: "PATCH",
-        body: JSON.stringify({ fields, typecast: true })
-      }
-    );
-    await syncTemplateLinesToNeon([patchedLine]);
+    // Editing an existing line changes the QUANTITY, never the price. The
+    // snapshot is the template's whole reason to exist, so unit_cost_at_save is
+    // deliberately untouched here — refreshTemplatePrices is the only thing
+    // allowed to move it.
+    const rows = await neonWrite("templateLineUpsert.update",
+      `UPDATE material_estimate_template_lines SET
+         quantity = COALESCE($2, quantity),
+         notes    = COALESCE($3, notes),
+         synced_at = now()
+       WHERE id = $1::uuid RETURNING id`,
+      [lineId,
+       quantity === undefined ? null : Number(quantity || 0),
+       notes    === undefined ? null : String(notes || "")]);
+    if (!rows.length) return resp(404, { ok: false, error: "Template line not found." });
     await recomputeTemplateTotal(templateId);
     return resp(200, { ok: true, lineId });
   }
 
-  // CREATE new line — snapshot current Default Unit Cost from the item
   if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
 
-  const [tmplRec, itemRec] = await Promise.all([
-    atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
-    atFetch(API_ROOT_INV, `${encodeURIComponent("Inventory Items")}/${itemId}`,        { method: "GET" })
-  ]);
-  if (!tmplRec?.id) return resp(404, { ok: false, error: "Template not found." });
-  if (!itemRec?.id) return resp(404, { ok: false, error: "Inventory item not found." });
+  // A new line snapshots the item's CURRENT default cost, and builds its title
+  // from both names — all three resolved in the insert rather than fetched
+  // first, which is what the Airtable version needed two round trips for.
+  const made = await neonWrite("templateLineUpsert.insert",
+    `INSERT INTO material_estimate_template_lines
+       (template_id, line_title, item_airtable_id, item_id, quantity,
+        unit_cost_at_save, notes, synced_at)
+     SELECT t.id, t.name || ' — ' || COALESCE(i.name, ''),
+            i.airtable_id, i.id, $3, COALESCE(i.default_unit_cost, 0), $4, now()
+       FROM material_estimate_templates t
+       JOIN inventory_items i ON i.airtable_id = $2
+      WHERE t.id = $1::uuid
+     RETURNING id`,
+    [templateId, String(itemId), Number(quantity || 0),
+     notes !== undefined && String(notes || "").trim() ? String(notes).trim() : null]);
 
-  const templateName = tmplRec.fields?.["Template Name"] || "";
-  const itemName     = itemRec.fields?.["Item Name"]     || "";
-  const unitCost     = Number(itemRec.fields?.["Default Unit Cost"] || 0);
-  const qty          = Number(quantity || 0);
-
-  const fields = {
-    [F_TLINE_TITLE]:     tlineTitle(templateName, itemName),
-    [F_TLINE_TEMPLATE]:  [String(templateId)],
-    [F_TLINE_ITEM]:      [String(itemId)],
-    [F_TLINE_QTY]:       qty,
-    [F_TLINE_UNIT_COST]: unitCost,
-    [F_TLINE_TOTAL]:     qty * unitCost
-  };
-  if (notes !== undefined && String(notes || "").trim()) {
-    fields[F_TLINE_NOTES] = String(notes).trim();
-  }
-
-  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
-    method: "POST",
-    body: JSON.stringify({ records: [{ fields }], typecast: true })
-  });
-  const newLineId = created.records?.[0]?.id;
-  await syncTemplateLinesToNeon(created?.records);
+  // No row means the JOIN found no template or no item — the Airtable version
+  // reported those as two separate 404s after two GETs.
+  if (!made.length) return resp(404, { ok: false, error: "Template or inventory item not found." });
   await recomputeTemplateTotal(templateId);
-  return resp(200, { ok: true, lineId: newLineId });
+  return resp(200, { ok: true, lineId: made[0].id });
 }
 
 // ── DELETE ONE TEMPLATE LINE ───────────────────────────────
 async function handleEstimateTemplateLineDelete(body) {
-  const { lineId, templateId } = body || {};
-  if (!lineId) return resp(400, { ok: false, error: "Missing lineId." });
+  const { templateId, lineId } = body || {};
+  if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
+  if (!lineId)     return resp(400, { ok: false, error: "Missing lineId." });
 
-  // Resolve the templateId from the line if the frontend didn't send it
-  let tid = templateId;
-  if (!tid) {
-    const ln = await atFetch(
-      API_ROOT_INV,
-      `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
-      { method: "GET" }
-    );
-    const links = ln.fields?.["Template"] || [];
-    tid = links.length
-      ? (typeof links[0] === "object" ? links[0].id : String(links[0]))
-      : "";
-  }
-
-  await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimate Template Lines")}/${lineId}`,
-    { method: "DELETE" }
-  );
-  await deleteTemplateLinesFromNeon([lineId]);
-
-  if (tid) await recomputeTemplateTotal(tid);
+  const gone = await neonWrite("templateLineDelete",
+    `DELETE FROM material_estimate_template_lines WHERE id = $1::uuid RETURNING id`, [lineId]);
+  if (!gone.length) return resp(404, { ok: false, error: "Template line not found." });
+  // The stored total has to follow the line out, or the template keeps quoting
+  // material it no longer contains.
+  await recomputeTemplateTotal(templateId);
   return resp(200, { ok: true, deleted: lineId });
 }
 
@@ -3566,36 +2883,12 @@ async function handleEstimateTemplateLineDelete(body) {
 async function handleEstimateTemplateDelete(body) {
   const { templateId } = body || {};
   if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
-
-  const tmplData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
-    { method: "GET" }
-  );
-  const lineIds = (tmplData.fields?.["Estimate Template Lines"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  for (let i = 0; i < lineIds.length; i += 10) {
-    const batch = lineIds.slice(i, i + 10);
-    const qs = batch.map(rid => `records[]=${rid}`).join("&");
-    await atFetch(
-      API_ROOT_INV,
-      `${encodeURIComponent("Estimate Template Lines")}?${qs}`,
-      { method: "DELETE" }
-    );
-  }
-
-  await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Estimate Templates")}/${templateId}`,
-    { method: "DELETE" }
-  );
-  // ON DELETE CASCADE takes the lines, so the loop above only mirrors Airtable's
-  // own line deletions. A template left in Neon would keep appearing in the
-  // picker and nothing would ever remove it — the loader only upserts.
-  await deleteTemplateFromNeon(templateId);
-
-  return resp(200, { ok: true, deleted: templateId, deletedLineCount: lineIds.length });
+  // ON DELETE CASCADE takes the lines. The Airtable version had to read the
+  // link array and delete them in batches of ten first.
+  const gone = await neonWrite("templateDelete",
+    `DELETE FROM material_estimate_templates WHERE id = $1::uuid RETURNING id`, [templateId]);
+  if (!gone.length) return resp(404, { ok: false, error: "Template not found." });
+  return resp(200, { ok: true, deleted: templateId });
 }
 
 // ── REFRESH ALL PRICES ────────────────────────────────────
@@ -3608,57 +2901,21 @@ async function handleRefreshTemplatePrices(body) {
   const { templateId } = body || {};
   if (!templateId) return resp(400, { ok: false, error: "Missing templateId." });
 
-  const [tmplData, allLines, allItemRecords] = await Promise.all([
-    atFetch(API_ROOT_INV, `${encodeURIComponent("Estimate Templates")}/${templateId}`, { method: "GET" }),
-    fetchAll(API_ROOT_INV, "Estimate Template Lines", {}),
-    itemIndex()
-  ]);
-  if (!tmplData?.id) return resp(404, { ok: false, error: "Template not found." });
+  // Re-snapshot every line against the item's current cost. This is the ONE
+  // operation allowed to move unit_cost_at_save — everywhere else it is frozen.
+  // One statement instead of read-all-lines, compute, PATCH in batches of ten.
+  const updated = await neonWrite("refreshTemplatePrices",
+    `UPDATE material_estimate_template_lines l SET
+       unit_cost_at_save = COALESCE(i.default_unit_cost, 0),
+       synced_at = now()
+     FROM inventory_items i
+     WHERE l.item_id = i.id AND l.template_id = $1::uuid
+     RETURNING l.id`, [templateId]);
 
-  const lineIds = (tmplData.fields?.["Estimate Template Lines"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  const itemCostById = {};
-  for (const [id, it] of Object.entries(allItemRecords)) itemCostById[id] = it.cost;
-
-  const myLines = allLines.filter(r => lineIds.includes(r.id));
-  const updates = myLines.map(r => {
-    const f = r.fields || {};
-    const qty = Number(f["Quantity"] || 0);
-    const itemArr = f["Inventory Item"] || [];
-    const itemId = itemArr.length
-      ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
-      : "";
-    const newCost = Number(itemCostById[itemId] || 0);
-    return {
-      id: r.id,
-      fields: {
-        [F_TLINE_UNIT_COST]: newCost,
-        [F_TLINE_TOTAL]:     qty * newCost
-      }
-    };
-  });
-
-  let updated = 0;
-  for (let i = 0; i < updates.length; i += 10) {
-    const batch = updates.slice(i, i + 10);
-    const patched = await atFetch(API_ROOT_INV, encodeURIComponent("Estimate Template Lines"), {
-      method: "PATCH",
-      body: JSON.stringify({ records: batch, typecast: true })
-    });
-    // Re-snapshotting is the whole point of this handler, so the new snapshot
-    // has to reach Neon — otherwise the template keeps quoting the old prices
-    // on the very screen that just said it refreshed them.
-    await syncTemplateLinesToNeon(patched?.records);
-    updated += batch.length;
-  }
-
-  // Recompute Total at Save against the freshly-PATCHed lines (refetch so
-  // the rollup reads the new totals, not the stale cache).
-  const refreshedLines = await fetchAll(API_ROOT_INV, "Estimate Template Lines", {});
-  const newTotal = await recomputeTemplateTotal(templateId, refreshedLines);
-
-  return resp(200, { ok: true, lineCount: updated, total: newTotal });
+  // And the header total follows, or the screen reports refreshed prices while
+  // still showing the old sum — the exact complaint this action exists to fix.
+  await recomputeTemplateTotal(templateId);
+  return resp(200, { ok: true, updated: updated.length });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -3668,16 +2925,7 @@ async function handleRefreshTemplatePrices(body) {
 const ORDER_TABLE_ID      = "tblLMunp1fSrZV4mH";
 const ORDER_LINE_TABLE_ID = "tblERYikTOpPhklPw";
 
-const F_ORD_ESTIMATE   = "fld446AqUqFbATskC";
-const F_ORD_JOB_NAME   = "fldst9PryHJTJYWeC";
-const F_ORD_CREATED_BY = "fldeRDqMUpfIQF36D";
-const F_ORD_VENDOR     = "fldgXcZ2EMNR5nfTG";
-const F_ORD_STATUS     = "fldshk9Rek2BnVAxc";
 
-const F_OL_ORDER       = "fldkAHSFDQwsQqCyd";
-const F_OL_ITEM        = "fldlNL42Hj9fEKNVR";
-const F_OL_DESCRIPTION = "fldoDLObzUjkHyhcA";
-const F_OL_QTY         = "fldI8RfBvcD8oGpcg";
 
 // ── ACTIVE ORDERS LIST ────────────────────────────────────
 async function handleOrdersList(params) {
@@ -3699,7 +2947,7 @@ async function handleOrdersList(params) {
   // The Airtable path hand-escapes a name into a formula string; here it is a
   // bind, so a created-by containing a quote can't reshape the query.
   const q = await neonQuery(
-    `SELECT o.airtable_id, o.order_number, o.job_name, o.vendor_notes, o.status,
+    `SELECT o.id, o.order_number, o.job_name, o.vendor_notes, o.status,
             o.created_at, o.created_by, v.line_count
        FROM material_orders o
        LEFT JOIN v_material_order_totals v ON v.order_id = o.id
@@ -3711,7 +2959,7 @@ async function handleOrdersList(params) {
     return resp(200, {
       ok: true, _source: "neon",
       orders: q.rows.map(r => ({
-        id:          r.airtable_id,
+        id:          r.id,
         orderId:     Number(r.order_number ?? 0),
         jobName:     r.job_name || "",
         vendor:      r.vendor_notes || "",
@@ -3725,28 +2973,11 @@ async function handleOrdersList(params) {
     });
   }
 
-  const records = await fetchAll(API_ROOT_INV, "Material Orders", {
-    filter,
-    sortField: "Date Created",
-    sortDir: "desc"
-  });
-
-  const orders = records.map(r => {
-    const f = r.fields || {};
-    return {
-      id:          r.id,
-      orderId:     f["Order ID"] || 0,
-      jobName:     f["Job Name"] || "",
-      vendor:      f["Vendor / Notes"] || "",
-      status:      f["Status"]?.name || f["Status"] || "Active",
-      dateCreated: f["Date Created"] || "",
-      createdBy:   f["Created By"] || "",
-      lineCount:   (f["Material Order Lines"] || []).length,
-      totalItems:  f["Total Items"] || 0
-    };
-  });
-
-  return resp(200, { ok: true, orders });
+  // Fail closed. Airtable stopped receiving order writes at the slice-4
+  // cutover, so its copy is missing every order raised since and still shows
+  // Active for ones that have been completed. An order list that is wrong in
+  // both directions is worse than one that admits it cannot load.
+  return resp(503, { ok: false, error: "Orders are unavailable right now. Please try again." });
 }
 
 // ── GET ONE ORDER WITH LINES ──────────────────────────────
@@ -3755,15 +2986,15 @@ async function handleOrderGet(params) {
   if (!id) return resp(400, { ok: false, error: "Missing order id." });
 
   const nq = await neonQuery(
-    `SELECT o.airtable_id AS order_id, o.order_number, o.job_name, o.vendor_notes,
+    `SELECT o.id AS order_id, o.order_number, o.job_name, o.vendor_notes,
             o.status, o.created_at, o.created_by,
-            l.airtable_id AS line_id, l.line_number, l.item_airtable_id,
+            l.id AS line_id, l.line_number, l.item_airtable_id,
             l.description, l.quantity_ordered,
             i.name AS item_name, i.unit_of_measure, i.category
        FROM material_orders o
        LEFT JOIN material_order_lines l ON l.order_id = o.id
        LEFT JOIN inventory_items i      ON i.id = l.item_id
-      WHERE o.airtable_id = $1
+      WHERE o.id = $1::uuid
       ORDER BY l.line_number ASC NULLS LAST`, [id]);
 
   if (nq?.rows) {
@@ -3804,74 +3035,11 @@ async function handleOrderGet(params) {
     });
   }
 
-  const orderData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Material Orders")}/${id}`,
-    { method: "GET" }
-  );
-  if (!orderData?.id) return resp(404, { ok: false, error: "Order not found." });
-
-  const of = orderData.fields || {};
-  const lineIds = (of["Material Order Lines"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  let lines = [];
-  if (lineIds.length) {
-    const [lineRecords, itemRecords] = await Promise.all([
-      fetchAll(API_ROOT_INV, "Material Order Lines", {}),
-      itemIndex()
-    ]);
-
-    const itemMap = itemRecords;
-
-    lines = lineRecords
-      .filter(r => lineIds.includes(r.id))
-      .map(r => {
-        const f = r.fields || {};
-        const itemArr = f["Inventory Item"] || [];
-        const itemId = itemArr.length
-          ? (typeof itemArr[0] === "object" ? itemArr[0].id : String(itemArr[0]))
-          : "";
-        const itemData = itemMap[itemId] || {};
-
-        // Detect " [BOX]" suffix marker on description — strip it, set isBox
-        const BOX_MARKER = " [BOX]";
-        let rawDesc = f["Description"] || "";
-        let isBox = false;
-        if (typeof rawDesc === "string" && rawDesc.endsWith(BOX_MARKER)) {
-          isBox = true;
-          rawDesc = rawDesc.slice(0, -BOX_MARKER.length);
-        }
-
-        return {
-          id:          r.id,
-          lineNum:     f["Line Item ID"] || 0,
-          itemId:      itemId,
-          itemName:    itemData.name || rawDesc || "",
-          uom:         itemData.uom || "",
-          category:    itemData.cat || "",
-          description: rawDesc,
-          qty:         f["Quantity Ordered"] || 0,
-          isMisc:      !itemId,
-          isBox:       isBox
-        };
-      })
-      .sort((a, b) => (a.lineNum || 0) - (b.lineNum || 0));
-  }
-
-  return resp(200, {
-    ok: true,
-    order: {
-      id:          orderData.id,
-      orderId:     of["Order ID"] || 0,
-      jobName:     of["Job Name"] || "",
-      vendor:      of["Vendor / Notes"] || "",
-      status:      of["Status"]?.name || of["Status"] || "Active",
-      dateCreated: of["Date Created"] || "",
-      createdBy:   of["Created By"] || "",
-      lines
-    }
-  });
+  // Fail closed. Airtable stopped receiving order writes at the slice-4
+  // cutover, so its copy is missing every order raised since and still shows
+  // Active for ones that have been completed. An order list that is wrong in
+  // both directions is worse than one that admits it cannot load.
+  return resp(503, { ok: false, error: "That order is unavailable right now. Please try again." });
 }
 
 // ── CREATE ORDER ──────────────────────────────────────────
@@ -3880,103 +3048,64 @@ async function handleOrderCreate(body) {
   if (!jobName || !jobName.trim()) return resp(400, { ok: false, error: "Job name is required." });
   if (!lines || !lines.length) return resp(400, { ok: false, error: "Order has no items." });
 
-  const orderFields = {
-    [F_ORD_JOB_NAME]:   String(jobName).trim(),
-    [F_ORD_VENDOR]:     String(vendor || "").trim(),
-    [F_ORD_CREATED_BY]: String(createdBy || "").trim(),
-    [F_ORD_STATUS]:     "Active"
-  };
-  if (estimateId) {
-    orderFields[F_ORD_ESTIMATE] = [String(estimateId)];
-  }
+  // ⚠⚠ THE #0 BUG IS GONE BY CONSTRUCTION. `Order ID` was an Airtable
+  // autonumber absent from the create response, so the order had to be written,
+  // re-fetched and re-synced just to learn its own number — and if that second
+  // round trip failed, every screen showed the order as #0. A sequence hands it
+  // over in the same INSERT.
+  //
+  // ⚠ The sequence starts at 40, NOT at max(order_number)+1. Numbers 13, 17,
+  // 23-25 and 27-31 survive; every gap is an order someone saw and later
+  // deleted, and #32 was minted and deleted during the Step D smoke. Airtable
+  // autonumbers never reclaim, max() does — seeding from max() would reissue a
+  // number already printed on someone's order.
+  const made = await neonWrite("orderCreate",
+    `INSERT INTO material_orders
+       (order_number, estimate_id, job_name, vendor_notes, created_by, status, created_at, synced_at)
+     VALUES (nextval('material_order_number_seq'), $1, $2, $3, $4, 'Active', now(), now())
+     RETURNING id, order_number`,
+    [estimateId ? String(estimateId) : null, String(jobName).trim(),
+     String(vendor || "").trim() || null, String(createdBy || "").trim() || null]);
 
-  const created = await atFetch(API_ROOT_INV, encodeURIComponent("Material Orders"), {
-    method: "POST",
-    body: JSON.stringify({ records: [{ fields: orderFields }], typecast: true })
-  });
+  const order = made[0];
+  if (!order?.id) return resp(500, { ok: false, error: "Failed to create order." });
 
-  const newId = created.records?.[0]?.id;
-  if (!newId) return resp(500, { ok: false, error: "Failed to create order." });
+  await createOrderLinesHelper(order.id, lines);
 
-  // Header first — lines resolve order_id by looking the parent up.
-  await syncOrderToNeon(created.records[0]);
-
-  // Create order lines in batches of 10
-  if (lines && lines.length) {
-    await createOrderLinesHelper(newId, lines);
-  }
-
-  // Re-fetch the created order to get the autonumber Order ID
-  let orderId = null;
-  try {
-    const refreshed = await atFetch(
-      API_ROOT_INV,
-      `${encodeURIComponent("Material Orders")}/${newId}`,
-      { method: "GET" }
-    );
-    orderId = refreshed.fields?.["Order ID"] || null;
-    // Re-sync now that the autonumber exists — the create response has no
-    // `Order ID`, so without this the order shows as #0 on every screen.
-    await syncOrderToNeon(refreshed);
-  } catch(e) {
-    console.warn("Failed to fetch new order autonumber:", e.message);
-  }
-
-  return resp(200, { ok: true, id: newId, orderId });
+  return resp(200, { ok: true, id: order.id, orderId: Number(order.order_number) });
 }
 
 // ── HELPER: Create order lines in batches of 10 ──────────
-async function createOrderLinesHelper(orderId, lines) {
-  for (let i = 0; i < lines.length; i += 10) {
-    const batch = lines.slice(i, i + 10).map(l => {
-      const fields = {
-        [F_OL_ORDER]: [String(orderId)],
-        [F_OL_QTY]:   Number(l.qty || 0)
-      };
-      if (l.itemId) {
-        fields[F_OL_ITEM] = [String(l.itemId)];
-      }
-      // Always store description for traceability — for inventory items this
-      // captures the name at order time so historical orders survive renames.
-      // Also append " [BOX]" marker so isBox persists without a schema change.
-      let desc = String(l.description || "").trim();
-      if (l.isBox) {
-        // Ensure we have something in description so the BOX marker isn't orphaned
-        if (!desc) desc = "Box order";
-        desc = desc + " [BOX]";
-      }
-      if (desc) {
-        fields[F_OL_DESCRIPTION] = desc;
-      }
-      return { fields };
-    });
-
-    const madeLines = await atFetch(API_ROOT_INV, encodeURIComponent("Material Order Lines"), {
-      method: "POST",
-      body: JSON.stringify({ records: batch, typecast: true })
-    });
-    await syncOrderLinesToNeon(madeLines?.records);
-  }
+// One statement for the whole order.
+//
+// ⚠ The " [BOX]" suffix is a MARKER, not prose: it records that a line was
+// ordered by the box rather than the each, stored in the description to avoid a
+// schema change. The read strips it again. Keep the two in step or it leaks
+// onto the printed order.
+async function createOrderLinesHelper(orderUuid, lines) {
+  if (!lines || !lines.length) return;
+  const params = [];
+  const p = (v) => { params.push(v); return `$${params.length}`; };
+  const tuples = lines.map((l, i) => {
+    const item = p(l.itemId ? String(l.itemId) : null);
+    let desc = String(l.description || "").trim();
+    if (l.isBox) desc = (desc || "Box order") + " [BOX]";
+    return `(${p(orderUuid)}, ${p(i + 1)}, ${item},` +
+           `(SELECT id FROM inventory_items WHERE airtable_id = ${item}),` +
+           `${p(Number(l.qty || 0))}, ${p(desc || null)}, now())`;
+  });
+  await neonWrite("createOrderLines",
+    `INSERT INTO material_order_lines
+       (order_id, line_number, item_airtable_id, item_id, quantity_ordered, description, synced_at)
+     VALUES ${tuples.join(",")}`, params);
 }
 
 // ── HELPER: Delete all lines for an order ────────────────
-async function deleteOrderLines(orderId) {
-  const orderData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Material Orders")}/${orderId}`,
-    { method: "GET" }
-  );
-  const lineIds = (orderData.fields["Material Order Lines"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  for (let i = 0; i < lineIds.length; i += 10) {
-    const batch = lineIds.slice(i, i + 10);
-    const qs = batch.map(rid => `records[]=${rid}`).join("&");
-    await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Order Lines")}?${qs}`, {
-      method: "DELETE"
-    });
-    await deleteOrderLinesFromNeon(batch);
-  }
+async function deleteOrderLines(orderUuid) {
+  // One DELETE by FK, where the Airtable version had to fetch the order, read
+  // its link array, and remove the lines ten at a time.
+  await neonWrite("deleteOrderLines",
+    `DELETE FROM material_order_lines WHERE order_id = $1::uuid`, [orderUuid]);
 }
 
 // ── UPDATE ORDER (status / vendor / notes / lines) ────────────────
@@ -3984,31 +3113,30 @@ async function handleOrderUpdate(body) {
   const { id, status, vendor, lines, replaceLines } = body || {};
   if (!id) return resp(400, { ok: false, error: "Missing order id." });
 
-  const fields = {};
-  if (status !== undefined) fields[F_ORD_STATUS] = status;
-  if (vendor !== undefined) fields[F_ORD_VENDOR] = String(vendor || "");
-
-  // Header fields — only patch if we have any
-  if (Object.keys(fields).length) {
-    const patched = await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ fields, typecast: true })
-    });
-    // Status is what the list filters on, so an unsynced "Complete" would leave
-    // the order sitting in the active list.
-    await syncOrderToNeon(patched);
+  const touchesHeader = status !== undefined || vendor !== undefined;
+  if (!touchesHeader && !replaceLines) {
+    return resp(400, { ok: false, error: "Nothing to update." });
   }
 
-  // Line editing
+  if (touchesHeader) {
+    // Status is what the active list and the home badge both filter on, so a
+    // "Complete" that does not land leaves the order sitting in the list
+    // looking outstanding.
+    const rows = await neonWrite("orderUpdate",
+      `UPDATE material_orders SET
+         status       = COALESCE($2, status),
+         vendor_notes = COALESCE($3, vendor_notes),
+         synced_at    = now()
+       WHERE id = $1::uuid RETURNING id`,
+      [id,
+       status === undefined ? null : String(status),
+       vendor === undefined ? null : String(vendor || "")]);
+    if (!rows.length) return resp(404, { ok: false, error: "Order not found." });
+  }
+
   if (replaceLines && lines !== undefined) {
     await deleteOrderLines(id);
-    if (lines.length) {
-      await createOrderLinesHelper(id, lines);
-    }
-  }
-
-  if (!Object.keys(fields).length && !replaceLines) {
-    return resp(400, { ok: false, error: "Nothing to update." });
+    if (lines.length) await createOrderLinesHelper(id, lines);
   }
 
   return resp(200, { ok: true, id });
@@ -4018,33 +3146,10 @@ async function handleOrderUpdate(body) {
 async function handleOrderDelete(body) {
   const { id } = body || {};
   if (!id) return resp(400, { ok: false, error: "Missing order id." });
-
-  // Get linked line ids
-  const orderData = await atFetch(
-    API_ROOT_INV,
-    `${encodeURIComponent("Material Orders")}/${id}`,
-    { method: "GET" }
-  );
-  const lineIds = (orderData.fields["Material Order Lines"] || [])
-    .map(l => typeof l === "object" ? l.id : String(l));
-
-  // Delete lines in batches of 10
-  for (let i = 0; i < lineIds.length; i += 10) {
-    const batch = lineIds.slice(i, i + 10);
-    const qs = batch.map(rid => `records[]=${rid}`).join("&");
-    await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Order Lines")}?${qs}`, {
-      method: "DELETE"
-    });
-    await deleteOrderLinesFromNeon(batch);
-  }
-
-  // Delete the order
-  await atFetch(API_ROOT_INV, `${encodeURIComponent("Material Orders")}/${id}`, {
-    method: "DELETE"
-  });
-  // ON DELETE CASCADE clears the lines; nothing else would ever remove this row.
-  await deleteOrderFromNeon(id);
-
+  // ON DELETE CASCADE takes the lines with it.
+  const gone = await neonWrite("orderDelete",
+    `DELETE FROM material_orders WHERE id = $1::uuid RETURNING id`, [id]);
+  if (!gone.length) return resp(404, { ok: false, error: "Order not found." });
   return resp(200, { ok: true, deleted: id });
 }
 
@@ -4056,10 +3161,9 @@ async function handleOrdersCount() {
     `SELECT count(*)::int AS n FROM material_orders WHERE status = 'Active'`);
   if (q?.rows) return resp(200, { ok: true, _source: "neon", count: q.rows[0]?.n ?? 0 });
 
-  const records = await fetchAll(API_ROOT_INV, "Material Orders", {
-    filter: `{Status}='Active'`
-  });
-  return resp(200, { ok: true, _source: "airtable", count: records.length });
+  // No Airtable fallback: a badge counting a frozen table would under-report
+  // outstanding orders, which is the one direction that matters.
+  return resp(503, { ok: false, error: "Order count is unavailable right now." });
 }
 
 // ═══════════════════════════════════════════════════════════

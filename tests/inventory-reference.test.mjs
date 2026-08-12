@@ -53,6 +53,11 @@ const estWrites      = [];
 const estLineWrites  = [];
 const estDeletes     = [];
 const estLineDeletes = [];
+const estUpdates     = [];
+let   estMissing     = new Set();   // estimate ids that should match nothing
+const EST1           = "e5717a7e-0000-4000-8000-000000000001";
+const NEW_EST        = "e5717a7e-1111-4111-8111-111111111111";
+let   tmplCloneLines = [];          // what the from-template INSERT..SELECT copies
 
 // Column types are INFERRED from the sample values rather than all declared as
 // text. The driver parses by dataTypeID, so declaring a boolean column as text
@@ -175,25 +180,43 @@ globalThis.fetch = async (url, opts = {}) => {
       payload = neonReply(["id"], txnDeleteMisses.has(body.params?.[0])
         ? [] : [{ id: body.params?.[0] }]);
     } else if (/INSERT INTO material_estimates/i.test(sql)) {
+      // The estimate is BORN here now — it returns its own uuid rather than
+      // mirroring one Airtable handed over.
       estWrites.push(body.params?.[0]);
-      payload = neonReply([], []);
+      payload = neonReply(["id"], [{ id: NEW_EST }]);
+    // Anchored on the template table, not just on the word SELECT: the ordinary
+    // per-line insert resolves its item FK with a subselect, so a looser match
+    // caught both statements and quietly double-counted the lines.
+    } else if (/FROM material_estimate_template_lines tl/i.test(sql)) {
+      // The from-template clone: one INSERT ... SELECT, no per-line binds.
+      estLineWrites.push(...tmplCloneLines);
+      payload = neonReply(["id"], tmplCloneLines.map((_, i) => ({ id: `line-${i + 1}` })));
     } else if (/INSERT INTO material_estimate_lines/i.test(sql)) {
-      // The real statement builds one tuple per line, so every 7th param is an id.
-      for (let i = 0; i < (body.params || []).length; i += 7) estLineWrites.push(body.params[i]);
+      // 8 binds per line: estimate, line_no, item (twice via the FK subselect
+      // is ONE bind), qty, cost, description.
+      const ps = body.params || [];
+      const n = Math.round(ps.length / 6);
+      for (let i = 0; i < n; i++) estLineWrites.push(ps[i * 6 + 2]);
       payload = neonReply([], []);
     } else if (/DELETE FROM material_estimate_lines/i.test(sql)) {
-      estLineDeletes.push(...pgArray(body.params?.[0]));
+      // One DELETE by parent uuid, not a list of line ids.
+      estLineDeletes.push(body.params?.[0]);
       payload = neonReply([], []);
+    } else if (/UPDATE material_estimates SET/i.test(sql)) {
+      estUpdates.push(body.params?.[0]);
+      payload = neonReply(["id"], estMissing.has(body.params?.[0]) ? [] : [{ id: body.params?.[0] }]);
     } else if (/DELETE FROM material_estimates/i.test(sql)) {
       estDeletes.push(body.params?.[0]);
-      payload = neonReply([], []);
+      payload = neonReply(["id"], estMissing.has(body.params?.[0]) ? [] : [{ id: body.params?.[0] }]);
+    } else if (/SELECT id, description FROM material_estimate_templates/i.test(sql)) {
+      payload = neonReply(["id", "description"], [{ id: body.params?.[0], description: "Standard shop" }]);
     } else if (/FROM material_estimates e\s+LEFT JOIN material_estimate_lines/i.test(sql)) {
       payload = neonReply(["est_id", "job_name", "job_airtable_id", "created_at", "created_by",
                            "status", "notes", "total", "line_id", "line_number",
                            "item_airtable_id", "description", "quantity", "unit_cost_at_estimate",
                            "item_name", "unit_of_measure", "category"], neonEstimateGet);
     } else if (/FROM material_estimates e/i.test(sql)) {
-      payload = neonReply(["airtable_id", "job_name", "job_airtable_id", "created_at",
+      payload = neonReply(["id", "job_name", "job_airtable_id", "created_at",
                            "created_by", "status", "notes", "total", "line_count"], neonEstimates);
     } else if (/FROM v_stock_levels/i.test(sql)) {
       let rows = neonStock;
@@ -337,20 +360,22 @@ function reset() {
   ];
   estWrites.length = 0; estLineWrites.length = 0;
   estDeletes.length = 0; estLineDeletes.length = 0;
+  estUpdates.length = 0; estMissing = new Set();
+  tmplCloneLines = ["recItemA", "recItemB"];
   neonEstimates = [
-    { airtable_id: "recEst1", job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
+    { id: EST1, job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
       created_at: "2026-07-17T11:39:54.000Z", created_by: "Rick", status: "Estimating",
       notes: null, total: "16420.9900", line_count: 47 },
   ];
   neonEstimateGet = [
     // A real item line…
-    { est_id: "recEst1", job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
+    { est_id: EST1, job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
       created_at: "2026-07-17T11:39:54.000Z", created_by: "Rick", status: "Estimating", notes: null,
       total: "16420.9900", line_id: "recL1", line_number: 1, item_airtable_id: "recItemA",
       description: null, quantity: "10.0000", unit_cost_at_estimate: "0.7500",
       item_name: "1/2\" EMT PIPE", unit_of_measure: "ft", category: "Conduit" },
     // …and a Misc line, which carries text instead of an item link.
-    { est_id: "recEst1", job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
+    { est_id: EST1, job_name: "Bethel School (MIB 433)", job_airtable_id: "reck7xKcgtlNiCorF",
       created_at: "2026-07-17T11:39:54.000Z", created_by: "Rick", status: "Estimating", notes: null,
       total: "16420.9900", line_id: "recL2", line_number: 2, item_airtable_id: null,
       description: "Rental — trencher", quantity: "1.0000", unit_cost_at_estimate: "250.0000",
@@ -779,10 +804,11 @@ await test("S1: deleting a transaction that removed nothing is a 404, not a succ
 await test("D: the estimates list totals come from the view, not a stored rollup", async () => {
   reset();
   const r = json(await GET("estimatesList"));
-  eq(r._source, "neon", "served from Neon");
-  eq(r.estimates[0].id, "recEst1", "Airtable rec id");
-  eq(r.estimates[0].total, 16420.99, "total from v_material_estimate_totals");
-  eq(r.estimates[0].lineCount, 47, "line count from the same view");
+  eq(r._source, "neon", "from Neon");
+  eq(r.estimates[0].id, EST1,
+     "the uuid — an estimate created since the cutover has no rec id to hand the detail view");
+  eq(r.estimates[0].total, 16420.99, "from v_material_estimate_totals, not a stored rollup");
+  eq(r.estimates[0].lineCount, 47, "and the line count with it");
 });
 
 await test("D: an estimate's lines come back with Misc lines intact", async () => {
@@ -799,46 +825,49 @@ await test("D: an estimate's lines come back with Misc lines intact", async () =
   eq(misc.lineTotal, 250, "1 x 250");
 });
 
-await test("D: creating an estimate writes the HEADER before the lines", async () => {
+await test("S4: creating an estimate is native, header then lines, no Airtable", async () => {
   reset();
   const r = json(await POST({ action: "estimateCreate", jobName: "Test Job", createdBy: "Rick",
                               lines: [{ itemId: "recItemA", qty: 2, unitCost: 0.75 }] }));
   eq(r.ok, true, "ok");
-  eq(estWrites.length, 1, "header synced");
-  eq(estLineWrites.length, 1, "line synced");
-  // Order matters: a line resolves estimate_id by looking its parent up, so a
-  // line written first lands with a null FK and never counts toward the total.
-  eq(estWrites[0], "recNewEst", "the header is the estimate just created");
+  eq(r.id, NEW_EST, "returns the uuid Postgres minted");
+  eq(estWrites.length, 1, "one header");
+  eq(estLineWrites.length, 1, "one line");
+  eq(atRequested.some(u => /Estimates/.test(u)), false, "nothing reached Airtable");
+  // Header still first, but for a plainer reason: the lines need its uuid. They
+  // no longer look the parent up by rec id, so the null-FK race is gone.
 });
 
-await test("D: an estimate built FROM A TEMPLATE syncs too — the path that 404'd on prod", async () => {
+await test("S4: an estimate built from a template clones in ONE insert…select", async () => {
   reset();
-  const r = json(await POST({ action: "createEstimateFromTemplate", templateId: "recTmpl1",
+  const r = json(await POST({ action: "createEstimateFromTemplate", templateId: EST1,
                               jobName: "Aaron McLauglin (MIA 274)", createdBy: "Rick" }));
   eq(r.ok, true, "ok");
-  eq(r.lineCount, 1, "the template line cloned into the new estimate");
-  // This is the SECOND handler that creates an estimate, and it shipped without
-  // either sync — so the estimate existed in Airtable, was missing from Neon,
-  // and the app 404'd the moment it opened the thing it had just created.
-  eq(estWrites[0], "recNewEst", "header synced — without this, estimateGet 404s");
-  eq(estLineWrites.length, 1, "line synced — without this, the total reads 0");
+  eq(r.estimateId, NEW_EST, "the new estimate's uuid");
+  eq(r.lineCount, 2, "both template lines cloned");
+  // This is the handler that shipped a 404 to production by writing Airtable and
+  // syncing nothing. There is one store now, so that shape of bug cannot recur.
+  eq(atRequested.some(u => /Estimate/.test(u)), false, "and none of it touched Airtable");
 });
 
-await test("D: replacing lines removes the old ones from Neon too", async () => {
+await test("S4: replacing an estimate's lines is one DELETE by parent, not a list", async () => {
   reset();
-  const r = json(await POST({ action: "estimateUpdate", id: "recEst1", replaceLines: true,
+  const r = json(await POST({ action: "estimateUpdate", id: EST1, replaceLines: true,
                               lines: [{ itemId: "recItemA", qty: 5, unitCost: 0.75 }] }));
   eq(r.ok, true, "ok");
-  eq(estLineDeletes.includes("recOldLine"), true,
-     "the replaced line is gone — nothing repairs a missed delete, and it would keep counting");
-  eq(estLineWrites.length, 1, "the new line landed");
+  eq(estLineDeletes[0], EST1,
+     "deleted by estimate_id — the old path had to ask Airtable which lines existed first");
+  eq(estLineWrites.length, 1, "the replacement landed");
 });
 
-await test("D: deleting an estimate removes it from Neon, lines cascade", async () => {
+await test("S4: deleting an estimate cascades, and a miss is a 404", async () => {
   reset();
-  const r = json(await POST({ action: "estimateDelete", id: "recEst1" }));
+  const r = json(await POST({ action: "estimateDelete", id: EST1 }));
   eq(r.ok, true, "ok");
-  eq(estDeletes[0], "recEst1", "estimate removed — otherwise it keeps showing on the list");
+  eq(estDeletes[0], EST1, "removed — ON DELETE CASCADE takes the lines");
+  estMissing.add("e5717a7e-9999-4999-8999-999999999999");
+  const missing = await POST({ action: "estimateDelete", id: "e5717a7e-9999-4999-8999-999999999999" });
+  eq(missing.statusCode, 404, "a delete that removed nothing does not report success");
 });
 
 console.log("\ninventory.js reference tables — Steps B + C + D\n" + "-".repeat(46));

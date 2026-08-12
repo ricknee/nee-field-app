@@ -8070,6 +8070,23 @@ async function handleCreateInspectionContact(body) {
 
 // ── POWER COMPANIES + POWER COMPANY CONTACTS (for Power Co. picker on Job) ──
 async function handleGetPowerCompanies() {
+  // ── NEON-FIRST (audit item 06) ────────────────────────────────────────────
+  // 9 utilities, all active. Backs the Power Co. tab's company typeahead.
+  //
+  // ⚠ Its CONTACTS are deliberately still on Airtable — see the note on
+  // handleGetContactsForPowerCompany. Moving a parent before its children is
+  // fine here because nothing about this read depends on the contacts.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, name FROM power_companies
+        WHERE coalesce(name,'') <> '' ORDER BY name`);
+    if (q?.rows?.length) {
+      return resp(200, { ok: true, _source: "neon", _ms: q.ms,
+        companies: q.rows.map(r => ({ id: r.airtable_id, name: r.name || "" })) });
+    }
+    console.error(`getPowerCompanies: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const records = await fetchAll(TABLES.powerCompanies, { sortField: F.powerCompany.name, sortDir: "asc" });
   const companies = records
     .map(r => ({ id: r.id, name: r.fields[F.powerCompany.name] || "" }))

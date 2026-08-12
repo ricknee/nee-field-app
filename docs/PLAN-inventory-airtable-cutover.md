@@ -284,16 +284,59 @@ uuid is one data migration plus one read change — cleanup, not cutover, and no
   bare **500**, losing the message that says nothing was charged. The chargeable rows are now
   fetched and checked *before* the indexes.
 
-### ⬜ Before slice 6 archives the base — a decision, not a task
+### ✅ The hole it left, and closing it — `2449a0c`
 
-**Locations, Vendors and Vendor Pricing now have no write path anywhere.** They were always
-read-only in this app, and nobody opens Airtable. Adding a vendor or a location is **new work**, not
-cutover work, and it is easier to decide while the base is still there.
+Found by trying to delete a test part: **the app could only ever CREATE items.** Editing, retiring
+and deleting all happened in Airtable, and the cutover removed that without replacing it.
 
-## What still is not smoked on production
+`itemUpdate` + `itemDelete` (admin-only) close it, and the Edit button lives on the stock lookup —
+where you already are when you notice a cost is wrong. The UI reuses the new-item form rather than
+adding a second one.
 
-- A real **Adjustment** — the fix that unblocks the counting day (`da93e4e`).
-- **Deleting a line from history** — the lowest-stakes of the ledger's six paths.
+> ⚠ **Delete REFUSES when anything references the item, and that refusal is the feature.** An item
+> on an old estimate or a pushed transaction cannot be removed without blanking the line it appears
+> on — history would silently change. The error counts what blocks it (*"4 stock movement(s), 2
+> estimate line(s)"*) and names the alternative: **untick Active**, which hides it from the pickers
+> and leaves every record intact. Delete then only exists for what it is genuinely safe for —
+> something created by mistake that nothing has ever used.
+> Stock settings are deliberately **not** in that guard: a reorder point is a setting on the item,
+> not a record of something that happened, and the FK cascades.
+
+Prod-smoked 2026-08-12: cost edited, TEST PART deleted, an in-use item correctly refused, Active
+toggled. Items, transactions and settings all returned to their pre-test counts.
+
+One asymmetry worth knowing: **create sends only the fields you filled in; edit sends every field,
+including the blank ones.** On create an absent key means "not given"; on edit it would mean "keep
+the old value", so clearing a barcode has to be explicit.
+
+### ⬜ Still open before slice 6 archives the base — a decision, not a task
+
+**Locations, Vendors and Vendor Pricing have no write path anywhere.** They were always read-only in
+this app, and nobody opens Airtable. Adding a vendor or a location is **new work**, and it is easier
+to decide while the base is still there. Items now have the edit screen; these three do not.
+
+## ✅ Everything is smoked on production (2026-08-12)
+
+All six slices, plus the two fixes and the item-edit screen. The adjustment was the last one: TEST
+PART 0 → 15 posted a **+15 delta on the adding leg** and landed on exactly 15, which is the bug that
+made a counting day dangerous. **The counting day is unblocked.**
+
+Three bugs were found by smoking rather than by reading, all the same shape — *it saves fine, then
+something cannot find it again*:
+
+1. A **new item vanished on refresh.** Three reads carried `WHERE COALESCE(airtable_id,'') <> ''`,
+   a Step-B guard meaning "skip malformed rows" that came to mean "skip everything created since
+   the cutover". The list was the visible half; `neonItemIndex` was the worse one, so the item would
+   not have priced in a cart either.
+2. **Adjusting a native item 404'd.** Its on-hand lookup still read `i.airtable_id = $1`. The same
+   grep turned up **seven latent ones** in the loader's FK-resolve passes, which would have set
+   `item_id` to NULL on native rows — invisible to `v_stock_on_hand`, so the next loader run would
+   have quietly removed native material from stock.
+3. **No way to edit or retire an item at all** — see §Slice 5.
+
+⚠ The lesson, having now paid for it five times: **when a domain goes native, grep for
+`airtable_id` in every WHERE, not just in the handlers you are editing.** And match on the clause,
+not the table name — the adjustment's was missed because its `WHERE` sat on a different line.
 
 ## Out of scope
 

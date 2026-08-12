@@ -21,6 +21,10 @@
 // so a mistake stays invisible until the next job happens to hit that status,
 // which can be days. Move one at a time.
 
+// Needed to resolve linked-record fields to their display NAMES — see the note
+// in fireJobStatusWebhooks. Read-only and fails soft, like every other consumer.
+import { neonQuery } from "./_neon.js";
+
 const HOOKS = {
   pcloud:      "https://hook.us1.make.com/cd41jmwojyuhehlap05p2va1lcnnx5vz",
   awarded:     "https://hook.us1.make.com/br272oamyugrnnaq64xdfaci6pjr8way",
@@ -93,6 +97,30 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   const status = str(f[N.status]);
   const out = [];
 
+  // ⚠⚠ LINKED FIELDS COME BACK AS RECORD IDS OVER REST — the automations used
+  // `getCellValueAsString()`, which renders the DISPLAY NAME.
+  //
+  // This is the project's own documented trap (ROADMAP §8: "an Airtable LOOKUP
+  // returns record IDs over the REST API, but renders as a display name inside
+  // a formula"), and it cost a live failure on 2026-08-12: `Contractor` arrived
+  // as `["rec84ohJ7tgrxp8tX"]`, we sent Make `"rec84ohJ7tgrxp8tX"` where the
+  // automation had always sent `"Misc Jobs"`, and scenario 4509211 rejected the
+  // bundle — 2 operations instead of 24, no pCloud folders for Test 2.
+  //
+  // Neon already stores the resolved name, so take it from there rather than
+  // resolving the link with another Airtable round trip. Falls back to whatever
+  // Airtable gave us, which is no worse than the broken behaviour it replaces.
+  let neonJob = null;
+  try {
+    const q = await neonQuery(
+      `SELECT contractor_name, po, po_locked, address_full FROM jobs WHERE airtable_id = $1`,
+      [record?.id]);
+    neonJob = q?.rows?.[0] || null;
+  } catch (e) {
+    console.error(`job-webhook: Neon lookup failed, falling back to Airtable values — ${e?.message || e}`);
+  }
+  const contractorName = neonJob?.contractor_name || str(f[N.contractor]);
+
   // ── 1. Estimating → pCloud folders ──────────────────────────────────────
   // ⚠ The flag write-back is NOT optional. This automation sets
   // "Automation – pCloud Folders Created" itself after a successful POST, and
@@ -103,8 +131,10 @@ export async function fireJobStatusWebhooks(record, atFetch) {
       event: "create_pcloud_folders",
       recordId: record.id,
       jobName: str(f[N.jobName]),
-      jobPO: str(f[N.jobPO]),
-      contractor: str(f[N.contractor]),
+      // `Job PO` is a FORMULA, so REST returns the rendered string — safe. Neon's
+      // `po` is the same value and is used only if Airtable withheld it.
+      jobPO: str(f[N.jobPO]) || str(neonJob?.po),
+      contractor: contractorName,
       year: new Date().getFullYear().toString(),
     }, "pcloud");
     out.push(r);
@@ -131,10 +161,10 @@ export async function fireJobStatusWebhooks(record, atFetch) {
     out.push(await post(HOOKS.awarded, {
       recordId: record.id,
       jobName: str(f[N.jobName]),
-      jobPO: str(f[N.jobPOLocked]),          // ⚠ the LOCKED PO here, not Job PO
+      jobPO: str(f[N.jobPOLocked]) || str(neonJob?.po_locked),  // ⚠ LOCKED PO, not Job PO
       jobType: str(f[N.jobType]),
-      contractor: str(f[N.contractor]),
-      jobAddress: str(f[N.address]),
+      contractor: contractorName,            // ⚠ the NAME — see the note above
+      jobAddress: str(f[N.address]) || str(neonJob?.address_full),
       trelloCreated: f[N.trelloDone] === true,
       tsheetsCreated: f[N.tsheetsDone] === true,
     }, "awarded"));

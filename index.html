@@ -3970,6 +3970,82 @@
     });
   }
 
+  // ── HEIF/HEIC → JPEG ──────────────────────────────────────────────────────
+  // Samsung and iPhone both shoot HEIF by default now, and **Chrome cannot
+  // decode it** — neither createImageBitmap nor <img> will touch the bytes.
+  //
+  // The comment above compressImage used to claim "iPhone HEIC becomes JPEG for
+  // free (canvas can decode it)". That is true on **iOS Safari**, where Apple
+  // decodes HEIC natively, and false everywhere else. It survived because
+  // everyone uploading happened to be on a device where it held.
+  //
+  // Found 2026-08-11: 21 of 28 jobsite photos skipped, every one a `.heif`
+  // handed over by Google Photos under a cache name
+  // (`0a3e8f90-…-1_all_3784.heif`). The 7 that worked were the ones Photos
+  // happened to hold a JPEG for.
+  //
+  // Fetched ONLY when a HEIF is actually selected — same idea as ensureJsPDF.
+  // It is a ~1.4 MB wasm payload and must never sit on the normal upload path,
+  // which runs on jobsite LTE.
+  //
+  // ⚠ jsDelivr, not the cdnjs host jsPDF uses. jsDelivr mirrors npm, so the URL
+  // resolves for any published version; cdnjs only carries libraries somebody
+  // submitted, and this is not one of them.
+  const HEIC2ANY_URL = "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
+
+  function ensureHeifDecoder() {
+    return new Promise((resolve, reject) => {
+      if (window.heic2any) return resolve();
+      if (!document.getElementById("heic2any-script")) {
+        const s = document.createElement("script");
+        s.id  = "heic2any-script";
+        s.src = HEIC2ANY_URL;
+        document.head.appendChild(s);
+      }
+      // Longer than jsPDF's 4.5 s: this is ~1.4 MB rather than ~350 KB, and the
+      // phones that need it are the ones on a jobsite signal.
+      let tries = 40;
+      (function wait() {
+        if (window.heic2any) resolve();
+        else if (--tries > 0) setTimeout(wait, 300);
+        else reject(new Error("HEIF converter failed to load — check your signal and try again"));
+      })();
+    });
+  }
+
+  // ⚠ Extension FIRST, type second. Android routinely hands over an empty
+  // `file.type` for something pulled out of Google Photos, so the MIME type
+  // alone misses exactly the case this exists for.
+  function isHeifFile(f) {
+    const n = String(f?.name || "").toLowerCase();
+    const t = String(f?.type || "").toLowerCase();
+    return /\.(heic|heif)$/.test(n) || t === "image/heic" || t === "image/heif";
+  }
+
+  // Keyed on the File so a full+thumbnail pair costs ONE decode rather than two
+  // — the conversion is by far the slowest step. The PROMISE is cached, not the
+  // result, so two concurrent callers share the work instead of racing.
+  const _heifJpeg = new WeakMap();
+  function heifToJpeg(file) {
+    if (_heifJpeg.has(file)) return _heifJpeg.get(file);
+    const p = (async () => {
+      await ensureHeifDecoder();
+      const out = await window.heic2any({ blob: file, toType: "image/jpeg", quality: 0.92 });
+      // A HEIF container can hold a burst, and heic2any returns an array then.
+      // The first frame is the one the user saw in their gallery.
+      const blob = Array.isArray(out) ? out[0] : out;
+      if (!blob) throw new Error("HEIF converter returned nothing");
+      return blob;
+    })();
+    _heifJpeg.set(file, p);
+    return p;
+  }
+
+  // Converted JPEGs are full-size (a few MB each), so 21 of them held for a
+  // whole batch is real memory on a phone. Callers that know they are finished
+  // with a file say so; everything else is collected when the File is.
+  function releaseHeifJpeg(file) { _heifJpeg.delete(file); }
+
   async function uploadPDFToPCloud({ type, jobId, jobNumber, pdfDoc, filename, metadata = {} }) {
     const pdfBase64 = pdfDoc.output('datauristring').split(',')[1];
     const payload = { type, jobId, jobNumber, pdfBase64, filename, metadata };
@@ -7994,11 +8070,19 @@
 
   // Shrink and re-encode before upload. Three jobs at once:
   //  - a 3–5 MB phone photo becomes ~400 KB, so uploads finish on jobsite LTE
-  //  - iPhone HEIC becomes JPEG for free (canvas can decode it, and every
-  //    browser can display the result — raw HEIC is a viewing headache)
+  //  - HEIF/HEIC becomes JPEG, which every browser can display — raw HEIF is a
+  //    viewing headache and, more to the point, Chrome cannot decode it at all
   //  - EXIF is dropped, which is why orientation must be applied during decode:
   //    without imageOrientation:"from-image" every iPhone photo lands sideways.
+  //
+  // ⚠ THE SECOND LINE USED TO READ "iPhone HEIC becomes JPEG for free (canvas
+  // can decode it)". That was only ever true on iOS Safari. On Chrome/Android it
+  // is false, and it cost 21 of 28 jobsite photos on 2026-08-11 before anyone
+  // noticed. The conversion is now explicit — see heifToJpeg above.
   async function compressImage(file, maxEdge, quality) {
+    // Done HERE rather than at a call site so every consumer inherits it: job
+    // photos, expense receipts, job prints, equipment photos.
+    if (isHeifFile(file)) file = await heifToJpeg(file);
     let bmp = null;
     try {
       bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
@@ -8152,11 +8236,17 @@
         for (let i = 0; i < chunk.length; i++) {
           status.textContent = `Preparing ${start + i + 1} of ${total}…`;
           try {
+            // A HEIF converts on the first call and is reused by the second;
+            // the release afterwards keeps a 28-photo batch from holding every
+            // full-size intermediate JPEG in memory at once.
+            if (isHeifFile(chunk[i])) status.textContent = `Converting ${start + i + 1} of ${total}…`;
             const full  = await compressImage(chunk[i], 2048, 0.75);
             const thumb = await compressImage(chunk[i], 400, 0.7);
+            releaseHeifJpeg(chunk[i]);
             if (!full || !thumb) throw new Error("decoded to nothing");
             prepared.push({ full, thumb });
           } catch (e) {
+            releaseHeifJpeg(chunk[i]);
             // NAMED, not just counted. "1 skipped" sends someone hunting through
             // 28 photos; the filename tells them which one to open in the
             // gallery first, which is also what forces Google Photos to

@@ -603,6 +603,17 @@ Not everything should move. These have no API route for us:
 
 - **pCloud folder creation** (`4509211`) — pCloud's app registration has been dead for months, so
   there is no way for us to hold a token. Make has one from before it broke.
+  > ✅ **Re-confirmed by the owner 2026-08-12: "keep make.com for pcloud integrations."** This is
+  > a decision, not an unfinished task. `netlify/functions/_pcloud.js` (254 lines: list, upload,
+  > download, thumbnails, public links) is written and imports nowhere purely for want of a token
+  > — **do not treat it as dead code to delete, and do not treat pCloud as a migration gap.**
+  > The app now *triggers* the folder creation (2026-08-12, item 04) but Make still does the work,
+  > which is the intended end state.
+  >
+  > ⚠ The one thing worth knowing, filed under no-action: that grandfathered Make app
+  > registration **cannot be rebuilt if it ever breaks**. It has been fine for years. If it ever
+  > isn't, the answer is R2 — already proven here for photos, prints, receipts and estimate PDFs
+  > — not a scramble to re-register with pCloud.
 - **pCloud PDF filing** (`4723276`)
 - **QB Time job creation + Trello cards** (`4509804`) — could move eventually; no reason to.
 - **Google contact sync** (`4729925`)

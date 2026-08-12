@@ -1482,6 +1482,90 @@ await test("setEmployeeActive: an employee Neon doesn't have never reports succe
   delete process.env.DATABASE_URL;
 });
 
+await test("job webhooks: ship INERT — JOB_WEBHOOKS unset posts nothing", async () => {
+  // The four Airtable automations are still deployed. If both they and this
+  // fire, every job reaching Estimating gets TWO sets of pCloud folders and
+  // every Awarded job two Trello cards. The switch is what keeps them apart.
+  const { jobWebhooksEnabled, fireJobStatusWebhooks, fireServiceCallWebhook } =
+    await import("../netlify/functions/_job-webhooks.js");
+
+  delete process.env.JOB_WEBHOOKS;
+  eq(jobWebhooksEnabled(), false, "unset → off");
+
+  // fetch is stubbed to EXPLODE. Checking the return value alone would pass
+  // even if we had already POSTed to Make.
+  const realFetch = globalThis.fetch;
+  let posted = 0;
+  globalThis.fetch = async () => { posted++; throw new Error("must not reach Make while disabled"); };
+  try {
+    const rec = { id: "recX", fields: { "Job Status": "Estimating", "Job Name": "Test" } };
+    eq(await fireJobStatusWebhooks(rec, async () => {}), null, "status hooks inert");
+    eq(await fireServiceCallWebhook(rec), null, "service-call hook inert");
+    eq(posted, 0, "Make was not called at all");
+
+    for (const v of ["", "on", "true", "1", "yes", "airtable"]) {
+      process.env.JOB_WEBHOOKS = v;
+      eq(jobWebhooksEnabled(), false, `"${v}" is not "app" → still off`);
+    }
+    process.env.JOB_WEBHOOKS = "app";
+    eq(jobWebhooksEnabled(), true, `"app" enables it`);
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.JOB_WEBHOOKS;
+  }
+});
+
+await test("job webhooks: the guard flags use an EN DASH, and a wrong name fires every time", async () => {
+  // ⚠ "Automation – pCloud Folders Created" contains U+2013, not a hyphen.
+  // Read the name wrong and the lookup is undefined, which is falsy, which
+  // means the "already done" guard never holds and every status re-save makes
+  // another set of pCloud folders. Asserted against the source so a tidy-up
+  // that "fixes" the dash fails here instead of in pCloud.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_job-webhooks.js", import.meta.url), "utf8");
+  for (const name of ["Automation – pCloud Folders Created",
+                      "Automation – Trello Created",
+                      "Automation – TSheets Created",
+                      "Automation – Trello Completed"]) {
+    ok(src.includes(name), `en-dash field name missing or altered: ${name}`);
+  }
+  ok(!/Automation - (pCloud|Trello|TSheets)/.test(src), "a hyphen crept into an Automation flag name");
+});
+
+await test("job webhooks: fire only on the right status, and respect the done flags", async () => {
+  const { fireJobStatusWebhooks } = await import("../netlify/functions/_job-webhooks.js");
+  process.env.JOB_WEBHOOKS = "app";
+  const realFetch = globalThis.fetch;
+  const hits = [];
+  globalThis.fetch = async (url, opts) => {
+    hits.push(JSON.parse(opts.body).event || "plain");
+    return { ok: true };
+  };
+  const noop = async () => {};
+  try {
+    // Wrong status → nothing.
+    hits.length = 0;
+    await fireJobStatusWebhooks({ id: "r1", fields: { "Job Status": "New Lead" } }, noop);
+    eq(hits.length, 0, "New Lead fires nothing");
+
+    // Estimating, flag already set → nothing. This is the re-save case that
+    // would otherwise duplicate folders in pCloud.
+    hits.length = 0;
+    await fireJobStatusWebhooks({ id: "r2", fields: {
+      "Job Status": "Estimating", "Automation – pCloud Folders Created": true } }, noop);
+    eq(hits.length, 0, "pCloud does not re-fire once its flag is set");
+
+    // Estimating, flag clear → exactly one, and it is the pCloud event.
+    hits.length = 0;
+    await fireJobStatusWebhooks({ id: "r3", fields: { "Job Status": "Estimating" } }, noop);
+    eq(hits.length, 1, "one post");
+    eq(hits[0], "create_pcloud_folders", "the pCloud payload");
+  } finally {
+    globalThis.fetch = realFetch;
+    delete process.env.JOB_WEBHOOKS;
+  }
+});
+
 await test("allocations: ship INERT — ALLOCATIONS_WRITE unset writes nothing", async () => {
   // The most important test in this file's billing section. The four Airtable
   // automations are still deployed, and if both they and this code are live the

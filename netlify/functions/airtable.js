@@ -14,6 +14,7 @@ import { syncExpenseToNeon as syncExpenseToNeonShared } from "./_expenses.js";
 // reports "disabled" when it is off, which is how the cutover is verified.
 import { createLaborAllocation, createMaterialAllocation,
          attachAllocationsToInvoice } from "./_allocations.js";
+import { fireJobStatusWebhooks, fireServiceCallWebhook } from "./_job-webhooks.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
 // pCloud lost the store decision when its app-registration page turned out to
@@ -5383,7 +5384,20 @@ async function handleUpdateJobStatus(body) {
   const VALID = ["New Lead","Estimating","Awarded","Service Call Scheduled","Ready to Invoice","Completed","Not Awarded"];
   if (!VALID.includes(status)) return resp(400, { ok: false, error: "Invalid status value." });
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fld2FBMjvkOsy9Puu": status } }) });
-  return resp(200, { ok: true, updatedId: data.id });
+
+  // Fire whatever this status change is supposed to fire — pCloud folders at
+  // Estimating, Trello + QuickBooks Time at Awarded, Trello-completed at
+  // Completed. Four Airtable automations did this until 2026-08-12; see
+  // docs/PLAN-replumb-job-webhooks.md and _job-webhooks.js.
+  //
+  // `data` is the PATCH response, so its fields are the CURRENT ones — exactly
+  // what the automation's trigger condition would have evaluated after the same
+  // write. That is why no re-read is needed.
+  //
+  // Inert until JOB_WEBHOOKS=app, and each automation stays deployed until its
+  // replacement has been seen to fire once.
+  const webhooks = await fireJobStatusWebhooks(data, atFetch);
+  return resp(200, { ok: true, updatedId: data.id, ...(webhooks ? { webhooks } : {}) });
 }
 
 // Updates the Power Co. tab on a Job. Accepts powerCompanyId and powerContactId
@@ -5424,7 +5438,12 @@ async function handleStartServiceCall(body) {
   const { jobId } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldgar4OL6AL5k1S6": true } }) });
-  return resp(200, { ok: true, updatedId: data.id });
+
+  // Its own hook, and its own trigger shape: not a status change but
+  // "Start Service Call" checked AND Job Type = Service Call. The type check
+  // lives in the module so the condition stays next to the payload it guards.
+  const webhooks = await fireServiceCallWebhook(data);
+  return resp(200, { ok: true, updatedId: data.id, ...(webhooks ? { webhooks } : {}) });
 }
 
 async function handleCompleteServiceCall(body) {

@@ -654,17 +654,21 @@ async function handleVendors(params) {
 }
 
 // ── LOCATIONS ──────────────────────────────────────────────
-async function handleLocations() {
+async function handleLocations(params) {
+  // `all=1` is the manage screen only: everywhere else a retired location must
+  // stay out of the pickers, but the screen that retires them has to be able to
+  // show one in order to restore it.
+  const all = params?.all === "1";
   // The table this migration exists for. In Airtable a location is a set of
   // field NAMES on Inventory Items; here it is a row you can insert.
   const q = await neonQuery(
-    `SELECT COALESCE(airtable_id, id::text) AS id, name, location_type AS type
-       FROM locations WHERE active
-      ORDER BY name ASC`);
+    `SELECT COALESCE(airtable_id, id::text) AS id, name, location_type AS type, active
+       FROM locations WHERE ($1::boolean OR active)
+      ORDER BY name ASC`, [all]);
   if (q?.rows) {
     return resp(200, {
       ok: true, _source: "neon",
-      locations: q.rows.map(r => ({ id: r.id, name: r.name || "", type: r.type || "" })),
+      locations: q.rows.map(r => ({ id: r.id, name: r.name || "", type: r.type || "", active: r.active === true })),
     });
   }
 
@@ -3643,7 +3647,7 @@ export async function handler(event) {
       if (action === "jobs")              return await handleJobs();
       if (action === "estimatingJobs")    return await handleEstimatingJobs();
       if (action === "awardedJobs")       return await handleAwardedJobs();
-      if (action === "locations")         return await handleLocations();
+      if (action === "locations")         return await handleLocations(params);
       if (action === "vendors")           return await handleVendors(params);
       if (action === "items")             return await handleItems();
       if (action === "history")           return await handleHistory(params);

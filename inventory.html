@@ -276,6 +276,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="newitem-btn" onclick="goNewItem()" style="display:none">
       <div class="ico">➕</div><div><div class="lbl">Add New Item</div><div class="sub">Create a new inventory item</div></div>
     </button>
+    <button class="big-btn" id="manageloc-btn" onclick="goManageLocations()" style="display:none">
+      <div class="ico">📍</div><div><div class="lbl">Shops &amp; Trucks</div><div class="sub">Add or retire a stock location</div></div>
+    </button>
     <button class="big-btn" id="wirecost-btn" onclick="goWireCostCalc()" style="display:none">
       <div class="ico">🧮</div><div><div class="lbl">Wire Cost Calculator</div><div class="sub">Convert $/ft invoice prices to $/lb</div></div>
     </button>
@@ -294,6 +297,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
   <div id="loc-list" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:8px;">
     <div class="loading"><div class="spinner"></div><br>Loading…</div>
   </div>
+</div>
+
+<!-- MANAGE LOCATIONS (admin) -->
+<div id="s-manageloc" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Shops &amp; Trucks</h2></div>
+  <div class="log-body" id="manageloc-body"></div>
 </div>
 
 <!-- LOG (Use / Return) -->
@@ -1078,6 +1087,8 @@ function applyUser() {
   if (adjBtn)      adjBtn.style.display      = isAdmin ? "flex" : "none";
   if (pushBtn)     pushBtn.style.display     = isAdmin ? "flex" : "none";
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
+  var managelocBtn = document.getElementById("manageloc-btn");
+  if (managelocBtn) managelocBtn.style.display = isAdmin ? "flex" : "none";
   var wirecostBtn = document.getElementById("wirecost-btn");
   if (wirecostBtn) wirecostBtn.style.display = isAdmin ? "flex" : "none";
   var updpriceBtn = document.getElementById("updprice-btn");
@@ -3950,14 +3961,24 @@ function renderVendorPricingContent(summary, vendors, itemId) {
   var el = document.getElementById("vendor-pricing-section");
   if (!el) return;
 
+  // Stashed so the edit form can prefill from what is already on screen rather
+  // than re-fetching a row the user is looking at.
+  window._lastPricingVendors = vendors || [];
+
   var html = '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 8px;">Vendor Pricing</div>';
+
+  var canEdit = currentUser && currentUser.role === "admin";
+  var addBtn = canEdit
+    ? '<button onclick="openPricingForm(\'' + itemId + '\')" style="background:var(--navy-mid);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-size:12px;font-weight:700;padding:8px 12px;cursor:pointer;">+ Add vendor price</button>'
+    : '';
 
   // Empty state — no vendor pricing records for this item at all
   if (!vendors.length) {
     html +=
       '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--dim);font-size:13px;">' +
-        '<div style="margin-bottom:4px;">No vendor pricing yet for this item.</div>' +
-        '<div style="font-size:11px;color:var(--muted);">Add a Vendor Pricing record in Airtable to track what your suppliers charge.</div>' +
+        '<div style="margin-bottom:' + (canEdit ? '10px' : '4px') + ';">No vendor pricing yet for this item.</div>' +
+        (canEdit ? addBtn
+                 : '<div style="font-size:11px;color:var(--muted);">Ask an admin to add what your suppliers charge.</div>') +
       '</div>';
     el.innerHTML = html;
     return;
@@ -4071,10 +4092,144 @@ function renderVendorPricingContent(summary, vendors, itemId) {
       html += '<div style="font-size:11px;color:var(--dim);margin-top:6px;font-style:italic;">' + v.notes + '</div>';
     }
 
+    if (canEdit) {
+      html += '<div style="display:flex;gap:8px;margin-top:10px;">';
+      // "Make preferred" is offered rather than a toggle, because preferring one
+      // vendor un-prefers the other — it is a single decision, not two.
+      if (!v.preferred && v.active) {
+        html += '<button onclick="makePreferred(\'' + itemId + '\',\'' + v.id + '\')" style="flex:1;background:var(--navy-mid);border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-size:11px;font-weight:700;padding:7px;cursor:pointer;">👍 Make preferred</button>';
+      }
+      html += '<button onclick="openPricingForm(\'' + itemId + '\',\'' + v.id + '\')" style="flex:1;background:var(--slate);border:none;border-radius:8px;color:var(--text);font-size:11px;font-weight:600;padding:7px;cursor:pointer;">✎ Edit</button>';
+      html += '<button onclick="deletePricing(\'' + itemId + '\',\'' + v.id + '\',\'' + (v.vendorName || '').replace(/'/g, "\\'") + '\')" style="background:transparent;border:1px solid var(--red);border-radius:8px;color:var(--red);font-size:11px;font-weight:600;padding:7px 12px;cursor:pointer;">Del</button>';
+      html += '</div>';
+    }
+
     html += '</div>';
   });
 
+  if (canEdit) html += '<div style="margin-top:4px;">' + addBtn + '</div>';
+
   el.innerHTML = html;
+}
+
+// Re-render in place after a change. NOT renderVendorPricingSection() — that
+// appends its own placeholder, so calling it again stacks a second panel.
+async function refreshPricing(itemId) {
+  try {
+    var d = await apiGet("itemVendorPricing", { itemId: itemId });
+    renderVendorPricingContent(d.summary || {}, d.vendors || [], itemId);
+    // The summary card shows Default vs Live, and a price change can move the
+    // live figure — so the item's cached cost is stale until the next lookup.
+    var cached = allItems.find(function(i){ return i.id === itemId; });
+    if (cached && d.summary && d.summary.defaultCost) cached.cost = d.summary.defaultCost;
+  } catch (ex) { showToast("Could not refresh pricing: " + ex.message, true); }
+}
+
+// ── VENDOR PRICING — add / edit ───────────────────────────
+// A prompt-based form rather than a screen: it is admin-only, used a handful of
+// times a month, and lives inside a panel that is already a sub-view of the
+// stock lookup. A third nested screen would cost more than it returns.
+var _pricingVendors = null;
+
+async function openPricingForm(itemId, pricingId) {
+  if (!currentUser || currentUser.role !== "admin") { showToast("Admin only", true); return; }
+
+  // Vendor list is fetched once per session — it changes rarely and the form
+  // should open instantly the second time.
+  if (!_pricingVendors) {
+    try { _pricingVendors = (await apiGet("vendors")).vendors || []; }
+    catch (ex) { showToast("Could not load vendors: " + ex.message, true); return; }
+  }
+
+  var existing = null;
+  if (pricingId) {
+    var sec = window._lastPricingVendors || [];
+    existing = sec.find(function(v){ return v.id === pricingId; }) || null;
+  }
+
+  var vendorId = existing ? existing.vendorId : null;
+  if (!existing) {
+    if (!_pricingVendors.length) {
+      if (!confirm("No vendors yet. Add one now?")) return;
+      var made = await addVendorInline();
+      if (!made) return;
+      vendorId = made.id;
+    } else {
+      var list = _pricingVendors.map(function(v, i){ return (i + 1) + ") " + v.name; }).join("\n");
+      var pick = prompt("Which vendor?\n\n" + list + "\n\n0) + Add a new vendor\n\nEnter a number:");
+      if (pick === null) return;
+      var n = parseInt(pick, 10);
+      if (n === 0) {
+        var v2 = await addVendorInline();
+        if (!v2) return;
+        vendorId = v2.id;
+      } else {
+        var chosen = _pricingVendors[n - 1];
+        if (!chosen) { showToast("No vendor picked", true); return; }
+        vendorId = chosen.id;
+      }
+    }
+  }
+
+  var costStr = prompt("Unit cost from this vendor:", existing ? String(existing.unitCost || "") : "");
+  if (costStr === null) return;
+  var cost = parseFloat(costStr);
+  if (isNaN(cost) || cost < 0) { showToast("Enter a valid cost", true); return; }
+
+  var part = prompt("Vendor part number (optional):", existing ? (existing.partNumber || "") : "");
+  if (part === null) return;
+
+  var pref = confirm("Make this the PREFERRED vendor for this item?\n\nThe preferred price is what estimates quote. Choosing this one un-prefers any other.");
+
+  try {
+    await apiPost({
+      action: "vendorPricingSave",
+      pricingId: pricingId || undefined,
+      itemId: pricingId ? undefined : itemId,
+      vendorId: pricingId ? undefined : vendorId,
+      unitCost: cost,
+      vendorPartNumber: part.trim(),
+      preferred: pref,
+      active: true
+    });
+    showToast("✓ Vendor price saved");
+    refreshPricing(itemId);
+  } catch (ex) {
+    showToast(ex.message, true);
+  }
+}
+
+// Adding a vendor from inside the pricing form, so a missing supplier does not
+// send you to another screen mid-task.
+async function addVendorInline() {
+  var name = prompt("New vendor name:");
+  if (name === null || !name.trim()) return null;
+  try {
+    var d = await apiPost({ action: "vendorSave", name: name.trim(), active: true });
+    _pricingVendors = null;   // re-fetch so the new one is in the picker
+    showToast("✓ " + d.vendor.name + " added");
+    return d.vendor;
+  } catch (ex) {
+    showToast(ex.message, true);
+    return null;
+  }
+}
+
+async function makePreferred(itemId, pricingId) {
+  try {
+    await apiPost({ action: "vendorPricingSave", pricingId: pricingId, preferred: true });
+    showToast("✓ Preferred vendor updated");
+    refreshPricing(itemId);
+  } catch (ex) { showToast(ex.message, true); }
+}
+
+async function deletePricing(itemId, pricingId, vendorName) {
+  if (!confirm('Remove ' + (vendorName || "this vendor") + "'s price for this item?")) return;
+  try {
+    await apiPost({ action: "vendorPricingDelete", pricingId: pricingId });
+    showToast("✓ Vendor price removed");
+    refreshPricing(itemId);
+  } catch (ex) { showToast(ex.message, true); }
 }
 
 // ── SYNC DEFAULT UNIT COST TO LIVE VENDOR PRICE ──────────
@@ -4236,6 +4391,97 @@ function saveOrCreateReorderPoint(input) {
       input.style.borderColor = "var(--red)";
       showToast("Save failed: " + ex.message, true);
     });
+}
+
+// ═══════════════════════════════════════════════════════════
+// MANAGE LOCATIONS (admin)
+// A stock location used to be a set of FIELD NAMES on the Airtable items table
+// — adding a truck meant hand-adding three columns. Here it is a row, so this
+// screen can exist at all.
+// ═══════════════════════════════════════════════════════════
+async function goManageLocations() {
+  if (!currentUser || currentUser.role !== "admin") { showToast("Admin only", true); return; }
+  showScreen("manageloc");
+  var body = document.getElementById("manageloc-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+
+  // `all=1` so retired locations are visible here and nowhere else — this is
+  // the one screen where you need to see something you switched off, to switch
+  // it back on.
+  var locs;
+  try { locs = (await apiGet("locations", { all: "1" })).locations || []; }
+  catch (ex) { body.innerHTML = '<div style="color:var(--red);padding:16px;">Could not load: ' + ex.message + '</div>'; return; }
+
+  var html = '<button class="primary-btn" onclick="addLocation()" style="margin-bottom:14px;">+ Add a shop or truck</button>';
+
+  if (!locs.length) {
+    html += '<div style="color:var(--dim);text-align:center;padding:20px;">No locations yet.</div>';
+  }
+
+  locs.forEach(function(l) {
+    var off = l.active === false;
+    html += '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;' + (off ? 'opacity:.55;' : '') + '">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">';
+    html += '<div style="flex:1;min-width:0;">';
+    html += '<div style="font-size:15px;font-weight:600;color:var(--text);">' + l.name + (off ? ' <span style="font-size:10px;color:var(--muted);">(retired)</span>' : '') + '</div>';
+    if (l.type) html += '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' + l.type + '</div>';
+    html += '</div>';
+    html += '<button onclick="renameLocation(\'' + l.id + '\',\'' + l.name.replace(/'/g, "\\'") + '\')" style="background:var(--slate);border:none;border-radius:8px;color:var(--text);font-size:11px;font-weight:600;padding:7px 12px;cursor:pointer;">✎</button>';
+    html += '<button onclick="toggleLocation(\'' + l.id + '\',' + (off ? 'true' : 'false') + ')" style="background:transparent;border:1px solid ' + (off ? 'var(--green)' : 'var(--muted)') + ';border-radius:8px;color:' + (off ? 'var(--green)' : 'var(--dim)') + ';font-size:11px;font-weight:600;padding:7px 12px;cursor:pointer;">' + (off ? 'Restore' : 'Retire') + '</button>';
+    html += '</div></div>';
+  });
+
+  // No delete, deliberately. A location appears on every transaction ever
+  // logged against it; retiring hides it from the pickers and leaves the
+  // history readable.
+  html += '<div style="font-size:11px;color:var(--muted);margin-top:10px;line-height:1.5;">' +
+          'Retiring hides a location from the pickers and keeps its history. There is no delete — ' +
+          'a location appears on every movement ever logged against it.</div>' +
+          '<div style="height:24px;"></div>';
+  body.innerHTML = html;
+}
+
+// The pickers iterate allLocations directly, so it is re-fetched rather than
+// cleared — a null here would throw on the next Use or Transfer screen. Only
+// the ACTIVE ones, because that is what a picker should offer.
+async function reloadLocationCache() {
+  try { allLocations = (await apiGet("locations")).locations || allLocations; }
+  catch (ex) { /* the manage screen still refreshes; the picker keeps its last good list */ }
+}
+
+async function addLocation() {
+  var name = prompt("Name of the shop or truck:");
+  if (name === null || !name.trim()) return;
+  var type = prompt("Type (optional) — e.g. Shop, Truck, Trailer:", "");
+  if (type === null) return;
+  try {
+    await apiPost({ action: "locationSave", name: name.trim(), locationType: type.trim(), active: true });
+    showToast("✓ " + name.trim() + " added");
+    await reloadLocationCache();
+    goManageLocations();
+  } catch (ex) { showToast(ex.message, true); }
+}
+
+async function renameLocation(id, current) {
+  var name = prompt("Rename this location:", current);
+  if (name === null || !name.trim() || name.trim() === current) return;
+  try {
+    await apiPost({ action: "locationSave", locationId: id, name: name.trim() });
+    showToast("✓ Renamed");
+    await reloadLocationCache();
+    goManageLocations();
+  } catch (ex) { showToast(ex.message, true); }
+}
+
+async function toggleLocation(id, currentlyOff) {
+  var turningOff = !currentlyOff;
+  if (turningOff && !confirm("Retire this location?\n\nIt disappears from the pickers. Its history stays, and you can restore it here.")) return;
+  try {
+    await apiPost({ action: "locationSave", locationId: id, active: currentlyOff });
+    showToast(turningOff ? "✓ Retired" : "✓ Restored");
+    await reloadLocationCache();
+    goManageLocations();
+  } catch (ex) { showToast(ex.message, true); }
 }
 
 // ═══════════════════════════════════════════════════════════

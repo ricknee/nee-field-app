@@ -488,11 +488,20 @@ const _TIME_SELF_WRITES = new Set([
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate",
+  // ⚠ Deleting a job estimate has NO STATUS GUARD — owner's explicit call
+  // 2026-08-20 — so a Sent or Approved estimate can be erased. Strict admin
+  // rather than admin+office precisely because this tier IS the guard; office
+  // handles money already earned, not the destruction of what was quoted.
+  "deleteJobEstimate",
   "addScheduleEntry", "updateScheduleEntry", "deleteScheduleEntry",
   // One-off migration action, admin only. Gated by role rather than by
   // ADMIN_BACKFILL_TOKEN: it is idempotent, copies rather than mutates, and the
   // token is itself a write-only Netlify secret nobody has a copy of.
   "copyLiftPhotosToR2", "copyFleetPhotosToR2", "copyEstimatePdfsToR2",
+  // Same shape: the Contacts loader for db/schema/048. It has to run in here
+  // rather than from a laptop because the LOCAL Airtable PAT is scoped to the
+  // sandbox base and 403s on production — only the function holds a prod key.
+  "backfillContacts",
   // Turning a person's app access on or off. Admin only — this is the action
   // that kills live sessions, and office manages money, not access.
   "setEmployeeActive",
@@ -541,7 +550,11 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // otherwise get. Reading them stays open to any signed-in role: the picker
   // renders inside the New Job Estimate modal, which is already admin-gated in
   // the UI, and a read leaks nothing a job's own estimate does not.
-  "estimateTemplateSave", "estimateTemplateArchive",
+  // Hard-deleting one sits at the same tier as deleting a photo: irreversible
+  // for a natively-created template (no Airtable copy to recover from), but
+  // it cannot alter a single figure on an existing quote, because a template's
+  // numbers are snapshotted into the estimate at create time.
+  "estimateTemplateSave", "estimateTemplateArchive", "estimateTemplateDelete",
   // Which city tax applies to a job's work. Same tier as the billable rate: a job
   // setting that moves money, so admin+office, not the whole crew.
   "updateJobCityTax",
@@ -6544,6 +6557,24 @@ const ET_SELECT = `
     FROM estimate_templates t
     LEFT JOIN companies c ON c.airtable_id = t.contractor_airtable_id`;
 
+// Who to stamp into `updated_by`.
+//
+// ⚠ THE TOKEN DOES NOT CARRY A NAME. `signToken` puts only { id, role, iat, exp }
+// in the payload, so `authUser.name` is always undefined — reading it wrote the
+// Airtable rec id into the audit column instead, which is useless to a human
+// reading the manager. Found on the first live edit, 2026-08-20.
+//
+// The id IS the Airtable employee rec id (login deliberately still returns that
+// — see the note on clockEmployee), so one indexed lookup resolves it. Falls
+// back to the id rather than NULL: a rec id is at least traceable, and this must
+// never be the reason a save fails.
+async function actorName(authUser) {
+  const id = authUser?.id ? String(authUser.id) : null;
+  if (!id) return null;
+  const q = await neonQuery(`SELECT name FROM employees WHERE airtable_id = $1`, [id]);
+  return (q?.rows?.[0]?.name || id).slice(0, 80);
+}
+
 function mapTemplateRow(r) {
   const s = (v) => (v === null || v === undefined ? "" : String(v));
   const n = (v) => (v === null || v === undefined ? null : Number(v));
@@ -6578,7 +6609,14 @@ function mapTemplateRow(r) {
 // Airtable FIND had to defend against cannot occur here at all: this is an
 // equality on a resolved name, not a FIND over a joined link field.
 async function handleEstimateTemplates(params) {
-  const want = String(params?.contractor || "").trim();
+  // `all=1` widens the list to every active template regardless of contractor,
+  // backing the "Show all contractors" toggle under the dropdown. It is a
+  // deliberate opt-in rather than the default: Standard Terms are written per
+  // contractor, so loading another contractor's template composes THEIR terms
+  // into a quote that is about to go out under someone else's name. The filter
+  // is a guard rail, and this is the gate in it — not its removal.
+  const all  = String(params?.all || "") === "1";
+  const want = all ? "" : String(params?.contractor || "").trim();
   const q = await neonQuery(
     `${ET_SELECT}
       WHERE t.active
@@ -6686,7 +6724,7 @@ async function handleEstimateTemplateSave(body, authUser) {
   }
 
   const active = b.active !== false;   // new templates default ACTIVE
-  const who    = String(authUser?.name || authUser?.id || "").slice(0, 80) || null;
+  const who    = await actorName(authUser);
   const vals   = [name, contractorId, contractorName, active,
                   text(b.scopeOfWork), text(b.exclusions), text(b.standardTerms),
                   money(b.basePrice), money(b.defaultLaborHours), money(b.defaultMaterialCost),
@@ -6735,7 +6773,7 @@ async function handleEstimateTemplateArchive(body, authUser) {
   const handle = String(body?.templateId || "").trim();
   if (!handle) return resp(400, { ok: false, error: "Missing templateId." });
   const active = body?.active === true;   // explicit true = restore, anything else = archive
-  const who    = String(authUser?.name || authUser?.id || "").slice(0, 80) || null;
+  const who    = await actorName(authUser);
 
   let rows;
   try {
@@ -6750,6 +6788,91 @@ async function handleEstimateTemplateArchive(body, authUser) {
   }
   if (!rows?.length) return resp(404, { ok: false, error: "That template no longer exists." });
   return resp(200, { ok: true, templateId: rows[0].handle, name: rows[0].template_name, active: rows[0].active });
+}
+
+// ── DELETE A TEMPLATE FOR GOOD ───────────────────────────────────────────
+// Archiving is the normal path and stays the default in the UI. This exists
+// because test rows and mistakes accumulate, and an Archived tab full of junk
+// is its own problem.
+//
+// ⚠ It NULLs `source_template_handle` on every estimate that pointed here,
+// in the same request. Leaving the handle would be a breadcrumb to a row that
+// no longer exists — worse than no breadcrumb, because it reads like data.
+// The estimates themselves are untouched: a template's numbers are SNAPSHOTTED
+// into the estimate at create time, so deleting the template cannot change a
+// single figure on a quote that already went out. That is the property that
+// makes a hard delete safe here at all.
+//
+// The count is returned so the client can say what it just orphaned.
+async function handleEstimateTemplateDelete(body) {
+  const handle = String(body?.templateId || "").trim();
+  if (!handle) return resp(400, { ok: false, error: "Missing templateId." });
+
+  let rows, orphaned = 0;
+  try {
+    // Order matters: clear the references first. If the DELETE ran first and
+    // the UPDATE then failed, the handles would dangle with nothing left to
+    // point at and no error surfaced to anyone.
+    const cleared = await neonWrite("estimateTemplate.clearRefs",
+      `UPDATE job_estimates SET source_template_handle = NULL
+        WHERE source_template_handle = $1 RETURNING 1`, [handle]);
+    orphaned = cleared?.length || 0;
+
+    rows = await neonWrite("estimateTemplate.delete",
+      `DELETE FROM estimate_templates
+        WHERE airtable_id = $1 OR id::text = $1
+        RETURNING COALESCE(airtable_id, id::text) AS handle, template_name`, [handle]);
+  } catch (e) {
+    console.error(`estimateTemplateDelete: ${e?.message || e}`);
+    return resp(502, { ok: false, error: "Couldn't delete the template. Please try again." });
+  }
+  if (!rows?.length) return resp(404, { ok: false, error: "That template no longer exists." });
+  return resp(200, { ok: true, deletedId: rows[0].handle, name: rows[0].template_name, orphaned });
+}
+
+// ── DELETE A JOB ESTIMATE ────────────────────────────────────────────────
+// STRICT ADMIN (_ADMIN_POSTS), not admin+office like the other back-office
+// money ops.
+//
+// ⚠⚠ THERE IS NO STATUS GUARD. Owner's explicit call, 2026-08-20, after being
+// shown the alternative: a Sent or Approved estimate is a record of what a
+// customer was quoted, and this will erase one without complaint. The
+// protection is therefore entirely (a) the strict-admin tier and (b) a client
+// confirm that names the estimate and its amount. If you are tempted to relax
+// either, the guard you are removing is the only one there is.
+//
+// Airtable FIRST, then Neon, matching every other delete in this file: Airtable
+// is still the identity authority for estimates, and a Neon-only delete would
+// be silently undone by nothing — but a row that vanished from Neon while
+// living on in Airtable would reappear in any read that falls back.
+//
+// `sent_estimate_pdfs.estimate_id` is ON DELETE SET NULL, so a PDF snapshot
+// SURVIVES its parent estimate. That is deliberate at the schema level: the PDF
+// is the thing that actually went to the customer, and it should outlive the
+// master record being tidied away.
+async function handleDeleteJobEstimate(body) {
+  const estimateId = String(body?.estimateId || "").trim();
+  if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
+  if (!estimateId.startsWith("rec")) {
+    return resp(400, { ok: false, error: "That doesn't look like an estimate id." });
+  }
+
+  try {
+    await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, { method: "DELETE" });
+  } catch (e) {
+    console.error(`deleteJobEstimate: Airtable delete failed — ${e?.message || e}`);
+    return resp(502, { ok: false, error: "Couldn't delete the estimate. Please try again." });
+  }
+
+  // Fails soft on purpose. The record is gone from Airtable either way, and the
+  // hourly job sync does not resurrect estimates. A 500 here would tell the user
+  // nothing happened when the destructive half already has.
+  await neonWrite("estimate.delete",
+    `DELETE FROM job_estimates WHERE airtable_id = $1`, [estimateId]).catch((e) => {
+      console.error(`deleteJobEstimate: Neon delete failed, Airtable row already gone — ${e?.message || e}`);
+    });
+
+  return resp(200, { ok: true, deletedId: estimateId });
 }
 
 // ── CREATE JOB ESTIMATE ──────────────────────────────────────────────────
@@ -8396,6 +8519,98 @@ async function handleListContractors() {
 //     handleVendors (`r.fields[Active] !== false`) which treats blank
 //     as "included" — only an explicitly unchecked box excludes.
 // Role is also returned (multipleSelects → joined string) for display.
+// ── ONE-OFF LOADER: Airtable Contacts → Neon (db/schema/048) ──────────────
+// Runs INSIDE the function rather than from a laptop because the local Airtable
+// PAT is scoped to the sandbox base and 403s on production — only Netlify holds
+// a prod key. Same reasoning as copyLiftPhotosToR2 and friends, and the same
+// reason the inventory loader lives here too.
+//
+// Idempotent by construction: ON CONFLICT (airtable_id) DO UPDATE, so re-running
+// is a refresh, not a duplicate. Run it again any time Airtable drifts ahead.
+//
+// ⚠ multipleSelects arrive as ARRAYS. They are joined to the same display string
+// `g()` produces on the read path, because the whole point of the flip is that
+// nothing on screen changes.
+async function handleBackfillContacts() {
+  if (!neonEnabled()) return resp(400, { ok: false, error: "Neon is not configured." });
+
+  const nz    = (v) => { const s = String(v ?? "").trim(); return s || null; };
+  const multi = (v) => (Array.isArray(v) ? (v.filter(Boolean).join(", ") || null) : nz(v));
+  const link  = (v) => (Array.isArray(v) && v.length
+    ? (typeof v[0] === "string" ? v[0] : v[0]?.id || null) : null);
+
+  // Chunked so one oversized statement can't blow the parameter limit; 100 rows
+  // × 12 columns is comfortably inside Postgres's 65535 bound.
+  async function upsert(label, rows, cols, sets) {
+    let done = 0;
+    for (let i = 0; i < rows.length; i += 100) {
+      const chunk = rows.slice(i, i + 100);
+      const params = [];
+      const tuples = chunk.map((vals) => {
+        const start = params.length;
+        params.push(...vals);
+        return `(${vals.map((_, k) => `$${start + k + 1}`).join(",")})`;
+      });
+      await neonWrite(label,
+        `INSERT INTO ${label.split(".")[0]} (${cols.join(",")}) VALUES ${tuples.join(",")}
+         ON CONFLICT (airtable_id) DO UPDATE SET ${sets}, synced_at = now()`, params);
+      done += chunk.length;
+    }
+    return done;
+  }
+
+  const cRecs = await fetchAll(TABLES.contacts, {});
+  const cRows = cRecs.map((r) => {
+    const f = r.fields || {};
+    return [r.id, nz(f[F.contact.firstName]), nz(f[F.contact.lastName]),
+            nz(f[F.contact.primaryPhone]), nz(f[F.contact.primaryEmail]),
+            link(f[F.contact.company]), multi(f[F.contact.role]),
+            nz(f[F.contact.street]), nz(f[F.contact.city]), nz(f[F.contact.state]),
+            nz(f[F.contact.zip]), f[F.contact.active] !== false];
+  });
+  const contacts = await upsert("contacts.backfill", cRows,
+    ["airtable_id","first_name","last_name","primary_phone","primary_email",
+     "company_airtable_id","role","street","city","state","zip","active"],
+    `first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
+     primary_phone=EXCLUDED.primary_phone, primary_email=EXCLUDED.primary_email,
+     company_airtable_id=EXCLUDED.company_airtable_id, role=EXCLUDED.role,
+     street=EXCLUDED.street, city=EXCLUDED.city, state=EXCLUDED.state,
+     zip=EXCLUDED.zip, active=EXCLUDED.active`);
+
+  const pRecs = await fetchAll(TABLES.powerContacts, {});
+  const pRows = pRecs.map((r) => {
+    const f = r.fields || {};
+    return [r.id, nz(f[F.powerContact.firstName]), nz(f[F.powerContact.lastName]),
+            nz(f[F.powerContact.cellPhone]), nz(f[F.powerContact.officePhone]),
+            nz(f[F.powerContact.email]), link(f[F.powerContact.powerCompanyLink]),
+            multi(f[F.powerContact.companyName]), multi(f[F.powerContact.jobRoles]),
+            nz(f[F.powerContact.notes]), f[F.powerContact.active] !== false];
+  });
+  const powerContacts = await upsert("power_contacts.backfill", pRows,
+    ["airtable_id","first_name","last_name","cell_phone","office_phone","email",
+     "power_company_airtable_id","power_company_name","job_roles","notes","active"],
+    `first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
+     cell_phone=EXCLUDED.cell_phone, office_phone=EXCLUDED.office_phone,
+     email=EXCLUDED.email,
+     power_company_airtable_id=EXCLUDED.power_company_airtable_id,
+     power_company_name=EXCLUDED.power_company_name, job_roles=EXCLUDED.job_roles,
+     notes=EXCLUDED.notes, active=EXCLUDED.active`);
+
+  // Resolve the FKs once the rows exist. Kept separate from the upserts so a
+  // company that has not been loaded yet leaves a NULL rather than failing the
+  // whole batch — the link id is stored either way and is what the reads use.
+  await neonWrite("contacts.linkCompany",
+    `UPDATE contacts c SET company_id = co.id
+       FROM companies co WHERE co.airtable_id = c.company_airtable_id
+        AND c.company_id IS DISTINCT FROM co.id`);
+  await neonWrite("power_contacts.linkCompany",
+    `UPDATE power_contacts pc SET power_company_id = p.id
+       FROM power_companies p WHERE p.airtable_id = pc.power_company_airtable_id
+        AND pc.power_company_id IS DISTINCT FROM p.id`);
+
+  return resp(200, { ok: true, contacts, powerContacts });
+}
+
 async function handleListContactsByCompany(params) {
   const companyId = String(params?.companyId || "").trim();
   if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
@@ -12174,6 +12389,7 @@ export async function handler(event) {
       if (body.action === "copyLiftPhotosToR2")   return await handleCopyLiftPhotosToR2();
       if (body.action === "copyFleetPhotosToR2")  return await handleCopyFleetPhotosToR2();
       if (body.action === "copyEstimatePdfsToR2") return await handleCopyEstimatePdfsToR2();
+      if (body.action === "backfillContacts")     return await handleBackfillContacts();
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);
@@ -12193,6 +12409,8 @@ export async function handler(event) {
       if (body.action === "createJobEstimate")    return await handleCreateJobEstimate(body);
       if (body.action === "estimateTemplateSave")    return await handleEstimateTemplateSave(body, authUser);
       if (body.action === "estimateTemplateArchive") return await handleEstimateTemplateArchive(body, authUser);
+      if (body.action === "estimateTemplateDelete")  return await handleEstimateTemplateDelete(body);
+      if (body.action === "deleteJobEstimate")       return await handleDeleteJobEstimate(body);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);

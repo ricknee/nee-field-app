@@ -5832,10 +5832,36 @@ async function handleCompleteServiceCall(body) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   // Neon-first, same reason as the two above: `project_complete` is in
   // JOB_SELECT, so an Airtable-only write silently reverts on refresh.
-  await neonWrite("job.completeServiceCall",
-    `UPDATE jobs SET project_complete = true, synced_at = now() WHERE airtable_id = $1`, [jobId]);
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldZ4tEiYt6Ke8IlK": true } }) });
-  return resp(200, { ok: true, updatedId: data.id });
+  //
+  // ⚠ AND THE STATUS ADVANCE, which `Project Complete Checked` used to do and
+  // nothing has done since it was undeployed on 2026-08-20. The button's own
+  // confirm says "Mark this service call as complete and ready to invoice?", so
+  // without this the app was promising something it had stopped delivering —
+  // the tick landed and the job sat in Service Call Scheduled forever.
+  //
+  // ⚠ NEVER DRAG A COMPLETED JOB BACKWARDS. The old automation excluded New
+  // Lead / Estimating / Completed; the button is only reachable mid-service-call
+  // so the first two cannot occur, but a re-tick on a finished job could, and
+  // "Completed" → "Ready to Invoice" would be a regression, not a fix.
+  const rows = await neonWrite("job.completeServiceCall",
+    `WITH prev AS (SELECT airtable_id, status AS old_status FROM jobs WHERE airtable_id = $1)
+     UPDATE jobs j
+        SET project_complete = true,
+            status = CASE WHEN j.status = 'Completed' THEN j.status ELSE 'Ready to Invoice' END,
+            synced_at = now()
+       FROM prev
+      WHERE j.airtable_id = prev.airtable_id
+      RETURNING j.status, prev.old_status`, [jobId]);
+
+  const row = rows?.[0] || {};
+  const fields = { "fldZ4tEiYt6Ke8IlK": true };                  // Project Complete
+  if (row.status && row.status !== row.old_status) {
+    fields["fld2FBMjvkOsy9Puu"] = row.status;                    // Job Status
+  }
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH", body: JSON.stringify({ fields }),
+  });
+  return resp(200, { ok: true, updatedId: data.id, status: row.status || null });
 }
 
 // Shared guard for employee self-service on an existing expense. Managers

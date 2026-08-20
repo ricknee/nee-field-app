@@ -68,40 +68,55 @@
 # ⚠ `/netlify/*` is NOT `/.netlify/*`. The leading dot is Netlify's own function
 # namespace and must keep working — the `/api/*` rule below rewrites onto it.
 # Verified after deploying this: `/api/inventory` still answers 401, not 404.
+#
+# ⚠⚠ `force = true` IS THE WHOLE RULE. Without it these do nothing at all.
+# Netlify applies a redirect only when the path does NOT match a file in the
+# publish directory — and every path here matches a real file, which is the
+# entire reason it needed blocking. The first version of this shipped without
+# `force` and changed precisely nothing: `_auth.js` still answered 200 after the
+# deploy went green. A deploy succeeding is not the same as a rule working, and
+# the only way to tell them apart is to re-request the URL afterwards.
 [[redirects]]
   from = "/netlify/*"
   to = "/404.html"
   status = 404
+  force = true
 
 [[redirects]]
   from = "/db/*"
   to = "/404.html"
   status = 404
+  force = true
 
 [[redirects]]
   from = "/docs/*"
   to = "/404.html"
   status = 404
+  force = true
 
 [[redirects]]
   from = "/tests/*"
   to = "/404.html"
   status = 404
+  force = true
 
 [[redirects]]
   from = "/tools/*"
   to = "/404.html"
   status = 404
+  force = true
 
 [[redirects]]
   from = "/CLAUDE.md"
   to = "/404.html"
   status = 404
+  force = true
 
 [[redirects]]
   from = "/README.md"
   to = "/404.html"
   status = 404
+  force = true
 
 # ── App routes ───────────────────────────────────────────────────────────────
 [[redirects]]

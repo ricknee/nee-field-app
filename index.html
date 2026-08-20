@@ -16985,6 +16985,45 @@
     $("newEstNotes").value    = _newEstComposeNotes(t);
   }
 
+  // Pulled out of openNewEstModal so the template manager can refresh the
+  // dropdown in place after a save — reopening the estimate modal to pick up a
+  // template you just wrote would throw away whatever is already typed in it.
+  //
+  // Preserves the current selection across a reload where it still exists, so
+  // editing a template's price and coming back doesn't silently reset the
+  // dropdown to "Blank estimate" while the loaded numbers stay on screen.
+  async function _newEstLoadTemplates() {
+    const sel = $("newEstTemplate");
+    const hint = $("newEstTemplateHint");
+    const contractor = (_newEstJob?.contractor || "").trim();
+    const keep = sel.value || "";
+    sel.disabled = true;
+    try {
+      const res = await apiGet("estimateTemplates", contractor ? { contractor } : {});
+      _newEstTemplates = res.templates || [];
+      if (!_newEstTemplates.length) {
+        sel.innerHTML = `<option value="">(no templates available — leave blank to create a custom estimate)</option>`;
+      } else {
+        // A general template (no contractor) is tagged in the option text. It
+        // shows on every job now, so without the tag there is nothing on screen
+        // to explain why a template belonging to nobody is in this list.
+        sel.innerHTML =
+          `<option value="">— Blank estimate (no template) —</option>` +
+          _newEstTemplates.map(t =>
+            `<option value="${esc(t.id)}">${esc(t.name)}${t.contractorId ? "" : "  ·  general"}</option>`
+          ).join("");
+        if (keep && _newEstTemplates.some(t => t.id === keep)) sel.value = keep;
+      }
+      hint.textContent = contractor
+        ? `Showing Active templates for ${contractor}, plus general ones.`
+        : `Showing all Active templates (job has no contractor).`;
+      sel.disabled = false;
+    } catch (e) {
+      sel.innerHTML = `<option value="">(error loading templates)</option>`;
+      hint.textContent = "Couldn't load templates: " + (e.message || e);
+    }
+  }
+
   window.openNewEstModal = async function(job) {
     if (!job) { alert("Pick a job first."); return; }
     _newEstJob = job;
@@ -17003,29 +17042,15 @@
 
     const contractor = (job.contractor || "").trim();
     $("newEstJobLabel").textContent = `Job: ${job.name || ""}` + (contractor ? `   ·   Contractor: ${contractor}` : "   ·   (no contractor set)");
-    $("newEstTemplateHint").textContent = contractor
-      ? `Showing Active templates for ${contractor}.`
-      : `Showing all Active templates (job has no contractor).`;
+    // The hint is written by _newEstLoadTemplates, which knows whether the load
+    // actually succeeded — setting it here too would leave a confident
+    // "Showing Active templates for X" sitting above an error.
+    $("newEstTemplateHint").textContent = "";
 
     $("newEstModal").style.display = "flex";
     pushBackEntry("newEst", () => { $("newEstModal").style.display = "none"; });
 
-    try {
-      const params = contractor ? { contractor } : {};
-      const res = await apiGet("estimateTemplates", params);
-      _newEstTemplates = res.templates || [];
-      if (!_newEstTemplates.length) {
-        sel.innerHTML = `<option value="">(no templates available — leave blank to create a custom estimate)</option>`;
-      } else {
-        sel.innerHTML =
-          `<option value="">— Blank estimate (no template) —</option>` +
-          _newEstTemplates.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
-      }
-      sel.disabled = false;
-    } catch (e) {
-      sel.innerHTML = `<option value="">(error loading templates)</option>`;
-      $("newEstTemplateHint").textContent = "Couldn't load templates: " + (e.message || e);
-    }
+    await _newEstLoadTemplates();
 
     sel.onchange = () => {
       const id = sel.value;
@@ -17100,6 +17125,261 @@
     } finally {
       btn.disabled = false;
       btn.textContent = "Create Job Estimate";
+    }
+  };
+
+  // ═══════════════════════════════════════════════════════════════
+  // ── ESTIMATE TEMPLATE MANAGER ──────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════
+  // Templates live in Neon and are edited here (db/schema/047). Before this
+  // they were typed into Airtable by hand and carried across hourly, which
+  // meant a wrong base price could not be corrected from inside the app.
+  //
+  // Opens ON TOP of the New Job Estimate modal, not instead of it — the
+  // backdrop is z-index 2100 and the estimate modal stays mounted underneath,
+  // so a detour to fix a template does not discard a half-filled estimate.
+  //
+  // ⚠ THESE ARE `window.X = function` ASSIGNMENTS, NOT DECLARATIONS, so they
+  // are NOT hoisted — the same trap documented on the New Project modal below.
+  // The trigger is an inline onclick in markup that is parsed before this runs,
+  // which is fine (the attribute is only resolved when clicked), but any
+  // wireEvents() binding would have to use an arrow wrapper.
+
+  let _tmplAll         = [];     // every template, active and archived
+  let _tmplContractors = [];
+  let _tmplEditing     = null;   // the template being edited, or null for a new one
+  let _tmplDirty       = false;  // set by the save/archive path, read on close
+
+  function _tmplMoney(v) {
+    return (v === null || v === undefined || v === "") ? "—"
+      : "$" + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  window.openTemplateManager = async function() {
+    _tmplDirty = false;
+    $("tmplMgrModal").style.display = "flex";
+    // The back entry closes the manager only. The estimate modal keeps its own
+    // entry underneath, so Android back walks manager -> estimate -> job rather
+    // than dropping both at once.
+    //
+    // ⚠ The closeFn must NOT call closeTemplateManager — popstate has already
+    // popped the stack, and popBackEntry would eat the estimate modal's entry
+    // too, dropping the user straight back to the job. It shares the teardown
+    // via _tmplCloseUI instead, so the dropdown still refreshes on a back press.
+    pushBackEntry("tmplMgr", () => { _tmplCloseUI(); });
+    tmplShowList();
+    $("tmplMgrList").innerHTML = `<div style="color:var(--muted); padding:14px 0;">Loading templates…</div>`;
+
+    // Contractors are fetched alongside the templates because the editor needs
+    // them the moment somebody clicks "+ New Template", and a picker that
+    // populates a beat late is one you scroll past empty.
+    try {
+      const [tRes, cRes] = await Promise.all([
+        apiGet("estimateTemplatesAll"),
+        apiGet("listContractors"),
+      ]);
+      _tmplAll = tRes.templates || [];
+      _tmplContractors = cRes.contractors || [];
+      tmplRenderList();
+    } catch (e) {
+      $("tmplMgrList").innerHTML =
+        `<div style="color:var(--red); padding:14px 0;">Couldn't load templates: ${esc(e.message || String(e))}</div>`;
+    }
+  };
+
+  // The teardown, shared by the X button and the back button.
+  function _tmplCloseUI() {
+    $("tmplMgrModal").style.display = "none";
+    _tmplEditing = null;
+    // Only refresh the dropdown underneath if something actually changed —
+    // an unchanged reload would still reset the picker's scroll position and
+    // costs a round trip for nothing.
+    if (_tmplDirty && _newEstJob) _newEstLoadTemplates();
+    _tmplDirty = false;
+  }
+
+  window.closeTemplateManager = function() {
+    popBackEntry("tmplMgr");
+    _tmplCloseUI();
+  };
+
+  function tmplShowList() {
+    $("tmplMgrListPane").style.display = "";
+    $("tmplMgrEditPane").style.display = "none";
+    $("tmplMgrTitle").textContent = "⚙ Estimate Templates";
+  }
+
+  function tmplRenderList() {
+    if (!_tmplAll.length) {
+      $("tmplMgrList").innerHTML =
+        `<div style="color:var(--muted); padding:14px 0;">No templates yet. Click “+ New Template” to build one.</div>`;
+      return;
+    }
+    // Archived rows sort last (the handler orders active DESC) and render muted
+    // with a badge, so the manager stays the one place an archived template can
+    // be found again — the picker filters them out entirely.
+    $("tmplMgrList").innerHTML = _tmplAll.map(t => `
+      <div onclick="tmplEditorOpen('${esc(t.id)}')"
+           style="display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid var(--line); cursor:pointer; ${t.active ? "" : "opacity:.55;"}">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+            ${esc(t.name)}
+            ${t.active ? "" : `<span style="font-size:10px; font-weight:600; color:var(--muted); border:1px solid var(--line-2); border-radius:4px; padding:1px 5px; margin-left:6px;">ARCHIVED</span>`}
+          </div>
+          <div style="font-size:11px; color:var(--muted); margin-top:2px;">
+            ${t.contractorId ? esc(t.contractorName || "(unknown contractor)") : "General — every job"}
+          </div>
+        </div>
+        <div style="text-align:right; white-space:nowrap; font-size:12px;">
+          <div style="font-weight:600;">${_tmplMoney(t.basePrice)}</div>
+          <div style="font-size:11px; color:var(--muted);">
+            ${t.defaultLaborHours != null ? esc(String(t.defaultLaborHours)) + " hrs" : "— hrs"}
+          </div>
+        </div>
+        <div style="color:var(--muted); font-size:16px;">›</div>
+      </div>`).join("");
+  }
+
+  // id = null for a new template, otherwise the handle (rec id or uuid).
+  window.tmplEditorOpen = function(id) {
+    const t = id ? _tmplAll.find(x => x.id === id) : null;
+    if (id && !t) { alert("That template couldn't be found. Try reopening the manager."); return; }
+    _tmplEditing = t || null;
+
+    $("tmplName").value       = t ? t.name : "";
+    $("tmplBase").value       = t && t.basePrice           != null ? t.basePrice           : "";
+    $("tmplLabor").value      = t && t.defaultLaborHours   != null ? t.defaultLaborHours   : "";
+    $("tmplMaterial").value   = t && t.defaultMaterialCost != null ? t.defaultMaterialCost : "";
+    $("tmplScope").value      = t ? t.scopeOfWork   : "";
+    $("tmplExclusions").value = t ? t.exclusions    : "";
+    $("tmplTerms").value      = t ? t.standardTerms : "";
+    $("tmplInternal").value   = t ? t.internalNotes : "";
+    $("tmplActive").checked   = t ? t.active : true;
+
+    // Blank value = a general template. Rendered explicitly rather than left as
+    // an empty first option, because "no contractor" is now a real choice that
+    // changes where the template shows up, not an unfilled field.
+    //
+    // ⚠ If the template's contractor is no longer in the ACTIVE contractor list
+    // (deactivated since), it is added back as an option here. Without that the
+    // select would silently fall back to "General" and the next save would
+    // quietly convert a contractor's template into one shown on every job.
+    let opts = _tmplContractors.slice();
+    if (t && t.contractorId && !opts.some(c => c.id === t.contractorId)) {
+      opts.push({ id: t.contractorId, name: (t.contractorName || "(inactive contractor)") + " — inactive" });
+    }
+    $("tmplContractor").innerHTML =
+      `<option value="">— General (every job) —</option>` +
+      opts.map(c => `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+    $("tmplContractor").value = t && t.contractorId ? t.contractorId : "";
+
+    const arch = $("tmplArchiveBtn");
+    arch.style.display = t ? "" : "none";
+    if (t) arch.textContent = t.active ? "Archive" : "Restore";
+
+    $("tmplMsg").style.display = "none";
+    $("tmplMgrTitle").textContent = t ? "Edit Template" : "New Template";
+    $("tmplMgrListPane").style.display = "none";
+    $("tmplMgrEditPane").style.display = "";
+    $("tmplMgrEditPane").scrollTop = 0;
+  };
+
+  window.tmplEditorCancel = function() { _tmplEditing = null; tmplShowList(); };
+
+  function _tmplMsg(text, ok) {
+    const m = $("tmplMsg");
+    m.textContent = text;
+    m.style.color = ok ? "var(--green)" : "var(--red)";
+    m.style.display = "block";
+  }
+
+  window.tmplSave = async function() {
+    const name = ($("tmplName").value || "").trim();
+    if (!name) { _tmplMsg("Template name is required.", false); $("tmplName").focus(); return; }
+
+    const btn = $("tmplSaveBtn");
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    $("tmplMsg").style.display = "none";
+
+    // The three money fields are sent as RAW STRINGS, empty included. The
+    // handler turns "" into NULL — doing a Number() here would send 0 for an
+    // empty box, and a template with a base price of 0 reads as a free job in
+    // the picker instead of one the estimator still has to price.
+    const payload = {
+      templateId:          _tmplEditing ? _tmplEditing.id : null,
+      name,
+      contractorId:        $("tmplContractor").value || null,
+      active:              $("tmplActive").checked,
+      basePrice:           $("tmplBase").value,
+      defaultLaborHours:   $("tmplLabor").value,
+      defaultMaterialCost: $("tmplMaterial").value,
+      scopeOfWork:         $("tmplScope").value,
+      exclusions:          $("tmplExclusions").value,
+      standardTerms:       $("tmplTerms").value,
+      internalNotes:       $("tmplInternal").value,
+    };
+
+    try {
+      const res = await apiPost("estimateTemplateSave", payload);
+      if (!res.ok) throw new Error(res.error || "Save failed");
+      _tmplDirty = true;
+      _tmplMsg("✓ Saved.", true);
+      // Re-read rather than splice the local copy: contractorName is resolved
+      // server-side from a live join on Companies, so a locally-built row would
+      // show a stale (or missing) contractor until the next open.
+      const tRes = await apiGet("estimateTemplatesAll");
+      _tmplAll = tRes.templates || [];
+      _tmplEditing = null;
+      setTimeout(() => { tmplShowList(); tmplRenderList(); }, 500);
+    } catch (e) {
+      // 409 from the duplicate-name guard arrives with the existing template's
+      // handle smuggled onto the error (apiPost's err.existingId). Offer to open
+      // that one instead of leaving the user to hunt for it in the list.
+      if (e && e.status === 409 && e.existingId) {
+        if (confirm((e.message || "That name is already in use.") + "\n\nOpen the existing template instead?")) {
+          btn.disabled = false;
+          btn.textContent = "Save Template";
+          tmplEditorOpen(e.existingId);
+          return;
+        }
+        _tmplMsg("Pick a different name, or open the existing template.", false);
+      } else {
+        _tmplMsg("Error: " + (e.message || String(e)), false);
+      }
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save Template";
+    }
+  };
+
+  // Archive is a SOFT flip of `active`, which is the same flag the picker
+  // filters on — the template leaves the dropdown and stays here, restorable.
+  // There is no hard delete: job_estimates.source_template_handle points at
+  // this row for provenance, and estimates outlive their templates by years.
+  window.tmplArchiveToggle = async function() {
+    if (!_tmplEditing) return;
+    const restoring = !_tmplEditing.active;
+    if (!restoring && !confirm(`Archive "${_tmplEditing.name}"?\n\nIt stops appearing in the Load Template dropdown. Estimates already created from it are unaffected, and you can restore it here.`)) return;
+
+    const btn = $("tmplArchiveBtn");
+    btn.disabled = true;
+    try {
+      const res = await apiPost("estimateTemplateArchive", {
+        templateId: _tmplEditing.id,
+        active: restoring,
+      });
+      if (!res.ok) throw new Error(res.error || "Failed");
+      _tmplDirty = true;
+      const tRes = await apiGet("estimateTemplatesAll");
+      _tmplAll = tRes.templates || [];
+      _tmplEditing = null;
+      tmplShowList();
+      tmplRenderList();
+    } catch (e) {
+      _tmplMsg("Error: " + (e.message || String(e)), false);
+    } finally {
+      btn.disabled = false;
     }
   };
 
@@ -24200,7 +24480,12 @@
       </div>
 
       <div class="sl-field" style="margin-bottom:16px;">
-        <label>Load Template</label>
+        <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
+          <label>Load Template</label>
+          <button type="button" id="btnManageTemplates" class="admin-only hidden"
+                  onclick="openTemplateManager()"
+                  style="background:none; border:none; padding:0; font-size:11px; color:var(--accent); cursor:pointer; font-family:'Inter',sans-serif;">⚙ Manage templates</button>
+        </div>
         <select id="newEstTemplate" style="width:100%; background:var(--panel); border:1px solid var(--line-2); border-radius:7px; padding:8px 10px; font-size:13px; color:var(--text); outline:none; font-family:'Inter',sans-serif;">
           <option value="">— Loading templates… —</option>
         </select>
@@ -24232,6 +24517,90 @@
         <button id="newEstSubmitBtn" onclick="submitNewEstimate()" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 16px;">Create Job Estimate</button>
       </div>
       <div id="newEstMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ── ESTIMATE TEMPLATE MANAGER ──────────────────────────────────────────
+     Opens on top of the New Job Estimate modal (z-index above it) rather than
+     replacing it, so whatever is already typed into the estimate survives a
+     detour into editing a template. Two panes in one backdrop: the list, and
+     the editor that replaces it in place. -->
+<div id="tmplMgrModal" class="sl-modal-backdrop" style="display:none; z-index:2100;">
+  <div class="sl-modal" style="max-width:760px;">
+    <div class="sl-modal-header">
+      <h2 id="tmplMgrTitle">⚙ Estimate Templates</h2>
+      <button onclick="closeTemplateManager()" class="btn btn-sm" type="button" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+
+    <!-- LIST PANE -->
+    <div id="tmplMgrListPane" class="sl-modal-body">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px;">
+        <div style="font-size:11px; color:var(--muted);">Prices here seed new estimates. Editing a template never changes an estimate that already exists.</div>
+        <button onclick="tmplEditorOpen(null)" class="btn btn-primary btn-sm" type="button" style="font-size:12px; white-space:nowrap;">+ New Template</button>
+      </div>
+      <div id="tmplMgrList" style="font-size:13px;"></div>
+    </div>
+
+    <!-- EDITOR PANE -->
+    <div id="tmplMgrEditPane" class="sl-modal-body" style="display:none;">
+      <div class="sl-field" style="margin-bottom:10px;">
+        <label>Template Name *</label>
+        <input id="tmplName" class="edit-input" placeholder="e.g. Case Farms — 2 Barn Setup" />
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr auto; gap:10px; align-items:end; margin-bottom:10px;">
+        <div class="sl-field">
+          <label>Contractor</label>
+          <select id="tmplContractor" class="edit-input"></select>
+          <div style="font-size:11px; color:var(--muted); margin-top:4px;">Leave as “General” to offer this template on every job.</div>
+        </div>
+        <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text); padding-bottom:22px; white-space:nowrap;">
+          <input id="tmplActive" type="checkbox" checked /> Active
+        </label>
+      </div>
+
+      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px;">
+        <div class="sl-field">
+          <label>Base Price ($)</label>
+          <input id="tmplBase" type="number" step="0.01" class="edit-input" placeholder="—" />
+        </div>
+        <div class="sl-field">
+          <label>Labor Hours</label>
+          <input id="tmplLabor" type="number" step="0.5" class="edit-input" placeholder="—" />
+        </div>
+        <div class="sl-field">
+          <label>Material Cost ($)</label>
+          <input id="tmplMaterial" type="number" step="0.01" class="edit-input" placeholder="—" />
+        </div>
+      </div>
+      <div style="font-size:11px; color:var(--muted); margin-top:4px;">Leave a box empty to have the estimator fill it in — empty is not the same as 0.</div>
+
+      <div class="sl-field" style="margin-top:12px;">
+        <label>Scope of Work</label>
+        <textarea id="tmplScope" class="edit-input" style="min-height:110px; resize:vertical; line-height:1.5;"></textarea>
+      </div>
+      <div class="sl-field" style="margin-top:10px;">
+        <label>Exclusions</label>
+        <textarea id="tmplExclusions" class="edit-input" style="min-height:80px; resize:vertical; line-height:1.5;"></textarea>
+      </div>
+      <div class="sl-field" style="margin-top:10px;">
+        <label>Standard Terms</label>
+        <textarea id="tmplTerms" class="edit-input" style="min-height:80px; resize:vertical; line-height:1.5;"></textarea>
+      </div>
+      <div class="sl-field" style="margin-top:10px;">
+        <label>Internal Notes (never printed on an estimate)</label>
+        <textarea id="tmplInternal" class="edit-input" style="min-height:60px; resize:vertical; line-height:1.5;"></textarea>
+      </div>
+
+      <div style="display:flex; gap:10px; justify-content:space-between; align-items:center; margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
+        <button id="tmplArchiveBtn" onclick="tmplArchiveToggle()" class="btn btn-sm" type="button" style="font-size:12px; display:none;">Archive</button>
+        <div style="display:flex; gap:10px; margin-left:auto;">
+          <button onclick="tmplEditorCancel()" class="btn btn-sm" type="button" style="font-size:13px; padding:8px 16px;">Cancel</button>
+          <button id="tmplSaveBtn" onclick="tmplSave()" class="btn btn-primary btn-sm" type="button" style="font-size:13px; padding:8px 16px;">Save Template</button>
+        </div>
+      </div>
+      <div id="tmplMsg" style="font-size:12px; margin-top:10px; text-align:right; display:none;"></div>
     </div>
   </div>
 </div>

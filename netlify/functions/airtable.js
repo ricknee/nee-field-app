@@ -534,6 +534,14 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // for the same reason: it is reference data the whole business bills against,
   // not a field action.
   "createCompany",
+  // Estimate templates carry the base price, labor hours and material cost that
+  // seed a customer quote. Editing one is a back-office money op in the same
+  // sense as updateJobBillableRate — the numbers land in front of a customer —
+  // so it sits here rather than at the _NON_VIEWER default a write would
+  // otherwise get. Reading them stays open to any signed-in role: the picker
+  // renders inside the New Job Estimate modal, which is already admin-gated in
+  // the UI, and a read leaks nothing a job's own estimate does not.
+  "estimateTemplateSave", "estimateTemplateArchive",
   // Which city tax applies to a job's work. Same tier as the billable rate: a job
   // setting that moves money, so admin+office, not the whole crew.
   "updateJobCityTax",
@@ -623,7 +631,16 @@ const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRate
 // who needs to read what circuit 23 feeds is standing at the panel. So are
 // `jobChecklists` / `jobChecklist` — a crew loading the truck at 6am is the
 // whole audience for a supply list.
-const _ADMIN_OFFICE_READS = new Set(["jobPhotosDeleted", "jobDocs", "jobPrintsDeleted"]);
+//
+// `estimateTemplatesAll` backs the template MANAGER, so it matches the tier of
+// the writes it exists to feed (estimateTemplateSave / estimateTemplateArchive)
+// — it returns internal notes and archived templates, neither of which the
+// picker shows. `estimateTemplates`, the picker read itself, is deliberately
+// ABSENT: it renders inside the New Job Estimate modal and returns the same
+// scope and terms text that ends up on the estimate anyway.
+const _ADMIN_OFFICE_READS = new Set([
+  "jobPhotosDeleted", "jobDocs", "jobPrintsDeleted", "estimateTemplatesAll",
+]);
 
 function authzFor(method, action) {
   if (method === "GET") {
@@ -6482,87 +6499,257 @@ async function handleSentEstimatePDFs(params) {
 }
 
 // ── ESTIMATE TEMPLATES ───────────────────────────────────────────────────
-// Lists Active templates from the Estimate Templates table. If a contractor
-// name is supplied, only templates whose Contractor link resolves to that
-// name are returned. With no contractor, all Active templates are returned
-// (covers jobs that have no contractor set).
+// NEON-NATIVE as of 2026-08-20 (db/schema/047). Backs the "Load Template"
+// dropdown in the New Job Estimate modal AND the template manager behind it.
+//
+// Templates were previously typed into Airtable by hand and carried across
+// hourly by `_billing-sync.js`. With nobody opening Airtable any more, a base
+// price could not be corrected without leaving the app — so the write path
+// below is the point of the whole exercise, not a nicety.
+//
+// ⚠⚠ THE VALUES ARE SNAPSHOTTED, NOT LINKED. `handleCreateJobEstimate` copies
+// the four numbers and the composed notes into the Job Estimate at create time.
+// Editing a template NEVER changes an estimate that already exists, and that is
+// deliberate — an estimate is what was quoted, not what the template says today.
+//
+// ⚠ NO AIRTABLE FALLBACK, unlike most reads in this file. Airtable's copy stops
+// being written the moment the templates block leaves `_billing-sync.js`, so a
+// fallback would serve a frozen base price into a live customer quote — wrong
+// money, silently, which is exactly the trade `handleEstimateTemplatesList` in
+// inventory.js already refused. Failing closed costs a blank estimate; falling
+// back costs a wrong number nobody catches. Same reasoning, same 503.
+
+// One projection, used by both reads, so the picker and the manager can never
+// disagree about what a template is.
+//
+// ⚠ THE DUAL HANDLE IS LOAD-BEARING (the rule enforced by db/schema/043). A
+// natively-created template has `airtable_id IS NULL`; serving that as the id
+// renders `<option value="">`, which COLLIDES with the "— Blank estimate —"
+// option, so picking your own brand-new template would silently do nothing.
+// Every write below resolves on `airtable_id = $1 OR id::text = $1` to match.
+//
+// contractor_name comes from a live JOIN on companies, not the stored copy:
+// once the ETL is gone that copy freezes, and renaming a contractor in Companies
+// would orphan its templates from a picker that matches on the NAME (the
+// frontend passes `job.contractor` as a name, not an id). The stored value is
+// kept only as a COALESCE fallback for a template whose company has since been
+// deleted — a stale string beats vanishing from the picker with no explanation.
+const ET_SELECT = `
+  SELECT COALESCE(t.airtable_id, t.id::text)       AS handle,
+         t.template_name, t.contractor_airtable_id,
+         COALESCE(c.name, t.contractor_name)       AS contractor_name,
+         t.active, t.scope_of_work, t.exclusions, t.standard_terms,
+         t.base_price, t.default_labor_hours, t.default_material_cost,
+         t.internal_notes, t.updated_at, t.updated_by
+    FROM estimate_templates t
+    LEFT JOIN companies c ON c.airtable_id = t.contractor_airtable_id`;
+
+function mapTemplateRow(r) {
+  const s = (v) => (v === null || v === undefined ? "" : String(v));
+  const n = (v) => (v === null || v === undefined ? null : Number(v));
+  return {
+    id:                  r.handle,          // rec id for Airtable-era rows, uuid for native
+    name:                s(r.template_name),
+    contractorId:        r.contractor_airtable_id || null,
+    contractorName:      s(r.contractor_name),
+    active:              r.active === true,
+    scopeOfWork:         s(r.scope_of_work),
+    exclusions:          s(r.exclusions),
+    standardTerms:       s(r.standard_terms),
+    basePrice:           n(r.base_price),
+    defaultLaborHours:   n(r.default_labor_hours),
+    defaultMaterialCost: n(r.default_material_cost),
+    internalNotes:       s(r.internal_notes),
+    updatedAt:           r.updated_at ? String(r.updated_at) : null,
+    updatedBy:           s(r.updated_by),
+  };
+}
+
+// The picker read: ACTIVE templates only, for one job's contractor.
+//
+// ⚠ A BLANK CONTRACTOR ON THE TEMPLATE NOW MEANS "EVERY JOB" (owner's call,
+// 2026-08-20). It previously meant "only jobs that also have no contractor",
+// which made a genuinely generic template impossible to build — "Commercial Bid
+// — General" had to be pinned to Classical Construction just to be reachable.
+// General templates sort BELOW the job's own, so the contractor-specific ones
+// stay at the top of the dropdown where they were.
+//
+// The `Case Farms` / `Case Farms North` substring collision that the old
+// Airtable FIND had to defend against cannot occur here at all: this is an
+// equality on a resolved name, not a FIND over a joined link field.
 async function handleEstimateTemplates(params) {
-  const { contractor } = params || {};
-  // ARRAYJOIN() on a multipleRecordLinks field expands to the primary field
-  // of the linked table; Companies' primary field is "Company Name", so a
-  // FIND on the joined string resolves the linked contractor by name.
-  // Cross-name filter safety — see the note in handleGenerator. Newline-delimited
-  // so FIND is an exact match per linked contractor rather than a substring:
-  // without it, "Case Farms" also matches "Case Farms North" and that
-  // contractor's templates appear under the wrong one.
+  const want = String(params?.contractor || "").trim();
+  const q = await neonQuery(
+    `${ET_SELECT}
+      WHERE t.active
+        AND ($1 = '' OR t.contractor_airtable_id IS NULL
+             OR lower(COALESCE(c.name, t.contractor_name, '')) = lower($1))
+      ORDER BY (t.contractor_airtable_id IS NULL), t.sort_order NULLS LAST,
+               t.template_name ASC`, [want]);
+
+  // `rows` empty is a legitimate answer here (a contractor with no templates),
+  // so the fail-closed test is on the ERROR, not on the row count.
+  if (!q || q.error) {
+    console.error(`estimateTemplates: Neon read failed — ${q?.error || "not configured"}`);
+    return resp(503, { ok: false, error: "Templates are unavailable right now. Please try again." });
+  }
+  return resp(200, {
+    ok: true, _source: "neon", _ms: q.ms,
+    templates: q.rows.map(mapTemplateRow),
+  });
+}
+
+// The manager read: EVERY template including archived ones, so an archived
+// template can be found again and restored. Archived rows sort last.
+async function handleEstimateTemplatesAll() {
+  const q = await neonQuery(
+    `${ET_SELECT}
+      ORDER BY t.active DESC, (t.contractor_airtable_id IS NULL),
+               COALESCE(c.name, t.contractor_name, ''), t.template_name`);
+  if (!q || q.error) {
+    console.error(`estimateTemplatesAll: Neon read failed — ${q?.error || "not configured"}`);
+    return resp(503, { ok: false, error: "Templates are unavailable right now. Please try again." });
+  }
+  return resp(200, { ok: true, _source: "neon", _ms: q.ms, templates: q.rows.map(mapTemplateRow) });
+}
+
+// ── SAVE A TEMPLATE (create + update) ────────────────────────────────────
+// One handler for both, keyed on whether a handle came in, because the field
+// list and every validation rule are identical — splitting them is how the two
+// halves drift until only one of them whitelists something.
+//
+// NEON-ONLY. Nothing is written to Airtable: the Estimate Templates table there
+// becomes frozen history at the ETL cutover, and writing to it would just
+// re-create the clobber problem from the other direction.
+async function handleEstimateTemplateSave(body, authUser) {
+  const b = body || {};
+  const handle = String(b.templateId || "").trim();
+  const name   = String(b.name || "").trim();
+  if (!name) return resp(400, { ok: false, error: "Template name is required." });
+
+  // Money fields: "" and undefined both mean "not set" and must land as NULL,
+  // NOT as 0. A template with base_price 0 reads as a free job in the picker,
+  // where a NULL correctly leaves the field blank for the estimator to fill in.
+  // Number("") === 0 is the trap this exists to avoid.
+  const money = (v) => {
+    if (v === undefined || v === null || String(v).trim() === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const text = (v) => {
+    const t = String(v ?? "").trim();
+    return t === "" ? null : t;
+  };
+
+  // Contractor: the client sends the Airtable rec id from `listContractors`
+  // (companies.airtable_id is the id currency for companies — see
+  // handleCreateCompany, where jobs link to it by rec id). Blank = a general
+  // template that shows on every job.
   //
-  // No in-memory id verification here, unlike the job sites: the caller passes a
-  // contractor NAME, not a record id, so there is nothing to verify against.
-  // Exact-per-element matching is the whole fix available.
-  // ── NEON-FIRST (migration Step 4e) ──────────────────────────────────────
-  // The contractor match becomes an EXACT equality on a stored name rather than
-  // a newline-delimited FIND over a joined link field. The bug the Airtable
-  // comment describes — "Case Farms" also matching "Case Farms North" — cannot
-  // occur here at all. Worth noting the live data has exactly that shape: two
-  // separate "Case Farms" templates, which is what made the collision real.
-  //
-  // contractor_name is stored rather than joined because Companies is not
-  // migrated, and resolving one name in the ETL is far cheaper than migrating a
-  // table for a single filter. Same rule as job_name and vendor_name.
-  if (neonEnabled()) {
-    const want = String(contractor || "").trim();
-    const q = await neonQuery(
-      `SELECT airtable_id, template_name, contractor_airtable_id, active, scope_of_work,
-              exclusions, standard_terms, base_price, default_labor_hours,
-              default_material_cost, internal_notes
-         FROM estimate_templates
-        WHERE active AND ($1 = '' OR lower(coalesce(contractor_name,'')) = lower($1))
-        ORDER BY template_name ASC`, [want]);
-    if (q?.rows?.length) {
-      const s = (v) => (v === null || v === undefined ? "" : String(v));
-      const n = (v) => (v === null || v === undefined ? null : Number(v));
-      return resp(200, {
-        ok: true,
-        templates: q.rows.map(r => ({
-          id: r.airtable_id, name: s(r.template_name),
-          // Kept an ARRAY to match the Airtable shape the frontend expects.
-          contractorIds: r.contractor_airtable_id ? [r.contractor_airtable_id] : [],
-          active: r.active === true, scopeOfWork: s(r.scope_of_work),
-          exclusions: s(r.exclusions), standardTerms: s(r.standard_terms),
-          basePrice: n(r.base_price), defaultLaborHours: n(r.default_labor_hours),
-          defaultMaterialCost: n(r.default_material_cost),
-          internalNotes: s(r.internal_notes),
-        })),
-        _source: "neon", _ms: q.ms
-      });
-    }
-    if (q?.error) console.error(`estimateTemplates: Neon read failed, falling back: ${q.error}`);
+  // The NAME is resolved here and stored alongside, even though the reads
+  // prefer the live join. It is the fallback that keeps a template identifiable
+  // if its company is later deleted, and it costs one indexed lookup on a
+  // table of 35 rows.
+  const contractorId = String(b.contractorId || "").trim() || null;
+  let contractorName = null;
+  if (contractorId) {
+    const c = await neonQuery(`SELECT name FROM companies WHERE airtable_id = $1`, [contractorId]);
+    // ⚠ `!c` (DATABASE_URL unset) and `c.error` must be separated from an empty
+    // result. Folding them together reports "that contractor no longer exists"
+    // for what is actually a deploy fault, and sends the user hunting through
+    // Companies for a row that is sitting right there.
+    if (!c || c.error) return resp(502, { ok: false, error: "Couldn't look up that contractor. Please try again." });
+    if (!c.rows.length) return resp(400, { ok: false, error: "That contractor no longer exists." });
+    contractorName = c.rows[0].name || null;
   }
 
-  const safeContractor = escapeFormulaString((contractor || "").trim());
-  const filter = safeContractor
-    ? `AND({Active}=TRUE(), FIND("\n${safeContractor}\n", "\n" & ARRAYJOIN({Contractor}, "\n") & "\n"))`
-    : `{Active}=TRUE()`;
-  const records = await fetchAll("Estimate Templates", { filter, sortField: "Template Name", sortDir: "asc" });
+  // Duplicate-name guard, case-insensitive, returning the existing id so the
+  // client can offer to open that one instead — the `handleCreateCompany` /
+  // `handleCreateVendor` shape, which apiPost already smuggles out as
+  // err.existingId. A WARNING, not a constraint: "Case Farms — 2 Barn Setup"
+  // and "— 3 Barn Setup" are legitimately separate rows, and a 2026 vs 2027
+  // version of one name is a judgement call that belongs to the user.
+  // Excludes the row being edited, or renaming nothing would 409 against itself.
+  const dupe = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS handle, template_name
+       FROM estimate_templates
+      WHERE lower(template_name) = lower($1)
+        AND ($2 = '' OR COALESCE(airtable_id, id::text) <> $2)
+      LIMIT 1`, [name, handle]);
+  if (!dupe || dupe.error) return resp(502, { ok: false, error: "Couldn't check for duplicates. Please try again." });
+  if (dupe.rows.length) {
+    return resp(409, {
+      ok: false,
+      error: `A template named "${dupe.rows[0].template_name}" already exists.`,
+      existingId: dupe.rows[0].handle,
+    });
+  }
 
-  const templates = records.map(r => {
-    const f = r.fields || {};
-    const contractorIds = Array.isArray(f["Contractor"]) ? f["Contractor"] : [];
-    return {
-      id:                 r.id,
-      name:               f["Template Name"] || "",
-      contractorIds,
-      active:             f["Active"] === true,
-      scopeOfWork:        f["Scope of Work"] || "",
-      exclusions:         f["Exclusions"] || "",
-      standardTerms:      f["Standard Terms"] || "",
-      basePrice:          gNum(f, "Base Price"),
-      defaultLaborHours:  gNum(f, "Default Labor Hours"),
-      defaultMaterialCost:gNum(f, "Default Material Cost"),
-      internalNotes:      f["Internal Notes"] || ""
-    };
-  });
-  return resp(200, { ok: true, templates });
+  const active = b.active !== false;   // new templates default ACTIVE
+  const who    = String(authUser?.name || authUser?.id || "").slice(0, 80) || null;
+  const vals   = [name, contractorId, contractorName, active,
+                  text(b.scopeOfWork), text(b.exclusions), text(b.standardTerms),
+                  money(b.basePrice), money(b.defaultLaborHours), money(b.defaultMaterialCost),
+                  text(b.internalNotes), who];
+
+  let rows;
+  try {
+    if (handle) {
+      rows = await neonWrite("estimateTemplate.update",
+        `UPDATE estimate_templates SET
+           template_name=$1, contractor_airtable_id=$2, contractor_name=$3, active=$4,
+           scope_of_work=$5, exclusions=$6, standard_terms=$7, base_price=$8,
+           default_labor_hours=$9, default_material_cost=$10, internal_notes=$11,
+           updated_by=$12, updated_at=now()
+         WHERE airtable_id = $13 OR id::text = $13
+         RETURNING COALESCE(airtable_id, id::text) AS handle`, [...vals, handle]);
+      if (!rows?.length) return resp(404, { ok: false, error: "That template no longer exists." });
+    } else {
+      rows = await neonWrite("estimateTemplate.create",
+        `INSERT INTO estimate_templates
+           (template_name, contractor_airtable_id, contractor_name, active,
+            scope_of_work, exclusions, standard_terms, base_price,
+            default_labor_hours, default_material_cost, internal_notes,
+            updated_by, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+         RETURNING COALESCE(airtable_id, id::text) AS handle`, vals);
+    }
+  } catch (e) {
+    console.error(`estimateTemplateSave: ${e?.message || e}`);
+    return resp(502, { ok: false, error: "Couldn't save the template. Please try again." });
+  }
+
+  return resp(200, { ok: true, templateId: rows[0]?.handle || handle, created: !handle });
+}
+
+// ── ARCHIVE / RESTORE A TEMPLATE ─────────────────────────────────────────
+// Soft only — this flips `active`, which is the same flag the picker already
+// filters on, so an archived template disappears from the dropdown and stays
+// findable in the manager.
+//
+// ⚠ NO HARD DELETE, deliberately. `job_estimates.source_template_handle` points
+// at this row for provenance, and estimates outlive the templates that seeded
+// them by years. A DELETE would leave a dangling handle on a real quote to
+// save a row in a five-row table.
+async function handleEstimateTemplateArchive(body, authUser) {
+  const handle = String(body?.templateId || "").trim();
+  if (!handle) return resp(400, { ok: false, error: "Missing templateId." });
+  const active = body?.active === true;   // explicit true = restore, anything else = archive
+  const who    = String(authUser?.name || authUser?.id || "").slice(0, 80) || null;
+
+  let rows;
+  try {
+    rows = await neonWrite("estimateTemplate.archive",
+      `UPDATE estimate_templates SET active=$2, updated_by=$3, updated_at=now()
+        WHERE airtable_id = $1 OR id::text = $1
+        RETURNING COALESCE(airtable_id, id::text) AS handle, template_name, active`,
+      [handle, active, who]);
+  } catch (e) {
+    console.error(`estimateTemplateArchive: ${e?.message || e}`);
+    return resp(502, { ok: false, error: "Couldn't update the template. Please try again." });
+  }
+  if (!rows?.length) return resp(404, { ok: false, error: "That template no longer exists." });
+  return resp(200, { ok: true, templateId: rows[0].handle, name: rows[0].template_name, active: rows[0].active });
 }
 
 // ── CREATE JOB ESTIMATE ──────────────────────────────────────────────────
@@ -6596,6 +6783,10 @@ async function handleCreateJobEstimate(body) {
   if (laborHours   !== undefined && laborHours   !== null && laborHours   !== "") fields["Estimated Labor Hours"]   = Number(laborHours);
   if (materialCost !== undefined && materialCost !== null && materialCost !== "") fields["Estimated Material Cost"] = Number(materialCost);
   if (notes && String(notes).trim()) fields["Notes"] = String(notes);
+  // The Airtable link only accepts an Airtable record id, so this guard has to
+  // stay. What changed (db/schema/047) is that failing it is no longer the end
+  // of the story: templates are natively creatable now, so a template made in
+  // the app has a uuid and would silently lose its provenance here.
   if (sourceTemplateId && String(sourceTemplateId).startsWith("rec")) {
     fields["fldrni1Lkpw7tMBq8"] = [sourceTemplateId];
   }
@@ -6605,6 +6796,20 @@ async function handleCreateJobEstimate(body) {
     body: JSON.stringify({ fields, typecast: true })
   });
   await syncEstimateToNeon(data);
+
+  // Provenance, in the store that can hold BOTH handle shapes. Written after
+  // syncEstimateToNeon because that is what creates the row — running it first
+  // would update nothing and lose the breadcrumb without erroring.
+  //
+  // Fails soft: the estimate itself is created and correct either way, and this
+  // is a breadcrumb nothing renders yet. A 500 here would tell the user their
+  // estimate failed when it did not.
+  if (sourceTemplateId) {
+    await neonWrite("estimate.sourceTemplate",
+      `UPDATE job_estimates SET source_template_handle = $2 WHERE airtable_id = $1`,
+      [data.id, String(sourceTemplateId)]).catch(() => {});
+  }
+
   return resp(200, { ok: true, id: data.id });
 }
 
@@ -11919,6 +12124,7 @@ export async function handler(event) {
       if (action === "jobInspections")     return await handleJobInspections(params);
       if (action === "jobEstimates")       return await handleJobEstimates(params);
       if (action === "estimateTemplates")  return await handleEstimateTemplates(params);
+      if (action === "estimateTemplatesAll") return await handleEstimateTemplatesAll();
       if (action === "sentEstimatePDFs")   return await handleSentEstimatePDFs(params);
       if (action === "allInvoices")        return await handleGetAllInvoices();
       if (action === "scheduleEntries")    return await handleGetScheduleEntries(params);
@@ -11985,6 +12191,8 @@ export async function handler(event) {
       if (body.action === "getNextEstimateNumber") return await handleGetNextEstimateNumber();
       if (body.action === "saveEstimate")         return await handleSaveEstimate(body);
       if (body.action === "createJobEstimate")    return await handleCreateJobEstimate(body);
+      if (body.action === "estimateTemplateSave")    return await handleEstimateTemplateSave(body, authUser);
+      if (body.action === "estimateTemplateArchive") return await handleEstimateTemplateArchive(body, authUser);
       if (body.action === "updateFleetVehicle")   return await handleUpdateFleetVehicle(body);
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);

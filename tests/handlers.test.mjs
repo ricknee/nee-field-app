@@ -2102,6 +2102,63 @@ await test("createCompany: same admin/office tier as createVendor, and name is r
   eq(sent.fields["fldA30AUOUbarysdp"], "Newco Construction", "name written");
 });
 
+await test("estimateTemplates: no Airtable fallback — a frozen price never reaches a quote", async () => {
+  // Templates went Neon-native on 2026-08-20 (db/schema/047) and the templates
+  // block left `_billing-sync.js`, so Airtable's copy is frozen history. The
+  // Airtable read path was DELETED rather than left as a fallback: a stale base
+  // price loaded into a live customer estimate is wrong money with no error
+  // anywhere, which is a worse failure than the modal saying "unavailable".
+  //
+  // This test is the guard on that decision. DATABASE_URL is unset in the
+  // harness, so Neon is unreachable — and a fully-populated Airtable table is
+  // planted to prove the handler does NOT reach for it.
+  mockTables = {
+    "Estimate Templates": [
+      { id: "recSTALE", fields: { "Template Name": "Stale Template", "Active": true, "Base Price": 99999 } },
+    ],
+  };
+  const r = await GET("estimateTemplates", { contractor: "Case Farms" });
+  eq(r.statusCode, 503, "read fails closed with Neon down");
+  ok(!String(r.body).includes("Stale Template"), "the frozen Airtable copy is NOT served");
+  ok(!String(r.body).includes("99999"), "and neither is its price");
+
+  eq((await GET("estimateTemplatesAll")).statusCode, 503, "the manager read fails closed too");
+
+  // The manager read carries internal notes and archived templates — neither of
+  // which the picker shows — so it sits at the tier of the writes it feeds.
+  // The picker read stays open to any signed-in role.
+  eq((await GET("estimateTemplatesAll", {}, EMP_TOK)).statusCode, 403, "employee can't list all templates");
+  eq((await GET("estimateTemplatesAll", {}, VIEWER_TOK)).statusCode, 403, "viewer can't either");
+  eq((await GET("estimateTemplates", { contractor: "X" }, EMP_TOK)).statusCode, 503,
+     "but the picker read is NOT role-gated — it reaches the handler and fails on Neon, not on 403");
+});
+
+await test("estimateTemplateSave/Archive: admin+office, and validated before Neon is touched", async () => {
+  // Templates carry the base price, labor hours and material cost that seed a
+  // customer quote, so editing one is a back-office money op in the same tier as
+  // updateJobBillableRate — NOT the _NON_VIEWER default a write would otherwise
+  // fall to. Reads stay open to any signed-in role.
+  mockTables = {};
+  eq((await POST("estimateTemplateSave", { name: "T" }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("estimateTemplateSave", { name: "T" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  eq((await POST("estimateTemplateArchive", { templateId: "recX" }, EMP_TOK)).statusCode, 403, "employee can't archive");
+  eq((await POST("estimateTemplateArchive", { templateId: "recX" }, VIEWER_TOK)).statusCode, 403, "viewer can't archive");
+
+  // Validation runs before any database call, so these answer 400 (a real
+  // complaint about the input) rather than 502/503 (Neon is down). Getting that
+  // order wrong tells someone their name was fine and the server broke.
+  eq((await POST("estimateTemplateSave", { name: "   " }, OFFICE_TOK)).statusCode, 400, "blank name rejected");
+  eq((await POST("estimateTemplateSave", {}, ADMIN_TOK)).statusCode, 400, "missing name rejected");
+  eq((await POST("estimateTemplateArchive", { templateId: "  " }, ADMIN_TOK)).statusCode, 400, "archive needs a templateId");
+
+  // Nothing here may write Airtable. The Estimate Templates table there is
+  // frozen history now; a write would re-create the clobber problem from the
+  // other direction and put the two copies back into a fight.
+  const before = lastFetch;
+  await POST("estimateTemplateSave", { name: "Neon Only Template" }, ADMIN_TOK);
+  eq(lastFetch, before, "save issues NO Airtable request at all");
+});
+
 await test("createPowerCompany: the record has to reach Neon, not just Airtable", async () => {
   // getPowerCompanies went Neon-first in item 06 slice 4 while this write stayed
   // Airtable-only, and NOTHING else writes power_companies — no hourly sync, no

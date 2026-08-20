@@ -2240,6 +2240,27 @@ await test("payroll bonuses: the Airtable fallback still works, and still exclud
      "a malformed employeeId is refused before either store is touched");
 });
 
+await test("job automation callback: a token signed for one job unlocks only that job", async () => {
+  // This endpoint skips the bearer check because Make.com has no session, so the
+  // scope token IS the security model — these rejections are the whole of it.
+  // Every call below deliberately passes NO auth header (third arg null): if one
+  // of them ever succeeds, the endpoint is open to the internet.
+  const forJob1 = signScope(["jobAutomation", "recJob1"]);
+
+  eq((await POST("jobAutomationResult", { recordId: "recJob1" }, null)).statusCode, 403,
+     "no token at all");
+  eq((await POST("jobAutomationResult", { recordId: "recJob1", token: "not-a-token" }, null)).statusCode, 403,
+     "a junk token");
+  // The point of scoping: a leaked token cannot be aimed at another record.
+  eq((await POST("jobAutomationResult", { recordId: "recJob2", token: forJob1 }, null)).statusCode, 403,
+     "a valid token belonging to a DIFFERENT job");
+
+  // Shape checks run before the token, so a caller learns nothing from them.
+  eq((await POST("jobAutomationResult", { token: forJob1 }, null)).statusCode, 400, "no recordId");
+  eq((await POST("jobAutomationResult", { recordId: "notarec", token: forJob1 }, null)).statusCode, 400,
+     "recordId that is not a record id");
+});
+
 await test("contacts: the picker can reach someone filed under another company", async () => {
   // The real case: a customer first entered under a GC rings up directly, and
   // the new job goes under Misc Jobs. Before `otherContacts` his details were

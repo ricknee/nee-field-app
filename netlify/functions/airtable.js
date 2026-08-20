@@ -5579,6 +5579,76 @@ async function handleUpdateJobStatus(body) {
   return resp(200, { ok: true, updatedId: data.id, ...(webhooks ? { webhooks } : {}) });
 }
 
+// ── MAKE REPORTS BACK WHAT IT CREATED ──────────────────────────────────────
+// Replaces the two airtable:ActionUpdateRecords modules at the end of the
+// "Airtable – Job Awarded" scenario (4509804). They recorded the new ids and set
+// the run-once flags; posting the same facts here puts them in NEON instead,
+// which is what finally makes that scenario Airtable-free.
+//
+// ⚠ UNAUTHENTICATED, like `clockWidget`, and safe for the same narrow reasons.
+// Make has no session and cannot hold a bearer token, so the payload carries a
+// scope token SIGNED FOR THIS ONE JOB (_job-webhooks.js mints it when it fires
+// the webhook). The token names the record, so a leaked one cannot touch any
+// other job, and it expires in 24 h. No shared secret has to live in Make.
+//
+// ⚠ FLAGS ONLY EVER GO TRUE. Make reports what it did; it never un-does. A
+// callback that arrives with a flag absent must leave the existing value alone,
+// or a partial retry would clear a guard and license a duplicate Trello card.
+//
+// Airtable is still mirrored while the job mirror exists — one writer (us)
+// instead of two, and the old guard keeps working until item 10 removes it.
+async function handleJobAutomationResult(body) {
+  const recordId = String(body?.recordId || "").trim();
+  if (!recordId.startsWith("rec")) return resp(400, { ok: false, error: "Missing or invalid recordId." });
+  if (!verifyScope(body?.token, ["jobAutomation", recordId])) {
+    return resp(403, { ok: false, error: "Invalid or expired callback token." });
+  }
+
+  const clean = (v) => { const s = String(v ?? "").trim(); return s || null; };
+  const tsheetsJobId   = clean(body?.tsheetsJobId);
+  const trelloCardId   = clean(body?.trelloCardId);
+  const trelloPoCardId = clean(body?.trelloPoCardId);
+  // An id arriving IS the proof that half ran, so it implies the flag. Make can
+  // also state the flag outright for a half that ran but returned no id.
+  const tsheetsCreated = body?.tsheetsCreated === true || !!tsheetsJobId;
+  const trelloCreated  = body?.trelloCreated  === true || !!trelloCardId || !!trelloPoCardId;
+
+  // Neon first and failing CLOSED: this is now the authority for the run-once
+  // guards, and a result we failed to record is what causes a second jobcode.
+  const rows = await neonWrite("job.automationResult",
+    `UPDATE jobs SET
+       tsheets_job_id    = COALESCE($2, tsheets_job_id),
+       trello_card_id    = COALESCE($3, trello_card_id),
+       trello_po_card_id = COALESCE($4, trello_po_card_id),
+       tsheets_created   = CASE WHEN $5 THEN true ELSE tsheets_created END,
+       trello_created    = CASE WHEN $6 THEN true ELSE trello_created END,
+       synced_at = now()
+     WHERE airtable_id = $1
+     RETURNING tsheets_job_id, trello_card_id, trello_po_card_id`,
+    [recordId, tsheetsJobId, trelloCardId, trelloPoCardId, tsheetsCreated, trelloCreated]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
+
+  // Mirror, failing soft. Losing this costs Airtable-side consistency until the
+  // next hourly sync; losing the Neon write above would cost a duplicate.
+  const fields = {};
+  if (tsheetsJobId)   fields["fld2VnSP0nXsLmXQq"] = tsheetsJobId;   // TSheets Job ID
+  if (trelloCardId)   fields["fldxisALDFRhNC6Cl"] = trelloCardId;   // Trello Card ID
+  if (trelloPoCardId) fields["fldTWUzDcPB1EBnqS"] = trelloPoCardId; // Trello Card PO ID
+  if (tsheetsCreated) fields["fldWDs8praJa3iGlf"] = true;           // Automation – TSheets Created
+  if (trelloCreated)  fields["fldlgoNEaus3XGJel"] = true;           // Automation – Trello Created
+  if (Object.keys(fields).length) {
+    try {
+      await atFetch(`${encodeURIComponent(TABLES.jobs)}/${recordId}`, {
+        method: "PATCH", body: JSON.stringify({ fields }),
+      });
+    } catch (e) {
+      console.error(`jobAutomationResult: Airtable mirror failed for ${recordId} — ${e?.message || e}`);
+    }
+  }
+
+  return resp(200, { ok: true, recorded: rows[0] });
+}
+
 // Updates the Power Co. tab on a Job. Accepts powerCompanyId and powerContactId
 // as record IDs from the typeahead pickers (frontend resolves names → ids via
 // handleGetPowerCompanies / handleGetContactsForPowerCompany). Writes BOTH the
@@ -11687,6 +11757,18 @@ export async function handler(event) {
     // enough to be safe, and what would stop making it so.
     if (event.httpMethod === "GET" && reqAction === "clockWidget") {
       return await handleClockWidget(event.queryStringParameters || {});
+    }
+
+    // ⚠ The SECOND action that skips the bearer check, and for the same reason:
+    // Make.com posts the result of the Awarded scenario back here and has no
+    // session to present. It carries a scope token signed for that one job
+    // instead — see handleJobAutomationResult, which verifies it before touching
+    // anything. Narrow by construction: the token names the record.
+    if (event.httpMethod === "POST" && reqAction === "jobAutomationResult") {
+      let parsed = null;
+      try { parsed = JSON.parse(event.body || "{}"); } catch { parsed = null; }
+      if (!parsed) return resp(400, { ok: false, error: "Malformed JSON body." });
+      return await handleJobAutomationResult(parsed);
     }
 
     // ── Warm-up: wake Neon while the browser is still parsing the app ────────

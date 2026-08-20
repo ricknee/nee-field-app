@@ -158,6 +158,16 @@ export const JOB_FIELDS = [
   ["pcloud_photo_folder_id",   "pCloud Photo's ID",                         joinText],
   ["pcloud_invoices_sent_id",  "pCloud Invoices Sent ID",                   joinText],
   ["trello_card_id",           "Trello Card ID",                            joinText],
+  // ── Added 2026-08-20, db/schema/045 ──────────────────────────────────────
+  // The run-once guards. Carried hourly so Neon can take over the decision from
+  // the Airtable PATCH response, which is what lets Make's two write-back
+  // modules be deleted. ⚠ EN DASH in every "Automation – …" name — a hyphen
+  // reads undefined, which is falsy, which fires the webhook every single time.
+  ["pcloud_folders_created",   "Automation – pCloud Folders Created",       bool],
+  ["trello_created",           "Automation – Trello Created",               bool],
+  ["tsheets_created",          "Automation – TSheets Created",              bool],
+  ["trello_completed",         "Automation – Trello Completed",             bool],
+  ["trello_po_card_id",        "Trello Card PO ID",                         joinText],
   ["start_service_call",       "Start Service Call",                        bool],
   ["service_call_created",     "Service Call Created",                      bool],
   ["project_complete",         "Project Complete (Ready to Invoice)",       bool],

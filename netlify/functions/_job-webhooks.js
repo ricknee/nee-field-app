@@ -23,7 +23,19 @@
 
 // Needed to resolve linked-record fields to their display NAMES — see the note
 // in fireJobStatusWebhooks. Read-only and fails soft, like every other consumer.
-import { neonQuery } from "./_neon.js";
+import { neonQuery, neonWrite } from "./_neon.js";
+import { signScope } from "./_auth.js";
+
+// Where Make posts its result back to. Netlify sets URL to the site's primary
+// address on every build, so this needs no configuration and follows the site if
+// it ever moves. The fallback is only for local `netlify dev`.
+const SELF_URL = process.env.URL || "https://hub.northeasternelec.com";
+
+// 24 h, not the scope default. Make retries a failed run later, and a token that
+// expired in the meantime would silently drop the result — leaving the ids and
+// the run-once flags unwritten, which is exactly the state that creates a second
+// Trello card next time.
+const CALLBACK_TTL_MS = 24 * 60 * 60 * 1000;
 
 const HOOKS = {
   pcloud:      "https://hook.us1.make.com/cd41jmwojyuhehlap05p2va1lcnnx5vz",
@@ -119,6 +131,8 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   try {
     const q = await neonQuery(
       `SELECT j.contractor_name, j.po, j.po_locked, j.address_full,
+              j.pcloud_folders_created, j.trello_created, j.tsheets_created,
+              j.trello_completed,
               c.tsheets_group_id, c.trello_list_id, c.trello_list_job_po_id
          FROM jobs j
          LEFT JOIN companies c ON c.airtable_id = j.contractor_at_id
@@ -130,12 +144,30 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   }
   const contractorName = neonJob?.contractor_name || str(f[N.contractor]);
 
+  // ── THE RUN-ONCE GUARDS, read from BOTH stores ──────────────────────────
+  // Done if EITHER says done. Not a hedge — the two failure modes are wildly
+  // asymmetric. Firing twice bills a second QuickBooks Time jobcode and leaves a
+  // duplicate Trello card on the board; failing to fire is a missing card that
+  // anyone can re-trigger by re-saving the status. So the expensive mistake is
+  // the one we refuse to make.
+  //
+  // ⚠ A NEON NULL IS "UNKNOWN", NOT "NOT DONE". The columns land empty
+  // (db/schema/045) and fill on the next hourly sync, so treating NULL as false
+  // during that window would re-fire every job somebody happened to re-save.
+  // Reading it as `=== true` gives exactly that: unknown contributes nothing and
+  // the Airtable value decides.
+  const done = (neonVal, atVal) => neonVal === true || atVal === true;
+  const pcloudDone    = done(neonJob?.pcloud_folders_created, f[N.pcloudDone]);
+  const trelloDone    = done(neonJob?.trello_created,         f[N.trelloDone]);
+  const tsheetsDone   = done(neonJob?.tsheets_created,        f[N.tsheetsDone]);
+  const completedDone = done(neonJob?.trello_completed,       f[N.completedDone]);
+
   // ── 1. Estimating → pCloud folders ──────────────────────────────────────
   // ⚠ The flag write-back is NOT optional. This automation sets
   // "Automation – pCloud Folders Created" itself after a successful POST, and
   // that flag is the only thing standing between a re-saved status and a second
   // set of folders in pCloud. Make does not set it for us.
-  if (status === "Estimating" && f[N.pcloudDone] !== true) {
+  if (status === "Estimating" && !pcloudDone) {
     const r = await post(HOOKS.pcloud, {
       event: "create_pcloud_folders",
       recordId: record.id,
@@ -148,6 +180,17 @@ export async function fireJobStatusWebhooks(record, atFetch) {
     }, "pcloud");
     out.push(r);
     if (r.fired) {
+      // Neon FIRST, and not inside the try below: this is the guard the app will
+      // read once Airtable's copy stops being maintained. Fails soft — the
+      // Airtable write underneath still guards today, and the hourly sync
+      // repairs Neon from it.
+      try {
+        await neonWrite("job.pcloudFlag",
+          `UPDATE jobs SET pcloud_folders_created = true, synced_at = now() WHERE airtable_id = $1`,
+          [record.id]);
+      } catch (e) {
+        console.error(`job-webhook pcloud: Neon flag not set on ${record.id} — ${e?.message || e}`);
+      }
       try {
         await atFetch(`Jobs/${record.id}`, {
           method: "PATCH",
@@ -166,7 +209,7 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   // Both flags must be false, matching the trigger. The flags are PASSED to
   // Make rather than written here — Make decides which half still needs doing
   // and sets them itself. Do not "helpfully" set them.
-  if (status === "Awarded" && f[N.trelloDone] !== true && f[N.tsheetsDone] !== true) {
+  if (status === "Awarded" && !trelloDone && !tsheetsDone) {
     // The three ids below are what module 6 ("Get Companies ID") existed to
     // fetch. With them in the payload that module can be deleted and the
     // scenario stops reading Airtable for configuration.
@@ -188,19 +231,28 @@ export async function fireJobStatusWebhooks(record, atFetch) {
       jobType: str(f[N.jobType]),
       contractor: contractorName,            // ⚠ the NAME — see the note above
       jobAddress: str(f[N.address]) || str(neonJob?.address_full),
-      trelloCreated: f[N.trelloDone] === true,
-      tsheetsCreated: f[N.tsheetsDone] === true,
+      trelloCreated: trelloDone,
+      tsheetsCreated: tsheetsDone,
       // Per-contractor automation config — replaces Make's second Airtable read.
       tsheetsGroupId:     str(neonJob?.tsheets_group_id),
       trelloListId:       str(neonJob?.trello_list_id),
       trelloListJobPoId:  str(neonJob?.trello_list_job_po_id),
+      // ── Where Make reports back, replacing its two Airtable WRITE modules ──
+      // Those modules record the new ids and set the run-once flags. Posting the
+      // same facts here puts them in Neon instead — and immediately, which also
+      // ends the hour-long wait before a new job's Trello card id is known.
+      //
+      // The token is signed for THIS job and nothing else, so the endpoint needs
+      // no session and no shared secret in Make. Same shape as the clock widget.
+      callbackUrl: `${SELF_URL}/.netlify/functions/airtable`,
+      callbackToken: signScope(["jobAutomation", record.id], CALLBACK_TTL_MS),
     }, "awarded"));
   }
 
   // ── 3. Completed → Trello "Completed by year" ───────────────────────────
   // recordId ONLY — Make reads the rest out of Airtable. See the plan's §2:
   // this one cannot survive the mirror writes going away without a Make edit.
-  if (status === "Completed" && f[N.completedDone] !== true) {
+  if (status === "Completed" && !completedDone) {
     out.push(await post(HOOKS.completed, { recordId: record.id }, "completed"));
   }
 

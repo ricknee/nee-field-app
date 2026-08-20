@@ -110,10 +110,19 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   // Neon already stores the resolved name, so take it from there rather than
   // resolving the link with another Airtable round trip. Falls back to whatever
   // Airtable gave us, which is no worse than the broken behaviour it replaces.
+  // ⚠ THE JOIN IS NOT DECORATION. The Awarded scenario read a SECOND Airtable
+  // record — the Companies row — purely for three per-contractor configuration
+  // values: which QuickBooks Time customer to hang the jobcode under, and which
+  // two Trello lists to file the cards in. Sending them makes that read
+  // deletable, which is the whole point of db/schema/044.
   let neonJob = null;
   try {
     const q = await neonQuery(
-      `SELECT contractor_name, po, po_locked, address_full FROM jobs WHERE airtable_id = $1`,
+      `SELECT j.contractor_name, j.po, j.po_locked, j.address_full,
+              c.tsheets_group_id, c.trello_list_id, c.trello_list_job_po_id
+         FROM jobs j
+         LEFT JOIN companies c ON c.airtable_id = j.contractor_at_id
+        WHERE j.airtable_id = $1`,
       [record?.id]);
     neonJob = q?.rows?.[0] || null;
   } catch (e) {
@@ -158,6 +167,20 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   // Make rather than written here — Make decides which half still needs doing
   // and sets them itself. Do not "helpfully" set them.
   if (status === "Awarded" && f[N.trelloDone] !== true && f[N.tsheetsDone] !== true) {
+    // The three ids below are what module 6 ("Get Companies ID") existed to
+    // fetch. With them in the payload that module can be deleted and the
+    // scenario stops reading Airtable for configuration.
+    //
+    // ⚠ A MISSING ID IS NOT A NEW FAULT, but it is now visible. Seven companies
+    // have neither id in Airtable either (JC Herbert, Marco Construction and the
+    // five added since May), so awarding one of their jobs would have handed Make
+    // a blank list id and failed there instead. None of the seven has a job yet.
+    // Log it here rather than let it surface as a Make error nobody reads.
+    if (!neonJob?.tsheets_group_id || !neonJob?.trello_list_id) {
+      console.error(`job-webhook awarded: ${contractorName || record.id} is missing ` +
+        `tsheets_group_id/trello_list_id — QuickBooks Time or Trello will reject this one ` +
+        `(fill them in on the company, see db/schema/044)`);
+    }
     out.push(await post(HOOKS.awarded, {
       recordId: record.id,
       jobName: str(f[N.jobName]),
@@ -167,6 +190,10 @@ export async function fireJobStatusWebhooks(record, atFetch) {
       jobAddress: str(f[N.address]) || str(neonJob?.address_full),
       trelloCreated: f[N.trelloDone] === true,
       tsheetsCreated: f[N.tsheetsDone] === true,
+      // Per-contractor automation config — replaces Make's second Airtable read.
+      tsheetsGroupId:     str(neonJob?.tsheets_group_id),
+      trelloListId:       str(neonJob?.trello_list_id),
+      trelloListJobPoId:  str(neonJob?.trello_list_job_po_id),
     }, "awarded"));
   }
 

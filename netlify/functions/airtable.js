@@ -5514,10 +5514,55 @@ async function handleUpdateJobStatus(body) {
   //
   // Fails CLOSED, because Neon is what the app reads. A status change that
   // cannot be recorded must report an error rather than appear to work.
-  await neonWrite("job.updateStatus",
-    `UPDATE jobs SET status = $2, synced_at = now() WHERE airtable_id = $1`, [jobId, status]);
+  // ── LOCK THE PO HERE TOO — the automation that used to do it is gone ─────
+  // `Fill Job PO - Locked` (and its Service Call twin) copied {Job PO} into
+  // {Job PO - Locked} when a job left New Lead. Both were undeployed on
+  // 2026-08-20, and NOTHING else wrote that value: Neon only ever received it
+  // second-hand, through the hourly sync reading Airtable. So Neon storing
+  // `po_locked` never made Neon the owner of it.
+  //
+  // ⚠⚠ WHY THIS IS NOT COSMETIC. `po_locked` is the string the QuickBooks
+  // puller matches timesheet job names against, and `_jobs-sync.js` only links
+  // a timesheet when that match is UNIQUE. A blank one means every hour logged
+  // to the job stays unlinked — paid but never costed, silently.
+  //
+  // Locking is literally copying `po`, which is what the Airtable formula
+  // produced, so this is byte-exact by construction rather than by a format
+  // string somebody has to keep in step.
+  //
+  // COALESCE, so re-running a status change can never re-point a PO that
+  // QuickBooks Time is already using. `prev` captures the value from BEFORE the
+  // update, which is how we know whether we filled it just now and therefore
+  // whether Airtable needs the mirror.
+  const nRows = await neonWrite("job.updateStatus",
+    `WITH prev AS (SELECT airtable_id, po_locked AS old_locked FROM jobs WHERE airtable_id = $1)
+     UPDATE jobs j
+        SET status = $2,
+            po_locked = CASE WHEN $2 <> 'New Lead' THEN COALESCE(j.po_locked, j.po) ELSE j.po_locked END,
+            synced_at = now()
+       FROM prev
+      WHERE j.airtable_id = prev.airtable_id
+      RETURNING j.po_locked, prev.old_locked, j.po`, [jobId, status]);
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fld2FBMjvkOsy9Puu": status } }) });
+  const nRow = nRows?.[0] || {};
+  const lockedNow = (!nRow.old_locked && nRow.po_locked) ? nRow.po_locked : null;
+  if (status !== "New Lead" && !nRow.po_locked) {
+    // Only reachable when `po` itself is missing, which the hourly sync fills.
+    // Worth a log rather than a guess: composing the string here would be a
+    // second definition of a format QuickBooks already depends on.
+    console.error(`updateJobStatus: ${jobId} left New Lead with no PO to lock — timesheets will not link until the sync fills jobs.po`);
+  }
+
+  // The PO mirror rides along in the SAME PATCH as the status, deliberately.
+  // ⚠ The Awarded scenario's QuickBooks module names the jobcode
+  // `{{2.Job PO - Locked}}`, where module 2 is an airtable:ActionGetRecord —
+  // Make re-reads the job out of AIRTABLE and was never moved to Neon. Item 04
+  // replumbed the TRIGGER only. So the value has to be in Airtable before the
+  // webhook fires below, or QuickBooks Time gets a blank jobcode. Writing it in
+  // this PATCH guarantees the ordering; a second call would not.
+  const patchFields = { "fld2FBMjvkOsy9Puu": status };
+  if (lockedNow) patchFields["fldDFQSF2jJmCDWB4"] = lockedNow;   // Job PO - Locked
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: patchFields }) });
 
   // Fire whatever this status change is supposed to fire — pCloud folders at
   // Estimating, Trello + QuickBooks Time at Awarded, Trello-completed at

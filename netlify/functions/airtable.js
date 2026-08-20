@@ -8615,6 +8615,51 @@ async function handleListContactsByCompany(params) {
   const companyId = String(params?.companyId || "").trim();
   if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
 
+  // ── NEON-FIRST (item 06, final slice — db/schema/048) ────────────────────
+  // One query replaces a fetchAll of the ENTIRE Contacts table on every open of
+  // the New Project picker. The partition into own/other happens here for the
+  // same reason it did against Airtable: the caller wants the contractor's own
+  // people first and everyone else only when they type.
+  //
+  // ⚠ COALESCE in the sort, not a bare lower(). Airtable's path sorted
+  // `(lastName || "")`, so a contact with no surname ("Sarge") sorted as an
+  // empty string; a NULL in Postgres would sort to the end instead and quietly
+  // reorder the list.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT c.airtable_id, c.first_name, c.last_name, c.primary_phone,
+              c.primary_email, c.role, c.street, c.city, c.state, c.zip,
+              c.company_airtable_id, co.name AS company_name
+         FROM contacts c
+         LEFT JOIN companies co ON co.airtable_id = c.company_airtable_id
+        WHERE c.active
+        ORDER BY lower(coalesce(c.last_name, '')), lower(coalesce(c.first_name, ''))`);
+    if (q?.rows) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      const shapeN = (r) => ({
+        id:           s(r.airtable_id),
+        firstName:    s(r.first_name),
+        lastName:     s(r.last_name),
+        primaryPhone: s(r.primary_phone),
+        primaryEmail: s(r.primary_email),
+        role:         s(r.role),
+        street:       s(r.street),
+        city:         s(r.city),
+        state:        s(r.state),
+        zip:          s(r.zip),
+      });
+      const own = [], other = [];
+      for (const r of q.rows) {
+        if (r.company_airtable_id === companyId) own.push(shapeN(r));
+        else other.push({ ...shapeN(r), companyId: s(r.company_airtable_id),
+                          companyName: s(r.company_name) });
+      }
+      return resp(200, { ok: true, contacts: own, otherContacts: other,
+                         _source: "neon", _ms: q.ms });
+    }
+    console.error(`listContactsByCompany: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   const records = await fetchAll(TABLES.contacts, {});
 
   // Role is multipleSelects — join for display.
@@ -8710,6 +8755,29 @@ async function handleCreateContact(body) {
     method: "POST",
     body: JSON.stringify({ fields })
   });
+
+  // ⚠⚠ MIRRORED IN THE SAME COMMIT AS THE READ FLIP. This is the bug this
+  // project has now been bitten by five times: the read moves to Neon, the write
+  // stays on Airtable, and the new record is invisible to the picker that just
+  // created it — permanently, not for an hour. `createCompany` and
+  // `createPowerCompany` were both caught this way. Fails soft: the contact
+  // exists in Airtable regardless, and the loader will adopt it.
+  try {
+    await neonWrite("contact.create",
+      `INSERT INTO contacts (airtable_id, first_name, last_name, primary_phone,
+                             primary_email, company_airtable_id,
+                             company_id, active, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM companies WHERE airtable_id=$6),true,now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
+         primary_phone=EXCLUDED.primary_phone, primary_email=EXCLUDED.primary_email,
+         company_airtable_id=EXCLUDED.company_airtable_id,
+         company_id=EXCLUDED.company_id, active=true, synced_at=now()`,
+      [data.id, firstName || null, lastName || null, primaryPhone || null,
+       primaryEmail || null, companyId]);
+  } catch (e) {
+    console.error(`createContact: Neon mirror failed, contact exists in Airtable only — ${e?.message || e}`);
+  }
 
   const f = data.fields || {};
   return resp(200, {
@@ -9031,6 +9099,43 @@ async function handleGetContactsForPowerCompany(params) {
     return resp(400, { ok: false, error: "Missing companyName or companyId." });
   }
 
+  // ── NEON-FIRST (item 06, final slice — db/schema/048) ────────────────────
+  // ⚠ THE ID WINS WHEN BOTH ARE GIVEN, matching the Airtable path exactly: it
+  // used the NAME as a loose `FIND(...)` prefilter and then re-verified the
+  // linked record id in memory, precisely because a name match can collide.
+  // Here the id is an equality test, so the name is only consulted when there
+  // is no id at all — same answer, without the substring hazard.
+  //
+  // `name` is a GENERATED column mirroring Airtable's "Contact Name" formula,
+  // so the `.filter(c => c.name)` the old path ended with is expressed as
+  // `name <> ''` rather than dropped.
+  if (neonEnabled()) {
+    const q = trimmedId
+      ? await neonQuery(
+          `SELECT airtable_id, name, cell_phone, office_phone, email
+             FROM power_contacts
+            WHERE active AND power_company_airtable_id = $1 AND btrim(name) <> ''
+            ORDER BY lower(name)`, [trimmedId])
+      : await neonQuery(
+          `SELECT airtable_id, name, cell_phone, office_phone, email
+             FROM power_contacts
+            WHERE active AND btrim(name) <> ''
+              AND lower(coalesce(power_company_name, '')) LIKE '%' || lower($1) || '%'
+            ORDER BY lower(name)`, [trimmedName]);
+    if (q?.rows) {
+      const s = (v) => (v === null || v === undefined ? "" : String(v));
+      return resp(200, { ok: true, _source: "neon", _ms: q.ms,
+        contacts: q.rows.map(r => ({
+          id:          s(r.airtable_id),
+          name:        s(r.name),
+          cellPhone:   s(r.cell_phone),
+          officePhone: s(r.office_phone),
+          email:       s(r.email),
+        })) });
+    }
+    console.error(`getContactsForPowerCompany: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   let records;
   if (trimmedName) {
     // Escape quotes/backslashes so they can't terminate the filter literal.
@@ -9154,6 +9259,35 @@ async function handleCreatePowerContact(body) {
     method: "POST",
     body: JSON.stringify({ fields })
   });
+
+  // ⚠⚠ Same-commit mirror, same reason as createContact above — and this table
+  // is the one where it already bit: `createPowerCompany` wrote Airtable while
+  // `getPowerCompanies` read Neon, so a new utility was invisible to the picker
+  // that created it. ⚠ `name` is GENERATED from the parts; never write it.
+  try {
+    await neonWrite("powerContact.create",
+      `INSERT INTO power_contacts (airtable_id, first_name, last_name, cell_phone,
+                                   office_phone, email, power_company_airtable_id,
+                                   power_company_id, job_roles, notes, active, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,
+               (SELECT id FROM power_companies WHERE airtable_id=$7),$8,$9,true,now())
+       ON CONFLICT (airtable_id) DO UPDATE SET
+         first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
+         cell_phone=EXCLUDED.cell_phone, office_phone=EXCLUDED.office_phone,
+         email=EXCLUDED.email,
+         power_company_airtable_id=EXCLUDED.power_company_airtable_id,
+         power_company_id=EXCLUDED.power_company_id,
+         job_roles=EXCLUDED.job_roles, notes=EXCLUDED.notes,
+         active=true, synced_at=now()`,
+      [data.id, trimmedFirst || null, (lastName && String(lastName).trim()) || null,
+       trimmedCell || null, (officePhone && String(officePhone).trim()) || null,
+       (email && String(email).trim()) || null, trimmedCoId,
+       (Array.isArray(jobRoles) && jobRoles.length ? jobRoles.join(", ") : null),
+       (notes && String(notes).trim()) || null]);
+  } catch (e) {
+    console.error(`createPowerContact: Neon mirror failed, contact exists in Airtable only — ${e?.message || e}`);
+  }
+
   return resp(200, {
     ok: true,
     contact: {

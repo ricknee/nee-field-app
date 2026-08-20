@@ -544,9 +544,22 @@ async function itemIndex() {
 // unique index swallows the rows and the ids of the ORIGINAL submission are
 // returned, so a retry looks identical to the first success from the outside.
 //
-// Item and location ids arriving here are still Airtable rec ids — those tables
-// remain Airtable-authoritative until slices 6 and 7 — so the FKs resolve by
-// subselect exactly as the mirror did, and both id forms are stored.
+// ⚠⚠ BOTH subselects take BOTH handle forms, and that is not optional.
+//
+// This comment used to say item and location ids "are still Airtable rec ids —
+// those tables remain Airtable-authoritative until slices 6 and 7". That stopped
+// being true when slices 5 and the reference-data slice landed, and the location
+// subselects were never updated: they matched `airtable_id` only, so a location
+// created in the app (uuid handle, `airtable_id` NULL) resolved to NULL.
+//
+// The row still inserted. `v_stock_on_hand` skips legs whose `*_location_id` is
+// NULL and `v_stock_levels` INNER JOINs `locations` on `l.id`, so every movement
+// into a new location was logged, chargeable, visible in History — and absent
+// from every stock figure, with no error anywhere. See db/schema/043.
+//
+// The rule: an id arriving here came out of a picker, and the pickers serve
+// `COALESCE(airtable_id, id::text)`. Match what the picker serves, on every
+// entity, or the FK silently resolves to NULL and the loss is invisible.
 async function insertTxns(rows, submitId = null) {
   if (!rows || !rows.length) return [];
   const params = [];
@@ -557,8 +570,8 @@ async function insertTxns(rows, submitId = null) {
     const to   = p(r.toLocationId ?? null);
     return `(${p(r.txnDate)}, ${item}, (SELECT id FROM inventory_items WHERE airtable_id=${item} OR id::text=${item}),` +
            `${p(Number(r.qty) || 0)}, ${p(r.type ?? null)},` +
-           `${from}, (SELECT id FROM locations WHERE airtable_id=${from}),` +
-           `${to}, (SELECT id FROM locations WHERE airtable_id=${to}),` +
+           `${from}, (SELECT id FROM locations WHERE airtable_id=${from} OR id::text=${from}),` +
+           `${to}, (SELECT id FROM locations WHERE airtable_id=${to} OR id::text=${to}),` +
            `${p(r.unitCost ?? null)}, ${p(r.notes ?? null)}, ${p(r.enteredBy ?? null)},` +
            `${p(r.jobId ?? null)}, ${p(r.jobName ?? null)},` +
            `${p(submitId)}, ${p(submitId ? i + 1 : null)}, now())`;
@@ -2460,10 +2473,16 @@ async function handleStockLevels(params) {
   // 269 pairs; this reads v_stock_on_hand, which reproduces the ledger exactly.
   // Numbers WILL differ from what this screen used to show, and the ledger is
   // the one that is right. See db/schema/032.
+  // ⚠ `item_handle`, NOT `item_airtable_id` — it is `COALESCE(airtable_id,
+  // id::text)`, the same value handleItems hands the picker. Filtering on the
+  // rec id alone meant a natively-created item matched nothing, and because the
+  // query SUCCEEDS with zero rows this returned a clean `levels: []` and a
+  // working-looking Check Stock screen saying the item was nowhere. A short list
+  // looks exactly like a complete one. See db/schema/043.
   const q = await neonQuery(
     `SELECT stock_id, location_name, qty_on_hand, default_unit_cost,
             total_value, reorder_point, wire_ft_per_lb, wire_ft
-       FROM v_stock_levels WHERE item_airtable_id = $1
+       FROM v_stock_levels WHERE item_handle = $1
       ORDER BY location_name ASC`, [itemId]);
   if (q?.rows) {
     return resp(200, {
@@ -2499,8 +2518,13 @@ async function handleStockLevels(params) {
 // Returns every stock level record with its linked item ID so the
 // client can group by item and show per-location breakdowns.
 async function handleStockLevelsAll() {
+  // `item_handle`, not `item_airtable_id`. The client joins this id straight
+  // back against the `items` list (inventory.html:3312 / :3387 / :3531) to get
+  // the category and name, so a native item's NULL rec id became `""`, joined to
+  // nothing, and its stock and dollars landed under "Uncategorized" against a
+  // blank row. See db/schema/043.
   const q = await neonQuery(
-    `SELECT stock_id, item_airtable_id, location_name, qty_on_hand,
+    `SELECT stock_id, item_handle, location_name, qty_on_hand,
             default_unit_cost, total_value, reorder_point, wire_ft_per_lb, wire_ft
        FROM v_stock_levels ORDER BY item_name ASC, location_name ASC`);
   if (q?.rows) {
@@ -2508,7 +2532,7 @@ async function handleStockLevelsAll() {
       ok: true, _source: "neon",
       levels: q.rows.map(r => ({
         id:           r.stock_id || null,
-        itemId:       r.item_airtable_id || "",
+        itemId:       r.item_handle || "",
         locationName: r.location_name || "",
         qtyOnHand:    Number(r.qty_on_hand ?? 0),
         unitCost:     Number(r.default_unit_cost ?? 0),
@@ -2534,8 +2558,12 @@ async function handleReorderAlerts() {
   // The Airtable filter compares against the CACHED quantity. This compares
   // against the ledger, so expect more alerts than before — the ones the stale
   // cache was hiding.
+  // Handles on both entities. These two ids are display-only in today's UI, so
+  // this is the one of the three that could not yet bite — but it is the same
+  // defect, and leaving it would mean the next screen that wants to act on an
+  // alert (count it, order it) inherits a broken id. See db/schema/043.
   const q = await neonQuery(
-    `SELECT item_airtable_id, item_name, location_airtable_id, location_name,
+    `SELECT item_handle, item_name, location_handle, location_name,
             qty_on_hand, reorder_point, wire_ft_per_lb, wire_ft
        FROM v_stock_levels
       WHERE reorder_point > 0 AND qty_on_hand <= reorder_point
@@ -2545,9 +2573,9 @@ async function handleReorderAlerts() {
     for (const r of q.rows) {
       const loc = r.location_name || "Unknown";
       (g[loc] = g[loc] || []).push({
-        itemId:       r.item_airtable_id || "",
+        itemId:       r.item_handle || "",
         itemName:     r.item_name || "",
-        locationId:   r.location_airtable_id || "",
+        locationId:   r.location_handle || "",
         qtyOnHand:    Number(r.qty_on_hand ?? 0),
         reorderPoint: Number(r.reorder_point ?? 0),
         shortBy:      Number(r.reorder_point ?? 0) - Number(r.qty_on_hand ?? 0),
@@ -2606,23 +2634,33 @@ async function handleCreateStockLevel(body) {
   if (!locationId) return resp(400, { ok: false, error: "Missing locationId." });
   if (reorderPoint === undefined) return resp(400, { ok: false, error: "Missing reorderPoint." });
 
+  // ⚠⚠ INSERT…SELECT, not INSERT…VALUES with subselects, and that is the whole
+  // point of the shape.
+  //
+  // This used to resolve both FKs as scalar subselects inside VALUES, then check
+  // the returned ids and answer 404 if either came back NULL. The check was
+  // right and the 404 was right — but the INSERT had already run. A NULL
+  // `location_id` sits OUTSIDE the (item_id, location_id) partial unique index,
+  // so the row landed, stayed invisible to v_stock_levels, and was reported to
+  // the user as a failure. Retrying appended another one.
+  //
+  // As a SELECT, an unresolvable handle produces no row to insert, so nothing is
+  // written and the 404 below is the truth rather than a description of a row
+  // that exists. No transaction needed. See db/schema/043.
   const rows = await neonWrite("createStockLevel",
     `INSERT INTO stock_settings
        (item_airtable_id, item_id, location_airtable_id, location_id, reorder_point, synced_at)
-     VALUES ($1, (SELECT id FROM inventory_items WHERE airtable_id = $1 OR id::text = $1),
-             $2, (SELECT id FROM locations WHERE airtable_id = $2), $3, now())
+     SELECT $1, i.id, $2, l.id, $3, now()
+       FROM inventory_items i, locations l
+      WHERE (i.airtable_id = $1 OR i.id::text = $1)
+        AND (l.airtable_id = $2 OR l.id::text = $2)
      ON CONFLICT (item_id, location_id) WHERE item_id IS NOT NULL AND location_id IS NOT NULL
        DO UPDATE SET reorder_point = EXCLUDED.reorder_point, synced_at = now()
-     RETURNING id, item_id, location_id`,
+     RETURNING id`,
     [String(itemId), String(locationId), Number(reorderPoint)]);
 
   const made = rows[0];
-  if (!made) return resp(500, { ok: false, error: "Failed to save the reorder point." });
-  // A row whose FKs did not resolve would sit outside the (item_id, location_id)
-  // unique index and outside v_stock_levels — saved, and invisible.
-  if (!made.item_id || !made.location_id) {
-    return resp(404, { ok: false, error: "Item or location not found." });
-  }
+  if (!made) return resp(404, { ok: false, error: "Item or location not found." });
   return resp(200, { ok: true, recordId: made.id });
 }
 

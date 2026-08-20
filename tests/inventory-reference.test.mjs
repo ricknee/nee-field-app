@@ -37,6 +37,7 @@ let neonHistory = [];    // inventory_transactions joined to items/locations
 const neonWrites = [];   // every INSERT INTO inventory_items airtable_id
 const txnWrites  = [];   // one entry per ROW inserted into inventory_transactions
 const txnInserts = [];   // one entry per INSERT STATEMENT (a cart must be exactly one)
+const txnInsertSql = []; // the SQL text of each, so a test can check how its FKs resolve
 const txnDeletes = [];   // every DELETE FROM inventory_transactions id
 const txnMarks   = [];   // every markTransactionsPushed id-array
 let   txnReplay  = [];   // rows the replay SELECT returns for an already-submitted cart
@@ -65,6 +66,23 @@ let   itemRefs       = { txns:0, est_lines:0, tmpl_lines:0, order_lines:0, prici
 let   itemMissing    = new Set();
 const NEW_EST        = "e5717a7e-1111-4111-8111-111111111111";
 let   tmplCloneLines = [];          // what the from-template INSERT..SELECT copies
+
+// ── TWO ID SPACES, and the mock has to model both ──────────────────────────
+// The slice-1 outage shipped past a green suite because the mock used the SAME
+// STRING for the uuid and the rec id, so asking for the wrong column still
+// matched. Everything below keeps them genuinely different values, and adds a
+// row for each entity that has NO rec id at all — which is what an item or
+// location created in the app since the cutover actually looks like.
+//
+// A native row's handle is its uuid: `COALESCE(airtable_id, id::text)`, exactly
+// what handleItems and handleLocations serve to the pickers. Any reader that
+// filters on `*_airtable_id` instead of `*_handle` will match nothing here, and
+// that is the bug class these fixtures exist to catch (db/schema/043).
+const NATIVE_ITEM = "17e11111-2222-4222-8222-222222222222";  // airtable_id NULL
+const NATIVE_LOC  = "10c11111-3333-4333-8333-333333333333";  // airtable_id NULL
+const LOC1_UUID   = "10c11111-1111-4111-8111-111111111111";  // recLoc1's uuid
+const ITEMA_UUID  = "17e11111-1111-4111-8111-111111111111";  // recItemA's uuid
+const handleOf = (recId, uuid) => recId || uuid;
 
 // Column types are INFERRED from the sample values rather than all declared as
 // text. The driver parses by dataTypeID, so declaring a boolean column as text
@@ -215,6 +233,7 @@ globalThis.fetch = async (url, opts = {}) => {
       const ps = body.params || [];
       const n  = Math.round(ps.length / 13);
       txnInserts.push(n);
+      txnInsertSql.push(sql);
       for (let i = 0; i < n; i++) {
         txnWrites.push({ itemId: ps[i * 13], from: ps[i * 13 + 1], to: ps[i * 13 + 2],
                          qty: ps[i * 13 + 4], type: ps[i * 13 + 5],
@@ -241,13 +260,22 @@ globalThis.fetch = async (url, opts = {}) => {
       payload = neonReply(["id"], stockMissing.has(body.params?.[0]) ? [] : [{ id: body.params?.[0] }]);
     } else if (/INSERT INTO stock_settings/i.test(sql)) {
       stockCreates.push({ itemId: body.params?.[0], locationId: body.params?.[1],
-                          reorderPoint: body.params?.[2] });
-      // The FK subselects resolve to NULL for an unknown item or location — the
-      // row saves but lands outside the unique index and outside v_stock_levels.
-      const known = body.params?.[0] === "recItemA" && body.params?.[1] === "recLoc1";
-      payload = neonReply(["id", "item_id", "location_id"],
-        [{ id: "5da5a5a5-9999-4999-8999-999999999999",
-           item_id: known ? "item-uuid" : null, location_id: known ? "loc-uuid" : null }]);
+                          reorderPoint: body.params?.[2], sql });
+      // ⚠ This models INSERT…SELECT, not INSERT…VALUES.
+      //
+      // The old shape resolved the FKs as scalar subselects inside VALUES, so an
+      // unknown handle still INSERTED a row — one with NULL ids, sitting outside
+      // the partial unique index and outside v_stock_levels. The handler caught
+      // it and returned 404, so the user was told it failed while the row
+      // existed. As a SELECT there is nothing to insert, so an unresolved handle
+      // returns NO ROW — which is what this returns.
+      //
+      // Both handle forms resolve, because that is what the app serves.
+      const itemOk = ["recItemA", ITEMA_UUID, NATIVE_ITEM].includes(body.params?.[0]);
+      const locOk  = ["recLoc1",  LOC1_UUID,  NATIVE_LOC ].includes(body.params?.[1]);
+      payload = neonReply(["id"], (itemOk && locOk)
+        ? [{ id: "5da5a5a5-9999-4999-8999-999999999999" }]
+        : []);
     } else if (/COALESCE\(s\.qty_on_hand, 0\)/i.test(sql)) {
       // The adjustment's "what is there now" read. `adjOnHand === null` models
       // an item/location pair that does not exist at all, which is a 404 rather
@@ -310,10 +338,23 @@ globalThis.fetch = async (url, opts = {}) => {
       let rows = neonStock;
       // handleStockLevels scopes to one item; honouring the bind matters, or the
       // test reads a different item's row and quietly passes on the wrong data.
-      if (/WHERE item_airtable_id = \$1/i.test(sql)) rows = rows.filter(s => s.item_airtable_id === body.params?.[0]);
+      //
+      // ⚠⚠ The filter is applied on whichever column the SQL actually NAMED.
+      // Matching on `item_handle` while the handler still asks for
+      // `item_airtable_id` is how the mock would hide the bug instead of
+      // catching it — the same "one id space" mistake that let the slice-1
+      // outage ship. Ask for the rec-id column and you get rec-id matching,
+      // which returns nothing for the native row.
+      if (/WHERE item_handle = \$1/i.test(sql)) {
+        rows = rows.filter(s => s.item_handle === body.params?.[0]);
+      } else if (/WHERE item_airtable_id = \$1/i.test(sql)) {
+        rows = rows.filter(s => s.item_airtable_id === body.params?.[0]);
+      }
       if (/reorder_point > 0/i.test(sql)) rows = rows.filter(s => Number(s.reorder_point) > 0 && Number(s.qty_on_hand) <= Number(s.reorder_point));
       payload = neonReply(["stock_id", "stock_airtable_id", "item_airtable_id", "item_name",
-                           "location_airtable_id", "location_name", "qty_on_hand",
+                           "item_handle",
+                           "location_airtable_id", "location_name", "location_handle",
+                           "qty_on_hand",
                            "default_unit_cost", "total_value",
                            "reorder_point", "wire_ft_per_lb", "wire_ft"], rows);
     } else if (/FROM inventory_transactions t/i.test(sql)) {
@@ -413,6 +454,10 @@ async function test(name, fn) {
   catch (e) { log.push(["✗", `${name} — ${e.message}`]); fail++; }
 }
 const eq = (a, b, m) => { if (a !== b) throw new Error(`${m || ""} expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`); };
+// For claims that are not an equality — "this row exists", "this SQL has this
+// shape". `eq(!!x, true)` reports "expected true, got false", which tells you
+// nothing about what was actually being asserted.
+const ok = (v, m) => { if (!v) throw new Error(m || "expected a truthy value"); };
 const GET  = (action, extra = {}) => handler({ httpMethod: "GET",
   queryStringParameters: { action, ...extra }, headers: { authorization: `Bearer ${TOK}` } });
 const POST = (body, tok = ADMIN) => handler({ httpMethod: "POST",
@@ -423,6 +468,7 @@ function reset() {
   neonDown = false; neonWrites.length = 0; atRequested.length = 0;
   txnWrites.length = 0; txnDeletes.length = 0;
   txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set();
+  txnInsertSql.length = 0;
   adjOnHand = 0;
   stockUpdates.length = 0; stockCreates.length = 0; stockMissing = new Set();
   neonPushes = [
@@ -440,19 +486,39 @@ function reset() {
       item_name: "3/4\" EMT PIPE", line_title: "3/4\" EMT PIPE x 10", quantity: "10.0000",
       unit_cost: "1.0700", line_total: "10.7000", wire_ft: null },
   ];
+  // ⚠ `item_handle` / `location_handle` are the columns the app reads. They are
+  // spelled out per row rather than derived, so a row that gets them wrong is
+  // visible in the fixture rather than hidden behind a helper.
   neonStock = [
     // 40 lb of wire on hand at 19.5 ft/lb → 780 ft; below its reorder point of 100.
     { stock_id: "5da5a5a5-1111-4111-8111-111111111111",
       stock_airtable_id: "recSL1", item_airtable_id: "recItemB", item_name: "12 THHN",
-      location_airtable_id: "recLoc1", location_name: "Shop #1", qty_on_hand: "40.0000",
+      item_handle: "recItemB",
+      location_airtable_id: "recLoc1", location_name: "Shop #1", location_handle: "recLoc1",
+      qty_on_hand: "40.0000",
       default_unit_cost: "1.2500", total_value: "50.0000", reorder_point: "100.0000",
       wire_ft_per_lb: "19.5000", wire_ft: "780.0000" },
     // Negative on-hand: used without being received. Honest arithmetic, and the
     // reason the ledger is the source rather than the cache.
     { stock_id: "5da5a5a5-2222-4222-8222-222222222222",
       stock_airtable_id: "recSL2", item_airtable_id: "recItemA", item_name: "1/2\" EMT PIPE",
-      location_airtable_id: "recLoc1", location_name: "Shop #1", qty_on_hand: "-1434.0000",
+      item_handle: "recItemA",
+      location_airtable_id: "recLoc1", location_name: "Shop #1", location_handle: "recLoc1",
+      qty_on_hand: "-1434.0000",
       default_unit_cost: "0.7500", total_value: "-1075.5000", reorder_point: "0.0000",
+      wire_ft_per_lb: "0.0000", wire_ft: "0.0000" },
+    // ── The row that only exists after the cutover ──────────────────────────
+    // An item created in the app, stocked at a location created in the app.
+    // BOTH rec ids are NULL, so both handles are uuids. Every reader that still
+    // filters on or returns `*_airtable_id` fails on exactly this row — which is
+    // the whole point of it being here. Under its reorder point, so it must also
+    // appear in the alerts.
+    { stock_id: "5da5a5a5-3333-4333-8333-333333333333",
+      stock_airtable_id: null, item_airtable_id: null, item_name: "TEST PART",
+      item_handle: NATIVE_ITEM,
+      location_airtable_id: null, location_name: "Shop #3", location_handle: NATIVE_LOC,
+      qty_on_hand: "2.0000",
+      default_unit_cost: "3.0000", total_value: "6.0000", reorder_point: "10.0000",
       wire_ft_per_lb: "0.0000", wire_ft: "0.0000" },
   ];
   estWrites.length = 0; estLineWrites.length = 0;
@@ -796,8 +862,11 @@ await test("C: reorder alerts compare against the ledger, grouped by location", 
   eq(shop.length, 1, "only the item actually under its reorder point");
   eq(shop[0].itemName, "12 THHN", "the wire");
   eq(shop[0].shortBy, 60, "100 - 40 = 60 short");
-  eq(shop[0].itemId, "recItemA" === shop[0].itemId ? "recItemA" : "recItemB",
-     "carries the item rec id so the alert can deep-link into Receive");
+  // Was `eq(shop[0].itemId, "recItemA" === shop[0].itemId ? "recItemA" : "recItemB")`
+  // — which compares the value against itself and can never fail. It stayed
+  // green through the whole of F-02, including while this field was "".
+  eq(shop[0].itemId, "recItemB",
+     "carries the item handle so the alert can deep-link into Receive");
 });
 
 await test("C: history splits 'job | notes' and prefers the snapshot cost", async () => {
@@ -851,6 +920,109 @@ await test("S3: an unknown item or location is refused, not saved invisibly", as
                          locationId: "recLoc1", reorderPoint: 40 });
   eq(r.statusCode, 404,
      "unresolved FKs would sit outside the unique index AND outside v_stock_levels — saved and unfindable");
+});
+
+// ── 043: the dual handle, on the two entities that went native last ────────
+// Items (041) and locations (042) both became creatable in the app. A native row
+// has no rec id, so its handle is its uuid — and three READERS were still keyed
+// on the rec id alone. Every test below FAILS on the code as it shipped, which
+// is the only reason any of them is worth having.
+
+await test("043/F-02: a natively-created item's stock is findable at all", async () => {
+  reset();
+  const r = json(await GET("stockLevels", { itemId: NATIVE_ITEM }));
+  eq(r._source, "neon", "served from Neon");
+  // The old code filtered on item_airtable_id, which is NULL here. The query
+  // SUCCEEDED with zero rows, so this came back `levels: []` with ok:true — a
+  // clean, working-looking Check Stock screen saying the item is nowhere.
+  // A short list looks exactly like a complete one.
+  eq(r.levels.length, 1, "the new item HAS stock, and asking by the handle it was given finds it");
+  eq(r.levels[0].locationName, "Shop #3", "at the location it was received into");
+  eq(r.levels[0].qtyOnHand, 2, "the quantity the ledger says");
+});
+
+await test("043/F-02: a rec-id item is unaffected — the handle is a superset", async () => {
+  reset();
+  const r = json(await GET("stockLevels", { itemId: "recItemA" }));
+  eq(r.levels.length, 1, "still exactly its own row");
+  eq(r.levels[0].qtyOnHand, -1434, "and still the ledger's honest negative");
+});
+
+await test("043/F-02: stockLevelsAll carries the native item's uuid, not an empty string", async () => {
+  reset();
+  const r = json(await GET("stockLevelsAll"));
+  const native = r.levels.find(l => l.locationName === "Shop #3");
+  ok(native, "the native pair is in the list");
+  // This id is joined straight back against the items list for category and
+  // name (inventory.html:3312 / :3387 / :3531). `item_airtable_id || ""` made it
+  // "", which joins to nothing — so the item's stock and its dollars landed
+  // under "Uncategorized" against a blank row.
+  eq(native.itemId, NATIVE_ITEM, "the handle the items list will actually match on");
+  eq(r.levels.find(l => l.qtyOnHand === -1434).itemId, "recItemA", "rec-id items unchanged");
+});
+
+await test("043/F-02: reorder alerts carry handles for BOTH item and location", async () => {
+  reset();
+  const r = json(await GET("reorderAlerts"));
+  const shop3 = r.groups["Shop #3"];
+  ok(shop3 && shop3.length === 1, "the native pair raises an alert like any other");
+  // Display-only in today's UI, which is why this one could not yet bite. It is
+  // the same defect though, and left alone the next screen that wants to ACT on
+  // an alert — count it, order it — would inherit an id that resolves to nothing.
+  eq(shop3[0].itemId, NATIVE_ITEM, "item handle, not a NULL rec id flattened to \"\"");
+  eq(shop3[0].locationId, NATIVE_LOC, "location handle too");
+  eq(shop3[0].shortBy, 8, "10 - 2");
+});
+
+await test("043/F-01: every FK in the ledger insert resolves on BOTH handle forms", async () => {
+  reset();
+  json(await POST({ action: "submitCart", locationId: "recLoc1", enteredBy: "Rick",
+    jobName: "Bethel School", jobId: "recJob1", submitId: "cart-handle",
+    lines: [{ itemId: "recItemA", qty: 10, unitCost: 0.75 }] }));
+  eq(txnInsertSql.length, 1, "one insert to inspect");
+
+  // A white-box assertion on purpose. The FK resolution itself happens inside
+  // Postgres, so an offline suite cannot observe it — but it CAN observe that
+  // the statement was written to accept both forms, which is the thing that was
+  // wrong. The item subselect took both; the two location subselects took
+  // `airtable_id` only, so a location created in the app resolved to NULL. The
+  // row still inserted, and v_stock_on_hand skips legs with a NULL location_id
+  // — so the movement was logged, chargeable, in History, and absent from every
+  // stock figure, with no error raised.
+  //
+  // Checked as a RULE over every subselect rather than by naming the two that
+  // were broken, so the next entity to go native is covered before it exists.
+  const subselects = txnInsertSql[0].match(/\(SELECT id FROM \w+ WHERE [^)]*\)/gi) || [];
+  eq(subselects.length, 3, "item, from-location, to-location");
+  for (const s of subselects) {
+    ok(/airtable_id\s*=/.test(s) && /id::text\s*=/.test(s),
+       `FK subselect must accept a uuid handle too, got: ${s}`);
+  }
+});
+
+await test("043/F-03: a reorder point on a native item and location saves", async () => {
+  reset();
+  const r = json(await POST({ action: "createStockLevel", itemId: NATIVE_ITEM,
+                              locationId: NATIVE_LOC, reorderPoint: 15 }));
+  eq(r.ok, true, "saved");
+  eq(stockCreates.length, 1, "one statement");
+  eq(stockCreates[0].itemId, NATIVE_ITEM, "the handle it was given, stored as given");
+});
+
+await test("043/F-03: an unresolved handle writes NOTHING, rather than an invisible row", async () => {
+  reset();
+  const r = await POST({ action: "createStockLevel", itemId: "recNope",
+                         locationId: "recLoc1", reorderPoint: 40 });
+  eq(r.statusCode, 404, "refused");
+  // The 404 was always right. What was wrong is that the INSERT had already run:
+  // resolving the FKs as scalar subselects inside VALUES meant an unknown handle
+  // still wrote a row with NULL ids, which sits OUTSIDE the (item_id,
+  // location_id) partial unique index and outside v_stock_levels. Saved,
+  // invisible, and reported as a failure — and a retry appended another one.
+  ok(/INSERT INTO stock_settings[\s\S]*\bSELECT\b[\s\S]*\bFROM\b[\s\S]*\bWHERE\b/i.test(stockCreates[0].sql),
+     "INSERT…SELECT, so an unresolvable handle produces no row to insert at all");
+  ok(!/VALUES\s*\(/i.test(stockCreates[0].sql),
+     "not INSERT…VALUES with scalar subselects — that is the shape that saved the orphan");
 });
 
 await test("S3: stock levels refuse to fall back to a frozen Airtable", async () => {

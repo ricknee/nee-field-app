@@ -6321,6 +6321,30 @@ async function handleUpdateEstimateStatus(body) {
 // records don't commingle with the source-of-truth Job Estimates.
 async function handleGetNextEstimateNumber() {
   const START_AT = 2187;
+
+  // ── NEON-FIRST ────────────────────────────────────────────────────────────
+  // Replaces paging the whole "Sent Estimate PDFs" table on every press of the
+  // button with one MAX(). Safe because `saveEstimate` writes this table in the
+  // SAME request as Airtable, so Neon can never be a number behind — this does
+  // NOT ride on the hourly sync, which is the thing that would have made it
+  // hand out a duplicate.
+  //
+  // ⚠⚠ THE ORDER OF THIS MIGRATION MATTERS. Verified before flipping: Neon holds
+  // 26 rows, max 2214, none missing a number. The day estimates go Neon-NATIVE
+  // and stop being minted in Airtable, an Airtable-based scan would freeze at
+  // its last mirrored number and re-issue it — exactly how allocations broke
+  // when time entries stopped getting an Airtable twin.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT COALESCE(MAX(display_number), 0)::int AS max_no FROM sent_estimate_pdfs`);
+    if (q?.rows?.length) {
+      const maxNo = Number(q.rows[0].max_no) || 0;
+      return resp(200, { ok: true, nextNumber: Math.max(maxNo + 1, START_AT),
+                         _source: "neon", _ms: q.ms });
+    }
+    console.error(`getNextEstimateNumber: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   let max = 0;
   let offset = undefined;
   try {
@@ -10393,6 +10417,27 @@ async function handleMarkInvoicePaid(body) {
 async function handleGetNextInvoiceNumber() {
   // Find max "Invoice Display #" across Invoices; start at 1633 if none exist
   const START_AT = 1633;
+
+  // ── NEON-FIRST ────────────────────────────────────────────────────────────
+  // Same reasoning as the estimate counter above. Safe because every invoice
+  // create AND update calls `syncInvoiceToNeon` in the same request, so the
+  // display number is in Neon before this handler could ever be asked again.
+  //
+  // ⚠ Verified before flipping, not assumed: Airtable max 1668 across 55
+  // records, Neon max 1668 across 55 rows. The 20 rows with a NULL number are
+  // blank in Airtable too — MAX() ignores them exactly as the old scan did,
+  // which skipped any record whose field did not parse as a number.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT COALESCE(MAX(invoice_display_no), 0)::int AS max_no FROM invoices`);
+    if (q?.rows?.length) {
+      const maxNo = Number(q.rows[0].max_no) || 0;
+      return resp(200, { ok: true, nextNumber: Math.max(maxNo + 1, START_AT),
+                         _source: "neon", _ms: q.ms });
+    }
+    console.error(`getNextInvoiceNumber: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
   let max = 0;
   let offset = undefined;
   // Paginate to cover all records (defensive for large tables)

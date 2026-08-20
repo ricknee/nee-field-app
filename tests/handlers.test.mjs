@@ -2174,6 +2174,72 @@ await test("hours breakdowns: fall back cleanly when Neon is unreachable", async
   eq((await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "nope" })).statusCode, 400, "bad bucket refused");
 });
 
+await test("payroll bonuses: the Airtable fallback still works, and still excludes superseded runs", async () => {
+  // Both handlers went Neon-first (audit item 02, second slice). The money used
+  // to come from Airtable while the employee list already came from Neon, which
+  // is what made a handler count call them "migrated".
+  //
+  // These tests run offline, so DATABASE_URL is never reachable — which means
+  // this exercises exactly the branch a Neon outage takes. The restructure moved
+  // the two fetchAll calls inside an `else`, so a mistake there would be
+  // invisible in production until the day Neon blinked.
+  //
+  // ⚠ Superseded runs are the whole reason this logic is not a SUM. The period
+  // 2026-07-26 → 08-08 has six runs, five superseded; counting them all would
+  // multiply somebody's YTD bonus by six.
+  mockTables = {
+    Employees: [
+      { id: "recEmp1", fields: { "Employee Name": "Jeff Koehn",  Role: "employee", Active: true } },
+      { id: "recEmp2", fields: { "Employee Name": "Dana Office", Role: "office",   Active: true } },
+    ],
+    tbln9nU1BtFmTYMYB: [
+      { id: "recRunLive", fields: { "Superseded": false, "Generated At": "2026-05-01T13:41:42.000Z" } },
+      { id: "recRunDead", fields: { "Superseded": true,  "Generated At": "2026-05-01T13:44:02.000Z" } },
+    ],
+    tblpE3emzU3J1P5jx: [
+      { id: "recBon1", fields: { Amount: 500, Employee: ["recEmp1"], "Payroll Run": ["recRunLive"],
+                                 "Pay Period Start": "2026-01-25", "Pay Period End": "2026-02-07" } },
+      { id: "recBon2", fields: { Amount: 900, Employee: ["recEmp1"], "Payroll Run": ["recRunDead"],
+                                 "Pay Period Start": "2026-01-25", "Pay Period End": "2026-02-07" } },
+      { id: "recBon3", fields: { Amount: 250, Employee: ["recEmp2"], "Payroll Run": ["recRunLive"],
+                                 "Pay Period Start": "2026-01-25", "Pay Period End": "2026-02-07" } },
+    ],
+  };
+  delete process.env.DATABASE_URL;
+
+  const roll = await GET("payrollBonusesRollup", { year: "2026" });
+  eq(roll.statusCode, 200, "rollup answers with Neon down");
+  eq(json(roll)._source, "airtable", "and says which store answered");
+  const emps = json(roll).employees;
+  const jeff = emps.find(e => e.id === "recEmp1");
+  ok(jeff, "the payroll-eligible employee is present");
+  eq(jeff.ytdBonus, 500, "the superseded run's 900 is excluded");
+  eq(emps.some(e => e.id === "recEmp2"), false, "office never appears in a payroll view");
+
+  const hist = await GET("payrollEmployeeBonusHistory", { employeeId: "recEmp1", limit: "5" });
+  eq(hist.statusCode, 200, "history answers with Neon down");
+  const bonuses = json(hist).bonuses;
+  eq(bonuses.length, 1, "only the live run's bonus survives");
+  eq(bonuses[0].id, "recBon1", "and it is the right one");
+  eq(bonuses[0].runGeneratedAt, "2026-05-01T13:41:42.000Z", "run timestamp comes through");
+
+  // The role guard sits ahead of both data paths — an office id must never
+  // return bonus history, whichever store is answering.
+  //
+  // ⚠ The mock returns every row of a table and ignores `filterByFormula`, so a
+  // by-record-id lookup here resolves to whatever sits FIRST in the array, not
+  // to the id asked for. Isolating the office employee is what actually puts the
+  // office record in front of the guard — leaving both in place tests nothing
+  // and quietly passes for the wrong reason.
+  mockTables.Employees = [{ id: "recEmp2", fields: { "Employee Name": "Dana Office", Role: "office", Active: true } }];
+  const leak = await GET("payrollEmployeeBonusHistory", { employeeId: "recEmp2" });
+  eq(leak.statusCode, 200, "office id answers");
+  eq(json(leak).bonuses.length, 0, "but with nothing in it");
+
+  eq((await GET("payrollEmployeeBonusHistory", { employeeId: "notARecordId" })).statusCode, 400,
+     "a malformed employeeId is refused before either store is touched");
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

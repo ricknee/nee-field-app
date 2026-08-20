@@ -3640,35 +3640,75 @@ async function handlePayrollBonusesRollup(params) {
   const year = parseInt(params?.year, 10) || new Date().getFullYear();
   const yearStart = `${year}-01-01`;
 
-  const [employees, allRuns] = await Promise.all([
-    employeesForPayroll().then(r => r ?? fetchAll(TABLES.employees)),
-    fetchAll(PR_RUNS.table)
-  ]);
-  const supersededRunIds = new Set();
-  for (const r of allRuns) {
-    if (gBool(r.fields, "Superseded")) supersededRunIds.add(r.id);
-  }
+  const employees = await employeesForPayroll().then(r => r ?? fetchAll(TABLES.employees));
   const empById = new Map(employees.map(e => [e.id, e]));
 
-  const bonuses = await fetchAll(PR_BONUSES.table, {
-    filter: `DATESTR({Pay Period End})>="${yearStart}"`
-  });
-
+  // ── NEON-FIRST (audit item 02, second slice) ─────────────────────────────
+  // The employee list already came from Neon; only the money still came from
+  // Airtable, which is why a handler count called this one "migrated". It
+  // paged BOTH Payroll Runs and Payroll Bonuses on every call.
+  //
+  // ⚠ THE PERIOD COLUMNS LIVE ON THE RUN, NOT THE BONUS. Airtable's Bonuses
+  // table shows Pay Period Start/End, but they are LOOKUPS through {Payroll
+  // Run} — verified row by row against all 31 bonuses, including the one
+  // malformed pair (run recdyryDlCxFuAlfo carries start 2026-03-22 with end
+  // 2026-02-07, and its four bonuses show exactly that). So joining through
+  // the run is a faithful port, not a correction: same rows, same figures,
+  // same bad dates where the source is bad.
+  //
+  // ⚠ LEFT JOIN, deliberately. The Airtable loop kept a bonus with no run
+  // link (`if (runId && superseded…)`), and a bonus with no run has no period
+  // either, so the date test drops it in both worlds. An INNER JOIN would
+  // change that reasoning silently if a run link ever goes missing.
   const totalsByEmpId = new Map();
   const empIdsWithBonus = new Set();
-  for (const b of bonuses) {
-    const f = b.fields || {};
-    const runId = firstLinkedId(f["Payroll Run"]);
-    if (runId && supersededRunIds.has(runId)) continue;
-    const empId = firstLinkedId(f["Employee"]);
-    if (!empId) continue;
-    // Drop bonuses owned by office/viewer roles so an inactive office worker
-    // with a prior bonus can't sneak back into the result via the union.
-    const empRec = empById.get(empId);
-    if (empRec && !isPayrollEligibleRole(empRec.fields)) continue;
-    const amt = Number(f["Amount"]) || 0;
-    totalsByEmpId.set(empId, (totalsByEmpId.get(empId) || 0) + amt);
-    empIdsWithBonus.add(empId);
+  let rows = null, ms;
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT b.employee_airtable_id AS emp_id, SUM(b.amount)::float8 AS total
+         FROM payroll_bonuses b
+         LEFT JOIN payroll_runs r ON r.airtable_id = b.payroll_run_airtable_id
+        WHERE r.superseded IS NOT TRUE
+          AND r.pay_period_end >= $1::date
+        GROUP BY 1`, [yearStart]);
+    if (q?.rows) { rows = q.rows; ms = q.ms; }
+    else console.error(`payrollBonusesRollup: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
+  if (rows) {
+    for (const r of rows) {
+      const empId = r.emp_id;
+      if (!empId) continue;
+      // Same role guard as the Airtable path: an inactive office worker with a
+      // prior bonus must not sneak back in through the union below.
+      const empRec = empById.get(empId);
+      if (empRec && !isPayrollEligibleRole(empRec.fields)) continue;
+      totalsByEmpId.set(empId, Number(r.total) || 0);
+      empIdsWithBonus.add(empId);
+    }
+  } else {
+    const allRuns = await fetchAll(PR_RUNS.table);
+    const supersededRunIds = new Set();
+    for (const r of allRuns) {
+      if (gBool(r.fields, "Superseded")) supersededRunIds.add(r.id);
+    }
+    const bonuses = await fetchAll(PR_BONUSES.table, {
+      filter: `DATESTR({Pay Period End})>="${yearStart}"`
+    });
+    for (const b of bonuses) {
+      const f = b.fields || {};
+      const runId = firstLinkedId(f["Payroll Run"]);
+      if (runId && supersededRunIds.has(runId)) continue;
+      const empId = firstLinkedId(f["Employee"]);
+      if (!empId) continue;
+      // Drop bonuses owned by office/viewer roles so an inactive office worker
+      // with a prior bonus can't sneak back into the result via the union.
+      const empRec = empById.get(empId);
+      if (empRec && !isPayrollEligibleRole(empRec.fields)) continue;
+      const amt = Number(f["Amount"]) || 0;
+      totalsByEmpId.set(empId, (totalsByEmpId.get(empId) || 0) + amt);
+      empIdsWithBonus.add(empId);
+    }
   }
 
   const result = [];
@@ -3683,7 +3723,8 @@ async function handlePayrollBonusesRollup(params) {
     });
   }
   result.sort((a, b) => a.name.localeCompare(b.name));
-  return resp(200, { ok: true, year, employees: result });
+  return resp(200, { ok: true, year, employees: result,
+                     ...(rows ? { _source: "neon", _ms: ms } : { _source: "airtable" }) });
 }
 
 // Per-employee bonus history (last N non-superseded). Bonuses table is small
@@ -3696,17 +3737,56 @@ async function handlePayrollEmployeeBonusHistory(params) {
   }
   const limit = Math.max(1, Math.min(50, parseInt(params?.limit, 10) || 5));
 
-  const [allRuns, allBonuses, empRecs] = await Promise.all([
-    fetchAll(PR_RUNS.table),
-    fetchAll(PR_BONUSES.table, { sortField: "Pay Period End", sortDir: "desc" }),
-    employeeRecordById(employeeId).then(r => r ? [r] : fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }))
-  ]);
+  const empRecs = await employeeRecordById(employeeId)
+    .then(r => r ? [r] : fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }));
   // Defensive: if the employeeId belongs to office/viewer (or was constructed
   // by hand against a non-eligible role), don't leak any bonus history.
   const emp = empRecs[0];
   if (emp && !isPayrollEligibleRole(emp.fields)) {
     return resp(200, { ok: true, employeeId, limit, bonuses: [] });
   }
+
+  // ── NEON-FIRST (audit item 02, second slice) ─────────────────────────────
+  // Periods and Generated At come from the RUN — see the note on the rollup
+  // above for why that is faithful rather than a correction.
+  //
+  // ⚠ `runGeneratedAt` is formatted, not returned raw. Airtable hands back an
+  // ISO string; a timestamptz would arrive shaped by whatever the driver
+  // decides, and this value is rendered straight into the popover. Pinning the
+  // format here keeps the Neon and Airtable paths byte-identical on screen.
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT COALESCE(b.airtable_id, b.id::text)        AS id,
+              b.amount::float8                           AS amount,
+              r.pay_period_start::text                   AS pay_period_start,
+              r.pay_period_end::text                     AS pay_period_end,
+              b.payroll_run_airtable_id                  AS run_id,
+              to_char(r.generated_at AT TIME ZONE 'UTC',
+                      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')   AS run_generated_at
+         FROM payroll_bonuses b
+         LEFT JOIN payroll_runs r ON r.airtable_id = b.payroll_run_airtable_id
+        WHERE b.employee_airtable_id = $1
+          AND r.superseded IS NOT TRUE
+        ORDER BY r.pay_period_end DESC NULLS LAST, r.generated_at DESC, b.airtable_id
+        LIMIT $2`, [employeeId, limit]);
+    if (q?.rows) {
+      return resp(200, { ok: true, employeeId, limit, _source: "neon", _ms: q.ms,
+        bonuses: q.rows.map(r => ({
+          id: r.id,
+          amount: Math.round((Number(r.amount) || 0) * 100) / 100,
+          payPeriodStart: r.pay_period_start || null,
+          payPeriodEnd:   r.pay_period_end   || null,
+          runId: r.run_id || null,
+          runGeneratedAt: r.run_id ? (r.run_generated_at || null) : null
+        })) });
+    }
+    console.error(`payrollEmployeeBonusHistory: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
+  const [allRuns, allBonuses] = await Promise.all([
+    fetchAll(PR_RUNS.table),
+    fetchAll(PR_BONUSES.table, { sortField: "Pay Period End", sortDir: "desc" })
+  ]);
   const supersededRunIds = new Set();
   const runGenAt = new Map();
   for (const r of allRuns) {
@@ -3731,7 +3811,7 @@ async function handlePayrollEmployeeBonusHistory(params) {
     });
   }
 
-  return resp(200, { ok: true, employeeId, limit, bonuses: out });
+  return resp(200, { ok: true, employeeId, limit, bonuses: out, _source: "airtable" });
 }
 
 // Per-employee hour breakdown for one of the four rollup tiles. Same date

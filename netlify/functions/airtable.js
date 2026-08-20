@@ -10564,12 +10564,33 @@ async function handleCreateJob(body) {
   //
   // Fails SOFT: the job exists in Airtable and the hourly sync will adopt it,
   // so a Neon hiccup costs the old one-hour lag rather than the job itself.
+  //
+  // ⚠ THE INTAKE BLOCK CARRIES TOO, and originally did not. The job appeared in
+  // Neon immediately but with no customer name, phone, email or address, because
+  // the app reads jobs Neon-FIRST — so "the one-hour lag is gone" was only true
+  // of the job's existence, not its details. Found on the first real job after
+  // the flip (Craig Davidson (Garage), MIC 287, 2026-08-20): Airtable had the
+  // whole customer block, Neon had nulls until the sync caught up.
+  //
+  // `address_full` is composed here because Airtable's is a FORMULA field this
+  // code cannot write. Empty parts are dropped rather than left as stray commas,
+  // and the hourly sync overwrites it with Airtable's own rendering — so a
+  // format difference costs an hour of cosmetics, never a blank address.
+  const nz = (v) => { const s = String(v ?? "").trim(); return s || null; };
+  const addressFull = [
+    [nz(customerStreet), nz(customerCity)].filter(Boolean).join(", "),
+    [customerState ? String(customerState).trim().toUpperCase() : null, nz(customerZip)]
+      .filter(Boolean).join(" ")
+  ].filter(Boolean).join(", ") || null;
+
   try {
     await neonWrite("job.create",
       `INSERT INTO jobs (airtable_id, name, status, job_type, tax_status, billing_method,
                          contractor_at_id, contractor_name, po_number, po, po_locked,
-                         job_year, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+                         job_year, customer_first_name, customer_last_name, customer_phone,
+                         customer_email, address_street, address_city, address_state,
+                         address_zip, address_full, notes, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, now())
        ON CONFLICT (airtable_id) DO UPDATE SET
          name=EXCLUDED.name, status=EXCLUDED.status, job_type=EXCLUDED.job_type,
          tax_status=EXCLUDED.tax_status, billing_method=EXCLUDED.billing_method,
@@ -10577,11 +10598,27 @@ async function handleCreateJob(body) {
          po_number=COALESCE(EXCLUDED.po_number, jobs.po_number),
          -- COALESCE so a failed re-read never BLANKS a PO the sync already had.
          po=COALESCE(EXCLUDED.po, jobs.po), po_locked=COALESCE(EXCLUDED.po_locked, jobs.po_locked),
+         -- Same reasoning for the intake block: a retry that omits them must
+         -- never blank details the sync has already carried over.
+         customer_first_name=COALESCE(EXCLUDED.customer_first_name, jobs.customer_first_name),
+         customer_last_name =COALESCE(EXCLUDED.customer_last_name,  jobs.customer_last_name),
+         customer_phone     =COALESCE(EXCLUDED.customer_phone,      jobs.customer_phone),
+         customer_email     =COALESCE(EXCLUDED.customer_email,      jobs.customer_email),
+         address_street     =COALESCE(EXCLUDED.address_street,      jobs.address_street),
+         address_city       =COALESCE(EXCLUDED.address_city,        jobs.address_city),
+         address_state      =COALESCE(EXCLUDED.address_state,       jobs.address_state),
+         address_zip        =COALESCE(EXCLUDED.address_zip,         jobs.address_zip),
+         address_full       =COALESCE(EXCLUDED.address_full,        jobs.address_full),
+         notes              =COALESCE(EXCLUDED.notes,               jobs.notes),
          synced_at=now()`,
       [data.id, trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
        taxStatus || "Taxable", "Contractor", trimmedContractorId,
        contractorName ? String(contractorName).trim() : null,
-       poNumber, poString, poLocked, new Date().getFullYear()]);
+       poNumber, poString, poLocked, new Date().getFullYear(),
+       nz(customerFirstName), nz(customerLastName), nz(customerPhone), nz(customerEmail),
+       nz(customerStreet), nz(customerCity),
+       customerState ? String(customerState).trim().toUpperCase() : null,
+       nz(customerZip), addressFull, nz(notes)]);
   } catch (e) {
     console.error(`createJob: Neon insert failed, hourly sync will adopt it — ${e?.message || e}`);
   }

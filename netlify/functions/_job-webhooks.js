@@ -62,6 +62,12 @@ const N = {
   tsheetsDone:   "Automation – TSheets Created",
   completedDone: "Automation – Trello Completed",
   startService:  "Start Service Call",
+  // Read-only fallbacks for the Completed payload, used when Neon has not yet
+  // carried a value over. Airtable is still the mirror, so it usually has them.
+  completedAt:    "Project Completed At",
+  trelloCardId:   "Trello Card ID",
+  trelloPoCardId: "Trello Card PO ID",
+  tsheetsJobId:   "TSheets Job ID",
 };
 
 export function jobWebhooksEnabled() {
@@ -133,6 +139,8 @@ export async function fireJobStatusWebhooks(record, atFetch) {
       `SELECT j.contractor_name, j.po, j.po_locked, j.address_full,
               j.pcloud_folders_created, j.trello_created, j.tsheets_created,
               j.trello_completed,
+              j.project_completed_at::text AS project_completed_at,
+              j.trello_card_id, j.trello_po_card_id, j.tsheets_job_id,
               c.tsheets_group_id, c.trello_list_id, c.trello_list_job_po_id
          FROM jobs j
          LEFT JOIN companies c ON c.airtable_id = j.contractor_at_id
@@ -253,7 +261,34 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   // recordId ONLY — Make reads the rest out of Airtable. See the plan's §2:
   // this one cannot survive the mirror writes going away without a Make edit.
   if (status === "Completed" && !completedDone) {
-    out.push(await post(HOOKS.completed, { recordId: record.id }, "completed"));
+    // Everything module 2 (airtable:ActionGetRecord) existed to fetch. With these
+    // in the payload the Completed scenario reads nothing from Airtable, and the
+    // final ActionUpdateRecords becomes the same callback the Awarded one uses.
+    //
+    // ⚠⚠ `completedYear` REPLACES A HARDCODED "Completed - 2026". Module 12
+    // matched the Trello list by that literal string, so on 2026-01-01 every
+    // completed job would have quietly found no list and moved nowhere — the same
+    // shape as the Airtable PO automation's hardcoded year that item 05 fixed.
+    //
+    // ⚠ The card description drops the third line. It was
+    // `{{2.Photos (Mobile)}}`, and NO SUCH FIELD EXISTS on the record — the real
+    // ones are "Add Photos (Mobile)" and "View pCloud Photos" — so it has always
+    // rendered blank. Porting it as blank keeps the output identical; adding a
+    // real photo link would be a behaviour change and belongs in its own commit.
+    const completedAt = str(neonJob?.project_completed_at) || str(f[N.completedAt]);
+    out.push(await post(HOOKS.completed, {
+      recordId: record.id,
+      jobPO: str(f[N.jobPOLocked]) || str(neonJob?.po_locked),
+      jobAddress: str(f[N.address]) || str(neonJob?.address_full),
+      projectCompletedAt: completedAt,
+      completedYear: (completedAt || "").slice(0, 4) || new Date().getFullYear().toString(),
+      trelloCardId:   str(neonJob?.trello_card_id)    || str(f[N.trelloCardId]),
+      trelloPoCardId: str(neonJob?.trello_po_card_id) || str(f[N.trelloPoCardId]),
+      tsheetsJobId:   str(neonJob?.tsheets_job_id)    || str(f[N.tsheetsJobId]),
+      trelloCompleted: completedDone,
+      callbackUrl: `${SELF_URL}/.netlify/functions/airtable`,
+      callbackToken: signScope(["jobAutomation", record.id], CALLBACK_TTL_MS),
+    }, "completed"));
   }
 
   return out.length ? out : [];

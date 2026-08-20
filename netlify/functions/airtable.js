@@ -5534,18 +5534,32 @@ async function handleUpdateJobStatus(body) {
   // QuickBooks Time is already using. `prev` captures the value from BEFORE the
   // update, which is how we know whether we filled it just now and therefore
   // whether Airtable needs the mirror.
+  // ── AND STAMP THE COMPLETION DATE — same story as the PO lock ────────────
+  // `Stamp Project Completed Date` was undeployed on 2026-08-20 and nothing else
+  // wrote that field. It is not decoration: the Completed webhook prints it on
+  // the Trello card ("Project Completed On …"), and GP reporting groups by it.
+  // COALESCE so re-completing a job never moves a date that already exists.
   const nRows = await neonWrite("job.updateStatus",
-    `WITH prev AS (SELECT airtable_id, po_locked AS old_locked FROM jobs WHERE airtable_id = $1)
+    `WITH prev AS (SELECT airtable_id, po_locked AS old_locked,
+                          project_completed_at AS old_completed
+                     FROM jobs WHERE airtable_id = $1)
      UPDATE jobs j
         SET status = $2,
             po_locked = CASE WHEN $2 <> 'New Lead' THEN COALESCE(j.po_locked, j.po) ELSE j.po_locked END,
+            project_completed_at = CASE WHEN $2 = 'Completed'
+                                        THEN COALESCE(j.project_completed_at, current_date)
+                                        ELSE j.project_completed_at END,
             synced_at = now()
        FROM prev
       WHERE j.airtable_id = prev.airtable_id
-      RETURNING j.po_locked, prev.old_locked, j.po`, [jobId, status]);
+      RETURNING j.po_locked, prev.old_locked, j.po,
+                j.project_completed_at::text AS project_completed_at, prev.old_completed`,
+    [jobId, status]);
 
   const nRow = nRows?.[0] || {};
   const lockedNow = (!nRow.old_locked && nRow.po_locked) ? nRow.po_locked : null;
+  const completedNow = (!nRow.old_completed && nRow.project_completed_at)
+    ? String(nRow.project_completed_at).slice(0, 10) : null;
   if (status !== "New Lead" && !nRow.po_locked) {
     // Only reachable when `po` itself is missing, which the hourly sync fills.
     // Worth a log rather than a guess: composing the string here would be a
@@ -5561,7 +5575,8 @@ async function handleUpdateJobStatus(body) {
   // webhook fires below, or QuickBooks Time gets a blank jobcode. Writing it in
   // this PATCH guarantees the ordering; a second call would not.
   const patchFields = { "fld2FBMjvkOsy9Puu": status };
-  if (lockedNow) patchFields["fldDFQSF2jJmCDWB4"] = lockedNow;   // Job PO - Locked
+  if (lockedNow)    patchFields["fldDFQSF2jJmCDWB4"] = lockedNow;      // Job PO - Locked
+  if (completedNow) patchFields["fldDcH5hrH596OTdB"] = completedNow;   // Project Completed At
   const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: patchFields }) });
 
   // Fire whatever this status change is supposed to fire — pCloud folders at

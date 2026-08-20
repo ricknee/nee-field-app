@@ -4626,13 +4626,31 @@
       if (liftPanel) liftPanel.style.display = "none";
     }
 
-    // Trello card - build URL from card ID
+    // Trello card — direct link when we know the card, a search when we don't.
+    //
+    // ⚠ The button used to disable itself whenever `trelloCardId` was empty,
+    // which made it look broken on exactly the jobs you most want it on. Make
+    // creates the card during the Awarded webhook and writes the id back to
+    // AIRTABLE; Neon only learns of it on the next hourly `_jobs-sync.js` run.
+    // So every freshly awarded job had a dead Trello button for up to an hour —
+    // the card existed the whole time. Hit on Craig Davidson (Garage) 2026-08-20.
+    //
+    // Searching by job name rather than reading Airtable for the id: it costs no
+    // round trip, and it is also the better answer for OLD jobs, whose stored id
+    // may point at a card that no longer exists — completed jobs get moved onto
+    // the "Completed by <year>" card, so the original is gone.
     const trelloBtn = $("btnTrello");
     if (job.trelloCardId) {
       trelloBtn.href = `https://trello.com/c/${job.trelloCardId}`;
+      trelloBtn.textContent = "📋 Trello Card";
+      trelloBtn.classList.remove("disabled");
+    } else if (job.name) {
+      trelloBtn.href = `https://trello.com/search?q=${encodeURIComponent(job.name)}`;
+      trelloBtn.textContent = "📋 Find in Trello";
       trelloBtn.classList.remove("disabled");
     } else {
       trelloBtn.href = "#";
+      trelloBtn.textContent = "📋 Trello Card";
       trelloBtn.classList.add("disabled");
     }
 

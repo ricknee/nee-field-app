@@ -1834,6 +1834,47 @@ await test("billing-sync: the delete pass spares Neon-native allocations", async
   }
 });
 
+await test("deleteJobEstimate: STRICT admin — office is out, and it must be a rec id", async () => {
+  // ⚠ This action has NO STATUS GUARD by owner's explicit decision (2026-08-20):
+  // a Sent or Approved estimate — the record of what a customer was quoted —
+  // will be deleted without complaint. The role tier IS the guard, so it sits at
+  // _ADMIN, not the _ADMIN_OFFICE that the other back-office money ops use.
+  // Office handling money already earned is not the same as office destroying
+  // the record of what was promised.
+  mockTables = { "Job Estimates": [] };
+  eq((await POST("deleteJobEstimate", { estimateId: "recX" }, OFFICE_TOK)).statusCode, 403, "OFFICE refused — this is the guard");
+  eq((await POST("deleteJobEstimate", { estimateId: "recX" }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("deleteJobEstimate", { estimateId: "recX" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  eq((await POST("deleteJobEstimate", {}, ADMIN_TOK)).statusCode, 400, "missing id rejected");
+  // A uuid here would mean the caller confused a TEMPLATE handle with an
+  // estimate id. Estimates are still Airtable-identity, so anything that isn't
+  // a rec id is a bug in the caller, not a record to go hunting for.
+  eq((await POST("deleteJobEstimate", { estimateId: "4f3a4be6-88ba-4cab-af82-f9fea6915ac9" }, ADMIN_TOK)).statusCode, 400,
+     "a uuid is refused — that's a template handle, not an estimate");
+});
+
+await test("estimateTemplateDelete: admin+office, and it clears provenance before deleting", async () => {
+  mockTables = {};
+  eq((await POST("estimateTemplateDelete", { templateId: "recX" }, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await POST("estimateTemplateDelete", { templateId: "recX" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  eq((await POST("estimateTemplateDelete", {}, ADMIN_TOK)).statusCode, 400, "missing id rejected");
+
+  // ORDER IS LOAD-BEARING. The UPDATE that clears job_estimates.
+  // source_template_handle must run BEFORE the DELETE: if the row went first and
+  // the clear then failed, every referencing estimate would carry a handle
+  // pointing at nothing — a breadcrumb to a deleted row reads like data and is
+  // worse than no breadcrumb. Asserted against the source because the offline
+  // suite has no Neon to observe it in.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleEstimateTemplateDelete"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  const clearAt  = body.indexOf("source_template_handle = NULL");
+  const deleteAt = body.indexOf("DELETE FROM estimate_templates");
+  ok(clearAt > 0 && deleteAt > 0, "both statements present");
+  ok(clearAt < deleteAt, "provenance is cleared BEFORE the template row is deleted");
+});
+
 await test("index.html: no role-gated element sits below the main <script>", async () => {
   // ⚠ THE CLASS DOES NOTHING DOWN THERE. renderAuth() clears `hidden` with a
   // one-shot document.querySelectorAll(".admin-only") at init. The main <script>

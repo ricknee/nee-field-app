@@ -1654,6 +1654,13 @@
     .alert.info { background: var(--blue-dim); border-color: rgba(59,142,234,0.3); color: #7db8f5; }
 
     .hidden { display: none !important; }
+    /* Active / Archived tabs in the estimate-template manager. */
+    .tmpl-tab {
+      background: var(--panel-2); border: 1px solid var(--line-2); color: var(--muted);
+      border-radius: 7px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+      cursor: pointer; font-family: 'Inter', sans-serif;
+    }
+    .tmpl-tab.is-on { background: var(--accent); border-color: var(--accent); color: #fff; }
 
     /* ── PAYROLL MODAL ── */
     .payroll-modal-backdrop {
@@ -4144,6 +4151,18 @@
     return (state.user?.role||"").toLowerCase() === "viewer";
   }
 
+  // Strict admin: role === "admin" ONLY, excluding office. Mirrors the
+  // `.strict-admin-only` class and the server's _ADMIN tier.
+  //
+  // renderAuth() has computed this inline as a local `isStrictAdmin` since the
+  // Schedule button shipped; this is the same test as a callable helper, for
+  // code that gates on it OUTSIDE renderAuth — markup built by a render*()
+  // function can't use the CSS class, because the class is only swept once at
+  // init and never sees dynamically-built rows.
+  function isStrictAdminRole() {
+    return (state.user?.role || "").toLowerCase() === "admin";
+  }
+
   // Viewer sees admin layout minus financial tabs
   const VIEWER_HIDDEN_TABS = ["live-perf", "closeout", "est-gp", "expenses", "time-entries", "invoice"];
 
@@ -5136,6 +5155,11 @@
             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
               <button data-est-id="${esc(est.id)}" class="est-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save Changes</button>
               <span data-est-id="${esc(est.id)}" class="est-save-msg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+              ${isStrictAdminRole() ? `<button data-est-id="${esc(est.id)}"
+                       data-est-name="${esc(est.name)}"
+                       data-est-amount="${est.actualEstimate != null ? esc(fmtCurrency(est.actualEstimate)) : "no amount"}"
+                       data-est-status="${esc(pillLabel)}"
+                       class="est-delete-btn btn btn-danger-sm" style="font-size:12px;">🗑 Delete</button>` : ""}
               ${est.calculatedTotal != null ? `<span style="font-size:12px; color:var(--muted);">Calc. Total: <strong>${fmtCurrency(est.calculatedTotal)}</strong></span>` : ""}
               ${est.pdfs && est.pdfs.length ? est.pdfs.map(pdf => `
                 <a href="${esc(pdf.url)}" target="_blank" style="font-size:12px; color:var(--accent); text-decoration:none; display:flex; align-items:center; gap:4px;">
@@ -5167,6 +5191,40 @@
             alert("Error: " + e.message);
           } finally {
             btn.disabled = false; btn.textContent = "Save Changes";
+          }
+        });
+      });
+
+      // Wire delete buttons. STRICT ADMIN only — the button is not rendered for
+      // anyone else, and deleteJobEstimate is in _ADMIN_POSTS so the server
+      // refuses regardless of what the client sends.
+      //
+      // ⚠ THERE IS NO STATUS GUARD ON THE SERVER — owner's explicit call. A
+      // Sent or Approved estimate WILL be deleted without complaint, so this
+      // confirm is most of the actual protection: it names the estimate, its
+      // amount and its status, because "are you sure?" alone does not tell you
+      // that the thing under the cursor is a $48,000 approved quote.
+      estimatesSection.querySelectorAll(".est-delete-btn").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const { estId, estName, estAmount, estStatus } = btn.dataset;
+          if (!confirm(
+            `Delete this estimate permanently?\n\n` +
+            `${estName}\n${estAmount}  ·  ${estStatus}\n\n` +
+            `This removes it from Airtable and the app. It cannot be undone, and ` +
+            `the job's Expected Revenue and GP figures will change.\n\n` +
+            `To take it out of the GP numbers WITHOUT deleting it, use Reject or ` +
+            `Archive instead.`
+          )) return;
+          btn.disabled = true; btn.textContent = "Deleting…";
+          try {
+            await apiPost("deleteJobEstimate", { estimateId: estId });
+            // Refetch the job: Expected Revenue and Projected GP % are rollups
+            // over the estimates, so the cards above are wrong until it lands.
+            const fresh = await refreshSelectedJob();
+            await renderEstGp(fresh || job);
+          } catch(e) {
+            alert("Error deleting estimate: " + (e.message || e));
+            btn.disabled = false; btn.textContent = "🗑 Delete";
           }
         });
       });
@@ -16992,14 +17050,30 @@
   // Preserves the current selection across a reload where it still exists, so
   // editing a template's price and coming back doesn't silently reset the
   // dropdown to "Blank estimate" while the loaded numbers stay on screen.
+  // Sticky for the life of the modal only — reset on every open, so widening
+  // the list to hunt for one template never silently becomes the default the
+  // next time somebody quotes a job.
+  let _newEstShowAll = false;
+
+  window.toggleAllTemplates = function() {
+    _newEstShowAll = !_newEstShowAll;
+    _newEstLoadTemplates();
+  };
+
   async function _newEstLoadTemplates() {
     const sel = $("newEstTemplate");
     const hint = $("newEstTemplateHint");
     const contractor = (_newEstJob?.contractor || "").trim();
     const keep = sel.value || "";
     sel.disabled = true;
+    // With no contractor on the job the list is already unfiltered, so the
+    // toggle would be a no-op control — hide it rather than offer a button
+    // that visibly does nothing.
+    $("btnShowAllTemplates").style.display = contractor ? "" : "none";
+    $("btnShowAllTemplates").textContent = _newEstShowAll ? "Show only this contractor" : "Show all contractors";
     try {
-      const res = await apiGet("estimateTemplates", contractor ? { contractor } : {});
+      const res = await apiGet("estimateTemplates",
+        _newEstShowAll ? { all: "1" } : (contractor ? { contractor } : {}));
       _newEstTemplates = res.templates || [];
       if (!_newEstTemplates.length) {
         sel.innerHTML = `<option value="">(no templates available — leave blank to create a custom estimate)</option>`;
@@ -17007,16 +17081,25 @@
         // A general template (no contractor) is tagged in the option text. It
         // shows on every job now, so without the tag there is nothing on screen
         // to explain why a template belonging to nobody is in this list.
+        //
+        // In show-all mode the OWNING contractor is tagged instead, because the
+        // whole risk of widening the list is loading someone else's Standard
+        // Terms onto this quote. The name has to be on screen at the moment of
+        // choosing, not one dialog away.
         sel.innerHTML =
           `<option value="">— Blank estimate (no template) —</option>` +
-          _newEstTemplates.map(t =>
-            `<option value="${esc(t.id)}">${esc(t.name)}${t.contractorId ? "" : "  ·  general"}</option>`
-          ).join("");
+          _newEstTemplates.map(t => {
+            const tag = !t.contractorId ? "  ·  general"
+              : (_newEstShowAll && t.contractorName ? `  ·  ${t.contractorName}` : "");
+            return `<option value="${esc(t.id)}">${esc(t.name)}${esc(tag)}</option>`;
+          }).join("");
         if (keep && _newEstTemplates.some(t => t.id === keep)) sel.value = keep;
       }
-      hint.textContent = contractor
-        ? `Showing Active templates for ${contractor}, plus general ones.`
-        : `Showing all Active templates (job has no contractor).`;
+      hint.textContent = _newEstShowAll
+        ? `Showing EVERY contractor's templates — check the terms before you send.`
+        : contractor
+          ? `Showing Active templates for ${contractor}, plus general ones.`
+          : `Showing all Active templates (job has no contractor).`;
       sel.disabled = false;
     } catch (e) {
       sel.innerHTML = `<option value="">(error loading templates)</option>`;
@@ -17028,6 +17111,7 @@
     if (!job) { alert("Pick a job first."); return; }
     _newEstJob = job;
     _newEstTemplates = [];
+    _newEstShowAll = false;   // widening the list never carries to the next job
 
     // Reset form
     $("newEstBase").value     = "";
@@ -17163,6 +17247,7 @@
   let _tmplContractors = [];
   let _tmplEditing     = null;   // the template being edited, or null for a new one
   let _tmplDirty       = false;  // set by the save/archive path, read on close
+  let _tmplTab         = "active";
 
   function _tmplMoney(v) {
     return (v === null || v === undefined || v === "") ? "—"
@@ -17194,7 +17279,7 @@
       ]);
       _tmplAll = tRes.templates || [];
       _tmplContractors = cRes.contractors || [];
-      tmplRenderList();
+      tmplSetTab("active");   // always land on Active, and sync the tab buttons
     } catch (e) {
       $("tmplMgrList").innerHTML =
         `<div style="color:var(--red); padding:14px 0;">Couldn't load templates: ${esc(e.message || String(e))}</div>`;
@@ -17223,16 +17308,32 @@
     $("tmplMgrTitle").textContent = "⚙ Estimate Templates";
   }
 
+  window.tmplSetTab = function(tab) {
+    _tmplTab = tab;
+    $("tmplTabActive").classList.toggle("is-on", tab === "active");
+    $("tmplTabArchived").classList.toggle("is-on", tab === "archived");
+    tmplRenderList();
+  };
+
   function tmplRenderList() {
-    if (!_tmplAll.length) {
-      $("tmplMgrList").innerHTML =
-        `<div style="color:var(--muted); padding:14px 0;">No templates yet. Click “+ New Template” to build one.</div>`;
+    // Both tabs read the same already-fetched list — estimateTemplatesAll
+    // returns active and archived together, so switching tabs costs no round
+    // trip and cannot show one tab stale relative to the other.
+    const want = _tmplTab === "archived";
+    const rows = _tmplAll.filter(t => t.active !== want);
+    $("tmplTabArchived").textContent =
+      "Archived" + (_tmplAll.some(t => !t.active) ? ` (${_tmplAll.filter(t => !t.active).length})` : "");
+
+    if (!rows.length) {
+      $("tmplMgrList").innerHTML = want
+        ? `<div style="color:var(--muted); padding:14px 0;">Nothing archived.</div>`
+        : `<div style="color:var(--muted); padding:14px 0;">No active templates. Click “+ New Template” to build one.</div>`;
       return;
     }
-    // Archived rows sort last (the handler orders active DESC) and render muted
-    // with a badge, so the manager stays the one place an archived template can
-    // be found again — the picker filters them out entirely.
-    $("tmplMgrList").innerHTML = _tmplAll.map(t => `
+    // Archived rows render muted with a badge even inside their own tab — the
+    // badge is what tells you a row you opened from here will not appear in the
+    // picker, which is easy to forget once the tab header scrolls away.
+    $("tmplMgrList").innerHTML = rows.map(t => `
       <div onclick="tmplEditorOpen('${esc(t.id)}')"
            style="display:flex; align-items:center; gap:10px; padding:10px 8px; border-bottom:1px solid var(--line); cursor:pointer; ${t.active ? "" : "opacity:.55;"}">
         <div style="flex:1; min-width:0;">
@@ -17290,6 +17391,10 @@
     const arch = $("tmplArchiveBtn");
     arch.style.display = t ? "" : "none";
     if (t) arch.textContent = t.active ? "Archive" : "Restore";
+    // Delete is offered on any saved template, but Archive stays first and is
+    // the button you reach for. Deleting is for clearing out test rows and
+    // mistakes, not for retiring a template that has been used.
+    $("tmplDeleteBtn").style.display = t ? "" : "none";
 
     $("tmplMsg").style.display = "none";
     $("tmplMgrTitle").textContent = t ? "Edit Template" : "New Template";
@@ -17364,6 +17469,42 @@
     } finally {
       btn.disabled = false;
       btn.textContent = "Save Template";
+    }
+  };
+
+  // Hard delete. Archive is the default and sits to its left; this is for test
+  // rows and mistakes.
+  //
+  // The template's numbers were SNAPSHOTTED into any estimate created from it,
+  // so deleting it cannot change a figure on a quote that already went out.
+  // What it does break is the provenance breadcrumb, which the server clears
+  // rather than leaving pointed at nothing — the confirm says how many.
+  window.tmplDelete = async function() {
+    if (!_tmplEditing) return;
+    const t = _tmplEditing;
+    if (!confirm(
+      `Delete "${t.name}" permanently?\n\n` +
+      `This cannot be undone. Estimates already created from it keep their ` +
+      `numbers — a template's values are copied into the estimate when it's ` +
+      `created — but they will no longer record which template they came from.\n\n` +
+      `Use Archive instead if you just want it out of the dropdown.`
+    )) return;
+
+    const btn = $("tmplDeleteBtn");
+    btn.disabled = true;
+    try {
+      const res = await apiPost("estimateTemplateDelete", { templateId: t.id });
+      if (!res.ok) throw new Error(res.error || "Delete failed");
+      _tmplDirty = true;
+      const tRes = await apiGet("estimateTemplatesAll");
+      _tmplAll = tRes.templates || [];
+      _tmplEditing = null;
+      tmplShowList();
+      tmplRenderList();
+    } catch (e) {
+      _tmplMsg("Error: " + (e.message || String(e)), false);
+    } finally {
+      btn.disabled = false;
     }
   };
 
@@ -24496,10 +24637,10 @@
       <div class="sl-field" style="margin-bottom:16px;">
         <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
           <label>Load Template</label>
-          <!-- `hidden` only — NOT `admin-only`. This markup sits after the main
-               <script>, so renderAuth()'s role sweep never reaches it; the class
-               would be decorative and misleading. openNewEstModal toggles this
-               explicitly on every open. -->
+          <!-- `hidden` only — NOT `admin-only`. This markup sits BELOW the main
+               script block, so renderAuth()'s one-shot role sweep never reaches
+               it and the class would be decorative and misleading.
+               openNewEstModal toggles this explicitly on every open. -->
           <button type="button" id="btnManageTemplates" class="hidden"
                   onclick="openTemplateManager()"
                   style="background:none; border:none; padding:0; font-size:11px; color:var(--accent); cursor:pointer; font-family:'Inter',sans-serif;">⚙ Manage templates</button>
@@ -24507,7 +24648,11 @@
         <select id="newEstTemplate" style="width:100%; background:var(--panel); border:1px solid var(--line-2); border-radius:7px; padding:8px 10px; font-size:13px; color:var(--text); outline:none; font-family:'Inter',sans-serif;">
           <option value="">— Loading templates… —</option>
         </select>
-        <div id="newEstTemplateHint" style="font-size:11px; color:var(--muted); margin-top:5px;"></div>
+        <div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-top:5px;">
+          <div id="newEstTemplateHint" style="font-size:11px; color:var(--muted);"></div>
+          <button type="button" id="btnShowAllTemplates" onclick="toggleAllTemplates()"
+                  style="background:none; border:none; padding:0; font-size:11px; color:var(--accent); cursor:pointer; white-space:nowrap; font-family:'Inter',sans-serif;">Show all contractors</button>
+        </div>
       </div>
 
       <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:10px;">
@@ -24554,9 +24699,13 @@
     <!-- LIST PANE -->
     <div id="tmplMgrListPane" class="sl-modal-body">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:12px;">
-        <div style="font-size:11px; color:var(--muted);">Prices here seed new estimates. Editing a template never changes an estimate that already exists.</div>
+        <div style="display:flex; gap:6px;">
+          <button type="button" id="tmplTabActive"   class="tmpl-tab is-on" onclick="tmplSetTab('active')">Active</button>
+          <button type="button" id="tmplTabArchived" class="tmpl-tab"       onclick="tmplSetTab('archived')">Archived</button>
+        </div>
         <button onclick="tmplEditorOpen(null)" class="btn btn-primary btn-sm" type="button" style="font-size:12px; white-space:nowrap;">+ New Template</button>
       </div>
+      <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Prices here seed new estimates. Editing a template never changes an estimate that already exists.</div>
       <div id="tmplMgrList" style="font-size:13px;"></div>
     </div>
 
@@ -24612,7 +24761,10 @@
       </div>
 
       <div style="display:flex; gap:10px; justify-content:space-between; align-items:center; margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
-        <button id="tmplArchiveBtn" onclick="tmplArchiveToggle()" class="btn btn-sm" type="button" style="font-size:12px; display:none;">Archive</button>
+        <div style="display:flex; gap:8px;">
+          <button id="tmplArchiveBtn" onclick="tmplArchiveToggle()" class="btn btn-sm" type="button" style="font-size:12px; display:none;">Archive</button>
+          <button id="tmplDeleteBtn" onclick="tmplDelete()" class="btn btn-danger-sm" type="button" style="font-size:12px; display:none;">🗑 Delete</button>
+        </div>
         <div style="display:flex; gap:10px; margin-left:auto;">
           <button onclick="tmplEditorCancel()" class="btn btn-sm" type="button" style="font-size:13px; padding:8px 16px;">Cancel</button>
           <button id="tmplSaveBtn" onclick="tmplSave()" class="btn btn-primary btn-sm" type="button" style="font-size:13px; padding:8px 16px;">Save Template</button>

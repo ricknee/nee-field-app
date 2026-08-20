@@ -864,6 +864,11 @@ async function fetchAll(tableName, opts = {}) {
   if (opts.filter)    params.set("filterByFormula", opts.filter);
   if (opts.sortField) params.set("sort[0][field]", opts.sortField);
   if (opts.sortDir)   params.set("sort[0][direction]", opts.sortDir);
+  // Returns records keyed by FIELD ID instead of name. Needed only for the
+  // Make-owned Google sync fields, which have no name this codebase has ever
+  // verified — `F.*` is read-by-name and would be guessing. Field ids are also
+  // the stabler handle: a rename in Airtable breaks a name, never an id.
+  if (opts.byFieldId) params.set("returnFieldsByFieldId", "true");
   const records = [];
   let offset = null;
   do {
@@ -8585,23 +8590,45 @@ async function handleBackfillContacts() {
     return done;
   }
 
+  // ⚠ A SECOND PASS, KEYED BY FIELD ID, purely for the two Google person ids
+  // (db/schema/049). They are Make-owned sync fields with no name this codebase
+  // has ever verified, so reading them through `F.*` would be guessing. One
+  // extra pass over 239 records is nothing for a one-off loader, and it keeps
+  // the rest of the mapping on the by-name convention the file uses everywhere.
+  const G1 = "fld7baYOGRf3mmdl1", G2 = "fldZ4H2ob1lcOmZDp";
+  const googleById = new Map();
+  try {
+    for (const r of await fetchAll(TABLES.contacts, { byFieldId: true })) {
+      const f = r.fields || {};
+      if (f[G1] || f[G2]) googleById.set(r.id, [nz(f[G1]), nz(f[G2])]);
+    }
+  } catch (e) {
+    // Not fatal: the contact data still loads, the ids just stay unfilled and
+    // this can be re-run. Losing the whole backfill over them would be worse.
+    console.error(`backfillContacts: Google id pass failed — ${e?.message || e}`);
+  }
+
   const cRecs = await fetchAll(TABLES.contacts, {});
   const cRows = cRecs.map((r) => {
     const f = r.fields || {};
+    const [g1, g2] = googleById.get(r.id) || [null, null];
     return [r.id, nz(f[F.contact.firstName]), nz(f[F.contact.lastName]),
             nz(f[F.contact.primaryPhone]), nz(f[F.contact.primaryEmail]),
             link(f[F.contact.company]), multi(f[F.contact.role]),
             nz(f[F.contact.street]), nz(f[F.contact.city]), nz(f[F.contact.state]),
-            nz(f[F.contact.zip]), f[F.contact.active] !== false];
+            nz(f[F.contact.zip]), f[F.contact.active] !== false, g1, g2];
   });
   const contacts = await upsert("contacts.backfill", cRows,
     ["airtable_id","first_name","last_name","primary_phone","primary_email",
-     "company_airtable_id","role","street","city","state","zip","active"],
+     "company_airtable_id","role","street","city","state","zip","active",
+     "google_person_id_1","google_person_id_2"],
     `first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
      primary_phone=EXCLUDED.primary_phone, primary_email=EXCLUDED.primary_email,
      company_airtable_id=EXCLUDED.company_airtable_id, role=EXCLUDED.role,
      street=EXCLUDED.street, city=EXCLUDED.city, state=EXCLUDED.state,
-     zip=EXCLUDED.zip, active=EXCLUDED.active`);
+     zip=EXCLUDED.zip, active=EXCLUDED.active,
+     google_person_id_1=COALESCE(EXCLUDED.google_person_id_1, contacts.google_person_id_1),
+     google_person_id_2=COALESCE(EXCLUDED.google_person_id_2, contacts.google_person_id_2)`);
 
   const pRecs = await fetchAll(TABLES.powerContacts, {});
   const pRows = pRecs.map((r) => {

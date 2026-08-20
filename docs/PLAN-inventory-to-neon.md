@@ -1,7 +1,18 @@
 # Plan — migrating the inventory app to Neon
 
-**Status:** planned 2026-08-07, nothing built. This is the detail behind `docs/ROADMAP.md` §4,
-which until now was five bullet lines.
+**Status:** ✅ **COMPLETE — A, B0, B, C, D and E all built and prod-smoked 2026-08-10/11.**
+Written 2026-08-07 as the detail behind `docs/ROADMAP.md` §4, which until then was five bullet
+lines. This plan covered the **reads**; the Airtable **writes** were retired separately in
+`docs/PLAN-inventory-airtable-cutover.md` (36 writes → zero, 2026-08-12).
+
+> **Everything below this line is historical** — the record of how the reads moved, kept for the
+> traps it documents. Read its "not started" and "do not start before this" framing in the past
+> tense.
+>
+> **For what actually remains on the inventory app, read `docs/AUDIT-inventory-app.md`**
+> (2026-08-19), which measures the live code and supersedes this file: three latent id-currency
+> bugs (~2 h, the only part that can bite), decommissioning the base, documentation drift, and
+> test gaps on 12 write paths. **The migration is finished; the app is not.**
 
 **Letters match ROADMAP §4 exactly** (A = drop the Jobs mirror, B = reference data, C = the
 ledger, D = estimating, E = the expense push). Do not re-letter — the field app's Step 4

@@ -30,3 +30,9 @@ Thumbs.db
 
 # Derived GP rollup definitions — same sensitivity as the inventory above
 docs/GP-ROLLUP-INFERENCE.json
+
+# Local editor config. Same reasoning as .claude/ above: publish = "." means any
+# committed file is served from the live site root, and this is local tooling.
+# It only sets files.exclude/search.exclude so the explorer stops rendering the
+# ~1,000 ignored files under .netlify/. Delete this line if you'd rather commit it.
+.vscode/

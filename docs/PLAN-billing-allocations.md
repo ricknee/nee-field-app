@@ -1,14 +1,19 @@
 # Plan — give billing allocations a write path
 
-**Status: ✅ CODE BUILT AND SHIPPED INERT 2026-08-11. ⬜ Cutover not done — `ALLOCATIONS_WRITE`
-is unset, so the four Airtable automations are still doing the work.** Roadmap §8 "the one real
-piece of work left"; audit item 03.
+**Status: ✅ BUILT AND CUT OVER 2026-08-11 — this plan is CLOSED.** `ALLOCATIONS_WRITE=on`, all
+four Airtable automations are undeployed, and the app owns allocations. Roadmap §8; audit item 03,
+closed (see `docs/ROADMAP.md` §8 and `docs/AUDIT-airtable-remaining.md` item 03).
+
+> **Everything below this line is historical.** It is the record of how the flip was staged and
+> what was found on the way — not outstanding work. Where the text says the switch is inert, the
+> automations are live, or the cutover is pending, read it in the past tense.
 
 Built: `netlify/functions/_allocations.js`, wired into `handleUpdateTimeEntryPayroll`,
 `handleApproveExpense` and `handleSaveInvoice`. 148 tier-1 tests pass, 2 new — including one that
 proves the switch is genuinely inert by failing if Airtable is touched at all while it is off.
 
-**What remains is §3 — the cutover — plus the §6 diff, and one thing found while building:**
+**What remained at the time of writing was §3 — the cutover — plus the §6 diff, and one thing
+found while building. All of it is now done; the item below was resolved by going Neon-native:**
 
 > ### ⚠ 24 billable time entries (48.25 h) cannot be billed AT ALL, and it grows
 > Found 2026-08-11 while writing the gate. An allocation's `Time Entry` field is an Airtable
@@ -23,10 +28,19 @@ proves the switch is genuinely inert by failing if Airtable is touched at all wh
 > **The real fix is allocations going Neon-native**, which requires `_billing-sync.js` to stop
 > treating Airtable as the authority on existence (§2). That is its own piece of work and should
 > be scheduled before the untwinned population gets large enough to matter.
+>
+> **✅ RESOLVED 2026-08-11 — allocations are Neon-native (`db/schema/033_neon_native_allocations.sql`).**
+> The untwinned population is no longer a problem because an allocation no longer needs an Airtable
+> twin to exist. Two rules came out of it and are live constraints, not history:
+> `_billing-sync.js` needs **both** the empty-array guard **and** `airtable_id IS NOT NULL`, or it
+> deletes every native row within the hour; and the **native** insert must write `bill_rate` (the
+> mirror must not), or those hours value at $0 in `v_invoices` while still printing on the PDF
+> (`db/schema/036_native_allocation_bill_rate.sql`).
 
-**One-line:** The app reads billing allocations but cannot create or link one — four Airtable
-automations do that, and they are the only reason anyone still has to open Airtable in normal
-operation.
+**One-line (as written 2026-08-11, now superseded):** The app reads billing allocations but cannot
+create or link one — four Airtable automations do that, and they are the only reason anyone still
+has to open Airtable in normal operation. *Since the cutover the app both creates and links them,
+and those four automations are undeployed.*
 
 ---
 

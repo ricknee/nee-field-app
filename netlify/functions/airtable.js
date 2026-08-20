@@ -5632,6 +5632,14 @@ async function handleJobAutomationResult(body) {
   // stated outright, and it is the ONLY thing stopping a re-completed job from
   // moving the card again.
   const trelloCompleted = body?.trelloCompleted === true;
+  // Service Call reports a whole pCloud tree plus its own run-once flag. Same
+  // rule as the others: an id implies its flag, flags only ever go true.
+  const pcJob      = clean(body?.pcloudJobFolderId);
+  const pcReceipts = clean(body?.pcloudReceiptsFolderId);
+  const pcJobsite  = clean(body?.pcloudJobsiteFilesFolderId);
+  const pcInvoices = clean(body?.pcloudInvoicesFolderId);
+  const pcPhotos   = clean(body?.pcloudPhotosFolderId);
+  const svcCallCreated = body?.serviceCallCreated === true;
 
   // Neon first and failing CLOSED: this is now the authority for the run-once
   // guards, and a result we failed to record is what causes a second jobcode.
@@ -5643,11 +5651,18 @@ async function handleJobAutomationResult(body) {
        tsheets_created   = CASE WHEN $5 THEN true ELSE tsheets_created END,
        trello_created    = CASE WHEN $6 THEN true ELSE trello_created END,
        trello_completed  = CASE WHEN $7 THEN true ELSE trello_completed END,
+       service_call_created = CASE WHEN $8 THEN true ELSE service_call_created END,
+       pcloud_job_folder_id           = COALESCE($9,  pcloud_job_folder_id),
+       pcloud_receipts_folder_id      = COALESCE($10, pcloud_receipts_folder_id),
+       pcloud_jobsite_files_folder_id = COALESCE($11, pcloud_jobsite_files_folder_id),
+       pcloud_invoices_sent_id        = COALESCE($12, pcloud_invoices_sent_id),
+       pcloud_photo_folder_id         = COALESCE($13, pcloud_photo_folder_id),
        synced_at = now()
      WHERE airtable_id = $1
-     RETURNING tsheets_job_id, trello_card_id, trello_po_card_id, trello_completed`,
+     RETURNING tsheets_job_id, trello_card_id, trello_po_card_id, trello_completed,
+               service_call_created, pcloud_job_folder_id`,
     [recordId, tsheetsJobId, trelloCardId, trelloPoCardId, tsheetsCreated, trelloCreated,
-     trelloCompleted]);
+     trelloCompleted, svcCallCreated, pcJob, pcReceipts, pcJobsite, pcInvoices, pcPhotos]);
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
 
   // Mirror, failing soft. Losing this costs Airtable-side consistency until the
@@ -5659,6 +5674,12 @@ async function handleJobAutomationResult(body) {
   if (tsheetsCreated) fields["fldWDs8praJa3iGlf"] = true;           // Automation – TSheets Created
   if (trelloCreated)  fields["fldlgoNEaus3XGJel"] = true;           // Automation – Trello Created
   if (trelloCompleted) fields["fldewPWukfRLkgDCa"] = true;          // Automation – Trello Completed
+  if (svcCallCreated) fields["fld5MZfIjGCYbIO9x"] = true;           // Service Call Created
+  if (pcJob)      fields["fldoicx7bnb2Gdg1D"] = pcJob;              // pCloud Folder ID
+  if (pcReceipts) fields["fld06WOq5dA4F9CUA"] = pcReceipts;         // pCloud Job Receipts ID
+  if (pcJobsite)  fields["fldn0dg7E42B2Pimg"] = pcJobsite;          // pCloud Jobsite Files ID
+  if (pcInvoices) fields["fldVtTkUcuh96TgXh"] = pcInvoices;         // pCloud Invoices Sent ID
+  if (pcPhotos)   fields["fld655NnOgjRhaVSe"] = pcPhotos;           // pCloud Photo's ID
   if (Object.keys(fields).length) {
     try {
       await atFetch(`${encodeURIComponent(TABLES.jobs)}/${recordId}`, {
@@ -5749,10 +5770,25 @@ async function handleStartServiceCall(body) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   // Same Neon-first rule as handleUpdateJobStatus above — `start_service_call`
   // is in JOB_SELECT, so an Airtable-only write reverts on the next refresh.
+  //
+  // ⚠ THE STATUS MOVES HERE TOO. Module 22 of the Make scenario used to set
+  // "Service Call Scheduled" mid-run, and that module goes away with the rest of
+  // its Airtable writes — so without this the status would simply never change.
+  // Setting it up front rather than after Make finishes also matches how every
+  // other status write in this file works, and means the screen is right even if
+  // the folder-building half is slow or fails.
   await neonWrite("job.startServiceCall",
-    `UPDATE jobs SET start_service_call = true, synced_at = now() WHERE airtable_id = $1`, [jobId]);
+    `UPDATE jobs SET start_service_call = true, status = 'Service Call Scheduled',
+                     synced_at = now()
+      WHERE airtable_id = $1`, [jobId]);
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldgar4OL6AL5k1S6": true } }) });
+  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields: {
+      "fldgar4OL6AL5k1S6": true,                     // Start Service Call
+      "fld2FBMjvkOsy9Puu": "Service Call Scheduled"  // Job Status
+    } }),
+  });
 
   // Its own hook, and its own trigger shape: not a status change but
   // "Start Service Call" checked AND Job Type = Service Call. The type check

@@ -68,6 +68,8 @@ const N = {
   trelloCardId:   "Trello Card ID",
   trelloPoCardId: "Trello Card PO ID",
   tsheetsJobId:   "TSheets Job ID",
+  notes:          "Notes",
+  serviceCallCreated: "Service Call Created",
 };
 
 export function jobWebhooksEnabled() {
@@ -302,5 +304,62 @@ export async function fireServiceCallWebhook(record) {
   const f = record?.fields || {};
   if (f[N.startService] !== true) return [];
   if (str(f[N.jobType]) !== "Service Call") return [];
-  return [await post(HOOKS.serviceCall, { recordId: record.id }, "service-call")];
+
+  // Everything modules 2 and 6 (the two airtable:ActionGetRecord) supplied. This
+  // scenario is the biggest of the four — it builds a seven-folder pCloud tree,
+  // a QuickBooks jobcode and two Trello cards — and every one of those reads a
+  // value that now travels in the payload instead.
+  let j = null;
+  try {
+    const q = await neonQuery(
+      `SELECT j.po, j.contractor_name, j.address_full, j.notes,
+              j.customer_first_name, j.customer_last_name, j.customer_phone,
+              j.trello_created, j.tsheets_created, j.service_call_created,
+              c.tsheets_group_id, c.trello_list_id, c.trello_list_job_po_id
+         FROM jobs j
+         LEFT JOIN companies c ON c.airtable_id = j.contractor_at_id
+        WHERE j.airtable_id = $1`, [record.id]);
+    j = q?.rows?.[0] || null;
+  } catch (e) {
+    console.error(`job-webhook service-call: Neon lookup failed — ${e?.message || e}`);
+  }
+
+  // ⚠ A RUN-ONCE GUARD THAT NEVER EXISTED. Nothing filtered on "Service Call
+  // Created", so re-ticking Start Service Call rebuilt the whole pCloud tree,
+  // minted a second QuickBooks jobcode and made two more Trello cards. The
+  // scenario wrote the flag and then nobody read it. Same both-stores rule as
+  // the status webhooks: done if EITHER store says done.
+  if (j?.service_call_created === true || f[N.serviceCallCreated] === true) {
+    console.log(`job-webhook service-call: ${record.id} already has one — not firing again`);
+    return [];
+  }
+
+  // ⚠ `Job PO`, NOT `Job PO - Locked`. This scenario names its folders, its
+  // jobcode and its cards from the unlocked PO — the Awarded one uses the locked
+  // value. They are usually the same string and are not the same field.
+  const jobPO = str(f[N.jobPO]) || str(j?.po);
+  return [await post(HOOKS.serviceCall, {
+    recordId: record.id,
+    jobPO,
+    contractor:   str(j?.contractor_name) || str(f[N.contractor]),
+    jobAddress:   str(f[N.address]) || str(j?.address_full),
+    customerFirstName: str(j?.customer_first_name),
+    customerLastName:  str(j?.customer_last_name),
+    customerPhone:     str(j?.customer_phone),
+    notes:        str(j?.notes) || str(f[N.notes]),
+    tsheetsGroupId:    str(j?.tsheets_group_id),
+    trelloListId:      str(j?.trello_list_id),
+    trelloListJobPoId: str(j?.trello_list_job_po_id),
+    trelloCreated:  j?.trello_created  === true || f[N.trelloDone]  === true,
+    tsheetsCreated: j?.tsheets_created === true || f[N.tsheetsDone] === true,
+    // The card's "Add Photos" line was an Airtable FORMULA read back mid-run.
+    // Built here instead so Make needs no round trip. ⚠ The sibling lines for
+    // Wire/Pipe (Mobile) are gone on purpose: those fields no longer exist —
+    // the JotForm wire/pipe path was retired — so they rendered blank anyway.
+    addPhotosLink: jobPO
+      ? `📸 Add Photos\nhttps://form.jotform.com/260246511955053?jobPo=${encodeURIComponent(jobPO)}`
+      : "",
+    callbackUrl: `${SELF_URL}/.netlify/functions/airtable`,
+    callbackToken: signScope(["jobAutomation", record.id], CALLBACK_TTL_MS),
+  }, "service-call")];
 }

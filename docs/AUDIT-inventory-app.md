@@ -10,6 +10,31 @@ https://claude.ai/code/artifact/34267f7d-94a6-4b1e-8838-6a37ae07d1f0
 
 ---
 
+> ## ✅ PROGRESS — 2026-08-20
+>
+> | | Item | State |
+> |---|---|---|
+> | 1 | **The three id-currency bugs** | ✅ **FIXED + DEPLOYED** — `f9c908e`, `db/schema/043`. 7 new tests, 6 fail on the old code. **247 pass.** ⏳ Owner browser smoke outstanding. |
+> | 2 | **Decommission** | ⬜ **Owner-only.** Prototype exported ✅. ⚠ The Airtable MCP **cannot undeploy** an automation — only delete — so the remaining three steps are UI actions. |
+> | 3 | **Documentation drift** | ✅ **DONE** — `4c3e6c8`. All five files plus the stale `inventory.html` comments. |
+> | 4 | **Test gaps** | ⬜ Not started. Still 12 uncovered write paths. |
+> | 5 | **Operational decisions** | ⬜ Owner. |
+>
+> 🔴 **And one thing this audit did not look for, found while fixing item 3.** `netlify.toml` has
+> `publish = "."`, so **every tracked file was a public static asset** — `netlify/functions/_auth.js`,
+> `airtable.js`, `inventory.js`, all of `db/schema/`, and every doc in this folder, all answering
+> **200 with no authentication**. Fixed in `4c3e6c8` + `f30ba66` with forced 404 routes. No secret
+> leaked: `.env` is gitignored and Netlify does not serve dotfiles, and `AUTH_SECRET` is env-only,
+> so tokens were never forgeable. What was readable was the auth *scheme*, the `authzFor` policy,
+> every Airtable field id, and the database design. Full detail in `netlify.toml`.
+>
+> ⚠⚠ **`force = true` is the whole rule.** Netlify skips a redirect when the path matches a real
+> file — which every blocked path did. The first attempt shipped without it, **the deploy went
+> green, and `_auth.js` still answered 200.** A green deploy is not a working rule; re-request the
+> URL.
+
+---
+
 ## The verdict
 
 **The migration is finished. The app is not.**

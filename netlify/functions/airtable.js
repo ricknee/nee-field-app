@@ -5627,6 +5627,11 @@ async function handleJobAutomationResult(body) {
   // also state the flag outright for a half that ran but returned no id.
   const tsheetsCreated = body?.tsheetsCreated === true || !!tsheetsJobId;
   const trelloCreated  = body?.trelloCreated  === true || !!trelloCardId || !!trelloPoCardId;
+  // The Completed scenario reports this one. It has no id to imply it — moving a
+  // card and archiving another produce nothing worth storing — so it must be
+  // stated outright, and it is the ONLY thing stopping a re-completed job from
+  // moving the card again.
+  const trelloCompleted = body?.trelloCompleted === true;
 
   // Neon first and failing CLOSED: this is now the authority for the run-once
   // guards, and a result we failed to record is what causes a second jobcode.
@@ -5637,10 +5642,12 @@ async function handleJobAutomationResult(body) {
        trello_po_card_id = COALESCE($4, trello_po_card_id),
        tsheets_created   = CASE WHEN $5 THEN true ELSE tsheets_created END,
        trello_created    = CASE WHEN $6 THEN true ELSE trello_created END,
+       trello_completed  = CASE WHEN $7 THEN true ELSE trello_completed END,
        synced_at = now()
      WHERE airtable_id = $1
-     RETURNING tsheets_job_id, trello_card_id, trello_po_card_id`,
-    [recordId, tsheetsJobId, trelloCardId, trelloPoCardId, tsheetsCreated, trelloCreated]);
+     RETURNING tsheets_job_id, trello_card_id, trello_po_card_id, trello_completed`,
+    [recordId, tsheetsJobId, trelloCardId, trelloPoCardId, tsheetsCreated, trelloCreated,
+     trelloCompleted]);
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
 
   // Mirror, failing soft. Losing this costs Airtable-side consistency until the
@@ -5651,6 +5658,7 @@ async function handleJobAutomationResult(body) {
   if (trelloPoCardId) fields["fldTWUzDcPB1EBnqS"] = trelloPoCardId; // Trello Card PO ID
   if (tsheetsCreated) fields["fldWDs8praJa3iGlf"] = true;           // Automation – TSheets Created
   if (trelloCreated)  fields["fldlgoNEaus3XGJel"] = true;           // Automation – Trello Created
+  if (trelloCompleted) fields["fldewPWukfRLkgDCa"] = true;          // Automation – Trello Completed
   if (Object.keys(fields).length) {
     try {
       await atFetch(`${encodeURIComponent(TABLES.jobs)}/${recordId}`, {

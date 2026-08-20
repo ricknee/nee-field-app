@@ -14,6 +14,71 @@ https://claude.ai/code/artifact/e460eb0e-98c0-4066-8685-2858e882a1c2
 
 ---
 
+## ▶▶ STATE AS OF 2026-08-20 — start here, then read the 08-12 pass for context
+
+Re-measured from the code with the same call-graph fixpoint, and from the live systems.
+
+| | 08-12 | **08-20** |
+|---|---|---|
+| dispatched actions | 170 | **176** |
+| Neon only | 42 | **48** |
+| both stores | 97 | **103** |
+| **Airtable only** | **28** | **22** |
+| Airtable automations DEPLOYED | 26 | **0** |
+| job Make scenarios touching Airtable | 4 of 4 | **0 of 4** |
+
+**The 22 remaining Airtable-only actions are now just three things:** 20 R2 id lookups,
+`payrollRunsList`, and `unlinkedMaterialAllocations`. Clear those and the field app has **no
+Airtable-only reads left at all**.
+
+### Shipped 2026-08-20
+
+- **All four job Make scenarios are Airtable-free.** pCloud and Awarded proven live; Completed and
+  Service Call pushed via the Make MCP and **not yet exercised**.
+- Payroll bonuses → Neon · **Contacts → Neon (item 06 COMPLETE)** · next-number scans → Neon
+- The app now owns what the automations used to do: PO allocation, **PO locking**, completion date,
+  service-call status, and the run-once guards (`db/schema/044–046`).
+- Google id groundwork (`db/schema/049`) — see the warning below.
+- Fixes: Trello button, cross-company contact search, job intake block reaching Neon.
+
+### Corrections to the 08-12 pass — it is wrong on these four points
+
+1. **`Assign PO Number` was NOT harmless.** Its counter had already diverged (Airtable next 286,
+   Neon last-used 286), so the next job created outside the app would have been issued a
+   **duplicate PO** — and `po_locked` is what the QB puller matches on, so a duplicate silently
+   un-costs the hours of *both* jobs.
+2. **`unlinkedMaterialAllocations` is NOT on the unsafe `FIND` pattern** — it uses the
+   newline-delimited form. `TODO.md`'s "four remaining sites" list is superseded by the completed
+   sweep at the top of that same file.
+3. **`handleUpdatePowerCo` was already fixed** (`70e4315`); TODO.md still lists it as suspected.
+4. **The QB heartbeat is not a heartbeat.** `sync_state` is only written when QuickBooks returns a
+   *changed* timesheet, so it is an activity signal. A dead schedule and a quiet afternoon look
+   identical. `max(jobs.synced_at)` is written unconditionally and is the real liveness check.
+
+### What is left, in order
+
+| | Do | Size | Why here |
+|---|---|---|---|
+| **1** | **Prove Completed + Service Call** — one real job each | minutes, owner | Both were pushed blind. Service Call has the largest blast radius of the four (it builds the pCloud tree). |
+| **2** | **Generator service call → Neon** | 2–3 h | ⚠ **DECISION FIRST:** the old `service_call_created` latch is PERMANENT — nothing clears it, so a generator gets ONE automatic call ever. Six are overdue (one since 2025-02) and would never be prompted again. Recommend guarding on *"is there an open service-call job for this generator"* instead, so recurring plans actually recur. Neon already computes `service_status` in `v_generators`; no Airtable needed. |
+| **3** | **R2 id lookups → Neon** (20 handlers) | 1.5–2 h | **Measured, not estimated:** 10 are the identical 3-line existence check, 1 needs the job name. One shared helper. Lowest-risk item left — no data moves, no writes, and every site fails the same visible way (404). Also deletes an Airtable round-trip from every photo/print tab open. |
+| **4** | **Payroll PDFs → R2, then `payrollRunsList`** | 2–3 h | The one genuinely blocked read — it needs a live attachment URL. |
+| **5** | **Item 10 — drop the mirror writes** | 2–3 h **+ Make edits** | ⚠ Now much closer than 08-12 assumed: all four job scenarios read the payload, not Airtable. What still keys on a rec id: R2 receipt/photo keys, sent-PDF back-links, and every client-side job/expense/contact id. **Do item 3 first** — those 20 lookups are Airtable reads that must go before the mirror can. |
+| **6** | **Google contacts direct (item 07)** | own session, owner-gated | ⚠⚠ **230 of 240 contacts ALREADY EXIST IN GOOGLE across TWO destinations.** Their ids are captured in `contacts.google_person_id_1/2` (schema 049). Syncing without them creates ~230 duplicates **twice over**. ⚠ Power contacts have **no per-person id at all** — that half must match by name/phone/email. ⚠ Which Google account is destination 1 vs 2 is recorded nowhere; resolve one known id in each before writing anything. Needs a Google Cloud project + OAuth + refresh token(s) from the owner. |
+| **7** | **Inventory: archive the Airtable base** | ~1 h, owner | No code. Nothing reads or writes it. |
+
+**Not on the list, deliberately:** `Invoice Paid`, `Send Invoice` and the auto-invoice half of
+`Service Call Ready to Invoice`. The owner sets job status and marks invoices paid by hand in the
+All Invoices tab, and the app writes "Sent" directly — the automation made **Draft** invoices and
+there is exactly one Draft among 55. Reinstating automatic creation of financial records needs a
+deliberate decision, not an assumption.
+
+**Also open, low value:** 27 estimates on completed jobs still read "Approved" rather than
+"Archived/Completed". Pre-dates today — the old automation used `limit: 1` and only ever archived
+ONE estimate per job. Decide whether that distinction matters to GP before replacing it.
+
+---
+
 ## RE-AUDITED 2026-08-12 (evening) — read this before the item table below
 
 Second full pass, run from the code and the live systems rather than from this file. Every

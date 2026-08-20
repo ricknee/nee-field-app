@@ -71,7 +71,13 @@ airtable.js:2824 / :2851 is the reference to copy. Add a test per site.
   (compress) and ScanSnap PDFs (upload untouched, no thumbnail). Full plan, decisions and
   gotchas in `docs/PLAN-expense-receipts.md`.
 
-## ⚠ SUSPECTED: `handleUpdatePowerCo` writes Airtable only — added 2026-08-12
+## ✅ CLOSED 2026-08-20: `handleUpdatePowerCo` — already fixed, was never open
+
+Fixed in `70e4315` ("swept every job writer"), which landed the same day this note was written.
+The handler writes Neon FIRST at `airtable.js:5485`, with a comment naming the sweep that caught
+it. Kept below for the failure mode, which is the one worth remembering.
+
+*Original note follows.*
 
 **The same bug as `ff21d46`, unverified, ~30 min to confirm and fix.**
 

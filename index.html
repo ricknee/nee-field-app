@@ -2279,7 +2279,10 @@
     .agency-search-result-empty { padding: 10px; font-size: 12px; color: var(--muted); font-style: italic; text-align: center; }
 
     /* Vendor typeahead — admin-only edit on the Expenses tab's New Expense panel.
-       Shape cloned from .agency-search above. */
+       Shape cloned from .agency-search above.
+       ALSO USED BY the New Project modal's Contact picker (_npWireContactPicker),
+       which reuses these classes rather than cloning a fourth near-identical
+       block. Change them with both screens in mind. */
     .myexp-lbl { font-size:11px; font-weight:700; color:var(--muted); display:block; margin-bottom:3px; text-transform:uppercase; letter-spacing:0.5px; }
     .vendor-search-wrap { position: relative; }
     .vendor-search {
@@ -17105,16 +17108,37 @@
     return el ? el.value : "";
   }
 
-  // Fetches active Contacts linked to the given contractor (Company)
-  // and repopulates #npContact. On a successful fetch the dropdown
-  // shows placeholder + "+ Add new contact" + each contact. On error
-  // we still surface placeholder + "+ Add new contact" so the user
-  // isn't blocked from creating a contact ad-hoc.
+  // Fetches active Contacts linked to the given contractor (Company), sorts
+  // them by name and hands them to the type-to-filter picker below. On error
+  // the list is empty but the picker still opens with "+ Add new contact", so
+  // a failed fetch never blocks someone entering a contact ad-hoc — the same
+  // guarantee the old <select> made.
+  //
+  // One label, used for BOTH the sort key and the rendered row. Sorting on one
+  // string while displaying another is how a list ends up looking unsorted to
+  // the person reading it.
+  function _npContactLabel(ct) {
+    const name = `${(ct.firstName||"").trim()} ${(ct.lastName||"").trim()}`.trim()
+                 || ct.primaryEmail || ct.primaryPhone || "(unnamed)";
+    return ct.role ? `${name} (${ct.role})` : name;
+  }
+
+  // Clears the picker back to "nothing chosen" — hidden value, visible text,
+  // and the results list. Called on load and on modal open; both used to be
+  // covered by `sel.value = ""` when this was a <select>.
+  function _npResetContactPicker() {
+    const hidden  = $("npContact");
+    const search  = $("npContactSearch");
+    const results = $("npContactResults");
+    if (hidden) hidden.value = "";
+    if (search) { search.value = ""; search.classList.remove("has-pick"); }
+    if (results) { results.classList.remove("open"); results.innerHTML = ""; }
+  }
+
   async function _npLoadContactsForContractor(contractorId) {
-    const sel = $("npContact");
     const row = $("npContactRow");
     _npContacts = [];
-    sel.value = "";
+    _npResetContactPicker();
 
     if (!contractorId) {
       row.style.display = "none";
@@ -17123,35 +17147,131 @@
 
     // A contractor that doesn't exist yet has no contacts to fetch, and
     // "__new__" is not a record id — asking the backend for its contacts
-    // would be a guaranteed-empty round trip. Show the picker with just
-    // the add-new row so the user can still enter the contact inline.
-    if (contractorId === "__new__") {
-      sel.innerHTML = `<option value="">— Pick contact —</option>` +
-                      `<option value="__new__">+ Add new contact</option>`;
-      row.style.display = "";
-      return;
+    // would be a guaranteed-empty round trip. The picker still opens, with
+    // just the add-new row, so the user can enter the contact inline.
+    if (contractorId !== "__new__") {
+      try {
+        const res = await apiGet("listContactsByCompany", { companyId: contractorId });
+        _npContacts = res.contacts || [];
+      } catch (e) {
+        console.error("listContactsByCompany failed", e);
+        _npContacts = [];
+      }
+      // Airtable hands these back in table order — neither alphabetical nor
+      // stable between calls. `sensitivity: "base"` so "de Vries" and "De
+      // Vries" sort together instead of case splitting the list in two.
+      _npContacts.sort((a, b) =>
+        _npContactLabel(a).localeCompare(_npContactLabel(b), undefined, { sensitivity: "base" }));
     }
 
-    try {
-      const res = await apiGet("listContactsByCompany", { companyId: contractorId });
-      _npContacts = res.contacts || [];
-    } catch (e) {
-      console.error("listContactsByCompany failed", e);
-      _npContacts = [];
-    }
-
-    const opts = [
-      `<option value="">— Pick contact —</option>`,
-      `<option value="__new__">+ Add new contact</option>`,
-      ..._npContacts.map(ct => {
-        const name = `${(ct.firstName||"").trim()} ${(ct.lastName||"").trim()}`.trim()
-                     || ct.primaryEmail || ct.primaryPhone || "(unnamed)";
-        const display = ct.role ? `${name} (${ct.role})` : name;
-        return `<option value="${esc(ct.id)}">${esc(display)}</option>`;
-      })
-    ];
-    sel.innerHTML = opts.join("");
+    _npWireContactPicker();
     row.style.display = "";
+  }
+
+  // Type-to-filter contact picker. Cloned from the vendor picker at
+  // populateVendorDropdown — same classes, same keyboard nav, same
+  // mousedown-not-click (blur would close the list before a click landed).
+  //
+  // ⚠ The pick path calls `hidden.onchange?.()` BY HAND. A hidden input fires
+  // no change event, and that handler is what stamps the contact onto the
+  // Customer (Intake) fields and does the customer-role address fill. Drop
+  // that call and picking a contact silently stops prefilling anything.
+  function _npWireContactPicker() {
+    const hidden  = $("npContact");
+    const search  = $("npContactSearch");
+    const results = $("npContactResults");
+    if (!hidden || !search || !results) return;
+    if (search._wired) return;
+    search._wired = true;
+    let activeIdx = -1;
+
+    const addRowHtml = () =>
+      `<div class="vendor-search-add" style="padding:10px; font-size:13px; color:var(--accent); border-top:1px solid var(--line); cursor:pointer; font-weight:600;">+ Add new contact</div>`;
+
+    const renderResults = (q) => {
+      const ql = (q || "").trim().toLowerCase();
+      const filtered = ql
+        ? _npContacts.filter(ct => _npContactLabel(ct).toLowerCase().includes(ql))
+        : _npContacts.slice();
+      activeIdx = -1;
+      const rowsHtml = filtered.length
+        ? filtered.slice(0, 30).map((ct, i) =>
+            `<div class="vendor-search-result" data-id="${esc(ct.id)}" data-idx="${i}">${esc(_npContactLabel(ct))}</div>`
+          ).join("")
+        : `<div class="vendor-search-result-empty">No matching contacts</div>`;
+      // Add-new is always offered: this modal is admin-only already, and a
+      // contact nobody has entered yet is the normal reason to be typing.
+      results.innerHTML = rowsHtml + addRowHtml();
+      results.classList.add("open");
+      results.querySelectorAll(".vendor-search-result").forEach(rowEl => {
+        rowEl.onmousedown = (ev) => { ev.preventDefault(); pick(rowEl.dataset.id); };
+      });
+      const addEl = results.querySelector(".vendor-search-add");
+      if (addEl) addEl.onmousedown = (ev) => { ev.preventDefault(); pickAddNew(); };
+    };
+
+    const pick = (contactId) => {
+      const ct = _npContacts.find(x => x.id === contactId);
+      hidden.value = contactId || "";
+      if (ct) {
+        search.value = _npContactLabel(ct);
+        search.classList.add("has-pick");
+      } else {
+        search.classList.remove("has-pick");
+      }
+      results.classList.remove("open");
+      hidden.onchange?.();
+    };
+
+    const pickAddNew = () => {
+      // What the user typed before giving up on the list is almost always the
+      // name they're about to create, so carry it into the name fields. Runs
+      // AFTER onchange, which deliberately blanks them for fresh entry.
+      const typed = search.value.trim();
+      hidden.value = "__new__";
+      search.value = "+ Add new contact";
+      search.classList.add("has-pick");
+      results.classList.remove("open");
+      hidden.onchange?.();
+      if (typed) {
+        const [first, ...rest] = typed.split(/\s+/);
+        if (!$("npCustFirst").value) $("npCustFirst").value = first;
+        if (!$("npCustLast").value && rest.length) $("npCustLast").value = rest.join(" ");
+      }
+    };
+
+    search.addEventListener("input", () => {
+      // Typing invalidates the prior pick — same convention as the vendor and
+      // agency pickers, so a half-typed name can never save the old contact.
+      hidden.value = "";
+      search.classList.remove("has-pick");
+      renderResults(search.value);
+    });
+    search.addEventListener("focus", () => renderResults(search.value));
+    search.addEventListener("blur", () => {
+      setTimeout(() => results.classList.remove("open"), 150);
+    });
+    search.addEventListener("keydown", (e) => {
+      const rows = results.querySelectorAll(".vendor-search-result");
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        activeIdx = Math.min(activeIdx + 1, rows.length - 1);
+        rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+        if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        activeIdx = Math.max(activeIdx - 1, 0);
+        rows.forEach((r, i) => r.classList.toggle("active", i === activeIdx));
+        if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter") {
+        if (activeIdx >= 0 && rows[activeIdx]) {
+          e.preventDefault();
+          pick(rows[activeIdx].dataset.id);
+        }
+      } else if (e.key === "Escape") {
+        results.classList.remove("open");
+      }
+    });
   }
 
   window.openNewProjectModal = async function() {
@@ -17184,7 +17304,10 @@
     // populated below; reset value to placeholder. Contact picker
     // stays hidden until a contractor is chosen.
     $("npContractor").value = "";
-    $("npContact").value    = "";
+    // Clears the hidden value AND the visible search text — setting only the
+    // value would reopen the modal showing the previous contact's name over an
+    // empty selection.
+    _npResetContactPicker();
     $("npContactRow").style.display = "none";
     $("npNewContractorRow").style.display = "none";
     $("npNewContractorName").value  = "";
@@ -24094,10 +24217,18 @@
 
       <div class="sl-field" id="npContactRow" style="margin-top:6px; display:none;">
         <label>Contact</label>
-        <select id="npContact" class="edit-input">
-          <option value="">— Pick contact —</option>
-          <option value="__new__">+ Add new contact</option>
-        </select>
+        <!-- #npContact stays the VALUE CARRIER it always was — same id, same
+             values ("", "__new__", or a contact rec id), same .onchange
+             contract. It went from <select> to <input type="hidden"> so the
+             list could be typed into and sorted; every reader downstream
+             (reset, the prefill handler, the save-time "__new__" guard) is
+             untouched by design. -->
+        <input type="hidden" id="npContact">
+        <div class="vendor-search-wrap">
+          <input type="text" id="npContactSearch" class="vendor-search"
+                 placeholder="Type a name…" autocomplete="off">
+          <div class="vendor-search-results" id="npContactResults"></div>
+        </div>
       </div>
 
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px;">

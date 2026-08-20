@@ -1489,7 +1489,10 @@ function updateItemPrice(val) {
   // Also update in allItems array
   var item = allItems.find(function(i){ return i.id === selectedItem.id; });
   if (item) item.cost = newCost;
-  // Save to Airtable in background
+  // Persist in the background. Postgres, not Airtable — items went native in
+  // the write cutover (db/schema/041). `selectedItem.id` is the item's HANDLE:
+  // its Airtable rec id if it has one, else its uuid. The backend resolves
+  // either form; do not assume it starts with "rec".
   apiPost({ action: "updateItemCost", itemId: selectedItem.id, cost: newCost })
     .then(function(){ showToast("✓ Price updated to $" + newCost.toFixed(2)); })
     .catch(function(ex){ showToast("Price update failed: " + ex.message, true); });
@@ -1649,7 +1652,7 @@ async function submitCart() {
   // The mechanical difference is only the locationId (handled above).
   var isReturnLike = (logMode === "Return" || logMode === "ReturnToShop");
 
-  // Combine same-item rows into one Airtable record. Group key is
+  // Combine same-item rows into one ledger row. Group key is
   // (itemId, uom, notes) — misc items with different free-text descriptions
   // stay as separate records. JSON.stringify avoids delimiter collisions in
   // free-text notes.
@@ -5063,7 +5066,9 @@ function toggleAllWireMulti(state) {
 }
 
 // Submits all checked items' price updates. Loops sequentially rather than
-// parallel because Airtable rate-limits at 5 req/sec — sequential is safer
+// parallel. That was originally an Airtable rate limit (5 req/sec); the writes
+// are Postgres now and the limit is gone, so this is a free choice rather than a
+// constraint — kept sequential because it is safer
 // for an arbitrary checklist size, and the UX cost is minimal (a handful of
 // items per invoice). Still updates the picked item too if present.
 async function submitWireMulti() {
@@ -5408,7 +5413,10 @@ async function submitNewItem() {
 // ═══════════════════════════════════════════════════════════
 
 // Categories that are priced per-lb and handled by the Wire Cost Calc.
-// If either name changes in Airtable, mirror the change here.
+// These are `inventory_items.category` values in Postgres now (they were
+// Airtable single-select options). If either name is edited there, mirror the
+// change here — nothing enforces the match, and a mismatch silently sends a
+// weighed wire item down the plain $/unit path.
 var WEIGHED_WIRE_CATEGORIES = ["Wire | THHN", "Romex"];
 
 var updatePriceItem = null;
@@ -6648,7 +6656,8 @@ async function saveEstimate() {
       // Close the editor and return to the estimates list — gives Rick a
       // clear visual confirmation that Save went through (he specifically
       // asked for this after confusion about whether the save happened).
-      // List reload brings back fresh totals from the Airtable rollup too.
+      // List reload brings back fresh totals too — computed by the estimates
+      // view in Postgres now, not an Airtable rollup.
       estimateState.current = null;
       await goEstimates();
     }

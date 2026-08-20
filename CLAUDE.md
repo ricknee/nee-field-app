@@ -53,7 +53,12 @@ answers, just slowly. It went unnoticed for three days.
 
 - `AIRTABLE_API_KEY` — Airtable PAT (used by both live functions)
 - `AIRTABLE_BASE_ID` — main NEE base (`appiqWg6SvKcGfMAu`)
-- `INVENTORY_BASE_ID` — separate inventory base (`appfsLJwfow4CepCw`; `inventory.js` only)
+- `INVENTORY_BASE_ID` — **dead; delete it.** Was the separate inventory base
+  (`appfsLJwfow4CepCw`). Nothing has read it since the write cutover (`79b1b56`, 2026-08-12):
+  `inventory.js` makes **zero reads and zero writes** to that base and no longer names the
+  variable. It is still set in the Netlify dashboard and in `.env.example` only because the base
+  itself has not been archived yet. The three inventory test suites also set it, as leftover
+  scaffolding. Do not wire anything new to it.
 - `GOOGLE_MAPS_API_KEY` — `handleCalculateMileage` distance lookups
 - `ADMIN_BACKFILL_TOKEN` — gates the one-off `backfillTimeEntryEmployeeLinks` admin action
 - `AUTH_SECRET` — HMAC key for signing/verifying session tokens (`_auth.js`, shared by both
@@ -139,9 +144,17 @@ Frontend conventions worth knowing before editing `index.html`:
   `JSON.parse(event.body).action`. The dispatcher is a flat `if (action === …)` chain at the
   bottom of the file (~line 3831). **To add an endpoint: write a `handleX` function, then
   register it in that chain.** Unknown actions return 400.
-- **`inventory.js`** (~110 KB) — same dispatch shape, for the inventory/estimating app. Unique
-  in that it spans **two Airtable bases** (`AIRTABLE_BASE_ID` for jobs/employees,
-  `INVENTORY_BASE_ID` for stock/items/orders).
+- **`inventory.js`** (~3,800 lines) — same dispatch shape, for the inventory/estimating app.
+  **58 actions, and Postgres is the only database it has.** Stock, items, locations, vendors,
+  pricing, the ledger, push history, reorder points and the whole estimating cluster are all
+  Neon-native, and every one of those reads **fails closed** rather than falling back to the
+  frozen Airtable copy.
+  It used to span two Airtable bases; it no longer touches the inventory base at all. The
+  Airtable calls that remain all go to the **main** base: eight are Neon-first reads with an
+  Airtable fallback (login, employees, the four job pickers, the push's job index), and one is
+  real — `handlePushExpenses` writes main-base `Expenses`, because Airtable is still the
+  *identity* authority for expenses in **both** apps (R2 receipt keys are built from the expense
+  rec id). That write leaves Airtable when expenses do, which is a field-app decision.
 
 (A third function, `auth.js`, was deleted in `304b86c` — it was dead duplicate handlers using
 legacy env-var PINs `EMPLOYEE_PIN`/`ADMIN_PIN`. That Phase-1 PIN model is **not** how the

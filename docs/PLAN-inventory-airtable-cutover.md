@@ -1,13 +1,26 @@
 # Plan — retiring the Airtable inventory base as a write target
 
-**Status: 2026-08-12 — 36 writes → ZERO. Only decommissioning is left (~1 h).**
+**Status: 2026-08-12 — 36 writes → ZERO. All six slices done. Only the Airtable-side
+decommission is left (~1 h, owner actions, no code).**
 Companion to `docs/PLAN-inventory-to-neon.md`, which moved the **reads**. This moves the **writes**.
 
-> **The inventory base is written by nothing.** The two writes still in `inventory.js` go to the
-> **MAIN** base's `Expenses` — the expense push feeding GP — and were never in scope; see
-> `docs/AUDIT-airtable-remaining.md`. The base is now read only by the loader, for three tables
-> nothing anywhere writes.
-> ⬜ **Slice 5 (items) is deployed but NOT prod-smoked.**
+> **The inventory base is written by nothing, and read by nothing.** Slice 6 deleted the loader
+> (`79b1b56`), which was the last reader. Re-measured from code 2026-08-19
+> (`docs/AUDIT-inventory-app.md`): `inventory.js` makes **zero reads and zero writes** to the
+> inventory base and no longer names `INVENTORY_BASE_ID`. The two writes still in the file go to
+> the **MAIN** base's `Expenses` — the expense push feeding GP — and were never in scope.
+>
+> ⬜ **What is left is in Airtable, not in the repo:** undeploy the one still-deployed automation
+> (`wflTe6pr2oCtig6qp` "Stock Levels" — a `recordCreated` trigger on a table nothing writes),
+> archive the base, and delete `INVENTORY_BASE_ID` from the Netlify dashboard and `.env.example`.
+> The conduit-assembly prototype (1 assembly, 1 labor unit) is exported to
+> `nee-backups/conduit-assembly-prototype_appfsLJwfow4CepCw_2026-08-20.md` — it is a design sketch
+> for the future native cost engine, not data to migrate.
+>
+> ⚠⚠ **The slices were not the end of it.** Items (slice 5) and locations/vendors/pricing made
+> both entities natively creatable, but **three READERS were still keyed on the Airtable rec id
+> alone** — found by the 2026-08-19 audit, fixed 2026-08-20 in `f9c908e` / `db/schema/043`. The
+> worst silently lost every stock movement into an app-created location. See §Slice 5 addendum.
 > ✅ **Owner confirmed 2026-08-11: nobody uses Airtable for anything — the app is the only way this
 > data is seen.** So this is a full retirement: no reverse mirror, and the base gets archived.
 > ✅ **The "Adjustment subtracts instead of setting" defect is FIXED** (`da93e4e`) — see §Slice 1.
@@ -61,8 +74,9 @@ Started at **36 writes across 12 tables in one file** (`netlify/functions/invent
 | 2 | **Expense pushes** — history header + lines | 2 | ✅ **DONE + PROD-VERIFIED 2026-08-12** (`d1c9d50`, `db/schema/038`). 34 headers, 415 lines, 0 orphaned, all reconciling to the cent. §Slice 2. |
 | 3 | **Stock settings** — reorder points | 2 | ✅ **DONE 2026-08-12** (`8b26747`, `db/schema/039`). Smallest domain, nothing references it — first under leaf-first. §Slice 3. |
 | 4 | **The estimating cluster** — estimates, lines, templates, template lines, orders, order lines | 15 | ✅ **DONE + PROD-SMOKED 2026-08-12** (`2932b03`, `db/schema/040`). Six tables, one slice. Order **#41** created live off a native estimate. §Slice 4. |
-| 5 | **Items** — the last domain | 4 | ✅ **DONE 2026-08-12** (`39e6e86`, `db/schema/041`). **Zero Airtable writes left to the inventory base.** ⚠ Items keep a **dual handle** — see §Slice 5. ⬜ Not yet prod-smoked. |
-| **6** | **Decommission** — retire the loader, archive the base | — | ⬜ **~1 h.** The loader now only reads Locations, Vendors and Vendor Pricing, which nothing anywhere writes. |
+| 5 | **Items** — the last domain | 4 | ✅ **DONE + PROD-SMOKED 2026-08-12** (`39e6e86`, `db/schema/041`, fixes `cf43966` / `e7a8e8c` / `2449a0c`). **Zero Airtable writes left to the inventory base.** ⚠ Items keep a **dual handle** — see §Slice 5. ⚠⚠ And the readers did not all learn it — see the addendum below. |
+| 5b | **Reference data becomes writable** — locations, vendors, vendor pricing | — | ✅ **DONE 2026-08-12** (`c0087ba` backend, `621fbe0` UI, `db/schema/042`). Closed the open question at the top of this plan: those three tables had **no write path at all**, so with nobody opening Airtable they were uneditable anywhere. ⬜ Still has **no test coverage**. |
+| **6** | **Decommission** — retire the loader, archive the base | — | ⚠ **Code half DONE 2026-08-12** (`79b1b56`) — the loader is deleted, so nothing reads the base. ⬜ **Airtable half outstanding (~1 h, owner):** undeploy `wflTe6pr2oCtig6qp`, archive the base, drop `INVENTORY_BASE_ID`. |
 
 **The two writes that will still remain afterwards go to the MAIN base** (`inventory.js` Expenses,
 the expense push feeding GP). They were never in scope — see `docs/AUDIT-airtable-remaining.md`.
@@ -333,6 +347,48 @@ Also: `last_price_update` moves only when the cost actually changes; locations a
 refuse duplicate **names**, because both are picked and read by name and two "Shop #2"s cannot be
 told apart in a dropdown; and locations can be **retired but never deleted** — a location appears on
 every movement ever logged against it.
+
+### ⚠⚠ ADDENDUM 2026-08-20 — the dual handle needs READERS taught too (`f9c908e`, `db/schema/043`)
+
+Slice 5 got the dual handle right everywhere it looked, and the sweep it ran was the right sweep.
+It just did not run wide enough, twice over:
+
+1. **It was never re-run for `locations`.** Those became natively creatable eight commits later in
+   `c0087ba` (slice 5b above). Nobody went back.
+2. **It only swept handlers.** Three of the misses were not in a handler's own SQL — they were in
+   `v_stock_levels`, and the handlers merely selected the wrong column out of it.
+
+The writers were all correct. `handleLocationSave` and `handleItemUpdate` resolve on
+`airtable_id = $1 OR id::text = $1`, and `handleItems` / `handleLocations` serve
+`COALESCE(airtable_id, id::text)`. **The readers were the gap** — so a native row saved perfectly,
+appeared in the picker, and evaporated on the next read.
+
+| | Site | What it did |
+|---|---|---|
+| F-01 | `insertTxns` — the two **location** subselects | Resolved to NULL for an app-created location. The row still inserted, but `v_stock_on_hand` skips legs with a NULL location and `v_stock_levels` INNER JOINs `locations` — so the movement was **logged, chargeable, in History, and absent from every stock figure, silently.** Shared by cart / receive / transfer / adjustment. |
+| F-02 | `handleStockLevels`, `handleStockLevelsAll`, `handleReorderAlerts` | Filtered on / returned `item_airtable_id`. A native item matched nothing, the query **succeeded with zero rows**, and Check Stock rendered a clean working-looking screen saying the item was nowhere. |
+| F-03 | `handleCreateStockLevel` | Same miss, but guarded → 404. The INSERT had already run, and a NULL `location_id` sits **outside** the partial unique index, so the row was saved, invisible, and reported as failed. A retry appended another. |
+
+**Fixed in the view, not at the call sites.** `db/schema/043` appends `item_handle` and
+`location_handle` to `v_stock_levels`, so any future reader is correct by construction and the id
+currency is decided in exactly one place. F-03's insert became an `INSERT…SELECT`, so an
+unresolvable handle has nothing to insert rather than saving an orphan.
+
+> **The rule, stated so it generalises:** an id arriving at a handler came out of a picker, and the
+> pickers serve `COALESCE(airtable_id, id::text)`. **Match what the picker serves, on every
+> entity.** A `WHERE` that names only `airtable_id` does not error on a native row — it resolves to
+> NULL or returns zero rows, and both of those look like a working screen.
+
+> **And the sweep is not done when the handlers are done.** Grep the **views** too. Three of these
+> four sites were invisible to a handler-level sweep because the wrong column was inside
+> `pg_get_viewdef`, not inside the file being edited.
+
+**Tests:** 7 new cases, 6 of which fail on the code as it shipped. The mock now models **two id
+spaces** — a genuinely different uuid and rec id, plus a fully native item/location pair — which is
+the slice-1 lesson applied one layer up. The F-01 case asserts the rule over *every* FK subselect
+in the ledger insert rather than the two that were broken, so the next entity to go native is
+covered before it exists. It also caught an existing assertion that compared a value against itself
+and had stayed green throughout.
 
 ### ⚠ Not in scope, now or later: the per-ft cost engine
 

@@ -1834,6 +1834,27 @@ await test("billing-sync: the delete pass spares Neon-native allocations", async
   }
 });
 
+await test("billing-sync: estimate templates are NOT synced — the app owns them now", async () => {
+  // Templates got a write path on 2026-08-20 (db/schema/047). The instant they
+  // did, this sync flipped from being the thing that KEPT the table populated to
+  // the thing that OVERWROTE it: the upsert is ON CONFLICT (airtable_id) DO
+  // UPDATE, so every edit to one of the five Airtable-era templates was reverted
+  // at the top of the hour. Silently — nothing in that file throws.
+  //
+  // Source-text assertion for the same reason as the delete-pass guard above:
+  // the offline suite cannot reach Neon, and re-adding the block is a plausible
+  // "the templates look stale, let's sync them again" mistake that would
+  // reinstate a bug nobody would attribute to this file.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_billing-sync.js", import.meta.url), "utf8");
+  const code = src.replace(/\/\/[^\n]*/g, "");   // strip comments; they discuss it on purpose
+  ok(!/estimate_templates/.test(code), "no estimate_templates write may return to the hourly sync");
+  ok(!/"Estimate Templates"/.test(code), "and it must not fetch the Airtable table either");
+  // Companies was fetched ONLY to resolve template contractor names. Nothing
+  // else here reads it, so a lingering fetch is dead weight on every hourly run.
+  ok(!/"Companies"/.test(code), "the Companies fetch went with it");
+});
+
 await test("setEmployeeSalaried: admin only — it decides how someone is paid", async () => {
   // Office is refused deliberately. Office handles money already earned
   // (approving expenses, marking invoices paid); this decides whether a person

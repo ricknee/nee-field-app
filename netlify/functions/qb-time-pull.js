@@ -369,11 +369,15 @@ export const handler = async () => {
   else console.error("qb-time-pull: jobs sync skipped — AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset");
   const linkReport = await backfillJobLinks(sql);
 
-  // ⚠ The billing allocations and estimate templates have NO WRITE PATH in the
-  // app — they are created inside Airtable — and invoice totals are computed
-  // FROM the allocations. Before this ran hourly, invoicing a job left Neon's
-  // total reading LOW until somebody remembered to run the ETL by hand. Fails
-  // soft: a stale allocation is a smaller problem than a missed timesheet.
+  // ⚠ The billing allocations have NO WRITE PATH in the app — they are created
+  // inside Airtable — and invoice totals are computed FROM them. Before this ran
+  // hourly, invoicing a job left Neon's total reading LOW until somebody
+  // remembered to run the ETL by hand. Fails soft: a stale allocation is a
+  // smaller problem than a missed timesheet.
+  //
+  // Estimate templates used to ride along here. They got a write path on
+  // 2026-08-20, at which point syncing them stopped preserving the table and
+  // started overwriting the app's edits — see the header of _billing-sync.js.
   let billingReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
   if (atKey && atBase) billingReport = await syncBillingTables(sql, atKey, atBase);
 

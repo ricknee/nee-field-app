@@ -1,16 +1,33 @@
 // ── Hourly sync for the tables the APP CANNOT WRITE ────────────────────────
 // Added 2026-08-08, after the field-app migration completed.
 //
-// Everything else moved to Neon-first writes. These three did not, and the
+// Everything else moved to Neon-first writes. These two did not, and the
 // reason matters: **there is no write path for them in the app at all.**
 //
 //   labor_billing_allocations     which time entry was billed on which invoice
 //   material_billing_allocations  which expense was billed on which invoice
-//   estimate_templates            reference data, edited in Airtable by design
 //
 // The app READS unlinked allocations (handleUnlinkedLaborAllocations /
 // handleUnlinkedMaterialAllocations) so you can choose them, but nothing creates
 // or links one. That happens inside Airtable.
+//
+// ── estimate_templates LEFT THIS FILE on 2026-08-20 ────────────────────────
+// It was the third table here, for the same "no write path" reason. It has one
+// now (db/schema/047 + handleEstimateTemplateSave), so this sync stopped being
+// the thing that kept it populated and became the thing that overwrote it: the
+// upsert is ON CONFLICT (airtable_id) DO UPDATE, so every edit made in the app
+// to one of the five Airtable-era templates was reverted at the top of the
+// hour. Silently — nothing here throws, and the app had no way to know.
+//
+// Companies went with it. It was fetched ONLY to resolve template contractor
+// names into `estimate_templates.contractor_name`; nothing else here reads it.
+// `handleEstimateTemplates` now JOINs companies live, so a contractor renamed
+// after this change still resolves — the stored copy is only a fallback for a
+// template whose company has since been deleted.
+//
+// Airtable's Estimate Templates table is frozen history from here. Do NOT wire
+// it back up: re-adding it would resume clobbering the app's edits, which is
+// the exact bug this removal fixes.
 //
 // ⚠ WHY THIS IS NOT COSMETIC. `v_invoices.invoice_total_calc` is computed FROM
 // these allocations — Invoice Labor Amount is SUM(hours × rate) over them, and
@@ -75,11 +92,9 @@ async function upsert(sql, table, cols, rows, syncedAt) {
 export async function syncBillingTables(sql, apiKey, baseId) {
   try {
     const syncedAt = new Date().toISOString();
-    const [labor, material, templates, companies] = await Promise.all([
+    const [labor, material] = await Promise.all([
       fetchAllRecords("Labor Billing Allocations", apiKey, baseId),
       fetchAllRecords("Material Billing Allocations", apiKey, baseId),
-      fetchAllRecords("Estimate Templates", apiKey, baseId),
-      fetchAllRecords("Companies", apiKey, baseId),
     ]);
 
     // Allocated Revenue $ is an Airtable FORMULA (hours × rate). It is carried
@@ -96,23 +111,6 @@ export async function syncBillingTables(sql, apiKey, baseId) {
       ["airtable_id", "expense_airtable_id", "invoice_airtable_id", "allocated_amount"],
       material.map(r => [r.id, link1(r.fields?.["Expense"]), link1(r.fields?.["Invoice"]),
         num(r.fields?.["Allocated Material Amount $"])]), syncedAt);
-
-    // Companies is fetched ONLY to resolve the contractor NAME — Companies itself
-    // is not migrated, and handleEstimateTemplates filters by name. Same rule as
-    // job_name and vendor_name: store the name, not the link.
-    const companyName = new Map(companies.map(c =>
-      [c.id, c.fields?.["Company Name"] || c.fields?.["Name"] || null]));
-
-    await upsert(sql, "estimate_templates",
-      ["airtable_id", "template_name", "contractor_airtable_id", "contractor_name", "active",
-       "scope_of_work", "exclusions", "standard_terms", "base_price", "default_labor_hours",
-       "default_material_cost", "internal_notes"],
-      templates.map(r => [r.id, r.fields?.["Template Name"] || "(unnamed)",
-        link1(r.fields?.["Contractor"]), companyName.get(link1(r.fields?.["Contractor"])) ?? null,
-        r.fields?.["Active"] === true, str(r.fields?.["Scope of Work"]),
-        str(r.fields?.["Exclusions"]), str(r.fields?.["Standard Terms"]),
-        num(r.fields?.["Base Price"]), num(r.fields?.["Default Labor Hours"]),
-        num(r.fields?.["Default Material Cost"]), str(r.fields?.["Internal Notes"])]), syncedAt);
 
     // Resolve the uuid FKs once the parents are present. Separate statements
     // rather than a correlated subquery per row — 2,800+ round trips otherwise.
@@ -169,8 +167,7 @@ export async function syncBillingTables(sql, apiKey, baseId) {
                     `labor=${labor.length} material=${material.length}`);
     }
 
-    return { ok: true, labor: labor.length, material: material.length,
-             templates: templates.length, deleted,
+    return { ok: true, labor: labor.length, material: material.length, deleted,
              deletesSkipped: !(labor.length && material.length) };
   } catch (e) {
     console.error(`billing-sync: failed (continuing) — ${e?.message || e}`);

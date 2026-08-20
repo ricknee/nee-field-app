@@ -17102,6 +17102,9 @@
 
   let _npContractors = [];
   let _npContacts    = [];
+  // Active contacts filed under OTHER companies. Only ever shown once the user
+  // types — an unfiltered list of all 239 would bury the contractor's own.
+  let _npOtherContacts = [];
 
   function _npGetRadioValue(name) {
     const el = document.querySelector(`input[name="${name}"]:checked`);
@@ -17123,6 +17126,16 @@
     return ct.role ? `${name} (${ct.role})` : name;
   }
 
+  // Looks in BOTH lists. The prefill handler and the pick path each resolve an
+  // id back to a contact, and a cross-company pick lives in the second list —
+  // resolving against _npContacts alone sets the value and then silently fills
+  // nothing in, which looks like the picker half-worked.
+  function _npFindContact(id) {
+    return _npContacts.find(c => c.id === id)
+        || _npOtherContacts.find(c => c.id === id)
+        || null;
+  }
+
   // Clears the picker back to "nothing chosen" — hidden value, visible text,
   // and the results list. Called on load and on modal open; both used to be
   // covered by `sel.value = ""` when this was a <select>.
@@ -17138,6 +17151,7 @@
   async function _npLoadContactsForContractor(contractorId) {
     const row = $("npContactRow");
     _npContacts = [];
+    _npOtherContacts = [];
     _npResetContactPicker();
 
     if (!contractorId) {
@@ -17152,16 +17166,21 @@
     if (contractorId !== "__new__") {
       try {
         const res = await apiGet("listContactsByCompany", { companyId: contractorId });
-        _npContacts = res.contacts || [];
+        _npContacts      = res.contacts || [];
+        _npOtherContacts = res.otherContacts || [];
       } catch (e) {
         console.error("listContactsByCompany failed", e);
-        _npContacts = [];
+        _npContacts      = [];
+        _npOtherContacts = [];
       }
-      // Airtable hands these back in table order — neither alphabetical nor
-      // stable between calls. `sensitivity: "base"` so "de Vries" and "De
-      // Vries" sort together instead of case splitting the list in two.
-      _npContacts.sort((a, b) =>
-        _npContactLabel(a).localeCompare(_npContactLabel(b), undefined, { sensitivity: "base" }));
+      // The backend sorts by LAST name; this list is displayed first-name-first,
+      // so sorted-by-surname reads as unsorted on screen. Re-sort by the label
+      // actually rendered. `sensitivity: "base"` so "de Vries" and "De Vries"
+      // sort together instead of case splitting the list in two.
+      const byLabel = (a, b) =>
+        _npContactLabel(a).localeCompare(_npContactLabel(b), undefined, { sensitivity: "base" });
+      _npContacts.sort(byLabel);
+      _npOtherContacts.sort(byLabel);
     }
 
     _npWireContactPicker();
@@ -17188,20 +17207,58 @@
     const addRowHtml = () =>
       `<div class="vendor-search-add" style="padding:10px; font-size:13px; color:var(--accent); border-top:1px solid var(--line); cursor:pointer; font-weight:600;">+ Add new contact</div>`;
 
+    // Group heading + "N more" both use their OWN classes, never
+    // .vendor-search-result, because arrow-key nav selects on that class and
+    // must step straight past anything unpickable.
+    const groupHtml = (text) =>
+      `<div class="vendor-search-group" style="padding:6px 10px; font-size:10px; font-weight:700; letter-spacing:0.5px; text-transform:uppercase; color:var(--muted); background:var(--bg); border-top:1px solid var(--line); border-bottom:1px solid var(--line);">${esc(text)}</div>`;
+
+    const rowHtml = (ct, idx, subLabel) =>
+      `<div class="vendor-search-result" data-id="${esc(ct.id)}" data-idx="${idx}">${esc(_npContactLabel(ct))}` +
+      (subLabel ? `<span style="display:block; font-size:11px; color:var(--muted); font-weight:400;">${esc(subLabel)}</span>` : "") +
+      `</div>`;
+
+    const OTHER_CAP = 20;
+
     const renderResults = (q) => {
       const ql = (q || "").trim().toLowerCase();
-      const filtered = ql
+      const own = ql
         ? _npContacts.filter(ct => _npContactLabel(ct).toLowerCase().includes(ql))
         : _npContacts.slice();
+
+      // Cross-company matches appear ONLY once something is typed. Unfiltered,
+      // every other contact in the base would bury the contractor's own list.
+      // Matching includes the company name, so "koehn" finds their people too.
+      const other = ql
+        ? _npOtherContacts.filter(ct =>
+            (_npContactLabel(ct) + " " + (ct.companyName || "")).toLowerCase().includes(ql))
+        : [];
+
       activeIdx = -1;
-      const rowsHtml = filtered.length
-        ? filtered.slice(0, 30).map((ct, i) =>
-            `<div class="vendor-search-result" data-id="${esc(ct.id)}" data-idx="${i}">${esc(_npContactLabel(ct))}</div>`
-          ).join("")
-        : `<div class="vendor-search-result-empty">No matching contacts</div>`;
+      let idx = 0;
+      let html = "";
+
+      if (own.length) {
+        html += own.slice(0, 30).map(ct => rowHtml(ct, idx++, "")).join("");
+      } else if (!other.length) {
+        html += `<div class="vendor-search-result-empty">No matching contacts</div>`;
+      }
+
+      if (other.length) {
+        html += groupHtml("other companies");
+        html += other.slice(0, OTHER_CAP)
+                     .map(ct => rowHtml(ct, idx++, ct.companyName || "another company"))
+                     .join("");
+        // Say so rather than truncating in silence — a cut-off list that looks
+        // complete is how you conclude someone isn't in the system.
+        if (other.length > OTHER_CAP) {
+          html += `<div class="vendor-search-result-empty">…and ${other.length - OTHER_CAP} more — keep typing</div>`;
+        }
+      }
+
       // Add-new is always offered: this modal is admin-only already, and a
       // contact nobody has entered yet is the normal reason to be typing.
-      results.innerHTML = rowsHtml + addRowHtml();
+      results.innerHTML = html + addRowHtml();
       results.classList.add("open");
       results.querySelectorAll(".vendor-search-result").forEach(rowEl => {
         rowEl.onmousedown = (ev) => { ev.preventDefault(); pick(rowEl.dataset.id); };
@@ -17211,7 +17268,7 @@
     };
 
     const pick = (contactId) => {
-      const ct = _npContacts.find(x => x.id === contactId);
+      const ct = _npFindContact(contactId);
       hidden.value = contactId || "";
       if (ct) {
         search.value = _npContactLabel(ct);
@@ -17314,6 +17371,7 @@
     $("npNewContractorPhone").value = "";
     $("npNewContractorEmail").value = "";
     _npContacts = [];
+    _npOtherContacts = [];
 
     $("npMsg").style.display = "none";
 
@@ -17360,7 +17418,9 @@
         $("npEmail").value     = "";
         return;
       }
-      const ct = _npContacts.find(c => c.id === v);
+      // Both lists — a contact picked from "other companies" is not in
+      // _npContacts, and resolving against that alone would stamp nothing.
+      const ct = _npFindContact(v);
       if (!ct) return;
       $("npCustFirst").value = ct.firstName    || "";
       $("npCustLast").value  = ct.lastName     || "";

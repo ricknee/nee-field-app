@@ -8023,36 +8023,70 @@ async function handleListContactsByCompany(params) {
 
   const records = await fetchAll(TABLES.contacts, {});
 
-  const contacts = records
-    .filter(r => {
-      const links = r.fields[F.contact.company];
-      if (!Array.isArray(links) || !links.includes(companyId)) return false;
-      return r.fields[F.contact.active] !== false;
-    })
-    .map(r => {
-      // Role is multipleSelects — join for display.
-      const roleVal = r.fields[F.contact.role];
-      const role = Array.isArray(roleVal) ? roleVal.join(", ") : (roleVal || "");
-      return {
-        id:           r.id,
-        firstName:    r.fields[F.contact.firstName]    || "",
-        lastName:     r.fields[F.contact.lastName]     || "",
-        primaryPhone: r.fields[F.contact.primaryPhone] || "",
-        primaryEmail: r.fields[F.contact.primaryEmail] || "",
-        role,
-        street:       r.fields[F.contact.street]       || "",
-        city:         r.fields[F.contact.city]         || "",
-        state:        r.fields[F.contact.state]        || "",
-        zip:          r.fields[F.contact.zip]          || ""
-      };
-    })
-    .sort((a, b) => {
-      const ln = a.lastName.toLowerCase().localeCompare(b.lastName.toLowerCase());
-      if (ln !== 0) return ln;
-      return a.firstName.toLowerCase().localeCompare(b.firstName.toLowerCase());
-    });
+  // Role is multipleSelects — join for display.
+  const shape = (r) => {
+    const roleVal = r.fields[F.contact.role];
+    const role = Array.isArray(roleVal) ? roleVal.join(", ") : (roleVal || "");
+    return {
+      id:           r.id,
+      firstName:    r.fields[F.contact.firstName]    || "",
+      lastName:     r.fields[F.contact.lastName]     || "",
+      primaryPhone: r.fields[F.contact.primaryPhone] || "",
+      primaryEmail: r.fields[F.contact.primaryEmail] || "",
+      role,
+      street:       r.fields[F.contact.street]       || "",
+      city:         r.fields[F.contact.city]         || "",
+      state:        r.fields[F.contact.state]        || "",
+      zip:          r.fields[F.contact.zip]          || ""
+    };
+  };
+  const byName = (a, b) => {
+    const ln = a.lastName.toLowerCase().localeCompare(b.lastName.toLowerCase());
+    if (ln !== 0) return ln;
+    return a.firstName.toLowerCase().localeCompare(b.firstName.toLowerCase());
+  };
+  const isActive = (r) => r.fields[F.contact.active] !== false;
+  const companyLinks = (r) => {
+    const links = r.fields[F.contact.company];
+    return Array.isArray(links) ? links : [];
+  };
 
-  return resp(200, { ok: true, contacts });
+  const contacts = records
+    .filter(r => companyLinks(r).includes(companyId) && isActive(r))
+    .map(shape)
+    .sort(byName);
+
+  // ── EVERY OTHER ACTIVE CONTACT, so the picker can find a person filed under
+  // a different company. The real case: a customer first entered under a GC
+  // rings up directly, the new job goes under Misc Jobs, and his details are
+  // invisible because he is filed under the GC. Retyping them by hand creates
+  // a second record for one person, and then his phone number is wrong in one
+  // of two places.
+  //
+  // This costs no extra Airtable traffic — the fetchAll above has always pulled
+  // the WHOLE Contacts table and filtered in memory. 239 contacts today.
+  //
+  // Company NAMES come from Neon (item 06 slice 3 owns `companies`), not from a
+  // lookup on the Contacts record: `F.*` is read-by-name and there is no
+  // verified name for that lookup field, so resolving by rec id is the honest
+  // route. Fails soft — no Neon means no label, not no contacts.
+  let nameByAtId = new Map();
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT airtable_id, name FROM companies WHERE airtable_id IS NOT NULL`);
+    if (q?.rows) nameByAtId = new Map(q.rows.map(r => [r.airtable_id, r.name || ""]));
+    else console.error(`listContactsByCompany: company names unavailable, rows will be unlabelled: ${q?.error || "no rows"}`);
+  }
+
+  const otherContacts = records
+    .filter(r => !companyLinks(r).includes(companyId) && isActive(r))
+    .map(r => {
+      const firstCompany = companyLinks(r)[0] || "";
+      return { ...shape(r), companyId: firstCompany, companyName: nameByAtId.get(firstCompany) || "" };
+    })
+    .sort(byName);
+
+  return resp(200, { ok: true, contacts, otherContacts });
 }
 
 // Creates a Contact record linked to a Company. Used by the New Project

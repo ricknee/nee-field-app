@@ -2240,6 +2240,45 @@ await test("payroll bonuses: the Airtable fallback still works, and still exclud
      "a malformed employeeId is refused before either store is touched");
 });
 
+await test("contacts: the picker can reach someone filed under another company", async () => {
+  // The real case: a customer first entered under a GC rings up directly, and
+  // the new job goes under Misc Jobs. Before `otherContacts` his details were
+  // invisible, and the only way forward was retyping them — which creates a
+  // SECOND record for one person, after which his phone number is wrong in one
+  // of the two places.
+  mockTables = {
+    tbl7vZpySDNfZX9Sq: [
+      { id: "recC1", fields: { "First Name": "Craig", "Last Name": "Davidson", "Company": ["recKoehn"],
+                               "Active": true, "Primary Phone": "330-555-0100", "Role": ["Customer"] } },
+      { id: "recC2", fields: { "First Name": "Dave",  "Last Name": "Miller",   "Company": ["recMisc"],
+                               "Active": true } },
+      { id: "recC3", fields: { "First Name": "Gone",  "Last Name": "Away",     "Company": ["recKoehn"],
+                               "Active": false } },
+    ],
+  };
+  delete process.env.DATABASE_URL;
+
+  const res = await GET("listContactsByCompany", { companyId: "recMisc" });
+  eq(res.statusCode, 200, "answers");
+  const b = json(res);
+  eq(b.contacts.length, 1, "the main list is still only the selected company's own");
+  eq(b.contacts[0].id, "recC2", "and it is the right one");
+
+  const other = b.otherContacts.map(c => c.id);
+  ok(other.includes("recC1"),  "Craig is reachable from the other-companies list");
+  ok(!other.includes("recC2"), "the selected company's own contact is not repeated in it");
+  ok(!other.includes("recC3"), "an inactive contact is offered in neither list");
+
+  // Company names come from Neon, which is unreachable here. The row must still
+  // be OFFERED — losing the label is acceptable, losing the contact is not.
+  const craig = b.otherContacts.find(c => c.id === "recC1");
+  eq(craig.companyId, "recKoehn", "the company id still comes through");
+  eq(craig.companyName, "", "and the name degrades to empty instead of failing the read");
+  eq(craig.primaryPhone, "330-555-0100", "details ride along so the form can prefill from them");
+
+  eq((await GET("listContactsByCompany", {})).statusCode, 400, "companyId is still required");
+});
+
 await test("people: renders off Airtable when Neon is unavailable", async () => {
   // Fail-soft read. A roster missing hire dates beats an error page.
   mockTables = { Employees: [

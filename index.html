@@ -17040,6 +17040,20 @@
     sel.innerHTML = `<option value="">— Loading templates… —</option>`;
     sel.disabled = true;
 
+    // ⚠⚠ ROLE VISIBILITY IS APPLIED HERE, NOT BY THE `admin-only` CLASS.
+    // This modal's markup lives AFTER the main <script> in DOM order, so the
+    // one-shot `document.querySelectorAll(".admin-only")` sweep in renderAuth()
+    // ran before this button existed and never cleared its `hidden` class —
+    // the button was in the DOM, correct in every way, and invisible to
+    // everyone. Same DOM-order trap that makes openNewAgencyModal lazy-wire its
+    // submit button. Any role-gated element added below line ~23911 has to be
+    // toggled on open like this; the class alone does nothing there.
+    //
+    // isAdmin() is admin+office, which matches the server tier exactly
+    // (_ADMIN_OFFICE_POSTS). The `admin-only` CLASS would also show this to
+    // viewers, who would then get a 403 the moment they opened the manager.
+    $("btnManageTemplates").classList.toggle("hidden", !isAdmin());
+
     const contractor = (job.contractor || "").trim();
     $("newEstJobLabel").textContent = `Job: ${job.name || ""}` + (contractor ? `   ·   Contractor: ${contractor}` : "   ·   (no contractor set)");
     // The hint is written by _newEstLoadTemplates, which knows whether the load
@@ -24482,7 +24496,11 @@
       <div class="sl-field" style="margin-bottom:16px;">
         <div style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;">
           <label>Load Template</label>
-          <button type="button" id="btnManageTemplates" class="admin-only hidden"
+          <!-- `hidden` only — NOT `admin-only`. This markup sits after the main
+               <script>, so renderAuth()'s role sweep never reaches it; the class
+               would be decorative and misleading. openNewEstModal toggles this
+               explicitly on every open. -->
+          <button type="button" id="btnManageTemplates" class="hidden"
                   onclick="openTemplateManager()"
                   style="background:none; border:none; padding:0; font-size:11px; color:var(--accent); cursor:pointer; font-family:'Inter',sans-serif;">⚙ Manage templates</button>
         </div>

@@ -1834,6 +1834,44 @@ await test("billing-sync: the delete pass spares Neon-native allocations", async
   }
 });
 
+await test("index.html: no role-gated element sits below the main <script>", async () => {
+  // ⚠ THE CLASS DOES NOTHING DOWN THERE. renderAuth() clears `hidden` with a
+  // one-shot document.querySelectorAll(".admin-only") at init. The main <script>
+  // closes around line 23900 and every modal's markup follows it, so an element
+  // added below that point does not exist when the sweep runs — its `hidden`
+  // class is never cleared and it is invisible to EVERY role, admin included.
+  //
+  // Cost a live bug on 2026-08-20: the "Manage templates" button shipped
+  // correct in every other respect and simply never appeared. It looked like a
+  // stale cache, and the deployed bytes were verified identical before anyone
+  // suspected DOM order. The fix is to toggle visibility when the modal opens
+  // (openNewEstModal does), which is also what openNewAgencyModal has always
+  // done for its submit-button wiring.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+  const lines = src.split(/\r?\n/);
+
+  // The main script is the longest inline <script> block — find where it ends.
+  let scriptEnd = -1, openAt = -1, best = -1;
+  lines.forEach((l, i) => {
+    if (/<script(?![^>]*\bsrc=)[^>]*>/.test(l)) openAt = i;
+    if (/<\/script>/.test(l) && openAt >= 0) {
+      if (i - openAt > best) { best = i - openAt; scriptEnd = i; }
+      openAt = -1;
+    }
+  });
+  ok(scriptEnd > 0, "found the main <script> block");
+
+  const ROLE_CLASSES = /class="[^"]*\b(admin-only|strict-admin-only|non-admin-only|payroll-eligible-only|employee-only)\b/;
+  const offenders = [];
+  for (let i = scriptEnd + 1; i < lines.length; i++) {
+    if (ROLE_CLASSES.test(lines[i])) offenders.push(`${i + 1}: ${lines[i].trim().slice(0, 110)}`);
+  }
+  eq(offenders.length, 0,
+     "role-gating class below the main <script> — renderAuth() never sees it, so it stays hidden for everyone.\n" +
+     "Toggle it on modal open instead.\n" + offenders.join("\n"));
+});
+
 await test("billing-sync: estimate templates are NOT synced — the app owns them now", async () => {
   // Templates got a write path on 2026-08-20 (db/schema/047). The instant they
   // did, this sync flipped from being the thing that KEPT the table populated to

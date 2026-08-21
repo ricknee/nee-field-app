@@ -37,7 +37,7 @@ import {
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
   listByPrefix, liftPrefix, fleetPrefix, presignEquipThumbPut,
   listLiftPhotos, deleteLiftPhoto, deleteAllLiftPhotos,
-  presignGet,
+  presignGet, presignGetDownload, payrollPrefix,
 } from "./_r2.js";
 
 /* ============================================================================
@@ -503,6 +503,10 @@ const _ADMIN_POSTS = new Set([
   // ADMIN_BACKFILL_TOKEN: it is idempotent, copies rather than mutates, and the
   // token is itself a write-only Netlify secret nobody has a copy of.
   "copyLiftPhotosToR2", "copyFleetPhotosToR2", "copyEstimatePdfsToR2",
+  // Same shape again, for the payroll archive (db/schema/052). Admin rather
+  // than admin+office even though it only copies: it reads every payroll PDF in
+  // the company, and payroll is the one tier office does not get.
+  "copyPayrollFilesToR2",
   // Same shape: the Contacts loader for db/schema/048. It has to run in here
   // rather than from a laptop because the LOCAL Airtable PAT is scoped to the
   // sandbox base and 403s on production — only the function holds a prod key.
@@ -3265,17 +3269,29 @@ async function handlePayrollRunCreate(body) {
   // would report a failure for work that actually succeeded; the mismatch is
   // visible instead through `neonMirrorError` in the response.
   let neonMirrorError = null;
+  let neonRunId = null;
   try {
-    await neonWrite("payrollRun.mirror",
+    // `supersedes_id` points at the OLDER run, matching Airtable's direction —
+    // see db/schema/052. Resolved inline from the rec id rather than in a second
+    // statement so a run can never exist with the flag set on its predecessor
+    // and no record of what replaced it.
+    const mirrored = await neonWrite("payrollRun.mirror",
       `INSERT INTO payroll_runs (airtable_id, pay_period_start, pay_period_end, generated_at,
-                                 generated_by, total_hours, total_bonus, superseded, notes, synced_at)
-       VALUES ($1,$2::date,$3::date,now(),$4,$5,$6,false,$7,now())
+                                 generated_by, total_hours, total_bonus, superseded, notes,
+                                 supersedes_id, synced_at)
+       VALUES ($1,$2::date,$3::date,now(),$4,$5,$6,false,$7,
+               (SELECT id FROM payroll_runs WHERE airtable_id = $8), now())
        ON CONFLICT (airtable_id) DO UPDATE SET
          pay_period_start=EXCLUDED.pay_period_start, pay_period_end=EXCLUDED.pay_period_end,
          generated_by=EXCLUDED.generated_by, total_hours=EXCLUDED.total_hours,
-         total_bonus=EXCLUDED.total_bonus, notes=EXCLUDED.notes, synced_at=now()`,
+         total_bonus=EXCLUDED.total_bonus, notes=EXCLUDED.notes,
+         supersedes_id=COALESCE(EXCLUDED.supersedes_id, payroll_runs.supersedes_id),
+         synced_at=now()
+       RETURNING id`,
       [runId, payPeriodStart, payPeriodEnd, String(generatedBy || ""),
-       Number(totalHours) || 0, Number(totalBonus) || 0, notes ? String(notes) : null]);
+       Number(totalHours) || 0, Number(totalBonus) || 0, notes ? String(notes) : null,
+       (supersedesId && String(supersedesId).startsWith("rec")) ? supersedesId : null]);
+    neonRunId = mirrored?.[0]?.id || null;
 
     // Bonuses are re-read from Airtable rather than taken from `resolvedBonuses`,
     // for the same reason the inventory push re-reads its expenses at Step E:
@@ -3309,6 +3325,43 @@ async function handlePayrollRunCreate(body) {
     neonMirrorError = err?.message || String(err);
   }
 
+  // 6. Copy the same two files into R2 (audit item 04, db/schema/052).
+  //
+  // ⚠ BOTH STORES, DELIBERATELY, until the mirror writes come out. A payroll PDF
+  // is the artifact people were paid from; it gets a second home before it gets
+  // a new one. The Airtable upload above still rolls the run back if it fails —
+  // this one does not, because by here the run, its PDF and its bonuses have all
+  // landed successfully and failing the request would report a disaster for work
+  // that succeeded.
+  //
+  // The key is stamped, not named after the file: two runs for the same period
+  // (an original and its correction) would otherwise collide, and the correction
+  // is exactly the case where you must still be able to open the original.
+  //
+  // Reported in the response rather than swallowed. `payrollRunsList` falls back
+  // to the Airtable attachment for any run with no pdf_key, so an R2 failure
+  // costs nothing today — but it is also the signal that this half is not ready
+  // to stand alone, and it should be visible when someone checks.
+  let pdfKey = null, jsonKey = null, r2Error = null;
+  if (neonRunId && r2Enabled()) {
+    try {
+      const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+      const prefix = payrollPrefix(neonRunId);
+      await putBufferToR2(`${prefix}${stamp}.pdf`,  Buffer.from(pdfBase64,  "base64"), "application/pdf");
+      await putBufferToR2(`${prefix}${stamp}.json`, Buffer.from(jsonBase64, "base64"), "application/json");
+      pdfKey  = `${prefix}${stamp}.pdf`;
+      jsonKey = `${prefix}${stamp}.json`;
+      await neonWrite("payrollRun.files",
+        `UPDATE payroll_runs SET pdf_key = $2, json_key = $3, synced_at = now() WHERE id = $1`,
+        [neonRunId, pdfKey, jsonKey]);
+    } catch (err) {
+      console.error("[payrollRunCreate] R2 archive failed:", err);
+      // Keys are cleared so the response never claims a file that isn't there.
+      pdfKey = null; jsonKey = null;
+      r2Error = err?.message || String(err);
+    }
+  }
+
   return resp(200, {
     ok: true,
     runId,
@@ -3316,6 +3369,8 @@ async function handlePayrollRunCreate(body) {
     bonusError,
     supersedeError,
     neonMirrorError,
+    r2Error,
+    pdfArchived: !!pdfKey,
     unresolvedBonuses
   });
 }
@@ -3329,6 +3384,65 @@ async function handlePayrollRunCreate(body) {
 // saved correction sorts above the predecessor it superseded).
 async function handlePayrollRunsList(params) {
   const showSuperseded = String(params?.showSuperseded || "").toLowerCase() === "true";
+
+  // ── NEON-FIRST (audit item 02/04) ─────────────────────────────────────────
+  // The last read in the field app that Airtable still owned, and it was owned
+  // for one reason: the PDF is an Airtable ATTACHMENT, whose url is signed and
+  // short-lived. There is no link to store, so the only way to hand someone a
+  // working one was to ask Airtable at read time. db/schema/052 moved the files
+  // to R2 and gave the run a `pdf_key`, which is a stable handle.
+  //
+  // The "Superseded By" resolution that used to need an in-memory id map is now
+  // a LEFT JOIN in the other direction — `s.supersedes_id = r.id` — so the
+  // whole-table fetch and the second pass both go away.
+  //
+  // ⚠ FALLS BACK ON A RUN WITH NO pdf_key, not just on a Neon failure. Until
+  // the backfill has run, some runs have their PDF only in Airtable, and a
+  // payroll archive that lists a run with no way to open it is worse than a
+  // slower page. One missing key sends the WHOLE list back to Airtable rather
+  // than serving a half-linked grid.
+  const q = await neonQuery(
+    `SELECT r.airtable_id, r.pay_period_start::text  AS pay_period_start,
+            r.pay_period_end::text AS pay_period_end, r.generated_at,
+            r.generated_by, r.total_hours, r.total_bonus, r.superseded, r.notes,
+            r.pdf_key,
+            (SELECT count(*) FROM payroll_bonuses b WHERE b.payroll_run_id = r.id) AS bonus_count,
+            s.airtable_id  AS superseded_by_id,
+            s.generated_at AS superseded_by_date
+       FROM payroll_runs r
+       LEFT JOIN payroll_runs s ON s.supersedes_id = r.id
+      ORDER BY r.pay_period_end DESC NULLS LAST, r.generated_at DESC NULLS LAST`);
+
+  if (q?.rows?.length && q.rows.every(r => r.pdf_key)) {
+    const visible = showSuperseded ? q.rows : q.rows.filter(r => r.superseded !== true);
+    const runs = await Promise.all(visible.map(async (r) => {
+      // Named for the human, not for the object: the R2 key is a timestamp, and
+      // a file called "20260808120000.pdf" in someone's Downloads folder is
+      // useless a fortnight later.
+      const filename = `Payroll ${r.pay_period_start || "run"} to ${r.pay_period_end || ""}.pdf`.trim();
+      return {
+        id:                r.airtable_id,
+        payPeriodStart:    r.pay_period_start || null,
+        payPeriodEnd:      r.pay_period_end   || null,
+        generatedAt:       r.generated_at ? new Date(r.generated_at).toISOString() : null,
+        generatedBy:       r.generated_by || null,
+        totalHours:        Number(r.total_hours) || 0,
+        totalBonus:        Number(r.total_bonus) || 0,
+        bonusCount:        Number(r.bonus_count) || 0,
+        notes:             r.notes || null,
+        superseded:        r.superseded === true,
+        supersededByRunId: r.superseded_by_id || null,
+        supersededByDate:  r.superseded_by_date ? new Date(r.superseded_by_date).toISOString() : null,
+        pdfUrl:            await presignGetDownload(r.pdf_key, filename),
+        pdfFilename:       filename,
+        pdfAvailable:      true,
+      };
+    }));
+    return resp(200, { ok: true, runs, _source: "neon", _ms: q.ms });
+  }
+  if (q?.error) console.error(`payrollRunsList: Neon read failed, falling back: ${q.error}`);
+  else if (q?.rows?.length) console.log("payrollRunsList: some runs have no pdf_key — serving from Airtable until copyPayrollFilesToR2 has run");
+
   const records = await fetchAll(PR_RUNS.table);
 
   // id → record, used to resolve "Superseded By" link to successor.generatedAt
@@ -7456,6 +7570,117 @@ async function handleCopyEstimatePdfsToR2() {
     table: "Job Estimates", neonTable: "job_estimates",
     kind: "estimates", nameField: "Estimate Name",
     attachmentField: "Estimate PDF",
+  });
+}
+
+// Server-side PUT of bytes we already hold. Everything else in this file hands
+// the browser a presigned URL and gets out of the way; these two paths (copying
+// an Airtable attachment, archiving a payroll PDF that arrived as base64) are
+// the exceptions, because the bytes are already in the function.
+//
+// ⚠ presignPut is ASYNC — signing is async in aws4fetch. Without the await,
+// fetch receives a Promise and dies with "Failed to parse URL from
+// [object Promise]".
+async function putBufferToR2(key, buf, contentType) {
+  const put = await fetch(await presignPut(key, contentType), {
+    method: "PUT", body: buf, headers: { "content-type": contentType },
+  });
+  if (!put.ok) throw new Error(`R2 upload ${put.status} for ${key}`);
+  return key;
+}
+
+// ── PAYROLL ARCHIVE → R2 (audit item 04, db/schema/052) ────────────────────
+// Copies every existing run's PDF and JSON out of Airtable and records the keys
+// in Neon, so `payrollRunsList` can stop asking Airtable for a signed
+// attachment url on every page load.
+//
+// Not folded into copyAirtablePhotosToR2 despite the family resemblance: that
+// helper copies MANY attachments per record from ONE field and derives the key
+// from the attachment id. A payroll run has exactly TWO files from TWO fields
+// and the keys are stored, not derived. Forcing them together would mean two
+// passes and a special case in both.
+//
+// ⚠ It also backfills `supersedes_id`, which is a second thing the grid needs
+// and has nowhere else to come from — Airtable's `Supersedes` link is the only
+// record of which correction replaced which run. Both passes are idempotent, so
+// re-running is free and is how you resume after a partial failure.
+async function handleCopyPayrollFilesToR2() {
+  if (!r2Enabled())   return resp(503, { ok: false, error: "R2 is not configured." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Neon is not configured." });
+
+  const records = await fetchAll(PR_RUNS.table);
+  const rows = await neonWrite("payrollRuns.listForCopy",
+    `SELECT id, airtable_id, pdf_key, json_key FROM payroll_runs WHERE airtable_id IS NOT NULL`);
+  const byAirtable = new Map(rows.map(r => [r.airtable_id, r]));
+
+  const report = { copied: 0, skipped: 0, failed: 0, unmatched: 0, supersedesLinked: 0, details: [] };
+
+  for (const rec of records) {
+    const run = byAirtable.get(rec.id);
+    if (!run) {
+      // A run in Airtable the mirror never carried over. Reported, not guessed
+      // at — copying it under an invented id would strand the file.
+      report.unmatched++;
+      report.details.push(`unmatched: ${rec.fields?.[PR_RUNS.payPeriodEnd] || rec.id}`);
+      continue;
+    }
+
+    const prefix = payrollPrefix(run.id);
+    const jobs = [
+      { field: PR_RUNS.pdf,         col: "pdf_key",  have: run.pdf_key,  ext: ".pdf",  type: "application/pdf" },
+      { field: PR_RUNS.jsonPayload, col: "json_key", have: run.json_key, ext: ".json", type: "application/json" },
+    ];
+
+    for (const j of jobs) {
+      if (j.have) { report.skipped++; continue; }
+      const att = (rec.fields?.[j.field] || [])[0];
+      if (!att) { report.skipped++; continue; }
+      // Keyed on the ATTACHMENT id: two runs can both hold "payroll.pdf", and a
+      // rename in Airtable must not orphan the copy.
+      const key = `${prefix}${att.id}${j.ext}`;
+      try {
+        // Download and upload back to back, while the signed url is still valid.
+        const dl = await fetch(att.url);
+        if (!dl.ok) throw new Error(`download ${dl.status}`);
+        const buf = Buffer.from(await dl.arrayBuffer());
+        await putBufferToR2(key, buf, att.type || j.type);
+        await neonWrite("payrollRuns.setKey",
+          `UPDATE payroll_runs SET ${j.col} = $2, synced_at = now() WHERE id = $1`, [run.id, key]);
+        report.copied++;
+        report.details.push(`copied: ${key} (${buf.length}b)`);
+      } catch (e) {
+        report.failed++;
+        report.details.push(`FAILED: ${key}: ${e.message}`);
+      }
+    }
+
+    // `Supersedes` holds the rec id of the OLDER run this one replaced.
+    const prior = (rec.fields?.[PR_RUNS.supersedes] || [])[0];
+    if (prior && byAirtable.get(prior)) {
+      try {
+        const upd = await neonWrite("payrollRuns.setSupersedes",
+          `UPDATE payroll_runs SET supersedes_id = $2, synced_at = now()
+            WHERE id = $1 AND supersedes_id IS DISTINCT FROM $2 RETURNING id`,
+          [run.id, byAirtable.get(prior).id]);
+        if (upd?.length) report.supersedesLinked++;
+      } catch (e) {
+        report.failed++;
+        report.details.push(`FAILED supersedes for ${rec.id}: ${e.message}`);
+      }
+    }
+  }
+
+  // The caller should not trust the R2 half until these agree.
+  const after = (await listByPrefix("payroll/")).length;
+  const expected = records.reduce((n, r) =>
+    n + ((r.fields?.[PR_RUNS.pdf]?.length || 0) > 0 ? 1 : 0)
+      + ((r.fields?.[PR_RUNS.jsonPayload]?.length || 0) > 0 ? 1 : 0), 0);
+  return resp(200, {
+    ok: report.failed === 0 && report.unmatched === 0 && after === expected,
+    ...report,
+    objectsInR2: after,
+    attachmentsInAirtable: expected,
+    reconciled: after === expected,
   });
 }
 
@@ -12541,6 +12766,7 @@ export async function handler(event) {
       if (body.action === "copyLiftPhotosToR2")   return await handleCopyLiftPhotosToR2();
       if (body.action === "copyFleetPhotosToR2")  return await handleCopyFleetPhotosToR2();
       if (body.action === "copyEstimatePdfsToR2") return await handleCopyEstimatePdfsToR2();
+      if (body.action === "copyPayrollFilesToR2") return await handleCopyPayrollFilesToR2();
       if (body.action === "backfillContacts")     return await handleBackfillContacts();
       if (body.action === "generatorServiceCheck") return await handleGeneratorServiceCheck(body);
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);

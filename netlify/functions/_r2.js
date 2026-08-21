@@ -823,6 +823,18 @@ export function expensePrefix(expenseId) {
   return `expenses/${String(expenseId)}/`;
 }
 
+// Payroll run archives — the generated PDF and its machine-readable twin.
+// Keyed on the NEON uuid, not the Airtable rec id, unlike photos and receipts.
+// Those two are stuck on rec ids because thousands of objects already sit under
+// them; payroll starts empty, so it starts on the id that will still exist when
+// Airtable is gone. See db/schema/052.
+//
+// Like receipts, deliberately outside the recycle bin's lifecycle rule: payroll
+// records are the artifact people were paid from and are never auto-purged.
+export function payrollPrefix(runId) {
+  return `payroll/${String(runId)}/`;
+}
+
 // R2's list response carries no Content-Type, so derive it from the extension.
 // The client branches on this: images open in the lightbox, PDFs in the
 // browser's own viewer.

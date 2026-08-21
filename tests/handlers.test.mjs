@@ -2828,6 +2828,36 @@ await test("generator service calls: a dry run never depends on the switch", asy
      "a dry run runs the check rather than short-circuiting on the switch");
 });
 
+// ── payroll archive → R2 (audit item 04, db/schema/052) ─────────────────────
+await test("payroll archive: copying every payroll PDF in the company is strict admin", async () => {
+  eq((await POST("copyPayrollFilesToR2", {}, EMP_TOK)).statusCode, 403, "the crew cannot");
+  eq((await POST("copyPayrollFilesToR2", {}, OFFICE_TOK)).statusCode, 403,
+     "nor office — payroll is the one tier office does not get");
+  eq((await POST("copyPayrollFilesToR2", {}, VIEWER_TOK)).statusCode, 403, "nor a viewer");
+});
+
+await test("payrollRunsList: a run with no pdf_key sends the WHOLE list back to Airtable", async () => {
+  // The half of this that matters. Until the backfill has run, some runs have
+  // their PDF only in Airtable — and a payroll archive that lists a run you
+  // cannot open is worse than a slower page. Neon is unreachable here, which is
+  // the same branch, and the grid must come back whole and openable.
+  mockTables = {
+    "tbln9nU1BtFmTYMYB": [
+      { id: "recR1", fields: {
+        "Pay Period Start": "2026-07-26", "Pay Period End": "2026-08-08",
+        "Generated At": "2026-08-09T12:00:00.000Z", "Total Hours": 812, "Total Bonus": 0,
+        "PDF": [{ url: "https://airtable.example/p.pdf", filename: "NEE_Payroll.pdf" }],
+      } },
+    ],
+  };
+  const res = await GET("payrollRunsList", {}, ADMIN_TOK);
+  eq(res.statusCode, 200, "the grid still loads");
+  const b = json(res);
+  eq(b.runs.length, 1, "and still has the run");
+  eq(b.runs[0].pdfAvailable, true, "with a working link");
+  eq(b._source, undefined, "served from Airtable, not Neon");
+});
+
 // ── the shared job-id gate (jobExists) ──────────────────────────────────────
 // Ten handlers used to each fetch the whole Jobs record just to check it
 // existed. They now share one helper that asks Neon first and only re-asks

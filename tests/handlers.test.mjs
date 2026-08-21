@@ -2179,7 +2179,14 @@ await test("createVendor: gated by the signed token, not a body field", async ()
   mockTables = { Vendors: [], Employees: [] };
   eq((await POST("createVendor", { name: "New Vendor Co" }, EMP_TOK)).statusCode, 403, "employee refused");
   eq((await POST("createVendor", { name: "New Vendor Co" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
-  ok((await POST("createVendor", { name: "New Vendor Co" }, OFFICE_TOK)).statusCode < 400, "office allowed with no employeeId");
+  // ⚠ 503, not 2xx, since cutover slice 1 (db/schema/053): the create is
+  // Neon-FIRST now and this harness has no DATABASE_URL. What is being asserted
+  // is that office got PAST the role gate — 403 would mean the gate broke.
+  // An Airtable-only vendor would be invisible to the Neon-first picker that
+  // created it, so refusing is the correct half-write-free answer.
+  const officeRes = await POST("createVendor", { name: "New Vendor Co" }, OFFICE_TOK);
+  eq(officeRes.statusCode, 503, "office is past the gate; no database is what stops it");
+  ok(officeRes.statusCode !== 403, "office allowed with no employeeId");
 });
 
 await test("createCompany: same admin/office tier as createVendor, and name is required", async () => {
@@ -2191,15 +2198,32 @@ await test("createCompany: same admin/office tier as createVendor, and name is r
   eq((await POST("createCompany", { name: "Newco Construction" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
   eq((await POST("createCompany", { name: "   " }, OFFICE_TOK)).statusCode, 400, "blank name rejected");
 
-  // Active Contractor must default TRUE. The only caller is the New Project
-  // contractor picker, so a company that lands inactive is invisible to the
-  // very dropdown that created it — it would look like the create silently
-  // failed. fldWzDYqRUShxXUKW is Active Contractor (NOT the tax checkbox —
-  // reading those two backwards is a mistake already made once on Vendors).
-  const sent = await capturePostTo("Companies", () =>
-    POST("createCompany", { name: "Newco Construction" }, OFFICE_TOK));
-  eq(sent.fields["fldWzDYqRUShxXUKW"], true, "Active Contractor defaults on");
-  eq(sent.fields["fldA30AUOUbarysdp"], "Newco Construction", "name written");
+  // ⚠ CHANGED BY CUTOVER SLICE 1 (db/schema/053). The create is Neon-FIRST now,
+  // so with no database it must refuse — writing Airtable alone would create a
+  // company invisible to the Neon-first picker that asked for it, permanently,
+  // because nothing back-fills this table. This harness has no DATABASE_URL, so
+  // that is the branch it can reach, and "no POST to Companies was made" is the
+  // assertion that matters.
+  let posted = false;
+  const before = lastFetch;
+  const res = await POST("createCompany", { name: "Newco Construction" }, OFFICE_TOK);
+  posted = lastFetch !== before && /Companies/.test(lastFetch?.url || "") &&
+           (lastFetch?.opts?.method || "").toUpperCase() === "POST";
+  eq(res.statusCode, 503, "no database → refuse, don't half-write");
+  eq(posted, false, "and nothing reached Airtable");
+
+  // The Airtable payload itself can no longer be asserted here, because the
+  // mirror is unreachable without a database. Keep the field-id trap covered at
+  // source instead: fldWzDYqRUShxXUKW is Active Contractor, NOT the sales-tax
+  // checkbox — reading those two backwards is a mistake already made once on
+  // Vendors, and it is silent when it happens.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const fnSrc = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const body = fnSrc.slice(fnSrc.indexOf("async function handleCreateCompany"));
+  ok(/fldWzDYqRUShxXUKW"\]\s*=\s*activeContractor !== false/.test(body),
+     "Active Contractor still defaults on");
+  ok(/fldA30AUOUbarysdp"\]\s*=\s*trimmedName/.test(body), "Company Name still written");
 });
 
 await test("estimateTemplates: no Airtable fallback — a frozen price never reaches a quote", async () => {
@@ -2265,17 +2289,28 @@ await test("createPowerCompany: the record has to reach Neon, not just Airtable"
   // loader. A utility added here was invisible to the picker that created it,
   // permanently. Same bug the Companies flip had; found by re-measuring on 08-12.
   //
-  // ⚠ HONEST SCOPE: offline, the mirror fails at the CONNECTION and is swallowed
-  // on purpose (the record exists in Airtable either way). So this asserts the
-  // Airtable write and its field mapping, NOT that the row lands in Neon — that
-  // needs a live-Neon test, the same gap already noted on setEmployeeActive.
+  // ⚠ INVERTED BY CUTOVER SLICE 1 (db/schema/053). The create is Neon-FIRST
+  // now, so the old concern — "does it reach Neon?" — is answered by
+  // construction, and the new question is the opposite one: with no database,
+  // does it refuse rather than writing Airtable alone? An Airtable-only utility
+  // is precisely the permanently-invisible row this test was written about.
   mockTables = { "Power Companies": [], Employees: [] };
-  // TABLES.powerCompanies is a tbl… ID, not a name — the POST URL carries the id.
-  const sent = await capturePostTo("tblgxHavdZybnuMhM", () =>
-    POST("createPowerCompany", { name: "Ohio Edison", utilityRegion: "Northeast" }, OFFICE_TOK));
-  eq(sent.fields["fldj7HRiBvKNp9DpN"], "Ohio Edison", "name written");
-  eq(sent.fields["fldFa3QqewblhWOID"], true, "Active forced on — an inactive utility is invisible");
-  eq((await POST("createPowerCompany", { name: "  " }, OFFICE_TOK)).statusCode, 400, "blank name rejected");
+  const before = lastFetch;
+  const res = await POST("createPowerCompany", { name: "Ohio Edison", utilityRegion: "Northeast" }, OFFICE_TOK);
+  eq(res.statusCode, 503, "no database → refuse");
+  ok(!(lastFetch !== before && /tblgxHavdZybnuMhM/.test(lastFetch?.url || "")
+       && (lastFetch?.opts?.method || "").toUpperCase() === "POST"),
+     "and nothing reached Airtable — an Airtable-only utility is the bug this test exists for");
+  eq((await POST("createPowerCompany", { name: "  " }, OFFICE_TOK)).statusCode, 400, "blank name still rejected first");
+
+  // Field mapping kept covered at source, since the mirror is unreachable here.
+  // fldFa3QqewblhWOID is Active — a utility that lands inactive is invisible.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const fnSrc = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const body = fnSrc.slice(fnSrc.indexOf("async function handleCreatePowerCompany"));
+  ok(/fldj7HRiBvKNp9DpN"\]\s*=\s*trimmedName/.test(body), "name still written");
+  ok(/fldFa3QqewblhWOID"\]\s*=\s*true/.test(body), "Active still forced on");
 });
 
 await test("createJob: an unknown contractor name omits the intake breadcrumb, not the job", async () => {

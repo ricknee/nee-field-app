@@ -5891,7 +5891,7 @@ async function handleUpdatePowerCo(body) {
     // Keep the DISPLAY name in step with the link. Resolvable because
     // power_companies moved to Neon in slice 4 of item 06.
     nVals.push(t);
-    nSets.push(`power_company_name = (SELECT name FROM power_companies WHERE airtable_id = $${nVals.length})`);
+    nSets.push(`power_company_name = (SELECT name FROM power_companies WHERE airtable_id = $${nVals.length} OR id::text = $${nVals.length})`);
   }
   // ⚠ `power_company_contact` (the contact's display name) is NOT updated: the
   // power-contact table is still Airtable-only, so there is nothing to resolve
@@ -6860,7 +6860,7 @@ async function handleEstimateTemplateSave(body, authUser) {
   const contractorId = String(b.contractorId || "").trim() || null;
   let contractorName = null;
   if (contractorId) {
-    const c = await neonQuery(`SELECT name FROM companies WHERE airtable_id = $1`, [contractorId]);
+    const c = await neonQuery(`SELECT name FROM companies WHERE airtable_id = $1 OR id::text = $1`, [contractorId]);
     // ⚠ `!c` (DATABASE_URL unset) and `c.error` must be separated from an empty
     // result. Folding them together reports "that contractor no longer exists"
     // for what is actually a deploy fault, and sends the user hunting through
@@ -8512,7 +8512,12 @@ async function handleCompanies() {
   // of — so they move together, in this commit.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT airtable_id, name, billing_address, primary_phone, primary_email
+      // ⚠ COALESCE(airtable_id, id::text) — the DUAL HANDLE (cutover slice 1,
+      // db/schema/053). A company created while Airtable was unreachable has no
+      // rec id; returning a bare airtable_id would hand the picker a null id and
+      // the row would be unselectable. Every lookup accepts either form.
+      `SELECT COALESCE(airtable_id, id::text) AS airtable_id,
+              name, billing_address, primary_phone, primary_email
          FROM companies WHERE coalesce(name,'') <> '' ORDER BY name`);
     if (q?.rows?.length) {
       return resp(200, { ok: true, _source: "neon", _ms: q.ms, companies: q.rows.map(r => ({
@@ -8559,7 +8564,9 @@ async function handleVendors() {
   // order identically.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT airtable_id, name, phone, email, charges_sales_tax
+      // Dual handle — see the note in handleCompanies (cutover slice 1).
+      `SELECT COALESCE(airtable_id, id::text) AS airtable_id,
+              name, phone, email, charges_sales_tax
          FROM expense_vendors WHERE active AND coalesce(name,'') <> '' ORDER BY name`);
     if (q?.rows?.length) {
       const vendors = q.rows.map(r => ({
@@ -8632,16 +8639,36 @@ async function handleCreateVendor(body) {
   const trimmedName = String(name || "").trim();
   if (!trimmedName) return resp(400, { ok: false, error: "Vendor Name is required." });
 
-  // ── Duplicate-name guard (case-insensitive) ──
-  const safeName = escapeFormulaString(trimmedName.toLowerCase());
-  const existing = await fetchAll("Vendors", {
-    filter: `LOWER({Vendor Name})="${safeName}"`
-  });
-  if (existing.length > 0) {
+  // ⚠ FAILS CLOSED without a database — see handleCreateCompany for the full
+  // reasoning. Neon owns expense_vendors and every read of it is Neon-first, so
+  // an Airtable-only vendor would be invisible to the picker that created it.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't add a vendor right now — the database is unavailable. Try again in a moment." });
+  }
+
+  // ── Duplicate-name guard (case-insensitive), Neon-first ──
+  // Backed by `expense_vendors_name_unique` (db/schema/053) so a race that
+  // slips past this check still cannot produce two vendors with one name.
+  let existingId = null, existingName = null;
+  const dup = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS id, name FROM expense_vendors
+      WHERE lower(btrim(name)) = lower(btrim($1)) LIMIT 1`, [trimmedName]);
+  if (dup?.rows?.length) {
+    existingId = dup.rows[0].id;
+    existingName = dup.rows[0].name;
+  } else if (!dup || dup.error) {
+    const safeName = escapeFormulaString(trimmedName.toLowerCase());
+    const existing = await fetchAll("Vendors", { filter: `LOWER({Vendor Name})="${safeName}"` });
+    if (existing.length > 0) {
+      existingId = existing[0].id;
+      existingName = existing[0].fields["Vendor Name"];
+    }
+  }
+  if (existingId) {
     return resp(409, {
       ok: false,
-      error: `A vendor named "${existing[0].fields["Vendor Name"]}" already exists.`,
-      existingId: existing[0].id
+      error: `A vendor named "${existingName}" already exists.`,
+      existingId
     });
   }
 
@@ -8653,44 +8680,43 @@ async function handleCreateVendor(body) {
   if (email && String(email).trim()) fields["fldAUaXdu6HWvTn5V"] = String(email).trim();
   if (chargesSalesTax === true)      fields["fldB4AUNSsP3Gyuhj"] = true;
 
-  const data = await atFetch(`${encodeURIComponent("Vendors")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields })
-  });
+  // ── NEON FIRST (identity cutover slice 1, db/schema/053) ─────────────────
+  // Reversed on 2026-08-21. It used to POST Airtable first because expenses
+  // store the vendor's rec id — but expenses store it as TEXT, not a link, so a
+  // uuid there is merely unfamiliar rather than invalid. Nothing 422s.
+  const rows = await neonWrite("vendor.create",
+    `INSERT INTO expense_vendors (name, phone, email, charges_sales_tax, active, synced_at)
+     VALUES ($1,$2,$3,$4,true,now())
+     RETURNING id`,
+    [trimmedName,
+     phone && String(phone).trim() ? String(phone).trim() : null,
+     email && String(email).trim() ? String(email).trim() : null,
+     chargesSalesTax === true]);
+  const neonId = rows?.[0]?.id;
 
-  // Mirror into Neon in the SAME commit as the read flip above — otherwise a
-  // vendor created here would be invisible to the picker that now reads Neon,
-  // which is the "flip a read without its write" trap that has bitten this
-  // project five times. Airtable stays the identity authority: expenses store
-  // the vendor's rec id, so the record has to exist there first.
-  //
-  // Fails soft. The vendor exists in Airtable and the hourly job/reference sync
-  // is not wired to this table, so the honest fallback is that a failure means
-  // the vendor is missing from the picker until someone re-adds it — which the
-  // duplicate-name guard above makes safe to do.
-  try {
-    await neonWrite("vendor.create",
-      `INSERT INTO expense_vendors (airtable_id, name, phone, email, charges_sales_tax, active, synced_at)
-       VALUES ($1,$2,$3,$4,$5,true,now())
-       ON CONFLICT (airtable_id) DO UPDATE SET
-         name=EXCLUDED.name, phone=EXCLUDED.phone, email=EXCLUDED.email,
-         charges_sales_tax=EXCLUDED.charges_sales_tax, active=true, synced_at=now()`,
-      [data.id, trimmedName,
-       phone && String(phone).trim() ? String(phone).trim() : null,
-       email && String(email).trim() ? String(email).trim() : null,
-       chargesSalesTax === true]);
-  } catch (e) {
-    console.error(`createVendor: Neon mirror failed, vendor exists in Airtable only — ${e?.message || e}`);
+  // Best-effort mirror. See handleCreateCompany for why stamping the rec id
+  // back is safe on this table and must not be copied to one with R2 files.
+  const data = await mirrorToAirtable("createVendor", () =>
+    atFetch(`${encodeURIComponent("Vendors")}`, {
+      method: "POST",
+      body: JSON.stringify({ fields })
+    }));
+
+  if (data?.id && neonId) {
+    await neonWrite("vendor.stampAirtableId",
+      `UPDATE expense_vendors SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+      [neonId, data.id]).catch((e) =>
+        console.error(`createVendor: rec id not stamped, vendor is Neon-only — ${e?.message || e}`));
   }
 
   return resp(200, {
     ok: true,
     vendor: {
-      id:              data.id,
-      name:            data.fields?.["Vendor Name"] || trimmedName,
-      phone:           data.fields?.["Primary Phone"] || "",
-      email:           data.fields?.["Primary Email"] || "",
-      chargesSalesTax: data.fields?.["Charges Sales Tax"] === true
+      id:              data?.id || String(neonId),
+      name:            data?.fields?.["Vendor Name"] || trimmedName,
+      phone:           data?.fields?.["Primary Phone"] || (phone ? String(phone).trim() : ""),
+      email:           data?.fields?.["Primary Email"] || (email ? String(email).trim() : ""),
+      chargesSalesTax: data?.fields?.["Charges Sales Tax"] === true || chargesSalesTax === true
     }
   });
 }
@@ -8717,17 +8743,46 @@ async function handleCreateCompany(body) {
   const trimmedName = String(name || "").trim();
   if (!trimmedName) return resp(400, { ok: false, error: "Company name is required." });
 
+  // ⚠ FAILS CLOSED without a database, and that is the point of slice 1.
+  // Neon owns companies now, and every read of them is Neon-first — so writing
+  // Airtable alone would create a company that is INVISIBLE to the picker that
+  // asked for it, permanently, because nothing back-fills this table. A clear
+  // "try again" beats a company nobody can select. Same contract as neonWrite.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't add a company right now — the database is unavailable. Try again in a moment." });
+  }
+
   // Duplicate guard, case-insensitive, matching handleCreateVendor. Returns the
   // existing id so the client can offer to select it instead of creating a
   // near-duplicate — which is exactly how "Wolff Brothers" and "Wolff Bros"
   // came to exist in two different tables.
-  const safe = escapeFormulaString(trimmedName);
-  const existing = await fetchAll("Companies", { filter: `LOWER({Company Name})=LOWER("${safe}")` });
-  if (existing.length > 0) {
+  //
+  // ⚠ MOVED TO NEON with the create below (slice 1). Asking Airtable was wrong
+  // twice over once the create stopped depending on it: an Airtable outage threw
+  // here and defeated the whole point of the reversal, and it could not see a
+  // company that had gone native. It now backs onto `companies_name_unique`
+  // (db/schema/053), so a race that slips past this check still cannot produce
+  // two companies with one name.
+  let existingId = null, existingName = null;
+  const dup = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS id, name FROM companies
+      WHERE lower(btrim(name)) = lower(btrim($1)) LIMIT 1`, [trimmedName]);
+  if (dup?.rows?.length) {
+    existingId = dup.rows[0].id;
+    existingName = dup.rows[0].name;
+  } else if (!dup || dup.error) {
+    const safe = escapeFormulaString(trimmedName);
+    const existing = await fetchAll("Companies", { filter: `LOWER({Company Name})=LOWER("${safe}")` });
+    if (existing.length > 0) {
+      existingId = existing[0].id;
+      existingName = existing[0].fields["Company Name"];
+    }
+  }
+  if (existingId) {
     return resp(409, {
       ok: false,
-      error: `A company named "${existing[0].fields["Company Name"]}" already exists.`,
-      existingId: existing[0].id,
+      error: `A company named "${existingName}" already exists.`,
+      existingId,
     });
   }
 
@@ -8738,36 +8793,50 @@ async function handleCreateCompany(body) {
   if (email          && String(email).trim())          fields["fldR2oOqbKx6uZtuH"] = String(email).trim();
   if (billingAddress && String(billingAddress).trim()) fields["fldwpTpCF10CObP35"] = String(billingAddress).trim();
 
-  const data = await atFetch(`${encodeURIComponent("Companies")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields }),
-  });
+  // ── NEON FIRST (identity cutover slice 1, db/schema/053) ─────────────────
+  // Reversed on 2026-08-21. It used to POST Airtable, take the rec id, then
+  // mirror — so an Airtable outage meant the company existed NOWHERE and the
+  // picker that asked for it came back empty. Now the row is real the moment
+  // Neon has it, and Airtable is best-effort.
+  //
+  // ⚠ THE MIRROR STAYS, and that is not laziness. `createJobRecord` posts
+  // `Contractor: ["rec…"]` — an Airtable LINKED-RECORD field — so a company with
+  // no rec id cannot be attached to a job until jobs go native in slice 6.
+  // Companies keep minting rec ids until then. See db/schema/053.
+  const rows = await neonWrite("company.create",
+    `INSERT INTO companies (name, primary_phone, primary_email,
+                            billing_address, active_contractor, synced_at)
+     VALUES ($1,$2,$3,$4,$5, now())
+     RETURNING id`,
+    [trimmedName,
+     phone          && String(phone).trim()          ? String(phone).trim()          : null,
+     email          && String(email).trim()          ? String(email).trim()          : null,
+     billingAddress && String(billingAddress).trim() ? String(billingAddress).trim() : null,
+     activeContractor !== false]);
+  const neonId = rows?.[0]?.id;
 
-  // Fails soft: the company exists in Airtable either way, and the duplicate
-  // guard above makes a retry safe. Better a missing picker entry the user can
-  // fix by re-adding than a 500 over a record that was actually created.
-  try {
-    await neonWrite("company.create",
-      `INSERT INTO companies (airtable_id, name, primary_phone, primary_email,
-                              billing_address, active_contractor, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6, now())
-       ON CONFLICT (airtable_id) DO UPDATE SET
-         name=EXCLUDED.name, primary_phone=EXCLUDED.primary_phone,
-         primary_email=EXCLUDED.primary_email, billing_address=EXCLUDED.billing_address,
-         active_contractor=EXCLUDED.active_contractor, synced_at=now()`,
-      [data.id, trimmedName,
-       phone          && String(phone).trim()          ? String(phone).trim()          : null,
-       email          && String(email).trim()          ? String(email).trim()          : null,
-       billingAddress && String(billingAddress).trim() ? String(billingAddress).trim() : null,
-       activeContractor !== false]);
-  } catch (e) {
-    console.error(`createCompany: Neon mirror failed, company exists in Airtable only — ${e?.message || e}`);
+  // ⚠ Stamping `airtable_id` afterwards CHANGES THE HANDLE from uuid to rec id.
+  // That is safe here and nowhere near universal: companies have no R2 objects
+  // keyed on their handle, and the response below is sent AFTER the stamp, so
+  // the client never holds the uuid. Do NOT copy this to a table with files.
+  const data = await mirrorToAirtable("createCompany", () =>
+    atFetch(`${encodeURIComponent("Companies")}`, {
+      method: "POST",
+      body: JSON.stringify({ fields }),
+    }));
+
+  if (data?.id && neonId) {
+    await neonWrite("company.stampAirtableId",
+      `UPDATE companies SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+      [neonId, data.id]).catch((e) =>
+        console.error(`createCompany: rec id not stamped, company is Neon-only — ${e?.message || e}`));
   }
 
   return resp(200, { ok: true, company: {
-    id: data.id, name: trimmedName,
+    id: data?.id || String(neonId), name: trimmedName,
     primaryPhone: String(phone || "").trim(),
     primaryEmail: String(email || "").trim(),
+    _airtableMirrored: !!data?.id,
   } });
 }
 
@@ -8777,7 +8846,8 @@ async function handleListContractors() {
   // every job form, and the list changes a handful of times a year.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT airtable_id, name, primary_phone, primary_email
+      // Dual handle — see handleCompanies (cutover slice 1, db/schema/053).
+      `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name, primary_phone, primary_email
          FROM companies WHERE active_contractor AND coalesce(name,'') <> '' ORDER BY name`);
     if (q?.rows?.length) {
       return resp(200, { ok: true, _source: "neon", _ms: q.ms, contractors: q.rows.map(r => ({
@@ -8924,11 +8994,11 @@ async function handleBackfillContacts() {
   // whole batch — the link id is stored either way and is what the reads use.
   await neonWrite("contacts.linkCompany",
     `UPDATE contacts c SET company_id = co.id
-       FROM companies co WHERE co.airtable_id = c.company_airtable_id
+       FROM companies co WHERE (co.airtable_id = c.company_airtable_id OR co.id::text = c.company_airtable_id)
         AND c.company_id IS DISTINCT FROM co.id`);
   await neonWrite("power_contacts.linkCompany",
     `UPDATE power_contacts pc SET power_company_id = p.id
-       FROM power_companies p WHERE p.airtable_id = pc.power_company_airtable_id
+       FROM power_companies p WHERE (p.airtable_id = pc.power_company_airtable_id OR p.id::text = pc.power_company_airtable_id)
         AND pc.power_company_id IS DISTINCT FROM p.id`);
 
   return resp(200, { ok: true, contacts, powerContacts });
@@ -9035,7 +9105,12 @@ async function handleListContactsByCompany(params) {
   let nameByAtId = new Map();
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT airtable_id, name FROM companies WHERE airtable_id IS NOT NULL`);
+      // ⚠ The `WHERE airtable_id IS NOT NULL` that used to be here is GONE.
+      // After db/schema/053 a company can be native, and filtering those out
+      // would leave its contacts unlabelled — the mirror image of the bug
+      // `createPowerCompany` shipped on 2026-08-12, where a new utility was
+      // invisible to the picker that created it.
+      `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name FROM companies`);
     if (q?.rows) nameByAtId = new Map(q.rows.map(r => [r.airtable_id, r.name || ""]));
     else console.error(`listContactsByCompany: company names unavailable, rows will be unlabelled: ${q?.error || "no rows"}`);
   }
@@ -9074,43 +9149,58 @@ async function handleCreateContact(body) {
   fields[F.contact.company] = [companyId];
   fields[F.contact.active]  = true;
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.contacts)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields })
-  });
-
-  // ⚠⚠ MIRRORED IN THE SAME COMMIT AS THE READ FLIP. This is the bug this
-  // project has now been bitten by five times: the read moves to Neon, the write
-  // stays on Airtable, and the new record is invisible to the picker that just
-  // created it — permanently, not for an hour. `createCompany` and
-  // `createPowerCompany` were both caught this way. Fails soft: the contact
-  // exists in Airtable regardless, and the loader will adopt it.
-  try {
-    await neonWrite("contact.create",
-      `INSERT INTO contacts (airtable_id, first_name, last_name, primary_phone,
-                             primary_email, company_airtable_id,
-                             company_id, active, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6,(SELECT id FROM companies WHERE airtable_id=$6),true,now())
-       ON CONFLICT (airtable_id) DO UPDATE SET
-         first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
-         primary_phone=EXCLUDED.primary_phone, primary_email=EXCLUDED.primary_email,
-         company_airtable_id=EXCLUDED.company_airtable_id,
-         company_id=EXCLUDED.company_id, active=true, synced_at=now()`,
-      [data.id, firstName || null, lastName || null, primaryPhone || null,
-       primaryEmail || null, companyId]);
-  } catch (e) {
-    console.error(`createContact: Neon mirror failed, contact exists in Airtable only — ${e?.message || e}`);
+  // ── NEON FIRST (identity cutover slice 1) ────────────────────────────────
+  // `contacts.airtable_id` was ALREADY nullable — this create was Airtable-first
+  // out of habit, not constraint, which is why it is one of the cheapest moves
+  // in the cutover. Reversed 2026-08-21.
+  //
+  // The read it feeds (`handleListContactsByCompany`) has been Neon-first since
+  // item 06, so an Airtable-only contact would be invisible to the picker that
+  // just created it — the bug this project has been bitten by five times, and
+  // the reason the mirror was added here in the first place. Failing closed is
+  // the honest version of that same protection.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't add a contact right now — the database is unavailable. Try again in a moment." });
   }
 
-  const f = data.fields || {};
+  const rows = await neonWrite("contact.create",
+    `INSERT INTO contacts (first_name, last_name, primary_phone,
+                           primary_email, company_airtable_id,
+                           company_id, active, synced_at)
+     VALUES ($1,$2,$3,$4,$5,(SELECT id FROM companies WHERE airtable_id=$5 OR id::text=$5),true,now())
+     RETURNING id`,
+    [firstName || null, lastName || null, primaryPhone || null,
+     primaryEmail || null, companyId]);
+  const neonId = rows?.[0]?.id;
+
+  // ⚠ The mirror can only run when the company still has a rec id — `Contact`'s
+  // company field is an Airtable LINK, and a uuid in it 422s the create. A
+  // native company therefore yields a native-only contact, which is correct and
+  // consistent: both are already invisible to Airtable by then.
+  const data = /^rec/.test(companyId)
+    ? await mirrorToAirtable("createContact", () =>
+        atFetch(`${encodeURIComponent(TABLES.contacts)}`, {
+          method: "POST",
+          body: JSON.stringify({ fields })
+        }))
+    : null;
+
+  if (data?.id && neonId) {
+    await neonWrite("contact.stampAirtableId",
+      `UPDATE contacts SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+      [neonId, data.id]).catch((e) =>
+        console.error(`createContact: rec id not stamped, contact is Neon-only — ${e?.message || e}`));
+  }
+
+  const f = data?.fields || {};
   return resp(200, {
     ok: true,
     contact: {
-      id:           data.id,
-      firstName:    f[F.contact.firstName]    || "",
-      lastName:     f[F.contact.lastName]     || "",
-      primaryPhone: f[F.contact.primaryPhone] || "",
-      primaryEmail: f[F.contact.primaryEmail] || ""
+      id:           data?.id || String(neonId),
+      firstName:    f[F.contact.firstName]    || firstName,
+      lastName:     f[F.contact.lastName]     || lastName,
+      primaryPhone: f[F.contact.primaryPhone] || primaryPhone,
+      primaryEmail: f[F.contact.primaryEmail] || primaryEmail
     }
   });
 }
@@ -9392,7 +9482,9 @@ async function handleGetPowerCompanies() {
   // fine here because nothing about this read depends on the contacts.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT airtable_id, name FROM power_companies
+      // Dual handle — see the note in handleCompanies (cutover slice 1).
+      `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name
+         FROM power_companies
         WHERE coalesce(name,'') <> '' ORDER BY name`);
     if (q?.rows?.length) {
       return resp(200, { ok: true, _source: "neon", _ms: q.ms,
@@ -9435,12 +9527,12 @@ async function handleGetContactsForPowerCompany(params) {
   if (neonEnabled()) {
     const q = trimmedId
       ? await neonQuery(
-          `SELECT airtable_id, name, cell_phone, office_phone, email
+          `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name, cell_phone, office_phone, email
              FROM power_contacts
             WHERE active AND power_company_airtable_id = $1 AND btrim(name) <> ''
             ORDER BY lower(name)`, [trimmedId])
       : await neonQuery(
-          `SELECT airtable_id, name, cell_phone, office_phone, email
+          `SELECT COALESCE(airtable_id, id::text) AS airtable_id, name, cell_phone, office_phone, email
              FROM power_contacts
             WHERE active AND btrim(name) <> ''
               AND lower(coalesce(power_company_name, '')) LIKE '%' || lower($1) || '%'
@@ -9509,45 +9601,51 @@ async function handleCreatePowerCompany(body) {
   if (utilityRegion && String(utilityRegion).trim()) fields["fld8lBfO5NX2b3Q1H"] = String(utilityRegion).trim();
   if (notes         && String(notes).trim())         fields["fldTpLUm9WJ88gwJs"] = String(notes);
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.powerCompanies)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields })
-  });
+  // ── NEON FIRST (identity cutover slice 1, db/schema/053) ─────────────────
+  // This table is the reason the whole "flip a read without its write" lesson
+  // exists twice over: `handleGetPowerCompanies` went Neon-first in item 06
+  // slice 4 while this write stayed Airtable-only, and **nothing anywhere else
+  // writes `power_companies`** — no hourly sync, no loader. A utility created
+  // here was invisible to the picker that created it, permanently. Fixed
+  // 2026-08-12; reversed to Neon-first here so it also survives an outage.
+  //
+  // Jobs reference a power company by rec id in a LINKED field, so the mirror
+  // stays until slice 6 — same reasoning as companies.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't add a power company right now — the database is unavailable. Try again in a moment." });
+  }
 
-  // ── MIRROR TO NEON, in the same request ──────────────────────────────────
-  // Not optional, and not merely a nicety. `handleGetPowerCompanies` went
-  // Neon-first in item 06 slice 4 while this write stayed Airtable-only, and
-  // **nothing anywhere else writes `power_companies`** — no hourly sync, no
-  // loader. So a power company created here landed in Airtable and was invisible
-  // to the picker that created it, permanently, not for an hour.
-  //
-  // Caught by the 2026-08-12 re-measure, same bug the Companies flip had. It had
-  // not bitten yet only because nobody had added a utility since the flip (9 rows
-  // in each store). The ON CONFLICT makes a retry after a partial failure safe.
-  //
-  // Fails SOFT, deliberately: the record exists in Airtable either way, and
-  // refusing the request would be worse than a picker entry the user can restore
-  // by adding it again.
+  const rows = await neonWrite("powerCompany.create",
+    `INSERT INTO power_companies (name, utility_region, notes, active, synced_at)
+     VALUES ($1,$2,$3,$4, now())
+     RETURNING id`,
+    [trimmedName,
+     utilityRegion && String(utilityRegion).trim() ? String(utilityRegion).trim() : null,
+     notes         && String(notes).trim()         ? String(notes)                : null,
+     true]);
+  const neonId = rows?.[0]?.id;
+
+  const data = await mirrorToAirtable("createPowerCompany", () =>
+    atFetch(`${encodeURIComponent(TABLES.powerCompanies)}`, {
+      method: "POST",
+      body: JSON.stringify({ fields })
+    }));
+
   try {
-    await neonWrite("powerCompany.create",
-      `INSERT INTO power_companies (airtable_id, name, utility_region, notes, active, synced_at)
-       VALUES ($1,$2,$3,$4,$5, now())
-       ON CONFLICT (airtable_id) DO UPDATE SET
-         name=EXCLUDED.name, utility_region=EXCLUDED.utility_region,
-         notes=EXCLUDED.notes, active=EXCLUDED.active, synced_at=now()`,
-      [data.id, trimmedName,
-       utilityRegion && String(utilityRegion).trim() ? String(utilityRegion).trim() : null,
-       notes         && String(notes).trim()         ? String(notes)                : null,
-       true]);
+    if (data?.id && neonId) {
+      await neonWrite("powerCompany.stampAirtableId",
+        `UPDATE power_companies SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+        [neonId, data.id]);
+    }
   } catch (e) {
-    console.error(`createPowerCompany: Neon mirror failed, company exists in Airtable only — ${e?.message || e}`);
+    console.error(`createPowerCompany: rec id not stamped, company is Neon-only — ${e?.message || e}`);
   }
 
   return resp(200, {
     ok: true,
     company: {
-      id:   data.id,
-      name: data.fields?.[F.powerCompany.name] || trimmedName
+      id:   data?.id || String(neonId),
+      name: data?.fields?.[F.powerCompany.name] || trimmedName
     }
   });
 }
@@ -9578,47 +9676,58 @@ async function handleCreatePowerContact(body) {
   if (email       && String(email).trim())       fields["fldQF88ZawxsH9rL1"] = String(email).trim();
   if (Array.isArray(jobRoles) && jobRoles.length) fields["fldpnd8H4gKfkbOwO"] = jobRoles;
   if (notes       && String(notes).trim())       fields["fld7MUJT2R2SRsYss"] = String(notes);
-  const data = await atFetch(`${encodeURIComponent(TABLES.powerContacts)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields })
-  });
+  // ── NEON FIRST (identity cutover slice 1) ────────────────────────────────
+  // `power_contacts.airtable_id` was already nullable; this was Airtable-first
+  // out of habit. Reversed 2026-08-21.
+  //
+  // ⚠ This table is where the "invisible to the picker that created it" bug
+  // actually bit: `createPowerCompany` wrote Airtable while `getPowerCompanies`
+  // read Neon. Failing closed is the honest version of the same protection.
+  // ⚠ `name` is GENERATED from the parts; never write it.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't add a contact right now — the database is unavailable. Try again in a moment." });
+  }
 
-  // ⚠⚠ Same-commit mirror, same reason as createContact above — and this table
-  // is the one where it already bit: `createPowerCompany` wrote Airtable while
-  // `getPowerCompanies` read Neon, so a new utility was invisible to the picker
-  // that created it. ⚠ `name` is GENERATED from the parts; never write it.
-  try {
-    await neonWrite("powerContact.create",
-      `INSERT INTO power_contacts (airtable_id, first_name, last_name, cell_phone,
-                                   office_phone, email, power_company_airtable_id,
-                                   power_company_id, job_roles, notes, active, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,
-               (SELECT id FROM power_companies WHERE airtable_id=$7),$8,$9,true,now())
-       ON CONFLICT (airtable_id) DO UPDATE SET
-         first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name,
-         cell_phone=EXCLUDED.cell_phone, office_phone=EXCLUDED.office_phone,
-         email=EXCLUDED.email,
-         power_company_airtable_id=EXCLUDED.power_company_airtable_id,
-         power_company_id=EXCLUDED.power_company_id,
-         job_roles=EXCLUDED.job_roles, notes=EXCLUDED.notes,
-         active=true, synced_at=now()`,
-      [data.id, trimmedFirst || null, (lastName && String(lastName).trim()) || null,
-       trimmedCell || null, (officePhone && String(officePhone).trim()) || null,
-       (email && String(email).trim()) || null, trimmedCoId,
-       (Array.isArray(jobRoles) && jobRoles.length ? jobRoles.join(", ") : null),
-       (notes && String(notes).trim()) || null]);
-  } catch (e) {
-    console.error(`createPowerContact: Neon mirror failed, contact exists in Airtable only — ${e?.message || e}`);
+  const rows = await neonWrite("powerContact.create",
+    `INSERT INTO power_contacts (first_name, last_name, cell_phone,
+                                 office_phone, email, power_company_airtable_id,
+                                 power_company_id, job_roles, notes, active, synced_at)
+     VALUES ($1,$2,$3,$4,$5,$6,
+             (SELECT id FROM power_companies WHERE airtable_id=$6 OR id::text=$6),$7,$8,true,now())
+     RETURNING id`,
+    [trimmedFirst || null, (lastName && String(lastName).trim()) || null,
+     trimmedCell || null, (officePhone && String(officePhone).trim()) || null,
+     (email && String(email).trim()) || null, trimmedCoId,
+     (Array.isArray(jobRoles) && jobRoles.length ? jobRoles.join(", ") : null),
+     (notes && String(notes).trim()) || null]);
+  const neonId = rows?.[0]?.id;
+
+  // Only mirrorable while the parent utility still has a rec id — the company
+  // field is an Airtable LINK and a uuid in it 422s the create. Same rule as
+  // createContact.
+  const data = /^rec/.test(trimmedCoId)
+    ? await mirrorToAirtable("createPowerContact", () =>
+        atFetch(`${encodeURIComponent(TABLES.powerContacts)}`, {
+          method: "POST",
+          body: JSON.stringify({ fields })
+        }))
+    : null;
+
+  if (data?.id && neonId) {
+    await neonWrite("powerContact.stampAirtableId",
+      `UPDATE power_contacts SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+      [neonId, data.id]).catch((e) =>
+        console.error(`createPowerContact: rec id not stamped, contact is Neon-only — ${e?.message || e}`));
   }
 
   return resp(200, {
     ok: true,
     contact: {
-      id:         data.id,
-      name:       data.fields?.[F.powerContact.nameFormula] || `${trimmedFirst} ${String(lastName || "").trim()}`.trim(),
-      cellPhone:  data.fields?.[F.powerContact.cellPhone]   || trimmedCell,
-      officePhone:data.fields?.[F.powerContact.officePhone] || "",
-      email:      data.fields?.[F.powerContact.email]       || ""
+      id:         data?.id || String(neonId),
+      name:       data?.fields?.[F.powerContact.nameFormula] || `${trimmedFirst} ${String(lastName || "").trim()}`.trim(),
+      cellPhone:  data?.fields?.[F.powerContact.cellPhone]   || trimmedCell,
+      officePhone:data?.fields?.[F.powerContact.officePhone] || (officePhone ? String(officePhone).trim() : ""),
+      email:      data?.fields?.[F.powerContact.email]       || (email ? String(email).trim() : "")
     }
   });
 }

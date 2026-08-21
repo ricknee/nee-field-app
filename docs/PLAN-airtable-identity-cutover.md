@@ -52,6 +52,33 @@ work, and the tables without it are already free.
 (frozen), `time_entries_deleted` (archive), `labor_cost_rates` (Neon already owns it; the
 constraint is vestigial), `_*_baseline` (scratch tables).
 
+## Where each of the 34 writes goes
+
+The table above is the scope; this is the same scope named handler by handler, so nothing can be
+assumed covered. Measured 2026-08-21.
+
+**13 are already Neon-first** — they write Neon, then Airtable, and are mirrors in everything but
+name. They are not identity problems and carry no risk; each becomes a one-line
+`mirrorToAirtable(...)` wrapper in whichever slice owns its table:
+
+`handleUpdateEmployee` · `handleSetEmployeePin` · `handleSetEmployeeActive` ·
+`handleUpdateJobStatus` · `handleJobAutomationResult` · `handleUpdatePowerCo` ·
+`handleStartServiceCall` · `handleCompleteServiceCall` · `handleCalculateMileage` ·
+`handleCreateInspectionContact` · `handleUpdateJobBillableRate` · `handleAddWarranty` ·
+`handleUpdateJobNotes`
+
+**21 are Airtable-first** — these are the work — plus `createJobRecord` (`_jobs.js`) and
+`handlePushExpenses` (`inventory.js`):
+
+| Slice | Handlers | Note |
+|---|---|---|
+| **1** reference leaves | `handleCreateVendor` · `handleCreateCompany` · `handleCreatePowerCompany` · `handleCreateContact` · `handleCreatePowerContact` | The last two write tables that are **already nullable** — they are Airtable-first out of habit, not constraint, and are the cheapest thing here. |
+| **2** payroll | `handlePayrollRunCreate` | The files already went to R2 on the Neon uuid (`db/schema/052`). |
+| **3** estimates + invoices | `handleSaveEstimate` · `handleCreateJobEstimate` · `handleUpdateEstimate` · `handleUpdateEstimateStatus` · `handleDeleteJobEstimate` · `handleSaveInvoice` · `handleSetInvoiceStatus` | All five estimate paths move together — `createEstimateFromTemplate` is the reason: a SECOND create path shipped a live 404 during the inventory cutover because only the open handler was checked. **Grep the POST to the table, not your open handlers.** |
+| **4** expenses | `handleAddGeneralExpense` · `handleAddLiftExpense` · `handleUpdateExpense` · `handleApproveExpense` · `handleDeleteExpense` · **`inventory.js handlePushExpenses`** | Plus R2 receipt keys and `handleUnlinkedMaterialAllocations`. Own session. |
+| **5** employees | `handleCreateEmployee` | The login id. Stale sessions must survive it. |
+| **6** jobs | `createJobRecord` (`_jobs.js`) · `handleUpdateJobInfo` · `handleUpdateJobInspection` | Last. `job_inspections` is already nullable; the job link is what holds it here. |
+
 ## The pattern is already proven here
 
 Nothing below is novel. It is the inventory app's item cutover, repeated:

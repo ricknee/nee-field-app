@@ -159,7 +159,41 @@ greppable and uniform, and a missed one is findable by grepping for the old colu
 reading 37 functions. **This is the `db/schema/043` pattern** (`item_handle` / `location_handle` in
 `v_stock_levels`), already proven in the inventory app.
 
-### Slices 1–6
+### ✅ Slice 1 — SHIPPED 2026-08-21 (`41bd94c`, `db/schema/053`)
+
+All five creates reversed: companies, expense vendors, power companies, contacts, power contacts.
+The row is real the moment Neon has it; Airtable is best-effort.
+
+**⚠⚠ It corrected the slice-0 recommendation, which was wrong.** A generated `handle` column of
+`COALESCE(airtable_id, id::text)` holds ONE value — so the moment a best-effort mirror succeeds and
+stamps `airtable_id`, the handle **flips** from uuid to rec id and every client holding the uuid
+can no longer find the row. That is exactly the *saves fine, then cannot be found again* bug the
+inventory cutover hit three times. **Use `WHERE airtable_id = $1 OR id::text = $1`** — it accepts
+either, permanently, and it is already proven in `inventory.js`. A generated handle is safe only on
+a table whose rows are native *forever*, which none of these are yet.
+
+**⚠⚠ Companies are not a leaf, and the mirror has to stay.** `createJobRecord` posts
+`Contractor: ["rec…"]`, an Airtable **linked-record** field; a uuid there 422s the whole job create.
+So these tables keep minting rec ids until jobs go native in slice 6. *Leaf-first by Neon foreign
+key is not the same as leaf-first by Airtable link field* — that is the lesson of this slice, and it
+should be re-asked at every remaining one. The only case where a company has no rec id is "Airtable
+was down when it was created", and in that state job creation is already impossible, so no new
+failure mode was introduced.
+
+**Two live bugs found on the way:**
+- `handleListContractors` selected `WHERE airtable_id IS NOT NULL` — a native company would have
+  been invisible to the picker that created it, the same bug `createPowerCompany` shipped on
+  2026-08-12, lying in wait.
+- The duplicate guards on companies and vendors read **Airtable**, which after the reversal both
+  defeated the point (an outage threw there) and could not see a native row. Now Neon-first, backed
+  by new unique indexes so a race cannot produce two rows with one name.
+
+**New contract: these creates fail CLOSED without a database.** Every read of these tables is
+Neon-first, so an Airtable-only row is invisible forever — nothing back-fills them. Three tests were
+inverted to assert exactly that, and the Airtable field-id mappings they used to check are now
+covered by source assertions, since the mirror is unreachable offline.
+
+### Slices 2–6
 
 Each slice is the same five steps, and they ship together in one commit:
 
@@ -222,7 +256,7 @@ size first estimated.
 | Slice | Was | Now | Why it moved |
 |---|---|---|---|
 | 0 — verify | ~1 h | ✅ **done** | Make passed, R2 passed, delete passes passed. |
-| 1 — reference leaves | ~1 h | ~1 h | 5 clauses. Unchanged. |
+| 1 — reference leaves | ~1 h | ✅ **done 2026-08-21** (`41bd94c`) | Ran long: the SQL was 5 clauses, but two live bugs surfaced (see below) and three tests had to be inverted. |
 | 2 — payroll runs + bonuses | ~45 min | ~45 min | 3 clauses, one function. Unchanged. |
 | **2.5 — convert Make `4723276` to a payload** | — | **~45 min** | **New, and it gates slice 3.** Found in slice 0: it re-reads the job and the estimate/invoice out of Airtable to build the pCloud path. |
 | 3 — estimates, invoices, allocations | ~1.5 h | ~1.5 h | 3 clauses + the money smoke test. |

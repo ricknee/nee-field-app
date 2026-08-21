@@ -94,23 +94,70 @@ Nothing below is novel. It is the inventory app's item cutover, repeated:
 
 ## Order of work
 
-### Slice 0 — verification only, no code (~1 h)
+### ✅ Slice 0 — RUN 2026-08-21. Findings below.
 
-Three things must be *measured* before slice 1, not assumed:
+**1. Make — PASSED, with one live exception.**
+All 18 active scenarios checked via `usedModules` in the scenario listing (no blueprints needed —
+the listing carries the module chain). **Not one has an Airtable trigger.** Every trigger is a
+webhook, a Gmail watch, or a pCloud folder watch. So the earlier worry is dead: *retiring a mirror
+write cannot stop a Make scenario, because no scenario is watching an Airtable table.*
 
-1. **Which Make scenarios still trigger on an Airtable record.** The mirror writes are the Make
-   trigger bus. All four job scenarios are payload-driven as of 2026-08-20, but the rest of the
-   18 active scenarios have not been re-checked, and the scenario list carries no base ids —
-   deciding needs **blueprints**. A retired mirror silently stops whatever still watches it, and
-   Make's failure emails are the only monitoring.
-2. **Every R2 key-building site.** `jobPrefix()`, `expensePrefix()`, `payrollPrefix()`,
-   `liftPrefix()`, `fleetPrefix()` plus the validators (`assertKeyInExpense`, `isPrintKey`,
-   `isDeletedReceiptKey`). Each must take the *client handle*, not an assumed `rec…`. Existing
-   objects keep their rec-id paths forever — that is correct and must not be "fixed".
-3. **Every ETL delete pass.** Only one exists (`_billing-sync.js:157/161`) and it is already
-   guarded with `airtable_id IS NOT NULL`, added 2026-08-11 after it deleted every native
-   allocation within the hour. Every other sync is upsert-only. **Re-check this before each
-   slice** — a new delete pass added without the guard reintroduces the same silent data loss.
+Six scenarios still call Airtable inside their body:
+
+| Scenario | State | Verdict |
+|---|---|---|
+| `4723276` Upload to pCloud — Estimates / Invoices / Generator | **LIVE.** Called straight from `index.html`. `CustomWebHook → ActionGetRecord@airtable ×2 → router → 3× pCloud upload`. 11 executions, 2 errors. | 🔴 **Must be converted to a payload before slice 3 and slice 6.** It re-reads the job and the estimate/invoice by rec id to build the pCloud path. When those go native the reads return nothing and **PDFs silently stop being filed** — Make's failure emails are the only monitoring. |
+| `4729925` / `4739070` / `4739000` / `4735255` / `4739137` — the five Google syncs | Dormant. Webhook-triggered by Airtable automations that were **undeployed 2026-08-20**, so they now receive nothing (1 execution, lifetime). | Not a cutover blocker. They belong to item 07 (Google contacts) and will be rebuilt or retired there. |
+
+Independent bonus: the four job scenarios report **zero** Airtable modules, confirming the
+2026-08-20 conversion from the outside.
+
+**2. R2 — PASSED, clean.**
+Zero `rec` assumptions anywhere in `_r2.js`; grep found none. Every key-building call site already
+passes either the client handle (`jobId`, `expenseId`) or a Neon uuid (`payrollPrefix(run.id)`,
+`liftPrefix(target.id)`), so keys follow the handle automatically and **no work is needed here.**
+
+> ⚠ One rule falls out of that: **never back-fill an `airtable_id` onto a row that went native.**
+> Its handle would change from uuid to rec id and every R2 object already written under the old
+> prefix would orphan — photos, receipts and prints, silently, with no error anywhere.
+
+**3. ETL delete passes — PASSED.**
+Exactly one destructive set-difference exists in the whole codebase (`_billing-sync.js:157/161`)
+and it already carries `airtable_id IS NOT NULL`, added 2026-08-11 after it deleted every native
+allocation within the hour. Every other sync is upsert-only. **Re-check before each slice** — a new
+delete pass without the guard reintroduces the same silent loss.
+
+**4. The clause sweep — this is what changed the plan.**
+Swept every `WHERE …airtable_id = $n` that is a *lookup* (excluding write-backs that stamp the
+mirror id, and clauses already dual): **77 lines across 62 functions.** They are not extra work —
+a bare lookup only breaks when *that table's* ids go native — so they are a per-slice checklist.
+But the distribution is nothing like the original estimate:
+
+| Ids being resolved | Lines | Functions | Slice |
+|---|---|---|---|
+| **jobs** | **46** | **37** | 6 |
+| **employees** | **19** | **18** | 5 |
+| companies | 5 | 4 | 1 |
+| payroll_runs | 3 | 1 | 2 |
+| job_estimates | 3 | 3 | 3 |
+| expenses · power_companies · labor_billable_rates · time_entries | 6 | 6 | 3–4 |
+
+Slices 5 and 6 are roughly **three times** the size originally costed. Slices 1–4 are unchanged —
+slice 4's difficulty was never its SQL.
+
+**Recommendation that came out of this: add a generated `handle` column per table as it goes
+native**, rather than hand-editing 46 job clauses into `OR id::text = $1`:
+
+```sql
+ALTER TABLE jobs ADD COLUMN handle text
+  GENERATED ALWAYS AS (COALESCE(airtable_id, id::text)) STORED;
+CREATE UNIQUE INDEX jobs_handle ON jobs (handle);
+```
+
+Every `WHERE airtable_id = $1` becomes `WHERE handle = $1`. Still 46 edits, but each is mechanical,
+greppable and uniform, and a missed one is findable by grepping for the old column instead of
+reading 37 functions. **This is the `db/schema/043` pattern** (`item_handle` / `location_handle` in
+`v_stock_levels`), already proven in the inventory app.
 
 ### Slices 1–6
 
@@ -169,14 +216,18 @@ Airtable read appearing in the logs, then set the PAT read-only for a week, then
 
 ## Rough sizing
 
-| Slice | Size |
-|---|---|
-| 0 — verify (Make blueprints, R2 key sites, delete passes) | ~1 h |
-| 1 — reference leaves | ~1 h |
-| 2 — payroll runs + bonuses | ~45 min |
-| 3 — estimates, invoices, job labor allocations | ~1.5 h |
-| 4 — **expenses** (own session: R2 keys, inventory push, material allocations) | ~2–3 h |
-| 5 — employees (stale-session verification) | ~1 h |
-| 6 — jobs | ~1.5 h |
+Re-costed 2026-08-21 **after** slice 0, which found slices 5 and 6 to be about three times the
+size first estimated.
 
-**~9–11 h**, and slice 4 is where the risk concentrates.
+| Slice | Was | Now | Why it moved |
+|---|---|---|---|
+| 0 — verify | ~1 h | ✅ **done** | Make passed, R2 passed, delete passes passed. |
+| 1 — reference leaves | ~1 h | ~1 h | 5 clauses. Unchanged. |
+| 2 — payroll runs + bonuses | ~45 min | ~45 min | 3 clauses, one function. Unchanged. |
+| **2.5 — convert Make `4723276` to a payload** | — | **~45 min** | **New, and it gates slice 3.** Found in slice 0: it re-reads the job and the estimate/invoice out of Airtable to build the pCloud path. |
+| 3 — estimates, invoices, allocations | ~1.5 h | ~1.5 h | 3 clauses + the money smoke test. |
+| 4 — **expenses** (own session) | ~2–3 h | ~2–3 h | Difficulty was never the SQL. R2 needs no work at all (slice 0). |
+| 5 — employees | ~1 h | **~2–3 h** | 19 clauses across 18 functions, plus stale-session verification. |
+| 6 — jobs | ~1.5 h | **~3–4 h** | **46 clauses across 37 functions** — the single biggest piece of the whole cutover. |
+
+**~12–15 h.** The risk still concentrates in slice 4; the *labour* concentrates in slice 6.

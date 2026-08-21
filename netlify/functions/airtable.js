@@ -7608,7 +7608,12 @@ async function handleCopyPayrollFilesToR2() {
   if (!r2Enabled())   return resp(503, { ok: false, error: "R2 is not configured." });
   if (!neonEnabled()) return resp(503, { ok: false, error: "Neon is not configured." });
 
-  const records = await fetchAll(PR_RUNS.table);
+  // ⚠ byFieldId, and it is NOT optional here. `PR_RUNS.*` holds field IDs, but
+  // Airtable returns records keyed by field NAME by default (see the F.* note in
+  // CLAUDE.md) — so `rec.fields["fldSIebm2uhLkpjqD"]` is undefined and every run
+  // looks like it has no attachments. The first run of this reported
+  // `copied: 0, skipped: 56, ok: true` and had done nothing at all.
+  const records = await fetchAll(PR_RUNS.table, { byFieldId: true });
   const rows = await neonWrite("payrollRuns.listForCopy",
     `SELECT id, airtable_id, pdf_key, json_key FROM payroll_runs WHERE airtable_id IS NOT NULL`);
   const byAirtable = new Map(rows.map(r => [r.airtable_id, r]));
@@ -7675,12 +7680,28 @@ async function handleCopyPayrollFilesToR2() {
   const expected = records.reduce((n, r) =>
     n + ((r.fields?.[PR_RUNS.pdf]?.length || 0) > 0 ? 1 : 0)
       + ((r.fields?.[PR_RUNS.jsonPayload]?.length || 0) > 0 ? 1 : 0), 0);
+
+  // ⚠⚠ "NOTHING TO DO" IS NOT SUCCESS WHEN THERE ARE RUNS.
+  // `after === expected` was the whole reconciliation, and it passed 0 === 0 on
+  // a run that read every field under the wrong key and therefore saw no
+  // attachments anywhere. A guard that a bug can satisfy by breaking BOTH sides
+  // of its own comparison is not a guard. Same failure the estimate copier hit
+  // from the other direction, where `expected` came back 0 while R2 correctly
+  // held 15 — in both cases the count was right and the input was wrong.
+  const blind = records.length > 0 && expected === 0;
+  if (blind) {
+    report.details.push(
+      `NOTHING FOUND: ${records.length} runs in Airtable and not one attachment on any of them. ` +
+      `That is a field-key bug, not an empty archive — check the byFieldId flag.`);
+  }
+
   return resp(200, {
-    ok: report.failed === 0 && report.unmatched === 0 && after === expected,
+    ok: !blind && report.failed === 0 && report.unmatched === 0 && after === expected,
     ...report,
+    runsInAirtable: records.length,
     objectsInR2: after,
     attachmentsInAirtable: expected,
-    reconciled: after === expected,
+    reconciled: !blind && after === expected,
   });
 }
 

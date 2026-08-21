@@ -73,9 +73,11 @@ export async function runGeneratorServiceCheck(atFetch, opts = {}) {
   //
   // `oc` is the job the LAST auto call created. It is joined only to report the
   // status in the dry run; the guard that matters is the due-date compare.
-  let rows;
-  try {
-    rows = await neonQuery(
+  // ⚠ neonQuery returns { rows, ms } — or NULL when Neon is not configured. It
+  // never throws. Treating it as an array is a silent no-op: `undefined.length`
+  // is falsy, so the check would report "nothing due" forever and nobody would
+  // ever know the feature was dead. Read `_neon.js` before touching this.
+  const q = await neonQuery(
       `SELECT g.id, g.airtable_id, g.customer_name, g.brand, g.model,
               g.job_type, g.tax_status, g.billing_method,
               g.service_call_job_at_id, g.service_call_due_date,
@@ -93,18 +95,21 @@ export async function runGeneratorServiceCheck(atFetch, opts = {}) {
           AND v.service_status IN ('OVERDUE', 'DUE SOON')
           AND v.next_service_due IS DISTINCT FROM g.service_call_due_date
         ORDER BY v.next_service_due`);
-  } catch (e) {
-    console.error(`generatorServiceCheck: query failed — ${e?.message || e}`);
-    return { ok: false, enabled: true, error: String(e?.message || e), created: 0, candidates: 0 };
+  if (!q || q.error) {
+    const error = q?.error || "Neon is not configured (DATABASE_URL unset)";
+    console.error(`generatorServiceCheck: query failed — ${error}`);
+    return { ok: false, enabled: true, error, created: 0, candidates: 0 };
   }
 
+  const rows = q.rows || [];
   if (!rows.length) return { ok: true, enabled: true, dryRun, candidates: 0, created: 0, jobs: [] };
 
   // The contractor is looked up once. If it is missing, stop — creating these
   // jobs under the wrong company would put them in the wrong PO series and
   // misfile them for billing, which is worse than not creating them at all.
-  const [company] = await neonQuery(
+  const cq = await neonQuery(
     `SELECT airtable_id, name FROM companies WHERE name = $1 LIMIT 1`, [SERVICE_CALL_COMPANY]);
+  const company = cq?.rows?.[0];
   if (!company?.airtable_id) {
     console.error(`generatorServiceCheck: no Company named "${SERVICE_CALL_COMPANY}" — refusing to create service calls`);
     return { ok: false, enabled: true, error: `Company "${SERVICE_CALL_COMPANY}" not found`,

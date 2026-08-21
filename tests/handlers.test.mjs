@@ -2828,6 +2828,52 @@ await test("generator service calls: a dry run never depends on the switch", asy
      "a dry run runs the check rather than short-circuiting on the switch");
 });
 
+// ── source guard: neonQuery returns { rows, ms }, never an array ─────────────
+// This is here because it already bit, on the day the generator service check
+// was written: `const rows = await neonQuery(...)` followed by `if (!rows.length)`.
+// `undefined` is falsy, so the check reported "nothing due" and did NOTHING —
+// forever, silently, with a green deploy. Nothing else in this suite can catch
+// it: every Neon path short-circuits offline because DATABASE_URL is unset, so
+// the misuse is never executed here.
+//
+// A source scan can, and it costs nothing. Two shapes are flagged: destructuring
+// the result as an array, and holding it in a variable that is then used like
+// one. If a legitimate case ever trips this, the fix is `.rows`, not an
+// exemption. (neonWrite is fine — it DOES return rows.)
+await test("neonQuery: its { rows } shape is respected — the silent-death guard", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const dir = fileURLToPath(new URL("../netlify/functions/", import.meta.url));
+  const offenders = [];
+
+  for (const f of readdirSync(dir).filter(n => n.endsWith(".js"))) {
+    const src = readFileSync(dir + f, "utf8");
+
+    src.split("\n").forEach((l, i) => {
+      if (/\[[^\]]*\]\s*=\s*await\s+neonQuery\s*\(/.test(l)) {
+        offenders.push(`${f}:${i + 1} destructures a neonQuery result as an array`);
+      }
+    });
+
+    const assign = /(?:const|let|var)?\s*\b(\w+)\s*=\s*await\s+neonQuery\s*\(/g;
+    let m;
+    while ((m = assign.exec(src))) {
+      const name = m[1];
+      // Look only as far as the next top-level function, so an unrelated later
+      // use of a common name like `rows` can't produce a false positive.
+      const rest = src.slice(m.index + m[0].length);
+      const stop = rest.search(/\n(?:export )?(?:async )?function /);
+      const scope = stop === -1 ? rest : rest.slice(0, stop);
+      const asArray = new RegExp(`\\b${name}\\s*(?:\\.length\\b|\\.map\\s*\\(|\\.filter\\s*\\(|\\.slice\\s*\\(|\\[0\\])`);
+      if (asArray.test(scope)) {
+        offenders.push(`${f}: \`${name}\` holds a neonQuery result but is used as an array — did you mean ${name}.rows?`);
+      }
+    }
+  }
+
+  eq(offenders.length, 0, offenders.join(" | "));
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

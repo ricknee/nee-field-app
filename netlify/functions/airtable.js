@@ -11298,6 +11298,38 @@ async function handleCreateJob(body) {
   }
 }
 
+// ── Does this job exist? ───────────────────────────────────────────────────
+// The only question ten handlers ever asked Airtable. Photos, deleted photos,
+// docs, prints, deleted prints, print upload urls, photo upload urls, bulk
+// photo ops, panel schedules and checklists all opened with the identical
+// three lines: fetch the whole Jobs record by RECORD_ID(), check `.length`,
+// throw the record away. Ten Airtable round trips that never read a field.
+//
+// ⚠ IT ASKS AIRTABLE ANYWAY WHEN NEON SAYS NO, AND THAT IS THE POINT.
+// A "not found" is the one answer that is expensive to get wrong — it makes a
+// job's photos vanish — so the cheap store only gets to say YES. Neon answering
+// yes ends it (the common case, and where the saved round trip lives); Neon
+// answering no, erroring, or being switched off all fall through to the same
+// Airtable read that runs today. So this cannot be less correct than what it
+// replaces, only faster. Two real cases depend on that fallback:
+//   · Neon down — every photo tab would 404 in unison.
+//   · A job whose create-time Neon insert failed (that write is fail-soft) and
+//     which the hourly sync has not adopted yet. It exists; it just isn't here.
+//
+// Side benefit: the Neon half is parameterised, so the job id never reaches a
+// filterByFormula string at all.
+async function jobExists(jobId) {
+  const id = String(jobId || "").trim();
+  if (!id) return false;
+
+  const q = await neonQuery(`SELECT 1 FROM jobs WHERE airtable_id = $1 LIMIT 1`, [id]);
+  if (q?.rows?.length) return true;
+  if (q?.error) console.error(`jobExists: Neon check failed, asking Airtable — ${q.error}`);
+
+  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(id)}"` });
+  return records.length > 0;
+}
+
 /* ── Jobsite photos (docs/PLAN-job-photos.md, slice 1: read-only) ───────────
  * Replaces the "View pCloud Photos" link, which dropped the user into the
  * pCloud web app — requiring a pCloud login and then exposing the whole
@@ -11353,8 +11385,7 @@ async function handleJobPhotos(params) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", photos: [] });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
     const photos = await listJobPhotos(jobId);
@@ -11382,8 +11413,7 @@ async function handleJobPhotoUploadUrls(body) {
   if (files.length > 25) return resp(400, { ok: false, error: "Too many photos at once (max 25)." });
   if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage isn't configured." });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   // Keys are server-decided. If the client named them, a caller could write
   // outside its own job's prefix just by sending "../otherjob/x.jpg". The
@@ -11480,17 +11510,34 @@ async function handleExpenseReceipts(params, authUser) {
   if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", receipts: [] });
 
-  let rec;
-  try { rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`); }
-  catch { return resp(404, { ok: false, error: "Expense not found." }); }
+  // Who submitted this expense? The whole Airtable record was fetched for one
+  // field. Neon answers it, and only falls back when it does not know the
+  // expense at all — the same rule as jobExists: the cheap store may say yes,
+  // never no.
+  //
+  // ⚠ A NULL submitter is NOT "everyone's". Legacy rows predate the ETL
+  // carrying `Submitted By` (2026-08-07) and read as NULL here, which fails the
+  // owner compare below and hides them from employees — exactly what the
+  // Airtable path does, where an empty `Submitted By` is never anyone's id.
+  // Same reasoning as the scope clause in handleExpenses.
+  let owner = null, known = false;
+  const q = await neonQuery(
+    `SELECT submitted_by_at_id FROM expenses
+      WHERE COALESCE(airtable_id, id::text) = $1 LIMIT 1`, [expenseId]);
+  if (q?.rows?.length) { known = true; owner = q.rows[0].submitted_by_at_id || null; }
+  else if (q?.error) console.error(`expenseReceipts: Neon read failed, falling back: ${q.error}`);
+
+  if (!known) {
+    let rec;
+    try { rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`); }
+    catch { return resp(404, { ok: false, error: "Expense not found." }); }
+    const submitted = rec.fields?.["Submitted By"];
+    owner = (Array.isArray(submitted) ? submitted[0] : submitted) || null;
+  }
 
   const role = (authUser?.role || "").toLowerCase();
-  if (role !== "admin" && role !== "office") {
-    const submitted = rec.fields?.["Submitted By"];
-    const owner = Array.isArray(submitted) ? submitted[0] : submitted;
-    if (owner !== authUser?.id) {
-      return resp(403, { ok: false, error: "You can only see receipts on your own expenses." });
-    }
+  if (role !== "admin" && role !== "office" && owner !== authUser?.id) {
+    return resp(403, { ok: false, error: "You can only see receipts on your own expenses." });
   }
 
   try {
@@ -11572,23 +11619,50 @@ async function handleExpenseReceiptSummary(params, authUser) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", receipts: {} });
 
-  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!jobRecords.length) return resp(200, { ok: true, available: true, receipts: {} });
-
-  const safeName = escapeFormulaString(jobRecords[0].fields["Job Name"] || "");
-  const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`;
-  const all = await fetchAll("Expenses", { filter });
-  const onJob = all.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
-
   const isMgr = authUser && (authUser.role === "admin" || authUser.role === "office");
-  const visible = isMgr
-    ? onJob
-    : onJob.filter(r => Array.isArray(r.fields?.["Submitted By"]) && r.fields["Submitted By"].includes(authUser?.id));
+
+  // ⚠ THE SCOPE IS AN AUTHORIZATION BOUNDARY, NOT A FILTER — see the long note
+  // in handleExpenses. This handler must return receipts for exactly the set of
+  // expenses that handler returns, so it deliberately mirrors its query, its
+  // scope clause and its fall-back rule rather than inventing its own. If the
+  // two ever disagree, the approval list shows a receipt badge on a row the user
+  // cannot see, or hides one they can.
+  //
+  // ⚠ `COALESCE(airtable_id, id::text)` — R2 receipt keys are built FROM the
+  // Airtable rec id. Returning a uuid here would orphan every existing receipt.
+  //
+  // Falls back on zero rows, not just on error, for the same reason
+  // handleExpenses does: an empty Neon answer and an unsynced one look
+  // identical, and this pair has to agree.
+  let visibleIds = null;
+  const q = await neonQuery(
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS id
+       FROM expenses e
+      WHERE e.job_airtable_id = $1
+        AND ($2 OR e.submitted_by_at_id = $3)`,
+    [jobId, isMgr === true, authUser?.id || null]);
+  if (q?.rows?.length) visibleIds = q.rows.map(r => r.id);
+  else if (q?.error) console.error(`expenseReceiptSummary: Neon read failed, falling back: ${q.error}`);
+
+  if (visibleIds === null) {
+    const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
+    if (!jobRecords.length) return resp(200, { ok: true, available: true, receipts: {} });
+
+    const safeName = escapeFormulaString(jobRecords[0].fields["Job Name"] || "");
+    const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`;
+    const all = await fetchAll("Expenses", { filter });
+    const onJob = all.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
+
+    const visible = isMgr
+      ? onJob
+      : onJob.filter(r => Array.isArray(r.fields?.["Submitted By"]) && r.fields["Submitted By"].includes(authUser?.id));
+    visibleIds = visible.map(r => r.id);
+  }
 
   try {
     return resp(200, {
       ok: true, available: true,
-      receipts: await summarizeExpenseReceipts(visible.map(r => r.id)),
+      receipts: await summarizeExpenseReceipts(visibleIds),
     });
   } catch (e) {
     return resp(200, { ok: true, available: false, ...r2Unavailable(e, "expenseReceiptSummary"), receipts: {} });
@@ -11613,8 +11687,7 @@ async function bulkPhotoOp(body, label, fn, noun = "photos") {
   }
   if (!r2Enabled()) return resp(503, { ok: false, error: "Photo storage isn't configured." });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   // Run several at once. Sequential was the direct cause of the 504: each
   // photo is up to four R2 round trips, and they are almost entirely waiting
@@ -11678,8 +11751,7 @@ async function handleJobDocs(params) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", docs: [] });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
     return resp(200, { ok: true, available: true, docs: await listJobDocs(jobId) });
@@ -11712,8 +11784,7 @@ async function handleJobPrints(params) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", prints: [] });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
     return resp(200, { ok: true, available: true, prints: await listJobPrints(jobId) });
@@ -11728,8 +11799,7 @@ async function handleJobPrintsDeleted(params) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", prints: [] });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
     return resp(200, { ok: true, available: true, prints: await listDeletedJobPrints(jobId) });
@@ -11775,8 +11845,7 @@ async function handleJobPrintUploadUrls(body) {
   if (files.length > 15) return resp(400, { ok: false, error: "Too many prints at once (max 15)." });
   if (!r2Enabled()) return resp(503, { ok: false, error: "Print storage isn't configured." });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
     // The filename is the only client-supplied part of the key and it is
@@ -11937,11 +12006,12 @@ async function handleCreatePanelSchedule(body, authUser) {
   }
   if (!neonEnabled()) return resp(503, { ok: false, error: "Panel schedules are unavailable (database not configured)." });
 
-  // The job must exist in AIRTABLE — that is still the jobs master. Deliberately
-  // not a Neon lookup: a job created in the last hour is not in Neon yet, and
-  // refusing to schedule its panels is exactly the failure this design avoids.
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  // ⚠ This used to read "deliberately not a Neon lookup: a job created in the
+  // last hour is not in Neon yet." That is no longer true — handleCreateJob
+  // inserts into Neon in the same request (2026-08-20) — and jobExists preserves
+  // the guarantee regardless, because it re-asks Airtable whenever Neon says no.
+  // A job the hourly sync has not adopted still gets its panels.
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   const rows = await neonWrite("panels.create",
     `INSERT INTO panel_schedules
@@ -12147,10 +12217,15 @@ async function handleCreateChecklist(body, authUser) {
   if (!name)  return resp(400, { ok: false, error: "Give the list a name." });
   if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
 
-  // Airtable is still the jobs master. Deliberately not a Neon lookup — see the
-  // keying note in db/schema/008_job_checklists.sql.
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  // ⚠ The note that used to sit here said "deliberately NOT a Neon lookup",
+  // citing the keying trap in db/schema/008 — a job created ten minutes ago was
+  // not in Neon yet, so checking Neon would have refused the first list anyone
+  // made on a new job. That reason expired twice over: handleCreateJob inserts
+  // into Neon in the same request now (2026-08-20), and jobExists re-asks
+  // Airtable whenever Neon says no, so it could not have refused it even then.
+  // The KEYING is unchanged — job_airtable_id is still the key, job_id still a
+  // nullable FK that backfills.
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   const rows = await neonWrite("checklists.create",
     `INSERT INTO job_checklists (job_airtable_id, job_id, name, created_by)
@@ -12277,8 +12352,7 @@ async function handleJobPhotosDeleted(params) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", photos: [] });
 
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-  if (!records.length) return resp(404, { ok: false, error: "Job not found." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
     return resp(200, { ok: true, available: true, photos: await listDeletedJobPhotos(jobId) });

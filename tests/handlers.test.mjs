@@ -2828,6 +2828,58 @@ await test("generator service calls: a dry run never depends on the switch", asy
      "a dry run runs the check rather than short-circuiting on the switch");
 });
 
+// ── the shared job-id gate (jobExists) ──────────────────────────────────────
+// Ten handlers used to each fetch the whole Jobs record just to check it
+// existed. They now share one helper that asks Neon first and only re-asks
+// Airtable when Neon says no. DATABASE_URL is unset here, so these run the
+// FALLBACK path — which is the half worth pinning, because it is what protects
+// photos when Neon is down or a job's create-time insert failed.
+await test("job id gate: an unknown job is still refused by every handler that shares it", async () => {
+  setR2();
+  const GATED_GETS = ["jobPhotos", "jobPhotosDeleted", "jobDocs", "jobPrints", "jobPrintsDeleted"];
+
+  // ⚠ The Airtable mock ignores filterByFormula and hands back whatever is in
+  // `mockTables`, so "unknown job" has to be modelled as an EMPTY Jobs table.
+  // Leaving recJ1 in place would make every one of these pass for the wrong
+  // reason — which is exactly what an earlier draft of this test did.
+  mockTables = { Jobs: [] };
+  for (const a of GATED_GETS) {
+    eq((await GET(a, { jobId: "recNOPE" })).statusCode, 404, `${a} must 404 an unknown job`);
+  }
+  // createPanelSchedule and createChecklist share the same gate, but both
+  // return 503 for an unconfigured database BEFORE reaching it, so they are not
+  // reachable from this offline harness. Covered by the smoke test instead.
+
+  mockTables = JOB_ONLY();
+  for (const a of GATED_GETS) {
+    ok((await GET(a, { jobId: "recJ1" })).statusCode !== 404, `${a} must let a real job through`);
+  }
+  clearR2();
+});
+
+await test("expenseReceipts: the owner check survived moving off the Airtable record", async () => {
+  setR2();
+  // The handler used to fetch the whole expense for one field. It now reads
+  // Neon and falls back — so this exercises the fallback, and the RULE, which
+  // is what matters: an employee sees receipts only on their own expenses.
+  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recOther"] } }] };
+  eq((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode, 403,
+     "an employee cannot open someone else's receipts");
+  ok((await GET("expenseReceipts", { expenseId: "recX1" }, ADMIN_TOK)).statusCode !== 403, "admin can");
+  ok((await GET("expenseReceipts", { expenseId: "recX1" }, OFFICE_TOK)).statusCode !== 403, "office can");
+
+  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmp"] } }] };
+  ok((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode !== 403,
+     "but their own is fine");
+
+  // An expense with no submitter is nobody's, not everybody's — legacy rows
+  // read that way in both stores.
+  mockTables = { Expenses: [{ id: "recX1", fields: {} }] };
+  eq((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode, 403,
+     "an unattributed expense is not an employee's");
+  clearR2();
+});
+
 // ── source guard: neonQuery returns { rows, ms }, never an array ─────────────
 // This is here because it already bit, on the day the generator service check
 // was written: `const rows = await neonQuery(...)` followed by `if (!rows.length)`.

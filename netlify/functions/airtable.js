@@ -5546,6 +5546,20 @@ async function handleJobById(params) {
 // and Airtable answers both correctly. Do NOT tighten this to `if (q?.rows)`
 // until the writes flip; that is what makes zero rows authoritative, and it
 // would hide every Airtable-created generator behind an empty screen.
+// ⚠ RESOLVES A GENERATOR BY *EITHER* OF ITS JOBS, since 2026-08-21.
+// `generators.job_id` is the INSTALL job — the one where the unit was
+// commissioned. When the service-call check opens a new job for a due service
+// (`_generator-service.js`), that job has a different rec id, so a lookup on the
+// install job alone found nothing and the Generator tab on the service call came
+// up EMPTY. The tech standing at the machine got a work order with no serial
+// number, no model, and no service history — which is most of the reason to
+// open the job at all.
+//
+// Found by the owner on SEK 293 within an hour of the first six being created.
+//
+// The base table is joined rather than adding the column to `v_generators`:
+// rebuilding a view in this repo has already reinstated a fixed OT bug once
+// (006 vs 024), and a join costs nothing here.
 async function handleGenerator(params) {
   const jobId = params?.jobId;
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
@@ -5575,8 +5589,9 @@ async function handleGenerator(params) {
                 ) s
               ), '[]'::json) AS service_records
          FROM v_generators g
+         JOIN generators gb ON gb.id = g.id
          LEFT JOIN jobs j ON j.id = g.job_id
-        WHERE g.job_airtable_id = $1
+        WHERE g.job_airtable_id = $1 OR gb.service_call_job_at_id = $1
         LIMIT 1`, [jobId]);
     if (q?.rows?.length) {
       const r = q.rows[0];

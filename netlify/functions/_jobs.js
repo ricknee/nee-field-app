@@ -122,7 +122,7 @@ export async function createJobRecord(atFetch, input) {
     jobName, jobType, taxStatus, billingMethod, contractorId, contractorName, contactId,
     customerFirstName, customerLastName,
     customerStreet, customerCity, customerState, customerZip,
-    customerPhone, customerEmail, notes
+    customerPhone, customerEmail, notes, generatorInstalled
   } = input || {};
 
   const trimmedName = String(jobName || "").trim();
@@ -163,6 +163,14 @@ export async function createJobRecord(atFetch, input) {
 
   const trimmedContactId = String(contactId || "").trim();
   if (trimmedContactId) fields["Primary Contact"] = [trimmedContactId];
+
+  // ⚠ THE FLAG THAT REVEALS THE GENERATOR TAB. Not cosmetic: `index.html` gates
+  // the whole Generator panel on `job.generatorInstalled`, so a job without it
+  // shows no generator no matter what the data says. The service-call check sets
+  // it, because a work order for a generator service that cannot display the
+  // generator is a work order with no serial number on it. Only ever set TRUE
+  // here — clearing it is a deliberate act with a confirm prompt behind it.
+  if (generatorInstalled === true) fields["Generator Installed"] = true;
 
   if (nz(customerFirstName)) fields["Customer 1st Name (Intake)"]       = nz(customerFirstName);
   if (nz(customerLastName )) fields["Customer Last Name (Intake)"]      = nz(customerLastName );
@@ -232,8 +240,8 @@ export async function createJobRecord(atFetch, input) {
                          contractor_at_id, contractor_name, po_number, po, po_locked,
                          job_year, customer_first_name, customer_last_name, customer_phone,
                          customer_email, address_street, address_city, address_state,
-                         address_zip, address_full, notes, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, now())
+                         address_zip, address_full, notes, generator_installed, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23, now())
        ON CONFLICT (airtable_id) DO UPDATE SET
          name=EXCLUDED.name, status=EXCLUDED.status, job_type=EXCLUDED.job_type,
          tax_status=EXCLUDED.tax_status, billing_method=EXCLUDED.billing_method,
@@ -253,6 +261,9 @@ export async function createJobRecord(atFetch, input) {
          address_zip        =COALESCE(EXCLUDED.address_zip,         jobs.address_zip),
          address_full       =COALESCE(EXCLUDED.address_full,        jobs.address_full),
          notes              =COALESCE(EXCLUDED.notes,               jobs.notes),
+         -- OR, never overwrite: a retry that omits the flag must not hide a
+         -- Generator tab somebody has already been using.
+         generator_installed = jobs.generator_installed OR EXCLUDED.generator_installed,
          synced_at=now()`,
       [record.id, trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
        taxStatus || "Taxable", billing, trimmedContractorId,
@@ -261,7 +272,7 @@ export async function createJobRecord(atFetch, input) {
        nz(customerFirstName), nz(customerLastName), nz(customerPhone), nz(customerEmail),
        nz(customerStreet), nz(customerCity),
        nz(customerState) ? nz(customerState).toUpperCase() : null,
-       nz(customerZip), addressFull, nz(notes)]);
+       nz(customerZip), addressFull, nz(notes), generatorInstalled === true]);
   } catch (e) {
     console.error(`createJob: Neon insert failed, hourly sync will adopt it — ${e?.message || e}`);
   }

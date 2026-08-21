@@ -172,6 +172,10 @@ export async function runGeneratorServiceCheck(atFetch, opts = {}) {
         customerCity:      g.address_city,
         customerState:     g.address_state,
         customerZip:       g.address_zip,
+        // ⚠ Without this the Generator tab does not RENDER on the new job —
+        // index.html gates the whole panel on it — so the tech opens a
+        // generator service call showing no serial, no model and no history.
+        generatorInstalled: true,
         notes: `Auto-opened service call — ${g.service_status} as of ${g.next_service_due}. ` +
                `Generator: ${g.asset_id || [g.brand, g.model].filter(Boolean).join(" ") || g.airtable_id}.`
       });

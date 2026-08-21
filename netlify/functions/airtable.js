@@ -3190,6 +3190,26 @@ async function handlePayrollRunCreate(body) {
     runFields[PR_RUNS.notes] = notes.trim();
   }
 
+  // ⚠⚠ STILL AIRTABLE-FIRST, ON PURPOSE. Cutover slice 2 (db/schema/054)
+  // dropped the NOT NULL on payroll_runs and made every run lookup accept a
+  // uuid, but STOPPED SHORT of reversing this create. It is the one handler in
+  // the cutover that is gated on evidence rather than on ordering.
+  //
+  // Why: a native run has no Airtable record, so it gets no PDF ATTACHMENT —
+  // R2 becomes the only copy. And the R2 write below (step 6) has never run in
+  // production. The 28 runs backfilled on 2026-08-21 went through
+  // `copyPayrollFilesToR2`, a different path that downloads an attachment and
+  // PUTs it. Reversing here would make the first real exercise of an untested
+  // write also the sole copy of a payroll PDF — the artifact people are paid
+  // from. Nor can it be smoke-tested: a payroll run is a fortnightly event.
+  //
+  // THE GATE — after the next real run, check all three:
+  //   · the response carries `pdfArchived: true` and `r2Error: null`
+  //   · `SELECT pdf_key FROM payroll_runs ORDER BY generated_at DESC LIMIT 1` is set
+  //   · the PDF opens from the Payroll Archive tab
+  // Then this becomes: Neon INSERT first, and this POST plus its attachments
+  // become a `mirrorToAirtable(...)`, exactly as the five creates in slice 1.
+  // Everything else is already in place.
   const created = await atFetch(`${encodeURIComponent(PR_RUNS.table)}`, {
     method: "POST",
     body: JSON.stringify({ fields: runFields, typecast: true })
@@ -3280,7 +3300,7 @@ async function handlePayrollRunCreate(body) {
                                  generated_by, total_hours, total_bonus, superseded, notes,
                                  supersedes_id, synced_at)
        VALUES ($1,$2::date,$3::date,now(),$4,$5,$6,false,$7,
-               (SELECT id FROM payroll_runs WHERE airtable_id = $8), now())
+               (SELECT id FROM payroll_runs WHERE airtable_id = $8 OR id::text = $8), now())
        ON CONFLICT (airtable_id) DO UPDATE SET
          pay_period_start=EXCLUDED.pay_period_start, pay_period_end=EXCLUDED.pay_period_end,
          generated_by=EXCLUDED.generated_by, total_hours=EXCLUDED.total_hours,
@@ -3306,7 +3326,7 @@ async function handlePayrollRunCreate(body) {
         await neonWrite("payrollBonus.mirror",
           `INSERT INTO payroll_bonuses (airtable_id, payroll_run_airtable_id, payroll_run_id,
                                         employee_airtable_id, employee_name, amount, synced_at)
-           VALUES ($1,$2,(SELECT id FROM payroll_runs WHERE airtable_id=$2),$3,$4,$5,now())
+           VALUES ($1,$2,(SELECT id FROM payroll_runs WHERE airtable_id=$2 OR id::text=$2),$3,$4,$5,now())
            ON CONFLICT (airtable_id) DO UPDATE SET
              payroll_run_airtable_id=EXCLUDED.payroll_run_airtable_id,
              payroll_run_id=EXCLUDED.payroll_run_id, amount=EXCLUDED.amount, synced_at=now()`,
@@ -3317,7 +3337,8 @@ async function handlePayrollRunCreate(body) {
 
     if (supersedesId && String(supersedesId).startsWith("rec") && !supersedeError) {
       await neonWrite("payrollRun.supersede",
-        `UPDATE payroll_runs SET superseded = true, synced_at = now() WHERE airtable_id = $1`,
+        `UPDATE payroll_runs SET superseded = true, synced_at = now()
+          WHERE airtable_id = $1 OR id::text = $1`,
         [supersedesId]);
     }
   } catch (err) {
@@ -3402,12 +3423,18 @@ async function handlePayrollRunsList(params) {
   // slower page. One missing key sends the WHOLE list back to Airtable rather
   // than serving a half-linked grid.
   const q = await neonQuery(
-    `SELECT r.airtable_id, r.pay_period_start::text  AS pay_period_start,
+    // ⚠ COALESCE — the dual handle (cutover slice 2, db/schema/054). Inert
+    // today because every run still has a rec id, and that is the point: when
+    // handlePayrollRunCreate is finally reversed, this read does not have to
+    // move with it. A bare airtable_id would hand the grid a null run id and
+    // the row's PDF link would be unopenable.
+    `SELECT COALESCE(r.airtable_id, r.id::text) AS airtable_id,
+            r.pay_period_start::text  AS pay_period_start,
             r.pay_period_end::text AS pay_period_end, r.generated_at,
             r.generated_by, r.total_hours, r.total_bonus, r.superseded, r.notes,
             r.pdf_key,
             (SELECT count(*) FROM payroll_bonuses b WHERE b.payroll_run_id = r.id) AS bonus_count,
-            s.airtable_id  AS superseded_by_id,
+            COALESCE(s.airtable_id, s.id::text) AS superseded_by_id,
             s.generated_at AS superseded_by_date
        FROM payroll_runs r
        LEFT JOIN payroll_runs s ON s.supersedes_id = r.id

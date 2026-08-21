@@ -2787,6 +2787,47 @@ await test("clock: promoting punches into payroll is admin-only, and needs confi
   delete process.env.TIME_CLOCK_PAYROLL;
 });
 
+// ── generator service calls (replaces Airtable automation wfledvx1A8oVscWla) ──
+// This action CREATES JOBS, and every job it creates burns a PO number that
+// cannot be handed back. So the two things worth pinning are that only an admin
+// can reach it, and that it does nothing at all until somebody deliberately
+// turns it on.
+await test("generator service calls: creating jobs unattended is strict admin", async () => {
+  eq((await POST("generatorServiceCheck", {}, EMP_TOK)).statusCode, 403, "the crew cannot open service calls");
+  eq((await POST("generatorServiceCheck", {}, OFFICE_TOK)).statusCode, 403, "nor can office — this mints PO numbers");
+  eq((await POST("generatorServiceCheck", {}, VIEWER_TOK)).statusCode, 403, "and certainly not a viewer");
+});
+
+await test("generator service calls: ship INERT — no switch, no jobs", async () => {
+  delete process.env.GENERATOR_SERVICE_CALLS;
+  const res = await POST("generatorServiceCheck", {}, ADMIN_TOK);
+  eq(res.statusCode, 200, "an off switch is the normal state, not an error");
+  const b = json(res);
+  eq(b.enabled, false, "reports itself off");
+  eq(b.created, 0, "and creates nothing");
+});
+
+await test("generator service calls: GENERATOR_SERVICE_CALLS=on still needs Neon", async () => {
+  // DATABASE_URL is unset in this harness, and the whole check is a Neon read —
+  // v_generators computes service_status. It must say so rather than silently
+  // reporting "nothing due", which would look identical to a healthy fleet.
+  process.env.GENERATOR_SERVICE_CALLS = "on";
+  const res = await POST("generatorServiceCheck", {}, ADMIN_TOK);
+  eq(res.statusCode, 500, "no database is a real failure, not a quiet zero");
+  ok(/DATABASE_URL/.test(json(res).error || ""), "and it names what is missing");
+  eq(json(res).created, 0, "nothing was created");
+  delete process.env.GENERATOR_SERVICE_CALLS;
+});
+
+await test("generator service calls: a dry run never depends on the switch", async () => {
+  // The dry run is how the owner decides whether to flip the switch at all, so
+  // it has to work while the switch is still off.
+  delete process.env.GENERATOR_SERVICE_CALLS;
+  const res = await POST("generatorServiceCheck", { dryRun: true }, ADMIN_TOK);
+  ok(res.statusCode !== 200 || json(res).enabled !== false,
+     "a dry run runs the check rather than short-circuiting on the switch");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

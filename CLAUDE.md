@@ -103,6 +103,15 @@ answers, just slowly. It went unnoticed for three days.
   dangerous half isn't letting people punch, it's letting a punch turn into money while QB is
   also being paid from. Rollback is exact — `DELETE FROM time_entries WHERE source = 'Clock'`.
   See `docs/PLAN-time-clock.md` §11 and `db/schema/018_time_clock.sql`.
+- `GENERATOR_SERVICE_CALLS` — **the generator service-call kill switch. Ships unset = inert.**
+  `on` lets the hourly `qb-time-pull` open a service-call **job** for every generator whose
+  service plan has come due; `dry` reports what it would create and writes nothing. Unset, the
+  check returns `enabled:false` and touches nothing. It is a switch because **the first run is
+  not a normal run**: six generators are overdue with the old Airtable latch already set, so they
+  all become eligible at once, and **every job created burns a PO number that cannot be handed
+  back**. Preview with the admin action `POST { action:"generatorServiceCheck", dryRun:true }`
+  before flipping it. Replaces Airtable automation `wfledvx1A8oVscWla`; see
+  `netlify/functions/_generator-service.js` and `db/schema/051_generator_service_calls.sql`.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

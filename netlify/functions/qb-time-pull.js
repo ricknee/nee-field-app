@@ -49,6 +49,8 @@
 import { neon } from "@neondatabase/serverless";
 import { syncJobs, backfillJobLinks } from "./_jobs-sync.js";
 import { syncBillingTables } from "./_billing-sync.js";
+import { runGeneratorServiceCheck } from "./_generator-service.js";
+import { makeAtFetch } from "./_jobs.js";
 
 const QB = "https://rest.tsheets.com/api/v1";
 
@@ -381,13 +383,38 @@ export const handler = async () => {
   let billingReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
   if (atKey && atBase) billingReport = await syncBillingTables(sql, atKey, atBase);
 
+  // Generator service calls — replaces Airtable automation wfledvx1A8oVscWla,
+  // the last one in the base that CREATED a record. Runs here rather than on its
+  // own schedule because this function is already the hourly heartbeat and a
+  // second scheduled function is a second thing to notice has stopped.
+  //
+  // ORDER MATTERS, mildly: it runs AFTER syncJobs so a service-call job created
+  // by the previous hour's run is already in `jobs` and its status can be read.
+  //
+  // ⚠ INERT unless GENERATOR_SERVICE_CALLS=on — it returns {enabled:false} and
+  // touches nothing. See the header of _generator-service.js.
+  //
+  // Fails soft and is caught here on purpose: the timesheet pull is the job that
+  // must not stop, and a generator reminder is the least urgent thing this
+  // function does.
+  let generatorReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
+  if (atKey && atBase) {
+    try {
+      generatorReport = await runGeneratorServiceCheck(makeAtFetch(atKey, atBase));
+    } catch (e) {
+      console.error("qb-time-pull: generator service check failed", e);
+      generatorReport = { ok: false, error: String(e?.message || e) };
+    }
+  }
+
   const [state] = await sql.query(`SELECT watermark FROM sync_state WHERE key = 'qb_timesheets'`);
   const since = state?.watermark
     ? new Date(new Date(state.watermark).getTime() - WATERMARK_OVERLAP_MS)
     : new Date(Date.now() - COLD_START_LOOKBACK_MS);
 
   try {
-    const report = { ...(await runPull({ sql, token, since })), jobsSync: jobsReport, jobLinks: linkReport, billingSync: billingReport };
+    const report = { ...(await runPull({ sql, token, since })), jobsSync: jobsReport, jobLinks: linkReport,
+                     billingSync: billingReport, generatorServiceCalls: generatorReport };
     console.log("qb-time-pull", JSON.stringify(report));
     return { statusCode: 200, body: JSON.stringify(report) };
   } catch (e) {

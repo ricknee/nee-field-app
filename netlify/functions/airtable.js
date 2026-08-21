@@ -15,6 +15,11 @@ import { syncExpenseToNeon as syncExpenseToNeonShared } from "./_expenses.js";
 import { createLaborAllocation, createMaterialAllocation,
          attachAllocationsToInvoice } from "./_allocations.js";
 import { fireJobStatusWebhooks, fireServiceCallWebhook } from "./_job-webhooks.js";
+// Creating a job lives in _jobs.js because there are now TWO callers — the New
+// Project form and the generator service-call check — and only one of them may
+// ever allocate a PO number. See the header of that file.
+import { createJobRecord, JobInputError } from "./_jobs.js";
+import { runGeneratorServiceCheck } from "./_generator-service.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
 // pCloud lost the store decision when its app-registration page turned out to
@@ -502,6 +507,12 @@ const _ADMIN_POSTS = new Set([
   // rather than from a laptop because the LOCAL Airtable PAT is scoped to the
   // sandbox base and 403s on production — only the function holds a prod key.
   "backfillContacts",
+  // Opens service-call jobs for generators that have come due. Admin because it
+  // CREATES JOBS and each one consumes a PO number that cannot be handed back —
+  // and because its dry run is how you decide whether to flip
+  // GENERATOR_SERVICE_CALLS on at all. Also runs unattended on the hourly
+  // schedule; this action is the manual/preview door onto the same code.
+  "generatorServiceCheck",
   // Turning a person's app access on or off. Admin only — this is the action
   // that kills live sessions, and office manages money, not access.
   "setEmployeeActive",
@@ -778,34 +789,23 @@ function addMonthsToDateStr(dateStr, months) {
 // typecast and silently create a duplicate option. Keep these in sync with
 // the singleselect choices configured on each table.
 
-// Jobs."Contractor (Intake)" — the legacy text breadcrumb handleCreateJob keeps
+// Jobs."Contractor (Intake)" — the legacy text breadcrumb the job create keeps
 // populated for downstream Make readers. It is a **singleSelect**, and the create
-// POST runs with typecast off, so writing a name that is not on this list does not
+// POST runs with typecast off, so writing a name that is not on the list does not
 // silently add an option — it 422s the ENTIRE job create.
 //
 // That mattered the moment `createCompany` shipped: every one of the 24 active
-// contractors happens to be on this list today, so nothing has ever hit it, but
+// contractors happens to be on the list today, so nothing has ever hit it, but
 // the first brand-new contractor would have made their first job impossible to
-// create. The guard below omits the field instead, which is the same "safe
-// fallback" the other OPTS arrays use — the linked `Contractor` field is the real
-// data and is unaffected.
+// create. The guard omits the field instead, which is the same "safe fallback"
+// the other OPTS arrays use — the linked `Contractor` field is the real data and
+// is unaffected.
 //
-// ⚠ Do NOT fix the spellings ("Milla Construcion", "Kalmback"). They are the
-// configured option names; correcting one here just makes it fail the match.
-// ⚠ A new contractor can never be added to this list from code. Add the option in
-// Airtable if a downstream reader actually needs the breadcrumb — or finish the
-// cleanup pass noted at handleCreateJob and delete the field.
-const CONTRACTOR_INTAKE_OPTS = [
-  "3DEE Construction", "Administration", "Aviary Poultry", "Case Farms",
-  "Classical Construction", "Deerfield Construction", "Double LL Construction",
-  "Gerber Poultry", "Granite Ridge Poultry", "Hardchuck Construction",
-  "Hardwood Solutions", "Heartwood Construction", "Hosterman Development Inc",
-  "J.J.O Construction", "JC Herbert", "Justin Biery", "Kalmback Feeds",
-  "KDC Properties", "Koehn Konstruction", "Linden Ave Developers",
-  "LK Construction", "Marco Construction", "Metis Construction",
-  "Milla Construcion", "Miller Poultry", "Misc Jobs", "P&H Builders",
-  "Penntex Ventures", "Service Calls", "Shop", "Ware Construction"
-];
+// ⚠ The array itself MOVED to `netlify/functions/_jobs.js` on 2026-08-21, next
+// to the only code that reads it. This note stays because the trap belongs with
+// the other OPTS whitelists, not because the list is still here. Do NOT fix the
+// spellings ("Milla Construcion", "Kalmback") — they are the configured option
+// names, same lesson as PR_CITY_TAXES.
 
 // Generator Service.Service Type — 7 valid options. "Install / Commissioning"
 // is server-set by handleCommissionGenerator; the other six are user-selectable
@@ -9669,9 +9669,33 @@ async function handleUpdateGenerator(body) {
   return resp(200, { ok: true, id: rows[0].id, _source: "neon" });
 }
 
+// ── GENERATOR SERVICE CALLS (admin door onto the hourly check) ──────────────
+// The work is in `_generator-service.js`; this is the manual/preview entry
+// point. The same function also runs unattended on the hourly schedule inside
+// qb-time-pull.js, so there is one implementation and two triggers.
+//
+// `{ dryRun: true }` reports exactly which jobs it WOULD create and writes
+// nothing — run that first. Each job it creates consumes a PO number, and PO
+// numbers cannot be handed back.
+//
+// ⚠ Answers 200 with `enabled:false` rather than an error when
+// GENERATOR_SERVICE_CALLS is unset. That is the normal shipped state, not a
+// misconfiguration, and a red error for a switch that is deliberately off would
+// send someone looking for a problem that isn't there.
+async function handleGeneratorServiceCheck(body) {
+  const report = await runGeneratorServiceCheck(atFetch, { dryRun: body?.dryRun === true });
+  return resp(report.ok === false ? 500 : 200, report);
+}
+
 // ── ADD GENERATOR SERVICE RECORD (quick-log from Generator tab) ─────────
 // Keep it lightweight: no truck/parts inventory, no labor billing, just the
 // observable facts a tech in the field would log on a service stop.
+//
+// ⚠ Logging a service is what makes the service plan RECUR. `v_generators`
+// derives next_service_due from max(service_date) + interval, so this insert
+// moves the due date forward, which is the signal `_generator-service.js`
+// watches for. A service done but not logged here leaves the generator looking
+// overdue forever and never opens the next call.
 async function handleAddGeneratorService(body) {
   const {
     generatorId, jobId,
@@ -11245,211 +11269,33 @@ async function handleUpdateJobInfo(body) {
   return resp(200, { ok: true, updatedId: data.id });
 }
 
-// POSTs a new Jobs record from the in-app New Project modal. Every new
-// job is now a contractor job: Contractor (linked) is required and the
-// same Company is written to both Contractor and Billing Company by
-// default. Status defaults to "New Lead" so the new job lands in the
-// right sidebar group. Optional fields are sent only when non-blank to
-// avoid stomping Airtable defaults with empty strings.
+// The in-app New Project modal's endpoint. **The work moved to
+// `netlify/functions/_jobs.js` on 2026-08-21** — read that file for the create
+// itself, the PO allocation, the Airtable re-read and the Neon mirror, all of
+// which are unchanged. This is now only the HTTP shape around it.
 //
-// Billing Method is force-set to "Contractor" — the radio is gone from
-// the UI but downstream invoice-builder reads (index.html:6514, 6605,
-// 6903, 7311) still inspect job.billingMethod as a Contract-vs-T&M
-// tiebreaker, so we keep the breadcrumb coherent.
+// It was extracted because a SECOND caller appeared (the generator service-call
+// check) and two PO allocators is how duplicate PO numbers come back — see the
+// header of _jobs.js for why that is worse than it sounds.
 //
-// Contractor (Intake) is still written with the company name string;
-// Make.com and other downstream readers may still depend on it. Plan
-// is to remove it in a follow-up cleanup pass once confirmed unused.
-//
-// LINKED RECORD shape: ["recXXX"] string array, NEVER [{id:"recXXX"}].
-// The object shape has silently dropped linked writes in this codebase
-// before. typecast is intentionally off.
-//
-// Returns the new record run through mapJob() so the frontend can splice
-// it into state.jobs and selectJob() it without a full list refetch.
+// Notes that still belong to the endpoint rather than the module:
+//   · Every new job from this form is a contractor job. Billing Method is left
+//     at the module's "Contractor" default — the radio is gone from the UI but
+//     downstream invoice-builder reads (index.html:6514, 6605, 6903, 7311) still
+//     inspect job.billingMethod as a Contract-vs-T&M tiebreaker, so the
+//     breadcrumb has to stay coherent.
+//   · Returns the new record run through mapJob() so the frontend can splice it
+//     into state.jobs and selectJob() it without a full list refetch.
+//   · A JobInputError is the caller's fault and answers 400; anything else
+//     (Airtable down, network) stays a 500, which is correct.
 async function handleCreateJob(body) {
-  const {
-    jobName, jobType, taxStatus, contractorId, contractorName, contactId,
-    customerFirstName, customerLastName,
-    customerStreet, customerCity, customerState, customerZip,
-    customerPhone, customerEmail, notes
-  } = body || {};
-
-  const trimmedName = String(jobName || "").trim();
-  if (!trimmedName) return resp(400, { ok: false, error: "Job Name is required." });
-
-  const trimmedContractorId = String(contractorId || "").trim();
-  if (!trimmedContractorId) return resp(400, { ok: false, error: "Contractor is required." });
-
-  const fields = {};
-  fields["Job Name"]       = trimmedName;
-  fields["Job Status"]     = "New Lead";
-  fields["Tax Status"]     = taxStatus || "Taxable";
-  fields["Billing Method"] = "Contractor";
-
-  if (jobType && String(jobType).trim()) fields["Job Type"] = String(jobType).trim();
-
-  // Contractor + Billing Company default to the same Company on create.
-  fields["Contractor"]      = [trimmedContractorId];
-  fields["Billing Company"] = [trimmedContractorId];
-
-  // Keep the legacy text breadcrumb populated for downstream readers — but only
-  // when the name is a configured option. It is a singleSelect and typecast is
-  // off, so an unknown value fails the whole create rather than this one field.
-  // See CONTRACTOR_INTAKE_OPTS for why omitting is the safe fallback.
-  const intakeName = String(contractorName || "").trim();
-  if (intakeName) {
-    if (CONTRACTOR_INTAKE_OPTS.includes(intakeName)) {
-      fields["Contractor (Intake)"] = intakeName;
-    } else {
-      console.log(`createJob: "${intakeName}" is not a Contractor (Intake) option — writing the linked Contractor only.`);
-    }
-  }
-
-  const trimmedContactId = String(contactId || "").trim();
-  if (trimmedContactId) fields["Primary Contact"] = [trimmedContactId];
-
-  if (customerFirstName && String(customerFirstName).trim()) fields["Customer 1st Name (Intake)"]      = String(customerFirstName).trim();
-  if (customerLastName  && String(customerLastName ).trim()) fields["Customer Last Name (Intake)"]     = String(customerLastName ).trim();
-  if (customerStreet    && String(customerStreet   ).trim()) fields["Job Site Street Address (Intake)"]= String(customerStreet   ).trim();
-  if (customerCity      && String(customerCity     ).trim()) fields["Job Site City (Intake)"]         = String(customerCity     ).trim();
-  if (customerState     && String(customerState    ).trim()) fields["Job Site State (Intake)"]        = String(customerState    ).trim().toUpperCase();
-  if (customerZip       && String(customerZip      ).trim()) fields["Job Site Zip Code (Intake)"]     = String(customerZip      ).trim();
-  if (customerPhone     && String(customerPhone    ).trim()) fields["Customer Phone (Intake)"]        = String(customerPhone    ).trim();
-  if (customerEmail     && String(customerEmail    ).trim()) fields["Customer Email (Intake)"]        = String(customerEmail    ).trim();
-  if (notes             && String(notes            ).trim()) fields["Notes"]                          = String(notes);
-
-  // ── PO NUMBER (audit item 05, db/schema/039) ─────────────────────────────
-  // Allocated from Neon BEFORE the Airtable POST, and written in the same POST.
-  //
-  // ⚠⚠ THAT ORDER IS THE WHOLE CUTOVER STRATEGY. The Airtable automation
-  // `wfltJAiEaavVLA0wB` triggers on "status = New Lead AND Job PO Number is
-  // EMPTY". Creating the record with the number already set makes its condition
-  // false, so it stands down on its own — no undeploy gap where a job could be
-  // created with nobody assigning a PO, and no window where both assign and the
-  // job ends up with two different numbers.
-  //
-  // ⚠ DO NOT derive the next number from the jobs table. 112 jobs run 102→436
-  // and 22 sit ABOVE the counter, because Dollar General jobs carry the general
-  // contractor's own numbering. max(po)+1 would jump to 437 and abandon 150
-  // unused numbers. The counter is the authority; the jobs table is not.
-  //
-  // Inert until JOB_CREATE_SOURCE=neon, in which case Airtable keeps assigning
-  // exactly as it does today.
-  let poNumber = null;
-  if (String(process.env.JOB_CREATE_SOURCE || "").toLowerCase() === "neon") {
-    try {
-      // One statement, so two people creating a job at the same instant cannot
-      // both read the same value — the flaw Airtable's read-then-write has
-      // always had and got away with because one person creates jobs at a time.
-      // A brand-new year starts at 100, matching the 2025/2027 counter rows.
-      const rows = await neonWrite("job.allocatePo",
-        `INSERT INTO job_po_counters (year, last_used) VALUES ($1, 100)
-         ON CONFLICT (year) DO UPDATE SET last_used = job_po_counters.last_used + 1,
-                                          synced_at = now()
-         RETURNING last_used`, [new Date().getFullYear()]);
-      poNumber = rows?.[0]?.last_used ?? null;
-      if (poNumber != null) fields["Job PO Number"] = poNumber;
-    } catch (e) {
-      // Fall through with no number: Airtable's automation still has its
-      // "PO is empty" condition satisfied and assigns one, exactly as today.
-      // A failed allocation must not block someone creating a job.
-      console.error(`createJob: PO allocation failed, leaving it to Airtable — ${e?.message || e}`);
-      poNumber = null;
-    }
-  }
-
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}`, {
-    method: "POST",
-    body: JSON.stringify({ fields })
-  });
-
-  // ⚠ RE-READ, don't trust the create response, for `Job PO`.
-  // It is an Airtable FORMULA (Contractor Code + job initial + Job PO Number),
-  // and the same trap the inventory push hit at Step E applies: a record read
-  // back before its computed fields settle hands you a blank. Writing that blank
-  // into Neon would leave the job list showing NO PO for an hour — which is the
-  // exact lag this slice exists to remove, just moved from one column to another.
-  //
-  // One extra round trip on a handful of job creations a week. Fails soft: worst
-  // case `po` stays null and the hourly sync fills it, i.e. today's behaviour.
-  let poString = null, poLocked = null;
   try {
-    const fresh = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${data.id}`);
-    poString = fresh?.fields?.["Job PO"] || null;
-    poLocked = fresh?.fields?.["Job PO - Locked"] || null;
+    const { record, poNumber } = await createJobRecord(atFetch, body || {});
+    return resp(200, { ok: true, job: mapJob(record), ...(poNumber != null ? { poNumber } : {}) });
   } catch (e) {
-    console.error(`createJob: PO re-read failed, hourly sync will fill it — ${e?.message || e}`);
+    if (e instanceof JobInputError) return resp(400, { ok: false, error: e.message });
+    throw e;
   }
-
-  // ── The job lands in Neon NOW, not up to an hour from now ────────────────
-  // `_jobs-sync.js` runs hourly, which is why a new job has shown an empty Time
-  // Entries tab for its first hour. Airtable is still created first because
-  // `jobs.airtable_id` is NOT NULL and every client-side job id is the rec id —
-  // a Neon-first job would have no id the app could use.
-  //
-  // Fails SOFT: the job exists in Airtable and the hourly sync will adopt it,
-  // so a Neon hiccup costs the old one-hour lag rather than the job itself.
-  //
-  // ⚠ THE INTAKE BLOCK CARRIES TOO, and originally did not. The job appeared in
-  // Neon immediately but with no customer name, phone, email or address, because
-  // the app reads jobs Neon-FIRST — so "the one-hour lag is gone" was only true
-  // of the job's existence, not its details. Found on the first real job after
-  // the flip (Craig Davidson (Garage), MIC 287, 2026-08-20): Airtable had the
-  // whole customer block, Neon had nulls until the sync caught up.
-  //
-  // `address_full` is composed here because Airtable's is a FORMULA field this
-  // code cannot write. Empty parts are dropped rather than left as stray commas,
-  // and the hourly sync overwrites it with Airtable's own rendering — so a
-  // format difference costs an hour of cosmetics, never a blank address.
-  const nz = (v) => { const s = String(v ?? "").trim(); return s || null; };
-  const addressFull = [
-    [nz(customerStreet), nz(customerCity)].filter(Boolean).join(", "),
-    [customerState ? String(customerState).trim().toUpperCase() : null, nz(customerZip)]
-      .filter(Boolean).join(" ")
-  ].filter(Boolean).join(", ") || null;
-
-  try {
-    await neonWrite("job.create",
-      `INSERT INTO jobs (airtable_id, name, status, job_type, tax_status, billing_method,
-                         contractor_at_id, contractor_name, po_number, po, po_locked,
-                         job_year, customer_first_name, customer_last_name, customer_phone,
-                         customer_email, address_street, address_city, address_state,
-                         address_zip, address_full, notes, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22, now())
-       ON CONFLICT (airtable_id) DO UPDATE SET
-         name=EXCLUDED.name, status=EXCLUDED.status, job_type=EXCLUDED.job_type,
-         tax_status=EXCLUDED.tax_status, billing_method=EXCLUDED.billing_method,
-         contractor_at_id=EXCLUDED.contractor_at_id, contractor_name=EXCLUDED.contractor_name,
-         po_number=COALESCE(EXCLUDED.po_number, jobs.po_number),
-         -- COALESCE so a failed re-read never BLANKS a PO the sync already had.
-         po=COALESCE(EXCLUDED.po, jobs.po), po_locked=COALESCE(EXCLUDED.po_locked, jobs.po_locked),
-         -- Same reasoning for the intake block: a retry that omits them must
-         -- never blank details the sync has already carried over.
-         customer_first_name=COALESCE(EXCLUDED.customer_first_name, jobs.customer_first_name),
-         customer_last_name =COALESCE(EXCLUDED.customer_last_name,  jobs.customer_last_name),
-         customer_phone     =COALESCE(EXCLUDED.customer_phone,      jobs.customer_phone),
-         customer_email     =COALESCE(EXCLUDED.customer_email,      jobs.customer_email),
-         address_street     =COALESCE(EXCLUDED.address_street,      jobs.address_street),
-         address_city       =COALESCE(EXCLUDED.address_city,        jobs.address_city),
-         address_state      =COALESCE(EXCLUDED.address_state,       jobs.address_state),
-         address_zip        =COALESCE(EXCLUDED.address_zip,         jobs.address_zip),
-         address_full       =COALESCE(EXCLUDED.address_full,        jobs.address_full),
-         notes              =COALESCE(EXCLUDED.notes,               jobs.notes),
-         synced_at=now()`,
-      [data.id, trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
-       taxStatus || "Taxable", "Contractor", trimmedContractorId,
-       contractorName ? String(contractorName).trim() : null,
-       poNumber, poString, poLocked, new Date().getFullYear(),
-       nz(customerFirstName), nz(customerLastName), nz(customerPhone), nz(customerEmail),
-       nz(customerStreet), nz(customerCity),
-       customerState ? String(customerState).trim().toUpperCase() : null,
-       nz(customerZip), addressFull, nz(notes)]);
-  } catch (e) {
-    console.error(`createJob: Neon insert failed, hourly sync will adopt it — ${e?.message || e}`);
-  }
-
-  return resp(200, { ok: true, job: mapJob(data), ...(poNumber != null ? { poNumber } : {}) });
 }
 
 /* ── Jobsite photos (docs/PLAN-job-photos.md, slice 1: read-only) ───────────
@@ -12622,6 +12468,7 @@ export async function handler(event) {
       if (body.action === "copyFleetPhotosToR2")  return await handleCopyFleetPhotosToR2();
       if (body.action === "copyEstimatePdfsToR2") return await handleCopyEstimatePdfsToR2();
       if (body.action === "backfillContacts")     return await handleBackfillContacts();
+      if (body.action === "generatorServiceCheck") return await handleGeneratorServiceCheck(body);
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);

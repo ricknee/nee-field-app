@@ -105,8 +105,20 @@ by a person hitting it rather than by a test.
 
 ## Smaller, unscheduled
 
-- **R2 lifecycle rule** to expire the photo recycle bin (`_deleted/`) at 30 days — ~15 min. Must
-  **exclude `expenses/`**: receipts are financial records and are deliberately never auto-purged.
+- **R2 lifecycle rule** to expire the photo recycle bin (`_deleted/`) at 30 days — ~15 min.
+  ⚠⚠ **Scope it to the `_deleted/` prefix, not to the bucket.** One bucket holds every domain
+  (`jobs/`, `expenses/`, `lifts/`, `fleet/`, `estimates/`, `payroll/`), so a bucket-wide
+  "expire after N days" rule would delete **financial records**, not old photos. The two that
+  must never be auto-purged:
+  - `expenses/` — receipts, wanted years later at audit time.
+  - `payroll/` — the run PDFs, added 2026-08-21 (`db/schema/052`). This is the artifact people
+    were paid from. Nothing in the app ever deletes one, and nothing ever moves one into
+    `_deleted/`, so a prefix-scoped rule cannot reach them — a bucket-wide one would.
+
+  Related, and worth confirming while you are in the Cloudflare console: **public access and the
+  `r2.dev` subdomain should be OFF.** Every read the app performs is a signed, expiring URL
+  (`presignGet` / `presignGetDownload`), so the bucket never needs to be public — and it now
+  holds payroll.
 - **Retire the JotForm photo path** (~2026-08-08, after a week's soak): pause form
   `260246511955053` and Make scenario `4522457`. Pause, don't delete. No code change.
 - **Archive Push History reprints** — `reprintPushHistoryPdf` rebuilds the PDF without a `pushId`

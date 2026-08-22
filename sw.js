@@ -4,7 +4,15 @@
 // Bumped when the shell list changes, so the activate handler drops the old
 // cache. Without a bump, a phone that already installed v1 keeps serving the old
 // shell list and never picks up the manifest or the icon.
-const CACHE_NAME = 'nee-app-v2';
+const CACHE_NAME = 'nee-app-v3';
+
+// A weak cellular connection is often worse than being fully offline: fetch()
+// stays pending for a long time, so its rejection handler never gets a chance to
+// serve the cached app. This is especially visible in iOS Safari. Give a page
+// navigation a brief chance to get the latest deploy, then use the installed
+// shell while the slow request continues in the background and refreshes the
+// cache for the next launch.
+const NAVIGATION_NETWORK_TIMEOUT_MS = 3000;
 
 // Files to cache on install (the app shell)
 // The manifest and icon are here so "Add to Home Screen" and the Android
@@ -70,15 +78,30 @@ self.addEventListener('fetch', event => {
 
   // For the main HTML document: network first, cache fallback
   if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request)
-        .then(response => {
-          // Update cache with fresh version
+    const network = fetch(event.request);
+
+    // Keep the worker alive for the cache refresh even when the timeout below
+    // wins the race and the cached page has already been returned to Safari.
+    event.waitUntil(
+      network.then(response => {
+        // Do not replace a working cached app with an error page.
+        if (response && response.ok) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
-          return response;
-        })
-        .catch(() => caches.match('/index.html'))
+          return caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        }
+      }).catch(() => {})
+    );
+
+    const cached = caches.match(event.request).then(response =>
+      response || caches.match('/index.html')
+    );
+
+    const timeout = new Promise(resolve => {
+      setTimeout(() => resolve(cached), NAVIGATION_NETWORK_TIMEOUT_MS);
+    });
+
+    event.respondWith(
+      Promise.race([network, timeout]).catch(() => cached)
     );
     return;
   }

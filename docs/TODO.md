@@ -103,6 +103,53 @@ three already fixed. **Sweep the other job writers in the same pass** rather tha
 each to surface on its own — this class has now bitten four times, and every instance was found
 by a person hitting it rather than by a test.
 
+## ✅ FIXED 2026-08-22 — pCloud job folders landed in the wrong place
+
+Make scenario `4509211` reported **21 successful operations** and created almost nothing where
+anyone would look for it. Found when WatersEdge 13 went New Lead → Estimating and no folders
+appeared.
+
+**The mechanism.** Modules 8 (year), 9 (contractor) and 10 (job) each carry an
+`onerror → builtin:Resume` whose mapper is **entirely blank**. That is correct for 8 and 9 — the
+year and contractor folders usually already exist, pCloud answers `[2004] File or folder already
+exists`, and the run should carry on. But every one of the 18 downstream folders built its path
+from **`{{10.name}}`**, the job folder's returned name. So the moment module 10 resumed blank, the
+path lost a segment and the whole tree was created **directly inside the contractor folder**:
+
+```
+NEE Jobs/2026/KDC Properties/Full Prints/…      ← wrong
+NEE Jobs/2026/KDC Properties/WatersEdge 13 (KDW 279)/Full Prints/…   ← intended
+```
+
+Make cannot see this. Every `createFolder` succeeded; only the parent was wrong.
+
+**The fix.** Nothing in the path may come from a module's *output* when the webhook payload
+already carries the value. All paths now use `{{43.jobPO}}` and `{{43.contractor}}` — the values
+the app sends — plus literals for the fixed folder names (`Full Prints`,
+`Quote - Contract - Expenses`). The blank Resumes stay, because tolerating "already exists" is
+still right; they simply can no longer poison anything.
+
+⚠ **The general rule, worth carrying to every other scenario:** a `Resume` that returns blanks is
+only safe if nothing downstream reads its output. Check what consumes a module before giving it an
+error handler.
+
+⚠ **Stray folders may exist** at the contractor level from earlier runs of any job that hit this.
+They are harmless but confusing; delete by hand.
+
+## Still open — the folder ids never come back
+
+`4509211` has **no callback module at all**: it is `webhook → 21× createFolder` and nothing else.
+So `jobs.pcloud_job_folder_id` and its four siblings (`db/schema/046`) are permanently NULL, and
+`handleJobAutomationResult` — which already accepts all five — never hears from it.
+
+Nothing in the app reads those columns today, so this is a gap rather than a fault. To close it:
+
+1. `_job-webhooks.js` must add a **scope token** to the pCloud payload (`signScope(["jobAutomation",
+   recordId])`), exactly as the Awarded and Completed payloads already do. Without it the callback
+   cannot authenticate — the endpoint is unauthenticated by design and the token is its only guard.
+2. Add an `http:ActionSendData` module at the end of the scenario POSTing `recordId`, `token` and
+   the five folder ids to `/.netlify/functions/airtable` with `action: "jobAutomationResult"`.
+
 ## Smaller, unscheduled
 
 - **R2 lifecycle rule** to expire the photo recycle bin (`_deleted/`) at 30 days — ~15 min.

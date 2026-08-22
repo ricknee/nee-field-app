@@ -4080,9 +4080,29 @@
   // with a file say so; everything else is collected when the File is.
   function releaseHeifJpeg(file) { _heifJpeg.delete(file); }
 
-  async function uploadPDFToPCloud({ type, jobId, jobNumber, pdfDoc, filename, metadata = {} }) {
+  // ⚠ `contractorName` AND `jobNumber` ARE THE pCLOUD FOLDER PATH.
+  // Make scenario 4723276 files the PDF at
+  //     /Northeastern Electric Jobs/NEE Jobs/‹year›/‹contractorName›/‹jobNumber›/…
+  // It used to fetch both from Airtable itself, with two ActionGetRecord modules.
+  // One of them was BROKEN: it read the *Companies* table using the *job* id, for
+  // a field (`Contractor Name (Text)`) that only exists on Jobs — so that path
+  // segment resolved empty and every estimate, invoice and generator report has
+  // been filing without its contractor folder. Sending both values removes the
+  // two Airtable reads AND fixes the path.
+  //
+  // Resolved from `state.jobs` when the caller does not pass it, so all three
+  // call sites keep working unchanged and a future one cannot silently omit it.
+  async function uploadPDFToPCloud({ type, jobId, jobNumber, pdfDoc, filename, metadata = {}, contractorName }) {
     const pdfBase64 = pdfDoc.output('datauristring').split(',')[1];
-    const payload = { type, jobId, jobNumber, pdfBase64, filename, metadata };
+    const contractor = String(
+      contractorName ?? (state.jobs || []).find(j => j.id === jobId)?.contractorName ?? ""
+    ).trim();
+    if (!contractor) {
+      // Loud, because the failure is INVISIBLE otherwise: the upload succeeds and
+      // the file lands one folder too high, which nobody notices for months.
+      console.error('[pcloud] no contractor name for job', jobId, '— the PDF will file without its contractor folder');
+    }
+    const payload = { type, jobId, jobNumber, contractorName: contractor, pdfBase64, filename, metadata };
 
     console.log('[DEBUG-PCLOUD-UPLOAD-2026-05] uploading', { type, jobId, jobNumber, filename, metadata });
     console.log('[DEBUG-PCLOUD-UPLOAD-2026-05] payload preview', { ...payload, pdfBase64: pdfBase64.slice(0, 24) + '... (' + pdfBase64.length + ' chars)' });

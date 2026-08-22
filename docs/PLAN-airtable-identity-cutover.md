@@ -193,7 +193,46 @@ Neon-first, so an Airtable-only row is invisible forever — nothing back-fills 
 inverted to assert exactly that, and the Airtable field-id mappings they used to check are now
 covered by source assertions, since the mirror is unreachable offline.
 
-### Slices 2–6
+### ✅ Slice 2.5 — SHIPPED 2026-08-22 (`eb38e2e` + a Make blueprint edit)
+
+Make scenario `4723276` — the pCloud PDF upload the app calls directly — no longer touches
+Airtable. `usedPackages` is now `gateway, builtin, pcloud`, and operations per upload dropped
+**5 → 3**.
+
+**⚠ pCloud did NOT move and never will.** Make keeps the grandfathered connection; their
+app-registration page is still down and no token can be issued. Only the two `ActionGetRecord`
+modules were removed. This is the same replumb as `4509211` (job folders): *Make stays, its data
+source changes.*
+
+The two modules supplied exactly two strings for the folder path:
+
+```
+/Northeastern Electric Jobs/NEE Jobs/‹year›/‹contractorName›/‹jobNumber›/…
+```
+
+`jobNumber` was **already in the payload** (`job.po`), so module #2 was pure redundancy.
+`contractorName` is now sent too, resolved from `state.jobs` when a caller omits it.
+
+**⚠⚠ A CLAIM MADE IN `eb38e2e`'s COMMIT MESSAGE IS NOT PROVEN.** That message states the folder
+path has been filing without its contractor level. The evidence is strong but circumstantial:
+
+- module #7 read the **Companies** table (`tblSMTewjVSCVRb0J`) using the **job** id;
+- `Contractor Name (Text)` exists on **Jobs** and **not** on Companies — verified against the live
+  base schema;
+- a job rec id queried against Companies returns **zero records** — verified live;
+- yet the module's own cached sample is a **Jobs** record showing `KDC Properties`, and a cached
+  pCloud sample from May shows a correct path *with* the contractor folder.
+
+So the table on module #7 appears to have been changed from Jobs to Companies at some point after
+May 2026, and executions have succeeded since. **Make's execution API returns only `SUCCESS` with
+no per-module detail**, so the actual written path could not be read back. The definitive check is
+the pCloud folder listing: if `NEE Jobs/2026/` contains job folders directly rather than contractor
+folders, the claim holds. Ask before repeating it as fact.
+
+The fix is correct either way — after this change the path comes from the payload, which is known
+good.
+
+### Slices 3–6
 
 Each slice is the same five steps, and they ship together in one commit:
 
@@ -258,7 +297,7 @@ size first estimated.
 | 0 — verify | ~1 h | ✅ **done** | Make passed, R2 passed, delete passes passed. |
 | 1 — reference leaves | ~1 h | ✅ **done 2026-08-21** (`41bd94c`) | Ran long: the SQL was 5 clauses, but two live bugs surfaced (see below) and three tests had to be inverted. |
 | 2 — payroll runs + bonuses | ~45 min | ~45 min | 3 clauses, one function. Unchanged. |
-| **2.5 — convert Make `4723276` to a payload** | — | **~45 min** | **New, and it gates slice 3.** Found in slice 0: it re-reads the job and the estimate/invoice out of Airtable to build the pCloud path. |
+| **2.5 — convert Make `4723276` to a payload** | — | ✅ **done 2026-08-22** (`eb38e2e` + Make edit) | Was gating slice 3. See below. |
 | 3 — estimates, invoices, allocations | ~1.5 h | ~1.5 h | 3 clauses + the money smoke test. |
 | 4 — **expenses** (own session) | ~2–3 h | ~2–3 h | Difficulty was never the SQL. R2 needs no work at all (slice 0). |
 | 5 — employees | ~1 h | **~2–3 h** | 19 clauses across 18 functions, plus stale-session verification. |

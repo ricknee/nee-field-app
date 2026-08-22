@@ -193,6 +193,42 @@ Neon-first, so an Airtable-only row is invisible forever — nothing back-fills 
 inverted to assert exactly that, and the Airtable field-id mappings they used to check are now
 covered by source assertions, since the mirror is unreachable offline.
 
+### ⚠ Slice 2 — PREPPED 2026-08-21 (`160d944`, `db/schema/054`), **NOT FLIPPED**
+
+Everything around the create shipped; the create itself did not. This is not caution — it is one
+piece of evidence:
+
+**`handlePayrollRunCreate` stays Airtable-first because the R2 write inside it has never run in
+production.** The 28 runs backfilled on 2026-08-21 went through `copyPayrollFilesToR2`, a
+*different* path that downloads an Airtable attachment and PUTs it. The write in the create handler
+(base64 from the browser → Buffer → presigned PUT) has never executed. A native run has **no
+Airtable record and therefore no PDF attachment**, so R2 becomes the only copy — reversing now
+would make the first real exercise of an untested write also the sole copy of a payroll PDF. Nor
+can it be smoke-tested on demand: a payroll run is a fortnightly event, not a button you press
+twice.
+
+**The gate** (also written into `054`'s header and the handler). At the next real payroll run:
+
+- the response carries `pdfArchived: true` and `r2Error: null`;
+- `SELECT pdf_key FROM payroll_runs ORDER BY generated_at DESC LIMIT 1` is set;
+- the PDF opens from the Payroll Archive tab.
+
+Then the flip is **~20 minutes** — Neon INSERT first, the Airtable POST and its attachments become
+a best-effort mirror, exactly as slice 1 did. One handler, not a sweep.
+
+**What did ship, and is inert until then:**
+
+- `NOT NULL` off `payroll_runs.airtable_id` and `payroll_bonuses.airtable_id`, so a native run is
+  possible at all;
+- all three run lookups accept **either** id form — supersedes resolution, the bonus-to-run link,
+  and the supersede flag;
+- `payrollRunsList` stops emitting a bare `airtable_id` as the run id, for both the run and its
+  superseded-by pointer.
+
+No native row can appear until the create is reversed, so none of the above can change behaviour
+today. That is the point of splitting it: the risky half is one handler, and it waits on evidence
+rather than on a calendar.
+
 ### ✅ Slice 2.5 — SHIPPED 2026-08-22 (`eb38e2e` + a Make blueprint edit)
 
 Make scenario `4723276` — the pCloud PDF upload the app calls directly — no longer touches
@@ -296,7 +332,7 @@ size first estimated.
 |---|---|---|---|
 | 0 — verify | ~1 h | ✅ **done** | Make passed, R2 passed, delete passes passed. |
 | 1 — reference leaves | ~1 h | ✅ **done 2026-08-21** (`41bd94c`) | Ran long: the SQL was 5 clauses, but two live bugs surfaced (see below) and three tests had to be inverted. |
-| 2 — payroll runs + bonuses | ~45 min | ~45 min | 3 clauses, one function. Unchanged. |
+| 2 — payroll runs + bonuses | ~45 min | ⚠ **prepped 2026-08-21** (`160d944`); ~20 min left | Everything but the create shipped. The flip is gated on the next **real** payroll run exercising the R2 write — see the slice 2 section. |
 | **2.5 — convert Make `4723276` to a payload** | — | ✅ **done 2026-08-22** (`eb38e2e` + Make edit) | Was gating slice 3. See below. |
 | 3 — estimates, invoices, allocations | ~1.5 h | ~1.5 h | 3 clauses + the money smoke test. |
 | 4 — **expenses** (own session) | ~2–3 h | ~2–3 h | Difficulty was never the SQL. R2 needs no work at all (slice 0). |

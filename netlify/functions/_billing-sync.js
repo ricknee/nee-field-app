@@ -123,6 +123,16 @@ export async function syncBillingTables(sql, apiKey, baseId) {
     await sql.query(`UPDATE labor_billing_allocations l SET time_entry_id = t.id
                        FROM time_entries t WHERE t.airtable_id = l.time_entry_airtable_id
                         AND l.time_entry_id IS DISTINCT FROM t.id`);
+    // Labor's invoice uuid, the twin of the material line above (db/schema/055).
+    // It exists for the same reason: someone can still link an allocation to an
+    // invoice in the Airtable UI, and that arrives here as a rec id only.
+    // `v_invoices` resolves either form, so this is not what keeps the total
+    // right — it keeps the COLUMN honest, so a future reader can join on
+    // invoice_id without discovering it is populated for some rows and not
+    // others. Rows on a NATIVE invoice have no rec id and are untouched by it.
+    await sql.query(`UPDATE labor_billing_allocations l SET invoice_id = i.id
+                       FROM invoices i WHERE i.airtable_id = l.invoice_airtable_id
+                        AND l.invoice_id IS DISTINCT FROM i.id`);
 
     // ⚠ DELETIONS MATTER HERE, unlike most syncs. Un-allocating material from an
     // invoice DELETES the allocation row in Airtable. Upserting alone would leave

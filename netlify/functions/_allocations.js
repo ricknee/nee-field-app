@@ -232,26 +232,45 @@ export async function createMaterialAllocation(atFetch, expenseAirtableId) {
 // never half-writes a row.
 const AT_BATCH = 10;   // Airtable's hard cap on records per write request
 
-export async function attachAllocationsToInvoice(atFetch, invoiceAirtableId, jobAirtableId) {
+// ⚠⚠ THE INVOICE IS PASSED AS BOTH HANDLES, and that is the whole of the
+// identity cutover in this function (slice 3, db/schema/055).
+//
+// `invoice.id` is the Neon uuid and ALWAYS exists — the invoice row is written
+// to Neon before this is called. `invoice.airtableId` is the mirror's rec id and
+// is NULL when Airtable was unreachable at create time. Only the Airtable PATCH
+// half needs the rec id; the Neon half never did, and `v_invoices` now resolves
+// its labor and material by uuid first (see 055), so an invoice with no rec id
+// still totals correctly. Before this change the uuid was never written at all
+// and a native invoice would have printed a $0 labor line.
+export async function attachAllocationsToInvoice(atFetch, invoice, jobAirtableId) {
   if (!allocationsWriteEnabled()) return { attached: 0, skipped: "disabled" };
-  if (!invoiceAirtableId || !jobAirtableId) return { attached: 0, skipped: "missing-ids" };
+  const invoiceNeonId      = invoice?.id || null;
+  const invoiceAirtableId  = invoice?.airtableId || null;
+  if (!invoiceNeonId || !jobAirtableId) return { attached: 0, skipped: "missing-ids" };
 
   // `a.airtable_id IS NOT NULL` is deliberately ABSENT. Neon-native allocations
   // have no Airtable row to PATCH, but they are exactly the ones covering work
   // logged since 2026-08-07 — excluding them would attach the old allocations to
   // an invoice and silently leave this week's labor off it.
+  //
+  // ⚠ "Unattached" now means BOTH handles are empty. Checking only
+  // `invoice_airtable_id IS NULL` would re-attach — and re-bill — every
+  // allocation already sitting on a NATIVE invoice, every time any invoice on
+  // that job was saved.
   const q = await neonQuery(
     `SELECT a.id::text AS id, a.airtable_id, 'labor' AS kind
        FROM labor_billing_allocations a
        JOIN time_entries t ON t.id = a.time_entry_id
        JOIN jobs j ON j.id = t.job_id
-      WHERE j.airtable_id = $1 AND a.invoice_airtable_id IS NULL
+      WHERE j.airtable_id = $1
+        AND a.invoice_airtable_id IS NULL AND a.invoice_id IS NULL
       UNION ALL
      SELECT a.id::text, a.airtable_id, 'material'
        FROM material_billing_allocations a
        JOIN expenses e ON e.id = a.expense_id
        JOIN jobs j ON j.id = e.job_id
-      WHERE j.airtable_id = $1 AND a.invoice_airtable_id IS NULL`, [jobAirtableId]);
+      WHERE j.airtable_id = $1
+        AND a.invoice_airtable_id IS NULL AND a.invoice_id IS NULL`, [jobAirtableId]);
   if (!q?.rows) return { attached: 0, skipped: "lookup-failed" };
   if (!q.rows.length) return { attached: 0, skipped: null };
 
@@ -266,9 +285,13 @@ export async function attachAllocationsToInvoice(atFetch, invoiceAirtableId, job
   const commit = async (kind, ids) => {
     if (!ids.length) return;
     const tbl = kind === "labor" ? "labor_billing_allocations" : "material_billing_allocations";
+    // BOTH columns, every time. The uuid is what `v_invoices` reads; the rec id
+    // is what the hourly Airtable sync reconciles against and is simply NULL
+    // when the invoice never reached Airtable.
     await neonWrite(`allocation.attach.${kind}`,
-      `UPDATE ${tbl} SET invoice_airtable_id = $2 WHERE id = ANY($1::uuid[])`,
-      [ids, invoiceAirtableId]);
+      `UPDATE ${tbl} SET invoice_id = $2, invoice_airtable_id = $3
+        WHERE id = ANY($1::uuid[])`,
+      [ids, invoiceNeonId, invoiceAirtableId]);
     attached += ids.length;
   };
 
@@ -289,7 +312,23 @@ export async function attachAllocationsToInvoice(atFetch, invoiceAirtableId, job
       failures.push(`${kind} native ×${nativeIds.length}: ${e?.message || e}`);
     }
 
-    const mirrored = rows.filter(r => r.airtable_id);
+    // An allocation that HAS an Airtable row, being attached to an invoice that
+    // does NOT. There is no rec id to write into the Airtable link field, so the
+    // Airtable half is skipped and the attach is committed in Neon alone —
+    // which is where the money is read from. The visible consequence is that
+    // Airtable's copy of that allocation keeps showing "no invoice"; the app is
+    // correct and Airtable is the stale one, which is the direction of travel.
+    const mirrored = invoiceAirtableId ? rows.filter(r => r.airtable_id) : [];
+    if (!invoiceAirtableId) {
+      const orphanIds = rows.filter(r => r.airtable_id).map(r => r.id);
+      if (orphanIds.length) {
+        try {
+          await commit(kind, orphanIds);
+        } catch (e) {
+          failures.push(`${kind} neon-only ×${orphanIds.length}: ${e?.message || e}`);
+        }
+      }
+    }
     for (let i = 0; i < mirrored.length; i += AT_BATCH) {
       const batch = mirrored.slice(i, i + AT_BATCH);
       try {

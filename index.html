@@ -16852,10 +16852,16 @@
     // "est_<recordId>" when seeded from estimates in loadEstimateTab; we
     // recover those ids here so the backend can populate the new "Job
     // Estimate" link field on Sent Estimate PDFs.
+    // ⚠ NO `startsWith("rec")` FILTER — removed 2026-08-22 with cutover slice 3.
+    // Estimates are created in Neon now, so a new one's id is a uuid, and this
+    // filter would have silently dropped exactly the estimates made since. The
+    // symptom is not an error: the snapshot saves, and the estimate it came from
+    // loses its scope text on the next load. The backend resolves either shape
+    // and only rec ids reach Airtable's link field.
     const jobEstimateIds = Array.from(new Set(
       estLines
         .map(l => (l.id || "").startsWith("est_") ? l.id.slice(4) : null)
-        .filter(id => id && id.startsWith("rec"))
+        .filter(id => id && String(id).trim())
     ));
 
     const body = {

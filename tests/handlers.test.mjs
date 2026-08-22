@@ -100,6 +100,9 @@ const EMP_TOK    = signToken({ id: "recEmp",    role: "employee" });
 const OFFICE_TOK = signToken({ id: "recOffice", role: "office" });
 const VIEWER_TOK = signToken({ id: "recViewer", role: "viewer" });
 
+// A Neon uuid, for the handles that are no longer rec-shaped (cutover slice 3).
+const NEON_INVOICE_ID = "1f0c9d84-6b1e-4f6a-9c3a-2b7f5e0d4a11";
+
 // ── tiny assert framework (no deps) ──
 let pass = 0, fail = 0;
 const log = [];
@@ -1679,7 +1682,8 @@ await test("allocations: ship INERT — ALLOCATIONS_WRITE unset writes nothing",
 
   eq((await createLaborAllocation(boom, "00000000-0000-0000-0000-000000000001")).skipped, "disabled", "labor inert");
   eq((await createMaterialAllocation(boom, "recAnything")).skipped, "disabled", "material inert");
-  eq((await attachAllocationsToInvoice(boom, "recInv", "recJob")).skipped, "disabled", "attach inert");
+  eq((await attachAllocationsToInvoice(boom, { id: NEON_INVOICE_ID, airtableId: "recInv" }, "recJob")).skipped,
+     "disabled", "attach inert");
   eq(touched, 0, "Airtable was not called at all");
 
   for (const v of ["off", "OFF", "false", "1", "yes", ""]) {
@@ -1792,10 +1796,21 @@ await test("allocations: the attach is BATCHED, and never touches Airtable witho
   delete process.env.DATABASE_URL;
   let touched = 0;
   const boom = async () => { touched++; throw new Error("must not reach Airtable"); };
-  const r = await attachAllocationsToInvoice(boom, "recInv", "recJob");
+  const r = await attachAllocationsToInvoice(boom, { id: NEON_INVOICE_ID, airtableId: "recInv" }, "recJob");
   eq(r.skipped, "lookup-failed", "no candidate list → refuse, don't guess");
   eq(r.attached, 0, "nothing attached");
   eq(touched, 0, "Airtable not called when Neon can't be read");
+
+  // ⚠ CUTOVER SLICE 3: the invoice arrives as BOTH handles, and the NEON uuid is
+  // the required half. A native invoice has no rec id, and passing the rec id
+  // alone — the old signature — would have attached nothing to it, printing an
+  // invoice with no labor and no material on it. Missing uuid must refuse
+  // outright rather than write a NULL invoice_id over the allocations.
+  eq((await attachAllocationsToInvoice(boom, { airtableId: "recInv" }, "recJob")).skipped,
+     "missing-ids", "no Neon uuid → refuse; the rec id alone is not enough");
+  eq((await attachAllocationsToInvoice(boom, { id: NEON_INVOICE_ID }, null)).skipped,
+     "missing-ids", "no job → refuse");
+  eq(touched, 0, "still no Airtable call");
   delete process.env.ALLOCATIONS_WRITE;
 
   const fs = await import("node:fs/promises");
@@ -1834,7 +1849,7 @@ await test("billing-sync: the delete pass spares Neon-native allocations", async
   }
 });
 
-await test("deleteJobEstimate: STRICT admin — office is out, and it must be a rec id", async () => {
+await test("deleteJobEstimate: STRICT admin — office is out, and a uuid is now a real id", async () => {
   // ⚠ This action has NO STATUS GUARD by owner's explicit decision (2026-08-20):
   // a Sent or Approved estimate — the record of what a customer was quoted —
   // will be deleted without complaint. The role tier IS the guard, so it sits at
@@ -1846,11 +1861,117 @@ await test("deleteJobEstimate: STRICT admin — office is out, and it must be a 
   eq((await POST("deleteJobEstimate", { estimateId: "recX" }, EMP_TOK)).statusCode, 403, "employee refused");
   eq((await POST("deleteJobEstimate", { estimateId: "recX" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
   eq((await POST("deleteJobEstimate", {}, ADMIN_TOK)).statusCode, 400, "missing id rejected");
-  // A uuid here would mean the caller confused a TEMPLATE handle with an
-  // estimate id. Estimates are still Airtable-identity, so anything that isn't
-  // a rec id is a bug in the caller, not a record to go hunting for.
-  eq((await POST("deleteJobEstimate", { estimateId: "4f3a4be6-88ba-4cab-af82-f9fea6915ac9" }, ADMIN_TOK)).statusCode, 400,
-     "a uuid is refused — that's a template handle, not an estimate");
+
+  // ⚠⚠ INVERTED BY CUTOVER SLICE 3 (2026-08-22). This asserted the opposite —
+  // that a uuid is refused, "because estimates are still Airtable-identity".
+  // They are not: `handleCreateJobEstimate` writes Neon first, so a uuid IS an
+  // estimate id now, and the old `startsWith("rec")` guard would have made every
+  // estimate created since undeletable. Both shapes must get past the guard and
+  // reach the database, which offline resolves to the 503 below rather than to a
+  // 400. What is still asserted is that neither shape is rejected on FORM.
+  for (const id of ["recX", "4f3a4be6-88ba-4cab-af82-f9fea6915ac9"]) {
+    const r = await POST("deleteJobEstimate", { estimateId: id }, ADMIN_TOK);
+    eq(r.statusCode, 503, `${id}: accepted on form, refused only for want of a database`);
+  }
+});
+
+// ── identity cutover, slice 3 (docs/PLAN-airtable-identity-cutover.md) ──────
+
+await test("slice 3: every estimate and invoice write fails CLOSED, and nothing half-lands in Airtable", async () => {
+  // The contract these seven share: the row is born in Neon, Airtable is a
+  // best-effort mirror. With no database that means REFUSE — an Airtable-only
+  // estimate or invoice is invisible to the app forever, because every read of
+  // both tables has been Neon-first since Step 4e and nothing back-fills them.
+  //
+  // The half that would be silent is the second assertion: a write that refuses
+  // but has already POSTed to Airtable leaves a record the app cannot see and
+  // the owner can, which is worse than either outcome on its own.
+  mockTables = { "Job Estimates": [], "Invoices": [], "Sent Estimate PDFs": [], Jobs: [], Employees: [] };
+  const writes = [
+    ["createJobEstimate",    { jobId: "recJob", baseAmount: 1000, laborHours: 10 }],
+    ["updateEstimate",       { estimateId: "recEst", actualEstimate: 900 }],
+    ["updateEstimateStatus", { estimateId: "recEst", status: "Sent" }],
+    ["deleteJobEstimate",    { estimateId: "recEst" }],
+    ["saveEstimate",         { jobId: "recJob", totalAmount: 1000, estimateNumber: 2215 }],
+    ["saveInvoice",          { jobId: "recJob", totalAmount: 1000, billingMode: "tm" }],
+    ["setInvoiceStatus",     { invoiceId: "recInv", status: "Paid" }],
+  ];
+  for (const [action, body] of writes) {
+    const before = lastFetch;
+    const res = await POST(action, body, ADMIN_TOK);
+    eq(res.statusCode, 503, `${action}: no database → refuse`);
+    const wrote = lastFetch !== before &&
+                  ["POST", "PATCH", "DELETE"].includes((lastFetch?.opts?.method || "").toUpperCase());
+    eq(wrote, false, `${action}: nothing was written to Airtable on the way to refusing`);
+  }
+});
+
+await test("slice 3: the columns Airtable used to compute are computed here, and correctly", async () => {
+  // These four cannot be exercised offline — they are SQL, and the harness has
+  // no database — so they are asserted at source. Each one is a number that a
+  // person is paid or billed from, and each failed silently rather than loudly
+  // when it was wrong before.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const sql = readFileSync(fileURLToPath(new URL("../db/schema/055_estimates_invoices_native.sql", import.meta.url)), "utf8");
+
+  // 1. Estimated Labor Cost = hours × 32.50, verified against all 89 estimates
+  //    before the reversal. It feeds v_job_rollups.est_labor_cost_rollup, i.e.
+  //    estimated GP, so a native estimate that left it null would report a job
+  //    as more profitable than it is.
+  ok(/const EST_LABOR_RATE = 32\.50;/.test(src), "the estimate labor rate is 32.50 and is named");
+  ok(/sqlEstLaborCost\("\$5"\)/.test(src), "the create computes labor cost rather than storing null");
+  ok(/sqlEstTotal\("\$5", "\$6"\)/.test(src), "the create computes the estimate total");
+
+  // 2. A partial update recomputes from the STORED values of the fields it was
+  //    not given. Editing only the material cost still moves the total.
+  const upd = src.slice(src.indexOf("async function handleUpdateEstimate"));
+  ok(/COALESCE\(\$3, estimated_labor_hours\)/.test(upd.slice(0, 2000)),
+     "update derives from stored hours when hours weren't sent");
+  ok(/COALESCE\(\$4, estimated_material_cost\)/.test(upd.slice(0, 2000)),
+     "update derives from stored material when material wasn't sent");
+
+  // 3. invoice_total stays NULL on a native invoice: v_invoices.invoice_total_calc
+  //    is the computed figure and the stored one goes stale the moment an
+  //    allocation changes (db/schema/015). Two opinions about a total is how a
+  //    wrong number gets quoted.
+  const inv = src.slice(src.indexOf('neonWrite("invoice.create"'), src.indexOf('neonWrite("invoice.create"') + 2500);
+  ok(!/\binvoice_total\b\s*,/.test(inv.split("VALUES")[0]), "invoice_total is not written by the create");
+  ok(/'-001'/.test(inv), "invoice_number reproduces the Airtable label verbatim");
+
+  // 4. v_invoices resolves BOTH handle shapes. If it resolved by rec id only, a
+  //    native invoice would print with no labor and no material on it — a $0
+  //    invoice, with no error anywhere.
+  ok(/COALESCE\(a\.invoice_id, i2\.id\)/.test(sql), "labor resolves uuid-first, rec id second");
+  ok(/COALESCE\(m\.invoice_id, i2\.id\)/.test(sql), "material resolves uuid-first, rec id second");
+  ok(/ADD COLUMN IF NOT EXISTS invoice_id uuid/.test(sql), "labor allocations gained the uuid link");
+});
+
+await test("slice 3: the mirror can fail without duplicating an invoice", async () => {
+  // ⚠⚠ The bug this guards against is a DUPLICATE INVOICE, not a lost one.
+  // `syncInvoiceToNeon` is an INSERT … ON CONFLICT (airtable_id). If the mirror
+  // POST succeeds and the stamp that records its rec id then fails, the row is
+  // still native, nothing conflicts, and the upsert writes a SECOND invoice for
+  // the same work — one native, one mirrored, both billable.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const save = src.slice(src.indexOf("async function handleSaveInvoice"));
+  const body = save.slice(0, save.indexOf("\n}\n"));
+
+  ok(/if \(data\?\.id && \(recId \|\| stamped\)\) await syncInvoiceToNeon\(data\)/.test(body),
+     "the carry-back only runs on a row that is known to hold that rec id");
+  ok(/stamped = true/.test(body), "the stamp records whether it actually succeeded");
+
+  // And the attach gets both handles — the uuid is the half that always exists.
+  ok(/attachAllocationsToInvoice\(\s*atFetch, \{ id: row\.id, airtableId:/.test(body),
+     "allocations are attached by uuid, with the rec id only for Airtable's link");
+
+  const alloc = readFileSync(fileURLToPath(new URL("../netlify/functions/_allocations.js", import.meta.url)), "utf8");
+  ok(/SET invoice_id = \$2, invoice_airtable_id = \$3/.test(alloc), "the attach writes both columns");
+  ok(/a\.invoice_airtable_id IS NULL AND a\.invoice_id IS NULL/.test(alloc),
+     "\"unattached\" means BOTH are empty — or a native invoice's work is re-billed on the next save");
 });
 
 await test("estimateTemplateDelete: admin+office, and it clears provenance before deleting", async () => {

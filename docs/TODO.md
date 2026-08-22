@@ -150,6 +150,30 @@ Nothing in the app reads those columns today, so this is a gap rather than a fau
 2. Add an `http:ActionSendData` module at the end of the scenario POSTing `recordId`, `token` and
    the five folder ids to `/.netlify/functions/airtable` with `action: "jobAutomationResult"`.
 
+## Found 2026-08-22 — every invoice is numbered `-001`, and always has been
+
+Surfaced while reproducing Airtable's formulas for cutover slice 3, not by anyone hitting it.
+
+```
+Invoice Number  =  {Job} & "-" & RIGHT("000" & {Invoice Sequence}, 3)
+Invoice Sequence =  {Invoices for Job}
+Invoices for Job =  a COUNT of the records in the invoice's own Job LINK field
+```
+
+That link holds exactly one job, so the count is **always 1**. Every invoice ever written reads
+`<job name>-001`; Bethel School has two invoices both called `Bethel School-001`. The intent was
+plainly "the Nth invoice on this job" and it has never once done that.
+
+**Not fixed, deliberately.** Slice 3 reproduces the label verbatim, bug included — changing what a
+customer-facing document says is not something a cutover should do quietly, and the number people
+actually work from is `Invoice Display #` (`invoice_display_no`, 1633+), which is unique and is
+what the app mints. Whether `Invoice Number` should become `<job>-<nth invoice on this job>`, or
+simply be dropped from the PDF, is the owner's call.
+
+⚠ If it is changed, it changes **existing** documents too: the column is computed on read for
+Airtable rows and is now stored per-invoice in Neon, so a fix must decide whether old invoices keep
+the number they were sent under. They should.
+
 ## Smaller, unscheduled
 
 - **R2 lifecycle rule** to expire the photo recycle bin (`_deleted/`) at 30 days — ~15 min.

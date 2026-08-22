@@ -37,7 +37,7 @@ work, and the tables without it are already free.
 |---|---|---|
 | `expense_vendors`, `labor_billable_rates`, `power_companies`, `companies` | 1 — leaves | Reference data. Nothing keys on them but jobs/expenses, by rec id, from rows that already exist. |
 | `payroll_runs`, `payroll_bonuses` | 2 | Files already moved to R2 on the **Neon uuid** (`db/schema/052`). Half done by accident. |
-| `job_estimates`, `invoices`, `job_labor_allocations` | 3 | Money. `sent_estimate_pdfs` is already nullable and points at estimates. |
+| `job_estimates`, `invoices`, ~~`job_labor_allocations`~~ | 3 | Money. `sent_estimate_pdfs` is already nullable and points at estimates. ⚠ `job_labor_allocations` was wrong: nothing in either function reads or writes it, so its NOT NULL is vestigial — see the slice 3 section. |
 | `expenses` | 4 | **The hard one.** R2 receipt keys are built from the expense rec id, and `inventory.js` writes this table from the other app. |
 | `employees` | 5 | The login `id` is this rec id and it is persisted in every browser's `localStorage`. |
 | `jobs` | 6 — last | Everything above links to it. |
@@ -268,7 +268,96 @@ folders, the claim holds. Ask before repeating it as fact.
 The fix is correct either way — after this change the path comes from the payload, which is known
 good.
 
-### Slices 3–6
+### ✅ Slice 3 — SHIPPED 2026-08-22 (`db/schema/055`)
+
+Estimates, sent-estimate PDFs and invoices are born in Neon. Seven handlers reversed:
+`handleCreateJobEstimate` · `handleUpdateEstimate` · `handleUpdateEstimateStatus` ·
+`handleDeleteJobEstimate` · `handleSaveEstimate` · `handleSaveInvoice` · `handleSetInvoiceStatus`.
+All of them now fail **closed** without a database and mirror to Airtable best-effort.
+
+**⚠⚠ THE FINDING THAT MATTERED: `v_invoices` JOINED ON REC IDS.** Its labor and material CTEs
+resolved `invoice_airtable_id = i.airtable_id`. A native invoice has no rec id, so both would have
+missed and `invoice_total_calc` — the figure the invoice screen and the printed PDF both use —
+would have come out **zero for every T&M invoice**. Not an error, not a warning: a $0 invoice.
+Same failure shape as the NULL `bill_rate` in `db/schema/036`. The view now resolves
+`COALESCE(uuid, resolved-from-rec-id)` in every CTE, uuid **first** — a rec-id-first resolution
+would drop exactly the newest work, because an allocation attached to a native invoice never gets
+a rec id and the hourly sync will never fill one in.
+
+`labor_billing_allocations` had no `invoice_id` at all (its material twin has had one since 033).
+Added and backfilled: **1,221 of 1,221 attached rows resolved, zero orphans.**
+
+**⚠ Airtable computed three of these columns, and one of them is GP.**
+
+| Column | Formula | Why it matters |
+|---|---|---|
+| `estimated_labor_cost` | hours × **32.50** | `v_job_rollups` sums it into `est_labor_cost_rollup` — estimated GP. Left null, a job reads as more profitable than it is. |
+| `calculated_estimated_total` | labor + material | Shown on every estimate. |
+| `invoice_number` | `{Job} & "-" & RIGHT("000"&{Invoice Sequence},3)` | See below. |
+
+Both estimate formulas were diffed against **all 89 estimates before any code was written — zero
+mismatches** — and the derivation lives in SQL, not JS, so the create path and the partial-update
+path cannot drift. An update that changes only material cost still recomputes the total from the
+*stored* hours.
+
+**32.50 is the prevailing-wage constant.** `docs/PLAN-prevailing-wage.md` is the project that
+changes it, and this is now the only place the app decides an estimate's labor cost.
+
+**`invoice_number` has always been `<job name>-001`, on every invoice ever written.** Its
+`Invoice Sequence` counts the records in the invoice's own Job *link* field, which is always 1, so
+Bethel School has two invoices both numbered `Bethel School-001`. Reproduced as-is: a cutover is
+the wrong moment to change what a customer-facing document says. `invoice_display_no` is the real
+number. Recorded in `docs/TODO.md`.
+
+**⚠⚠ A MIRROR THAT HALF-SUCCEEDS CAN DUPLICATE AN INVOICE.** `syncInvoiceToNeon` is an
+`INSERT … ON CONFLICT (airtable_id)`. If the Airtable POST succeeds and the stamp that records its
+rec id then fails, the row is still native, nothing conflicts, and the carry-back writes a
+**second invoice for the same work** — one native, one mirrored, both billable. The carry-back is
+gated on `recId || stamped`, and `stamped` is set only by a stamp that actually returned.
+
+**⚠ The stamp is safe on these tables, and the reasoning does not transfer.** Slice 0's rule —
+never back-fill `airtable_id` onto a native row — is about **R2 keys**. Estimate PDFs in R2 are
+keyed on the *Neon uuid* already (`estimates/<uuid>/…`, see `copyAirtablePhotosToR2`), and invoices
+have no R2 objects at all: invoice PDFs go to pCloud from the browser, and scenario `4723276` has
+taken its folder path from the **payload** since slice 2.5. Nothing downstream re-reads these rec
+ids, so the handle may change. On a table with files it may not.
+
+**Two live bugs found on the way, both silent:**
+- `index.html` filtered the estimate back-links it sends with `startsWith("rec")`, so every
+  estimate created after this slice would have been dropped from the link. The symptom is not an
+  error: the snapshot saves, and the estimate it came from **loses its scope text** on the next
+  load.
+- `attachAllocationsToInvoice` treated "unattached" as `invoice_airtable_id IS NULL`. Left alone,
+  every allocation sitting on a *native* invoice would have been re-attached — and re-billed —
+  every time any invoice on that job was saved. It now requires **both** handles to be empty.
+
+**⚠ `job_labor_allocations` IS NOT IN THIS SLICE, and the plan's scope table above is wrong about
+it.** It is the weekly allocation table from `db/schema/004`; nothing in either function reads or
+writes it, its only writer is `db/etl/time-entries-full.mjs`, and its newest row is 2026-08-09. It
+has no create path to reverse, so its `NOT NULL` is vestigial exactly like `labor_cost_rates`.
+Dropping it would buy nothing and would imply a native row is expected there.
+
+**Verified before shipping, not after:**
+- `v_invoices` old vs new, all 56 invoices: **zero diffs on every component**, total
+  `$1,267,086.19` both ways.
+- The estimate back-link change, all 89 estimates: **identical**, 23 with a snapshot before and
+  after.
+- **18 new parameterised statements PREPAREd against the live schema** — the offline suite cannot
+  catch broken SQL, which is the lesson from the employees flip.
+- 182 tests pass (3 new; 2 existing ones inverted, see below).
+- Zero duplicates in `invoice_display_no` / `display_number` before adding the unique indexes that
+  now back the MAX()+1 mint.
+
+**Two tests were inverted rather than deleted.** `deleteJobEstimate` asserted that a uuid is
+*refused* "because estimates are still Airtable-identity" — that guard would have made every
+estimate created since this slice undeletable. The allocation attach test was updated to the
+two-handle signature, plus a new case that a rec id **alone** is refused.
+
+⬜ **Not smoke-tested.** The money path needs a person: create an estimate, save its PDF, reopen
+the job and check the scope text came back, invoice it, confirm the labor and material lines are
+non-zero, mark it paid.
+
+### Slices 4–6
 
 Each slice is the same five steps, and they ship together in one commit:
 
@@ -334,7 +423,7 @@ size first estimated.
 | 1 — reference leaves | ~1 h | ✅ **done 2026-08-21** (`41bd94c`) | Ran long: the SQL was 5 clauses, but two live bugs surfaced (see below) and three tests had to be inverted. |
 | 2 — payroll runs + bonuses | ~45 min | ⚠ **prepped 2026-08-21** (`160d944`); ~20 min left | Everything but the create shipped. The flip is gated on the next **real** payroll run exercising the R2 write — see the slice 2 section. |
 | **2.5 — convert Make `4723276` to a payload** | — | ✅ **done 2026-08-22** (`eb38e2e` + Make edit) | Was gating slice 3. See below. |
-| 3 — estimates, invoices, allocations | ~1.5 h | ~1.5 h | 3 clauses + the money smoke test. |
+| 3 — estimates, invoices, allocations | ~1.5 h | ✅ **done 2026-08-22** (`db/schema/055`) | Ran long. The 3 clauses were the easy part; `v_invoices` joined on rec ids and would have printed every native T&M invoice at $0, and three Airtable formula columns had to be reproduced. |
 | 4 — **expenses** (own session) | ~2–3 h | ~2–3 h | Difficulty was never the SQL. R2 needs no work at all (slice 0). |
 | 5 — employees | ~1 h | **~2–3 h** | 19 clauses across 18 functions, plus stale-session verification. |
 | 6 — jobs | ~1.5 h | **~3–4 h** | **46 clauses across 37 functions** — the single biggest piece of the whole cutover. |

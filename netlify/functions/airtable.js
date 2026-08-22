@@ -6274,8 +6274,14 @@ async function handleJobEstimates(params) {
          FROM job_estimates e
          LEFT JOIN jobs j ON j.id = e.job_id
          LEFT JOIN LATERAL (
+           -- Dual handle (cutover slice 3). The uuid first: a snapshot saved
+           -- against a NATIVE estimate has only that, and matching on
+           -- airtable_id alone would silently drop the back-link — which shows
+           -- up as an estimate whose scope text has gone missing, not as an
+           -- error.
            SELECT s.snapshot FROM sent_estimate_pdfs s
-            WHERE s.estimate_airtable_id = e.airtable_id
+            WHERE (s.estimate_id = e.id
+                   OR (e.airtable_id IS NOT NULL AND s.estimate_airtable_id = e.airtable_id))
             ORDER BY s.estimate_date DESC NULLS LAST, s.display_number DESC NULLS LAST
             LIMIT 1
          ) back ON true
@@ -6404,17 +6410,49 @@ async function fetchSentEstimatePDFsForJob(jobId) {
   }
 }
 
+// ── THE TWO FORMULAS AIRTABLE USED TO COMPUTE (cutover slice 3) ───────────
+// A native estimate has no Airtable record, so nothing computes these unless
+// the app does. Both were checked against all 89 existing estimates before this
+// was written — reproduced exactly, zero mismatches:
+//
+//   Estimated Labor Cost       = {Estimated Labor Hours} × 32.50
+//   Calculated Estimated Total = {Estimated Labor Cost} + {Estimated Material Cost}
+//
+// ⚠ `estimated_labor_cost` is not decoration. `v_job_rollups` sums it into
+// `est_labor_cost_rollup` and `proj_est_labor_cost`, which IS estimated GP — so
+// leaving it null on a native estimate would quietly report a job as more
+// profitable than it is.
+//
+// ⚠ A blank hours field evaluates to 0 in an Airtable formula, not to blank, so
+// the coercion below is deliberate rather than sloppy: it is what the formula
+// did. The derivation lives in SQL and not in JS so that the create path and the
+// partial-update path cannot drift apart — an update that changes only material
+// cost still has to recompute the total, and it does it from the stored hours.
+//
+// ⚠⚠ 32.50 IS THE PREVAILING-WAGE CONSTANT. docs/PLAN-prevailing-wage.md is the
+// project that changes it, and it needs this to be findable — it is the only
+// place the app now decides an estimate's labor cost.
+// `hoursExpr` / `materialExpr` are SQL fragments the caller owns — a bind
+// parameter on the create path, `COALESCE($n, <column>)` on the update path so a
+// field the caller left out keeps its stored value.
+const EST_LABOR_RATE = 32.50;
+const sqlEstLaborCost = (hoursExpr) =>
+  `round(COALESCE(${hoursExpr}, 0) * ${EST_LABOR_RATE}, 2)`;
+const sqlEstTotal = (hoursExpr, materialExpr) =>
+  `round(COALESCE(${hoursExpr}, 0) * ${EST_LABOR_RATE} + COALESCE(${materialExpr}, 0), 2)`;
+
 // ── KEEP NEON IN STEP AFTER AN ESTIMATE WRITE (migration Step 4e) ─────────
 // handleJobEstimates reads Neon first and only falls through on ZERO rows, so on
 // any job that already has an estimate an Airtable-only write would simply never
 // appear. Same trap as the warranties at 83e022c and the expenses at 6ee42b5.
 //
-// Airtable stays the identity authority here, as it does for expenses: the id
-// contract is rec-shaped, Sent Estimate PDFs back-link to the rec id, and
-// estimate PDFs live in R2 under keys derived from it.
-//
-// Fed the record Airtable just RETURNED, so Estimated Labor Cost and Calculated
-// Estimated Total arrive already computed — identical to what the ETL loads.
+// ⚠ AS OF SLICE 3 THIS IS THE MIRROR PATH, NOT THE WRITE PATH. It is called
+// after an Airtable PATCH succeeds on an estimate that HAS a rec id, to carry
+// Airtable's computed fields back. Creates no longer come through here — see
+// handleCreateJobEstimate, which writes Neon first. Left in place because a
+// mirrored estimate edited through Airtable still needs its values carried, and
+// because ON CONFLICT (airtable_id) is a no-op for native rows (NULL never
+// conflicts), so it cannot damage one.
 async function syncEstimateToNeon(rec) {
   if (!rec?.id) return;
   const f = rec.fields || {};
@@ -6446,28 +6484,84 @@ async function syncEstimateToNeon(rec) {
      n(f["Estimate Display #"]), s(f["Estimate Snapshot"])]).catch(() => {});
 }
 
+// Neon-first, dual handle, mirror best-effort (cutover slice 3).
+//
+// ⚠ The derived columns are recomputed IN THE SAME STATEMENT, from
+// `COALESCE($n, <stored column>)`. Editing only the material cost still changes
+// the total, and the hours it needs are the ones already in the row. Getting
+// this wrong is invisible: the estimate saves, and its GP is quietly stale.
 async function handleUpdateEstimate(body) {
   const { estimateId, actualEstimate, laborHours, materialCost } = body || {};
   if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
-  const fields = {};
-  if (actualEstimate !== undefined && actualEstimate !== null) fields["fldJTAPtFpXH2vRwF"] = Number(actualEstimate);
-  if (laborHours     !== undefined && laborHours     !== null) fields["fldH7bJSZikzOYxkm"] = Number(laborHours);
-  if (materialCost   !== undefined && materialCost   !== null) fields["fldDEUGzVrfA56aBq"] = Number(materialCost);
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
-  const data = await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, { method: "PATCH", body: JSON.stringify({ fields }) });
-  await syncEstimateToNeon(data);
-  return resp(200, { ok: true, updatedId: data.id });
+
+  const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+  const est = num(actualEstimate), hrs = num(laborHours), mat = num(materialCost);
+  if (est === null && hrs === null && mat === null) {
+    return resp(400, { ok: false, error: "Nothing to update." });
+  }
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't update the estimate right now — the database is unavailable. Try again in a moment." });
+  }
+
+  const H = "COALESCE($3, estimated_labor_hours)";
+  const M = "COALESCE($4, estimated_material_cost)";
+  const rows = await neonWrite("estimate.update",
+    `UPDATE job_estimates SET
+       actual_estimate_sent       = COALESCE($2, actual_estimate_sent),
+       estimated_labor_hours      = ${H},
+       estimated_material_cost    = ${M},
+       estimated_labor_cost       = ${sqlEstLaborCost(H)},
+       calculated_estimated_total = ${sqlEstTotal(H, M)},
+       synced_at                  = now()
+      WHERE airtable_id = $1 OR id::text = $1
+      RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id`,
+    [String(estimateId), est, hrs, mat]);
+  if (!rows?.length) return resp(404, { ok: false, error: "That estimate no longer exists." });
+
+  const recId = rows[0].airtable_id;
+  if (recId) {
+    const fields = {};
+    if (est !== null) fields["fldJTAPtFpXH2vRwF"] = est;
+    if (hrs !== null) fields["fldH7bJSZikzOYxkm"] = hrs;
+    if (mat !== null) fields["fldDEUGzVrfA56aBq"] = mat;
+    await mirrorToAirtable("updateEstimate", () =>
+      atFetch(`${encodeURIComponent("Job Estimates")}/${recId}`, {
+        method: "PATCH", body: JSON.stringify({ fields }),
+      }));
+  }
+  return resp(200, { ok: true, updatedId: rows[0].handle });
 }
 
+// Neon-first, dual handle, mirror best-effort (cutover slice 3).
+//
+// ⚠ Status is not cosmetic: `v_job_rollups` counts only Sent / Approved /
+// Archived-Completed estimates into expected revenue, so this write moves a
+// job's revenue figure. It has to land in the store the app reads.
 async function handleUpdateEstimateStatus(body) {
   const { estimateId, status } = body || {};
   if (!estimateId || !status) return resp(400, { ok: false, error: "Missing estimateId or status." });
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't update the estimate right now — the database is unavailable. Try again in a moment." });
+  }
+
+  const rows = await neonWrite("estimate.updateStatus",
+    `UPDATE job_estimates SET status = $2, synced_at = now()
+      WHERE airtable_id = $1 OR id::text = $1
+      RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id`,
+    [String(estimateId), String(status)]);
+  if (!rows?.length) return resp(404, { ok: false, error: "That estimate no longer exists." });
+
+  const recId = rows[0].airtable_id;
+  if (!recId) return resp(200, { ok: true, updatedId: rows[0].handle });
+
   // Job Estimates — Status field ID = fld9GsGvxaNPuCnjo (singleSelect)
   const fields = { "fld9GsGvxaNPuCnjo": status };
-  const data = await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
-  });
+  const data = await mirrorToAirtable("updateEstimateStatus", () =>
+    atFetch(`${encodeURIComponent("Job Estimates")}/${recId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ fields, typecast: true })
+    }));
+  if (!data?.id) return resp(200, { ok: true, updatedId: rows[0].handle });
   await syncEstimateToNeon(data);
   return resp(200, { ok: true, updatedId: data.id });
 }
@@ -6552,58 +6646,106 @@ async function handleSaveEstimate(body) {
   // Bidirectional traceability: link this snapshot to the Job Estimates
   // record(s) whose totals seeded the builder. Field is multipleRecordLinks
   // (fldPoz43rrlqWRnwC = "Job Estimate" on Sent Estimate PDFs).
-  if (Array.isArray(jobEstimateIds)) {
-    const cleaned = jobEstimateIds.filter(id => typeof id === "string" && id.startsWith("rec"));
+  //
+  // ⚠ The Airtable LINK still takes rec ids only — a uuid there 422s the write,
+  // the same constraint that keeps companies mirrored in slice 1. The back-link
+  // Neon stores is resolved separately below and accepts either shape, so a
+  // native estimate keeps its provenance even though Airtable cannot hold it.
+  const backLinks = Array.isArray(jobEstimateIds)
+    ? jobEstimateIds.filter(id => typeof id === "string" && id.trim())
+    : [];
+  {
+    const cleaned = backLinks.filter(id => id.startsWith("rec"));
     if (cleaned.length) fields["fldPoz43rrlqWRnwC"] = cleaned;
   }
   // Note: "notes" from the caller is embedded in the Snapshot JSON; no separate column.
 
+  // ── NEON FIRST (identity cutover slice 3, db/schema/055) ─────────────────
+  // This table is the snapshot of what actually went to the customer, and
+  // `handleJobEstimates`' snapshot cascade reads it from Neon. It used to be
+  // written to Airtable first purely out of habit — `sent_estimate_pdfs`
+  // has never had a NOT NULL on `airtable_id` — which made an Airtable outage
+  // lose the scope text of a quote that had already been sent.
+  //
+  // ⚠ FAILS CLOSED without a database, like every other create in this cutover.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't save the estimate right now — the database is unavailable. Try again in a moment." });
+  }
+
+  const numOrNull = (v) => (v === undefined || v === null || v === "" || isNaN(Number(v)) ? null : Number(v));
+  const totalNum   = numOrNull(totalAmount);
+  const displayNum = numOrNull(estimateNumber);
+  const snapshotText = snapshot ? (typeof snapshot === "string" ? snapshot : JSON.stringify(snapshot)) : null;
+
+  // The Neon back-link accepts either handle shape: resolve the FIRST estimate
+  // the builder was seeded from to its row, and store both of its ids.
+  let estRecId = null, estNeonId = null;
+  if (backLinks.length) {
+    const er = await neonQuery(
+      `SELECT id, airtable_id FROM job_estimates
+        WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [backLinks[0]]);
+    if (er?.rows?.length) { estNeonId = er.rows[0].id; estRecId = er.rows[0].airtable_id; }
+  }
+
   try {
-    // PATCH the existing estimate snapshot when estimateId is provided (edit
-    // mode); else POST a new record (create mode). Both paths use typecast
-    // so any new singleSelect option values get auto-created.
-    let data;
+    let row;
     if (estimateId) {
-      data = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}/${estimateId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ fields, typecast: true })
-      });
+      const rows = await neonWrite("sentEstimatePdf.update",
+        `UPDATE sent_estimate_pdfs SET
+           job_airtable_id = $2, job_id = (SELECT id FROM jobs WHERE airtable_id = $2),
+           estimate_airtable_id = COALESCE($3, estimate_airtable_id),
+           estimate_id          = COALESCE($4, estimate_id),
+           display_number = COALESCE($5, display_number),
+           estimate_date  = COALESCE($6::date, estimate_date),
+           total          = COALESCE($7, total),
+           snapshot       = COALESCE($8, snapshot),
+           synced_at      = now()
+          WHERE airtable_id = $1 OR id::text = $1
+          RETURNING id, airtable_id`,
+        [String(estimateId), String(jobId), estRecId, estNeonId, displayNum,
+         estimateDate ? String(estimateDate).slice(0, 10) : null, totalNum, snapshotText]);
+      if (!rows?.length) return resp(404, { ok: false, error: "That estimate no longer exists." });
+      row = rows[0];
     } else {
-      data = await atFetch(`${encodeURIComponent("Sent Estimate PDFs")}`, {
-        method: "POST",
-        body: JSON.stringify({ fields, typecast: true })
-      });
-    }
-    if (data.error) return resp(400, { ok: false, error: data.error });
-
-    // ⚠ KEEP NEON IN STEP — handleJobEstimates' snapshot cascade now reads
-    // sent_estimate_pdfs FROM NEON. Without this, saving an estimate would
-    // write the scope text to Airtable and the app would keep showing the
-    // previous snapshot, or none. The cascade is the whole reason this table
-    // matters; leaving it Airtable-only would hollow out the read flip.
-    {
-      const sf = data.fields || {};
-      const sn = (v) => { if (Array.isArray(v)) v = v[0]; const x = Number(v); return Number.isFinite(x) ? x : null; };
-      const ss = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "" || x === null) ? null : String(x); };
-      await neonWrite("sentEstimatePdf.sync",
+      const rows = await neonWrite("sentEstimatePdf.create",
         `INSERT INTO sent_estimate_pdfs
-           (airtable_id, job_airtable_id, job_id, estimate_airtable_id, estimate_id,
+           (job_airtable_id, job_id, estimate_airtable_id, estimate_id,
             display_number, estimate_date, total, snapshot, synced_at)
-         VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,
-                 (SELECT id FROM job_estimates WHERE airtable_id=$3),
-                 $4,$5::date,$6,$7, now())
-         ON CONFLICT (airtable_id) DO UPDATE SET
-           job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
-           estimate_airtable_id=EXCLUDED.estimate_airtable_id,
-           estimate_id=EXCLUDED.estimate_id, display_number=EXCLUDED.display_number,
-           estimate_date=EXCLUDED.estimate_date, total=EXCLUDED.total,
-           snapshot=EXCLUDED.snapshot, synced_at=now()`,
-        [data.id, ss(sf["Job"]), ss(sf["Job Estimate"]),
-         sn(sf["Estimate Display #"]), ss(sf["Estimate Date"]),
-         sn(sf["Total"]), ss(sf["Snapshot"])]).catch(() => {});
+         VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3,
+                 $4, $5::date, $6, $7, now())
+         RETURNING id, airtable_id`,
+        [String(jobId), estRecId, estNeonId, displayNum,
+         estimateDate ? String(estimateDate).slice(0, 10) : null, totalNum, snapshotText]);
+      row = rows?.[0];
+      if (!row) return resp(502, { ok: false, error: "Couldn't save the estimate. Please try again." });
     }
 
-    return resp(200, { ok: true, id: data.id, updated: !!estimateId });
+    // The mirror. On an edit it can only run when the row already had a rec id;
+    // a native snapshot has no Airtable record to PATCH and never acquires one.
+    const recId = row.airtable_id;
+    let data = null;
+    if (estimateId && recId) {
+      data = await mirrorToAirtable("saveEstimate.update", () =>
+        atFetch(`${encodeURIComponent("Sent Estimate PDFs")}/${recId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ fields, typecast: true })
+        }));
+    } else if (!estimateId) {
+      data = await mirrorToAirtable("saveEstimate.create", () =>
+        atFetch(`${encodeURIComponent("Sent Estimate PDFs")}`, {
+          method: "POST",
+          body: JSON.stringify({ fields, typecast: true })
+        }));
+      if (data?.id) {
+        await neonWrite("sentEstimatePdf.stampAirtableId",
+          `UPDATE sent_estimate_pdfs SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+          [row.id, data.id]).catch((e) =>
+            console.error(`saveEstimate: rec id not stamped, snapshot is Neon-only — ${e?.message || e}`));
+      }
+    }
+
+    return resp(200, { ok: true, id: data?.id || recId || String(row.id),
+                       updated: !!estimateId, _airtableMirrored: !!(data?.id || recId) });
   } catch (e) {
     const msg = String(e?.message || e || "");
     if (/NOT_FOUND|could not.*find.*table/i.test(msg)) {
@@ -6641,7 +6783,11 @@ async function handleSentEstimatePDFs(params) {
   // read flip is complete on its own and cannot go stale behind a save.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT airtable_id, display_number, estimate_date::text AS estimate_date,
+      // Dual handle (cutover slice 3): a snapshot saved since the reversal has
+      // no rec id, and emitting a bare `airtable_id` handed the client a NULL
+      // id — the row rendered, and every button on it did nothing.
+      `SELECT COALESCE(airtable_id, id::text) AS airtable_id,
+              display_number, estimate_date::text AS estimate_date,
               total, snapshot
          FROM sent_estimate_pdfs
         WHERE job_airtable_id = $1
@@ -7052,10 +7198,22 @@ async function handleEstimateTemplateDelete(body) {
 // confirm that names the estimate and its amount. If you are tempted to relax
 // either, the guard you are removing is the only one there is.
 //
-// Airtable FIRST, then Neon, matching every other delete in this file: Airtable
-// is still the identity authority for estimates, and a Neon-only delete would
-// be silently undone by nothing — but a row that vanished from Neon while
-// living on in Airtable would reappear in any read that falls back.
+// ⚠ NEON FIRST AS OF SLICE 3, and the order flipped for a reason. It used to
+// delete Airtable first, because Airtable was the identity authority and a
+// Neon-only delete would be undone by a read that fell back. Neither half of
+// that is true now: Neon owns the row, every read is Neon-first, and a native
+// estimate has no Airtable record at all — under the old order the very first
+// line would have 404'd on the only estimates the app can now create.
+//
+// The Airtable half is a best-effort mirror. If it fails, Airtable keeps a row
+// the app can no longer see, which is the same divergence every other native
+// write accepts and is the direction the base is going anyway.
+//
+// ⚠ The `startsWith("rec")` guard is GONE. It was a real id check when rec ids
+// were the only shape; keeping it would have rejected every native estimate —
+// the exact id-form regression recorded in docs/TODO.md. The 404 below is the
+// check now, and it is a better one: it fails on ids that do not exist rather
+// than on ids that do not look familiar.
 //
 // `sent_estimate_pdfs.estimate_id` is ON DELETE SET NULL, so a PDF snapshot
 // SURVIVES its parent estimate. That is deliberate at the schema level: the PDF
@@ -7064,26 +7222,29 @@ async function handleEstimateTemplateDelete(body) {
 async function handleDeleteJobEstimate(body) {
   const estimateId = String(body?.estimateId || "").trim();
   if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
-  if (!estimateId.startsWith("rec")) {
-    return resp(400, { ok: false, error: "That doesn't look like an estimate id." });
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't delete the estimate right now — the database is unavailable. Try again in a moment." });
   }
 
+  let rows;
   try {
-    await atFetch(`${encodeURIComponent("Job Estimates")}/${estimateId}`, { method: "DELETE" });
+    rows = await neonWrite("estimate.delete",
+      `DELETE FROM job_estimates
+        WHERE airtable_id = $1 OR id::text = $1
+        RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id`, [estimateId]);
   } catch (e) {
-    console.error(`deleteJobEstimate: Airtable delete failed — ${e?.message || e}`);
+    console.error(`deleteJobEstimate: Neon delete failed — ${e?.message || e}`);
     return resp(502, { ok: false, error: "Couldn't delete the estimate. Please try again." });
   }
+  if (!rows?.length) return resp(404, { ok: false, error: "That estimate no longer exists." });
 
-  // Fails soft on purpose. The record is gone from Airtable either way, and the
-  // hourly job sync does not resurrect estimates. A 500 here would tell the user
-  // nothing happened when the destructive half already has.
-  await neonWrite("estimate.delete",
-    `DELETE FROM job_estimates WHERE airtable_id = $1`, [estimateId]).catch((e) => {
-      console.error(`deleteJobEstimate: Neon delete failed, Airtable row already gone — ${e?.message || e}`);
-    });
+  const recId = rows[0].airtable_id;
+  if (recId) {
+    await mirrorToAirtable("deleteJobEstimate", () =>
+      atFetch(`${encodeURIComponent("Job Estimates")}/${recId}`, { method: "DELETE" }));
+  }
 
-  return resp(200, { ok: true, deletedId: estimateId });
+  return resp(200, { ok: true, deletedId: rows[0].handle });
 }
 
 // ── CREATE JOB ESTIMATE ──────────────────────────────────────────────────
@@ -7125,26 +7286,60 @@ async function handleCreateJobEstimate(body) {
     fields["fldrni1Lkpw7tMBq8"] = [sourceTemplateId];
   }
 
-  const data = await atFetch(`${encodeURIComponent("Job Estimates")}`, {
-    method: "POST",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  await syncEstimateToNeon(data);
-
-  // Provenance, in the store that can hold BOTH handle shapes. Written after
-  // syncEstimateToNeon because that is what creates the row — running it first
-  // would update nothing and lose the breadcrumb without erroring.
+  // ── NEON FIRST (identity cutover slice 3, db/schema/055) ─────────────────
+  // Reversed on 2026-08-22. It used to POST Airtable, take the rec id, then
+  // sync — so an Airtable outage meant the estimate existed NOWHERE, and every
+  // read of this table is Neon-first, so nothing would have back-filled it.
   //
-  // Fails soft: the estimate itself is created and correct either way, and this
-  // is a breadcrumb nothing renders yet. A 500 here would tell the user their
-  // estimate failed when it did not.
-  if (sourceTemplateId) {
-    await neonWrite("estimate.sourceTemplate",
-      `UPDATE job_estimates SET source_template_handle = $2 WHERE airtable_id = $1`,
-      [data.id, String(sourceTemplateId)]).catch(() => {});
+  // ⚠ FAILS CLOSED without a database, like slice 1's creates and for the same
+  // reason: an Airtable-only estimate is invisible to the app forever.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't create the estimate right now — the database is unavailable. Try again in a moment." });
   }
 
-  return resp(200, { ok: true, id: data.id });
+  const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+  const rows = await neonWrite("estimate.create",
+    `INSERT INTO job_estimates
+       (job_airtable_id, job_id, estimate_type, status, actual_estimate_sent,
+        estimated_labor_hours, estimated_material_cost,
+        estimated_labor_cost, calculated_estimated_total,
+        estimate_date, notes, source_template_handle, synced_at)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3, $4, $5, $6,
+             ${sqlEstLaborCost("$5")}, ${sqlEstTotal("$5", "$6")},
+             $7::date, $8, $9, now())
+     RETURNING id`,
+    [String(jobId), fields["Estimate Type"], fields["Status"],
+     num(baseAmount), num(laborHours), num(materialCost),
+     estimateDate ? String(estimateDate).slice(0, 10) : null,
+     notes && String(notes).trim() ? String(notes) : null,
+     sourceTemplateId ? String(sourceTemplateId) : null]);
+  const neonId = rows?.[0]?.id;
+  if (!neonId) return resp(502, { ok: false, error: "Couldn't create the estimate. Please try again." });
+
+  // The mirror. Best-effort from here on: the estimate is already real.
+  //
+  // ⚠ The stamp is safe on THIS table, and the reasoning is not transferable.
+  // Estimate PDFs in R2 are keyed on the NEON uuid (`estimates/<uuid>/…`, see
+  // copyAirtablePhotosToR2), not on the rec id, so a handle that changes from
+  // uuid to rec id cannot orphan a file here — the slice-0 rule about
+  // back-filling `airtable_id` is about R2 keys, and this table has none that
+  // depend on it. The response is sent AFTER the stamp, so the client is handed
+  // one handle and only one. Everything that looks an estimate up accepts both
+  // anyway.
+  const data = await mirrorToAirtable("createJobEstimate", () =>
+    atFetch(`${encodeURIComponent("Job Estimates")}`, {
+      method: "POST",
+      body: JSON.stringify({ fields, typecast: true })
+    }));
+
+  if (data?.id) {
+    await neonWrite("estimate.stampAirtableId",
+      `UPDATE job_estimates SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+      [neonId, data.id]).catch((e) =>
+        console.error(`createJobEstimate: rec id not stamped, estimate is Neon-only — ${e?.message || e}`));
+  }
+
+  return resp(200, { ok: true, id: data?.id || String(neonId), _airtableMirrored: !!data?.id });
 }
 
 const FLEET_TABLES = { vehicles: "Fleet Vehicles", maintenance: "Fleet Maintenance", mileageLog: "Fleet Mileage Log" };
@@ -8208,7 +8403,8 @@ async function handleUnlinkedLaborAllocations(params) {
          JOIN time_entries t ON t.id = la.time_entry_id
          JOIN jobs j         ON j.id = t.job_id
         WHERE j.airtable_id = $1
-          AND la.invoice_airtable_id IS NULL`, [jobId]);
+          AND la.invoice_airtable_id IS NULL
+          AND la.invoice_id IS NULL`, [jobId]);
     if (q?.rows) {
       return resp(200, {
         ok: true,
@@ -9955,23 +10151,123 @@ async function handleSaveInvoice(body) {
     fields["fldcbhc1z8nEftVeY"] = 0;                                 // zero manual material
   }
 
-  // PATCH the existing invoice when invoiceId is provided (edit mode); else
-  // POST a new record (create mode). Both paths use typecast for new option
-  // values that might appear on stage/status singleSelects.
-  let data;
-  if (invoiceId) {
-    data = await atFetch(`${encodeURIComponent("Invoices")}/${invoiceId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ fields, typecast: true })
-    });
-  } else {
-    data = await atFetch(`${encodeURIComponent("Invoices")}`, {
-      method: "POST",
-      body: JSON.stringify({ fields, typecast: true })
-    });
+  // ── NEON FIRST (identity cutover slice 3, db/schema/055) ─────────────────
+  // Reversed on 2026-08-22. This is the highest-consequence reversal in the
+  // slice: an invoice is the document a customer is billed from, and under the
+  // old order an Airtable outage lost it entirely while the user watched a
+  // spinner. Now the invoice is real the moment Neon has it.
+  //
+  // ⚠ FAILS CLOSED without a database. Every invoice read is Neon-first, so an
+  // Airtable-only invoice would be invisible to the app — including to the
+  // "previously billed" chain that caps the next contract invoice.
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't save the invoice right now — the database is unavailable. Try again in a moment." });
   }
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  await syncInvoiceToNeon(data);
+
+  const billingModeV = fields["fldljpi4PpNPIfI27"];
+  const invoiceTypeV = fields["fldC4loXTBzC2UKGt"];
+  const autoAllocate = fields["fldejNlo5R194TGMs"] === true;
+  const pctToBill    = fields["fldiaGIu4ZzKLz6ra"];
+  const displayNo    = fields["fld7FxS299iYDzMa8"];
+  const snapshotText = fields["fldJT0EqxsYPUQOg1"] ?? null;
+  const dateVal      = invoiceDate ? String(invoiceDate).slice(0, 10) : null;
+
+  let row;
+  if (invoiceId) {
+    const rows = await neonWrite("invoice.update",
+      // Status is deliberately absent: editing a Paid invoice must not flip it
+      // back to Sent, which is the same rule the Airtable branch above follows.
+      `UPDATE invoices SET
+         job_airtable_id  = $2, job_id = (SELECT id FROM jobs WHERE airtable_id = $2),
+         billing_mode     = $3, invoice_type = $4, auto_allocate = $5,
+         manual_labor     = 0,  manual_material = 0,
+         percent_to_bill  = COALESCE($6, percent_to_bill),
+         invoice_date     = COALESCE($7::date, invoice_date),
+         invoice_notes    = COALESCE($8, invoice_notes),
+         invoice_display_no = COALESCE($9, invoice_display_no),
+         invoice_snapshot = COALESCE($10, invoice_snapshot),
+         invoice_stage    = COALESCE($11, invoice_stage),
+         snapshot_total   = COALESCE($12, snapshot_total),
+         synced_at        = now()
+        WHERE airtable_id = $1 OR id::text = $1
+        RETURNING id, airtable_id`,
+      [String(invoiceId), String(jobId), billingModeV, invoiceTypeV, autoAllocate,
+       pctToBill ?? null, dateVal, notes || null, displayNo ?? null,
+       snapshotText, invoiceStage ? String(invoiceStage) : null, totalNum]);
+    if (!rows?.length) return resp(404, { ok: false, error: "That invoice no longer exists." });
+    row = rows[0];
+  } else {
+    const rows = await neonWrite("invoice.create",
+      // ⚠ `invoice_number` reproduces the Airtable formula, bug and all:
+      //     {Job} & "-" & RIGHT("000" & {Invoice Sequence}, 3)
+      // where `Invoice Sequence` counts the records in the invoice's own Job
+      // LINK field — always 1. So every invoice ever written reads
+      // `<job name>-001`, and Bethel School has two of them. It is a label, not
+      // an identifier; `invoice_display_no` is the number that identifies an
+      // invoice. Changing what a customer-facing document says is not a
+      // cutover's job — see docs/TODO.md.
+      //
+      // ⚠ `invoice_total` is left NULL on purpose. It was Airtable's formula
+      // column, and it is stale by construction the moment an allocation
+      // changes — which is exactly why db/schema/015 built
+      // `v_invoices.invoice_total_calc` and why every read in this file uses
+      // that instead. Writing a second, decaying opinion of the total into a
+      // money column is how a wrong number gets quoted later.
+      `INSERT INTO invoices
+         (job_airtable_id, job_id, invoice_number, invoice_status, invoice_type,
+          billing_mode, invoice_stage, invoice_date, snapshot_total,
+          manual_labor, manual_material, percent_to_bill, auto_allocate,
+          invoice_display_no, invoice_notes, invoice_snapshot, synced_at)
+       VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1),
+               COALESCE((SELECT name FROM jobs WHERE airtable_id = $1), '') || '-001',
+               'Sent', $2, $3, $4, $5::date, $6, 0, 0, $7, $8, $9, $10, $11, now())
+       RETURNING id, airtable_id`,
+      [String(jobId), invoiceTypeV, billingModeV,
+       invoiceStage ? String(invoiceStage) : null, dateVal, totalNum,
+       pctToBill ?? null, autoAllocate, displayNo ?? null,
+       notes || null, snapshotText]);
+    row = rows?.[0];
+    if (!row) return resp(502, { ok: false, error: "Couldn't save the invoice. Please try again." });
+  }
+
+  // The mirror. Best-effort: the invoice exists either way.
+  //
+  // ⚠ No R2 keys are derived from an invoice handle — invoice PDFs go to pCloud
+  // from the browser, and scenario 4723276 has taken its folder path from the
+  // PAYLOAD since slice 2.5, so nothing downstream re-reads this rec id. That is
+  // what makes the stamp below safe here.
+  const recId = row.airtable_id;
+  let data = null, stamped = false;
+  if (invoiceId && recId) {
+    data = await mirrorToAirtable("saveInvoice.update", () =>
+      atFetch(`${encodeURIComponent("Invoices")}/${recId}`, {
+        method: "PATCH", body: JSON.stringify({ fields, typecast: true })
+      }));
+  } else if (!invoiceId) {
+    data = await mirrorToAirtable("saveInvoice.create", () =>
+      atFetch(`${encodeURIComponent("Invoices")}`, {
+        method: "POST", body: JSON.stringify({ fields, typecast: true })
+      }));
+    if (data?.id) {
+      try {
+        await neonWrite("invoice.stampAirtableId",
+          `UPDATE invoices SET airtable_id = $2, synced_at = now() WHERE id = $1`,
+          [row.id, data.id]);
+        stamped = true;
+      } catch (e) {
+        console.error(`saveInvoice: rec id not stamped, invoice is Neon-only — ${e?.message || e}`);
+      }
+    }
+  }
+  // Carry Airtable's computed columns back, but ONLY onto a row we know carries
+  // that rec id.
+  //
+  // ⚠⚠ THE GUARD IS NOT DEFENSIVE PROGRAMMING, IT IS A DUPLICATE-INVOICE BUG.
+  // `syncInvoiceToNeon` is an INSERT … ON CONFLICT (airtable_id). If the POST
+  // succeeded and the STAMP then failed, this row's airtable_id is still NULL,
+  // nothing conflicts, and the upsert writes a SECOND invoice for the same
+  // work — one native, one mirrored, both real, both billable.
+  if (data?.id && (recId || stamped)) await syncInvoiceToNeon(data);
 
   // Claim the job's unlinked allocations onto this invoice. Was two Airtable
   // automations (wflOcxtmkzdxKMVQW labor, wfl7bzJpZY9kcJ27i material), both
@@ -9982,12 +10278,16 @@ async function handleSaveInvoice(body) {
   // it false a few lines up, because a contract invoice bills a percentage of
   // the contract and must NOT sweep up time-and-material allocations.
   //
-  // Runs after syncInvoiceToNeon so the invoice row exists in Neon before
-  // anything points at it.
+  // ⚠ BOTH handles are passed (slice 3). The uuid is what the allocation rows
+  // and `v_invoices` key on and always exists; the rec id is only for the
+  // Airtable link field and is NULL on a native invoice. Passing the rec id
+  // alone — as this did until 2026-08-22 — would attach nothing at all to a
+  // native invoice, and it would print with no labor and no material on it.
   let allocations;
   if (fields["fldejNlo5R194TGMs"] === true) {
     try {
-      allocations = await attachAllocationsToInvoice(atFetch, data.id, jobId);
+      allocations = await attachAllocationsToInvoice(
+        atFetch, { id: row.id, airtableId: data?.id || recId || null }, jobId);
     } catch (e) {
       // The invoice is saved either way. An unattached allocation shows up as a
       // total that reads LOW, which is visible and re-fixable by saving again —
@@ -9996,7 +10296,8 @@ async function handleSaveInvoice(body) {
       allocations = { attached: 0, error: String(e?.message || e) };
     }
   }
-  return resp(200, { ok: true, id: data.id, updated: !!invoiceId,
+  return resp(200, { ok: true, id: data?.id || recId || String(row.id),
+                     updated: !!invoiceId, _airtableMirrored: !!(data?.id || recId),
                      ...(allocations ? { allocations } : {}) });
 }
 
@@ -10815,18 +11116,34 @@ async function handleCommissionGenerator(body) {
 // Generalized status setter (replaces the old markInvoicePaid). Accepts any
 // option name; thanks to typecast: true, new options like "Disputed" get
 // auto-added to the singleSelect on first use.
+// Neon-first, dual handle, mirror best-effort (cutover slice 3).
+// This is how an invoice is marked Paid, so it has to land in the store the All
+// Invoices tab reads — which has been Neon since Step 4e.
 async function handleSetInvoiceStatus(body) {
   const { invoiceId, status } = body || {};
   if (!invoiceId) return resp(400, { ok: false, error: "Missing invoiceId." });
   if (!status)    return resp(400, { ok: false, error: "Missing status." });
-  const fields = { "fldXcHqj8xqmOWeLH": status };  // Invoice Status
-  const data = await atFetch(`${encodeURIComponent("Invoices")}/${invoiceId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
-  });
-  if (data.error) return resp(400, { ok: false, error: data.error });
-  await syncInvoiceToNeon(data);
-  return resp(200, { ok: true, id: data.id });
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't update the invoice right now — the database is unavailable. Try again in a moment." });
+  }
+
+  const rows = await neonWrite("invoice.setStatus",
+    `UPDATE invoices SET invoice_status = $2, synced_at = now()
+      WHERE airtable_id = $1 OR id::text = $1
+      RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id`,
+    [String(invoiceId), String(status)]);
+  if (!rows?.length) return resp(404, { ok: false, error: "That invoice no longer exists." });
+
+  const recId = rows[0].airtable_id;
+  if (recId) {
+    const fields = { "fldXcHqj8xqmOWeLH": status };  // Invoice Status
+    await mirrorToAirtable("setInvoiceStatus", () =>
+      atFetch(`${encodeURIComponent("Invoices")}/${recId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields, typecast: true })
+      }));
+  }
+  return resp(200, { ok: true, id: rows[0].handle });
 }
 
 // Backward-compat alias — old "markInvoicePaid" callers still work.

@@ -14,6 +14,51 @@ https://claude.ai/code/artifact/e460eb0e-98c0-4066-8685-2858e882a1c2
 
 ---
 
+## ▶ UPDATE 2026-08-23 — item 10 is half done
+
+**Read this before the 08-20 state below, which is still accurate but no longer current.**
+
+Item 10 (the identity cutover — the last structural item) is underway and tracked slice by slice
+in **`docs/PLAN-airtable-identity-cutover.md`**, which is now the live document for it. Summary:
+
+| Slice | State |
+|---|---|
+| 0 — verify Make / R2 / delete passes | ✅ 2026-08-21. All three passed. The clause sweep found **77 lookup clauses across 62 functions**, tripling slices 5 and 6. |
+| 1 — reference leaves | ✅ 2026-08-21 (`41bd94c`, schema 053) |
+| 2 — payroll runs + bonuses | ⚠ **prepped, NOT flipped** (`160d944`, schema 054). Gated on the next **real** payroll run exercising the R2 write, which has never run in production. ~20 min once it does. |
+| 2.5 — Make `4723276` off Airtable | ✅ 2026-08-22 (`eb38e2e`). Was gating slice 3. |
+| 3 — estimates + invoices | ✅ 2026-08-22 (`12f66fb`, schema 055), fixed `e8551be`, smoked `93a1307` |
+| 4 expenses · 5 employees · 6 jobs | ⬜ ~7-10 h. Slice 6 alone is 46 clauses across 37 functions. |
+
+**So "5 — Item 10 — drop the mirror writes" in the table below is no longer one task.** It is six,
+three of them done.
+
+⚠ **The counts in the 08-20 table below have NOT been re-measured** since. Estimates and invoices
+stopped minting Airtable rec ids on 08-22, which changes the shape of the remaining work but not
+the list of Airtable-only *reads*.
+
+✅ **A recorded precondition was met, and it is worth closing off explicitly.** The 08-12 table
+(item 5, further down) warned: *move the next-number scans to Neon BEFORE estimates or invoices go
+Neon-native, or numbering breaks the way allocations did.* Both counters read `MAX()` from Neon —
+`sent_estimate_pdfs.display_number` and `invoices.invoice_display_no` — and were verified before
+slice 3 shipped. Unique indexes now back both mints (schema 055), so a race fails loudly instead
+of issuing a duplicate number.
+
+⚠⚠ **A METHOD CORRECTION THAT APPLIES TO EVERY REMAINING ITEM.** Slice 3 shipped broken and the
+verification is why. All 18 new statements were checked with
+`PREPARE name(text, numeric, …) AS …` — and **declaring the parameter types resolves ambiguity
+that the real driver hits**, so the check passed and the first click in production failed with
+`inconsistent types deduced for parameter $5`. The driver sends parameters **untyped**.
+
+> Verify as **`PREPARE name AS <sql>`, with no type list.** Anything else tests a statement the app
+> never sends.
+
+⬜ **Smoke status of slice 3: estimates PASS, invoices UNTESTED.** The invoice half is where the
+$0-invoice risk lives (`v_invoices` used to join on rec ids). One real invoice closes it — check
+the labor and material lines are non-zero.
+
+---
+
 ## ▶▶ STATE AS OF 2026-08-20 — start here, then read the 08-12 pass for context
 
 Re-measured from the code with the same call-graph fixpoint, and from the live systems.
@@ -63,7 +108,7 @@ Airtable-only reads left at all**.
 | **2** | ~~Generator service call → Neon~~ **BUILT 2026-08-21 — needs one owner decision to go live** | flip a switch | Code, schema and tests are in (`_generator-service.js`, `db/schema/051`, hourly inside `qb-time-pull`). **Ships INERT behind `GENERATOR_SERVICE_CALLS`.** ✅ The permanent-latch bug is fixed as recommended, but with a *sharper* guard than "is there an open job": **one call per DUE DATE** (`service_call_due_date`). "Open job" alone re-fires every hour once someone completes the job without logging a service; the due-date compare cannot, and it still recurs the moment a service record moves `next_service_due`. ⚠ **The first run is not a normal run** — the 6 overdue generators all become eligible at once and each job burns an unreturnable PO number. Preview with `POST { action:"generatorServiceCheck", dryRun:true }`, then set the env var. ⚠⚠ This was also the forcing function for extracting `_jobs.js`: it is the **second caller of the PO allocator**, and two allocators is how duplicate POs come back. |
 | **3** | ~~R2 id lookups → Neon~~ **DONE 2026-08-21** | — | **18 actions** no longer touch Airtable on their happy path. Ten handlers opened with the *byte-identical* 3-line existence check (fetch the whole Jobs record by `RECORD_ID()`, test `.length`, discard it) — those collapsed onto one `jobExists()` helper, and `bulkPhotoOp` alone carries 7 of the actions. Plus `expenseReceipts` (fetched a whole expense for one field) and `expenseReceiptSummary` (two reads, now one Neon query mirroring `handleExpenses`' scope clause exactly). ⚠⚠ **The Airtable read is kept as a FALLBACK on purpose: the cheap store may say YES, never NO.** A wrong "not found" makes a job's photos vanish, so Neon-says-no / Neon-erroring / Neon-off all re-ask Airtable — which means this cannot be less correct than what it replaced, only faster. ⚠ Two comments saying *"deliberately NOT a Neon lookup — a job created in the last hour isn't in Neon yet"* were **stale** and are corrected in place; `handleCreateJob` has inserted into Neon in the same request since 08-20. |
 | **4** | ~~Payroll PDFs → R2, then `payrollRunsList`~~ **DONE + BACKFILLED 2026-08-21** | — | All 28 runs copied (56 objects), all 11 superseded runs linked to their successor, `reconciled: true`. The grid is served from Neon and **diffed 28-for-28 against Airtable on pay period, hours, bonus and superseded — zero mismatches.** Files live at `payroll/<run uuid>/`, keyed on the **Neon** id, not the rec id. ⚠ Two bugs found doing it: (1) the copier read every field under a field **ID** while Airtable returns records by **name**, so the first run reported `copied: 0, skipped: 56, ok: true` having done nothing; (2) the reconciliation guard **agreed**, because the same bug blinded both sides of its own `0 === 0` comparison. It now refuses when there are runs in Airtable and no attachment on any of them. |
-| **5** | **Item 10 — drop the mirror writes** | 2–3 h **+ Make edits** | ⚠ Now much closer than 08-12 assumed: all four job scenarios read the payload, not Airtable. What still keys on a rec id: R2 receipt/photo keys, sent-PDF back-links, and every client-side job/expense/contact id. **Do item 3 first** — those 20 lookups are Airtable reads that must go before the mirror can. |
+| **5** | **Item 10 — the identity cutover** — ⚙ **HALF DONE, see the 08-23 update at the top** | **~7-10 h left** | Six slices, not one task. ✅ 0 verify · ✅ 1 reference leaves · ⚠ 2 payroll **prepped but gated on a real payroll run** · ✅ 2.5 Make `4723276` · ✅ 3 estimates + invoices. ⬜ Left: **4 expenses** (own session — R2 receipt keys are built from the expense rec id, so the stamp that was safe in slice 3 is NOT safe here, and `unlinkedMaterialAllocations` must move in the same commit or it repeats the $35k Bethel bug) · **5 employees** (19 clauses; the login id is in every browser's localStorage, so verify on a STALE session) · **6 jobs** (46 clauses across 37 functions — the single biggest piece). Live doc: `docs/PLAN-airtable-identity-cutover.md`. |
 | **6** | **Google contacts direct (item 07)** | own session, owner-gated | ⚠⚠ **230 of 240 contacts ALREADY EXIST IN GOOGLE across TWO destinations.** Their ids are captured in `contacts.google_person_id_1/2` (schema 049). Syncing without them creates ~230 duplicates **twice over**. ⚠ Power contacts have **no per-person id at all** — that half must match by name/phone/email. ⚠ Which Google account is destination 1 vs 2 is recorded nowhere; resolve one known id in each before writing anything. Needs a Google Cloud project + OAuth + refresh token(s) from the owner. |
 | **7** | **Inventory: archive the Airtable base** | ~1 h, owner | No code. Nothing reads or writes it. |
 

@@ -372,9 +372,34 @@ statement prepares cleanly and then fails on the first real call. The driver sen
 Nothing was written — every reversed handler fails closed, so the estimate simply did not exist.
 That half worked exactly as designed.
 
-⬜ **Not smoke-tested.** The money path needs a person: create an estimate, save its PDF, reopen
-the job and check the scope text came back, invoice it, confirm the labor and material lines are
-non-zero, mark it paid.
+### Smoke test, 2026-08-23 — estimates PASS, invoices UNTESTED
+
+Run by the owner on Classical Construction (Fuel Tank), then deleted.
+
+✅ **Proven end to end**, and the `$5` bug above is what it caught first:
+
+| | Result |
+|---|---|
+| `createJobEstimate` | Neon insert → Airtable mirror → rec-id stamp, all landed |
+| The two formulas | `$325` labor / `$575` total — **and Airtable independently computed the same figures from its own formulas**, which is stronger evidence than the 89-row diff |
+| `updateEstimate` | material 250 → 500 moved the total to `$825` and GP to 18% — the partial recompute reads stored hours, as intended |
+| `updateEstimateStatus` | Sent reached both stores and moved Expected Revenue |
+| `deleteJobEstimate` | gone from Neon **and** the Airtable mirror, with the old `startsWith("rec")` guard removed |
+
+⬜ **Still dark, and not to be assumed working:**
+
+- **The whole invoice half** — `handleSaveInvoice`, `handleSetInvoiceStatus`, and the allocation
+  attach. This is where the $0-invoice risk lives. It needs one real invoice: save it, confirm the
+  labor and material lines are non-zero, mark it paid.
+- **`handleSaveEstimate`** (the sent-PDF snapshot). Reversed, never run. The next real estimate
+  that goes out exercises it.
+- **The native / uuid branch of every dual-handle lookup.** Everything tested carried a rec id
+  because the mirror succeeded. That branch runs only when Airtable is unreachable at create time,
+  so it cannot be staged in production — it gets its first real test during an Airtable outage,
+  which is precisely when nobody wants a surprise. Worth a deliberate exercise on a sandbox base
+  before slice 4 makes the same bet on expenses.
+
+⚠ **Zero native rows exist**, so `git revert` is still a clean rollback of the whole slice.
 
 ### Slices 4–6
 

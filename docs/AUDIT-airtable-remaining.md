@@ -4,8 +4,15 @@
 scenarios. Not written from `ROADMAP.md` — this file exists because the roadmap says the field-app
 migration is complete and it is not.*
 
-Published copy (same content, easier to read):
-https://claude.ai/code/artifact/e460eb0e-98c0-4066-8685-2858e882a1c2
+**Published, and kept current — read this one:**
+https://claude.ai/code/artifact/42b5ddb8-8865-423a-8d61-b89097513202 · *"Leaving Airtable"*,
+re-measured 2026-08-23, slice by slice.
+
+⚠ An older published copy exists at
+`https://claude.ai/code/artifact/e460eb0e-98c0-4066-8685-2858e882a1c2`. It is the **2026-08-12
+snapshot** and was described here as "same content" long after it stopped being so — it still shows
+four Make scenarios down, 28 Airtable-only actions and item 10 as one unstarted task. Superseded;
+do not link it to anyone.
 
 ---
 

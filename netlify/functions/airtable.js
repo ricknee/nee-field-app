@@ -6435,11 +6435,23 @@ async function fetchSentEstimatePDFsForJob(jobId) {
 // `hoursExpr` / `materialExpr` are SQL fragments the caller owns — a bind
 // parameter on the create path, `COALESCE($n, <column>)` on the update path so a
 // field the caller left out keeps its stored value.
+// ⚠⚠ THE `0::numeric` IS LOAD-BEARING, and the casts at the call site with it.
+// A bare `0` is an INTEGER literal, so `COALESCE($5, 0)` deduces $5 as integer
+// while the `estimated_labor_hours` column it also feeds deduces it as numeric —
+// and Postgres refuses the whole statement with "inconsistent types deduced for
+// parameter $5". A parameter used in two places must resolve to ONE type.
+//
+// ⚠⚠ THIS SHIPPED BROKEN ON 2026-08-22 AND THE VERIFICATION IS WHY.
+// `PREPARE name(text, numeric, …) AS …` DECLARES the parameter types, which
+// resolves the ambiguity before Postgres ever has to deduce it — so the check
+// passed and production failed on the first click. The driver sends parameters
+// UNTYPED. **Verify with `PREPARE name AS …` and no type list**, which is what
+// the driver actually does.
 const EST_LABOR_RATE = 32.50;
 const sqlEstLaborCost = (hoursExpr) =>
-  `round(COALESCE(${hoursExpr}, 0) * ${EST_LABOR_RATE}, 2)`;
+  `round(COALESCE(${hoursExpr}, 0::numeric) * ${EST_LABOR_RATE}, 2)`;
 const sqlEstTotal = (hoursExpr, materialExpr) =>
-  `round(COALESCE(${hoursExpr}, 0) * ${EST_LABOR_RATE} + COALESCE(${materialExpr}, 0), 2)`;
+  `round(COALESCE(${hoursExpr}, 0::numeric) * ${EST_LABOR_RATE} + COALESCE(${materialExpr}, 0::numeric), 2)`;
 
 // ── KEEP NEON IN STEP AFTER AN ESTIMATE WRITE (migration Step 4e) ─────────
 // handleJobEstimates reads Neon first and only falls through on ZERO rows, so on
@@ -7305,7 +7317,7 @@ async function handleCreateJobEstimate(body) {
         estimated_labor_cost, calculated_estimated_total,
         estimate_date, notes, source_template_handle, synced_at)
      VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3, $4, $5, $6,
-             ${sqlEstLaborCost("$5")}, ${sqlEstTotal("$5", "$6")},
+             ${sqlEstLaborCost("$5::numeric")}, ${sqlEstTotal("$5::numeric", "$6::numeric")},
              $7::date, $8, $9, now())
      RETURNING id`,
     [String(jobId), fields["Estimate Type"], fields["Status"],

@@ -1921,8 +1921,18 @@ await test("slice 3: the columns Airtable used to compute are computed here, and
   //    estimated GP, so a native estimate that left it null would report a job
   //    as more profitable than it is.
   ok(/const EST_LABOR_RATE = 32\.50;/.test(src), "the estimate labor rate is 32.50 and is named");
-  ok(/sqlEstLaborCost\("\$5"\)/.test(src), "the create computes labor cost rather than storing null");
-  ok(/sqlEstTotal\("\$5", "\$6"\)/.test(src), "the create computes the estimate total");
+  ok(/sqlEstLaborCost\("\$5::numeric"\)/.test(src), "the create computes labor cost rather than storing null");
+  ok(/sqlEstTotal\("\$5::numeric", "\$6::numeric"\)/.test(src), "the create computes the estimate total");
+
+  // ⚠⚠ REGRESSION, 2026-08-22: this shipped broken and the first click in
+  // production failed with `inconsistent types deduced for parameter $5`.
+  // A bare `0` is an INTEGER literal, so `COALESCE($5, 0)` deduced $5 as
+  // integer while the numeric column it also feeds deduced numeric — and a
+  // parameter used twice must resolve to ONE type. The casts are the fix, and
+  // they are asserted because nothing else in this offline suite can see them.
+  const code = src.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  ok(!/COALESCE\(\$\d+, 0\)/.test(code), "no untyped zero literal against a parameter");
+  ok(/COALESCE\(\$\{hoursExpr\}, 0::numeric\)/.test(src), "the coalesce literal is numeric, not integer");
 
   // 2. A partial update recomputes from the STORED values of the fields it was
   //    not given. Editing only the material cost still moves the total.

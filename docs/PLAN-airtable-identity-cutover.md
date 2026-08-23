@@ -353,6 +353,25 @@ Dropping it would buy nothing and would imply a native row is expected there.
 estimate created since this slice undeletable. The allocation attach test was updated to the
 two-handle signature, plus a new case that a rec id **alone** is refused.
 
+
+**🔴 FIXED 2026-08-23 — slice 3 shipped broken, and the VERIFICATION is why.**
+
+The first click in production failed: `estimate.create: inconsistent types deduced for parameter
+$5`. `$5` (labor hours) fed the `numeric` column *and* `COALESCE($5, 0)`, where the bare `0` is an
+**integer** literal — and a parameter used twice must resolve to one type. Fixed with
+`COALESCE($5::numeric, 0::numeric)`.
+
+⚠⚠ **`PREPARE name(text, numeric, …) AS …` CANNOT CATCH THIS, AND THAT IS WHAT WAS RUN.**
+Declaring the parameter types *resolves* the ambiguity before Postgres has to deduce it, so the
+statement prepares cleanly and then fails on the first real call. The driver sends parameters
+**untyped**.
+
+> **Verify with `PREPARE name AS …` — no type list.** That is what the driver does. Re-run against
+> all 17 of this slice's statements in that form: the estimate create was the only one affected.
+
+Nothing was written — every reversed handler fails closed, so the estimate simply did not exist.
+That half worked exactly as designed.
+
 ⬜ **Not smoke-tested.** The money path needs a person: create an estimate, save its PDF, reopen
 the job and check the scope text came back, invoice it, confirm the labor and material lines are
 non-zero, mark it paid.

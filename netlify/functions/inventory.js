@@ -148,7 +148,7 @@ async function fetchAll(root, table, opts = {}) {
 // it keeps working if LOGIN_SOURCE is switched back.
 async function stampLastLogin(airtableId) {
   await neonExec("login.lastSeen",
-    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1`, [airtableId]);
+    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1 OR id::text = $1`, [airtableId]);
 }
 
 async function handleLogin(body) {

@@ -4,7 +4,7 @@
 import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource,
-         neonEmployees, neonEmployeeById } from "./_employees.js";
+         neonEmployees, neonEmployeeById, isEmployeeHandle } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Shared with inventory.js — the materials push writes expenses too (Step E).
@@ -1083,6 +1083,16 @@ async function handleCreateTimeEntry(body) {
   const durationSecs = Math.round(Number(duration) || 0);
   const klass  = cls || "Contract";
   const taxes  = cityTaxes || "A No Tax";
+  // ⚠ These two KEEP the bare `startsWith("rec")` test, and deliberately — they
+  // are not validating the handle, they are extracting the AIRTABLE rec id for
+  // the Airtable mirror's linked-record fields. A native employee (slice 5) or
+  // a native job (slice 6) genuinely has no rec id to put there, so `null` is
+  // the correct answer and the field is simply omitted from the mirror.
+  //
+  // ⚠ This is the one place the "a guard doesn't 404, it silently DROPS the
+  // field from the mirror" note does NOT apply. That warning is about skipping
+  // an id that could have been resolved; here there is nothing to resolve to.
+  // The Neon insert below takes the handle in either form.
   const jobRec = (jobId      && String(jobId).startsWith("rec"))      ? String(jobId)      : null;
   const empRec = (employeeId && String(employeeId).startsWith("rec")) ? String(employeeId) : null;
 
@@ -1097,7 +1107,7 @@ async function handleCreateTimeEntry(body) {
        (employee_name, employee_id, work_date, duration_seconds, city_taxes, class,
         job_id, job_name, labor_reviewed, source)
      VALUES ($1,
-             (SELECT id FROM employees WHERE airtable_id = $2),
+             (SELECT id FROM employees WHERE airtable_id = $2 OR id::text = $2),
              $3::date, $4::numeric, $5, $6,
              (SELECT id        FROM jobs WHERE airtable_id = $7),
              (SELECT po_locked FROM jobs WHERE airtable_id = $7),
@@ -1266,7 +1276,7 @@ function canUseTimeClock(authUser) {
 // Neon uuid), which is why this resolves through employees.airtable_id.
 async function clockEmployee(authUser) {
   const q = await neonQuery(
-    `SELECT id, name FROM employees WHERE airtable_id = $1`, [authUser?.id || null]);
+    `SELECT id, name FROM employees WHERE airtable_id = $1 OR id::text = $1`, [authUser?.id || null]);
   return q?.rows?.[0] || null;
 }
 
@@ -1676,7 +1686,7 @@ async function handleClockEditTimes(body, authUser) {
   // ── A COMPLETED punch ──
   const cur = await neonQuery(
     `SELECT c.id, c.employee_id, c.started_at, c.ended_at, c.break_seconds::float8 AS break_seconds,
-            c.time_entry_id, e.airtable_id AS emp_airtable_id
+            c.time_entry_id, COALESCE(e.airtable_id, e.id::text) AS emp_airtable_id
        FROM clock_punches c JOIN employees e ON e.id = c.employee_id
       WHERE c.id = $1 AND c.deleted_at IS NULL`, [String(punchId)]);
   const punch = cur?.rows?.[0];
@@ -1829,7 +1839,7 @@ async function handleClockDeletePunch(body, authUser) {
   const me = await clockEmployee(authUser);
 
   const cur = await neonQuery(
-    `SELECT c.id, c.time_entry_id, e.airtable_id AS emp_airtable_id
+    `SELECT c.id, c.time_entry_id, COALESCE(e.airtable_id, e.id::text) AS emp_airtable_id
        FROM clock_punches c JOIN employees e ON e.id = c.employee_id
       WHERE c.id = $1 AND c.deleted_at IS NULL`, [String(punchId)]);
   const punch = cur?.rows?.[0];
@@ -2012,7 +2022,7 @@ async function handlePtoRequests(params) {
   // Anyone payroll-eligible and hourly with NO allowance row — otherwise they
   // simply never appear and nobody notices they were missed.
   const missing = await neonQuery(
-    `SELECT e.airtable_id, e.name FROM employees e
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS airtable_id, e.name FROM employees e
       WHERE e.active IS TRUE AND lower(coalesce(e.role,'')) = 'employee'
         AND NOT EXISTS (SELECT 1 FROM pto_years p WHERE p.employee_id = e.id AND p.year = $1)
       ORDER BY e.name`, [year]);
@@ -2122,7 +2132,7 @@ async function handleDecidePtoRequest(body, authUser) {
 // the same pto_request_id link, and stays just as reversible.
 async function handleAdminAddPto(body, authUser) {
   const { employeeId, startDate, endDate, hoursPerDay, note } = body || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Pick a person." });
   }
   const dOk = s => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
@@ -2321,7 +2331,7 @@ async function handlePtoRollover(body) {
 // ── ADMIN: set someone's yearly allowance ──────────────────────────────────
 async function handleSetPtoAllowance(body) {
   const { employeeId, year, allowanceHours, carriedInHours, note } = body || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   const yr  = Number(year) || PTO_YEAR();
@@ -2337,7 +2347,7 @@ async function handleSetPtoAllowance(body) {
   const rows = await neonWrite("pto.setAllowance",
     `INSERT INTO pto_years (employee_id, year, allowance_hours, carried_in_hours, note, updated_at)
      SELECT e.id, $2, $3::numeric, $4::numeric, NULLIF($5, ''), now()
-       FROM employees e WHERE e.airtable_id = $1
+       FROM employees e WHERE e.airtable_id = $1 OR e.id::text = $1
      ON CONFLICT (employee_id, year) DO UPDATE
         SET allowance_hours  = EXCLUDED.allowance_hours,
             carried_in_hours = EXCLUDED.carried_in_hours,
@@ -2392,7 +2402,7 @@ async function handleClockWidget(params) {
   if (!employeeId || !token) return deny();
 
   const q = await neonQuery(
-    `SELECT id, name, widget_key FROM employees WHERE airtable_id = $1`, [employeeId]);
+    `SELECT id, name, widget_key FROM employees WHERE airtable_id = $1 OR id::text = $1`, [employeeId]);
   const emp = q?.rows?.[0];
   if (!emp?.widget_key) return deny();
   if (!verifyScope(token, widgetScopeParts(employeeId, emp.widget_key))) return deny();
@@ -2476,7 +2486,7 @@ async function handleWidgetLink(body, authUser) {
         SET widget_key = CASE WHEN widget_key IS NULL OR $2 THEN gen_random_uuid()
                               ELSE widget_key END
       WHERE id = $1
-      RETURNING airtable_id, widget_key`, [me.id, rotate]);
+      RETURNING COALESCE(airtable_id, id::text) AS airtable_id, widget_key`, [me.id, rotate]);
 
   const r = rows?.[0];
   if (!r) return resp(404, { ok: false, error: "Employee not found." });
@@ -2540,7 +2550,7 @@ async function handleClockReconcile(params) {
           AND deleted_at IS NULL
         GROUP BY 1, 2
      )
-     SELECT e.name AS employee, e.airtable_id AS employee_id,
+     SELECT e.name AS employee, COALESCE(e.airtable_id, e.id::text) AS employee_id,
             to_char(coalesce(qb.work_date, ck.work_date),'YYYY-MM-DD') AS work_date,
             coalesce(qb.hours, 0)   AS qb_hours,
             coalesce(ck.hours, 0)   AS clock_hours,
@@ -2832,7 +2842,7 @@ async function handleClockRoster(params) {
   // punch's own snapshot, because this view is about who is working NOW — the
   // current name is the right one to show.
   const onClock = await neonQuery(
-    `SELECT e.airtable_id AS employee_id, e.name,
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS employee_id, e.name,
             o.started_at, o.job_name, o.class, o.city_taxes,
             o.break_seconds::float8 AS break_seconds, o.break_started_at
        FROM open_punches o
@@ -2843,7 +2853,7 @@ async function handleClockRoster(params) {
   // Office and viewers are excluded — they have no hours, so offering to punch
   // them in would be offering to create a payroll row that shouldn't exist.
   const offClock = await neonQuery(
-    `SELECT e.airtable_id AS employee_id, e.name
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS employee_id, e.name
        FROM employees e
       WHERE e.active IS TRUE
         AND lower(coalesce(e.role, '')) IN ('admin', 'employee')
@@ -2854,7 +2864,7 @@ async function handleClockRoster(params) {
   // and not just "is Dave here this second". Same local-date rule as the punch
   // itself — see the overnight note in db/schema/018_time_clock.sql.
   const today = await neonQuery(
-    `SELECT e.airtable_id AS employee_id, e.name,
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS employee_id, e.name,
             c.started_at, c.ended_at,
             c.duration_seconds::float8 AS duration_seconds,
             c.break_seconds::float8 AS break_seconds,
@@ -2894,7 +2904,7 @@ async function handleClockPunches(params) {
     // back a DATE column as a JS Date, so String(d).slice(0,10) produced
     // "Mon Aug 10" — which the client then split on "-" and got NaN from, hence
     // "Week of Invalid Date". to_char removes the guesswork about the wire format.
-    `SELECT c.id, e.name AS employee, e.airtable_id AS employee_id,
+    `SELECT c.id, e.name AS employee, COALESCE(e.airtable_id, e.id::text) AS employee_id,
             to_char(c.work_date, 'YYYY-MM-DD') AS work_date,
             -- Monday of that week. Matches time_entries.week_start_date, which is
             -- what payroll groups on, so a week here is the same week there.
@@ -2950,9 +2960,9 @@ async function handleClockPunches(params) {
 // Resolve the person an admin is acting ON. Airtable rec id, because that is what
 // every other people-facing action in this file takes and what the client holds.
 async function clockEmployeeById(employeeId) {
-  if (!employeeId || !String(employeeId).startsWith("rec")) return null;
+  if (!employeeId || !isEmployeeHandle(employeeId)) return null;
   const q = await neonQuery(
-    `SELECT id, name FROM employees WHERE airtable_id = $1`, [String(employeeId)]);
+    `SELECT id, name FROM employees WHERE airtable_id = $1 OR id::text = $1`, [String(employeeId)]);
   return q?.rows?.[0] || null;
 }
 
@@ -3175,7 +3185,7 @@ async function handlePayrollRunCreate(body) {
   const unresolvedBonuses = [];
   const resolvedBonuses = [];
   nonZero.forEach(b => {
-    if (typeof b.employeeId === "string" && b.employeeId.startsWith("rec")) {
+    if (typeof b.employeeId === "string" && isEmployeeHandle(b.employeeId)) {
       resolvedBonuses.push(b);
     } else {
       unresolvedBonuses.push({ employeeName: b.employeeName || null, amount: Number(b.amount) });
@@ -3958,7 +3968,7 @@ async function handlePayrollBonusesRollup(params) {
 // avoids the {Employee}-link/ARRAYJOIN-returns-name pitfall.
 async function handlePayrollEmployeeBonusHistory(params) {
   const employeeId = params?.employeeId;
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   const limit = Math.max(1, Math.min(50, parseInt(params?.limit, 10) || 5));
@@ -4090,7 +4100,7 @@ async function handlePayrollHoursBreakdown(params) {
   // YTD). Inactive 0-hour leavers stay hidden.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT e.airtable_id, e.name, e.active,
+      `SELECT COALESCE(e.airtable_id, e.id::text) AS airtable_id, e.name, e.active,
               round(coalesce(sum(t.hours), 0), 2)::float8 AS hours
          FROM employees e
          LEFT JOIN time_entries t
@@ -4178,7 +4188,7 @@ async function handlePayrollHoursBreakdown(params) {
 
 async function handleMyHoursRollup(params) {
   const employeeId = params?.employeeId;
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   const todayStr = params?.today || dateToYmd(new Date());
@@ -4212,7 +4222,7 @@ async function handleMyHoursRollup(params) {
               round(coalesce(sum(t.hours), 0), 2)::float8 AS ytd
          FROM time_entries t
          JOIN employees e ON e.id = t.employee_id
-        WHERE e.airtable_id = $1
+        WHERE e.airtable_id = $1 OR e.id::text = $1
           AND t.work_date >= $2::date AND t.work_date <= $7::date`,
       [employeeId, dateToYmd(yearStart), dateToYmd(thisWeekStart), dateToYmd(payPeriodStart),
        dateToYmd(payPeriodEnd), dateToYmd(monthStart), todayStr]
@@ -4276,7 +4286,7 @@ async function handleMyHoursBreakdown(params) {
   const VALID_BUCKETS = new Set(["thisWeek", "payPeriod", "thisMonth", "ytd"]);
   const employeeId = params?.employeeId;
   const bucket = params?.bucket;
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   if (!VALID_BUCKETS.has(bucket)) {
@@ -4323,7 +4333,7 @@ async function handleMyHoursBreakdown(params) {
          FROM time_entries t
          JOIN employees e ON e.id = t.employee_id
          LEFT JOIN jobs j ON j.id = t.job_id
-        WHERE e.airtable_id = $1
+        WHERE e.airtable_id = $1 OR e.id::text = $1
           AND t.work_date >= $2::date AND t.work_date <= $3::date
         ORDER BY t.work_date`,
       [employeeId, dateToYmd(bucketStart), dateToYmd(sumEnd)]);
@@ -4414,7 +4424,7 @@ async function handleLogin(body) {
       }
       if (!r.user) return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
       await neonExec("login.lastSeen",
-        `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1`, [r.user.id]);
+        `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1 OR id::text = $1`, [r.user.id]);
       return resp(200, {
         ok: true, user: r.user, _source: "neon",
         token: signToken({ id: r.user.id, role: r.user.role }),
@@ -4460,7 +4470,7 @@ async function handleLogin(body) {
   // the only way to spot an account nobody has used in a year is to record this,
   // but nobody should be locked out if it doesn't land.
   await neonExec("login.lastSeen",
-    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1`, [match.id]);
+    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1 OR id::text = $1`, [match.id]);
   // Issue a signed session token the client attaches to every later request.
   return resp(200, { ok: true, user, _source: "airtable", token: signToken({ id: user.id, role: user.role }) });
 }
@@ -4541,7 +4551,8 @@ async function handlePeople() {
   // the ETL dimension load that used to overwrite it is retired — so Airtable's
   // copy is the mirror, and reading it here would show stale names and roles.
   const q = await neonQuery(
-    `SELECT e.airtable_id, e.name, e.username, e.role, e.active, e.email, e.phone,
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS airtable_id,
+            e.name, e.username, e.role, e.active, e.email, e.phone,
             e.employee_no, e.labor_type, e.notes, e.first_name, e.last_name,
             e.hired_on, e.terminated_on, e.termination_note,
             e.token_valid_from, e.last_login_at, e.salaried,
@@ -4578,7 +4589,8 @@ async function handlePeople() {
   // of two of them. Fails soft — no PTO figures is a worse screen, not a broken one.
   const ptoByAirtableId = new Map();
   const pq = await neonQuery(
-    `SELECT airtable_id, allowance_hours::float8, carried_in_hours::float8,
+    `SELECT COALESCE(airtable_id, employee_id::text) AS airtable_id,
+            allowance_hours::float8, carried_in_hours::float8,
             entitled_hours::float8, used_hours::float8, remaining_hours::float8,
             holiday_hours::float8, year
        FROM v_pto_balances WHERE year = EXTRACT(YEAR FROM CURRENT_DATE)::int`, []);
@@ -4671,12 +4683,12 @@ async function handlePeople() {
 //   is found at the right moment.
 async function handleEmployeePin(params) {
   const { employeeId } = params || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   // Neon holds the PIN now (db/schema/017), and the People screen writes both
   // stores, so read the one that login actually uses. Airtable is the fallback.
-  const q = await neonQuery(`SELECT pin FROM employees WHERE airtable_id = $1`, [employeeId]);
+  const q = await neonQuery(`SELECT pin FROM employees WHERE airtable_id = $1 OR id::text = $1`, [employeeId]);
   let pin = (q && !q.error && q.rows?.length) ? String(q.rows[0].pin ?? "").trim() : null;
   if (pin === null) {
     const rec = await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, { method: "GET" });
@@ -4733,7 +4745,7 @@ function appRateKey(employeeId, startDate) {
 
 async function handleEmployeeRates(params) {
   const { employeeId } = params || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   const q = await neonQuery(
@@ -4741,7 +4753,7 @@ async function handleEmployeeRates(params) {
             r.base_hourly_wage, r.payroll_burden_pct, r.true_cost_rate, r.notes
        FROM labor_cost_rates r
        JOIN employees e ON e.id = r.employee_id
-      WHERE e.airtable_id = $1
+      WHERE e.airtable_id = $1 OR e.id::text = $1
       ORDER BY r.effective_start_date DESC`, [employeeId]);
   if (!q || q.error || !Array.isArray(q.rows)) {
     return resp(503, { ok: false, error: "Can't read rates right now (database unreachable)." });
@@ -4785,7 +4797,7 @@ function parseRateInput(body) {
 // rates or none.
 async function handleAddEmployeeRaise(body) {
   const { employeeId, startDate } = body || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startDate || ""))) {
@@ -4795,7 +4807,7 @@ async function handleAddEmployeeRaise(body) {
   if (p.error) return resp(400, { ok: false, error: p.error });
 
   const rows = await neonWrite("employeeRaise",
-    `WITH emp AS (SELECT id FROM employees WHERE airtable_id = $1),
+    `WITH emp AS (SELECT id FROM employees WHERE airtable_id = $1 OR id::text = $1),
         closed AS (
           UPDATE labor_cost_rates
              SET effective_end_date = ($2::date - 1)
@@ -4855,8 +4867,19 @@ async function handleCorrectEmployeeRate(body) {
   return resp(200, { ok: true, trueCost: Number(rows[0].true_cost_rate) });
 }
 
-// Add a person. Airtable record first — its rec id IS the identity every other
-// table keys on, so it has to exist before anything can reference it.
+// Add a person. NEON FIRST since cutover slice 5 (2026-08-24) — the Neon row is
+// the identity now, and Airtable gets a best-effort mirror.
+//
+// It used to be the other way round, on the reasoning that "its rec id IS the
+// identity every other table keys on". That stopped being true: every child
+// table FKs to `employees(id)`, the uuid (verified in db/schema/060), and login
+// has read Neon since 2026-08-08. The rec id was the identity by habit.
+//
+// ⚠⚠ THE REC ID IS NOT STAMPED BACK. There is no ETL over `employees` — the ETL
+// dimension load was retired precisely because re-running it reactivated
+// leavers — so nothing would re-read the mirror and no ON CONFLICT can
+// duplicate the row. Leaving `airtable_id` NULL keeps one rule for the whole
+// table: a person hired in the app is Neon's, full stop.
 //
 // ⚠ A starting rate is not optional for anyone who will book hours. An employee
 // with NO rate row contributes NOTHING to job labor cost: v_job_labor_cost_true
@@ -4873,53 +4896,78 @@ async function handleCreateEmployee(body) {
   const cleanPin = String(pin ?? "").trim();
   if (!/^\d{4,8}$/.test(cleanPin)) return resp(400, { ok: false, error: "PIN must be 4 to 8 digits." });
 
-  const all = await fetchAll(TABLES.employees);
-  // Same rule as handleSetEmployeePin: login matches identifier + PIN, so two
-  // people sharing a PIN lets either log in as the other.
-  const clash = all.find(r => String(r.fields?.[F.emp.pin] ?? "").trim() === cleanPin);
-  if (clash) {
-    return resp(409, { ok: false, error: `That PIN is already used by ${g(clash.fields, F.emp.name) || "another employee"}. Pick a different one.` });
+  // ⚠⚠ THIS CHECK READS NEON, NOT AIRTABLE — cutover slice 5, and it is a
+  // SECURITY change, not a tidy-up.
+  //
+  // Login matches identifier + PIN, so two people sharing a PIN lets either log
+  // in as the other. This used to scan the Airtable Employees table, which after
+  // this slice does not contain natively-hired people at all — so their PINs
+  // were invisible to it and a second person could be given the same one. The
+  // duplicate would then be undetectable from the UI and would silently make
+  // `neonLoginCandidate` ambiguous, which it refuses (`ambiguous:true`),
+  // locking BOTH of them out on their next login.
+  //
+  // Fails CLOSED. If Neon cannot answer we do not know whether the PIN is free,
+  // and guessing "free" is the answer that creates the collision.
+  const dupe = await neonQuery(
+    `SELECT name, btrim(pin) = $1 AS pin_clash,
+            lower(btrim(name)) = lower(btrim($2)) AS name_clash
+       FROM employees
+      WHERE (pin IS NOT NULL AND btrim(pin) = $1)
+         OR lower(btrim(name)) = lower(btrim($2))`, [cleanPin, cleanName]);
+  if (!dupe?.rows) {
+    return resp(503, { ok: false, error: "Couldn't check for a duplicate PIN. Nobody was added — please try again." });
   }
-  if (all.some(r => normalize(g(r.fields, F.emp.name)) === normalize(cleanName))) {
+  const pinClash = dupe.rows.find(r => r.pin_clash === true);
+  if (pinClash) {
+    return resp(409, { ok: false, error: `That PIN is already used by ${pinClash.name || "another employee"}. Pick a different one.` });
+  }
+  if (dupe.rows.some(r => r.name_clash === true)) {
     return resp(409, { ok: false, error: `There is already an employee called ${cleanName}.` });
   }
 
   const nextLabor = _LABOR_OPTS.includes(String(laborType || "")) ? String(laborType) : "Regular";
-  const created = await atFetch(encodeURIComponent(TABLES.employees), {
-    method: "POST",
-    body: JSON.stringify({ fields: {
-      [_EMP_FLD.name]:       cleanName,
-      [_EMP_FLD.username]:   String(username ?? "").trim(),
-      [_EMP_FLD.pin]:        cleanPin,
-      [_EMP_FLD.role]:       nextRole,
-      [_EMP_FLD.active]:     true,
-      [_EMP_FLD.phone]:      String(phone ?? "").trim(),
-      [_EMP_FLD.email]:      String(email ?? "").trim(),
-      [_EMP_FLD.employeeNo]: String(employeeNo ?? "").trim(),
-      [_EMP_FLD.laborType]:  nextLabor,
-    } }),
-  });
-  const newId = created?.id;
-  if (!newId) return resp(502, { ok: false, error: "Airtable did not return a record id." });
-
   const ymd = (v) => {
     const s = String(v ?? "").trim();
     return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
   };
-  // Login reads Neon now, so this row is what actually lets them in. It must
-  // land, hence neonWrite rather than a best-effort mirror.
-  await neonWrite("createEmployee",
-    `INSERT INTO employees (airtable_id, name, username, role, active, pin,
+
+  // ── THE HIRE. Neon first and it fails closed: this row is what lets the
+  // person log in, so a create reported as done must actually be done.
+  //
+  // No `ON CONFLICT` any more. It existed to make an Airtable-first create
+  // idempotent against the rec id; a native row has no natural key to conflict
+  // on, and the duplicate-name/PIN check above is what prevents a double-add.
+  const rows = await neonWrite("createEmployee",
+    `INSERT INTO employees (name, username, role, active, pin,
                             email, phone, employee_no, labor_type, hired_on)
-          VALUES ($1,$2,$3,$4,true,$5,$6,$7,$8,$9,$10::date)
-     ON CONFLICT (airtable_id) DO UPDATE
-            SET name=EXCLUDED.name, username=EXCLUDED.username, role=EXCLUDED.role,
-                active=true, pin=EXCLUDED.pin, email=EXCLUDED.email, phone=EXCLUDED.phone,
-                employee_no=EXCLUDED.employee_no, labor_type=EXCLUDED.labor_type,
-                hired_on=EXCLUDED.hired_on`,
-    [newId, cleanName, String(username ?? "").trim(), nextRole, cleanPin,
+          VALUES ($1::text,$2::text,$3::text,true,$4::text,$5::text,$6::text,
+                  $7::text,$8::text,$9::date)
+       RETURNING id`,
+    [cleanName, String(username ?? "").trim(), nextRole, cleanPin,
      String(email ?? "").trim(), String(phone ?? "").trim(),
      String(employeeNo ?? "").trim(), nextLabor, ymd(hiredOn)]);
+  const newId = rows?.[0]?.id ? String(rows[0].id) : null;
+  if (!newId) return resp(502, { ok: false, error: "Couldn't add the employee. Please try again." });
+
+  // The Airtable mirror. Best-effort, and the rec id is deliberately NOT carried
+  // back — see the header note. If this fails the person still exists and can
+  // still log in, which is the only thing that matters about a new hire.
+  await mirrorToAirtable("createEmployee", () =>
+    atFetch(encodeURIComponent(TABLES.employees), {
+      method: "POST",
+      body: JSON.stringify({ fields: {
+        [_EMP_FLD.name]:       cleanName,
+        [_EMP_FLD.username]:   String(username ?? "").trim(),
+        [_EMP_FLD.pin]:        cleanPin,
+        [_EMP_FLD.role]:       nextRole,
+        [_EMP_FLD.active]:     true,
+        [_EMP_FLD.phone]:      String(phone ?? "").trim(),
+        [_EMP_FLD.email]:      String(email ?? "").trim(),
+        [_EMP_FLD.employeeNo]: String(employeeNo ?? "").trim(),
+        [_EMP_FLD.laborType]:  nextLabor,
+      } }),
+    }));
 
   if (withRate) {
     const start = ymd(hiredOn) || new Date().toISOString().slice(0, 10);
@@ -4935,7 +4983,7 @@ async function handleCreateEmployee(body) {
                base_hourly_wage, payroll_burden_pct, true_cost_rate, synced_at)
        SELECT $2, e.id, $3, $4::date, $5::numeric, $6::numeric,
               round($5::numeric * (1 + $6::numeric), 2), now()
-         FROM employees e WHERE e.airtable_id = $1
+         FROM employees e WHERE e.airtable_id = $1 OR e.id::text = $1
        ON CONFLICT (airtable_id) DO NOTHING`,
       [newId, appRateKey(newId, start), p.laborType, start, p.wage, p.burdenFrac]);
   }
@@ -4963,7 +5011,7 @@ const _LABOR_OPTS = ["Regular", "Prevailing Wage", "Service Rate"];
 async function handleUpdateEmployee(body, authUser) {
   const { employeeId, name, username, employeeNo, phone, email,
           role, laborType, hiredOn, terminatedOn, notes } = body || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   const cleanName = String(name ?? "").trim();
@@ -4998,47 +5046,65 @@ async function handleUpdateEmployee(body, authUser) {
   // statement wrote the general Notes field into it, so editing someone's
   // notes silently overwrote the reason they were let go. General notes now
   // have their own column.
+  // ⚠⚠ THIS WAS AN `INSERT … ON CONFLICT (airtable_id)` UPSERT AND HAD TO STOP
+  // BEING ONE — cutover slice 5. Handed a native employee's uuid it would not
+  // have updated anybody: nothing conflicts, so it would INSERT A SECOND
+  // EMPLOYEE whose `airtable_id` is literally that uuid string. The person would
+  // then exist twice with the same name and PIN, `neonLoginCandidate` would see
+  // two matches and refuse the login as `ambiguous`, and the admin would have
+  // been told the edit saved.
+  //
+  // The upsert existed because "a new hire exists in Airtable the moment they're
+  // added but only reaches Neon on the next ETL run, and refusing to let anyone
+  // edit them until then would be a silly place to fail." Both halves of that
+  // are now false: hires are created in Neon first, and the ETL dimension load
+  // is retired. A plain UPDATE is the honest statement — the row must exist.
   const rows = await neonWrite("updateEmployee",
-    `INSERT INTO employees (airtable_id, name, username, role, email, phone,
-                            employee_no, labor_type, notes, hired_on, terminated_on)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11::date)
-     ON CONFLICT (airtable_id) DO UPDATE
-            SET name          = EXCLUDED.name,
-                username      = EXCLUDED.username,
-                role          = EXCLUDED.role,
-                email         = EXCLUDED.email,
-                phone         = EXCLUDED.phone,
-                employee_no   = EXCLUDED.employee_no,
-                labor_type    = EXCLUDED.labor_type,
-                notes         = EXCLUDED.notes,
-                hired_on      = EXCLUDED.hired_on,
-                terminated_on = EXCLUDED.terminated_on
-       RETURNING airtable_id`,
+    `UPDATE employees
+        SET name          = $2::text,
+            username      = $3::text,
+            role          = $4::text,
+            email         = $5::text,
+            phone         = $6::text,
+            employee_no   = $7::text,
+            labor_type    = $8::text,
+            notes         = $9::text,
+            hired_on      = $10::date,
+            terminated_on = $11::date
+      WHERE airtable_id = $1 OR id::text = $1
+  RETURNING airtable_id`,
     [employeeId, cleanName, String(username ?? "").trim(), nextRole,
      String(email ?? "").trim(), String(phone ?? "").trim(),
      String(employeeNo ?? "").trim(), nextLabor, String(notes ?? "").trim(),
      ymd(hiredOn), ymd(terminatedOn)]);
   if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error(`updateEmployee: no row written for ${employeeId}`);
+    return resp(404, { ok: false, error: "That employee is not in the database — nothing was changed." });
   }
 
-  await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: {
-      [_EMP_FLD.name]:       cleanName,
-      [_EMP_FLD.username]:   String(username ?? "").trim(),
-      [_EMP_FLD.employeeNo]: String(employeeNo ?? "").trim(),
-      [_EMP_FLD.phone]:      String(phone ?? "").trim(),
-      [_EMP_FLD.email]:      String(email ?? "").trim(),
-      [_EMP_FLD.role]:       nextRole,
-      [_EMP_FLD.laborType]:  nextLabor,
-      [_EMP_FLD.notes]:      String(notes ?? "").trim(),
-      // Blanked on every save. `Role New` can only express employee/admin/
-      // viewer — it has no `office` — so a value left sitting there is a
-      // demotion waiting to happen if any reader ever prefers it again.
-      [_EMP_FLD.roleNew]:    null,
-    } }),
-  });
+  // Gated on the row's REC ID — a native hire has no Airtable record to PATCH,
+  // and addressing `Employees/<uuid>` would 404 and throw after the real write
+  // had already landed.
+  const updRecId = rows[0]?.airtable_id || null;
+  if (updRecId) {
+    await mirrorToAirtable("updateEmployee", () =>
+      atFetch(`${encodeURIComponent(TABLES.employees)}/${updRecId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields: {
+          [_EMP_FLD.name]:       cleanName,
+          [_EMP_FLD.username]:   String(username ?? "").trim(),
+          [_EMP_FLD.employeeNo]: String(employeeNo ?? "").trim(),
+          [_EMP_FLD.phone]:      String(phone ?? "").trim(),
+          [_EMP_FLD.email]:      String(email ?? "").trim(),
+          [_EMP_FLD.role]:       nextRole,
+          [_EMP_FLD.laborType]:  nextLabor,
+          [_EMP_FLD.notes]:      String(notes ?? "").trim(),
+          // Blanked on every save. `Role New` can only express employee/admin/
+          // viewer — it has no `office` — so a value left sitting there is a
+          // demotion waiting to happen if any reader ever prefers it again.
+          [_EMP_FLD.roleNew]:    null,
+        } }),
+      }));
+  }
 
   return resp(200, { ok: true, employeeId });
 }
@@ -5059,7 +5125,7 @@ async function handleUpdateEmployee(body, authUser) {
 // safe and useful. It will sign you out, which is correct and expected.
 async function handleSetEmployeePin(body) {
   const { employeeId, pin } = body || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   const next = String(pin ?? "").trim();
@@ -5092,17 +5158,26 @@ async function handleSetEmployeePin(body) {
     `UPDATE employees
         SET token_valid_from = $2::timestamptz,
             pin              = $3::text
-      WHERE airtable_id = $1
-  RETURNING airtable_id`, [employeeId, new Date().toISOString(), next]);
+      WHERE airtable_id = $1 OR id::text = $1
+  RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id`, [employeeId, new Date().toISOString(), next]);
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error(`employee ${employeeId} is not in Neon yet — cannot sign out their devices`);
   }
   clearRevocationCache();
 
-  await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: { [_EMP_FLD.pin]: next } }),
-  });
+  // ⚠ Gated on the row's REC ID, not on `employeeId` — cutover slice 5. A
+  // natively-hired employee has no Airtable record, so this PATCH would address
+  // `Employees/<uuid>`, 404, and throw AFTER the authoritative Neon write had
+  // already landed: the PIN would be changed and their devices signed out, and
+  // the admin would see a 500 saying it failed. Mirror, not gospel.
+  const repinRecId = rows[0]?.airtable_id || null;
+  if (repinRecId) {
+    await mirrorToAirtable("repinEmployee", () =>
+      atFetch(`${encodeURIComponent(TABLES.employees)}/${repinRecId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields: { [_EMP_FLD.pin]: next } }),
+      }));
+  }
 
   return resp(200, { ok: true, employeeId, name: g(target.fields, F.emp.name) || "" });
 }
@@ -5139,7 +5214,7 @@ async function handleSetEmployeePin(body) {
 // the authority until login moves. Do not "fix" that by dropping the mirror.
 async function handleSetEmployeeActive(body, authUser) {
   const { employeeId, active, note } = body || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   if (typeof active !== "boolean") {
@@ -5157,13 +5232,17 @@ async function handleSetEmployeeActive(body, authUser) {
   // (a new hire, or any gap since the last ETL run) would report success while
   // recording no revocation at all. That is precisely the silent lie this whole
   // feature exists to remove, so it is checked rather than assumed.
+  // Returns the matched row so the caller can read its REC ID — see the mirror
+  // note below the branches.
   const mustHaveMatched = (rows) => {
     if (!Array.isArray(rows) || rows.length === 0) {
       throw new Error(`employee ${employeeId} is not in Neon yet — cannot record a session revocation for them`);
     }
+    return rows[0];
   };
 
   const nowIso = new Date().toISOString();
+  let matched;
   if (active === false) {
     // token_valid_from stamped from THIS clock, so it is compared against a
     // token `iat` from the same family of clock rather than Postgres now().
@@ -5177,22 +5256,22 @@ async function handleSetEmployeeActive(body, authUser) {
     // parameter $2". It failed on every single revocation; the offline tests
     // could not catch it because they die at the connection before Postgres
     // ever parses the SQL.
-    mustHaveMatched(await neonWrite("revokeEmployee",
+    matched = mustHaveMatched(await neonWrite("revokeEmployee",
       `UPDATE employees
           SET token_valid_from = $2::timestamptz,
               active           = false,
               terminated_on    = COALESCE(terminated_on, ($2::timestamptz)::date),
               termination_note = COALESCE(NULLIF($3::text, ''), termination_note)
-        WHERE airtable_id = $1
+        WHERE airtable_id = $1 OR id::text = $1
     RETURNING airtable_id`, [employeeId, nowIso, String(note || "").trim()]));
   } else {
-    mustHaveMatched(await neonWrite("restoreEmployee",
+    matched = mustHaveMatched(await neonWrite("restoreEmployee",
       `UPDATE employees
           SET token_valid_from = NULL,
               active           = true,
               terminated_on    = NULL,
               termination_note = NULL
-        WHERE airtable_id = $1
+        WHERE airtable_id = $1 OR id::text = $1
     RETURNING airtable_id`, [employeeId]));
   }
   // This instance stops honouring the dead token now instead of up to 60s from
@@ -5200,10 +5279,24 @@ async function handleSetEmployeeActive(body, authUser) {
   // guarantee, this is a courtesy to whoever is doing the clicking.
   clearRevocationCache();
 
-  await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: { [_EMP_FLD.active]: active } }),
-  });
+  // ⚠ Gated on the row's REC ID — cutover slice 5. A natively-hired employee
+  // has no Airtable record, so this would PATCH `Employees/<uuid>`, 404 and
+  // throw — AFTER the revocation had already landed in Neon. The admin would
+  // be told the deactivation failed while the person was, in fact, locked out.
+  //
+  // ⚠⚠ The ORDER-AND-WHICH-HALF-FAILS-CLOSED note above still holds and is why
+  // this is a mirror rather than a second authority: Neon revokes the live
+  // session and is the half that must not silently fail. Airtable's `Active`
+  // box only blocked FUTURE logins, and login has read Neon since 2026-08-08.
+  // For a native employee that box does not exist and is not needed.
+  const accessRecId = matched?.airtable_id || null;
+  if (accessRecId) {
+    await mirrorToAirtable("setEmployeeActive", () =>
+      atFetch(`${encodeURIComponent(TABLES.employees)}/${accessRecId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ fields: { [_EMP_FLD.active]: active } }),
+      }));
+  }
 
   return resp(200, { ok: true, employeeId, active });
 }
@@ -5228,7 +5321,7 @@ async function handleSetEmployeeActive(body, authUser) {
 // "Regular" for all three of the salaried owners.
 async function handleSetEmployeeSalaried(body) {
   const { employeeId, salaried } = body || {};
-  if (!employeeId || !String(employeeId).startsWith("rec")) {
+  if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
   if (typeof salaried !== "boolean") {
@@ -5241,8 +5334,8 @@ async function handleSetEmployeeSalaried(body) {
   // the toggle in its new position, which is the silent lie to avoid on a
   // setting that decides whether someone is paid overtime.
   const rows = await neonWrite("setEmployeeSalaried",
-    `UPDATE employees SET salaried = $2 WHERE airtable_id = $1
-      RETURNING airtable_id, name, salaried`, [employeeId, salaried]);
+    `UPDATE employees SET salaried = $2 WHERE airtable_id = $1 OR id::text = $1
+      RETURNING COALESCE(airtable_id, id::text) AS airtable_id, name, salaried`, [employeeId, salaried]);
   if (!Array.isArray(rows) || rows.length === 0) {
     return resp(404, { ok: false, error: `Employee ${employeeId} is not in Neon — nothing was changed.` });
   }
@@ -7072,7 +7165,7 @@ const ET_SELECT = `
 async function actorName(authUser) {
   const id = authUser?.id ? String(authUser.id) : null;
   if (!id) return null;
-  const q = await neonQuery(`SELECT name FROM employees WHERE airtable_id = $1`, [id]);
+  const q = await neonQuery(`SELECT name FROM employees WHERE airtable_id = $1 OR id::text = $1`, [id]);
   return (q?.rows?.[0]?.name || id).slice(0, 80);
 }
 
@@ -8858,7 +8951,7 @@ async function createExpenseNative({ jobId, expenseType, expenseDate, billable,
              $6::numeric, $7::numeric,
              (SELECT name FROM expense_vendors WHERE airtable_id = $8 OR id::text = $8),
              $9, $10,
-             (SELECT name FROM employees WHERE airtable_id = $10 OR id::text = $10),
+             (SELECT name FROM employees WHERE airtable_id = $1 OR id::text = $10 OR id::text = $10),
              now())
      RETURNING id`,
     [handle.startsWith("rec") ? handle : null, handle,
@@ -8878,7 +8971,17 @@ async function handleAddLiftExpense(body, authUser) {
   if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid jobId received: ${idStr}` });
   const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldlTUL8hsPkReBAB":["recU56ncurkFrM2Nx"],"fldwbLPIafVtmaSeb":Number(amount),"fldX2x2J0xkRyMY3y":"Scissor Lift","fldelsB2jH2tvt1Cj":description||"Scissor Lift Expense","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
   // Submitted By (Employee link) — stamped from the token, never client input.
-  if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
+  // ⚠⚠ REC-ID ONLY, and the guard is not paranoia — cutover slice 5. This is an
+  // Airtable LINKED-RECORD field written with `typecast: true`, so handing it a
+  // uuid does not error: Airtable CREATES A NEW EMPLOYEES RECORD whose name is
+  // that uuid, and links to it. A natively-hired employee submitting one expense
+  // would quietly add a junk person to the Employees table, and every expense
+  // they filed after that would attribute to it.
+  //
+  // Dropping the field instead is correct and costs nothing: `submitted_by_at_id`
+  // in Neon is what actually scopes an employee to their own expenses, and it is
+  // written from the token by createExpenseNative regardless of id form.
+  if (authUser?.id && String(authUser.id).startsWith("rec")) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
   if (date) fields["fldCCPYdyWAOGchWb"] = date;
 
   const neonId = await createExpenseNative({
@@ -8916,7 +9019,17 @@ async function handleAddGeneralExpense(body, authUser) {
   if (vendorId && String(vendorId).startsWith("rec")) fields["fldlTUL8hsPkReBAB"] = [String(vendorId)];
   // Submitted By (Employee link) — stamped from the token, never client input.
   // This is what lets employees see/edit only their own expenses.
-  if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
+  // ⚠⚠ REC-ID ONLY, and the guard is not paranoia — cutover slice 5. This is an
+  // Airtable LINKED-RECORD field written with `typecast: true`, so handing it a
+  // uuid does not error: Airtable CREATES A NEW EMPLOYEES RECORD whose name is
+  // that uuid, and links to it. A natively-hired employee submitting one expense
+  // would quietly add a junk person to the Employees table, and every expense
+  // they filed after that would attribute to it.
+  //
+  // Dropping the field instead is correct and costs nothing: `submitted_by_at_id`
+  // in Neon is what actually scopes an employee to their own expenses, and it is
+  // written from the token by createExpenseNative regardless of id form.
+  if (authUser?.id && String(authUser.id).startsWith("rec")) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
 
   const neonId = await createExpenseNative({
     jobId: idStr, expenseType: type || "Materials", expenseDate: date,
@@ -11706,7 +11819,7 @@ async function setScheduleCrew(entryUuid, crewAtIds) {
   if (!ids.length) return;
   await neonWrite("schedule.crew.set",
     `INSERT INTO schedule_entry_crew (schedule_entry_id, employee_id)
-     SELECT $1, e.id FROM employees e WHERE e.airtable_id = ANY($2::text[])
+     SELECT $1, e.id FROM employees e WHERE e.airtable_id = ANY($2::text[]) OR e.id::text = ANY($2::text[])
      ON CONFLICT DO NOTHING`, [entryUuid, ids]);
 }
 
@@ -11826,19 +11939,28 @@ async function handleListEmployeesForScheduling() {
   // load felt exactly as slow as before. Half a flip buys nothing on a parallel
   // fetch; the slowest leg sets the time.
   //
-  // `id` stays the AIRTABLE employee id: it is what the crew picker sends back in
-  // `crewIds`, what schedule_entry_crew resolves against, and what the payroll
-  // screens use. Employees are still an Airtable-owned dimension.
+  // `id` is the employee HANDLE — the rec id wherever one exists, so it is
+  // unchanged for everyone hired before 2026-08-24. It is what the crew picker
+  // sends back in `crewIds`, what schedule_entry_crew resolves against, and what
+  // the payroll screens use; all of those take either form since slice 5.
+  //
+  // ⚠⚠ `AND airtable_id IS NOT NULL` WAS A FILTER, NOT A SANITY CHECK, and it is
+  // gone. It made sense when a row without a rec id could only be corrupt; after
+  // slice 5 it describes every natively-hired employee — so a new hire would
+  // have been **silently absent from the crew picker**, unschedulable, with no
+  // error and nothing in the UI to suggest they had been left out. The kind of
+  // omission somebody notices on a Monday morning when a crew is short.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT airtable_id, name, lower(coalesce(role, 'employee')) AS role
+      `SELECT COALESCE(airtable_id, id::text) AS handle, name,
+              lower(coalesce(role, 'employee')) AS role
          FROM employees
-        WHERE active IS TRUE AND airtable_id IS NOT NULL
+        WHERE active IS TRUE
         ORDER BY name`);
     if (q?.rows?.length) {
       return resp(200, {
         ok: true,
-        employees: q.rows.map(r => ({ id: r.airtable_id, name: r.name || "", role: r.role || "employee" })),
+        employees: q.rows.map(r => ({ id: r.handle, name: r.name || "", role: r.role || "employee" })),
         _source: "neon", _ms: q.ms
       });
     }

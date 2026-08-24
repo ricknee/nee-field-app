@@ -59,8 +59,21 @@ export function primeRevocationCache(entries, nowMs = Date.now()) {
 async function loadRevocations(nowMs) {
   if (_cache && nowMs - _cache.loadedAt < REVOCATION_TTL_MS) return _cache.byId;
 
+  // ⚠⚠ `COALESCE(airtable_id, id::text)` — cutover slice 5, and this one is a
+  // SECURITY hole if it regresses, not a cosmetic id mismatch.
+  //
+  // The map is keyed by the handle, and `isSessionRevoked` looks up `user.id`
+  // from the token. A natively-hired employee has `airtable_id NULL`, so a bare
+  // emit here keyed their entry under the string "null" while their session
+  // carries a uuid — the lookup misses, the function returns "not revoked", and
+  // **deactivating that person would not end their session at all.** They would
+  // keep full access for the remaining life of a 30-day token, which is the
+  // precise failure this whole file was written to fix.
+  //
+  // It fails that way silently: the admin clicks the toggle, the write succeeds,
+  // the UI says done, and the phone keeps working.
   const q = await neonQuery(
-    `SELECT airtable_id, token_valid_from
+    `SELECT COALESCE(airtable_id, id::text) AS handle, token_valid_from
        FROM employees
       WHERE token_valid_from IS NOT NULL`, []);
 
@@ -81,7 +94,7 @@ async function loadRevocations(nowMs) {
   const byId = new Map();
   for (const r of q.rows) {
     const t = new Date(r.token_valid_from).getTime();
-    if (Number.isFinite(t)) byId.set(String(r.airtable_id), t);
+    if (Number.isFinite(t)) byId.set(String(r.handle), t);
   }
   _cache = { loadedAt: nowMs, byId };
   return byId;

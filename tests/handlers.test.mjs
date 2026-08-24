@@ -1500,6 +1500,96 @@ await test("revocation: a token issued AFTER the stamp still works", async () =>
   clearRevocationCache();
 });
 
+// ── Cutover slice 5: employees can be Neon-native ──────────────────────────
+// A hire made in the app has NO Airtable record, so their handle is a uuid.
+// Every id-shaped thing in the employee path has to accept that, and the ones
+// that emit an id have to keep emitting the REC id for everyone who has one —
+// otherwise a 30-day token in a field phone stops matching its own account.
+const NATIVE_EMP = "9f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f";
+
+await test("slice 5: a native employee's session revokes like anyone else's", async () => {
+  // ⚠⚠ SECURITY, not id tidiness. The revocation map used to key on a bare
+  // `airtable_id`, which is NULL for a native hire — so their entry landed under
+  // the string "null", their session carried a uuid, the lookup missed and
+  // `isSessionRevoked` answered "not revoked". Deactivating that person would
+  // not have ended their session at all: full access for the rest of a 30-day
+  // token, while the admin watched the toggle flip and the UI say it was done.
+  mockTables = { Employees: [] };
+  const t0 = Date.now();
+  const stale = signToken({ id: NATIVE_EMP, role: "employee" }, t0 - 60_000);
+  primeRevocationCache([[NATIVE_EMP, t0]]);
+  const res = await GET("jobs", {}, stale);
+  eq(res.statusCode, 401, "the native hire's revoked session is refused too");
+  clearRevocationCache();
+});
+
+await test("slice 5: isEmployeeHandle accepts BOTH forms and nothing else", async () => {
+  const { isEmployeeHandle } = await import("../netlify/functions/_employees.js");
+  ok(isEmployeeHandle("recAbCdEfGhIjKlMn"), "a rec id, exactly as before");
+  ok(isEmployeeHandle(NATIVE_EMP), "and a native uuid");
+  ok(isEmployeeHandle(NATIVE_EMP.toUpperCase()), "case-insensitively");
+  ok(!isEmployeeHandle(""), "not empty");
+  ok(!isEmployeeHandle("nonsense"), "not arbitrary text");
+  ok(!isEmployeeHandle(null), "not null");
+});
+
+await test("slice 5: the 400 guards no longer reject a native employee's own id", async () => {
+  // Fifteen handlers tested `String(employeeId).startsWith("rec")` and 400'd
+  // otherwise. A native hire would have been able to log in and then be refused
+  // by their own PIN screen, hours, rate history and the People screen — every
+  // one a flat "invalid employeeId" with nothing to suggest the id was fine and
+  // the guard was stale.
+  //
+  // These must now fail LATER (at the unreachable Neon write), not at the guard.
+  mockTables = { Employees: [] };
+  delete process.env.DATABASE_URL;
+  for (const [action, body] of [
+    ["setEmployeeSalaried", { employeeId: NATIVE_EMP, salaried: true }],
+    ["setEmployeeActive",   { employeeId: NATIVE_EMP, active: false }],
+    ["updateEmployee",      { employeeId: NATIVE_EMP, name: "New Hire", role: "employee" }],
+  ]) {
+    const res = await POST(action, body);
+    ok(res.statusCode !== 400, `${action} does not 400 on a uuid (got ${res.statusCode})`);
+  }
+  const rates = await GET("employeeRates", { employeeId: NATIVE_EMP });
+  ok(rates.statusCode !== 400, `employeeRates does not 400 on a uuid (got ${rates.statusCode})`);
+});
+
+await test("slice 5: the employee source rules the sweep depends on", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const emp = await fs.readFile(new URL("../netlify/functions/_employees.js", import.meta.url), "utf8");
+  const rev = await fs.readFile(new URL("../netlify/functions/_revocation.js", import.meta.url), "utf8");
+
+  // The emit side is COALESCE, never a bare id. If anyone "simplifies" this to
+  // `id`, every phone in the field is holding a rec id that stops matching —
+  // the whole crew is logged out at once.
+  ok(/COALESCE\(airtable_id, id::text\) AS handle, name, role/.test(emp),
+     "login emits the handle, so a rec id stays a rec id");
+  ok(/COALESCE\(airtable_id, id::text\) AS handle, token_valid_from/.test(rev),
+     "revocation keys on the handle");
+
+  // updateEmployee must NOT be an upsert on airtable_id. Handed a uuid it would
+  // conflict with nothing and INSERT A SECOND employee carrying that uuid as its
+  // airtable_id — same name, same PIN, login then ambiguous and BOTH locked out.
+  ok(!/neonWrite\("updateEmployee",\s*\n\s*`INSERT INTO employees/.test(src),
+     "updateEmployee is a plain UPDATE, not an ON CONFLICT upsert");
+  ok(/neonWrite\("updateEmployee",\s*\n\s*`UPDATE employees/.test(src),
+     "and it is keyed on the dual handle");
+
+  // The crew picker filtered `airtable_id IS NOT NULL`, which after this slice
+  // describes every native hire — they would be silently unschedulable.
+  ok(!/WHERE active IS TRUE AND airtable_id IS NOT NULL/.test(src),
+     "the crew picker no longer filters native employees out");
+
+  // Airtable linked-record fields written with typecast:true CREATE a record for
+  // an unknown value. A uuid there adds a junk person to the Employees table.
+  const submittedBy = src.match(/fields\["fldRWV0eIKwBrXwHV"\] = \[authUser\.id\]/g) || [];
+  eq(submittedBy.length, 2, "both Submitted By writes still exist");
+  ok(!/if \(authUser\?\.id\) fields\["fldRWV0eIKwBrXwHV"\]/.test(src),
+     "and neither is written without a rec-id guard");
+});
+
 await test("revocation: everyone else is untouched", async () => {
   // The regression that would take the whole app down. Only listed ids revoke.
   mockTables = { Employees: [] };
@@ -2449,12 +2539,24 @@ await test("rates + createEmployee: admin only, and validated", async () => {
   eq((await POST("createEmployee", { name: "", role: "employee", pin: "1111" })).statusCode, 400, "empty name refused");
   eq((await POST("createEmployee", { name: "New Guy", role: "wizard", pin: "1111" })).statusCode, 400, "bogus role refused");
   eq((await POST("createEmployee", { name: "New Guy", role: "employee", pin: "12" })).statusCode, 400, "short PIN refused");
+  // ⚠ INVERTED BY CUTOVER SLICE 5 (2026-08-24). This used to assert a 409 for a
+  // duplicate PIN, satisfied from the mocked Airtable Employees table above.
+  // The check reads NEON now, and it had to move: after this slice the Airtable
+  // table does not contain natively-hired people at all, so their PINs were
+  // invisible to it and a second person could be handed the same one.
+  //
   // Login matches identifier + PIN, so a duplicate PIN is a working credential
-  // for someone else's account — same guard as setEmployeePin.
+  // for someone else's account. It is also worse than that here — two rows
+  // matching one PIN make `neonLoginCandidate` ambiguous, which it refuses, so
+  // the collision locks BOTH people out rather than letting one impersonate the
+  // other.
+  //
+  // This suite has no Neon, so what it can pin is the contract that matters:
+  // an unanswerable duplicate check must REFUSE the hire, never assume the PIN
+  // is free. Guessing "free" is the answer that creates the collision.
   const dup = await POST("createEmployee", { name: "New Guy", role: "employee", pin: "1184" });
-  eq(dup.statusCode, 409, "duplicate PIN refused on create");
-  ok(/Larry Unruh/.test(json(dup).error), "names who holds it");
-  eq((await POST("createEmployee", { name: "larry unruh", role: "employee", pin: "5555" })).statusCode, 409, "duplicate name refused");
+  eq(dup.statusCode, 503, "an unanswerable duplicate check refuses the hire");
+  ok(/nobody was added/i.test(json(dup).error), "and says plainly that nothing happened");
 });
 
 await test("rates: a rate write with Neon down fails CLOSED", async () => {

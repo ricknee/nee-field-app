@@ -2801,7 +2801,7 @@ async function handleUpdateJobCityTax(body) {
   }
 
   const rows = await neonWrite("job.setCityTax",
-    `UPDATE jobs SET city_tax = $2 WHERE airtable_id = $1 RETURNING airtable_id, city_tax`,
+    `UPDATE jobs SET city_tax = $2 WHERE airtable_id = $1 OR id::text = $1 RETURNING airtable_id, city_tax`,
     [String(jobId), value]);
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
 
@@ -2828,7 +2828,7 @@ async function handleUpdateJobClockVisibility(body) {
   }
 
   const rows = await neonWrite("job.setClockVisibility",
-    `UPDATE jobs SET clock_visibility = $2 WHERE airtable_id = $1
+    `UPDATE jobs SET clock_visibility = $2 WHERE airtable_id = $1 OR id::text = $1
      RETURNING airtable_id, clock_visibility`, [String(jobId), value]);
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
   return resp(200, { ok: true, jobId, clockVisibility: rows[0].clock_visibility ?? null });
@@ -5928,7 +5928,7 @@ async function handleUpdateJobStatus(body) {
   // the Trello card ("Project Completed On …"), and GP reporting groups by it.
   // COALESCE so re-completing a job never moves a date that already exists.
   const nRows = await neonWrite("job.updateStatus",
-    `WITH prev AS (SELECT airtable_id, po_locked AS old_locked,
+    `WITH prev AS (SELECT id AS prev_id, po_locked AS old_locked,
                           project_completed_at AS old_completed
                      FROM jobs WHERE airtable_id = $1 OR id::text = $1)
      UPDATE jobs j
@@ -5939,7 +5939,7 @@ async function handleUpdateJobStatus(body) {
                                         ELSE j.project_completed_at END,
             synced_at = now()
        FROM prev
-      WHERE j.airtable_id = prev.airtable_id
+      WHERE j.id = prev.prev_id
       RETURNING j.po_locked, prev.old_locked, j.po,
                 j.project_completed_at::text AS project_completed_at, prev.old_completed`,
     [jobId, status]);
@@ -5965,7 +5965,7 @@ async function handleUpdateJobStatus(body) {
   const patchFields = { "fld2FBMjvkOsy9Puu": status };
   if (lockedNow)    patchFields["fldDFQSF2jJmCDWB4"] = lockedNow;      // Job PO - Locked
   if (completedNow) patchFields["fldDcH5hrH596OTdB"] = completedNow;   // Project Completed At
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: patchFields }) });
+  const data = await mirrorJobPatch("updateJobStatus", jobId, patchFields);
 
   // Fire whatever this status change is supposed to fire — pCloud folders at
   // Estimating, Trello + QuickBooks Time at Awarded, Trello-completed at
@@ -5978,8 +5978,20 @@ async function handleUpdateJobStatus(body) {
   //
   // Inert until JOB_WEBHOOKS=app, and each automation stays deployed until its
   // replacement has been seen to fire once.
-  const webhooks = await fireJobStatusWebhooks(data, atFetch);
-  return resp(200, { ok: true, updatedId: data.id, ...(webhooks ? { webhooks } : {}) });
+  // ⚠ `data` is null for a NATIVE job — the Airtable mirror does not exist, and
+  // that is the designed state, not a failure. This was the crash: the first
+  // native job could not have its status changed because the PATCH 404'd and
+  // the handler reported "failed to update status", while Neon had already been
+  // written correctly.
+  //
+  // ⬜ The status webhooks are SKIPPED for a native job rather than fired with
+  // nulls. Three of the four job Make scenarios still describe the job from an
+  // Airtable record, so they need the same payload conversion slice 2.5 did for
+  // the pCloud hook before a native job can drive them. Logged loudly because a
+  // silently un-fired webhook is exactly the failure this migration keeps hitting.
+  const webhooks = data ? await fireJobStatusWebhooks(data, atFetch) : null;
+  if (!data) console.warn(`updateJobStatus: ${jobId} is Neon-native — status webhooks skipped (no Airtable record to send)`);
+  return resp(200, { ok: true, updatedId: data?.id || jobId, ...(webhooks ? { webhooks } : {}) });
 }
 
 // ── MAKE REPORTS BACK WHAT IT CREATED ──────────────────────────────────────
@@ -6070,9 +6082,7 @@ async function handleJobAutomationResult(body) {
   if (pcPhotos)   fields["fld655NnOgjRhaVSe"] = pcPhotos;           // pCloud Photo's ID
   if (Object.keys(fields).length) {
     try {
-      await atFetch(`${encodeURIComponent(TABLES.jobs)}/${recordId}`, {
-        method: "PATCH", body: JSON.stringify({ fields }),
-      });
+      await mirrorJobPatch("jobAutomationResult", recordId, fields);
     } catch (e) {
       console.error(`jobAutomationResult: Airtable mirror failed for ${recordId} — ${e?.message || e}`);
     }
@@ -6143,14 +6153,15 @@ async function handleUpdatePowerCo(body) {
   if (meterNumber    !== undefined) nPut("meter_number", meterNumber);
   if (nSets.length) {
     await neonWrite("job.updatePowerCo",
-      `UPDATE jobs SET ${nSets.join(", ")}, synced_at = now() WHERE airtable_id = $1`, nVals);
+      `UPDATE jobs SET ${nSets.join(", ")}, synced_at = now() WHERE airtable_id = $1 OR id::text = $1`, nVals);
   }
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields })
-  });
-  return resp(200, { ok: true, updatedId: data.id, job: mapJob(data) });
+  const data = await mirrorJobPatch("updateJob", jobId, fields);
+  // ⚠ `data` is null for a native job — the mirror is absent by design. Answer
+  // with the handle the caller sent and the job as Neon holds it; re-reading an
+  // Airtable record that does not exist is not a fallback, it is a crash.
+  return resp(200, { ok: true, updatedId: data?.id || jobId,
+                     ...(data ? { job: mapJob(data) } : {}) });
 }
 
 async function handleStartServiceCall(body) {
@@ -6168,21 +6179,23 @@ async function handleStartServiceCall(body) {
   await neonWrite("job.startServiceCall",
     `UPDATE jobs SET start_service_call = true, status = 'Service Call Scheduled',
                      synced_at = now()
-      WHERE airtable_id = $1`, [jobId]);
+      WHERE airtable_id = $1 OR id::text = $1`, [jobId]);
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields: {
-      "fldgar4OL6AL5k1S6": true,                     // Start Service Call
-      "fld2FBMjvkOsy9Puu": "Service Call Scheduled"  // Job Status
-    } }),
+  const data = await mirrorJobPatch("startServiceCall", jobId, {
+    "fldgar4OL6AL5k1S6": true,                     // Start Service Call
+    "fld2FBMjvkOsy9Puu": "Service Call Scheduled"  // Job Status
   });
 
   // Its own hook, and its own trigger shape: not a status change but
   // "Start Service Call" checked AND Job Type = Service Call. The type check
   // lives in the module so the condition stays next to the payload it guards.
-  const webhooks = await fireServiceCallWebhook(data);
-  return resp(200, { ok: true, updatedId: data.id, ...(webhooks ? { webhooks } : {}) });
+  // The webhook needs an Airtable record to describe; a native job has none, so
+  // it is skipped rather than fired with nulls. Recorded as a slice-6 gap: the
+  // service-call Make scenario has to take a payload before native jobs can use
+  // it, the same conversion slice 2.5 did for the pCloud hook.
+  const webhooks = data ? await fireServiceCallWebhook(data) : null;
+  if (!data) console.warn(`startServiceCall: ${jobId} is Neon-native — service-call webhook skipped (no Airtable record to send)`);
+  return resp(200, { ok: true, updatedId: data?.id || jobId, ...(webhooks ? { webhooks } : {}) });
 }
 
 async function handleCompleteServiceCall(body) {
@@ -6202,13 +6215,13 @@ async function handleCompleteServiceCall(body) {
   // so the first two cannot occur, but a re-tick on a finished job could, and
   // "Completed" → "Ready to Invoice" would be a regression, not a fix.
   const rows = await neonWrite("job.completeServiceCall",
-    `WITH prev AS (SELECT airtable_id, status AS old_status FROM jobs WHERE airtable_id = $1 OR id::text = $1)
+    `WITH prev AS (SELECT id AS prev_id, status AS old_status FROM jobs WHERE airtable_id = $1 OR id::text = $1)
      UPDATE jobs j
         SET project_complete = true,
             status = CASE WHEN j.status = 'Completed' THEN j.status ELSE 'Ready to Invoice' END,
             synced_at = now()
        FROM prev
-      WHERE j.airtable_id = prev.airtable_id
+      WHERE j.id = prev.prev_id
       RETURNING j.status, prev.old_status`, [jobId]);
 
   const row = rows?.[0] || {};
@@ -6216,10 +6229,8 @@ async function handleCompleteServiceCall(body) {
   if (row.status && row.status !== row.old_status) {
     fields["fld2FBMjvkOsy9Puu"] = row.status;                    // Job Status
   }
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
-    method: "PATCH", body: JSON.stringify({ fields }),
-  });
-  return resp(200, { ok: true, updatedId: data.id, status: row.status || null });
+  const data = await mirrorJobPatch("completeServiceCall", jobId, fields);
+  return resp(200, { ok: true, updatedId: data?.id || jobId, status: row.status || null });
 }
 
 // ── THE FIELD APP'S EXPENSE WRITES ARE NEON-FIRST since 2026-08-24 ────────
@@ -8955,8 +8966,8 @@ async function handleCalculateMileage(body) {
   // load, which is the worst shape for this bug — the value looks right the
   // moment you press the button and is gone by the next visit.
   await neonWrite("job.calculateMileage",
-    `UPDATE jobs SET miles_from_shop = $2, synced_at = now() WHERE airtable_id = $1`, [jobId, miles]);
-  await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldMy1yR7aHtVko9F": miles } }) });
+    `UPDATE jobs SET miles_from_shop = $2, synced_at = now() WHERE airtable_id = $1 OR id::text = $1`, [jobId, miles]);
+  await mirrorJobPatch("calculateMileage", jobId, { "fldMy1yR7aHtVko9F": miles });
   return resp(200, { ok: true, miles });
 }
 
@@ -10517,17 +10528,14 @@ async function handleUpdateJobBillableRate(body) {
     `UPDATE jobs
         SET labor_billable_rate_at_id = $2,
             billable_hourly_rate = (SELECT billable_hourly_rate FROM labor_billable_rates
-                                     WHERE airtable_id = $2),
+                                     WHERE airtable_id = $2 OR id::text = $2),
             synced_at = now()
       WHERE airtable_id = $1`, [jobId, rateId ? String(rateId) : null]);
 
   const fields = {};
   fields["fldcCGetfLtQW2nhm"] = rateId ? [String(rateId)] : [];
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields })
-  });
-  return resp(200, { ok: true, updatedId: data.id });
+  const data = await mirrorJobPatch("updateJob", jobId, fields);
+  return resp(200, { ok: true, updatedId: data?.id || jobId });
 }
 
 // ── SAVE INVOICE RECORD ──────────────────────────────────────────────────
@@ -12352,9 +12360,9 @@ async function handleUpdateJobNotes(body) {
   // Job notes carry crew instructions, so a note that reverts is a crew reading
   // yesterday's plan.
   await neonWrite("job.updateNotes",
-    `UPDATE jobs SET notes = $2, synced_at = now() WHERE airtable_id = $1`, [jobId, notes || ""]);
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldAuZAW19iYPBPxP": notes || "" } }) });
-  return resp(200, { ok: true, updatedId: data.id });
+    `UPDATE jobs SET notes = $2, synced_at = now() WHERE airtable_id = $1 OR id::text = $1`, [jobId, notes || ""]);
+  const data = await mirrorJobPatch("updateJobNotes", jobId, { "fldAuZAW19iYPBPxP": notes || "" });
+  return resp(200, { ok: true, updatedId: data?.id || jobId });
 }
 
 // Admin-only Inspections-tab edit. PATCHes four Job fields in a single call:
@@ -12387,10 +12395,7 @@ async function handleUpdateJobInspection(body) {
   fields["fldDKGllmOyyyf9qo"] = permitNumber || "";
   fields["fldQ5VJgOYcQBxmCr"] = !!inspectionNotRequired;
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields })
-  });
+  const data = await mirrorJobPatch("updateJob", jobId, fields);
 
   // ⚠ WRITE NEON TOO — same bug 10b6e04 fixed in updateJobInfo, same cause.
   // handleJobs and handleJobById are Neon-first and Neon's `jobs` is refreshed
@@ -12408,7 +12413,7 @@ async function handleUpdateJobInspection(body) {
        inspector_at_id = $7, inspector_name = $8,
        inspector_phone = $9, inspector_email = $10,
        permit_number = $11, inspection_not_required = $12
-     WHERE airtable_id = $1`,
+     WHERE airtable_id = $1 OR id::text = $1`,
     [jobId, hasAgency ? ag.rec : null, look(jf[F.job.inspectionAgency]),
      look(jf[F.job.inspectionAgencyPhone]), look(jf[F.job.inspectionAgencyEmail]),
      look(jf[F.job.inspectionSchedulingLink]),
@@ -12447,10 +12452,7 @@ async function handleUpdateJobInfo(body) {
 
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
 
-  const data = await atFetch(`${encodeURIComponent(TABLES.jobs)}/${jobId}`, {
-    method: "PATCH",
-    body: JSON.stringify({ fields, typecast: true })
-  });
+  const data = await mirrorJobPatch("updateJobInfo", jobId, fields, { typecast: true });
 
   // ⚠ WRITE NEON TOO, or the edit silently reverts for up to an hour.
   // handleJobs and handleJobById are BOTH Neon-first, and Neon's `jobs` is a
@@ -12509,7 +12511,7 @@ async function handleUpdateJobInfo(body) {
     // fields, so a Neon hiccup must not fail an edit the user watched succeed.
     // The hourly sync repairs it.
     await neonWrite("job.updateInfo",
-      `UPDATE jobs SET ${nSets.join(", ")} WHERE airtable_id = $1`, nVals).catch(() => {});
+      `UPDATE jobs SET ${nSets.join(", ")} WHERE airtable_id = $1 OR id::text = $1`, nVals).catch(() => {});
   }
 
   return resp(200, { ok: true, updatedId: data.id });
@@ -12588,6 +12590,50 @@ async function handleJobCreateStatus() {
       ? "Jobs are BORN IN NEON. Airtable gets a fail-soft mirror and the rec id is never stamped back."
       : "Jobs are created in Airtable first. Setting JOB_CREATE_SOURCE=native requires a REDEPLOY to take effect.",
   });
+}
+
+// ── THE AIRTABLE REC ID FOR A JOB HANDLE, OR NULL ─────────────────────────
+// Cutover slice 6, added 2026-08-24 after the first native job could not have
+// its status changed: `handleUpdateJobStatus` PATCHed `Jobs/<uuid>`, Airtable
+// answered 404, and the app reported "failed to update status".
+//
+// ⚠⚠ THE SLICE-6 SWEEP MISSED THIS ENTIRE CLASS, AND THE MISS HAS A NAME. It
+// converted job READS, guards and the emit, and stopped there — but ten handlers
+// also WRITE to Airtable addressed by the same id. It is the identical mistake
+// slice 5 made with `handleSetEmployeePin` (an Airtable read used as a lookup)
+// wearing the other face: **a handler can be fully dual-handled in every Neon
+// statement it runs and still fail on the Airtable call two lines later.**
+//
+// Returns the rec id when one exists, else null — and callers must treat null as
+// "skip the mirror", never as an error. A native job has no Airtable record and
+// that is the normal, permanent state, not a failure to repair.
+//
+// Fast path: a handle that already looks like a rec id is one, no query needed.
+// That keeps every pre-cutover job on exactly the behaviour it had.
+async function jobAirtableId(jobHandle) {
+  const id = String(jobHandle || "").trim();
+  if (!id) return null;
+  if (id.startsWith("rec")) return id;
+  const q = await neonQuery(
+    `SELECT airtable_id FROM jobs WHERE id::text = $1 LIMIT 1`, [id]);
+  return q?.rows?.[0]?.airtable_id || null;
+}
+
+// Mirror a PATCH onto the job's Airtable twin, if it has one.
+//
+// Fail-soft by contract: by the time this runs the authoritative Neon write has
+// already landed, so an Airtable problem must not turn a successful save into an
+// error the user sees. That is precisely what went wrong on the first native
+// job — the status had been written, and the 404 from a doomed PATCH was
+// reported as "failed to update status".
+async function mirrorJobPatch(label, jobHandle, fields, opts = {}) {
+  const recId = await jobAirtableId(jobHandle);
+  if (!recId) return null;
+  return await mirrorToAirtable(label, () =>
+    atFetch(`${encodeURIComponent(TABLES.jobs)}/${recId}`, {
+      method: "PATCH",
+      body: JSON.stringify(opts.typecast ? { fields, typecast: true } : { fields }),
+    }));
 }
 
 async function jobExists(jobId) {

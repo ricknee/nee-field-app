@@ -196,7 +196,7 @@ export async function fireJobStatusWebhooks(record, atFetch) {
       // repairs Neon from it.
       try {
         await neonWrite("job.pcloudFlag",
-          `UPDATE jobs SET pcloud_folders_created = true, synced_at = now() WHERE airtable_id = $1`,
+          `UPDATE jobs SET pcloud_folders_created = true, synced_at = now() WHERE airtable_id = $1 OR id::text = $1`,
           [record.id]);
       } catch (e) {
         console.error(`job-webhook pcloud: Neon flag not set on ${record.id} — ${e?.message || e}`);

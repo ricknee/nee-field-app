@@ -2489,6 +2489,20 @@ await test("slice 5 follow-up: no employee handler resolves via an Airtable exis
      "setScheduleCrew accepts either id form instead of dropping uuids");
   ok(!/crewAtIds : \[\]\)\.filter\(x => typeof x === "string" && x\.startsWith\("rec"\)\)/.test(src),
      "and the old rec-only crew filter is gone");
+
+  // ── The READ half of the same bug, and the worse one. `crew_ids` and
+  // `crew_names` are zipped BY POSITION in index.html (~21501, ~21805). They
+  // were aggregated with DIFFERENT filters — ids on `e.airtable_id IS NOT NULL`,
+  // names on `e.name IS NOT NULL` — so a native hire lost their id but kept
+  // their name, the arrays fell out of step, and everyone sorting after them was
+  // paired with the wrong id. A mis-assigned crew member beats an absent one for
+  // damage. One shared filter is what stops them diverging again.
+  ok(/array_agg\(COALESCE\(e\.airtable_id, e\.id::text\) ORDER BY e\.name\)/.test(src),
+     "the schedule read emits the dual handle for crew");
+  eq((src.match(/FILTER \(WHERE c\.employee_id IS NOT NULL\), '\{\}'\)/g) || []).length, 2,
+     "and both crew arrays share ONE filter so they cannot fall out of step");
+  ok(!/FILTER \(WHERE e\.airtable_id IS NOT NULL\), '\{\}'\) AS crew_ids/.test(src),
+     "the old airtable_id-only crew filter is gone");
 });
 
 await test("setEmployeePin: a PIN change signs the person out, and fails closed", async () => {

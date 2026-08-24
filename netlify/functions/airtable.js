@@ -11683,10 +11683,24 @@ async function handleGetScheduleEntriesFromNeon(params) {
             s.start_date::text AS start_date, s.end_date::text AS end_date,
             j.airtable_id AS job_at_id, j.name AS job_name,
             j.contractor_name, j.status AS job_status,
-            COALESCE(array_agg(e.airtable_id ORDER BY e.name)
-                     FILTER (WHERE e.airtable_id IS NOT NULL), '{}') AS crew_ids,
+            -- WARNING: THESE TWO ARRAYS ARE POSITIONALLY PAIRED BY THE CLIENT,
+            -- and they used to be built with DIFFERENT filters -- ids on
+            -- e.airtable_id IS NOT NULL, names on e.name IS NOT NULL.
+            --
+            -- For a natively-hired employee (slice 5) airtable_id is NULL, so
+            -- their id was dropped while their NAME was kept. The arrays then
+            -- had different lengths, and index.html renders the crew by zipping
+            -- them by position (~21501, ~21805) -- so the person was missing AND
+            -- everyone sorting after them was paired with the wrong id. A
+            -- mis-assigned crew member is worse than an absent one.
+            --
+            -- Both now emit the dual handle and share ONE filter -- "this entry
+            -- actually has a crew row" -- so they cannot diverge again whatever
+            -- an individual column holds.
+            COALESCE(array_agg(COALESCE(e.airtable_id, e.id::text) ORDER BY e.name)
+                     FILTER (WHERE c.employee_id IS NOT NULL), '{}') AS crew_ids,
             COALESCE(array_agg(e.name ORDER BY e.name)
-                     FILTER (WHERE e.name IS NOT NULL), '{}') AS crew_names
+                     FILTER (WHERE c.employee_id IS NOT NULL), '{}') AS crew_names
        FROM schedule_entries s
        LEFT JOIN jobs j ON j.id = s.job_id
        LEFT JOIN schedule_entry_crew c ON c.schedule_entry_id = s.id

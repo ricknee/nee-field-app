@@ -4094,8 +4094,21 @@
   // call sites keep working unchanged and a future one cannot silently omit it.
   async function uploadPDFToPCloud({ type, jobId, jobNumber, pdfDoc, filename, metadata = {}, contractorName }) {
     const pdfBase64 = pdfDoc.output('datauristring').split(',')[1];
+    // ⚠⚠ THE JOB OBJECT'S FIELD IS `contractor`, NOT `contractorName`.
+    // `mapJob` returns `contractor: s(r.contractor_name)` (airtable.js ~5494);
+    // `contractorName` exists on the client only on ESTIMATE TEMPLATES. This
+    // fallback was introduced reading the wrong key, so it resolved to undefined
+    // on every call site that relies on it — which is all three of them.
+    //
+    // It was invisible for four hours and then broke every upload. While Make
+    // still read the contractor out of Airtable an empty value here cost nothing
+    // (the file filed one folder too high, silently). The moment the scenario was
+    // repointed at this payload, the path became `/NEE Jobs/2026//‹job PO›/…` and
+    // pCloud answered `[2005] Directory does not exist` — a hard failure, which
+    // is the only reason anybody found out.
+    const jobRef = (state.jobs || []).find(j => j.id === jobId);
     const contractor = String(
-      contractorName ?? (state.jobs || []).find(j => j.id === jobId)?.contractorName ?? ""
+      contractorName ?? jobRef?.contractor ?? ""
     ).trim();
     if (!contractor) {
       // Loud, because the failure is INVISIBLE otherwise: the upload succeeds and

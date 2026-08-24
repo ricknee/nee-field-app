@@ -1600,6 +1600,36 @@ await test("warmup: unauthenticated, reads nothing, and never errors", async () 
   eq(Object.keys(b).sort().join(","), "ok,reason,warmed", "returns nothing else");
 });
 
+await test("pCloud upload: the contractor folder reads the field the jobs API actually returns", async () => {
+  // Regression for 2026-08-24. eb38e2e added a fallback that resolved the
+  // contractor from state.jobs as `j.contractorName` — but mapJob returns
+  // `contractor`. `contractorName` exists on the client only on estimate
+  // TEMPLATES, so the fallback was undefined on all three upload call sites
+  // (invoice, estimate, generator report), none of which pass it explicitly.
+  //
+  // It cost nothing for four hours: Make still read the contractor out of
+  // Airtable, so the file just filed one folder too high, silently. When the
+  // scenario was repointed at this payload the path became
+  // `/NEE Jobs/2026//<job PO>/...` and pCloud returned
+  // `[2005] Directory does not exist` on every upload.
+  //
+  // Pinned as a pair, because the bug is the two names DISAGREEING — asserting
+  // either one alone would not have caught it.
+  const fs = await import("node:fs/promises");
+  const [html, src] = await Promise.all([
+    fs.readFile(new URL("../index.html", import.meta.url), "utf8"),
+    fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8"),
+  ]);
+  ok(/contractor: s\(r\.contractor_name\)/.test(src),
+     "mapJob still returns the contractor as `contractor`");
+  const fn = html.slice(html.indexOf("async function uploadPDFToPCloud"),
+                        html.indexOf("MAKE_PCLOUD_UPLOAD_WEBHOOK,", html.indexOf("async function uploadPDFToPCloud")));
+  ok(/jobRef\?\.contractor\b/.test(fn) && !/\?\.contractorName\b/.test(fn),
+     "the upload fallback reads `contractor`, not `contractorName`");
+  ok(/contractorName: contractor/.test(fn),
+     "and still sends it to Make under the key the scenario maps");
+});
+
 await test("createJob: carries the job's markup into Neon, or new jobs bill at cost", async () => {
   // Regression for 2026-08-24, found on the first inventory push to a brand-new
   // job. `Job Markup %` is a plain percent field whose value on create comes

@@ -17,7 +17,7 @@ import { fireJobStatusWebhooks, fireServiceCallWebhook } from "./_job-webhooks.j
 // Creating a job lives in _jobs.js because there are now TWO callers — the New
 // Project form and the generator service-call check — and only one of them may
 // ever allocate a PO number. See the header of that file.
-import { createJobRecord, JobInputError, isJobHandle } from "./_jobs.js";
+import { createJobRecord, JobInputError, isJobHandle, jobCreateSource, jobsAreNative } from "./_jobs.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
@@ -635,7 +635,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // start and stop their paid time. Office is excluded from payroll throughout.
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
-const _ADMIN_READS = new Set(["r2Status", "people", "employeePin", "employeeRates",
+const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "people", "employeePin", "employeeRates",
                               "clockRoster", "clockReconcile", "clockPunches",
                               // The approval queue + everyone's leave balances.
                               "ptoRequests"]);
@@ -12564,6 +12564,32 @@ async function handleCreateJob(body) {
 //
 // Side benefit: the Neon half is parameterised, so the job id never reaches a
 // filterByFormula string at all.
+// ── WHICH JOB-CREATE MODE IS THIS FUNCTION ACTUALLY RUNNING? ───────────────
+// Admin-only. Exists because setting JOB_CREATE_SOURCE in the Netlify UI does
+// NOT reach an already-deployed function: Netlify bakes env vars at BUILD time,
+// so the variable only applies after a redeploy. Two jobs were created believing
+// the switch was live when it was not, and the only tell was noticing that the
+// Neon rows still carried an airtable_id.
+//
+// Same job as r2Status: name the specific misconfiguration instead of leaving
+// somebody to infer it from the data afterwards. `native` here is the ONLY value
+// that means jobs are born in Neon.
+async function handleJobCreateStatus() {
+  const raw = process.env.JOB_CREATE_SOURCE;
+  return resp(200, {
+    ok: true,
+    // The raw value, so a trailing space or a wrong case is visible rather than
+    // silently normalised away.
+    rawValue: raw === undefined ? null : raw,
+    resolved: jobCreateSource() || "(unset)",
+    jobsAreNative: jobsAreNative(),
+    poAssignedBy: (jobCreateSource() === "neon" || jobsAreNative()) ? "neon" : "airtable",
+    meaning: jobsAreNative()
+      ? "Jobs are BORN IN NEON. Airtable gets a fail-soft mirror and the rec id is never stamped back."
+      : "Jobs are created in Airtable first. Setting JOB_CREATE_SOURCE=native requires a REDEPLOY to take effect.",
+  });
+}
+
 async function jobExists(jobId) {
   const id = String(jobId || "").trim();
   if (!id) return false;
@@ -13699,6 +13725,7 @@ export async function handler(event) {
       if (action === "jobs")               return await handleJobs();
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status(params);
+      if (action === "jobCreateStatus")    return await handleJobCreateStatus();
       if (action === "people")             return await handlePeople();
       if (action === "employeePin")        return await handleEmployeePin(params);
       if (action === "employeeRates")      return await handleEmployeeRates(params);

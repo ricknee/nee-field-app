@@ -1780,6 +1780,83 @@ await test("allocations: a Neon-native row carries its own bill rate", async () 
      "mirror must NOT write bill_rate — Airtable's lookup owns it");
 });
 
+// ── cutover slice 4: the allocation chain stops depending on the expense rec id
+await test("allocations: the material gate resolves an expense by EITHER handle", async () => {
+  // Regression for the slice-4 pre-flight finding. createMaterialAllocation was
+  // parameterised on the expense REC ID and depended on it three times in one
+  // query — the WHERE, the v_expenses join, and the already-allocated guard.
+  // A native expense has a NULL airtable_id, so all three miss, the lookup
+  // returns nothing, and the function reports "expense-not-found". The expense
+  // then never gets a material allocation at all: the material is a cost with no
+  // route onto an invoice and the customer is never billed for it. Silent, like
+  // the Bethel School labor loss, from the other side of the ledger.
+  //
+  // Source-pinned for the same reason as the labor twin above — the query needs
+  // a live Neon. Behaviour that IS checkable offline: no id still refuses, and
+  // refuses before touching Airtable.
+  const { createMaterialAllocation } = await import("../netlify/functions/_allocations.js");
+  process.env.ALLOCATIONS_WRITE = "on";
+  let touched = 0;
+  const boom = async () => { touched++; throw new Error("must not reach Airtable"); };
+  const r = await createMaterialAllocation(boom, null);
+  eq(r.skipped, "no-expense-id", "refused for the right reason");
+  eq(r.created, 0, "nothing created");
+  eq(touched, 0, "Airtable not called");
+  delete process.env.ALLOCATIONS_WRITE;
+
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_allocations.js", import.meta.url), "utf8");
+  const gate = src.slice(src.indexOf("export async function createMaterialAllocation"),
+                         src.indexOf("// ── Attach on invoice save"));
+  ok(/WHERE e\.id::text = \$1 OR e\.airtable_id = \$1/.test(gate),
+     "the expense lookup must accept either handle");
+  ok(/LEFT JOIN v_expenses v ON v\.id = e\.id/.test(gate),
+     "v_expenses must join on the uuid — v.airtable_id = e.airtable_id is NULL=NULL for a native row");
+  ok(/a\.expense_id = e\.id[\s\S]*?a\.expense_airtable_id = e\.airtable_id/.test(gate),
+     "the already-allocated guard must count through BOTH keys, or a row is double-allocated");
+  ok(/allocation\.material\.native/.test(gate),
+     "a native expense must get a Neon-native allocation, not a refusal");
+
+  const mirror = src.match(/allocation\.material\.insert[\s\S]*?EXCLUDED\.synced_at/);
+  ok(mirror, "the mirror insert is still there");
+  ok(!/SELECT id FROM expenses WHERE airtable_id/.test(mirror[0]),
+     "expense_id must be passed in, not re-derived from the rec id — v_invoices joins on it");
+});
+
+await test("unlinkedMaterialAllocations: keyed on the JOB ID, and both id forms ship", async () => {
+  // Two problems, one rewrite. (1) It filtered by job NAME, because {Job} on
+  // Material Billing Allocations is a lookup through Expense → Job and returns a
+  // name. Eight job names are shared by two jobs — "Strongsville DG" is MES 252
+  // and MES 394 — so the endpoint offered one job's material under the other.
+  // The invoice draft's own expenseId intersection contained it, but the API
+  // answer was only safe because a caller filtered it again. (2) It had no Neon
+  // path at all, so a native allocation or a native expense would have been
+  // invisible — an empty picker, not an error, which on an invoice draft means
+  // quietly proposing less material than was spent.
+  mockTables = {
+    ...TWO_JOBS,
+    tblMoKg7txcfYczQQ: [
+      { id: "recMA1", fields: { Job: ["Jenny Ln 1"], Expense: ["recEX1"],
+                                "Allocated Material Amount $": 250 } },
+    ],
+  };
+  const b = json(await GET("unlinkedMaterialAllocations", { jobId: "recJ1" }));
+  eq(b.allocations.length, 1, "the job's unlinked allocation");
+  eq(b.allocations[0].expenseId, "recEX1", "expense handle present");
+  eq(b.allocations[0].allocatedMaterial, 250, "amount carried through");
+
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleUnlinkedMaterialAllocations"),
+                       src.indexOf("const SHOP_ADDRESS"));
+  ok(/j\.airtable_id = \$1 OR j\.id::text = \$1/.test(fn),
+     "Neon branch must key on the JOB ID, not a name — duplicate names exist");
+  ok(/COALESCE\(e\.airtable_id, e\.id::text\) AS expense_id/.test(fn),
+     "expense_id must match the `expenses` handler's id exactly, or the draft's intersection empties");
+  ok(/a\.invoice_id IS NULL[\s\S]*?a\.invoice_airtable_id IS NULL/.test(fn),
+     "unattached must test BOTH invoice columns, or native-invoiced material is re-billed");
+});
+
 await test("allocations: the attach is BATCHED, and never touches Airtable without Neon", async () => {
   // Regression for 2026-08-11: Bethel School's invoice carried 163 allocations,
   // the attach did two round trips each, and the function ran past Netlify's

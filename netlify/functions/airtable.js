@@ -8623,9 +8623,70 @@ async function handleExpenses(params, authUser) {
 // {Job} on Material Billing Allocations is a multipleLookupValues through
 // Expense → Job — returns job NAME, not record ID. Defense-in-depth filtering
 // by expenseId happens on the frontend.
+//
+// ── NEON-FIRST since 2026-08-24 (cutover slice 4) ──────────────────────────
+// This was the last handler in the field app with NO Neon path at all, and it
+// had two independent problems that one rewrite closes.
+//
+// ⚠⚠ IT MATCHED BY JOB NAME, because the lookup gives it nothing else. The
+// \n-delimited FIND does handle the prefix case ("Jenny Ln 1" vs "Jenny Ln
+// 10/11/12"), but it cannot handle DUPLICATE names — and they exist: eight job
+// names are shared by two jobs each. **"Strongsville DG" is two jobs, MES 252
+// and MES 394**, and MES 394 carries $10,983.26 of unlinked material that this
+// endpoint offered under both. It has not mis-billed anyone: the invoice draft
+// intersects `expenseId` against the job's OWN expenses, which is the
+// defense-in-depth the comment above describes, and it holds. But it means the
+// API's answer is only safe because one caller filters it again — so this keys
+// on the job id and the answer is correct at the source.
+//
+// ⚠ AND IT COULD NOT HAVE SEEN A NATIVE ROW. A Neon-native material allocation
+// has no Airtable record, and a native expense has no rec id for the lookup to
+// resolve through, so both would be invisible here — as an empty picker, not an
+// error, which on an invoice draft means silently proposing less material than
+// was actually spent.
+//
+// ⚠ `expense_id` is emitted as COALESCE(rec, uuid) to match the `expenses`
+// handler's `id` exactly. Those two sets are INTERSECTED by the invoice draft,
+// and two id forms that never intersect is precisely the Bethel School failure
+// — $34,937.50 of labor typed in by hand.
 async function handleUnlinkedMaterialAllocations(params) {
   const { jobId } = params || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  if (neonEnabled()) {
+    // The job takes either handle already. That is ahead of slice 6 on purpose —
+    // it costs nothing here and removes one more site from that sweep. The labor
+    // twin above still has a bare `j.airtable_id = $1` and needs the same.
+    const q = await neonQuery(
+      `SELECT COALESCE(a.airtable_id, a.id::text) AS id,
+              a.allocated_amount::float8          AS allocated_material,
+              COALESCE(e.airtable_id, e.id::text) AS expense_id,
+              j.name                              AS job_name
+         FROM material_billing_allocations a
+         JOIN expenses e ON e.id = a.expense_id
+         JOIN jobs j     ON j.id = e.job_id
+        WHERE (j.airtable_id = $1 OR j.id::text = $1)
+          AND a.invoice_id IS NULL
+          AND a.invoice_airtable_id IS NULL`, [String(jobId)]);
+    if (q?.rows) {
+      return resp(200, {
+        ok: true,
+        allocations: q.rows.map(r => ({
+          id: r.id,
+          allocatedMaterial: Number(r.allocated_material) || 0,
+          expenseId: r.expense_id,
+          jobName: r.job_name || "",
+        })),
+        _source: "neon", _ms: q.ms
+      });
+    }
+    console.error(`unlinkedMaterialAllocations: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+  }
+
+  // ⚠ THE FALLBACK CANNOT SEE NATIVE ROWS, and that is survivable only while no
+  // native expenses exist. It must be deleted in the same commit that reverses
+  // the expense creates — a fallback that silently returns a SUBSET of the
+  // material is how an invoice goes out short.
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!jobRecords.length) return resp(200, { ok: true, allocations: [] });
   const jobName = jobRecords[0].fields["Job Name"] || "";

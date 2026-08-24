@@ -171,18 +171,43 @@ export async function createLaborAllocation(atFetch, timeEntryNeonId, timeEntryA
 // ⚠ NOT symmetric with labor. Here the automation writes the same field it
 // gates on — the unbilled remainder, not the full amount. Making the two halves
 // "consistent" would change what customers are billed.
-export async function createMaterialAllocation(atFetch, expenseAirtableId) {
+// ⚠⚠ TAKES EITHER HANDLE (cutover slice 4, 2026-08-24), and this is the half of
+// slice 4 that would have cost money.
+//
+// It used to be parameterised on the expense REC ID and depended on it three
+// separate times in one query: `WHERE e.airtable_id = $1`, the `v_expenses`
+// join, and the already-allocated guard. A native expense has a NULL
+// `airtable_id`, so all three fail — and they fail QUIETLY. The lookup returns
+// nothing, this returns `skip("expense-not-found")`, and the expense simply
+// never gets a material billing allocation: the material is a cost with no route
+// onto an invoice, and **the customer is never billed for it**. No error
+// anywhere. That is the same silent shape as the Bethel School labor loss, from
+// the other side of the ledger.
+//
+// Now every clause takes either form, matching `createLaborAllocation` above,
+// which already had to solve exactly this when time entries stopped having
+// Airtable twins on 2026-08-07.
+//
+// Verified equivalent before the swap: all 406 expenses, identical billable /
+// reviewed / unbilled / existing on every row, zero diff either way.
+export async function createMaterialAllocation(atFetch, expenseId) {
   if (!allocationsWriteEnabled()) return skip("disabled");
-  if (!expenseAirtableId) return skip("no-expense-id");
+  if (!expenseId) return skip("no-expense-id");
 
+  // The allocation count is taken through BOTH keys, for the same reason the
+  // labor twin does it: an allocation carries one or the other, never both, and
+  // an expense that acquires a rec id later must not be double-allocated
+  // because the guard only looked at one of them.
   const q = await neonQuery(
-    `SELECT e.billable AS billable, e.reviewed AS reviewed,
+    `SELECT e.id AS expense_uuid, e.airtable_id AS expense_airtable_id,
+            e.billable AS billable, e.reviewed AS reviewed,
             v.unbilled_material_amount_calc::float8 AS unbilled,
             (SELECT count(*) FROM material_billing_allocations a
-              WHERE a.expense_airtable_id = e.airtable_id) AS existing
+              WHERE a.expense_id = e.id
+                 OR (e.airtable_id IS NOT NULL AND a.expense_airtable_id = e.airtable_id)) AS existing
        FROM expenses e
-       LEFT JOIN v_expenses v ON v.airtable_id = e.airtable_id
-      WHERE e.airtable_id = $1`, [expenseAirtableId]);
+       LEFT JOIN v_expenses v ON v.id = e.id
+      WHERE e.id::text = $1 OR e.airtable_id = $1`, [String(expenseId)]);
   if (!q?.rows?.length) return skip("expense-not-found");
   const r = q.rows[0];
 
@@ -192,16 +217,42 @@ export async function createMaterialAllocation(atFetch, expenseAirtableId) {
   const amount = Number(r.unbilled);
   if (!(amount > 0))          return skip("nothing-unbilled");
 
+  const airtableId = r.expense_airtable_id || null;
+
+  // ── Neon-native: no twin to link to ──────────────────────────────────────
+  // An Airtable allocation's `Expense` field is a link, so it has nothing to
+  // point at for a native expense. The row is created Neon-only with a NULL
+  // airtable_id, exactly as the labor path has done since 2026-08-07.
+  //
+  // ⚠ No `bill_rate` equivalent to worry about here, and the asymmetry with
+  // labor is worth stating: labor's rate is an Airtable LOOKUP that a native row
+  // would leave NULL (valuing those hours at $0 — the Bethel 1665 bug), whereas
+  // material's `allocated_amount` is written directly on both paths. Nothing is
+  // left for Airtable to fill in.
+  //
+  // ⚠ Survives only because `_billing-sync.js`'s delete pass skips
+  // `airtable_id IS NULL`. Remove that guard and every native allocation
+  // disappears within the hour, taking the invoice total with it.
+  if (!airtableId) {
+    const ins = await neonWrite("allocation.material.native",
+      `INSERT INTO material_billing_allocations (expense_id, allocated_amount, synced_at)
+       SELECT $1::uuid, $2::numeric, now()
+        WHERE NOT EXISTS (SELECT 1 FROM material_billing_allocations WHERE expense_id = $1::uuid)
+       RETURNING id`, [r.expense_uuid, amount]);
+    if (!Array.isArray(ins) || !ins.length) return skip("already-allocated");
+    return { created: 1, skipped: null, allocationId: ins[0].id, amount, neonNative: true };
+  }
+
   const created = await atFetch(T_MATERIAL, {
     method: "POST",
     body: JSON.stringify({ fields: {
-      [F_MAT_EXPENSE]: [expenseAirtableId],
+      [F_MAT_EXPENSE]: [airtableId],
       [F_MAT_AMOUNT]: amount,
     } }),
   });
   if (!created?.id) throw new Error("createMaterialAllocation: Airtable returned no record id");
 
-  await mirrorMaterialToNeon(created.id, expenseAirtableId, amount);
+  await mirrorMaterialToNeon(created.id, airtableId, amount, r.expense_uuid);
   return { created: 1, skipped: null, allocationId: created.id, amount };
 }
 
@@ -372,15 +423,21 @@ async function mirrorLaborToNeon(allocationId, timeEntryAirtableId, hours) {
     [allocationId, timeEntryAirtableId, hours]);
 }
 
-async function mirrorMaterialToNeon(allocationId, expenseAirtableId, amount) {
+// ⚠ `expense_id` is now PASSED IN rather than re-resolved by a
+// `(SELECT id FROM expenses WHERE airtable_id = $2)` subselect. The caller has
+// already looked the expense up through the dual handle, so re-deriving it from
+// the rec id here would reintroduce the very dependency this slice removed —
+// and it is the column `v_invoices` joins on (`e.id = m.expense_id`), so a NULL
+// there drops the expense's credit out of the invoice total.
+async function mirrorMaterialToNeon(allocationId, expenseAirtableId, amount, expenseNeonId) {
   await neonWrite("allocation.material.insert",
     `INSERT INTO material_billing_allocations
        (airtable_id, expense_airtable_id, expense_id, allocated_amount, synced_at)
-     VALUES ($1, $2, (SELECT id FROM expenses WHERE airtable_id = $2), $3, now())
+     VALUES ($1, $2, $4::uuid, $3, now())
      ON CONFLICT (airtable_id) DO UPDATE SET
        expense_airtable_id = EXCLUDED.expense_airtable_id,
        expense_id          = EXCLUDED.expense_id,
        allocated_amount    = EXCLUDED.allocated_amount,
        synced_at           = EXCLUDED.synced_at`,
-    [allocationId, expenseAirtableId, amount]);
+    [allocationId, expenseAirtableId, amount, expenseNeonId]);
 }

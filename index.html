@@ -14389,7 +14389,7 @@
 
     el.innerHTML = `
       <div class="inv-wrap">
-        <div id="inv-saved-banner" class="inv-saved-banner">✓ Invoice saved to Airtable!</div>
+        <div id="inv-saved-banner" class="inv-saved-banner">✓ Invoice saved!</div>
 
         <!-- Editing-mode banner (only visible when an invoice was loaded for edit) -->
         <div id="inv-editing-banner" style="display:none; margin: 8px 0; padding: 10px 14px; border-radius: 9px; background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.45); color: #b45309; font-size: 13px; font-weight: 600; display: none; align-items: center; justify-content: space-between; gap: 10px;">
@@ -15158,8 +15158,8 @@
       const result = await apiPost("saveInvoice", body);
       if (!result.ok) throw new Error(result.error || "Save failed");
       finishInvoiceSave(wasEditing
-        ? `✓ Invoice #${invoiceNumber} updated in Airtable`
-        : "✓ Invoice saved to Airtable");
+        ? `✓ Invoice #${invoiceNumber} updated`
+        : "✓ Invoice saved");
     } catch(err) {
       // Believe the server, not the transport — see invoiceDidLand above. Held
       // on screen longer than a normal save because "don't press it again" is
@@ -16514,7 +16514,7 @@
         </div><!-- /preview -->
       </div><!-- /wrap -->
 
-      <div id="est-saved-msg" class="inv-saved-banner" style="display:none; margin-top:12px;">✓ Estimate saved to Airtable!</div>
+      <div id="est-saved-msg" class="inv-saved-banner" style="display:none; margin-top:12px;">✓ Estimate saved!</div>
 
       ${estimates && estimates.length > 1 ? `
         <div style="margin-top:14px; padding:10px 14px; background:#fff7ed; border:1px dashed #fdba74; border-radius:8px; font-size:12px; color:#9a3412;">
@@ -16888,8 +16888,8 @@
       const banner = $("est-saved-msg");
       if (banner) {
         banner.textContent   = wasEditing
-          ? `✓ Estimate #${estimateNumber || ""} updated in Airtable`
-          : `✓ Estimate #${estimateNumber || ""} saved to Airtable`;
+          ? `✓ Estimate #${estimateNumber || ""} updated`
+          : `✓ Estimate #${estimateNumber || ""} saved`;
         banner.style.display = "block";
         setTimeout(() => { banner.style.display = "none"; }, 4000);
       }

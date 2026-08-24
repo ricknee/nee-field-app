@@ -574,6 +574,17 @@ exercises materials, tax and markup in one push). Logged `Use 300`, `Return −3
 exercise the "Airtable unreachable at create time" branch. That branch is covered by tests only —
 same residual gap slice 3 recorded.
 
+✅ **Second prod push, 2026-08-24 12:05 — the materials PDF now attaches to its expense.**
+100 × 1/2" EMT COUPLING at $0.26 → $26.00 + $1.95 tax, billable $28.60 / $2.15, both native, both
+inserted in the same millisecond, mirror one second later, rec ids never stamped back. **The
+receipt appeared on the expense**, which is the leg that had no automated coverage — the presign
+and the browser PUT can only be proved by a real push.
+
+> ⚠ **Debugging note that cost a minute of false alarm:** a `left(description, 55)` in a *diagnostic
+> query* clipped `×100` to `×10` and looked like a quantity bug. The stored value was 56 characters.
+> When a verification query truncates, it is a **verification** artefact — widen the column before
+> believing the data is wrong.
+
 ### Slices 4–6
 
 Each slice is the same five steps, and they ship together in one commit:

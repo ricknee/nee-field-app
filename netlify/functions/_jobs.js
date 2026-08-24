@@ -199,11 +199,30 @@ export async function createJobRecord(atFetch, input) {
   //
   // One extra round trip on a handful of job creations a week. Fails soft: worst
   // case `po` stays null and the hourly sync fills it, i.e. today's behaviour.
-  let poString = null, poLocked = null;
+  // ⚠⚠ `Job Markup %` COMES BACK ON THIS SAME RE-READ, and it must. It is a
+  // plain percent field whose value on a new job comes from an AIRTABLE FIELD
+  // DEFAULT (10%), so this code never sends it and never knew it — the column
+  // was simply absent from the INSERT below and Neon held NULL until
+  // `_jobs-sync.js` ran, up to an hour later.
+  //
+  // That hour is not cosmetic here, and this is the same lesson as the intake
+  // block above, on a column that bills. `unbilled_material_amount_calc`
+  // multiplies by `COALESCE(j.markup_pct, 0)`, and `createMaterialAllocation`
+  // SNAPSHOTS that figure into `material_billing_allocations.allocated_amount`.
+  // So an expense approved on a job less than an hour old was allocated at COST
+  // — and the hourly sync fixes the job afterwards but never recomputes an
+  // allocation already written. The under-billing is permanent for that row.
+  // Found 2026-08-24 on Test 2 (MIT 298): Airtable said 83.60, Neon said 76.00.
+  //
+  // Costs nothing — the round trip already exists for the PO formulas.
+  let poString = null, poLocked = null, markupPct = null;
   try {
     const fresh = await atFetch(`${encodeURIComponent(JOBS_TABLE)}/${record.id}`);
     poString = fresh?.fields?.["Job PO"] || null;
     poLocked = fresh?.fields?.["Job PO - Locked"] || null;
+    const mk = fresh?.fields?.["Job Markup %"];
+    markupPct = (mk === undefined || mk === null || mk === "") ? null : Number(mk);
+    if (markupPct !== null && !Number.isFinite(markupPct)) markupPct = null;
   } catch (e) {
     console.error(`createJob: PO re-read failed, hourly sync will fill it — ${e?.message || e}`);
   }
@@ -240,8 +259,8 @@ export async function createJobRecord(atFetch, input) {
                          contractor_at_id, contractor_name, po_number, po, po_locked,
                          job_year, customer_first_name, customer_last_name, customer_phone,
                          customer_email, address_street, address_city, address_state,
-                         address_zip, address_full, notes, generator_installed, synced_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23, now())
+                         address_zip, address_full, notes, generator_installed, markup_pct, synced_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24::numeric, now())
        ON CONFLICT (airtable_id) DO UPDATE SET
          name=EXCLUDED.name, status=EXCLUDED.status, job_type=EXCLUDED.job_type,
          tax_status=EXCLUDED.tax_status, billing_method=EXCLUDED.billing_method,
@@ -264,6 +283,9 @@ export async function createJobRecord(atFetch, input) {
          -- OR, never overwrite: a retry that omits the flag must not hide a
          -- Generator tab somebody has already been using.
          generator_installed = jobs.generator_installed OR EXCLUDED.generator_installed,
+         -- COALESCE like the PO: a retry whose re-read failed must never blank a
+         -- markup the sync already carried, or the next allocation bills at cost.
+         markup_pct=COALESCE(EXCLUDED.markup_pct, jobs.markup_pct),
          synced_at=now()`,
       [record.id, trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
        taxStatus || "Taxable", billing, trimmedContractorId,
@@ -272,7 +294,7 @@ export async function createJobRecord(atFetch, input) {
        nz(customerFirstName), nz(customerLastName), nz(customerPhone), nz(customerEmail),
        nz(customerStreet), nz(customerCity),
        nz(customerState) ? nz(customerState).toUpperCase() : null,
-       nz(customerZip), addressFull, nz(notes), generatorInstalled === true]);
+       nz(customerZip), addressFull, nz(notes), generatorInstalled === true, markupPct]);
   } catch (e) {
     console.error(`createJob: Neon insert failed, hourly sync will adopt it — ${e?.message || e}`);
   }

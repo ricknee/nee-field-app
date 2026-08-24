@@ -1600,6 +1600,39 @@ await test("warmup: unauthenticated, reads nothing, and never errors", async () 
   eq(Object.keys(b).sort().join(","), "ok,reason,warmed", "returns nothing else");
 });
 
+await test("createJob: carries the job's markup into Neon, or new jobs bill at cost", async () => {
+  // Regression for 2026-08-24, found on the first inventory push to a brand-new
+  // job. `Job Markup %` is a plain percent field whose value on create comes
+  // from an AIRTABLE FIELD DEFAULT (10%), so this code never sent it — and the
+  // column was simply missing from the INSERT, leaving Neon NULL until
+  // _jobs-sync.js ran up to an hour later.
+  //
+  // That hour bills. `unbilled_material_amount_calc` multiplies by
+  // COALESCE(j.markup_pct, 0), and createMaterialAllocation SNAPSHOTS that into
+  // material_billing_allocations.allocated_amount. An expense approved on a job
+  // under an hour old was allocated at COST, and the hourly sync fixes the job
+  // afterwards but never recomputes an allocation already written — so the
+  // under-billing is permanent for that row. Test 2 (MIT 298): Airtable 83.60,
+  // Neon 76.00, a 10% shortfall on everything pushed that hour.
+  //
+  // Source-pinned: the insert needs a live Neon and this suite is offline.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_jobs.js", import.meta.url), "utf8");
+  ok(/Job Markup %/.test(src), "the markup is read back from Airtable");
+  const insStart = src.indexOf("INSERT INTO jobs");
+  ok(insStart > -1, "the job insert is still there");
+  ok(/markup_pct/.test(src.slice(insStart, src.indexOf("ON CONFLICT", insStart))),
+     "and markup_pct is in the INSERT column list");
+  ok(/markup_pct=COALESCE\(EXCLUDED\.markup_pct, jobs\.markup_pct\)/.test(src),
+     "a retry whose re-read failed must not blank a markup the sync already carried");
+  // It must come from the RE-READ, not the create response: the create response
+  // is built from the fields we sent, and we never send this one.
+  const rrStart = src.indexOf("const fresh = await atFetch");
+  ok(rrStart > -1, "the PO re-read is still there");
+  const reread = src.slice(rrStart, src.indexOf("} catch", rrStart));
+  ok(/Job Markup %/.test(reread), "read from the re-read, where the default has landed");
+});
+
 await test("createJob: ships INERT — Airtable still assigns the PO", async () => {
   // The automation wfltJAiEaavVLA0wB triggers on "New Lead AND Job PO Number
   // empty". While the switch is off we must NOT send that field, or the

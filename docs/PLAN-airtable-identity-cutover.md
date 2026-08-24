@@ -714,6 +714,38 @@ been changed.
 `Authorization` header. From the app's console:
 > `fetch('/.netlify/functions/airtable?action=jobCreateStatus', { headers: { Authorization: 'Bearer ' + JSON.parse(localStorage.getItem('nee_user_v2')).token } }).then(r => r.json()).then(console.log)`
 
+### ✅ FLIPPED 2026-08-24 — and the first native job broke immediately
+
+`JOB_CREATE_SOURCE=native`. **Test 10 (MIT 301)** is the first job in this system's history born in
+Neon: `airtable_id` NULL, `contractor_code` MIT, `po`/`po_locked` `Test 10 (MIT 301)`,
+`markup_pct` 0.1000 — and the Airtable mirror created the same second, field-for-field identical
+on everything the app sets.
+
+Then changing its status returned **"failed to update status, Airtable error 404"**, and it was
+three separate defects. **The sweep found none of them, because it looked at job READS, guards and
+the emit — and every one of these is a WRITE.**
+
+1. 🔴 **`NULL = NULL` IS NOT TRUE.** `handleUpdateJobStatus` and `handleCompleteServiceCall` build a
+   `prev` CTE and joined it back with `WHERE j.airtable_id = prev.airtable_id`. On a native job
+   both sides are NULL, so the UPDATE **matched nothing and reported success**. This is the
+   payroll-bonus bug from slice 2, verbatim. Both now carry the uuid through the CTE.
+2. 🔴 **Ten Airtable PATCHes addressed `Jobs/<handle>`.** A uuid 404s — *after* the authoritative
+   Neon write, so **a save that worked was reported to the user as a failure.** They now go through
+   `mirrorJobPatch`, which resolves the rec id, skips when there is none, and is fail-soft.
+3. 🔴 **Ten `UPDATE jobs … WHERE airtable_id = $1` were still bare.** The sweep grepped
+   `FROM jobs WHERE airtable_id` — **and an `UPDATE` has no `FROM`.**
+
+> ⚠⚠ **POINT 3 IS THE SAME MISS AS SLICE 5's `inventory.js` LOGIN STAMP, ONE DAY LATER.** That one
+> was written up as *"grep the CLAUSE, not the table name"* and the rule was then not applied to
+> the next slice. **A sweep must enumerate the VERBS — SELECT, UPDATE, INSERT, DELETE, and the
+> Airtable GET/POST/PATCH — not just the one shape that happens to be on screen.**
+
+⬜ **THE ONE REMAINING GAP, recorded not fixed:** for a native job the **job-status and
+service-call Make webhooks are skipped** and log a warning. Three of the four scenarios still
+describe the job from an Airtable record, so they need the payload conversion slice 2.5 did for the
+pCloud hook. Firing them with nulls would be worse. **Practically: on a native job, a status change
+does not drive the Trello/pCloud automation chain.** That is a Make-side edit, not code here.
+
 ⬜ **THE GATE — before setting `JOB_CREATE_SOURCE=native`:**
 1. Create a job with the switch **off** — unchanged behaviour, PO from the counter.
 2. Set `native`, create one, and **diff the Neon row against the Airtable mirror field by field.**

@@ -606,6 +606,85 @@ and the browser PUT can only be proved by a real push.
 > When a verification query truncates, it is a **verification** artefact — widen the column before
 > believing the data is wrong.
 
+### ◑ Slice 6 — CODE COMPLETE 2026-08-24, SHIPPED INERT (`52d1cc3` + `31427f7`, `db/schema/061`)
+
+**The last slice.** Two commits: the sweep (inert by construction) and the create (inert by switch).
+
+**`JOB_CREATE_SOURCE` gains a third value.** `unset`/`airtable` → Airtable creates the job and
+assigns the PO · **`neon` → production today**, Airtable creates it, Neon assigns the PO ·
+**`native` → the job is born in Neon.** Nothing sets `native`, and the switch is tested to refuse
+every near-miss *including* `neon`. That care is not ceremony: **a PO number cannot be handed
+back**, so every attempt at a native create burns one permanently.
+
+**The sweep — 41 resolves, 6 server guards, 3 client guards, 1 emit.**
+
+- `JOB_SELECT` emits `COALESCE(airtable_id, id::text)`. That single column is the job id the whole
+  app speaks: it returns as `job.id` and goes straight back out as `jobId` on expenses, photos,
+  estimates, invoices, panels, the schedule and every R2 prefix. A bare emit hands the client NULL
+  for a native job — **the job lists, and nothing on it opens.**
+- `updateTimeEntryPayroll` narrowed `jobId` to a rec id *before* resolving, so re-pointing an hour
+  at a native job **silently unlinked it from every job**. The hours stay and vanish from the job's
+  Time Entries tab (an INNER JOIN on `jobs`) and from its labor cost.
+- The three client guards blamed the user — *"No valid job selected"* — when adding any expense to
+  a job the app had just created.
+
+**What the sweep produced before it shipped, and the rules that now hold it:**
+
+- 🔴 **`AND` binds tighter than `OR`.** Three converted clauses read
+  `WHERE j.airtable_id = $1 OR j.id::text = $1 AND a.invoice_id IS NULL`, which returns **every
+  allocation on every job**. Now parenthesised, and a test rejects the shape.
+- 🔴 **A `$1` string-replace matches inside `$10`.** This one shipped in *slice 5* and was caught
+  here: `createExpenseNative` ended up resolving the submitting employee by `$1`, the **job**
+  handle. Nothing errored — `submitted_by_name` would simply have come back NULL on every new
+  expense. Same family as the 057 replay bug (`billable_material_amount` is a prefix of
+  `billable_material_amount_calc`). **A count check does not catch it: the count is right, the
+  match position is wrong.** A test now asserts both halves of every dual handle read the same
+  parameter, across all seven function files.
+- Two clauses were **double-applied** over ones slice 4a had already fixed, because the guard
+  tested the matched text and the existing `OR` sat outside it.
+
+**Two Airtable formulas are reproduced in `_jobs.js`**, read out of the base with the meta API
+rather than inferred — the Generator Asset ID lesson:
+
+```
+Contractor Code = LEFT(UPPER({Contractor Name}),2) & LEFT(UPPER({Job Name}),1)
+Job PO          = {Job Name} & " (" & {Contractor Code} & " " & {Job PO Number} & ")"
+```
+
+⚠ **`markup_pct` is sent explicitly.** Airtable supplies it from a *field default*, which is why
+this code never sent it — and a native job has no field to default from. A NULL markup bills
+material at **cost**, and `createMaterialAllocation` snapshots that figure permanently, so rows
+written before anyone notices stay wrong. All 116 jobs carry `0.1000`.
+
+⚠ **`po_locked` is seeded equal to `po`.** It is a `singleLineText` nothing fills reliably (already
+NULL on 24 of 116, including recent jobs) and `qb-time-pull` matches a timesheet's jobcode against
+it — NULL means QuickBooks hours can never attach to that job.
+
+**Checked and needing no change:** all 16 child FKs reference `jobs(id)`; the GP chain joins
+`r.id = j.id` so gross profit works for a native job with **no view changes** (the opposite of
+slice 3); `v_invoices` already groups by `COALESCE(job_id, j.id)`; and `syncJobs` is upsert-only
+with **no DELETE**, so it can neither overwrite nor remove a native row.
+
+**Verified end to end on a real native job** — inserted, emitted as its uuid, dual-resolved, joined
+both GP views, and an expense on it came out **$200.00 cost → $220.00 billable**. That is the
+markup reaching the money through a uuid `job_id`, which is the failure this slice existed to
+avoid. Then deleted; the PO counter was never touched.
+
+📝 **There is no PO collision hazard** — checked and dismissed. The 22 jobs numbered above the
+counter are Dollar General jobs carrying the general contractor's own numbering (the allocator's
+own comment says so), and the PO *string* includes the job name and contractor code, so a shared
+number is not a shared PO.
+
+⬜ **THE GATE — before setting `JOB_CREATE_SOURCE=native`:**
+1. Create a job with the switch **off** — unchanged behaviour, PO from the counter.
+2. Set `native`, create one, and **diff the Neon row against the Airtable mirror field by field.**
+   The create-time INSERT is a column subset and that has bitten **twice** (intake block 08-20,
+   `markup_pct` 08-24) — and going native makes any gap **permanent**, because a native row is
+   invisible to the hourly sync that used to backfill it.
+3. Confirm `po`, `po_locked`, `contractor_code` and `markup_pct` are all populated.
+4. Open the job: expenses, photos, panel schedules, the schedule crew picker.
+5. Put an expense on it and check the billable figure is **cost × 1.10**, not cost.
+
 ### Slices 4–6
 
 Each slice is the same five steps, and they ship together in one commit:
@@ -766,6 +845,6 @@ size first estimated.
 | 3 — estimates, invoices, allocations | ~1.5 h | ✅ **done 2026-08-22** (`db/schema/055`) | Ran long. The 3 clauses were the easy part; `v_invoices` joined on rec ids and would have printed every native T&M invoice at $0, and three Airtable formula columns had to be reproduced. |
 | 4 — **expenses** (own session) | ~2–3 h | ✅ **done 2026-08-24** — 4a `e071bd1`, 4b `a04b11f` + schema 057/058, 4c schema 059 | Ran long, and again not because of the SQL: 4b shipped without the `DROP NOT NULL` and the first real expense failed on it; 4c found an **existing** ETL that would have duplicated every native expense. ⬜ Prod-smoked for 4a/4b; the push (4c) still needs one real push. |
 | 5 — employees | ~1 h | ✅ **done 2026-08-24** (`4bfabec`, schema 060) | The 19 clauses were ~30, and the stale-session risk the estimate was built around evaporated on one `COALESCE`. What ran long instead: 15 rec-id GUARDS, an ON CONFLICT upsert that would duplicate a person, and a revocation map that would not revoke them. |
-| 6 — jobs | ~1.5 h | **~3–4 h** | **46 clauses across 37 functions** — the single biggest piece of the whole cutover. |
+| 6 — jobs | ~1.5 h | ◑ **code complete 2026-08-24, INERT** (`52d1cc3` + `31427f7`, schema 061) | 41 resolves + 9 guards + 1 emit, close to the estimate. What was NOT in it: three `AND`/`OR` precedence bugs, two double-applications, and a `$1`-matches-inside-`$10` replace that had already shipped in slice 5. ⬜ Gated on `JOB_CREATE_SOURCE=native`. |
 
 **~12–15 h.** The risk still concentrates in slice 4; the *labour* concentrates in slice 6.

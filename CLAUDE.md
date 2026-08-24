@@ -112,6 +112,21 @@ answers, just slowly. It went unnoticed for three days.
   back**. Preview with the admin action `POST { action:"generatorServiceCheck", dryRun:true }`
   before flipping it. Replaces Airtable automation `wfledvx1A8oVscWla`; see
   `netlify/functions/_generator-service.js` and `db/schema/051_generator_service_calls.sql`.
+- `JOB_CREATE_SOURCE` — **where a job is born. Three values, and the third is the identity
+  cutover's last switch.** `unset`/`airtable` = Airtable creates the job *and* assigns its PO
+  number. **`neon` = production today**: Airtable still creates the job, Neon's `job_po_counters`
+  assigns the PO (audit item 05, `db/schema/039`). **`native`** = the job is **born in Neon** and
+  Airtable gets a fail-soft mirror it never reads back (cutover slice 6, `db/schema/061`).
+  It is a switch rather than a code path because **a PO number cannot be handed back** — every
+  attempt at a native create burns one permanently — and because jobs are the spine: every
+  expense, photo, estimate, invoice, panel and schedule entry hangs off a job id.
+  ⚠ `native` also makes the app the **only** source of two values Airtable used to compute: the
+  `Job PO` string and `markup_pct` (a NULL markup bills material at **cost**, permanently, because
+  allocations snapshot it). Both are reproduced in `_jobs.js`.
+  ⚠⚠ **Never stamp the Airtable rec id back onto a native job.** `_jobs-sync.js` upserts
+  `ON CONFLICT (airtable_id)` **hourly** across 38 columns: a native job conflicts with nothing and
+  is invisible to it, but a stamped one would be overwritten from Airtable every hour, silently
+  reverting everything the app wrote.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

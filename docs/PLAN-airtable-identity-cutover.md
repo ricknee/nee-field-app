@@ -627,9 +627,55 @@ Each slice is the same five steps, and they ship together in one commit:
   app** and it exists solely because Airtable is the expense identity authority. It ends here.
 - `handleUnlinkedMaterialAllocations` must move in the same commit — see below.
 
-**Slice 5 (employees)** changes the login `id`, which is persisted client-side. Every browser
-holds a `rec…`. The token carries it too. So the dual handle has to work on a **stale session**,
-not just a fresh login — verify by logging in, flipping, and *not* re-logging-in.
+### ✅ Slice 5 — SHIPPED 2026-08-24 (`4bfabec`, `db/schema/060`)
+
+**The stale-session risk turned out to be the easy half.** The plan's warning was right about the
+exposure — the login id is persisted client-side *and* baked into a 30-day HMAC token, so every
+phone in the field is holding a `rec…` — but `COALESCE(airtable_id, id::text)` on the emit side
+disposes of it entirely: an employee who *has* a rec id emits that rec id, byte for byte. Verified
+12/12 existing employees unchanged. Only a native hire ever yields a uuid.
+> ⚠ **Never "simplify" the emit to a bare `id`.** That is the version of this slice that logs the
+> entire crew out at once, and it looks tidier.
+
+**The sweep was the work, and it was bigger than the estimated 19 clauses:**
+
+- **15 handlers validated `String(employeeId).startsWith("rec")`** and would have 400'd a native
+  hire on their own PIN screen, hours, rate history and the People screen — a flat "invalid
+  employeeId" with nothing to suggest the id was fine and the guard was stale. Replaced with
+  `isEmployeeHandle`, deliberately a **superset** so no rec id that works today can start failing.
+  ⚠⚠ **This is the `b79b9a0` trap inverted.** That regression was handlers which *never* validated
+  and silently forwarded an id; the note from it was "grepping `startsWith('rec')` is NOT
+  sufficient". Also true in reverse — a guard that *does* validate hard-fails the new id form — and
+  a grep for the guard finds only this half. **Both halves have to be swept.**
+- 🔴 **`_revocation.js` keyed its map on a bare `airtable_id`.** NULL for a native hire, so their
+  entry landed under the string `"null"` while their session carried a uuid: the lookup missed,
+  `isSessionRevoked` answered "not revoked", and **deactivating that person would not have ended
+  their session at all** — full access for the rest of a 30-day token while the admin watched the
+  toggle flip. Security, not id tidiness.
+- 🔴 **`updateEmployee` was `INSERT … ON CONFLICT (airtable_id)`.** Handed a uuid it conflicts with
+  nothing and **inserts a second employee** whose `airtable_id` is that uuid string — same name,
+  same PIN, `neonLoginCandidate` then sees two matches and refuses as `ambiguous`, locking **both**
+  people out, having told the admin the edit saved. Now a plain `UPDATE` on the dual handle.
+- **The crew picker filtered `airtable_id IS NOT NULL`** — which after this slice describes every
+  native hire, making them silently unschedulable. Proved live: **10 active with the fix, 9 with
+  the old filter.**
+- **The duplicate-PIN check scanned Airtable**, where a native hire does not appear, so a second
+  person could be given the same PIN. Reads Neon now and **fails closed** — guessing "free" is the
+  answer that creates the collision.
+- **Both `Submitted By` writes** put `authUser.id` into an Airtable **linked-record** field with
+  `typecast: true`, which *creates* a record for an unknown value: a uuid there adds a junk person
+  to Employees and every expense that hire files attributes to it. Gated on the rec-id form.
+- **Three Airtable PATCHes** addressed `Employees/<id>` directly — a uuid 404s **after** the
+  authoritative Neon write has landed, telling the admin it failed when it had not.
+- **`inventory.js`'s own login stamp**, which a `FROM employees` grep misses because it is an
+  `UPDATE`. ⚠ **Grep the clause, not the table name.**
+
+**Verified:** `PREPARE … AS` untyped for the create and the update, then a real native employee
+inserted, resolved by the actual login query, dual-resolved, and deleted. 286 tests across four
+suites (4 new, 1 inverted).
+
+⬜ **Not smoked on production.** The test is: add a person on the People screen, then log in as
+them. Watch for the crew picker and their PIN screen, which are the two that would fail silently.
 
 ## The one genuine straggler
 
@@ -674,7 +720,7 @@ size first estimated.
 | **2.5 — convert Make `4723276` to a payload** | — | ✅ **done 2026-08-22** (`eb38e2e` + Make edit) | Was gating slice 3. See below. |
 | 3 — estimates, invoices, allocations | ~1.5 h | ✅ **done 2026-08-22** (`db/schema/055`) | Ran long. The 3 clauses were the easy part; `v_invoices` joined on rec ids and would have printed every native T&M invoice at $0, and three Airtable formula columns had to be reproduced. |
 | 4 — **expenses** (own session) | ~2–3 h | ✅ **done 2026-08-24** — 4a `e071bd1`, 4b `a04b11f` + schema 057/058, 4c schema 059 | Ran long, and again not because of the SQL: 4b shipped without the `DROP NOT NULL` and the first real expense failed on it; 4c found an **existing** ETL that would have duplicated every native expense. ⬜ Prod-smoked for 4a/4b; the push (4c) still needs one real push. |
-| 5 — employees | ~1 h | **~2–3 h** | 19 clauses across 18 functions, plus stale-session verification. |
+| 5 — employees | ~1 h | ✅ **done 2026-08-24** (`4bfabec`, schema 060) | The 19 clauses were ~30, and the stale-session risk the estimate was built around evaporated on one `COALESCE`. What ran long instead: 15 rec-id GUARDS, an ON CONFLICT upsert that would duplicate a person, and a revocation map that would not revoke them. |
 | 6 — jobs | ~1.5 h | **~3–4 h** | **46 clauses across 37 functions** — the single biggest piece of the whole cutover. |
 
 **~12–15 h.** The risk still concentrates in slice 4; the *labour* concentrates in slice 6.

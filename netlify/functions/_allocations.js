@@ -313,14 +313,14 @@ export async function attachAllocationsToInvoice(atFetch, invoice, jobAirtableId
        FROM labor_billing_allocations a
        JOIN time_entries t ON t.id = a.time_entry_id
        JOIN jobs j ON j.id = t.job_id
-      WHERE j.airtable_id = $1
+      WHERE (j.airtable_id = $1 OR j.id::text = $1)
         AND a.invoice_airtable_id IS NULL AND a.invoice_id IS NULL
       UNION ALL
      SELECT a.id::text, a.airtable_id, 'material'
        FROM material_billing_allocations a
        JOIN expenses e ON e.id = a.expense_id
        JOIN jobs j ON j.id = e.job_id
-      WHERE j.airtable_id = $1
+      WHERE (j.airtable_id = $1 OR j.id::text = $1)
         AND a.invoice_airtable_id IS NULL AND a.invoice_id IS NULL`, [jobAirtableId]);
   if (!q?.rows) return { attached: 0, skipped: "lookup-failed" };
   if (!q.rows.length) return { attached: 0, skipped: null };

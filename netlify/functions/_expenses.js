@@ -68,7 +68,7 @@ export async function syncExpenseToNeon(rec) {
         total_cost_actual, reviewed, reviewed_expenses, billable, billable_material_amount,
         billed_material_amount, unbilled_material_amount, manual_material_cost, material_credit,
         vendor_name, description, push_id, submitted_by_at_id, submitted_by_name, synced_at)
-     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5::date,$6,$7,$8,$9,$10,
+     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),$3,$4,$5::date,$6,$7,$8,$9,$10,
              $11,$12,$13,$14,$15,$16,$17,$18,$19, now())
      ON CONFLICT (airtable_id) DO UPDATE SET
        job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,

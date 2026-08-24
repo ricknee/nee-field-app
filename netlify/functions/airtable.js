@@ -1109,8 +1109,8 @@ async function handleCreateTimeEntry(body) {
      VALUES ($1,
              (SELECT id FROM employees WHERE airtable_id = $2 OR id::text = $2),
              $3::date, $4::numeric, $5, $6,
-             (SELECT id        FROM jobs WHERE airtable_id = $7),
-             (SELECT po_locked FROM jobs WHERE airtable_id = $7),
+             (SELECT id        FROM jobs WHERE airtable_id = $7 OR id::text = $7),
+             (SELECT po_locked FROM jobs WHERE airtable_id = $7 OR id::text = $7),
              false, 'Manual')
      RETURNING id, job_name`,
     [employee, empRec, workDate, durationSecs, taxes, klass, jobRec]);
@@ -1386,7 +1386,7 @@ async function handleClockIn(body, authUser, targetEmp) {
      SELECT $1, $2::timestamptz, j.id, j.po_locked, $4, $5, $6,
             $7::numeric, $8::numeric, $9
        FROM (SELECT 1) _
-       LEFT JOIN jobs j ON j.airtable_id = $3
+       LEFT JOIN jobs j ON j.airtable_id = $3 OR j.id::text = $3
      ON CONFLICT (employee_id) DO NOTHING
      RETURNING started_at, job_name, class, city_taxes, notes, client_punch_id`,
     [me.id, started, jobRec, cls || null, cityTaxes || null, notes || null,
@@ -1537,7 +1537,7 @@ async function handleClockOut(body, authUser, targetEmp) {
             COALESCE(c.client_punch_id, $10),
             c.original_started_at, c.edited_at, c.edited_by
        FROM calc c
-       LEFT JOIN jobs j ON j.airtable_id = $4
+       LEFT JOIN jobs j ON j.airtable_id = $4 OR j.id::text = $4
      RETURNING id, work_date, started_at, ended_at,
                duration_seconds::float8 AS duration_seconds,
                break_seconds::float8 AS break_seconds, job_name`,
@@ -1658,12 +1658,12 @@ async function handleClockEditTimes(body, authUser) {
               -- statement: "could not determine data type of parameter $3".
               job_id   = CASE WHEN $3::text IS NULL THEN job_id
                               WHEN $3::text = ''    THEN NULL
-                              ELSE (SELECT id FROM jobs WHERE airtable_id = $3::text) END,
+                              ELSE (SELECT id FROM jobs WHERE airtable_id = $3::text OR id::text = $3::text) END,
               -- job_name follows job_id for the same reason as on a completed
               -- punch: this is "I picked the wrong job", not a historical snapshot.
               job_name = CASE WHEN $3::text IS NULL THEN job_name
                               WHEN $3::text = ''    THEN NULL
-                              ELSE (SELECT po_locked FROM jobs WHERE airtable_id = $3::text) END,
+                              ELSE (SELECT po_locked FROM jobs WHERE airtable_id = $3::text OR id::text = $3::text) END,
               class      = COALESCE($5, class),
               city_taxes = COALESCE($6, city_taxes),
               edited_at = now(), edited_by = $2
@@ -1756,7 +1756,7 @@ async function handleClockEditTimes(body, authUser) {
 
   const rows = await neonWrite("clock.editPunch",
     `WITH j AS (
-       SELECT id, po_locked FROM jobs WHERE airtable_id = NULLIF($5, '')
+       SELECT id, po_locked FROM jobs WHERE airtable_id = NULLIF($5, '') OR id::text = NULLIF($5, '')
      ), upd AS (
        UPDATE clock_punches c
           SET original_started_at = COALESCE(c.original_started_at, c.started_at),
@@ -2700,7 +2700,7 @@ async function handleClockSwitch(body, authUser) {
               COALESCE(j.id, c.job_id), COALESCE(j.po_locked, c.job_name), $4,
               COALESCE($5, c.city_taxes), c.start_lat, c.start_lon, $6
          FROM calc c
-         LEFT JOIN jobs j ON j.airtable_id = NULLIF($7::text, '')
+         LEFT JOIN jobs j ON j.airtable_id = NULLIF($7::text, '') OR j.id::text = NULLIF($7::text, '')
        RETURNING started_at, job_name, class, city_taxes, client_punch_id,
                  break_seconds::float8 AS break_seconds, break_started_at
      )
@@ -5726,7 +5726,7 @@ async function handleJobById(params) {
   // saving an estimate would visibly REVERT the job's numbers to the old labor
   // figures. The two must share a source.
   if (neonEnabled()) {
-    const q = await neonQuery(`${JOB_SELECT} WHERE j.airtable_id = $1`, [jobId]);
+    const q = await neonQuery(`${JOB_SELECT} WHERE j.airtable_id = $1 OR j.id::text = $1`, [jobId]);
     if (q?.rows?.length) {
       return resp(200, { ok: true, job: mapJobFromNeon(q.rows[0]), _source: "neon", _ms: q.ms });
     }
@@ -5914,7 +5914,7 @@ async function handleUpdateJobStatus(body) {
   const nRows = await neonWrite("job.updateStatus",
     `WITH prev AS (SELECT airtable_id, po_locked AS old_locked,
                           project_completed_at AS old_completed
-                     FROM jobs WHERE airtable_id = $1)
+                     FROM jobs WHERE airtable_id = $1 OR id::text = $1)
      UPDATE jobs j
         SET status = $2,
             po_locked = CASE WHEN $2 <> 'New Lead' THEN COALESCE(j.po_locked, j.po) ELSE j.po_locked END,
@@ -6186,7 +6186,7 @@ async function handleCompleteServiceCall(body) {
   // so the first two cannot occur, but a re-tick on a finished job could, and
   // "Completed" → "Ready to Invoice" would be a regression, not a fix.
   const rows = await neonWrite("job.completeServiceCall",
-    `WITH prev AS (SELECT airtable_id, status AS old_status FROM jobs WHERE airtable_id = $1)
+    `WITH prev AS (SELECT airtable_id, status AS old_status FROM jobs WHERE airtable_id = $1 OR id::text = $1)
      UPDATE jobs j
         SET project_complete = true,
             status = CASE WHEN j.status = 'Completed' THEN j.status ELSE 'Ready to Invoice' END,
@@ -6471,7 +6471,7 @@ async function handleCreateInspection(body) {
   const rows = await neonWrite("inspection.insert",
     `INSERT INTO job_inspections
        (job_airtable_id, job_id, inspection_type, inspection_date, inspection_status, notes)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3::date, $4, $5)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3::date, $4, $5)
      RETURNING id`,
     [String(jobId), typeSafe, date || null, statusSafe, notes || null]);
   const neonId = rows?.[0]?.id;
@@ -6733,7 +6733,7 @@ async function syncEstimateToNeon(rec) {
         estimated_labor_hours, estimated_labor_cost, estimated_material_cost,
         calculated_estimated_total, estimate_date, notes, display_number,
         estimate_snapshot, synced_at)
-     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13, now())
+     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13, now())
      ON CONFLICT (airtable_id) DO UPDATE SET
        job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
        estimate_type=EXCLUDED.estimate_type, status=EXCLUDED.status,
@@ -6960,7 +6960,7 @@ async function handleSaveEstimate(body) {
     if (estimateId) {
       const rows = await neonWrite("sentEstimatePdf.update",
         `UPDATE sent_estimate_pdfs SET
-           job_airtable_id = $2, job_id = (SELECT id FROM jobs WHERE airtable_id = $2),
+           job_airtable_id = $2, job_id = (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
            estimate_airtable_id = COALESCE($3, estimate_airtable_id),
            estimate_id          = COALESCE($4, estimate_id),
            display_number = COALESCE($5, display_number),
@@ -6979,7 +6979,7 @@ async function handleSaveEstimate(body) {
         `INSERT INTO sent_estimate_pdfs
            (job_airtable_id, job_id, estimate_airtable_id, estimate_id,
             display_number, estimate_date, total, snapshot, synced_at)
-         VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3,
+         VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3,
                  $4, $5::date, $6, $7, now())
          RETURNING id, airtable_id`,
         [String(jobId), estRecId, estNeonId, displayNum,
@@ -7572,7 +7572,7 @@ async function handleCreateJobEstimate(body) {
         estimated_labor_hours, estimated_material_cost,
         estimated_labor_cost, calculated_estimated_total,
         estimate_date, notes, source_template_handle, synced_at)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3, $4, $5, $6,
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5, $6,
              ${sqlEstLaborCost("$5::numeric")}, ${sqlEstTotal("$5::numeric", "$6::numeric")},
              $7::date, $8, $9, now())
      RETURNING id`,
@@ -8589,7 +8589,7 @@ async function handleTimeEntries(params) {
          FROM time_entries t
          JOIN jobs j              ON j.id = t.job_id
          LEFT JOIN v_time_entry_billing b ON b.id = t.id
-        WHERE j.airtable_id = $1
+        WHERE j.airtable_id = $1 OR j.id::text = $1
         ORDER BY t.work_date DESC`,
       [jobId]
     );
@@ -8670,7 +8670,7 @@ async function handleUnlinkedLaborAllocations(params) {
          FROM labor_billing_allocations la
          JOIN time_entries t ON t.id = la.time_entry_id
          JOIN jobs j         ON j.id = t.job_id
-        WHERE j.airtable_id = $1
+        WHERE (j.airtable_id = $1 OR j.id::text = $1)
           AND la.invoice_airtable_id IS NULL
           AND la.invoice_id IS NULL`, [jobId]);
     if (q?.rows) {
@@ -8854,7 +8854,7 @@ async function handleUnlinkedMaterialAllocations(params) {
   if (neonEnabled()) {
     // The job takes either handle already. That is ahead of slice 6 on purpose —
     // it costs nothing here and removes one more site from that sweep. The labor
-    // twin above still has a bare `j.airtable_id = $1` and needs the same.
+    // twin above was a bare `j.airtable_id = $1`; slice 6 gave it the dual handle too.
     const q = await neonQuery(
       `SELECT COALESCE(a.airtable_id, a.id::text) AS id,
               a.allocated_amount::float8          AS allocated_material,
@@ -8982,7 +8982,7 @@ async function createExpenseNative({ jobId, expenseType, expenseDate, billable,
              $6::numeric, $7::numeric,
              (SELECT name FROM expense_vendors WHERE airtable_id = $8 OR id::text = $8),
              $9, $10,
-             (SELECT name FROM employees WHERE airtable_id = $1 OR id::text = $10 OR id::text = $10),
+             (SELECT name FROM employees WHERE airtable_id = $10 OR id::text = $10),
              now())
      RETURNING id`,
     [handle.startsWith("rec") ? handle : null, handle,
@@ -10624,7 +10624,7 @@ async function handleSaveInvoice(body) {
       // Status is deliberately absent: editing a Paid invoice must not flip it
       // back to Sent, which is the same rule the Airtable branch above follows.
       `UPDATE invoices SET
-         job_airtable_id  = $2, job_id = (SELECT id FROM jobs WHERE airtable_id = $2),
+         job_airtable_id  = $2, job_id = (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
          billing_mode     = $3, invoice_type = $4, auto_allocate = $5,
          manual_labor     = 0,  manual_material = 0,
          percent_to_bill  = COALESCE($6, percent_to_bill),
@@ -10664,8 +10664,8 @@ async function handleSaveInvoice(body) {
           billing_mode, invoice_stage, invoice_date, snapshot_total,
           manual_labor, manual_material, percent_to_bill, auto_allocate,
           invoice_display_no, invoice_notes, invoice_snapshot, synced_at)
-       VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1),
-               COALESCE((SELECT name FROM jobs WHERE airtable_id = $1), '') || '-001',
+       VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1),
+               COALESCE((SELECT name FROM jobs WHERE airtable_id = $1 OR id::text = $1), '') || '-001',
                'Sent', $2, $3, $4, $5::date, $6, 0, 0, $7, $8, $9, $10, $11, now())
        RETURNING id, airtable_id`,
       [String(jobId), invoiceTypeV, billingModeV,
@@ -10886,7 +10886,7 @@ async function handleAddGeneratorService(body) {
         spark_plugs_changed, battery_tested, battery_replaced, load_test_performed,
         firmware_checked, exercise_checked, trouble_codes, work_performed_notes,
         parts_used, labor_hours, generator_hours)
-     SELECT g.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2),
+     SELECT g.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
             $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
             $16, $17, $18, $19, $20
        FROM generators g
@@ -11365,7 +11365,7 @@ async function handleCommissionGenerator(body) {
      ), upd AS (
        UPDATE generators g SET
          job_airtable_id = $2,
-         job_id = COALESCE((SELECT id FROM jobs WHERE airtable_id = $2), g.job_id),
+         job_id = COALESCE((SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2), g.job_id),
          brand = $3, model = COALESCE($4, g.model), kw = COALESCE($5, g.kw),
          serial_number = COALESCE($6, g.serial_number),
          transfer_switch_model = COALESCE($7, g.transfer_switch_model),
@@ -11382,13 +11382,13 @@ async function handleCommissionGenerator(body) {
          (job_airtable_id, job_id, customer_name, brand, model, kw, serial_number,
           transfer_switch_model, transfer_switch_serial, fuel_type, install_date,
           service_plan_active, service_interval_months, battery_install_date, notes)
-       SELECT $2, (SELECT id FROM jobs WHERE airtable_id = $2),
+       SELECT $2, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
               -- Snapshot the customer, exactly as the ETL does. Without it a
               -- brand-new generator has a NULL asset_id until the hourly jobs
               -- sync catches up, i.e. no name on screen.
               (SELECT NULLIF(TRIM(COALESCE(customer_first_name,'') || ' ' ||
                                   COALESCE(customer_last_name,'')), '')
-                 FROM jobs WHERE airtable_id = $2),
+                 FROM jobs WHERE airtable_id = $2 OR id::text = $2),
               $3, $4, $5, $6, $7, $8, $9, $10::date, COALESCE($11,false), $12, $13::date, $14
         WHERE NOT EXISTS (SELECT 1 FROM existing)
        RETURNING id, airtable_id
@@ -11398,7 +11398,7 @@ async function handleCommissionGenerator(body) {
        INSERT INTO generator_service
          (generator_id, job_airtable_id, job_id, service_date, service_type,
           technician, generator_hours, work_performed_notes)
-       SELECT gen.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2),
+       SELECT gen.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
               $15::date, $16, $17, $18, $19
          FROM gen
         WHERE NOT EXISTS (SELECT 1 FROM generator_service gs
@@ -11705,7 +11705,7 @@ async function handleGetScheduleEntriesFromNeon(params) {
        LEFT JOIN jobs j ON j.id = s.job_id
        LEFT JOIN schedule_entry_crew c ON c.schedule_entry_id = s.id
        LEFT JOIN employees e ON e.id = c.employee_id
-      WHERE ($1 = '' OR j.airtable_id = $1)
+      WHERE ($1 = '' OR j.airtable_id = $1 OR j.id::text = $1)
         -- Overlap test, matching the JS below: an entry with no dates at all is
         -- always kept, otherwise it shows when its range meets the window.
         AND ($2 = '' OR s.start_date IS NULL OR COALESCE(s.end_date, s.start_date) >= $2::date)
@@ -11894,7 +11894,7 @@ async function handleAddScheduleEntry(body) {
   const rows = await neonWrite("schedule.insert",
     `INSERT INTO schedule_entries
        (title, entry_type, job_id, start_date, end_date, notes, source)
-     VALUES ($1, $2, (SELECT id FROM jobs WHERE airtable_id = $3), $4::date, $5::date, $6, 'app')
+     VALUES ($1, $2, (SELECT id FROM jobs WHERE airtable_id = $3 OR id::text = $3), $4::date, $5::date, $6, 'app')
      RETURNING id`,
     [title ? String(title) : null, entryType, jobId || null,
      startDate, endDate, notes ? String(notes) : null]);
@@ -12214,7 +12214,7 @@ async function syncInvoiceToNeon(rec) {
         billing_mode, invoice_stage, invoice_date, snapshot_total,
         manual_labor, manual_material, percent_to_bill, auto_allocate, invoice_display_no,
         invoice_notes, invoice_snapshot, synced_at)
-     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5,$6,$7,$8::date,$9,
+     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),$3,$4,$5,$6,$7,$8::date,$9,
              $10,$11,$12,$13,$14,$15,$16, now())
      ON CONFLICT (airtable_id) DO UPDATE SET
        job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
@@ -12477,7 +12477,7 @@ async function handleUpdateJobInfo(body) {
   if (touchedAddress) {
     const cur = (await neonQuery(
       `SELECT address_street, address_city, address_state, address_zip
-         FROM jobs WHERE airtable_id = $1`, [jobId]))?.rows?.[0] || {};
+         FROM jobs WHERE airtable_id = $1 OR id::text = $1`, [jobId]))?.rows?.[0] || {};
     const street = customerStreet !== undefined ? customerStreet : (cur.address_street || "");
     const city   = customerCity   !== undefined ? customerCity   : (cur.address_city   || "");
     const state  = customerState  !== undefined ? customerState  : (cur.address_state  || "");
@@ -12550,7 +12550,7 @@ async function jobExists(jobId) {
   const id = String(jobId || "").trim();
   if (!id) return false;
 
-  const q = await neonQuery(`SELECT 1 FROM jobs WHERE airtable_id = $1 LIMIT 1`, [id]);
+  const q = await neonQuery(`SELECT 1 FROM jobs WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [id]);
   if (q?.rows?.length) return true;
   if (q?.error) console.error(`jobExists: Neon check failed, asking Airtable — ${q.error}`);
 
@@ -13244,7 +13244,7 @@ async function handleCreatePanelSchedule(body, authUser) {
   const rows = await neonWrite("panels.create",
     `INSERT INTO panel_schedules
        (job_airtable_id, job_id, name, voltage, circuits, location, fed_from, updated_by)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3, $4, $5, $6, $7)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5, $6, $7)
      RETURNING *`,
     [String(jobId), name, String(body?.voltage || "").trim() || null, circuits,
      String(body?.location || "").trim() || null, String(body?.fedFrom || "").trim() || null,
@@ -13457,7 +13457,7 @@ async function handleCreateChecklist(body, authUser) {
 
   const rows = await neonWrite("checklists.create",
     `INSERT INTO job_checklists (job_airtable_id, job_id, name, created_by)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1), $2, $3)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3)
      RETURNING *`,
     [String(jobId), name, authUser?.name || null]);
   return resp(200, { ok: true, list: mapChecklist(rows[0]) });

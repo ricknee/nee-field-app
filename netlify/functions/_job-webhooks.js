@@ -146,7 +146,7 @@ export async function fireJobStatusWebhooks(record, atFetch) {
               c.tsheets_group_id, c.trello_list_id, c.trello_list_job_po_id
          FROM jobs j
          LEFT JOIN companies c ON c.airtable_id = j.contractor_at_id
-        WHERE j.airtable_id = $1`,
+        WHERE j.airtable_id = $1 OR j.id::text = $1`,
       [record?.id]);
     neonJob = q?.rows?.[0] || null;
   } catch (e) {
@@ -318,7 +318,7 @@ export async function fireServiceCallWebhook(record) {
               c.tsheets_group_id, c.trello_list_id, c.trello_list_job_po_id
          FROM jobs j
          LEFT JOIN companies c ON c.airtable_id = j.contractor_at_id
-        WHERE j.airtable_id = $1`, [record.id]);
+        WHERE j.airtable_id = $1 OR j.id::text = $1`, [record.id]);
     j = q?.rows?.[0] || null;
   } catch (e) {
     console.error(`job-webhook service-call: Neon lookup failed — ${e?.message || e}`);

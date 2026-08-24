@@ -2460,6 +2460,38 @@ await test("setEmployeePin: admin only, digits only, and no duplicates", async (
   ok(/nothing was changed/i.test(json(dup).error), "and says plainly that nothing happened");
 });
 
+await test("every dual handle resolves BOTH halves with the SAME parameter", async () => {
+  // ⚠⚠ THE BUG THIS EXISTS FOR, WHICH SHIPPED AND WAS CAUGHT BY LUCK.
+  // The slice-5 sweep converted clauses with a plain string replace on
+  // `... airtable_id = $1`. That text is a PREFIX OF `... airtable_id = $10`, so
+  // it matched inside the longer placeholder and left behind
+  //     WHERE airtable_id = $1 OR id::text = $10 OR id::text = $10
+  // in createExpenseNative — resolving the submitting EMPLOYEE by $1, the job
+  // handle. Nothing errored; `submitted_by_name` would simply have come back
+  // NULL on every new expense. Same family as the schema-057 replay bug, where
+  // `billable_material_amount` is a prefix of `billable_material_amount_calc`.
+  //
+  // A dual handle whose two sides read different parameters is ALWAYS wrong, so
+  // that is a rule a machine can hold rather than a reviewer.
+  const fs = await import("node:fs/promises");
+  const files = ["airtable.js", "inventory.js", "_employees.js", "_revocation.js",
+                 "_allocations.js", "_expenses.js", "_job-webhooks.js"];
+  const offenders = [];
+  for (const name of files) {
+    const src = await fs.readFile(new URL(`../netlify/functions/${name}`, import.meta.url), "utf8");
+    src.split("\n").forEach((line, i) => {
+      const t = line.trim();
+      if (t.startsWith("//") || t.startsWith("--")) return;   // prose quotes SQL on purpose
+      const re = /airtable_id ?= ?\$(\d+)[^$]*?id::text ?= ?\$(\d+)/g;
+      let m;
+      while ((m = re.exec(line)) !== null) {
+        if (m[1] !== m[2]) offenders.push(`${name}:${i + 1} ($${m[1]} vs $${m[2]})`);
+      }
+    });
+  }
+  eq(offenders.length, 0, `mismatched dual handles: ${offenders.join(", ")}`);
+});
+
 await test("slice 5 follow-up: no employee handler resolves via an Airtable existence check", async () => {
   // The regression above, source-pinned. `fetchAll(TABLES.employees)` is fine as
   // a Neon FALLBACK (`?? fetchAll(...)`) and fine for the payroll roster; it is

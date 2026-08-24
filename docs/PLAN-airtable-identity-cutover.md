@@ -674,8 +674,53 @@ disposes of it entirely: an employee who *has* a rec id emits that rec id, byte 
 inserted, resolved by the actual login query, dual-resolved, and deleted. 286 tests across four
 suites (4 new, 1 inverted).
 
-⬜ **Not smoked on production.** The test is: add a person on the People screen, then log in as
-them. Watch for the crew picker and their PIN screen, which are the two that would fail silently.
+### Slice 5 smoke, 2026-08-24 — PASSED, and it found three bugs the suite could not
+
+Verified on a real native hire ("Test 4", `airtable_id NULL`): create · Airtable mirror written the
+same second with the rec id **not** stamped back · login · `last_login_at` stamped (which proves a
+dual-handle `UPDATE` ran against a uuid) · remove access blocks login and stamps
+`token_valid_from` · restore access clears it · PIN change · schedule crew.
+
+**Three bugs, all of one family, none catchable offline:**
+
+1. **`handleSetEmployeePin` resolved through Airtable** (`fetchAll` + match on record id) → *"No such
+   employee"* for a person who had just logged in. ⚠ The sweep covered SQL sites, rec-id guards and
+   Airtable **writes**, and still missed an Airtable **read used as a lookup**.
+2. **`setScheduleCrew` filtered its crew array with `x.startsWith("rec")`** → the uuid was dropped
+   *before* the SQL ran. The rest of the crew saved; the new hire was simply absent. ⚠ A guard on
+   one id 400s and gets noticed; **a filter on a LIST silently shortens it.**
+3. **The schedule read built `crew_ids` and `crew_names` with different filters** → a native hire
+   lost their id but kept their name, the two arrays fell out of step, and since the client zips
+   them by position, **everyone sorting after them was paired with the wrong id.** ⚠⚠ **Paired
+   arrays must share one filter.**
+
+> ### ⚠⚠⚠ THE SHAPE TO GREP FOR BEFORE SLICE 6 STARTS
+> **`airtable_id IS NOT NULL` — written when a row without a rec id could only be corrupt —
+> silently becomes a NATIVE-ROW FILTER.** It hit three separate reads in two days: the crew picker,
+> the People roster and the schedule crew. Its siblings share the root: `.filter(x =>
+> x.startsWith("rec"))` over a list of ids, and `fetchAll(TABLE)` used as an existence check.
+> Grep the **predicate**, not the variable name.
+
+### ✅ ACCEPTED TRADE-OFF, OWNER RULING 2026-08-24 — do NOT "fix" this
+
+**A native hire's Airtable mirror is created once and never updated again.** Test 4's mirror still
+reads its original PIN and `Active ✓` while Neon holds the current values. This follows directly
+from not stamping the rec id back: later edits have no Airtable address to PATCH, so they skip the
+mirror.
+
+**Stamping it back would be worse** — the handle would flip from uuid to rec id and every
+already-issued token would stop matching, breaking revocation and expense scoping, which is the
+exact mismatch this slice exists to prevent.
+
+⚠ **The one real consequence:** `LOGIN_SOURCE=neon` falls back to Airtable when Neon is unreachable,
+so **during a Neon outage a native hire could log in with a superseded PIN, or a deactivated one
+could get in.** It needs an outage and affects only people hired after 2026-08-24.
+
+**The owner reviewed this and accepted it** rather than adding an `airtable_mirror_id` column or
+dropping the employee mirror entirely, on the grounds that the base is being archived. Nothing to
+build; this note exists so the stale mirror is not later mistaken for a sync bug.
+
+⬜ **Still untested:** People **edit** and the **salaried** toggle on a native row. Both fail loudly.
 
 ## The one genuine straggler
 

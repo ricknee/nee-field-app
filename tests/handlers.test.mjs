@@ -2481,6 +2481,52 @@ await test("slice 6: the 400 guards no longer reject a native job's own id", asy
   }
 });
 
+await test("slice 6: the job webhooks build a payload without an Airtable record", async () => {
+  // ⚠⚠ THIS TEST EXISTS BECAUSE `node --check` CANNOT CATCH WHAT NEARLY SHIPPED.
+  // A half-applied edit left the payloads referencing `jobName` and `jobType`
+  // while their declarations were never written. That is a ReferenceError at
+  // RUNTIME, inside a branch, on a code path that only executes when a job
+  // changes status — so the syntax check passed and every status change would
+  // have 500'd.
+  //
+  // Constructing the payload is the only thing that proves those names resolve.
+  const { fireJobStatusWebhooks } = await import("../netlify/functions/_job-webhooks.js");
+  const savedHook = process.env.JOB_WEBHOOKS;
+  const savedDb   = process.env.DATABASE_URL;
+  process.env.JOB_WEBHOOKS = "app";
+  delete process.env.DATABASE_URL;          // Neon unreachable -> neonJob stays null
+
+  const posted = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => {
+    posted.push({ url: String(url), body: JSON.parse(opts?.body || "{}") });
+    return { ok: true, status: 200, text: async () => "{}", json: async () => ({}) };
+  };
+  try {
+    // A mirrored job: status arrives on the Airtable record, as it always has.
+    const out = await fireJobStatusWebhooks(
+      { id: "recJobX", fields: { "Job Status": "Estimating", "Job Name": "Bethel School" } },
+      async () => ({}));
+    ok(Array.isArray(out), "returns a report");
+    eq(posted.length, 1, "the Estimating branch fired exactly one hook");
+    eq(posted[0].body.event, "create_pcloud_folders", "the pCloud hook");
+    eq(posted[0].body.jobName, "Bethel School", "and jobName resolved rather than throwing");
+
+    // ⚠ The native case: NO Airtable fields at all. Every str(f[...]) reads "".
+    // With Neon also unreachable there is nothing to fire on, and the contract is
+    // that it returns quietly rather than throwing — a native job whose webhook
+    // cannot be built must not break the status change that triggered it.
+    posted.length = 0;
+    const native = await fireJobStatusWebhooks({ id: NATIVE_JOB, fields: {} }, async () => ({}));
+    ok(Array.isArray(native), "a native job with no record still returns a report");
+    eq(posted.length, 0, "and fires nothing it cannot describe");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (savedHook === undefined) delete process.env.JOB_WEBHOOKS; else process.env.JOB_WEBHOOKS = savedHook;
+    if (savedDb !== undefined) process.env.DATABASE_URL = savedDb;
+  }
+});
+
 await test("slice 6: the native create ships INERT and cannot fire by accident", async () => {
   const { jobsAreNative, jobCreateSource } = await import("../netlify/functions/_jobs.js");
   const saved = process.env.JOB_CREATE_SOURCE;

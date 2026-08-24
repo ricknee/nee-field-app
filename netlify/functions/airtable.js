@@ -5989,8 +5989,12 @@ async function handleUpdateJobStatus(body) {
   // Airtable record, so they need the same payload conversion slice 2.5 did for
   // the pCloud hook before a native job can drive them. Logged loudly because a
   // silently un-fired webhook is exactly the failure this migration keeps hitting.
-  const webhooks = data ? await fireJobStatusWebhooks(data, atFetch) : null;
-  if (!data) console.warn(`updateJobStatus: ${jobId} is Neon-native — status webhooks skipped (no Airtable record to send)`);
+  // ⚠ A native job has no Airtable record, so pass its HANDLE with an empty
+  // fields object: _job-webhooks resolves status, name, type, PO, contractor and
+  // the automation flags out of Neon. Skipping the call entirely — which is what
+  // this did first — meant a native job's status change created no pCloud folders
+  // and no Trello card, silently. That is how Test 10 (MIT 301) got none.
+  const webhooks = await fireJobStatusWebhooks(data || { id: jobId, fields: {} }, atFetch);
   return resp(200, { ok: true, updatedId: data?.id || jobId, ...(webhooks ? { webhooks } : {}) });
 }
 
@@ -6193,8 +6197,9 @@ async function handleStartServiceCall(body) {
   // it is skipped rather than fired with nulls. Recorded as a slice-6 gap: the
   // service-call Make scenario has to take a payload before native jobs can use
   // it, the same conversion slice 2.5 did for the pCloud hook.
-  const webhooks = data ? await fireServiceCallWebhook(data) : null;
-  if (!data) console.warn(`startServiceCall: ${jobId} is Neon-native — service-call webhook skipped (no Airtable record to send)`);
+  // Same as updateJobStatus: the handle is enough, the module reads the rest
+  // out of Neon.
+  const webhooks = await fireServiceCallWebhook(data || { id: jobId, fields: {} });
   return resp(200, { ok: true, updatedId: data?.id || jobId, ...(webhooks ? { webhooks } : {}) });
 }
 

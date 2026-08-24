@@ -114,7 +114,6 @@ async function post(hook, payload, label) {
 export async function fireJobStatusWebhooks(record, atFetch) {
   if (!jobWebhooksEnabled()) return null;
   const f = record?.fields || {};
-  const status = str(f[N.status]);
   const out = [];
 
   // ⚠⚠ LINKED FIELDS COME BACK AS RECORD IDS OVER REST — the automations used
@@ -138,7 +137,8 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   let neonJob = null;
   try {
     const q = await neonQuery(
-      `SELECT j.contractor_name, j.po, j.po_locked, j.address_full,
+      `SELECT j.name, j.job_type, j.status,
+              j.contractor_name, j.po, j.po_locked, j.address_full,
               j.pcloud_folders_created, j.trello_created, j.tsheets_created,
               j.trello_completed,
               j.project_completed_at::text AS project_completed_at,
@@ -152,6 +152,17 @@ export async function fireJobStatusWebhooks(record, atFetch) {
   } catch (e) {
     console.error(`job-webhook: Neon lookup failed, falling back to Airtable values — ${e?.message || e}`);
   }
+  // ⚠⚠ NEON-FIRST FOR THE TRIGGER AND THE PAYLOAD — cutover slice 6.
+  // A NATIVE JOB HAS NO AIRTABLE RECORD, so `f` is an empty object and every
+  // str(f[...]) below reads "". Before this, `status` came from Airtable alone,
+  // so a native job matched NO branch and fired NOTHING — the pCloud folders for
+  // Test 10 (MIT 301) were never created and nothing errored anywhere.
+  //
+  // Airtable stays the fallback for a mirrored job, where it is authoritative
+  // for the automation flags Make itself ticks.
+  const status   = str(f[N.status])  || str(neonJob?.status);
+  const jobName  = str(f[N.jobName]) || str(neonJob?.name);
+  const jobType  = str(f[N.jobType]) || str(neonJob?.job_type);
   const contractorName = neonJob?.contractor_name || str(f[N.contractor]);
 
   // ── THE RUN-ONCE GUARDS, read from BOTH stores ──────────────────────────
@@ -181,7 +192,7 @@ export async function fireJobStatusWebhooks(record, atFetch) {
     const r = await post(HOOKS.pcloud, {
       event: "create_pcloud_folders",
       recordId: record.id,
-      jobName: str(f[N.jobName]),
+      jobName,
       // `Job PO` is a FORMULA, so REST returns the rendered string — safe. Neon's
       // `po` is the same value and is used only if Airtable withheld it.
       jobPO: str(f[N.jobPO]) || str(neonJob?.po),
@@ -236,9 +247,9 @@ export async function fireJobStatusWebhooks(record, atFetch) {
     }
     out.push(await post(HOOKS.awarded, {
       recordId: record.id,
-      jobName: str(f[N.jobName]),
+      jobName,
       jobPO: str(f[N.jobPOLocked]) || str(neonJob?.po_locked),  // ⚠ LOCKED PO, not Job PO
-      jobType: str(f[N.jobType]),
+      jobType,
       contractor: contractorName,            // ⚠ the NAME — see the note above
       jobAddress: str(f[N.address]) || str(neonJob?.address_full),
       trelloCreated: trelloDone,
@@ -302,8 +313,10 @@ export async function fireJobStatusWebhooks(record, atFetch) {
 export async function fireServiceCallWebhook(record) {
   if (!jobWebhooksEnabled()) return null;
   const f = record?.fields || {};
-  if (f[N.startService] !== true) return [];
-  if (str(f[N.jobType]) !== "Service Call") return [];
+  // ⚠⚠ THE GATES MOVED BELOW THE NEON LOOKUP — cutover slice 6. They read
+  // `Start Service Call` and `Job Type` off the Airtable record, so a NATIVE job
+  // (empty `fields`) failed both and returned before Neon was ever consulted.
+  // The webhook simply never fired, and nothing said so. See below the lookup.
 
   // Everything modules 2 and 6 (the two airtable:ActionGetRecord) supplied. This
   // scenario is the biggest of the four — it builds a seven-folder pCloud tree,
@@ -313,6 +326,7 @@ export async function fireServiceCallWebhook(record) {
   try {
     const q = await neonQuery(
       `SELECT j.po, j.contractor_name, j.address_full, j.notes,
+              j.start_service_call, j.job_type,
               j.customer_first_name, j.customer_last_name, j.customer_phone,
               j.trello_created, j.tsheets_created, j.service_call_created,
               c.tsheets_group_id, c.trello_list_id, c.trello_list_job_po_id
@@ -329,6 +343,12 @@ export async function fireServiceCallWebhook(record) {
   // minted a second QuickBooks jobcode and made two more Trello cards. The
   // scenario wrote the flag and then nobody read it. Same both-stores rule as
   // the status webhooks: done if EITHER store says done.
+  // The gates, Neon-first with Airtable as the fallback for a mirrored job.
+  const startService = f[N.startService] === true || j?.start_service_call === true;
+  const jobTypeSvc   = str(f[N.jobType]) || str(j?.job_type);
+  if (!startService) return [];
+  if (jobTypeSvc !== "Service Call") return [];
+
   if (j?.service_call_created === true || f[N.serviceCallCreated] === true) {
     console.log(`job-webhook service-call: ${record.id} already has one — not firing again`);
     return [];

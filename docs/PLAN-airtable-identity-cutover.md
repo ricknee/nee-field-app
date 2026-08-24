@@ -695,11 +695,24 @@ hourly sync fills it later. Harmless while jobs are mirrored; **permanent once n
 native row is invisible to that sync. `createJobNative` writes it, so it is covered — but that is
 precisely the shape (intake block 08-20, `markup_pct` 08-24) that has now appeared three times.
 
-⚠⚠ **SETTING THE NETLIFY VARIABLE IS NOT ENOUGH — THE FUNCTIONS NEED A REDEPLOY.** Netlify bakes
-env vars at build time, so the first "native" job after the variable was set came out fully
-mirrored (`airtable_id` present, `contractor_code` NULL) and looked like the code had failed. It
-had not; the switch simply had not reached the running function. **Trigger a deploy, then verify
-the next job has `airtable_id IS NULL` before creating a third.**
+⚠⚠ **TWO JOBS WERE CREATED BELIEVING THE SWITCH WAS LIVE, AND IT WAS STILL SET TO `neon`.**
+Both came out fully mirrored (`airtable_id` present, `contractor_code` NULL), which looked exactly
+like the native code failing. It had not run at all.
+
+The first guess — "Netlify bakes env vars at build time, so it needs a redeploy" — was **wrong**,
+and is recorded here because it is the plausible-sounding explanation that costs an hour. The
+`jobCreateStatus` endpoint settled it in one call: `rawValue: "neon"`. The value had simply never
+been changed.
+
+> **The lesson is the endpoint, not the cause.** Two jobs and two PO numbers were spent inferring a
+> config state from row data, and a diagnostic that reports the raw value answers it immediately —
+> including a trailing space or a wrong case, which normalising would hide. Same reasoning as
+> `r2Status`. **Check `?action=jobCreateStatus` before and after touching the variable**, rather
+> than creating a job to find out.
+
+⚠ It is an admin GET, so a plain browser navigation returns "not signed in" — it carries no
+`Authorization` header. From the app's console:
+> `fetch('/.netlify/functions/airtable?action=jobCreateStatus', { headers: { Authorization: 'Bearer ' + JSON.parse(localStorage.getItem('nee_user_v2')).token } }).then(r => r.json()).then(console.log)`
 
 ⬜ **THE GATE — before setting `JOB_CREATE_SOURCE=native`:**
 1. Create a job with the switch **off** — unchanged behaviour, PO from the counter.

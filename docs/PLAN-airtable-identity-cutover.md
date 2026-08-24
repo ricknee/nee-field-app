@@ -477,9 +477,30 @@ Run by the owner on Classical Construction (Fuel Tank), then deleted.
 
 ⬜ **Still dark, and not to be assumed working:**
 
-- **The whole invoice half** — `handleSaveInvoice`, `handleSetInvoiceStatus`, and the allocation
-  attach. This is where the $0-invoice risk lives. It needs one real invoice: save it, confirm the
-  labor and material lines are non-zero, mark it paid.
+- ~~**The whole invoice half**~~ — ✅ **MATERIAL HALF SMOKED 2026-08-24** on Test 2, invoice 1671,
+  off the back of the slice-4c pushes. The full native chain ran: four Neon-native push expenses →
+  `unlinkedMaterialAllocations` → `createMaterialAllocation` → the attach. **Four allocations
+  created, every one `airtable_id NULL`, resolved by expense UUID**, totalling $39.74 —
+  `invoice_material_amount` and `invoice_total_calc` both $39.74 against a $39.74 snapshot. That is
+  the Bethel $34,937.50 pair holding on an end-to-end native chain, on a T&M job **with a prior
+  invoice**, which is the exact configuration that hid the original bug.
+  ⚠ `snapshot_total` round-tripped correctly through the Airtable mirror — worth checking every
+  time, because it drives `Total Contract Billed` → `Previous Contract Billing` →
+  `Contract Remaining`, the cap on what the next contract invoice may bill.
+  🔴 **THE LABOR HALF IS STILL DARK, and its $0 here proves nothing** — Test 2 has **zero time
+  entries**, so the labor line is correct by absence, not by test. The Bethel bug *was* the labor
+  pair specifically. It still needs a T&M job with real hours.
+- 📝 **Finding, benign, do not "fix" it by reading the column.** Invoice 1671's stored
+  `invoice_total` is **0.00** while `invoice_total_calc` is the correct $39.74. `handleSaveInvoice`
+  carries Airtable's computed columns back via `syncInvoiceToNeon` after mirroring, and Airtable's
+  rollup **cannot see a Neon-native allocation**, so it will read 0.00 on every native-allocation
+  invoice from now on. Harmless today: nothing reads it — every read in `airtable.js` uses
+  `invoice_total_calc` (grep confirms three hits on the bare column, all writes or comments).
+  ⚠ But note the inconsistency: the native INSERT leaves `invoice_total` NULL *on purpose*, with a
+  comment saying a second decaying opinion of a total in a money column is how a wrong number gets
+  quoted later — and then the carry-back writes 0.00 over it. ⬜ Worth dropping `invoice_total`
+  from `syncInvoiceToNeon`'s column list so it stays NULL. Not done: it changes a money write path
+  and nothing observable, so it is the owner's call.
 - **`handleSaveEstimate`** (the sent-PDF snapshot). Reversed, never run. The next real estimate
   that goes out exercises it.
 - **The native / uuid branch of every dual-handle lookup.** Everything tested carried a rec id

@@ -644,11 +644,35 @@ const OWNER_TOK = signToken({ id: "recEmpOwner", role: "employee" });
 const OTHER_TOK = signToken({ id: "recEmpOther", role: "employee" });
 const SUBMITTED_BY = "fldRWV0eIKwBrXwHV"; // Expenses → Submitted By (Employee link)
 
-await test("addGeneralExpense: stamps Submitted By from the token (not client input)", async () => {
+// ⚠ INVERTED 2026-08-24 by cutover slice 4. Expenses are born in Neon now, so
+// the create FAILS CLOSED without a database instead of writing Airtable-only —
+// same contract as the slice-1 reference creates. An Airtable-only expense
+// would be invisible forever: every read is Neon-first and nothing back-fills
+// it, since no ETL re-reads Airtable Expenses.
+await test("addGeneralExpense: fails CLOSED without a database, and writes nothing", async () => {
+  delete process.env.DATABASE_URL;
   mockTables = {};
-  await POST("addGeneralExpense", { jobId: "recJob1", amount: 50, type: "Materials" }, OWNER_TOK);
-  const fields = JSON.parse(lastFetch.opts.body).fields;
-  eq(JSON.stringify(fields[SUBMITTED_BY]), JSON.stringify(["recEmpOwner"]), "Submitted By = token user id");
+  lastFetch = null;
+  const res = await POST("addGeneralExpense", { jobId: "recJob1", amount: 50, type: "Materials" }, OWNER_TOK);
+  ok(res.statusCode >= 500, `refused, got ${res.statusCode}`);
+  eq(lastFetch, null, "and never created the Airtable row it could no longer track");
+});
+
+await test("addGeneralExpense: still stamps Submitted By from the token, never client input", async () => {
+  // The Airtable mirror payload is now built behind a Neon write that this
+  // offline suite cannot run, so the guarantee is source-pinned. What it
+  // protects is that ownership comes from the verified token — it is what
+  // scopes an employee to their own expenses in every read and guard.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleAddGeneralExpense"),
+                       src.indexOf("async function handleUpdateExpense"));
+  ok(new RegExp(`fields\\["${SUBMITTED_BY}"\\] = \\[authUser\\.id\\]`).test(fn),
+     "Submitted By is stamped from authUser.id");
+  ok(!/body\.submittedBy|body\.employeeId/.test(fn), "and never from the request body");
+  ok(/createExpenseNative\(/.test(fn), "the row is created in Neon first");
+  ok(/authUser\?\.id \? String\(authUser\.id\) : null/.test(src.slice(src.indexOf("async function createExpenseNative"))),
+     "the native insert takes its submitter from the token too");
 });
 
 await test("expenses: employee sees only own; admin/office see all", async () => {
@@ -669,11 +693,27 @@ await test("expenses: employee sees only own; admin/office see all", async () =>
   eq(json(await GET("expenses", { jobId: "recJob1" }, OFFICE_TOK)).expenses.length, 3, "office sees all");
 });
 
-await test("updateExpense: employee edits own unreviewed → 200 + patches amount", async () => {
+// ⚠ INVERTED with the create, and for the same reason: the edit form is how a
+// mis-typed cost gets corrected, so an update that did not reach the
+// authoritative store must not report success.
+await test("updateExpense: employee passes the guard, then fails CLOSED without a database", async () => {
+  delete process.env.DATABASE_URL;
   mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Not Reviewed" } }] };
   const res = await POST("updateExpense", { expenseId: "recX1", amount: 75, type: "Fuel" }, OWNER_TOK);
-  eq(res.statusCode, 200, "ok");
-  eq(JSON.parse(lastFetch.opts.body).fields["fldwbLPIafVtmaSeb"], 75, "amount patched");
+  ok(res.statusCode >= 500, `not a silent success, got ${res.statusCode}`);
+
+  // The amount still maps to Manual Material Cost, NOT Total Cost (Actual).
+  // The comment on this field said the latter for months; they are different
+  // columns and the second is derived (cost minus credit), so writing the
+  // amount there would double-count every credit in GP.
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleUpdateExpense"),
+                       src.indexOf("async function handleUpdateInspection"));
+  ok(/"fldwbLPIafVtmaSeb": hasAmount \? Number\(amount\) : null,\s*\/\/ Manual Material Cost/.test(fn),
+     "fldwbLPIafVtmaSeb is Manual Material Cost");
+  ok(/manual_material_cost = \$4::numeric/.test(fn), "and the Neon write agrees");
+  ok(/WHERE airtable_id = \$1 OR id::text = \$1/.test(fn), "resolved by either handle");
 });
 
 await test("updateExpense: employee edits someone else's → 403", async () => {
@@ -686,15 +726,34 @@ await test("updateExpense: employee edits an approved one → 403 (locked)", asy
   eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, OWNER_TOK)).statusCode, 403, "locked after approval");
 });
 
-await test("updateExpense: admin edits any expense → 200", async () => {
+await test("updateExpense: admin still clears the guard on a reviewed expense", async () => {
+  // The 403s below are the half worth pinning offline — they are decided in the
+  // guard, before any store is written. An admin gets PAST the guard (so not
+  // 403) and then meets the same fail-closed write as everyone else.
+  delete process.env.DATABASE_URL;
   mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOther"], "Expense Status": "Reviewed", "Reviewed": true } }] };
-  eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, ADMIN_TOK)).statusCode, 200, "admin any");
+  const res = await POST("updateExpense", { expenseId: "recX1", amount: 75 }, ADMIN_TOK);
+  ok(res.statusCode !== 403, "admin is not blocked by ownership or the approval lock");
+  ok(res.statusCode >= 500, `and then fails closed like everyone else, got ${res.statusCode}`);
 });
 
-await test("deleteExpense: employee deletes own unreviewed → 200; other's → 403", async () => {
+await test("deleteExpense: ownership is enforced, and the delete fails CLOSED", async () => {
+  // ⚠ The Neon delete used to be `WHERE airtable_id = $1` with .catch(() => {}),
+  // so on a native expense it matched nothing, swallowed the miss, and the row
+  // survived in the only store that counts while the caller was told it was
+  // deleted. It now takes either handle and throws.
+  delete process.env.DATABASE_URL;
   mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Not Reviewed" } }] };
-  eq((await POST("deleteExpense", { expenseId: "recX1" }, OWNER_TOK)).statusCode, 200, "own unreviewed");
-  eq((await POST("deleteExpense", { expenseId: "recX1" }, OTHER_TOK)).statusCode, 403, "not owner");
+  eq((await POST("deleteExpense", { expenseId: "recX1" }, OTHER_TOK)).statusCode, 403, "not owner → still 403");
+  const own = await POST("deleteExpense", { expenseId: "recX1" }, OWNER_TOK);
+  ok(own.statusCode >= 500, `owner passes the guard, then the delete fails closed, got ${own.statusCode}`);
+
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleDeleteExpense"),
+                       src.indexOf("async function handleApproveExpense"));
+  ok(/DELETE FROM expenses WHERE airtable_id = \$1 OR id::text = \$1/.test(fn), "deletes by either handle");
+  ok(!/expense\.delete[\s\S]{0,200}catch\(\(\) => \{\}\)/.test(fn), "and no longer swallows the failure");
 });
 
 await test("deleteExpense: viewer still blocked (403)", async () => {
@@ -1833,6 +1892,12 @@ await test("unlinkedMaterialAllocations: keyed on the JOB ID, and both id forms 
   // path at all, so a native allocation or a native expense would have been
   // invisible — an empty picker, not an error, which on an invoice draft means
   // quietly proposing less material than was spent.
+  // ⚠ AND THE AIRTABLE FALLBACK IS GONE, deleted in the same commit that made
+  // expenses native — it could not see a Neon-native allocation or one on a
+  // native expense, so it would have returned a SUBSET. This endpoint proposes
+  // the material line on an invoice draft; a subset is an invoice that goes out
+  // short. There is no honest degraded answer, so it fails closed.
+  delete process.env.DATABASE_URL;
   mockTables = {
     ...TWO_JOBS,
     tblMoKg7txcfYczQQ: [
@@ -1840,10 +1905,9 @@ await test("unlinkedMaterialAllocations: keyed on the JOB ID, and both id forms 
                                 "Allocated Material Amount $": 250 } },
     ],
   };
-  const b = json(await GET("unlinkedMaterialAllocations", { jobId: "recJ1" }));
-  eq(b.allocations.length, 1, "the job's unlinked allocation");
-  eq(b.allocations[0].expenseId, "recEX1", "expense handle present");
-  eq(b.allocations[0].allocatedMaterial, 250, "amount carried through");
+  const res = await GET("unlinkedMaterialAllocations", { jobId: "recJ1" });
+  eq(res.statusCode, 503, "refuses rather than serving Airtable's partial answer");
+  eq(json(res).ok, false, "and says so");
 
   const fs = await import("node:fs/promises");
   const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

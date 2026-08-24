@@ -8,7 +8,6 @@ import { shadowLoginCheck, neonLoginCandidate, loginSource,
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Shared with inventory.js — the materials push writes expenses too (Step E).
-import { syncExpenseToNeon as syncExpenseToNeonShared } from "./_expenses.js";
 // The switch is read inside the module, not here — every entry point gates
 // itself, so a caller can never forget to. The response's `allocation.skipped`
 // reports "disabled" when it is off, which is how the cutover is verified.
@@ -6083,79 +6082,154 @@ async function handleCompleteServiceCall(body) {
   return resp(200, { ok: true, updatedId: data.id, status: row.status || null });
 }
 
+// ── THE FIELD APP'S EXPENSE WRITES ARE NEON-FIRST since 2026-08-24 ────────
+// The note that used to sit here said "AIRTABLE STAYS THE IDENTITY AUTHORITY
+// for expenses, deliberately … Invert this only when receipts move too." That
+// condition was met differently than expected: the receipts did not move, the
+// KEY did. `expenses/<handle>/…` is built from whatever id the client holds, so
+// a native expense's receipts live under its uuid and a mirrored one's stay
+// under its rec id. Both resolve, neither moves — which is exactly why the rec
+// id must never be stamped back onto a native row afterwards.
+//
+// `syncExpenseToNeon` (the local wrapper that copied an Airtable response into
+// Neon) is gone with it. Feeding a mirror response back through
+// `INSERT … ON CONFLICT (airtable_id)` would insert a SECOND row for a native
+// expense, because its airtable_id is NULL and nothing conflicts. The shared
+// `_expenses.js` helper stays — the inventory push still writes Airtable-first
+// and is slice 4c.
+
 // Shared guard for employee self-service on an existing expense. Managers
 // (admin/office) may mutate any expense; an employee may mutate ONLY their own
 // AND only while it is still "Not Reviewed" (approval locks it). Returns
-// { ok:true, record } or { ok:false, resp } with the right 400/403.
-// ── KEEP NEON IN STEP AFTER AN EXPENSE WRITE (migration Step 4d) ──────────
-// handleExpenses reads Neon first and only falls through on ZERO rows, so on any
-// job that already has an expense an Airtable-only write would simply never
-// appear. Same partial-results trap as the warranties at 83e022c.
-//
-// AIRTABLE STAYS THE IDENTITY AUTHORITY for expenses, deliberately: R2 receipt
-// keys are built from the rec id and receipts can be attached at create time, so
-// the record has to exist in Airtable before anything else can reference it.
-// Neon is kept in step rather than made authoritative. Invert this only when
-// receipts move too.
-//
-// Fed the record Airtable just RETURNED, so every derived field (Total Cost,
-// Billable, Unbilled, Reviewed Expenses) arrives already computed — identical to
-// what the ETL loads, so the two can't disagree about the same row.
-//
-// The mapping itself moved to `_expenses.js` at Step E, because the INVENTORY
-// app's materials push writes expenses too and had no Neon leg at all — the
-// duplicate that would have created sits on a money path, so it is shared
-// rather than copied. Read that file's header for why the two callers handle
-// failure differently.
-//
-// This caller SWALLOWS: handleExpenses falls back to Airtable, so the user still
-// sees the row and a failed sync is cosmetic here. The inventory push does not
-// have that luxury and fails closed.
-async function syncExpenseToNeon(rec) {
-  await syncExpenseToNeonShared(rec).catch(() => {});
-}
+// { ok:true, uuid, airtableId } or { ok:false, resp } with the right 400/403.
 
+// ── NEON-FIRST since 2026-08-24 (cutover slice 4) ─────────────────────────
+// This is the gate on every expense mutation and on the receipt endpoints, and
+// it was a bare `atFetch("Expenses/<id>")` — which 404s on a uuid. Nothing else
+// in the slice could flip until it resolved either handle.
+//
+// It also returns BOTH resolved handles now, because every caller needs to know
+// which store owns the row: `airtableId` is null exactly when the expense is
+// native, and that is what decides whether the Airtable half of a mutation runs
+// at all.
+//
+// ⚠ The Airtable fallback stays for a row Neon has never heard of — a sync that
+// failed, or an expense created directly in the base. It cannot serve a native
+// row, but a native row is by definition in Neon, so that gap is not reachable.
 async function guardExpenseMutation(expenseId, authUser) {
   if (!expenseId) return { ok: false, resp: resp(400, { ok: false, error: "Missing expenseId." }) };
-  const rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`);
-  const f = rec.fields || {};
   const isMgr = authUser && (authUser.role === "admin" || authUser.role === "office");
-  if (isMgr) return { ok: true, record: rec };
-  const owns = Array.isArray(f["Submitted By"]) && f["Submitted By"].includes(authUser?.id);
-  const status = f["Expense Status"]?.name || f["Expense Status"] || "";
-  const reviewed = f["Reviewed"] === true || status === "Reviewed";
-  if (!owns)    return { ok: false, resp: resp(403, { ok: false, error: "You can only change your own expenses." }) };
-  if (reviewed) return { ok: false, resp: resp(403, { ok: false, error: "This expense has been approved and can no longer be changed." }) };
-  return { ok: true, record: rec };
+
+  let uuid = null, airtableId = null, owner = null, reviewed = null, known = false;
+  if (neonEnabled()) {
+    const q = await neonQuery(
+      `SELECT id::text AS uuid, airtable_id, submitted_by_at_id, reviewed, expense_status
+         FROM expenses WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [String(expenseId)]);
+    if (q?.rows?.length) {
+      const r = q.rows[0];
+      known = true;
+      uuid = r.uuid; airtableId = r.airtable_id || null;
+      owner = r.submitted_by_at_id || null;
+      reviewed = r.reviewed === true || String(r.expense_status || "") === "Reviewed";
+    } else if (q?.error) {
+      console.error(`guardExpenseMutation: Neon read failed, falling back: ${q.error}`);
+    }
+  }
+
+  if (!known) {
+    // A uuid can never resolve here, so refuse rather than let atFetch 404 into
+    // an unhandled throw.
+    if (!String(expenseId).startsWith("rec")) {
+      return { ok: false, resp: resp(404, { ok: false, error: "Expense not found." }) };
+    }
+    let rec;
+    try { rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`); }
+    catch { return { ok: false, resp: resp(404, { ok: false, error: "Expense not found." }) }; }
+    const f = rec.fields || {};
+    airtableId = rec.id;
+    const submitted = f["Submitted By"];
+    owner = (Array.isArray(submitted) ? submitted[0] : submitted) || null;
+    const status = f["Expense Status"]?.name || f["Expense Status"] || "";
+    reviewed = f["Reviewed"] === true || status === "Reviewed";
+  }
+
+  if (isMgr) return { ok: true, uuid, airtableId };
+  if (owner !== authUser?.id) {
+    return { ok: false, resp: resp(403, { ok: false, error: "You can only change your own expenses." }) };
+  }
+  if (reviewed) {
+    return { ok: false, resp: resp(403, { ok: false, error: "This expense has been approved and can no longer be changed." }) };
+  }
+  return { ok: true, uuid, airtableId };
 }
 
 async function handleDeleteExpense(body, authUser) {
   const { expenseId } = body || {};
   const guard = await guardExpenseMutation(expenseId, authUser);
   if (!guard.ok) return guard.resp;
-  await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "DELETE" });
-  await neonWrite("expense.delete", `DELETE FROM expenses WHERE airtable_id = $1`, [expenseId]).catch(() => {});
+
+  // ⚠ NEON FIRST, AND IT NO LONGER SWALLOWS. This was
+  // `DELETE ... WHERE airtable_id = $1` with `.catch(() => {})` — so on a native
+  // expense it matched nothing, failed silently, and the row survived in the one
+  // store that counts while Airtable (which never had it) reported success.
+  // Deleting from the authoritative store is the delete; if that fails the
+  // request must fail, or the user is told a cost is gone when it is not.
+  //
+  // Cascades to material_billing_allocations by FK, which is intended — an
+  // allocation must not outlive the expense it bills.
+  await neonWrite("expense.delete",
+    `DELETE FROM expenses WHERE airtable_id = $1 OR id::text = $1`, [String(expenseId)]);
+
+  // The mirror. Only a row that HAS a rec id has anything to delete there.
+  if (guard.airtableId) {
+    await mirrorToAirtable("deleteExpense", () =>
+      atFetch(`${encodeURIComponent("Expenses")}/${guard.airtableId}`, { method: "DELETE" }));
+  }
   return resp(200, { ok: true, deleted: expenseId });
 }
 
 async function handleApproveExpense(body) {
   const { expenseId } = body || {};
   if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
-  const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "PATCH", body: JSON.stringify({ fields: { "fldwSsga6eashzJsw": true } }) });
-  await syncExpenseToNeon(data);
+
+  // ⚠ NEON FIRST. `reviewed` is the gate on the material allocation below and on
+  // reviewed_expenses in GP, so the authoritative store has to be the one that
+  // records the approval. Fails closed: an approval that did not land must not
+  // report success, because the allocation it triggers reads this value back.
+  const upd = await neonWrite("expense.approve",
+    `UPDATE expenses SET reviewed = true, synced_at = now()
+      WHERE airtable_id = $1 OR id::text = $1
+      RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id`,
+    [String(expenseId)]);
+  if (!upd?.length) return resp(404, { ok: false, error: "Expense not found." });
+  const handle     = upd[0].handle;
+  const airtableId = upd[0].airtable_id || null;
+
+  // The mirror. Only sets the checkbox — every derived column is computed by
+  // v_expenses now (schema 057), so there is nothing to read back.
+  //
+  // ⚠ syncExpenseToNeon is NOT called on the response any more. It would
+  // overwrite `reviewed` with whatever Airtable echoed and, on a native row,
+  // INSERT a duplicate — its ON CONFLICT is on airtable_id, which is NULL here,
+  // so nothing conflicts.
+  if (airtableId) {
+    await mirrorToAirtable("approveExpense", () =>
+      atFetch(`${encodeURIComponent("Expenses")}/${airtableId}`,
+        { method: "PATCH", body: JSON.stringify({ fields: { "fldwSsga6eashzJsw": true } }) }));
+  }
 
   // Approving an expense is what creates its material billing allocation —
   // otherwise the material is a cost with no route onto an invoice. Was
   // Airtable automation wflNmJsnIhWtSjUlL until 2026-08-11.
   //
-  // MUST run after syncExpenseToNeon: the gate reads `unbilled_material_amount`
-  // from Neon, and that is an Airtable formula. Allocating before the sync
-  // lands would read the pre-approval value and allocate the wrong amount —
-  // the same trap the inventory push hit at Step E, where syncing before the
-  // formulas computed wrote zeros into the money columns.
+  // ⚠ ORDER STILL MATTERS, for a different reason than it used to. The gate
+  // reads `unbilled_material_amount_calc`, which is computed from this row's own
+  // `reviewed` flag and its cost columns — so the Neon UPDATE above must land
+  // first. It used to need the Airtable sync first, because the amount was an
+  // Airtable formula; 057 moved that computation into the view.
   let allocation;
   try {
-    allocation = await createMaterialAllocation(atFetch, data.id);
+    allocation = await createMaterialAllocation(atFetch, handle);
   } catch (e) {
     // The approval itself succeeded and is what the user asked for. The hourly
     // billing sync will adopt an Airtable-only allocation; a failed one gets
@@ -6163,7 +6237,7 @@ async function handleApproveExpense(body) {
     console.error(`approveExpense: allocation failed — ${e?.message || e}`);
     allocation = { created: 0, error: String(e?.message || e) };
   }
-  return resp(200, { ok: true, updatedId: data.id, allocation });
+  return resp(200, { ok: true, updatedId: handle, allocation });
 }
 
 async function handleScissorLiftsByJob(params) {
@@ -8683,28 +8757,20 @@ async function handleUnlinkedMaterialAllocations(params) {
     console.error(`unlinkedMaterialAllocations: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
   }
 
-  // ⚠ THE FALLBACK CANNOT SEE NATIVE ROWS, and that is survivable only while no
-  // native expenses exist. It must be deleted in the same commit that reverses
-  // the expense creates — a fallback that silently returns a SUBSET of the
-  // material is how an invoice goes out short.
-  const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
-  if (!jobRecords.length) return resp(200, { ok: true, allocations: [] });
-  const jobName = jobRecords[0].fields["Job Name"] || "";
-  const safeName = escapeFormulaString(jobName);
-  const filter = `AND(FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n"), {Invoice} = BLANK())`;
-  const records = await fetchAll(TABLES.materialAllocations, { filter });
-  const allocations = records.map(r => {
-    const f = r.fields || {};
-    const expArr = f["Expense"];
-    const jobArr = f["Job"];
-    return {
-      id: r.id,
-      allocatedMaterial: f["Allocated Material Amount $"] ?? 0,
-      expenseId: Array.isArray(expArr) ? expArr[0] : null,
-      jobName: Array.isArray(jobArr) ? jobArr[0] : (jobArr || "")
-    };
-  });
-  return resp(200, { ok: true, allocations });
+  // ⚠⚠ THE AIRTABLE FALLBACK WAS DELETED HERE, in the same commit that made
+  // expenses native — as the note left in its place on 2026-08-24 required.
+  //
+  // It matched allocations by job NAME out of Airtable, so it could not see a
+  // Neon-native material allocation (no Airtable row) or one belonging to a
+  // native expense (no rec id for the lookup to resolve through). It would have
+  // returned a SUBSET, silently, and this endpoint proposes the material line on
+  // an invoice draft — a subset here is an invoice that goes out short. There is
+  // no honest degraded answer, so this now fails closed.
+  //
+  // This is the same contract as the slice-1 creates: on a money path, a refusal
+  // the user can see beats a plausible number nobody checks.
+  return resp(503, { ok: false,
+    error: "Couldn't load the material allocations for this job. Please try again." });
 }
 
 const SHOP_ADDRESS = "5909 Bandy Rd Homeworth OH 44634";
@@ -8754,6 +8820,57 @@ async function handleCalculateMileage(body) {
   return resp(200, { ok: true, miles });
 }
 
+// ── NEON-FIRST EXPENSE CREATE (cutover slice 4, 2026-08-24) ───────────────
+// Shared by handleAddGeneralExpense and handleAddLiftExpense. Returns the new
+// row's uuid; the caller mirrors to Airtable and NEVER stamps the rec id back.
+//
+// ⚠⚠ THE REC ID IS NEVER STAMPED BACK, and expenses are the one table where
+// that rule is absolute. R2 receipt keys are `expenses/<handle>/…`, built from
+// whatever id the client is holding. If the handle flipped from uuid to rec id
+// after a successful mirror, every receipt already uploaded under the old prefix
+// would orphan — `listExpenseReceipts` lists ONE prefix, not both. Estimates and
+// invoices could be stamped in slice 3 precisely because nothing in R2 is keyed
+// on their handle. Expenses are.
+//
+// ⚠⚠ AND THE MIRROR RESPONSE IS NEVER FED TO syncExpenseToNeon. That helper is
+// `INSERT … ON CONFLICT (airtable_id)`, and a native row's airtable_id is NULL,
+// so nothing conflicts — it would insert a SECOND expense for the same spend and
+// both would count in GP. The Airtable copy is write-only from here.
+//
+// Safe because nothing re-reads Airtable Expenses on a schedule: qb-time-pull
+// does not touch them and _billing-sync pulls only the two allocation tables
+// (verified 2026-08-24). ⚠ If an expense ETL is ever added it MUST skip rows it
+// cannot match by rec id, or every native expense doubles within the hour.
+//
+// The four Airtable formula columns are deliberately left NULL — v_expenses
+// computes all of them, and since schema 057 nothing reads the stored copies.
+async function createExpenseNative({ jobId, expenseType, expenseDate, billable,
+                                    manualMaterialCost, materialCredit,
+                                    vendorId, description, authUser }) {
+  const handle = String(jobId);
+  const rows = await neonWrite("expense.create",
+    `INSERT INTO expenses
+       (job_airtable_id, job_id, expense_type, expense_status, expense_date,
+        reviewed, billable, manual_material_cost, material_credit,
+        vendor_name, description, submitted_by_at_id, submitted_by_name, synced_at)
+     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
+             $3, 'Not Reviewed', $4::date, false, $5::boolean,
+             $6::numeric, $7::numeric,
+             (SELECT name FROM expense_vendors WHERE airtable_id = $8 OR id::text = $8),
+             $9, $10,
+             (SELECT name FROM employees WHERE airtable_id = $10 OR id::text = $10),
+             now())
+     RETURNING id`,
+    [handle.startsWith("rec") ? handle : null, handle,
+     expenseType, expenseDate || null, billable === true,
+     manualMaterialCost == null ? null : Number(manualMaterialCost),
+     materialCredit == null ? null : Number(materialCredit),
+     vendorId ? String(vendorId) : null,
+     description || null,
+     authUser?.id ? String(authUser.id) : null]);
+  return rows?.[0]?.id || null;
+}
+
 async function handleAddLiftExpense(body, authUser) {
   const { jobId, date, amount, description, billable } = body || {};
   if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
@@ -8763,9 +8880,18 @@ async function handleAddLiftExpense(body, authUser) {
   // Submitted By (Employee link) — stamped from the token, never client input.
   if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
   if (date) fields["fldCCPYdyWAOGchWb"] = date;
-  const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
-  await syncExpenseToNeon(data);
-  return resp(200, { ok: true, id: data.id });
+
+  const neonId = await createExpenseNative({
+    jobId: idStr, expenseType: "Scissor Lift", expenseDate: date,
+    billable: billable === true || billable === "true",
+    manualMaterialCost: Number(amount), materialCredit: null,
+    vendorId: "recU56ncurkFrM2Nx", description: description || "Scissor Lift Expense",
+    authUser });
+  if (!neonId) return resp(502, { ok: false, error: "Couldn't save the expense. Please try again." });
+
+  await mirrorToAirtable("addLiftExpense", () =>
+    atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) }));
+  return resp(200, { ok: true, id: String(neonId) });
 }
 
 async function handleAddGeneralExpense(body, authUser) {
@@ -8791,9 +8917,22 @@ async function handleAddGeneralExpense(body, authUser) {
   // Submitted By (Employee link) — stamped from the token, never client input.
   // This is what lets employees see/edit only their own expenses.
   if (authUser?.id) fields["fldRWV0eIKwBrXwHV"] = [authUser.id];
-  const data = await atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) });
-  await syncExpenseToNeon(data);
-  return resp(200, { ok: true, id: data.id });
+
+  const neonId = await createExpenseNative({
+    jobId: idStr, expenseType: type || "Materials", expenseDate: date,
+    billable: billable === true || billable === "true",
+    // Gated exactly as the Airtable payload is: a credit-only entry leaves
+    // Manual Material Cost NULL, matching the four precedent records entered
+    // through the Airtable web UI. NULL and 0 are not the same to the GP views.
+    manualMaterialCost: hasAmount ? Number(amount) : null,
+    materialCredit:     hasCredit ? Number(credit) : null,
+    vendorId: (vendorId && String(vendorId).startsWith("rec")) ? String(vendorId) : null,
+    description, authUser });
+  if (!neonId) return resp(502, { ok: false, error: "Couldn't save the expense. Please try again." });
+
+  await mirrorToAirtable("addGeneralExpense", () =>
+    atFetch(`${encodeURIComponent("Expenses")}`, { method: "POST", body: JSON.stringify({ fields, typecast: true }) }));
+  return resp(200, { ok: true, id: String(neonId) });
 }
 
 // Edit an existing expense. Managers may edit any; an employee may edit only
@@ -8813,16 +8952,48 @@ async function handleUpdateExpense(body, authUser) {
   const fields = {
     "fldX2x2J0xkRyMY3y": type || "Materials",
     "fld9Afieu4ofjvhSb": billable === true || billable === "true",
-    "fldwbLPIafVtmaSeb": hasAmount ? Number(amount) : null,  // Total Cost (Actual)
+    // ⚠ Manual Material COST — verified against the live schema 2026-08-24. The
+    // comment here used to say "Total Cost (Actual)", which is a DIFFERENT and
+    // derived column (cost minus credit). Writing the amount into that one
+    // would double-count the credit in every GP figure.
+    "fldwbLPIafVtmaSeb": hasAmount ? Number(amount) : null,  // Manual Material Cost
     "fldcld418pREq2bGq": hasCredit ? Number(credit) : null   // Material Credit
   };
   if (date !== undefined)        fields["fldCCPYdyWAOGchWb"] = date || null;
   if (description !== undefined) fields["fldelsB2jH2tvt1Cj"] = description || "";
   if (vendorId !== undefined)    fields["fldlTUL8hsPkReBAB"] = (vendorId && String(vendorId).startsWith("rec")) ? [String(vendorId)] : [];
 
-  const data = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`, { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) });
-  await syncExpenseToNeon(data);
-  return resp(200, { ok: true, updatedId: data.id });
+  // ⚠ NEON FIRST, and it fails closed. The edit form is how a mis-typed cost
+  // gets corrected, so an update that silently did not land is a wrong number
+  // left standing on a job.
+  //
+  // `vendor_name` is resolved here rather than carried from Airtable's
+  // "Vendor Name (from Vendor)" lookup — a native row has no lookup to read.
+  const upd = await neonWrite("expense.update",
+    `UPDATE expenses SET
+       expense_type = $2,
+       billable = $3::boolean,
+       manual_material_cost = $4::numeric,
+       material_credit = $5::numeric,
+       expense_date = COALESCE($6::date, expense_date),
+       description = COALESCE($7, description),
+       vendor_name = (SELECT name FROM expense_vendors WHERE airtable_id = $8 OR id::text = $8),
+       synced_at = now()
+      WHERE airtable_id = $1 OR id::text = $1
+      RETURNING COALESCE(airtable_id, id::text) AS handle`,
+    [String(expenseId), type || "Materials", billable === true || billable === "true",
+     hasAmount ? Number(amount) : null, hasCredit ? Number(credit) : null,
+     date !== undefined ? (date || null) : null,
+     description !== undefined ? (description || "") : null,
+     (vendorId && String(vendorId).startsWith("rec")) ? String(vendorId) : null]);
+  if (!upd?.length) return resp(404, { ok: false, error: "Expense not found." });
+
+  if (guard.airtableId) {
+    await mirrorToAirtable("updateExpense", () =>
+      atFetch(`${encodeURIComponent("Expenses")}/${guard.airtableId}`,
+        { method: "PATCH", body: JSON.stringify({ fields, typecast: true }) }));
+  }
+  return resp(200, { ok: true, updatedId: upd[0].handle });
 }
 
 // ── UPDATE INSPECTION — NEON-FIRST (migration Step 4c) ────────────────────

@@ -5135,15 +5135,45 @@ async function handleSetEmployeePin(body) {
     return resp(400, { ok: false, error: "PIN must be 4 to 8 digits." });
   }
 
-  const all = await fetchAll(TABLES.employees);
-  const target = all.find(r => r.id === employeeId);
+  // ⚠⚠ THIS RESOLVES AND CLASH-CHECKS IN NEON — fixed 2026-08-24, same day as
+  // slice 5 shipped, because it was MISSED by that sweep and broke in the field.
+  //
+  // It was `fetchAll(TABLES.employees)` then `.find(r => r.id === employeeId)`.
+  // That is an AIRTABLE read, and a natively-hired employee is not in it — so
+  // changing their PIN answered **"No such employee."** with a 404, for a person
+  // who had just logged in successfully.
+  //
+  // ⚠ THE LESSON, AND IT IS A NEW ONE: the slice-5 sweep covered the SQL sites,
+  // the rec-id guards and the Airtable WRITES, and still missed this because it
+  // is an Airtable **READ** used as an existence check. A handler can be fully
+  // dual-handled in every statement it writes and still 404 in its first three
+  // lines. **On slice 6, grep `fetchAll(TABLES.jobs)` and `atFetch` GETs too,
+  // not just the writes.**
+  //
+  // The clash half mattered just as much and would have failed silently rather
+  // than loudly: scanning Airtable cannot see a native hire's PIN, so two people
+  // could end up sharing one — and a shared PIN makes `neonLoginCandidate`
+  // ambiguous, which it refuses, locking BOTH of them out.
+  //
+  // Fails CLOSED: if Neon cannot answer we do not know whether the PIN is free,
+  // and guessing "free" is the answer that creates the collision.
+  const who = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS handle, name,
+            (pin IS NOT NULL AND btrim(pin) = $2) AS pin_clash
+       FROM employees
+      WHERE airtable_id = $1 OR id::text = $1
+         OR (pin IS NOT NULL AND btrim(pin) = $2)`, [employeeId, next]);
+  if (!who?.rows) {
+    return resp(503, { ok: false, error: "Couldn't check that PIN right now. Nothing was changed — please try again." });
+  }
+  const target = who.rows.find(r => r.handle === String(employeeId));
   if (!target) return resp(404, { ok: false, error: "No such employee." });
 
-  const clash = all.find(r => r.id !== employeeId && String(r.fields?.[F.emp.pin] ?? "").trim() === next);
+  const clash = who.rows.find(r => r.pin_clash === true && r.handle !== String(employeeId));
   if (clash) {
     return resp(409, {
       ok: false,
-      error: `That PIN is already used by ${g(clash.fields, F.emp.name) || "another employee"}. Two people sharing a PIN lets either log in as the other — pick a different one.`,
+      error: `That PIN is already used by ${clash.name || "another employee"}. Two people sharing a PIN lets either log in as the other — pick a different one.`,
     });
   }
 
@@ -5179,7 +5209,8 @@ async function handleSetEmployeePin(body) {
       }));
   }
 
-  return resp(200, { ok: true, employeeId, name: g(target.fields, F.emp.name) || "" });
+  // `target` is a Neon row now, not an Airtable record — plain `.name`.
+  return resp(200, { ok: true, employeeId, name: target.name || "" });
 }
 
 // Turn an employee's access on or off. THE point of the screen.

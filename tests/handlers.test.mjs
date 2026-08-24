@@ -2436,9 +2436,45 @@ await test("setEmployeePin: admin only, digits only, and no duplicates", async (
   // had 1184, so either office user could log in as `larry` and get admin.
   // Login matches identifier + PIN, so a shared PIN IS a working credential
   // for someone else's account.
+  // ⚠ INVERTED 2026-08-24, for the same reason as the createEmployee twin: this
+  // resolve-and-clash-check reads NEON now, not Airtable.
+  //
+  // It had to move because it BROKE IN THE FIELD the day slice 5 shipped. The
+  // handler opened with `fetchAll(TABLES.employees)` and `.find(r => r.id ===
+  // employeeId)` — an Airtable existence check — so changing a natively-hired
+  // employee's PIN answered "No such employee." for a person who had just
+  // logged in successfully. The slice-5 sweep covered SQL sites, rec-id guards
+  // and Airtable WRITES, and still missed an Airtable **READ** used as a
+  // lookup. A handler can be fully dual-handled in every statement it writes
+  // and still 404 in its first three lines.
+  //
+  // The clash half would have failed the quieter way: Airtable cannot see a
+  // native hire's PIN, so two people could end up sharing one — and a shared
+  // PIN makes `neonLoginCandidate` ambiguous, which it refuses, locking BOTH
+  // of them out rather than letting one impersonate the other.
+  //
+  // Offline, what this can pin is the contract that matters: an unanswerable
+  // duplicate check REFUSES the change rather than assuming the PIN is free.
   const dup = await POST("setEmployeePin", { employeeId: "recB", pin: "1184" }, ADMIN_TOK);
-  eq(dup.statusCode, 409, "duplicate PIN refused");
-  ok(/Larry Unruh/.test(json(dup).error), "and names who already has it");
+  eq(dup.statusCode, 503, "an unanswerable duplicate check refuses the change");
+  ok(/nothing was changed/i.test(json(dup).error), "and says plainly that nothing happened");
+});
+
+await test("slice 5 follow-up: no employee handler resolves via an Airtable existence check", async () => {
+  // The regression above, source-pinned. `fetchAll(TABLES.employees)` is fine as
+  // a Neon FALLBACK (`?? fetchAll(...)`) and fine for the payroll roster; it is
+  // NOT fine as the lookup that decides whether a person exists, because a
+  // native hire is not in that table at all.
+  const fs = await import("node:fs/promises");
+  const raw = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  // Strip line comments before matching. The note left at the fix site quotes
+  // the offending code verbatim — deliberately, so the next reader sees what it
+  // looked like — and an unfiltered grep flags the explanation as the bug.
+  const src = raw.split("\n").filter(l => !l.trim().startsWith("//")).join("\n");
+  ok(!/const all = await fetchAll\(TABLES\.employees\);\s*\n\s*const target = all\.find/.test(src),
+     "setEmployeePin no longer resolves its target out of Airtable");
+  ok(!/\.find\(r => r\.id === employeeId\)/.test(src),
+     "and nothing else matches an employee handle against Airtable record ids");
 });
 
 await test("setEmployeePin: a PIN change signs the person out, and fails closed", async () => {

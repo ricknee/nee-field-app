@@ -2475,6 +2475,20 @@ await test("slice 5 follow-up: no employee handler resolves via an Airtable exis
      "setEmployeePin no longer resolves its target out of Airtable");
   ok(!/\.find\(r => r\.id === employeeId\)/.test(src),
      "and nothing else matches an employee handle against Airtable record ids");
+
+  // ── The QUIET half of the rec-id trap, which shipped and broke scheduling.
+  // `setScheduleCrew` filtered its crew array with `x.startsWith("rec")`, so a
+  // native hire's uuid was dropped BEFORE the SQL ran. No error: the rest of the
+  // crew saved and the new person was simply absent from the entry.
+  //
+  // ⚠ It escaped the slice-5 sweep because the grep was for
+  // `String(employeeId).startsWith("rec")` — here the id is an anonymous array
+  // element. A filter on a LIST of ids reads nothing like a guard on a single
+  // one. Grep the predicate, not the variable name.
+  ok(/\.filter\(isEmployeeHandle\)/.test(src),
+     "setScheduleCrew accepts either id form instead of dropping uuids");
+  ok(!/crewAtIds : \[\]\)\.filter\(x => typeof x === "string" && x\.startsWith\("rec"\)\)/.test(src),
+     "and the old rec-only crew filter is gone");
 });
 
 await test("setEmployeePin: a PIN change signs the person out, and fails closed", async () => {

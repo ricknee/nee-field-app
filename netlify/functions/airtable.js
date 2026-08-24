@@ -11846,7 +11846,23 @@ async function resolveScheduleEntry(entryId) {
 async function setScheduleCrew(entryUuid, crewAtIds) {
   await neonWrite("schedule.crew.clear",
     `DELETE FROM schedule_entry_crew WHERE schedule_entry_id = $1`, [entryUuid]);
-  const ids = (Array.isArray(crewAtIds) ? crewAtIds : []).filter(x => typeof x === "string" && x.startsWith("rec"));
+  // ⚠⚠ THE QUIET HALF OF THE REC-ID TRAP, AND IT SHIPPED — fixed 2026-08-24.
+  // This filter was `x.startsWith("rec")`, so a natively-hired employee's uuid
+  // was **dropped from the array before the SQL ever ran**. The statement below
+  // already resolved either form; it simply never received the id.
+  //
+  // The failure had no error anywhere: the rest of the crew saved normally and
+  // the new hire was just absent from the entry. Silently unschedulable — which
+  // is exactly what the slice-5 note predicted for the crew picker, arriving
+  // through the write instead of the read that was fixed.
+  //
+  // ⚠ It also escaped the slice-5 sweep because the grep was for
+  // `String(employeeId).startsWith("rec")`. Here the id is an anonymous array
+  // element, `x`. **A filter on a LIST of ids reads nothing like a guard on a
+  // single one — grep the predicate, not the variable name.** Same shape to
+  // look for in slice 6, where crew, job and allocation id arrays all get
+  // filtered like this.
+  const ids = (Array.isArray(crewAtIds) ? crewAtIds : []).filter(isEmployeeHandle);
   if (!ids.length) return;
   await neonWrite("schedule.crew.set",
     `INSERT INTO schedule_entry_crew (schedule_entry_id, employee_id)
@@ -11876,7 +11892,14 @@ async function handleAddScheduleEntry(body) {
   if (jobId)              fields[SCHED_F.job]       = [jobId];
   fields[SCHED_F.startDate] = startDate;
   fields[SCHED_F.endDate]   = endDate;
-  if (Array.isArray(crewIds) && crewIds.length) fields[SCHED_F.crew] = crewIds;
+  // ⚠⚠ REC IDS ONLY IN THE MIRROR. `SCHED_F.crew` is an Airtable LINKED-RECORD
+  // field written with `typecast: true`, which CREATES a record for a value it
+  // does not recognise — so a native hire's uuid would add a junk person to the
+  // Employees table and link the schedule to them. Same trap as `Submitted By`
+  // on expenses. Dropping them here costs nothing: `setScheduleCrew` above has
+  // already written the real crew to Neon, which is what the app reads.
+  const crewRecIds = (Array.isArray(crewIds) ? crewIds : []).filter(x => typeof x === "string" && x.startsWith("rec"));
+  if (crewRecIds.length) fields[SCHED_F.crew] = crewRecIds;
   if (notes) fields[SCHED_F.notes] = String(notes);
   if (title) fields[SCHED_F.title] = String(title);
 
@@ -11926,7 +11949,10 @@ async function handleUpdateScheduleEntry(body) {
   if (jobId       !== undefined) fields[SCHED_F.job]       = jobId ? [jobId] : [];
   if (startDate   !== undefined) fields[SCHED_F.startDate] = startDate || null;
   if (endDate     !== undefined) fields[SCHED_F.endDate]   = endDate   || null;
-  if (crewIds     !== undefined) fields[SCHED_F.crew]      = Array.isArray(crewIds) ? crewIds : [];
+  // Rec ids only — see the note in handleAddScheduleEntry. A uuid in this
+  // linked-record field creates a junk employee via typecast.
+  if (crewIds     !== undefined) fields[SCHED_F.crew]      =
+    (Array.isArray(crewIds) ? crewIds : []).filter(x => typeof x === "string" && x.startsWith("rec"));
   if (notes       !== undefined) fields[SCHED_F.notes]     = String(notes || "");
   if (title       !== undefined) fields[SCHED_F.title]     = String(title || "");
 

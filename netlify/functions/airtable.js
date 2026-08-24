@@ -12000,26 +12000,45 @@ async function syncInvoiceToNeon(rec) {
   const s = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "" || x === null) ? null : String(x); };
   const sel = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v.name : s(v));
   await neonWrite("invoice.sync",
+    // ⚠⚠ `invoice_total` IS DELIBERATELY NOT CARRIED BACK (2026-08-24). It was
+    // Airtable's rollup over the invoice's LINKED allocation records — and since
+    // slice 3 an allocation can be Neon-native with no Airtable row at all, so
+    // that rollup sees nothing and reads **0.00** on a correct invoice. Invoice
+    // 1671 (Test 2) is the proof: $39.74 of native material, and Airtable's
+    // total said zero.
+    //
+    // Carrying it back therefore wrote a known-wrong number into a money column,
+    // directly contradicting the native INSERT a few hundred lines up, which
+    // leaves it NULL on purpose because "a second, decaying opinion of the total
+    // in a money column is how a wrong number gets quoted later."
+    //
+    // Nothing reads the column — every read uses `v_invoices.invoice_total_calc`
+    // — so this changes no output. It removes the trap, not a behaviour.
+    // ⚠ Historical rows KEEP the values they already hold: the column is simply
+    // no longer in the INSERT or the DO UPDATE SET, so an upsert leaves it be.
     `INSERT INTO invoices
        (airtable_id, job_airtable_id, job_id, invoice_number, invoice_status, invoice_type,
-        billing_mode, invoice_stage, invoice_date, snapshot_total, invoice_total,
+        billing_mode, invoice_stage, invoice_date, snapshot_total,
         manual_labor, manual_material, percent_to_bill, auto_allocate, invoice_display_no,
         invoice_notes, invoice_snapshot, synced_at)
-     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5,$6,$7,$8::date,$9,$10,
-             $11,$12,$13,$14,$15,$16,$17, now())
+     VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id=$2),$3,$4,$5,$6,$7,$8::date,$9,
+             $10,$11,$12,$13,$14,$15,$16, now())
      ON CONFLICT (airtable_id) DO UPDATE SET
        job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
        invoice_number=EXCLUDED.invoice_number, invoice_status=EXCLUDED.invoice_status,
        invoice_type=EXCLUDED.invoice_type, billing_mode=EXCLUDED.billing_mode,
        invoice_stage=EXCLUDED.invoice_stage, invoice_date=EXCLUDED.invoice_date,
-       snapshot_total=EXCLUDED.snapshot_total, invoice_total=EXCLUDED.invoice_total,
+       snapshot_total=EXCLUDED.snapshot_total,
        manual_labor=EXCLUDED.manual_labor, manual_material=EXCLUDED.manual_material,
        percent_to_bill=EXCLUDED.percent_to_bill, auto_allocate=EXCLUDED.auto_allocate,
        invoice_display_no=EXCLUDED.invoice_display_no, invoice_notes=EXCLUDED.invoice_notes,
        invoice_snapshot=EXCLUDED.invoice_snapshot, synced_at=now()`,
+    // ⚠ `Invoice Total` is gone from this array too, not just the SQL. Leaving an
+    // unreferenced bind behind would fail at PREPARE with "could not determine
+    // data type of parameter $10" — every placeholder after it shifted down one.
     [rec.id, s(f["Job"]), s(f["Invoice Number"]), sel(f["Invoice Status"]), sel(f["Invoice Type"]),
      sel(f["Billing Mode"]), sel(f["Invoice Stage"]), s(f["Invoice Date"]),
-     n(f["Snapshot Total"]), n(f["Invoice Total"]), n(f["Manual Labor $"]),
+     n(f["Snapshot Total"]), n(f["Manual Labor $"]),
      n(f["Manual Material $"]), n(f["Percent to Bill"]), f["Auto Allocate?"] === true,
      n(f["Invoice Display #"]), s(f["Invoice Notes"]), s(f["Invoice Snapshot"])]).catch(() => {});
 }

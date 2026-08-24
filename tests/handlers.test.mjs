@@ -3024,6 +3024,67 @@ await test("payrollRunsList: a run with no pdf_key sends the WHOLE list back to 
   eq(b._source, undefined, "served from Airtable, not Neon");
 });
 
+// ── payrollRunCreate, reversed (cutover slice 2, 2026-08-24) ────────────────
+// The handler is Neon-first now, and its refusals changed shape with it. Both
+// cases below pin the SAME property: a payroll run either lands completely or
+// not at all — there is no half-record. That is what made slice 3's `$5` bug
+// survivable, and it is the only guarantee this offline harness can check,
+// since the SQL itself needs live Neon (verified there with `PREPARE name AS`,
+// no type list).
+const PR_RUN_BODY = {
+  payPeriodStart: "2026-08-09", payPeriodEnd: "2026-08-22",
+  generatedBy: "Rick Unruh", totalHours: 289.25, totalBonus: 0,
+  pdfBase64: Buffer.from("%PDF-1.4 fake").toString("base64"),  pdfFilename: "NEE_Payroll.pdf",
+  jsonBase64: Buffer.from(JSON.stringify({ employees: [] })).toString("base64"), jsonFilename: "NEE_Payroll.json",
+  bonuses: [],
+};
+
+await test("payrollRunCreate: R2 unconfigured is a REFUSAL now, not a warning", async () => {
+  // ⚠ THIS INVERTED WITH THE FLIP. While the run was Airtable-first the PDF was
+  // also an Airtable attachment, so a missing R2 was reported in `r2Error` and
+  // cost nothing. A native run has no Airtable record, so R2 holds the ONLY
+  // copy of the artifact people are paid from — an unconfigured store has to
+  // stop the request before anything is written, not after.
+  clearR2();
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  lastFetch = null;
+  const res = await POST("payrollRunCreate", PR_RUN_BODY);
+  eq(res.statusCode, 503, "refused up front");
+  ok(/not configured/i.test(json(res).error), "and says why");
+  ok(/nothing was saved/i.test(json(res).error), "and says nothing was saved");
+  // The whole point of checking BEFORE the insert: no run to unwind, and no
+  // orphan left in Airtable either.
+  eq(lastFetch, null, "not one Airtable call was made");
+});
+
+await test("payrollRunCreate: no Neon, no run — and no orphan record in Airtable", async () => {
+  // The run is born in Neon, so an unreachable database must fail the request
+  // outright. The half-record this guards against is the expensive one: an
+  // Airtable Payroll Run with a PDF attached that no payroll screen can see,
+  // because every read resolves runs from Neon now.
+  setR2();
+  delete process.env.DATABASE_URL;
+  mockTables = {};
+  lastFetch = null;
+  const res = await POST("payrollRunCreate", PR_RUN_BODY);
+  ok(res.statusCode >= 500, `fails closed, got ${res.statusCode}`);
+  eq(lastFetch, null, "and never created the Airtable run it can no longer track");
+  clearR2();
+});
+
+await test("payrollRunCreate: still validates its payload before any of that", async () => {
+  // Unchanged by the flip, and worth pinning because the R2 refusal now sits
+  // very close to the front of the handler — a missing PDF must still be a 400
+  // about the missing PDF, not a 503 about the store.
+  setR2();
+  const { pdfBase64, ...noPdf } = PR_RUN_BODY;
+  const res = await POST("payrollRunCreate", noPdf);
+  eq(res.statusCode, 400, "bad request");
+  ok(/pdfBase64/.test(json(res).error), "names the missing field");
+  clearR2();
+});
+
 // ── the shared job-id gate (jobExists) ──────────────────────────────────────
 // Ten handlers used to each fetch the whole Jobs record just to check it
 // existed. They now share one helper that asks Neon first and only re-asks

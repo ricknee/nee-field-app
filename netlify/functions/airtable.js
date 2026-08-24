@@ -17,7 +17,7 @@ import { fireJobStatusWebhooks, fireServiceCallWebhook } from "./_job-webhooks.j
 // Creating a job lives in _jobs.js because there are now TWO callers — the New
 // Project form and the generator service-call check — and only one of them may
 // ever allocate a PO number. See the header of that file.
-import { createJobRecord, JobInputError } from "./_jobs.js";
+import { createJobRecord, JobInputError, isJobHandle } from "./_jobs.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
@@ -1167,9 +1167,18 @@ async function handleUpdateTimeEntryPayroll(body) {
   if (cityTaxes !== undefined) put("city_taxes", cityTaxes);
   if (reviewed  !== undefined) put("labor_reviewed", reviewed === true);
   if (jobId !== undefined) {
-    const rec = (jobId && String(jobId).startsWith("rec")) ? String(jobId) : null;
-    vals.push(rec);
-    sets.push(`job_id = (SELECT id FROM jobs WHERE airtable_id = $${vals.length})`);
+    // ⚠⚠ THE HANDLE, NOT THE REC ID — cutover slice 6. This used to narrow the
+    // value to `startsWith("rec") ? jobId : null` and then resolve on that, so
+    // re-pointing an hour at a NATIVE job resolved to NULL and **silently
+    // unlinked the entry from every job** — the hours stay, and they vanish from
+    // the job's Time Entries tab (which INNER JOINs `jobs`) and from its labor
+    // cost. Exactly the shape `_jobs-sync.js` was written to repair.
+    //
+    // The Airtable mirror below still narrows to a rec id, and correctly: a
+    // native job has none, so the link field is cleared there. Neon is the store
+    // that has to be right.
+    vals.push(jobId ? String(jobId) : null);
+    sets.push(`job_id = (SELECT id FROM jobs WHERE airtable_id = $${vals.length} OR id::text = $${vals.length})`);
   }
   if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
 
@@ -2778,7 +2787,7 @@ async function promoteClockPunch(punchId) {
 // inconsistently across 112 jobs.
 async function handleUpdateJobCityTax(body) {
   const { jobId, cityTax } = body || {};
-  if (!jobId || !String(jobId).startsWith("rec")) {
+  if (!jobId || !isJobHandle(jobId)) {
     return resp(400, { ok: false, error: "Missing or invalid jobId." });
   }
   // null/"" clears it back to "not yet decided", which is a legitimate state and
@@ -2809,7 +2818,7 @@ const CLOCK_VIS_OPTS = ["all", "admin", "hidden"];
 
 async function handleUpdateJobClockVisibility(body) {
   const { jobId, visibility } = body || {};
-  if (!jobId || !String(jobId).startsWith("rec")) {
+  if (!jobId || !isJobHandle(jobId)) {
     return resp(400, { ok: false, error: "Missing or invalid jobId." });
   }
   const raw = visibility == null ? null : String(visibility).trim();
@@ -5542,7 +5551,14 @@ function mapJob(r) {
 // all of them. Time entries could move to a uuid because nothing else referenced
 // them; jobs cannot, yet.
 const JOB_SELECT = `
-  SELECT j.airtable_id, j.name, j.po, j.status, j.job_type, j.job_year,
+  -- ⚠⚠ COALESCE, NOT A BARE airtable_id — cutover slice 6. This one column is
+  -- the job id the ENTIRE app speaks: mapJobFromNeon returns it as job.id,
+  -- and it comes straight back as jobId on expenses, photos, estimates,
+  -- invoices, panels, the schedule and every R2 prefix. A bare emit would hand
+  -- the client NULL for a native job, and every one of those would break at
+  -- once — the job would list, and nothing on it would open.
+  SELECT COALESCE(j.airtable_id, j.id::text) AS airtable_id,
+         j.name, j.po, j.status, j.job_type, j.job_year,
          j.address_full, j.contractor_name, j.contractor_at_id,
          j.generator_installed, j.power_company_name, j.power_company_contact,
          j.power_company_at_id, j.power_contact_at_id, j.power_company_cell_phone,
@@ -5986,7 +6002,7 @@ async function handleUpdateJobStatus(body) {
 // instead of two, and the old guard keeps working until item 10 removes it.
 async function handleJobAutomationResult(body) {
   const recordId = String(body?.recordId || "").trim();
-  if (!recordId.startsWith("rec")) return resp(400, { ok: false, error: "Missing or invalid recordId." });
+  if (!isJobHandle(recordId)) return resp(400, { ok: false, error: "Missing or invalid recordId." });
   if (!verifyScope(body?.token, ["jobAutomation", recordId])) {
     return resp(403, { ok: false, error: "Invalid or expired callback token." });
   }
@@ -8999,7 +9015,7 @@ async function handleAddLiftExpense(body, authUser) {
   const { jobId, date, amount, description, billable } = body || {};
   if (!jobId || !amount) return resp(400, { ok: false, error: "Missing jobId or amount." });
   const idStr = String(jobId).trim();
-  if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid jobId received: ${idStr}` });
+  if (!isJobHandle(idStr)) return resp(400, { ok: false, error: `Invalid jobId received: ${idStr}` });
   const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldlTUL8hsPkReBAB":["recU56ncurkFrM2Nx"],"fldwbLPIafVtmaSeb":Number(amount),"fldX2x2J0xkRyMY3y":"Scissor Lift","fldelsB2jH2tvt1Cj":description||"Scissor Lift Expense","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
   // Submitted By (Employee link) — stamped from the token, never client input.
   // ⚠⚠ REC-ID ONLY, and the guard is not paranoia — cutover slice 5. This is an
@@ -9039,7 +9055,7 @@ async function handleAddGeneralExpense(body, authUser) {
   const hasCredit = credit && Number(credit) > 0;
   if (!hasAmount && !hasCredit) return resp(400, { ok: false, error: "Missing amount or credit." });
   const idStr = String(jobId).trim();
-  if (!idStr.startsWith("rec")) return resp(400, { ok: false, error: `Invalid jobId: ${idStr}` });
+  if (!isJobHandle(idStr)) return resp(400, { ok: false, error: `Invalid jobId: ${idStr}` });
   const fields = { "fldPNFIzq1grsdxYi":[idStr],"fldX2x2J0xkRyMY3y":type||"Materials","fldJTg0ekrdZ4Jqr6":"Not Reviewed","fld9Afieu4ofjvhSb":billable===true||billable==="true" };
   if (date)        fields["fldCCPYdyWAOGchWb"] = date;
   if (description) fields["fldelsB2jH2tvt1Cj"] = description;
@@ -11946,8 +11962,10 @@ async function handleUpdateScheduleEntry(body) {
   if (notes     !== undefined) put("notes", String(notes || ""));
   if (title     !== undefined) put("title", String(title || ""));
   if (jobId     !== undefined) {
+    // Dual handle — cutover slice 6. Re-pointing a schedule entry at a native
+    // job resolved to NULL before, dropping it off that job's schedule.
     vals.push(jobId || null);
-    sets.push(`job_id = (SELECT id FROM jobs WHERE airtable_id = $${vals.length})`);
+    sets.push(`job_id = (SELECT id FROM jobs WHERE airtable_id = $${vals.length} OR id::text = $${vals.length})`);
   }
   if (sets.length) {
     await neonWrite("schedule.update",
@@ -12351,7 +12369,7 @@ async function handleUpdateJobNotes(body) {
 // singleSelects in scope, so typecast would only mask broken input.
 async function handleUpdateJobInspection(body) {
   const { jobId, agencyId, permitNumber, inspectorId, inspectionNotRequired } = body || {};
-  if (!jobId || !String(jobId).startsWith("rec")) {
+  if (!jobId || !isJobHandle(jobId)) {
     return resp(400, { ok: false, error: "Missing or invalid jobId." });
   }
   // Resolve BOTH forms. The pickers emit rec ids by design (see
@@ -13307,6 +13325,11 @@ async function handleSavePanelSchedule(body, authUser) {
         SET name = $2, voltage = $3, circuits = $4, location = $5, fed_from = $6,
             feed = $7, mounting = $8, enclosure = $9, notes = $10,
             updated_at = now(), updated_by = $11,
+            -- Column-to-column, NOT a parameter, so it deliberately keeps the bare
+            -- airtable_id (slice 6 checked it). It heals a legacy panel whose
+            -- job_airtable_id was set before job_id existed. A native job never
+            -- reaches this branch: its rows are written with job_id already
+            -- populated and job_airtable_id NULL, so the COALESCE is a no-op.
             job_id = COALESCE(job_id, (SELECT id FROM jobs WHERE airtable_id = job_airtable_id))
       WHERE id = $1::uuid`,
     [String(panelId), name, String(body?.voltage ?? existing.voltage ?? "").trim() || null, circuits,

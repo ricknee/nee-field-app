@@ -3942,6 +3942,20 @@
   }
 
   // ── API ──
+  // Is this a usable job handle? (cutover slice 6, 2026-08-24)
+  // A job created in the app is Neon-native and its id is a uuid, not a rec id.
+  // Three save handlers below tested startsWith('rec') and refused anything else
+  // with "No valid job selected" -- so on a job the app had just created, adding
+  // a general, lift or bucket-truck expense was impossible, and the alert blamed
+  // the user's selection rather than the id format.
+  //
+  // Deliberately a SUPERSET: every rec id still passes exactly as before.
+  function isJobHandle(v) {
+    const s = String(v ?? '').trim();
+    if (s.startsWith('rec')) return true;
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+  }
+
   async function apiGet(action, params={}) {
     const url = new URL(API, location.origin);
     url.searchParams.set("action", action);
@@ -13499,7 +13513,7 @@
     const job = state.selected;
     if (!job) return;
     const jobId = String(job.id || '');
-    if (!jobId.startsWith('rec')) { alert("No valid job selected."); return; }
+    if (!isJobHandle(jobId)) { alert("No valid job selected."); return; }
 
     const date     = $("genExpDate").value;
     const type     = $("genExpType").value;
@@ -13766,7 +13780,7 @@
     const job = state.selected;
     if (!job) return;
     const jobId = String(job.id || '');
-    if (!jobId.startsWith('rec')) { alert("No valid job selected."); return; }
+    if (!isJobHandle(jobId)) { alert("No valid job selected."); return; }
     const date = $("slExpDate").value;
     const saveBtn = $("slExpSaveBtn");
     const msgEl = $("slExpMsg");
@@ -13880,7 +13894,7 @@
     const job = state.selected;
     if (!job) return;
     const jobId = String(job.id || '');
-    if (!jobId.startsWith('rec')) { alert("No valid job selected."); return; }
+    if (!isJobHandle(jobId)) { alert("No valid job selected."); return; }
 
     const date    = $("btExpDate").value;
     const saveBtn = $("btExpSaveBtn");

@@ -30,6 +30,27 @@ const AT_API = "https://api.airtable.com/v0";
 // `Jobs` is the table NAME, not an id, matching TABLES.jobs in airtable.js.
 export const JOBS_TABLE = "Jobs";
 
+// ── IS THIS A PLAUSIBLE JOB HANDLE? (cutover slice 6, 2026-08-24) ──────────
+// Replaces the `String(jobId).startsWith("rec")` guards that 400'd on a uuid.
+// A job created by the app is Neon-native and has no rec id, so those guards
+// would have refused a job the app itself had just created — its expenses, its
+// photos, its panel schedules, all "Invalid jobId".
+//
+// ⚠ Deliberately a SUPERSET: anything starting with "rec" still passes exactly
+// as before, so no rec id that works today can begin to fail. The uuid branch is
+// the only new acceptance. Same contract as isEmployeeHandle (slice 5).
+//
+// ⚠⚠ This is ONLY for guards — for deciding whether an id is well-formed enough
+// to act on. It is NOT for the sites that narrow a value to a rec id in order to
+// fill an Airtable LINKED-RECORD field. Those must keep the bare
+// `startsWith("rec")` test, because a native job genuinely has nothing to put
+// there and `typecast: true` would CREATE a junk Jobs record from a uuid.
+export function isJobHandle(v) {
+  const s = String(v ?? "").trim();
+  if (s.startsWith("rec")) return true;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 // ⚠ Do NOT fix the spellings ("Milla Construcion", "Kalmback"). They are the
 // configured option names in Airtable's `Contractor (Intake)` singleSelect, and
 // correcting one here just makes it fail the match.

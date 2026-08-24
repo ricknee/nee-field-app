@@ -2460,6 +2460,60 @@ await test("setEmployeePin: admin only, digits only, and no duplicates", async (
   ok(/nothing was changed/i.test(json(dup).error), "and says plainly that nothing happened");
 });
 
+// ── Cutover slice 6: jobs can be Neon-native ───────────────────────────────
+// Jobs are the spine — every expense, photo, estimate, invoice, panel and
+// schedule entry hangs off a job id. This slice is inert until the first native
+// job exists, so what these pin is the SHAPE, not behaviour.
+const NATIVE_JOB = "7c2e4a10-9b3d-4f52-8a61-0d5e7c9b1234";
+
+await test("slice 6: the 400 guards no longer reject a native job's own id", async () => {
+  // Fifteen job guards tested String(jobId).startsWith("rec"). A job the app had
+  // just created would have been refused by its own expense, photo and panel
+  // handlers with "Invalid jobId" — the id was fine, the guard was stale.
+  mockTables = { Jobs: [] };
+  delete process.env.DATABASE_URL;
+  for (const [action, body] of [
+    ["addGeneralExpense", { jobId: NATIVE_JOB, type: "Materials", amount: 10 }],
+    ["addLiftExpense",    { jobId: NATIVE_JOB, amount: 10 }],
+  ]) {
+    const res = await POST(action, body);
+    ok(res.statusCode !== 400, `${action} does not 400 on a uuid (got ${res.statusCode})`);
+  }
+});
+
+await test("slice 6: the job source rules the sweep depends on", async () => {
+  const fs = await import("node:fs/promises");
+  const raw = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const src = raw.split("\n").filter(l => !l.trim().startsWith("//")).join("\n");
+
+  // JOB_SELECT's first column IS the job id the whole app speaks — it comes back
+  // as job.id and goes straight out again as jobId on expenses, photos,
+  // estimates, invoices, panels, the schedule and every R2 prefix. A bare emit
+  // hands the client NULL for a native job: the job lists, and nothing on it
+  // opens.
+  ok(/SELECT COALESCE\(j\.airtable_id, j\.id::text\) AS airtable_id/.test(src),
+     "JOB_SELECT emits the dual handle");
+
+  // No job resolve may be left on a bare airtable_id. A missed one does not
+  // error — it writes a NULL job_id, and the row silently drops out of the job's
+  // costs, its GP and (for estimates) its expected revenue.
+  const bare = (src.match(/FROM jobs WHERE airtable_id = \$\d+\)/g) || []);
+  eq(bare.length, 0, `bare job resolves left: ${bare.join(", ")}`);
+
+  // ⚠ AND binds tighter than OR. `WHERE j.airtable_id = $1 OR j.id::text = $1
+  // AND a.invoice_id IS NULL` returns every allocation on every job. Three of
+  // these shipped into the working tree during this slice before being caught.
+  const lines = src.split("\n");
+  const unparenthesised = [];
+  lines.forEach((l, i) => {
+    if (!/OR j\.id::text = \$/.test(l)) return;
+    if (/\)\s*$/.test(l.trim())) return;                 // already wrapped
+    if (/^AND\b/i.test((lines[i + 1] || "").trim())) unparenthesised.push(i + 1);
+  });
+  eq(unparenthesised.length, 0,
+     `dual handle followed by AND without parentheses at line(s): ${unparenthesised.join(", ")}`);
+});
+
 await test("every dual handle resolves BOTH halves with the SAME parameter", async () => {
   // ⚠⚠ THE BUG THIS EXISTS FOR, WHICH SHIPPED AND WAS CAUGHT BY LUCK.
   // The slice-5 sweep converted clauses with a plain string replace on

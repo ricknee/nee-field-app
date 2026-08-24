@@ -193,7 +193,90 @@ Neon-first, so an Airtable-only row is invisible forever — nothing back-fills 
 inverted to assert exactly that, and the Airtable field-id mappings they used to check are now
 covered by source assertions, since the mirror is unreachable offline.
 
-### ⚠ Slice 2 — PREPPED 2026-08-21 (`160d944`, `db/schema/054`), **NOT FLIPPED**
+### ✅ Slice 2 — FLIPPED 2026-08-24 (`5328a0b`, `db/schema/056`)
+
+**The gate below was met by the 2026-08-09 → 08-22 payroll run**, created 09:28 that morning —
+the first time the R2 write inside `handlePayrollRunCreate` ever ran in production.
+
+| check | result |
+|---|---|
+| `pdf_key` / `json_key` set | ✅ `payroll/825eab70…/20260824092819.pdf` (+ `.json`) |
+| `r2Error: null`, `pdfArchived: true` | ✅ implied — see below |
+| PDF opens from Payroll Archive | ✅ owner confirmed via the **Reprint** button |
+
+Two things made those checks mean what they claim, and both are worth reusing in slices 4-6:
+
+- ⚠ **The key shape is the fingerprint.** `20260824092819.pdf` is timestamp-named; the 28 runs
+  backfilled on 08-21 are `att….pdf`, because `copyPayrollFilesToR2` keys on the Airtable
+  attachment id. Seeing a timestamp key is how you know the in-handler write ran and not the
+  copier.
+- ⚠ **The keys ARE the evidence of the write, not a record of it.** They are stamped only after
+  *both* `putBufferToR2` calls resolve, and explicitly cleared on any failure. Non-null keys
+  therefore prove the PUTs succeeded — no R2 listing needed, which matters because the R2
+  credentials are write-only Netlify secrets and cannot be listed locally.
+- ⚠⚠ **The "PDF opens" check was nearly worthless.** `payrollRunsList` falls back to Airtable
+  **wholesale** unless *every* run has a `pdf_key` — one null sends the entire grid back to
+  attachment urls. Had any run been missing a key, clicking Reprint would have opened an Airtable
+  attachment and proved nothing. All 29 rows had both keys, so the click really did exercise
+  `presignGetDownload` against R2. **Check the fallback condition before trusting a UI check.**
+
+**What shipped:** the create is Neon-first; Airtable is a `mirrorToAirtable(...)` whose rec id is
+stamped back onto the run and each bonus. Two contracts inverted with it:
+
+- **R2 became a hard precondition**, checked before anything is written. A native run has no
+  Airtable record, so R2 holds the only copy of the artifact people are paid from. Unconfigured →
+  503, nothing written. Failed PUT → the Neon row is deleted and the request 500s. The client
+  already answers a throw with `showArchiveErrorModal()`, which offers a retry *and* still hands
+  over the locally-generated PDF, so refusing costs nothing. R2 is "optional as a group" everywhere
+  else in this codebase; on this path it is required.
+- **The supersede flag is written to Neon unconditionally**, not only alongside the Airtable PATCH.
+  A native predecessor has nothing to patch, and the chain then exists only in Neon.
+
+#### ⚠⚠ "One handler, not a sweep" was WRONG — and the same undercount is likely in slices 4-6
+
+054's header and this document both estimated slice 2 at *~20 minutes, one handler*. The flip
+touched **four** handlers, and the three extra sites were all **silent wrong numbers, not errors**:
+
+1. **`payrollBonusesRollup`** joined `r.airtable_id = b.payroll_run_airtable_id`. A native run has
+   a NULL `airtable_id`, `NULL = NULL` is not true, and the LEFT JOIN then drops the row at
+   `r.pay_period_end >= $1` — so every bonus on a native run vanishes from the year-to-date total.
+   **This is the `v_invoices` bug from slice 3 in a plain handler.** The slice-0 note said "a VIEW
+   can join on rec ids too"; the real rule is broader — *anything* can, so grep the handlers for
+   `airtable_id =` as well as `pg_get_viewdef`.
+2. **`payrollEmployeeBonusHistory`** — the same join, plus a bare `payroll_run_airtable_id` handed
+   back as the run handle and a bare `b.airtable_id` as the sort tiebreaker.
+3. **`findMatchingPayrollRun`** returned a bare `airtable_id` — the sharpest of the three. NULL for
+   a native run, so the client reads `found.runId || null`, concludes there is no prior run for the
+   period, and **skips the supersede confirm dialog entirely**. Two non-superseded runs on one
+   period, which `computePayrollDateRanges` resolves by `generated_at` and gets wrong — moving
+   every payroll tile by a fortnight. The period 2026-07-26 → 08-08 already carries six runs, five
+   superseded, so this is the normal case, not an edge one.
+
+**Method that caught them:** grep every SQL site touching the table, not just the handler being
+flipped — `grep -n "payroll_runs\|payroll_bonuses" netlify/functions/*.js`. The flip handler itself
+was the *least* interesting of the four.
+
+**Method that made the swap safe:** each rewritten read was proved equivalent against live data
+*before* shipping, with an `EXCEPT` both ways — 31 bonuses, 4 rollup rows, $12,900, zero diff. So
+the change is provably inert today and correct once native runs exist. Every new statement was
+verified as **`PREPARE name AS <sql>` with no type list**, per the correction slice 3 paid for.
+
+**Schema 056** adds `pr_bonuses_run_uuid_idx` on `payroll_bonuses(payroll_run_id)`. The existing
+index (052) was on `payroll_run_airtable_id` — the column both reads had just stopped joining on,
+which would have left every payroll screen on a sequential scan. ⚠ **When a join column changes,
+the index does not follow it.**
+
+**Known cosmetic leak:** if the two R2 PUTs succeed but the `pdf_key` UPDATE fails, the rollback
+deletes the run and leaves two objects under a uuid prefix nothing references. Harmless, invisible,
+and not worth a transaction.
+
+**Still true:** nothing re-reads Airtable to insert payroll rows — there is no ETL for these tables
+(verified across `_*.js`, `qb-time-pull.js` and `db/etl/`) — so the slice-0 "failed stamp duplicates
+the row" trap does not apply here. A failed stamp just leaves the run Neon-only, which every read
+already handles.
+
+<details>
+<summary>The original gate, kept for the record</summary>
 
 Everything around the create shipped; the create itself did not. This is not caution — it is one
 piece of evidence:
@@ -228,6 +311,12 @@ a best-effort mirror, exactly as slice 1 did. One handler, not a sweep.
 No native row can appear until the create is reversed, so none of the above can change behaviour
 today. That is the point of splitting it: the risky half is one handler, and it waits on evidence
 rather than on a calendar.
+
+⚠ That last claim — "three run lookups accept either id form" — was the undercount. It covered the
+three *write*-side lookups and missed the three *read*-side ones listed above. Splitting the slice
+was still right; the estimate of what remained was not.
+
+</details>
 
 ### ✅ Slice 2.5 — SHIPPED 2026-08-22 (`eb38e2e` + a Make blueprint edit)
 
@@ -465,7 +554,7 @@ size first estimated.
 |---|---|---|---|
 | 0 — verify | ~1 h | ✅ **done** | Make passed, R2 passed, delete passes passed. |
 | 1 — reference leaves | ~1 h | ✅ **done 2026-08-21** (`41bd94c`) | Ran long: the SQL was 5 clauses, but two live bugs surfaced (see below) and three tests had to be inverted. |
-| 2 — payroll runs + bonuses | ~45 min | ⚠ **prepped 2026-08-21** (`160d944`); ~20 min left | Everything but the create shipped. The flip is gated on the next **real** payroll run exercising the R2 write — see the slice 2 section. |
+| 2 — payroll runs + bonuses | ~45 min | ✅ **done 2026-08-24** (`160d944` + `5328a0b`, schema 054 + 056) | Prep 08-21, flip 08-24 once a real payroll run exercised the R2 write. ⚠ The "~20 min, one handler" estimate was wrong — it was four handlers, three of them silent-wrong-number reads. See the slice 2 section. |
 | **2.5 — convert Make `4723276` to a payload** | — | ✅ **done 2026-08-22** (`eb38e2e` + Make edit) | Was gating slice 3. See below. |
 | 3 — estimates, invoices, allocations | ~1.5 h | ✅ **done 2026-08-22** (`db/schema/055`) | Ran long. The 3 clauses were the easy part; `v_invoices` joined on rec ids and would have printed every native T&M invoice at $0, and three Airtable formula columns had to be reproduced. |
 | 4 — **expenses** (own session) | ~2–3 h | ~2–3 h | Difficulty was never the SQL. R2 needs no work at all (slice 0). |

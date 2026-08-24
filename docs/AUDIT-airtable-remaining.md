@@ -32,13 +32,25 @@ in **`docs/PLAN-airtable-identity-cutover.md`**, which is now the live document 
 |---|---|
 | 0 — verify Make / R2 / delete passes | ✅ 2026-08-21. All three passed. The clause sweep found **77 lookup clauses across 62 functions**, tripling slices 5 and 6. |
 | 1 — reference leaves | ✅ 2026-08-21 (`41bd94c`, schema 053) |
-| 2 — payroll runs + bonuses | ⚠ **prepped, NOT flipped** (`160d944`, schema 054). Gated on the next **real** payroll run exercising the R2 write, which has never run in production. ~20 min once it does. |
+| 2 — payroll runs + bonuses | ✅ **2026-08-24** (`160d944` + `5328a0b`, schema 054 + 056). The gate — a real payroll run exercising the R2 write — was met by the 08-09 → 08-22 run. ⚠ Estimated at "~20 min, one handler"; it was **four** handlers, and the three extra were silent wrong numbers, not errors. |
 | 2.5 — Make `4723276` off Airtable | ✅ 2026-08-22 (`eb38e2e`). Was gating slice 3. |
 | 3 — estimates + invoices | ✅ 2026-08-22 (`12f66fb`, schema 055), fixed `e8551be`, smoked `93a1307` |
 | 4 expenses · 5 employees · 6 jobs | ⬜ ~7-10 h. Slice 6 alone is 46 clauses across 37 functions. |
 
 **So "5 — Item 10 — drop the mirror writes" in the table below is no longer one task.** It is six,
-three of them done.
+**four of them done** (0, 1, 2, 2.5, 3 — leaving 4, 5, 6).
+
+⚠⚠ **A SECOND METHOD CORRECTION, from slice 2 on 2026-08-24.** Slice 2 was estimated at "~20
+minutes, one handler, not a sweep" in two places. It was four handlers. The three that were missed
+had nothing to do with the create being flipped — they were **reads elsewhere in the file that
+resolved a run by `airtable_id`**, and every one of them fails as a *silent wrong number* rather
+than an error: a bonus rollup that drops native runs, a history popover that does the same, and a
+lookup that returns NULL and so lets two live runs sit on one payroll period.
+
+> Before estimating any remaining slice, grep **every** SQL site touching the tables involved
+> (`grep -n "<table>" netlify/functions/*.js`), not just the handler being reversed. The handler is
+> usually the least interesting of them. And prove each rewritten read equivalent against live data
+> with an `EXCEPT` both ways *before* shipping — that is what made slice 2's swap provably inert.
 
 ⚠ **The counts in the 08-20 table below have NOT been re-measured** since. Estimates and invoices
 stopped minting Airtable rec ids on 08-22, which changes the shape of the remaining work but not

@@ -2224,7 +2224,9 @@ async function pushOneJob(idx) {
       return;
     }
     showToast(result.alreadyPushed ? "✓ " + g.jobName + " already pushed" : "✓ Pushed " + g.jobName);
-    // Generate and download PDF receipt
+    // Generate and download PDF receipt — and file it against the expense it
+    // documents. See stampReceiptTargets.
+    stampReceiptTargets([g], result);
     downloadReceiptPDF(g);
     window._pendingExpenses.splice(idx, 1);
     if (window._pendingExpenses.length) {
@@ -2260,7 +2262,10 @@ async function submitPushExpenses(idxOnly) {
     var msg = parts.length ? parts.join(", ") : (result.count + " expense" + (result.count !== 1 ? "s" : "") + " created");
     showToast((result.staleSkipped ? "⚠ " : "✓ ") + msg, !!result.staleSkipped);
     // Download a receipt for each job that wasn't refused as stale.
-    if (!result.staleSkipped) toPush.forEach(function(g){ downloadReceiptPDF(g); });
+    if (!result.staleSkipped) {
+      stampReceiptTargets(toPush, result);
+      toPush.forEach(function(g){ downloadReceiptPDF(g); });
+    }
     // If anything was refused as out-of-date, reload pending so the user sees
     // the true remaining state instead of clearing the list.
     if (result.staleSkipped) { loadPushPending(); return; }
@@ -2483,6 +2488,23 @@ function reprintPushHistoryPdf() {
 // Deliberately fire-and-forget: the push has already succeeded by the time this
 // runs, and the user still gets their local download. An archiving failure must
 // never make a completed push look broken, so it logs and stays quiet.
+// Carry each group's new materials-expense id from the push response onto the
+// group object, so the PDF generated a moment later can be filed against it.
+//
+// Keyed by push id rather than by array position: the server skips groups (zero
+// totals, stale snapshots, guard #1) so the response cannot be zipped with the
+// request. Position-matching two lists where one side silently drops entries is
+// how a receipt ends up attached to a different job's expense.
+//
+// Absent for a group the server did not freshly charge — which is deliberate,
+// and the reason a retry re-downloads the PDF without filing a second copy.
+function stampReceiptTargets(groups, result) {
+  var targets = (result && result.receiptTargets) || {};
+  groups.forEach(function (g) {
+    if (g && g.pushId) g._expenseId = targets[g.pushId] || null;
+  });
+}
+
 async function archiveReceiptPDF(g, pdfBase64) {
   try {
     if (!g || !g.jobId || !g.pushId || !pdfBase64) return;   // nothing to key it to
@@ -2509,6 +2531,38 @@ async function archiveReceiptPDF(g, pdfBase64) {
     console.log("[materials-pdf] archived", d.key);
   } catch (e) {
     console.warn("[materials-pdf] archive failed (push itself was fine):", e);
+  }
+
+  // Second home, and the one people actually look at: the materials expense's
+  // own receipt, so a pushed expense carries its paperwork like a hand-entered
+  // one instead of being the only kind with an empty receipt list.
+  //
+  // A SEPARATE try//catch and a separate upload on purpose. The job-docs copy
+  // above is the durable archive and must not be lost because the receipt leg
+  // failed — and the same the other way. Two destinations, two failures.
+  //
+  // `g._expenseId` is set by the push response (`receiptTargets`) and only for
+  // groups that were FRESHLY CHARGED, so a guard #1 retry re-downloads the PDF
+  // for the user without filing a duplicate receipt against the expense.
+  try {
+    if (!g._expenseId) return;
+
+    var e2 = await apiPost({ action: "pushReceiptUploadUrl", expenseId: g._expenseId });
+    if (!e2.available || !e2.putUrl) return;                 // R2 not configured — fine
+
+    var binary2 = atob(pdfBase64);
+    var bytes2  = new Uint8Array(binary2.length);
+    for (var j = 0; j < binary2.length; j++) bytes2[j] = binary2.charCodeAt(j);
+
+    var r2 = await fetch(e2.putUrl, {
+      method:  "PUT",
+      headers: { "Content-Type": e2.contentType || "application/pdf" },
+      body:    new Blob([bytes2], { type: "application/pdf" })
+    });
+    if (!r2.ok) throw new Error("storage refused the upload (HTTP " + r2.status + ")");
+    console.log("[materials-pdf] attached to expense", g._expenseId, e2.key);
+  } catch (e) {
+    console.warn("[materials-pdf] could not attach to the expense (push itself was fine):", e);
   }
 }
 

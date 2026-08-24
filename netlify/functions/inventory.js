@@ -38,7 +38,7 @@ import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
 // See docs/PLAN-expense-receipts.md §11.
-import { r2Enabled, jobDocsPrefix, presignPut, R2Error } from "./_r2.js";
+import { r2Enabled, jobDocsPrefix, expensePrefix, presignPut, R2Error } from "./_r2.js";
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const MAIN_BASE_ID     = process.env.AIRTABLE_BASE_ID;
@@ -72,6 +72,7 @@ const _NON_VIEWER  = ["admin", "office", "employee"];
 const _ADMIN_WRITES = new Set([
   "pushExpenses",        // pushes material cost into job Expenses (money)
   "jobDocUploadUrl",     // archives the materials PDF — same tier as the push it documents
+  "pushReceiptUploadUrl",// attaches that PDF to the expense — same tier, same reason
   "updateItemCost", "createItem", "itemUpdate", "itemDelete",   // catalog / pricing
   "locationSave", "vendorSave", "vendorPricingSave", "vendorPricingDelete", // reference data
   "bulkPreview", "bulkApply",   // spreadsheet upload
@@ -1452,6 +1453,13 @@ async function handlePushExpenses(body) {
   const today         = new Date().toISOString().split("T")[0];
   const expenseIds    = [];
   const pushHistoryIds = [];
+  // Per-group handles for the client, keyed by push id. The materials receipt
+  // PDF is generated in the browser AFTER the push returns, so this is the only
+  // way it can be attached to the expense it documents — before slice 4c the
+  // response carried a count and nothing else, and there was no id to hang a
+  // receipt on. Only FRESHLY CHARGED groups appear here: a guard #1 retry must
+  // not upload a second copy of a receipt the original attempt already stored.
+  const receiptTargets = {};
   let   txMarked      = 0;
   let   created       = 0;  // groups freshly charged this call
   let   alreadyPushed = 0;  // groups short-circuited by guard #1 (same pushId)
@@ -1599,6 +1607,12 @@ async function handlePushExpenses(body) {
       continue;
     }
     expenseIds.push(...jobExpenseIds);
+    // ⚠ The MATERIALS row, which is `rows[0]` and therefore `jobExpenseIds[0]` —
+    // the INSERT preserves the order of its VALUES list. The receipt itemises
+    // the material lines, so it belongs on that expense and not on the derived
+    // tax row. Do not try to identify it by amount: on a credit push both rows
+    // are negative, and on a cheap push the tax can round to the same figure.
+    receiptTargets[pushId] = jobExpenseIds[0];
 
     // ── The Airtable mirror. Best-effort, never blocking, and NEVER stamped
     // back onto the Neon row.
@@ -1669,7 +1683,8 @@ async function handlePushExpenses(body) {
     alreadyPushed,
     staleSkipped,
     txCount:         txMarked,
-    pushHistoryIds
+    pushHistoryIds,
+    receiptTargets
   };
 
   // ── FAIL CLOSED on any group that could not be charged ─────────────────────
@@ -3692,6 +3707,65 @@ async function handleJobDocUploadUrl(body) {
   }
 }
 
+// ── ATTACH THE MATERIALS PDF TO THE EXPENSE IT DOCUMENTS ───────────────────
+// Presigns a PUT under `expenses/<handle>/`, the same prefix the field app's
+// receipt viewer lists — so a pushed expense gets a receipt like every
+// hand-entered one, instead of the PDF existing only as a browser download and
+// a job-docs archive nobody thinks to open.
+//
+// ⚠ This became possible only with slice 4c. The PDF is generated in the
+// browser AFTER the push returns, and until the push started minting Neon
+// expense ids and handing them back (`receiptTargets`) there was no id to
+// attach to. The pre-4c code attached it as an AIRTABLE attachment, which is
+// both the wrong store and, since the client stopped sending `pdfs`, dead.
+//
+// ⚠⚠ THE KEY SHAPE MUST MATCH `handleExpenseReceiptUploadUrls` in airtable.js
+// (`<stamp>-NN-<rand>.<ext>`). `listExpenseReceipts` lists ONE prefix and the
+// field app parses these names; an object written under a different convention
+// is stored, billed for, and invisible.
+//
+// Fails SOFT, like the job-docs archive above: the money is already charged by
+// the time this is called, and a storage problem must never make a completed
+// push look broken.
+async function handlePushReceiptUploadUrl(body) {
+  const expenseId = String(body?.expenseId || "").trim();
+  if (!expenseId) return resp(400, { ok: false, error: "Missing expenseId." });
+  // It lands in an object key, so it may not contain path separators. Belt and
+  // braces over the existence check below — that check is the real control.
+  if (/[/\\]/.test(expenseId) || expenseId.includes("..")) {
+    return resp(400, { ok: false, error: "Invalid expenseId." });
+  }
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured" });
+
+  // ⚠ Prove the expense exists before minting a URL that can write under its
+  // prefix. Without this, any admin-signed call writes an arbitrary object into
+  // the receipts namespace — and a receipt filed against an expense that never
+  // existed is worse than no receipt, because nothing will ever surface it.
+  // Fails closed: an unverifiable expense gets no upload url.
+  const q = await neonQuery(
+    `SELECT 1 FROM expenses WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [expenseId]);
+  if (!q?.rows)      return resp(200, { ok: true, available: false, reason: "lookup-failed" });
+  if (!q.rows.length) return resp(404, { ok: false, error: "Expense not found." });
+
+  const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const rand  = Math.random().toString(36).slice(2, 8);
+  const key   = `${expensePrefix(expenseId)}${stamp}-01-${rand}.pdf`;
+
+  try {
+    return resp(200, {
+      ok: true,
+      available: true,
+      key,
+      putUrl: await presignPut(key, "application/pdf"),
+      contentType: "application/pdf",
+    });
+  } catch (e) {
+    const detail = e instanceof R2Error ? e.code : "error";
+    console.error(`pushReceiptUploadUrl failed for expense ${expenseId}: ${String(e?.message || e).slice(0, 200)}`);
+    return resp(200, { ok: true, available: false, reason: detail });
+  }
+}
+
 export async function handler(event) {
   try {
     if (event.httpMethod === "OPTIONS") return resp(200, { ok: true });
@@ -3755,6 +3829,7 @@ export async function handler(event) {
       if (body.action === "adjustment")      return await handleAdjustment(body);
       if (body.action === "pushExpenses")    return await handlePushExpenses(body);
       if (body.action === "jobDocUploadUrl") return await handleJobDocUploadUrl(body);
+      if (body.action === "pushReceiptUploadUrl") return await handlePushReceiptUploadUrl(body);
       if (body.action === "createItem")        return await handleCreateItem(body);
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "itemUpdate")         return await handleItemUpdate(body);

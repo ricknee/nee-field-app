@@ -363,6 +363,43 @@ await test("taxable push creates materials + tax expense, both stamped", async (
   eq(state.expenses.length, 2, "and both mirrored");
 });
 
+// ── The materials PDF is filed against the expense it documents ─────────────
+// The PDF is generated in the browser AFTER the push returns, so the response
+// has to hand back the id to attach it to. Before slice 4c there was none.
+
+await test("receiptTargets names the MATERIALS expense, never the tax row", async () => {
+  resetState(["tx9"]);
+  const g = group("pid-rcpt", ["tx9"]); g.taxable = true;
+  const r = json(await PUSH([g]));
+  const target = r.receiptTargets["pid-rcpt"];
+  eq(!!target, true, "a target was returned");
+  const hit = state.neonExpenses.find(e => e.id === target);
+  eq(hit.amount, 100, "it is the $100 materials row, not the $7.50 tax row");
+  // Identifying it by amount is what this guards against: on a credit push both
+  // rows are negative, and on a cheap push the tax can round to the same figure.
+  // The contract is positional — materials is the first row of the INSERT.
+  eq(target, state.neonExpenses[0].id, "and it is the first row inserted");
+});
+
+await test("a guard #1 retry returns NO receipt target — no duplicate receipt filed", async () => {
+  resetState(["tx1"]);
+  const first = json(await PUSH([group("pid-once", ["tx1"])]));
+  eq(!!first.receiptTargets["pid-once"], true, "the first push files one");
+
+  const retry = json(await PUSH([group("pid-once", ["tx1"])]));
+  eq(retry.alreadyPushed, 1, "recognised as already pushed");
+  eq(retry.receiptTargets["pid-once"], undefined,
+     "and offers nothing to attach — the original attempt already stored it");
+});
+
+await test("a refused group offers no receipt target either", async () => {
+  resetState(["tx1"]);
+  const g = group("pid-ghost", ["tx1"]);
+  g.jobId = "recGhostJob";
+  const r = json(await PUSH([g]));
+  eq(r.receiptTargets["pid-ghost"], undefined, "nothing was charged, so nothing to document");
+});
+
 // ── Slice 4c: the failure direction is inverted ─────────────────────────────
 // Neon holds the money and Airtable holds a copy nobody reads, so "Airtable
 // didn't get it" is cosmetic and "Neon didn't get it" means nothing was charged.

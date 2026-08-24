@@ -154,7 +154,7 @@ Frontend conventions worth knowing before editing `index.html`:
   bottom of the file (~line 3831). **To add an endpoint: write a `handleX` function, then
   register it in that chain.** Unknown actions return 400.
 - **`inventory.js`** (~3,800 lines) — same dispatch shape, for the inventory/estimating app.
-  **58 actions, and Postgres is the only database it has.** Stock, items, locations, vendors,
+  **59 actions, and Postgres is the only database it has.** Stock, items, locations, vendors,
   pricing, the ledger, push history, reorder points and the whole estimating cluster are all
   Neon-native, and every one of those reads **fails closed** rather than falling back to the
   frozen Airtable copy.

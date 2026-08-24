@@ -490,6 +490,71 @@ Run by the owner on Classical Construction (Fuel Tank), then deleted.
 
 ⚠ **Zero native rows exist**, so `git revert` is still a clean rollback of the whole slice.
 
+### ✅ Slice 4c — SHIPPED 2026-08-24 (`db/schema/059`)
+
+**The inventory app now makes zero authoritative Airtable writes.** `handlePushExpenses` was the
+last one, and it existed for exactly one reason: Airtable was the identity authority for expenses.
+Slice 4b ended that for the field app; this ends it for the push. Materials and sales-tax expenses
+are born in Neon; the main base gets a best-effort mirror that nothing reads.
+
+**What moved**
+
+- **Guard #1 reads Neon.** It was a `filterByFormula` on `{Push ID}` — and *that* is the part of
+  this slice that could have cost money. A native expense may never reach Airtable at all, so
+  asking Airtable "has this push id already produced expenses?" would answer **no** about a push
+  that had already charged, and the retry would charge the customer again. Proved equivalent
+  before the swap: all 21 Airtable expenses carrying a `{Push ID}` diffed against Neon's `push_id`
+  with `EXCEPT` **both ways, on (rec id, push id) pairs, not counts** — zero rows either direction.
+  It fails **closed**: an unavailable guard is indistinguishable from "nothing has been pushed".
+- **The two creates became one statement.** Materials and its tax row insert together
+  (`createPushExpensesNative`). Two calls are two transactions, and a materials row that landed
+  while its tax row failed is a job undercharged by 7.5% — with guard #1 then short-circuiting
+  every retry, because the push id already "produced Expenses". One statement makes the half-state
+  impossible.
+- **Step E is gone, and its 502 inverted.** Step E healed an expense that reached Airtable but not
+  Neon. That direction no longer exists. The 502 now reports the opposite: a group whose Neon
+  insert refused, which means it was **not** charged and its transactions are still pending.
+- **`syncExpenseToNeon` is no longer imported by `inventory.js`** and must not come back — see the
+  ETL note below for what it does to a native row.
+
+**⚠⚠ THE TRAP THIS SLICE ADDED THAT NO PRIOR SLICE HAD: a NULL `job_id` is not an error, it is a
+discount.** `v_expenses` derives `billable_material_amount_calc` as
+`manual_material_cost × (1 + COALESCE(j.markup_pct, 0))` **through `job_id`**. An expense whose job
+does not resolve therefore inserts happily and prices the material **at cost** — the same shape as
+the bug that billed a new job's first hour at cost (`a04b11f`), and invisible in exactly the same
+way. The INSERT is a `CROSS JOIN` against a `j` CTE, so an unresolvable job writes **zero rows**
+and the handler refuses the group. Verified live: 100.00 at a 10% markup → `110.00` billable
+through `job_id`, and a ghost job id → 0 rows.
+
+**⚠⚠ AND THE SLICE BROKE AN EXISTING ETL — `db/etl/expenses-backfill.mjs`, now hard-stopped.**
+The 4b note said *"if an expense ETL is ever added it MUST skip rows it can't match by rec id"*.
+One already existed. Its definition of "missing" is *Airtable rec id not present in
+`expenses.airtable_id`*, and **every mirror of a native expense matches that, permanently, by
+design** — because the rec id is deliberately never stamped back. Running it would
+`syncExpenseToNeon` each mirror, `ON CONFLICT (airtable_id)` cannot fire on a NULL, and it would
+**insert a second copy of spend already recorded**, both counting in GP.
+⚠ **It cannot be fixed by filtering.** Nothing Airtable-side identifies a record as the mirror of
+a Neon row; that back-pointer is the exact thing the R2 receipt-key rule forbids. So it refuses to
+run, before it even reads `.env`.
+> **The general rule, worth applying to slices 5 and 6:** the question is not "will I add an ETL?"
+> — it is **"what already reads this table out of Airtable?"** Grep `db/etl/` for the table name
+> in every remaining slice.
+
+**Verification done before shipping**
+
+- `PREPARE … AS <sql>` **untyped** for both the one-row and two-row shapes (a type list resolves
+  the ambiguity the driver actually hits — it is not a check).
+- Then **executed for real** and rolled back by hand, because `NOT NULL`/`CHECK` are runtime
+  constraints that never fire on prepare. Confirmed: `airtable_id NULL`, job resolved, vendor
+  resolved to "NEE Inventory", the four Airtable formula columns NULL, every `*_calc` correct.
+- `expenses.airtable_id` NOT NULL was **checked, not assumed** (058 dropped it) — and so were
+  `expense_pushes`, `expense_push_lines`, `inventory_transactions`, all already nullable. This is
+  the check 057 skipped, which is why the first real expense after 4b failed.
+- 12 push tests (three inverted for the new direction, four new), 279 across all four suites.
+
+⬜ **Not yet smoked on production.** 62 transactions are pending, so the next real push is the test.
+**Check the job's expense lines show the marked-up amount, not the cost.**
+
 ### Slices 4–6
 
 Each slice is the same five steps, and they ship together in one commit:
@@ -557,7 +622,7 @@ size first estimated.
 | 2 — payroll runs + bonuses | ~45 min | ✅ **done 2026-08-24** (`160d944` + `5328a0b`, schema 054 + 056) | Prep 08-21, flip 08-24 once a real payroll run exercised the R2 write. ⚠ The "~20 min, one handler" estimate was wrong — it was four handlers, three of them silent-wrong-number reads. See the slice 2 section. |
 | **2.5 — convert Make `4723276` to a payload** | — | ✅ **done 2026-08-22** (`eb38e2e` + Make edit) | Was gating slice 3. See below. |
 | 3 — estimates, invoices, allocations | ~1.5 h | ✅ **done 2026-08-22** (`db/schema/055`) | Ran long. The 3 clauses were the easy part; `v_invoices` joined on rec ids and would have printed every native T&M invoice at $0, and three Airtable formula columns had to be reproduced. |
-| 4 — **expenses** (own session) | ~2–3 h | ~2–3 h | Difficulty was never the SQL. R2 needs no work at all (slice 0). |
+| 4 — **expenses** (own session) | ~2–3 h | ✅ **done 2026-08-24** — 4a `e071bd1`, 4b `a04b11f` + schema 057/058, 4c schema 059 | Ran long, and again not because of the SQL: 4b shipped without the `DROP NOT NULL` and the first real expense failed on it; 4c found an **existing** ETL that would have duplicated every native expense. ⬜ Prod-smoked for 4a/4b; the push (4c) still needs one real push. |
 | 5 — employees | ~1 h | **~2–3 h** | 19 clauses across 18 functions, plus stale-session verification. |
 | 6 — jobs | ~1.5 h | **~3–4 h** | **46 clauses across 37 functions** — the single biggest piece of the whole cutover. |
 

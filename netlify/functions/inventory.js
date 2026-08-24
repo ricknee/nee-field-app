@@ -1,15 +1,23 @@
 // netlify/functions/inventory.js
-// NEE Inventory App v2 — Neon-backed, with one foot still in the main Airtable base
+// NEE Inventory App v2 — Neon-backed
 //
 // Env vars: DATABASE_URL, AUTH_SECRET, and AIRTABLE_API_KEY + AIRTABLE_BASE_ID
 // for the MAIN base only.
 //
 // ⚠ INVENTORY_BASE_ID is no longer read. As of the write cutover (2026-08-12)
 // this file does not touch the Airtable INVENTORY base at all — not a read, not
-// a write, not a loader. Everything it once held lives in Neon. The only
-// Airtable calls left go to the MAIN base's `Expenses`, which is the expense
-// push feeding GP and was never part of this migration.
+// a write, not a loader. Everything it once held lives in Neon.
 // The variable can be deleted from Netlify once the base itself is archived.
+//
+// ⚠ AS OF THE IDENTITY CUTOVER, SLICE 4c (2026-08-24) THIS APP MAKES NO
+// AUTHORITATIVE AIRTABLE WRITE AT ALL. `handlePushExpenses` was the last one,
+// and it existed for exactly one reason: Airtable was the identity authority
+// for expenses. It is not any more (db/schema/058, 059) — pushed expenses are
+// born in Neon and the main base gets a best-effort MIRROR that nothing reads.
+// What is left pointing at the main base is: a handful of Neon-first reads with
+// an Airtable fallback (login, employees, the job pickers, the push's job
+// index), that mirror, and the `getExpenseFields` schema debug action.
+// See docs/PLAN-airtable-identity-cutover.md.
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from "./_employees.js";
@@ -17,11 +25,15 @@ import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from
 // the main-base job reads (Step B0). The driver is lazy-imported so the offline
 // test suites stay install-free.
 import { neonExec, neonQuery, neonWrite } from "./_neon.js";
-// Step E. The materials push writes Expenses into the MAIN base, and the field
-// app has read expenses from Neon since Step 4d — so an Airtable-only write is
-// invisible over there. Shared with airtable.js; see _expenses.js for why this
-// caller fails closed and that one doesn't.
-import { syncExpenseToNeon } from "./_expenses.js";
+// ⚠⚠ `syncExpenseToNeon` USED TO BE IMPORTED HERE AND MUST NOT COME BACK.
+// Step E existed because the push wrote Expenses to Airtable only while the
+// field app read them from Neon; it copied each created record across. Slice 4c
+// reversed the direction, so there is nothing left to copy — and calling it now
+// would be actively destructive: it is `INSERT … ON CONFLICT (airtable_id)`, a
+// native expense's `airtable_id` is NULL, so feeding it the mirror's response
+// conflicts with nothing and INSERTS A SECOND EXPENSE for the same spend, with
+// both counting in GP. Same trap the field app's local wrapper was deleted for
+// in a04b11f. The helper still exists in `_expenses.js` for db/etl only.
 import { randomUUID } from "node:crypto";
 // Archiving the generated materials PDF into the same R2 bucket the field app's
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
@@ -1116,31 +1128,6 @@ async function handlePendingExpenses() {
   return resp(200, { ok: true, pending, unmatched: unmatchedList });
 }
 
-// ── RECEIPT FIELD LOOKUP ──────────────────────────────────
-// Returns field ID for "Receipt / Document" on the Expenses table
-// Uses the Airtable meta API — requires schema:read scope on the token
-async function getReceiptFieldId() {
-  try {
-    const res  = await fetch(`https://api.airtable.com/v0/meta/bases/${MAIN_BASE_ID}/tables`, {
-      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` }
-    });
-    if (!res.ok) {
-      console.error(`Meta API ${res.status} — token may lack schema:read scope`);
-      return null;
-    }
-    const data  = await res.json();
-    const exp   = (data.tables || []).find(t => t.name === "Expenses");
-    if (!exp) { console.error("Expenses table not found in meta"); return null; }
-    const field = exp.fields.find(f => f.name === "Receipt / Document");
-    const id    = field?.id || null;
-    console.log("Receipt/Document field ID:", id);
-    return id;
-  } catch(e) {
-    console.error("getReceiptFieldId failed:", e.message);
-    return null;
-  }
-}
-
 // ── DEBUG: GET EXPENSE FIELD IDS ──────────────────────────
 async function handleGetExpenseFields() {
   try {
@@ -1156,44 +1143,6 @@ async function handleGetExpenseFields() {
   } catch(e) {
     return resp(500, { ok: false, error: e.message });
   }
-}
-
-// ── PDF ATTACHMENT UPLOAD ─────────────────────────────────
-async function uploadPdfToExpense(recordId, fieldId, pdfBase64, filename) {
-  const pdfBuffer = Buffer.from(pdfBase64, "base64");
-  const boundary  = "NEEBoundary" + Date.now().toString(36);
-  const CRLF      = "\r\n";
-
-  // Manually construct multipart/form-data body (more reliable than FormData in Node.js)
-  const pre = Buffer.from([
-    `--${boundary}${CRLF}`,
-    `Content-Disposition: form-data; name="contentType"${CRLF}${CRLF}`,
-    `application/pdf${CRLF}`,
-    `--${boundary}${CRLF}`,
-    `Content-Disposition: form-data; name="filename"${CRLF}${CRLF}`,
-    `${filename}${CRLF}`,
-    `--${boundary}${CRLF}`,
-    `Content-Disposition: form-data; name="file"; filename="${filename}"${CRLF}`,
-    `Content-Type: application/pdf${CRLF}${CRLF}`
-  ].join(""));
-  const post = Buffer.from(`${CRLF}--${boundary}--${CRLF}`);
-  const body  = Buffer.concat([pre, pdfBuffer, post]);
-
-  const res = await fetch(
-    `https://content.airtable.com/v0/${MAIN_BASE_ID}/${recordId}/uploadAttachment/${fieldId}`,
-    {
-      method:  "POST",
-      headers: {
-        Authorization:  `Bearer ${AIRTABLE_API_KEY}`,
-        "Content-Type": `multipart/form-data; boundary=${boundary}`,
-        "Content-Length": body.length.toString()
-      },
-      body
-    }
-  );
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Attachment upload ${res.status}: ${text.substring(0, 300)}`);
-  try { return JSON.parse(text); } catch(e) { return { ok: true }; }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1399,6 +1348,11 @@ async function handlePushHistoryDetail(params) {
 // In Airtable this stays a read-then-write (no unique constraint); when this
 // slice moves to Neon the pushId becomes a UNIQUE column + INSERT ... ON CONFLICT.
 const EXP_PUSH_ID_FIELD = "flddMVlSELtNT48ez";  // Expenses -> Push ID (main base)
+// The vendor every pushed expense is booked against: "NEE Inventory" — material
+// coming off our own shelf rather than bought from a supplier for the job.
+// Module-level since slice 4c, because the Neon insert and the Airtable mirror
+// both need it and they are two functions now.
+const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO";
 // The two Inventory Transactions field ids that used to live here are gone with
 // the ledger cutover: `Push ID` and `Expense Created?` are Neon columns now and
 // the Airtable copies are never written again.
@@ -1423,20 +1377,86 @@ async function markTransactionsPushed(txIds, pushId) {
     [txIds, String(pushId || "")]);
 }
 
+// Best-effort Airtable mirror. Never throws — the authoritative write already
+// landed in Neon, so an Airtable problem must not fail the user's push. Same
+// contract and same name as the field app's helper (airtable.js:1061); this is
+// the inventory app's copy, and the only place it needs one, because after this
+// slice the push is the app's only Airtable write of any kind.
+async function mirrorToAirtable(label, fn) {
+  try {
+    return await fn();
+  } catch (e) {
+    console.error(`mirrorToAirtable ${label} failed (ignored): ${e?.message || e}`);
+    return null;
+  }
+}
+
+// ── CREATE A PUSH'S EXPENSES IN NEON (cutover slice 4c, 2026-08-24) ────────
+// One statement for BOTH rows a push can create — materials and its sales tax.
+// That is deliberate: two calls are two transactions, and a materials row that
+// landed while its tax row failed is a job undercharged by 7.5% with guard #1
+// then short-circuiting every retry, because the push id already "produced
+// Expenses". One statement makes the pair atomic and the half-state impossible.
+//
+// ⚠⚠ THE JOB MUST RESOLVE OR NOTHING IS INSERTED, AND THAT IS THE POINT.
+// `v_expenses` derives `billable_material_amount_calc` as
+// `manual_material_cost * (1 + COALESCE(j.markup_pct, 0))` through `job_id`. A
+// NULL `job_id` therefore does not error — it quietly prices the material at
+// COST, which is exactly the shape of the bug that billed a new job's first
+// hour at cost (a04b11f). The CROSS JOIN against the `j` CTE makes an
+// unresolvable job insert zero rows, so the caller refuses the group instead
+// of charging the wrong number.
+//
+// ⚠ The four Airtable formula columns (Total Cost (Actual), Billable / Billed /
+// Unbilled Material Amount $) are left NULL on purpose. Since schema 057 every
+// reader computes them from `v_expenses.*_calc`, and a native row has no
+// formula engine to fill them.
+//
+// ⚠ Every parameter is cast explicitly. `PREPARE` with a type list is not a
+// check — the driver sends parameters UNTYPED, and an uncast `$n` inside a
+// VALUES list has no target column to be deduced from (slice 3's
+// "inconsistent types deduced for parameter $5").
+async function createPushExpensesNative({ jobId, expenseDate, pushId, rows }) {
+  const handle = String(jobId);
+  const params = [
+    handle.startsWith("rec") ? handle : null,   // $1 job_airtable_id
+    handle,                                     // $2 job handle (either form)
+    expenseDate,                                // $3 expense_date
+    String(pushId),                             // $4 push_id
+    NEE_VENDOR_ID,                              // $5 vendor handle
+  ];
+  const p = (v) => { params.push(v); return `$${params.length}`; };
+  const tuples = rows.map(r => `(${p(Number(r.amount))}::numeric, ${p(String(r.description))}::text)`);
+
+  const created = await neonWrite("pushExpense.create",
+    `WITH j AS (SELECT id FROM jobs WHERE airtable_id = $2::text OR id::text = $2::text LIMIT 1)
+     INSERT INTO expenses
+       (job_airtable_id, job_id, expense_type, expense_status, expense_date,
+        reviewed, billable, manual_material_cost, vendor_name, description,
+        push_id, synced_at)
+     SELECT $1::text, j.id, 'Materials', 'Not Reviewed', $3::date, false, true,
+            v.amount,
+            (SELECT name FROM expense_vendors WHERE airtable_id = $5::text OR id::text = $5::text),
+            v.descr, $4::text, now()
+       FROM j CROSS JOIN (VALUES ${tuples.join(",")}) AS v(amount, descr)
+     RETURNING id`,
+    params);
+  return (created || []).map(r => String(r.id));
+}
+
 async function handlePushExpenses(body) {
-  const { pending, pdfs, pushedBy } = body || {};
+  const { pending, pushedBy } = body || {};
   if (!pending || !pending.length) return resp(400, { ok: false, error: "Nothing to push." });
 
   const TAX_RATE      = 0.075;
   const today         = new Date().toISOString().split("T")[0];
-  const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO";
   const expenseIds    = [];
   const pushHistoryIds = [];
-  let   pdfUploads    = 0;
   let   txMarked      = 0;
   let   created       = 0;  // groups freshly charged this call
   let   alreadyPushed = 0;  // groups short-circuited by guard #1 (same pushId)
   let   staleSkipped  = 0;  // groups refused by guard #2 (stale snapshot)
+  const failedJobs    = []; // groups whose Neon insert refused — nothing charged
 
   // ── Idempotency reads (authoritative, before any write) ───────────────────
   // (a) The set of transactions that are *genuinely* still pending right now.
@@ -1464,66 +1484,29 @@ async function handlePushExpenses(body) {
   }
   const stillPending = new Set(nqFresh.rows.map(r => r.id));
 
-  // (b) Which of this request's push IDs already produced Expenses. UUIDs are a
-  //     safe charset ([0-9a-f-]) so they need no formula escaping.
+  // (b) Which of this request's push IDs already produced Expenses.
+  //
+  // ⚠⚠ THIS READ MOVED TO NEON IN SLICE 4c, AND IT IS THE GUARD THAT STOPS A
+  // RETRY CHARGING A CUSTOMER TWICE. It used to be a `filterByFormula` on the
+  // main base's {Push ID}; the expenses this push creates are born in Neon now
+  // and may never reach Airtable at all, so asking Airtable would answer "no
+  // expenses for this push id" about a push that had already charged — and the
+  // retry would charge it again. Proved equivalent before the swap: all 21
+  // Airtable expenses carrying a {Push ID} diffed against Neon's `push_id` with
+  // EXCEPT both ways, zero rows either direction (db/schema/059).
+  //
+  // Fails CLOSED. An unavailable guard is indistinguishable from "nothing has
+  // been pushed", which is the one wrong answer that costs money.
   const reqPushIds = [...new Set(pending.map(g => g && g.pushId).filter(Boolean))];
   const pushIdsWithExpenses = new Set();
-  // The records themselves, kept so guard #1 can RE-SYNC them to Neon on a
-  // retry (Step E). Without this, a push whose Airtable write landed but whose
-  // Neon write failed could never be healed: the retry would short-circuit as
-  // "already pushed" and the expense would stay invisible to the field app
-  // forever — which is the exact bug Step E exists to close.
-  const existingByPushId = new Map();
   if (reqPushIds.length) {
-    const clauses = reqPushIds.map(id => `{Push ID}='${id}'`);
-    const existing = await fetchAll(API_ROOT_MAIN, "Expenses", {
-      filter: clauses.length === 1 ? clauses[0] : `OR(${clauses.join(",")})`
-    });
-    existing.forEach(r => {
-      const pid = r.fields?.["Push ID"];
-      if (!pid) return;
-      pushIdsWithExpenses.add(pid);
-      if (!existingByPushId.has(pid)) existingByPushId.set(pid, []);
-      existingByPushId.get(pid).push(r);
-    });
-  }
-
-  // Expenses that reached Airtable but not Neon. Collected rather than thrown
-  // mid-loop: the Airtable records already exist, so aborting would strand the
-  // groups after this one too. Reported at the end, and the push answers
-  // ok:false so the caller retries — which heals via guard #1 above.
-  const neonSyncFailures = [];
-
-  // Re-read the record before syncing instead of trusting the create response.
-  // `Total Cost (Actual)`, `Billable Material Amount $` and `Unbilled Material
-  // Amount $` are Airtable formulas/rollups and they feed GP; syncing a record
-  // whose derived fields haven't been computed yet would write zeros into the
-  // money columns, which is worse than the gap this closes. One extra GET per
-  // expense (1-2 per job) is a cheap price for not having to trust that.
-  async function syncCreatedExpense(expenseId, label) {
-    try {
-      const rec = await atFetch(API_ROOT_MAIN, `${encodeURIComponent("Expenses")}/${expenseId}`);
-      // Assert the read came back as the record we asked for. syncExpenseToNeon
-      // early-returns on a record with no `id`, which is right for a fail-soft
-      // caller and WRONG here — it would turn "the re-read returned something
-      // unexpected" into a silent success and strand the expense, which is the
-      // whole failure mode this step exists to remove.
-      if (rec?.id !== expenseId) throw new Error(`re-read returned ${rec?.id || "no record"}`);
-      await syncExpenseToNeon(rec);
-    } catch (e) {
-      console.error(`Push: expense ${expenseId} (${label}) did NOT reach Neon: ${e.message}`);
-      neonSyncFailures.push(expenseId);
+    const nqPushed = await neonQuery(
+      `SELECT DISTINCT push_id FROM expenses WHERE push_id = ANY($1::text[])`,
+      [reqPushIds]);
+    if (!nqPushed?.rows) {
+      return resp(503, { ok: false, error: "Cannot verify which pushes already went through. Nothing was pushed — please try again." });
     }
-  }
-
-  // Look up the "Receipt / Document" field ID once if PDFs are provided
-  let receiptFieldId = null;
-  if (pdfs && pdfs.some(p => p)) {
-    console.log(`PDF array received: ${pdfs.length} entries, non-null: ${pdfs.filter(Boolean).length}`);
-    receiptFieldId = await getReceiptFieldId();
-    console.log("Using receipt field ID:", receiptFieldId || "NOT FOUND — PDF upload will be skipped");
-  } else {
-    console.log("No PDFs in payload — skipping attachment upload");
+    nqPushed.rows.forEach(r => { if (r.push_id) pushIdsWithExpenses.add(r.push_id); });
   }
 
   for (let i = 0; i < pending.length; i++) {
@@ -1540,21 +1523,18 @@ async function handlePushExpenses(body) {
     // ── Guard #1: this exact push already created its Expenses. Don't create a
     // second set; just make sure the transactions are marked (the usual reason
     // for the retry is the original mark didn't land).
+    //
+    // The Airtable re-sync that used to run here (Step E) is gone with the
+    // flip: it healed an expense that reached Airtable but not Neon, and that
+    // failure no longer exists — Neon is written first and Airtable is a mirror.
+    // ⚠ The inverse gap is accepted deliberately: an expense whose Neon insert
+    // landed and whose mirror failed never gets its Airtable copy, because the
+    // retry short-circuits here. The mirror is decorative and the base is being
+    // archived; the money is right in the store every reader reads.
     if (pushIdsWithExpenses.has(pushId)) {
       if (txList.length) {
         try { await markTransactionsPushed(txList, pushId); txMarked += txList.length; }
         catch (e) { console.warn("Idempotent re-mark failed (non-fatal):", e.message); }
-      }
-      // Re-sync to Neon as well (Step E). Marking transactions was the original
-      // reason for this retry path; a Neon write that failed last time is the
-      // other, and it is the one that would otherwise be unfixable. The upsert
-      // is ON CONFLICT so re-syncing an already-synced expense is a no-op.
-      for (const rec of existingByPushId.get(pushId) || []) {
-        try { await syncExpenseToNeon(rec); }
-        catch (e) {
-          console.error(`Push: re-sync of ${rec.id} still failing: ${e.message}`);
-          neonSyncFailures.push(rec.id);
-        }
       }
       alreadyPushed++;
       continue;
@@ -1584,77 +1564,76 @@ async function handlePushExpenses(body) {
       return `${l.item} ×${qtyStr}`;
     }).join(", ");
 
-    // Track expense IDs created for this single job, for the history record
-    const jobExpenseIds = [];
-    let   jobTaxAmount  = 0;
+    // Amount can be negative when the push is a net credit (returns > uses) —
+    // it lands on the job as a credit line item.
+    const matAmount = Math.round(jobTotal * 100) / 100;
+    const matDesc   = (jobTotal < 0 ? "Inventory credit (materials returned to shop) — " : "Inventory materials — ") + desc;
+    // Tax carries the same sign as the materials total — a negative materials
+    // push yields a negative tax credit, which is correct accounting.
+    const jobTaxAmount = taxable ? Math.round(jobTotal * TAX_RATE * 100) / 100 : 0;
+    const taxDesc      = (jobTotal < 0 ? "Sales tax credit (7.5%) on returned materials — " : "Sales tax (7.5%) on inventory materials — ") + jobName;
 
-    // Create materials expense. Amount can be negative when the push is a
-    // net credit (returns > uses) — Airtable accepts negative numbers fine,
-    // and it appears in the job's expenses as a credit line item.
-    const matFields = {
+    const rows = [{ amount: matAmount, description: matDesc }];
+    if (taxable) rows.push({ amount: jobTaxAmount, description: taxDesc });
+
+    // ── THE CHARGE. Neon first and fail closed: this is the money, and Neon is
+    // the store every reader reads. A failure here means this group was NOT
+    // charged — its transactions stay unmarked and still pending, so the user
+    // can simply push again. Collected rather than thrown so one bad job does
+    // not strand the groups after it.
+    let jobExpenseIds;
+    try {
+      jobExpenseIds = await createPushExpensesNative({
+        jobId, expenseDate: today, pushId, rows });
+    } catch (e) {
+      console.error(`Push: Neon insert failed for "${jobName}" — nothing charged: ${e.message}`);
+      failedJobs.push(jobName || String(jobId));
+      continue;
+    }
+    // Fewer rows than asked for means the `j` CTE found no job — see
+    // createPushExpensesNative. Refuse rather than leave an expense with a NULL
+    // job_id, which prices the material at cost and hangs it off nothing.
+    if (jobExpenseIds.length !== rows.length) {
+      console.error(`Push: "${jobName}" (${jobId}) did not resolve to a job in Neon — nothing charged.`);
+      failedJobs.push(jobName || String(jobId));
+      continue;
+    }
+    expenseIds.push(...jobExpenseIds);
+
+    // ── The Airtable mirror. Best-effort, never blocking, and NEVER stamped
+    // back onto the Neon row.
+    //
+    // ⚠⚠ NEVER carry the rec id back to `expenses.airtable_id`. R2 receipt keys
+    // are `expenses/<handle>/` built from whatever id the client holds, and
+    // `listExpenseReceipts` lists ONE prefix — a handle that flips orphans every
+    // receipt already stored. Expenses are the one table in this cutover where
+    // the slice-1/2/3 stamp-back is unsafe.
+    //
+    // ⚠⚠ AND THE RESPONSE IS NEVER FED TO syncExpenseToNeon. That helper is
+    // `INSERT … ON CONFLICT (airtable_id)`, and a native row's airtable_id is
+    // NULL, so nothing conflicts — it would insert a SECOND expense for the same
+    // spend and both would count in GP.
+    //
+    // Kept at all only because the Airtable Expenses table is still the trigger
+    // bus for the automations that watch it. It goes when the base is archived.
+    const mirrorRecords = rows.map(r => ({ fields: {
       "fldPNFIzq1grsdxYi": [String(jobId)],
       "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
-      "fldwbLPIafVtmaSeb": Math.round(jobTotal * 100) / 100,
+      // Manual Material COST — the input column, not the derived Total Cost
+      // (Actual). Writing the derived one double-counts credits in GP.
+      "fldwbLPIafVtmaSeb": r.amount,
       "fldX2x2J0xkRyMY3y": "Materials",
       "fldCCPYdyWAOGchWb": today,
       "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
       "fld9Afieu4ofjvhSb": true,
       [EXP_PUSH_ID_FIELD]: pushId,
-      "fldnSQEOnyq3sho5g": (jobTotal < 0 ? "Inventory credit (materials returned to shop) — " : "Inventory materials — ") + desc
-    };
-
-    const matResp = await atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
-      method: "POST",
-      body: JSON.stringify({ records: [{ fields: matFields }], typecast: true })
-    });
-    const matExpenseId = matResp.records?.[0]?.id;
-    if (matExpenseId) {
-      expenseIds.push(matExpenseId);
-      jobExpenseIds.push(matExpenseId);
-      await syncCreatedExpense(matExpenseId, `materials — ${jobName}`);
-
-      // Upload PDF receipt if provided
-      const pdfBase64 = pdfs?.[i];
-      if (pdfBase64 && receiptFieldId) {
-        try {
-          const safeName = (jobName || "job").replace(/[^a-z0-9]/gi, "_").substring(0, 30);
-          const filename = `NEE_Materials_${safeName}_${today}.pdf`;
-          await uploadPdfToExpense(matExpenseId, receiptFieldId, pdfBase64, filename);
-          pdfUploads++;
-          console.log(`PDF uploaded for job: ${jobName}`);
-        } catch(uploadErr) {
-          console.error("PDF upload failed (non-fatal):", uploadErr.message);
-        }
-      }
-    }
-
-    // Create sales tax expense if taxable. Tax is the same sign as the
-    // materials total — a negative materials push yields a negative tax
-    // credit, which is correct accounting.
-    if (taxable) {
-      jobTaxAmount = Math.round(jobTotal * TAX_RATE * 100) / 100;
-      const taxFields = {
-        "fldPNFIzq1grsdxYi": [String(jobId)],
-        "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
-        "fldwbLPIafVtmaSeb": jobTaxAmount,
-        "fldX2x2J0xkRyMY3y": "Materials",
-        "fldCCPYdyWAOGchWb": today,
-        "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
-        [EXP_PUSH_ID_FIELD]: pushId,
-        "fld9Afieu4ofjvhSb": true,
-        "fldnSQEOnyq3sho5g": (jobTotal < 0 ? "Sales tax credit (7.5%) on returned materials — " : "Sales tax (7.5%) on inventory materials — ") + jobName
-      };
-      const taxResp = await atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
+      "fldnSQEOnyq3sho5g": r.description
+    } }));
+    await mirrorToAirtable(`pushExpenses:${jobName}`, () =>
+      atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
         method: "POST",
-        body: JSON.stringify({ records: [{ fields: taxFields }], typecast: true })
-      });
-      const taxExpenseId = taxResp.records?.[0]?.id;
-      if (taxExpenseId) {
-        expenseIds.push(taxExpenseId);
-        jobExpenseIds.push(taxExpenseId);
-        await syncCreatedExpense(taxExpenseId, `tax — ${jobName}`);
-      }
-    }
+        body: JSON.stringify({ records: mirrorRecords, typecast: true })
+      }));
 
     // ── Mark THIS group's transactions immediately (guard #3). Best-effort: if
     // it fails the expense already carries the push ID, so a retry hits guard #1
@@ -1673,6 +1652,8 @@ async function handlePushExpenses(body) {
       taxable:        !!taxable,
       txCount:        txList.length,
       lines,                 // [{item, qty, cost, total, wireFt}, ...]
+      // Neon uuids now, not rec ids. Display-only — a comma-separated string in
+      // `expense_pushes.expense_record_ids` that nothing joins on.
       expenseIds:     jobExpenseIds,
       description:    desc,
       pushedBy:       pushedBy || "",
@@ -1688,24 +1669,23 @@ async function handlePushExpenses(body) {
     alreadyPushed,
     staleSkipped,
     txCount:         txMarked,
-    pdfUploads,
     pushHistoryIds
   };
 
-  // ── FAIL CLOSED if anything didn't reach Neon (Step E) ────────────────────
-  // The expense exists in Airtable and the money is right there, but the field
-  // app reads expenses from Neon — so an unsynced expense is invisible on the
-  // job and absent from GP. Reporting success would be a lie of exactly the
-  // kind that hid this for three days.
+  // ── FAIL CLOSED on any group that could not be charged ─────────────────────
+  // Nothing was written for these jobs and their transactions are still pending,
+  // so the honest answer is "not done" — and the retry is safe by construction:
+  // a failed group has no expenses carrying its push id, so it takes the normal
+  // path, while the groups that did go through short-circuit on guard #1.
   //
-  // Safe to tell the user to retry: the push is idempotent on `Push ID`, so the
-  // retry re-hits guard #1, creates nothing new, and re-runs only the sync.
-  if (neonSyncFailures.length) {
+  // This replaces the Step E 502, which reported the opposite failure: an
+  // expense that reached Airtable but not Neon. That direction no longer exists.
+  if (failedJobs.length) {
     return resp(502, {
       ok: false,
-      error: `Pushed to Airtable, but ${neonSyncFailures.length} expense(s) did not reach the ` +
-             `database, so they won't show on the job yet. Push again to finish — it won't charge twice.`,
-      neonSyncFailures,
+      error: `${failedJobs.length} job(s) could not be charged and were left pending: ` +
+             `${failedJobs.join(", ")}. Push again — the jobs that did go through won't charge twice.`,
+      failedJobs,
       ...summary
     });
   }

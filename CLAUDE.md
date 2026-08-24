@@ -158,12 +158,16 @@ Frontend conventions worth knowing before editing `index.html`:
   pricing, the ledger, push history, reorder points and the whole estimating cluster are all
   Neon-native, and every one of those reads **fails closed** rather than falling back to the
   frozen Airtable copy.
-  It used to span two Airtable bases; it no longer touches the inventory base at all. The
-  Airtable calls that remain all go to the **main** base: eight are Neon-first reads with an
-  Airtable fallback (login, employees, the four job pickers, the push's job index), and one is
-  real — `handlePushExpenses` writes main-base `Expenses`, because Airtable is still the
-  *identity* authority for expenses in **both** apps (R2 receipt keys are built from the expense
-  rec id). That write leaves Airtable when expenses do, which is a field-app decision.
+  It used to span two Airtable bases; it no longer touches the inventory base at all — and since
+  the identity cutover's slice 4c (2026-08-24) it makes **no authoritative Airtable write at
+  all.** The Airtable calls that remain all go to the **main** base and are: eight Neon-first
+  reads with an Airtable fallback (login, employees, the four job pickers, the push's job index),
+  the `getExpenseFields` schema debug action, and **one fail-soft mirror** — `handlePushExpenses`
+  creates its materials/tax expenses in Neon and then best-effort-copies them to main-base
+  `Expenses`, kept only because that table is still a Make trigger bus. It never stamps the rec id
+  back (R2 receipt keys are `expenses/<handle>/`, so a handle that flips orphans every receipt)
+  and never feeds the mirror response to `syncExpenseToNeon` (its `ON CONFLICT (airtable_id)`
+  cannot fire on a NULL, so it would insert a **second** expense for the same spend).
 
 (A third function, `auth.js`, was deleted in `304b86c` — it was dead duplicate handlers using
 legacy env-var PINs `EMPLOYEE_PIN`/`ADMIN_PIN`. That Phase-1 PIN model is **not** how the

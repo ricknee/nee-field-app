@@ -256,6 +256,12 @@ main-base actions (`jobs`, `employees`, `login`, `estimatingJobs`, `awardedJobs`
 `templateContractors`, `pendingExpenses`, `pushExpenses`) are all Neon-first with an Airtable
 fallback. **What is left for this app is not code — it is archiving the base.**
 
+> **Updated 2026-08-24 (identity cutover, slice 4c).** `pushExpenses` was the one entry above that
+> was more than a read: it *created* main-base `Expenses`, because Airtable was the identity
+> authority for expenses. It no longer does. Pushed expenses are born in Neon and Airtable gets a
+> **fail-soft mirror** — so this app now has **zero authoritative Airtable writes**, and a total
+> Airtable outage costs it nothing but the mirror. See `docs/PLAN-airtable-identity-cutover.md`.
+
 **Make: 14 active of 70.** 8 are the vendor-invoice/pCloud email robots (Home Depot, Lowe's,
 CED ×3, Wolff ×3), 5 are the Google contact syncs (item 07), 1 is the grandfathered
 browser→pCloud upload hook `4723276` — which is the single Make URL in `index.html`, confirmed

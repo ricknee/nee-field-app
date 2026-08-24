@@ -127,6 +127,15 @@ answers, just slowly. It went unnoticed for three days.
   `ON CONFLICT (airtable_id)` **hourly** across 38 columns: a native job conflicts with nothing and
   is invisible to it, but a stamped one would be overwritten from Airtable every hour, silently
   reverting everything the app wrote.
+  ⚠⚠ **…but its Airtable MIRROR is not invisible to that sync, and that was a live bug** (fixed
+  2026-08-24, `db/schema/062`). The mirror is a real Airtable record with a rec id no Neon row
+  carries, so the hourly sync took the INSERT branch and re-imported it as a **second job** — same
+  name, same PO, frozen at "New Lead", listed right beside the real one. `createJobNative` now
+  records the mirror's id in **`jobs.airtable_mirror_id`** and `syncJobs` skips it. That column is a
+  skip list and nothing else: never resolve or emit through it, and never copy it into
+  `airtable_id`. **The general rule: "we never stamp the id back" protects the row we wrote — it
+  says nothing about the row we caused to exist in Airtable. For any un-stamped mirror, ask what
+  reads that table wholesale.**
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

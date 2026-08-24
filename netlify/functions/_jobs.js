@@ -181,6 +181,23 @@ async function allocatePoNumber() {
 // PO fields — silently reverting whatever the app wrote. That is the
 // `estimate_templates` trap at the scale of the whole jobs table.
 //
+// ⚠⚠ …AND THAT WAS AN ANSWER ABOUT THE WRONG ROW. Correct as far as it goes:
+// the NATIVE row is invisible to the sync. The MIRROR is not. It is a real
+// Airtable record with its own rec id that no Neon row carries, so the sync
+// took the INSERT branch and the mirror came back an hour later as a SECOND
+// job — same name, same PO number, frozen at "New Lead", no PO string, no
+// pCloud folders, and listed right next to the real one. Caught on the first
+// native job ever created, three hours after the flip (schema 062).
+//
+// So the mirror's id IS recorded — in `jobs.airtable_mirror_id`, which is a
+// skip list for the sync and NOTHING else. Never resolve or emit through it.
+//
+// ⚠ THE RULE THIS COST US: "not stamping the id back" is not the same claim as
+// "the sync cannot see this job." Not stamping protects the row we wrote; it
+// says nothing about the row we caused to exist somewhere else. Any time this
+// app creates a record in a system that an ETL reads back wholesale, ask what
+// that ETL does with it — the answer here was "inserts it as new."
+//
 // ⚠⚠ TWO AIRTABLE FORMULAS ARE REPRODUCED HERE, because a native job has no
 // Airtable record to read them back from. Both were READ OUT OF THE BASE via the
 // meta API rather than inferred from the data — the Generator Asset ID lesson,
@@ -263,7 +280,7 @@ async function createJobNative(a) {
   // the mirror rather than sent as uuids — `typecast: true` would CREATE a junk
   // Company from one, exactly as it would have on Submitted By in slice 5.
   fields["Job PO Number"] = poNumber;
-  await mirrorJobToAirtable(atFetch, fields);
+  await recordMirrorId(neonId, await mirrorJobToAirtable(atFetch, fields));
 
   // Airtable-shaped so callers (handleCreateJob → mapJob, _generator-service)
   // need no changes. The id is the Neon uuid, which is the handle everything
@@ -281,6 +298,36 @@ async function mirrorJobToAirtable(atFetch, fields) {
     });
   } catch (e) {
     console.error(`createJobNative: Airtable mirror failed (ignored) — ${e?.message || e}`);
+    return null;
+  }
+}
+
+// Hands the mirror's rec id to `_jobs-sync.js`'s skip list (schema 062). This is
+// the whole of the ghost-job fix on the write side.
+//
+// ⚠ FAIL SOFT, LIKE THE MIRROR ITSELF. The job exists and is fully usable; a
+// mirror we failed to record costs one duplicate row in the job list, not a
+// broken create, and throwing here after the PO has been burned would be the
+// worse trade. But it is logged with BOTH ids at error level rather than
+// swallowed, because that log line is the only way anyone learns a ghost is
+// coming — the duplicate appears up to an hour later, in a different system,
+// with nothing to connect it back to this request.
+//
+// The window is real: mirror POSTed, this UPDATE lost. Reconcile by hand with
+//   UPDATE jobs SET airtable_mirror_id = '<rec id from the log>' WHERE id = '<uuid>';
+// then delete the duplicate row if the sync has already run.
+async function recordMirrorId(neonId, mirror) {
+  const mirrorId = mirror?.id ? String(mirror.id) : null;
+  if (!mirrorId || !neonId) return null;
+  try {
+    await neonWrite("job.recordMirrorId",
+      `UPDATE jobs SET airtable_mirror_id = $1 WHERE id = $2::uuid`,
+      [mirrorId, String(neonId)]);
+    return mirrorId;
+  } catch (e) {
+    console.error(
+      `createJobNative: mirror ${mirrorId} NOT recorded against job ${neonId} — ` +
+      `_jobs-sync will import it as a duplicate job within the hour. ${e?.message || e}`);
     return null;
   }
 }

@@ -872,10 +872,96 @@ build; this note exists so the stale mirror is not later mistaken for a sync bug
 
 ⬜ **Still untested:** People **edit** and the **salaried** toggle on a native row. Both fail loudly.
 
-## The one genuine straggler
+### 🔴 THE GHOST JOB — found in production 2026-08-24, three hours after the flip
 
-`handleUnlinkedMaterialAllocations` (airtable.js:8318) is the only handler in the field app with
-no Neon path at all. It reads material allocations by job **name** out of Airtable.
+**Every native job was being duplicated, once an hour, forever.** Fixed the same day
+(`db/schema/062`, `_jobs.js`, `_jobs-sync.js`).
+
+Test 10 — the first job ever born in Neon — was in the `jobs` table **twice**:
+
+| id | airtable_id | status | po_locked | po# | born |
+|---|---|---|---|---|---|
+| `846245ef…` | NULL | Estimating | Test 10 (MIT 301) | 301 | 20:25, the real one |
+| `f10b709f…` | `recPvbB0WaNllOhNm` | New Lead | NULL | 301 | **21:00:50**, by `_jobs-sync` |
+
+`handleGetJobs` is `${JOB_SELECT} ORDER BY j.name` with no filter, so the crew saw the job twice —
+and the copy with no PO string, no pCloud folders and a status frozen at "New Lead" sorted directly
+next to the real one.
+
+**The bug is a true statement about the wrong row.** Slice 6 and `db/schema/061` both argue at
+length that a native job is invisible to the hourly sync: that sync is
+`INSERT … ON CONFLICT (airtable_id)`, a native job has `airtable_id NULL`, it conflicts with
+nothing. All correct — **about the native row**. The native create also POSTs a fail-soft **mirror**
+into that same Airtable table, and the mirror is an ordinary Airtable record with its own rec id
+that no Neon row carries, *because we deliberately never stamp it back*. So the sync read it, found
+no conflict, and took the **INSERT** branch.
+
+The safeguard and the bug were the same decision, seen from two ends.
+
+⚠ **The near miss.** The ghost's `po_locked` was NULL only because `Job PO - Locked` is not in the
+mirror payload. Populate it and `backfillJobLinks` sees two jobs on one Job PO, its `= 1` guard
+calls the match ambiguous, and **QuickBooks hours stop attaching to the job** — the duplicate-PO
+failure mode, reached from a direction nobody was watching.
+
+**The fix.** `jobs.airtable_mirror_id` records the mirror's rec id at create time, and `syncJobs`
+skips any Airtable record whose id is in that list.
+
+- The skip is **by exact rec id, from a list this database owns** — never by name, PO number, or a
+  marker field on the Airtable side. It must never be able to hide a job somebody really did create
+  in Airtable; only an id can promise that.
+- ⚠⚠ **`airtable_mirror_id` is not a second `airtable_id`.** Nothing resolves or emits through it,
+  no view joins on it. Putting the value in `airtable_id` instead would work for exactly one hour
+  and then do what 061 exists to prevent: make the job a conflict target so Airtable's frozen copy
+  overwrites all 38 columns every hour.
+- **Fails soft, and the fallback is the old behaviour.** If the skip list is unavailable the sync
+  proceeds unfiltered — one duplicate row is a far smaller harm than an hour of timesheets that
+  cannot resolve their job, which is what refusing to sync would cost.
+- The write-side window (mirror POSTed, the `UPDATE` lost) is **logged with both ids at error
+  level**, and `syncJobs` reports — never silently skips — any Airtable record carrying a PO number
+  that belongs to a native job. That is what an unrecorded mirror looks like from the read side, and
+  it is also what the stale-counter duplicate-PO bug looks like. Both need a human.
+
+**Cleanup, run once against production:** the mirror adopted onto `846245ef…`, then the ghost
+deleted. Verified first across all 16 child FKs plus every `job_airtable_id` column — **zero rows**
+referenced it. It had existed for two hours and nothing had ever been filed against it.
+
+#### ⚠⚠⚠ THE RULE, AND THE SWEEP IT DEMANDS
+
+> **"We never stamp the id back" is not the same claim as "that sync cannot see this job."**
+> Not stamping protects **the row we wrote**. It says nothing about **the row we caused to exist in
+> the other system** — and a wholesale ETL reading that system back does not know it is reading our
+> own writing.
+
+So the question to ask of every un-stamped mirror is: **what reads that table wholesale?** Swept on
+2026-08-24, and jobs was the only live instance:
+
+| Mirror | Wholesale reader | Verdict |
+|---|---|---|
+| **Jobs** (`createJobNative`) | `_jobs-sync.syncJobs`, **hourly** | 🔴 the bug. Fixed here. |
+| **Expenses** (`handlePushExpenses`, field-app 4b) | `db/etl/expenses-backfill.mjs` | ✅ already retired in 4c with a hard stop, for exactly this reason. |
+| **Employees** (slice 5) | none — the ETL dimension load was retired | ✅ no importer, no ghost. |
+| **Allocations** | `_billing-sync`, hourly | ✅ a native allocation is Neon-only; the Airtable branch stamps its id back, so the upsert conflicts correctly. |
+| **Estimates / invoices** (slice 3) | none | ✅ nothing re-reads them. |
+
+⚠ One correction worth carrying forward: `expenses-backfill`'s header says a mirror-skip "cannot be
+fixed by filtering… nothing on the Airtable side identifies a record as the mirror of a Neon row."
+True — and the fix here is that **the back-pointer does not have to live on the Airtable side.**
+`airtable_mirror_id` is the mechanism that note was missing, and it breaks none of the R2 handle
+rules, because the handle never changes.
+
+## The one genuine straggler — ✅ CLOSED IN SLICE 4, 2026-08-24
+
+**This section is history now. Re-checked 2026-08-24: `handleUnlinkedMaterialAllocations`
+(airtable.js:8882) has a Neon path**, and it takes either handle —
+`WHERE (j.airtable_id = $1 OR j.id::text = $1)`, joining `material_billing_allocations` →
+`expenses` → `jobs` on uuids and emitting `COALESCE(a.airtable_id, a.id::text)`. The line item
+below was done inside slice 4 as the plan required. What follows is why it mattered; leave it
+readable, because the $35k lesson is the point, not the handler.
+
+---
+
+`handleUnlinkedMaterialAllocations` was the only handler in the field app with
+no Neon path at all. It read material allocations by job **name** out of Airtable.
 
 Its twin, `handleUnlinkedLaborAllocations`, was fixed on 2026-08-11 after a real loss: it returned
 rec ids while `timeEntries` had gone Neon-first and returned uuids, the two sets never intersected,

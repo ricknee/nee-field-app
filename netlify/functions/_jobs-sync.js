@@ -211,10 +211,47 @@ async function fetchJobs(apiKey, baseId) {
 // A guard worth keeping: an empty Airtable response returns early rather than
 // upserting nothing, so a transient read that comes back blank can never be mistaken
 // for "there are no jobs".
+//
+// ── ⚠⚠ THE MIRROR SKIP (2026-08-24, schema 062) ────────────────────────────
+// "Airtable is the sole source of truth for Jobs — nothing writes back" stopped
+// being true when JOB_CREATE_SOURCE=native shipped. A job born in Neon POSTs a
+// best-effort MIRROR into this very table, and that mirror is a record like any
+// other: its rec id matches no Neon row (the id is deliberately never stamped
+// back), so the upsert below took the INSERT branch and re-imported the app's
+// own job as a SECOND one, an hour after it was created. It listed twice —
+// `handleGetJobs` is `${JOB_SELECT} ORDER BY j.name`, unfiltered — and the copy
+// frozen at the mirror's creation-time values sorted right next to the real one.
+//
+// So a mirror is skipped by rec id, from a list this database owns
+// (`jobs.airtable_mirror_id`). Not by name, not by PO number, not by a marker
+// field on the Airtable side: this must never be able to skip a job somebody
+// really did create in Airtable, and only an exact id can promise that.
+//
+// ⚠ The skip is not "Airtable no longer matters for native jobs" — it is
+// narrower than that. It says: this ONE record is our own outbound copy, and
+// re-reading our own writing is how a mirror becomes a ghost.
 export async function syncJobs(sql, apiKey, baseId) {
   try {
     const records = await fetchJobs(apiKey, baseId);
     if (!records.length) return { ok: true, jobs: 0 };
+
+    const { mirrors, ghosts } = await mirrorSkipList(sql, records);
+    const incoming = mirrors.size
+      ? records.filter(r => !mirrors.has(r.id))
+      : records;
+    const skipped = records.length - incoming.length;
+    if (skipped) console.log(`jobs-sync: skipped ${skipped} native-job mirror(s)`);
+    // Not skipped — REPORTED. A PO number the counter issued to a native job,
+    // arriving on some other Airtable record, is either a mirror we failed to
+    // record (see recordMirrorId) or the stale-counter duplicate-PO bug. Both
+    // need a human; neither is safe to silently drop, because dropping a real
+    // job means its QuickBooks hours never link and nobody finds out for weeks.
+    for (const g of ghosts) {
+      console.error(
+        `jobs-sync: ⚠ Airtable job ${g.airtable_id} carries PO ${g.po_number}, which ` +
+        `belongs to native job ${g.id}. Unrecorded mirror, or a duplicate PO — check before it bills.`);
+    }
+    if (!incoming.length) return { ok: true, jobs: 0, skippedMirrors: skipped };
 
     const cols = ["airtable_id", ...FIELDS.map(([c]) => c), "synced_at"];
     const setList = cols.slice(1).map(c => `"${c}" = EXCLUDED."${c}"`).join(", ");
@@ -222,8 +259,8 @@ export async function syncJobs(sql, apiKey, baseId) {
 
     // 100 rows × 38 columns ≈ 3,800 bind parameters per statement, comfortably under
     // Postgres's 65,535 ceiling. The chunk was 200 while this carried 8 columns.
-    for (let i = 0; i < records.length; i += 100) {
-      const chunk = records.slice(i, i + 100);
+    for (let i = 0; i < incoming.length; i += 100) {
+      const chunk = incoming.slice(i, i + 100);
       const params = [];
       const tuples = chunk.map(j => {
         const row = [j.id, ...FIELDS.map(([, at, coerce]) => coerce(j.fields?.[at])), syncedAt];
@@ -236,10 +273,53 @@ export async function syncJobs(sql, apiKey, baseId) {
         params
       );
     }
-    return { ok: true, jobs: records.length };
+    return { ok: true, jobs: incoming.length, skippedMirrors: skipped };
   } catch (e) {
     console.error(`jobs-sync: failed (continuing) — ${e?.message || e}`);
     return { ok: false, error: String(e?.message || e) };
+  }
+}
+
+// The skip list, plus the tell for anything it did not catch.
+//
+// ⚠ FAILS SOFT, and the fallback is the OLD behaviour, not a blocked sync. If this
+// query throws — the column missing because the migration has not run, Neon slow,
+// anything — the sync proceeds unfiltered: one duplicate job in a list is a far
+// smaller harm than an hour of timesheets that cannot resolve their job, which is
+// what refusing to sync would cost. That is this file's whole contract (see the
+// header): a broken jobs sync must never stop timesheets importing.
+//
+// Both halves come from ONE round trip. `mirrors` is the exact id skip list;
+// `ghosts` is every OTHER Airtable record whose PO number is already held by a
+// native job, which is what an unrecorded mirror looks like from here.
+async function mirrorSkipList(sql, records) {
+  const empty = { mirrors: new Set(), ghosts: [] };
+  try {
+    const ids = records.map(r => r.id);
+    const pos = [...new Set(records
+      .map(r => num(r.fields?.["Job PO Number"]))
+      .filter(v => v !== null))];
+    const r = await sql.query(
+      `SELECT id::text AS id, airtable_mirror_id, po_number
+         FROM jobs
+        WHERE airtable_id IS NULL
+          AND (airtable_mirror_id = ANY($1::text[]) OR po_number = ANY($2::int[]))`,
+      [ids, pos]);
+    const rows = r?.rows || [];
+    const mirrors = new Set(rows.map(x => x.airtable_mirror_id).filter(Boolean));
+    // A record is a ghost candidate only if it is NOT the recorded mirror: the
+    // mirror shares its job's PO by definition, so reporting it would be noise.
+    const byPo = new Map(rows.filter(x => x.po_number !== null).map(x => [Number(x.po_number), x]));
+    const ghosts = [];
+    for (const rec of records) {
+      if (mirrors.has(rec.id)) continue;
+      const hit = byPo.get(num(rec.fields?.["Job PO Number"]));
+      if (hit) ghosts.push({ airtable_id: rec.id, po_number: hit.po_number, id: hit.id });
+    }
+    return { mirrors, ghosts };
+  } catch (e) {
+    console.error(`jobs-sync: mirror skip list unavailable, syncing unfiltered — ${e?.message || e}`);
+    return empty;
   }
 }
 

@@ -87,7 +87,9 @@ globalThis.fetch = async (url, opts) => {
   } else {
     bodyObj = { records: rows }; // list read (single page, no offset)
   }
-  return { ok: true, status: 200, text: async () => JSON.stringify(bodyObj) };
+  // `json()` as well as `text()`: airtable.js's atFetch reads .text(), but
+  // _jobs-sync.js's own fetcher reads .json(). Both are the same body.
+  return { ok: true, status: 200, text: async () => JSON.stringify(bodyObj), json: async () => bodyObj };
 };
 
 // 3) Import the real handler (dynamic import = after env is set).
@@ -3740,6 +3742,104 @@ await test("neonQuery: its { rows } shape is respected — the silent-death guar
   eq(offenders.length, 0, offenders.join(" | "));
 });
 
+
+// ── the ghost-job fix: _jobs-sync must not re-import our own mirrors ────────
+// Production bug, 2026-08-24, three hours after JOB_CREATE_SOURCE=native: a
+// native job's fail-soft Airtable MIRROR came back through the hourly sync as a
+// SECOND Neon job — same name, same PO, frozen at "New Lead" — because its rec
+// id matches no Neon row and the upsert is ON CONFLICT (airtable_id). See
+// db/schema/062. These run the real syncJobs against a fake `sql`.
+const { syncJobs } = await import("../netlify/functions/_jobs-sync.js");
+
+// Records every statement, answers the skip-list SELECT from `skipRows`, and
+// lets a test make that SELECT throw to exercise the fail-soft path.
+function fakeSql({ skipRows = [], skipThrows = false } = {}) {
+  const calls = [];
+  return {
+    calls,
+    query: async (text, params) => {
+      calls.push({ text, params });
+      if (text.includes("airtable_mirror_id = ANY")) {
+        if (skipThrows) throw new Error("column \"airtable_mirror_id\" does not exist");
+        return { rows: skipRows };
+      }
+      return { rows: [] };
+    },
+    // The upserted rec ids, in order — the only thing these tests care about.
+    upserted() {
+      const ins = calls.find(c => c.text.includes("INSERT INTO jobs"));
+      if (!ins) return [];
+      // airtable_id is the first column of each tuple, and the only rec-shaped
+      // parameter in the statement — no job name or status can collide with it.
+      return ins.params.filter(v => typeof v === "string" && /^rec[A-Za-z0-9]+$/.test(v) && v.length === 17);
+    },
+  };
+}
+
+const JOB_FIELDS_FOR = (name, po) => ({ "Job Name": name, "Job PO Number": po, "Job Status": "New Lead" });
+
+await test("jobs-sync: a recorded mirror is skipped, everything else syncs", async () => {
+  mockTables = { Jobs: [
+    { id: "recREALJOB1234567", fields: JOB_FIELDS_FOR("Bethel School", 288) },
+    { id: "recMIRROR12345678", fields: JOB_FIELDS_FOR("Test 10", 301) },
+  ] };
+  const sql = fakeSql({ skipRows: [
+    { id: "846245ef-294f-423b-a2b1-4b4a919607f8", airtable_mirror_id: "recMIRROR12345678", po_number: 301 },
+  ] });
+  const r = await syncJobs(sql, "test-key", "testbase");
+  ok(r.ok, "sync ok");
+  eq(r.skippedMirrors, 1, "skippedMirrors");
+  eq(r.jobs, 1, "jobs upserted");
+  const ids = sql.upserted();
+  ok(ids.includes("recREALJOB1234567"), "the real Airtable job still syncs");
+  ok(!ids.includes("recMIRROR12345678"), "the mirror is NOT re-imported as a second job");
+});
+
+await test("jobs-sync: with no native jobs at all, nothing is skipped", async () => {
+  mockTables = { Jobs: [
+    { id: "recREALJOB1234567", fields: JOB_FIELDS_FOR("Bethel School", 288) },
+  ] };
+  const sql = fakeSql({ skipRows: [] });
+  const r = await syncJobs(sql, "test-key", "testbase");
+  eq(r.jobs, 1, "jobs upserted");
+  eq(r.skippedMirrors, 0, "nothing skipped");
+  ok(sql.upserted().includes("recREALJOB1234567"), "the job synced");
+});
+
+// The contract this file has always had: a broken jobs sync must never stop
+// timesheets importing. If the skip list is unavailable — the migration not run
+// yet, Neon slow — the OLD behaviour is the fallback, duplicate and all.
+await test("jobs-sync: skip list unavailable → syncs unfiltered rather than refusing", async () => {
+  mockTables = { Jobs: [
+    { id: "recREALJOB1234567", fields: JOB_FIELDS_FOR("Bethel School", 288) },
+    { id: "recMIRROR12345678", fields: JOB_FIELDS_FOR("Test 10", 301) },
+  ] };
+  const sql = fakeSql({ skipThrows: true });
+  const r = await syncJobs(sql, "test-key", "testbase");
+  ok(r.ok, "still ok");
+  eq(r.jobs, 2, "both rows synced");
+});
+
+// An UNRECORDED mirror (the write-side window) must be reported, never dropped:
+// silently skipping by PO would hide a real job created outside the app, and its
+// QuickBooks hours would never link.
+await test("jobs-sync: a PO collision is reported, NOT skipped", async () => {
+  mockTables = { Jobs: [
+    { id: "recUNRECORDED1234", fields: JOB_FIELDS_FOR("Test 10", 301) },
+  ] };
+  const sql = fakeSql({ skipRows: [
+    { id: "846245ef-294f-423b-a2b1-4b4a919607f8", airtable_mirror_id: null, po_number: 301 },
+  ] });
+  const errs = [];
+  const realErr = console.error;
+  console.error = (...a) => errs.push(a.join(" "));
+  try { var r = await syncJobs(sql, "test-key", "testbase"); }
+  finally { console.error = realErr; }
+  eq(r.jobs, 1, "the record still syncs");
+  eq(r.skippedMirrors, 0, "and is not skipped");
+  ok(errs.some(e => e.includes("recUNRECORDED1234") && e.includes("301")),
+     "the collision is logged with both the rec id and the PO");
+});
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

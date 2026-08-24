@@ -675,6 +675,32 @@ counter are Dollar General jobs carrying the general contractor's own numbering 
 own comment says so), and the PO *string* includes the job name and contractor code, so a shared
 number is not a shared PO.
 
+✅ **THE REPRODUCED FORMULAS ARE VALIDATED AGAINST A REAL JOB (2026-08-24, "Test 123", PO 299).**
+That job was created while the switch was still on `neon`, so Airtable computed the values and the
+native code's would-be output could be compared against them directly:
+
+| | Airtable computed | `createJobNative` produces |
+|---|---|---|
+| Contractor Code | `MIT` | `"Misc Jobs"`→`MI` + `"Test 123"`→`T` = `MIT` |
+| Job PO | `Test 123 (MIT 299)` | `Test 123 (MIT 299)` |
+| Job PO - Locked | `Test 123 (MIT 299)` | same (seeded from `po`) |
+| Job Markup % | `0.1` | `0.10` |
+
+Byte-identical on all four — checked against a live job rather than against the reasoning that
+produced them.
+
+⚠ **The same diff found the column gap the gate exists for.** Neon's `contractor_code` was **NULL**
+on that job while Airtable held `MIT`, because the `neon`-path INSERT does not carry it and the
+hourly sync fills it later. Harmless while jobs are mirrored; **permanent once native**, since a
+native row is invisible to that sync. `createJobNative` writes it, so it is covered — but that is
+precisely the shape (intake block 08-20, `markup_pct` 08-24) that has now appeared three times.
+
+⚠⚠ **SETTING THE NETLIFY VARIABLE IS NOT ENOUGH — THE FUNCTIONS NEED A REDEPLOY.** Netlify bakes
+env vars at build time, so the first "native" job after the variable was set came out fully
+mirrored (`airtable_id` present, `contractor_code` NULL) and looked like the code had failed. It
+had not; the switch simply had not reached the running function. **Trigger a deploy, then verify
+the next job has `airtable_id IS NULL` before creating a third.**
+
 ⬜ **THE GATE — before setting `JOB_CREATE_SOURCE=native`:**
 1. Create a job with the switch **off** — unchanged behaviour, PO from the counter.
 2. Set `native`, create one, and **diff the Neon row against the Airtable mirror field by field.**

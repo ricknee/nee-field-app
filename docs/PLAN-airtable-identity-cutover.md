@@ -552,8 +552,27 @@ run, before it even reads `.env`.
   the check 057 skipped, which is why the first real expense after 4b failed.
 - 12 push tests (three inverted for the new direction, four new), 279 across all four suites.
 
-⬜ **Not yet smoked on production.** 62 transactions are pending, so the next real push is the test.
-**Check the job's expense lines show the marked-up amount, not the cost.**
+✅ **PROD-SMOKED 2026-08-24 on job "Test 2 (MIT 298)"** (Taxable, 10% markup — the job shape that
+exercises materials, tax and markup in one push). Logged `Use 300`, `Return −300`, `Use 10` of
+1/2" EMT PIPE and pushed. Every check passed:
+
+- **The markup came through `job_id`** — $7.60 → **$8.36** and $0.57 → **$0.63**, both at 10%, in
+  the field app's Expenses tab. This is the one failure mode of this slice that would have looked
+  fine (a NULL `job_id` shows the cost with no error anywhere), so it was checked first.
+- **Both rows born native** — `airtable_id NULL`, `job_id` resolved, `push_id` stamped, and the
+  four Airtable formula columns NULL while the UI still showed the right money (schema 057's
+  `*_calc` doing its job).
+- **The pair is atomic** — identical `synced_at` to the millisecond (`11:52:47.841`), which is the
+  single-statement insert holding.
+- **Mirror created one second later** (`11:52:48`, `recPVkzemcaXz7G3D` + `recTveg4nbocTm2ZE`) —
+  correct order, and the rec ids were **never stamped back**.
+- **Netting works** — the three transactions collapsed to one push line of 10, all marked
+  `expense_created` under the same push id.
+- **Push history holds uuids**, not rec ids, in `expense_record_ids`.
+
+⚠ Note the push id was *not* the risky path here: the mirror succeeded, so this run did not
+exercise the "Airtable unreachable at create time" branch. That branch is covered by tests only —
+same residual gap slice 3 recorded.
 
 ### Slices 4–6
 

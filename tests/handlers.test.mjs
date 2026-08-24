@@ -2481,6 +2481,61 @@ await test("slice 6: the 400 guards no longer reject a native job's own id", asy
   }
 });
 
+await test("slice 6: the native create ships INERT and cannot fire by accident", async () => {
+  const { jobsAreNative, jobCreateSource } = await import("../netlify/functions/_jobs.js");
+  const saved = process.env.JOB_CREATE_SOURCE;
+
+  // ⚠ A PO number cannot be handed back — every attempt at a native create burns
+  // one permanently. So the switch must be OFF for everything except the exact
+  // string, and in particular must NOT be armed by "neon", which IS set in
+  // production today and means something different (Airtable creates the job,
+  // Neon assigns its PO).
+  for (const v of [undefined, "", "airtable", "neon", "NEON", "true", "1", "yes", "native "]) {
+    if (v === undefined) delete process.env.JOB_CREATE_SOURCE;
+    else process.env.JOB_CREATE_SOURCE = v;
+    ok(!jobsAreNative(), `JOB_CREATE_SOURCE=${JSON.stringify(v)} must NOT go native`);
+  }
+  process.env.JOB_CREATE_SOURCE = "native";
+  ok(jobsAreNative(), "only the exact value arms it");
+  process.env.JOB_CREATE_SOURCE = "NATIVE";
+  ok(jobsAreNative(), "case-insensitively");
+
+  // The PO allocator has to answer for BOTH neon-ish modes, or a native create
+  // refuses every time (it fails closed without a number).
+  process.env.JOB_CREATE_SOURCE = "airtable";
+  eq(jobCreateSource(), "airtable", "source is readable for diagnostics");
+
+  if (saved === undefined) delete process.env.JOB_CREATE_SOURCE;
+  else process.env.JOB_CREATE_SOURCE = saved;
+});
+
+await test("slice 6: the native create reproduces Airtable's two formulas", async () => {
+  // Both were read out of the base via the meta API, not inferred:
+  //   Contractor Code = LEFT(UPPER({Contractor Name}),2) & LEFT(UPPER({Job Name}),1)
+  //   Job PO          = {Job Name} & " (" & {Contractor Code} & " " & {Job PO Number} & ")"
+  // Checked against live rows: Case Farms + Joe Yoder + 436 -> "Joe Yoder (CAJ 436)".
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_jobs.js", import.meta.url), "utf8");
+  ok(/String\(contractorName \|\| ""\)\.toUpperCase\(\)\.slice\(0, 2\)/.test(src),
+     "contractor code takes 2 from the contractor name");
+  ok(/String\(trimmedName\)\.toUpperCase\(\)\.slice\(0, 1\)/.test(src),
+     "and 1 from the job name");
+  ok(/trimmedName \+ " \(" \+ contractorCode \+ " " \+ poNumber \+ "\)"/.test(src),
+     "the PO string matches the Airtable formula");
+
+  // markup_pct MUST be sent. Airtable supplies it from a field default; a native
+  // job has no field to default from, and a NULL markup bills material at COST
+  // and is snapshotted permanently into every allocation written before anyone
+  // notices.
+  ok(/const DEFAULT_MARKUP_PCT = 0\.10;/.test(src), "a default markup exists");
+  ok(/DEFAULT_MARKUP_PCT\]\);/.test(src), "and the native insert actually sends it");
+
+  // The rec id must never come back: _jobs-sync.js upserts ON CONFLICT
+  // (airtable_id) hourly, so a stamped job would be overwritten from Airtable
+  // every hour, silently reverting everything the app wrote.
+  ok(!/UPDATE jobs SET airtable_id/.test(src), "the rec id is never stamped back");
+});
+
 await test("slice 6: the job source rules the sweep depends on", async () => {
   const fs = await import("node:fs/promises");
   const raw = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

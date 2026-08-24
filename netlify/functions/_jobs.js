@@ -116,8 +116,39 @@ const nz = (v) => { const s = String(v ?? "").trim(); return s || null; };
 // Returns null rather than throwing: a failed allocation must not block someone
 // creating a job. With no number, Airtable's "PO is empty" condition is
 // satisfied and it assigns one, exactly as it did before the cutover.
+// ── WHERE IS A JOB BORN? (cutover slice 6) ────────────────────────────────
+//   unset / "airtable"  Airtable creates the job AND assigns the PO number.
+//   "neon"              Airtable still creates the job; Neon assigns the PO.
+//                       ← production today.
+//   "native"            The job is BORN IN NEON. Airtable gets a fail-soft
+//                       mirror and never sees the id again.
+//
+// Ships INERT: the code below only takes the native path on "native", which is
+// not set anywhere, so this deploy changes nothing. Same pattern as
+// ALLOCATIONS_WRITE, TIME_CLOCK_PAYROLL and LOGIN_SOURCE — and the reason is
+// stronger here than for any of them: **a PO number cannot be handed back.** A
+// bad native create burns one, permanently, on every attempt.
+export function jobCreateSource() {
+  return String(process.env.JOB_CREATE_SOURCE || "").toLowerCase();
+}
+export function jobsAreNative() { return jobCreateSource() === "native"; }
+
+// Every one of the 116 jobs in the table carries markup_pct = 0.1000, without
+// exception (checked 2026-08-24). In Airtable the value arrives from a FIELD
+// DEFAULT on `Job Markup %`, which is why this code never sent it — and why a
+// native job, having no Airtable field to default from, must send it explicitly.
+//
+// ⚠⚠ IT IS NOT COSMETIC AND IT DOES NOT SELF-CORRECT. `unbilled_material_amount_calc`
+// multiplies by COALESCE(j.markup_pct, 0), and `createMaterialAllocation`
+// SNAPSHOTS that figure into material_billing_allocations.allocated_amount. A
+// job created with a NULL markup bills its material at COST, and every
+// allocation written before anyone notices stays wrong — the fix does not
+// recompute rows already written. That is the a04b11f bug exactly.
+const DEFAULT_MARKUP_PCT = 0.10;
+
 async function allocatePoNumber() {
-  if (String(process.env.JOB_CREATE_SOURCE || "").toLowerCase() !== "neon") return null;
+  const src = jobCreateSource();
+  if (src !== "neon" && src !== "native") return null;
   try {
     const rows = await neonWrite("job.allocatePo",
       `INSERT INTO job_po_counters (year, last_used) VALUES ($1, 100)
@@ -138,6 +169,122 @@ async function allocatePoNumber() {
  * @param {object} input  jobName + contractorId are required; everything else optional.
  * @returns {Promise<{ record: object, poNumber: number|null, po: string|null, poLocked: string|null }>}
  */
+// ── THE NATIVE CREATE (cutover slice 6, 2026-08-24) ───────────────────────
+// The job is INSERTed into Neon first and Airtable gets a fail-soft mirror.
+//
+// ⚠⚠ THE REC ID IS NOT STAMPED BACK, and here that is not a preference — it is
+// what keeps `_jobs-sync.js` harmless. That sync runs HOURLY and does
+// `INSERT … ON CONFLICT (airtable_id) DO UPDATE SET <all 38 columns>`. A native
+// job has `airtable_id` NULL, conflicts with nothing, and is invisible to it.
+// Stamp the rec id back and the same job becomes a conflict target, so every
+// hour Airtable's copy would overwrite status, addresses, markup, contacts and
+// PO fields — silently reverting whatever the app wrote. That is the
+// `estimate_templates` trap at the scale of the whole jobs table.
+//
+// ⚠⚠ TWO AIRTABLE FORMULAS ARE REPRODUCED HERE, because a native job has no
+// Airtable record to read them back from. Both were READ OUT OF THE BASE via the
+// meta API rather than inferred from the data — the Generator Asset ID lesson,
+// where a plausible guess put the wrong string on all 11 generators:
+//
+//   Contractor Code = CONCATENATE(LEFT(UPPER({Contractor Name}), 2),
+//                                 LEFT(UPPER({Job Name}), 1))
+//   Job PO          = {Job Name} & " (" & {Contractor Code} & " " & {Job PO Number} & ")"
+//
+// ⚠ `po_locked` is a singleLineText that something else fills in Airtable, NOT a
+// formula — and it is already NULL on 24 of 116 jobs, including recent ones, so
+// nothing fills it reliably. It matters because `qb-time-pull` matches a
+// timesheet's jobcode against `jobs.po_locked`: NULL there means QuickBooks
+// hours can never attach to the job. A native job therefore seeds it equal to
+// `po`, which is what it holds on the 90 jobs where it is set at all. It stays a
+// snapshot — 26 jobs have `po_locked` deliberately diverged from `po` after a
+// rename, and nothing here recomputes it later.
+async function createJobNative(a) {
+  const {
+    atFetch, fields, poNumber, trimmedName, jobType, taxStatus, billing,
+    trimmedContractorId, contractorName, generatorInstalled, notes,
+    customerFirstName, customerLastName, customerPhone, customerEmail,
+    customerStreet, customerCity, customerState, customerZip,
+  } = a;
+
+  // ⚠ FAIL CLOSED. A job with no PO number is not a job: the PO is its identity
+  // on invoices, in pCloud folder names, on Trello cards and in QuickBooks Time.
+  // Better to refuse than to create one that can never be matched or billed.
+  if (poNumber == null) {
+    throw new JobInputError("Could not assign a PO number, so the job was not created. Please try again.");
+  }
+
+  const contractorCode =
+    String(contractorName || "").toUpperCase().slice(0, 2) +
+    String(trimmedName).toUpperCase().slice(0, 1);
+  const poString = trimmedName + " (" + contractorCode + " " + poNumber + ")";
+  const poLocked = poString;
+
+  const addressFull = [
+    [nz(customerStreet), nz(customerCity)].filter(Boolean).join(", "),
+    [nz(customerState) ? nz(customerState).toUpperCase() : null, nz(customerZip)]
+      .filter(Boolean).join(" ")
+  ].filter(Boolean).join(", ") || null;
+
+  // No ON CONFLICT: a native row has no natural key to conflict on, and every
+  // call has already burned a fresh PO number, so a retry is a different job.
+  const rows = await neonWrite("job.createNative",
+    `INSERT INTO jobs (name, status, job_type, tax_status, billing_method,
+                       contractor_at_id, contractor_name, contractor_code,
+                       po_number, po, po_locked, job_year,
+                       customer_first_name, customer_last_name, customer_phone,
+                       customer_email, address_street, address_city, address_state,
+                       address_zip, address_full, notes, generator_installed,
+                       markup_pct, synced_at)
+     VALUES ($1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,
+             $9::int,$10::text,$11::text,$12::int,
+             $13::text,$14::text,$15::text,$16::text,$17::text,$18::text,$19::text,
+             $20::text,$21::text,$22::text,$23::boolean,$24::numeric, now())
+     RETURNING id`,
+    [trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
+     taxStatus || "Taxable", billing, trimmedContractorId,
+     contractorName ? String(contractorName).trim() : null, contractorCode,
+     poNumber, poString, poLocked, new Date().getFullYear(),
+     nz(customerFirstName), nz(customerLastName), nz(customerPhone), nz(customerEmail),
+     nz(customerStreet), nz(customerCity),
+     nz(customerState) ? nz(customerState).toUpperCase() : null,
+     nz(customerZip), addressFull, nz(notes), generatorInstalled === true,
+     DEFAULT_MARKUP_PCT]);
+
+  const neonId = rows?.[0]?.id ? String(rows[0].id) : null;
+  if (!neonId) throw new Error("job.createNative: no id returned");
+
+  // The mirror. Best-effort — the job already exists and is fully usable without
+  // it. Kept because everything downstream of a job (the contractor link, the
+  // Estimating-time pCloud folder) still triggers off the Airtable record.
+  //
+  // ⚠ The linked-record fields (Contractor, Billing Company, Primary Contact)
+  // still carry rec ids and still work: companies and contacts keep minting them
+  // until their own slices. If they ever go native, these must be DROPPED from
+  // the mirror rather than sent as uuids — `typecast: true` would CREATE a junk
+  // Company from one, exactly as it would have on Submitted By in slice 5.
+  fields["Job PO Number"] = poNumber;
+  await mirrorJobToAirtable(atFetch, fields);
+
+  // Airtable-shaped so callers (handleCreateJob → mapJob, _generator-service)
+  // need no changes. The id is the Neon uuid, which is the handle everything
+  // downstream now speaks.
+  return {
+    record: { id: neonId, fields: { ...fields, "Job PO": poString, "Job PO - Locked": poLocked } },
+    poNumber, po: poString, poLocked,
+  };
+}
+
+async function mirrorJobToAirtable(atFetch, fields) {
+  try {
+    return await atFetch(`${encodeURIComponent(JOBS_TABLE)}`, {
+      method: "POST", body: JSON.stringify({ fields })
+    });
+  } catch (e) {
+    console.error(`createJobNative: Airtable mirror failed (ignored) — ${e?.message || e}`);
+    return null;
+  }
+}
+
 export async function createJobRecord(atFetch, input) {
   const {
     jobName, jobType, taxStatus, billingMethod, contractorId, contractorName, contactId,
@@ -205,6 +352,16 @@ export async function createJobRecord(atFetch, input) {
 
   const poNumber = await allocatePoNumber();
   if (poNumber != null) fields["Job PO Number"] = poNumber;
+
+  // ═══ NATIVE PATH — the job is born in Neon (cutover slice 6) ═════════════
+  if (jobsAreNative()) {
+    return await createJobNative({
+      atFetch, fields, poNumber, trimmedName, jobType, taxStatus, billing,
+      trimmedContractorId, contractorName, generatorInstalled, notes,
+      customerFirstName, customerLastName, customerPhone, customerEmail,
+      customerStreet, customerCity, customerState, customerZip,
+    });
+  }
 
   const record = await atFetch(`${encodeURIComponent(JOBS_TABLE)}`, {
     method: "POST",

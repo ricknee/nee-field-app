@@ -4146,6 +4146,92 @@ await test("write guard: UUID_RE matches Neon ids and not rec ids", async () => 
   eq(UUID_RE.test("recPvbB0WaNllOhNm"), false, "rec id");
   eq(UUID_RE.test("not-a-uuid"), false, "junk");
 });
+
+// ── The integrity checks (_integrity.js, 2026-08-25) ───────────────────────
+// Built because eleven defects in one day were all SILENT. These tests are about
+// the runner's contract, not the SQL (which is verified against production):
+// it must survive both driver result shapes, survive a check that throws, and
+// stay quiet when everything is healthy.
+const { runIntegrityChecks, CHECKS } = await import("../netlify/functions/_integrity.js");
+
+const fakeCheckSql = (answers, { shape = "array", throwOn = null } = {}) => ({
+  query: async (text) => {
+    const which = CHECKS.find(c => c.sql === text);
+    if (throwOn && which?.name === throwOn) throw new Error("column does not exist");
+    const rows = (which && answers[which.name]) || [];
+    return shape === "array" ? rows : { rows };
+  },
+});
+const quiet = async (fn) => {
+  const errs = []; const real = console.error;
+  console.error = (...a) => errs.push(a.join(" "));
+  try { return { out: await fn(), errs }; } finally { console.error = real; }
+};
+
+await test("integrity: a healthy system reports nothing at all", async () => {
+  const { out, errs } = await quiet(() => runIntegrityChecks(fakeCheckSql({})));
+  eq(out.ok, true, "ok");
+  eq(out.failures, 0, "no failures");
+  eq(out.findings.length, 0, "no findings");
+  eq(errs.length, 0, "and says NOTHING — a quiet run is what healthy looks like");
+  eq(out.checked, CHECKS.length, "every check ran");
+});
+
+await test("integrity: findings are counted, formatted and logged", async () => {
+  const { out, errs } = await quiet(() => runIntegrityChecks(fakeCheckSql({
+    "duplicate-po": [{ po_number: 301, job_year: 2026, n: 2, jobs: "Test 10 | Test 10" }],
+  })));
+  eq(out.failures, 1, "one failure");
+  eq(out.findings[0].check, "duplicate-po", "named");
+  eq(out.findings[0].severity, "critical", "severity carried");
+  ok(out.findings[0].detail[0].includes("PO 301"), `formatted: ${out.findings[0].detail[0]}`);
+  ok(errs.some(e => e.includes("integrity [critical] duplicate-po")), "logged at error level");
+});
+
+// The bug that made the ghost-job fix silently do nothing: sql.query resolves to
+// a BARE ARRAY here, while neonQuery returns { rows }. The runner takes both, so
+// it works from the hourly pull AND from the admin action.
+await test("integrity: works with BOTH driver result shapes", async () => {
+  const rows = { "ghost-job": [{ name: "Test 10", po_number: 301, airtable_id: "recX" }] };
+  for (const shape of ["array", "rows"]) {
+    const { out } = await quiet(() => runIntegrityChecks(fakeCheckSql(rows, { shape })));
+    eq(out.failures, 1, `${shape}: found it`);
+  }
+});
+
+await test("integrity: a check that throws is REPORTED, not swallowed", async () => {
+  const { out, errs } = await quiet(() => runIntegrityChecks(fakeCheckSql({}, { throwOn: "clock-left-running" })));
+  eq(out.ok, false, "not ok");
+  eq(out.brokenChecks, 1, "one broken");
+  eq(out.failures, 0, "a broken check is not a data failure");
+  const broken = out.findings.find(f => f.severity === "check-broken");
+  ok(broken && broken.check === "clock-left-running", "names the check that broke");
+  ok(errs.some(e => e.includes("check-broken")), "and says so — a renamed column must not become silence");
+});
+
+await test("integrity: one bad check does not stop the others", async () => {
+  const { out } = await quiet(() => runIntegrityChecks(fakeCheckSql({
+    "duplicate-po": [{ po_number: 1, job_year: 2026, n: 2, jobs: "a | b" }],
+  }, { throwOn: "ghost-job" })));
+  eq(out.checked, CHECKS.length - 1, "the rest still ran");
+  eq(out.failures, 1, "and still found the real problem");
+});
+
+await test("integrity: long finding lists are truncated, and say so", async () => {
+  const many = Array.from({ length: 25 }, (_, i) => ({ name: `Job ${i}`, po: "", po_number: i, status: "Awarded" }));
+  const { out } = await quiet(() => runIntegrityChecks(fakeCheckSql({ "job-missing-po-locked": many })));
+  eq(out.findings[0].count, 25, "full count kept");
+  eq(out.findings[0].detail.length, 10, "detail capped");
+  eq(out.findings[0].truncated, true, "flagged as truncated — a silent cap would hide the tail");
+});
+
+await test("integrityCheck action is strict admin", async () => {
+  eq((await GET("integrityCheck", {}, EMP_TOK)).statusCode, 403, "employee refused");
+  eq((await GET("integrityCheck", {}, OFFICE_TOK)).statusCode, 403, "office refused");
+  // Admin gets through to the handler, which needs a database it does not have
+  // offline — 503 proves the routing and the auth tier, which is what is testable here.
+  eq((await GET("integrityCheck", {}, ADMIN_TOK)).statusCode, 503, "admin reaches the handler");
+});
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

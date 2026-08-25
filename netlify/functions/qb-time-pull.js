@@ -50,6 +50,7 @@ import { neon } from "@neondatabase/serverless";
 import { syncJobs, backfillJobLinks } from "./_jobs-sync.js";
 import { syncBillingTables } from "./_billing-sync.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
+import { runIntegrityChecks, reportIntegrity } from "./_integrity.js";
 import { makeAtFetch } from "./_jobs.js";
 
 const QB = "https://rest.tsheets.com/api/v1";
@@ -407,6 +408,25 @@ export const handler = async () => {
     }
   }
 
+  // ── Integrity checks (_integrity.js) ─────────────────────────────────────
+  // LAST, so every sync above has already had its say and the checks see the
+  // state the hour actually ended in.
+  //
+  // ⚠ Runs even when the Airtable syncs were skipped: these assert Neon against
+  // ITSELF — duplicate POs, invoices with nothing allocated, hours paid but not
+  // costed — and none of them needs Airtable to be reachable, or to exist.
+  //
+  // Fails soft like everything else here. An alarm that breaks the timesheet
+  // pull would be worse than the problems it reports.
+  let integrityReport = { ok: false, error: "not run" };
+  try {
+    integrityReport = await runIntegrityChecks(sql);
+    await reportIntegrity(integrityReport);
+  } catch (e) {
+    console.error("qb-time-pull: integrity checks failed (continuing)", e);
+    integrityReport = { ok: false, error: String(e?.message || e) };
+  }
+
   const [state] = await sql.query(`SELECT watermark FROM sync_state WHERE key = 'qb_timesheets'`);
   const since = state?.watermark
     ? new Date(new Date(state.watermark).getTime() - WATERMARK_OVERLAP_MS)
@@ -414,7 +434,10 @@ export const handler = async () => {
 
   try {
     const report = { ...(await runPull({ sql, token, since })), jobsSync: jobsReport, jobLinks: linkReport,
-                     billingSync: billingReport, generatorServiceCalls: generatorReport };
+                     billingSync: billingReport, generatorServiceCalls: generatorReport,
+                     integrity: { failures: integrityReport.failures ?? null,
+                                  brokenChecks: integrityReport.brokenChecks ?? null,
+                                  findings: integrityReport.findings?.map(f => `${f.check}:${f.count}`) ?? [] } };
     console.log("qb-time-pull", JSON.stringify(report));
     return { statusCode: 200, body: JSON.stringify(report) };
   } catch (e) {

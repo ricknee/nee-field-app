@@ -4,6 +4,7 @@
 import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { scrubFabricatingLinks, UUID_RE } from "./_airtable-write-guard.js";
+import { runIntegrityChecks } from "./_integrity.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource,
          neonEmployees, neonEmployeeById, isEmployeeHandle } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
@@ -636,7 +637,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // start and stop their paid time. Office is excluded from payroll throughout.
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
-const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "people", "employeePin", "employeeRates",
+const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "people", "employeePin", "employeeRates",
                               "clockRoster", "clockReconcile", "clockPunches",
                               // The approval queue + everyone's leave balances.
                               "ptoRequests"]);
@@ -12724,6 +12725,30 @@ async function handleCreateJob(body) {
 // Same job as r2Status: name the specific misconfiguration instead of leaving
 // somebody to infer it from the data afterwards. `native` here is the ONLY value
 // that means jobs are born in Neon.
+// ── ON-DEMAND INTEGRITY CHECK ─────────────────────────────────────────────
+// The same checks the hourly pull runs (_integrity.js), reachable when someone
+// wants an answer NOW rather than at the top of the hour — after a big import,
+// before a payroll run, or when a number looks wrong.
+//
+// ⚠ Read-only, like every check in that file. It reports; it never repairs.
+async function handleIntegrityCheck() {
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Integrity checks need the database. DATABASE_URL is unset." });
+  }
+  // The checks want a client with .query(); neonQuery is the wrapper this file
+  // uses everywhere else, so adapt rather than opening a second connection.
+  const sql = { query: async (text, params) => await neonQuery(text, params || []) };
+  const report = await runIntegrityChecks(sql);
+  return resp(200, {
+    ok: true,
+    healthy: report.failures === 0 && report.brokenChecks === 0,
+    checked: report.checked,
+    failures: report.failures,
+    brokenChecks: report.brokenChecks,
+    findings: report.findings,
+  });
+}
+
 async function handleJobCreateStatus() {
   const raw = process.env.JOB_CREATE_SOURCE;
   return resp(200, {
@@ -13919,6 +13944,7 @@ export async function handler(event) {
       if (action === "jobs")               return await handleJobs();
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status(params);
+      if (action === "integrityCheck")     return await handleIntegrityCheck();
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
       if (action === "people")             return await handlePeople();
       if (action === "employeePin")        return await handleEmployeePin(params);

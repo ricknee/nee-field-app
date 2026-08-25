@@ -6354,7 +6354,24 @@ function renderEstimateLines() {
 
     var qtyStep = isWire && displayUnit === "ft" ? "1" : "0.01";
 
-    return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 80px 80px 28px;gap:8px;align-items:center;">' +
+    // Transient "was $X" trail left by Refresh Prices, so the user can see at a
+    // glance which rows the reprice actually moved (and by how much) before
+    // they commit it with Save. _prevUnitCost is never persisted — saveEstimate
+    // maps an explicit field list, and reopening reloads from the server.
+    var priceHint = "";
+    if (l._prevUnitCost !== undefined && l._prevUnitCost !== null) {
+      var wasCost = Number(l._prevUnitCost) || 0;
+      var moved   = cost - wasCost;
+      priceHint =
+        '<div id="estl-was-' + idx + '" style="grid-column:1 / -1;font-size:10px;color:var(--gold);padding:0 2px;margin-top:-2px;">' +
+          'was ' + fmtCurrency(wasCost) + ' → ' + fmtCurrency(cost) +
+          '  ·  ' + (moved > 0 ? '+' : '') + fmtCurrency(moved) + ' / ' + (isWire ? 'lb' : (l.uom || 'unit')) +
+        '</div>';
+    }
+
+    return '<div style="background:var(--navy-lt);border:1px solid ' +
+      (priceHint ? 'var(--gold)' : 'var(--border)') +
+      ';border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 80px 80px 28px;gap:8px;align-items:center;">' +
       '<div>' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
       '<div>' +
         '<input type="number" step="' + qtyStep + '" class="field-inp" id="estl-qty-' + idx + '" value="' + visibleQty +
@@ -6371,6 +6388,7 @@ function renderEstimateLines() {
       '<button onclick="removeEstimateLine(' + idx + ')" ' +
         'style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>' +
       wireHint +
+      priceHint +
     '</div>';
   }).join("") : '<div style="padding:14px;text-align:center;color:var(--dim);background:var(--navy-lt);border-radius:8px;border:1px dashed var(--border);">No line items yet</div>';
 
@@ -6384,8 +6402,23 @@ function renderEstimateLines() {
       '<button onclick="addMiscLine()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">+ Misc Line</button>' +
     '</div>';
 
+  // Reprice only means something when at least one line is linked to an
+  // inventory item — a Misc line has no item to read a price from.
+  var hasLinkedLine = lines.some(function(l){ return !l.isMisc && l.itemId; });
+  var linesHeader =
+    '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:8px;margin-bottom:3px;">' +
+      '<label class="field-lbl" style="margin-bottom:0;">Line Items</label>' +
+      (hasLinkedLine
+        ? '<button type="button" id="est-reprice-btn" onclick="refreshEstimatePrices()" ' +
+            'title="Pull today&apos;s Default Unit Cost from Inventory onto every linked line" ' +
+            'style="background:var(--navy-lt);border:1px solid var(--gold);border-radius:8px;color:var(--gold);' +
+            'font-weight:600;padding:6px 11px;cursor:pointer;font-size:12px;font-family:inherit;line-height:1.2;">' +
+            '🔄 Refresh Prices</button>'
+        : '') +
+    '</div>';
+
   return '<div id="est-lines-block">' +
-    '<label class="field-lbl">Line Items</label>' +
+    linesHeader +
     '<div id="est-lines-rows" style="display:flex;flex-direction:column;gap:6px;">' + rowsHtml + '</div>' +
     addButtons +
     '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:10px 12px;background:var(--navy-lt);border-radius:8px;border:1px solid var(--border);">' +
@@ -6434,6 +6467,14 @@ function updateLineField(idx, field, value) {
     }
   } else {
     line[field] = value;
+  }
+
+  // A hand-typed cost supersedes whatever Refresh Prices put there, so drop the
+  // "was $X" trail rather than leave it claiming a number the user just replaced.
+  if (field === "unitCost" && line._prevUnitCost !== undefined) {
+    delete line._prevUnitCost;
+    var wasEl = document.getElementById("estl-was-" + idx);
+    if (wasEl) wasEl.remove();
   }
 
   // Update only the total cells in-place — don't touch the inputs to preserve focus/cursor
@@ -6600,6 +6641,181 @@ function addItemToEstimate(itemId) {
   // the user can type the real qty immediately instead of hunting for the row.
   var el = document.getElementById("estl-qty-" + newIdx);
   if (el) { el.focus(); if (el.select) el.select(); el.scrollIntoView({ block: "center" }); }
+}
+
+// ── REFRESH LINE PRICES AGAINST TODAY'S INVENTORY COST ────
+// The workflow this exists for: an estimate is entered, THEN a price is
+// corrected in Inventory, and the estimate should pick that up without the
+// user re-typing every row or eyeballing which ones moved.
+//
+// Deliberately client-side and staged, unlike the template screen's
+// refreshTemplatePrices (which writes server-side then reloads). An estimate
+// form buffers unsaved qty edits in estimateState.current.lines — a
+// write-then-reload here would silently throw those away. So this applies to
+// the form, shows exactly what moved, and leaves committing it to Save.
+//
+// Misc lines are never touched: they have no inventory item to price from.
+var _estRepricePending = null;   // { changes: [{line, name, qty, oldCost, newCost}], … }
+
+async function refreshEstimatePrices() {
+  var e = estimateState.current;
+  if (!e || !e.lines || !e.lines.length) { showToast("No line items to reprice", true); return; }
+
+  var btn = document.getElementById("est-reprice-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Checking…"; }
+
+  // Re-read items instead of trusting allItems. The entire point of the button
+  // is that the price changed since this screen loaded — a cached cost would
+  // report "already current" against the very number the user just replaced.
+  try {
+    var fresh = await apiGet("items");
+    if (fresh && fresh.items && fresh.items.length) allItems = fresh.items;
+  } catch(ex) {
+    showToast("Couldn't load current prices: " + (ex.message || ex), true);
+    if (btn) { btn.disabled = false; btn.innerHTML = "🔄 Refresh Prices"; }
+    return;
+  }
+  if (btn) { btn.disabled = false; btn.innerHTML = "🔄 Refresh Prices"; }
+
+  var itemMap = {};
+  allItems.forEach(function(i){ itemMap[i.id] = i; });
+
+  var changes = [], unmatched = [], unpriced = [], linked = 0;
+  e.lines.forEach(function(l) {
+    if (l.isMisc || !l.itemId) return;
+    linked++;
+    var item = itemMap[l.itemId];
+    // Item deleted or deactivated since the estimate was written. Say so
+    // rather than quietly leaving one line at a stale price inside a run the
+    // user will read as "everything is current now".
+    if (!item) { unmatched.push(l.itemName || "Unknown item"); return; }
+    var oldCost = Number(l.unitCost) || 0;
+    var newCost = Number(item.cost)  || 0;
+    // An item with no cost set would zero the line. That is a data gap, not a
+    // price change — flag it and leave the estimate's number alone.
+    if (newCost <= 0) { unpriced.push(l.itemName || item.name); return; }
+    if (Math.abs(newCost - oldCost) < 0.00005) return;   // equal at the 4dp we store
+    changes.push({
+      line: l,                                  // hold the object, not an index:
+      name: l.itemName || item.name || "Item",  // applying must survive a splice
+      qty: Number(l.qty) || 0,
+      oldCost: oldCost,
+      newCost: newCost
+    });
+  });
+
+  if (!changes.length) {
+    var extra = [];
+    if (unmatched.length) extra.push(unmatched.length + " no longer in Inventory");
+    if (unpriced.length)  extra.push(unpriced.length + " with no price set");
+    showToast(extra.length
+      ? "Prices already current — but " + extra.join(", ")
+      : "✓ All " + linked + " line" + (linked === 1 ? "" : "s") + " already at current pricing");
+    return;
+  }
+
+  _estRepricePending = { changes: changes, unmatched: unmatched, unpriced: unpriced };
+  openEstimateRepriceModal();
+}
+
+function openEstimateRepriceModal() {
+  var p = _estRepricePending;
+  if (!p) return;
+  closeEstimateRepriceModal();
+
+  var oldSub = 0, newSub = 0;
+  p.changes.forEach(function(c){ oldSub += c.qty * c.oldCost; newSub += c.qty * c.newCost; });
+  var subDelta = newSub - oldSub;
+
+  var rows = p.changes.map(function(c) {
+    var diff  = c.newCost - c.oldCost;
+    var arrow = diff > 0 ? "▲" : "▼";
+    var color = diff > 0 ? "var(--gold)" : "var(--green, #00b478)";
+    var pct   = c.oldCost > 0 ? (diff / c.oldCost) * 100 : 0;
+    return '<div style="padding:9px 12px;border-bottom:1px solid var(--border);">' +
+      '<div style="font-weight:600;font-size:13px;color:var(--text);">' + escapeHtml(c.name) + '</div>' +
+      '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' +
+        fmtCurrency(c.oldCost) + ' → <b style="color:var(--text);">' + fmtCurrency(c.newCost) + '</b>' +
+        '<span style="color:' + color + ';font-weight:700;margin-left:8px;">' +
+          arrow + ' ' + (diff > 0 ? '+' : '') + fmtCurrency(diff) +
+          (c.oldCost > 0 ? ' (' + (pct > 0 ? '+' : '') + pct.toFixed(1) + '%)' : '') +
+        '</span>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' +
+        'qty ' + c.qty + '  ·  line ' + fmtCurrency(c.qty * c.oldCost) + ' → ' + fmtCurrency(c.qty * c.newCost) +
+      '</div>' +
+    '</div>';
+  }).join("");
+
+  // Skipped lines are surfaced, not swallowed: "12 lines repriced" reads as
+  // "the whole estimate is current now" unless the exceptions are named.
+  var skipped = "";
+  if (p.unmatched.length || p.unpriced.length) {
+    skipped =
+      '<div style="padding:10px 12px;border-top:1px solid var(--border);background:rgba(232,101,26,.06);font-size:11px;color:var(--dim);line-height:1.5;">' +
+        (p.unmatched.length
+          ? '<div><b style="color:var(--gold);">Left alone — no longer in Inventory:</b> ' +
+              escapeHtml(p.unmatched.join(", ")) + '</div>' : '') +
+        (p.unpriced.length
+          ? '<div' + (p.unmatched.length ? ' style="margin-top:4px;"' : '') + '>' +
+              '<b style="color:var(--gold);">Left alone — no price set in Inventory:</b> ' +
+              escapeHtml(p.unpriced.join(", ")) + '</div>' : '') +
+      '</div>';
+  }
+
+  var n = p.changes.length;
+  var overlay = document.createElement("div");
+  overlay.id = "est-reprice-modal";
+  overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);" +
+    "z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;";
+  overlay.innerHTML =
+    '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:480px;max-height:82vh;display:flex;flex-direction:column;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);">' +
+        '<h3 style="margin:0;font-size:15px;color:var(--text);">' +
+          n + ' price' + (n === 1 ? '' : 's') + ' changed</h3>' +
+        '<button onclick="closeEstimateRepriceModal()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
+      '</div>' +
+      '<div style="flex:1;overflow-y:auto;">' + rows + skipped + '</div>' +
+      '<div style="padding:12px 14px;border-top:1px solid var(--border);">' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:10px;">' +
+          '<span style="color:var(--dim);font-weight:600;">Affected lines</span>' +
+          '<span style="color:var(--text);font-weight:700;">' +
+            fmtCurrency(oldSub) + ' → ' + fmtCurrency(newSub) +
+            '<span style="color:' + (subDelta > 0 ? 'var(--gold)' : 'var(--green, #00b478)') + ';margin-left:8px;">' +
+              (subDelta > 0 ? '+' : '') + fmtCurrency(subDelta) +
+            '</span>' +
+          '</span>' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;">' +
+          '<button onclick="closeEstimateRepriceModal()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:11px;cursor:pointer;font-size:13px;font-family:inherit;">Cancel</button>' +
+          '<button onclick="applyEstimatePriceRefresh()" style="flex:1;background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:11px;cursor:pointer;font-size:13px;font-family:inherit;">Apply</button>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--muted);text-align:center;margin-top:8px;">' +
+          'Apply updates the form — hit Save to keep it.</div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(overlay);
+}
+
+function closeEstimateRepriceModal() {
+  var ov = document.getElementById("est-reprice-modal");
+  if (ov) ov.remove();
+}
+
+function applyEstimatePriceRefresh() {
+  var p = _estRepricePending;
+  closeEstimateRepriceModal();
+  _estRepricePending = null;
+  if (!p || !p.changes.length) return;
+
+  p.changes.forEach(function(c) {
+    c.line._prevUnitCost = c.oldCost;   // transient — drives the "was $X" trail
+    c.line.unitCost = c.newCost;
+  });
+
+  refreshLines();
+  var n = p.changes.length;
+  showToast("✓ " + n + " line" + (n === 1 ? "" : "s") + " repriced — Save to keep");
 }
 
 // ── JOB SEARCH (for new estimate) ─────────────────────────
@@ -7394,7 +7610,10 @@ async function doRefreshTemplatePrices() {
   if (!t || !t.id) return;
   try {
     var d = await apiPost({ action: "refreshTemplatePrices", templateId: t.id });
-    showToast("✓ Prices refreshed (" + (d.lineCount || 0) + " line" + (d.lineCount === 1 ? "" : "s") + ")");
+    // handleRefreshTemplatePrices returns `updated`, not `lineCount` — the old
+    // key was never in the response, so this toast always read "(0 lines)".
+    var nUpd = Number(d.updated || 0);
+    showToast("✓ Prices refreshed (" + nUpd + " line" + (nUpd === 1 ? "" : "s") + ")");
     // Reload to pull fresh snapshots
     await openEstimateTemplate(t.id);
   } catch(ex) {

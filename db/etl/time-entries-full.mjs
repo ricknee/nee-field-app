@@ -229,7 +229,18 @@ src.hours = Math.round(src.hours * 100) / 100;
 // ── load ──────────────────────────────────────────────────────────────────
 const link = v => (Array.isArray(v) && v.length ? v[0] : null);
 
-async function upsertBatch(table, cols, rows, conflict, batch = 300) {
+// `preserve` — the escape hatch for a table that has stopped being read-only.
+//   { when: "<predicate over the target table>", cols: ["a","b"] }
+// Those columns keep their STORED value on the DO UPDATE branch whenever the
+// predicate holds; everything else still takes Airtable's.
+//
+// ⚠⚠ WHY THIS EXISTS. The standing rule in this codebase, learned twice already
+// (estimate templates, reference data): GIVING A READ-ONLY TABLE A WRITE PATH
+// TURNS ITS ETL FROM PRESERVING INTO OVERWRITING. Nothing about this function
+// changed — the table underneath it did. Re-running a full load is supposed to
+// be safe and idempotent, and for years it was, because Airtable was the only
+// writer of every column here.
+async function upsertBatch(table, cols, rows, conflict, batch = 300, preserve = null) {
   let done = 0;
   for (let i = 0; i < rows.length; i += batch) {
     const chunk = rows.slice(i, i + batch);
@@ -238,7 +249,11 @@ async function upsertBatch(table, cols, rows, conflict, batch = 300) {
       const ph = row.map(v => { params.push(v); return `$${params.length}`; });
       return `(${ph.join(",")})`;
     });
-    const setList = cols.filter(c => c !== conflict).map(c => `"${c}"=EXCLUDED."${c}"`).join(", ");
+    const keep = new Set(preserve?.cols || []);
+    const setList = cols.filter(c => c !== conflict).map(c =>
+      keep.has(c)
+        ? `"${c}"=CASE WHEN ${preserve.when} THEN ${table}."${c}" ELSE EXCLUDED."${c}" END`
+        : `"${c}"=EXCLUDED."${c}"`).join(", ");
     await sql.query(
       `INSERT INTO ${table} (${cols.map(c => `"${c}"`).join(",")}) VALUES ${tuples.join(",")}
        ON CONFLICT ("${conflict}") DO UPDATE SET ${setList}`,
@@ -421,7 +436,18 @@ await upsertBatch("jobs",
       num(r.fields["Estimated Labor Cost"]), num(r.fields["Estimated Material Cost"]),
       num(r.fields["Calculated Estimated Total"]), nul(r.fields["Estimate Date"]),
       nul(r.fields["Notes"]), num(r.fields["Estimate Display #"]),
-      nul(r.fields["Estimate Snapshot"]), now]), "airtable_id", 200);
+      nul(r.fields["Estimate Snapshot"]), now]), "airtable_id", 200,
+    // ⚠⚠ THE APP OWNS AN ESTIMATE'S MONEY NOW (db/schema/065). Airtable has no
+    // column for raw cost vs markup, so its `Estimated Material Cost` is the
+    // SELL figure and its `Calculated Estimated Total` is the old formula that
+    // adds labor cost to it. Re-running this load without the guard would leave
+    // every split estimate holding a raw cost and markup that no longer agree
+    // with the two figures derived from them — silently, on both sides of GP.
+    // The tell is per-row: a pre-split estimate has nothing to protect and
+    // still refreshes exactly as it always did.
+    // Same guard, same reasoning, as `syncEstimateToNeon` in airtable.js.
+    { when: "job_estimates.material_raw_cost IS NOT NULL OR job_estimates.labor_burden_rate IS NOT NULL",
+      cols: ["estimated_labor_cost", "estimated_material_cost", "calculated_estimated_total"] });
 
   // ⚠ submitted_by_at_id IS AN AUTHORIZATION FIELD, not decoration.
   // handleExpenses scopes by it: admin/office see every expense on a job, an

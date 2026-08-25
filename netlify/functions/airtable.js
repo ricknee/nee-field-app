@@ -5621,7 +5621,21 @@ function mapJob(r) {
       projectedEstimatedMaterialCost,
       projectedEstimatedLaborCost,
       projectedGrossProfitDollar,
-      projectedGrossProfitPct
+      projectedGrossProfitPct,
+    // ── db/schema/065, and they are NULL here on purpose ───────────────────
+    // The cost/sell split is a Neon column set; the frozen Airtable copy has no
+    // twin for any of it and never will. This mapper still runs on the two
+    // job-write paths that echo an Airtable record back to the client, so the
+    // keys are emitted — NULL, so the card renders "—" — rather than omitted,
+    // which is the standing rule for this pair of mappers: a key present in one
+    // and absent from the other is how a field silently disappears. The client
+    // re-reads the job from Neon straight after either write.
+    markupPct: gNum(f, "Job Markup %") ?? null,
+    projectedEstimatedMaterialMarkup: null,
+    projectedEstimatedMaterialSell:   null,
+    projectedEstimatedLaborSell:      null,
+    estimateCount:       null,
+    estimateLegacyCount: null,
   };
 }
 
@@ -5664,10 +5678,17 @@ const JOB_SELECT = `
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.bird_date::text AS bird_date, j.workflow_status, j.billable_hourly_rate,
          j.labor_billable_rate_at_id,
+         -- The markup ACTUAL material is billed at (10% on every job today). The
+         -- new-estimate form seeds its markup box from it, so estimated and
+         -- actual material stop using two unrelated markup models — which is
+         -- what makes est GP and final GP comparable at all. db/schema/065.
+         j.markup_pct,
          r.base_contract_amount, r.total_contract_billed, r.total_wire_cost,
          r.reviewed_wire_cost_rollup, r.pipe_cost, r.pipe_cost_reviewed,
          r.expected_revenue, r.hours_rollup,
          r.est_labor_hours_rollup, r.est_labor_cost_rollup, r.est_material_cost_rollup,
+         r.est_material_markup_rollup, r.est_material_sell_rollup,
+         r.est_labor_sell_rollup, r.est_counted, r.est_legacy_count,
          r.reviewed_expenses_rollup,
          r.total_actual_expenses_audit,
          f.total_revenue_live, f.total_materials_live, f.total_labor_cost_live,
@@ -5792,7 +5813,20 @@ function mapJobFromNeon(r) {
     expectedRevenueAllStatus, projectedEstimatedTotalCost,
     projectedEstimatedLaborHours: n(r.est_labor_hours_rollup),
     projectedEstimatedMaterialCost, projectedEstimatedLaborCost,
-    projectedGrossProfitDollar, projectedGrossProfitPct
+    projectedGrossProfitDollar, projectedGrossProfitPct,
+    // ── db/schema/065 ──────────────────────────────────────────────────────
+    // The sell side of the estimate, which the cost-only cards above could never
+    // show. `projectedEstimatedMaterialCost` is now genuinely a COST; the markup
+    // that used to be buried inside it is its own line.
+    markupPct: n(r.markup_pct),
+    projectedEstimatedMaterialMarkup: n(r.est_material_markup_rollup),
+    projectedEstimatedMaterialSell:   n(r.est_material_sell_rollup),
+    projectedEstimatedLaborSell:      n(r.est_labor_sell_rollup),
+    // ⚠ How many of the counted estimates predate the split. The GP figures are
+    // exact for those (they reproduce the old arithmetic); the two SELL figures
+    // are INFERRED. The screen has to say which it is showing.
+    estimateCount:       n(r.est_counted),
+    estimateLegacyCount: n(r.est_legacy_count),
   };
 }
 
@@ -6687,8 +6721,18 @@ async function handleJobEstimates(params) {
               e.estimate_date::text AS estimate_date, e.actual_estimate_sent,
               e.estimated_labor_hours, e.estimated_material_cost,
               e.calculated_estimated_total, e.notes, e.display_number,
+              -- db/schema/065. A NULL material_raw_cost is the legacy tell and
+              -- the client keys its "pre-split" badge on it, so it is emitted raw
+              -- rather than coalesced into something tidy.
+              e.material_raw_cost, e.material_markup, e.labor_sell_rate,
+              e.labor_burden_rate, e.price_adjustment, e.calculated_selling_price,
               COALESCE(back.snapshot, bytotal.snapshot, e.estimate_snapshot, '') AS snapshot,
-              j.name AS job_name
+              j.name AS job_name,
+              -- Seeds for the new-estimate form: the markup the job's ACTUAL
+              -- material is billed at, and the rate its labor is charged at. Sent
+              -- with the estimates so the form has no second round trip.
+              j.markup_pct AS job_markup_pct,
+              j.billable_hourly_rate AS job_billable_rate
          FROM job_estimates e
          LEFT JOIN jobs j ON j.id = e.job_id
          LEFT JOIN LATERAL (
@@ -6737,13 +6781,33 @@ async function handleJobEstimates(params) {
         name: [s(r.estimate_type), s(r.job_name)].filter(Boolean).join(" – "),
         estimateType: s(r.estimate_type), status: s(r.status),
         date: s(r.estimate_date), actualEstimate: n(r.actual_estimate_sent),
-        laborHours: n(r.estimated_labor_hours), materialCost: n(r.estimated_material_cost),
+        laborHours: n(r.estimated_labor_hours),
+        // `materialCost` KEEPS ITS WIRE NAME and now carries material SELL, which
+        // is what it has always carried on a marked-up quote — renaming it would
+        // only move the confusion. `materialRawCost` is the honest cost figure.
+        materialCost: n(r.estimated_material_cost),
+        materialRawCost: n(r.material_raw_cost), materialMarkup: n(r.material_markup),
+        laborSellRate: n(r.labor_sell_rate), laborBurdenRate: n(r.labor_burden_rate),
+        priceAdjustment: n(r.price_adjustment),
+        calculatedSellingPrice: n(r.calculated_selling_price),
+        // The row predates the cost/markup split, so its material figure cannot
+        // be read as a cost. The card says so rather than showing a made-up GP.
+        legacyMaterialBasis: r.material_raw_cost === null,
         calculatedTotal: n(r.calculated_estimated_total), notes: s(r.notes),
         displayNumber: r.display_number ?? null, snapshot: s(r.snapshot),
         pdfs: pdfsById.get(r.id) || [],
       }));
       if (onlySaved) estimates = estimates.filter(e => e.displayNumber != null);
-      return resp(200, { ok: true, estimates, _source: "neon", _ms: q.ms });
+      const j0 = q.rows[0] || {};
+      return resp(200, {
+        ok: true, estimates, _source: "neon", _ms: q.ms,
+        jobDefaults: {
+          markupPct:  n(j0.job_markup_pct),
+          sellRate:   n(j0.job_billable_rate),
+          burdenRate: EST_LABOR_RATE,
+          fallbackSellRate: EST_LABOR_SELL_RATE,
+        },
+      });
     }
     // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
     // Airtable stopped being written on 2026-08-25, so its copy is frozen —
@@ -6873,10 +6937,61 @@ async function fetchSentEstimatePDFsForJob(jobId) {
 // UNTYPED. **Verify with `PREPARE name AS …` and no type list**, which is what
 // the driver actually does.
 const EST_LABOR_RATE = 32.50;
-const sqlEstLaborCost = (hoursExpr) =>
-  `round(COALESCE(${hoursExpr}, 0::numeric) * ${EST_LABOR_RATE}, 2)`;
-const sqlEstTotal = (hoursExpr, materialExpr) =>
-  `round(COALESCE(${hoursExpr}, 0::numeric) * ${EST_LABOR_RATE} + COALESCE(${materialExpr}, 0::numeric), 2)`;
+
+// ── THE COST/SELL SPLIT (db/schema/065) ──────────────────────────────────
+// Everything above describes the model as Airtable left it, and one line of it
+// was wrong for five years: `Calculated Estimated Total` adds labor COST to the
+// material figure, and on a marked-up quote that figure is the SELLING value.
+// So the markup was reported as cost, and estimated GP came out low by exactly
+// the markup — always in the same direction, which is why nobody caught it.
+// Measured on the Seneca quote: 21.9% reported, 27.5% real, $7,000 mislaid.
+//
+// An estimate now carries five stored facts instead of two:
+//
+//   material_raw_cost  what the material costs        ┐ NULL on all 90 rows
+//   material_markup    what is added to it            ┘ that predate the split
+//   labor_sell_rate    what an hour is CHARGED at     ← from the job, else 75.00
+//   labor_burden_rate  what an hour COSTS             ← 32.50 unless overridden
+//   price_adjustment   a deliberate final nudge
+//
+// ⚠ A LEGACY ROW IS `material_raw_cost IS NULL`, AND IT MUST KEEP TODAY'S MATH.
+// The `matEntered` fallback below is what guarantees that: with no raw cost, the
+// cost basis is the figure as typed and the markup is zero, which reproduces the
+// old arithmetic exactly. Verified after the migration — all 117 jobs, zero
+// movement in `est_material_cost_rollup`. The old numbers cannot be re-derived
+// (implied labor sell across the last 30 estimates ranges $8.33–$200/hr, so
+// there is no formula to invert) and this is why they are not touched.
+//
+// ⚠⚠ 32.50 IS STILL THE PREVAILING-WAGE CONSTANT, now as the `burden` FALLBACK
+// rather than a hardcode. docs/PLAN-prevailing-wage.md §2 names this exact hole
+// — "the system has one answer to what an hour costs, and it is company-wide".
+// `labor_burden_rate` is the column its per-job resolver lands in: that project
+// changes what fills the parameter, not this arithmetic.
+const EST_LABOR_SELL_RATE = 75.00;
+
+// ONE definition of the four derived figures, called by BOTH write paths for
+// the reason the original note gives: an update that changes only the markup
+// still has to recompute the price, and it does it from the stored hours.
+// Each argument is a SQL fragment the caller owns — a cast bind parameter on the
+// create path, `COALESCE($n, <column>)` on the update path.
+function estDerived({ hours, matRaw, matMarkup, matEntered, sellRate, burden }) {
+  const h    = `COALESCE(${hours}, 0::numeric)`;
+  const b    = `COALESCE(${burden}, ${EST_LABOR_RATE})`;
+  const sr   = `COALESCE(${sellRate}, ${EST_LABOR_SELL_RATE})`;
+  // NULL + anything is NULL, so a row with no raw cost falls straight through to
+  // the figure as entered. That propagation IS the legacy behaviour — do not
+  // "fix" it with a COALESCE around matRaw.
+  const cost = `COALESCE(${matRaw}, ${matEntered}, 0::numeric)`;
+  const sell = `COALESCE(${matRaw} + COALESCE(${matMarkup}, 0::numeric), ${matEntered}, 0::numeric)`;
+  return {
+    laborCost:    `round(${h} * ${b}, 2)`,
+    materialSell: `round(${sell}, 2)`,
+    // `calculated_estimated_total` keeps its name and becomes honest: it is the
+    // estimated DIRECT COST and always was. The UI label changes with it.
+    directCost:   `round(${h} * ${b} + ${cost}, 2)`,
+    sellingPrice: `round(${sell} + ${h} * ${sr}, 2)`,
+  };
+}
 
 // ── KEEP NEON IN STEP AFTER AN ESTIMATE WRITE (migration Step 4e) ─────────
 // handleJobEstimates reads Neon first and only falls through on ZERO rows, so on
@@ -6912,13 +7027,30 @@ async function syncEstimateToNeon(rec) {
      -- to. Three of them did exactly that on Test 10 before this was found.
      -- The INSERT branch still sets both: an Airtable-born row has no Neon row
      -- to be junior to. Only the OVERWRITE is gone.
+     -- ⚠⚠ AND NEITHER IS THE MONEY, ONCE THE APP HAS SPLIT IT (db/schema/065).
+     -- Airtable has no column for raw cost vs markup and never will, so its
+     -- "Estimated Material Cost" is the SELL figure and its "Calculated
+     -- Estimated Total" is the old formula that adds labor cost to it. Letting
+     -- those overwrite a split row leaves the worst possible state: the raw cost
+     -- and markup survive while the two figures derived from them are reset to
+     -- pre-split values, so the same estimate holds two contradictory accounts
+     -- of the same money and neither the card nor the rollup errors.
+     -- It cannot fire today (AIRTABLE_WRITES=off makes the mirror return a null
+     -- id, so this function is never reached) — which is exactly why the guard
+     -- goes in NOW, while the reason is in front of us, rather than being
+     -- rediscovered by whoever turns that switch back on.
+     -- The tell is per-row, not global: a pre-split estimate has nothing to
+     -- protect and still syncs, so nothing about historical rows changes.
      ON CONFLICT (airtable_id) DO UPDATE SET
        estimate_type=EXCLUDED.estimate_type, status=EXCLUDED.status,
        actual_estimate_sent=EXCLUDED.actual_estimate_sent,
        estimated_labor_hours=EXCLUDED.estimated_labor_hours,
-       estimated_labor_cost=EXCLUDED.estimated_labor_cost,
-       estimated_material_cost=EXCLUDED.estimated_material_cost,
-       calculated_estimated_total=EXCLUDED.calculated_estimated_total,
+       estimated_labor_cost = CASE WHEN job_estimates.material_raw_cost IS NULL AND job_estimates.labor_burden_rate IS NULL
+                                   THEN EXCLUDED.estimated_labor_cost ELSE job_estimates.estimated_labor_cost END,
+       estimated_material_cost = CASE WHEN job_estimates.material_raw_cost IS NULL AND job_estimates.labor_burden_rate IS NULL
+                                   THEN EXCLUDED.estimated_material_cost ELSE job_estimates.estimated_material_cost END,
+       calculated_estimated_total = CASE WHEN job_estimates.material_raw_cost IS NULL AND job_estimates.labor_burden_rate IS NULL
+                                   THEN EXCLUDED.calculated_estimated_total ELSE job_estimates.calculated_estimated_total END,
        estimate_date=EXCLUDED.estimate_date, notes=EXCLUDED.notes,
        display_number=EXCLUDED.display_number, estimate_snapshot=EXCLUDED.estimate_snapshot,
        synced_at=now()`,
@@ -6936,31 +7068,76 @@ async function syncEstimateToNeon(rec) {
 // the total, and the hours it needs are the ones already in the row. Getting
 // this wrong is invisible: the estimate saves, and its GP is quietly stale.
 async function handleUpdateEstimate(body) {
-  const { estimateId, actualEstimate, laborHours, materialCost } = body || {};
+  const { estimateId, actualEstimate, laborHours, materialCost,
+          materialRawCost, materialMarkup, laborSellRate, laborBurdenRate,
+          priceAdjustment } = body || {};
   if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
 
   const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
   const est = num(actualEstimate), hrs = num(laborHours), mat = num(materialCost);
-  if (est === null && hrs === null && mat === null) {
+  const raw = num(materialRawCost),  mk  = num(materialMarkup);
+  const sr  = num(laborSellRate),    br  = num(laborBurdenRate);
+  const adj = num(priceAdjustment);
+  if ([est, hrs, mat, raw, mk, sr, br, adj].every(v => v === null)) {
     return resp(400, { ok: false, error: "Nothing to update." });
   }
   if (!neonEnabled()) {
     return resp(503, { ok: false, error: "Can't update the estimate right now — the database is unavailable. Try again in a moment." });
   }
 
-  const H = "COALESCE($3, estimated_labor_hours)";
-  const M = "COALESCE($4, estimated_material_cost)";
-  const rows = await neonWrite("estimate.update",
+  // Every fragment reads the OLD row when the caller left the field out, which
+  // is what makes this a partial update. Postgres evaluates every SET expression
+  // against the pre-update row, so the repetition below is safe — none of these
+  // can see another's new value.
+  //
+  // ⚠ The sell-rate fallback reaches the JOB, not a constant, because the rate
+  // is already per-job (`labor_billable_rates`, picked on the job) and only 36
+  // of 117 jobs are on 75.00. Defaulting everything to 75 would misprice a third
+  // of the book. The rate is only STAMPED when the caller sends one — inventing
+  // a record of what an old quote charged is not this handler's business.
+  const E = {
+    hours:      "COALESCE($3, estimated_labor_hours)",
+    matRaw:     "COALESCE($5, material_raw_cost)",
+    matMarkup:  "COALESCE($6, material_markup)",
+    matEntered: "COALESCE($4, estimated_material_cost)",
+    sellRate:   "COALESCE($7, labor_sell_rate, (SELECT j.billable_hourly_rate FROM jobs j WHERE j.id = job_estimates.job_id))",
+    burden:     "COALESCE($8, labor_burden_rate)",
+  };
+  const d = estDerived(E);
+  // ⚠ THE DOUBLE-COUNT GUARD IS THE DATABASE'S, NOT A PRE-CHECK HERE, and that
+  // is a correction rather than laziness. The first cut refused any request
+  // carrying a markup without a raw cost IN THE BODY — which broke the most
+  // ordinary edit there is: changing only the markup on an estimate that
+  // already has a raw cost stored. The condition is about the ROW, and only the
+  // row's own UPDATE knows it. Caught by the live branch run, not by reasoning.
+  let rows;
+  try {
+    rows = await neonWrite("estimate.update",
     `UPDATE job_estimates SET
        actual_estimate_sent       = COALESCE($2, actual_estimate_sent),
-       estimated_labor_hours      = ${H},
-       estimated_material_cost    = ${M},
-       estimated_labor_cost       = ${sqlEstLaborCost(H)},
-       calculated_estimated_total = ${sqlEstTotal(H, M)},
+       estimated_labor_hours      = ${E.hours},
+       material_raw_cost          = ${E.matRaw},
+       material_markup            = ${E.matMarkup},
+       labor_sell_rate            = COALESCE($7, labor_sell_rate),
+       labor_burden_rate          = COALESCE($8, labor_burden_rate),
+       price_adjustment           = COALESCE($9, price_adjustment),
+       estimated_material_cost    = ${d.materialSell},
+       estimated_labor_cost       = ${d.laborCost},
+       calculated_estimated_total = ${d.directCost},
+       calculated_selling_price   = ${d.sellingPrice},
        synced_at                  = now()
       WHERE airtable_id = $1 OR id::text = $1
-      RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id`,
-    [String(estimateId), est, hrs, mat]);
+      RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id,
+                estimated_material_cost`,
+    [String(estimateId), est, hrs, mat, raw, mk, sr, br, adj]);
+  } catch (e) {
+    // The one constraint a user can actually trip. Anything else is a fault.
+    if (/job_estimates_markup_needs_raw/.test(String(e?.message || e))) {
+      return resp(400, { ok: false, error: "Enter the raw material cost before adding a markup — otherwise the markup is counted twice." });
+    }
+    console.error(`updateEstimate: ${e?.message || e}`);
+    return resp(502, { ok: false, error: "Couldn't save that estimate. Please try again." });
+  }
   if (!rows?.length) return resp(404, { ok: false, error: "That estimate no longer exists." });
 
   const recId = rows[0].airtable_id;
@@ -6968,7 +7145,12 @@ async function handleUpdateEstimate(body) {
     const fields = {};
     if (est !== null) fields["fldJTAPtFpXH2vRwF"] = est;
     if (hrs !== null) fields["fldH7bJSZikzOYxkm"] = hrs;
-    if (mat !== null) fields["fldDEUGzVrfA56aBq"] = mat;
+    // The mirror gets the material SELL value — the same thing this field has
+    // always held over there. Airtable has no column for the split and is never
+    // gaining one (AIRTABLE_WRITES=off makes this a no-op today anyway).
+    if (mat !== null || raw !== null || mk !== null) {
+      fields["fldDEUGzVrfA56aBq"] = Number(rows[0].estimated_material_cost);
+    }
     await mirrorToAirtable("updateEstimate", () =>
       atFetch(`${encodeURIComponent("Job Estimates")}/${recId}`, {
         method: "PATCH", body: JSON.stringify({ fields }),
@@ -7364,6 +7546,7 @@ const ET_SELECT = `
          COALESCE(c.name, t.contractor_name)       AS contractor_name,
          t.active, t.scope_of_work, t.exclusions, t.standard_terms,
          t.base_price, t.default_labor_hours, t.default_material_cost,
+         t.default_material_markup, t.default_labor_sell_rate,
          t.internal_notes, t.updated_at, t.updated_by
     FROM estimate_templates t
     LEFT JOIN companies c ON c.airtable_id = t.contractor_airtable_id`;
@@ -7400,7 +7583,13 @@ function mapTemplateRow(r) {
     standardTerms:       s(r.standard_terms),
     basePrice:           n(r.base_price),
     defaultLaborHours:   n(r.default_labor_hours),
-    defaultMaterialCost: n(r.default_material_cost),
+    // db/schema/065: this now seeds the RAW cost box, not the marked-up figure.
+    defaultMaterialCost:   n(r.default_material_cost),
+    defaultMaterialMarkup: n(r.default_material_markup),
+    // NULL = "use the job's billable rate", which is what nearly every template
+    // should do — only 36 of 117 jobs are on 75.00, so a template that pins a
+    // rate is pinning it for jobs that do not charge it.
+    defaultLaborSellRate:  n(r.default_labor_sell_rate),
     internalNotes:       s(r.internal_notes),
     updatedAt:           r.updated_at ? String(r.updated_at) : null,
     updatedBy:           s(r.updated_by),
@@ -7539,7 +7728,8 @@ async function handleEstimateTemplateSave(body, authUser) {
   const vals   = [name, contractorId, contractorName, active,
                   text(b.scopeOfWork), text(b.exclusions), text(b.standardTerms),
                   money(b.basePrice), money(b.defaultLaborHours), money(b.defaultMaterialCost),
-                  text(b.internalNotes), who];
+                  text(b.internalNotes), who,
+                  money(b.defaultMaterialMarkup), money(b.defaultLaborSellRate)];
 
   let rows;
   try {
@@ -7549,8 +7739,9 @@ async function handleEstimateTemplateSave(body, authUser) {
            template_name=$1, contractor_airtable_id=$2, contractor_name=$3, active=$4,
            scope_of_work=$5, exclusions=$6, standard_terms=$7, base_price=$8,
            default_labor_hours=$9, default_material_cost=$10, internal_notes=$11,
-           updated_by=$12, updated_at=now()
-         WHERE airtable_id = $13 OR id::text = $13
+           updated_by=$12, default_material_markup=$13, default_labor_sell_rate=$14,
+           updated_at=now()
+         WHERE airtable_id = $15 OR id::text = $15
          RETURNING COALESCE(airtable_id, id::text) AS handle`, [...vals, handle]);
       if (!rows?.length) return resp(404, { ok: false, error: "That template no longer exists." });
     } else {
@@ -7559,8 +7750,9 @@ async function handleEstimateTemplateSave(body, authUser) {
            (template_name, contractor_airtable_id, contractor_name, active,
             scope_of_work, exclusions, standard_terms, base_price,
             default_labor_hours, default_material_cost, internal_notes,
-            updated_by, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
+            updated_by, default_material_markup, default_labor_sell_rate,
+            updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14, now())
          RETURNING COALESCE(airtable_id, id::text) AS handle`, vals);
     }
   } catch (e) {
@@ -7707,8 +7899,18 @@ async function handleDeleteJobEstimate(body) {
 // template seeded the values; the values themselves are independent
 // scalars, so editing the template later does not change this estimate.
 async function handleCreateJobEstimate(body) {
-  const { jobId, baseAmount, laborHours, materialCost, notes, estimateType, sourceTemplateId, estimateDate } = body || {};
+  const { jobId, baseAmount, laborHours, materialCost, notes, estimateType, sourceTemplateId, estimateDate,
+          materialRawCost, materialMarkup, laborSellRate, laborBurdenRate, priceAdjustment } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // db/schema/065. `materialCost` is still accepted and still means "the figure
+  // as typed" — a client that has not picked up the new form creates a
+  // legacy-shaped row, which is the correct thing for it to do rather than a
+  // half-populated one. See the CHECK note in handleUpdateEstimate.
+  if (materialMarkup !== undefined && materialMarkup !== null && String(materialMarkup) !== "" &&
+      (materialRawCost === undefined || materialRawCost === null || String(materialRawCost) === "")) {
+    return resp(400, { ok: false, error: "Enter the raw material cost before adding a markup — otherwise the markup is counted twice." });
+  }
 
   // NOTE: Estimate Name (fldneXJv6ia3TIPj6) is a formula field on the Job
   // Estimates table — Airtable computes it automatically and rejects writes.
@@ -7730,7 +7932,12 @@ async function handleCreateJobEstimate(body) {
   if (estimateDate) fields["Estimate Date"] = estimateDate;
   if (baseAmount   !== undefined && baseAmount   !== null && baseAmount   !== "") fields["Actual Estimate Sent"]    = Number(baseAmount);
   if (laborHours   !== undefined && laborHours   !== null && laborHours   !== "") fields["Estimated Labor Hours"]   = Number(laborHours);
-  if (materialCost !== undefined && materialCost !== null && materialCost !== "") fields["Estimated Material Cost"] = Number(materialCost);
+  // The mirror keeps holding material SELL, which is what this Airtable field
+  // has always contained. Airtable is not gaining a column for the split.
+  const mirrorMaterial = (materialRawCost !== undefined && materialRawCost !== null && materialRawCost !== "")
+    ? Number(materialRawCost) + Number(materialMarkup || 0)
+    : (materialCost !== undefined && materialCost !== null && materialCost !== "" ? Number(materialCost) : null);
+  if (mirrorMaterial !== null) fields["Estimated Material Cost"] = mirrorMaterial;
   if (notes && String(notes).trim()) fields["Notes"] = String(notes);
   // The Airtable link only accepts an Airtable record id, so this guard has to
   // stay. What changed (db/schema/047) is that failing it is no longer the end
@@ -7752,22 +7959,41 @@ async function handleCreateJobEstimate(body) {
   }
 
   const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+
+  // ⚠ THE RATES ARE STAMPED HERE, RESOLVED, INCLUDING THE FALLBACKS — that is
+  // the difference from the update path. A create knows exactly which rates were
+  // in force at the moment of quoting, and an estimate that records them cannot
+  // be silently repriced by next year's rate change. `labor_billable_rates` is
+  // already effective-dated per job for the same reason.
+  const SELL_RATE = `COALESCE($12::numeric, (SELECT j2.billable_hourly_rate FROM jobs j2 WHERE j2.airtable_id = $1 OR j2.id::text = $1), ${EST_LABOR_SELL_RATE})`;
+  const BURDEN    = `COALESCE($13::numeric, ${EST_LABOR_RATE})`;
+  const d = estDerived({
+    hours: "$5::numeric", matRaw: "$10::numeric", matMarkup: "$11::numeric",
+    matEntered: "$6::numeric", sellRate: SELL_RATE, burden: BURDEN,
+  });
   const rows = await neonWrite("estimate.create",
     `INSERT INTO job_estimates
        (job_airtable_id, job_id, estimate_type, status, actual_estimate_sent,
         estimated_labor_hours, estimated_material_cost,
-        estimated_labor_cost, calculated_estimated_total,
+        material_raw_cost, material_markup, labor_sell_rate, labor_burden_rate,
+        price_adjustment,
+        estimated_labor_cost, calculated_estimated_total, calculated_selling_price,
         estimate_date, notes, source_template_handle, synced_at)
      VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END,
-             (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5, $6,
-             ${sqlEstLaborCost("$5::numeric")}, ${sqlEstTotal("$5::numeric", "$6::numeric")},
+             (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5,
+             ${d.materialSell},
+             $10::numeric, $11::numeric, ${SELL_RATE}, ${BURDEN},
+             $14::numeric,
+             ${d.laborCost}, ${d.directCost}, ${d.sellingPrice},
              $7::date, $8, $9, now())
      RETURNING id`,
     [String(jobId), fields["Estimate Type"], fields["Status"],
      num(baseAmount), num(laborHours), num(materialCost),
      estimateDate ? String(estimateDate).slice(0, 10) : null,
      notes && String(notes).trim() ? String(notes) : null,
-     sourceTemplateId ? String(sourceTemplateId) : null]);
+     sourceTemplateId ? String(sourceTemplateId) : null,
+     num(materialRawCost), num(materialMarkup),
+     num(laborSellRate), num(laborBurdenRate), num(priceAdjustment)]);
   const neonId = rows?.[0]?.id;
   if (!neonId) return resp(502, { ok: false, error: "Couldn't create the estimate. Please try again." });
 

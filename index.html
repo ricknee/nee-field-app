@@ -3484,6 +3484,10 @@
           <div class="info-grid" id="estGpGrid">
             <div class="loading-msg">Select a job to view estimated gross profit.</div>
           </div>
+          <!-- Written by renderEstGp when this job holds estimates that predate
+               the cost/markup split. The cards above blend two populations and
+               this is where that is admitted. -->
+          <div id="estGpLegacyNote" style="display:none; margin-top:10px; padding:9px 13px; background:#fff7ed; border:1px dashed #fdba74; border-radius:8px; font-size:12px; color:#9a3412; line-height:1.5;"></div>
           <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px; gap:10px; flex-wrap:wrap;">
             <div class="section-header" style="margin:0;">📋 Job Estimates</div>
             <button id="estGpNewBtn" class="btn btn-primary btn-sm" type="button" style="font-size:12px; padding:6px 12px;" onclick="openNewEstModal(state.selected)">+ New From Template</button>
@@ -5198,17 +5202,83 @@
     return state.selected;
   }
 
+  // ── THE ESTIMATE MONEY MODEL, CLIENT SIDE (db/schema/065) ────────────────
+  // One function so the estimate card, the new-estimate modal and the job cards
+  // cannot disagree about what GP means. It mirrors `estDerived` in airtable.js
+  // exactly, including the legacy fallback: with no raw cost, the material
+  // figure as entered IS the cost basis and the markup is zero, which reproduces
+  // what this screen showed before the split.
+  //
+  // ⚠ Material MARKUP IS NOT A COST. That single line is the whole bug this
+  // model exists to fix — the old screen added labor cost to material SELL and
+  // called the difference profit, so GP came out low by exactly the markup.
+  const EST_BURDEN_FALLBACK = 32.50;
+  const EST_SELL_FALLBACK   = 75.00;
+  function estMath(v) {
+    const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
+    const has = (x) => x !== null && x !== undefined && x !== "";
+    const hours    = num(v.laborHours);
+    const burden   = has(v.laborBurdenRate) ? num(v.laborBurdenRate) : EST_BURDEN_FALLBACK;
+    const sellRate = has(v.laborSellRate)   ? num(v.laborSellRate)
+                   : (has(v.jobSellRate)    ? num(v.jobSellRate) : EST_SELL_FALLBACK);
+    const legacy   = !has(v.materialRawCost);
+    const matCost  = legacy ? num(v.materialCost) : num(v.materialRawCost);
+    const markup   = legacy ? 0 : num(v.materialMarkup);
+    const matSell  = matCost + markup;
+    const laborCost = hours * burden;
+    const laborSell = hours * sellRate;
+    const directCost = matCost + laborCost;
+    const calcPrice  = matSell + laborSell;
+    const finalPrice = has(v.actualEstimate) ? num(v.actualEstimate) : 0;
+    const gpDollars  = finalPrice - directCost;
+    return {
+      legacy, hours, burden, sellRate, matCost, markup, matSell,
+      laborCost, laborSell, directCost, calcPrice, finalPrice, gpDollars,
+      suggested: calcPrice + num(v.priceAdjustment),
+      // Guarded rather than assumed positive: a $0 estimate is a real state
+      // while it is being filled in, and NaN% renders as literal "NaN".
+      gpPct: finalPrice > 0 ? (gpDollars / finalPrice) * 100 : null,
+    };
+  }
+  const fmtPct1 = (p) => (p === null ? "—" : `${p.toFixed(1)}%`);
+
   async function renderEstGp(job) {
     const grid = $("estGpGrid");
+    // ⚠ Expected Revenue is the ALL-STATUS figure while every cost card beside
+    // it is FILTERED to Sent/Approved/Archived. That mismatch predates this
+    // change and is deliberate — see the note in mapJobFromNeon — so it is left
+    // exactly as it was rather than quietly "fixed" inside a GP rewrite.
+    const legacyN = Number(job.estimateLegacyCount || 0);
+    const totalN  = Number(job.estimateCount || 0);
     grid.innerHTML = `
       ${infoBox("Job Name", val(job.name))}
       ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus))}
-      ${infoBox("Projected Est. Total Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
-      ${infoBox("Proj. Est. Labor Hours", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—")}
-      ${infoBox("Proj. Est. Material Cost", fmtCurrency(job.projectedEstimatedMaterialCost))}
-      ${infoBox("Proj. Est. Labor Cost", fmtCurrency(job.projectedEstimatedLaborCost))}
-      ${infoBox("Projected Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar))}
-      ${infoBox("Projected Gross Profit %", job.projectedGrossProfitPct != null ? Math.round(job.projectedGrossProfitPct * 100) + "%" : "—")}`;
+      ${infoBox("Estimated Direct Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
+      ${infoBox("Estimated Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar))}
+      ${infoBox("Estimated GP %", job.projectedGrossProfitPct != null ? (job.projectedGrossProfitPct * 100).toFixed(1) + "%" : "—")}
+      ${infoBox("Labor Hours", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—")}
+      ${infoBox("Labor Cost", fmtCurrency(job.projectedEstimatedLaborCost))}
+      ${infoBox("Raw Material Cost", fmtCurrency(job.projectedEstimatedMaterialCost))}
+      ${infoBox("Material Markup", fmtCurrency(job.projectedEstimatedMaterialMarkup))}
+      ${infoBox("Material Sell", fmtCurrency(job.projectedEstimatedMaterialSell))}
+      ${infoBox("Labor Sell", fmtCurrency(job.projectedEstimatedLaborSell))}`;
+
+    // The screen has to say which of its numbers are records and which are
+    // guesses. Cost and GP are exact for a pre-split estimate — they reproduce
+    // the old arithmetic — but Material Sell, Material Markup and Labor Sell are
+    // inferred for one, and saying nothing would present a guess as a record.
+    const legacyNote = $("estGpLegacyNote");
+    if (legacyNote) {
+      if (legacyN > 0) {
+        legacyNote.innerHTML =
+          `⚠ ${legacyN} of ${totalN} counted estimate${totalN === 1 ? "" : "s"} predate${legacyN === 1 ? "s" : ""} the cost/markup split. ` +
+          `Cost and GP above are exact for those; <strong>Material Markup, Material Sell and Labor Sell are inferred</strong> ` +
+          `(markup read as $0, labor sell at this job's current rate). Split one below to make it exact.`;
+        legacyNote.style.display = "block";
+      } else {
+        legacyNote.style.display = "none";
+      }
+    }
 
     // Load estimates for this job
     const estimatesSection = $("estGpEstimates");
@@ -5216,6 +5286,10 @@
     try {
       const d = await apiGet("jobEstimates", { jobId: job.id });
       const estimates = d.estimates || [];
+      // The job's own markup % and billable rate, so the card can offer the
+      // right defaults instead of a hardcoded 10% / $75. Only 36 of 117 jobs
+      // charge 75/hr, so a constant here would misprice a third of the book.
+      const jd = d.jobDefaults || {};
       if (!estimates.length) {
         estimatesSection.innerHTML = `<div class="empty-msg">No estimates found for this job.</div>`;
         return;
@@ -5274,20 +5348,49 @@
               </div>
             </div>
 
-            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:12px;">
+            ${est.legacyMaterialBasis ? `
+            <div style="margin-bottom:10px; padding:8px 12px; background:#fff7ed; border:1px dashed #fdba74; border-radius:7px; font-size:11.5px; color:#9a3412; line-height:1.5;">
+              ⚠ <strong>Pre-split estimate.</strong> The ${fmtCurrency(est.materialCost)} material figure was entered before cost and
+              markup were separate fields, so it is being read as pure cost — which is exactly what this
+              screen has always done, and it is why GP may read low. Enter the raw cost and markup below
+              to make it exact. Leaving it alone changes nothing.
+            </div>` : ""}
+
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:12px;">
               <div>
-                <label class="edit-label">Actual Estimate Sent ($)</label>
+                <label class="edit-label">Estimate Selling Price ($)</label>
                 <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-actual edit-input" style="font-size:13px;" value="${est.actualEstimate != null ? est.actualEstimate : ""}" placeholder="0.00" />
               </div>
               <div>
-                <label class="edit-label">Est. Labor Hours</label>
+                <label class="edit-label">Labor Hours</label>
                 <input type="number" step="0.5" data-est-id="${esc(est.id)}" class="est-hours edit-input" style="font-size:13px;" value="${est.laborHours != null ? est.laborHours : ""}" placeholder="0" />
               </div>
               <div>
-                <label class="edit-label">Est. Material Cost ($)</label>
-                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-material edit-input" style="font-size:13px;" value="${est.materialCost != null ? est.materialCost : ""}" placeholder="0.00" />
+                <label class="edit-label">Material Cost ($)</label>
+                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-raw edit-input" style="font-size:13px;"
+                       value="${est.materialRawCost != null ? est.materialRawCost : ""}"
+                       placeholder="${est.legacyMaterialBasis && est.materialCost != null ? est.materialCost : "0.00"}" />
+              </div>
+              <div>
+                <label class="edit-label" style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+                  <span>Material Markup ($)</span>
+                  ${jd.markupPct ? `<button type="button" data-est-id="${esc(est.id)}" class="est-markup-fill"
+                       style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit;"
+                       title="Fill from this job's markup — the same % its actual material is billed at">${(jd.markupPct * 100).toFixed(0)}%</button>` : ""}
+                </label>
+                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-markup edit-input" style="font-size:13px;" value="${est.materialMarkup != null ? est.materialMarkup : ""}" placeholder="0.00" />
+              </div>
+              <div>
+                <label class="edit-label">Labor Sell Rate ($/hr)</label>
+                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-sellrate edit-input" style="font-size:13px;"
+                       value="${est.laborSellRate != null ? est.laborSellRate : ""}"
+                       placeholder="${jd.sellRate != null ? jd.sellRate : (jd.fallbackSellRate != null ? jd.fallbackSellRate : 75)}" />
               </div>
             </div>
+
+            <!-- Derived, never editable, recomputed on every keystroke by
+                 wireEstCardCalc so the estimator sees the GP before saving. -->
+            <div class="est-calc" data-est-id="${esc(est.id)}" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(128px, 1fr)); gap:8px 14px; margin-bottom:12px; padding:10px 12px; background:var(--panel-2); border-radius:8px; font-size:12px;"></div>
 
             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
               <button data-est-id="${esc(est.id)}" class="est-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save Changes</button>
@@ -5297,7 +5400,6 @@
                        data-est-amount="${est.actualEstimate != null ? esc(fmtCurrency(est.actualEstimate)) : "no amount"}"
                        data-est-status="${esc(pillLabel)}"
                        class="est-delete-btn btn btn-danger-sm" style="font-size:12px;">🗑 Delete</button>` : ""}
-              ${est.calculatedTotal != null ? `<span style="font-size:12px; color:var(--muted);">Calc. Total: <strong>${fmtCurrency(est.calculatedTotal)}</strong></span>` : ""}
               ${est.pdfs && est.pdfs.length ? est.pdfs.map(pdf => `
                 <a href="${esc(pdf.url)}" target="_blank" style="font-size:12px; color:var(--accent); text-decoration:none; display:flex; align-items:center; gap:4px;">
                   📄 ${esc(pdf.filename)}
@@ -5306,17 +5408,95 @@
           </div>`;
       }).join("");
 
+      // Reading the five boxes is done in one place because the save and the
+      // live recalculation must never disagree about what is on screen.
+      const estCardValues = (row, estId, est) => {
+        // ⚠ AN EMPTY BOX MEANS "UNCHANGED", NOT "ZERO", AND THE LIVE CALC HAS TO
+        // AGREE WITH THE SAVE. updateEstimate resolves every field it was not
+        // given with COALESCE($n, <stored column>), so clearing the markup on an
+        // estimate that has one does not clear it — it leaves it alone. Reading
+        // the blank as empty here would have shown a GP the save would not
+        // produce, which is the same class of quiet disagreement this whole
+        // change exists to remove.
+        const v = (cls, stored) => {
+          const raw = row.querySelector(`.${cls}[data-est-id="${estId}"]`)?.value ?? "";
+          return raw !== "" ? raw : (stored ?? "");
+        };
+        return {
+          actualEstimate:  v("est-actual",   est?.actualEstimate),
+          laborHours:      v("est-hours",    est?.laborHours),
+          materialRawCost: v("est-raw",      est?.materialRawCost),
+          materialMarkup:  v("est-markup",   est?.materialMarkup),
+          laborSellRate:   v("est-sellrate", est?.laborSellRate),
+          // Not editable, and needed only so a still-unsplit row keeps showing
+          // the figure it was entered with as its cost basis.
+          materialCost:    est?.materialCost,
+          laborBurdenRate: est?.laborBurdenRate,
+          jobSellRate:     jd.sellRate,
+        };
+      };
+      const byId = new Map(estimates.map(e => [String(e.id), e]));
+      const paintEstCalc = (row, estId) => {
+        const box = row.querySelector(`.est-calc[data-est-id="${estId}"]`);
+        if (!box) return;
+        const m = estMath(estCardValues(row, estId, byId.get(String(estId))));
+        const cell = (label, value, strong) =>
+          `<div><div style="color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px;">${label}</div>
+             <div style="${strong ? "font-weight:700;" : ""} color:${strong ? (m.gpDollars < 0 ? "var(--red)" : "var(--green)") : "var(--text)"};">${value}</div></div>`;
+        box.innerHTML =
+          cell("Material Sell", fmtCurrency(m.matSell)) +
+          cell("Labor Sell", fmtCurrency(m.laborSell)) +
+          cell("Calculated Price", fmtCurrency(m.calcPrice)) +
+          cell("Est. Direct Cost", fmtCurrency(m.directCost)) +
+          cell("Est. GP $", fmtCurrency(m.gpDollars), true) +
+          cell("Est. GP %", fmtPct1(m.gpPct), true);
+      };
+
+      estimatesSection.querySelectorAll(".est-calc").forEach(box => {
+        const estId = box.dataset.estId;
+        const row   = box.closest("div[style*='border-radius:10px']");
+        paintEstCalc(row, estId);
+        row.querySelectorAll(`input[data-est-id="${estId}"]`).forEach(inp =>
+          inp.addEventListener("input", () => paintEstCalc(row, estId)));
+      });
+
+      // "10%" next to the markup label: fill the markup from the job's own
+      // markup %, the same one its ACTUAL material is billed at. Typing over it
+      // is fine — the dollar figure is what gets stored, because that is how an
+      // estimator prices, and a stored % would fight the override.
+      estimatesSection.querySelectorAll(".est-markup-fill").forEach(b => {
+        b.addEventListener("click", () => {
+          const estId = b.dataset.estId;
+          const row   = b.closest("div[style*='border-radius:10px']");
+          const raw   = Number(row.querySelector(`.est-raw[data-est-id="${estId}"]`)?.value || 0);
+          if (!raw) { alert("Enter the material cost first — the markup is a percentage of it."); return; }
+          const box = row.querySelector(`.est-markup[data-est-id="${estId}"]`);
+          box.value = (raw * Number(jd.markupPct || 0)).toFixed(2);
+          paintEstCalc(row, estId);
+        });
+      });
+
       // Wire save buttons
       estimatesSection.querySelectorAll(".est-save-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
           const estId = btn.dataset.estId;
           const row   = btn.closest("div[style*='border-radius:10px']");
-          const actualEstimate = row.querySelector(`.est-actual[data-est-id="${estId}"]`).value;
-          const laborHours     = row.querySelector(`.est-hours[data-est-id="${estId}"]`).value;
-          const materialCost   = row.querySelector(`.est-material[data-est-id="${estId}"]`).value;
+          const f = estCardValues(row, estId, byId.get(String(estId)));
+          // ⚠ Sent WITHOUT `materialCost`. That field means "the figure as
+          // typed" and the server reads it as a legacy write; sending it
+          // alongside a raw cost would look like two different claims about the
+          // same money. The server recomputes it from raw + markup.
+          const payload = {
+            estimateId: estId,
+            actualEstimate:  f.actualEstimate,
+            laborHours:      f.laborHours,
+            materialRawCost: f.materialRawCost,
+            materialMarkup:  f.materialMarkup,
+            laborSellRate:   f.laborSellRate,
+          };
           btn.disabled = true; btn.textContent = "Saving...";
           try {
-            await apiPost("updateEstimate", { estimateId: estId, actualEstimate, laborHours, materialCost });
+            await apiPost("updateEstimate", payload);
             const msg = row.querySelector(`.est-save-msg[data-est-id="${estId}"]`);
             msg.style.display = "inline";
             setTimeout(() => { msg.style.display = "none"; }, 2500);
@@ -16539,7 +16719,18 @@
         estLines.push({ id:"est1", section:"", description:"", qty:1, rate:0, amount:0, editable:true, hideQtyRate:true });
       } else {
         estimates.forEach((est, i) => {
-          const amount = Number(est.actualEstimate != null ? est.actualEstimate : (est.calculatedTotal || 0));
+          // ⚠ THIS FALLBACK USED TO QUOTE THE CUSTOMER OUR COST. `calculatedTotal`
+          // is the estimated DIRECT COST — labor at $32.50 plus material at cost
+          // — so an estimate with no selling price entered would print a
+          // customer-facing document at roughly what the job costs us. Nothing
+          // has ever hit it (all 90 estimates carry a sent amount) but the
+          // cost/sell split is what makes the right value exist: the calculated
+          // SELLING price, material sell plus labor sell. Cost is last, and only
+          // so a pre-split estimate with no price still renders something.
+          const amount = Number(
+            est.actualEstimate != null ? est.actualEstimate
+            : est.calculatedSellingPrice != null ? est.calculatedSellingPrice
+            : (est.calculatedTotal || 0));
           let desc = est.name || "";
           if (est.notes && est.notes.trim()) desc = desc + (desc ? "\n\n" : "") + est.notes.trim();
           estLines.push({
@@ -17197,8 +17388,50 @@
       $("newEstBase")?.value,
       $("newEstLabor")?.value,
       $("newEstMaterial")?.value,
+      $("newEstMarkup")?.value,
+      $("newEstSellRate")?.value,
+      $("newEstAdjust")?.value,
       $("newEstNotes")?.value
     ].some(v => v && String(v).trim());
+  }
+
+  // Live derivation for the new-estimate modal. Same estMath the estimate cards
+  // use, so a quote reads identically before and after it is saved.
+  function _newEstPaint() {
+    const box = $("newEstCalc");
+    if (!box) return;
+    const m = estMath({
+      actualEstimate:  $("newEstBase")?.value,
+      laborHours:      $("newEstLabor")?.value,
+      materialRawCost: $("newEstMaterial")?.value,
+      materialMarkup:  $("newEstMarkup")?.value,
+      laborSellRate:   $("newEstSellRate")?.value,
+      priceAdjustment: $("newEstAdjust")?.value,
+      jobSellRate:     _newEstJob?.billableHourlyRate,
+    });
+    const cell = (label, value, strong) =>
+      `<div><div style="color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px;">${label}</div>
+         <div style="${strong ? "font-weight:700;" : ""} color:${strong ? (m.gpDollars < 0 ? "var(--red)" : "var(--green)") : "var(--text)"};">${value}</div></div>`;
+    box.innerHTML =
+      cell("Material Sell", fmtCurrency(m.matSell)) +
+      cell("Labor Sell", fmtCurrency(m.laborSell)) +
+      cell("Calculated Price", fmtCurrency(m.calcPrice)) +
+      cell("Est. Direct Cost", fmtCurrency(m.directCost)) +
+      cell("Est. GP $", fmtCurrency(m.gpDollars), true) +
+      cell("Est. GP %", fmtPct1(m.gpPct), true);
+
+    // The adjustment SUGGESTS a price; it never writes one. Forcing the quoted
+    // figure to follow a calculation is the one behaviour the estimator has to
+    // stay in charge of.
+    const sug = $("newEstSuggested");
+    if (sug) {
+      const adj = Number($("newEstAdjust")?.value || 0);
+      sug.innerHTML = adj
+        ? `Suggested: <strong>${fmtCurrency(m.suggested)}</strong> · <button type="button" id="newEstUseSuggested" style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit;">use this price</button>`
+        : `Optional. Adjusts the suggested price for risk, schedule or competition.`;
+      const use = $("newEstUseSuggested");
+      if (use) use.onclick = () => { $("newEstBase").value = m.suggested.toFixed(2); _newEstPaint(); };
+    }
   }
 
   function _newEstComposeNotes(t) {
@@ -17230,7 +17463,13 @@
     $("newEstBase").value     = t.basePrice          != null ? t.basePrice          : "";
     $("newEstLabor").value    = t.defaultLaborHours  != null ? t.defaultLaborHours  : "";
     $("newEstMaterial").value = t.defaultMaterialCost!= null ? t.defaultMaterialCost: "";
+    $("newEstMarkup").value   = t.defaultMaterialMarkup != null ? t.defaultMaterialMarkup : "";
+    // Blank means "use the job's rate", which is what almost every template
+    // should do — pinning 75 on a template pins it for the 81 of 117 jobs that
+    // do not charge it.
+    $("newEstSellRate").value = t.defaultLaborSellRate != null ? t.defaultLaborSellRate : "";
     $("newEstNotes").value    = _newEstComposeNotes(t);
+    _newEstPaint();
   }
 
   // Pulled out of openNewEstModal so the template manager can refresh the
@@ -17307,12 +17546,40 @@
     $("newEstBase").value     = "";
     $("newEstLabor").value    = "";
     $("newEstMaterial").value = "";
+    $("newEstMarkup").value   = "";
+    $("newEstSellRate").value = "";
+    $("newEstAdjust").value   = "";
     $("newEstNotes").value    = "";
     _newEstSetType("Original");
     $("newEstMsg").style.display = "none";
     const sel = $("newEstTemplate");
     sel.innerHTML = `<option value="">— Loading templates… —</option>`;
     sel.disabled = true;
+
+    // ── The job's own rates, shown as PLACEHOLDERS, not values ─────────────
+    // A placeholder leaves the field empty, so the server resolves the rate at
+    // save time and stamps what it actually used. Prefilling a value would make
+    // every estimate carry a hardcoded rate the estimator never chose, and the
+    // whole point of stamping is that it records a decision.
+    const jobRate = job.billableHourlyRate;
+    $("newEstSellRate").placeholder = jobRate != null ? Number(jobRate).toFixed(2) : "75.00";
+    const fill = $("newEstMarkupFill");
+    if (job.markupPct) {
+      fill.textContent = `${(Number(job.markupPct) * 100).toFixed(0)}%`;
+      fill.title = "Fill from this job's markup — the same % its actual material is billed at";
+      fill.style.display = "";
+      fill.onclick = () => {
+        const raw = Number($("newEstMaterial").value || 0);
+        if (!raw) { alert("Enter the material cost first — the markup is a percentage of it."); return; }
+        $("newEstMarkup").value = (raw * Number(job.markupPct)).toFixed(2);
+        _newEstPaint();
+      };
+    } else {
+      fill.style.display = "none";
+    }
+    ["newEstBase", "newEstLabor", "newEstMaterial", "newEstMarkup", "newEstSellRate", "newEstAdjust"]
+      .forEach(id => { const el = $(id); if (el) el.oninput = _newEstPaint; });
+    _newEstPaint();
 
     // ⚠⚠ ROLE VISIBILITY IS APPLIED HERE, NOT BY THE `admin-only` CLASS.
     // This modal's markup lives AFTER the main <script> in DOM order, so the
@@ -17368,7 +17635,6 @@
 
     const baseAmount  = $("newEstBase").value;
     const laborHours  = $("newEstLabor").value;
-    const materialCost= $("newEstMaterial").value;
     const notes       = $("newEstNotes").value || "";
     const sourceId    = $("newEstTemplate").value || null;
 
@@ -17381,7 +17647,14 @@
         jobId:            _newEstJob.id,
         baseAmount,
         laborHours,
-        materialCost,
+        // ⚠ `materialCost` is NOT sent. It still exists server-side and still
+        // means "the figure as typed", which creates a legacy-shaped row — the
+        // right thing for an old cached client to do, and the wrong thing for
+        // this one. Every estimate written from this form carries the split.
+        materialRawCost: $("newEstMaterial").value,
+        materialMarkup:  $("newEstMarkup").value,
+        laborSellRate:   $("newEstSellRate").value,
+        priceAdjustment: $("newEstAdjust").value,
         notes,
         estimateType:     _newEstType,
         sourceTemplateId: sourceId,
@@ -17555,6 +17828,8 @@
     $("tmplBase").value       = t && t.basePrice           != null ? t.basePrice           : "";
     $("tmplLabor").value      = t && t.defaultLaborHours   != null ? t.defaultLaborHours   : "";
     $("tmplMaterial").value   = t && t.defaultMaterialCost != null ? t.defaultMaterialCost : "";
+    $("tmplMarkup").value     = t && t.defaultMaterialMarkup != null ? t.defaultMaterialMarkup : "";
+    $("tmplSellRate").value   = t && t.defaultLaborSellRate  != null ? t.defaultLaborSellRate  : "";
     $("tmplScope").value      = t ? t.scopeOfWork   : "";
     $("tmplExclusions").value = t ? t.exclusions    : "";
     $("tmplTerms").value      = t ? t.standardTerms : "";
@@ -17623,6 +17898,8 @@
       basePrice:           $("tmplBase").value,
       defaultLaborHours:   $("tmplLabor").value,
       defaultMaterialCost: $("tmplMaterial").value,
+      defaultMaterialMarkup: $("tmplMarkup").value,
+      defaultLaborSellRate:  $("tmplSellRate").value,
       scopeOfWork:         $("tmplScope").value,
       exclusions:          $("tmplExclusions").value,
       standardTerms:       $("tmplTerms").value,
@@ -24845,11 +25122,12 @@
         </div>
       </div>
 
-      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-top:10px;">
-        <div class="sl-field">
-          <label>Base Price ($)</label>
-          <input id="newEstBase" type="number" step="0.01" class="edit-input" placeholder="0.00" />
-        </div>
+      <!-- ⚠ `newEstMaterial` IS THE RAW COST BOX NOW, not the marked-up figure.
+           The id is kept so the back-stack, the dirty check and the template
+           loader do not all have to be re-pointed at once; what changed is what
+           it means, which is written on the label and enforced server-side by
+           the markup/raw CHECK in db/schema/065. -->
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-top:10px;">
         <div class="sl-field">
           <label>Labor Hours</label>
           <input id="newEstLabor" type="number" step="0.5" class="edit-input" placeholder="0" />
@@ -24857,6 +25135,37 @@
         <div class="sl-field">
           <label>Material Cost ($)</label>
           <input id="newEstMaterial" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+        </div>
+        <div class="sl-field">
+          <label style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+            <span>Material Markup ($)</span>
+            <button type="button" id="newEstMarkupFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit;"></button>
+          </label>
+          <input id="newEstMarkup" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+        </div>
+        <div class="sl-field">
+          <label>Labor Sell Rate ($/hr)</label>
+          <input id="newEstSellRate" type="number" step="0.01" class="edit-input" placeholder="75.00" />
+        </div>
+      </div>
+
+      <!-- Derived. Written by _newEstPaint on every keystroke. -->
+      <div id="newEstCalc" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(128px, 1fr)); gap:8px 14px; margin-top:10px; padding:10px 12px; background:var(--panel-2); border-radius:8px; font-size:12px;"></div>
+
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-top:10px; align-items:end;">
+        <div class="sl-field">
+          <label>Estimate Selling Price ($)</label>
+          <input id="newEstBase" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <div style="font-size:10.5px; color:var(--muted); margin-top:4px;">What you actually quote. It may differ from the calculated price on purpose.</div>
+        </div>
+        <div class="sl-field">
+          <!-- NOT called profit or O&P: it is a deliberate final adjustment for
+               risk, complexity, schedule or a competitive situation, and naming
+               it "profit" would invite it into the GP maths, which it is not
+               part of — GP is measured against the price actually quoted. -->
+          <label>Price Adjustment ($)</label>
+          <input id="newEstAdjust" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <div id="newEstSuggested" style="font-size:10.5px; color:var(--muted); margin-top:4px;"></div>
         </div>
       </div>
 
@@ -24917,7 +25226,7 @@
         </label>
       </div>
 
-      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px;">
+      <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
         <div class="sl-field">
           <label>Base Price ($)</label>
           <input id="tmplBase" type="number" step="0.01" class="edit-input" placeholder="—" />
@@ -24930,8 +25239,21 @@
           <label>Material Cost ($)</label>
           <input id="tmplMaterial" type="number" step="0.01" class="edit-input" placeholder="—" />
         </div>
+        <div class="sl-field">
+          <label>Material Markup ($)</label>
+          <input id="tmplMarkup" type="number" step="0.01" class="edit-input" placeholder="—" />
+        </div>
+        <div class="sl-field">
+          <label>Labor Sell Rate ($/hr)</label>
+          <input id="tmplSellRate" type="number" step="0.01" class="edit-input" placeholder="job's rate" />
+        </div>
       </div>
-      <div style="font-size:11px; color:var(--muted); margin-top:4px;">Leave a box empty to have the estimator fill it in — empty is not the same as 0.</div>
+      <div style="font-size:11px; color:var(--muted); margin-top:4px;">
+        Leave a box empty to have the estimator fill it in — empty is not the same as 0.
+        <br>Material Cost is the <strong>raw</strong> cost, before markup. Leave Labor Sell Rate empty to
+        use whatever rate each job is set to — only 36 of 117 jobs charge $75/hr, so pinning a rate here
+        pins it for jobs that don't.
+      </div>
 
       <div class="sl-field" style="margin-top:12px;">
         <label>Scope of Work</label>

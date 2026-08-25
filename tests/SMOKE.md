@@ -25,6 +25,24 @@ paths never touch live data). See `.env.example`.
 
 - [ ] `node tests/handlers.test.mjs` → **all pass** (offline, mocked Airtable). Add a case per bug fixed.
 
+## Tier 1.5 — Live SQL, against a Neon **branch** (opt-in, writes)
+
+Tier 1 has no database, so it can pin the *shape* of a statement but never its
+arithmetic. That gap is not theoretical: the estimate create shipped broken on
+2026-08-22 and failed on the first click in production, because the pre-flight
+check used `PREPARE name(text, numeric, …)` — declaring the parameter types and
+so resolving the very ambiguity that broke. **The driver sends parameters
+untyped.** Only a real call through the real driver proves a statement.
+
+- [ ] `node tests/estimate-gp.live.mjs "<neon-branch-connection-string>"` → **all pass**
+
+⚠ It **creates and deletes estimates on real jobs**. Make a branch first
+(`create_branch` in the Neon MCP, or the console) and pass *that* connection
+string — never the production one. It cleans up everything it makes.
+
+Run it when touching the estimate money model, `estDerived`, `v_job_rollups`, or
+anything that upserts `job_estimates`.
+
 ## Tier 2 — Money-path E2E (Playwright, against `netlify dev` + test base)
 
 - [ ] Invoice builder: Contract %-progress and T&M modes both produce correct Snapshot Total.

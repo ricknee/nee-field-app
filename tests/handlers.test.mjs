@@ -2236,8 +2236,11 @@ await test("slice 3: the columns Airtable used to compute are computed here, and
   //    estimated GP, so a native estimate that left it null would report a job
   //    as more profitable than it is.
   ok(/const EST_LABOR_RATE = 32\.50;/.test(src), "the estimate labor rate is 32.50 and is named");
-  ok(/sqlEstLaborCost\("\$5::numeric"\)/.test(src), "the create computes labor cost rather than storing null");
-  ok(/sqlEstTotal\("\$5::numeric", "\$6::numeric"\)/.test(src), "the create computes the estimate total");
+  // db/schema/065 replaced the two sqlEst* builders with one `estDerived`, which
+  // both write paths call. The assertion is that the CREATE derives rather than
+  // storing nulls — the failure mode is unchanged, only the helper's name moved.
+  ok(/const d = estDerived\(\{/.test(src), "the create derives its money columns rather than storing null");
+  ok(/\$\{d\.laborCost\}, \$\{d\.directCost\}, \$\{d\.sellingPrice\}/.test(src), "all three derived columns are written by the create");
 
   // ⚠⚠ REGRESSION, 2026-08-22: this shipped broken and the first click in
   // production failed with `inconsistent types deduced for parameter $5`.
@@ -2247,7 +2250,7 @@ await test("slice 3: the columns Airtable used to compute are computed here, and
   // they are asserted because nothing else in this offline suite can see them.
   const code = src.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
   ok(!/COALESCE\(\$\d+, 0\)/.test(code), "no untyped zero literal against a parameter");
-  ok(/COALESCE\(\$\{hoursExpr\}, 0::numeric\)/.test(src), "the coalesce literal is numeric, not integer");
+  ok(/COALESCE\(\$\{hours\}, 0::numeric\)/.test(src), "the coalesce literal is numeric, not integer");
 
   // 2. A partial update recomputes from the STORED values of the fields it was
   //    not given. Editing only the material cost still moves the total.
@@ -2271,6 +2274,117 @@ await test("slice 3: the columns Airtable used to compute are computed here, and
   ok(/COALESCE\(a\.invoice_id, i2\.id\)/.test(sql), "labor resolves uuid-first, rec id second");
   ok(/COALESCE\(m\.invoice_id, i2\.id\)/.test(sql), "material resolves uuid-first, rec id second");
   ok(/ADD COLUMN IF NOT EXISTS invoice_id uuid/.test(sql), "labor allocations gained the uuid link");
+});
+
+await test("est GP: material markup is not a cost, and a pre-split estimate keeps today's maths", async () => {
+  // ── WHAT BROKE (db/schema/065) ──────────────────────────────────────────
+  // `Calculated Estimated Total` added labor COST to the material figure, and
+  // on a marked-up quote that figure is the SELLING value. So the markup was
+  // booked as cost and estimated GP came out low by exactly the markup — always
+  // in the same direction, which is why it survived five years. Measured on the
+  // Seneca quote: 21.9% reported against 27.5% real, $7,000 mislaid.
+  //
+  // This suite is offline and cannot see the arithmetic run. What it CAN pin is
+  // the shape of the SQL, and every assertion below is a specific way the fix
+  // silently reverts. The arithmetic itself is proven by tests/estimate-gp.live.mjs
+  // against a Neon branch, because the driver sends parameters untyped and only
+  // a real call proves a statement (the 2026-08-22 lesson, three tests up).
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const sql  = readFileSync(fileURLToPath(new URL("../db/schema/065_estimate_gp_model.sql", import.meta.url)), "utf8");
+
+  // 1. THE COST BASIS EXCLUDES THE MARKUP. If `directCost` ever picks up `sell`
+  //    instead of `cost`, GP silently returns to being understated — no error,
+  //    no failed save, just the old wrong number back on the screen.
+  const der = src.slice(src.indexOf("function estDerived"), src.indexOf("function estDerived") + 1400);
+  ok(/const cost = `COALESCE\(\$\{matRaw\}, \$\{matEntered\}, 0::numeric\)`/.test(der),
+     "cost basis is raw cost, falling back to the figure as entered");
+  ok(/const sell = `COALESCE\(\$\{matRaw\} \+ COALESCE\(\$\{matMarkup\}, 0::numeric\), \$\{matEntered\}, 0::numeric\)`/.test(der),
+     "sell basis adds the markup on top of raw");
+  ok(/directCost:\s+`round\(\$\{h\} \* \$\{b\} \+ \$\{cost\}, 2\)`/.test(der),
+     "DIRECT COST USES `cost`, NEVER `sell` — this is the whole bug");
+  ok(/sellingPrice:\s+`round\(\$\{sell\} \+ \$\{h\} \* \$\{sr\}, 2\)`/.test(der),
+     "the calculated PRICE uses sell, and charges labor at the sell rate");
+
+  // 2. A LEGACY ROW IS UNTOUCHED. `matRaw` is NULL on all 90 pre-split rows, and
+  //    NULL + anything is NULL, so both bases fall through to the figure as
+  //    typed — which reproduces the old arithmetic exactly. Wrapping matRaw in
+  //    its own COALESCE would look tidier and would quietly reinterpret history.
+  ok(!/COALESCE\(\$\{matRaw\}, 0/.test(der), "matRaw is never defaulted to zero — that would reinterpret 90 old estimates");
+  ok(/COALESCE\(e\.material_raw_cost, e\.estimated_material_cost\)/.test(sql),
+     "the rollup reads raw cost first and the as-entered figure second");
+
+  // 3. THE SELL RATE COMES FROM THE JOB. Only 36 of 117 jobs charge $75/hr, so a
+  //    constant here misprices roughly a third of the book — and it would do it
+  //    invisibly, because $75 is a plausible number on every screen.
+  ok(/billable_hourly_rate FROM jobs j2 WHERE j2\.airtable_id = \$1/.test(src),
+     "the create resolves the sell rate from the job, not from a constant");
+  ok(/COALESCE\(\$7, labor_sell_rate, \(SELECT j\.billable_hourly_rate/.test(src),
+     "the update falls back job-ward too");
+
+  // 4. THE DOUBLE-COUNT GUARD IS THE DATABASE'S. A markup with no raw cost makes
+  //    the cost basis fall back to the SELL figure while the markup is also
+  //    booked as profit — the same dollars on both sides of GP. The first cut
+  //    checked the request body instead of the row, which refused the most
+  //    ordinary edit there is: changing only the markup.
+  ok(/CHECK \(material_markup IS NULL OR material_raw_cost IS NOT NULL\)/.test(sql),
+     "the constraint lives in the schema");
+  ok(/job_estimates_markup_needs_raw/.test(src), "and the handler turns it into a sentence");
+  const upd2 = src.slice(src.indexOf("async function handleUpdateEstimate"));
+  ok(!/if \(mk !== null && raw === null\)/.test(upd2.slice(0, 3000)),
+     "the update does NOT pre-check the body — only the row knows whether a raw cost is stored");
+
+  // 5. THE ESTIMATE BUILDER NO LONGER FALLS BACK TO OUR COST. `calculatedTotal`
+  //    is the estimated DIRECT COST, so an estimate with no selling price would
+  //    have printed a customer-facing quote at roughly what the job costs us.
+  ok(/est\.calculatedSellingPrice != null \? est\.calculatedSellingPrice/.test(html),
+     "the printed estimate prefers the calculated SELLING price over the cost total");
+
+  // 6. THE SCREEN ADMITS WHICH NUMBERS ARE GUESSES. Cost and GP are exact for a
+  //    pre-split estimate; Material Sell, Markup and Labor Sell are inferred.
+  //    Blending the two populations without saying so is the quiet lie.
+  ok(/est_legacy_count/.test(sql), "the rollup counts pre-split estimates");
+  ok(/estGpLegacyNote/.test(html), "and the screen has somewhere to say so");
+
+  // 7. NOTHING AIRTABLE-SHAPED MAY HALF-REVERT A SPLIT ROW. Airtable has no
+  //    raw-cost column, so an upsert from it resets the three derived money
+  //    figures while raw cost and markup stay — one estimate holding two
+  //    contradictory accounts of the same money, with nothing erroring. Two
+  //    writers can do this: syncEstimateToNeon (dead while AIRTABLE_WRITES=off,
+  //    alive the moment it is switched back) and the full ETL, where re-running
+  //    a load has always been safe *because Airtable owned every column*.
+  const sync = src.slice(src.indexOf("async function syncEstimateToNeon"));
+  ok(/estimated_material_cost = CASE WHEN job_estimates\.material_raw_cost IS NULL/.test(sync.slice(0, 3500)),
+     "syncEstimateToNeon will not overwrite a split row's material figure");
+  ok(/calculated_estimated_total = CASE WHEN job_estimates\.material_raw_cost IS NULL/.test(sync.slice(0, 3500)),
+     "nor its direct cost");
+  const etl = readFileSync(fileURLToPath(new URL("../db/etl/time-entries-full.mjs", import.meta.url)), "utf8");
+  ok(/when: "job_estimates\.material_raw_cost IS NOT NULL/.test(etl),
+     "the full ETL preserves the columns the app now owns");
+  ok(/cols: \["estimated_labor_cost", "estimated_material_cost", "calculated_estimated_total"\]/.test(etl),
+     "and it names all three of them");
+});
+
+await test("est GP: the new estimate fields fail CLOSED without a database", async () => {
+  // Same contract as the rest of slice 3: an estimate that exists only in
+  // Airtable is invisible to the app forever, so a create without Neon must
+  // refuse rather than half-land. The new fields must not open a bypass.
+  const saved = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  const c = await POST("createJobEstimate", {
+    jobId: "recJob", baseAmount: 126000, laborHours: 650,
+    materialRawCost: 70250, materialMarkup: 7000, laborSellRate: 75,
+  }, ADMIN_TOK);
+  eq(c.statusCode, 503, "create refuses without a database");
+  const u = await POST("updateEstimate", { estimateId: "recEst", materialMarkup: 9000 }, ADMIN_TOK);
+  eq(u.statusCode, 503, "update refuses without a database");
+  // And the one guard that runs BEFORE the database is reached, so it cannot be
+  // dodged by an outage: a markup with no raw cost on a brand-new estimate.
+  const bad = await POST("createJobEstimate", { jobId: "recJob", materialMarkup: 7000 }, ADMIN_TOK);
+  eq(bad.statusCode, 400, "markup without a raw cost is refused before anything else");
+  if (saved) process.env.DATABASE_URL = saved;
 });
 
 await test("slice 3: the mirror can fail without duplicating an invoice", async () => {

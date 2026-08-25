@@ -3,7 +3,7 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
-import { scrubFabricatingLinks, airtableWriteBlocked, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
+import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource,
          neonEmployees, neonEmployeeById, isEmployeeHandle } from "./_employees.js";
@@ -12763,6 +12763,22 @@ async function handleJobCreateStatus() {
     meaning: jobsAreNative()
       ? "Jobs are BORN IN NEON. Airtable gets a fail-soft mirror and the rec id is never stamped back."
       : "Jobs are created in Airtable first. Setting JOB_CREATE_SOURCE=native requires a REDEPLOY to take effect.",
+
+    // ── The mirror kill switch, reported here for the same reason this endpoint
+    // exists at all: so flipping an env var stops being guesswork. The RAW value
+    // is included because the failure mode is a typo — "Off " or "false" both
+    // leave writes ON, deliberately, and only the raw value shows you why.
+    airtableWrites: {
+      rawValue: process.env.AIRTABLE_WRITES === undefined ? null : process.env.AIRTABLE_WRITES,
+      enabled: airtableWritesEnabled(),
+      meaning: airtableWritesEnabled()
+        ? "Mirrors ARE being written to Airtable. Set AIRTABLE_WRITES=off to stop all 65 of them."
+        : "Mirrors are OFF. Nothing in this app writes to Airtable; Neon is the only record.",
+      // The combination that cannot work, surfaced before somebody hits it.
+      misconfigured: !jobsAreNative() && !airtableWritesEnabled()
+        ? "⚠ JOB_CREATE_SOURCE is not 'native' AND writes are off — job creation will refuse, because the non-native path re-reads its own Airtable write."
+        : null,
+    },
   });
 }
 

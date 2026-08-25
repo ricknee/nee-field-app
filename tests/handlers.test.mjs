@@ -3762,6 +3762,32 @@ await test("no bare `WHERE airtable_id = $n` — the dual-handle guard", async (
   eq(offenders.length, 0, offenders.join(" | "));
 });
 
+// ── The bill-once rule (2026-08-25) ────────────────────────────────────────
+// T&M material is billable once it is approved and must never be billed again.
+// `unbilled_material_amount_calc` enforces that by subtracting
+// expenses.billed_material_amount — a column whose only writer used to be
+// syncExpenseToNeon copying an Airtable rollup. Native expenses have no rollup,
+// so it stayed NULL and every later invoice re-offered material already billed.
+// The claim path writes it now. Offline, so this asserts the shape rather than
+// the behaviour: the SQL cannot be exercised without a database, and losing it
+// silently is exactly the failure mode.
+await test("claiming material marks the expense billed, scoped to native rows", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/_allocations.js", import.meta.url)), "utf8");
+
+  ok(/if \(kind === "material"\)/.test(src),
+     "the write is gated to material — labor has no equivalent column");
+  ok(/billed_material_amount\s*=\s*COALESCE\(e\.billed_material_amount,\s*0\)\s*\+\s*c\.amt/.test(src),
+     "claiming ADDS to billed_material_amount rather than replacing it");
+  ok(/JOIN expenses e ON e\.id = m\.expense_id[\s\S]{0,200}e\.airtable_id IS NULL/.test(src),
+     "scoped to native expenses — a legacy row's number still comes from Airtable's rollup");
+  // The claim lookup must keep requiring BOTH handles empty, or an allocation
+  // could be claimed twice and its amount added twice.
+  ok(/a\.invoice_airtable_id IS NULL AND a\.invoice_id IS NULL/.test(src),
+     "claim lookup still requires both invoice handles empty (idempotency)");
+});
+
 // ── The fabricated-link guard (2026-08-25) ─────────────────────────────────
 // Two rules, one bug. Saving an invoice on a native job put the uuid into an
 // Airtable LINKED-RECORD field with `typecast: true`, which does not reject an

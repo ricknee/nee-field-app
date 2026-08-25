@@ -344,6 +344,56 @@ export async function attachAllocationsToInvoice(atFetch, invoice, jobAirtableId
         WHERE id = ANY($1::uuid[])`,
       [ids, invoiceNeonId, invoiceAirtableId]);
     attached += ids.length;
+
+    // ── MARK THE MATERIAL BILLED (2026-08-25) ───────────────────────────────
+    // "Bill it once it is approved, and then never again" is the T&M rule, and
+    // `unbilled_material_amount_calc` is what enforces it:
+    //
+    //   unbilled = billable − expenses.billed_material_amount
+    //
+    // That column was an AIRTABLE ROLLUP over the expense's linked allocations,
+    // and the ONLY thing that ever wrote it into Neon is syncExpenseToNeon,
+    // copying the rollup back. A Neon-native expense has no rollup to copy, so
+    // it stayed NULL forever: the material read fully unbilled no matter how
+    // many times it had been invoiced, and every later invoice offered it again.
+    // Measured before this fix — 406 legacy expenses had the column set, all 7
+    // native ones had it NULL. Since expenses went native on 2026-08-24 that is
+    // every expense from here on, so the second invoice on any new T&M job would
+    // have re-billed its material.
+    //
+    // ⚠ SCOPED TO NATIVE EXPENSES ON PURPOSE. A legacy expense still gets its
+    // number from Airtable's rollup, which the hourly sync carries back and
+    // would overwrite anything written here — and its allocations still mint
+    // Airtable rows, so that rollup is still correct for them. Widening this to
+    // legacy rows would put two writers on one column, which is how the stored
+    // value and the allocations drifted apart in the first place (135 of 406
+    // legacy expenses disagree with their own allocations by $274k — a separate
+    // question, deliberately not answered by this change).
+    //
+    // ⚠ Contract invoices never reach here: `auto_allocate` is false for them,
+    // so handleSaveInvoice skips the attach entirely. Contract jobs bill from
+    // the estimate and its addenda; their material is tracked, not billed.
+    //
+    // Idempotent by construction: the lookup above only returns allocations with
+    // BOTH invoice handles NULL, so an allocation is claimed once and can only
+    // be added to its expense once.
+    if (kind === "material") {
+      await neonWrite("allocation.attach.markBilled",
+        `WITH claimed AS (
+           SELECT m.expense_id, SUM(m.allocated_amount) AS amt
+             FROM material_billing_allocations m
+             JOIN expenses e ON e.id = m.expense_id
+            WHERE m.id = ANY($1::uuid[])
+              AND e.airtable_id IS NULL
+            GROUP BY m.expense_id
+         )
+         UPDATE expenses e
+            SET billed_material_amount = COALESCE(e.billed_material_amount, 0) + c.amt,
+                synced_at = now()
+           FROM claimed c
+          WHERE e.id = c.expense_id`,
+        [ids]);
+    }
   };
 
   for (const kind of ["labor", "material"]) {

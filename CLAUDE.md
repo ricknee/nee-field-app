@@ -123,10 +123,12 @@ answers, just slowly. It went unnoticed for three days.
   ⚠ `native` also makes the app the **only** source of two values Airtable used to compute: the
   `Job PO` string and `markup_pct` (a NULL markup bills material at **cost**, permanently, because
   allocations snapshot it). Both are reproduced in `_jobs.js`.
-  ⚠⚠ **Never stamp the Airtable rec id back onto a native job.** `_jobs-sync.js` upserts
-  `ON CONFLICT (airtable_id)` **hourly** across 38 columns: a native job conflicts with nothing and
-  is invisible to it, but a stamped one would be overwritten from Airtable every hour, silently
-  reverting everything the app wrote.
+  ⚠⚠ **Never stamp the Airtable rec id back onto a native job.** This mattered because
+  `_jobs-sync.js` upserted `ON CONFLICT (airtable_id)` **hourly** across 38 columns, so a stamped
+  id would have let Airtable overwrite everything the app wrote, every hour, silently.
+  **That sync was RETIRED 2026-08-25** — it is no longer called and must not be wired back (see
+  its header) — so the rule now stands for a different reason: `airtable_id` is the handle every
+  R2 key, token and stored id already speaks, and changing it strands all of them.
   ⚠⚠ **…but its Airtable MIRROR is not invisible to that sync, and that was a live bug** (fixed
   2026-08-24, `db/schema/062`). The mirror is a real Airtable record with a rec id no Neon row
   carries, so the hourly sync took the INSERT branch and re-imported it as a **second job** — same
@@ -136,8 +138,9 @@ answers, just slowly. It went unnoticed for three days.
   `airtable_id`. **The general rule: "we never stamp the id back" protects the row we wrote — it
   says nothing about the row we caused to exist in Airtable. For any un-stamped mirror, ask what
   reads that table wholesale.**
-- `AIRTABLE_WRITES` — **the mirror kill switch. Unset or `on` = mirrors are written (today).
-  `off` = every POST/PATCH/PUT/DELETE through any `atFetch` is skipped** and resolves to
+- `AIRTABLE_WRITES` — **PRODUCTION TODAY: `off`. The app writes NOTHING to Airtable.**
+  Unset or `on` = mirrors are written.
+  `off` = every POST/PATCH/PUT/DELETE through any `atFetch` is skipped, and resolves to
   `{ id: null, fields: {}, skipped: true }` rather than null, because ~65 call sites read `data?.id`
   or `created.id`. One env var moves all of them; editing 40 handlers would be 40 chances to miss one.
   ⚠ **Safe only because every remaining Airtable write is a MIRROR** — verified 2026-08-25 by call
@@ -183,7 +186,15 @@ Frontend conventions worth knowing before editing `index.html`:
   PDFs are sent as base64 directly from the browser to a **Make.com webhook**
   (`MAKE_PCLOUD_UPLOAD_WEBHOOK` in `index.html`). The functions are not in this path.
 
-### Three Netlify Functions (`netlify/functions/`)
+### Netlify Functions (`netlify/functions/`)
+
+⚠ Two modules added 2026-08-25 sit in front of everything else and are worth knowing first:
+**`_airtable-write-guard.js`** — the single choke point every Airtable write passes through. Holds
+`AIRTABLE_WRITES` (the kill switch) and strips uuids out of linked-record fields, because
+`typecast: true` does not reject an unknown link value, it **CREATES the record**.
+**`_integrity.js`** — nine SELECT-only checks run at the end of every hourly pull, and on demand via
+`GET ?action=integrityCheck`. It exists because eleven defects were found by hand in one day and
+**not one of them threw**: this system fails by matching nothing, which reads as "no data".
 
 - **`airtable.js`** (~200 KB) — the main proxy for the field app. One `handler` dispatches on
   an `action` string: GET reads `event.queryStringParameters.action`, POST reads
@@ -199,12 +210,15 @@ Frontend conventions worth knowing before editing `index.html`:
   the identity cutover's slice 4c (2026-08-24) it makes **no authoritative Airtable write at
   all.** The Airtable calls that remain all go to the **main** base and are: eight Neon-first
   reads with an Airtable fallback (login, employees, the four job pickers, the push's job index),
-  the `getExpenseFields` schema debug action, and **one fail-soft mirror** — `handlePushExpenses`
-  creates its materials/tax expenses in Neon and then best-effort-copies them to main-base
-  `Expenses`, kept only because that table is still a Make trigger bus. It never stamps the rec id
-  back (R2 receipt keys are `expenses/<handle>/`, so a handle that flips orphans every receipt)
-  and never feeds the mirror response to `syncExpenseToNeon` (its `ON CONFLICT (airtable_id)`
-  cannot fire on a NULL, so it would insert a **second** expense for the same spend).
+  the `getExpenseFields` schema debug action, and one fail-soft mirror in `handlePushExpenses`.
+  ⚠ **That mirror no longer runs: `AIRTABLE_WRITES=off` since 2026-08-25.** Its old justification
+  — "that table is still a Make trigger bus" — was **measured false** the same day: of the 20 Make
+  scenarios in the only team, every one using the `airtable` package is `isActive: false`.
+  The code stays, inert, and still carries its two rules for whenever anyone reads it: it never
+  stamps the rec id back (R2 receipt keys are `expenses/<handle>/`, so a handle that flips orphans
+  every receipt) and never feeds the mirror response to `syncExpenseToNeon` (its
+  `ON CONFLICT (airtable_id)` cannot fire on a NULL, so it would insert a **second** expense for
+  the same spend).
 
 (A third function, `auth.js`, was deleted in `304b86c` — it was dead duplicate handlers using
 legacy env-var PINs `EMPLOYEE_PIN`/`ADMIN_PIN`. That Phase-1 PIN model is **not** how the
@@ -242,6 +256,38 @@ billable-rate, createVendor), and `_NON_VIEWER` as the default for all other wri
 read-only). It's a **conservative first pass** — it does NOT harden the plaintext-PIN compare in
 `handleLogin` (a separate pass). When adding a write action, decide its tier in `authzFor` or it
 defaults to non-viewer.
+
+## 🔴 WHERE THIS STANDS — 2026-08-25 (read this before planning anything)
+
+**The app no longer reads or writes Airtable in normal operation. Neon is the system of record.**
+
+- `AIRTABLE_WRITES=off` in production. All ~65 mirror writes are skipped at the `atFetch` choke
+  point. Verify with `GET ?action=jobCreateStatus` → `airtableWrites.enabled`.
+- **Both hourly pulls are retired** — `syncJobs` (38 job columns) and `syncBillingTables`. Their
+  modules carry a RETIRED banner. ⚠⚠ Re-enabling one would not "resume syncing", it would
+  **OVERWRITE**: every app edit since the cut is newer than Airtable's copy.
+- **39 read handlers now REFUSE (503) rather than fall back**, because Airtable is frozen and a
+  fallback answers with yesterday's world, silently. Four fallbacks remain on purpose:
+  `handleLogin` (governed by `LOGIN_SOURCE`; the failure mode is nobody can work — **owner's call**),
+  and three value-returning helpers: `guardExpenseMutation`, `computePayrollDateRanges`,
+  `handlePayrollBonusesRollup`.
+- **Billing allocations are Neon-native for every row**, not just native ones (2026-08-25). The
+  Airtable-first fork is gone and `bill_rate` is written on every allocation — nothing else fills
+  it now, and a NULL rate values those hours at **$0 while they still print**.
+- The hourly `qb-time-pull` still runs and is untouched: **QuickBooks Time → Neon → the app**.
+  QB Time remains the source of truth for hours by owner's instruction. It writes
+  `sync_state('hourly_pull')` every run — that is the liveness signal now that `jobs.synced_at`
+  no longer moves.
+
+**What is left of the Airtable exit:** the four fallbacks above, deleting the now-unreachable
+Airtable read branches, then PAT read-only for a week and archive the base. After that: Google
+contacts (item 07), then prevailing wage. Running order stays `docs/AUDIT-airtable-remaining.md`.
+
+**⚠ The lesson that cost the most on 2026-08-25:** eleven defects were found by hand in one day and
+**not one of them threw**. A native row does not crash a query, it *matches nothing*, which is
+indistinguishable from "there is no data". Deploying is not evidence — **re-query production after
+the next real run.** `_integrity.js` exists to break that silence; five static guards in
+`tests/handlers.test.mjs` exist to stop the specific spellings coming back.
 
 ## Airtable integration conventions (read before touching `airtable.js`)
 

@@ -546,3 +546,62 @@ job scenarios; Make hooks listed; both frontends grepped for direct Airtable and
 - what the custom script inside `wflGOWii6JG6qpk21` — "Create Contact from Job Intake" — posts to
 - what sent the four near-empty POSTs at 10:17:24Z. Ruled out as app traffic on the code; not
   traced to its actual source.
+
+---
+
+# ▶▶▶ 2026-08-25 — THE CORD IS CUT. Read this before anything above.
+
+Everything above this line was written while Airtable was still wired in. Most of it is now
+history. **The app no longer reads or writes Airtable in normal operation.**
+
+## What changed, in the order it happened
+
+| | what | commit |
+|---|---|---|
+| 1 | Both hourly pulls retired — `syncJobs` (38 job columns, hourly `ON CONFLICT` overwrite) and `syncBillingTables` | `45a5cf0` |
+| 2 | Billing allocations went **fully Neon-native** — closing a hole step 1 opened | `adf6888` |
+| 3 | `AIRTABLE_WRITES` kill switch — all ~65 mirror writes, one env var | `48a78d7` |
+| 4 | 14 read handlers refuse instead of falling back | `3a2c67d` |
+| 5 | 25 more read handlers, same | `5bb8199` |
+
+Plus, earlier the same day: the ghost-job fix (`db/schema/062`), the missing `v_invoices` columns
+(`063`), invoice save idempotency (`064`), the fabricated-record guard, and the hourly integrity
+checks.
+
+## The four things that were true and are no longer
+
+1. **"Mirror writes are the Make trigger bus."** Measured false on 2026-08-25: of the 20 Make
+   scenarios in the only team (6575), every one that uses the `airtable` package is
+   `isActive: false`. Nothing watches those tables.
+2. **"Airtable is the sole source of truth for Jobs — nothing writes back."** It was upstream of
+   118 of 120 jobs via the hourly sync. That is why every app write to a job field had to mirror
+   back or be reverted at the top of the hour.
+3. **"The billing allocations have no write path in the app."** They have had one since
+   2026-08-11 (`db/schema/033`); the sync outlived its own reason by two weeks.
+4. **"No rows is ambiguous — the job may have been created in Airtable within the last hour."**
+   True until the sync was retired. No job is created in Airtable any more.
+
+## What is left
+
+- **4 read fallbacks**, each deliberate: `handleLogin` (owner's call — `LOGIN_SOURCE` governs it and
+  the failure mode is nobody can log in), plus `guardExpenseMutation`, `computePayrollDateRanges`
+  and `handlePayrollBonusesRollup`, which return values rather than responses.
+- **The Airtable read branches still exist as code.** Unreachable while a database is configured,
+  but not deleted.
+- **PAT read-only for a week, then archive.** The original rule stands: no Airtable read in the
+  logs across a full pay period first.
+- Then **Google contacts (item 07)**, then **prevailing wage** — the owner's stated order.
+
+## ⚠ The method note that matters more than any of the above
+
+Eleven defects were found by hand on 2026-08-25 and **not one of them threw.** Every single one
+returned success, an empty list, or a stale screen. Three of the day's fixes were for problems
+introduced earlier in the same session, and each was caught by **re-querying production after a
+real run** — never by tests passing or a green deploy.
+
+Two specific traps, both of which produced false confidence before being caught:
+- **Classify by call graph, not grep.** The grep pass over Airtable writes produced four false
+  positives; the genuine Airtable-FIRST writer (allocations) was in a different file entirely.
+- **A bulk edit cannot tell one shape from another.** The read-fallback sweep put an unconditional
+  503 into four handlers where an empty result is a legitimate answer — a job with no generator,
+  a job that does not exist, two receipt lookups. Audit every mechanical edit for reachability.

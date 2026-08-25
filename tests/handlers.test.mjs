@@ -4073,6 +4073,79 @@ await test("jobs-sync: a PO collision is reported, NOT skipped", async () => {
   ok(errs.some(e => e.includes("recUNRECORDED1234") && e.includes("301")),
      "the collision is logged with both the rec id and the PO");
 });
+
+// ── The fabricated-record guard (2026-08-25) ───────────────────────────────
+// `typecast: true` does not reject an unknown linked-record value, it CREATES
+// the record — that is how one invoice mirror produced an Airtable Job named
+// after a uuid. The nine job-link sites were fixed individually; this guard sits
+// at the atFetch choke point so the fix also covers employees, vendors,
+// companies and any link written by code that does not exist yet.
+const { scrubFabricatingLinks, UUID_RE } = await import("../netlify/functions/_airtable-write-guard.js");
+const UUID = "846245ef-294f-423b-a2b1-4b4a919607f8";
+const scrubbed = (fields, method = "POST") => {
+  const errs = [];
+  const realErr = console.error;
+  console.error = (...a) => errs.push(a.join(" "));
+  try {
+    const out = scrubFabricatingLinks("test", { method, body: JSON.stringify({ fields, typecast: true }) });
+    return { fields: JSON.parse(out.body).fields, errs };
+  } finally { console.error = realErr; }
+};
+
+await test("write guard: a uuid never reaches a linked-record field", async () => {
+  const { fields, errs } = scrubbed({ "Job": [UUID], "Notes": "hello" });
+  eq("Job" in fields, false, "the link field is OMITTED, not sent as []");
+  eq(fields.Notes, "hello", "everything else is untouched");
+  ok(errs.some(e => e.includes(UUID)), "and it says so, with the id");
+});
+
+await test("write guard: a rec id passes through untouched", async () => {
+  const { fields, errs } = scrubbed({ "Job": ["recPvbB0WaNllOhNm"], "Vendor": ["recABC12345678xyz"] });
+  eq(fields.Job[0], "recPvbB0WaNllOhNm", "rec id kept");
+  eq(fields.Vendor[0], "recABC12345678xyz", "second link kept");
+  eq(errs.length, 0, "and nothing is logged");
+});
+
+await test("write guard: an intentional empty array still CLEARS the link", async () => {
+  const { fields } = scrubbed({ "Vendor": [] });
+  eq(Array.isArray(fields.Vendor), true, "[] is left alone — several call sites clear links this way");
+  eq(fields.Vendor.length, 0, "still empty");
+});
+
+await test("write guard: a uuid in a TEXT field is legitimate and kept", async () => {
+  // Push ID is a uuid stored as text; only ARRAYS are linked-record fields.
+  const { fields, errs } = scrubbed({ "Push ID": UUID, "Job Name": "Test 10" });
+  eq(fields["Push ID"], UUID, "scalar uuid untouched");
+  eq(errs.length, 0, "nothing logged");
+});
+
+await test("write guard: mixed arrays keep the rec ids and drop the uuid", async () => {
+  const { fields } = scrubbed({ "Crew": ["recAAA1234567890", UUID, "recBBB1234567890"] });
+  eq(fields.Crew.length, 2, "two survivors");
+  eq(fields.Crew.includes(UUID), false, "uuid gone");
+});
+
+await test("write guard: batch records and GETs", async () => {
+  const errs = [];
+  const realErr = console.error; console.error = (...a) => errs.push(a.join(" "));
+  let out;
+  try {
+    out = scrubFabricatingLinks("batch", { method: "POST",
+      body: JSON.stringify({ records: [{ fields: { Job: [UUID] } }, { fields: { Job: ["recZZZ1234567890"] } }], typecast: true }) });
+  } finally { console.error = realErr; }
+  const recs = JSON.parse(out.body).records;
+  eq("Job" in recs[0].fields, false, "batch row 0 scrubbed");
+  eq(recs[1].fields.Job[0], "recZZZ1234567890", "batch row 1 untouched");
+  // A GET has no body to inspect and must pass straight through.
+  const get = { method: "GET" };
+  eq(scrubFabricatingLinks("g", get), get, "GET returned as-is");
+});
+
+await test("write guard: UUID_RE matches Neon ids and not rec ids", async () => {
+  eq(UUID_RE.test(UUID), true, "uuid");
+  eq(UUID_RE.test("recPvbB0WaNllOhNm"), false, "rec id");
+  eq(UUID_RE.test("not-a-uuid"), false, "junk");
+});
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

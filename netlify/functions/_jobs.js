@@ -24,6 +24,7 @@
 // condition was "status = New Lead AND Job PO Number is EMPTY", which a record
 // created with the number already in it never satisfies.
 import { neonWrite } from "./_neon.js";
+import { scrubFabricatingLinks } from "./_airtable-write-guard.js";
 
 const AT_API = "https://api.airtable.com/v0";
 
@@ -88,6 +89,9 @@ export class JobInputError extends Error {
 export function makeAtFetch(apiKey, baseId) {
   if (!apiKey || !baseId) throw new Error("makeAtFetch: apiKey and baseId are required");
   return async function atFetch(path, options = {}) {
+    // See _airtable-write-guard.js — this one carries the native job's mirror,
+    // which is the write that fabricated a Job on 2026-08-25.
+    options = scrubFabricatingLinks(path, options);
     const res = await fetch(`${AT_API}/${baseId}/${path}`, {
       ...options,
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", ...(options.headers || {}) }

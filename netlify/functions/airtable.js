@@ -3,6 +3,7 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
+import { scrubFabricatingLinks, UUID_RE } from "./_airtable-write-guard.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource,
          neonEmployees, neonEmployeeById, isEmployeeHandle } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
@@ -850,6 +851,9 @@ const WARRANTY_SOURCE_OPTS = ["Standard", "Extended Purchase", "Promotional", "T
 
 async function atFetch(path, options = {}) {
   ensureEnv();
+  // See _airtable-write-guard.js: a uuid in a linked-record field does not fail,
+  // it FABRICATES the record. Every write in this file passes through here.
+  options = scrubFabricatingLinks(path, options);
   const res = await fetch(`${API_ROOT}/${path}`, {
     ...options,
     headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}`, "Content-Type": "application/json", ...(options.headers || {}) }
@@ -10639,6 +10643,7 @@ async function handleUpdateJobBillableRate(body) {
 async function handleSaveInvoice(body) {
   const {
     invoiceId,            // NEW: if present, PATCH existing record instead of POSTing a new one
+    clientSaveId,         // idempotency key for the CREATE path — see db/schema/064
     jobId, invoiceDate, billingMode,
     percentToBill,        // legacy — only used if totalAmount not provided
     totalAmount,          // NEW: authoritative amount from the line-item sum
@@ -10646,6 +10651,14 @@ async function handleSaveInvoice(body) {
     notes, invoiceNumber, snapshot, invoiceStage
   } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+
+  // The idempotency key (db/schema/064). Accepted ONLY in canonical uuid form:
+  // anything else — an older client that sends nothing, a stray string — is
+  // treated as absent, so the save behaves exactly as it did before, just
+  // without duplicate protection. A malformed value must never reach the
+  // `$12::uuid` cast, which would 500 a save that was otherwise fine.
+  const saveKey = UUID_RE.test(String(clientSaveId ?? "").trim())
+    ? String(clientSaveId).trim() : null;
 
   const fields = {};
   Object.assign(fields, jobLink("fld1fmEklDw6y9hS2", jobId));       // Job (linked)
@@ -10773,16 +10786,47 @@ async function handleSaveInvoice(body) {
          (job_airtable_id, job_id, invoice_number, invoice_status, invoice_type,
           billing_mode, invoice_stage, invoice_date, snapshot_total,
           manual_labor, manual_material, percent_to_bill, auto_allocate,
-          invoice_display_no, invoice_notes, invoice_snapshot, synced_at)
+          invoice_display_no, invoice_notes, invoice_snapshot, client_save_id, synced_at)
        VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1),
                COALESCE((SELECT name FROM jobs WHERE airtable_id = $1 OR id::text = $1), '') || '-001',
-               'Sent', $2, $3, $4, $5::date, $6, 0, 0, $7, $8, $9, $10, $11, now())
+               'Sent', $2, $3, $4, $5::date, $6, 0, 0, $7, $8, $9, $10, $11, $12::uuid, now())
+       -- ⚠⚠ THE WHOLE POINT OF THIS STATEMENT (db/schema/064). A retried save —
+       -- a double-click, a 504 that actually landed, a phone that lost signal —
+       -- carries the SAME key and lands here, where it does nothing instead of
+       -- minting a second invoice and burning another display number. Six
+       -- invoices on Test 10 in a few minutes is what this prevents.
+       -- ⚠ The WHERE is not optional. The index is PARTIAL (client_save_id IS
+       -- NOT NULL, so the thousands of pre-existing NULL rows stay legal), and
+       -- Postgres will only infer a partial index as the conflict arbiter if the
+       -- statement repeats its predicate. Without it: "there is no unique or
+       -- exclusion constraint matching the ON CONFLICT specification".
+       ON CONFLICT (client_save_id) WHERE client_save_id IS NOT NULL DO NOTHING
        RETURNING id, airtable_id`,
       [String(jobId), invoiceTypeV, billingModeV,
        invoiceStage ? String(invoiceStage) : null, dateVal, totalNum,
        pctToBill ?? null, autoAllocate, displayNo ?? null,
-       notes || null, snapshotText]);
+       notes || null, snapshotText, saveKey]);
     row = rows?.[0];
+
+    // No row means the conflict fired: this exact save already created an
+    // invoice. Return THAT one and report it as a duplicate rather than an
+    // error — the caller asked for a save and a save exists, which is success.
+    //
+    // ⚠ Deliberately skips the allocation claim below by returning early. The
+    // first request already swept the job's unlinked allocations onto this
+    // invoice; running it again would find nothing, but the early return also
+    // keeps the Airtable mirror from being POSTed twice.
+    if (!row && saveKey) {
+      const dup = await neonQuery(
+        `SELECT COALESCE(airtable_id, id::text) AS id, invoice_display_no
+           FROM invoices WHERE client_save_id = $1::uuid`, [saveKey]);
+      const hit = dup?.rows?.[0];
+      if (hit) {
+        console.log(`saveInvoice: duplicate save ${saveKey} — returning invoice ${hit.invoice_display_no}`);
+        return resp(200, { ok: true, id: hit.id, duplicate: true,
+                           displayNumber: hit.invoice_display_no ?? null });
+      }
+    }
     if (!row) return resp(502, { ok: false, error: "Couldn't save the invoice. Please try again." });
   }
 

@@ -20,6 +20,7 @@
 // See docs/PLAN-airtable-identity-cutover.md.
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
+import { scrubFabricatingLinks } from "./_airtable-write-guard.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from "./_employees.js";
 // Both fail-soft by contract: neonExec for the last-login stamp, neonQuery for
 // the main-base job reads (Step B0). The driver is lazy-imported so the offline
@@ -103,6 +104,8 @@ function gBool(fields, name) {
 }
 
 async function atFetch(root, path, options = {}) {
+  // See _airtable-write-guard.js — the push's expense mirror writes a Job link.
+  options = scrubFabricatingLinks(path, options);
   const res = await fetch(`${root}/${path}`, {
     ...options,
     headers: {

@@ -251,11 +251,28 @@ async function handleEmployees() {
 // columns refreshed hourly) and carries every column they need, so they read
 // Neon first and keep Airtable as the fallback.
 //
-// ⚠⚠ These return `airtable_id` AS `id` — never the Neon uuid. That id flows
-// picker → cart → `submitCart` stamps it onto `Job ID (Main)` → the expense push
-// writes it into a **linked-record field** on main-base Expenses. A uuid there
-// writes garbage into an Airtable link. This is deliberate and stays this way
-// until Step E moves the push itself.
+// ⚠⚠ THESE USED TO RETURN `airtable_id` AS `id` AND TO FILTER OUT ANY ROW
+// WITHOUT ONE. Both were right when every job had a rec id. After
+// `JOB_CREATE_SOURCE=native` (2026-08-24) they meant: **a job born in the app is
+// missing from every inventory picker.** Reported live on Test 10 — awarded,
+// visible in the field app, absent from "Use on Job", so no material could be
+// logged against it at all.
+//
+// The filter was `COALESCE(airtable_id, '') <> ''`, which is why the slice 5/6
+// sweeps for `airtable_id IS NOT NULL` never saw it. Same trap, different spelling.
+//
+// The old note said the rec id was load-bearing because the push writes it into
+// a LINKED-RECORD field on main-base Expenses, where a uuid would write garbage.
+// That is still true of the Airtable MIRROR — and it is now handled where it
+// actually happens, in `handlePushExpenses`, which drops the link rather than
+// sending a uuid into `typecast: true` (that combination CREATES a junk Job).
+// Everything else downstream already takes either handle: the ledger column is
+// text, `pendingFromNeon` re-emits it verbatim, and the native expense insert
+// resolves the job with `airtable_id = $1 OR id::text = $1`.
+//
+// So: emit `COALESCE(airtable_id, id::text)`, the same rule as every other emit
+// site in the cutover, and let the one genuinely rec-id-shaped consumer guard
+// itself.
 //
 // ⚠ Display name uses `po`, NOT `po_locked`. The PO only locks when a job is
 // awarded, so `po_locked` is blank on all 13 New Lead jobs — and those are in
@@ -266,7 +283,10 @@ const JOB_STATUS_ESTIMATING = ["New Lead", "Estimating", ...JOB_STATUS_AWARDED];
 
 function mapNeonJob(r) {
   return {
-    id:         r.airtable_id,
+    // The dual handle: a rec id for every job Airtable ever created, the uuid
+    // for one born here. Byte-identical to the old output for all 116 legacy
+    // jobs, so nothing already in a cart or a ledger row changes meaning.
+    id:         r.handle,
     name:       (r.po || r.name || "").trim(),
     status:     r.status || "",
     taxable:    (r.tax_status || "") === "Taxable",
@@ -284,10 +304,10 @@ function mapNeonJob(r) {
 async function neonJobs(statuses) {
   const filtered = Array.isArray(statuses);
   const q = await neonQuery(
-    `SELECT airtable_id, name, po, status, tax_status, contractor_name
+    `SELECT COALESCE(airtable_id, id::text) AS handle,
+            name, po, status, tax_status, contractor_name
        FROM jobs
-      WHERE COALESCE(airtable_id, '') <> ''
-        ${filtered ? "AND status = ANY($1::text[])" : ""}
+      ${filtered ? "WHERE status = ANY($1::text[])" : ""}
       ORDER BY name ASC`,
     filtered ? [statuses] : []
   );
@@ -1630,8 +1650,16 @@ async function handlePushExpenses(body) {
     //
     // Kept at all only because the Airtable Expenses table is still the trigger
     // bus for the automations that watch it. It goes when the base is archived.
+    // ⚠⚠ THE JOB LINK IS OMITTED FOR A NATIVE JOB, AND OMITTING IT IS THE SAFE
+    // HALF. `fldPNFIzq1grsdxYi` is a LINKED-RECORD field and this POST carries
+    // `typecast: true`, which for an unrecognised value does not fail — it
+    // CREATES a Job record named with that uuid, which the hourly _jobs-sync
+    // then imports as a real job. That is the slice-5 "Submitted By" trap with
+    // a worse blast radius. The mirror is a courtesy copy nothing reads; a
+    // jobless one is strictly better than a fabricated job in both stores.
+    const jobLink = String(jobId).startsWith("rec") ? [String(jobId)] : null;
     const mirrorRecords = rows.map(r => ({ fields: {
-      "fldPNFIzq1grsdxYi": [String(jobId)],
+      ...(jobLink ? { "fldPNFIzq1grsdxYi": jobLink } : {}),
       "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
       // Manual Material COST — the input column, not the derived Total Cost
       // (Actual). Writing the derived one double-counts credits in GP.

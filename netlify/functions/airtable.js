@@ -1096,6 +1096,22 @@ async function handleCreateTimeEntry(body) {
   const jobRec = (jobId      && String(jobId).startsWith("rec"))      ? String(jobId)      : null;
   const empRec = (employeeId && String(employeeId).startsWith("rec")) ? String(employeeId) : null;
 
+  // ⚠⚠ AND THESE TWO ARE FOR THE MIRROR ONLY. The INSERT below gets the RAW
+  // handles, because its resolves are `airtable_id = $n OR id::text = $n` and
+  // feeding them the rec-stripped value hands a dual-handle clause a NULL.
+  //
+  // That is precisely what shipped: `jobRec` was passed as $7, so adding hours
+  // to a NATIVE job wrote job_id NULL and job_name NULL. The row saved, payroll
+  // paid it, and it vanished from the job's Time Entries tab — which INNER JOINs
+  // jobs — with no error anywhere. Reported live on Test 10, 2026-08-25.
+  //
+  // ⚠ The lesson is narrower than "use the dual handle" and worth stating on its
+  // own: THE CLAUSE WAS ALREADY CORRECT. A dual-handle resolve fed a single-handle
+  // parameter is indistinguishable, at the SQL, from a job that does not exist.
+  // Check what reaches $n, not just what $n is compared against.
+  const jobHandle = jobId      ? String(jobId).trim()      : null;
+  const empHandle = employeeId ? String(employeeId).trim() : null;
+
   // NEON FIRST — this row is the record from here on, whatever Airtable does.
   // `source = 'Manual'` is not decoration: the te_has_a_key CHECK requires a row to
   // name its origin, and a Neon-native row has neither an Airtable nor a QB id at
@@ -1113,7 +1129,7 @@ async function handleCreateTimeEntry(body) {
              (SELECT po_locked FROM jobs WHERE airtable_id = $7 OR id::text = $7),
              false, 'Manual')
      RETURNING id, job_name`,
-    [employee, empRec, workDate, durationSecs, taxes, klass, jobRec]);
+    [employee, empHandle, workDate, durationSecs, taxes, klass, jobHandle]);
   const neonId = rows?.[0]?.id;
   // Returned from the INSERT rather than re-derived in JS, so the mirror carries
   // BYTE-IDENTICAL text to the authoritative row. Re-querying po_locked here would
@@ -1373,7 +1389,13 @@ async function handleClockIn(body, authUser, targetEmp) {
   const me = targetEmp || await clockEmployee(authUser);
   if (!me) return resp(400, { ok: false, error: "No employee record found for this login." });
 
-  const jobRec = (jobId && String(jobId).startsWith("rec")) ? String(jobId) : null;
+  // ⚠ THE RAW HANDLE, not a rec-stripped one. The LEFT JOIN below is
+  // `airtable_id = $3 OR id::text = $3`; handing it a value that has already had
+  // uuids filtered out makes a native job resolve to no row, and the LEFT JOIN
+  // then writes job_id NULL / job_name NULL rather than failing. Someone
+  // punches in on a job and the punch records no job. Same defect as
+  // handleCreateTimeEntry, found in the same sweep (2026-08-25).
+  const jobHandle = jobId ? String(jobId).trim() : null;
 
   // Replay guard #1: this punch cycle already ran to completion. The queue is retrying
   // a clock-in whose clock-out has ALREADY been recorded, so re-opening a shift here
@@ -1398,7 +1420,7 @@ async function handleClockIn(body, authUser, targetEmp) {
        LEFT JOIN jobs j ON j.airtable_id = $3 OR j.id::text = $3
      ON CONFLICT (employee_id) DO NOTHING
      RETURNING started_at, job_name, class, city_taxes, notes, client_punch_id`,
-    [me.id, started, jobRec, cls || null, cityTaxes || null, notes || null,
+    [me.id, started, jobHandle, cls || null, cityTaxes || null, notes || null,
      numOrNull(lat), numOrNull(lon), clientPunchId]);
 
   if (rows?.length) return resp(200, { ok: true, open: rows[0] });
@@ -1493,7 +1515,11 @@ async function handleClockOut(body, authUser, targetEmp) {
     return resp(200, { ok: true, punch: done.rows[0], replayed: true });
   }
 
-  const jobRec = (jobId && String(jobId).startsWith("rec")) ? String(jobId) : null;
+  // Raw handle — see the note in clockIn. Here the miss is quieter still:
+  // the SELECT is `COALESCE(j.id, c.job_id)`, so a native job that failed to
+  // resolve falls back to the open punch's job_id, which clockIn had already
+  // left NULL for the same reason. Two bugs covering for each other.
+  const jobHandle = jobId ? String(jobId).trim() : null;
 
   // ONE STATEMENT, so closing the shift and recording it cannot half-happen. If the
   // insert fails the delete rolls back with it and the person is still on the clock —
@@ -1550,7 +1576,7 @@ async function handleClockOut(body, authUser, targetEmp) {
      RETURNING id, work_date, started_at, ended_at,
                duration_seconds::float8 AS duration_seconds,
                break_seconds::float8 AS break_seconds, job_name`,
-    [me.id, me.name || null, ended, jobRec, cls || null, cityTaxes || null,
+    [me.id, me.name || null, ended, jobHandle, cls || null, cityTaxes || null,
      notes || null, numOrNull(lat), numOrNull(lon), clientPunchId]);
 
   const punch = rows?.[0];
@@ -1651,8 +1677,12 @@ async function handleClockEditTimes(body, authUser) {
     // NULL means "not sent, leave alone" for each field. For the job specifically,
     // an empty string is how you CLEAR it — that is what "— No job —" sends, and
     // it's why the job needs three branches where the others need one.
-    const jobRecOpen = (jobId === undefined) ? null
-      : (jobId && String(jobId).startsWith("rec") ? String(jobId) : "");
+    // ⚠⚠ THE WORST OF THIS FAMILY, because "" is not "unknown" here — it MEANS
+    // CLEAR. The old form mapped any non-rec id to "", so editing an open punch
+    // on a NATIVE job did not merely fail to set the job, it actively unset the
+    // one already there. Three branches, and only the middle one is a uuid's
+    // business: undefined = leave alone, "" = clear, anything else = resolve.
+    const jobRecOpen = (jobId === undefined) ? null : (jobId ? String(jobId).trim() : "");
 
     const rows = await neonWrite("clock.editOpen",
       `UPDATE open_punches
@@ -1760,8 +1790,8 @@ async function handleClockEditTimes(body, authUser) {
   // a different act — someone is saying "this shift was on the wrong job entirely",
   // and leaving the name pointing at the old job would produce a row linked to one
   // job and labelled another, which is worse than either.
-  const jobRecEdit = (jobId === undefined) ? null
-    : (jobId && String(jobId).startsWith("rec") ? String(jobId) : "");
+  // Same three branches, same reason, same "" = CLEAR semantics as editOpen.
+  const jobRecEdit = (jobId === undefined) ? null : (jobId ? String(jobId).trim() : "");
 
   const rows = await neonWrite("clock.editPunch",
     `WITH j AS (
@@ -10928,7 +10958,12 @@ async function handleAddGeneratorService(body) {
 
   const b = (v) => (v === undefined ? false : v === true);
   const n = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
-  const jobRec = jobId && String(jobId).startsWith("rec") ? String(jobId) : null;
+  // ⚠ TWO VALUES, because $2 was doing two jobs. The COLUMN `job_airtable_id`
+  // must stay rec-only — it means "the Airtable id", and a uuid in it is a lie.
+  // The RESOLVE needs the raw handle, or a native job's service record files
+  // itself against job_id NULL and drops off the job's service history.
+  const jobRec    = jobId && String(jobId).startsWith("rec") ? String(jobId) : null;
+  const jobHandle = jobId ? String(jobId).trim() : null;
 
   const rows = await neonWrite("generatorService.insert",
     `INSERT INTO generator_service
@@ -10937,7 +10972,7 @@ async function handleAddGeneratorService(body) {
         spark_plugs_changed, battery_tested, battery_replaced, load_test_performed,
         firmware_checked, exercise_checked, trouble_codes, work_performed_notes,
         parts_used, labor_hours, generator_hours)
-     SELECT g.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
+     SELECT g.id, $2, (SELECT id FROM jobs WHERE airtable_id = $21 OR id::text = $21),
             $3::date, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
             $16, $17, $18, $19, $20
        FROM generators g
@@ -10949,7 +10984,7 @@ async function handleAddGeneratorService(body) {
      b(firmwareChecked), b(exerciseChecked),
      troubleCodesFound ? String(troubleCodesFound) : null,
      workNotes ? String(workNotes) : null, partsUsed ? String(partsUsed) : null,
-     n(laborHours), n(generatorHours)]);
+     n(laborHours), n(generatorHours), jobHandle]);
 
   const neonId = rows?.[0]?.id;
   // No row inserted means the SELECT matched no generator. That is a real error,

@@ -35,7 +35,7 @@ const requested = [];     // every fetched URL, for "which base?" assertions
 //     ARRAYS — it zips them into objects itself. Handing it objects throws
 //     "c.map is not a function". Shape verified against the installed driver.
 //     `neonFail` simulates a query error so the Airtable fallback is provable.
-const NEON_COLS = ["airtable_id", "name", "po", "status", "tax_status", "contractor_name"];
+const NEON_COLS = ["handle", "name", "po", "status", "tax_status", "contractor_name"];
 let neonRows  = [];
 let neonFail  = false;
 const neonQueries = [];       // every {query, params} sent, for assertions
@@ -229,9 +229,9 @@ await test("pendingExpenses: resolves by 'Job ID (Main)' text; never reads the m
   // the Airtable job path. pendingExpenses has no Airtable path any more — the
   // ledger, the item index and the job index are all Neon — so it needs Neon on.
   neonOn([
-    { airtable_id: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
+    { handle: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
       status: "Awarded", tax_status: "Taxable", contractor_name: "Case Farms" },
-    { airtable_id: "recJobB", name: "Miller Barn", po: "",
+    { handle: "recJobB", name: "Miller Barn", po: "",
       status: "Estimating", tax_status: "Non-Taxable", contractor_name: "Miller Poultry" },
   ]);
   invItems = [{ id: "recItem1", fields: { "Item Name": "12-2 Wire", "Default Unit Cost": 10 } }];
@@ -262,26 +262,56 @@ await test("pendingExpenses: resolves by 'Job ID (Main)' text; never reads the m
 
 const NEON_FIXTURE = [
   // PO present → PO wins as the display.
-  { airtable_id: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
+  { handle: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
     status: "Awarded", tax_status: "Taxable", contractor_name: "Case Farms" },
   // A New Lead with NO po. This is the po_locked trap in miniature: the PO only
   // locks at award time, so every New Lead job has a blank locked PO. If the
   // query read po_locked these would vanish from the estimating picker and the
   // shortened list would look complete.
-  { airtable_id: "recJobN", name: "Miller Barn", po: "",
+  { handle: "recJobN", name: "Miller Barn", po: "",
     status: "New Lead", tax_status: "Tax Exempt", contractor_name: "Miller Poultry" },
 ];
 
-await test("B0 jobs: served from Neon, ids are Airtable rec ids (never the uuid)", async () => {
+await test("B0 jobs: served from Neon, ids are the DUAL handle", async () => {
   seedMain();
   neonOn([NEON_FIXTURE[0]]);
   const r = json(await GET("jobs"));
   eq(r.ok, true, "ok");
   eq(r._source, "neon", "served from Neon");
   eq(r.jobs.length, 1, "one awarded job");
-  eq(r.jobs[0].id, "recJobA", "id is the AIRTABLE rec id — a uuid here corrupts Job ID (Main)");
+  // ⚠ This assertion USED TO READ "never the uuid", and that was the bug. A job
+  // with a rec id must still emit it byte for byte — that half is unchanged and
+  // is what keeps every cart, ledger row and Job ID (Main) already in the data
+  // meaning the same thing.
+  eq(r.jobs[0].id, "recJobA", "a job Airtable created still emits its rec id");
   eq(r.jobs[0].name, "Blue Ridge Poultry (BRB 126)", "PO display preferred");
   eq(requested.some(u => u.includes(`/v0/${MAIN_BASE}/Jobs`)), false, "must not also page Airtable");
+});
+
+// The regression this file shipped with. JOB_CREATE_SOURCE=native went live on
+// 2026-08-24 and the picker query filtered `COALESCE(airtable_id,'') <> ''`, so
+// a job born in the app was missing from every inventory picker — awarded,
+// visible in the field app, and impossible to log material against. Reported on
+// Test 10. The filter is gone; the emit is COALESCE(airtable_id, id::text).
+await test("B0 jobs: a NATIVE job (no rec id) appears, keyed by its uuid", async () => {
+  seedMain();
+  const NATIVE_UUID = "846245ef-294f-423b-a2b1-4b4a919607f8";
+  neonOn([
+    NEON_FIXTURE[0],
+    { handle: NATIVE_UUID, name: "Test 10", po: "Test 10 (MIT 301)",
+      status: "Awarded", tax_status: "Taxable", contractor_name: "Misc Jobs" },
+  ]);
+  const r = json(await GET("jobs"));
+  eq(r.jobs.length, 2, "the native job is NOT filtered out");
+  const nativeJob = r.jobs.find(j => j.id === NATIVE_UUID);
+  eq(!!nativeJob, true, "native job present, keyed by uuid");
+  eq(nativeJob.name, "Test 10 (MIT 301)", "PO display");
+  // And the query must not have re-grown a native-row filter in any spelling —
+  // the one that shipped was `COALESCE(airtable_id, '') <> ''`, which is exactly
+  // why sweeping for `airtable_id IS NOT NULL` came back clean.
+  const sql = String(neonQueries[0]?.query || "").replace(/COALESCE\(airtable_id, id::text\)/g, "");
+  eq(/airtable_id\s+IS\s+NOT\s+NULL|COALESCE\(airtable_id|airtable_id\s*(<>|!=)\s*''/.test(sql), false,
+     `no native-row filter in the picker query — got: ${sql.slice(0, 160)}`);
 });
 
 await test("B0 estimatingJobs: a New Lead with no PO still appears, named by Job Name", async () => {
@@ -322,8 +352,8 @@ await test("B0 templateContractors: dedupes and sorts from Neon", async () => {
   seedMain();
   neonOn([
     ...NEON_FIXTURE,
-    { airtable_id: "recJobC", name: "Dup", po: "Dup", status: "Completed", tax_status: "Taxable", contractor_name: "Case Farms" },
-    { airtable_id: "recJobD", name: "Blank", po: "Blank", status: "Completed", tax_status: "Taxable", contractor_name: "" },
+    { handle: "recJobC", name: "Dup", po: "Dup", status: "Completed", tax_status: "Taxable", contractor_name: "Case Farms" },
+    { handle: "recJobD", name: "Blank", po: "Blank", status: "Completed", tax_status: "Taxable", contractor_name: "" },
   ]);
   const r = json(await GET("templateContractors"));
   eq(r._source, "neon", "served from Neon");
@@ -353,9 +383,9 @@ await test("pendingExpenses: stale 'Job ID (Main)' → unmatched; jobless/link-o
   // the Airtable job path. pendingExpenses has no Airtable path any more — the
   // ledger, the item index and the job index are all Neon — so it needs Neon on.
   neonOn([
-    { airtable_id: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
+    { handle: "recJobA", name: "Blue Ridge Poultry", po: "Blue Ridge Poultry (BRB 126)",
       status: "Awarded", tax_status: "Taxable", contractor_name: "Case Farms" },
-    { airtable_id: "recJobB", name: "Miller Barn", po: "",
+    { handle: "recJobB", name: "Miller Barn", po: "",
       status: "Estimating", tax_status: "Non-Taxable", contractor_name: "Miller Poultry" },
   ]);
   invItems = [{ id: "recItem1", fields: { "Item Name": "12-2 Wire", "Default Unit Cost": 10 } }];

@@ -5270,10 +5270,18 @@
     const legacyNote = $("estGpLegacyNote");
     if (legacyNote) {
       if (legacyN > 0) {
+        // ⚠⚠ THE WORD HERE WAS "EXACT" AND IT WAS THE WRONG WORD (2026-08-25).
+        // It meant "reproduces the old arithmetic precisely, nothing invented".
+        // It READS as "correct" — and on a pre-split estimate the GP above is
+        // precisely the understated figure this whole change exists to fix. The
+        // one line whose job is to prevent a misreading was inviting one.
+        // Say UNCHANGED, and say what it is unchanged from.
         legacyNote.innerHTML =
           `⚠ ${legacyN} of ${totalN} counted estimate${totalN === 1 ? "" : "s"} predate${legacyN === 1 ? "s" : ""} the cost/markup split. ` +
-          `Cost and GP above are exact for those; <strong>Material Markup, Material Sell and Labor Sell are inferred</strong> ` +
-          `(markup read as $0, labor sell at this job's current rate). Split one below to make it exact.`;
+          `Their material figure is still being read as <strong>pure cost</strong>, so <strong>Estimated Direct Cost and GP above are unchanged ` +
+          `from what this screen has always shown — any markup inside that figure is still counted as a cost, and GP still reads low.</strong> ` +
+          `Material Markup, Material Sell and Labor Sell are inferred too (markup as $0, labor sell at this job's current rate). ` +
+          `Split ${legacyN === 1 ? "it" : "them"} below and these numbers become real.`;
         legacyNote.style.display = "block";
       } else {
         legacyNote.style.display = "none";
@@ -5372,11 +5380,16 @@
                        placeholder="${est.legacyMaterialBasis && est.materialCost != null ? est.materialCost : "0.00"}" />
               </div>
               <div>
-                <label class="edit-label" style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+                <!-- ⚠ NOT space-between. Right-aligning this button pushed it to
+                     the far edge of its own column, where it sat flush against
+                     the NEXT field's label and read as if it belonged to Labor
+                     Sell Rate — "10%" beside a $/hr box. Keep it hard against
+                     the label it acts on, and let it say what it does. -->
+                <label class="edit-label" style="display:flex; align-items:baseline; gap:8px;">
                   <span>Material Markup ($)</span>
                   ${jd.markupPct ? `<button type="button" data-est-id="${esc(est.id)}" class="est-markup-fill"
-                       style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit;"
-                       title="Fill from this job's markup — the same % its actual material is billed at">${(jd.markupPct * 100).toFixed(0)}%</button>` : ""}
+                       style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"
+                       title="Fill from this job's markup — the same % its actual material is billed at">fill ${(jd.markupPct * 100).toFixed(0)}%</button>` : ""}
                 </label>
                 <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-markup edit-input" style="font-size:13px;" value="${est.materialMarkup != null ? est.materialMarkup : ""}" placeholder="0.00" />
               </div>
@@ -17565,7 +17578,7 @@
     $("newEstSellRate").placeholder = jobRate != null ? Number(jobRate).toFixed(2) : "75.00";
     const fill = $("newEstMarkupFill");
     if (job.markupPct) {
-      fill.textContent = `${(Number(job.markupPct) * 100).toFixed(0)}%`;
+      fill.textContent = `fill ${(Number(job.markupPct) * 100).toFixed(0)}%`;
       fill.title = "Fill from this job's markup — the same % its actual material is billed at";
       fill.style.display = "";
       fill.onclick = () => {
@@ -25137,9 +25150,12 @@
           <input id="newEstMaterial" type="number" step="0.01" class="edit-input" placeholder="0.00" />
         </div>
         <div class="sl-field">
-          <label style="display:flex; justify-content:space-between; align-items:baseline; gap:6px;">
+          <!-- Left-aligned beside its own label, not pushed to the column edge
+               where it reads as belonging to the next field. See the matching
+               note on the estimate card. -->
+          <label style="display:flex; align-items:baseline; gap:8px;">
             <span>Material Markup ($)</span>
-            <button type="button" id="newEstMarkupFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit;"></button>
+            <button type="button" id="newEstMarkupFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"></button>
           </label>
           <input id="newEstMarkup" type="number" step="0.01" class="edit-input" placeholder="0.00" />
         </div>

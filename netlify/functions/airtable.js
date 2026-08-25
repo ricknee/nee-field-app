@@ -4867,7 +4867,12 @@ async function handleCorrectEmployeeRate(body) {
             true_cost_rate     = round($3::numeric * (1 + $4::numeric), 2),
             notes              = NULLIF($5::text, ''),
             synced_at          = now()
-      WHERE airtable_id = $1
+      -- Dual handle for the same reason as the two jobs sites, though this one
+      -- is latent rather than live: all 15 labor_cost_rates rows still carry a
+      -- rec id (checked 2026-08-25), so nothing has hit it yet. Neon owns this
+      -- table now, so the first rate born here would have been uncorrectable —
+      -- silently, with a 404 the UI reads as "No such rate row."
+      WHERE airtable_id = $1 OR id::text = $1
   RETURNING id, true_cost_rate`,
     [rateId, p.laborType, p.wage, p.burdenFrac, p.notes]);
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -6062,7 +6067,15 @@ async function handleJobAutomationResult(body) {
        pcloud_invoices_sent_id        = COALESCE($12, pcloud_invoices_sent_id),
        pcloud_photo_folder_id         = COALESCE($13, pcloud_photo_folder_id),
        synced_at = now()
-     WHERE airtable_id = $1
+     -- ⚠⚠ DUAL HANDLE, AND IT WAS MISSING UNTIL 2026-08-25. recordId here is
+     -- whatever the webhook sent, which for a native job is a uuid. A bare
+     -- "airtable_id = $1" matched nothing, the guard below returned 404, and
+     -- Make's HTTP module failed the whole scenario with DataError: Not Found
+     -- — AFTER it had already created the QuickBooks Time jobcode. So the
+     -- jobcode existed, its id was never recorded, the run-once flag stayed
+     -- unset, and the Trello branch never ran at all. Seen live on Test 10's
+     -- Awarded run at 09:47:54Z.
+     WHERE airtable_id = $1 OR id::text = $1
      RETURNING tsheets_job_id, trello_card_id, trello_po_card_id, trello_completed,
                service_call_created, pcloud_job_folder_id`,
     [recordId, tsheetsJobId, trelloCardId, trelloPoCardId, tsheetsCreated, trelloCreated,
@@ -10535,7 +10548,16 @@ async function handleUpdateJobBillableRate(body) {
             billable_hourly_rate = (SELECT billable_hourly_rate FROM labor_billable_rates
                                      WHERE airtable_id = $2 OR id::text = $2),
             synced_at = now()
-      WHERE airtable_id = $1`, [jobId, rateId ? String(rateId) : null]);
+     -- ⚠⚠ THE RATE LOOKUP TOOK EITHER HANDLE; THE ROW IT WROTE TO DID NOT.
+     -- A bare "airtable_id = $1" updated ZERO rows on a native job and this
+     -- handler still returned ok — the UI showed the rate saved. It is not
+     -- cosmetic: billable_hourly_rate feeds v_job_financials, and the
+     -- allocation writers SNAPSHOT the rate into
+     -- material_billing_allocations / labor_billing_allocations.
+     -- A NULL there bills those hours at $0 while they
+     -- still print on the invoice, and the snapshot does not recompute.
+     -- Same family as the automation-result miss above, found in the same sweep.
+      WHERE airtable_id = $1 OR id::text = $1`, [jobId, rateId ? String(rateId) : null]);
 
   const fields = {};
   fields["fldcCGetfLtQW2nhm"] = rateId ? [String(rateId)] : [];

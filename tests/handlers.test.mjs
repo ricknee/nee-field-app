@@ -3708,6 +3708,41 @@ await test("expenseReceipts: the owner check survived moving off the Airtable re
 // the result as an array, and holding it in a variable that is then used like
 // one. If a legitimate case ever trips this, the fix is `.rows`, not an
 // exemption. (neonWrite is fine — it DOES return rows.)
+// ── The dual-handle guard (cutover slice 6, and it has now bitten FOUR times) ──
+// `WHERE airtable_id = $1` is invisible to a native row, and it never errors —
+// the UPDATE matches nothing and the handler reports success. The verb sweep
+// caught 10 of these; three more surfaced afterwards, the live one taking down
+// every job Make scenario at its callback (2026-08-25) and the quiet one
+// dropping a job's billable rate, which bills its hours at $0.
+//
+// So: no bare `WHERE airtable_id = $n` anywhere in the functions. The one
+// deliberate exception is allowlisted by shape, not by line number.
+await test("no bare `WHERE airtable_id = $n` — the dual-handle guard", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const dir = fileURLToPath(new URL("../netlify/functions/", import.meta.url));
+  const offenders = [];
+
+  for (const f of readdirSync(dir).filter(n => n.endsWith(".js"))) {
+    const src = readFileSync(dir + f, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n").map(l => l.replace(/\/\/.*$/, "").replace(/^\s*--.*$/, "")).join("\n");
+
+    src.split("\n").forEach((l, i) => {
+      if (!/WHERE\s+(?:\w+\.)?airtable_id\s*=\s*\$\d/.test(l)) return;
+      if (/OR\s+(?:\w+\.)?id::text/.test(l)) return;
+      // The ONE allowed bare resolve: mirrorLaborToNeon's subselect, reached only
+      // from the Airtable-first branch, where the time entry has a rec id by
+      // construction (the native branch returns before it). Matched by shape so
+      // that moving the code does not silently re-open the hole.
+      if (/SELECT id FROM time_entries WHERE airtable_id = \$\d/.test(l)) return;
+      offenders.push(`${f}:${i + 1} ${l.trim().slice(0, 90)}`);
+    });
+  }
+
+  eq(offenders.length, 0, offenders.join(" | "));
+});
+
 // The mirror image of the guard below, and it exists because the inverse bug
 // shipped on 2026-08-24. `sql` in the sync modules is `neon()` from
 // @neondatabase/serverless: its `.query()` resolves to a BARE ARRAY, while

@@ -147,6 +147,15 @@ export const CHECKS = [
              -- that. Only a T&M invoice is supposed to be the sum of what is
              -- allocated to it, so only there does $0 mean "nothing attached".
              AND invoice_type = 'Time & Material'
+             -- ⚠ AND NOT ALREADY PAID. The first run of this check flagged
+             -- invoice #1666 — Bethel School, marked Paid on 2026-08-11, billed
+             -- through QuickBooks with its allocations never linked. That is the
+             -- same historical pattern the owner reviewed and closed: real
+             -- money, correctly collected, just not reconstructable from the
+             -- allocations. A PAID invoice is settled history; this check is
+             -- about invoices being written NOW, where $0 means the work did not
+             -- attach and somebody is about to send it.
+             AND invoice_status <> 'Paid'
              AND synced_at > now() - interval '45 days'`,
     say: (r) => `invoice #${r.invoice_display_no} shows $${r.snapshot_total} but nothing is allocated to it (computes $0)`,
   },

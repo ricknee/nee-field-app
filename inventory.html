@@ -866,6 +866,16 @@ function comboOnBlur(id) {
     if (list) list.style.display = "none";
     if (!c || !inp) return;
     var typed = inp.value.trim();
+    // Snap a trimmed value back to the option it came from. Several item names
+    // carry a trailing space ("NSI 4 PORT 250MCM "), so picking one committed
+    // the padded name, then this blur trimmed it 180ms later and re-fired
+    // onChange with a string that matches NO option — the caller's
+    // find(i.name === name) missed and the panel it had just rendered blanked
+    // itself. Looked like "I click the item and it disappears."
+    var canonical = (c.options || []).find(function(o){
+      return String(o).trim() === typed;
+    });
+    if (typed && canonical !== undefined) typed = String(canonical);
     // Commit whatever was typed — supports both "pick existing" and "type new"
     if (typed !== c.selected) comboCommit(id, typed);
   }, 180);
@@ -5524,8 +5534,13 @@ function onUpdatePriceItemPicked(name) {
   if (!details) return;
   if (!name) { updatePriceItem = null; details.innerHTML = ""; return; }
 
+  // Match on the trimmed name — item names are hand-entered and some carry
+  // stray leading/trailing whitespace. An exact === here is what made
+  // "NSI 4 PORT 250MCM " unpickable.
+  var wanted = String(name).trim();
   updatePriceItem = allItems.find(function(i){
-    return i.name === name && WEIGHED_WIRE_CATEGORIES.indexOf(i.cat) === -1;
+    return String(i.name || "").trim() === wanted &&
+           WEIGHED_WIRE_CATEGORIES.indexOf(i.cat) === -1;
   });
   if (!updatePriceItem) { details.innerHTML = ""; return; }
 

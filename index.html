@@ -4564,7 +4564,13 @@
   document.addEventListener("input", (e) => {
     const t = e.target;
     if (!t || t.tagName !== "TEXTAREA") return;
-    if (!t.matches(".inv-desc, .est-desc, #invNotes, #estNotes")) return;
+    // ⚠ THE TEMPLATE EDITOR IS ON THIS LIST DELIBERATELY. The boilerplate in the
+    // screenshot — General Conditions, Assumptions, Including, Exclusions — is
+    // not typed into an estimate, it lives in an estimate TEMPLATE and gets
+    // edited there. Leaving these four off would have "fixed" bullets everywhere
+    // except the one place the mixed list actually came from.
+    if (!t.matches(".inv-desc, .est-desc, #invNotes, #estNotes, " +
+                   "#tmplScope, #tmplExclusions, #tmplTerms, #tmplInternal")) return;
     autoBulletTextarea(t);
   }, true);
 

@@ -85,6 +85,43 @@ export const CHECKS = [
     say: (r) => `${r.status} job "${r.name}" (PO ${r.po_number}) has no locked PO — QuickBooks hours cannot attach${r.po ? `; its PO reads "${r.po}"` : ""}`,
   },
   {
+    name: "automation-ran-but-recorded-nothing",
+    severity: "warning",
+    // ── THIS IS THE ALARM FOR MAKE'S SILENT FOLDER FAILURES ─────────────────
+    // On 2026-08-25 every `createFolder` in the Service Call scenario was given
+    // a `Resume` error handler, so an existing folder no longer kills the run.
+    // That was the right trade — without it the scenario could only ever run
+    // ONCE per job — but it cost the loud failure: a genuine permissions or path
+    // fault now slides past, and the only symptom is an upload that cannot find
+    // its folder weeks later.
+    //
+    // This is the tripwire that pays that debt. Resume substitutes an EMPTY
+    // bundle, so a folder that failed reports no id — which means "the flag says
+    // it ran, the id says it did not" is exactly the fingerprint of a silently
+    // skipped module. Same shape catches a Trello or QuickBooks branch that
+    // errored after its flag was set.
+    //
+    // ⚠ SCOPED TO NATIVE JOBS. Legacy jobs carry these flags from the Airtable
+    // era with the ids recorded only in Airtable — 13 service calls and 8 Trello
+    // cards look "broken" and are not. A native job's automations were run by
+    // this app, so for those the invariant genuinely holds.
+    sql: `SELECT name, po,
+                 (service_call_created IS TRUE AND (pcloud_job_folder_id IS NULL
+                                                 OR pcloud_photo_folder_id IS NULL)) AS pcloud_gap,
+                 (trello_created  IS TRUE AND trello_card_id  IS NULL) AS trello_gap,
+                 (tsheets_created IS TRUE AND tsheets_job_id IS NULL)  AS tsheets_gap
+            FROM jobs
+           WHERE airtable_id IS NULL
+             AND ( (service_call_created IS TRUE AND (pcloud_job_folder_id IS NULL
+                                                   OR pcloud_photo_folder_id IS NULL))
+                OR (trello_created  IS TRUE AND trello_card_id  IS NULL)
+                OR (tsheets_created IS TRUE AND tsheets_job_id IS NULL) )`,
+    say: (r) => `job "${r.name}" says its ` +
+      [r.pcloud_gap && "pCloud folders", r.trello_gap && "Trello card", r.tsheets_gap && "QuickBooks jobcode"]
+        .filter(Boolean).join(" and ") +
+      ` were created but recorded no id — a Make module was skipped by its Resume handler`,
+  },
+  {
     name: "job-missing-markup",
     severity: "critical",
     // A NULL markup bills material at COST, and allocations SNAPSHOT it, so the

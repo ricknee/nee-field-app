@@ -1,3 +1,23 @@
+// 🔴 RETIRED 2026-08-25 — NOT CALLED BY ANYTHING, AND MUST NOT BE WIRED BACK.
+//
+// syncJobs pulled 38 job columns hourly with INSERT … ON CONFLICT (airtable_id) DO UPDATE, which made Airtable upstream of Neon for 118 of 120 jobs.
+//
+// It is also why every app write to a job field had to be mirrored back: without the mirror, the next hourly run silently reverted it. `backfillJobLinks` in this same file is STILL LIVE and still called — it touches Airtable not at all.
+//
+// The owner confirmed on 2026-08-25 that nobody reads or edits Airtable any
+// more. That was the ONLY precondition this had, so the hourly call in
+// qb-time-pull.js is gone and NEON IS THE AUTHORITY.
+//
+// ⚠⚠ RE-ENABLING THIS WOULD NOT "RESUME SYNCING" — IT WOULD OVERWRITE. Every
+// edit the app has made since the cord was cut is newer than Airtable's copy,
+// so the first run would revert all of it, silently, at the top of an hour.
+// This is the estimate_templates trap (2026-08-20) at the scale of the jobs
+// table: that one reverted five template edits an hour and nothing threw.
+//
+// Kept on disk rather than deleted because the field map below is the only
+// written record of how the Airtable columns line up with Neon's, and the
+// archive is not done yet.
+
 // Jobs master sync + job-link backfill, run hourly from qb-time-pull.
 // ---------------------------------------------------------------------------
 // WHY THIS EXISTS

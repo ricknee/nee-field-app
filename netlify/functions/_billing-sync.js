@@ -1,3 +1,23 @@
+// 🔴 RETIRED 2026-08-25 — NOT CALLED BY ANYTHING, AND MUST NOT BE WIRED BACK.
+//
+// syncBillingTables pulled both allocation tables hourly.
+//
+// Its stated reason was that the app has no write path for allocations and they are created inside Airtable. The app has had one since 2026-08-11 (db/schema/033), so the reason expired before the sync did.
+//
+// The owner confirmed on 2026-08-25 that nobody reads or edits Airtable any
+// more. That was the ONLY precondition this had, so the hourly call in
+// qb-time-pull.js is gone and NEON IS THE AUTHORITY.
+//
+// ⚠⚠ RE-ENABLING THIS WOULD NOT "RESUME SYNCING" — IT WOULD OVERWRITE. Every
+// edit the app has made since the cord was cut is newer than Airtable's copy,
+// so the first run would revert all of it, silently, at the top of an hour.
+// This is the estimate_templates trap (2026-08-20) at the scale of the jobs
+// table: that one reverted five template edits an hour and nothing threw.
+//
+// Kept on disk rather than deleted because the field map below is the only
+// written record of how the Airtable columns line up with Neon's, and the
+// archive is not done yet.
+
 // ── Hourly sync for the tables the APP CANNOT WRITE ────────────────────────
 // Added 2026-08-08, after the field-app migration completed.
 //

@@ -47,8 +47,7 @@
 //    both run the reconciler may report Neon slightly ahead. That is correct, not
 //    drift — INSERT_FLOOR_DATE keeps it out of closed pay periods.
 import { neon } from "@neondatabase/serverless";
-import { syncJobs, backfillJobLinks } from "./_jobs-sync.js";
-import { syncBillingTables } from "./_billing-sync.js";
+import { backfillJobLinks } from "./_jobs-sync.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 import { runIntegrityChecks, reportIntegrity } from "./_integrity.js";
 import { makeAtFetch } from "./_jobs.js";
@@ -359,38 +358,65 @@ export const handler = async () => {
 
   const sql = neon(url);
 
-  // Refresh the Jobs master record BEFORE pulling timesheets, so a job created
-  // in Airtable since the last run is already resolvable by the jobByPo lookup in
-  // runPull. Order matters: run it after, and a timesheet for a brand-new job lands
-  // with job_id NULL and nothing ever goes back to fix it — that was the bug this
-  // exists to close (see _jobs-sync.js). Then heal anything that slipped through
-  // historically. Both fail soft: the timesheet pull is the job that must not stop.
-  const atKey  = process.env.AIRTABLE_API_KEY;
-  const atBase = process.env.AIRTABLE_BASE_ID;
-  let jobsReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
-  if (atKey && atBase) jobsReport = await syncJobs(sql, atKey, atBase);
-  else console.error("qb-time-pull: jobs sync skipped — AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset");
+  // ── 🔴 THE CORD IS CUT (2026-08-25) ──────────────────────────────────────
+  // Two hourly pulls FROM Airtable used to run here, and between them they made
+  // Airtable upstream of Neon for 118 of 120 jobs:
+  //
+  //   syncJobs           38 job columns, INSERT … ON CONFLICT (airtable_id)
+  //                      DO UPDATE — so Airtable overwrote them every hour, and
+  //                      every app write to a job field had to mirror back or be
+  //                      silently reverted at the top of the hour.
+  //   syncBillingTables  both allocation tables, on the reasoning that "the app
+  //                      has no write path for them — they are created inside
+  //                      Airtable". It has had one since 2026-08-11 (schema 033).
+  //
+  // The owner confirmed on 2026-08-25 that nobody reads or edits Airtable any
+  // more, which is the only precondition either of them had. NEON IS NOW THE
+  // AUTHORITY FOR EVERY JOB, not just the native ones.
+  //
+  // ⚠⚠ WHAT MUST NOT CHANGE, AND HAS NOT: QuickBooks Time remains the source of
+  // truth for hours and stays that way "for quite some time" (owner, same day).
+  // The timesheet pull below is untouched and still writes QB → Neon → the app.
+  // It never wrote to Airtable; only these two syncs did.
+  //
+  // `backfillJobLinks` STAYS. It links a timesheet to its job by matching
+  // job_name against jobs.po_locked and touches Airtable not at all — and it
+  // matters more now, not less, because there is no longer an hourly refresh
+  // arriving just before it.
   const linkReport = await backfillJobLinks(sql);
 
-  // ⚠ The billing allocations have NO WRITE PATH in the app — they are created
-  // inside Airtable — and invoice totals are computed FROM them. Before this ran
-  // hourly, invoicing a job left Neon's total reading LOW until somebody
-  // remembered to run the ETL by hand. Fails soft: a stale allocation is a
-  // smaller problem than a missed timesheet.
-  //
-  // Estimate templates used to ride along here. They got a write path on
-  // 2026-08-20, at which point syncing them stopped preserving the table and
-  // started overwriting the app's edits — see the header of _billing-sync.js.
-  let billingReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
-  if (atKey && atBase) billingReport = await syncBillingTables(sql, atKey, atBase);
+  // ⚠ THE LIVENESS SIGNAL MOVED, AND THAT IS NOT COSMETIC. The recorded way to
+  // tell this function was alive was `max(jobs.synced_at)`, because syncJobs
+  // stamped it unconditionally every hour while `sync_state` only moves when
+  // QuickBooks returns a CHANGED timesheet — a dead schedule and a quiet
+  // afternoon look identical there. Cutting syncJobs would have silently
+  // retired the only honest heartbeat, so it is replaced here with one that
+  // says the same thing and does not depend on Airtable existing.
+  await sql.query(
+    `INSERT INTO sync_state (key, watermark, updated_at, note)
+     VALUES ('hourly_pull', now(), now(), 'qb-time-pull ran')
+     ON CONFLICT (key) DO UPDATE SET watermark = now(), updated_at = now(),
+                                     note = EXCLUDED.note`);
 
   // Generator service calls — replaces Airtable automation wfledvx1A8oVscWla,
   // the last one in the base that CREATED a record. Runs here rather than on its
   // own schedule because this function is already the hourly heartbeat and a
   // second scheduled function is a second thing to notice has stopped.
   //
-  // ORDER MATTERS, mildly: it runs AFTER syncJobs so a service-call job created
-  // by the previous hour's run is already in `jobs` and its status can be read.
+  // ⚠ The ordering note that used to be here said this runs AFTER syncJobs so a
+  // job created by the previous hour's run is already in `jobs`. That sync is
+  // gone and the note with it: a job created by this app is in `jobs` the moment
+  // it is created, which is the whole point of being native.
+  //
+  // ⚠⚠ THE LAST AIRTABLE DEPENDENCY IN THIS FUNCTION. The generator check needs
+  // an atFetch only to write the fail-soft MIRROR of a job it creates — the job
+  // itself is born in Neon. These two lines go when the mirrors go, and then
+  // this function touches Airtable nowhere at all.
+  //
+  // The owner still wants generator service calls: the work is real and not yet
+  // done. Kept live and INERT rather than removed.
+  const atKey  = process.env.AIRTABLE_API_KEY;
+  const atBase = process.env.AIRTABLE_BASE_ID;
   //
   // ⚠ INERT unless GENERATOR_SERVICE_CALLS=on — it returns {enabled:false} and
   // touches nothing. See the header of _generator-service.js.
@@ -433,8 +459,8 @@ export const handler = async () => {
     : new Date(Date.now() - COLD_START_LOOKBACK_MS);
 
   try {
-    const report = { ...(await runPull({ sql, token, since })), jobsSync: jobsReport, jobLinks: linkReport,
-                     billingSync: billingReport, generatorServiceCalls: generatorReport,
+    const report = { ...(await runPull({ sql, token, since })), jobLinks: linkReport,
+                     generatorServiceCalls: generatorReport,
                      integrity: { failures: integrityReport.failures ?? null,
                                   brokenChecks: integrityReport.brokenChecks ?? null,
                                   findings: integrityReport.findings?.map(f => `${f.check}:${f.count}`) ?? [] } };

@@ -136,6 +136,19 @@ answers, just slowly. It went unnoticed for three days.
   `airtable_id`. **The general rule: "we never stamp the id back" protects the row we wrote — it
   says nothing about the row we caused to exist in Airtable. For any un-stamped mirror, ask what
   reads that table wholesale.**
+- `AIRTABLE_WRITES` — **the mirror kill switch. Unset or `on` = mirrors are written (today).
+  `off` = every POST/PATCH/PUT/DELETE through any `atFetch` is skipped** and resolves to
+  `{ id: null, fields: {}, skipped: true }` rather than null, because ~65 call sites read `data?.id`
+  or `created.id`. One env var moves all of them; editing 40 handlers would be 40 chances to miss one.
+  ⚠ **Safe only because every remaining Airtable write is a MIRROR** — verified 2026-08-25 by call
+  graph, not grep (the grep pass produced four false positives: `handleAddLiftExpense` and
+  `handleAddGeneralExpense` write Neon through an imported helper and 502 if it fails). Billing
+  allocations were the one genuine Airtable-**first** writer and went Neon-native the same day.
+  Before flipping, re-ask that question of anything added since: **is Neon written first, and does
+  the caller consume the response?**
+  ⚠⚠ `createJobRecord`'s non-native branch POSTs a job and then **re-reads its own write** for
+  Airtable's computed `Job PO`. `AIRTABLE_WRITES=off` with `JOB_CREATE_SOURCE` ≠ `native` is refused
+  in `_jobs.js` — before the PO is allocated, because a PO cannot be handed back.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

@@ -3,7 +3,7 @@
 // Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
 import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
-import { scrubFabricatingLinks, UUID_RE } from "./_airtable-write-guard.js";
+import { scrubFabricatingLinks, airtableWriteBlocked, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
 import { shadowLoginCheck, neonLoginCandidate, loginSource,
          neonEmployees, neonEmployeeById, isEmployeeHandle } from "./_employees.js";
@@ -854,6 +854,7 @@ async function atFetch(path, options = {}) {
   ensureEnv();
   // See _airtable-write-guard.js: a uuid in a linked-record field does not fail,
   // it FABRICATES the record. Every write in this file passes through here.
+  if (airtableWriteBlocked(path, options)) return SKIPPED_WRITE;
   options = scrubFabricatingLinks(path, options);
   const res = await fetch(`${API_ROOT}/${path}`, {
     ...options,

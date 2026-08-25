@@ -4246,6 +4246,101 @@ await test("integrityCheck action is strict admin", async () => {
   // offline — 503 proves the routing and the auth tier, which is what is testable here.
   eq((await GET("integrityCheck", {}, ADMIN_TOK)).statusCode, 503, "admin reaches the handler");
 });
+
+// ── The mirror kill switch (AIRTABLE_WRITES) ───────────────────────────────
+// 65 write sites across ~40 handlers, moved by one env var. Safe only because
+// every one of them is a MIRROR — verified by call graph on 2026-08-25, after a
+// grep pass produced four false positives. These tests pin the switch's
+// contract, including that it ships INERT.
+const G = await import("../netlify/functions/_airtable-write-guard.js");
+
+const withEnv = async (val, fn) => {
+  const had = "AIRTABLE_WRITES" in process.env;
+  const prev = process.env.AIRTABLE_WRITES;
+  if (val === undefined) delete process.env.AIRTABLE_WRITES;
+  else process.env.AIRTABLE_WRITES = val;
+  try { return await fn(); }
+  finally { if (had) process.env.AIRTABLE_WRITES = prev; else delete process.env.AIRTABLE_WRITES; }
+};
+
+await test("kill switch: ships INERT — unset means writes still happen", async () => {
+  await withEnv(undefined, () => {
+    eq(G.airtableWritesEnabled(), true, "unset = on, so deploying this changes nothing");
+    eq(G.airtableWriteBlocked("Jobs", { method: "POST" }), false, "a POST goes through");
+  });
+  await withEnv("on", () => eq(G.airtableWritesEnabled(), true, "explicit on"));
+});
+
+await test("kill switch: off blocks every write verb and no read", async () => {
+  await withEnv("off", () => {
+    eq(G.airtableWritesEnabled(), false, "off");
+    for (const m of ["POST", "PATCH", "PUT", "DELETE", "post", "patch"]) {
+      eq(G.airtableWriteBlocked("Expenses", { method: m }), true, `${m} blocked`);
+    }
+    // Reads must keep working — the app still falls back to Airtable on some
+    // reads, and this switch is about writes only.
+    eq(G.airtableWriteBlocked("Jobs", { method: "GET" }), false, "GET allowed");
+    eq(G.airtableWriteBlocked("Jobs", {}), false, "no method = GET = allowed");
+  });
+});
+
+await test("kill switch: tolerates a sloppy env value", async () => {
+  for (const v of [" OFF ", "Off", "off"]) {
+    await withEnv(v, () => eq(G.airtableWritesEnabled(), false, `${JSON.stringify(v)} = off`));
+  }
+  // Anything unrecognised must stay ON. Failing safe here means "keep mirroring",
+  // because a typo that silently stopped every mirror would be found late.
+  for (const v of ["no", "false", "0", ""]) {
+    await withEnv(v, () => eq(G.airtableWritesEnabled(), true, `${JSON.stringify(v)} is NOT off`));
+  }
+});
+
+await test("kill switch: a skipped write resolves to a shape callers can read", async () => {
+  // ~65 call sites do `data?.id` and a few do `created.id`. Returning null would
+  // turn a deliberate skip into a TypeError in handlers that are working fine.
+  eq(G.SKIPPED_WRITE.id, null, "id is null — nothing was created, which is true");
+  eq(typeof G.SKIPPED_WRITE.fields, "object", "fields is an object, not undefined");
+  eq(G.SKIPPED_WRITE.skipped, true, "and it says it was skipped");
+  eq(Object.isFrozen(G.SKIPPED_WRITE), true, "frozen — one caller mutating it would poison the rest");
+});
+
+await test("kill switch: every atFetch honours it, and before the scrub", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  for (const f of ["airtable.js", "inventory.js", "_jobs.js"]) {
+    const src = readFileSync(fileURLToPath(new URL("../netlify/functions/" + f, import.meta.url)), "utf8");
+    ok(/if \(airtableWriteBlocked\(path, options\)\) return SKIPPED_WRITE;/.test(src),
+       `${f}: atFetch checks the switch`);
+    const blockAt = src.indexOf("airtableWriteBlocked(path, options)");
+    const scrubAt = src.indexOf("scrubFabricatingLinks(path, options)");
+    ok(blockAt > -1 && scrubAt > -1 && blockAt < scrubAt,
+       `${f}: the switch is checked BEFORE the scrub — no point rewriting a body that is never sent`);
+  }
+});
+
+await test("kill switch: the one path that reads its own write refuses loudly", async () => {
+  // createJobRecord's non-native branch POSTs a job then re-reads it. With
+  // writes off that re-read would fetch Jobs/null AFTER a PO number was spent.
+  const { createJobRecord, JobInputError } = await import("../netlify/functions/_jobs.js");
+  const prevSrc = process.env.JOB_CREATE_SOURCE;
+  process.env.JOB_CREATE_SOURCE = "neon";     // not native
+  let threw = null, touched = 0;
+  const realErr = console.error; console.error = () => {};
+  try {
+    await withEnv("off", async () => {
+      try {
+        await createJobRecord(async () => { touched++; return { id: "recX" }; },
+                              { jobName: "Test", contractorId: "recC" });
+      } catch (e) { threw = e; }
+    });
+  } finally {
+    console.error = realErr;
+    if (prevSrc === undefined) delete process.env.JOB_CREATE_SOURCE; else process.env.JOB_CREATE_SOURCE = prevSrc;
+  }
+  ok(threw instanceof JobInputError, `refused with a JobInputError, got ${threw && threw.name}`);
+  ok(/Airtable writes are turned off/.test(threw.message), "and the message names the actual problem");
+  eq(touched, 0, "and it refused BEFORE touching Airtable — or burning a PO number");
+});
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

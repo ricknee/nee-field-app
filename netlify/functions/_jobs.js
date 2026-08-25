@@ -24,7 +24,7 @@
 // condition was "status = New Lead AND Job PO Number is EMPTY", which a record
 // created with the number already in it never satisfies.
 import { neonWrite } from "./_neon.js";
-import { scrubFabricatingLinks } from "./_airtable-write-guard.js";
+import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, SKIPPED_WRITE } from "./_airtable-write-guard.js";
 
 const AT_API = "https://api.airtable.com/v0";
 
@@ -91,6 +91,7 @@ export function makeAtFetch(apiKey, baseId) {
   return async function atFetch(path, options = {}) {
     // See _airtable-write-guard.js — this one carries the native job's mirror,
     // which is the write that fabricated a Job on 2026-08-25.
+    if (airtableWriteBlocked(path, options)) return SKIPPED_WRITE;
     options = scrubFabricatingLinks(path, options);
     const res = await fetch(`${AT_API}/${baseId}/${path}`, {
       ...options,
@@ -400,6 +401,26 @@ export async function createJobRecord(atFetch, input) {
   if (nz(customerPhone    )) fields["Customer Phone (Intake)"]          = nz(customerPhone    );
   if (nz(customerEmail    )) fields["Customer Email (Intake)"]          = nz(customerEmail    );
   if (nz(notes            )) fields["Notes"]                            = String(notes);
+
+  // ⚠⚠ THE ONE COMBINATION THE MIRROR KILL SWITCH CANNOT SURVIVE, CHECKED
+  // BEFORE A PO IS BURNED. The non-native branch below POSTs the job to Airtable
+  // and then RE-READS the record for Airtable's computed `Job PO` — it consumes
+  // its own write. With AIRTABLE_WRITES=off that POST is skipped, the re-read
+  // would fetch `Jobs/null`, and the job would half-exist: a PO number spent, no
+  // record anywhere.
+  //
+  // Refusing here is the honest answer, and it is deliberately BEFORE
+  // allocatePoNumber so a refusal costs nothing. A PO cannot be handed back.
+  //
+  // If this ever fires, the fix is one of two env vars, not a code change:
+  // JOB_CREATE_SOURCE=native (where the app is) or AIRTABLE_WRITES=on.
+  if (!jobsAreNative() && !airtableWritesEnabled()) {
+    console.error("createJobRecord: refused — JOB_CREATE_SOURCE is not 'native' but AIRTABLE_WRITES is 'off'. " +
+                  "The non-native create reads back its own Airtable write, so it cannot run with mirrors disabled.");
+    throw new JobInputError(
+      "Job creation is misconfigured: the app is set to create jobs in Airtable, but Airtable writes are turned off. " +
+      "Set JOB_CREATE_SOURCE=native (or AIRTABLE_WRITES=on) and try again.");
+  }
 
   const poNumber = await allocatePoNumber();
   if (poNumber != null) fields["Job PO Number"] = poNumber;

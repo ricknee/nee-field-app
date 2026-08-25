@@ -36,6 +36,56 @@
 // a Postgres uuid.
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// ── THE MIRROR KILL SWITCH ─────────────────────────────────────────────────
+// `AIRTABLE_WRITES` — unset or `on` (today) = mirrors are written. `off` = every
+// POST/PATCH/PUT/DELETE through any atFetch is skipped.
+//
+// It is an env var and not a code change for the same reason LOGIN_SOURCE and
+// JOB_CREATE_SOURCE are: it moves 65 write sites across ~40 handlers at once,
+// and moving back takes seconds with no rebuild. Editing 40 handlers to achieve
+// the same thing would be 40 chances to get one wrong.
+//
+// ⚠ SAFE ONLY BECAUSE EVERY REMAINING WRITE IS A MIRROR. Verified 2026-08-25 by
+// call graph, not by grep — the grep pass produced four false positives
+// (handleAddLiftExpense and handleAddGeneralExpense call createExpenseNative
+// through an imported helper, and 502 if Neon fails). Billing allocations were
+// the one genuine exception, Airtable-FIRST until the same day; they are
+// Neon-native now. Before flipping this, re-answer that question for anything
+// added since: is Neon written first, and does the caller need the response?
+//
+// ⚠⚠ ONE PATH STILL READS ITS OWN WRITE BACK: createJobRecord's non-native
+// branch POSTs the job and then re-reads the record for Airtable's computed
+// `Job PO`. It is dormant while JOB_CREATE_SOURCE=native, and _jobs.js refuses
+// loudly rather than letting it half-run — see the guard there.
+export function airtableWritesEnabled() {
+  return String(process.env.AIRTABLE_WRITES ?? "on").trim().toLowerCase() !== "off";
+}
+
+// What a skipped write resolves to. NOT null: ~65 call sites do `data?.id` or
+// `created.id`, and a null would turn a deliberate skip into a TypeError in
+// handlers that are otherwise working perfectly. `id: null` reads as "nothing
+// was created", which is exactly true, and every caller already handles it
+// because a mirror has always been allowed to fail.
+export const SKIPPED_WRITE = Object.freeze({ id: null, fields: {}, records: [], skipped: true });
+
+const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+// One line per table per cold start. The switch being on is a deliberate state,
+// not an incident; logging every skipped mirror would bury the checks that
+// matter in the same log.
+const announced = new Set();
+
+/** True when this request is a write and the switch is off. */
+export function airtableWriteBlocked(label, options) {
+  if (airtableWritesEnabled()) return false;
+  if (!WRITE_METHODS.has(String(options?.method || "GET").toUpperCase())) return false;
+  const table = String(label || "").split("/")[0];
+  if (!announced.has(table)) {
+    announced.add(table);
+    console.log(`airtable-write: SKIPPED (AIRTABLE_WRITES=off) — ${table}. The Neon row is the record.`);
+  }
+  return true;
+}
+
 const isUuidString = (v) => typeof v === "string" && UUID_RE.test(v.trim());
 
 /**

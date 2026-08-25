@@ -4523,6 +4523,51 @@
   }
   window.deselectJob = deselectJob;
 
+  // ── "- " BECOMES "• " AS YOU TYPE ──────────────────────────────────────
+  // The estimate and invoice description boxes have always PROMISED this in
+  // their placeholder ("start a line with '- ' for a bullet"), and the invoice
+  // PDF builder honours it — processDescription() turns a leading -, * or • into
+  // a drawn bullet. But NOTES are rendered with a plain splitTextToSize and get
+  // no such treatment, so the same text bullets in one place and shows a raw
+  // dash in another. That is the mixed list in the 2026-08-25 screenshot: the
+  // lines typed with "• " render as bullets, the ones typed with "- " do not.
+  //
+  // Converting at INPUT time fixes it everywhere at once, because the stored
+  // text itself becomes a bullet — every renderer downstream, PDF or screen,
+  // shows the same thing.
+  //
+  // ⚠ Registered in the CAPTURE phase. The estimate and invoice builders each
+  // have their own bubble-phase `input` listener that copies t.value into
+  // estLines/invLines; capture runs first, so the model receives the converted
+  // text. On the bubble phase the model would keep the dash and the conversion
+  // would be undone by the next re-render.
+  //
+  // ⚠ The pattern matches what the PDF ALREADY calls a bullet — its regex is
+  // /^\s*[-*•]\s+/, which accepts more than one space. Matching that exactly is
+  // the point: a line the PDF would bullet becomes a bullet in the text, so the
+  // two can never disagree again. "-  Hook up Temp Genset" in the screenshot has
+  // two spaces and must convert like the rest.
+  //
+  // Because "-  " and "• " differ in length, the caret CANNOT simply be put
+  // back where it was. Converting the text before the caret separately gives its
+  // new length exactly, whatever was replaced ahead of it.
+  const BULLET_RE = /(^|\n)[ \t]*-[ \t]+(?=\S)/g;
+  function autoBulletTextarea(t) {
+    const before = t.value;
+    const after  = before.replace(BULLET_RE, "$1• ");
+    if (after === before) return;
+    const pos = t.selectionStart;
+    const movedPrefix = before.slice(0, pos).replace(BULLET_RE, "$1• ").length;
+    t.value = after;
+    try { t.setSelectionRange(movedPrefix, movedPrefix); } catch (_) { /* detached or unsupported */ }
+  }
+  document.addEventListener("input", (e) => {
+    const t = e.target;
+    if (!t || t.tagName !== "TEXTAREA") return;
+    if (!t.matches(".inv-desc, .est-desc, #invNotes, #estNotes")) return;
+    autoBulletTextarea(t);
+  }, true);
+
   // Re-read the jobs list and re-render the open job from the fresh copy.
   //
   // Every write that changes something VISIBLE on the job header needs this.

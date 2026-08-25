@@ -4523,6 +4523,31 @@
   }
   window.deselectJob = deselectJob;
 
+  // Re-read the jobs list and re-render the open job from the fresh copy.
+  //
+  // Every write that changes something VISIBLE on the job header needs this.
+  // The buttons used to just relabel themselves, so the server had the new
+  // status and the screen had the old one until a manual reload — reported on
+  // Start Service Call, 2026-08-25.
+  //
+  // `quiet` is for the delayed second look after an automation: it does nothing
+  // unless that job is still the selected one, so a background refresh can never
+  // yank the user out of whatever they opened next.
+  async function refreshJobPanel(jobId, quiet) {
+    try {
+      if (quiet && state.selected?.id !== jobId) return;
+      await loadJobs();
+      const fresh = (state.jobs || []).find(j => j.id === jobId);
+      if (!fresh) return;
+      if (quiet && state.selected?.id !== jobId) return;
+      selectJob(fresh);
+    } catch (e) {
+      // A failed refresh is cosmetic — the write already landed. Say so in the
+      // console rather than alerting over a successful action.
+      console.warn("[refreshJobPanel] could not refresh", jobId, e);
+    }
+  }
+
   function selectJob(job) {
     state.selected = job;
     renderJobList(); // re-render to update active state
@@ -4786,7 +4811,18 @@
             try {
               await apiPost("startServiceCall", { jobId: job.id });
               startBtn.textContent = "✓ Service Call Started";
-              setTimeout(() => { startBtn.innerHTML = "▶ Start Service Call"; startBtn.disabled = false; }, 3000);
+              // ⚠ REFRESH, don't just relabel. The write moves Job Status to
+              // "Service Call Scheduled" and sets startServiceCall, but nothing
+              // here re-read the job, so `state.jobs` kept the pre-click copy and
+              // the panel showed the old status until someone reloaded the page.
+              // Re-selecting the refreshed job swaps the button for the
+              // "⏳ Service Call Being Created..." badge, which is the honest
+              // state while Make builds the folders and cards.
+              await refreshJobPanel(job.id);
+              // Make's callbacks (folder ids, jobcode, Trello cards) land a few
+              // seconds after the webhook, so look once more. Guarded on the job
+              // still being the selected one — the user may have moved on.
+              setTimeout(() => { refreshJobPanel(job.id, true); }, 8000);
             } catch(e) {
               alert("Error: " + e.message);
               startBtn.disabled = false;
@@ -4806,7 +4842,10 @@
             try {
               await apiPost("completeServiceCall", { jobId: job.id });
               doneBtn.textContent = "✓ Marked Complete";
-              setTimeout(() => { doneBtn.innerHTML = "✅ Service Call Complete"; doneBtn.disabled = false; }, 3000);
+              // Same staleness as the Start button above: this write changes the
+              // status and projectComplete, and without a re-read the panel keeps
+              // offering "Service Call Complete" on a job already completed.
+              await refreshJobPanel(job.id);
             } catch(e) {
               alert("Error: " + e.message);
               doneBtn.disabled = false;

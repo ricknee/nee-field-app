@@ -70,8 +70,16 @@ export async function syncExpenseToNeon(rec) {
         vendor_name, description, push_id, submitted_by_at_id, submitted_by_name, synced_at)
      VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),$3,$4,$5::date,$6,$7,$8,$9,$10,
              $11,$12,$13,$14,$15,$16,$17,$18,$19, now())
+     -- ⚠⚠ THE JOB LINKAGE IS NOT CARRIED BACK (2026-08-25). On the DO UPDATE
+     -- branch the app has ALREADY written the authoritative row, so Airtable is
+     -- the junior opinion — and on a native job it is a wrong one. The mirror
+     -- links to whatever Airtable holds, which for a native job was a record
+     -- "typecast: true" fabricated out of the uuid, so this SET replaced a
+     -- correct job_id with NULL and the expense silently left the job it belonged
+     -- to. Three of them did exactly that on Test 10 before this was found.
+     -- The INSERT branch still sets both: an Airtable-born row has no Neon row
+     -- to be junior to. Only the OVERWRITE is gone.
      ON CONFLICT (airtable_id) DO UPDATE SET
-       job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
        expense_type=EXCLUDED.expense_type, expense_status=EXCLUDED.expense_status,
        expense_date=EXCLUDED.expense_date, total_cost_actual=EXCLUDED.total_cost_actual,
        reviewed=EXCLUDED.reviewed, reviewed_expenses=EXCLUDED.reviewed_expenses,

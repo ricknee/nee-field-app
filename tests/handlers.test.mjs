@@ -3762,6 +3762,41 @@ await test("no bare `WHERE airtable_id = $n` — the dual-handle guard", async (
   eq(offenders.length, 0, offenders.join(" | "));
 });
 
+// ── The fabricated-link guard (2026-08-25) ─────────────────────────────────
+// Two rules, one bug. Saving an invoice on a native job put the uuid into an
+// Airtable LINKED-RECORD field with `typecast: true`, which does not reject an
+// unknown value — it CREATES the record. Airtable gained a Job named
+// "846245ef-294f-423b-a2b1-4b4a919607f8", and the write-back then copied that
+// fabricated link over the correct Neon row, so the invoice and three estimates
+// left the job entirely. Both halves are guarded here.
+await test("no raw job handle into an Airtable link, and no job linkage carried back", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const dir = fileURLToPath(new URL("../netlify/functions/", import.meta.url));
+  const offenders = [];
+
+  for (const f of readdirSync(dir).filter(n => n.endsWith(".js"))) {
+    const src = readFileSync(dir + f, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n").map(l => l.replace(/\/\/.*$/, "").replace(/^\s*--.*$/, "")).join("\n");
+
+    src.split("\n").forEach((l, i) => {
+      // Half 1: a link field assigned a bare handle. Everything must go through
+      // jobLink(), which yields {} when there is no rec id to link.
+      if (/(?:fields|createFields|svcFields|wFields)\s*\[[^\]]+\]\s*=\s*\[\s*(?:String\()?\s*(?:jobId|job_id)\b/.test(l)) {
+        offenders.push(`${f}:${i + 1} raw job handle into a linked field — use jobLink()`);
+      }
+      // Half 2: a DO UPDATE SET that copies Airtable's idea of the job over the
+      // app's. Fine on INSERT, never on the conflict branch.
+      if (/^\s*job_(airtable_)?id\s*=\s*EXCLUDED\./.test(l)) {
+        offenders.push(`${f}:${i + 1} carries job linkage back over an app-owned row`);
+      }
+    });
+  }
+
+  eq(offenders.length, 0, offenders.join(" | "));
+});
+
 // The mirror image of the guard below, and it exists because the inverse bug
 // shipped on 2026-08-24. `sql` in the sync modules is `neon()` from
 // @neondatabase/serverless: its `.query()` resolves to a BARE ARRAY, while

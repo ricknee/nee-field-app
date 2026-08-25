@@ -1058,6 +1058,25 @@ async function resolveTimeEntry(entryId) {
 // Best-effort Airtable mirror. Never throws — the authoritative write already
 // landed in Neon, so an Airtable problem must not fail the user's request. This is
 // the same fail-soft contract the Neon mirror used to have, pointed the other way.
+// ⚠⚠ A LINKED-RECORD FIELD TAKES A REC ID OR NOTHING — NEVER A UUID.
+// Added 2026-08-25, after a native job's invoice mirror did exactly that. Every
+// one of these POSTs carries `typecast: true`, and typecast does not reject an
+// unrecognised link value: it CREATES the record. Saving one invoice on Test 10
+// therefore created an Airtable Job literally named
+// "846245ef-294f-423b-a2b1-4b4a919607f8", which `_jobs-sync` would have imported
+// as a real job at the top of the hour — and whose display name Airtable's
+// Invoice Number formula then wrote back over the invoice as
+// "846245ef-…-001".
+//
+// Returns an object to spread, so the call site stays one line and the field is
+// ABSENT (not null, not []) when there is no rec id to link. Omitting it is the
+// whole point: the Neon row already carries the real job_id, and the mirror is a
+// courtesy copy that nothing reads back.
+function jobLink(fieldKey, jobId) {
+  const s = String(jobId || "").trim();
+  return s.startsWith("rec") ? { [fieldKey]: [s] } : {};
+}
+
 async function mirrorToAirtable(label, fn) {
   try {
     return await fn();
@@ -6554,7 +6573,7 @@ async function handleCreateInspection(body) {
   if (!neonId) return resp(500, { ok: false, error: "Inspection was not written to Neon." });
 
   const fields = {};
-  fields["fldqk2pA5w3TSN3q8"] = [String(jobId)];
+  Object.assign(fields, jobLink("fldqk2pA5w3TSN3q8", jobId));
   if (typeSafe)   fields["fldR2IQkaeRHXytsR"] = typeSafe;
   if (date)       fields["fldPblyNOIryMLFB6"] = date;
   if (statusSafe) fields["fld7kH2SEHsxaS9vz"] = statusSafe;
@@ -6810,8 +6829,16 @@ async function syncEstimateToNeon(rec) {
         calculated_estimated_total, estimate_date, notes, display_number,
         estimate_snapshot, synced_at)
      VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13, now())
+     -- ⚠⚠ THE JOB LINKAGE IS NOT CARRIED BACK (2026-08-25). On the DO UPDATE
+     -- branch the app has ALREADY written the authoritative row, so Airtable is
+     -- the junior opinion — and on a native job it is a wrong one. The mirror
+     -- links to whatever Airtable holds, which for a native job was a record
+     -- "typecast: true" fabricated out of the uuid, so this SET replaced a
+     -- correct job_id with NULL and the estimate silently left the job it belonged
+     -- to. Three of them did exactly that on Test 10 before this was found.
+     -- The INSERT branch still sets both: an Airtable-born row has no Neon row
+     -- to be junior to. Only the OVERWRITE is gone.
      ON CONFLICT (airtable_id) DO UPDATE SET
-       job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
        estimate_type=EXCLUDED.estimate_type, status=EXCLUDED.status,
        actual_estimate_sent=EXCLUDED.actual_estimate_sent,
        estimated_labor_hours=EXCLUDED.estimated_labor_hours,
@@ -6975,7 +7002,7 @@ async function handleSaveEstimate(body) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
-  fields["Job"] = [jobId];
+  Object.assign(fields, jobLink("Job", jobId));
   if (estimateDate) fields["Estimate Date"] = estimateDate;
   if (totalAmount !== undefined && totalAmount !== null && totalAmount !== "") {
     fields["Total"] = Number(totalAmount);
@@ -7605,7 +7632,7 @@ async function handleCreateJobEstimate(body) {
   // The other formulas on this table (Estimated Labor Cost, Calculated
   // Estimated Total) are also skipped here. Only user-editable fields below.
   const fields = {};
-  fields["Job"] = [jobId];
+  Object.assign(fields, jobLink("Job", jobId));
   // Status (fld9GsGvxaNPuCnjo, singleSelect) has no schema-level default,
   // so records created here without it land with Status=null and get
   // filtered out of the Est. GP estimates view. Default to "Draft" — the
@@ -10620,7 +10647,7 @@ async function handleSaveInvoice(body) {
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
-  fields["fld1fmEklDw6y9hS2"] = [jobId];                            // Job (linked)
+  Object.assign(fields, jobLink("fld1fmEklDw6y9hS2", jobId));       // Job (linked)
   // Only force "Sent" status on the initial create. When editing an existing
   // invoice we leave the status alone — the user might be tweaking a Paid or
   // Disputed invoice and we don't want to silently flip it back to Sent.
@@ -11006,7 +11033,7 @@ async function handleAddGeneratorService(body) {
   // Build by name — typecast: true handles single-select option creation.
   const fields = {};
   if (genAt) fields["Generator"] = [genAt];
-  if (jobId)            fields["Job"] = [jobId];
+  Object.assign(fields, jobLink("Job", jobId));
   fields["Service Date"] = serviceDate;
   if (serviceType)      fields["Service Type"] = serviceType;
   if (technician)       fields["Technician"]   = technician;
@@ -11549,7 +11576,7 @@ async function handleCommissionGenerator(body) {
     if (!patched?.id) warnings.push("Generator saved in Neon, but the Airtable mirror PATCH failed.");
   } else {
     const createFields = { ...assetFields };
-    createFields[F.gen.job] = [jobId];
+    Object.assign(createFields, jobLink(F.gen.job, jobId));
     const created = await mirrorToAirtable("commission.createAsset", () =>
       atFetch(`${encodeURIComponent(TABLES.generators)}`, {
         method: "POST", body: JSON.stringify({ fields: createFields, typecast: true })
@@ -11571,7 +11598,7 @@ async function handleCommissionGenerator(body) {
   if (neonServiceId && resolvedGeneratorId) {
     const svcFields = {};
     svcFields[F.svc.generator]   = [resolvedGeneratorId];
-    svcFields[F.svc.job]         = [jobId];
+    Object.assign(svcFields, jobLink(F.svc.job, jobId));
     svcFields[F.svc.serviceDate] = commissioningDate || installDate;
     svcFields[F.svc.serviceType] = svcTypeNeon;
     if (technician) svcFields[F.svc.technician] = String(technician);
@@ -11991,7 +12018,7 @@ async function handleAddScheduleEntry(body) {
 
   const fields = {};
   fields[SCHED_F.type] = entryType;
-  if (jobId)              fields[SCHED_F.job]       = [jobId];
+  Object.assign(fields, jobLink(SCHED_F.job, jobId));
   fields[SCHED_F.startDate] = startDate;
   fields[SCHED_F.endDate]   = endDate;
   // ⚠⚠ REC IDS ONLY IN THE MIRROR. `SCHED_F.crew` is an Airtable LINKED-RECORD
@@ -12306,9 +12333,21 @@ async function syncInvoiceToNeon(rec) {
         invoice_notes, invoice_snapshot, synced_at)
      VALUES ($1,$2,(SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),$3,$4,$5,$6,$7,$8::date,$9,
              $10,$11,$12,$13,$14,$15,$16, now())
+     -- ⚠⚠ THE JOB LINKAGE AND invoice_number ARE NO LONGER CARRIED BACK, AND
+     -- THAT IS THE FIX FOR A REAL LOSS (2026-08-25). This upsert runs right
+     -- after the app has written the authoritative row, so on the DO UPDATE
+     -- branch Airtable is always the JUNIOR opinion. On a native job it was a
+     -- WRONG one: the mirror POST had linked the invoice to a Job record
+     -- typecast had just fabricated from the uuid, so this SET overwrote a
+     -- correct job_id with NULL and a correct invoice_number with
+     -- "846245ef-…-001" — the fabricated job's display name, straight out of
+     -- Airtable's Invoice Number formula. The invoice then belonged to no job
+     -- and vanished from the job's invoice history.
+     --
+     -- The INSERT branch still carries them: a genuinely Airtable-born invoice
+     -- has no Neon row to be junior to. Only the overwrite is gone.
      ON CONFLICT (airtable_id) DO UPDATE SET
-       job_airtable_id=EXCLUDED.job_airtable_id, job_id=EXCLUDED.job_id,
-       invoice_number=EXCLUDED.invoice_number, invoice_status=EXCLUDED.invoice_status,
+       invoice_status=EXCLUDED.invoice_status,
        invoice_type=EXCLUDED.invoice_type, billing_mode=EXCLUDED.billing_mode,
        invoice_stage=EXCLUDED.invoice_stage, invoice_date=EXCLUDED.invoice_date,
        snapshot_total=EXCLUDED.snapshot_total,

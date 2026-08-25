@@ -8188,6 +8188,7 @@ async function buildOrderWorkingList(estimate) {
           shop1:       0,
           shop2:       0,
           available:   0,
+          usable:      0,
           shortfall:   Number(l.qty) || 0,
           orderQty:    Number(l.qty) || 0,
           isBox:       false,
@@ -8200,8 +8201,13 @@ async function buildOrderWorkingList(estimate) {
       var shop1 = shop1Level ? Number(shop1Level.qtyOnHand) || 0 : 0;
       var shop2 = shop2Level ? Number(shop2Level.qtyOnHand) || 0 : 0;
       var available = shop1 + shop2;
+      // A negative on-hand is a counting error, never "we owe stock". Left in
+      // the arithmetic it INFLATES the buy: 2230 ft needed against -10 on hand
+      // came out as 2240 ft to order. Kept as-is for DISPLAY so the bad count
+      // stays visible, clamped to 0 everywhere it feeds a number.
+      var usable = Math.max(0, available);
       var estQty = Number(l.qty) || 0;
-      var shortfall = Math.max(0, estQty - available);
+      var shortfall = Math.max(0, estQty - usable);
       return {
         itemId:      l.itemId,
         itemName:    l.itemName || "Item",
@@ -8211,11 +8217,16 @@ async function buildOrderWorkingList(estimate) {
         estQty:      estQty,
         shop1:       shop1,
         shop2:       shop2,
-        available:   available,
+        available:   available,           // true on-hand — display only
+        usable:      usable,              // the same number, safe to do maths with
         shortfall:   shortfall,
-        orderQty:    shortfall,           // pre-fill with shortfall
+        // Order the FULL estimated qty, not the shortfall. Stock is reference,
+        // not a deduction: if the estimate says 2230 ft, the order says 2230 ft.
+        // Type over it to buy less. Netting against a stock count nobody trusts
+        // yet is how an order silently comes up short on site.
+        orderQty:    estQty,
         isBox:       false,
-        include:     shortfall > 0        // pre-check items needing order
+        include:     estQty > 0
       };
     });
 
@@ -8240,7 +8251,7 @@ function renderOrderBuild() {
 
   var headerHint = isJobContext
     ? "Add items for this job and enter qtys, then generate PDF."
-    : "Adjust qtys and check the items you want to order, then generate PDF.";
+    : "Every qty is pre-filled with the FULL estimate qty. Stock is shown for reference only — type over a qty to buy less, or uncheck to skip.";
 
   var header =
     '<div style="background:var(--navy-lt);padding:12px 14px;border-radius:8px;border:1px solid var(--border);margin-bottom:14px;">' +
@@ -8282,11 +8293,15 @@ function renderOrderBuild() {
     inStock.sort(byCat);
     miscItems.sort(byCat);
 
+    // The split is now INFORMATION, not a decision — both sections order the
+    // full estimate qty. The old titles ("Items needing order" / "Already in
+    // stock") described a pre-fill that no longer happens and would read as
+    // "the second section isn't on the order", which it is.
     if (needsOrder.length) {
-      content += sectionHtml("Items needing order", "var(--gold)", needsOrder, true);
+      content += sectionHtml("Not enough in stock", "var(--gold)", needsOrder, true);
     }
     if (inStock.length) {
-      content += sectionHtml("Already in stock", "var(--dim)", inStock, false);
+      content += sectionHtml("Stock covers this", "var(--dim)", inStock, false);
     }
     if (miscItems.length) {
       content += sectionHtml("Misc / Other (no inventory match)", "var(--dim)", miscItems, false);
@@ -8308,10 +8323,16 @@ function sectionHtml(title, color, group, defaultExpanded) {
     var it = g.it;
     var idx = g.idx;
     var checkedAttr = it.include ? "checked" : "";
+    // A negative on-hand is called out rather than quietly shown as a number:
+    // it is the tell that the count is wrong, and it no longer moves the order.
+    var stockTxt = it.available < 0
+      ? '<span style="color:var(--red);font-weight:600;" title="Negative on-hand — the count is wrong. Treated as 0 here.">' +
+          fmtQty(it.available) + ' ⚠</span>'
+      : fmtQty(it.available);
     var stockInfo = it.isMisc
       ? '<span style="color:var(--dim);font-style:italic;">(no inventory match)</span>'
-      : 'Need: ' + fmtQty(it.estQty) + ' · In stock: ' + fmtQty(it.available) +
-        (it.shortfall > 0 ? ' · <span style="color:var(--gold);font-weight:600;">Short ' + fmtQty(it.shortfall) + '</span>' : ' · <span style="color:var(--green);">In stock</span>');
+      : 'Need: ' + fmtQty(it.estQty) + ' · In stock: ' + stockTxt +
+        (it.shortfall > 0 ? ' · <span style="color:var(--gold);font-weight:600;">Short ' + fmtQty(it.shortfall) + '</span>' : ' · <span style="color:var(--green);">Covered</span>');
 
     var isBox = !!it.isBox;
     var boxBtnStyle = isBox

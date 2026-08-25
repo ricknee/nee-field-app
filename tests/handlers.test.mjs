@@ -3738,6 +3738,25 @@ await test("no bare `WHERE airtable_id = $n` — the dual-handle guard", async (
       if (/SELECT id FROM time_entries WHERE airtable_id = \$\d/.test(l)) return;
       offenders.push(`${f}:${i + 1} ${l.trim().slice(0, 90)}`);
     });
+
+    // ── The SECOND spelling, found 2026-08-25 when a pushed expense did not
+    // appear on Test 10. These filter the child's OWN `job_airtable_id` COLUMN
+    // rather than resolving through `jobs`, and that column is NULL on every row
+    // belonging to a native job. Nine sites, i.e. nine tabs that render empty:
+    // expenses, invoices, estimates, sent estimate PDFs, inspections,
+    // generators, receipts, panel schedules, checklists. Nothing errors — the
+    // tab just looks like a job with no expenses on it.
+    //
+    // A statement may filter on that column, but it must offer the uuid an
+    // escape within the same clause, hence the small window.
+    const lines = src.split("\n");
+    lines.forEach((l, i) => {
+      const m = l.match(/(?:\w+\.)?job_airtable_id\s*=\s*(\$\d+)/);
+      if (!m) return;
+      const window = lines.slice(Math.max(0, i - 1), i + 4).join("\n");
+      if (window.includes(`id::text = ${m[1]}`)) return;
+      offenders.push(`${f}:${i + 1} filters job_airtable_id with no uuid path — ${l.trim().slice(0, 70)}`);
+    });
   }
 
   eq(offenders.length, 0, offenders.join(" | "));

@@ -5851,6 +5851,7 @@ async function handleGenerator(params) {
          JOIN generators gb ON gb.id = g.id
          LEFT JOIN jobs j ON j.id = g.job_id
         WHERE g.job_airtable_id = $1 OR gb.service_call_job_at_id = $1
+           OR g.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1)
         LIMIT 1`, [jobId]);
     if (q?.rows?.length) {
       const r = q.rows[0];
@@ -6487,7 +6488,7 @@ async function handleJobInspections(params) {
          FROM job_inspections ji
          LEFT JOIN jobs j                ON j.id  = ji.job_id
          LEFT JOIN inspection_agencies ia ON ia.id = ji.agency_id
-        WHERE ji.job_airtable_id = $1
+        WHERE (ji.job_airtable_id = $1 OR ji.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY ji.inspection_date DESC NULLS LAST`, [jobId]);
     if (q?.rows?.length) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
@@ -6625,7 +6626,7 @@ async function handleJobEstimates(params) {
             ORDER BY s.estimate_date DESC NULLS LAST, s.display_number DESC NULLS LAST
             LIMIT 1
          ) bytotal ON true
-        WHERE e.job_airtable_id = $1
+        WHERE (e.job_airtable_id = $1 OR e.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY e.estimate_date DESC NULLS LAST`, [jobId]);
     if (q?.rows?.length) {
       // One R2 listing for the whole job rather than one per estimate.
@@ -7133,7 +7134,7 @@ async function handleSentEstimatePDFs(params) {
               display_number, estimate_date::text AS estimate_date,
               total, snapshot
          FROM sent_estimate_pdfs
-        WHERE job_airtable_id = $1
+        WHERE (job_airtable_id = $1 OR job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY estimate_date DESC NULLS LAST, display_number DESC NULLS LAST`, [jobId]);
     if (q?.rows?.length) {
       return resp(200, {
@@ -8831,7 +8832,7 @@ async function handleExpenses(params, authUser) {
               j.markup_pct
          FROM v_expenses e
          LEFT JOIN jobs j ON j.id = e.job_id
-        WHERE e.job_airtable_id = $1
+        WHERE (e.job_airtable_id = $1 OR e.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
           AND ($2 OR e.submitted_by_at_id = $3)
         ORDER BY e.expense_date DESC NULLS LAST`,
       [jobId, isMgrScope, authUser?.id || null]);
@@ -11446,11 +11447,12 @@ async function handleCommissionGenerator(body) {
     `WITH existing AS (
        SELECT id, airtable_id FROM generators
         WHERE ($1 <> '' AND (id::text = $1 OR airtable_id = $1))
-           OR ($1 =  '' AND job_airtable_id = $2)
+           OR ($1 =  '' AND (job_airtable_id = $2
+                            OR job_id = (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2)))
         LIMIT 1
      ), upd AS (
        UPDATE generators g SET
-         job_airtable_id = $2,
+         job_airtable_id = CASE WHEN $2 LIKE 'rec%' THEN $2 ELSE NULL END,
          job_id = COALESCE((SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2), g.job_id),
          brand = $3, model = COALESCE($4, g.model), kw = COALESCE($5, g.kw),
          serial_number = COALESCE($6, g.serial_number),
@@ -11468,7 +11470,7 @@ async function handleCommissionGenerator(body) {
          (job_airtable_id, job_id, customer_name, brand, model, kw, serial_number,
           transfer_switch_model, transfer_switch_serial, fuel_type, install_date,
           service_plan_active, service_interval_months, battery_install_date, notes)
-       SELECT $2, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
+       SELECT CASE WHEN $2 LIKE 'rec%' THEN $2 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
               -- Snapshot the customer, exactly as the ETL does. Without it a
               -- brand-new generator has a NULL asset_id until the hourly jobs
               -- sync catches up, i.e. no name on screen.
@@ -11484,7 +11486,7 @@ async function handleCommissionGenerator(body) {
        INSERT INTO generator_service
          (generator_id, job_airtable_id, job_id, service_date, service_type,
           technician, generator_hours, work_performed_notes)
-       SELECT gen.id, $2, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
+       SELECT gen.id, CASE WHEN $2 LIKE 'rec%' THEN $2 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
               $15::date, $16, $17, $18, $19
          FROM gen
         WHERE NOT EXISTS (SELECT 1 FROM generator_service gs
@@ -12343,7 +12345,7 @@ async function handleGetJobInvoices(body) {
               invoice_total_calc, snapshot_total, percent_to_bill,
               contract_invoice_amount, invoice_notes, invoice_snapshot, invoice_stage
          FROM v_invoices
-        WHERE job_airtable_id = $1
+        WHERE (job_airtable_id = $1 OR job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY invoice_date DESC NULLS LAST`, [jobId]);
     if (q?.rows?.length) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
@@ -13018,7 +13020,7 @@ async function handleExpenseReceiptSummary(params, authUser) {
   const q = await neonQuery(
     `SELECT COALESCE(e.airtable_id, e.id::text) AS id
        FROM expenses e
-      WHERE e.job_airtable_id = $1
+      WHERE (e.job_airtable_id = $1 OR e.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         AND ($2 OR e.submitted_by_at_id = $3)`,
     [jobId, isMgr === true, authUser?.id || null]);
   if (q?.rows?.length) visibleIds = q.rows.map(r => r.id);
@@ -13330,7 +13332,7 @@ async function handlePanelSchedules(params) {
             (SELECT count(*) FROM panel_circuits c
               WHERE c.panel_id = p.id AND c.description <> '')::int AS filled
        FROM panel_schedules p
-      WHERE p.job_airtable_id = $1
+      WHERE (p.job_airtable_id = $1 OR p.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
       ORDER BY p.name`,
     [String(jobId)]);
   return resp(200, { ok: true, panels: (rows || []).map(mapPanel) });
@@ -13569,7 +13571,7 @@ async function handleJobChecklists(params) {
             (SELECT count(*) FROM checklist_items i WHERE i.checklist_id = c.id AND NOT i.done)::int AS open,
             (SELECT count(*) FROM checklist_items i WHERE i.checklist_id = c.id AND     i.done)::int AS done_count
        FROM job_checklists c
-      WHERE c.job_airtable_id = $1
+      WHERE (c.job_airtable_id = $1 OR c.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
       ORDER BY c.created_at`,
     [String(jobId)]);
   const lists = (rows || []).map(mapChecklist);

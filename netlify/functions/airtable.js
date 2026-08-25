@@ -5781,7 +5781,14 @@ async function handleJobs() {
     // Guarded on .length, not .rows: an empty jobs table is never a legitimate
     // answer here — the app cannot function with no jobs — so treat it as failure
     // and let Airtable answer rather than blanking the job list.
-    console.error(`jobs: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ EMPTY IS STILL TREATED AS FAILURE HERE, and that judgement is the
+    // original author's: this list cannot legitimately come back empty, so an
+    // empty answer means something is wrong. What CHANGED on 2026-08-25 is the
+    // remedy. Airtable stopped being written that day, so falling back now
+    // serves a frozen copy — silently, and looking perfectly normal. Better to
+    // say the database is unavailable than to hand back yesterday's world.
+    console.error(`jobs: Neon returned nothing — refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   const records = await fetchAll(TABLES.jobs);
   const jobs = records
@@ -6515,7 +6522,7 @@ async function handleJobInspections(params) {
          LEFT JOIN inspection_agencies ia ON ia.id = ji.agency_id
         WHERE (ji.job_airtable_id = $1 OR ji.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY ji.inspection_date DESC NULLS LAST`, [jobId]);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
       return resp(200, {
         ok: true,
@@ -6527,7 +6534,14 @@ async function handleJobInspections(params) {
         _source: "neon", _ms: q.ms
       });
     }
-    if (q?.error) console.error(`jobInspections: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`jobInspections: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
@@ -6653,7 +6667,7 @@ async function handleJobEstimates(params) {
          ) bytotal ON true
         WHERE (e.job_airtable_id = $1 OR e.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY e.estimate_date DESC NULLS LAST`, [jobId]);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       // One R2 listing for the whole job rather than one per estimate.
       let pdfsById = new Map();
       try {
@@ -6684,7 +6698,14 @@ async function handleJobEstimates(params) {
       if (onlySaved) estimates = estimates.filter(e => e.displayNumber != null);
       return resp(200, { ok: true, estimates, _source: "neon", _ms: q.ms });
     }
-    if (q?.error) console.error(`jobEstimates: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`jobEstimates: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
@@ -7169,7 +7190,7 @@ async function handleSentEstimatePDFs(params) {
          FROM sent_estimate_pdfs
         WHERE (job_airtable_id = $1 OR job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY estimate_date DESC NULLS LAST, display_number DESC NULLS LAST`, [jobId]);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       return resp(200, {
         ok: true,
         estimates: q.rows.map(r => {
@@ -7188,7 +7209,14 @@ async function handleSentEstimatePDFs(params) {
         _source: "neon", _ms: q.ms
       });
     }
-    if (q?.error) console.error(`sentEstimatePDFs: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`sentEstimatePDFs: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   let records = [];
@@ -8870,7 +8898,7 @@ async function handleExpenses(params, authUser) {
           AND ($2 OR e.submitted_by_at_id = $3)
         ORDER BY e.expense_date DESC NULLS LAST`,
       [jobId, isMgrScope, authUser?.id || null]);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
       const n = (v) => (v === null || v === undefined ? null : Number(v));
       return resp(200, {
@@ -8887,7 +8915,14 @@ async function handleExpenses(params, authUser) {
         _source: "neon", _ms: q.ms
       });
     }
-    if (q?.error) console.error(`expenses: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`expenses: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
@@ -9322,7 +9357,14 @@ async function handleCompanies() {
         primaryEmail:   r.primary_email || "",
       })) });
     }
-    console.error(`companies: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ EMPTY IS STILL TREATED AS FAILURE HERE, and that judgement is the
+    // original author's: this list cannot legitimately come back empty, so an
+    // empty answer means something is wrong. What CHANGED on 2026-08-25 is the
+    // remedy. Airtable stopped being written that day, so falling back now
+    // serves a frozen copy — silently, and looking perfectly normal. Better to
+    // say the database is unavailable than to hand back yesterday's world.
+    console.error(`companies: Neon returned nothing — refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll("Companies", { sortField: "Company Name", sortDir: "asc" });
@@ -9377,7 +9419,14 @@ async function handleVendors() {
       });
       return resp(200, { ok: true, vendors, _source: "neon", _ms: q.ms });
     }
-    console.error(`vendors: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ EMPTY IS STILL TREATED AS FAILURE HERE, and that judgement is the
+    // original author's: this list cannot legitimately come back empty, so an
+    // empty answer means something is wrong. What CHANGED on 2026-08-25 is the
+    // remedy. Airtable stopped being written that day, so falling back now
+    // serves a frozen copy — silently, and looking perfectly normal. Better to
+    // say the database is unavailable than to hand back yesterday's world.
+    console.error(`vendors: Neon returned nothing — refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll("Vendors", {
@@ -9651,7 +9700,14 @@ async function handleListContractors() {
         primaryEmail: r.primary_email || "",
       })) }, { "Cache-Control": "public, max-age=60" });
     }
-    console.error(`listContractors: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ EMPTY IS STILL TREATED AS FAILURE HERE, and that judgement is the
+    // original author's: this list cannot legitimately come back empty, so an
+    // empty answer means something is wrong. What CHANGED on 2026-08-25 is the
+    // remedy. Airtable stopped being written that day, so falling back now
+    // serves a frozen copy — silently, and looking perfectly normal. Better to
+    // say the database is unavailable than to hand back yesterday's world.
+    console.error(`listContractors: Neon returned nothing — refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll("Companies", {
@@ -10038,14 +10094,21 @@ async function handleGetInspectionAgencies() {
     const q = await neonQuery(
       `SELECT COALESCE(airtable_id, id::text) AS id, name FROM inspection_agencies
         WHERE coalesce(name,'') <> '' ORDER BY name ASC`);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       return resp(200, {
         ok: true,
         agencies: q.rows.map(r => ({ id: r.id, name: r.name })),
         _source: "neon", _ms: q.ms
       });
     }
-    if (q?.error) console.error(`getInspectionAgencies: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`getInspectionAgencies: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   const records = await fetchAll(TABLES.inspectionAgencies, { sortField: "Inspection Agency Name", sortDir: "asc" });
@@ -10146,7 +10209,7 @@ async function handleGetInspectorsForAgency(params) {
                OR ($1::uuid IS NULL AND ($2 = '' OR lower(a.name) = lower($2))) )
           ORDER BY c.inspector_name ASC`,
         [ids.neon, trimmedName]);
-      if (q?.rows?.length) {
+      if (q?.rows) {
         return resp(200, {
           ok: true,
           inspectors: q.rows.map(r => ({
@@ -10156,7 +10219,14 @@ async function handleGetInspectorsForAgency(params) {
           _source: "neon", _ms: q.ms
         });
       }
-      if (q?.error) console.error(`inspectorsForAgency: Neon read failed, falling back: ${q.error}`);
+      // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+      // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+      // falling back now serves data that is stale by construction, and serves
+      // it silently. A failed read is an outage; say so and let the caller retry.
+      if (q?.error) {
+        console.error(`inspectorsForAgency: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+        return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+      }
     }
   }
 
@@ -10284,7 +10354,14 @@ async function handleGetPowerCompanies() {
       return resp(200, { ok: true, _source: "neon", _ms: q.ms,
         companies: q.rows.map(r => ({ id: r.airtable_id, name: r.name || "" })) });
     }
-    console.error(`getPowerCompanies: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ EMPTY IS STILL TREATED AS FAILURE HERE, and that judgement is the
+    // original author's: this list cannot legitimately come back empty, so an
+    // empty answer means something is wrong. What CHANGED on 2026-08-25 is the
+    // remedy. Airtable stopped being written that day, so falling back now
+    // serves a frozen copy — silently, and looking perfectly normal. Better to
+    // say the database is unavailable than to hand back yesterday's world.
+    console.error(`getPowerCompanies: Neon returned nothing — refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll(TABLES.powerCompanies, { sortField: F.powerCompany.name, sortDir: "asc" });
@@ -10554,7 +10631,14 @@ async function handleLaborBillableRates() {
         endDate:   r.end_date || "",
       })) });
     }
-    console.error(`laborBillableRates: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ EMPTY IS STILL TREATED AS FAILURE HERE, and that judgement is the
+    // original author's: this list cannot legitimately come back empty, so an
+    // empty answer means something is wrong. What CHANGED on 2026-08-25 is the
+    // remedy. Airtable stopped being written that day, so falling back now
+    // serves a frozen copy — silently, and looking perfectly normal. Better to
+    // say the database is unavailable than to hand back yesterday's world.
+    console.error(`laborBillableRates: Neon returned nothing — refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll("Labor Billable Rates", { sortField: "Billable Hourly Rate", sortDir: "asc" });
@@ -11180,7 +11264,7 @@ async function handleGetWarrantyTemplates(params) {
           AND ( coalesce(model,'') = ''
                 OR ($2 <> '' AND lower(model) = lower($2)) )
         ORDER BY duration_months NULLS LAST`, [brand, model]);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       return resp(200, {
         ok: true,
         templates: q.rows.map(r => ({
@@ -11192,7 +11276,14 @@ async function handleGetWarrantyTemplates(params) {
         _source: "neon", _ms: q.ms
       });
     }
-    if (q?.error) console.error(`getWarrantyTemplates: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`getWarrantyTemplates: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   const filter = buildWarrantyTemplateFilter(brand, model);
@@ -11259,7 +11350,7 @@ async function handleGetWarranties(params) {
          FROM warranties w
         WHERE w.generator_id = $1
         ORDER BY w.end_date ASC NULLS LAST`, [ids.neon]);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
       return resp(200, {
         ok: true,
@@ -11277,7 +11368,14 @@ async function handleGetWarranties(params) {
     // Zero rows is ambiguous — genuinely no warranties, or warranties that
     // commissioning step 3 wrote to Airtable only (it has not migrated). Fall
     // through when a rec id is available; Airtable answers both correctly.
-    if (q?.error) console.error(`getWarranties: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`getWarranties: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   // A uuid with no Neon row cannot be looked up in Airtable at all — say so
@@ -12201,7 +12299,14 @@ async function handleListEmployeesForScheduling() {
     }
     // Zero active employees is never a legitimate answer — it would empty the crew
     // picker — so treat it as a failure and let Airtable answer.
-    console.error(`schedulingCrew: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ EMPTY IS STILL TREATED AS FAILURE HERE, and that judgement is the
+    // original author's: this list cannot legitimately come back empty, so an
+    // empty answer means something is wrong. What CHANGED on 2026-08-25 is the
+    // remedy. Airtable stopped being written that day, so falling back now
+    // serves a frozen copy — silently, and looking perfectly normal. Better to
+    // say the database is unavailable than to hand back yesterday's world.
+    console.error(`schedulingCrew: Neon returned nothing — refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   const records = await fetchAll(TABLES.employees);
   const employees = records
@@ -12244,7 +12349,7 @@ async function handleGetAllInvoices() {
          FROM v_invoices v
          LEFT JOIN jobs j ON j.id = v.job_id
         ORDER BY v.invoice_date DESC NULLS LAST`);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
       return resp(200, {
         ok: true,
@@ -12265,7 +12370,14 @@ async function handleGetAllInvoices() {
         _source: "neon", _ms: q.ms
       });
     }
-    if (q?.error) console.error(`getAllInvoices: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`getAllInvoices: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   // 1. Pull all invoices, paginated
@@ -12433,7 +12545,7 @@ async function handleGetJobInvoices(body) {
          FROM v_invoices
         WHERE (job_airtable_id = $1 OR job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         ORDER BY invoice_date DESC NULLS LAST`, [jobId]);
-    if (q?.rows?.length) {
+    if (q?.rows) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
       return resp(200, {
         ok: true,
@@ -12452,7 +12564,14 @@ async function handleGetJobInvoices(body) {
         _source: "neon", _ms: q.ms
       });
     }
-    if (q?.error) console.error(`getJobInvoices: Neon read failed, falling back: ${q.error}`);
+    // ⚠ LOUD, NOT FALLBACK (2026-08-25). This used to log and read Airtable.
+    // Airtable stopped being written on 2026-08-25, so its copy is frozen —
+    // falling back now serves data that is stale by construction, and serves
+    // it silently. A failed read is an outage; say so and let the caller retry.
+    if (q?.error) {
+      console.error(`getJobInvoices: Neon read FAILED — refusing to serve stale Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   // Fetch all invoices, paginated, and filter client-side by job link.

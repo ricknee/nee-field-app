@@ -4341,6 +4341,57 @@ await test("kill switch: the one path that reads its own write refuses loudly", 
   ok(/Airtable writes are turned off/.test(threw.message), "and the message names the actual problem");
   eq(touched, 0, "and it refused BEFORE touching Airtable — or burning a PO number");
 });
+
+// ── Read fallbacks: converted handlers must not serve frozen Airtable ───────
+// AIRTABLE_WRITES went off on 2026-08-25, which makes Airtable's copy frozen by
+// construction. A read that falls back to it now returns yesterday's world,
+// silently, looking entirely normal — the same failure that made the invoice
+// history read "(none yet)" for weeks while the real SQL error sat in the log.
+//
+// Source-pinned: the offline suite runs with Neon DISABLED, so it takes the
+// Airtable path in every one of these handlers and cannot exercise the change.
+// What it CAN do is hold the contract still.
+await test("converted read handlers refuse rather than fall back", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+
+  // ⚠ Comments stripped. The first cut of this failed on its own explanation —
+  // the note saying "falling back now serves stale data" contains the very
+  // phrase it was searching for. Same trap as the sql.query guard below.
+  const body = (name) => {
+    const start = src.indexOf(`async function ${name}(`);
+    ok(start > -1, `${name} exists`);
+    const next = src.indexOf("\nasync function ", start + 10);
+    return src.slice(start, next === -1 ? src.length : next)
+              .split("\n").map(l => l.replace(/\/\/.*$/, "")).join("\n");
+  };
+
+  // These return a LIST and an empty one is a legitimate answer. A Neon error
+  // must 503 rather than hand back Airtable.
+  for (const h of ["handleJobInspections", "handleJobEstimates", "handleSentEstimatePDFs",
+                   "handleExpenses", "handleGetInspectionAgencies", "handleGetWarranties",
+                   "handleGetAllInvoices", "handleGetJobInvoices"]) {
+    const b = body(h);
+    ok(/if \(q\?\.rows\) \{/.test(b), `${h}: empty is an ANSWER — guards on q?.rows, not .length`);
+    ok(/return resp\(503/.test(b), `${h}: a failed read 503s`);
+    ok(!/falling back/.test(b), `${h}: no "falling back" left in the Neon path`);
+  }
+
+  // These cannot legitimately be empty — the author's judgement, kept. The guard
+  // stays on .length; only the remedy changed from Airtable to a 503.
+  for (const h of ["handleJobs", "handleCompanies", "handleVendors", "handleListContractors",
+                   "handleGetPowerCompanies", "handleLaborBillableRates"]) {
+    const b = body(h);
+    ok(/if \(q\?\.rows\?\.length\) \{/.test(b), `${h}: keeps the length guard — empty means something is wrong`);
+    ok(/return resp\(503/.test(b), `${h}: and says so instead of serving frozen data`);
+  }
+
+  // And the ones deliberately NOT converted, because the length check IS the
+  // answer. Converting jobExists would make every id "exist".
+  ok(/if \(q\?\.rows\?\.length\) return true;/.test(body("jobExists")),
+     "jobExists still guards on length — it is an existence check, not a list");
+});
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

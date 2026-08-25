@@ -118,14 +118,34 @@ export async function createLaborAllocation(atFetch, timeEntryNeonId, timeEntryA
 
   const airtableId = timeEntryAirtableId || r.airtable_id || null;
 
-  // ── Neon-native: no twin to link to ──────────────────────────────────────
-  if (!airtableId) {
-    // ⚠ bill_rate IS WRITTEN HERE AND NOWHERE ELSE, and the asymmetry with the
-    // mirrored path below is the point. In Airtable the column is a lookup
-    // through Time Entry → Job, so Airtable fills it and the hourly sync carries
-    // the value over — which is why mirrorLaborToNeon must not guess at it. A
-    // native row has no Airtable counterpart to do that filling, so left alone
-    // it stays NULL forever, and v_invoices computes labor as
+  // ── ALWAYS NEON-NATIVE (2026-08-25) ─────────────────────────────────────
+  // This used to fork: a time entry WITHOUT an Airtable twin was written here,
+  // and one WITH a twin was POSTed to Airtable first, mirrored back by
+  // mirrorLaborToNeon, and had its bill_rate filled in later by the hourly
+  // _billing-sync carrying Airtable's "Bill Rate" lookup across.
+  //
+  // 🔴 THAT SYNC WAS RETIRED EARLIER TODAY, WHICH BROKE THE RATE. The mirror
+  // insert deliberately does not set bill_rate — it had no need to, because the
+  // sync did — so the next allocation on any legacy time entry would have landed
+  // rate-less, and v_invoices computes labor as sum(allocated_hours * bill_rate).
+  // A NULL rate values those hours at ZERO while they still print on the PDF.
+  // That is Bethel School invoice 1665 again: 10.75 hours on the PDF, $698.75
+  // missing from the total.
+  //
+  // So the fork is gone. Every allocation is written here, with the rate, from
+  // the job's CURRENT billable rate — which is what Airtable's lookup resolved
+  // to anyway, and 2,696 of 2,696 rated allocations already matched.
+  //
+  // ⚠ time_entry_airtable_id is still carried when the entry has one. The
+  // already-allocated guard counts through BOTH keys, and a legacy entry's
+  // existing allocations are keyed by the rec id — dropping it would make an
+  // entry look unallocated and bill it twice.
+  {
+    // ⚠ bill_rate IS WRITTEN HERE AND NOWHERE ELSE — and since 2026-08-25 there
+    // is no "elsewhere" left to write it. Airtable's column was a lookup through
+    // Time Entry → Job and the hourly sync carried the value over; that sync is
+    // retired, so this line is the only thing standing between an allocation and
+    // a NULL rate. v_invoices computes labor as
     // sum(allocated_hours * bill_rate): a NULL rate silently values those hours
     // at ZERO. Found on Bethel School invoice 1665 — 10.75 hours billed on the
     // PDF, $698.75 missing from the invoice's own computed total. Since Step 3
@@ -140,27 +160,23 @@ export async function createLaborAllocation(atFetch, timeEntryNeonId, timeEntryA
     // gap to paper over — see the three rate-less T&M jobs in the GP audit —
     // and inventing a number here would hide it.
     const ins = await neonWrite("allocation.labor.native",
-      `INSERT INTO labor_billing_allocations (time_entry_id, allocated_hours, bill_rate, synced_at)
-       SELECT $1::uuid, $2, $3, now()
-        WHERE NOT EXISTS (SELECT 1 FROM labor_billing_allocations WHERE time_entry_id = $1::uuid)
-       RETURNING id`, [timeEntryNeonId, Number(r.hours), r.job_rate ?? null]);
+      `INSERT INTO labor_billing_allocations
+         (time_entry_id, time_entry_airtable_id, allocated_hours, bill_rate, synced_at)
+       -- ⚠ $4::text IS NOT DECORATION. The driver sends parameters UNTYPED and
+       -- $4 appears only in IS NULL / equality positions, so Postgres cannot
+       -- infer it: "could not determine data type of parameter $4", and the
+       -- FIRST real allocation would have failed. Caught by PREPARE'ing without
+       -- a type list, which is the only check that tests what the app sends.
+       SELECT $1::uuid, $4::text, $2, $3, now()
+        WHERE NOT EXISTS (SELECT 1 FROM labor_billing_allocations
+                           WHERE time_entry_id = $1::uuid
+                              OR ($4::text IS NOT NULL AND time_entry_airtable_id = $4::text))
+       RETURNING id`, [timeEntryNeonId, Number(r.hours), r.job_rate ?? null, airtableId]);
     if (!Array.isArray(ins) || !ins.length) return skip("already-allocated");
     return { created: 1, skipped: null, allocationId: ins[0].id,
              hours: Number(r.hours), billRate: r.job_rate ?? null, neonNative: true };
   }
 
-  // ── Airtable-first: the entry has a twin, so keep them in step ───────────
-  const created = await atFetch(T_LABOR, {
-    method: "POST",
-    body: JSON.stringify({ fields: {
-      [F_LABOR_TIME_ENTRY]: [airtableId],
-      [F_LABOR_HOURS]: Number(r.hours),
-    } }),
-  });
-  if (!created?.id) throw new Error("createLaborAllocation: Airtable returned no record id");
-
-  await mirrorLaborToNeon(created.id, airtableId, Number(r.hours));
-  return { created: 1, skipped: null, allocationId: created.id, hours: Number(r.hours) };
 }
 
 // ── Material ───────────────────────────────────────────────────────────────
@@ -230,30 +246,31 @@ export async function createMaterialAllocation(atFetch, expenseId) {
   // material's `allocated_amount` is written directly on both paths. Nothing is
   // left for Airtable to fill in.
   //
-  // ⚠ Survives only because `_billing-sync.js`'s delete pass skips
-  // `airtable_id IS NULL`. Remove that guard and every native allocation
-  // disappears within the hour, taking the invoice total with it.
-  if (!airtableId) {
+  // ⚠ The note that used to sit here said this row "survives only because
+  // _billing-sync's delete pass skips airtable_id IS NULL". That sync — delete
+  // pass and all — was retired on 2026-08-25, so nothing reaps these any more.
+  // Which also means the reverse is now true: an allocation removed in Airtable
+  // no longer disappears from Neon, because nothing reads Airtable to notice.
+  // Un-allocating is an app action now.
+  //
+  // ── ALWAYS NEON-NATIVE (2026-08-25), same as labor above ────────────────
+  // The Airtable-first fork is gone. It POSTed the allocation, mirrored it back
+  // and left the money columns to be filled in by the hourly sync; with that
+  // sync retired the fork would have written rows the invoice could not value.
+  {
     const ins = await neonWrite("allocation.material.native",
-      `INSERT INTO material_billing_allocations (expense_id, allocated_amount, synced_at)
-       SELECT $1::uuid, $2::numeric, now()
-        WHERE NOT EXISTS (SELECT 1 FROM material_billing_allocations WHERE expense_id = $1::uuid)
-       RETURNING id`, [r.expense_uuid, amount]);
+      `INSERT INTO material_billing_allocations
+         (expense_id, expense_airtable_id, allocated_amount, synced_at)
+       -- $3::text for the same reason as the labor twin above.
+       SELECT $1::uuid, $3::text, $2::numeric, now()
+        WHERE NOT EXISTS (SELECT 1 FROM material_billing_allocations
+                           WHERE expense_id = $1::uuid
+                              OR ($3::text IS NOT NULL AND expense_airtable_id = $3::text))
+       RETURNING id`, [r.expense_uuid, amount, airtableId]);
     if (!Array.isArray(ins) || !ins.length) return skip("already-allocated");
     return { created: 1, skipped: null, allocationId: ins[0].id, amount, neonNative: true };
   }
 
-  const created = await atFetch(T_MATERIAL, {
-    method: "POST",
-    body: JSON.stringify({ fields: {
-      [F_MAT_EXPENSE]: [airtableId],
-      [F_MAT_AMOUNT]: amount,
-    } }),
-  });
-  if (!created?.id) throw new Error("createMaterialAllocation: Airtable returned no record id");
-
-  await mirrorMaterialToNeon(created.id, airtableId, amount, r.expense_uuid);
-  return { created: 1, skipped: null, allocationId: created.id, amount };
 }
 
 // ── Attach on invoice save ─────────────────────────────────────────────────
@@ -452,42 +469,4 @@ export async function attachAllocationsToInvoice(atFetch, invoice, jobAirtableId
   return { attached, skipped: null, failed: failures.length, neonNative: native };
 }
 
-// ── Neon mirrors ───────────────────────────────────────────────────────────
-// Separate from the create calls so the ordering above stays readable, and so a
-// Neon failure throws with a name that says which half succeeded.
-//
-// `bill_rate` is deliberately NOT set here. In Airtable it is a lookup through
-// the Time Entry to the job's T&M rate, so Airtable fills it and the hourly
-// sync carries the computed value across. Writing our own guess would create a
-// second opinion about a number that feeds Invoice Total.
-async function mirrorLaborToNeon(allocationId, timeEntryAirtableId, hours) {
-  await neonWrite("allocation.labor.insert",
-    `INSERT INTO labor_billing_allocations
-       (airtable_id, time_entry_airtable_id, time_entry_id, allocated_hours, synced_at)
-     VALUES ($1, $2, (SELECT id FROM time_entries WHERE airtable_id = $2), $3, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       time_entry_airtable_id = EXCLUDED.time_entry_airtable_id,
-       time_entry_id          = EXCLUDED.time_entry_id,
-       allocated_hours        = EXCLUDED.allocated_hours,
-       synced_at              = EXCLUDED.synced_at`,
-    [allocationId, timeEntryAirtableId, hours]);
-}
 
-// ⚠ `expense_id` is now PASSED IN rather than re-resolved by a
-// `(SELECT id FROM expenses WHERE airtable_id = $2)` subselect. The caller has
-// already looked the expense up through the dual handle, so re-deriving it from
-// the rec id here would reintroduce the very dependency this slice removed —
-// and it is the column `v_invoices` joins on (`e.id = m.expense_id`), so a NULL
-// there drops the expense's credit out of the invoice total.
-async function mirrorMaterialToNeon(allocationId, expenseAirtableId, amount, expenseNeonId) {
-  await neonWrite("allocation.material.insert",
-    `INSERT INTO material_billing_allocations
-       (airtable_id, expense_airtable_id, expense_id, allocated_amount, synced_at)
-     VALUES ($1, $2, $4::uuid, $3, now())
-     ON CONFLICT (airtable_id) DO UPDATE SET
-       expense_airtable_id = EXCLUDED.expense_airtable_id,
-       expense_id          = EXCLUDED.expense_id,
-       allocated_amount    = EXCLUDED.allocated_amount,
-       synced_at           = EXCLUDED.synced_at`,
-    [allocationId, expenseAirtableId, amount, expenseNeonId]);
-}

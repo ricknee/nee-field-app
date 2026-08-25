@@ -1983,15 +1983,20 @@ await test("allocations: a Neon-native row carries its own bill rate", async () 
   const fs = await import("node:fs/promises");
   const src = await fs.readFile(new URL("../netlify/functions/_allocations.js", import.meta.url), "utf8");
 
+  // ⚠ REWRITTEN 2026-08-25. This used to assert an ASYMMETRY: the native insert
+  // writes bill_rate and the mirror insert must not, because Airtable's lookup
+  // owned that value and the hourly sync carried it across. Both halves of that
+  // are now gone — the sync is retired and the Airtable-first fork with it — so
+  // the rule is simpler and stricter. There is ONE insert, it happens for every
+  // time entry, and it must carry the rate because nothing else ever will.
   const native = src.match(/allocation\.labor\.native[\s\S]*?RETURNING id/);
-  ok(native, "the native insert is still there");
-  ok(/INSERT INTO labor_billing_allocations \([^)]*bill_rate/.test(native[0]),
-     "native insert must write bill_rate, or its hours are billed at $0");
-
-  const mirror = src.match(/allocation\.labor\.insert[\s\S]*?EXCLUDED\.synced_at/);
-  ok(mirror, "the mirror insert is still there");
-  ok(!/bill_rate/.test(mirror[0]),
-     "mirror must NOT write bill_rate — Airtable's lookup owns it");
+  ok(native, "the single native insert is still there");
+  ok(/INSERT INTO labor_billing_allocations[\s\S]{0,140}bill_rate/.test(native[0]),
+     "the insert must write bill_rate, or its hours are billed at $0");
+  ok(!/allocation\.labor\.insert/.test(src),
+     "the Airtable-first mirror insert must be GONE — with the sync retired it wrote rows nothing could value");
+  ok(!/atFetch\(T_LABOR/.test(src),
+     "and nothing POSTs a labor allocation to Airtable any more");
 });
 
 // ── cutover slice 4: the allocation chain stops depending on the expense rec id
@@ -2031,9 +2036,18 @@ await test("allocations: the material gate resolves an expense by EITHER handle"
   ok(/allocation\.material\.native/.test(gate),
      "a native expense must get a Neon-native allocation, not a refusal");
 
-  const mirror = src.match(/allocation\.material\.insert[\s\S]*?EXCLUDED\.synced_at/);
-  ok(mirror, "the mirror insert is still there");
-  ok(!/SELECT id FROM expenses WHERE airtable_id/.test(mirror[0]),
+  ok(!/allocation\.material\.insert/.test(src),
+     "the Airtable-first mirror insert is GONE (2026-08-25) — every expense gets a Neon-native allocation now");
+  ok(!/atFetch\(T_MATERIAL/.test(src),
+     "and nothing POSTs a material allocation to Airtable any more");
+  // The old mirror insert re-derived expense_id from the rec id with a
+  // subselect, which is NULL = NULL for a native expense — so v_invoices, which
+  // joins on expense_id, saw nothing. There is no mirror insert to check any
+  // more; the equivalent guarantee now is that the single native insert takes
+  // the uuid it was given rather than looking one up.
+  const nativeIns = src.match(/allocation\.material\.native[\s\S]*?RETURNING id/);
+  ok(nativeIns, "the native insert is there");
+  ok(!/SELECT id FROM expenses WHERE airtable_id/.test(nativeIns[0]),
      "expense_id must be passed in, not re-derived from the rec id — v_invoices joins on it");
 });
 

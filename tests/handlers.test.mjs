@@ -375,16 +375,20 @@ await test("hoursByJob: serves from Airtable when DATABASE_URL is unset", async 
   eq(b.jobs[0].hours, 8, "Airtable answer correct");
 });
 
-await test("hoursByJob: unreachable Neon falls back to Airtable, response intact", async () => {
+// ⚠ REWRITTEN 2026-08-25. This asserted the OPPOSITE: that an unreachable Neon
+// falls back to Airtable and the request still succeeds. That was the right
+// contract while Airtable was being kept current. Writes stopped that day, so
+// its copy is frozen — a fallback now answers with yesterday's world, silently
+// and convincingly. Refusing is the honest response, and the caller can retry.
+await test("hoursByJob: unreachable Neon REFUSES rather than serving frozen data", async () => {
   // Deliberately malformed so the driver fails fast without any network I/O.
   process.env.DATABASE_URL = "not-a-valid-connection-string";
   mockTables = SHADOW_ROWS;
-  const b = json(await GET("hoursByJob"));
-  ok(b.ok, "request still succeeds");
-  eq(b._source, "airtable", "fallback is reported, not silent");
-  eq(b.jobs[0].jobName, "Alpha", "Airtable answer unchanged");
-  eq(b.jobs[0].hours, 8, "Airtable hours unchanged");
-  eq(b.summary.jobCount, 1, "summary unchanged");
+  const res = await GET("hoursByJob");
+  eq(res.statusCode, 503, "a failed read is an outage, not an empty answer");
+  const b = json(res);
+  eq(b.ok, false, "and says so");
+  ok(/database is unavailable/i.test(b.error), `message names the cause: ${b.error}`);
   delete process.env.DATABASE_URL;
 });
 
@@ -414,15 +418,16 @@ await test("payrollEntries: serves from Airtable when DATABASE_URL is unset", as
   eq(b.entries[0].reviewed, true, "Labor Reviewed carried through");
 });
 
-await test("payrollEntries: unreachable Neon falls back to Airtable, ids intact", async () => {
+// ⚠ REWRITTEN 2026-08-25, same reason as hoursByJob above. Payroll is the worst
+// place of all to answer from a frozen copy: hours arrive QB → Neon every hour,
+// so Airtable's Time Entries have been stale since Step 3 and are now permanently
+// so. An hours figure that is quietly out of date is worse than no figure.
+await test("payrollEntries: unreachable Neon REFUSES rather than serving frozen hours", async () => {
   process.env.DATABASE_URL = "not-a-valid-connection-string";
   mockTables = PR_ROWS;
-  const b = json(await GET("payrollEntries", { startDate: "2026-07-26", endDate: "2026-08-08" }));
-  ok(b.ok, "request still succeeds");
-  eq(b._source, "airtable", "fallback is reported, not silent");
-  eq(b.entries.length, 1, "entry still returned");
-  eq(b.entries[0].id, "recPR1", "editable id survives the fallback");
-  eq(b.entries[0].cityTaxes, "A No Tax", "city tax carried through");
+  const res = await GET("payrollEntries", { startDate: "2026-07-26", endDate: "2026-08-08" });
+  eq(res.statusCode, 503, "refuses");
+  eq(json(res).ok, false, "and says so");
   delete process.env.DATABASE_URL;
 });
 
@@ -3045,7 +3050,7 @@ await test("backfillTimeEntryEmployeeLinks is gone, not just unlisted", async ()
   eq((await POST("backfillTimeEntryEmployeeLinks", { confirm: "YES" })).statusCode, 400, "unknown action");
 });
 
-await test("hours breakdowns: fall back cleanly when Neon is unreachable", async () => {
+await test("hours breakdowns: answer without a database, REFUSE with a broken one", async () => {
   // These two served the AIRTABLE Time Entries table, frozen by Step 3 on
   // 2026-08-07, while the rollup tiles above them served Neon — so the
   // drill-down disagreed with the tile it opened from, and drifted daily.
@@ -3055,15 +3060,22 @@ await test("hours breakdowns: fall back cleanly when Neon is unreachable", async
     Employees: [{ id: "recEmp1", fields: { "Employee Name": "Jeff Koehn", Role: "employee", Active: true } }],
     "Time Entries": [], "Payroll Runs": [],
   };
-  for (const url of [undefined, "not-a-valid-connection-string"]) {
-    if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
-    const a = await GET("payrollHoursBreakdown", { bucket: "ytd", today: "2026-08-09" });
-    eq(a.statusCode, 200, `admin breakdown answers (DATABASE_URL=${url})`);
-    ok(Array.isArray(json(a).employees), "employees array present");
-    const m = await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "ytd", today: "2026-08-09" });
-    eq(m.statusCode, 200, `my breakdown answers (DATABASE_URL=${url})`);
-    ok(Array.isArray(json(m).entries), "entries array present");
-  }
+  // ⚠ TWO DIFFERENT CASES, and 2026-08-25 split them apart. With NO
+  // DATABASE_URL the app has no database configured at all and Airtable is the
+  // only thing there is — that still answers. With a BROKEN one, Neon exists and
+  // failed, and serving the frozen Airtable copy instead would be a wrong number
+  // wearing a right number's clothes.
+  delete process.env.DATABASE_URL;
+  eq((await GET("payrollHoursBreakdown", { bucket: "ytd", today: "2026-08-09" })).statusCode, 200,
+     "no database configured at all: Airtable still answers");
+  eq((await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "ytd", today: "2026-08-09" })).statusCode, 200,
+     "same for the employee's own breakdown");
+
+  process.env.DATABASE_URL = "not-a-valid-connection-string";
+  eq((await GET("payrollHoursBreakdown", { bucket: "ytd", today: "2026-08-09" })).statusCode, 503,
+     "database configured but FAILING: refuse, do not serve frozen hours");
+  eq((await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "ytd", today: "2026-08-09" })).statusCode, 503,
+     "same for the employee's own breakdown");
   delete process.env.DATABASE_URL;
   // Bucket validation must survive ahead of either data path.
   eq((await GET("payrollHoursBreakdown", { bucket: "lastTuesday" })).statusCode, 400, "bad bucket refused");
@@ -4387,10 +4399,38 @@ await test("converted read handlers refuse rather than fall back", async () => {
     ok(/return resp\(503/.test(b), `${h}: and says so instead of serving frozen data`);
   }
 
+  // Tranche 2: payroll, time, fleet, lifts, schedule, allocations, contacts.
+  for (const h of ["handleTimeEntries", "handlePayrollEntries", "handleScissorLifts",
+                   "handleFleetServiceHistory", "handleUnlinkedLaborAllocations",
+                   "handleUnlinkedMaterialAllocations", "handleListContactsByCompany",
+                   "handleGetContactsForPowerCompany"]) {
+    const b = body(h);
+    ok(/return resp\(503/.test(b), `${h}: a failed read 503s instead of serving frozen data`);
+  }
+
+  // ⚠ THE NEXT-NUMBER HANDLERS MATTER MOST OF ALL, and not for tidiness: a
+  // number computed from FROZEN Airtable is LOWER than Neon's max, so falling
+  // back would hand out an invoice or estimate number already in use.
+  for (const h of ["handleGetNextInvoiceNumber", "handleGetNextEstimateNumber"]) {
+    ok(/return resp\(503/.test(body(h)), `${h}: refuses rather than issuing a colliding number`);
+  }
+
+  // handleJobById must tell "no such job" apart from "database down". Returning
+  // 503 for a deleted job says the wrong thing to whoever is looking at it.
+  const jb = body("handleJobById");
+  ok(/if \(q\?\.error\) \{/.test(jb), "jobById: 503 is gated on an actual error");
+  ok(/return resp\(404, \{ ok: false, error: "Job not found\." \}\);/.test(jb),
+     "jobById: an empty result is a 404, not an outage");
+
   // And the ones deliberately NOT converted, because the length check IS the
   // answer. Converting jobExists would make every id "exist".
   ok(/if \(q\?\.rows\?\.length\) return true;/.test(body("jobExists")),
      "jobExists still guards on length — it is an existence check, not a list");
+  // handleLogin keeps its fallback ON PURPOSE: LOGIN_SOURCE governs it and the
+  // failure mode of getting this wrong is that nobody can work.
+  ok(/falling back to Airtable/.test(src.slice(src.indexOf("async function handleLogin("),
+                                               src.indexOf("async function handleLogin(") + 4000)),
+     "handleLogin still falls back — deliberate, and the owner's call to change");
 });
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");

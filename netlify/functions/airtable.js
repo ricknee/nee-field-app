@@ -966,7 +966,9 @@ async function handlePayrollEntries(params) {
       return resp(200, { ok: true, entries, _source: "neon", _ms: q.ms,
         ...(unlinked ? { unlinked } : {}), ...(salaried ? { salaried } : {}) });
     }
-    console.error(`payrollEntries: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`payrollEntries: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   return payrollEntriesFromAirtable(startDate, endDate);
 }
@@ -3180,7 +3182,9 @@ async function handleFindMatchingPayrollRun(params) {
         generatedBy: n.generated_by || null,                      // passes it back as supersedesId
       });
     }
-    console.error(`findMatchingPayrollRun: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`findMatchingPayrollRun: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const start = escapeFormulaString(payPeriodStart);
@@ -3583,7 +3587,17 @@ async function handlePayrollRunsList(params) {
     }));
     return resp(200, { ok: true, runs, _source: "neon", _ms: q.ms });
   }
-  if (q?.error) console.error(`payrollRunsList: Neon read failed, falling back: ${q.error}`);
+  // ⚠ REFUSE ON A FAILED READ (2026-08-25): Airtable has been frozen since
+  // writes went off, so falling back answers with yesterday's world, silently.
+  if (q?.error) {
+    console.error(`payrollRunsList: Neon read FAILED — refusing to serve frozen Airtable data: ${q.error}`);
+    return resp(503, { ok: false, error: "Can't load payroll runs right now — the database is unavailable. Try again in a moment." });
+  }
+  // ⚠ THE OTHER FALLBACK STAYS, AND IT IS NOT THE SAME THING. This one fires
+  // when Neon ANSWERED but some run has no pdf_key — the PDFs live in R2 and a
+  // run missing its key cannot be served from Neon at all. That is a data gap
+  // with a known fix (copyPayrollFilesToR2), not a database outage, and Airtable
+  // still holds those historical attachments. It goes when the last run has a key.
   else if (q?.rows?.length) console.log("payrollRunsList: some runs have no pdf_key — serving from Airtable until copyPayrollFilesToR2 has run");
 
   const records = await fetchAll(PR_RUNS.table);
@@ -3736,7 +3750,9 @@ async function handlePayrollHoursRollup(params) {
         _source: "neon", _ms: q.ms
       });
     }
-    console.error(`payrollHoursRollup: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`payrollHoursRollup: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   // DATESTR + string compare keeps us out of the IS_AFTER/IS_BEFORE granularity
@@ -3829,7 +3845,9 @@ async function handleHoursByJob() {
         _ms: q.ms,
       });
     }
-    console.error(`hoursByJob: Neon read failed, falling back to Airtable: ${q?.error || meta?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`hoursByJob: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   return hoursByJobFromAirtable();
 }
@@ -4087,7 +4105,9 @@ async function handlePayrollEmployeeBonusHistory(params) {
           runGeneratedAt: r.run_id ? (r.run_generated_at || null) : null
         })) });
     }
-    console.error(`payrollEmployeeBonusHistory: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`payrollEmployeeBonusHistory: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const [allRuns, allBonuses] = await Promise.all([
@@ -4188,7 +4208,9 @@ async function handlePayrollHoursBreakdown(params) {
         _source: "neon", _ms: q.ms,
       });
     }
-    console.error(`payrollHoursBreakdown: Neon read failed, falling back to Airtable (FROZEN table — figures will be stale): ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`payrollHoursBreakdown: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const [records, employees] = await Promise.all([
@@ -4306,7 +4328,9 @@ async function handleMyHoursRollup(params) {
         _source: "neon", _ms: q.ms
       });
     }
-    console.error(`myHoursRollup: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`myHoursRollup: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   // One Time Entries fetch covering Jan 1 → today, then in-memory filter by
@@ -4421,7 +4445,9 @@ async function handleMyHoursBreakdown(params) {
         _source: "neon", _ms: q.ms,
       });
     }
-    console.error(`myHoursBreakdown: Neon read failed, falling back to Airtable (FROZEN table — figures will be stale): ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`myHoursBreakdown: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll(TABLES.timeEntries, {
@@ -5813,10 +5839,21 @@ async function handleJobById(params) {
     if (q?.rows?.length) {
       return resp(200, { ok: true, job: mapJobFromNeon(q.rows[0]), _source: "neon", _ms: q.ms });
     }
-    // No rows here is ambiguous — a genuinely unknown job, or a job created in
-    // Airtable within the last hour that the sync has not carried over yet. Fall
-    // through to Airtable, which answers both correctly.
-    console.error(`jobById: Neon miss for ${jobId}, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ THE AMBIGUITY THAT JUSTIFIED THE FALLBACK IS GONE. The note here used to
+    // read: "No rows is ambiguous — a genuinely unknown job, or a job created in
+    // Airtable within the last hour that the sync has not carried over yet."
+    // Both halves died on 2026-08-25. The hourly sync was retired, and no job is
+    // created in Airtable any more, so there is no such thing as a job Neon has
+    // not heard of yet. No rows now means exactly one thing: no such job.
+    //
+    // ⚠⚠ AND THESE TWO OUTCOMES MUST NOT SHARE AN ANSWER. The first cut of this
+    // returned 503 for both, which tells someone looking at a deleted job that
+    // the database is down. An error is an outage; an empty result is a fact.
+    if (q?.error) {
+      console.error(`jobById: Neon read FAILED for ${jobId} — refusing to serve frozen Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load that job right now — the database is unavailable. Try again in a moment." });
+    }
+    return resp(404, { ok: false, error: "Job not found." });
   }
   const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
   if (!records.length) return resp(404, { ok: false, error: "Job not found." });
@@ -5918,7 +5955,15 @@ async function handleGenerator(params) {
       }));
       return resp(200, { ok: true, generator, serviceRecords, _source: "neon", _ms: q.ms });
     }
-    if (q?.error) console.error(`generator: Neon read failed, falling back to Airtable: ${q.error}`);
+    // ⚠ AN ERROR AND AN EMPTY ANSWER ARE DIFFERENT THINGS HERE, and the first
+    // cut of this conflated them — it returned 503 for both, which would have
+    // made every job WITHOUT a generator look like a database outage.
+    if (q?.error) {
+      console.error(`generator: Neon read FAILED — refusing to serve frozen Airtable data: ${q.error}`);
+      return resp(503, { ok: false, error: "Can't load the generator right now — the database is unavailable. Try again in a moment." });
+    }
+    // Neon answered and this job simply has no generator. That is the answer.
+    return resp(200, { ok: true, generator: null, serviceRecords: [], _source: "neon" });
   }
 
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
@@ -6488,7 +6533,9 @@ async function handleScissorLiftsByJob(params) {
         _source: "neon", _ms: q.ms,
       });
     }
-    console.error(`scissorLiftsByJob: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`scissorLiftsByJob: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => { const f=r.fields||{}; const photos=(f["Photo"]||[]).map(a=>a.url); return { id:r.id,name:f["Lift Name"]||"",status:f["Status"]||"Available",currentJob:f["Current Job"]||"",assignedTo:f["Assigned To"]||"",dateDeployed:f["Date Deployed"]||"",notes:f["Notes"]||"",photoUrl:photos[0]||"",hooksLeft:f["Lift Hooks Left at Job"]===true,boxLeft:f["Lift Box Left at Job"]===true }; }).filter(l => l.currentJob === jobName && l.status === "On Job");
@@ -6990,7 +7037,9 @@ async function handleGetNextEstimateNumber() {
       return resp(200, { ok: true, nextNumber: Math.max(maxNo + 1, START_AT),
                          _source: "neon", _ms: q.ms });
     }
-    console.error(`getNextEstimateNumber: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): a number from FROZEN Airtable would be lower than Neon's and COLLIDE with one already issued.
+    console.error(`getNextEstimateNumber: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   let max = 0;
@@ -7796,7 +7845,9 @@ async function handleFleetVehicles() {
   if (neonEnabled()) {
     const r = await handleFleetVehiclesFromNeon();
     if (r) return resp(200, { ok: true, vehicles: r.vehicles, _source: "neon", _ms: r.ms });
-    console.error("fleetVehicles: Neon read failed, falling back to Airtable");
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error("fleetVehicles: Neon read failed, refusing to serve frozen Airtable data");
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   const records = await fetchAll(FLEET_TABLES.vehicles, { sortField: "Vehicle Name", sortDir: "asc" });
   const vehicles = records.filter(r => r.fields["Active"] === true).map(r => { const f=r.fields||{}; return { id:r.id,name:f["Vehicle Name"]||"",year:f["Year"]||null,make:f["Make"]||"",model:f["Model"]||"",color:f["Color"]||"",vin:f["VIN"]||"",plate:f["License Plate"]||"",type:f["Vehicle Type"]?.name||f["Vehicle Type"]||"",currentMileage:f["Current Mileage"]??null,mileageDate:f["Mileage Date"]||"",oilType:f["Oil Type"]||"",oilCapacity:f["Oil Capacity (qts)"]??null,tireBrand:f["Tire Brand"]||"",tireSize:f["Tire Size"]||"",tireInstallDate:f["Tire Install Date"]||"",notes:f["Notes"]||"",photoUrl:(f["Photo"]||[])[0]?.url||"",wrenchSize:f["Oil Drain Wrench Size"]||"",lugTorque:f["Lug Torque (ft-lbs)"]??null }; });
@@ -7843,7 +7894,9 @@ async function handleFleetServiceHistory(params) {
         _source: "neon", _ms: q.ms,
       });
     }
-    console.error(`fleetServiceHistory: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`fleetServiceHistory: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   const vehRecords = await fetchAll(FLEET_TABLES.vehicles, { filter: `RECORD_ID()="${vehicleId}"` });
   if (!vehRecords.length) return resp(200, { ok: true, records: [] });
@@ -8161,7 +8214,9 @@ async function handleScissorLifts() {
         _source: "neon", _ms: q.ms,
       });
     }
-    console.error(`scissorLifts: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`scissorLifts: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
   const records = await fetchAll(TABLES.scissorLifts, { sortField: "Lift Name", sortDir: "asc" });
   const lifts = records.map(r => { const f=r.fields||{}; const photos=(f["Photo"]||[]).map(a=>a.url); return { id:r.id,name:f["Lift Name"]||"",status:f["Status"]||"Available",currentJob:f["Current Job"]||"",assignedTo:f["Assigned To"]||"",dateDeployed:f["Date Deployed"]||"",notes:f["Notes"]||"",photoUrl:photos[0]||"",photos:[],hooksLeft:f["Lift Hooks Left at Job"]===true,boxLeft:f["Lift Box Left at Job"]===true }; });
@@ -8747,7 +8802,9 @@ async function handleTimeEntries(params) {
       }));
       return resp(200, { ok: true, entries, _source: "neon", _ms: q.ms });
     }
-    console.error(`timeEntries: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`timeEntries: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
@@ -8825,7 +8882,9 @@ async function handleUnlinkedLaborAllocations(params) {
         _source: "neon", _ms: q.ms
       });
     }
-    console.error(`unlinkedLaborAllocations: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`unlinkedLaborAllocations: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${jobId}"` });
@@ -9023,7 +9082,9 @@ async function handleUnlinkedMaterialAllocations(params) {
         _source: "neon", _ms: q.ms
       });
     }
-    console.error(`unlinkedMaterialAllocations: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`unlinkedMaterialAllocations: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   // ⚠⚠ THE AIRTABLE FALLBACK WAS DELETED HERE, in the same commit that made
@@ -9900,7 +9961,9 @@ async function handleListContactsByCompany(params) {
       return resp(200, { ok: true, contacts: own, otherContacts: other,
                          _source: "neon", _ms: q.ms });
     }
-    console.error(`listContactsByCompany: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`listContactsByCompany: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll(TABLES.contacts, {});
@@ -10419,7 +10482,9 @@ async function handleGetContactsForPowerCompany(params) {
           email:       s(r.email),
         })) });
     }
-    console.error(`getContactsForPowerCompany: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error(`getContactsForPowerCompany: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   let records;
@@ -11879,7 +11944,9 @@ async function handleGetNextInvoiceNumber() {
       return resp(200, { ok: true, nextNumber: Math.max(maxNo + 1, START_AT),
                          _source: "neon", _ms: q.ms });
     }
-    console.error(`getNextInvoiceNumber: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): a number from FROZEN Airtable would be lower than Neon's and COLLIDE with one already issued.
+    console.error(`getNextInvoiceNumber: Neon read failed, refusing to serve frozen Airtable data: ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   let max = 0;
@@ -12019,7 +12086,9 @@ async function handleGetScheduleEntries(params) {
     const r = await handleGetScheduleEntriesFromNeon(params);
     if (r) return resp(200, { ok: true, entries: r.entries, birdDates: r.birdDates,
                               _source: "neon", _ms: r.ms });
-    console.error("scheduleEntries: Neon read failed, falling back to Airtable");
+    // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
+    console.error("scheduleEntries: Neon read failed, refusing to serve frozen Airtable data");
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   }
 
   const records = await fetchAll(TABLES.scheduleEntries);
@@ -13152,7 +13221,13 @@ async function handleExpenseReceipts(params, authUser) {
     `SELECT submitted_by_at_id FROM expenses
       WHERE COALESCE(airtable_id, id::text) = $1 LIMIT 1`, [expenseId]);
   if (q?.rows?.length) { known = true; owner = q.rows[0].submitted_by_at_id || null; }
-  else if (q?.error) console.error(`expenseReceipts: Neon read failed, falling back: ${q.error}`);
+  // ⚠ ONLY AN ERROR STOPS THIS, not an empty result. Zero rows here means the
+  // expense is not in Neon, which the code below already handles; returning 503
+  // for that would break every legitimate miss.
+  else if (q?.error) {
+    console.error(`expenseReceipts: Neon read FAILED — refusing to serve frozen Airtable data: ${q.error}`);
+    return resp(503, { ok: false, error: "Can't load receipts right now — the database is unavailable. Try again in a moment." });
+  }
 
   if (!known) {
     let rec;
@@ -13269,7 +13344,13 @@ async function handleExpenseReceiptSummary(params, authUser) {
         AND ($2 OR e.submitted_by_at_id = $3)`,
     [jobId, isMgr === true, authUser?.id || null]);
   if (q?.rows?.length) visibleIds = q.rows.map(r => r.id);
-  else if (q?.error) console.error(`expenseReceiptSummary: Neon read failed, falling back: ${q.error}`);
+  // ⚠ ONLY AN ERROR STOPS THIS, not an empty result. Zero rows here means the
+  // expense is not in Neon, which the code below already handles; returning 503
+  // for that would break every legitimate miss.
+  else if (q?.error) {
+    console.error(`expenseReceiptSummary: Neon read FAILED — refusing to serve frozen Airtable data: ${q.error}`);
+    return resp(503, { ok: false, error: "Can't load receipts right now — the database is unavailable. Try again in a moment." });
+  }
 
   if (visibleIds === null) {
     const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });

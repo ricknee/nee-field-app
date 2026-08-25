@@ -3762,6 +3762,30 @@ await test("no bare `WHERE airtable_id = $n` — the dual-handle guard", async (
   eq(offenders.length, 0, offenders.join(" | "));
 });
 
+// The gate that never opened. `Job Type` holds "Service Calls" — plural, on all
+// 22 of them — and the webhook tested the singular, so it returned [] every
+// time and Make never fired. Same word, same mistake as Airtable's "Service
+// Calls" GP formula, which reads $0 on 20 real jobs for exactly this reason.
+await test("service-call gate accepts the plural the data actually holds", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/_job-webhooks.js", import.meta.url)), "utf8");
+
+  ok(!/jobTypeSvc\s*!==\s*"Service Call"/.test(src),
+     "the singular-only equality test is gone — it can never match the stored value");
+  const gate = src.match(/\/\^service calls\?\$\/i/);
+  ok(gate, "gate matches 'Service Call' or 'Service Calls', case-insensitively");
+  // Prove the pattern against the values that exist, so a future 'tidy-up' that
+  // narrows it fails here rather than in production six weeks later.
+  const re = /^service calls?$/i;
+  for (const v of ["Service Calls", "Service Call", "service calls", " Service Calls "]) {
+    eq(re.test(v.trim()), true, `must accept ${JSON.stringify(v)}`);
+  }
+  for (const v of ["Contract", "Time & Material", "Service", ""]) {
+    eq(re.test(v.trim()), false, `must reject ${JSON.stringify(v)}`);
+  }
+});
+
 // ── The bill-once rule (2026-08-25) ────────────────────────────────────────
 // T&M material is billable once it is approved and must never be billed again.
 // `unbilled_material_amount_calc` enforces that by subtracting

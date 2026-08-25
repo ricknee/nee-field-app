@@ -347,7 +347,23 @@ export async function fireServiceCallWebhook(record) {
   const startService = f[N.startService] === true || j?.start_service_call === true;
   const jobTypeSvc   = str(f[N.jobType]) || str(j?.job_type);
   if (!startService) return [];
-  if (jobTypeSvc !== "Service Call") return [];
+  // ⚠⚠ "Service CallS". THE DATA HAS ONLY EVER HELD THE PLURAL — 22 jobs, 14
+  // with the start flag ticked and 13 that really did get a service call built.
+  // The singular this used to test for does not exist anywhere in the table, so
+  // the gate could never pass: the service-call webhook has never fired from
+  // the app, not once, and Make scenario 4545219 shows exactly one execution
+  // ever (a failed ping from 08-12). Found 2026-08-25 on Adena Service Repair —
+  // status flipped to "Service Call Scheduled" and nothing else happened.
+  //
+  // ⚠ THIS EXACT TRAP IS ALREADY RECORDED ELSEWHERE IN THIS SYSTEM: Airtable's
+  // "Service Calls" GP formula tests the singular too, which is why 20 jobs read
+  // $0 against $5,540 of real work. Same word, same mistake, different file.
+  // When transcribing a condition off an Airtable automation, check the option
+  // list rather than the script — a single-select's stored text is the contract.
+  //
+  // Accepts either spelling, trimmed and case-insensitive, because being strict
+  // about which one is right is what caused this.
+  if (!/^service calls?$/i.test(String(jobTypeSvc || "").trim())) return [];
 
   if (j?.service_call_created === true || f[N.serviceCallCreated] === true) {
     console.log(`job-webhook service-call: ${record.id} already has one — not firing again`);

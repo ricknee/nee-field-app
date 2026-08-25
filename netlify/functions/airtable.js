@@ -6566,7 +6566,7 @@ async function handleCreateInspection(body) {
   const rows = await neonWrite("inspection.insert",
     `INSERT INTO job_inspections
        (job_airtable_id, job_id, inspection_type, inspection_date, inspection_status, notes)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3::date, $4, $5)
+     VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3::date, $4, $5)
      RETURNING id`,
     [String(jobId), typeSafe, date || null, statusSafe, notes || null]);
   const neonId = rows?.[0]?.id;
@@ -7082,7 +7082,7 @@ async function handleSaveEstimate(body) {
         `INSERT INTO sent_estimate_pdfs
            (job_airtable_id, job_id, estimate_airtable_id, estimate_id,
             display_number, estimate_date, total, snapshot, synced_at)
-         VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3,
+         VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3,
                  $4, $5::date, $6, $7, now())
          RETURNING id, airtable_id`,
         [String(jobId), estRecId, estNeonId, displayNum,
@@ -7675,7 +7675,8 @@ async function handleCreateJobEstimate(body) {
         estimated_labor_hours, estimated_material_cost,
         estimated_labor_cost, calculated_estimated_total,
         estimate_date, notes, source_template_handle, synced_at)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5, $6,
+     VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END,
+             (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5, $6,
              ${sqlEstLaborCost("$5::numeric")}, ${sqlEstTotal("$5::numeric", "$6::numeric")},
              $7::date, $8, $9, now())
      RETURNING id`,
@@ -9080,7 +9081,7 @@ async function createExpenseNative({ jobId, expenseType, expenseDate, billable,
        (job_airtable_id, job_id, expense_type, expense_status, expense_date,
         reviewed, billable, manual_material_cost, material_credit,
         vendor_name, description, submitted_by_at_id, submitted_by_name, synced_at)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
+     VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
              $3, 'Not Reviewed', $4::date, false, $5::boolean,
              $6::numeric, $7::numeric,
              (SELECT name FROM expense_vendors WHERE airtable_id = $8 OR id::text = $8),
@@ -10733,7 +10734,7 @@ async function handleSaveInvoice(body) {
       // Status is deliberately absent: editing a Paid invoice must not flip it
       // back to Sent, which is the same rule the Airtable branch above follows.
       `UPDATE invoices SET
-         job_airtable_id  = $2, job_id = (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
+         job_airtable_id  = CASE WHEN $2 LIKE 'rec%' THEN $2 ELSE NULL END, job_id = (SELECT id FROM jobs WHERE airtable_id = $2 OR id::text = $2),
          billing_mode     = $3, invoice_type = $4, auto_allocate = $5,
          manual_labor     = 0,  manual_material = 0,
          percent_to_bill  = COALESCE($6, percent_to_bill),
@@ -10773,7 +10774,7 @@ async function handleSaveInvoice(body) {
           billing_mode, invoice_stage, invoice_date, snapshot_total,
           manual_labor, manual_material, percent_to_bill, auto_allocate,
           invoice_display_no, invoice_notes, invoice_snapshot, synced_at)
-       VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1),
+       VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1),
                COALESCE((SELECT name FROM jobs WHERE airtable_id = $1 OR id::text = $1), '') || '-001',
                'Sent', $2, $3, $4, $5::date, $6, 0, 0, $7, $8, $9, $10, $11, now())
        RETURNING id, airtable_id`,
@@ -13437,7 +13438,7 @@ async function handleCreatePanelSchedule(body, authUser) {
   const rows = await neonWrite("panels.create",
     `INSERT INTO panel_schedules
        (job_airtable_id, job_id, name, voltage, circuits, location, fed_from, updated_by)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5, $6, $7)
+     VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5, $6, $7)
      RETURNING *`,
     [String(jobId), name, String(body?.voltage || "").trim() || null, circuits,
      String(body?.location || "").trim() || null, String(body?.fedFrom || "").trim() || null,
@@ -13655,7 +13656,7 @@ async function handleCreateChecklist(body, authUser) {
 
   const rows = await neonWrite("checklists.create",
     `INSERT INTO job_checklists (job_airtable_id, job_id, name, created_by)
-     VALUES ($1, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3)
+     VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END, (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3)
      RETURNING *`,
     [String(jobId), name, authUser?.name || null]);
   return resp(200, { ok: true, list: mapChecklist(rows[0]) });

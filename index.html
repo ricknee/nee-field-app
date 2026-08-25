@@ -15088,9 +15088,25 @@
   }
 
   window.invSaveToAirtable = async function() {
-    if (!invJobRef) return;
+    // ⚠ THIS USED TO BE A BARE `return`, AND THAT IS WHY "IT JUST DOES NOT SAVE"
+    // WAS ALL ANYONE COULD SAY ABOUT IT (2026-08-25). Every other failure in
+    // this function reports: the server errors alert, a timeout is checked
+    // against the server and reported. Only the two silent paths — this guard,
+    // and any throw before the try/finally below — produced a button that did
+    // nothing at all, with no console line and no banner.
+    if (!invJobRef) {
+      alert("This invoice isn't attached to a job any more. Close the Invoice tab, reopen it from the job, and try again.");
+      console.error("[invSave] invJobRef is null — loadInvoiceTab never ran, or the view was rebuilt without it");
+      return;
+    }
     const btn = event?.target;
     if (btn) { btn.disabled = true; btn.textContent = "Saving..."; }
+    // One line, so the next report can say WHERE it stopped. Everything between
+    // here and the try below is unprotected: a throw in calcInvTotal() or in the
+    // snapshot build leaves the button stuck on "Saving..." and never reaches
+    // the catch that would have alerted.
+    console.log("[invSave] start", { job: invJobRef.id, lines: (invLines || []).length,
+                                     editing: !!window._invEditingId });
 
     const isContract = (invJobRef.type || "").toLowerCase() === "contract"
                     || (invJobRef.billingMethod || "").toLowerCase() === "contract";

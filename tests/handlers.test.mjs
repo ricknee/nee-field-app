@@ -3708,6 +3708,56 @@ await test("expenseReceipts: the owner check survived moving off the Airtable re
 // the result as an array, and holding it in a variable that is then used like
 // one. If a legitimate case ever trips this, the fix is `.rows`, not an
 // exemption. (neonWrite is fine — it DOES return rows.)
+// The mirror image of the guard below, and it exists because the inverse bug
+// shipped on 2026-08-24. `sql` in the sync modules is `neon()` from
+// @neondatabase/serverless: its `.query()` resolves to a BARE ARRAY, while
+// `neonQuery` in airtable.js returns `{ rows }`. Reading `.rows` off the driver
+// yields undefined — and where the result feeds a filter or a skip list, that is
+// not an error, it is a silently empty answer.
+await test("sql.query: its ARRAY shape is respected — the inverse silent-death guard", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const dir = fileURLToPath(new URL("../netlify/functions/", import.meta.url));
+  const offenders = [];
+
+  for (const f of readdirSync(dir).filter(n => n.endsWith(".js"))) {
+    // Comments are stripped first, because this codebase documents the bad
+    // pattern in prose right next to the good code — the first cut of this guard
+    // flagged its own warning comment. Stripping can mangle a `//` inside a
+    // string literal (a URL), which cannot produce a false positive of the shape
+    // being searched for.
+    const src = readFileSync(dir + f, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n").map(l => l.replace(/\/\/.*$/, "")).join("\n");
+
+    // Same shape as its twin below, and for the same reason: the bug that
+    // shipped was NOT the one-liner. It was `const r = await sql.query(` on one
+    // line and `r?.rows` four lines later, which no single-line regex sees. So
+    // bind the variable, then look for `.rows` on it within the same function.
+    const assign = /(?:const|let|var)?\s*\b(\w+)\s*=\s*await\s+sql\.query\s*\(/g;
+    let m;
+    while ((m = assign.exec(src))) {
+      const name = m[1];
+      const rest = src.slice(m.index + m[0].length);
+      const stop = rest.search(/\n(?:export )?(?:async )?function /);
+      const scope = stop === -1 ? rest : rest.slice(0, stop);
+      if (new RegExp(`\\b${name}\\s*\\??\\.rows\\b`).test(scope)) {
+        const line = src.slice(0, m.index).split("\n").length;
+        offenders.push(`${f}:${line} \`${name}\` holds a sql.query result but is read as .rows — the driver returns an ARRAY`);
+      }
+    }
+
+    // And the one-liner, which the binding pass cannot see.
+    src.split("\n").forEach((l, i) => {
+      if (/await\s+sql\.query\s*\([^;]*\)\s*\)?\s*\??\.rows\b/.test(l)) {
+        offenders.push(`${f}:${i + 1} reads .rows straight off sql.query — the driver returns an ARRAY`);
+      }
+    });
+  }
+
+  eq(offenders.length, 0, offenders.join(" | "));
+});
+
 await test("neonQuery: its { rows } shape is respected — the silent-death guard", async () => {
   const { readFileSync, readdirSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
@@ -3753,17 +3803,27 @@ const { syncJobs } = await import("../netlify/functions/_jobs-sync.js");
 
 // Records every statement, answers the skip-list SELECT from `skipRows`, and
 // lets a test make that SELECT throw to exercise the fail-soft path.
-function fakeSql({ skipRows = [], skipThrows = false } = {}) {
+//
+// ⚠⚠ `shape` DEFAULTS TO "array", BECAUSE THAT IS WHAT THE REAL CLIENT DOES.
+// `sql` here is `neon()` from @neondatabase/serverless and its `.query()`
+// resolves to a bare array of rows — NOT the `{ rows }` object `neonQuery` in
+// airtable.js returns. The first cut of these tests faked `{ rows }`, so all
+// four passed against code that read `r.rows`, got undefined, and silently
+// skipped nothing; the ghost came back at the next hourly sync in production.
+// A fake that lies about the shape tests the fake. Both shapes are exercised
+// below so neither can regress.
+function fakeSql({ skipRows = [], skipThrows = false, shape = "array" } = {}) {
   const calls = [];
+  const wrap = (rows) => (shape === "array" ? rows : { rows });
   return {
     calls,
     query: async (text, params) => {
       calls.push({ text, params });
       if (text.includes("airtable_mirror_id = ANY")) {
         if (skipThrows) throw new Error("column \"airtable_mirror_id\" does not exist");
-        return { rows: skipRows };
+        return wrap(skipRows);
       }
-      return { rows: [] };
+      return wrap([]);
     },
     // The upserted rec ids, in order — the only thing these tests care about.
     upserted() {
@@ -3793,6 +3853,40 @@ await test("jobs-sync: a recorded mirror is skipped, everything else syncs", asy
   const ids = sql.upserted();
   ok(ids.includes("recREALJOB1234567"), "the real Airtable job still syncs");
   ok(!ids.includes("recMIRROR12345678"), "the mirror is NOT re-imported as a second job");
+});
+
+// The regression that shipped: the driver's `.query()` gives a bare array, the
+// code read `.rows`, and an empty skip list is indistinguishable from "no
+// mirrors exist". This case fails against that code; the one above does not,
+// because it can be satisfied by either shape.
+await test("jobs-sync: an unexpected driver result shape is LOUD, not an empty skip list", async () => {
+  const jobs = [
+    { id: "recREALJOB1234567", fields: JOB_FIELDS_FOR("Bethel School", 288) },
+    { id: "recMIRROR12345678", fields: JOB_FIELDS_FOR("Test 10", 301) },
+  ];
+  const skipRows = [
+    { id: "846245ef-294f-423b-a2b1-4b4a919607f8", airtable_mirror_id: "recMIRROR12345678", po_number: 301 },
+  ];
+
+  // The real driver: a bare array. The mirror is skipped.
+  mockTables = { Jobs: jobs };
+  const arr = fakeSql({ skipRows, shape: "array" });
+  eq((await syncJobs(arr, "test-key", "testbase")).skippedMirrors, 1, "array: skippedMirrors");
+  ok(!arr.upserted().includes("recMIRROR12345678"), "array: mirror not re-imported");
+
+  // A `{ rows }` object — what airtable.js's neonQuery returns, and what the
+  // shipped bug assumed. It must not quietly skip nothing: it syncs unfiltered
+  // (the ghost comes back, as it did in production) but SAYS SO.
+  mockTables = { Jobs: jobs };
+  const obj = fakeSql({ skipRows, shape: "rows" });
+  const errs = [];
+  const realErr = console.error;
+  console.error = (...a) => errs.push(a.join(" "));
+  try { var r2 = await syncJobs(obj, "test-key", "testbase"); }
+  finally { console.error = realErr; }
+  eq(r2.skippedMirrors, 0, "rows: nothing skipped");
+  ok(errs.some(e => e.includes("driver shape changed")),
+     "rows: the shape mismatch is logged, not swallowed");
 });
 
 await test("jobs-sync: with no native jobs at all, nothing is skipped", async () => {

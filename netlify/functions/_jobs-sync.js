@@ -305,7 +305,23 @@ async function mirrorSkipList(sql, records) {
         WHERE airtable_id IS NULL
           AND (airtable_mirror_id = ANY($1::text[]) OR po_number = ANY($2::int[]))`,
       [ids, pos]);
-    const rows = r?.rows || [];
+    // ⚠⚠ `sql` HERE IS `neon()` FROM @neondatabase/serverless, AND ITS `.query()`
+    // RESOLVES TO A BARE ARRAY OF ROWS — not the `{ rows }` result object that
+    // `neonQuery` in airtable.js returns. Two shapes, one codebase. This line was
+    // `r?.rows || []` for one deploy: the skip list came back empty on every run,
+    // `mirrorSkipList` reported success, and the ghost was re-inserted at the very
+    // next hourly sync — no error anywhere, because an empty skip list is exactly
+    // what "there are no mirrors" looks like. `backfillJobLinks` below has always
+    // read `rows?.length` on the same client and is the proof.
+    //
+    // So this ASSERTS the shape rather than absorbing both. A defensive
+    // `r?.rows || []` fallback is what silence is made of: it turns a changed
+    // driver into an empty answer. Throwing lands in the catch below, which logs
+    // and syncs unfiltered — the same fail-soft outcome, but audible.
+    if (!Array.isArray(r)) {
+      throw new Error(`sql.query returned ${r === null ? "null" : typeof r}, expected an array of rows — driver shape changed`);
+    }
+    const rows = r;
     const mirrors = new Set(rows.map(x => x.airtable_mirror_id).filter(Boolean));
     // A record is a ghost candidate only if it is NOT the recorded mirror: the
     // mirror shares its job's PO by definition, so reporting it would be noise.

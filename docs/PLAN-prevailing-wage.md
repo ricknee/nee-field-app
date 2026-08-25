@@ -45,6 +45,11 @@ The existing create-job path may continue creating its ordinary Airtable mirror 
 dependency still exists, but it sends no PW field or rate to Airtable. `_jobs-sync.js` must not own
 or overwrite any PW column.
 
+*Update 2026-08-25: this boundary is now the default rather than something to enforce —
+`AIRTABLE_WRITES=off` is production and `_jobs-sync.js` is retired, so the app writes nothing to
+Airtable and nothing syncs back. The paragraph above is kept as the rule that must survive if
+either is ever wired back up.*
+
 ---
 
 ## 1. The reframe: this is not a prevailing-wage feature
@@ -424,10 +429,12 @@ Visible warning on the job, flag on the GP figures — same spirit as the existi
    is born in Neon and Airtable gets a fail-soft mirror nothing reads back. Good news for this
    build (§"Airtable boundary" now gets what it wanted for free), but **verify the line number
    before trusting it; it has already moved once.**
-   ⚠⚠ **Do not let `prevailing_wage` reach the Airtable mirror.** The mirror is a real record
-   carrying no Neon row's id, and `_jobs-sync.js` re-imported one as a duplicate job until
-   `jobs.airtable_mirror_id` was added (`db/schema/062`). A PW flag mirrored out is a PW flag that
-   can come back as a second, un-flagged job.
+   ⚠ **Do not send `prevailing_wage` to Airtable — but as of 2026-08-25 this is belt-and-braces,
+   not a live hazard.** `AIRTABLE_WRITES=off` means the mirror is not written at all, and
+   `_jobs-sync.js` is retired, so nothing can currently round-trip a flag back. The rule stands for
+   the day someone wires either back up: the mirror is a real record no Neon row's id matches, and
+   that sync re-imported one as a **duplicate job** until `jobs.airtable_mirror_id` (`db/schema/062`).
+   A PW flag mirrored out is a PW flag that can return as a second, un-flagged job.
 3. **Offline tests cannot reach the Neon SQL.** `tests/handlers.test.mjs` mocks Airtable and runs
    without a database, so a broken parameterised write passes and fails in production. `PREPARE`
    every new statement first.

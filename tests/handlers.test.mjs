@@ -5026,6 +5026,25 @@ await test("contactDuplicates: STATIC — a proposal, never a mutation", async (
      "a failed Google check is reported, so 'not found' cannot stand in for 'not asked'");
 });
 
+
+await test("contactDuplicates: STATIC — Neon-first merging would orphan a live Google copy", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleContactDuplicates(");
+  const fn = src.slice(i, src.indexOf("\n}\n", i));
+  // Two situations wear the same face. If ONE id is dead, somebody already
+  // merged that person in Google and merging here catches up. If BOTH still
+  // resolve, Google holds them twice — and since the sync NEVER deletes,
+  // merging here first drops our reference and strands the extra copy on
+  // people's phones with nothing left that could ever clean it up.
+  ok(/googleStillDuplicated/.test(fn), "pairs Google still holds twice are identified");
+  ok(/d\.resolvesInGoogle === true/.test(fn),
+     "identified by BOTH ids resolving, not by our own bookkeeping");
+  ok(/orderOfWork/.test(fn), "and the report states the order of work");
+  ok(/Merging in Neon FIRST would leave the extra Google copy orphaned/.test(fn),
+     "spelling out why Google must be merged first");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

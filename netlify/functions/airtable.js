@@ -13456,6 +13456,25 @@ async function handleContactDuplicates() {
       } : null;
     }
 
+    // ⚠⚠ TWO DIFFERENT SITUATIONS WEAR THE SAME FACE, AND THEY NEED OPPOSITE
+    // ORDERS OF WORK.
+    //   (a) one id is dead -> somebody already merged this person in Google, and
+    //       merging in Neon simply catches up. Nothing is left behind.
+    //   (b) BOTH ids still resolve -> Google genuinely holds this person twice.
+    //       Merging in Neon drops our reference to one of them, but the contact
+    //       itself STAYS in Google forever: the sync never deletes, so nothing
+    //       will ever clean it up. We would have quietly orphaned a duplicate on
+    //       everyone's phone.
+    // So (b) has to be merged in GOOGLE first — its own Merge & fix, which
+    // previews each merge — and only then here.
+    const googleStillDuplicated = [];
+    for (const dest of DESTINATIONS) {
+      const g = googleIds[dest.column];
+      if (g?.resolvesInGoogle === true && g.discarding?.some(d => d.resolvesInGoogle === true)) {
+        googleStillDuplicated.push(dest.subject);
+      }
+    }
+
     const reasons = [];
     if (phoneAgrees) reasons.push("same phone number once formatting is ignored");
     if (emailAgrees) reasons.push("same email address");
@@ -13470,8 +13489,12 @@ async function handleContactDuplicates() {
       }
     }
 
+    if (googleStillDuplicated.length) {
+      reasons.push(`⚠ GOOGLE STILL HOLDS BOTH COPIES in ${googleStillDuplicated.join(" and ")} — merge this person there FIRST (Contacts -> Merge & fix), or the extra copy is orphaned on people's phones with nothing left to clean it up.`);
+    }
+
     pairs.push({
-      name, confidence, rowCount: rows.length,
+      name, confidence, rowCount: rows.length, googleStillDuplicated,
       keep: { id: keep.id, phone: keep.primary_phone, email: keep.primary_email, score: contactScore(keep) },
       drop: drop.map(d => ({ id: d.id, phone: d.primary_phone, email: d.primary_email, score: contactScore(d) })),
       fills, googleIds, reasons,
@@ -13493,7 +13516,15 @@ async function handleContactDuplicates() {
       wouldDelete: pairs.reduce((n, p) => n + p.drop.length, 0),
       high: pairs.filter(p => p.confidence === "HIGH").length,
       review: pairs.filter(p => p.confidence === "REVIEW").length,
+      alreadyMergedInGoogle: pairs.filter(p => !p.googleStillDuplicated.length).length,
+      googleStillHasBoth: pairs.filter(p => p.googleStillDuplicated.length).length,
     },
+    orderOfWork: [
+      "1. In Google Contacts (BOTH accounts), Merge & fix the people listed under googleStillHasBoth. Google previews each merge.",
+      "2. Re-run this report — their second id will then read resolvesInGoogle:false.",
+      "3. Then apply the Neon merges, which will pick the surviving id on its own.",
+      "Merging in Neon FIRST would leave the extra Google copy orphaned, because the sync never deletes.",
+    ],
     pairs,
   });
 }

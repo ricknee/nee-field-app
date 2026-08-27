@@ -649,7 +649,7 @@ const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "
                               // Item 07 diagnostics. googleContactsReconcile reads every
                               // contact in both company address books, so it sits at strict
                               // admin with the roster rather than with office.
-                              "googleStatus", "googleContactsReconcile",
+                              "googleStatus", "googleContactsReconcile", "contactDuplicates",
                               "clockRoster", "clockReconcile", "clockPunches",
                               // The approval queue + everyone's leave balances.
                               "ptoRequests"]);
@@ -13338,6 +13338,166 @@ async function handleGoogleContactsReconcile(params) {
   return resp(200, { ok: true, mode: googleContactsMode(), reconcile: out });
 }
 
+// ── PROPOSED CONTACT MERGES — READ-ONLY (item 07 prerequisite) ────────────
+// Admin-only. Writes NOTHING, in Neon or in Google. It reports what a merge
+// would do so a person can approve it; a separate action would perform one.
+//
+// ⚠⚠ WHY THIS BLOCKS THE SYNC. The reconcile on 2026-08-27 found 13 duplicate
+// PEOPLE among the 240 contacts — 26 rows, the same person entered twice, most
+// pairs differing only in phone FORMATTING ("3307046150" vs "(330) 704-6150"),
+// which is why nothing ever flagged them. Both halves carry their own Google
+// person id, so Google already holds each of these people twice in BOTH
+// accounts, and somebody has been merging a few by hand.
+//
+// Syncing all 240 as-is would therefore RE-CREATE the ones already cleaned up
+// and leave the rest duplicated. That is worse than not running at all, and it
+// is exactly the outcome the owner asked to avoid.
+//
+// ⚠ THE MERGE MUST CARRY FORWARD THE GOOGLE ID THAT STILL RESOLVES, which is
+// not always the id on the row that wins on data. Keeping a dead id would make
+// the very next sync create a duplicate — undoing the merge it just did.
+function normPhone(v) { return String(v || "").replace(/\D+/g, ""); }
+function normEmail(v) { return String(v || "").trim().toLowerCase(); }
+function contactScore(r) {
+  // Completeness, deliberately crude — a human approves the result anyway.
+  return (r.primary_email ? 4 : 0) + (r.primary_phone ? 2 : 0) +
+         (r.company_id ? 1 : 0) + (r.street ? 1 : 0) + (r.role ? 1 : 0);
+}
+
+async function handleContactDuplicates() {
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "This report needs the database. DATABASE_URL is unset." });
+  }
+
+  const q = await neonQuery(
+    `SELECT id, first_name, last_name, primary_phone, primary_email, role, street, city, state, zip,
+            company_id, active, google_person_id_1, google_person_id_2
+       FROM contacts
+      ORDER BY last_name NULLS LAST, first_name NULLS LAST`);
+  if (!q?.rows) {
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+  }
+
+  const groups = new Map();
+  for (const r of q.rows) {
+    const key = `${String(r.first_name || "").trim().toLowerCase()} ${String(r.last_name || "").trim().toLowerCase()}`.trim();
+    if (!key) continue;
+    (groups.get(key) || groups.set(key, []).get(key)).push(r);
+  }
+  const dupeGroups = [...groups.entries()].filter(([, rows]) => rows.length > 1);
+
+  // Which of these Google ids still resolve? One batch call per account for the
+  // whole report, not one per contact.
+  const live = new Map(); // "<destKey>:<storedId>" -> true
+  const googleChecked = googleConfigured();
+  const googleErrors = [];
+  if (googleChecked) {
+    for (const dest of DESTINATIONS) {
+      const ids = dupeGroups.flatMap(([, rows]) => rows.map(r => r[dest.column]).filter(Boolean));
+      if (!ids.length) continue;
+      try {
+        const found = await getPeopleBatch(dest.subject, ids);
+        for (const id of found.keys()) live.set(`${dest.key}:${id}`, true);
+      } catch (e) {
+        // Report it rather than letting "not found" stand in for "not asked".
+        googleErrors.push({ account: dest.subject, hint: String(e?.message || e).slice(0, 200) });
+      }
+    }
+  }
+  const resolves = (destKey, id) => (id ? live.has(`${destKey}:${id}`) : null);
+
+  const pairs = [];
+  for (const [name, rows] of dupeGroups) {
+    const phones = new Set(rows.map(r => normPhone(r.primary_phone)).filter(Boolean));
+    const emails = new Set(rows.map(r => normEmail(r.primary_email)).filter(Boolean));
+
+    // HIGH means the rows agree on a phone or an email, not merely on a name.
+    // Two different people can share a name; two rows sharing a mobile number
+    // are the same person.
+    const phoneAgrees = phones.size === 1 && rows.every(r => !r.primary_phone || normPhone(r.primary_phone) === [...phones][0]);
+    const emailAgrees = emails.size === 1 && emails.size > 0;
+    const confidence = (phoneAgrees || emailAgrees) ? "HIGH" : "REVIEW";
+
+    // Keeper: most complete row. Ties break on having a live Google id, so the
+    // surviving row is the one Google already knows.
+    const ranked = [...rows].sort((a, b) => {
+      const s = contactScore(b) - contactScore(a);
+      if (s) return s;
+      const aLive = (resolves(1, a.google_person_id_1) ? 1 : 0) + (resolves(2, a.google_person_id_2) ? 1 : 0);
+      const bLive = (resolves(1, b.google_person_id_1) ? 1 : 0) + (resolves(2, b.google_person_id_2) ? 1 : 0);
+      return bLive - aLive;
+    });
+    const keep = ranked[0];
+    const drop = ranked.slice(1);
+
+    // ⚠ Field-level merge: take any value the keeper lacks from a dropped row.
+    // Nothing is discarded silently — every borrowed field is named in `fills`.
+    const fills = {};
+    for (const f of ["primary_email", "primary_phone", "role", "street", "city", "state", "zip", "company_id"]) {
+      if (!keep[f]) {
+        const donor = drop.find(d => d[f]);
+        if (donor) fills[f] = { value: donor[f], from: donor.id };
+      }
+    }
+
+    // ⚠⚠ Google ids are chosen by WHAT STILL RESOLVES, independently of which
+    // row won. A merge that keeps a dead id makes the next sync create a
+    // duplicate and undo itself.
+    const googleIds = {};
+    for (const dest of DESTINATIONS) {
+      const candidates = rows.map(r => ({ id: r[dest.column], row: r.id, live: resolves(dest.key, r[dest.column]) }))
+                             .filter(c => c.id);
+      const chosen = candidates.find(c => c.live === true) || candidates[0] || null;
+      googleIds[dest.column] = chosen ? {
+        use: chosen.id,
+        fromRow: chosen.row,
+        resolvesInGoogle: chosen.live,
+        discarding: candidates.filter(c => c.id !== chosen.id).map(c => ({ id: c.id, resolvesInGoogle: c.live })),
+      } : null;
+    }
+
+    const reasons = [];
+    if (phoneAgrees) reasons.push("same phone number once formatting is ignored");
+    if (emailAgrees) reasons.push("same email address");
+    if (!phoneAgrees && phones.size > 1) {
+      reasons.push(`⚠ phone numbers DIFFER (${[...phones].join(" vs ")}) — could be a typo in one, or two different people`);
+    }
+    if (Object.keys(fills).length) reasons.push(`keeper is missing ${Object.keys(fills).join(", ")}, filled from the dropped row`);
+    for (const dest of DESTINATIONS) {
+      const g = googleIds[dest.column];
+      if (g?.discarding?.length && g.resolvesInGoogle === true && g.discarding.some(d => d.resolvesInGoogle === false)) {
+        reasons.push(`${dest.subject}: keeping the id that still resolves and dropping a dead one (already merged in Google by hand)`);
+      }
+    }
+
+    pairs.push({
+      name, confidence, rowCount: rows.length,
+      keep: { id: keep.id, phone: keep.primary_phone, email: keep.primary_email, score: contactScore(keep) },
+      drop: drop.map(d => ({ id: d.id, phone: d.primary_phone, email: d.primary_email, score: contactScore(d) })),
+      fills, googleIds, reasons,
+    });
+  }
+
+  pairs.sort((a, b) => (a.confidence === b.confidence ? a.name.localeCompare(b.name) : a.confidence === "HIGH" ? -1 : 1));
+
+  return resp(200, {
+    ok: true,
+    // Nothing below has been written. This is a proposal.
+    wroteAnything: false,
+    googleChecked,
+    googleErrors,
+    counts: {
+      totalContacts: q.rows.length,
+      duplicatePeople: pairs.length,
+      rowsInvolved: pairs.reduce((n, p) => n + p.rowCount, 0),
+      wouldDelete: pairs.reduce((n, p) => n + p.drop.length, 0),
+      high: pairs.filter(p => p.confidence === "HIGH").length,
+      review: pairs.filter(p => p.confidence === "REVIEW").length,
+    },
+    pairs,
+  });
+}
+
 // ── THE AIRTABLE REC ID FOR A JOB HANDLE, OR NULL ─────────────────────────
 // Cutover slice 6, added 2026-08-24 after the first native job could not have
 // its status changed: `handleUpdateJobStatus` PATCHed `Jobs/<uuid>`, Airtable
@@ -14533,6 +14693,7 @@ export async function handler(event) {
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
       if (action === "googleStatus")       return await handleGoogleStatus();
       if (action === "googleContactsReconcile") return await handleGoogleContactsReconcile(params);
+      if (action === "contactDuplicates")  return await handleContactDuplicates();
       if (action === "people")             return await handlePeople();
       if (action === "employeePin")        return await handleEmployeePin(params);
       if (action === "employeeRates")      return await handleEmployeeRates(params);

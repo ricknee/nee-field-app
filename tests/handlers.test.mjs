@@ -5001,6 +5001,31 @@ await test("googleContacts: a MALFORMED id must throw, never report absence", as
   }
 });
 
+
+await test("contactDuplicates: STATIC — a proposal, never a mutation", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleContactDuplicates(");
+  ok(i > 0, "handler exists");
+  const fn = src.slice(i, src.indexOf("\n}\n", i));
+  // 13 duplicate PEOPLE among the 240 contacts, both halves carrying their own
+  // Google id. Syncing as-is would re-create the ones already merged by hand.
+  // This reports; a separate action would act.
+  ok(!/neonWrite|DELETE FROM|UPDATE contacts|createPerson|updatePerson/.test(fn),
+     "the report writes nothing — no Neon write, no delete, no Google write");
+  ok(/wroteAnything: false/.test(fn), "and says so in the response");
+  // ⚠ The keeper is chosen on completeness, but the Google id is chosen on what
+  // still RESOLVES. Keeping a dead id would make the next sync create a
+  // duplicate and undo the merge it just performed.
+  ok(/candidates\.find\(c => c\.live === true\)/.test(fn),
+     "the surviving Google id is the one that still resolves, not the keeper's by default");
+  // Name alone is not identity — two people can share one.
+  ok(/confidence = \(phoneAgrees \|\| emailAgrees\) \? "HIGH" : "REVIEW"/.test(fn),
+     "a name-only match is REVIEW, never HIGH");
+  ok(/googleErrors/.test(fn),
+     "a failed Google check is reported, so 'not found' cannot stand in for 'not asked'");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

@@ -5,7 +5,8 @@
 is service account + domain-wide delegation, not OAuth refresh tokens. Route B below is dead
 weight kept only in case the delegation step hits a wall.
 ✅ **Both destinations stay** (§7.4). ⛔ **Nothing is ever deleted** (§7.4).
-⬜ Still open: the trigger rule (§7.2) and power contacts (§7.3). Written 2026-08-27 after the owner chose the direct path over replumbing Make:
+✅ **All four owner decisions are CLOSED** (§7): both destinations, no deletion, sync all 240, power
+contacts created fresh. **Nothing is open but the key.** Written 2026-08-27 after the owner chose the direct path over replumbing Make:
 *"i want to go direct with contacts."*
 
 > **Read this block first.** Two things recorded elsewhere as unknown are now **solved** (§1), and
@@ -42,8 +43,8 @@ is a dependency. If any future edit to this plan introduces an Airtable read, th
 | | verified |
 |---|---|
 | The five Make sync scenarios | **`isActive: false`** — `4729925` confirmed directly, the other four by their connection usage. Nothing has synced a contact to Google since 2026-08-20. |
-| `contacts` in Neon | **240** — **230 carry BOTH Google person ids**, 10 carry neither |
-| `power_contacts` | **25**, and **no per-person id exists** (schema 049 explains why) |
+| `contacts` in Neon | **240**, all `active` — **230 carry BOTH Google person ids**, 10 carry neither, and **7 of those 10 have no phone and no email** |
+| `power_contacts` | **26** (not the 25 in schema 049 — recounted 2026-08-27, all carry an `airtable_id`, so it is a stale count and not drift), and **no per-person id exists** |
 | Drift so far | **none.** `airtable_id IS NULL` returns **0** contacts, so nobody has created one since the flip. |
 | OAuth code in the repo | **none.** The only Google thing present is `GOOGLE_MAPS_API_KEY`, for mileage. |
 
@@ -172,12 +173,14 @@ That rule is why 10 of 240 have no ids — they are **not failures**.
 
 ## 5. Power contacts — the half with no id
 
-25 rows, and schema 049 is explicit that their two Airtable fields held contact **group** ids
+**26** rows (§0 explains the 25/26 discrepancy), and schema 049 is explicit that their two Airtable
+fields held contact **group** ids
 (`contactGroups/36e512d0097f117f`, `contactGroups/593386b00fa9ca08`), identical on every row. They
 say which Google *label* to file under, not which person a row became. **There is no id to match
 on.**
 
-Three options, and the owner picks:
+✅ **Owner picked option 2 on 2026-08-27 — create all 26 fresh.** The other two are kept for the
+reasoning only:
 
 1. **Match by email, then phone, then exact name** against `people.connections.list` for each
    destination. Safest-sounding, most code, and still capable of a wrong match on a shared office
@@ -187,7 +190,17 @@ Three options, and the owner picks:
    failure mode.
 3. **Leave power contacts out of the first cut** entirely and ship the 240 job contacts.
 
-⚠ Whichever is chosen, `power_contacts.name` is **GENERATED** in Postgres (Airtable's "Contact
+⚠⚠ **Creating fresh needs a SCHEMA CHANGE that does not exist yet.** Schema 049 deliberately added
+`google_person_id_1/2` to `contacts` **only** — it explicitly declined to add them to
+`power_contacts`, on the grounds that storing the same constant group id 26 times would imply a
+per-row identity that did not exist. That reasoning was right then and is obsolete now: once these
+are created fresh, each row **does** have a per-person identity, and it must be stored or every run
+re-creates all 26. So slice 4 opens with `db/schema/066_power_contact_google_ids.sql` (next free
+number as of 2026-08-27 — ⚠ re-check it, a parallel session may have taken 066) adding the same
+two columns to `power_contacts`. **Without that column pair, “create fresh” is a duplicate
+generator, not a migration.**
+
+⚠ `power_contacts.name` is **GENERATED** in Postgres (Airtable's "Contact
 Name" was a formula). Never store a copy that can drift; read it, don't write it. The two group
 ids should become configuration so the sync can file contacts under the right label.
 
@@ -201,8 +214,8 @@ Ordered so the dangerous write comes last and is preceded by evidence.
 |---|---|---|
 | 1 | `_google-contacts.js` — auth (Route A or B), token cache, People API wrapper, and `GET ?action=googleStatus` naming the specific misconfiguration. **Model it on `r2Status`**, which exists precisely because "it doesn't work" is not a diagnosis. Lazy-import the auth dep so the test suite stays offline. | 2 h |
 | 2 | **Reconcile, read-only.** For each contact × destination: does the stored person id still resolve? Report update / create / missing / conflict. **This is the gate.** Nothing writes until its output is read. | 2 h |
-| 3 | `contacts` write path — 230 updates by id (read-then-write for the etag), 10 creates, id stamped back in the same request. | 3 h |
-| 4 | `power_contacts` — per the §7 decision. | 0-2 h |
+| 3 | `contacts` write path — **all 240** (§7.2): 230 updates by id (read-then-write for the etag), 10 creates, id stamped back in the same request. No job-status gate. | 3 h |
+| 4 | `power_contacts` — **create all 26 fresh** (§7.3), id stamped back to Neon on create. Needs a new column pair; no matching logic. | 1-2 h |
 | 5 | Wire into the create/update handlers + `GOOGLE_CONTACTS` switch + `dry`. Fail soft. | 2 h |
 | 6 | Live `dry` run against production, read it line by line, then flip. | 1-2 h |
 
@@ -217,9 +230,27 @@ native-job post-mortem: **deploying is not evidence — re-query after the first
 ## 7. Open decisions — owner
 
 1. **Workspace or not?** Decides Route A vs B (§2). Ask first; everything else waits on it.
-2. **Trigger rule:** keep "only contacts whose job reached Awarded / Service Call Scheduled", or
-   sync all 240? The 10 with no ids are the only rows this changes today.
-3. **Power contacts:** match, create-fresh, or defer (§5).
+2. ~~**Trigger rule?**~~ ✅ **DECIDED 2026-08-27 — SYNC ALL 240.** Owner: *“sync all 240.”* The
+   retired Awarded / Service-Call-Scheduled gate is **dropped**, which is the right call now that
+   `nee@` is the office address book — and it makes the code simpler, because there is no job-status
+   join to evaluate at all. **Measured the same day: all 240 are `active`**, so there is no
+   active/inactive gate either. The sync condition is: every row in `contacts`.
+
+   ⚠ **7 of the 240 have neither phone nor email** — name only — and all 7 are inside the 10 that
+   were never synced. So the old gate was not the only reason those 10 have no ids; **7 of them
+   had nothing worth syncing.** They will now be created as name-only entries in both accounts.
+   That is harmless and consistent with “all 240”, but if staff would rather not see 7 blank
+   entries, skipping rows with no phone AND no email is a one-line filter. **Flagging, not
+   assuming** — say the word either way.
+3. ~~**Power contacts?**~~ ✅ **DECIDED 2026-08-27 — CREATE FRESH.** Owner: *“create the power
+   contacts fresh.”* No fuzzy matching by name/phone/email; each gets a clean id anchor written
+   back to Neon on create. Any duplicate this produces against a pre-existing Google entry is
+   bounded and mergeable by hand.
+
+   ⚠ **It is 26 rows, not 25.** Schema 049 and the audit both say 25; the table holds **26** as of
+   2026-08-27, and **all 26 carry an `airtable_id`** (0 native), so this is not drift — the earlier
+   count was simply captured before the last row loaded. All 26 are `active` and **every one has at
+   least one phone or email**, so there is no empty-entry question on this half.
 4. ~~**Still two destinations?**~~ ✅ **DECIDED 2026-08-27 — BOTH STAY.** Owner: *“i want them on
    rick@northeasternelec.com and nee@northeasternelec.com. in the future office and staff will rely
    on this one for contacts.”* So `nee@` is not a spare copy to be economised away — it is becoming

@@ -4870,6 +4870,69 @@ await test("googleContacts/oauth: a half-configured pair refuses rather than hal
   });
 });
 
+
+await test("googleContacts: the reconcile reads in BATCHES, or it cannot finish", async () => {
+  const saved = {};
+  for (const k of ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET",
+                   "GOOGLE_REFRESH_TOKEN_1", "GOOGLE_REFRESH_TOKEN_2"]) saved[k] = process.env[k];
+  process.env.GOOGLE_OAUTH_CLIENT_ID = "c"; process.env.GOOGLE_OAUTH_CLIENT_SECRET = "s";
+  process.env.GOOGLE_REFRESH_TOKEN_1 = "r1"; process.env.GOOGLE_REFRESH_TOKEN_2 = "r2";
+  const savedFetch = globalThis.fetch;
+
+  let batchCalls = 0, maxChunk = 0;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("tokeninfo")) return { ok: true, status: 200, json: async () => ({}) };
+    if (u.includes("oauth2.googleapis.com/token")) return { ok: true, status: 200, json: async () => ({ access_token: "t", expires_in: 3600 }) };
+    if (u.includes("people:batchGet")) {
+      batchCalls++;
+      const names = new URL(u).searchParams.getAll("resourceNames");
+      maxChunk = Math.max(maxChunk, names.length);
+      return { ok: true, status: 200, json: async () => ({
+        responses: names.map(n => n === "people/gone"
+          ? { requestedResourceName: n, httpStatusCode: 404 }
+          : { requestedResourceName: n, person: { resourceName: n } }),
+      }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ connections: [] }) };
+  };
+  try {
+    const gc = await import(`../netlify/functions/_google-contacts.js?batch=${Date.now()}`);
+    const ids = [...Array.from({ length: 229 }, (_, i) => `people/c${i}`), "people/gone"];
+    const found = await gc.getPeopleBatch("rick@northeasternelec.com", ids);
+
+    // 230 ids x 2 accounts one-at-a-time is 460 sequential round trips — well
+    // past a Netlify function's 10s cutoff. It would not have failed cleanly
+    // either: it would have died partway through the one report that exists to
+    // be read BEFORE anything writes.
+    eq(batchCalls, 2, "230 ids is 2 calls, not 230");
+    ok(maxChunk <= 200, `chunks stay within the 200 cap (largest was ${maxChunk})`);
+
+    // Repeated query params, not a comma-joined string: .set() would have kept
+    // only the last resourceName and reported the other 199 as absent — a silent
+    // wrong answer that reads as "re-create them all".
+    eq(found.size, 229, "every resolvable id came back");
+    eq(found.has("people/gone"), false, "and a 404 entry is absent, not faked");
+  } finally {
+    globalThis.fetch = savedFetch;
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+await test("googleContacts: STATIC — a failed batch is an ERROR, never 230 'missing'", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleGoogleContactsReconcile(");
+  const fn = src.slice(i, src.indexOf("\n}\n", i));
+  // If an outage were counted as "these ids no longer resolve", the report would
+  // invite re-creating all 230 — which is the 230-duplicates-twice-over outcome
+  // this whole design exists to prevent.
+  ok(/summary\.errors = withIds\.length/.test(fn),
+     "a thrown batch marks every id as an ERROR, not as missing");
+  ok(/anyErrors[\s\S]*NOT SAFE TO RUN/.test(fn),
+     "and any error forces the NOT SAFE verdict");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

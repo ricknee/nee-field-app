@@ -395,7 +395,13 @@ async function callPeople(subject, path, { method = "GET", body, query, timeoutM
   const token = await getAccessToken(subject, timeoutMs);
   const url = new URL(`${PEOPLE_BASE}/${path.replace(/^\/+/, "")}`);
   for (const [k, v] of Object.entries(query || {})) {
-    if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+    if (v === undefined || v === null) continue;
+    // ⚠ An ARRAY means a repeated parameter, not a comma-joined string.
+    // people:batchGet wants resourceNames listed up to 200 times; .set() would
+    // keep only the last, which would check ONE contact and report the other 199
+    // as absent — a silent wrong answer, not an error.
+    if (Array.isArray(v)) { for (const item of v) url.searchParams.append(k, String(item)); }
+    else url.searchParams.set(k, String(v));
   }
 
   const res = await withTimeout((signal) => fetch(url.toString(), {
@@ -470,6 +476,40 @@ export async function createPerson(subject, person, timeoutMs = DEFAULT_TIMEOUT_
     body: person,
     timeoutMs,
   });
+}
+
+// Read up to 200 people per call instead of one.
+//
+// ⚠⚠ THIS EXISTS BECAUSE THE ONE-AT-A-TIME VERSION COULD NOT FINISH. The
+// reconcile checks 230 stored ids in EACH of two accounts — 460 sequential
+// round trips, comfortably over a minute, against a Netlify function that is cut
+// off at 10s (26s at most). It would not have failed cleanly either: it would
+// have died partway with no verdict, on the one report that exists to be read
+// before anything writes.
+//
+// batchGet caps at 200 resourceNames per request, so 230 ids becomes 2 calls per
+// account and the whole reconcile is 4.
+//
+// Returns a Map of resourceName -> person, with MISSING ENTRIES SIMPLY ABSENT.
+// A per-entry error means that id no longer resolves; a thrown error means the
+// whole call failed and the caller must not read absence into it.
+export async function getPeopleBatch(subject, resourceNames, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const out = new Map();
+  for (let i = 0; i < resourceNames.length; i += 200) {
+    const chunk = resourceNames.slice(i, i + 200);
+    const res = await callPeople(subject, "people:batchGet", {
+      query: { resourceNames: chunk, personFields: PERSON_FIELDS },
+      timeoutMs,
+    });
+    for (const entry of res.responses || []) {
+      // requestedResourceName is echoed back, so the mapping never depends on
+      // the responses arriving in the order they were asked for.
+      const name = entry.requestedResourceName;
+      if (!name) continue;
+      if (entry.person) out.set(name, entry.person);
+    }
+  }
+  return out;
 }
 
 // Page the impersonated user's whole contact list. Only needed for the

@@ -32,7 +32,7 @@ import { runGeneratorServiceCheck } from "./_generator-service.js";
 // disable the sync. Nothing here is in ensureEnv(). docs/PLAN-google-contacts.md
 import {
   googleStatus, googleConfigured, googleContactsMode,
-  getPerson, listConnections, DESTINATIONS,
+  getPerson, getPeopleBatch, listConnections, DESTINATIONS,
 } from "./_google-contacts.js";
 
 import {
@@ -13271,44 +13271,38 @@ async function handleGoogleContactsReconcile(params) {
     const summary = {
       key: dest.key, account: dest.subject, column: dest.column,
       withStoredId: 0, resolved: 0, missing: 0, errors: 0, noId: 0,
-      missingSamples: [], errorSamples: [],
+      missingSamples: [],
     };
 
-    for (const r of rows) {
-      const id = r[dest.column];
-      if (!id) { summary.noId++; continue; }
-      summary.withStoredId++;
-      try {
-        const person = await getPerson(dest.subject, id);
-        if (person) summary.resolved++;
-        else {
-          summary.missing++;
-          if (summary.missingSamples.length < 10) {
-            summary.missingSamples.push({
-              contactId: r.id,
-              name: [r.first_name, r.last_name].filter(Boolean).join(" "),
-              storedId: id,
-            });
-          }
-        }
-      } catch (e) {
-        summary.errors++;
-        if (summary.errorSamples.length < 5) {
-          summary.errorSamples.push({
-            contactId: r.id, code: e?.code || "ERROR",
-            hint: String(e?.message || e).slice(0, 200),
+    const withIds = rows.filter(r => r[dest.column]);
+    summary.noId = rows.length - withIds.length;
+    summary.withStoredId = withIds.length;
+
+    try {
+      // Batched: 230 ids is 2 calls, not 230. The one-at-a-time version could
+      // not finish inside a Netlify function's timeout — see getPeopleBatch.
+      const found = await getPeopleBatch(dest.subject, withIds.map(r => r[dest.column]));
+      for (const r of withIds) {
+        if (found.has(r[dest.column])) { summary.resolved++; continue; }
+        summary.missing++;
+        if (summary.missingSamples.length < 10) {
+          summary.missingSamples.push({
+            contactId: r.id,
+            name: [r.first_name, r.last_name].filter(Boolean).join(" "),
+            storedId: r[dest.column],
           });
         }
-        // An auth failure fails EVERY row identically, so stop rather than making
-        // 240 doomed calls and burning the rate limit for nothing.
-        if (e?.code === "AUTH" || e?.code === "NOT_CONFIGURED" || e?.code === "FORBIDDEN") {
-          summary.abortedAfter = summary.withStoredId;
-          break;
-        }
       }
+    } catch (e) {
+      // ⚠ A failed batch is NOT evidence of absence. Record it as an error so the
+      // verdict refuses, rather than reporting 230 contacts as missing and
+      // inviting somebody to re-create every one of them.
+      summary.errors = withIds.length;
+      summary.errorCode = e?.code || "ERROR";
+      summary.errorHint = String(e?.message || e).slice(0, 300);
     }
 
-    if (deep && !summary.abortedAfter) {
+    if (deep && !summary.errors) {
       try {
         const all = await listConnections(dest.subject);
         summary.accountTotalContacts = all.length;

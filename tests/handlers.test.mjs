@@ -5045,6 +5045,43 @@ await test("contactDuplicates: STATIC — Neon-first merging would orphan a live
      "spelling out why Google must be merged first");
 });
 
+
+await test("contactMerge: STATIC — the only destructive action, and it is fenced", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleContactMerge(");
+  ok(i > 0, "handler exists");
+  const fn = src.slice(i, src.indexOf("\n}\n\n", i));
+
+  // Dry by default. A destructive action whose default is to act is a trap.
+  ok(/const dryRun = body\?\.confirm !== true/.test(fn), "writes only on explicit confirm:true");
+
+  // ⚠⚠ The caller names the keeper; this code never ranks. contactDuplicates
+  // ranks by completeness and would have got Mike Ware backwards — the row with
+  // the WRONG phone ((330) 260-5049, a transposition) also carried a role, so it
+  // scored higher. Completeness is not correctness, and no scorer can know which
+  // of two phone numbers is real.
+  ok(!/contactScore/.test(fn), "no ranking here — the keeper arrives as input");
+
+  // A mistyped uuid that happens to exist would delete a real, unrelated person.
+  ok(/are different people/.test(fn), "refuses when keep and drop are different people");
+  ok(/if \(problems\.length\) return resp\(400/.test(fn),
+     "and validates the WHOLE batch before writing any of it");
+
+  // Deleting a row whose Google id is still live strands that contact forever,
+  // because the sync never deletes. The surviving id must be the live one.
+  ok(/live\.has\(`\$\{dest\.key\}:\$\{id\}`\)/.test(fn),
+     "the surviving Google id is re-derived live, not taken from the request");
+
+  // UPDATE and DELETE in one statement: a row can never be deleted without its
+  // survivor having been updated first.
+  ok(/WITH upd AS \(/.test(fn) && /AND EXISTS \(SELECT 1 FROM upd\)/.test(fn),
+     "update and delete are atomic per merge");
+
+  // Admin only — it is the one thing here that removes a contact.
+  ok(/"contactMerge",/.test(src), "registered in the admin-only POST tier");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

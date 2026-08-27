@@ -526,6 +526,10 @@ const _ADMIN_POSTS = new Set([
   // GENERATOR_SERVICE_CALLS on at all. Also runs unattended on the hourly
   // schedule; this action is the manual/preview door onto the same code.
   "generatorServiceCheck",
+  // Merging duplicate contacts. Admin because it is the only action here that
+  // DELETES a contact row, and because its input is a human decision that no
+  // ranking can make — see the Mike Ware case in handleContactMerge.
+  "contactMerge",
   // Turning a person's app access on or off. Admin only — this is the action
   // that kills live sessions, and office manages money, not access.
   "setEmployeeActive",
@@ -13529,6 +13533,159 @@ async function handleContactDuplicates() {
   });
 }
 
+// ── APPLY CONTACT MERGES — THE ONLY DESTRUCTIVE ACTION HERE ───────────────
+// Admin-only. Deletes contact rows, so everything about it is deliberately
+// explicit: it merges ONLY the pairs handed to it, never what it works out for
+// itself, and it will not write without confirm:true.
+//
+//   POST { action:"contactMerge",
+//          merges:[{ keep:"<uuid>", drop:["<uuid>", …] }, …],
+//          confirm:true }        // omit confirm for a dry run
+//
+// ⚠⚠ WHY THE CALLER NAMES THE KEEPER RATHER THAN THIS CODE RANKING THEM.
+// contactDuplicates ranks by completeness, and on 2026-08-27 that would have got
+// Mike Ware exactly backwards: the row carrying the WRONG phone number
+// ((330) 260-5049, a transposition of the real (330) 206-5049) also carried a
+// role, so it scored higher and would have been kept. Completeness is not
+// correctness, and no scorer can know which of two phone numbers is the real
+// one. A person does. So the decision arrives as input.
+//
+// ⚠ Safe to delete these rows only because NOTHING references contacts.id —
+// verified 2026-08-27: no foreign keys, and jobs carry customer details as
+// copied text (customer_first_name, customer_phone…) rather than a link.
+// Re-check that before extending this to any other table.
+async function handleContactMerge(body, authUser) {
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Merging needs the database. DATABASE_URL is unset." });
+  }
+  const merges = Array.isArray(body?.merges) ? body.merges : null;
+  if (!merges?.length) {
+    return resp(400, { ok: false, error: "Nothing to do: pass merges:[{keep, drop:[…]}] from the contactDuplicates report." });
+  }
+  const dryRun = body?.confirm !== true;
+
+  // Load every row named, in one query, so validation sees real data rather
+  // than trusting the ids it was handed.
+  const wanted = [...new Set(merges.flatMap(m => [m.keep, ...(Array.isArray(m.drop) ? m.drop : [])]).filter(Boolean))];
+  if (wanted.some(id => !/^[0-9a-f-]{36}$/i.test(String(id)))) {
+    return resp(400, { ok: false, error: "Every keep/drop must be a contact uuid." });
+  }
+  const q = await neonQuery(
+    `SELECT id, first_name, last_name, primary_phone, primary_email, role, street, city, state, zip,
+            company_id, active, google_person_id_1, google_person_id_2
+       FROM contacts WHERE id = ANY($1::uuid[])`, [wanted]);
+  if (!q?.rows) {
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+  }
+  const byId = new Map(q.rows.map(r => [String(r.id), r]));
+
+  // ── Validate the whole batch BEFORE writing any of it ────────────────────
+  const problems = [];
+  for (const [n, m] of merges.entries()) {
+    const drop = Array.isArray(m.drop) ? m.drop : [];
+    const keep = byId.get(String(m.keep));
+    if (!keep) { problems.push(`merge ${n}: keep ${m.keep} is not a contact`); continue; }
+    if (!drop.length) { problems.push(`merge ${n}: nothing to drop`); continue; }
+    if (drop.includes(m.keep)) { problems.push(`merge ${n}: keep and drop name the same row`); continue; }
+    for (const d of drop) {
+      const row = byId.get(String(d));
+      if (!row) { problems.push(`merge ${n}: drop ${d} is not a contact`); continue; }
+      // A mistyped uuid that happens to exist would delete a real, unrelated
+      // person. Names must agree.
+      const nameOf = (r) => `${String(r.first_name || "").trim().toLowerCase()} ${String(r.last_name || "").trim().toLowerCase()}`.trim();
+      if (nameOf(row) !== nameOf(keep)) {
+        problems.push(`merge ${n}: REFUSING — "${nameOf(keep)}" and "${nameOf(row)}" are different people. Check the uuids.`);
+      }
+    }
+  }
+  if (problems.length) return resp(400, { ok: false, error: "Refused — nothing was written.", problems });
+
+  // Which Google ids still resolve? Derived LIVE rather than taken from the
+  // request, because a report read an hour ago may already be stale — and
+  // keeping a dead id would make the next sync create a duplicate, undoing the
+  // merge it had just performed.
+  const live = new Set();
+  const googleErrors = [];
+  if (googleConfigured()) {
+    for (const dest of DESTINATIONS) {
+      const ids = q.rows.map(r => r[dest.column]).filter(Boolean);
+      if (!ids.length) continue;
+      try {
+        const found = await getPeopleBatch(dest.subject, ids);
+        for (const id of found.keys()) live.add(`${dest.key}:${id}`);
+      } catch (e) { googleErrors.push({ account: dest.subject, hint: String(e?.message || e).slice(0, 200) }); }
+    }
+  }
+
+  const FILLABLE = ["primary_email", "primary_phone", "role", "street", "city", "state", "zip", "company_id"];
+  const plan = [];
+  for (const m of merges) {
+    const keep = byId.get(String(m.keep));
+    const drops = m.drop.map(d => byId.get(String(d)));
+
+    // Fill only what the keeper LACKS. The keeper's own values always win —
+    // that is the whole point of naming it explicitly.
+    const set = {};
+    for (const f of FILLABLE) {
+      if (keep[f]) continue;
+      const donor = drops.find(d => d[f]);
+      if (donor) set[f] = donor[f];
+    }
+    for (const dest of DESTINATIONS) {
+      const cands = [keep, ...drops].map(r => r[dest.column]).filter(Boolean);
+      const chosen = cands.find(id => live.has(`${dest.key}:${id}`)) || cands[0] || null;
+      if (chosen && chosen !== keep[dest.column]) set[dest.column] = chosen;
+    }
+
+    plan.push({
+      name: `${keep.first_name || ""} ${keep.last_name || ""}`.trim(),
+      keep: keep.id, drop: drops.map(d => d.id),
+      keeping: { phone: keep.primary_phone, email: keep.primary_email },
+      set,
+      googleIdsUnverified: googleErrors.length ? true : undefined,
+    });
+  }
+
+  if (dryRun) {
+    return resp(200, {
+      ok: true, dryRun: true, wroteAnything: false, googleErrors,
+      wouldDelete: plan.reduce((n, p) => n + p.drop.length, 0),
+      plan,
+      note: "Nothing was written. Re-send with confirm:true to apply.",
+    });
+  }
+
+  // ── Apply ────────────────────────────────────────────────────────────────
+  // One statement per merge, UPDATE and DELETE in a single CTE so a row can
+  // never be deleted without its survivor having been updated first.
+  const applied = [];
+  for (const p of plan) {
+    const cols = Object.keys(p.set);
+    const assigns = cols.map((c, i) => `${c} = $${i + 2}`).join(", ");
+    const sql = `WITH upd AS (
+                   ${cols.length ? `UPDATE contacts SET ${assigns} WHERE id = $1::uuid RETURNING id`
+                                 : `SELECT $1::uuid AS id`}
+                 )
+                 DELETE FROM contacts
+                  WHERE id = ANY($${cols.length + 2}::uuid[])
+                    AND EXISTS (SELECT 1 FROM upd)`;
+    const params = [p.keep, ...cols.map(c => p.set[c]), p.drop];
+    const r = await neonWrite("contactMerge", sql, params);
+    applied.push({ name: p.name, keep: p.keep, dropped: p.drop, updated: cols, ok: !r?.error, error: r?.error });
+  }
+
+  const failed = applied.filter(a => !a.ok);
+  console.log(`contactMerge: ${applied.length - failed.length}/${applied.length} merged by ${authUser?.id || "?"}`);
+  return resp(failed.length ? 207 : 200, {
+    ok: !failed.length, dryRun: false, googleErrors,
+    merged: applied.length - failed.length, failed: failed.length, applied,
+    // ⚠ The dropped rows are gone. If any of their Google ids were still live,
+    // that Google contact is now unreferenced and the sync will never touch it —
+    // which is why the report tells you to merge in Google FIRST.
+    reminder: "Re-run contactDuplicates to confirm, then googleContactsReconcile before enabling the sync.",
+  });
+}
+
 // ── THE AIRTABLE REC ID FOR A JOB HANDLE, OR NULL ─────────────────────────
 // Cutover slice 6, added 2026-08-24 after the first native job could not have
 // its status changed: `handleUpdateJobStatus` PATCHed `Jobs/<uuid>`, Airtable
@@ -14820,6 +14977,7 @@ export async function handler(event) {
       if (body.action === "copyEstimatePdfsToR2") return await handleCopyEstimatePdfsToR2();
       if (body.action === "copyPayrollFilesToR2") return await handleCopyPayrollFilesToR2();
       if (body.action === "backfillContacts")     return await handleBackfillContacts();
+      if (body.action === "contactMerge")         return await handleContactMerge(body, authUser);
       if (body.action === "generatorServiceCheck") return await handleGeneratorServiceCheck(body);
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);

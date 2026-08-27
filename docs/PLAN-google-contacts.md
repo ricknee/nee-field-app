@@ -8,6 +8,29 @@ than it was.** Written 2026-08-27 after the owner chose the direct path over rep
 > the credential story changed shape because of it. The audit's "needs a Google Cloud project +
 > OAuth consent + refresh token(s)" is still true in outline and **wrong in the details** — see §2.
 
+## ⛔ THIS BUILD TOUCHES ZERO AIRTABLE — owner's instruction, 2026-08-27
+
+*"remember airtable is leaving so not include airtable."*
+
+**Nothing in this plan reads or writes Airtable, and nothing in it may.** The base is going
+PAT-read-only and then archived; a design with an Airtable leg in it is a design that breaks on a
+date already on the calendar. Verified against what this build actually needs:
+
+| What the sync needs | Where it lives now |
+|---|---|
+| The 230 Google person ids | **Neon** — `contacts.google_person_id_1/2` (schema 049 captured them for exactly this reason) |
+| Contact names / phones / emails / company | **Neon** — `contacts`, `power_contacts` (schema 048) |
+| The trigger condition (job reached Awarded / Service Call Scheduled) | **Neon** — job status has been Neon-served since the cutover |
+| The two contact-GROUP ids for power contacts | **constants**, recorded in §5 and in schema 049's header |
+| Which Google account is which | **§1 of this document** |
+
+**Where the new person id gets written: Neon, and only Neon.** Airtable used to be the id store —
+that is precisely the role being replaced. See §3.
+
+⚠ Airtable appears below **only as historical provenance** — the `fld…` ids in §1 explain where the
+values in Neon came from, and the retired formula in §4 is quoted as the spec to reproduce. Neither
+is a dependency. If any future edit to this plan introduces an Airtable read, that is a defect.
+
 ---
 
 ## 0. Where this stands, measured 2026-08-27
@@ -37,7 +60,7 @@ Method, so it can be re-run if this is ever doubted: fetch scenario `4729925`'s 
 `google-contacts:createAContact` modules and the `airtable:ActionUpdateRecords` module that consumes
 each one's output, then resolve the `__IMTCONN__` connection id against `connections_list`.
 
-| Neon column | Airtable field | writes from | Make connection | **Google account** | uid |
+| **Neon column (the anchor)** | *was Airtable field* | writes from | Make connection | **Google account** | uid |
 |---|---|---|---|---|---|
 | `google_person_id_1` | `fld7baYOGRf3mmdl1` | module 6 → 10 | `4769144` "Google - Rick" | **rick@northeasternelec.com** | 102385516730302296763 |
 | `google_person_id_2` | `fldZ4H2ob1lcOmZDp` | module 12 → 13 | `4769161` "NEE -Google" | **nee@northeasternelec.com** | 108079752496166473589 |
@@ -195,14 +218,33 @@ native-job post-mortem: **deploying is not evidence — re-query after the first
 
 ---
 
-## 8. The cheap fallback, recorded but not recommended
+## 8. ⛔ The Make fallback is DEAD — it was Airtable at both ends
 
-Replumbing the five webhooks to fire from the Netlify function and letting Make keep the Google
-half is ~2 h and needs no Google credentials. **The owner has now twice chosen the direct path**
-(2026-08-12 and 2026-08-27), so this is a stall-breaker, not a plan.
+Earlier revisions of this file, and the audit, kept "replumb the five webhooks and let Make do the
+Google half, ~2 h, no Google credentials" as a cheap stall-breaker. **Delete that idea. It cannot
+work after Airtable goes.**
 
-⚠ It is also no longer the 2 h the audit quotes: those five scenarios are **undeployed**, so the
-fallback now additionally means reactivating them and clearing their queues.
+Measured from scenario `4729925`'s blueprint on 2026-08-27 — the Google sync scenario contains:
+
+| module | count | what it does |
+|---|---|---|
+| `airtable:ActionGetRecord` | **2** | reads the CONTACT out of Airtable to get the fields to sync |
+| `airtable:ActionUpdateRecords` | **4** | writes the returned Google person id BACK into Airtable |
+
+So Make is Airtable-bound on **both** ends: it sources the contact from Airtable and it stores the
+person id in Airtable. With `AIRTABLE_WRITES=off` those four writes already go nowhere, so even
+reactivated today the scenario would sync a contact and then **lose the person id** — which is
+precisely the duplicate-generating failure §3 exists to prevent. Once the base is archived the two
+reads fail as well and it stops entirely.
+
+**The direct build is therefore not the preferred option. It is the only one**, and the "cheap
+fallback" line in `docs/AUDIT-airtable-remaining.md` should be read as superseded by this section.
+
+> 🔑 **The general lesson, and it applies past contacts.** "Let Make keep doing that half" reads as
+> an Airtable-free answer because the *trigger* moved to the app. It is not. **Ask what the
+> scenario does in its MIDDLE, not just what fires it** — the same trap recorded on item 04, where
+> three of four job scenarios still read the job back out of Airtable after their triggers were
+> replumbed. A retired automation is only Airtable-free if its modules are.
 
 ---
 

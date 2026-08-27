@@ -4933,6 +4933,74 @@ await test("googleContacts: STATIC — a failed batch is an ERROR, never 230 'mi
      "and any error forces the NOT SAFE verdict");
 });
 
+
+await test("googleContacts: stored ids are BARE — prefixed on the wire, bare to the caller", async () => {
+  const saved = {};
+  for (const k of ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET",
+                   "GOOGLE_REFRESH_TOKEN_1", "GOOGLE_REFRESH_TOKEN_2"]) saved[k] = process.env[k];
+  process.env.GOOGLE_OAUTH_CLIENT_ID = "c"; process.env.GOOGLE_OAUTH_CLIENT_SECRET = "s";
+  process.env.GOOGLE_REFRESH_TOKEN_1 = "r1"; process.env.GOOGLE_REFRESH_TOKEN_2 = "r2";
+  const savedFetch = globalThis.fetch;
+  const sent = [];
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("tokeninfo")) return { ok: true, status: 200, json: async () => ({}) };
+    if (u.includes("oauth2.googleapis.com/token")) return { ok: true, status: 200, json: async () => ({ access_token: "t", expires_in: 3600 }) };
+    if (u.includes("people:batchGet")) {
+      const names = new URL(u).searchParams.getAll("resourceNames");
+      sent.push(...names);
+      return { ok: true, status: 200, json: async () => ({ responses: names.map(n => ({ requestedResourceName: n, person: { resourceName: n } })) }) };
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  try {
+    const gc = await import(`../netlify/functions/_google-contacts.js?rn=${Date.now()}`);
+    // The exact shape production holds — all 460 ids Make wrote are bare.
+    const stored = ["c1083443642224811802", "c7886742199196380706"];
+    const found = await gc.getPeopleBatch("rick@northeasternelec.com", stored);
+
+    ok(sent.every(n => n.startsWith("people/")), "everything on the wire is a resource name");
+    ok(stored.every(id => found.has(id)), "but the caller looks results up by the STORED form");
+    ok(!sent.includes("c1083443642224811802"), "a bare id is never sent — Google 400s on it");
+
+    eq(gc.toResourceName("people/cX"), "people/cX", "already-prefixed ids are left alone");
+    eq(gc.toStoredId(gc.toResourceName("cX")), "cX", "round-trips");
+    eq(gc.toResourceName(""), "", "empty stays empty rather than becoming people/");
+  } finally {
+    globalThis.fetch = savedFetch;
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+await test("googleContacts: a MALFORMED id must throw, never report absence", async () => {
+  const savedFetch = globalThis.fetch;
+  const savedKey = process.env.GOOGLE_SA_KEY;
+  const saved1 = process.env.GOOGLE_REFRESH_TOKEN_1;
+  process.env.GOOGLE_OAUTH_CLIENT_ID = "c"; process.env.GOOGLE_OAUTH_CLIENT_SECRET = "s";
+  process.env.GOOGLE_REFRESH_TOKEN_1 = "r1"; process.env.GOOGLE_REFRESH_TOKEN_2 = "r2";
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("oauth2.googleapis.com/token")) return { ok: true, status: 200, json: async () => ({ access_token: "t", expires_in: 3600 }) };
+    // Exactly what production returned on 2026-08-27 for a bare id.
+    return { ok: false, status: 400, json: async () => ({ error: { message: 'Person resource name "c1854794767628276135" must be in the format "people/<person_id>".' } }) };
+  };
+  try {
+    const gc = await import(`../netlify/functions/_google-contacts.js?mal=${Date.now()}`);
+    let threw = null;
+    try { await gc.getPerson("rick@northeasternelec.com", "people/whatever"); } catch (e) { threw = e; }
+    // ⚠⚠ THE NEAR MISS. A malformed id is a 400, and 400 is not 404 — so this
+    // threw instead of reporting absence. Had it reported absence, the sync
+    // would have "found" all 230 contacts missing from BOTH accounts and created
+    // 460 duplicates on people's phones. Only a genuine 404 may mean absence.
+    ok(threw, "a 400 throws");
+    ok(threw.code !== "NOT_FOUND", "and is never labelled as absence");
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.GOOGLE_SA_KEY; else process.env.GOOGLE_SA_KEY = savedKey;
+    if (saved1 === undefined) delete process.env.GOOGLE_REFRESH_TOKEN_1; else process.env.GOOGLE_REFRESH_TOKEN_1 = saved1;
+  }
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

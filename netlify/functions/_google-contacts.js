@@ -436,12 +436,42 @@ async function callPeople(subject, path, { method = "GET", body, query, timeoutM
   return json;
 }
 
+// ── STORED ID vs RESOURCE NAME ────────────────────────────────────────────
+// ⚠⚠ THE STORED IDS ARE NOT RESOURCE NAMES, and this was found by the reconcile
+// on live data (2026-08-27), not by reasoning. All 460 values that Make wrote
+// into contacts.google_person_id_1/2 are BARE — "c1083443642224811802" — while
+// the People API requires "people/c1083443642224811802" and rejects the bare
+// form outright:
+//
+//   Person resource name "c1854794767628276135" must be in the format "people/<person_id>"
+//
+// It failed loudly, which was luck as much as design: a malformed id is an HTTP
+// 400, and 400 is not 404, so getPerson threw instead of reporting absence. Had
+// it reported absence, the sync would have "discovered" that all 230 contacts
+// were missing from both accounts and created 460 duplicates on people's phones.
+// The rule that saved it is the one at the top of this file: only a genuine 404
+// may mean absence.
+//
+// The column keeps the BARE form, because 230 rows already hold it and a
+// migration to change that buys nothing. Conversion happens at the boundary:
+// prefix on the way out, strip on the way back in.
+export function toResourceName(storedId) {
+  const v = String(storedId || "").trim();
+  if (!v) return v;
+  return v.startsWith("people/") ? v : `people/${v}`;
+}
+
+export function toStoredId(resourceName) {
+  const v = String(resourceName || "").trim();
+  return v.startsWith("people/") ? v.slice("people/".length) : v;
+}
+
 // Read one person. Returns null ONLY for a genuine "this id no longer exists"
 // — every other failure throws, so a caller can never mistake an outage for an
 // absence and go on to create a duplicate.
 export async function getPerson(subject, resourceName, timeoutMs = DEFAULT_TIMEOUT_MS) {
   try {
-    return await callPeople(subject, resourceName, {
+    return await callPeople(subject, toResourceName(resourceName), {
       query: { personFields: PERSON_FIELDS }, timeoutMs,
     });
   } catch (e) {
@@ -456,7 +486,7 @@ export async function getPerson(subject, resourceName, timeoutMs = DEFAULT_TIMEO
 // edits that contact on their phone.
 export async function updatePerson(subject, resourceName, etag, person, timeoutMs = DEFAULT_TIMEOUT_MS) {
   if (!etag) throw new GoogleError("NO_ETAG", "updatePerson needs a current etag — read the person first.");
-  return await callPeople(subject, `${resourceName}:updateContact`, {
+  return await callPeople(subject, `${toResourceName(resourceName)}:updateContact`, {
     method: "PATCH",
     query: { updatePersonFields: UPDATE_FIELDS, personFields: PERSON_FIELDS },
     body: { ...person, etag },
@@ -495,8 +525,19 @@ export async function createPerson(subject, person, timeoutMs = DEFAULT_TIMEOUT_
 // whole call failed and the caller must not read absence into it.
 export async function getPeopleBatch(subject, resourceNames, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const out = new Map();
-  for (let i = 0; i < resourceNames.length; i += 200) {
-    const chunk = resourceNames.slice(i, i + 200);
+  // resource name -> the exact value the caller gave us, so the returned Map is
+  // keyed the way the caller thinks about these ids (bare, as stored) rather
+  // than the way Google wants them.
+  const backToInput = new Map();
+  const wire = [];
+  for (const given of resourceNames) {
+    const rn = toResourceName(given);
+    backToInput.set(rn, given);
+    wire.push(rn);
+  }
+
+  for (let i = 0; i < wire.length; i += 200) {
+    const chunk = wire.slice(i, i + 200);
     const res = await callPeople(subject, "people:batchGet", {
       query: { resourceNames: chunk, personFields: PERSON_FIELDS },
       timeoutMs,
@@ -505,8 +546,8 @@ export async function getPeopleBatch(subject, resourceNames, timeoutMs = DEFAULT
       // requestedResourceName is echoed back, so the mapping never depends on
       // the responses arriving in the order they were asked for.
       const name = entry.requestedResourceName;
-      if (!name) continue;
-      if (entry.person) out.set(name, entry.person);
+      if (!name || !entry.person) continue;
+      out.set(backToInput.get(name) ?? name, entry.person);
     }
   }
   return out;

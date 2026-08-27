@@ -45,7 +45,22 @@ iam.disableServiceAccountKeyCreation   ("Service account key creation is disable
 This is Google's **Secure by Default** enforcement, applied automatically to newer orgs — nobody
 locked it down deliberately, and there is no other admin to ask. The owner is the whole company.
 
-### 👉 THE NEXT CLICK
+### ✅ DECIDED 2026-08-27 — GO ROUTE B (OAuth). The policy fight is OFF.
+
+Owner asked what the downside of OAuth actually was, and on inspection the service-account route
+was the wrong recommendation, not merely the blocked one:
+
+- **Google discourages downloadable service-account keys**, which is exactly why the policy exists.
+  Disabling it to create one spends a real security control to save setup time. OAuth never
+  produces that artifact.
+- The downsides of OAuth are modest here: the tokens are tied to two people’s consent and a dead
+  token needs a manual re-mint. Neither can cause a **duplicate**, because an auth failure throws —
+  `getPerson` returns null only on a genuine 404 — so a revoked token stops the sync loudly rather
+  than being mistaken for “this person isn’t in Google”.
+
+⬜ **The steps below are kept only in case the policy is ever lifted anyway. Do not work them.**
+
+### 👉 THE NEXT CLICK — only if reviving Route A
 
 Project Owner does **not** include the right to override an org policy, but
 `roles/orgpolicy.policyAdmin` **can be granted at the project level**, and a project can override
@@ -83,9 +98,20 @@ Route B steps, in the order they were given to the owner:
 4. Netlify: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN_1` (rick@),
    `GOOGLE_REFRESH_TOKEN_2` (nee@). Redeploy.
 
-⬜ **`_google-contacts.js` does NOT support Route B yet** — it implements the service-account JWT
-flow only. Adding the refresh-token path is ~1 h and touches `getAccessToken()` alone; everything
-above it (the People API wrapper, the reconcile, the no-delete rule) is auth-agnostic and unchanged.
+✅ **`_google-contacts.js` SUPPORTS BOTH ROUTES as of 2026-08-27.** `googleAuthMode()` picks OAuth
+whenever the client credentials are present and falls back to the service account otherwise, so
+nothing changes if the policy is ever lifted. Everything above the token call — the People API
+wrapper, the reconcile, the no-delete rule — was auth-agnostic and did not change.
+
+⚠⚠ **Route B gives up the one guarantee Route A had, and the code compensates.** A service
+account’s `sub` claim PROVES which mailbox a token acts on. **A refresh token proves nothing** — it
+is simply whoever consented. So a transposed `GOOGLE_REFRESH_TOKEN_1`/`_2` writes all 240 contacts
+to the wrong address book and files each id in the wrong column, with no error anywhere: this
+project’s signature failure, a silent mismatch rather than a crash.
+`verifyIdentity()` therefore asks Google who each token belongs to, and `googleStatus` refuses with
+`reason:"swapped-tokens"` on a mismatch. **Reaching Google successfully is NOT evidence the wiring
+is right.** If the tokens lack `userinfo.email` the check reports `identityUnverified` rather than
+claiming a clean bill of health.
 
 ### Code state — slices 1-2 are SHIPPED AND INERT
 

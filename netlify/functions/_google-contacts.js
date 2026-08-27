@@ -32,14 +32,13 @@
 // office staff are about to depend on. Genuine within-account duplicates belong
 // to Google Contacts' own Merge & fix, which previews each merge.
 // ---------------------------------------------------------------------------
-// WHY A SERVICE ACCOUNT AND NOT OAUTH REFRESH TOKENS:
-// Both destinations are on the company's own Workspace domain, so one service
-// account with domain-wide delegation impersonates both. That means no consent
-// screen, no per-account approval flow, and no refresh token that can be
-// revoked by someone clicking "remove access" in their Google account. Rotation
-// is a new key rather than a re-consent.
+// TWO AUTH ROUTES ARE IMPLEMENTED, and production uses OAuth. See the "TWO AUTH
+// ROUTES" block below for which is live and why: the service-account route is
+// blocked by an org policy this org cannot lift, and OAuth is the better
+// credential anyway — it never produces a long-lived downloadable key.
 //
-// NO NEW NPM DEPENDENCY. The JWT assertion is signed with node:crypto, which
+// NO NEW NPM DEPENDENCY on either route. The service-account JWT is signed with
+// node:crypto and the OAuth refresh is a plain form POST, which
 // deliberately sidesteps netlify/functions/package.json entirely — see the
 // CLAUDE.md note about the install step being the only reason declared
 // dependencies ship at all. This module is importable with no node_modules
@@ -80,8 +79,10 @@ export const UPDATE_FIELDS = "names,emailAddresses,phoneNumbers,organizations,ad
 // having written nothing, which is the silent-failure shape this codebase keeps
 // getting bitten by. Override per-environment if the accounts ever change.
 export const DESTINATIONS = [
-  { key: 1, column: "google_person_id_1", subject: process.env.GOOGLE_CONTACTS_DEST_1 || "rick@northeasternelec.com" },
-  { key: 2, column: "google_person_id_2", subject: process.env.GOOGLE_CONTACTS_DEST_2 || "nee@northeasternelec.com" },
+  { key: 1, column: "google_person_id_1", refreshTokenEnv: "GOOGLE_REFRESH_TOKEN_1",
+    subject: process.env.GOOGLE_CONTACTS_DEST_1 || "rick@northeasternelec.com" },
+  { key: 2, column: "google_person_id_2", refreshTokenEnv: "GOOGLE_REFRESH_TOKEN_2",
+    subject: process.env.GOOGLE_CONTACTS_DEST_2 || "nee@northeasternelec.com" },
 ];
 
 export class GoogleError extends Error {
@@ -119,11 +120,39 @@ export function googleWritesLive() {
   return googleContactsMode() === "on";
 }
 
+// ── TWO AUTH ROUTES, AND THE LIVE ONE IS OAUTH ────────────────────────────
+// Route B (OAuth refresh tokens) is what production uses. Route A (service
+// account + domain-wide delegation) is implemented and kept, but is BLOCKED in
+// this org: `iam.disableServiceAccountKeyCreation` is enforced org-wide by
+// Google's Secure by Default, the owner has Cloud IAM on the project only, and
+// there is no higher admin to ask. See docs/PLAN-google-contacts.md.
+//
+// It is not merely the fallback, and the first framing of it here was wrong:
+// Google discourages downloadable service-account keys precisely BECAUSE they
+// are long-lived credentials with no expiry and no revocation story. Turning
+// that policy off to create one spends a real security control to save setup
+// time. OAuth never produces that artifact.
+//
+// ⚠⚠ WHAT ROUTE B GIVES UP, AND HOW THIS FILE COMPENSATES.
+// With a service account the `sub` claim GUARANTEES which mailbox a token acts
+// on. With refresh tokens nothing does — the token simply IS whoever consented.
+// So if GOOGLE_REFRESH_TOKEN_1 and _2 are pasted the wrong way round, every
+// contact is written to the wrong address book and its person id is stored in
+// the wrong column, with no error anywhere. That is this project's signature
+// failure: not a crash, a silent mismatch.
+//
+// Hence verifyIdentity() below, and hence googleStatus() refusing to report OK
+// on an unverified token. A swapped pair is caught before it writes.
+export function googleAuthMode() {
+  if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET) return "oauth";
+  if (process.env.GOOGLE_SA_KEY) return "service-account";
+  return "none";
+}
+
 // ── CREDENTIALS ───────────────────────────────────────────────────────────
-// The service account JSON, base64-encoded into one env var. Base64 because
-// the raw JSON contains a PEM private key full of newlines, and env vars
-// carrying literal newlines survive some tooling and not others — encoding it
-// removes a whole class of "works locally, fails on deploy".
+// Route A only. The service account JSON, base64-encoded into one env var —
+// base64 because the raw JSON carries a PEM private key full of newlines, and
+// env vars with literal newlines survive some tooling and not others.
 let _credCache;
 
 function credentials() {
@@ -136,9 +165,7 @@ function credentials() {
     // Tolerate both a base64 blob and raw JSON pasted directly, because someone
     // WILL paste the file contents straight in and the failure would otherwise
     // be an unhelpful JSON parse error.
-    const text = raw.trim().startsWith("{")
-      ? raw
-      : Buffer.from(raw, "base64").toString("utf8");
+    const text = raw.trim().startsWith("{") ? raw : Buffer.from(raw, "base64").toString("utf8");
     const json = JSON.parse(text);
 
     if (!json.client_email || !json.private_key) {
@@ -148,11 +175,9 @@ function credentials() {
       clientEmail: json.client_email,
       privateKey: json.private_key,
       tokenUri: json.token_uri || "https://oauth2.googleapis.com/token",
-      // The numeric id that has to be pasted into the Admin console's
-      // domain-wide delegation screen. Surfaced in googleStatus() so nobody has
-      // to go dig the JSON back out to check it matches.
+      // The numeric id that goes into the Admin console's domain-wide delegation
+      // screen. Surfaced by googleStatus so nobody has to dig the JSON back out.
       clientId: json.client_id || null,
-      projectId: json.project_id || null,
     };
     return _credCache;
   } catch (e) {
@@ -163,7 +188,17 @@ function credentials() {
 }
 
 export function googleConfigured() {
-  try { return credentials() !== null; } catch { return false; }
+  const mode = googleAuthMode();
+  if (mode === "oauth") {
+    // Client credentials alone are not enough — a destination with no refresh
+    // token cannot be written to, and reporting "configured" would let the
+    // reconcile run and report a clean pass over an account it never reached.
+    return DESTINATIONS.every(d => !!process.env[d.refreshTokenEnv]);
+  }
+  if (mode === "service-account") {
+    try { return credentials() !== null; } catch { return false; }
+  }
+  return false;
 }
 
 function b64url(input) {
@@ -172,30 +207,78 @@ function b64url(input) {
 }
 
 // ── ACCESS TOKENS ─────────────────────────────────────────────────────────
-// One token per impersonated subject, cached until shortly before it expires.
-// Tokens last an hour; a Netlify function instance rarely lives that long, but
-// a reconcile pass over 240 contacts × 2 accounts would otherwise mint two
-// tokens per contact and get rate-limited for no reason.
+// One token per destination, cached until shortly before it expires. Tokens
+// last an hour; a function instance rarely does, but a reconcile over 240
+// contacts x 2 accounts would otherwise mint two tokens per contact and get
+// throttled for no reason.
 const _tokens = new Map(); // subject -> { token, expiresAt }
+
+const OAUTH_TOKEN_URI = "https://oauth2.googleapis.com/token";
 
 async function getAccessToken(subject, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const cached = _tokens.get(subject);
-  // 60s of margin so a token can't expire mid-request.
+  // 60s of margin so a token cannot expire mid-request.
   if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
 
+  const mode = googleAuthMode();
+  if (mode === "none") throw new GoogleError("NOT_CONFIGURED", "No Google credentials are set.");
+
+  const { body, tokenUri } = mode === "oauth"
+    ? oauthTokenRequest(subject)
+    : serviceAccountTokenRequest(subject);
+
+  const res = await withTimeout((signal) => fetch(tokenUri, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(body),
+    signal,
+  }), timeoutMs);
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || !json.access_token) {
+    throw new GoogleError("AUTH", tokenErrorHint(mode, subject, json, res.status), JSON.stringify(json).slice(0, 400));
+  }
+
+  _tokens.set(subject, {
+    token: json.access_token,
+    expiresAt: Date.now() + (Number(json.expires_in || 3600) * 1000),
+  });
+  return json.access_token;
+}
+
+// Route B. The refresh token IS the identity — there is no impersonation step,
+// which is exactly why verifyIdentity() exists.
+function oauthTokenRequest(subject) {
+  const dest = DESTINATIONS.find(d => d.subject === subject);
+  if (!dest) throw new GoogleError("NO_DESTINATION", `${subject} is not one of the configured destinations.`);
+  const refresh = process.env[dest.refreshTokenEnv];
+  if (!refresh) {
+    throw new GoogleError("NOT_CONFIGURED",
+      `${dest.refreshTokenEnv} is unset, so ${subject} cannot be reached. Mint it in the OAuth playground signed in AS that account.`);
+  }
+  return {
+    tokenUri: OAUTH_TOKEN_URI,
+    body: {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+      client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    },
+  };
+}
+
+// Route A. The `sub` claim is the impersonation — without it the token
+// authorises the service account's OWN empty contact list, and the sync would
+// report success having written into a void.
+function serviceAccountTokenRequest(subject) {
   const cred = credentials();
   if (!cred) throw new GoogleError("NOT_CONFIGURED", "GOOGLE_SA_KEY is unset.");
 
   const now = Math.floor(Date.now() / 1000);
   const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claims = b64url(JSON.stringify({
-    iss: cred.clientEmail,
-    sub: subject,              // <- the impersonation. Without this the token is
-                               //    the service account's OWN empty contact list.
-    scope: SCOPE,
-    aud: cred.tokenUri,
-    iat: now,
-    exp: now + 3600,
+    iss: cred.clientEmail, sub: subject, scope: SCOPE, aud: cred.tokenUri,
+    iat: now, exp: now + 3600,
   }));
 
   let signature;
@@ -204,41 +287,101 @@ async function getAccessToken(subject, timeoutMs = DEFAULT_TIMEOUT_MS) {
   } catch (e) {
     throw new GoogleError("BAD_KEY", `Could not sign with the service account private key: ${e?.message || e}`);
   }
-  const assertion = `${header}.${claims}.${b64url(signature)}`;
-
-  const res = await withTimeout((signal) => fetch(cred.tokenUri, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
+  return {
+    tokenUri: cred.tokenUri,
+    body: {
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
-    signal,
-  }), timeoutMs);
+      assertion: `${header}.${claims}.${b64url(signature)}`,
+    },
+  };
+}
 
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || !body.access_token) {
-    // These three are the mistakes that actually happen when wiring DWD up, and
-    // each has a completely different fix. Google reports all of them as
-    // "invalid_grant" or "unauthorized_client" with no further help, and the
-    // wrong guess costs an hour.
-    const err = String(body.error || res.status);
-    const hint =
-      err === "unauthorized_client"
-        ? `Domain-wide delegation is not authorising this service account for ${subject}. Two causes: (a) the client ID + scope pair is missing from Admin console → Security → API controls → Domain-wide delegation, or (b) ${subject} is a GROUP or a mail-only ALIAS rather than a licensed user — delegation can only impersonate a real user, and this is what that looks like.`
-      : err === "invalid_grant"
-        ? `Google rejected the assertion for ${subject}. Usually the subject does not exist on this domain, or the server clock has drifted more than 5 minutes.`
-      : err === "invalid_scope"
-        ? `The scope ${SCOPE} is not among those authorised for this client ID in the Admin console.`
-      : `Token request failed (${err}).`;
-    throw new GoogleError("AUTH", hint, JSON.stringify(body).slice(0, 400));
+// Google reports several completely different mistakes with the same one-word
+// error, and guessing wrong costs an hour each time. Name every cause.
+function tokenErrorHint(mode, subject, json, status) {
+  const err = String(json.error || status);
+  if (mode === "oauth") {
+    if (err === "invalid_grant") {
+      // ⚠⚠ THE ONE THAT WOULD COST A WEEK. An OAuth consent screen created as
+      // External + Testing issues refresh tokens that expire after SEVEN DAYS.
+      // The sync works, then stops — silently, in a system whose failure mode is
+      // already silence. Internal never expires.
+      return `The refresh token for ${subject} is no longer valid. Three causes, in order of likelihood: (a) the OAuth consent screen was created as EXTERNAL + Testing, which expires refresh tokens after 7 DAYS — it must be INTERNAL; (b) somebody revoked access at myaccount.google.com -> Security -> third-party apps; (c) the token was pasted with a truncation or a stray space. Re-mint it in the OAuth playground signed in AS ${subject}.`;
+    }
+    if (err === "invalid_client") {
+      return "GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET are wrong or belong to a different project.";
+    }
+    if (err === "invalid_scope") {
+      return `The token for ${subject} was not granted ${SCOPE}. Re-mint it with that scope selected.`;
+    }
+    return `Token refresh failed for ${subject} (${err}).`;
+  }
+  if (err === "unauthorized_client") {
+    return `Domain-wide delegation is not authorising this service account for ${subject}. Two causes: (a) the client ID + scope pair is missing from Admin console -> Security -> API controls -> Domain-wide delegation, or (b) ${subject} is a GROUP or a mail-only ALIAS rather than a licensed user — delegation can only impersonate a real user, and this is what that looks like.`;
+  }
+  if (err === "invalid_grant") {
+    return `Google rejected the assertion for ${subject}. Usually the subject does not exist on this domain, or the server clock has drifted more than 5 minutes.`;
+  }
+  if (err === "invalid_scope") {
+    return `The scope ${SCOPE} is not among those authorised for this client ID in the Admin console.`;
+  }
+  return `Token request failed (${err}).`;
+}
+
+// ── WHOSE ADDRESS BOOK IS THIS, REALLY? ───────────────────────────────────
+// ⚠⚠ Route B's one genuine hazard. A refresh token carries no statement of who
+// it belongs to, so swapping GOOGLE_REFRESH_TOKEN_1 and _2 writes every contact
+// to the wrong account and files its person id in the wrong column — silently,
+// and in a way that looks completely healthy from the outside.
+//
+// Asking Google who the token belongs to costs one call and turns that into a
+// named error. Two ways, because which one works depends on the scopes granted:
+//   1. people/me — available under the contacts scope on most configurations
+//   2. tokeninfo — definitive, but only returns an email if the token also
+//      carries userinfo.email
+//
+// If NEITHER can answer, this returns verified:false with a reason. It must
+// never return verified:true on a guess: an unverified token is exactly the
+// state that silently mis-files 240 contacts.
+export async function verifyIdentity(subject, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  let token;
+  try { token = await getAccessToken(subject, timeoutMs); }
+  catch (e) { return { verified: false, reason: e?.message || String(e), code: e?.code || "AUTH" }; }
+
+  // Route A cannot be mis-wired this way — `sub` is in the signed assertion, so
+  // the token provably acts on the requested mailbox.
+  if (googleAuthMode() === "service-account") {
+    return { verified: true, email: subject, via: "impersonation-claim" };
   }
 
-  _tokens.set(subject, {
-    token: body.access_token,
-    expiresAt: Date.now() + (Number(body.expires_in || 3600) * 1000),
-  });
-  return body.access_token;
+  try {
+    const me = await callPeople(subject, "people/me", { query: { personFields: "emailAddresses" }, timeoutMs });
+    const emails = (me.emailAddresses || []).map(e => String(e.value || "").toLowerCase());
+    if (emails.length) {
+      return {
+        verified: true, via: "people/me", email: emails[0],
+        matches: emails.includes(String(subject).toLowerCase()),
+        allEmails: emails,
+      };
+    }
+  } catch { /* fall through to tokeninfo */ }
+
+  try {
+    const res = await withTimeout((signal) => fetch(
+      `https://oauth2.googleapis.com/tokeninfo?access_token=${encodeURIComponent(token)}`, { signal }), timeoutMs);
+    const info = await res.json().catch(() => ({}));
+    if (info.email) {
+      return {
+        verified: true, via: "tokeninfo", email: String(info.email).toLowerCase(),
+        matches: String(info.email).toLowerCase() === String(subject).toLowerCase(),
+      };
+    }
+  } catch { /* fall through */ }
+
+  return {
+    verified: false, code: "UNVERIFIED",
+    reason: `Google would not say which account this token belongs to, so a swapped GOOGLE_REFRESH_TOKEN_1/_2 could not be detected. Re-mint the tokens with https://www.googleapis.com/auth/userinfo.email added alongside the contacts scope, which makes this check definitive.`,
+  };
 }
 
 function withTimeout(fn, ms) {
@@ -356,58 +499,106 @@ export async function listConnections(subject, timeoutMs = DEFAULT_TIMEOUT_MS) {
 // a different switch, which is why rawValue is echoed below.
 export async function googleStatus(timeoutMs = DEFAULT_TIMEOUT_MS) {
   const mode = googleContactsMode();
+  const authMode = googleAuthMode();
   const raw = process.env.GOOGLE_CONTACTS;
 
-  let cred = null;
-  let credError = null;
-  try { cred = credentials(); } catch (e) { credError = e.message; }
+  let cred = null, credError = null;
+  if (authMode === "service-account") {
+    try { cred = credentials(); } catch (e) { credError = e.message; }
+  }
 
   const base = {
     mode,
     rawValue: raw === undefined ? null : raw,
     writesLive: mode === "on",
+    authMode,
     meaning:
       mode === "off" ? "INERT. The sync does nothing. Set GOOGLE_CONTACTS=dry and REDEPLOY to see what it would write."
-    : mode === "dry" ? "DRY RUN. Reports what it would write and writes nothing."
-    : "LIVE. Contact changes are written to Google.",
+      : mode === "dry" ? "DRY RUN. Reports what it would write and writes nothing."
+      : "LIVE. Contact changes are written to Google.",
+    scope: SCOPE,
+    destinations: DESTINATIONS.map(d => ({
+      key: d.key, column: d.column, account: d.subject,
+      // Never echo the token itself — only whether one is present.
+      refreshTokenEnv: d.refreshTokenEnv,
+      refreshTokenSet: !!process.env[d.refreshTokenEnv],
+    })),
     serviceAccount: cred?.clientEmail || null,
     clientIdForDelegation: cred?.clientId || null,
-    scopeForDelegation: SCOPE,
-    destinations: DESTINATIONS.map(d => ({ key: d.key, column: d.column, account: d.subject })),
   };
 
-  if (credError) return { ok: false, reason: "bad-key", hint: credError, ...base };
-  if (!cred) {
+  if (authMode === "none") {
     return {
       ok: false, reason: "not-configured",
-      hint: "GOOGLE_SA_KEY is unset. Add the service account JSON, base64-encoded, in the Netlify dashboard — then REDEPLOY.",
+      hint: "No Google credentials are set. For the OAuth route (the live one) set GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN_1 and GOOGLE_REFRESH_TOKEN_2 — then REDEPLOY.",
       ...base,
     };
   }
+  if (credError) return { ok: false, reason: "bad-key", hint: credError, ...base };
 
-  // Prove each impersonation independently. They fail separately and for
-  // different reasons — one account being a group while the other is a real
-  // user is exactly the case this catches.
+  if (authMode === "oauth") {
+    const missing = DESTINATIONS.filter(d => !process.env[d.refreshTokenEnv]);
+    if (missing.length) {
+      return {
+        ok: false, reason: "missing-refresh-token",
+        // Half-configured is worse than unconfigured: the reconcile would report
+        // a clean pass over an account it never reached.
+        hint: `No refresh token for ${missing.map(d => d.subject).join(" and ")} (${missing.map(d => d.refreshTokenEnv).join(", ")}). Mint it in the OAuth playground signed in AS that account.`,
+        ...base,
+      };
+    }
+  }
+
+  // Prove each destination independently. They fail separately and for different
+  // reasons — one account being a group while the other is a real user, or one
+  // token being revoked, are both cases this catches.
   const checks = [];
   for (const d of DESTINATIONS) {
     try {
       const page = await callPeople(d.subject, "people/me/connections", {
         query: { personFields: "names", pageSize: 1 }, timeoutMs,
       });
-      checks.push({
-        account: d.subject, key: d.key, ok: true,
-        totalContacts: page.totalPeople ?? null,
-      });
+      const check = { account: d.subject, key: d.key, ok: true, totalContacts: page.totalPeople ?? null };
+
+      // ⚠⚠ THE SWAPPED-TOKEN CHECK. On the OAuth route nothing in the token says
+      // whose it is, so a transposed GOOGLE_REFRESH_TOKEN_1/_2 would write every
+      // contact to the wrong address book and file its id in the wrong column,
+      // with no error anywhere. Reaching Google successfully is NOT evidence the
+      // wiring is right.
+      const who = await verifyIdentity(d.subject, timeoutMs);
+      check.identity = who;
+      if (who.verified && who.matches === false) {
+        check.ok = false;
+        check.code = "WRONG_ACCOUNT";
+        check.hint = `${d.refreshTokenEnv} authenticates as ${who.email}, but this destination is ${d.subject}. The two refresh tokens are almost certainly swapped — writing now would put every contact in the wrong address book.`;
+      } else if (!who.verified) {
+        // Not a failure, but not a clean bill of health either. Say so rather
+        // than implying the wiring was proved.
+        check.identityUnverified = who.reason;
+      }
+      checks.push(check);
     } catch (e) {
       checks.push({
         account: d.subject, key: d.key, ok: false,
-        code: e?.code || "ERROR",
-        hint: e?.message || String(e),
+        code: e?.code || "ERROR", hint: e?.message || String(e),
       });
     }
   }
 
-  return { ok: checks.every(c => c.ok), reason: checks.every(c => c.ok) ? null : "impersonation", checks, ...base };
+  const ok = checks.every(c => c.ok);
+  return {
+    ok,
+    // Distinct reasons because the fixes are completely different: a swapped
+    // pair is an env-var transposition, an impersonation failure is a missing
+    // delegation entry or a non-user mailbox, and a plain auth failure is a
+    // dead or mistyped token.
+    reason: ok ? null
+      : checks.some(c => c.code === "WRONG_ACCOUNT") ? "swapped-tokens"
+      : authMode === "service-account" ? "impersonation"
+      : "auth",
+    checks,
+    ...base,
+  };
 }
 
 // ── BUILDING A GOOGLE PERSON FROM A NEON ROW ──────────────────────────────

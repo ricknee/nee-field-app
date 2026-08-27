@@ -164,10 +164,23 @@ answers, just slowly. It went unnoticed for three days.
   stay and `nee@` is becoming the office address book. Cross-account copies are **two address
   books, not duplicates**; clearing one would empty the book staff depend on. Genuine
   within-account dupes belong to Google’s own Merge & fix.
-  Auth is a **service account with domain-wide delegation** (scope
-  `https://www.googleapis.com/auth/contacts`), signed with `node:crypto` — **no npm dependency**,
-  so the test suite stays offline. ⚠ Delegation impersonates a **licensed user**; a Group or alias
-  fails `unauthorized_client`, which looks like a scope error and is not. Diagnose with
+  **Auth is OAuth refresh tokens** (`GOOGLE_OAUTH_CLIENT_ID`/`_SECRET`, `GOOGLE_REFRESH_TOKEN_1`
+  for `rick@` and `_2` for `nee@`), scope `https://www.googleapis.com/auth/contacts`. A
+  service-account + domain-wide-delegation route is also implemented and picked up automatically
+  from `GOOGLE_SA_KEY`, but it is **blocked in this org** —
+  `iam.disableServiceAccountKeyCreation` is enforced by Google's Secure by Default and the owner
+  has Cloud IAM on the project only. OAuth is the better credential regardless: it never produces a
+  long-lived downloadable key. Both routes use `node:crypto` / a plain form POST, so there is **no
+  npm dependency** and the test suite stays offline.
+  ⚠⚠ **The consent screen must be `Internal`.** External + Testing refresh tokens **expire after
+  7 days** — the sync would run for a week then stop silently.
+  ⚠⚠ **`GOOGLE_REFRESH_TOKEN_1`/`_2` transposed is a silent catastrophe:** nothing in a refresh
+  token says whose it is, so a swapped pair writes every contact to the wrong address book and
+  files its id in the wrong column. `googleStatus` asks Google who each token belongs to and
+  refuses with `reason:"swapped-tokens"` — **reaching Google is not evidence the wiring is right.**
+  ⚠ Both destinations must have a token or `googleConfigured()` is false: half-configured is worse
+  than unconfigured, because the reconcile would report a clean pass over an account it never
+  reached. Diagnose with
   `GET ?action=googleStatus`; `GET ?action=googleContactsReconcile` is a **read-only** audit of
   whether the stored ids still resolve (`&deep=1` also looks for within-account duplicates).
   See `netlify/functions/_google-contacts.js` and `docs/PLAN-google-contacts.md`.

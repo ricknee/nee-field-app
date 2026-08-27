@@ -4734,6 +4734,142 @@ await test("googleContacts: STATIC — the reconcile is read-only and gated on t
      "both actions are registered in the strict-admin read tier");
 });
 
+
+// ── Route B: OAuth refresh tokens (the LIVE auth path) ──────────────────────
+// Route A (service account) is blocked in this org by
+// iam.disableServiceAccountKeyCreation and is kept only as a second
+// implementation. These cases cover the path production actually uses.
+function withOauthEnv(fn) {
+  const saved = {};
+  for (const k of ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET",
+                   "GOOGLE_REFRESH_TOKEN_1", "GOOGLE_REFRESH_TOKEN_2", "GOOGLE_SA_KEY"]) saved[k] = process.env[k];
+  delete process.env.GOOGLE_SA_KEY;
+  process.env.GOOGLE_OAUTH_CLIENT_ID = "cid";
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET = "sec";
+  process.env.GOOGLE_REFRESH_TOKEN_1 = "rt1";
+  process.env.GOOGLE_REFRESH_TOKEN_2 = "rt2";
+  const savedFetch = globalThis.fetch;
+  return Promise.resolve(fn()).finally(() => {
+    globalThis.fetch = savedFetch;
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+}
+
+await test("googleContacts/oauth: refreshes per destination with the right token", async () => {
+  await withOauthEnv(async () => {
+    const seen = [];
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      // ⚠ tokeninfo BEFORE token: the tokeninfo URL contains the token URL as a
+      // substring, and matching in the other order double-counts every call.
+      if (u.includes("tokeninfo")) return { ok: true, status: 200, json: async () => ({}) };
+      if (u.includes("oauth2.googleapis.com/token")) {
+        const b = Object.fromEntries(new URLSearchParams(opts.body));
+        seen.push(b);
+        return { ok: true, status: 200, json: async () => ({ access_token: `tok_${b.refresh_token}`, expires_in: 3600 }) };
+      }
+      if (u.includes("/people/me?")) {
+        // Honest stub: each token answers as its own account.
+        const email = u.includes("rt") ? null : null;
+        return { ok: true, status: 200, json: async () => ({ emailAddresses: [] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ connections: [], totalPeople: 5 }) };
+    };
+    const gc = await import(`../netlify/functions/_google-contacts.js?oa=${Date.now()}`);
+    eq(gc.googleAuthMode(), "oauth", "auth mode");
+    eq(gc.googleConfigured(), true, "configured");
+    await gc.googleStatus();
+    eq(seen.length, 2, "one refresh per destination");
+    eq(seen[0].grant_type, "refresh_token", "grant type");
+    // The destination -> token mapping is the whole ballgame on this route.
+    eq(seen[0].refresh_token, "rt1", "destination 1 uses GOOGLE_REFRESH_TOKEN_1");
+    eq(seen[1].refresh_token, "rt2", "destination 2 uses GOOGLE_REFRESH_TOKEN_2");
+    ok(!seen.some(b => b.assertion), "no JWT assertion is sent on the OAuth route");
+  });
+});
+
+await test("googleContacts/oauth: SWAPPED tokens are caught before anything writes", async () => {
+  await withOauthEnv(async () => {
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes("oauth2.googleapis.com/token")) {
+        const b = Object.fromEntries(new URLSearchParams(opts.body));
+        return { ok: true, status: 200, json: async () => ({ access_token: `tok_${b.refresh_token}`, expires_in: 3600 }) };
+      }
+      if (u.includes("/people/me?")) {
+        // Both tokens report the SAME account — the shape a transposed pair takes.
+        return { ok: true, status: 200, json: async () => ({ emailAddresses: [{ value: "nee@northeasternelec.com" }] }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ connections: [], totalPeople: 5 }) };
+    };
+    const gc = await import(`../netlify/functions/_google-contacts.js?swap=${Date.now()}`);
+    const st = await gc.googleStatus();
+    // ⚠⚠ Reaching Google successfully is NOT evidence the wiring is right. With
+    // a service account the `sub` claim proves it; a refresh token proves
+    // nothing, and a swapped pair would file all 240 contacts in the wrong
+    // address book with no error anywhere.
+    eq(st.ok, false, "status refuses");
+    eq(st.reason, "swapped-tokens", "and names the cause");
+    const bad = st.checks.find(c => c.code === "WRONG_ACCOUNT");
+    ok(bad, "the mismatched destination is identified");
+    ok(/almost certainly swapped/i.test(bad.hint), "the hint says what to do");
+  });
+});
+
+await test("googleContacts/oauth: an unverifiable identity is NOT reported as verified", async () => {
+  await withOauthEnv(async () => {
+    globalThis.fetch = async (url, opts) => {
+      const u = String(url);
+      if (u.includes("oauth2.googleapis.com/token")) {
+        return { ok: true, status: 200, json: async () => ({ access_token: "tok", expires_in: 3600 }) };
+      }
+      if (u.includes("tokeninfo")) return { ok: true, status: 200, json: async () => ({}) };
+      if (u.includes("/people/me?")) return { ok: false, status: 403, json: async () => ({ error: { message: "insufficient scope" } }) };
+      return { ok: true, status: 200, json: async () => ({ connections: [], totalPeople: 5 }) };
+    };
+    const gc = await import(`../netlify/functions/_google-contacts.js?unv=${Date.now()}`);
+    const who = await gc.verifyIdentity("rick@northeasternelec.com");
+    eq(who.verified, false, "unverified rather than assumed good");
+    ok(/userinfo\.email/.test(who.reason), "and says how to make the check definitive");
+    // The account still works, so status stays ok — but it must SAY the identity
+    // was not proved rather than implying it was.
+    const st = await gc.googleStatus();
+    ok(st.checks[0].identityUnverified, "status carries the caveat forward");
+  });
+});
+
+await test("googleContacts/oauth: invalid_grant names the 7-day External-consent trap", async () => {
+  await withOauthEnv(async () => {
+    globalThis.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: "invalid_grant" }) });
+    const gc = await import(`../netlify/functions/_google-contacts.js?ig=${Date.now()}`);
+    const st = await gc.googleStatus();
+    eq(st.ok, false, "fails");
+    const hint = st.checks[0].hint;
+    // This is the failure that would work for a week and then stop silently.
+    ok(/EXTERNAL \+ Testing/.test(hint), "names the External+Testing cause");
+    ok(/7 DAYS/.test(hint), "and that it expires after 7 days");
+    ok(/INTERNAL/.test(hint), "and the fix");
+    ok(/revoked/i.test(hint), "and the revocation cause");
+  });
+});
+
+await test("googleContacts/oauth: a half-configured pair refuses rather than half-syncing", async () => {
+  await withOauthEnv(async () => {
+    delete process.env.GOOGLE_REFRESH_TOKEN_2;
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ access_token: "t", expires_in: 3600 }) });
+    const gc = await import(`../netlify/functions/_google-contacts.js?half=${Date.now()}`);
+    // Half-configured is worse than unconfigured: the reconcile would otherwise
+    // report a clean pass over an account it never reached.
+    eq(gc.googleConfigured(), false, "not configured until BOTH destinations have a token");
+    const st = await gc.googleStatus();
+    eq(st.ok, false, "status refuses");
+    eq(st.reason, "missing-refresh-token", "and names which");
+    ok(/nee@northeasternelec\.com/.test(st.hint), "identifying the account that cannot be reached");
+    // And never echo a secret, even a partial one.
+    ok(!JSON.stringify(st).includes("rt1"), "no refresh token value appears in the status output");
+  });
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

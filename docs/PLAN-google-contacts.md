@@ -1,6 +1,7 @@
 # Plan — Google contacts direct (audit item 07)
 
-**Status: NOT STARTED — waiting only on the service-account JSON key.**
+**Status: SLICES 1-2 SHIPPED AND INERT (`45a4b0a`). Setup is MID-FLIGHT and BLOCKED on an org
+policy — see ⏸ RESUME HERE below, and start there rather than at the top.**
 ✅ **Route A CONFIRMED 2026-08-27** — the owner is a Google Workspace admin on the domain, so this
 is service account + domain-wide delegation, not OAuth refresh tokens. Route B below is dead
 weight kept only in case the delegation step hits a wall.
@@ -11,7 +12,89 @@ contacts created fresh. **Nothing is open but the key.** Written 2026-08-27 afte
 
 > **Read this block first.** Two things recorded elsewhere as unknown are now **solved** (§1), and
 > the credential story changed shape because of it. The audit's "needs a Google Cloud project +
-> OAuth consent + refresh token(s)" is still true in outline and **wrong in the details** — see §2.
+> O## ⏸ RESUME HERE — stopped mid-setup 2026-08-27
+
+**Owner stopped partway through the Google Cloud setup: *"im gonna have to come back this is hard
+and i need to leave."* Do not restart the console walkthrough from the top — most of it is done.
+Pick up at THE NEXT CLICK below.**
+
+### ✅ Done in Google Cloud
+
+| | |
+|---|---|
+| Cloud project | **NEE Field App** (`nee-field-app`), in org `northeasternelec.com` (org id starts `309373…`) |
+| People API | **ENABLED** on that project — verified on screen |
+| Service account | **`contacts-sync`** created |
+| **Its Client ID / Unique ID** | **`112988291121215224869`** ← this is what the Admin console needs. Not a secret. |
+| Owner's Cloud rights | **Owner of the PROJECT only.** No org-level IAM at all — the org node reports "you don't have permission to view the permissions of the selected resource". |
+
+⬜ **UNCONFIRMED: the domain-wide delegation entry.** The owner was given the Admin console step
+(`https://admin.google.com/ac/owl/domainwidedelegation`, Client ID above + scope
+`https://www.googleapis.com/auth/contacts`) but never confirmed adding it. **Check before
+diagnosing anything else** — a missing entry and a non-user mailbox produce the same
+`unauthorized_client`.
+
+### ⛔ WHERE IT BLOCKED
+
+Creating the service account's JSON key is refused by an inherited **org policy**:
+
+```
+iam.disableServiceAccountKeyCreation   ("Service account key creation is disabled")
+```
+
+This is Google's **Secure by Default** enforcement, applied automatically to newer orgs — nobody
+locked it down deliberately, and there is no other admin to ask. The owner is the whole company.
+
+### 👉 THE NEXT CLICK
+
+Project Owner does **not** include the right to override an org policy, but
+`roles/orgpolicy.policyAdmin` **can be granted at the project level**, and a project can override
+an inherited boolean constraint. So:
+
+1. https://console.cloud.google.com/iam-admin/iam?project=nee-field-app — confirm the header reads
+   *Permissions for project "NEE Field App"*, click the **pencil** on the `rick@northeasternelec.com`
+   row → **+ Add another role** → **Organization Policy Administrator** → Save. **Wait a minute**;
+   IAM propagation lag looks exactly like failure.
+2. https://console.cloud.google.com/iam-admin/orgpolicies/iam-disableServiceAccountKeyCreation?project=nee-field-app
+   — resource selector on **NEE Field App**, not the org → **Manage policy** → **Override parent's
+   policy** → **Add rule** → **Enforcement: Off** → **Set policy**.
+3. Then `contacts-sync` → **Keys** → **Add key → Create new key → JSON**.
+4. Netlify env `GOOGLE_SA_KEY` = base64 of that file, `GOOGLE_CONTACTS` left unset, then **REDEPLOY**.
+
+⚠ **Timebox step 2.** Some Secure-by-Default enforcements cannot be overridden below the org. If it
+refuses, Route A is genuinely closed — go to Route B and do not keep digging.
+
+### ⚠⚠ IF ROUTE B IS NEEDED — the trap that would cost a week
+
+Route B (§2) needs no key file and no policy change, so the org policy stops mattering. **But the
+OAuth consent screen MUST be created as `User type: Internal`.**
+
+**External + Testing issues refresh tokens that expire after SEVEN DAYS.** The sync would work for a
+week and then stop — silently, in a system whose failure mode is already silence. Internal never
+expires and needs no Google verification, because every user is on the domain.
+
+Route B steps, in the order they were given to the owner:
+1. Consent screen → **Internal** → app name `NEE Contacts Sync`.
+2. Credentials → **OAuth client ID** → **Web application** → authorised redirect URI exactly
+   `https://developers.google.com/oauthplayground`.
+3. https://developers.google.com/oauthplayground → gear → **Use your own OAuth credentials** →
+   scope `https://www.googleapis.com/auth/contacts` → authorise **as rick@**, exchange, keep the
+   refresh token. Repeat **in an incognito window as nee@** for the second.
+4. Netlify: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN_1` (rick@),
+   `GOOGLE_REFRESH_TOKEN_2` (nee@). Redeploy.
+
+⬜ **`_google-contacts.js` does NOT support Route B yet** — it implements the service-account JWT
+flow only. Adding the refresh-token path is ~1 h and touches `getAccessToken()` alone; everything
+above it (the People API wrapper, the reconcile, the no-delete rule) is auth-agnostic and unchanged.
+
+### Code state — slices 1-2 are SHIPPED AND INERT
+
+`45a4b0a`. `GOOGLE_CONTACTS` is unset in production, so none of this runs. 241 tests green.
+Nothing here is waiting on a code change — it is waiting on a credential.
+
+---
+
+Auth consent + refresh token(s)" is still true in outline and **wrong in the details** — see §2.
 
 ## ⛔ THIS BUILD TOUCHES ZERO AIRTABLE — owner's instruction, 2026-08-27
 

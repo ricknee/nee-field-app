@@ -4546,6 +4546,194 @@ await test("converted read handlers refuse rather than fall back", async () => {
                                                src.indexOf("async function handleLogin(") + 4000)),
      "handleLogin still falls back — deliberate, and the owner's call to change");
 });
+
+// ── Google contact sync (item 07) — auth, inertness, and the no-delete rule ──
+// docs/PLAN-google-contacts.md. These run fully offline: the JWT is signed
+// against a locally generated key pair and verified here, and every Google call
+// is stubbed. Nothing reaches Google.
+//
+// ⚠⚠ The bug class these exist to block is not an exception — it is a SILENT
+// DUPLICATE. If the module ever treats an auth failure or an outage as "this
+// person isn't in Google", the sync creates 230 contacts twice over in address
+// books that are live on phones. Several of the cases below assert on a THROW
+// where the tempting behaviour would be to return null.
+await test("googleContacts: ships INERT — unset means the feature does not exist", async () => {
+  const saved = process.env.GOOGLE_CONTACTS;
+  delete process.env.GOOGLE_CONTACTS;
+  const gc = await import("../netlify/functions/_google-contacts.js");
+  eq(gc.googleContactsMode(), "off", "mode");
+  eq(gc.googleContactsEnabled(), false, "enabled");
+  eq(gc.googleWritesLive(), false, "writesLive");
+  // "dry" must never be mistaken for live — it is the gate before the first
+  // real run, and a dry run that writes is worse than no dry run.
+  process.env.GOOGLE_CONTACTS = "dry";
+  eq(gc.googleContactsMode(), "dry", "dry mode");
+  eq(gc.googleWritesLive(), false, "dry does NOT write");
+  process.env.GOOGLE_CONTACTS = "on";
+  eq(gc.googleWritesLive(), true, "on writes");
+  // A typo must fail closed, the same way AIRTABLE_WRITES does.
+  process.env.GOOGLE_CONTACTS = "true";
+  eq(gc.googleContactsMode(), "off", "an unrecognised value is OFF, not on");
+  if (saved === undefined) delete process.env.GOOGLE_CONTACTS; else process.env.GOOGLE_CONTACTS = saved;
+});
+
+await test("googleContacts: JWT is RS256 over the right claims, and impersonates per destination", async () => {
+  const crypto = await import("node:crypto");
+  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const savedKey = process.env.GOOGLE_SA_KEY;
+  process.env.GOOGLE_SA_KEY = Buffer.from(JSON.stringify({
+    client_email: "svc@test.iam.gserviceaccount.com",
+    private_key: privateKey,
+    token_uri: "https://oauth2.googleapis.com/token",
+    client_id: "123456789",
+  })).toString("base64");
+
+  const savedFetch = globalThis.fetch;
+  const assertions = [];
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      assertions.push(Object.fromEntries(new URLSearchParams(opts.body)).assertion);
+      return { ok: true, status: 200, json: async () => ({ access_token: "tok", expires_in: 3600 }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ connections: [], totalPeople: 7 }) };
+  };
+  try {
+    // Fresh import so the credential cache is not carried over from another case.
+    const gc = await import(`../netlify/functions/_google-contacts.js?jwt=${Date.now()}`);
+    const st = await gc.googleStatus();
+    ok(st.ok, "status ok against the stub");
+    eq(st.checks.length, 2, "both destinations probed independently");
+    eq(assertions.length, 2, "one token per SUBJECT, not one per call");
+
+    const subs = assertions.map(a => JSON.parse(Buffer.from(a.split(".")[1], "base64url").toString()));
+    // The `sub` claim IS the impersonation. Without it the token authorises the
+    // service account's own (empty) contact list, and the sync would cheerfully
+    // report success having written into a void.
+    eq(subs[0].sub, "rick@northeasternelec.com", "destination 1 impersonates rick@");
+    eq(subs[1].sub, "nee@northeasternelec.com", "destination 2 impersonates nee@");
+    eq(subs[0].scope, "https://www.googleapis.com/auth/contacts", "scope");
+    eq(subs[0].iss, "svc@test.iam.gserviceaccount.com", "iss is the service account");
+
+    const [h, c, sig] = assertions[0].split(".");
+    ok(crypto.createVerify("RSA-SHA256").update(`${h}.${c}`).verify(publicKey, Buffer.from(sig, "base64url")),
+       "RS256 signature verifies against the public key");
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.GOOGLE_SA_KEY; else process.env.GOOGLE_SA_KEY = savedKey;
+  }
+});
+
+await test("googleContacts: unauthorized_client names the GROUP/ALIAS cause, not just the error", async () => {
+  const crypto = await import("node:crypto");
+  const { privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const savedKey = process.env.GOOGLE_SA_KEY;
+  process.env.GOOGLE_SA_KEY = Buffer.from(JSON.stringify({
+    client_email: "svc@test.iam.gserviceaccount.com", private_key: privateKey,
+  })).toString("base64");
+
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: false, status: 401, json: async () => ({ error: "unauthorized_client" }) });
+  try {
+    const gc = await import(`../netlify/functions/_google-contacts.js?auth=${Date.now()}`);
+    const st = await gc.googleStatus();
+    eq(st.ok, false, "status reports failure");
+    eq(st.reason, "impersonation", "and says which stage failed");
+    // Google reports a missing delegation entry and a non-user mailbox with the
+    // SAME error. Guessing wrong costs an hour, so the hint must name both.
+    ok(/GROUP or a mail-only ALIAS/i.test(st.checks[0].hint), "hint names the group/alias cause");
+    ok(/Domain-wide delegation/i.test(st.checks[0].hint), "hint names the delegation cause");
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.GOOGLE_SA_KEY; else process.env.GOOGLE_SA_KEY = savedKey;
+  }
+});
+
+await test("googleContacts: an outage THROWS — it must never read as 'not in Google'", async () => {
+  const crypto = await import("node:crypto");
+  const { privateKey } = crypto.generateKeyPairSync("rsa", {
+    modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const savedKey = process.env.GOOGLE_SA_KEY;
+  process.env.GOOGLE_SA_KEY = Buffer.from(JSON.stringify({
+    client_email: "svc@test.iam.gserviceaccount.com", private_key: privateKey,
+  })).toString("base64");
+
+  const savedFetch = globalThis.fetch;
+  let mode = "500";
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("oauth2.googleapis.com/token")) {
+      return { ok: true, status: 200, json: async () => ({ access_token: "tok", expires_in: 3600 }) };
+    }
+    if (mode === "404") return { ok: false, status: 404, json: async () => ({ error: { message: "Not found" } }) };
+    return { ok: false, status: 503, json: async () => ({ error: { message: "backend error" } }) };
+  };
+  try {
+    const gc = await import(`../netlify/functions/_google-contacts.js?out=${Date.now()}`);
+    // 503 -> throws. THIS is the case that would duplicate 230 contacts if it
+    // returned null and the caller took that as "no such person, create one".
+    let threw = null;
+    try { await gc.getPerson("rick@northeasternelec.com", "people/c1"); } catch (e) { threw = e; }
+    ok(threw, "an outage throws rather than returning null");
+    eq(threw.code, "RATE_LIMIT", "and is labelled as an availability failure");
+
+    // 404 is the ONLY case that may report absence.
+    mode = "404";
+    eq(await gc.getPerson("rick@northeasternelec.com", "people/c1"), null,
+       "a genuine 404 is the only thing that reports absence");
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedKey === undefined) delete process.env.GOOGLE_SA_KEY; else process.env.GOOGLE_SA_KEY = savedKey;
+  }
+});
+
+await test("googleContacts: updatePerson refuses without an etag", async () => {
+  const gc = await import("../netlify/functions/_google-contacts.js");
+  let threw = null;
+  try { await gc.updatePerson("rick@northeasternelec.com", "people/c1", null, {}); } catch (e) { threw = e; }
+  ok(threw, "throws");
+  eq(threw.code, "NO_ETAG", "named so the caller knows to re-read, not to create");
+});
+
+await test("googleContacts: STATIC — the module contains no delete path at all", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_google-contacts.js", import.meta.url), "utf8");
+  // Owner's decision 2026-08-27: both accounts stay and nee@ is becoming the
+  // office address book. Cross-account copies are TWO ADDRESS BOOKS, not
+  // duplicates — clearing one would empty the book staff depend on. This guard
+  // exists because "just add a cleanup flag" is the obvious next request.
+  ok(!/deleteContact|:deleteContact|method:\s*["']DELETE["']/.test(src),
+     "no deleteContact call and no DELETE method — the sync must never delete");
+  ok(!/batchDeleteContacts/.test(src), "no batch delete either");
+  // And the update mask must stay aligned with the read mask, or an update
+  // silently drops the fields it did not name.
+  ok(/export const PERSON_FIELDS/.test(src) && /export const UPDATE_FIELDS/.test(src),
+     "both field masks are declared in one place");
+});
+
+await test("googleContacts: STATIC — the reconcile is read-only and gated on the DB", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleGoogleContactsReconcile(");
+  ok(i > 0, "handler exists");
+  const fn = src.slice(i, src.indexOf("\n}\n", i));
+  ok(!/createPerson|updatePerson|neonWrite/.test(fn),
+     "the reconcile writes NOTHING — not to Google, not to Neon");
+  ok(/googleConfigured\(\)/.test(fn), "refuses when the key is unset rather than reporting a clean run");
+  // Both endpoints are strict-admin: the reconcile reads every contact in both
+  // company address books.
+  ok(/"googleStatus", "googleContactsReconcile"/.test(src),
+     "both actions are registered in the strict-admin read tier");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

@@ -152,6 +152,25 @@ answers, just slowly. It went unnoticed for three days.
   ⚠⚠ `createJobRecord`'s non-native branch POSTs a job and then **re-reads its own write** for
   Airtable's computed `Job PO`. `AIRTABLE_WRITES=off` with `JOB_CREATE_SOURCE` ≠ `native` is refused
   in `_jobs.js` — before the PO is allocated, because a PO cannot be handed back.
+- `GOOGLE_CONTACTS` / `GOOGLE_SA_KEY` / `GOOGLE_CONTACTS_DEST_1` / `_DEST_2` — **the Google
+  contact sync (audit item 07). Optional as a group, fails soft, ships INERT.** Neon → Google
+  People API, replacing five retired Make scenarios. `GOOGLE_CONTACTS` unset = the sync does
+  nothing; `dry` = reports what it would write and writes nothing; `on` = live.
+  ⚠⚠ **Run `dry` first and read it.** 230 of 240 contacts already exist in **both** accounts, and
+  `contacts.google_person_id_1/2` are the only thing stopping a cold start creating **230
+  duplicates twice over** in address books live on people’s phones. Id-first always; a row with a
+  stored id is an update, never a create.
+  ⛔ **There is no delete path and there must not be** — owner’s call 2026-08-27: both accounts
+  stay and `nee@` is becoming the office address book. Cross-account copies are **two address
+  books, not duplicates**; clearing one would empty the book staff depend on. Genuine
+  within-account dupes belong to Google’s own Merge & fix.
+  Auth is a **service account with domain-wide delegation** (scope
+  `https://www.googleapis.com/auth/contacts`), signed with `node:crypto` — **no npm dependency**,
+  so the test suite stays offline. ⚠ Delegation impersonates a **licensed user**; a Group or alias
+  fails `unauthorized_client`, which looks like a scope error and is not. Diagnose with
+  `GET ?action=googleStatus`; `GET ?action=googleContactsReconcile` is a **read-only** audit of
+  whether the stored ids still resolve (`&deep=1` also looks for within-account duplicates).
+  See `netlify/functions/_google-contacts.js` and `docs/PLAN-google-contacts.md`.
 - `DATABASE_URL` — **optional.** Neon Postgres connection string for the time-entries
   migration. When set, `_neon.js` lets read handlers run a **shadow read** against Neon and
   attach a `_shadow` diff to the response. **Fails soft by contract** (the opposite of

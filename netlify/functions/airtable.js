@@ -27,6 +27,14 @@ import { runGeneratorServiceCheck } from "./_generator-service.js";
 // have been down for months, so no API token could be issued. That file and
 // tools/pcloud-*.mjs are kept on disk in case it ever reopens (a mirror-to-
 // pCloud option), but nothing calls them. See docs/PLAN-job-photos.md.
+// Google People API — contact sync to the two company address books (item 07).
+// Optional infrastructure that FAILS SOFT, like _r2.js: unset credentials just
+// disable the sync. Nothing here is in ensureEnv(). docs/PLAN-google-contacts.md
+import {
+  googleStatus, googleConfigured, googleContactsMode,
+  getPerson, listConnections, DESTINATIONS,
+} from "./_google-contacts.js";
+
 import {
   r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut,
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
@@ -638,6 +646,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
 const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "people", "employeePin", "employeeRates",
+                              // Item 07 diagnostics. googleContactsReconcile reads every
+                              // contact in both company address books, so it sits at strict
+                              // admin with the roster rather than with office.
+                              "googleStatus", "googleContactsReconcile",
                               "clockRoster", "clockReconcile", "clockPunches",
                               // The approval queue + everyone's leave balances.
                               "ptoRequests"]);
@@ -13196,6 +13208,142 @@ async function handleJobCreateStatus() {
   });
 }
 
+// ── GOOGLE CONTACT SYNC: STATUS + RECONCILE (audit item 07) ───────────────
+// Both admin-only, both READ-ONLY. See docs/PLAN-google-contacts.md.
+//
+// Same job as r2Status and jobCreateStatus: name the specific misconfiguration
+// rather than leaving somebody to infer it from the data afterwards. Netlify
+// bakes env vars at BUILD time, so setting GOOGLE_CONTACTS or GOOGLE_SA_KEY in
+// the dashboard does not reach a deployed function until a REDEPLOY.
+async function handleGoogleStatus() {
+  const status = await googleStatus();
+  return resp(200, { ok: true, google: status });
+}
+
+// ⚠⚠ THE GATE. Nothing may write to Google until somebody has read this.
+//
+// 230 of 240 contacts already exist in both accounts, and the stored ids are the
+// only thing preventing a cold start from creating 230 duplicates twice over, in
+// address books that are live on phones. This answers, per account and WITHOUT
+// WRITING ANYTHING: does each stored id still resolve, how many rows have no id
+// at all, and does either account hold duplicates of its own?
+//
+// ⚠ An id that fails to resolve is reported as "missing", NOT quietly upgraded to
+// a create. Deciding to re-create is a human decision made from this report,
+// because the failure modes look identical from here: a contact genuinely deleted
+// in Google and a contact whose id we simply got wrong both return 404.
+async function handleGoogleContactsReconcile(params) {
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "The reconcile needs the database. DATABASE_URL is unset." });
+  }
+  if (!googleConfigured()) {
+    return resp(503, {
+      ok: false,
+      error: "GOOGLE_SA_KEY is unset. Add the service account JSON (base64) in Netlify and REDEPLOY.",
+      hint: "GET ?action=googleStatus reports the wiring in detail.",
+    });
+  }
+
+  // Deep mode also pages every contact in each account to look for
+  // within-account duplicates. Much slower, and not needed to decide whether the
+  // sync is safe to run, so it is opt-in.
+  const deep = String(params?.deep || "") === "1";
+
+  const q = await neonQuery(
+    `SELECT c.id, c.first_name, c.last_name, c.primary_phone, c.primary_email,
+            c.google_person_id_1, c.google_person_id_2
+       FROM contacts c
+      ORDER BY c.last_name NULLS LAST, c.first_name NULLS LAST`);
+  if (!q?.rows) {
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+  }
+  const rows = q.rows;
+
+  const out = { totalContacts: rows.length, destinations: [] };
+
+  // 7 of the 240 carry neither a phone nor an email. The owner was told these
+  // would sync as name-only entries under the "all 240" decision; counted here so
+  // the number is in front of him BEFORE anything is written, not after.
+  out.noPhoneNoEmail = rows.filter(r =>
+    !String(r.primary_phone || "").trim() && !String(r.primary_email || "").trim()).length;
+
+  for (const dest of DESTINATIONS) {
+    const summary = {
+      key: dest.key, account: dest.subject, column: dest.column,
+      withStoredId: 0, resolved: 0, missing: 0, errors: 0, noId: 0,
+      missingSamples: [], errorSamples: [],
+    };
+
+    for (const r of rows) {
+      const id = r[dest.column];
+      if (!id) { summary.noId++; continue; }
+      summary.withStoredId++;
+      try {
+        const person = await getPerson(dest.subject, id);
+        if (person) summary.resolved++;
+        else {
+          summary.missing++;
+          if (summary.missingSamples.length < 10) {
+            summary.missingSamples.push({
+              contactId: r.id,
+              name: [r.first_name, r.last_name].filter(Boolean).join(" "),
+              storedId: id,
+            });
+          }
+        }
+      } catch (e) {
+        summary.errors++;
+        if (summary.errorSamples.length < 5) {
+          summary.errorSamples.push({
+            contactId: r.id, code: e?.code || "ERROR",
+            hint: String(e?.message || e).slice(0, 200),
+          });
+        }
+        // An auth failure fails EVERY row identically, so stop rather than making
+        // 240 doomed calls and burning the rate limit for nothing.
+        if (e?.code === "AUTH" || e?.code === "NOT_CONFIGURED" || e?.code === "FORBIDDEN") {
+          summary.abortedAfter = summary.withStoredId;
+          break;
+        }
+      }
+    }
+
+    if (deep && !summary.abortedAfter) {
+      try {
+        const all = await listConnections(dest.subject);
+        summary.accountTotalContacts = all.length;
+        // Within-account duplicates — the only kind that is a genuine duplicate to
+        // a person looking at their phone. Reported, never fixed: Google Contacts
+        // has its own Merge & fix, which previews each merge.
+        const byName = new Map();
+        for (const p of all) {
+          const n = (p.names?.[0]?.displayName || "").trim().toLowerCase();
+          if (!n) continue;
+          byName.set(n, (byName.get(n) || 0) + 1);
+        }
+        const dupes = [...byName.entries()].filter(([, n]) => n > 1);
+        summary.withinAccountDuplicateNames = dupes.length;
+        summary.withinAccountDuplicateSamples = dupes.slice(0, 10).map(([name, n]) => ({ name, count: n }));
+      } catch (e) {
+        summary.deepError = String(e?.message || e).slice(0, 200);
+      }
+    }
+
+    out.destinations.push(summary);
+  }
+
+  // The one-line answer, so nobody has to add the columns up by hand.
+  const anyErrors  = out.destinations.some(d => d.errors > 0);
+  const anyMissing = out.destinations.some(d => d.missing > 0);
+  out.verdict = anyErrors
+    ? "NOT SAFE TO RUN — some ids could not be checked at all. Fix the errors first; a run now would treat unchecked rows as creates."
+    : anyMissing
+      ? "CHECK FIRST — every id was checked, but some no longer resolve in Google. Decide per contact whether to re-create before enabling writes."
+      : "SAFE — every stored id resolves in every destination. A sync would UPDATE these, not duplicate them.";
+
+  return resp(200, { ok: true, mode: googleContactsMode(), reconcile: out });
+}
+
 // ── THE AIRTABLE REC ID FOR A JOB HANDLE, OR NULL ─────────────────────────
 // Cutover slice 6, added 2026-08-24 after the first native job could not have
 // its status changed: `handleUpdateJobStatus` PATCHed `Jobs/<uuid>`, Airtable
@@ -14389,6 +14537,8 @@ export async function handler(event) {
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "integrityCheck")     return await handleIntegrityCheck();
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
+      if (action === "googleStatus")       return await handleGoogleStatus();
+      if (action === "googleContactsReconcile") return await handleGoogleContactsReconcile(params);
       if (action === "people")             return await handlePeople();
       if (action === "employeePin")        return await handleEmployeePin(params);
       if (action === "employeeRates")      return await handleEmployeeRates(params);

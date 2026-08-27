@@ -1,7 +1,11 @@
 # Plan — Google contacts direct (audit item 07)
 
-**Status: NOT STARTED. Owner-gated on Google credentials — see §2, which is now much smaller
-than it was.** Written 2026-08-27 after the owner chose the direct path over replumbing Make:
+**Status: NOT STARTED — waiting only on the service-account JSON key.**
+✅ **Route A CONFIRMED 2026-08-27** — the owner is a Google Workspace admin on the domain, so this
+is service account + domain-wide delegation, not OAuth refresh tokens. Route B below is dead
+weight kept only in case the delegation step hits a wall.
+✅ **Both destinations stay** (§7.4). ⛔ **Nothing is ever deleted** (§7.4).
+⬜ Still open: the trigger rule (§7.2) and power contacts (§7.3). Written 2026-08-27 after the owner chose the direct path over replumbing Make:
 *"i want to go direct with contacts."*
 
 > **Read this block first.** Two things recorded elsewhere as unknown are now **solved** (§1), and
@@ -90,9 +94,14 @@ expire or be revoked** by someone clicking "remove access" in their Google accou
 impersonates `rick@` for destination 1 and `nee@` for destination 2. Rotation is a new key, not a
 re-consent.
 
-⚠ **Requires that `northeasternelec.com` really is Google Workspace and that the owner is a
-Workspace admin.** Both accounts being custom-domain Google identities is strong evidence, not
-proof. **Confirm this before building** — it decides the whole auth module.
+✅ **Confirmed 2026-08-27: the domain is Workspace and the owner is an admin.** This is the route.
+
+⚠ **The one thing left that can bite: DWD impersonates a real, licensed USER.** If either mailbox
+is a Google Group or a mail-only alias rather than a licensed user, the token request fails with
+`unauthorized_client` — which reads exactly like a scope or clock-skew problem and is neither.
+Evidence says both are real accounts: distinct uids (`102385516730302296763` vs
+`108079752496166473589`) and 192 **distinct** person ids captured in each column, which an alias
+pointing at one mailbox could not produce. Confirm the licence, then stop worrying about it.
 
 ### Route B — two OAuth refresh tokens (fallback, if not Workspace)
 
@@ -211,10 +220,35 @@ native-job post-mortem: **deploying is not evidence — re-query after the first
 2. **Trigger rule:** keep "only contacts whose job reached Awarded / Service Call Scheduled", or
    sync all 240? The 10 with no ids are the only rows this changes today.
 3. **Power contacts:** match, create-fresh, or defer (§5).
-4. **Still two destinations?** Both accounts are on the company domain, and syncing to both is
-   twice the API traffic and twice the duplicate risk. If `nee@` is a shared account nobody's phone
-   actually reads from, collapsing to one is a real simplification. **Do not assume it** — removing
-   contacts from someone's phone is the kind of change that gets noticed a week later.
+4. ~~**Still two destinations?**~~ ✅ **DECIDED 2026-08-27 — BOTH STAY.** Owner: *“i want them on
+   rick@northeasternelec.com and nee@northeasternelec.com. in the future office and staff will rely
+   on this one for contacts.”* So `nee@` is not a spare copy to be economised away — it is becoming
+   **the office address book**, and its completeness is a requirement, not a nice-to-have.
+
+### ⛔ And therefore: THIS BUILD DELETES NOTHING
+
+The owner asked, before the destinations were settled: *“i dont want duplicates if we for sure dont
+lose some. so delete them if they are duplicates.”* That question is now **answered without any
+deletion**, and the reasoning is worth keeping because the instinct will recur.
+
+**What looked like duplicates is two address books, not duplicated data.** Every one of the 230
+contacts exists once in `rick@` and once in `nee@`, by design — the old sync wrote both, which is
+why the retired Airtable formula fired when *either* id was blank. Anyone signed into **both**
+accounts on one phone sees every contact twice. Nothing is corrupted, and **cross-account copies
+must not be deleted**: clearing `nee@` would not de-duplicate a second person’s phone, it would
+empty the address book office and staff are about to depend on.
+
+Rules that follow, and they are load-bearing:
+
+- **The sync never deletes. Ever.** Not as a cleanup step, not behind a flag. A job that runs on
+   every contact save must not hold a delete path.
+- **Genuine WITHIN-account duplicates** (the same person twice inside `rick@` alone) are a
+   different thing, are not yet known to exist, and are for **Google Contacts’ own Merge & fix** —
+   it previews each merge and is safer than anything written here. Slice 2 reports whether any
+   exist; it does not fix them.
+- ⚠ If a contact ever *is* deleted in Google by hand, **the stored id in Neon must be cleared in
+   the same breath**, or the next run re-creates it from `google_person_id_1/2`. A delete that
+   leaves the id behind is a delete that undoes itself.
 
 ---
 

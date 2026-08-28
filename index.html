@@ -1343,6 +1343,11 @@
     .info-box--green  { background: rgba(76, 175, 80, 0.12); border-color: rgba(76, 175, 80, 0.35); }
     .info-box--red    { background: rgba(244, 67, 54, 0.12); border-color: rgba(244, 67, 54, 0.35); }
     .info-box--orange { background: rgba(255, 152, 0, 0.18); border-color: rgba(255, 152, 0, 0.35); }
+    /* Added for the Est. GP grid. Same rgba-tint pattern as the three above, so
+       they read as one family — these are CATEGORY colours (which figure is
+       this), not status colours. Only GP % changes colour by value. */
+    .info-box--blue   { background: rgba(33, 150, 243, 0.12); border-color: rgba(33, 150, 243, 0.35); }
+    .info-box--purple { background: rgba(156, 39, 176, 0.12); border-color: rgba(156, 39, 176, 0.35); }
 
     #livePerfGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
@@ -5356,7 +5361,7 @@
       ${infoBox("Job Name", val(job.name))}
       ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus))}
       ${infoBox("Estimated Direct Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
-      ${infoBox("Estimated Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar))}
+      ${infoBox("Estimated Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar), false, "info-box--orange")}
       ${infoBox("Estimated GP %", job.projectedGrossProfitPct != null ? (job.projectedGrossProfitPct * 100).toFixed(1) + "%" : "—",
                 false,
                 // ⚠ The rollup is a FRACTION here — x100 before comparing, or
@@ -5371,9 +5376,9 @@
            six figures with nothing on screen accounting for the change. Subs,
            quoted gear, rentals and the sales tax paid on them. -->
       ${infoBox("Other Costs + Tax", fmtCurrency(job.projectedEstimatedOtherCost))}
-      ${infoBox("Material Markup", fmtCurrency(job.projectedEstimatedMaterialMarkup))}
+      ${infoBox("Material Markup", fmtCurrency(job.projectedEstimatedMaterialMarkup), false, "info-box--purple")}
       ${infoBox("Material Sell", fmtCurrency(job.projectedEstimatedMaterialSell))}
-      ${infoBox("Labor Sell", fmtCurrency(job.projectedEstimatedLaborSell))}`;
+      ${infoBox("Labor Sell", fmtCurrency(job.projectedEstimatedLaborSell), false, "info-box--blue")}`;
 
     // The screen has to say which of its numbers are records and which are
     // guesses. Cost and GP are exact for a pre-split estimate — they reproduce

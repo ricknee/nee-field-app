@@ -5650,6 +5650,11 @@ function mapJob(r) {
     projectedEstimatedMaterialMarkup: null,
     projectedEstimatedMaterialSell:   null,
     projectedEstimatedLaborSell:      null,
+    // db/schema/066, NULL for the same reason as the four above — no Airtable
+    // twin, ever. ⚠ NULL here is NOT the same claim as 0: it means "this path
+    // cannot know", and `projectedEstimatedTotalCost` above is correspondingly
+    // a two-term sum. Emitting 0 would assert the job has no bought-in cost.
+    projectedEstimatedOtherCost:      null,
     estimateCount:       null,
     estimateLegacyCount: null,
   };
@@ -5705,6 +5710,17 @@ const JOB_SELECT = `
          r.est_labor_hours_rollup, r.est_labor_cost_rollup, r.est_material_cost_rollup,
          r.est_material_markup_rollup, r.est_material_sell_rollup,
          r.est_labor_sell_rollup, r.est_counted, r.est_legacy_count,
+         -- db/schema/066. ⚠⚠ THIS IS THE THIRD OF THREE EXPLICIT COLUMN LISTS a
+         -- new rollup has to be added to, and not one of them is a star select.
+         -- (No backticks in this comment: it lives inside a JS template literal
+         -- and a stray one ends the string mid-query.)
+         --   v_job_rollups        the rollup itself
+         --   v_job_rollups_true   a passthrough that names all 35 columns
+         --   JOB_SELECT           right here
+         -- Miss any one and the mapper reads undefined, n(...) || 0 makes it a
+         -- clean $0.00, and Estimated Direct Cost quietly drops six figures.
+         -- Two of the three were missed on the first pass of this change.
+         r.est_other_cost_rollup,
          r.reviewed_expenses_rollup,
          r.total_actual_expenses_audit,
          f.total_revenue_live, f.total_materials_live, f.total_labor_cost_live,
@@ -5747,7 +5763,18 @@ function mapJobFromNeon(r) {
   const expectedRevenueAllStatus       = n(r.expected_revenue) || 0;
   const projectedEstimatedMaterialCost = n(r.est_material_cost_rollup) || 0;
   const projectedEstimatedLaborCost    = n(r.est_labor_cost_rollup) || 0;
-  const projectedEstimatedTotalCost = projectedEstimatedMaterialCost + projectedEstimatedLaborCost;
+  // db/schema/066 — bought-in direct cost (subs, quoted gear, rentals) plus the
+  // sales tax paid on it. `est_other_cost_rollup`, the FILTERED twin, for the
+  // reason the block above gives: `proj_est_other_cost` is the unfiltered one
+  // and would pull Draft estimates into a card that has always hidden them.
+  //
+  // ⚠ THE AIRTABLE MAPPER (`mapJob`, ~line 5491) DELIBERATELY HAS NO SUCH TERM.
+  // Airtable never had a column for this and is not gaining one — the base is
+  // frozen and AIRTABLE_WRITES is off. That path can only ever answer with the
+  // two-term sum, which is correct for the data it reads.
+  const projectedEstimatedOtherCost    = n(r.est_other_cost_rollup) || 0;
+  const projectedEstimatedTotalCost = projectedEstimatedMaterialCost + projectedEstimatedLaborCost
+                                    + projectedEstimatedOtherCost;
   const projectedGrossProfitDollar  = expectedRevenueAllStatus - projectedEstimatedTotalCost;
   const projectedGrossProfitPct     = expectedRevenueAllStatus > 0
     ? (projectedGrossProfitDollar / expectedRevenueAllStatus) : null;
@@ -5838,6 +5865,11 @@ function mapJobFromNeon(r) {
     projectedEstimatedMaterialMarkup: n(r.est_material_markup_rollup),
     projectedEstimatedMaterialSell:   n(r.est_material_sell_rollup),
     projectedEstimatedLaborSell:      n(r.est_labor_sell_rollup),
+    // db/schema/066. Emitted as its own key AND folded into
+    // projectedEstimatedTotalCost above, because a Direct Cost that jumps with
+    // nothing on screen to explain it is the same silent shape as a native row
+    // matching nothing — the grid renders a tile for this.
+    projectedEstimatedOtherCost:      projectedEstimatedOtherCost,
     // ⚠ How many of the counted estimates predate the split. The GP figures are
     // exact for those (they reproduce the old arithmetic); the two SELL figures
     // are INFERRED. The screen has to say which it is showing.
@@ -6742,6 +6774,10 @@ async function handleJobEstimates(params) {
               -- rather than coalesced into something tidy.
               e.material_raw_cost, e.material_markup, e.labor_sell_rate,
               e.labor_burden_rate, e.price_adjustment, e.calculated_selling_price,
+              -- db/schema/066. Emitted raw, NOT coalesced to 0: the card has to
+              -- render an empty box for "none recorded" rather than a typed $0,
+              -- and the save reads a blank as UNCHANGED.
+              e.other_costs, e.sales_tax,
               COALESCE(back.snapshot, bytotal.snapshot, e.estimate_snapshot, '') AS snapshot,
               j.name AS job_name,
               -- Seeds for the new-estimate form: the markup the job's ACTUAL
@@ -6805,6 +6841,7 @@ async function handleJobEstimates(params) {
         materialRawCost: n(r.material_raw_cost), materialMarkup: n(r.material_markup),
         laborSellRate: n(r.labor_sell_rate), laborBurdenRate: n(r.labor_burden_rate),
         priceAdjustment: n(r.price_adjustment),
+        otherCosts: n(r.other_costs), salesTax: n(r.sales_tax),
         calculatedSellingPrice: n(r.calculated_selling_price),
         // The row predates the cost/markup split, so its material figure cannot
         // be read as a cost. The card says so rather than showing a made-up GP.
@@ -6822,6 +6859,7 @@ async function handleJobEstimates(params) {
           sellRate:   n(j0.job_billable_rate),
           burdenRate: EST_LABOR_RATE,
           fallbackSellRate: EST_LABOR_SELL_RATE,
+          salesTaxRate: EST_SALES_TAX_RATE,
         },
       });
     }
@@ -6985,12 +7023,28 @@ const EST_LABOR_RATE = 32.50;
 // changes what fills the parameter, not this arithmetic.
 const EST_LABOR_SELL_RATE = 75.00;
 
+// db/schema/066. The rate the "fill 8%" control on the estimate card uses, over
+// a base of (material cost + other costs) — labor is not taxable and a
+// subcontractor pays tax on their own purchases, so quotes are not taxed here.
+//
+// ⚠ THIS IS A CONVENIENCE DEFAULT, NOT A TAX ENGINE. It fills a box the
+// estimator can overwrite or clear; `sales_tax` stores DOLLARS, so a job that is
+// exempt, on resale, or in a different county is handled by typing the right
+// number rather than by teaching this constant about jurisdictions.
+const EST_SALES_TAX_RATE = 0.08;
+
 // ONE definition of the four derived figures, called by BOTH write paths for
 // the reason the original note gives: an update that changes only the markup
 // still has to recompute the price, and it does it from the stored hours.
 // Each argument is a SQL fragment the caller owns — a cast bind parameter on the
 // create path, `COALESCE($n, <column>)` on the update path.
-function estDerived({ hours, matRaw, matMarkup, matEntered, sellRate, burden }) {
+// ⚠ `other` and `tax` HAVE NO DEFAULT, DELIBERATELY (db/schema/066). A caller
+// that forgets them interpolates the string "undefined" into the SQL and
+// Postgres refuses the statement — loud, on the first click. Defaulting them to
+// NULL would instead save an estimate with its bought-in costs silently zeroed,
+// which understates direct cost and OVERSTATES GP. That is the failure this
+// whole file exists to stop; a 502 is the better outcome.
+function estDerived({ hours, matRaw, matMarkup, matEntered, sellRate, burden, other, tax }) {
   const h    = `COALESCE(${hours}, 0::numeric)`;
   const b    = `COALESCE(${burden}, ${EST_LABOR_RATE})`;
   const sr   = `COALESCE(${sellRate}, ${EST_LABOR_SELL_RATE})`;
@@ -6999,13 +7053,28 @@ function estDerived({ hours, matRaw, matMarkup, matEntered, sellRate, burden }) 
   // "fix" it with a COALESCE around matRaw.
   const cost = `COALESCE(${matRaw}, ${matEntered}, 0::numeric)`;
   const sell = `COALESCE(${matRaw} + COALESCE(${matMarkup}, 0::numeric), ${matEntered}, 0::numeric)`;
+  // Bought-in direct cost. Two columns on the row, ONE term here — they are
+  // separate so the tax can be filled and checked on its own, but they are the
+  // same kind of money and land in the same place in the arithmetic.
+  //
+  // ⚠ These COALESCE to 0, unlike matRaw above, and the difference is the
+  // point: a NULL raw cost means "this row predates the split, read the entered
+  // figure instead", so it must propagate. A NULL other_costs just means the
+  // job had none. There is nothing to fall back TO.
+  const oth  = `(COALESCE(${other}, 0::numeric) + COALESCE(${tax}, 0::numeric))`;
   return {
     laborCost:    `round(${h} * ${b}, 2)`,
     materialSell: `round(${sell}, 2)`,
     // `calculated_estimated_total` keeps its name and becomes honest: it is the
     // estimated DIRECT COST and always was. The UI label changes with it.
-    directCost:   `round(${h} * ${b} + ${cost}, 2)`,
-    sellingPrice: `round(${sell} + ${h} * ${sr}, 2)`,
+    directCost:   `round(${h} * ${b} + ${cost} + ${oth}, 2)`,
+    // ⚠ Other costs enter the price at COST, with no markup on top, and that is
+    // not an oversight. This column is a sanity check against the price the
+    // estimator actually typed, and on a bid-program quote it reconstructs that
+    // program's own pre-overhead subtotal exactly — which is what makes the gap
+    // to `actual_estimate_sent` readable as the margin added on top. Marking it
+    // up here would invent a number no report contains.
+    sellingPrice: `round(${sell} + ${h} * ${sr} + ${oth}, 2)`,
   };
 }
 
@@ -7086,7 +7155,7 @@ async function syncEstimateToNeon(rec) {
 async function handleUpdateEstimate(body) {
   const { estimateId, actualEstimate, laborHours, materialCost,
           materialRawCost, materialMarkup, laborSellRate, laborBurdenRate,
-          priceAdjustment } = body || {};
+          priceAdjustment, otherCosts, salesTax } = body || {};
   if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
 
   const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
@@ -7094,7 +7163,8 @@ async function handleUpdateEstimate(body) {
   const raw = num(materialRawCost),  mk  = num(materialMarkup);
   const sr  = num(laborSellRate),    br  = num(laborBurdenRate);
   const adj = num(priceAdjustment);
-  if ([est, hrs, mat, raw, mk, sr, br, adj].every(v => v === null)) {
+  const oth = num(otherCosts),       tax = num(salesTax);
+  if ([est, hrs, mat, raw, mk, sr, br, adj, oth, tax].every(v => v === null)) {
     return resp(400, { ok: false, error: "Nothing to update." });
   }
   if (!neonEnabled()) {
@@ -7118,6 +7188,13 @@ async function handleUpdateEstimate(body) {
     matEntered: "COALESCE($4, estimated_material_cost)",
     sellRate:   "COALESCE($7, labor_sell_rate, (SELECT j.billable_hourly_rate FROM jobs j WHERE j.id = job_estimates.job_id))",
     burden:     "COALESCE($8, labor_burden_rate)",
+    // db/schema/066. Same partial-update contract as every fragment above: an
+    // empty box means UNCHANGED, not zero. Clearing the Other Costs field on an
+    // estimate that has $126,850 in it leaves the $126,850 alone — the client's
+    // estCardValues reads a blank the same way, so the live GP on screen and the
+    // GP the save produces cannot disagree.
+    other:      "COALESCE($10, other_costs)",
+    tax:        "COALESCE($11, sales_tax)",
   };
   const d = estDerived(E);
   // ⚠ THE DOUBLE-COUNT GUARD IS THE DATABASE'S, NOT A PRE-CHECK HERE, and that
@@ -7137,6 +7214,8 @@ async function handleUpdateEstimate(body) {
        labor_sell_rate            = COALESCE($7, labor_sell_rate),
        labor_burden_rate          = COALESCE($8, labor_burden_rate),
        price_adjustment           = COALESCE($9, price_adjustment),
+       other_costs                = ${E.other},
+       sales_tax                  = ${E.tax},
        estimated_material_cost    = ${d.materialSell},
        estimated_labor_cost       = ${d.laborCost},
        calculated_estimated_total = ${d.directCost},
@@ -7145,7 +7224,7 @@ async function handleUpdateEstimate(body) {
       WHERE airtable_id = $1 OR id::text = $1
       RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id,
                 estimated_material_cost`,
-    [String(estimateId), est, hrs, mat, raw, mk, sr, br, adj]);
+    [String(estimateId), est, hrs, mat, raw, mk, sr, br, adj, oth, tax]);
   } catch (e) {
     // The one constraint a user can actually trip. Anything else is a fault.
     if (/job_estimates_markup_needs_raw/.test(String(e?.message || e))) {
@@ -7916,7 +7995,8 @@ async function handleDeleteJobEstimate(body) {
 // scalars, so editing the template later does not change this estimate.
 async function handleCreateJobEstimate(body) {
   const { jobId, baseAmount, laborHours, materialCost, notes, estimateType, sourceTemplateId, estimateDate,
-          materialRawCost, materialMarkup, laborSellRate, laborBurdenRate, priceAdjustment } = body || {};
+          materialRawCost, materialMarkup, laborSellRate, laborBurdenRate, priceAdjustment,
+          otherCosts, salesTax } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   // db/schema/065. `materialCost` is still accepted and still means "the figure
@@ -7986,20 +8066,21 @@ async function handleCreateJobEstimate(body) {
   const d = estDerived({
     hours: "$5::numeric", matRaw: "$10::numeric", matMarkup: "$11::numeric",
     matEntered: "$6::numeric", sellRate: SELL_RATE, burden: BURDEN,
+    other: "$15::numeric", tax: "$16::numeric",
   });
   const rows = await neonWrite("estimate.create",
     `INSERT INTO job_estimates
        (job_airtable_id, job_id, estimate_type, status, actual_estimate_sent,
         estimated_labor_hours, estimated_material_cost,
         material_raw_cost, material_markup, labor_sell_rate, labor_burden_rate,
-        price_adjustment,
+        price_adjustment, other_costs, sales_tax,
         estimated_labor_cost, calculated_estimated_total, calculated_selling_price,
         estimate_date, notes, source_template_handle, synced_at)
      VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END,
              (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5,
              ${d.materialSell},
              $10::numeric, $11::numeric, ${SELL_RATE}, ${BURDEN},
-             $14::numeric,
+             $14::numeric, $15::numeric, $16::numeric,
              ${d.laborCost}, ${d.directCost}, ${d.sellingPrice},
              $7::date, $8, $9, now())
      RETURNING id`,
@@ -8009,7 +8090,8 @@ async function handleCreateJobEstimate(body) {
      notes && String(notes).trim() ? String(notes) : null,
      sourceTemplateId ? String(sourceTemplateId) : null,
      num(materialRawCost), num(materialMarkup),
-     num(laborSellRate), num(laborBurdenRate), num(priceAdjustment)]);
+     num(laborSellRate), num(laborBurdenRate), num(priceAdjustment),
+     num(otherCosts), num(salesTax)]);
   const neonId = rows?.[0]?.id;
   if (!neonId) return resp(502, { ok: false, error: "Couldn't create the estimate. Please try again." });
 

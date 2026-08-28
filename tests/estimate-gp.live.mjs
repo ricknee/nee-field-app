@@ -230,6 +230,92 @@ console.log("\n── 8. AIRTABLE CANNOT HALF-REVERT A SPLIT ESTIMATE ───�
   }
 }
 
+console.log("\n── 8b. THE SOUTHWOOD BID: bought-in cost and tax (db/schema/066) ───");
+// A real Project Summary out of the bid estimating program, 2026-08-27. Every
+// figure below is off that report; the assertions are the arithmetic it prints.
+//
+//   Extended Labor Costs      $88,344.00   ← 1,039.34 h at the $85 QUOTED rate
+//   Extended Material Cost    $38,473.13   bare cost
+//   Extended Other Costs     $126,850.00   bare cost, owner-confirmed
+//   Extended Quotes Costs          $0.00
+//   Sales tax @ 8%            $13,225.85   = 8% x (material + other)
+//   Sub Total With Tax       $266,892.98
+//   + 8% overhead, + 8% profit
+//   Selling Price            $311,303.98
+//
+// ⚠⚠ THE ONE TRAP THIS CASE EXISTS TO CATCH. The report's "Extended Labor
+// Costs" is priced at the rate we QUOTE, so it is labor SELL. Feed that $88,344
+// into other_costs — the obvious reading of the word "cost" — and direct cost
+// becomes $266,892.98, GP $44,411 and the job reports 14.3%: our own margin,
+// booked as a cost. Entered correctly it is 1,039.34 hours at the $32.50 burden.
+//
+// The bid program's overhead and profit are NOT costs and are not stored. GP is
+// before overhead; that is the whole difference between 31.8% and 14.3%.
+{
+  const HOURS = 1039.34;                       // 88,344 / 85, what the report implies
+  const id8 = await mk(JOB_75, {
+    baseAmount: 311303.98, laborHours: HOURS,
+    materialRawCost: 38473.13, materialMarkup: 0,
+    laborSellRate: 85, otherCosts: 126850, salesTax: 13225.85,
+  });
+  const { est } = await readOne(JOB_75, id8);
+  eq(est.otherCosts, 126850, "other costs stored");
+  eq(est.salesTax, 13225.85, "sales tax stored");
+  eq(est.materialMarkup, 0, "markup is ZERO, not NULL — the bid takes margin via overhead/profit");
+  eq(est.legacyMaterialBasis, false, "a 0 markup with a raw cost is still a split row");
+  eq(est.laborSellRate, 85, "the quoted rate overrides the job's 75");
+  eq(est.laborBurdenRate, 32.5, "and labor still COSTS 32.50 — the two are different facts");
+
+  // Labor sell reproduces the report's own line, which is how the estimator
+  // checks the hours are right without the report ever printing them.
+  eq((HOURS * 85).toFixed(2), "88343.90", "hours x quoted rate reproduces Extended Labor Costs");
+
+  // 33,778.55 labor + 38,473.13 material + 140,075.85 bought-in
+  eq(est.calculatedTotal, 212327.53, "DIRECT COST carries labor at BURDEN, plus material, other and tax");
+  // Material sell 38,473.13 + labor sell 88,343.90 + bought-in 140,075.85.
+  // Lands on the report's own Sub Total With Tax, to ten cents of the hours.
+  eq(est.calculatedSellingPrice, 266892.88, "calculated price reconstructs the bid's pre-overhead subtotal");
+
+  const gpD = est.actualEstimate - est.calculatedTotal;
+  eq(gpD.toFixed(2), "98976.45", "GP $ = 98,976.45");
+  eq((gpD / est.actualEstimate * 100).toFixed(1), "31.8", "GP % = 31.8  —  NOT 76.8 (cost dropped) and NOT 14.3 (labor sell booked as cost)");
+
+  // The failure this replaces: with nowhere to put other costs or tax, direct
+  // cost was 72,251.68 and the tab reported 76.8%. Assert the gap explicitly so
+  // a regression that drops the term is named, not just numerically off.
+  eq((est.calculatedTotal - 72251.68).toFixed(2), "140075.85",
+     "the bought-in cost that used to vanish is exactly what was missing");
+
+  // Blank means UNCHANGED here too — clearing the box must not zero the column.
+  await POST("updateEstimate", { estimateId: id8, laborHours: 1050 });
+  const { est: e2 } = await readOne(JOB_75, id8);
+  eq(e2.otherCosts, 126850, "an unrelated update leaves other costs alone");
+  eq(e2.salesTax, 13225.85, "…and the tax");
+  eq(e2.calculatedTotal, 212673.98, "direct cost = 1050 x 32.50 + 38,473.13 + 140,075.85");
+
+  // And an update that DOES send them moves both.
+  await POST("updateEstimate", { estimateId: id8, otherCosts: 100000, salesTax: 11077.85 });
+  const { est: e3 } = await readOne(JOB_75, id8);
+  eq(e3.otherCosts, 100000, "other costs updatable on their own");
+  eq(e3.calculatedTotal, 183675.98, "direct cost = 34,125 + 38,473.13 + 111,077.85");
+
+  // ⚠⚠ THE JOB CARD, NOT JUST THE ESTIMATE CARD. These two screens read
+  // different things: the estimate card comes from `jobEstimates`, the card
+  // above it from `jobById` → v_job_rollups_true. Adding the rollup to
+  // v_job_rollups but not to that passthrough left every assertion above
+  // passing while the job card showed $0.00 and dropped six figures from
+  // Estimated Direct Cost. Assert the screen the number is actually on.
+  await POST("updateEstimateStatus", { estimateId: id8, status: "Sent" });
+  const job = json(await GET("jobById", { jobId: JOB_75 })).job;
+  eq(job.projectedEstimatedOtherCost, 111077.85,
+     "THE JOB CARD sees bought-in cost — a passthrough view that drops it reads $0.00 and nothing throws");
+  eq(
+    (job.projectedEstimatedTotalCost -
+     (job.projectedEstimatedMaterialCost + job.projectedEstimatedLaborCost)).toFixed(2),
+    "111077.85",
+    "and Estimated Direct Cost is the THREE-term sum, not two");
+}
+
 console.log("\n── 9. CLEAN UP ────────────────────────────────────────────────────");
 for (const id of created) await POST("deleteJobEstimate", { estimateId: id });
 console.log(`  removed ${created.length} scratch estimates`);

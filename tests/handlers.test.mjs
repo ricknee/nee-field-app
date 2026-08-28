@@ -2298,14 +2298,18 @@ await test("est GP: material markup is not a cost, and a pre-split estimate keep
   // 1. THE COST BASIS EXCLUDES THE MARKUP. If `directCost` ever picks up `sell`
   //    instead of `cost`, GP silently returns to being understated — no error,
   //    no failed save, just the old wrong number back on the screen.
-  const der = src.slice(src.indexOf("function estDerived"), src.indexOf("function estDerived") + 1400);
+  const der = src.slice(src.indexOf("function estDerived"), src.indexOf("function estDerived") + 3200);
   ok(/const cost = `COALESCE\(\$\{matRaw\}, \$\{matEntered\}, 0::numeric\)`/.test(der),
      "cost basis is raw cost, falling back to the figure as entered");
   ok(/const sell = `COALESCE\(\$\{matRaw\} \+ COALESCE\(\$\{matMarkup\}, 0::numeric\), \$\{matEntered\}, 0::numeric\)`/.test(der),
      "sell basis adds the markup on top of raw");
-  ok(/directCost:\s+`round\(\$\{h\} \* \$\{b\} \+ \$\{cost\}, 2\)`/.test(der),
+  // db/schema/066 appended `${oth}` to both. The assertions stay EXACT rather
+  // than loosening to /\$\{cost\}/ — the point of pinning the whole expression
+  // is that a future edit swapping `cost` for `sell` has to fail here, and a
+  // regex that only checks a term is present would let that through.
+  ok(/directCost:\s+`round\(\$\{h\} \* \$\{b\} \+ \$\{cost\} \+ \$\{oth\}, 2\)`/.test(der),
      "DIRECT COST USES `cost`, NEVER `sell` — this is the whole bug");
-  ok(/sellingPrice:\s+`round\(\$\{sell\} \+ \$\{h\} \* \$\{sr\}, 2\)`/.test(der),
+  ok(/sellingPrice:\s+`round\(\$\{sell\} \+ \$\{h\} \* \$\{sr\} \+ \$\{oth\}, 2\)`/.test(der),
      "the calculated PRICE uses sell, and charges labor at the sell rate");
 
   // 2. A LEGACY ROW IS UNTOUCHED. `matRaw` is NULL on all 90 pre-split rows, and
@@ -2365,6 +2369,111 @@ await test("est GP: material markup is not a cost, and a pre-split estimate keep
      "the full ETL preserves the columns the app now owns");
   ok(/cols: \["estimated_labor_cost", "estimated_material_cost", "calculated_estimated_total"\]/.test(etl),
      "and it names all three of them");
+});
+
+// ── db/schema/066 — bought-in cost, and the sign-flipped twin of the 065 bug ──
+// A bid summary carries two cost lines the estimate had nowhere to put: other
+// bought-in cost ($126,850 on Southwood) and the sales tax on it ($13,225.85).
+// Keyed in without them, $140,075.85 of real cost vanished and the tab reported
+// 76.8% GP on a job that estimates at 31.8%.
+//
+// ⚠ 065's error made GP read LOW, which is why it survived five years — nobody
+// chases a number that looks too small. THIS one reads HIGH, and a high GP gets
+// acted on. Every guard below exists to keep a cost from going missing quietly.
+await test("est GP: bought-in cost and tax reach DIRECT COST, or GP reads high", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const sql  = readFileSync(fileURLToPath(new URL("../db/schema/066_estimate_other_costs.sql", import.meta.url)), "utf8");
+
+  // 1. THE ARITHMETIC. Both terms, both sides. (The exact `directCost` /
+  //    `sellingPrice` strings are pinned in the 065 block above; this asserts
+  //    the fragment they consume is built from BOTH columns.)
+  const der = src.slice(src.indexOf("function estDerived"), src.indexOf("function estDerived") + 3200);
+  ok(/const oth\s+= `\(COALESCE\(\$\{other\}, 0::numeric\) \+ COALESCE\(\$\{tax\}, 0::numeric\)\)`/.test(der),
+     "bought-in cost is other + tax, and a missing one reads as zero");
+
+  // 2. NO DEFAULT ON THE FRAGMENT ARGS. A caller that forgets them must produce
+  //    a Postgres error, not an estimate whose bought-in cost is silently zero —
+  //    that is a understated cost and an OVERSTATED GP, the exact failure this
+  //    file exists to stop. Destructuring with `= 'NULL'` would hide it.
+  ok(/function estDerived\(\{ hours, matRaw, matMarkup, matEntered, sellRate, burden, other, tax \}\)/.test(der),
+     "estDerived takes other/tax with NO default — a forgetful caller must fail loudly");
+
+  // 3. BOTH WRITE PATHS PASS THEM. Two callers, and the create's are cast bind
+  //    params while the update's are COALESCE-onto-the-stored-column fragments.
+  ok(/other: "\$15::numeric", tax: "\$16::numeric"/.test(src),
+     "the create binds both");
+  ok(/other:\s+"COALESCE\(\$10, other_costs\)"/.test(src) &&
+     /tax:\s+"COALESCE\(\$11, sales_tax\)"/.test(src),
+     "the update keeps blank-means-unchanged for both");
+  ok(/other_costs\s+= \$\{E\.other\}/.test(src) && /sales_tax\s+= \$\{E\.tax\}/.test(src),
+     "and actually SETs the two columns — a resolved fragment nothing assigns is a no-op");
+  ok(/num\(otherCosts\), num\(salesTax\)\]\)/.test(src),
+     "the create's parameter array carries them in $15/$16 order");
+
+  // 4. THE ROLLUP, AND THE FILTERED TWIN. `proj_est_other_cost` is the
+  //    unfiltered column and its name sounds right, which is exactly the trap
+  //    CLAUDE.md documents — the Est. GP card has always hidden Draft and
+  //    Rejected estimates, so the card must read `est_other_cost_rollup`.
+  ok(/AS est_other_cost_rollup/.test(sql) && /AS proj_est_other_cost/.test(sql),
+     "the view exposes both twins");
+  //    ⚠⚠ AND THE PASSTHROUGH. handleJobs/handleJobById read v_job_rollups_true,
+  //    which names its parent's columns one by one and has no SELECT *. Adding a
+  //    column to v_job_rollups alone leaves the mapper asking for a column that
+  //    is not there — `undefined`, which `n(...) || 0` renders as a clean $0.00.
+  //    This WAS the state of this change for twenty minutes and nothing threw.
+  const trueView = sql.slice(sql.indexOf("CREATE OR REPLACE VIEW v_job_rollups_true"));
+  ok(trueView.length > 500, "066 rebuilds the passthrough view too");
+  ok(/r\.est_other_cost_rollup/.test(trueView) && /r\.proj_est_other_cost/.test(trueView),
+     "v_job_rollups_true FORWARDS both — adding to the parent alone renders $0.00 silently");
+  ok(/LEFT JOIN v_job_rollups_true\s+r ON r\.id = j\.id/.test(src),
+     "…and that really is the view the job read selects from");
+  ok(/const projectedEstimatedOtherCost\s+= n\(r\.est_other_cost_rollup\) \|\| 0/.test(src),
+     "and the Neon mapper reads the FILTERED one");
+  ok(/projectedEstimatedMaterialCost \+ projectedEstimatedLaborCost\s*\n?\s*\+ projectedEstimatedOtherCost/.test(src),
+     "DIRECT COST IS A THREE-TERM SUM — dropping the third is a six-figure silent overstatement");
+
+  // 5. THE TWO MAPPERS KEEP THE SAME KEYS. A key present in one and absent from
+  //    the other is how a field silently disappears (the standing rule on this
+  //    pair). The Airtable mapper emits NULL — "cannot know", not "zero".
+  // Bounded by mapJob's OWN closing brace, not by a character count and not by
+  // the next function: a short slice silently misses the emit block, and slicing
+  // as far as mapJobFromNeon swallows JOB_SELECT — which names
+  // est_other_cost_rollup perfectly legitimately and makes 5b fail on correct
+  // code. The assertion is about this function's body and nothing else.
+  const mapJobAt = src.indexOf("function mapJob(r)");
+  const atMap    = src.slice(mapJobAt, src.indexOf("\n}\n", mapJobAt));
+  ok(atMap.length > 2000 && atMap.length < 20000 && /projectedGrossProfitPct/.test(atMap),
+     "the mapJob slice really is mapJob's body");
+  ok(/projectedEstimatedOtherCost:\s+null/.test(atMap),
+     "the Airtable mapper emits the key as NULL rather than omitting it");
+  ok(!/est_other_cost_rollup/.test(atMap),
+     "…and does NOT invent a value — Airtable has no such column and never will");
+
+  // 6. THE SCREEN ACCOUNTS FOR ITS OWN NUMBER. Estimated Direct Cost can move by
+  //    six figures on this change; a grid with no tile for the third term is the
+  //    same silent shape as a native row matching nothing.
+  ok(/infoBox\("Other Costs \+ Tax", fmtCurrency\(job\.projectedEstimatedOtherCost\)\)/.test(html),
+     "the Est GP grid shows the term that moved Direct Cost");
+
+  // 7. LABOR MUST NOT LAND IN THIS BOX, and a bid summary is the document that
+  //    tempts it: its "Extended Labor Costs" is priced at the QUOTED rate, so it
+  //    is labor SELL wearing the word cost. Putting it here moves the company's
+  //    own margin onto the cost side and reports Southwood at 14.3%.
+  ok(/LABOR DOES NOT GO IN "Other Costs"/.test(html),
+     "both entry points warn against the one wrong thing to type here");
+  ok(/OVERHEAD AND PROFIT PERCENTS ARE NOT STORED AND MUST NOT BE/.test(sql),
+     "and the schema says why overhead is not a job cost");
+
+  // 8. THE TAX BASE. Material + other. Labor is not taxable and a sub pays tax
+  //    on their own purchases — both what the bid program does and what Ohio
+  //    does. A fill that quietly taxed labor would overstate cost on every job.
+  ok(/const base = matBasis \+ numOr0\(f\.otherCosts\)/.test(html),
+     "the card's fill taxes material + other, never labor");
+  ok(/Number\(\$\("newEstMaterial"\)\.value \|\| 0\) \+ Number\(\$\("newEstOther"\)\.value \|\| 0\)/.test(html),
+     "and the modal's fill uses the same base");
 });
 
 await test("est GP: the new estimate fields fail CLOSED without a database", async () => {

@@ -5214,6 +5214,13 @@
   // called the difference profit, so GP came out low by exactly the markup.
   const EST_BURDEN_FALLBACK = 32.50;
   const EST_SELL_FALLBACK   = 75.00;
+  // db/schema/066. Mirrors EST_SALES_TAX_RATE in netlify/functions/airtable.js.
+  // ⚠ It is duplicated because the New Estimate modal never calls jobEstimates
+  // and so has no `jobDefaults` to read — the estimate CARD uses the server's
+  // value (`jd.salesTaxRate`) and only falls back to this. Both are a fill
+  // convenience for a box storing DOLLARS, so drift changes what a button
+  // pre-fills and nothing that is stored. Keep them equal anyway.
+  const EST_SALES_TAX_RATE  = 0.08;
   function estMath(v) {
     const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
     const has = (x) => x !== null && x !== undefined && x !== "";
@@ -5227,12 +5234,22 @@
     const matSell  = matCost + markup;
     const laborCost = hours * burden;
     const laborSell = hours * sellRate;
-    const directCost = matCost + laborCost;
-    const calcPrice  = matSell + laborSell;
+    // db/schema/066 — bought-in direct cost and the tax on it. Unlike the
+    // material pair above there is no legacy fork: NULL here means the job had
+    // none, not "read some other column instead", so both simply read as 0.
+    //
+    // ⚠ IT IS ON BOTH SIDES, and that is not double counting. Cost, because you
+    // pay it; price, because a quote that passes a $126,850 sub through has to
+    // recover it. On a bid-program estimate that makes calcPrice reproduce the
+    // program's own pre-overhead subtotal, so the gap to the price actually
+    // quoted reads as the margin added on top.
+    const otherCost = num(v.otherCosts) + num(v.salesTax);
+    const directCost = matCost + laborCost + otherCost;
+    const calcPrice  = matSell + laborSell + otherCost;
     const finalPrice = has(v.actualEstimate) ? num(v.actualEstimate) : 0;
     const gpDollars  = finalPrice - directCost;
     return {
-      legacy, hours, burden, sellRate, matCost, markup, matSell,
+      legacy, hours, burden, sellRate, matCost, markup, matSell, otherCost,
       laborCost, laborSell, directCost, calcPrice, finalPrice, gpDollars,
       suggested: calcPrice + num(v.priceAdjustment),
       // Guarded rather than assumed positive: a $0 estimate is a real state
@@ -5259,6 +5276,11 @@
       ${infoBox("Labor Hours", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—")}
       ${infoBox("Labor Cost", fmtCurrency(job.projectedEstimatedLaborCost))}
       ${infoBox("Raw Material Cost", fmtCurrency(job.projectedEstimatedMaterialCost))}
+      <!-- db/schema/066. This tile is not decoration: it is the third term of
+           Estimated Direct Cost above, and without it that number can move by
+           six figures with nothing on screen accounting for the change. Subs,
+           quoted gear, rentals and the sales tax paid on them. -->
+      ${infoBox("Other Costs + Tax", fmtCurrency(job.projectedEstimatedOtherCost))}
       ${infoBox("Material Markup", fmtCurrency(job.projectedEstimatedMaterialMarkup))}
       ${infoBox("Material Sell", fmtCurrency(job.projectedEstimatedMaterialSell))}
       ${infoBox("Labor Sell", fmtCurrency(job.projectedEstimatedLaborSell))}`;
@@ -5399,6 +5421,30 @@
                        value="${est.laborSellRate != null ? est.laborSellRate : ""}"
                        placeholder="${jd.sellRate != null ? jd.sellRate : (jd.fallbackSellRate != null ? jd.fallbackSellRate : 75)}" />
               </div>
+              <!-- ── db/schema/066 ────────────────────────────────────────────
+                   ⚠ LABOR DOES NOT GO IN "Other Costs", and a bid summary is
+                   exactly the document that tempts it: its "Extended Labor
+                   Costs" line is priced at the rate you QUOTED, so it is labor
+                   sell wearing the word cost. Put the HOURS in the box above and
+                   the quoted rate beside it. -->
+              <div>
+                <label class="edit-label">Other Costs ($)</label>
+                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-other edit-input" style="font-size:13px;"
+                       value="${est.otherCosts != null ? est.otherCosts : ""}" placeholder="0.00"
+                       title="Bought-in job cost at COST: subcontracts, quoted gear, rentals, equipment. Not labor — that is hours × rate above." />
+              </div>
+              <div>
+                <!-- Hard against its own label, not space-between — see the note
+                     on the markup fill above for why that mattered. -->
+                <label class="edit-label" style="display:flex; align-items:baseline; gap:8px;">
+                  <span>Sales Tax ($)</span>
+                  ${jd.salesTaxRate ? `<button type="button" data-est-id="${esc(est.id)}" class="est-tax-fill"
+                       style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"
+                       title="Fill at ${(jd.salesTaxRate * 100).toFixed(0)}% of material + other costs — labor is not taxable and a sub pays tax on their own purchases">fill ${(jd.salesTaxRate * 100).toFixed(0)}%</button>` : ""}
+                </label>
+                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-tax edit-input" style="font-size:13px;"
+                       value="${est.salesTax != null ? est.salesTax : ""}" placeholder="0.00" />
+              </div>
             </div>
 
             <!-- Derived, never editable, recomputed on every keystroke by
@@ -5441,6 +5487,12 @@
           materialRawCost: v("est-raw",      est?.materialRawCost),
           materialMarkup:  v("est-markup",   est?.materialMarkup),
           laborSellRate:   v("est-sellrate", est?.laborSellRate),
+          // db/schema/066, through the SAME blank-means-unchanged helper as
+          // everything else — updateEstimate resolves them with
+          // COALESCE($n, other_costs) / COALESCE($n, sales_tax), so clearing a
+          // box does not zero the column, and the live GP must say the same.
+          otherCosts:      v("est-other",    est?.otherCosts),
+          salesTax:        v("est-tax",      est?.salesTax),
           // Not editable, and needed only so a still-unsplit row keeps showing
           // the figure it was entered with as its cost basis.
           materialCost:    est?.materialCost,
@@ -5459,6 +5511,10 @@
         box.innerHTML =
           cell("Material Sell", fmtCurrency(m.matSell)) +
           cell("Labor Sell", fmtCurrency(m.laborSell)) +
+          // Only when there is one. On the ~90% of estimates with no bought-in
+          // cost this cell would be a permanent $0.00 teaching the reader that
+          // the concept does not apply here — it does, it is just empty.
+          (m.otherCost ? cell("Other + Tax", fmtCurrency(m.otherCost)) : "") +
           cell("Calculated Price", fmtCurrency(m.calcPrice)) +
           cell("Est. Direct Cost", fmtCurrency(m.directCost)) +
           cell("Est. GP $", fmtCurrency(m.gpDollars), true) +
@@ -5489,6 +5545,34 @@
         });
       });
 
+      // "fill 8%" next to Sales Tax. The base is material + other costs —
+      // labor is not taxable, and a subcontractor pays tax on their own
+      // purchases, so quoted work is not taxed again here. That is both what
+      // the bid program does and what Ohio does.
+      //
+      // ⚠ Reads the STORED values behind the boxes, not just what is typed,
+      // for the same reason estCardValues does: on an estimate that already
+      // holds a material cost, an untouched box is empty but the cost is not
+      // zero, and filling tax on a zero base would quietly write $0.00.
+      estimatesSection.querySelectorAll(".est-tax-fill").forEach(b => {
+        b.addEventListener("click", () => {
+          const estId = b.dataset.estId;
+          const row   = b.closest("div[style*='border-radius:10px']");
+          const f     = estCardValues(row, estId, byId.get(String(estId)));
+          const numOr0 = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
+          // The material cost basis, legacy fork included — a pre-split row has
+          // no raw cost and its entered figure is the basis. Same rule estMath
+          // uses, so the filled tax matches the GP shown right below it.
+          const matBasis = f.materialRawCost !== "" && f.materialRawCost != null
+            ? numOr0(f.materialRawCost) : numOr0(f.materialCost);
+          const base = matBasis + numOr0(f.otherCosts);
+          if (!base) { alert("Enter the material and/or other costs first — the tax is a percentage of them."); return; }
+          row.querySelector(`.est-tax[data-est-id="${estId}"]`).value =
+            (base * Number(jd.salesTaxRate || 0)).toFixed(2);
+          paintEstCalc(row, estId);
+        });
+      });
+
       // Wire save buttons
       estimatesSection.querySelectorAll(".est-save-btn").forEach(btn => {
         btn.addEventListener("click", async () => {
@@ -5506,6 +5590,8 @@
             materialRawCost: f.materialRawCost,
             materialMarkup:  f.materialMarkup,
             laborSellRate:   f.laborSellRate,
+            otherCosts:      f.otherCosts,
+            salesTax:        f.salesTax,
           };
           btn.disabled = true; btn.textContent = "Saving...";
           try {
@@ -17404,6 +17490,8 @@
       $("newEstMarkup")?.value,
       $("newEstSellRate")?.value,
       $("newEstAdjust")?.value,
+      $("newEstOther")?.value,
+      $("newEstTax")?.value,
       $("newEstNotes")?.value
     ].some(v => v && String(v).trim());
   }
@@ -17420,6 +17508,8 @@
       materialMarkup:  $("newEstMarkup")?.value,
       laborSellRate:   $("newEstSellRate")?.value,
       priceAdjustment: $("newEstAdjust")?.value,
+      otherCosts:      $("newEstOther")?.value,
+      salesTax:        $("newEstTax")?.value,
       jobSellRate:     _newEstJob?.billableHourlyRate,
     });
     const cell = (label, value, strong) =>
@@ -17428,6 +17518,7 @@
     box.innerHTML =
       cell("Material Sell", fmtCurrency(m.matSell)) +
       cell("Labor Sell", fmtCurrency(m.laborSell)) +
+      (m.otherCost ? cell("Other + Tax", fmtCurrency(m.otherCost)) : "") +
       cell("Calculated Price", fmtCurrency(m.calcPrice)) +
       cell("Est. Direct Cost", fmtCurrency(m.directCost)) +
       cell("Est. GP $", fmtCurrency(m.gpDollars), true) +
@@ -17562,6 +17653,8 @@
     $("newEstMarkup").value   = "";
     $("newEstSellRate").value = "";
     $("newEstAdjust").value   = "";
+    $("newEstOther").value    = "";
+    $("newEstTax").value      = "";
     $("newEstNotes").value    = "";
     _newEstSetType("Original");
     $("newEstMsg").style.display = "none";
@@ -17590,7 +17683,25 @@
     } else {
       fill.style.display = "none";
     }
-    ["newEstBase", "newEstLabor", "newEstMaterial", "newEstMarkup", "newEstSellRate", "newEstAdjust"]
+
+    // db/schema/066 — the tax fill, wired HERE for the same DOM-order reason the
+    // markup fill is: this markup sits below the main script block, so anything
+    // bound at load time never sees it. Base is material + other costs; labor is
+    // not taxable and a sub pays tax on their own purchases.
+    const taxFill = $("newEstTaxFill");
+    if (taxFill) {
+      taxFill.textContent = `fill ${(EST_SALES_TAX_RATE * 100).toFixed(0)}%`;
+      taxFill.title = "Fill at 8% of material + other costs — labor is not taxable and a sub pays tax on their own purchases";
+      taxFill.style.display = "";
+      taxFill.onclick = () => {
+        const base = Number($("newEstMaterial").value || 0) + Number($("newEstOther").value || 0);
+        if (!base) { alert("Enter the material and/or other costs first — the tax is a percentage of them."); return; }
+        $("newEstTax").value = (base * EST_SALES_TAX_RATE).toFixed(2);
+        _newEstPaint();
+      };
+    }
+    ["newEstBase", "newEstLabor", "newEstMaterial", "newEstMarkup", "newEstSellRate", "newEstAdjust",
+     "newEstOther", "newEstTax"]
       .forEach(id => { const el = $(id); if (el) el.oninput = _newEstPaint; });
     _newEstPaint();
 
@@ -17667,6 +17778,8 @@
         materialRawCost: $("newEstMaterial").value,
         materialMarkup:  $("newEstMarkup").value,
         laborSellRate:   $("newEstSellRate").value,
+        otherCosts:      $("newEstOther").value,
+        salesTax:        $("newEstTax").value,
         priceAdjustment: $("newEstAdjust").value,
         notes,
         estimateType:     _newEstType,
@@ -25162,6 +25275,24 @@
         <div class="sl-field">
           <label>Labor Sell Rate ($/hr)</label>
           <input id="newEstSellRate" type="number" step="0.01" class="edit-input" placeholder="75.00" />
+        </div>
+        <!-- ── db/schema/066 ──────────────────────────────────────────────────
+             ⚠ LABOR DOES NOT GO IN "Other Costs". A bid summary's "Extended
+             Labor Costs" is priced at the rate you QUOTED, so it is labor sell
+             wearing the word cost — putting it here would move your own margin
+             onto the cost side. Hours go in the box above, quoted rate beside
+             it, and the Labor Sell cell below will match the report. -->
+        <div class="sl-field">
+          <label>Other Costs ($)</label>
+          <input id="newEstOther" type="number" step="0.01" class="edit-input" placeholder="0.00"
+                 title="Bought-in job cost at COST: subcontracts, quoted gear, rentals, equipment. Not labor — that is hours × rate." />
+        </div>
+        <div class="sl-field">
+          <label style="display:flex; align-items:baseline; gap:8px;">
+            <span>Sales Tax ($)</span>
+            <button type="button" id="newEstTaxFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"></button>
+          </label>
+          <input id="newEstTax" type="number" step="0.01" class="edit-input" placeholder="0.00" />
         </div>
       </div>
 

@@ -316,6 +316,44 @@ console.log("\n── 8b. THE SOUTHWOOD BID: bought-in cost and tax (db/schema/0
     "and Estimated Direct Cost is the THREE-term sum, not two");
 }
 
+console.log("\n── 8c. THE TAX RATE IS A RECORD, NOT AN INPUT (db/schema/067) ──────");
+// Ohio rates vary by county, so 8% was never safe as a constant. The rate is
+// now stored so reopening an estimate answers "where did that tax come from?".
+//
+// ⚠ THE POINT OF THIS BLOCK: nothing derives sales_tax FROM tax_rate_pct. A
+// part-exempt or split-county job is entered as dollars that no single rate
+// explains, and every later save must leave those dollars alone. If a future
+// edit ever "helpfully" recomputes tax = rate x base, these assertions fail.
+{
+  const id9 = await mk(JOB_75, {
+    baseAmount: 311303.98, laborHours: 1039.34,
+    materialRawCost: 38473.13, materialMarkup: 0, laborSellRate: 85,
+    otherCosts: 126850, salesTax: 11985.93, taxRatePct: 0.0725,
+  });
+  const { est } = await readOne(JOB_75, id9);
+  eq(est.taxRatePct, 0.0725, "the rate is stored as a FRACTION, matching jobs.markup_pct");
+  eq(est.salesTax, 11985.93, "and the dollars are 7.25% of 165,323.13");
+  eq(est.calculatedTotal, 211087.61, "direct cost = 33,778.55 + 38,473.13 + 126,850 + 11,985.93");
+  const gp = est.actualEstimate - est.calculatedTotal;
+  eq((gp / est.actualEstimate * 100).toFixed(1), "32.2", "GP % = 32.2 at 7.25%, vs 31.8 at 8%");
+
+  // A part-exempt job: dollars that no rate explains. Changing anything else
+  // must not recompute them.
+  await POST("updateEstimate", { estimateId: id9, salesTax: 4000 });
+  await POST("updateEstimate", { estimateId: id9, laborHours: 1100 });
+  const { est: e2 } = await readOne(JOB_75, id9);
+  eq(e2.salesTax, 4000, "A HAND-TYPED TAX SURVIVES a later unrelated save — nothing derives it from the rate");
+  eq(e2.taxRatePct, 0.0725, "…and the rate it no longer matches is still on the row, unchanged");
+
+  // The CHECK, and the sentence in front of it. 725 is what you get by typing
+  // 7.25 into a box that already means percent, twice over.
+  const bad = json(await POST("updateEstimate", { estimateId: id9, taxRatePct: 7.25 }));
+  eq(bad.ok, false, "a 725% rate is refused");
+  eq(/between 0% and 100%/.test(bad.error || ""), true, "and the refusal names the units, not the constraint");
+  const { est: e3 } = await readOne(JOB_75, id9);
+  eq(e3.taxRatePct, 0.0725, "a refused update changes nothing");
+}
+
 console.log("\n── 9. CLEAN UP ────────────────────────────────────────────────────");
 for (const id of created) await POST("deleteJobEstimate", { estimateId: id });
 console.log(`  removed ${created.length} scratch estimates`);

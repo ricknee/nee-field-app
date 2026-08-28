@@ -5259,6 +5259,33 @@
   }
   const fmtPct1 = (p) => (p === null ? "—" : `${p.toFixed(1)}%`);
 
+  // ── db/schema/067 — "that tax is too small for that purchase" ─────────────
+  // On the first day this shipped, an 8 was typed into the Sales Tax box beside
+  // a control reading "fill 8%". Eight dollars of tax on $165,323 of purchases.
+  // Nothing errored, nothing looked broken, and the job reported 36.0% instead
+  // of 31.8% — wrong by $13,218 and four points, in the direction people act on.
+  //
+  // The mirror mistake is typing 0.0725 into a box that already means percent,
+  // which bills 0.07% of the purchase. Both land here.
+  //
+  // ⚠ A HINT, NOT A REFUSAL, and that is the whole design. A genuinely tiny tax
+  // is legal — part-exempt jobs, resale certificates, a job that is nearly all
+  // labor — so blocking the save would make the honest case impossible to
+  // record. It only refuses to let the mistake pass in SILENCE.
+  // Returns null when there is nothing to say.
+  function estTaxWarning(taxDollars, base, ratePct) {
+    const t = Number(taxDollars), b = Number(base);
+    if (!Number.isFinite(t) || !Number.isFinite(b) || t <= 0 || b <= 0) return null;
+    const implied = t / b;
+    if (implied >= 0.01) return null;                 // 1%+ is a real rate, say nothing
+    const r = Number(ratePct);
+    const suggestion = Number.isFinite(r) && r > 0
+      ? ` At ${r}% it would be ${fmtCurrency(b * r / 100)}.`
+      : "";
+    return `⚠ ${fmtCurrency(t)} is ${(implied * 100).toFixed(3)}% of material + other. ` +
+           `This box takes DOLLARS, not a percentage.${suggestion}`;
+  }
+
   async function renderEstGp(job) {
     const grid = $("estGpGrid");
     // ⚠ Expected Revenue is the ALL-STATUS figure while every cost card beside
@@ -5436,14 +5463,28 @@
               <div>
                 <!-- Hard against its own label, not space-between — see the note
                      on the markup fill above for why that mattered. -->
-                <label class="edit-label" style="display:flex; align-items:baseline; gap:8px;">
+                <!-- db/schema/067. The rate is an INPUT, not a constant, because
+                     it varies by county — and it is STORED, so reopening this
+                     estimate answers "where did that tax figure come from?".
+                     ⚠ A <div>, not a <label>: a <label> wrapping an input makes
+                     clicking the words "Sales Tax" focus the RATE box instead of
+                     the dollars box beside it. -->
+                <div class="edit-label" style="display:flex; align-items:baseline; gap:5px;">
                   <span>Sales Tax ($)</span>
-                  ${jd.salesTaxRate ? `<button type="button" data-est-id="${esc(est.id)}" class="est-tax-fill"
+                  <input type="number" step="0.01" min="0" max="100" data-est-id="${esc(est.id)}" class="est-taxrate"
+                         style="width:48px; font-size:10.5px; padding:1px 4px; border:1px solid var(--line-2); border-radius:4px; background:var(--panel); color:var(--text); font-family:inherit; font-weight:600;"
+                         value="${est.taxRatePct != null ? (est.taxRatePct * 100).toFixed(2).replace(/\.?0+$/, "") : (jd.salesTaxRate != null ? (jd.salesTaxRate * 100).toFixed(2).replace(/\.?0+$/, "") : "")}"
+                         title="Sales-tax rate for this job, as a percentage. Varies by county." />
+                  <span style="font-size:10.5px; color:var(--muted);">%</span>
+                  <button type="button" data-est-id="${esc(est.id)}" class="est-tax-fill"
                        style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"
-                       title="Fill at ${(jd.salesTaxRate * 100).toFixed(0)}% of material + other costs — labor is not taxable and a sub pays tax on their own purchases">fill ${(jd.salesTaxRate * 100).toFixed(0)}%</button>` : ""}
-                </label>
+                       title="Fill at that rate x (material + other costs) — labor is not taxable and a sub pays tax on their own purchases">fill</button>
+                </div>
                 <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-tax edit-input" style="font-size:13px;"
                        value="${est.salesTax != null ? est.salesTax : ""}" placeholder="0.00" />
+                <!-- Written by paintEstCalc. See estTaxWarning for what it catches
+                     and why it is a hint rather than a refusal. -->
+                <div data-est-id="${esc(est.id)}" class="est-tax-warn" style="display:none; margin-top:4px; font-size:10.5px; line-height:1.4; color:#9a3412;"></div>
               </div>
             </div>
 
@@ -5493,6 +5534,10 @@
           // box does not zero the column, and the live GP must say the same.
           otherCosts:      v("est-other",    est?.otherCosts),
           salesTax:        v("est-tax",      est?.salesTax),
+          // db/schema/067. Read as a PERCENT here (that is what the box holds);
+          // converted to a fraction at the point of save, once, so the two
+          // conventions never meet in the middle of an expression.
+          taxRatePct:      v("est-taxrate",  est?.taxRatePct != null ? est.taxRatePct * 100 : null),
           // Not editable, and needed only so a still-unsplit row keeps showing
           // the figure it was entered with as its cost basis.
           materialCost:    est?.materialCost,
@@ -5519,6 +5564,16 @@
           cell("Est. Direct Cost", fmtCurrency(m.directCost)) +
           cell("Est. GP $", fmtCurrency(m.gpDollars), true) +
           cell("Est. GP %", fmtPct1(m.gpPct), true);
+
+        // db/schema/067. Recomputed on every keystroke alongside the GP, so the
+        // warning and the number it is about can never disagree.
+        const f    = estCardValues(row, estId, byId.get(String(estId)));
+        const warn = row.querySelector(`.est-tax-warn[data-est-id="${estId}"]`);
+        if (warn) {
+          const msg = estTaxWarning(f.salesTax, m.matCost + Number(f.otherCosts || 0), f.taxRatePct);
+          warn.textContent = msg || "";
+          warn.style.display = msg ? "block" : "none";
+        }
       };
 
       estimatesSection.querySelectorAll(".est-calc").forEach(box => {
@@ -5567,8 +5622,14 @@
             ? numOr0(f.materialRawCost) : numOr0(f.materialCost);
           const base = matBasis + numOr0(f.otherCosts);
           if (!base) { alert("Enter the material and/or other costs first — the tax is a percentage of them."); return; }
+          // db/schema/067 — the RATE BOX, not a constant. The box holds a
+          // percent; divide once, here, and never carry both conventions.
+          const ratePct = Number(f.taxRatePct);
+          if (!Number.isFinite(ratePct) || ratePct <= 0) {
+            alert("Enter the tax rate first — e.g. 7.25 for 7.25%."); return;
+          }
           row.querySelector(`.est-tax[data-est-id="${estId}"]`).value =
-            (base * Number(jd.salesTaxRate || 0)).toFixed(2);
+            (base * ratePct / 100).toFixed(2);
           paintEstCalc(row, estId);
         });
       });
@@ -5592,6 +5653,10 @@
             laborSellRate:   f.laborSellRate,
             otherCosts:      f.otherCosts,
             salesTax:        f.salesTax,
+            // db/schema/067 — the ONE place percent becomes fraction. The column
+            // matches jobs.markup_pct, so 7.25 on screen is 0.0725 stored.
+            taxRatePct:      f.taxRatePct === "" || f.taxRatePct == null
+                               ? "" : Number(f.taxRatePct) / 100,
           };
           btn.disabled = true; btn.textContent = "Saving...";
           try {
@@ -17536,6 +17601,17 @@
       const use = $("newEstUseSuggested");
       if (use) use.onclick = () => { $("newEstBase").value = m.suggested.toFixed(2); _newEstPaint(); };
     }
+
+    // db/schema/067 — same too-small-tax hint as the estimate card, same helper.
+    const warn = $("newEstTaxWarn");
+    if (warn) {
+      const msg = estTaxWarning(
+        $("newEstTax")?.value,
+        Number($("newEstMaterial")?.value || 0) + Number($("newEstOther")?.value || 0),
+        $("newEstTaxRate")?.value);
+      warn.textContent = msg || "";
+      warn.style.display = msg ? "block" : "none";
+    }
   }
 
   function _newEstComposeNotes(t) {
@@ -17655,6 +17731,7 @@
     $("newEstAdjust").value   = "";
     $("newEstOther").value    = "";
     $("newEstTax").value      = "";
+    $("newEstTaxWarn").style.display = "none";
     $("newEstNotes").value    = "";
     _newEstSetType("Original");
     $("newEstMsg").style.display = "none";
@@ -17690,18 +17767,23 @@
     // not taxable and a sub pays tax on their own purchases.
     const taxFill = $("newEstTaxFill");
     if (taxFill) {
-      taxFill.textContent = `fill ${(EST_SALES_TAX_RATE * 100).toFixed(0)}%`;
-      taxFill.title = "Fill at 8% of material + other costs — labor is not taxable and a sub pays tax on their own purchases";
+      // db/schema/067 — the rate box seeds from the company default and is then
+      // the estimator's to change; the fill reads the BOX, never the constant.
+      $("newEstTaxRate").value = (EST_SALES_TAX_RATE * 100).toFixed(2).replace(/\.?0+$/, "");
+      taxFill.textContent = "fill";
+      taxFill.title = "Fill at that rate × (material + other costs) — labor is not taxable and a sub pays tax on their own purchases";
       taxFill.style.display = "";
       taxFill.onclick = () => {
         const base = Number($("newEstMaterial").value || 0) + Number($("newEstOther").value || 0);
         if (!base) { alert("Enter the material and/or other costs first — the tax is a percentage of them."); return; }
-        $("newEstTax").value = (base * EST_SALES_TAX_RATE).toFixed(2);
+        const ratePct = Number($("newEstTaxRate").value);
+        if (!Number.isFinite(ratePct) || ratePct <= 0) { alert("Enter the tax rate first — e.g. 7.25 for 7.25%."); return; }
+        $("newEstTax").value = (base * ratePct / 100).toFixed(2);
         _newEstPaint();
       };
     }
     ["newEstBase", "newEstLabor", "newEstMaterial", "newEstMarkup", "newEstSellRate", "newEstAdjust",
-     "newEstOther", "newEstTax"]
+     "newEstOther", "newEstTax", "newEstTaxRate"]
       .forEach(id => { const el = $(id); if (el) el.oninput = _newEstPaint; });
     _newEstPaint();
 
@@ -17780,6 +17862,8 @@
         laborSellRate:   $("newEstSellRate").value,
         otherCosts:      $("newEstOther").value,
         salesTax:        $("newEstTax").value,
+        // db/schema/067 — percent on screen, fraction in the column, converted once.
+        taxRatePct:      $("newEstTaxRate").value === "" ? "" : Number($("newEstTaxRate").value) / 100,
         priceAdjustment: $("newEstAdjust").value,
         notes,
         estimateType:     _newEstType,
@@ -25288,11 +25372,17 @@
                  title="Bought-in job cost at COST: subcontracts, quoted gear, rentals, equipment. Not labor — that is hours × rate." />
         </div>
         <div class="sl-field">
-          <label style="display:flex; align-items:baseline; gap:8px;">
+          <!-- db/schema/067 — a <div>, not a <label>: a label wrapping an input
+               makes clicking "Sales Tax" focus the rate box, not the dollars. -->
+          <div style="display:flex; align-items:baseline; gap:5px; font-size:11px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); margin-bottom:4px;">
             <span>Sales Tax ($)</span>
-            <button type="button" id="newEstTaxFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"></button>
-          </label>
+            <input id="newEstTaxRate" type="number" step="0.01" min="0" max="100"
+                   style="width:48px; font-size:10.5px; padding:1px 4px; border:1px solid var(--line-2); border-radius:4px; background:var(--panel); color:var(--text); font-family:inherit; font-weight:600; text-transform:none; letter-spacing:0;" />
+            <span style="font-size:10.5px;">%</span>
+            <button type="button" id="newEstTaxFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; text-transform:none; letter-spacing:0; white-space:nowrap;"></button>
+          </div>
           <input id="newEstTax" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <div id="newEstTaxWarn" style="display:none; margin-top:4px; font-size:10.5px; line-height:1.4; color:#9a3412;"></div>
         </div>
       </div>
 

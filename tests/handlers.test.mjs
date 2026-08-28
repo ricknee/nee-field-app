@@ -2255,9 +2255,9 @@ await test("slice 3: the columns Airtable used to compute are computed here, and
   // 2. A partial update recomputes from the STORED values of the fields it was
   //    not given. Editing only the material cost still moves the total.
   const upd = src.slice(src.indexOf("async function handleUpdateEstimate"));
-  ok(/COALESCE\(\$3, estimated_labor_hours\)/.test(upd.slice(0, 2000)),
+  ok(/COALESCE\(\$3, estimated_labor_hours\)/.test(upd.slice(0, 3200)),
      "update derives from stored hours when hours weren't sent");
-  ok(/COALESCE\(\$4, estimated_material_cost\)/.test(upd.slice(0, 2000)),
+  ok(/COALESCE\(\$4, estimated_material_cost\)/.test(upd.slice(0, 3200)),
      "update derives from stored material when material wasn't sent");
 
   // 3. invoice_total stays NULL on a native invoice: v_invoices.invoice_total_calc
@@ -2410,8 +2410,8 @@ await test("est GP: bought-in cost and tax reach DIRECT COST, or GP reads high",
      "the update keeps blank-means-unchanged for both");
   ok(/other_costs\s+= \$\{E\.other\}/.test(src) && /sales_tax\s+= \$\{E\.tax\}/.test(src),
      "and actually SETs the two columns — a resolved fragment nothing assigns is a no-op");
-  ok(/num\(otherCosts\), num\(salesTax\)\]\)/.test(src),
-     "the create's parameter array carries them in $15/$16 order");
+  ok(/num\(otherCosts\), num\(salesTax\), num\(taxRatePct\)\]\)/.test(src),
+     "the create's parameter array carries them in $15/$16/$17 order");
 
   // 4. THE ROLLUP, AND THE FILTERED TWIN. `proj_est_other_cost` is the
   //    unfiltered column and its name sounds right, which is exactly the trap
@@ -2474,6 +2474,66 @@ await test("est GP: bought-in cost and tax reach DIRECT COST, or GP reads high",
      "the card's fill taxes material + other, never labor");
   ok(/Number\(\$\("newEstMaterial"\)\.value \|\| 0\) \+ Number\(\$\("newEstOther"\)\.value \|\| 0\)/.test(html),
      "and the modal's fill uses the same base");
+});
+
+// ── db/schema/067 — the tax RATE, and the $8 that read as 36.0% GP ───────────
+// Two findings from the owner's first real entry, 2026-08-28. The rate was a
+// constant, so a 7.25% county meant a calculator. And an `8` typed into a box
+// labelled "Sales Tax ($)" next to a control reading "fill 8%" produced eight
+// dollars of tax on $165,323 of purchases — no error, a plausible 36.0%, wrong
+// by $13,218 and four points of GP.
+await test("est GP: the tax rate is stored, and $8 of tax on $165k says so", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const sql  = readFileSync(fileURLToPath(new URL("../db/schema/067_estimate_tax_rate.sql", import.meta.url)), "utf8");
+
+  // 1. ⚠⚠ THE RATE IS A RECORD, NOT AN INPUT. Nothing may derive sales_tax from
+  //    it: a part-exempt or split-county job is entered as dollars no single
+  //    rate explains, and a formula would overwrite that correction on the next
+  //    unrelated save. `estDerived` is where such a "helpful" change would land.
+  const der = src.slice(src.indexOf("function estDerived"), src.indexOf("function estDerived") + 3200);
+  ok(!/tax_rate_pct|taxRatePct/.test(der),
+     "estDerived NEVER sees the rate — tax dollars are authoritative, always");
+  ok(/tax_rate_pct\s+= COALESCE\(\$12, tax_rate_pct\)/.test(src),
+     "the update stores the rate and nothing else keys off it");
+  ok(/A RECORD, never an input/.test(sql), "and the column comment says so");
+
+  // 2. ONE PLACE CONVERTS PERCENT TO FRACTION. The column matches
+  //    jobs.markup_pct (0.0725), the box holds 7.25. Two conventions meeting
+  //    anywhere but the save is how an 8 comes to mean 0.08%.
+  ok(/CHECK \(tax_rate_pct IS NULL OR \(tax_rate_pct >= 0 AND tax_rate_pct <= 1\)\)/.test(sql),
+     "the schema pins the fraction convention at 0..1");
+  ok(/taxRatePct:\s+f\.taxRatePct === "" \|\| f\.taxRatePct == null\s*\n?\s*\? "" : Number\(f\.taxRatePct\) \/ 100/.test(html),
+     "the card converts once, at the point of save");
+  ok(/between 0% and 100% — enter it as a percentage/.test(src),
+     "a 725% rate is refused with the UNITS named, not the constraint name");
+
+  // 3. THE FILL READS THE BOX, NOT THE CONSTANT — otherwise a 7.25% county is
+  //    a calculator, which is the whole reason this exists.
+  ok(/const ratePct = Number\(f\.taxRatePct\);/.test(html) &&
+     /\(base \* ratePct \/ 100\)\.toFixed\(2\)/.test(html),
+     "the card's fill uses the rate box");
+  ok(/const ratePct = Number\(\$\("newEstTaxRate"\)\.value\);/.test(html),
+     "and so does the modal's");
+
+  // 4. THE TOO-SMALL-TAX HINT, AND IT IS A HINT. A genuinely tiny tax is legal
+  //    — part-exempt, resale, an almost-all-labor job — so blocking the save
+  //    would make the honest case unrecordable. It only breaks the silence.
+  ok(/function estTaxWarning\(taxDollars, base, ratePct\)/.test(html),
+     "one helper, shared by the card and the modal so they cannot disagree");
+  ok(/if \(implied >= 0\.01\) return null;/.test(html),
+     "1% or more is a real rate and says nothing");
+  ok(/This box takes DOLLARS, not a percentage/.test(html),
+     "and the message names the actual mistake");
+  ok(!/alert\([^)]*takes DOLLARS/.test(html) && !/return resp\(400[^)]*takes DOLLARS/.test(html),
+     "IT NEVER BLOCKS THE SAVE — a real $8 tax on a small job must stay recordable");
+
+  // 5. NO VIEW CHANGES, and that is deliberate — a rate does not roll up. 066
+  //    needed three column lists because it added a SUMMED column; this does not.
+  ok(!/CREATE OR REPLACE VIEW/.test(sql), "067 touches no view");
+  ok(/NO VIEW CHANGES, AND THAT IS NOT AN OVERSIGHT/.test(sql), "and says why, so nobody goes looking");
 });
 
 await test("est GP: the new estimate fields fail CLOSED without a database", async () => {

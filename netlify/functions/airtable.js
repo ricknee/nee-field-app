@@ -6777,7 +6777,7 @@ async function handleJobEstimates(params) {
               -- db/schema/066. Emitted raw, NOT coalesced to 0: the card has to
               -- render an empty box for "none recorded" rather than a typed $0,
               -- and the save reads a blank as UNCHANGED.
-              e.other_costs, e.sales_tax,
+              e.other_costs, e.sales_tax, e.tax_rate_pct,
               COALESCE(back.snapshot, bytotal.snapshot, e.estimate_snapshot, '') AS snapshot,
               j.name AS job_name,
               -- Seeds for the new-estimate form: the markup the job's ACTUAL
@@ -6842,6 +6842,7 @@ async function handleJobEstimates(params) {
         laborSellRate: n(r.labor_sell_rate), laborBurdenRate: n(r.labor_burden_rate),
         priceAdjustment: n(r.price_adjustment),
         otherCosts: n(r.other_costs), salesTax: n(r.sales_tax),
+        taxRatePct: n(r.tax_rate_pct),
         calculatedSellingPrice: n(r.calculated_selling_price),
         // The row predates the cost/markup split, so its material figure cannot
         // be read as a cost. The card says so rather than showing a made-up GP.
@@ -7155,7 +7156,7 @@ async function syncEstimateToNeon(rec) {
 async function handleUpdateEstimate(body) {
   const { estimateId, actualEstimate, laborHours, materialCost,
           materialRawCost, materialMarkup, laborSellRate, laborBurdenRate,
-          priceAdjustment, otherCosts, salesTax } = body || {};
+          priceAdjustment, otherCosts, salesTax, taxRatePct } = body || {};
   if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
 
   const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
@@ -7164,8 +7165,15 @@ async function handleUpdateEstimate(body) {
   const sr  = num(laborSellRate),    br  = num(laborBurdenRate);
   const adj = num(priceAdjustment);
   const oth = num(otherCosts),       tax = num(salesTax);
-  if ([est, hrs, mat, raw, mk, sr, br, adj, oth, tax].every(v => v === null)) {
+  const trp = num(taxRatePct);
+  if ([est, hrs, mat, raw, mk, sr, br, adj, oth, tax, trp].every(v => v === null)) {
     return resp(400, { ok: false, error: "Nothing to update." });
+  }
+  // db/schema/067. Turned into a sentence here rather than left to the CHECK,
+  // because this one has a units cause the user can act on: the box takes a
+  // PERCENT and stores a fraction, so 725 arrives as 7.25 — a 725% rate.
+  if (trp !== null && (!(trp >= 0) || trp > 1)) {
+    return resp(400, { ok: false, error: "That tax rate isn't between 0% and 100% — enter it as a percentage, e.g. 7.25." });
   }
   if (!neonEnabled()) {
     return resp(503, { ok: false, error: "Can't update the estimate right now — the database is unavailable. Try again in a moment." });
@@ -7216,6 +7224,10 @@ async function handleUpdateEstimate(body) {
        price_adjustment           = COALESCE($9, price_adjustment),
        other_costs                = ${E.other},
        sales_tax                  = ${E.tax},
+       -- db/schema/067. A RECORD of the rate used, never an input: nothing
+       -- above derives sales_tax from it, so an estimator's hand-typed tax on a
+       -- part-exempt job survives every later save.
+       tax_rate_pct               = COALESCE($12, tax_rate_pct),
        estimated_material_cost    = ${d.materialSell},
        estimated_labor_cost       = ${d.laborCost},
        calculated_estimated_total = ${d.directCost},
@@ -7224,7 +7236,7 @@ async function handleUpdateEstimate(body) {
       WHERE airtable_id = $1 OR id::text = $1
       RETURNING COALESCE(airtable_id, id::text) AS handle, airtable_id,
                 estimated_material_cost`,
-    [String(estimateId), est, hrs, mat, raw, mk, sr, br, adj, oth, tax]);
+    [String(estimateId), est, hrs, mat, raw, mk, sr, br, adj, oth, tax, trp]);
   } catch (e) {
     // The one constraint a user can actually trip. Anything else is a fault.
     if (/job_estimates_markup_needs_raw/.test(String(e?.message || e))) {
@@ -7996,7 +8008,7 @@ async function handleDeleteJobEstimate(body) {
 async function handleCreateJobEstimate(body) {
   const { jobId, baseAmount, laborHours, materialCost, notes, estimateType, sourceTemplateId, estimateDate,
           materialRawCost, materialMarkup, laborSellRate, laborBurdenRate, priceAdjustment,
-          otherCosts, salesTax } = body || {};
+          otherCosts, salesTax, taxRatePct } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   // db/schema/065. `materialCost` is still accepted and still means "the figure
@@ -8073,14 +8085,14 @@ async function handleCreateJobEstimate(body) {
        (job_airtable_id, job_id, estimate_type, status, actual_estimate_sent,
         estimated_labor_hours, estimated_material_cost,
         material_raw_cost, material_markup, labor_sell_rate, labor_burden_rate,
-        price_adjustment, other_costs, sales_tax,
+        price_adjustment, other_costs, sales_tax, tax_rate_pct,
         estimated_labor_cost, calculated_estimated_total, calculated_selling_price,
         estimate_date, notes, source_template_handle, synced_at)
      VALUES (CASE WHEN $1 LIKE 'rec%' THEN $1 ELSE NULL END,
              (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1), $2, $3, $4, $5,
              ${d.materialSell},
              $10::numeric, $11::numeric, ${SELL_RATE}, ${BURDEN},
-             $14::numeric, $15::numeric, $16::numeric,
+             $14::numeric, $15::numeric, $16::numeric, $17::numeric,
              ${d.laborCost}, ${d.directCost}, ${d.sellingPrice},
              $7::date, $8, $9, now())
      RETURNING id`,
@@ -8091,7 +8103,7 @@ async function handleCreateJobEstimate(body) {
      sourceTemplateId ? String(sourceTemplateId) : null,
      num(materialRawCost), num(materialMarkup),
      num(laborSellRate), num(laborBurdenRate), num(priceAdjustment),
-     num(otherCosts), num(salesTax)]);
+     num(otherCosts), num(salesTax), num(taxRatePct)]);
   const neonId = rows?.[0]?.id;
   if (!neonId) return resp(502, { ok: false, error: "Couldn't create the estimate. Please try again." });
 

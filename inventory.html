@@ -8956,7 +8956,15 @@ function toggleOrderBox(idx) {
 }
 
 function refreshJobOrderItems() {
-  var block = document.getElementById("job-order-items-block");
+  // Scope to the VISIBLE screen. This block's id is emitted by both the order
+  // BUILD screen (#s-order-build) and the order EDIT screen (#s-order), and a
+  // screen is only hidden by a class — it keeps its DOM. A bare
+  // getElementById therefore returns whichever comes first in the document
+  // (build), so adding/removing a line while editing a SAVED order redrew an
+  // invisible list: the row didn't appear until the save round-trip through
+  // openOrder() rebuilt #order-body.
+  var scope = document.querySelector(".screen.active") || document;
+  var block = scope.querySelector("#job-order-items-block");
   if (!block) return;
   block.outerHTML = renderJobOrderItems();
 }

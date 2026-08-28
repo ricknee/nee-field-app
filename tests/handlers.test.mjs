@@ -2602,10 +2602,15 @@ await test("est GP: 30% turns the GP % green, and the units cannot slip", async 
   ok(/const GP_TARGET_PCT = 30;/.test(html), "one threshold, named");
   ok(/Number\(pct\) >= GP_TARGET_PCT \? "var\(--green\)"/.test(html), "at or above it, green");
 
-  // ⚠ BELOW TARGET IS DEFAULT TEXT, NOT RED. A 25% job is a good job that missed
-  // the target; colouring it like a loss teaches the eye to ignore both.
-  ok(/Number\(pct\) < 0 \? "var\(--red\)"/.test(html), "red is reserved for an actual loss");
-  ok(/: "var\(--text\)";/.test(html), "and everything between is plain text");
+  // ⚠ TWO STATES, NO MIDDLE — owner's explicit choice after being offered a
+  //    neutral band for near-misses. Red means UNDER TARGET, not losing money:
+  //    a 28% job is profitable and still red. Anyone softening this later is
+  //    overriding a decision, not fixing an oversight.
+  ok(/: "var\(--red\)";/.test(html), "below it, red");
+  ok(!/Number\(pct\) < 0 \? "var\(--red\)"/.test(html),
+     "and there is no separate loss-only branch — under target IS the red condition");
+  ok(/\? "info-box--green" : "info-box--red"/.test(html),
+     "the job tile takes both states too, not just the green one");
 
   // ⚠⚠ THE UNITS TRAP. estMath returns a PERCENT (31.8); the job rollup returns
   // a FRACTION (0.318). Comparing the fraction against 30 makes every job read

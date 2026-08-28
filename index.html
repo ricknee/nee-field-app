@@ -5301,23 +5301,21 @@
   const fmtPct1 = (p) => (p === null ? "—" : `${p.toFixed(1)}%`);
 
   // ── The 30% line ──────────────────────────────────────────────────────────
-  // Owner's threshold, 2026-08-28: an estimate is worth doing at 30% GP or
-  // better. Green means cleared it — nothing else.
-  //
-  // ⚠ BELOW 30 IS DEFAULT TEXT, NOT RED, and that is deliberate. A 25% job is a
-  // perfectly good job that simply missed the target; painting it the same
-  // colour as a LOSS would train the eye to ignore both. Red is reserved for
-  // actually negative.
+  // Owner's threshold and owner's colour scheme, 2026-08-28: an estimate is
+  // worth doing at 30% GP or better. GREEN AT OR ABOVE, RED BELOW. Two states,
+  // no middle — asked for explicitly after being offered a neutral band for
+  // near-misses, and reaffirmed. It is a target, not a diagnosis: red here
+  // means "under target", NOT "losing money", and a 28% job is still profitable.
   //
   // ⚠ TAKES A PERCENT (31.8), NOT A FRACTION (0.318). estMath returns percent;
   // the job rollup returns a fraction. The two conventions meet only at the
-  // call sites, each of which converts explicitly.
+  // call sites, each of which converts explicitly. Compare a fraction against
+  // 30 and every job reads as 0.3% — permanently red, with nothing to find.
   const GP_TARGET_PCT = 30;
   const gpPctColor = (pct) =>
     pct == null || !Number.isFinite(Number(pct)) ? "var(--text)"
-      : Number(pct) < 0 ? "var(--red)"
       : Number(pct) >= GP_TARGET_PCT ? "var(--green)"
-      : "var(--text)";
+      : "var(--red)";
 
   // ── db/schema/067 — "that tax is too small for that purchase" ─────────────
   // On the first day this shipped, an 8 was typed into the Sales Tax box beside
@@ -5362,8 +5360,9 @@
       ${infoBox("Estimated GP %", job.projectedGrossProfitPct != null ? (job.projectedGrossProfitPct * 100).toFixed(1) + "%" : "—",
                 false,
                 // ⚠ The rollup is a FRACTION here — x100 before comparing, or
-                // 0.318 reads as 0.3% and no job is ever green.
-                job.projectedGrossProfitPct != null && job.projectedGrossProfitPct * 100 >= GP_TARGET_PCT ? "info-box--green" : "")}
+                // 0.318 reads as 0.3% and every job is permanently red.
+                job.projectedGrossProfitPct == null ? ""
+                  : job.projectedGrossProfitPct * 100 >= GP_TARGET_PCT ? "info-box--green" : "info-box--red")}
       ${infoBox("Labor Hours", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—")}
       ${infoBox("Labor Cost", fmtCurrency(job.projectedEstimatedLaborCost))}
       ${infoBox("Raw Material Cost", fmtCurrency(job.projectedEstimatedMaterialCost))}

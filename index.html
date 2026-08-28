@@ -5300,6 +5300,25 @@
   }
   const fmtPct1 = (p) => (p === null ? "—" : `${p.toFixed(1)}%`);
 
+  // ── The 30% line ──────────────────────────────────────────────────────────
+  // Owner's threshold, 2026-08-28: an estimate is worth doing at 30% GP or
+  // better. Green means cleared it — nothing else.
+  //
+  // ⚠ BELOW 30 IS DEFAULT TEXT, NOT RED, and that is deliberate. A 25% job is a
+  // perfectly good job that simply missed the target; painting it the same
+  // colour as a LOSS would train the eye to ignore both. Red is reserved for
+  // actually negative.
+  //
+  // ⚠ TAKES A PERCENT (31.8), NOT A FRACTION (0.318). estMath returns percent;
+  // the job rollup returns a fraction. The two conventions meet only at the
+  // call sites, each of which converts explicitly.
+  const GP_TARGET_PCT = 30;
+  const gpPctColor = (pct) =>
+    pct == null || !Number.isFinite(Number(pct)) ? "var(--text)"
+      : Number(pct) < 0 ? "var(--red)"
+      : Number(pct) >= GP_TARGET_PCT ? "var(--green)"
+      : "var(--text)";
+
   // ── db/schema/067 — "that tax is too small for that purchase" ─────────────
   // On the first day this shipped, an 8 was typed into the Sales Tax box beside
   // a control reading "fill 8%". Eight dollars of tax on $165,323 of purchases.
@@ -5340,7 +5359,11 @@
       ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus))}
       ${infoBox("Estimated Direct Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
       ${infoBox("Estimated Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar))}
-      ${infoBox("Estimated GP %", job.projectedGrossProfitPct != null ? (job.projectedGrossProfitPct * 100).toFixed(1) + "%" : "—")}
+      ${infoBox("Estimated GP %", job.projectedGrossProfitPct != null ? (job.projectedGrossProfitPct * 100).toFixed(1) + "%" : "—",
+                false,
+                // ⚠ The rollup is a FRACTION here — x100 before comparing, or
+                // 0.318 reads as 0.3% and no job is ever green.
+                job.projectedGrossProfitPct != null && job.projectedGrossProfitPct * 100 >= GP_TARGET_PCT ? "info-box--green" : "")}
       ${infoBox("Labor Hours", job.projectedEstimatedLaborHours != null ? job.projectedEstimatedLaborHours : "—")}
       ${infoBox("Labor Cost", fmtCurrency(job.projectedEstimatedLaborCost))}
       ${infoBox("Raw Material Cost", fmtCurrency(job.projectedEstimatedMaterialCost))}
@@ -5595,9 +5618,12 @@
         const box = row.querySelector(`.est-calc[data-est-id="${estId}"]`);
         if (!box) return;
         const m = estMath(estCardValues(row, estId, byId.get(String(estId))));
-        const cell = (label, value, strong) =>
+        // `color` overrides the default strong/weak colouring — used by GP %,
+        // which answers a different question from GP $ (did it clear 30%, not
+        // did it make money) and so cannot share its rule.
+        const cell = (label, value, strong, color) =>
           `<div><div style="color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px;">${label}</div>
-             <div style="${strong ? "font-weight:700;" : ""} color:${strong ? (m.gpDollars < 0 ? "var(--red)" : "var(--green)") : "var(--text)"};">${value}</div></div>`;
+             <div style="${strong ? "font-weight:700;" : ""} color:${color || (strong ? (m.gpDollars < 0 ? "var(--red)" : "var(--green)") : "var(--text)")};">${value}</div></div>`;
         box.innerHTML =
           cell("Material Sell", fmtCurrency(m.matSell)) +
           cell("Labor Sell", fmtCurrency(m.laborSell)) +
@@ -5608,7 +5634,7 @@
           cell("Calculated Price", fmtCurrency(m.calcPrice)) +
           cell("Est. Direct Cost", fmtCurrency(m.directCost)) +
           cell("Est. GP $", fmtCurrency(m.gpDollars), true) +
-          cell("Est. GP %", fmtPct1(m.gpPct), true);
+          cell("Est. GP %", fmtPct1(m.gpPct), true, gpPctColor(m.gpPct));
 
         // db/schema/067. Recomputed on every keystroke alongside the GP, so the
         // warning and the number it is about can never disagree.
@@ -17622,9 +17648,9 @@
       salesTax:        numById("newEstTax"),
       jobSellRate:     _newEstJob?.billableHourlyRate,
     });
-    const cell = (label, value, strong) =>
+    const cell = (label, value, strong, color) =>
       `<div><div style="color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px;">${label}</div>
-         <div style="${strong ? "font-weight:700;" : ""} color:${strong ? (m.gpDollars < 0 ? "var(--red)" : "var(--green)") : "var(--text)"};">${value}</div></div>`;
+         <div style="${strong ? "font-weight:700;" : ""} color:${color || (strong ? (m.gpDollars < 0 ? "var(--red)" : "var(--green)") : "var(--text)")};">${value}</div></div>`;
     box.innerHTML =
       cell("Material Sell", fmtCurrency(m.matSell)) +
       cell("Labor Sell", fmtCurrency(m.laborSell)) +
@@ -17632,7 +17658,7 @@
       cell("Calculated Price", fmtCurrency(m.calcPrice)) +
       cell("Est. Direct Cost", fmtCurrency(m.directCost)) +
       cell("Est. GP $", fmtCurrency(m.gpDollars), true) +
-      cell("Est. GP %", fmtPct1(m.gpPct), true);
+      cell("Est. GP %", fmtPct1(m.gpPct), true, gpPctColor(m.gpPct));
 
     // The adjustment SUGGESTS a price; it never writes one. Forcing the quoted
     // figure to follow a calculation is the one behaviour the estimator has to

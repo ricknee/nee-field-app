@@ -2593,6 +2593,30 @@ await test("est GP: comma-formatted inputs, and NaN never reaches the database",
      "and NOT on input — that fights the caret");
 });
 
+// ── The 30% line (owner's threshold, 2026-08-28) ─────────────────────────────
+await test("est GP: 30% turns the GP % green, and the units cannot slip", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  ok(/const GP_TARGET_PCT = 30;/.test(html), "one threshold, named");
+  ok(/Number\(pct\) >= GP_TARGET_PCT \? "var\(--green\)"/.test(html), "at or above it, green");
+
+  // ⚠ BELOW TARGET IS DEFAULT TEXT, NOT RED. A 25% job is a good job that missed
+  // the target; colouring it like a loss teaches the eye to ignore both.
+  ok(/Number\(pct\) < 0 \? "var\(--red\)"/.test(html), "red is reserved for an actual loss");
+  ok(/: "var\(--text\)";/.test(html), "and everything between is plain text");
+
+  // ⚠⚠ THE UNITS TRAP. estMath returns a PERCENT (31.8); the job rollup returns
+  // a FRACTION (0.318). Comparing the fraction against 30 makes every job read
+  // as 0.3% and NOTHING is ever green — a silent, permanent no-op.
+  ok(/job\.projectedGrossProfitPct \* 100 >= GP_TARGET_PCT/.test(html),
+     "the job tile multiplies the FRACTION by 100 before comparing");
+  ok(/gpPctColor\(m\.gpPct\)/.test(html), "the card passes estMath's percent straight through");
+  ok((html.match(/gpPctColor\(m\.gpPct\)/g) || []).length === 2,
+     "both the estimate card and the New Estimate modal use it — one screen agreeing with itself is not enough");
+});
+
 await test("est GP: the new estimate fields fail CLOSED without a database", async () => {
   // Same contract as the rest of slice 3: an estimate that exists only in
   // Airtable is invisible to the app forever, so a create without Neon must

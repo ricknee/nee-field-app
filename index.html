@@ -5359,7 +5359,7 @@
     const totalN  = Number(job.estimateCount || 0);
     grid.innerHTML = `
       ${infoBox("Job Name", val(job.name))}
-      ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus))}
+      ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus), false, "info-box--red")}
       ${infoBox("Estimated Direct Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
       ${infoBox("Estimated Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar), false, "info-box--orange")}
       ${infoBox("Estimated GP %", job.projectedGrossProfitPct != null ? (job.projectedGrossProfitPct * 100).toFixed(1) + "%" : "—",

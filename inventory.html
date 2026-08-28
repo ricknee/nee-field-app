@@ -8923,7 +8923,8 @@ function renderJobOrderItems() {
     return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 46px 24px;gap:6px;align-items:center;">' +
       '<div style="min-width:0;">' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
       '<input type="number" step="0.01" min="0" class="field-inp" id="jol-qty-' + idx + '" value="' + (it.orderQty || 0) +
-        '" oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
+        '" onfocus="selectQtyOnFocus(this)" ' +
+        'oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
       boxBtn +
       '<button onclick="removeJobOrderItem(' + idx + ')" ' +
@@ -8953,6 +8954,19 @@ function toggleOrderBox(idx) {
   } else {
     renderOrderBuild();
   }
+}
+
+// Every order line is born with a qty of 1, so tapping the qty box used to mean
+// backspacing over the 1 before typing the real number. Select it instead, and
+// the first keystroke replaces it.
+// The setTimeout is not decoration: on Chrome for Android the caret is placed
+// from the tap AFTER focus fires, which collapses a selection made synchronously
+// here. Deferring a tick lets the tap finish first. select() is wrapped because
+// some browsers throw on a type="number" input.
+function selectQtyOnFocus(el) {
+  setTimeout(function() {
+    try { el.select(); } catch (e) {}
+  }, 0);
 }
 
 function refreshJobOrderItems() {

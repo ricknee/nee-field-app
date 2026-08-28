@@ -354,6 +354,34 @@ console.log("\n── 8c. THE TAX RATE IS A RECORD, NOT AN INPUT (db/schema/067)
   eq(e3.taxRatePct, 0.0725, "a refused update changes nothing");
 }
 
+console.log("\n── 8d. A COMMA MUST NEVER BECOME NaN IN THE DATABASE ───────────────");
+// The estimate boxes carry thousands separators now, so they are type="text"
+// and every read strips. This is what happens if a strip is ever missed.
+//
+// ⚠⚠ Number("311,303.98") is NaN; `v !== null` cannot see it, COALESCE cannot
+// see it, and Postgres `numeric` STORES 'NaN' quite happily. One such write
+// makes every SUM over the job NaN — its revenue, its direct cost, its GP, and
+// the rollups of every other estimate on it — with nothing erroring anywhere.
+// Proven against the real database rather than reasoned about, because the
+// "numeric accepts NaN" half is the part that sounds wrong until you try it.
+{
+  const id10 = await mk(JOB_70, { baseAmount: 10000, laborHours: 100, materialRawCost: 1000 });
+  const before = (await readOne(JOB_70, id10)).est;
+
+  const r = json(await POST("updateEstimate", { estimateId: id10, actualEstimate: "311,303.98" }));
+  eq(r.ok, false, "a comma-bearing figure is REFUSED, not stored");
+  eq(/isn't a number/.test(r.error || ""), true, "and the message points at stray characters");
+
+  const after = (await readOne(JOB_70, id10)).est;
+  eq(after.actualEstimate, before.actualEstimate, "the row is untouched by the refused write");
+  eq(Number.isFinite(Number(after.calculatedTotal)), true, "and its direct cost is still a real number, not NaN");
+
+  const c = json(await POST("createJobEstimate", {
+    jobId: JOB_70, estimateDate: "2026-08-28", baseAmount: "1,000.00" }));
+  eq(c.ok, false, "the create refuses it too — both write paths, not just one");
+  if (c.ok && c.id) created.push(c.id);
+}
+
 console.log("\n── 9. CLEAN UP ────────────────────────────────────────────────────");
 for (const id of created) await POST("deleteJobEstimate", { estimateId: id });
 console.log(`  removed ${created.length} scratch estimates`);

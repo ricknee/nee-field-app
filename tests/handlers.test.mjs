@@ -2472,7 +2472,7 @@ await test("est GP: bought-in cost and tax reach DIRECT COST, or GP reads high",
   //    does. A fill that quietly taxed labor would overstate cost on every job.
   ok(/const base = matBasis \+ numOr0\(f\.otherCosts\)/.test(html),
      "the card's fill taxes material + other, never labor");
-  ok(/Number\(\$\("newEstMaterial"\)\.value \|\| 0\) \+ Number\(\$\("newEstOther"\)\.value \|\| 0\)/.test(html),
+  ok(/Number\(numById\("newEstMaterial"\) \|\| 0\) \+ Number\(numById\("newEstOther"\) \|\| 0\)/.test(html),
      "and the modal's fill uses the same base");
 });
 
@@ -2513,7 +2513,7 @@ await test("est GP: the tax rate is stored, and $8 of tax on $165k says so", asy
   // 3. THE FILL READS THE BOX, NOT THE CONSTANT — otherwise a 7.25% county is
   //    a calculator, which is the whole reason this exists.
   ok(/const ratePct = Number\(f\.taxRatePct\);/.test(html) &&
-     /\(base \* ratePct \/ 100\)\.toFixed\(2\)/.test(html),
+     /fmtNumIn\(base \* ratePct \/ 100, 2\)/.test(html),
      "the card's fill uses the rate box");
   ok(/const ratePct = Number\(\$\("newEstTaxRate"\)\.value\);/.test(html),
      "and so does the modal's");
@@ -2534,6 +2534,63 @@ await test("est GP: the tax rate is stored, and $8 of tax on $165k says so", asy
   //    needed three column lists because it added a SUMMED column; this does not.
   ok(!/CREATE OR REPLACE VIEW/.test(sql), "067 touches no view");
   ok(/NO VIEW CHANGES, AND THAT IS NOT AN OVERSIGHT/.test(sql), "and says why, so nobody goes looking");
+});
+
+// ── Thousands separators in the input boxes, and the NaN they can cause ──────
+// The estimate money/quantity boxes carry commas now, which means they are
+// type="text" and every read has to strip. The cost of missing one is not a
+// visible bug: Number("311,303.98") is NaN, the server's null checks cannot see
+// it (NaN !== null), COALESCE cannot (NaN is not NULL), and Postgres `numeric`
+// STORES 'NaN' — after which every SUM touching that row is NaN, including the
+// rollups of every other estimate on the job. Nothing throws.
+await test("est GP: comma-formatted inputs, and NaN never reaches the database", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // 1. THE SERVER GUARD IS THE ONE THAT ACTUALLY MATTERS — the client is where
+  //    the bug would be, so the check cannot live only there. Both write paths.
+  const upd = src.slice(src.indexOf("async function handleUpdateEstimate"),
+                        src.indexOf("async function handleUpdateEstimateStatus"));
+  const crt = src.slice(src.indexOf("async function handleCreateJobEstimate"),
+                        src.indexOf("async function handleCreateJobEstimate") + 8000);
+  ok(/some\(v => v !== null && !Number\.isFinite\(v\)\)/.test(upd),
+     "the update refuses a non-finite figure before writing");
+  ok(/some\(v => v !== null && !Number\.isFinite\(v\)\)/.test(crt),
+     "and so does the create");
+  ok(/isn't a number\. Check for stray characters/.test(src),
+     "with a message about stray characters, which is what a comma is");
+
+  // 2. ⚠ type="number" CANNOT HOLD A COMMA — the browser blanks the value and
+  //    reads back "". If any of these six reverts to number, the commas stop
+  //    appearing and, worse, a typed value silently becomes empty.
+  for (const cls of ["est-actual", "est-hours", "est-raw", "est-markup", "est-other", "est-tax"]) {
+    const m = new RegExp(`<input type="text" inputmode="decimal" data-dp="\\d" data-est-id="\\$\\{esc\\(est\\.id\\)\\}" class="${cls} edit-input num-fmt"`);
+    ok(m.test(html), `${cls} is a text box with inputmode=decimal and num-fmt`);
+  }
+
+  // 3. ONE STRIPPER, AND THE CARD'S SINGLE ACCESSOR USES IT. estCardValues.v()
+  //    is the only way the card reads a box; that is what made commas affordable.
+  ok(/const numIn = \(v\) => \(v === null \|\| v === undefined \? "" : String\(v\)\.replace\(\/,\/g, ""\)\.trim\(\)\)/.test(html),
+     "numIn is the single strip");
+  ok(/const raw = numIn\(row\.querySelector/.test(html),
+     "the card's one accessor strips before returning");
+  ok(/const numById = \(id\) => numIn\(\$\(id\)\?\.value\)/.test(html),
+     "and the modal reads by id through the same strip");
+
+  // 4. NO RAW READ OF A COMMA BOX SURVIVES IN THE MODAL. A single
+  //    `$("newEstBase").value` feeding Number() is all it takes.
+  const rawModalReads = (html.match(/\$\("newEst(Base|Labor|Material|Markup|Other|Tax|Adjust)"\)\??\.value(?!\s*=)/g) || []);
+  ok(rawModalReads.length === 0,
+     `no unstripped modal reads remain (found ${rawModalReads.length})`);
+
+  // 5. FORMATTING HAPPENS ON BLUR, NOT ON INPUT. Reformatting mid-type moves the
+  //    caret to the end and makes the box unusable.
+  ok(/document\.addEventListener\("focusout"/.test(html) && /document\.addEventListener\("focusin"/.test(html),
+     "commas go in on blur and come out on focus");
+  ok(!/addEventListener\("input"[^)]*num-fmt/.test(html),
+     "and NOT on input — that fights the caret");
 });
 
 await test("est GP: the new estimate fields fail CLOSED without a database", async () => {

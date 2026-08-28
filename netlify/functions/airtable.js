@@ -7166,6 +7166,17 @@ async function handleUpdateEstimate(body) {
   const adj = num(priceAdjustment);
   const oth = num(otherCosts),       tax = num(salesTax);
   const trp = num(taxRatePct);
+  // ⚠⚠ NaN IS NOT CAUGHT BY ANYTHING BELOW, AND POSTGRES ACCEPTS IT.
+  // `Number("311,303.98")` is NaN — one thousands separator surviving the
+  // client is all it takes — and `numeric` stores 'NaN' quite happily. From
+  // there every SUM touching the row is NaN: the job's expected revenue, its
+  // direct cost, its GP, and the rollups of every OTHER estimate on it. Nothing
+  // throws and the screen reads "NaN%".
+  // The null checks above cannot see it (NaN !== null) and COALESCE cannot
+  // either (NaN is not NULL). Refuse here, before the write.
+  if ([est, hrs, mat, raw, mk, sr, br, adj, oth, tax, trp].some(v => v !== null && !Number.isFinite(v))) {
+    return resp(400, { ok: false, error: "One of those figures isn't a number. Check for stray characters and try again." });
+  }
   if ([est, hrs, mat, raw, mk, sr, br, adj, oth, tax, trp].every(v => v === null)) {
     return resp(400, { ok: false, error: "Nothing to update." });
   }
@@ -8067,6 +8078,15 @@ async function handleCreateJobEstimate(body) {
   }
 
   const num = (v) => (v === undefined || v === null || v === "" ? null : Number(v));
+
+  // Same NaN guard as handleUpdateEstimate, and for the same reason: a stray
+  // thousands separator makes Number() return NaN, Postgres numeric stores it,
+  // and every rollup that touches the row becomes NaN without erroring.
+  if ([baseAmount, laborHours, materialCost, materialRawCost, materialMarkup,
+       laborSellRate, laborBurdenRate, priceAdjustment, otherCosts, salesTax,
+       taxRatePct].map(num).some(v => v !== null && !Number.isFinite(v))) {
+    return resp(400, { ok: false, error: "One of those figures isn't a number. Check for stray characters and try again." });
+  }
 
   // ⚠ THE RATES ARE STAMPED HERE, RESOLVED, INCLUDING THE FALLBACKS — that is
   // the difference from the update path. A create knows exactly which rates were

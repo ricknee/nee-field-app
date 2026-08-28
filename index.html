@@ -5091,6 +5091,47 @@
     return n.toLocaleString("en-US", { style: "currency", currency: "USD" });
   }
 
+  // ── THOUSANDS SEPARATORS IN INPUT BOXES ───────────────────────────────────
+  // `<input type="number">` cannot hold a comma — the browser rejects the value
+  // and reads back "". So the money and quantity boxes on the estimate screens
+  // are type="text" + inputmode="decimal" (which still gives a numeric keypad on
+  // a phone) and carry class="num-fmt".
+  //
+  // ⚠⚠ THE COST OF THIS IS THAT EVERY READ MUST STRIP THE COMMAS, AND MISSING
+  // ONE IS NOT A VISIBLE BUG. `Number("311,303.98")` is NaN; the server's
+  // null-checks cannot see it (NaN !== null), COALESCE cannot (NaN is not NULL),
+  // and Postgres `numeric` stores 'NaN' without complaint — after which every
+  // SUM touching that row is NaN, including the rollups of every other estimate
+  // on the job. handleUpdateEstimate and handleCreateJobEstimate now refuse a
+  // non-finite number outright; `numIn` below is the client half.
+  //
+  // ONE function strips, and it is the only way these boxes are read.
+  const numIn = (v) => (v === null || v === undefined ? "" : String(v).replace(/,/g, "").trim());
+  // Read a box by id, comma-free. For the modal, which reads its fields by id
+  // in three places rather than through one accessor.
+  const numById = (id) => numIn($(id)?.value);
+  // Display form. `dp` is the MINIMUM decimals — 2 for money so $126,850 reads
+  // as 126,850.00, 0 for hours so 1,500 does not become 1,500.00.
+  const fmtNumIn = (v, dp) => {
+    const s = numIn(v);
+    if (s === "") return "";
+    const n = Number(s);
+    if (!Number.isFinite(n)) return s;   // leave nonsense visible rather than blanking someone's typing
+    return n.toLocaleString("en-US", { minimumFractionDigits: dp, maximumFractionDigits: 2 });
+  };
+  // Commas go in on blur, not on every keystroke — reformatting mid-type fights
+  // the caret. They come back OUT on focus so editing and select-all behave
+  // like a plain number box. Delegated at the document, so it covers the
+  // estimate cards (rebuilt on every render) and the modal alike.
+  document.addEventListener("focusin", (e) => {
+    const el = e.target;
+    if (el?.classList?.contains("num-fmt")) el.value = numIn(el.value);
+  });
+  document.addEventListener("focusout", (e) => {
+    const el = e.target;
+    if (el?.classList?.contains("num-fmt")) el.value = fmtNumIn(el.value, Number(el.dataset.dp || 0));
+  });
+
   function fmtPct(v) {
     if (v === null || v === undefined || v === "" || v === "—") return "—";
     const n = parseFloat(v);
@@ -5416,17 +5457,17 @@
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:10px; margin-bottom:12px;">
               <div>
                 <label class="edit-label">Estimate Selling Price ($)</label>
-                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-actual edit-input" style="font-size:13px;" value="${est.actualEstimate != null ? est.actualEstimate : ""}" placeholder="0.00" />
+                <input type="text" inputmode="decimal" data-dp="2" data-est-id="${esc(est.id)}" class="est-actual edit-input num-fmt" style="font-size:13px;" value="${fmtNumIn(est.actualEstimate, 2)}" placeholder="0.00" />
               </div>
               <div>
                 <label class="edit-label">Labor Hours</label>
-                <input type="number" step="0.5" data-est-id="${esc(est.id)}" class="est-hours edit-input" style="font-size:13px;" value="${est.laborHours != null ? est.laborHours : ""}" placeholder="0" />
+                <input type="text" inputmode="decimal" data-dp="0" data-est-id="${esc(est.id)}" class="est-hours edit-input num-fmt" style="font-size:13px;" value="${fmtNumIn(est.laborHours, 0)}" placeholder="0" />
               </div>
               <div>
                 <label class="edit-label">Material Cost ($)</label>
-                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-raw edit-input" style="font-size:13px;"
-                       value="${est.materialRawCost != null ? est.materialRawCost : ""}"
-                       placeholder="${est.legacyMaterialBasis && est.materialCost != null ? est.materialCost : "0.00"}" />
+                <input type="text" inputmode="decimal" data-dp="2" data-est-id="${esc(est.id)}" class="est-raw edit-input num-fmt" style="font-size:13px;"
+                       value="${fmtNumIn(est.materialRawCost, 2)}"
+                       placeholder="${est.legacyMaterialBasis && est.materialCost != null ? fmtNumIn(est.materialCost, 2) : "0.00"}" />
               </div>
               <div>
                 <!-- ⚠ NOT space-between. Right-aligning this button pushed it to
@@ -5440,7 +5481,7 @@
                        style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"
                        title="Fill from this job's markup — the same % its actual material is billed at">fill ${(jd.markupPct * 100).toFixed(0)}%</button>` : ""}
                 </label>
-                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-markup edit-input" style="font-size:13px;" value="${est.materialMarkup != null ? est.materialMarkup : ""}" placeholder="0.00" />
+                <input type="text" inputmode="decimal" data-dp="2" data-est-id="${esc(est.id)}" class="est-markup edit-input num-fmt" style="font-size:13px;" value="${fmtNumIn(est.materialMarkup, 2)}" placeholder="0.00" />
               </div>
               <div>
                 <label class="edit-label">Labor Sell Rate ($/hr)</label>
@@ -5456,8 +5497,8 @@
                    the quoted rate beside it. -->
               <div>
                 <label class="edit-label">Other Costs ($)</label>
-                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-other edit-input" style="font-size:13px;"
-                       value="${est.otherCosts != null ? est.otherCosts : ""}" placeholder="0.00"
+                <input type="text" inputmode="decimal" data-dp="2" data-est-id="${esc(est.id)}" class="est-other edit-input num-fmt" style="font-size:13px;"
+                       value="${fmtNumIn(est.otherCosts, 2)}" placeholder="0.00"
                        title="Bought-in job cost at COST: subcontracts, quoted gear, rentals, equipment. Not labor — that is hours × rate above." />
               </div>
               <div>
@@ -5480,8 +5521,8 @@
                        style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"
                        title="Fill at that rate x (material + other costs) — labor is not taxable and a sub pays tax on their own purchases">fill</button>
                 </div>
-                <input type="number" step="0.01" data-est-id="${esc(est.id)}" class="est-tax edit-input" style="font-size:13px;"
-                       value="${est.salesTax != null ? est.salesTax : ""}" placeholder="0.00" />
+                <input type="text" inputmode="decimal" data-dp="2" data-est-id="${esc(est.id)}" class="est-tax edit-input num-fmt" style="font-size:13px;"
+                       value="${fmtNumIn(est.salesTax, 2)}" placeholder="0.00" />
                 <!-- Written by paintEstCalc. See estTaxWarning for what it catches
                      and why it is a hint rather than a refusal. -->
                 <div data-est-id="${esc(est.id)}" class="est-tax-warn" style="display:none; margin-top:4px; font-size:10.5px; line-height:1.4; color:#9a3412;"></div>
@@ -5518,8 +5559,12 @@
         // the blank as empty here would have shown a GP the save would not
         // produce, which is the same class of quiet disagreement this whole
         // change exists to remove.
+        // ⚠ `numIn` strips the thousands separators the boxes now carry. This is
+        // the ONE place the card reads them, which is exactly why the commas
+        // were affordable: miss a strip and Number() yields NaN, which the
+        // server's null checks cannot see and Postgres numeric will store.
         const v = (cls, stored) => {
-          const raw = row.querySelector(`.${cls}[data-est-id="${estId}"]`)?.value ?? "";
+          const raw = numIn(row.querySelector(`.${cls}[data-est-id="${estId}"]`)?.value ?? "");
           return raw !== "" ? raw : (stored ?? "");
         };
         return {
@@ -5592,10 +5637,10 @@
         b.addEventListener("click", () => {
           const estId = b.dataset.estId;
           const row   = b.closest("div[style*='border-radius:10px']");
-          const raw   = Number(row.querySelector(`.est-raw[data-est-id="${estId}"]`)?.value || 0);
+          const raw   = Number(numIn(row.querySelector(`.est-raw[data-est-id="${estId}"]`)?.value) || 0);
           if (!raw) { alert("Enter the material cost first — the markup is a percentage of it."); return; }
           const box = row.querySelector(`.est-markup[data-est-id="${estId}"]`);
-          box.value = (raw * Number(jd.markupPct || 0)).toFixed(2);
+          box.value = fmtNumIn(raw * Number(jd.markupPct || 0), 2);
           paintEstCalc(row, estId);
         });
       });
@@ -5629,7 +5674,7 @@
             alert("Enter the tax rate first — e.g. 7.25 for 7.25%."); return;
           }
           row.querySelector(`.est-tax[data-est-id="${estId}"]`).value =
-            (base * ratePct / 100).toFixed(2);
+            fmtNumIn(base * ratePct / 100, 2);
           paintEstCalc(row, estId);
         });
       });
@@ -17549,14 +17594,14 @@
 
   function _newEstFieldsAreDirty() {
     return [
-      $("newEstBase")?.value,
-      $("newEstLabor")?.value,
-      $("newEstMaterial")?.value,
-      $("newEstMarkup")?.value,
+      numById("newEstBase"),
+      numById("newEstLabor"),
+      numById("newEstMaterial"),
+      numById("newEstMarkup"),
       $("newEstSellRate")?.value,
-      $("newEstAdjust")?.value,
-      $("newEstOther")?.value,
-      $("newEstTax")?.value,
+      numById("newEstAdjust"),
+      numById("newEstOther"),
+      numById("newEstTax"),
       $("newEstNotes")?.value
     ].some(v => v && String(v).trim());
   }
@@ -17567,14 +17612,14 @@
     const box = $("newEstCalc");
     if (!box) return;
     const m = estMath({
-      actualEstimate:  $("newEstBase")?.value,
-      laborHours:      $("newEstLabor")?.value,
-      materialRawCost: $("newEstMaterial")?.value,
-      materialMarkup:  $("newEstMarkup")?.value,
+      actualEstimate:  numById("newEstBase"),
+      laborHours:      numById("newEstLabor"),
+      materialRawCost: numById("newEstMaterial"),
+      materialMarkup:  numById("newEstMarkup"),
       laborSellRate:   $("newEstSellRate")?.value,
-      priceAdjustment: $("newEstAdjust")?.value,
-      otherCosts:      $("newEstOther")?.value,
-      salesTax:        $("newEstTax")?.value,
+      priceAdjustment: numById("newEstAdjust"),
+      otherCosts:      numById("newEstOther"),
+      salesTax:        numById("newEstTax"),
       jobSellRate:     _newEstJob?.billableHourlyRate,
     });
     const cell = (label, value, strong) =>
@@ -17594,20 +17639,20 @@
     // stay in charge of.
     const sug = $("newEstSuggested");
     if (sug) {
-      const adj = Number($("newEstAdjust")?.value || 0);
+      const adj = Number(numById("newEstAdjust") || 0);
       sug.innerHTML = adj
         ? `Suggested: <strong>${fmtCurrency(m.suggested)}</strong> · <button type="button" id="newEstUseSuggested" style="background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit;">use this price</button>`
         : `Optional. Adjusts the suggested price for risk, schedule or competition.`;
       const use = $("newEstUseSuggested");
-      if (use) use.onclick = () => { $("newEstBase").value = m.suggested.toFixed(2); _newEstPaint(); };
+      if (use) use.onclick = () => { $("newEstBase").value = fmtNumIn(m.suggested, 2); _newEstPaint(); };
     }
 
     // db/schema/067 — same too-small-tax hint as the estimate card, same helper.
     const warn = $("newEstTaxWarn");
     if (warn) {
       const msg = estTaxWarning(
-        $("newEstTax")?.value,
-        Number($("newEstMaterial")?.value || 0) + Number($("newEstOther")?.value || 0),
+        numById("newEstTax"),
+        Number(numById("newEstMaterial") || 0) + Number(numById("newEstOther") || 0),
         $("newEstTaxRate")?.value);
       warn.textContent = msg || "";
       warn.style.display = msg ? "block" : "none";
@@ -17640,10 +17685,10 @@
   function _newEstApplyTemplate(t) {
     // Only triggers when picking from the dropdown. Caller has already
     // resolved the confirm-on-overwrite dialog if needed.
-    $("newEstBase").value     = t.basePrice          != null ? t.basePrice          : "";
-    $("newEstLabor").value    = t.defaultLaborHours  != null ? t.defaultLaborHours  : "";
-    $("newEstMaterial").value = t.defaultMaterialCost!= null ? t.defaultMaterialCost: "";
-    $("newEstMarkup").value   = t.defaultMaterialMarkup != null ? t.defaultMaterialMarkup : "";
+    $("newEstBase").value     = fmtNumIn(t.basePrice, 2);
+    $("newEstLabor").value    = fmtNumIn(t.defaultLaborHours, 0);
+    $("newEstMaterial").value = fmtNumIn(t.defaultMaterialCost, 2);
+    $("newEstMarkup").value   = fmtNumIn(t.defaultMaterialMarkup, 2);
     // Blank means "use the job's rate", which is what almost every template
     // should do — pinning 75 on a template pins it for the 81 of 117 jobs that
     // do not charge it.
@@ -17752,9 +17797,9 @@
       fill.title = "Fill from this job's markup — the same % its actual material is billed at";
       fill.style.display = "";
       fill.onclick = () => {
-        const raw = Number($("newEstMaterial").value || 0);
+        const raw = Number(numById("newEstMaterial") || 0);
         if (!raw) { alert("Enter the material cost first — the markup is a percentage of it."); return; }
-        $("newEstMarkup").value = (raw * Number(job.markupPct)).toFixed(2);
+        $("newEstMarkup").value = fmtNumIn(raw * Number(job.markupPct), 2);
         _newEstPaint();
       };
     } else {
@@ -17774,11 +17819,11 @@
       taxFill.title = "Fill at that rate × (material + other costs) — labor is not taxable and a sub pays tax on their own purchases";
       taxFill.style.display = "";
       taxFill.onclick = () => {
-        const base = Number($("newEstMaterial").value || 0) + Number($("newEstOther").value || 0);
+        const base = Number(numById("newEstMaterial") || 0) + Number(numById("newEstOther") || 0);
         if (!base) { alert("Enter the material and/or other costs first — the tax is a percentage of them."); return; }
         const ratePct = Number($("newEstTaxRate").value);
         if (!Number.isFinite(ratePct) || ratePct <= 0) { alert("Enter the tax rate first — e.g. 7.25 for 7.25%."); return; }
-        $("newEstTax").value = (base * ratePct / 100).toFixed(2);
+        $("newEstTax").value = fmtNumIn(base * ratePct / 100, 2);
         _newEstPaint();
       };
     }
@@ -17839,8 +17884,8 @@
     const btn = $("newEstSubmitBtn");
     const msg = $("newEstMsg");
 
-    const baseAmount  = $("newEstBase").value;
-    const laborHours  = $("newEstLabor").value;
+    const baseAmount  = numById("newEstBase");
+    const laborHours  = numById("newEstLabor");
     const notes       = $("newEstNotes").value || "";
     const sourceId    = $("newEstTemplate").value || null;
 
@@ -17857,14 +17902,14 @@
         // means "the figure as typed", which creates a legacy-shaped row — the
         // right thing for an old cached client to do, and the wrong thing for
         // this one. Every estimate written from this form carries the split.
-        materialRawCost: $("newEstMaterial").value,
-        materialMarkup:  $("newEstMarkup").value,
+        materialRawCost: numById("newEstMaterial"),
+        materialMarkup:  numById("newEstMarkup"),
         laborSellRate:   $("newEstSellRate").value,
-        otherCosts:      $("newEstOther").value,
-        salesTax:        $("newEstTax").value,
+        otherCosts:      numById("newEstOther"),
+        salesTax:        numById("newEstTax"),
         // db/schema/067 — percent on screen, fraction in the column, converted once.
         taxRatePct:      $("newEstTaxRate").value === "" ? "" : Number($("newEstTaxRate").value) / 100,
-        priceAdjustment: $("newEstAdjust").value,
+        priceAdjustment: numById("newEstAdjust"),
         notes,
         estimateType:     _newEstType,
         sourceTemplateId: sourceId,
@@ -25340,11 +25385,11 @@
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-top:10px;">
         <div class="sl-field">
           <label>Labor Hours</label>
-          <input id="newEstLabor" type="number" step="0.5" class="edit-input" placeholder="0" />
+          <input id="newEstLabor" type="text" inputmode="decimal" data-dp="0" class="edit-input num-fmt" placeholder="0" />
         </div>
         <div class="sl-field">
           <label>Material Cost ($)</label>
-          <input id="newEstMaterial" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <input id="newEstMaterial" type="text" inputmode="decimal" data-dp="2" class="edit-input num-fmt" placeholder="0.00" />
         </div>
         <div class="sl-field">
           <!-- Left-aligned beside its own label, not pushed to the column edge
@@ -25354,7 +25399,7 @@
             <span>Material Markup ($)</span>
             <button type="button" id="newEstMarkupFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; white-space:nowrap;"></button>
           </label>
-          <input id="newEstMarkup" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <input id="newEstMarkup" type="text" inputmode="decimal" data-dp="2" class="edit-input num-fmt" placeholder="0.00" />
         </div>
         <div class="sl-field">
           <label>Labor Sell Rate ($/hr)</label>
@@ -25368,7 +25413,7 @@
              it, and the Labor Sell cell below will match the report. -->
         <div class="sl-field">
           <label>Other Costs ($)</label>
-          <input id="newEstOther" type="number" step="0.01" class="edit-input" placeholder="0.00"
+          <input id="newEstOther" type="text" inputmode="decimal" data-dp="2" class="edit-input num-fmt" placeholder="0.00"
                  title="Bought-in job cost at COST: subcontracts, quoted gear, rentals, equipment. Not labor — that is hours × rate." />
         </div>
         <div class="sl-field">
@@ -25381,7 +25426,7 @@
             <span style="font-size:10.5px;">%</span>
             <button type="button" id="newEstTaxFill" style="display:none; background:none; border:none; padding:0; font-size:10.5px; color:var(--accent); cursor:pointer; font-family:inherit; text-transform:none; letter-spacing:0; white-space:nowrap;"></button>
           </div>
-          <input id="newEstTax" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <input id="newEstTax" type="text" inputmode="decimal" data-dp="2" class="edit-input num-fmt" placeholder="0.00" />
           <div id="newEstTaxWarn" style="display:none; margin-top:4px; font-size:10.5px; line-height:1.4; color:#9a3412;"></div>
         </div>
       </div>
@@ -25392,7 +25437,7 @@
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-top:10px; align-items:end;">
         <div class="sl-field">
           <label>Estimate Selling Price ($)</label>
-          <input id="newEstBase" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <input id="newEstBase" type="text" inputmode="decimal" data-dp="2" class="edit-input num-fmt" placeholder="0.00" />
           <div style="font-size:10.5px; color:var(--muted); margin-top:4px;">What you actually quote. It may differ from the calculated price on purpose.</div>
         </div>
         <div class="sl-field">
@@ -25401,7 +25446,7 @@
                it "profit" would invite it into the GP maths, which it is not
                part of — GP is measured against the price actually quoted. -->
           <label>Price Adjustment ($)</label>
-          <input id="newEstAdjust" type="number" step="0.01" class="edit-input" placeholder="0.00" />
+          <input id="newEstAdjust" type="text" inputmode="decimal" data-dp="2" class="edit-input num-fmt" placeholder="0.00" />
           <div id="newEstSuggested" style="font-size:10.5px; color:var(--muted); margin-top:4px;"></div>
         </div>
       </div>

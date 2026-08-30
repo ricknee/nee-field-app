@@ -5267,6 +5267,18 @@
   // convenience for a box storing DOLLARS, so drift changes what a button
   // pre-fills and nothing that is stored. Keep them equal anyway.
   const EST_SALES_TAX_RATE  = 0.08;
+  // db/schema/068. What the server will STAMP as the burden rate on the next
+  // estimate created — the live hours-weighted crew cost, sent with every
+  // jobEstimates read. Cached here because the New Estimate modal has no
+  // jobDefaults of its own, and its live GP preview has to agree with what the
+  // save will produce; a preview at the 32.50 fallback against a save that
+  // stamps 33.12 is a disagreement the estimator would only notice afterwards.
+  //
+  // ⚠ Populated by renderEstGp, which always runs before the modal can open —
+  // the "+ New From Template" button lives on that tab. Null until then, and
+  // estMath falls back to EST_BURDEN_FALLBACK, so a missed render costs the old
+  // behaviour rather than a wrong number.
+  let _estBurdenRate = null;
   function estMath(v) {
     const num = (x) => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
     const has = (x) => x !== null && x !== undefined && x !== "";
@@ -5415,6 +5427,9 @@
       // right defaults instead of a hardcoded 10% / $75. Only 36 of 117 jobs
       // charge 75/hr, so a constant here would misprice a third of the book.
       const jd = d.jobDefaults || {};
+      // db/schema/068 — cache the crew burden rate for the New Estimate modal,
+      // which cannot fetch its own jobDefaults. See the note at _estBurdenRate.
+      if (jd.burdenRate != null) _estBurdenRate = Number(jd.burdenRate);
       if (!estimates.length) {
         estimatesSection.innerHTML = `<div class="empty-msg">No estimates found for this job.</div>`;
         return;
@@ -17651,6 +17666,9 @@
       otherCosts:      numById("newEstOther"),
       salesTax:        numById("newEstTax"),
       jobSellRate:     _newEstJob?.billableHourlyRate,
+      // db/schema/068 — the rate the SAVE will stamp, so this preview and the
+      // saved estimate cannot report two different GPs for the same numbers.
+      laborBurdenRate: _estBurdenRate,
     });
     const cell = (label, value, strong, color) =>
       `<div><div style="color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.4px;">${label}</div>

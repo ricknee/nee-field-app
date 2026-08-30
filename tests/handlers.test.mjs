@@ -2622,6 +2622,67 @@ await test("est GP: 30% turns the GP % green, and the units cannot slip", async 
      "both the estimate card and the New Estimate modal use it — one screen agreeing with itself is not enough");
 });
 
+// ── db/schema/068 — the estimating rate comes from the crew, and old quotes freeze ──
+// The actual side has always priced each week at the rate in force that week.
+// The estimate side used one frozen literal. Now it reads the crew — but the
+// backfill is what makes that safe, and it is the part that would have gone
+// wrong silently.
+await test("est GP: the burden rate is read from the crew, and old estimates keep theirs", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const sql  = readFileSync(fileURLToPath(new URL("../db/schema/068_estimating_labor_rate.sql", import.meta.url)), "utf8");
+
+  // 1. ⚠⚠ THE BACKFILL. 90 of 91 estimates had no stamped rate and fell through
+  //    to the constant. Repointing that fallback WITHOUT stamping them first
+  //    reprices 19,039 historical hours and moves $11,233 of estimated GP on
+  //    quotes that were already sent and won. Owner's instruction, and the one
+  //    thing in this file that cannot be reordered.
+  ok(/UPDATE job_estimates\s*\n\s*SET labor_burden_rate = 32\.50\s*\n\s*WHERE labor_burden_rate IS NULL;/.test(sql),
+     "068 stamps every unstamped estimate with the 32.50 it was already costed at");
+  ok(sql.indexOf("UPDATE job_estimates") < sql.indexOf("CREATE OR REPLACE VIEW v_estimating_labor_rate"),
+     "and does it BEFORE creating the view the new fallback reads — order is the safety");
+  ok(/Never bulk-update this column/.test(sql),
+     "the column comment forbids the bulk update that would undo it");
+
+  // 2. THE RATE IS STAMPED AT CREATE, NOT RESOLVED AT READ. If the view were
+  //    read on the way OUT instead, every existing quote would silently follow
+  //    this year's payroll — which is the whole thing being prevented.
+  ok(/COALESCE\(\$13::numeric, \(SELECT burden_rate FROM v_estimating_labor_rate\), \$\{EST_LABOR_RATE\}\)/.test(src),
+     "the create resolves crew → constant and stamps the result");
+  const upd = src.slice(src.indexOf("async function handleUpdateEstimate"),
+                        src.indexOf("async function handleUpdateEstimateStatus"));
+  ok(/burden:\s+"COALESCE\(\$8, labor_burden_rate\)"/.test(upd),
+     "the UPDATE keeps the stored rate — an edit never re-resolves it");
+  ok(!/v_estimating_labor_rate/.test(upd),
+     "…and the update cannot see the view at all, so it cannot reprice an old quote");
+
+  // 3. THE CONSTANT IS THE LAST RESORT, NOT THE DEFAULT. The view returns NULL
+  //    with no rates or no time history; a NULL reaching the multiplication
+  //    costs labor at $0/hr, which reads as a spectacular GP, not an outage.
+  ok(/v_estimating_labor_rate\), 32\.50\)/.test(src) || /v_estimating_labor_rate\), \$\{EST_LABOR_RATE\}\)/.test(src),
+     "the constant sits AFTER the view in the COALESCE, never before it");
+
+  // 4. THE PREVIEW AND THE SAVE MUST AGREE. The New Estimate modal has no
+  //    jobDefaults of its own; without this its live GP uses 32.50 while the
+  //    save stamps the crew rate, and the number moves after you press save.
+  ok(/burdenRate: n\(j0\.est_burden_rate\) \?\? EST_LABOR_RATE/.test(src),
+     "jobDefaults carries the crew rate to the client");
+  ok(/laborBurdenRate: _estBurdenRate,/.test(html),
+     "and the modal's preview uses it rather than the client constant");
+
+  // 5. THE OT PREMIUM AND THE EXCLUSION LABELS. 'Paid Holiday', not 'Holiday' —
+  //    this system has been bitten twice by a singular/plural single-select
+  //    mismatch, and a wrong label here does not error, it silently prices paid
+  //    non-productive hours into a productive-cost rate.
+  ok(/ot_hours \* rate \* 1\.5/.test(sql), "overtime is costed at 1.5x, as the actuals view does");
+  ok(/ARRAY\['PTO'::text, 'Paid Holiday'::text\]/.test(sql),
+     "PTO and Paid Holiday are excluded, spelled as v_job_labor_cost_true spells them");
+  ok(/SUM\(wk_hours \* rate\) \/ NULLIF\(SUM\(wk_hours\), 0\)/.test(sql),
+     "the average is HOURS-WEIGHTED — a plain mean over-weights whoever is on the payroll");
+});
+
 await test("est GP: the new estimate fields fail CLOSED without a database", async () => {
   // Same contract as the rest of slice 3: an estimate that exists only in
   // Airtable is invisible to the app forever, so a create without Neon must

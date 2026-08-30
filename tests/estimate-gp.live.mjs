@@ -64,7 +64,16 @@ const JOB_NULL = "rec3dKTdZEXyq5ITg";  // KDC Management — no billable rate
 
 const created = [];
 const mk = async (jobId, body) => {
-  const r = json(await POST("createJobEstimate", { jobId, estimateDate: "2026-08-25", ...body }));
+  // ⚠ db/schema/068 — THE BURDEN RATE IS PINNED HERE ON PURPOSE. Since 068 the
+  // create resolves it from `v_estimating_labor_rate`, which moves with payroll
+  // and with the last twelve months of hours. Every fixture below is about the
+  // ARITHMETIC (cost vs sell, bought-in cost, tax) and would go flaky if its
+  // expected totals tracked a live crew average. Section 8e is where the
+  // resolution itself is tested, and it opts out by passing
+  // `laborBurdenRate: undefined` — JSON.stringify drops the key, so the server
+  // sees no rate and falls through to the view exactly as production does.
+  const r = json(await POST("createJobEstimate", {
+    jobId, estimateDate: "2026-08-25", laborBurdenRate: 32.50, ...body }));
   if (!r.ok) throw new Error(`create failed: ${r.error}`);
   created.push(r.id);
   return r.id;
@@ -380,6 +389,47 @@ console.log("\n── 8d. A COMMA MUST NEVER BECOME NaN IN THE DATABASE ──�
     jobId: JOB_70, estimateDate: "2026-08-28", baseAmount: "1,000.00" }));
   eq(c.ok, false, "the create refuses it too — both write paths, not just one");
   if (c.ok && c.id) created.push(c.id);
+}
+
+console.log("\n── 8e. THE BURDEN RATE COMES FROM THE CREW, AND FREEZES (068) ──────");
+// The estimating rate was a source literal (32.50). It now reads
+// v_estimating_labor_rate — hours-weighted crew true cost, OT premium included.
+//
+// ⚠⚠ THE RULE THIS BLOCK EXISTS FOR (owner, 2026-08-30): "if a job started out
+// at $32.50 we need to keep that data — only change it on jobs where an
+// employee got a raise." An estimate is STAMPED at create and never
+// re-resolved, so a later raise reaches NEW quotes only. If anyone ever moves
+// the view read to the way OUT instead of the way IN, every historical quote
+// silently follows this year's payroll and these assertions fail.
+{
+
+  // undefined, not omitted: mk() pins 32.50 by default and this is how a case
+  // opts back out — JSON.stringify drops the key, so the server resolves the
+  // crew rate exactly as it does in production.
+  const idA = await mk(JOB_75, { baseAmount: 100000, laborHours: 100, materialRawCost: 1000, laborBurdenRate: undefined });
+  const a = (await readOne(JOB_75, idA)).est;
+  eq(Number.isFinite(Number(a.laborBurdenRate)), true, "a new estimate gets a real burden rate, never null");
+  eq(Number(a.laborBurdenRate) > 0, true, "…and never zero — a NULL view result would cost labor at $0/hr");
+  eq(a.calculatedTotal, Number((100 * Number(a.laborBurdenRate) + 1000).toFixed(2)),
+     "direct cost uses the rate that was stamped, not a constant");
+
+  // An explicit override still wins, and is what gets stamped.
+  const idB = await mk(JOB_75, { baseAmount: 100000, laborHours: 100, materialRawCost: 1000, laborBurdenRate: 40 });
+  eq((await readOne(JOB_75, idB)).est.laborBurdenRate, 40, "an explicit burden rate overrides the crew figure");
+
+  // ⚠ THE FREEZE. Edit the estimate — hours, price, anything — and the stamped
+  // rate must not move. This is the assertion that would catch a future
+  // "helpful" re-resolve.
+  await POST("updateEstimate", { estimateId: idB, laborHours: 250 });
+  const b2 = (await readOne(JOB_75, idB)).est;
+  eq(b2.laborBurdenRate, 40, "EDITING AN ESTIMATE DOES NOT RE-RESOLVE ITS RATE — the old quote keeps its own");
+  eq(b2.calculatedTotal, 11000, "and its direct cost recomputes at 40, not at the crew rate: 250 x 40 + 1,000");
+
+  // The client is told the same number the server will stamp, or the New
+  // Estimate preview and the saved estimate report two different GPs.
+  const defaults = (await readOne(JOB_75, idA)).defaults;
+  eq(Number(defaults.burdenRate), Number(a.laborBurdenRate),
+     "jobDefaults.burdenRate equals what the create actually stamped");
 }
 
 console.log("\n── 9. CLEAN UP ────────────────────────────────────────────────────");

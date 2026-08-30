@@ -6784,7 +6784,14 @@ async function handleJobEstimates(params) {
               -- material is billed at, and the rate its labor is charged at. Sent
               -- with the estimates so the form has no second round trip.
               j.markup_pct AS job_markup_pct,
-              j.billable_hourly_rate AS job_billable_rate
+              j.billable_hourly_rate AS job_billable_rate,
+              -- db/schema/068. What the server WILL stamp on the next estimate
+              -- created here. Sent so the New Estimate form's live GP preview
+              -- uses the same burden the save will use — a preview computed at
+              -- 32.50 against a save that stamps 33.12 is the quiet
+              -- disagreement this file keeps having to design against.
+              -- Uncorrelated, so Postgres evaluates the view once per request.
+              (SELECT burden_rate FROM v_estimating_labor_rate) AS est_burden_rate
          FROM job_estimates e
          LEFT JOIN jobs j ON j.id = e.job_id
          LEFT JOIN LATERAL (
@@ -6858,7 +6865,9 @@ async function handleJobEstimates(params) {
         jobDefaults: {
           markupPct:  n(j0.job_markup_pct),
           sellRate:   n(j0.job_billable_rate),
-          burdenRate: EST_LABOR_RATE,
+          // db/schema/068 — the live crew rate, falling back to the constant
+          // only if the view has nothing to compute from.
+          burdenRate: n(j0.est_burden_rate) ?? EST_LABOR_RATE,
           fallbackSellRate: EST_LABOR_SELL_RATE,
           salesTaxRate: EST_SALES_TAX_RATE,
         },
@@ -8094,7 +8103,18 @@ async function handleCreateJobEstimate(body) {
   // be silently repriced by next year's rate change. `labor_billable_rates` is
   // already effective-dated per job for the same reason.
   const SELL_RATE = `COALESCE($12::numeric, (SELECT j2.billable_hourly_rate FROM jobs j2 WHERE j2.airtable_id = $1 OR j2.id::text = $1), ${EST_LABOR_SELL_RATE})`;
-  const BURDEN    = `COALESCE($13::numeric, ${EST_LABOR_RATE})`;
+  // db/schema/068. The burden rate is READ FROM THE CREW now, not from the
+  // constant — hours-weighted true cost over the last 12 months, overtime
+  // premium included. Resolved HERE and stamped, exactly like the sell rate
+  // above and for the same reason: a quote records the rate that was in force
+  // when it was written, so next year's raises reach new estimates and cannot
+  // reprice old ones.
+  //
+  // ⚠ The 32.50 constant stays as the LAST resort, not the default. The view
+  // returns NULL if there are no current rates or no time history, and a NULL
+  // reaching the multiplication would cost labor at $0/hr on every new estimate
+  // — which reads as a spectacular GP, not as an outage.
+  const BURDEN    = `COALESCE($13::numeric, (SELECT burden_rate FROM v_estimating_labor_rate), ${EST_LABOR_RATE})`;
   const d = estDerived({
     hours: "$5::numeric", matRaw: "$10::numeric", matMarkup: "$11::numeric",
     matEntered: "$6::numeric", sellRate: SELL_RATE, burden: BURDEN,

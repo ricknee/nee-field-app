@@ -5445,6 +5445,60 @@ await test("expense vendor: a Neon-native vendor is a usable handle everywhere",
      "the name lookup matches on either handle");
 });
 
+// ── The clock path the 2026-08-25 sweep missed (found 2026-08-31) ────────────
+// The clock itself makes ZERO Airtable calls — verified by scanning the whole
+// handler region. What it still had was an Airtable-SHAPED assumption:
+// handleClockSwitch narrowed jobId to a rec id before feeding it a dual-handle
+// LEFT JOIN, so switching onto a job the app created matched no row and
+// `COALESCE(j.id, c.job_id)` kept the job being switched AWAY from. Confirmed
+// against production: the raw handle resolves "GMT Trucking (SEG 305)", the
+// rec-stripped value resolves NULL.
+await test("clock: no handler is Airtable-bound, and switch takes a native job", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const qb   = readFileSync(fileURLToPath(new URL("../netlify/functions/qb-time-pull.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // 1. THE CLOCK REGION CALLS AIRTABLE NOWHERE. Bounded by the two handlers that
+  //    open and close it, so the check moves with the file rather than by line
+  //    number. QuickBooks Time stays the book of record; that is a payroll
+  //    decision, and it does not run through Airtable.
+  const start = src.indexOf("async function handleClockStatus");
+  const end   = src.indexOf("async function handleClockRoster");
+  ok(start > 0 && end > start, "the clock region is locatable");
+  const clock = src.slice(start, end);
+  ok(!/\batFetch\(/.test(clock),  "no clock handler calls atFetch");
+  ok(!/\bfetchAll\(/.test(clock), "no clock handler calls fetchAll");
+  ok(!/mirrorToAirtable\(/.test(clock), "and none of them mirrors to Airtable either");
+
+  // 2. THE QB PULL IS NEON-ONLY. Its one atFetch is the generator service-call
+  //    mirror, which is a different feature riding the same cron.
+  ok(!/\batFetch\(/.test(qb), "qb-time-pull makes no Airtable call of its own");
+  ok(/SELECT id, po_locked FROM jobs/.test(qb),
+     "it resolves a jobcode to a job by po_locked, which native jobs have too");
+
+  // 3. ⚠⚠ THE FIX. Every clock write hands the SQL the RAW handle; the dual-handle
+  //    clause does the resolving. A rec-stripped value is the bug, not the guard.
+  ok(/isJobHandle\(jobId\) \? String\(jobId\)\.trim\(\) : ""/.test(clock),
+     "clockSwitch passes the raw handle, not a rec-stripped one");
+  ok(!/\(jobId && String\(jobId\)\.startsWith\("rec"\)\) \? String\(jobId\) : ""/.test(clock),
+     "and the rec-only spelling is gone from the clock entirely");
+
+  // 4. PTO ids are handles on BOTH sides of the client's join. This one is not a
+  //    "reads as no data" bug: bare, both sides come back null for a natively
+  //    hired employee, `null === null` is true, and the request shows ANOTHER
+  //    person's remaining hours next to the approve button.
+  ok(/WHERE COALESCE\(r\.employee_airtable_id, r\.employee_id::text\) = \$1/.test(src),
+     "one person's PTO history matches on either id form");
+  ok(/COALESCE\(employee_airtable_id, employee_id::text\) AS employee_airtable_id/.test(src),
+     "the pending queue emits a handle");
+  ok(/COALESCE\(airtable_id, employee_id::text\) AS airtable_id,\n\s*name, allowance_hours/.test(src),
+     "so does the balances list it is joined against");
+  ok(/r\.employee_airtable_id\n\s*\? bals\.find/.test(html),
+     "and the client refuses to match on a missing id at all");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

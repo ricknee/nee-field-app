@@ -2072,18 +2072,31 @@ async function handlePtoRequests(params) {
   // its own so the roster doesn't have to carry everybody's requests just so one
   // card can show a handful.
   if (params?.employeeId) {
+    // ⚠ COALESCE, not the bare column. handleCreateEmployee has been Neon-first
+    // since the employees migration, so everyone hired from now on has a uuid and
+    // a NULL airtable_id, and v_pto_requests emits that column raw. Bare, this
+    // matches nothing for them: their PTO history reads as "never requested any",
+    // which is indistinguishable from the truth.
     const hist = await neonQuery(
       `SELECT r.id, r.start_date, r.end_date, r.hours_per_day::float8, r.days,
               r.total_hours::float8, r.status, r.note, r.decision_note,
               r.requested_at, r.decided_at
          FROM v_pto_requests r
-        WHERE r.employee_airtable_id = $1
+        WHERE COALESCE(r.employee_airtable_id, r.employee_id::text) = $1
         ORDER BY r.start_date DESC LIMIT 40`, [String(params.employeeId)]);
     return resp(200, { ok: true, employeeId: params.employeeId, history: hist?.rows || [], _source: "neon" });
   }
 
   const pending = await neonQuery(
-    `SELECT id, employee_airtable_id, employee_name, start_date, end_date,
+    // ⚠⚠ COALESCE on the EMIT side, and this one is not a "reads as no data"
+    // bug — it is a WRONG NUMBER. The client joins a pending request to its
+    // balance row with `b.airtable_id === r.employee_airtable_id`, and for a
+    // natively-hired employee BOTH sides are null. `null === null` is true, so
+    // the request would show the FIRST null-id person's remaining hours — one
+    // real employee's PTO balance printed on another's request, right where the
+    // approve/deny decision is made.
+    `SELECT id, COALESCE(employee_airtable_id, employee_id::text) AS employee_airtable_id,
+            employee_name, start_date, end_date,
             hours_per_day::float8, days, total_hours::float8, note, requested_at
        FROM v_pto_requests WHERE status = 'pending' ORDER BY start_date`);
 
@@ -2097,7 +2110,11 @@ async function handlePtoRequests(params) {
   // Balances for everyone who has an allowance, so a decision can be made with
   // the remaining figure in view rather than from memory.
   const balances = await neonQuery(
-    `SELECT airtable_id, name, allowance_hours::float8, carried_in_hours::float8,
+    // The other half of that join — same COALESCE as handleEmployees already
+    // applies to this view (~airtable.js:4700). Both sides must be handles or
+    // the match is by luck.
+    `SELECT COALESCE(airtable_id, employee_id::text) AS airtable_id,
+            name, allowance_hours::float8, carried_in_hours::float8,
             entitled_hours::float8, used_hours::float8, remaining_hours::float8
        FROM v_pto_balances WHERE year = $1 ORDER BY name`, [year]);
 
@@ -2791,7 +2808,17 @@ async function handleClockSwitch(body, authUser) {
             r.* FROM reopened r`,
     [me.id, me.name || null, stamp, String(cls),
      cityTaxes == null ? null : String(cityTaxes), clientPunchId,
-     (jobId && String(jobId).startsWith("rec")) ? String(jobId) : ""]);
+     // ⚠ THE RAW HANDLE, not a rec-stripped one. Same rule as clockIn, clockOut,
+     // clock.editOpen and clock.editPunch — and this is the ONE clock path the
+     // 2026-08-25 sweep missed. The LEFT JOIN above is
+     // `airtable_id = NULLIF($7,'') OR id::text = NULLIF($7,'')`, so a native
+     // job's uuid resolves perfectly well; narrowing it to rec ids here made the
+     // join match nothing, and `COALESCE(j.id, c.job_id)` then silently kept the
+     // job the person was switching AWAY from. They'd switch from Shop Work onto
+     // a job the app created, the sheet would say it worked, and the whole
+     // afternoon would bank to Shop Work.
+     // "" still means "class change only, keep the current job" — unchanged.
+     isJobHandle(jobId) ? String(jobId).trim() : ""]);
 
   const out = rows?.[0];
   if (!out) {

@@ -21422,7 +21422,14 @@
     const pendHtml = pend.length ? pend.map(r => {
       // The remaining figure is shown ON the decision, so approving doesn't mean
       // remembering what someone has left.
-      const bal = bals.find(b => b.airtable_id === r.employee_airtable_id);
+      // ⚠ The `&&` is load-bearing. Both ids are COALESCEd server-side now, but
+      // if either ever comes back null again, `null === null` is TRUE and this
+      // silently prints ANOTHER employee's remaining hours on this request —
+      // next to the approve button. No match is the correct answer to a missing
+      // id; the row just shows no balance.
+      const bal = r.employee_airtable_id
+        ? bals.find(b => b.airtable_id === r.employee_airtable_id)
+        : null;
       const left = bal ? Number(bal.remaining_hours) : null;
       const over = left != null && Number(r.total_hours) > left;
       const label = r.start_date === r.end_date

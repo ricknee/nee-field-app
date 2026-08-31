@@ -9526,6 +9526,30 @@ async function handleCalculateMileage(body) {
   return resp(200, { ok: true, miles });
 }
 
+// ── VENDOR HANDLE (2026-08-31) ─────────────────────────────────────────────
+// Same contract as isJobHandle / isEmployeeHandle: rec id OR Neon uuid, a
+// deliberate SUPERSET so nothing that works today starts failing.
+//
+// It exists because `handleCreateVendor` has been Neon-first since 2026-08-21
+// and `AIRTABLE_WRITES=off` since 08-25, so every vendor added through the app
+// now has a uuid and no rec id at all. The expense writers below narrowed
+// vendorId with `startsWith("rec")` for BOTH their Airtable payload and their
+// Neon parameter — and the Neon SQL resolves `airtable_id = $8 OR id::text = $8`
+// perfectly well. A brand-new vendor was therefore visible in the picker and
+// unusable on the expense: the general form refused it outright, the employee
+// form dropped it silently.
+//
+// ⚠⚠ USE THIS ONLY FOR THE NEON SIDE. The Airtable payloads below still test
+// `startsWith("rec")` on purpose — `fldlTUL8hsPkReBAB` is a LINKED-RECORD field
+// written with `typecast: true`, and handing that a uuid does not error, it
+// CREATES a Vendors record named with the uuid and links to it. Same trap as the
+// Submitted By link in slice 5.
+function isVendorHandle(v) {
+  const s = String(v ?? "").trim();
+  if (s.startsWith("rec")) return true;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 // ── NEON-FIRST EXPENSE CREATE (cutover slice 4, 2026-08-24) ───────────────
 // Shared by handleAddGeneralExpense and handleAddLiftExpense. Returns the new
 // row's uuid; the caller mirrors to Airtable and NEVER stamps the rec id back.
@@ -9629,6 +9653,8 @@ async function handleAddGeneralExpense(body, authUser) {
   // entries, matching the 4 existing precedent records entered via Airtable web UI.
   if (hasAmount) fields["fldwbLPIafVtmaSeb"] = Number(amount);
   if (hasCredit) fields["fldcld418pREq2bGq"] = Number(credit);
+  // ⚠ REC-ID ONLY on the Airtable side — see isVendorHandle. A native vendor's
+  // uuid is simply omitted from the (inert) mirror; Neon below takes both forms.
   if (vendorId && String(vendorId).startsWith("rec")) fields["fldlTUL8hsPkReBAB"] = [String(vendorId)];
   // Submitted By (Employee link) — stamped from the token, never client input.
   // This is what lets employees see/edit only their own expenses.
@@ -9652,7 +9678,10 @@ async function handleAddGeneralExpense(body, authUser) {
     // through the Airtable web UI. NULL and 0 are not the same to the GP views.
     manualMaterialCost: hasAmount ? Number(amount) : null,
     materialCredit:     hasCredit ? Number(credit) : null,
-    vendorId: (vendorId && String(vendorId).startsWith("rec")) ? String(vendorId) : null,
+    // ⚠ isVendorHandle, NOT startsWith("rec"): createExpenseNative resolves the
+    // name with `airtable_id = $8 OR id::text = $8`, so a uuid works — nulling
+    // it here was what left a native vendor's expenses with a blank vendor.
+    vendorId: isVendorHandle(vendorId) ? String(vendorId) : null,
     description, authUser });
   if (!neonId) return resp(502, { ok: false, error: "Couldn't save the expense. Please try again." });
 
@@ -9687,7 +9716,11 @@ async function handleUpdateExpense(body, authUser) {
   };
   if (date !== undefined)        fields["fldCCPYdyWAOGchWb"] = date || null;
   if (description !== undefined) fields["fldelsB2jH2tvt1Cj"] = description || "";
-  if (vendorId !== undefined)    fields["fldlTUL8hsPkReBAB"] = (vendorId && String(vendorId).startsWith("rec")) ? [String(vendorId)] : [];
+  // ⚠ REC-ID ONLY on the Airtable side (linked record + typecast — see
+  // isVendorHandle). A uuid is OMITTED rather than written as `[]`: an empty
+  // array means "the user cleared the vendor", and a native vendor is not that.
+  if (vendorId !== undefined && (!vendorId || String(vendorId).startsWith("rec")))
+    fields["fldlTUL8hsPkReBAB"] = vendorId ? [String(vendorId)] : [];
 
   // ⚠ NEON FIRST, and it fails closed. The edit form is how a mis-typed cost
   // gets corrected, so an update that silently did not land is a wrong number
@@ -9711,7 +9744,10 @@ async function handleUpdateExpense(body, authUser) {
      hasAmount ? Number(amount) : null, hasCredit ? Number(credit) : null,
      date !== undefined ? (date || null) : null,
      description !== undefined ? (description || "") : null,
-     (vendorId && String(vendorId).startsWith("rec")) ? String(vendorId) : null]);
+     // ⚠ isVendorHandle — the SELECT above already matches `airtable_id OR
+     // id::text`, so a native vendor resolves here; narrowing to rec ids wrote
+     // vendor_name = NULL on every edit that named one.
+     isVendorHandle(vendorId) ? String(vendorId) : null]);
   if (!upd?.length) return resp(404, { ok: false, error: "Expense not found." });
 
   if (guard.airtableId) {

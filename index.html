@@ -3959,11 +3959,22 @@
   // the user's selection rather than the id format.
   //
   // Deliberately a SUPERSET: every rec id still passes exactly as before.
-  function isJobHandle(v) {
+  // Any record handle the backend will accept: an Airtable rec id OR a Neon
+  // uuid. Generalised 2026-08-31 from isJobHandle, because JOBS WERE NEVER THE
+  // ONLY THING THAT WENT NATIVE. A vendor added through the "+ Add new vendor"
+  // modal is Neon-only (AIRTABLE_WRITES=off), so its id is a uuid — and
+  // saveGeneralExpense tested startsWith('rec'), which meant the vendor you had
+  // just created, and could see in the picker, was rejected with "Please select
+  // a vendor". Same failure shape as the job one below.
+  //
+  // ⚠ Any new id-shaped guard in this file uses THIS, not a bare
+  // startsWith('rec'). A rec id still passes exactly as before — superset.
+  function isRecordHandle(v) {
     const s = String(v ?? '').trim();
     if (s.startsWith('rec')) return true;
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
   }
+  function isJobHandle(v) { return isRecordHandle(v); }
 
   async function apiGet(action, params={}) {
     const url = new URL(API, location.origin);
@@ -14067,7 +14078,12 @@
     // vendor record we seed in Airtable. Frontend-only validation by
     // design; backend stays permissive so the bucket-truck batch save
     // path at index.html:~7660 continues to work without vendorId.
-    if (!vendorId.startsWith("rec")) {
+    //
+    // ⚠ isRecordHandle, NOT startsWith("rec"): a vendor created in this app is
+    // Neon-native and carries a uuid. This guard used to refuse it, so adding a
+    // vendor "worked", the vendor appeared in the picker, and the expense could
+    // then never be saved against it.
+    if (!isRecordHandle(vendorId)) {
       errEl.textContent = "Please select a vendor (use 'Other' if not listed).";
       errEl.style.display = "";
       return;
@@ -14077,13 +14093,13 @@
     saveBtn.disabled = true; saveBtn.textContent = "Saving...";
     if (closeBtn) closeBtn.disabled = true;
     try {
-      // Vendor is required (validated above), so vendorId is guaranteed to
-      // start with "rec" here. The guard below is belt-and-suspenders —
-      // also keeps the backend permissive for the bucket-truck batch path
-      // (index.html:~7660) which writes directly without going through this
-      // handler.
+      // Vendor is required (validated above), so vendorId is guaranteed to be a
+      // usable handle here — rec id or uuid. The guard below is
+      // belt-and-suspenders; it also keeps the backend permissive for the
+      // bucket-truck batch path (index.html:~7660) which writes directly
+      // without going through this handler.
       const payload = { jobId, date, type, amount, credit, description: desc, billable };
-      if (vendorId.startsWith("rec")) payload.vendorId = vendorId;
+      if (isRecordHandle(vendorId)) payload.vendorId = vendorId;
       const saved = await apiPost("addGeneralExpense", payload);
 
       // The receipt uploads in the BACKGROUND from here. The expense record is
@@ -14220,7 +14236,10 @@
       billable:    $("myExpBillable").checked
     };
     const vendorId = $("myExpVendor").value;
-    if (vendorId && vendorId.startsWith("rec")) payload.vendorId = vendorId;
+    // ⚠ isRecordHandle — a native vendor's uuid used to be DROPPED here without
+    // a word, so an employee could pick the vendor, save successfully, and get
+    // an expense with no vendor on it. Silent, unlike the general form's refusal.
+    if (isRecordHandle(vendorId)) payload.vendorId = vendorId;
 
     const btn = $("myExpSaveBtn");
     btn.disabled = true; btn.textContent = "Saving…";

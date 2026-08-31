@@ -5398,6 +5398,53 @@ await test("contactMerge: STATIC — the only destructive action, and it is fenc
   ok(/"contactMerge",/.test(src), "registered in the admin-only POST tier");
 });
 
+// ── The vendor a user just created could not be used (2026-08-31) ────────────
+// `handleCreateVendor` has been Neon-first since 2026-08-21 and AIRTABLE_WRITES
+// has been off since 08-25, so a vendor added through the app has a uuid and no
+// rec id. Every id guard on the expense path still tested startsWith("rec"), so
+// the new vendor appeared in the picker and then: the general form refused it
+// ("Please select a vendor"), and the employee form dropped it in silence.
+// Confirmed against production — "Ebay", created 2026-08-31, airtable_id NULL.
+await test("expense vendor: a Neon-native vendor is a usable handle everywhere", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // 1. BOTH SIDES ACCEPT BOTH FORMS. The predicates are supersets — a rec id
+  //    still passes exactly as it did.
+  ok(/function isVendorHandle\(v\)/.test(src), "the backend has a vendor handle predicate");
+  ok(/function isRecordHandle\(v\)/.test(html), "the client has one too");
+  ok(/isVendorHandle\(vendorId\) \? String\(vendorId\) : null/.test(src),
+     "createExpenseNative's vendorId param takes a uuid");
+  ok((src.match(/isVendorHandle\(vendorId\)/g) || []).length === 2,
+     "add AND edit — one handler fixed alone leaves the other blanking the vendor");
+
+  // 2. NO BARE REC TEST IS LEFT ON A VENDOR IN THE CLIENT. This is the exact
+  //    spelling that produced the bug report.
+  ok(!/vendorId\.startsWith\("rec"\)/.test(html),
+     "no client guard narrows a vendorId to a rec id");
+  ok(/if \(!isRecordHandle\(vendorId\)\) \{/.test(html),
+     "the general form's required-vendor check is the superset");
+  ok(/if \(isRecordHandle\(vendorId\)\) payload\.vendorId = vendorId;/.test(html),
+     "and the employee form forwards a uuid instead of silently dropping it");
+
+  // 3. ⚠⚠ THE AIRTABLE SIDE MUST STAY REC-ONLY, and this assertion is the point
+  //    of the test as much as the fix is. fldlTUL8hsPkReBAB is a LINKED-RECORD
+  //    field written with `typecast: true`: a uuid does not error, it CREATES a
+  //    Vendors record named with the uuid and links to it. "Widening the last
+  //    startsWith too" is the tempting, wrong follow-up.
+  ok(/if \(vendorId && String\(vendorId\)\.startsWith\("rec"\)\) fields\["fldlTUL8hsPkReBAB"\]/.test(src),
+     "addGeneralExpense's Airtable link field is still rec-only");
+  ok(/\(!vendorId \|\| String\(vendorId\)\.startsWith\("rec"\)\)\)\s*\n\s*fields\["fldlTUL8hsPkReBAB"\]/.test(src),
+     "and updateExpense's is too — a uuid is omitted, not written as an empty clear");
+
+  // 4. The SQL was never the problem: it has always resolved either form. The
+  //    guards above it were throwing the uuid away before it got here.
+  ok(/SELECT name FROM expense_vendors WHERE airtable_id = \$8 OR id::text = \$8/.test(src),
+     "the name lookup matches on either handle");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

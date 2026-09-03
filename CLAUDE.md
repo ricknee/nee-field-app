@@ -51,7 +51,8 @@ answers, just slowly. It went unnoticed for three days.
 
 ### Required environment variables (set in Netlify dashboard; `.env.example` is the template)
 
-- `AIRTABLE_API_KEY` — Airtable PAT (used by both live functions)
+- `AIRTABLE_API_KEY` — Airtable PAT. **Read by `airtable.js` only.** `inventory.js` stopped
+  reading it on 2026-09-03 and its `ensureEnv()` no longer requires it.
 - `AIRTABLE_BASE_ID` — main NEE base (`appiqWg6SvKcGfMAu`)
 - `INVENTORY_BASE_ID` — **dead; delete it.** Was the separate inventory base
   (`appfsLJwfow4CepCw`). Nothing has read it since the write cutover (`79b1b56`, 2026-08-12):
@@ -78,14 +79,19 @@ answers, just slowly. It went unnoticed for three days.
   has been down for months, so no API token can be issued (its native login demands a second factor
   under an undocumented parameter). Make.com still reaches pCloud only because Make registered its
   own app years ago. Don't wire these back up without re-reading `docs/PLAN-job-photos.md`.
-- `LOGIN_SOURCE` — **optional; the employees/login migration kill switch.** Unset or
-  `airtable` (the default) = Airtable decides a login, with Neon running as a shadow that only
-  logs disagreements (`login-shadow` in the function logs). `neon` = Neon decides, falling back
-  to Airtable whenever Neon is unreachable, so a database blip can't stop the crew logging in.
-  It is an env var rather than a code path because it moves login for **both** apps at once —
-  the riskiest switch in the migration — and flipping it back takes seconds with no rebuild.
-  Only turn it on once the shadow logs are clean. `_source` on the login response says which
-  store actually answered. See `netlify/functions/_employees.js`.
+- `LOGIN_SOURCE` — **RETIRED 2026-09-03; delete it from the Netlify dashboard.** It staged the
+  employees/login migration in three steps: Airtable decides with Neon shadowing → Neon decides
+  with Airtable as the fallback (live 2026-08-08) → Neon decides, full stop. Setting it now does
+  nothing: both apps call `neonLoginCandidate` and only that, and an unreachable Neon answers
+  **503**, not a fallback. ⚠⚠ The fallback went because it had turned from a safety net into a
+  hazard — Airtable has taken no employee write since `AIRTABLE_WRITES=off`, so its PIN and
+  `Active` columns are frozen, and falling back would accept a PIN the crew had already changed
+  and admit someone deactivated since: failing **open** on a retired credential. It also bought
+  less than it looked like it did, since with Neon down every screen behind login already 503s.
+  The matching rule is the union of what the two apps used to accept (full name, first name,
+  username, email), so nobody who could log in before lost the ability to. `_source` on the
+  response still says which store answered and should now read `neon` every time.
+  See `netlify/functions/_employees.js`.
 - `TIME_CLOCK` / `TIME_CLOCK_PAYROLL` — **the in-app time clock's two kill switches.**
   **Production today: `TIME_CLOCK=on`, `TIME_CLOCK_PAYROLL` UNSET.** So the crew punches, and
   **nothing they punch counts** — QuickBooks Time is still the book of record and the crew is
@@ -233,24 +239,23 @@ Frontend conventions worth knowing before editing `index.html`:
   `JSON.parse(event.body).action`. The dispatcher is a flat `if (action === …)` chain at the
   bottom of the file (~line 3831). **To add an endpoint: write a `handleX` function, then
   register it in that chain.** Unknown actions return 400.
-- **`inventory.js`** (~3,800 lines) — same dispatch shape, for the inventory/estimating app.
-  **59 actions, and Postgres is the only database it has.** Stock, items, locations, vendors,
-  pricing, the ledger, push history, reorder points and the whole estimating cluster are all
-  Neon-native, and every one of those reads **fails closed** rather than falling back to the
-  frozen Airtable copy.
-  It used to span two Airtable bases; it no longer touches the inventory base at all — and since
-  the identity cutover's slice 4c (2026-08-24) it makes **no authoritative Airtable write at
-  all.** The Airtable calls that remain all go to the **main** base and are: eight Neon-first
-  reads with an Airtable fallback (login, employees, the four job pickers, the push's job index),
-  the `getExpenseFields` schema debug action, and one fail-soft mirror in `handlePushExpenses`.
-  ⚠ **That mirror no longer runs: `AIRTABLE_WRITES=off` since 2026-08-25.** Its old justification
-  — "that table is still a Make trigger bus" — was **measured false** the same day: of the 20 Make
-  scenarios in the only team, every one using the `airtable` package is `isActive: false`.
-  The code stays, inert, and still carries its two rules for whenever anyone reads it: it never
-  stamps the rec id back (R2 receipt keys are `expenses/<handle>/`, so a handle that flips orphans
-  every receipt) and never feeds the mirror response to `syncExpenseToNeon` (its
-  `ON CONFLICT (airtable_id)` cannot fire on a NULL, so it would insert a **second** expense for
-  the same spend).
+- **`inventory.js`** (~3,700 lines) — same dispatch shape, for the inventory/estimating app.
+  **58 actions, and Postgres is the only database it has — there is no Airtable client in the
+  file at all** (2026-09-03). Not a read, not a write, not a fallback, not a schema probe;
+  `ensureEnv()` asks only for `AUTH_SECRET`. Stock, items, locations, vendors, pricing, the
+  ledger, push history, reorder points, the estimating cluster, login, employees and the four
+  job pickers all read Neon and **fail closed** (503) rather than answering from the frozen
+  Airtable copy.
+  How it got here: the write cutover (2026-08-12) took it off the Airtable *inventory* base;
+  identity-cutover slice 4c (2026-08-24) made pushed expenses Neon-born, leaving only a mirror;
+  `AIRTABLE_WRITES=off` (2026-08-25) stopped that mirror executing; and 2026-09-03 deleted the
+  eight remaining Neon-first-with-fallback reads' fallbacks, the dead mirror, and the
+  `getExpenseFields` schema debug action.
+  ⛔ **Do not add an Airtable call back to this file.** If something here needs data only Airtable
+  has, that is a migration gap to close in Neon, not a fetch to reintroduce — a reintroduced read
+  works in dev and serves a frozen answer in production without erroring.
+  `tests/handlers.test.mjs` asserts the absence statically ("the inventory app has NO Airtable
+  client at all"), and `tests/inventory-push.test.mjs` throws if a push ever POSTs an Expense.
 
 (A third function, `auth.js`, was deleted in `304b86c` — it was dead duplicate handlers using
 legacy env-var PINs `EMPLOYEE_PIN`/`ADMIN_PIN`. That Phase-1 PIN model is **not** how the
@@ -298,11 +303,17 @@ defaults to non-viewer.
 - **Both hourly pulls are retired** — `syncJobs` (38 job columns) and `syncBillingTables`. Their
   modules carry a RETIRED banner. ⚠⚠ Re-enabling one would not "resume syncing", it would
   **OVERWRITE**: every app edit since the cut is newer than Airtable's copy.
-- **39 read handlers now REFUSE (503) rather than fall back**, because Airtable is frozen and a
-  fallback answers with yesterday's world, silently. Four fallbacks remain on purpose:
-  `handleLogin` (governed by `LOGIN_SOURCE`; the failure mode is nobody can work — **owner's call**),
-  and three value-returning helpers: `guardExpenseMutation`, `computePayrollDateRanges`,
-  `handlePayrollBonusesRollup`.
+- **The read fallbacks are down to three.** 39 read handlers already refused (503) rather than
+  serve yesterday's world silently; on **2026-09-03** the inventory app's remaining eight went
+  the same way and **`handleLogin` lost its fallback in both apps** — see `LOGIN_SOURCE` above.
+  What is left, all in the field app, are three value-returning helpers: `guardExpenseMutation`,
+  `computePayrollDateRanges`, `handlePayrollBonusesRollup`.
+- ⚠ Two field-app fallbacks that are NOT in that count and are worth knowing: `handlePeople`
+  renders the roster off Airtable with the Neon columns null if Neon can't be read, and the
+  People screen's Airtable **writes** are still in the code (inert under `AIRTABLE_WRITES=off`).
+  The note above them used to say "drop them in the same commit that retires `LOGIN_SOURCE`";
+  that commit has now happened and the deletion was deliberately deferred rather than ridden
+  along with a login change.
 - **Billing allocations are Neon-native for every row**, not just native ones (2026-08-25). The
   Airtable-first fork is gone and `bill_rate` is written on every allocation — nothing else fills
   it now, and a NULL rate values those hours at **$0 while they still print**.
@@ -311,8 +322,9 @@ defaults to non-viewer.
   `sync_state('hourly_pull')` every run — that is the liveness signal now that `jobs.synced_at`
   no longer moves.
 
-**What is left of the Airtable exit:** the four fallbacks above, deleting the now-unreachable
-Airtable read branches, then PAT read-only for a week and archive the base. After that: Google
+**What is left of the Airtable exit:** the three fallbacks above, deleting the now-unreachable
+Airtable read branches (the inventory app's are already gone — it has no Airtable client left),
+then PAT read-only for a week and archive the base. After that: Google
 contacts (item 07), then prevailing wage. Running order stays `docs/AUDIT-airtable-remaining.md`.
 
 **⚠ The lesson that cost the most on 2026-08-25:** eleven defects were found by hand in one day and

@@ -35,9 +35,77 @@ let mockGoogle = null;
 // field, so the stub mirrors that — a stub that used HTTP status would let a
 // real bug (treating result!==0 as success) pass.
 let mockPcloud = { listfolder: [], bytes: Buffer.from("JPEGBYTES"), result: 0 };
+// 2b) Mock Neon. Needed as of 2026-09-03: login has no Airtable fallback any
+//     more, so a suite with no database answers 503 to every login unless it
+//     can stand one up.
+//     @neondatabase/serverless POSTs {query, params} to /sql over fetch and
+//     expects {fields, rows} back with rows as VALUE ARRAYS — it zips them into
+//     objects itself. Handing it objects throws "c.map is not a function".
+//
+// ⚠ `neonOff()` (DATABASE_URL unset) is the OUTAGE case, and it is not the same
+//   as `neonOn([])`. Unset means Neon had no opinion → 503. Empty means Neon
+//   answered and nobody matched → 401. Conflating those is the bug that would
+//   tell the crew their PIN is wrong while the database is down.
+let mockNeonEmployees = [];
+const FAKE_NEON_URL = "postgresql://u:p@fake.neon.tech/db";
+function neonOn(employees) {
+  process.env.DATABASE_URL = FAKE_NEON_URL;
+  mockNeonEmployees = employees;
+}
+function neonOff() { delete process.env.DATABASE_URL; mockNeonEmployees = []; }
+const neonReply = (cols, rows) => {
+  const body = {
+    command: "SELECT", rowCount: rows.length, rowAsArray: false,
+    fields: cols.map((n, i) => ({ name: n, dataTypeID: 25, tableID: 0, columnID: i + 1,
+                                  dataTypeSize: -1, dataTypeModifier: -1, format: "text" })),
+    rows: rows.map(r => cols.map(c => (c in r ? r[c] : null))),
+  };
+  return { ok: true, status: 200, headers: { get: () => "application/json" },
+           text: async () => JSON.stringify(body), json: async () => body };
+};
+
 globalThis.fetch = async (url, opts) => {
-  lastFetch = { url: String(url), opts: opts || {} };
   const method = (opts?.method || "GET").toUpperCase();
+  // ⚠ The Neon branch comes FIRST and deliberately does NOT touch `lastFetch`.
+  // That variable means "the last AIRTABLE request", and a dozen fail-closed
+  // cases assert it is still null to prove nothing was mirrored. Recording a
+  // Neon attempt in it would turn every one of those green-to-red for a write
+  // that never happened.
+  if (String(url).includes("/sql")) {
+    // ⚠⚠ ANSWER FROM THE CURRENT ENV, NOT THE REQUEST. _neon.js caches its
+    // client (getSql memoises `_sql`), so once ANY case has switched Neon on,
+    // every later case still reaches this branch even after DATABASE_URL is
+    // unset or set to a broken string — the cached client carries the old
+    // connection string in its header. Reading process.env here is what keeps
+    // the "Neon is down" cases actually testing a down Neon; without it they
+    // would quietly start passing against a live stub, which is the exact
+    // silent-green failure this suite exists to prevent.
+    if (process.env.DATABASE_URL !== FAKE_NEON_URL) {
+      return { ok: false, status: 500, headers: { get: () => "text/plain" },
+               text: async () => "neon unreachable" };
+    }
+    let sent = {};
+    try { sent = JSON.parse(opts?.body || "{}"); } catch { /* ignore */ }
+    const sql = String(sent.query || "");
+    // The login lookup. Mirrors neonLoginCandidate's UNION rule — full name,
+    // FIRST name, username, email — so a fixture can be written the way a person
+    // thinks about it rather than as SQL.
+    if (/FROM employees/i.test(sql) && /btrim\(pin\)/i.test(sql)) {
+      const [id, pin] = sent.params || [];
+      const rows = (mockNeonEmployees || []).filter(e =>
+        e.active !== false
+        && String(e.pin ?? "").trim() !== ""
+        && String(e.pin).trim() === String(pin)
+        && [e.name, e.username, e.email, String(e.name || "").trim().split(" ")[0]]
+             .some(v => String(v || "").trim().toLowerCase() === String(id)));
+      return neonReply(["handle", "name", "role"],
+        rows.map(e => ({ handle: e.id, name: e.name, role: e.role ?? null })));
+    }
+    // Everything else — the last-login stamp above all — is a no-op success.
+    // These cases are about who ANSWERS a login, not what it records afterwards.
+    return neonReply([], []);
+  }
+  lastFetch = { url: String(url), opts: opts || {} };
   if (String(url).includes("maps.googleapis.com")) {
     return { ok: true, status: 200, json: async () => mockGoogle };
   }
@@ -132,37 +200,58 @@ await test("unknown GET action → 400", async () => {
   eq((await GET("definitelyNotAnAction")).statusCode, 400, "status");
 });
 
+// ── LOGIN ────────────────────────────────────────────────────────────────
+// ⚠⚠ These fixtures are NEON rows, not Airtable records, as of 2026-09-03.
+// handleLogin has no Airtable fallback any more: LOGIN_SOURCE is retired and
+// Neon is the only store consulted. `mockTables.Employees` is deliberately left
+// populated in the first case to prove Airtable is not consulted even when it
+// holds a perfectly good answer.
 await test("login: correct identifier + PIN → 200 with role", async () => {
   mockTables = { Employees: [
-    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
+    { id: "recGHOST", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
   ] };
+  neonOn([{ id: "recE1", name: "Rick Nee", pin: "1234", role: "admin" }]);
   const res = await POST("login", { identifier: "rick nee", pin: "1234" }); // case-insensitive
   eq(res.statusCode, 200, "status");
   const b = json(res);
   ok(b.ok, "ok"); eq(b.user.role, "admin", "role"); eq(b.user.id, "recE1", "id");
+  eq(b._source, "neon", "Neon answered — never the Airtable record sitting right there");
   ok(b.token && verifyToken(b.token), "login issues a verifiable token");
   eq(verifyToken(b.token).role, "admin", "token carries the role");
+  neonOff();
 });
 
 await test("login: wrong PIN → 401", async () => {
-  mockTables = { Employees: [
-    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
-  ] };
+  neonOn([{ id: "recE1", name: "Rick Nee", pin: "1234", role: "admin" }]);
   eq((await POST("login", { identifier: "rick nee", pin: "0000" })).statusCode, 401, "status");
+  neonOff();
 });
 
 await test("login: inactive employee → 401", async () => {
-  mockTables = { Employees: [
-    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: false } },
-  ] };
+  neonOn([{ id: "recE1", name: "Rick Nee", pin: "1234", role: "admin", active: false }]);
   eq((await POST("login", { identifier: "rick nee", pin: "1234" })).statusCode, 401, "status");
+  neonOff();
 });
 
 await test("login: unknown role normalizes to 'employee'", async () => {
-  mockTables = { Employees: [
-    { id: "recE9", fields: { "Employee Name": "Temp Guy", PIN: "9", Role: "Intern", Active: true } },
-  ] };
+  neonOn([{ id: "recE9", name: "Temp Guy", pin: "9", role: "Intern" }]);
   eq(json(await POST("login", { identifier: "temp guy", pin: "9" })).user.role, "employee", "role fallback");
+  neonOff();
+});
+
+await test("login: the union rule — first name and email both still work", async () => {
+  // The field app used to match full name | username | email and the inventory
+  // app full name | FIRST name | username. The shared Neon rule is the UNION of
+  // the two, so retiring the Airtable paths cannot lock anyone out who could log
+  // in before. "patrick" worked in one app and not the other; now it works.
+  neonOn([{ id: "recE2", name: "Patrick Ryan", username: "pryan",
+            email: "pat@example.com", pin: "77", role: "employee" }]);
+  for (const who of ["patrick ryan", "patrick", "pryan", "pat@example.com"]) {
+    const res = await POST("login", { identifier: who, pin: "77" });
+    eq(res.statusCode, 200, `"${who}" logs in`);
+    eq(json(res).user.id, "recE2", `"${who}" resolves to the right person`);
+  }
+  neonOff();
 });
 
 await test("jobs: maps records and filters out archived/closed", async () => {
@@ -3191,57 +3280,84 @@ await test("setEmployeePin: a PIN change signs the person out, and fails closed"
   delete process.env.DATABASE_URL;
 });
 
-await test("login: the Neon shadow cannot affect the answer", async () => {
-  // Stage 2 contract. Airtable decides; the shadow only logs. A broken or
-  // absent Neon must leave both the allow and the refuse path untouched —
-  // this is login, so the blast radius of getting it wrong is everybody.
+await test("login: Neon down is a 503, NOT a 401 — and never an Airtable answer", async () => {
+  // ⚠⚠ THE PROPERTY THIS WHOLE CHANGE TURNS ON (2026-09-03). The Airtable
+  // fallback was retired because Airtable has taken no employee write since
+  // AIRTABLE_WRITES=off, so its PIN and Active columns are frozen: falling back
+  // would accept a PIN already changed and admit someone deactivated since —
+  // failing OPEN on a retired credential.
+  //
+  // A perfectly good Airtable record is left in the mock on purpose. If a
+  // fallback ever comes back, this case goes red instead of silently going green
+  // in the worst possible way.
   mockTables = { Employees: [
     { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
   ] };
-  for (const url of [undefined, "not-a-valid-connection-string"]) {
-    if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
-    const good = await POST("login", { identifier: "rick nee", pin: "1234" });
-    eq(good.statusCode, 200, `login still succeeds (DATABASE_URL=${url})`);
-    eq(json(good).user.role, "admin", "role unchanged by the shadow");
-    ok(json(good).token, "token still issued");
-    const bad = await POST("login", { identifier: "rick nee", pin: "9999" });
-    eq(bad.statusCode, 401, `wrong PIN still refused (DATABASE_URL=${url})`);
-  }
-  delete process.env.DATABASE_URL;
-});
-
-await test("login: LOGIN_SOURCE defaults OFF — the flip ships inert", async () => {
-  // Stage 3 lands in production switched off. If this ever fails, the flip has
-  // taken effect without anyone deciding to enable it.
-  delete process.env.LOGIN_SOURCE;
-  mockTables = { Employees: [
-    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
-  ] };
-  const res = await POST("login", { identifier: "rick nee", pin: "1234" });
-  eq(res.statusCode, 200, "login works");
-  eq(json(res)._source, "airtable", "Airtable answered, not Neon");
-});
-
-await test("login: with the flip ON and Neon dead, Airtable still lets you in", async () => {
-  // The property the whole kill-switch design exists for. Neon having no
-  // opinion — unset OR unreachable — must fall back, never refuse: a database
-  // blip that locks out every crew member is far worse than the stale-copy
-  // risk it would be avoiding.
-  mockTables = { Employees: [
-    { id: "recE1", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
-  ] };
-  process.env.LOGIN_SOURCE = "neon";
   for (const url of [undefined, "not-a-valid-connection-string"]) {
     if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
     const res = await POST("login", { identifier: "rick nee", pin: "1234" });
-    eq(res.statusCode, 200, `fallback login succeeds (DATABASE_URL=${url})`);
-    eq(json(res)._source, "airtable", "and reports honestly which store answered");
-    eq(json(res).user.role, "admin", "role intact");
-    // A wrong PIN must still be refused on the fallback path.
-    eq((await POST("login", { identifier: "rick nee", pin: "9999" })).statusCode, 401, "bad PIN still refused");
+    eq(res.statusCode, 503, `refuses when Neon has no opinion (DATABASE_URL=${url})`);
+    ok(!json(res).token, "and issues no token");
   }
   delete process.env.DATABASE_URL;
+});
+
+await test("login: a database outage and a wrong PIN are DIFFERENT answers", async () => {
+  // Collapsing these is a support call that goes the wrong way for an hour:
+  // a 401 sends the crew hunting for a credential problem that does not exist.
+  neonOn([{ id: "recE1", name: "Rick Nee", pin: "1234", role: "admin" }]);
+  eq((await POST("login", { identifier: "rick nee", pin: "9999" })).statusCode, 401, "wrong PIN is 401");
+  neonOff();
+  eq((await POST("login", { identifier: "rick nee", pin: "1234" })).statusCode, 503, "no database is 503");
+});
+
+await test("login: an ambiguous identifier is refused, not guessed", async () => {
+  // Airtable's Array.find() silently took the FIRST match. With first-name
+  // matching in the union rule, two Daves on a shared PIN would have handed one
+  // of them the other's session with no error anywhere.
+  neonOn([
+    { id: "recD1", name: "Dave Miller",  pin: "5555", role: "employee" },
+    { id: "recD2", name: "Dave Schultz", pin: "5555", role: "admin" },
+  ]);
+  const res = await POST("login", { identifier: "dave", pin: "5555" });
+  eq(res.statusCode, 401, "refused");
+  ok(!json(res).token, "and no token for either of them");
+  neonOff();
+});
+
+await test("login: LOGIN_SOURCE is retired and setting it changes nothing", async () => {
+  // The kill switch is gone. If someone re-adds it, or leaves the stale var set
+  // in the Netlify dashboard, that must not resurrect an Airtable path.
+  mockTables = { Employees: [
+    { id: "recGHOST", fields: { "Employee Name": "Rick Nee", PIN: "1234", Role: "admin", Active: true } },
+  ] };
+  for (const v of ["airtable", "neon", ""]) {
+    process.env.LOGIN_SOURCE = v;
+    neonOn([{ id: "recE1", name: "Rick Nee", pin: "1234", role: "admin" }]);
+    const res = await POST("login", { identifier: "rick nee", pin: "1234" });
+    eq(json(res)._source, "neon", `LOGIN_SOURCE=${JSON.stringify(v)} still answers from Neon`);
+    eq(json(res).user.id, "recE1", "and with Neon's id, not Airtable's");
+    neonOff();
+  }
   delete process.env.LOGIN_SOURCE;
+});
+
+await test("login: STATIC — no Airtable read survives in EITHER app's handleLogin", async () => {
+  // Both must move together: one token validates in both apps, so a fallback
+  // left in one of them mints sessions the other would never have issued.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  for (const f of ["airtable.js", "inventory.js"]) {
+    const src = readFileSync(fileURLToPath(new URL("../netlify/functions/" + f, import.meta.url)), "utf8");
+    const start = src.indexOf("async function handleLogin(");
+    ok(start > -1, `${f}: handleLogin exists`);
+    const next = src.indexOf("\nasync function ", start + 10);
+    const body = src.slice(start, next === -1 ? src.length : next)
+                    .split("\n").map(l => l.replace(/\/\/.*$/, "")).join("\n");
+    ok(!/fetchAll\(|atFetch\(/.test(body), `${f}: handleLogin makes no Airtable read`);
+    ok(!/loginSource\(\)|shadowLoginCheck\(/.test(body), `${f}: the LOGIN_SOURCE gate and its shadow are gone`);
+    ok(/return resp\(503/.test(body), `${f}: an unreachable Neon is refused`);
+  }
 });
 
 await test("updateEmployee: admin only, and you can't change your own role", async () => {
@@ -4787,7 +4903,10 @@ await test("kill switch: a skipped write resolves to a shape callers can read", 
 await test("kill switch: every atFetch honours it, and before the scrub", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
-  for (const f of ["airtable.js", "inventory.js", "_jobs.js"]) {
+  // ⚠ inventory.js is NOT in this list any more, and that is the assertion in
+  // the case below rather than an omission: it has no atFetch to guard as of
+  // 2026-09-03.
+  for (const f of ["airtable.js", "_jobs.js"]) {
     const src = readFileSync(fileURLToPath(new URL("../netlify/functions/" + f, import.meta.url)), "utf8");
     ok(/if \(airtableWriteBlocked\(path, options\)\) return SKIPPED_WRITE;/.test(src),
        `${f}: atFetch checks the switch`);
@@ -4795,6 +4914,42 @@ await test("kill switch: every atFetch honours it, and before the scrub", async 
     const scrubAt = src.indexOf("scrubFabricatingLinks(path, options)");
     ok(blockAt > -1 && scrubAt > -1 && blockAt < scrubAt,
        `${f}: the switch is checked BEFORE the scrub — no point rewriting a body that is never sent`);
+  }
+});
+
+await test("inventory.js: STATIC — the inventory app has NO Airtable client at all", async () => {
+  // 2026-09-03. The last eight reads (login, employees, four job pickers, the
+  // push's job index) refuse instead of falling back, and the dead expense
+  // mirror and getExpenseFields schema probe went with them. What is asserted
+  // here is ABSENCE, because absence is the only durable form of this fix: an
+  // Airtable call added back would work in dev and serve a frozen answer in
+  // production, which is exactly the failure this system does not throw on.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/inventory.js", import.meta.url)), "utf8");
+  const code = src.split("\n").map(l => l.replace(/\/\/.*$/, "")).join("\n");
+
+  ok(!/api\.airtable\.com/.test(code), "no Airtable API host");
+  ok(!/async function atFetch\(|async function fetchAll\(/.test(code), "no Airtable fetch helpers");
+  ok(!/AIRTABLE_API_KEY|AIRTABLE_BASE_ID/.test(code), "and it does not read the Airtable env vars");
+  ok(!/handleGetExpenseFields|mirrorToAirtable/.test(code), "the schema probe and the mirror are gone");
+  // ⚠ ensureEnv must not demand credentials the file cannot use. Leaving them in
+  // would keep the function refusing to boot for a dependency it no longer has.
+  const eeAt = code.indexOf("function ensureEnv()");
+  const ee = code.slice(eeAt, eeAt + 400);
+  ok(/AUTH_SECRET/.test(ee), "ensureEnv still requires AUTH_SECRET — auth fails closed");
+  ok(!/AIRTABLE/.test(ee), "ensureEnv no longer requires anything Airtable");
+
+  // Every read that used to fall back now names itself when it refuses. A bare
+  // 503 with no log is the same silence this whole pass exists to end.
+  for (const h of ["handleEmployees", "mainJobIndex", "handleJobs", "handleEstimatingJobs",
+                   "handleTemplateContractors", "handleAwardedJobs"]) {
+    const start = code.indexOf("async function " + h + "(");
+    ok(start > -1, `${h} exists`);
+    const next = code.indexOf("\nasync function ", start + 10);
+    const body = code.slice(start, next === -1 ? code.length : next);
+    ok(/refusing to serve frozen Airtable data/.test(body), `${h}: says why it refused`);
+    ok(!/fetchAll\(/.test(body), `${h}: reads Neon and nothing else`);
   }
 });
 
@@ -4894,11 +5049,13 @@ await test("converted read handlers refuse rather than fall back", async () => {
   // answer. Converting jobExists would make every id "exist".
   ok(/if \(q\?\.rows\?\.length\) return true;/.test(body("jobExists")),
      "jobExists still guards on length — it is an existence check, not a list");
-  // handleLogin keeps its fallback ON PURPOSE: LOGIN_SOURCE governs it and the
-  // failure mode of getting this wrong is that nobody can work.
-  ok(/falling back to Airtable/.test(src.slice(src.indexOf("async function handleLogin("),
-                                               src.indexOf("async function handleLogin(") + 4000)),
-     "handleLogin still falls back — deliberate, and the owner's call to change");
+  // handleLogin's fallback is GONE as of 2026-09-03 — see the dedicated login
+  // block above. It was the last of the four kept on purpose, and it went
+  // because a frozen Airtable had turned it from a safety net into a way to fail
+  // OPEN on a credential the app had already changed.
+  ok(!/falling back to Airtable/.test(src.slice(src.indexOf("async function handleLogin("),
+                                                src.indexOf("async function handleLogin(") + 4000)),
+     "handleLogin no longer falls back");
 });
 
 // ── Google contact sync (item 07) — auth, inertness, and the no-delete rule ──

@@ -21,6 +21,78 @@ do not link it to anyone.
 
 ---
 
+## ▶ UPDATE 2026-09-03 — the inventory app is off Airtable entirely, and login went with it
+
+**Read this before anything below it.** Owner's call, in his words: *"i dont know why i would need
+the fallbacks any more. i no longer look at airtable."*
+
+`netlify/functions/inventory.js` **has no Airtable client at all.** Not a read, not a write, not a
+fallback, not a schema probe. `ensureEnv()` asks only for `AUTH_SECRET`.
+
+| What went | Was |
+|---|---|
+| `handleLogin` | Neon-first, Airtable fallback, gated by `LOGIN_SOURCE` |
+| `handleEmployees` | Neon-first, Airtable fallback (name picker) |
+| `mainJobIndex` | Neon-first, Airtable fallback (the expense push's job index) |
+| `handleJobs` · `handleAwardedJobs` · `handleEstimatingJobs` · `handleTemplateContractors` | the four job pickers, all Neon-first with a fallback |
+| `handleGetExpenseFields` | Airtable meta-API schema probe — the one Airtable-**only** action |
+| the `handlePushExpenses` Expenses mirror | inert since `AIRTABLE_WRITES=off`, now deleted |
+
+`handleLogin` in **`airtable.js` moved in the same commit**, and had to: one token validates in both
+apps, so a fallback left in one of them mints sessions the other would never have issued.
+`LOGIN_SOURCE` and `shadowLoginCheck` are retired — **delete `LOGIN_SOURCE` from the Netlify
+dashboard**, it now does nothing.
+
+### ⚠⚠ Why a fallback stopped being a safety net
+
+The login fallback was the last of the four kept on purpose, because its failure mode is the worst
+one in the system: nobody can work. What retired it is that it had **inverted**. Airtable has taken
+no employee write since `AIRTABLE_WRITES=off` (2026-08-25), so its `PIN` and `Active` columns are
+frozen and drifting. Falling back would:
+
+* accept a PIN the crew had **already changed in the app**, and
+* admit someone **deactivated in Neon** but still active in the frozen copy.
+
+That is failing **OPEN on a retired credential** — strictly worse than not logging in. And it bought
+less than it appeared to: with Neon unreachable, 39 read handlers already answer 503, so the
+fallback admitted people to an app with no data in it.
+
+🔑 **The general rule this leaves behind: a fallback's value decays the moment the store behind it
+stops being written.** It does not fail when it goes bad — it *answers*, and nothing in the response
+says the answer is from August. Re-ask of every remaining fallback: **is anything still writing to
+what it falls back to?**
+
+### What is left
+
+Three value-returning helpers in `airtable.js`: `guardExpenseMutation`, `computePayrollDateRanges`,
+`handlePayrollBonusesRollup`. Plus two things that are not in that count and should be:
+
+* `handlePeople` renders the roster off Airtable with the Neon columns null when Neon can't be read.
+* The People screen's Airtable **writes** are still in the code, inert under `AIRTABLE_WRITES=off`.
+  Their own note said "drop them in the same commit that retires `LOGIN_SOURCE`". That commit has
+  now happened; the deletion was deferred deliberately rather than ridden along with a login change.
+
+### Tests
+
+356 across the four suites, all green. New static guards worth knowing, because absence is the only
+durable form of this fix:
+
+* `handlers.test.mjs` — *"the inventory app has NO Airtable client at all"* (no API host, no
+  `atFetch`/`fetchAll`, no Airtable env vars in `ensureEnv`, and every converted read names itself
+  when it refuses); *"no Airtable read survives in EITHER app's handleLogin"*.
+* `handlers.test.mjs` — a **Neon stub** had to be added: with login Neon-only, a suite with no
+  database 503s every login. ⚠ Its `/sql` branch answers from `process.env.DATABASE_URL`, not from
+  the request, because `_neon.js` memoises its client — without that, the "Neon is down" cases would
+  quietly start passing against a live stub.
+* `inventory-jobs.test.mjs` — *"every job picker REFUSES when Neon is down, and reads no Airtable"*.
+  The old *"B0 Neon failure falls back to Airtable, whole list intact"* is **inverted**, not deleted.
+* `inventory-push.test.mjs` — the Expenses POST branch of the stub now **throws**, so a restored
+  mirror fails the push rather than quietly writing a record into a base nothing reads.
+
+⚠ Not yet smoked in a browser at time of writing — the money path (log material → push) and a login
+on each app are the two to check first.
+---
+
 ## ▶ UPDATE 2026-08-23 — item 10 is half done
 
 **Read this before the 08-20 state below, which is still accurate but no longer current.**

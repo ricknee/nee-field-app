@@ -5,8 +5,8 @@ import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
-import { shadowLoginCheck, neonLoginCandidate, loginSource,
-         neonEmployees, neonEmployeeById, isEmployeeHandle } from "./_employees.js";
+import { neonLoginCandidate, neonEmployees, neonEmployeeById,
+         isEmployeeHandle } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
 // Shared with inventory.js — the materials push writes expenses too (Step E).
@@ -4537,75 +4537,54 @@ async function handleLogin(body) {
   const { identifier, pin } = body || {};
   if (!identifier || !pin) return resp(400, { ok: false, error: "Missing identifier or PIN." });
 
-  // ── Stage 3: Neon decides, but ONLY when switched on ────────────────────
-  // Gated by LOGIN_SOURCE (see _employees.js). Unset — the default, and what
-  // production runs until the shadow logs are proven clean — skips this block
-  // entirely and behaves exactly as before.
+  // ⚠⚠ NEON DECIDES, AND THERE IS NO AIRTABLE FALLBACK ANY MORE (2026-09-03).
+  // inventory.js's handleLogin mirrors this exactly, and the two must MOVE
+  // TOGETHER: one token validates in BOTH apps, so if these disagreed about who
+  // a login belongs to, a session minted there would carry the wrong identity
+  // here. LOGIN_SOURCE is gone — there is only one source now, so there is
+  // nothing left to switch and nothing left to shadow.
   //
-  // `_source` is echoed on the response for the same reason the payroll reads
-  // do it: it is the only way to confirm on production which store actually
-  // answered. Reconcile the ANSWER too, not just the label.
-  if (loginSource() === "neon") {
-    const r = await neonLoginCandidate(identifier, pin);
-    if (r.ok) {
-      if (r.ambiguous) {
-        // Authoritative refusal, deliberately NOT a fallback. Falling through
-        // to Airtable here would hand the login to Array.find()'s arbitrary
-        // first match — the exact behaviour the ambiguity guard exists to stop.
-        console.warn(`login[field]: refusing ambiguous identifier — ${r.n} employees match.`);
-        return resp(401, { ok: false, error: "That name matches more than one person. Use your username." });
-      }
-      if (!r.user) return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
-      await neonExec("login.lastSeen",
-        `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1 OR id::text = $1`, [r.user.id]);
-      return resp(200, {
-        ok: true, user: r.user, _source: "neon",
-        token: signToken({ id: r.user.id, role: r.user.role }),
-      });
-    }
-    // r.ok === false means Neon had no opinion — unset, unreachable, timed out.
-    // Fall through to Airtable rather than refuse: a database blip must not
-    // stop the crew logging in. The honest cost is that during a Neon outage,
-    // an employee deactivated in Neon-but-not-Airtable could get back in —
-    // the same fail-soft trade the revocation check makes, for the same reason.
-    console.warn("login[field]: Neon unavailable, falling back to Airtable.");
-  }
+  // ⚠ The fallback was kept longest of the four because its failure mode is the
+  // worst one in the system: nobody can work. What retired it is that the
+  // fallback had stopped being a safety net and become a hazard. Airtable has
+  // taken no employee write since AIRTABLE_WRITES=off (2026-08-25), so its PIN
+  // and Active columns are frozen and drifting — a fallback login would accept
+  // a PIN already changed in the app, and admit someone deactivated in Neon.
+  // That is failing OPEN on a retired credential. It also bought less than it
+  // looked like it did: with Neon unreachable, 39 read handlers already answer
+  // 503, so the fallback admitted people to an app with no data in it.
+  //
+  // `_source` stays on the response. It is still the only way to confirm on
+  // production which store answered, and it should now read "neon" every time.
+  const r = await neonLoginCandidate(identifier, pin);
 
-  const records = await fetchAll(TABLES.employees);
-  const match = records.find(r => {
-    const f = r.fields || {};
-    const name=normalize(f[F.emp.name]),username=normalize(f[F.emp.username]),email=normalize(f[F.emp.email]);
-    const savedPin=String(f[F.emp.pin]||"").trim(),active=gBool(f,F.emp.active),id=normalize(identifier);
-    return [name,username,email].includes(id)&&savedPin!==""&&savedPin===String(pin).trim()&&active;
-  });
-  if (!match) {
-    // Shadow the refusal too — a flip that would ALLOW someone Airtable turns
-    // away is the more dangerous direction, and it only shows up here.
-    await shadowLoginCheck("field", identifier, pin, null);
-    return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
+  // ⚠ `ok:false` means Neon had NO OPINION — DATABASE_URL unset, unreachable,
+  // timed out, SQL error. That is not "wrong PIN", and answering 401 would send
+  // the crew hunting a credential problem that does not exist while the real
+  // fault is the database. Say which one it is.
+  if (!r.ok) {
+    console.error("login[field]: Neon unavailable, refusing — no Airtable fallback since 2026-09-03.");
+    return resp(503, { ok: false, error: "Can't sign in right now — the database is unavailable. Try again in a moment." });
   }
-  const f = match.fields || {};
-  // Recognize four roles: admin, office, viewer, employee. Office acts like
-  // admin on the field-app side but is filtered out of inventory + crew pickers.
-  const rawRole = normalize(f[F.emp.role]);
-  let role;
-  if      (rawRole === "admin")  role = "admin";
-  else if (rawRole === "office") role = "office";
-  else if (rawRole === "viewer") role = "viewer";
-  else                            role = "employee";
-  const user = { id: match.id, name: f[F.emp.name]||"Unknown", role };
-  // Stage 2 of the login flip: Airtable still decides, Neon is checked
-  // alongside and only logs when the two disagree. See _employees.js.
-  await shadowLoginCheck("field", identifier, pin, user);
+  if (r.ambiguous) {
+    // Authoritative refusal. The old code would not fall through here either:
+    // handing an ambiguous login to Array.find()'s arbitrary first match is the
+    // exact behaviour this guard exists to stop.
+    console.warn(`login[field]: refusing ambiguous identifier — ${r.n} employees match.`);
+    return resp(401, { ok: false, error: "That name matches more than one person. Use your username." });
+  }
+  if (!r.user) return resp(401, { ok: false, error: "Invalid login. Check your name and PIN." });
+
   // Stamp the last login for the People screen. neonExec, NOT neonWrite — this
-  // is cosmetic and a login must never fail because Neon is unreachable. It is
-  // also deliberately not awaited for its result beyond the fail-soft wrapper:
-  // the only way to spot an account nobody has used in a year is to record this,
-  // but nobody should be locked out if it doesn't land.
+  // is cosmetic and a login must never fail because the stamp didn't land. It is
+  // the only way to spot an account nobody has used in a year.
   await neonExec("login.lastSeen",
-    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1 OR id::text = $1`, [match.id]);
+    `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1 OR id::text = $1`, [r.user.id]);
   // Issue a signed session token the client attaches to every later request.
-  return resp(200, { ok: true, user, _source: "airtable", token: signToken({ id: user.id, role: user.role }) });
+  return resp(200, {
+    ok: true, user: r.user, _source: "neon",
+    token: signToken({ id: r.user.id, role: r.user.role }),
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -4623,25 +4602,29 @@ async function handleLogin(body) {
 //   Neon owns      hired_on, terminated_on, termination_note, token_valid_from,
 //                  last_login_at — columns Airtable simply does not have.
 //
-// ── STAGE 5 (2026-08-09): THE AIRTABLE WRITES BELOW ARE DELIBERATELY KEPT ──
-// The plan said Stage 5 would drop them. It doesn't, and the reason is the
-// login kill switch.
+// ── THE AIRTABLE WRITES BELOW ARE NOW DEAD WEIGHT (2026-09-03) ────────────
+// They were kept through Stage 5 for one reason: `LOGIN_SOURCE=airtable` was the
+// documented rollback for the riskiest change in this migration, and it resolved
+// logins against Airtable's Employees table. An escape hatch is only worth having
+// while the data behind it is current, so the mirror had to keep running.
 //
-// `LOGIN_SOURCE=airtable` is the documented rollback for the riskiest change in
-// this whole migration, and it resolves logins against Airtable's Employees
-// table. That escape hatch is only worth having while the data behind it is
-// current. Stop mirroring, and within a week Airtable is missing new hires,
-// holding old PINs, and showing leavers as active — so throwing the switch
-// would let a leaver back in and lock a new hire out, which is worse than the
-// problem it exists to solve.
+// ⚠ THAT ESCAPE HATCH IS GONE. `LOGIN_SOURCE` was retired with the login
+// fallback, and these writes have not actually executed since AIRTABLE_WRITES=off
+// (2026-08-25) — they resolve to SKIPPED_WRITE at the choke point. So Airtable's
+// Employees table is ALREADY frozen and drifting, which is precisely why keeping
+// a rollback to it would have been a hazard rather than a safety net: within a
+// week of the freeze it was missing new hires, holding old PINs, and showing
+// leavers as active.
+//
+// Removing the call sites is now safe and is the tidy-up this note used to defer
+// to ("drop them in the same commit that retires LOGIN_SOURCE"). It is deferred
+// once more, deliberately: they are inert, and deleting write sites inside the
+// People handlers is a change to money-adjacent code that deserves its own pass
+// rather than riding along with a login change. Do not "reactivate" them.
 //
 // Airtable's own Employees records also remain the parents of Labor Cost Rates,
 // Bonuses, Job Labor Allocation and Employee Weekly Time. Those tables are
 // still there.
-//
-// So these writes are no longer a dual-authority — Neon is authoritative and
-// every read comes from it. They are **fallback maintenance**. Drop them in the
-// same commit that retires `LOGIN_SOURCE`, not before, and not separately.
 //
 // (The old warning here said never to write `active` to Neon because the ETL
 // dimension load would erase it. That load is RETIRED as of 2026-08-09 — see

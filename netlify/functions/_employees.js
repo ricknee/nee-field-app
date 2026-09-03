@@ -1,23 +1,23 @@
-// Shared employee lookup for login — Stages 2 and 3 of the employees/login
-// migration. See docs/PLAN-employee-admin.md and db/schema/017_employees_full.sql.
+// Shared employee lookup for login. See docs/PLAN-employee-admin.md and
+// db/schema/017_employees_full.sql.
 // ---------------------------------------------------------------------------
-// WHAT THIS IS FOR. Employees are the last Airtable-owned dimension in the
-// field app, and login is the last thing reading them. Moving it is the moment
-// Airtable goes dark — and it is also the single change in this migration
-// that, done wrong, locks every user out of BOTH apps at once.
+// WHAT THIS IS FOR. Employees were the last Airtable-owned dimension in the
+// field app, and login was the last thing reading them. This is the module that
+// moved it — the single change in the migration that, done wrong, locks every
+// user out of BOTH apps at once.
 //
-// ── THE KILL SWITCH ───────────────────────────────────────────────────────
-// Which store decides is an ENV VAR, not a deploy:
+// ── THE KILL SWITCH IS GONE, AND THAT IS THE POINT ────────────────────────
+// `LOGIN_SOURCE` staged this in three steps: Airtable decides with Neon
+// shadowing, then Neon decides with Airtable as the fallback (2026-08-08), then
+// — 2026-09-03 — Neon decides and there is no fallback. The env var and
+// `shadowLoginCheck` went with that last step, because a switch is only worth
+// its complexity while there is somewhere to switch BACK to, and there is not:
+// Airtable has taken no employee write since AIRTABLE_WRITES=off (2026-08-25),
+// so its PIN and Active columns are frozen. Reverting login to it would accept
+// PINs the crew has already changed and admit people deactivated since.
 //
-//   LOGIN_SOURCE unset / "airtable"  →  Airtable decides (today). Neon runs as
-//                                       a shadow and only logs disagreements.
-//   LOGIN_SOURCE = "neon"            →  Neon decides, Airtable is the fallback
-//                                       when Neon can't be reached.
-//
-// So this code ships inert, gets switched on when the shadow logs are clean,
-// and is switched OFF again in seconds from the Netlify dashboard if anything
-// looks wrong — no revert, no rebuild, no waiting for a deploy. Given the
-// blast radius, that is worth more than the small amount of code it costs.
+// ⛔ DO NOT REINTRODUCE AN AIRTABLE LOGIN PATH. If Neon is unreachable both
+// handleLogin's now answer 503, deliberately — see the notes there.
 //
 // ── THE TWO APPS DO NOT CURRENTLY AGREE, WHICH IS WHY THIS IS SHARED ───────
 // airtable.js  matches  full name | username | email
@@ -37,11 +37,6 @@
 // first-name collisions among active staff today (checked), so this changes
 // nothing now and prevents a genuinely nasty class of bug later.
 import { neonQuery } from "./_neon.js";
-
-export function loginSource() {
-  return String(process.env.LOGIN_SOURCE || "").trim().toLowerCase() === "neon"
-    ? "neon" : "airtable";
-}
 
 // The four roles the apps understand. Anything else — including null — is an
 // employee, matching both handleLogin's existing fallback exactly.
@@ -178,54 +173,4 @@ export async function neonEmployees(activeOnly = true) {
     id: r.handle, name: r.name || "", username: r.username || "",
     role: normalizeRole(r.role), active: r.active === true, laborType: r.labor_type || "",
   }));
-}
-
-// Compares what Airtable decided against what Neon would have, and logs only
-// when they differ. Never throws, never returns anything the caller acts on —
-// this must not be able to affect a login while Airtable is authoritative.
-//
-// `airtableUser` is the { id, role } the app is about to issue a token for, or
-// null if the login was refused.
-export async function shadowLoginCheck(app, identifier, pin, airtableUser) {
-  try {
-    const r = await neonLoginCandidate(identifier, pin);
-
-    // No opinion is not a mismatch. It is also exactly why the flip could not
-    // reuse the old two-state version of this function.
-    if (!r.ok) return;
-
-    if (r.ambiguous) {
-      console.warn(`login-shadow[${app}]: AMBIGUOUS in Neon — ${r.n} employees match that identifier+PIN. Airtable ${airtableUser ? `allowed ${airtableUser.id}` : "refused"}.`);
-      return;
-    }
-    if (!r.user && !airtableUser) return;                  // both say no
-    if (airtableUser && !r.user) {
-      // The dangerous direction to ship on: someone who can log in today would
-      // be refused after the flip. Either Neon is stale, or the identifier form
-      // isn't covered by the union rule.
-      console.warn(`login-shadow[${app}]: Airtable allowed ${airtableUser.id} but Neon found NO match — would LOCK OUT after the flip.`);
-      return;
-    }
-    if (!airtableUser && r.user) {
-      // The other dangerous direction: the flip would let someone in who is
-      // refused today. Usually means Neon's copy is stale (a PIN or Active
-      // changed in Airtable without the app writing it through).
-      console.warn(`login-shadow[${app}]: Airtable refused but Neon would ALLOW ${r.user.id} — Neon copy is likely stale.`);
-      return;
-    }
-    if (r.user.id !== airtableUser.id) {
-      console.warn(`login-shadow[${app}]: DIFFERENT PERSON — Airtable ${airtableUser.id}, Neon ${r.user.id}.`);
-      return;
-    }
-    if (r.user.role !== airtableUser.role) {
-      console.warn(`login-shadow[${app}]: role differs for ${r.user.id} — Airtable "${airtableUser.role}", Neon "${r.user.role}".`);
-      return;
-    }
-    // Agreement is logged too, and quietly. Without a positive signal there is
-    // no way to tell "the shadow agrees on every login" from "the shadow never
-    // ran", and those justify very different levels of confidence in the flip.
-    console.log(`login-shadow[${app}]: match ${r.user.id} (${r.user.role})`);
-  } catch (e) {
-    console.warn(`login-shadow[${app}]: check failed (ignored): ${String(e?.message || e).slice(0, 200)}`);
-  }
 }

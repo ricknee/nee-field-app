@@ -173,54 +173,40 @@ function seedMain() {
   invTx = [];
   invItems = [];
   requested.length = 0;
-  neonOff();          // the pre-B0 cases assert the Airtable path specifically
+  neonOff();          // callers that want Neon call neonOn() after seeding
 }
 
 // ── cases ──
+// ⚠ The four Airtable-path cases that stood here are GONE (2026-09-03), not
+// merely disabled: `estimatingJobs`, `templateContractors` and `jobs` have no
+// Airtable path left to exercise. Everything they asserted about the display
+// string, the contractor and the tax flag is covered against Neon fixtures in
+// the Step B0 block below — see "B0 estimatingJobs: a New Lead with no PO".
+// What replaces them is the property that actually needs guarding now.
 
-await test("estimatingJobs reads MAIN base only (mirror untouched)", async () => {
-  seedMain();
-  const r = json(await GET("estimatingJobs"));
-  eq(r.ok, true, "ok");
-  eq(r.jobs.length, 2, "two jobs");
-  eq(hitInvJobs(), false, "must NOT fetch the inventory-base Jobs mirror");
+await test("every job picker REFUSES when Neon is down, and reads no Airtable", async () => {
+  // One case over all four, because the failure they share is the dangerous one:
+  // any single picker quietly falling back would serve a frozen list that looks
+  // complete. Asserting the URL was never requested is the durable half — a
+  // reintroduced fetch fails here even if it happens to return the right shape.
+  for (const action of ["jobs", "awardedJobs", "estimatingJobs", "templateContractors"]) {
+    seedMain();                     // ends with neonOff() — Neon has no opinion
+    const res = await GET(action);
+    eq(res.statusCode, 503, `${action}: refuses rather than answering`);
+    eq(json(res).ok, false, `${action}: ok:false`);
+    eq(requested.some(u => u.includes(`/v0/${MAIN_BASE}/Jobs`)), false,
+       `${action}: the main base was NOT read`);
+    eq(hitInvJobs(), false, `${action}: nor the inventory-base mirror`);
+  }
 });
 
-await test("estimatingJobs uses Job PO display and Contractor Name (Text)", async () => {
+await test("employees REFUSES when Neon is down — an empty picker is not an answer", async () => {
+  // The specific harm: a blank name picker looks like a working screen with no
+  // staff, so someone logs material against nobody rather than seeing an error.
   seedMain();
-  const r = json(await GET("estimatingJobs"));
-  const a = r.jobs.find(j => j.id === "recJobA");
-  const b = r.jobs.find(j => j.id === "recJobB");
-  eq(a.name, "Blue Ridge Poultry (BRB 126)", "PO display preferred");
-  eq(a.contractor, "Case Farms", "contractor from main formula");
-  eq(a.taxable, true, "taxable parsed from object value");
-  eq(b.name, "Miller Barn", "falls back to Job Name when PO empty");
-  eq(b.taxable, false, "non-taxable parsed from string value");
-});
-
-await test("templateContractors returns sorted distinct contractors from MAIN base", async () => {
-  seedMain();
-  // add a duplicate + an empty to prove dedupe + blank-skip
-  mainJobs.push({ id: "recJobC", fields: { "Job Name": "Dup", "Contractor Name (Text)": "Case Farms" } });
-  mainJobs.push({ id: "recJobD", fields: { "Job Name": "Blank", "Contractor Name (Text)": "" } });
-  requested.length = 0;
-  const r = json(await GET("templateContractors"));
-  eq(r.ok, true, "ok");
-  eq(JSON.stringify(r.contractors), JSON.stringify(["Case Farms", "Miller Poultry"]), "sorted, deduped, no blanks");
-  eq(hitInvJobs(), false, "must NOT fetch the inventory-base Jobs mirror");
-});
-
-// ── Step B: USE-cart picker repoint + expense-push dual-read ──
-
-await test("jobs (USE cart picker) reads MAIN base only (mirror untouched)", async () => {
-  seedMain();
-  const r = json(await GET("jobs"));
-  eq(r.ok, true, "ok");
-  eq(hitInvJobs(), false, "must NOT fetch the inventory-base Jobs mirror");
-  // returns main-base record IDs with a Name (PO) display
-  const a = r.jobs.find(j => j.id === "recJobA");
-  eq(!!a, true, "main job recJobA present");
-  eq(a.name, "Blue Ridge Poultry (BRB 126)", "PO display preferred");
+  const res = await GET("employees");
+  eq(res.statusCode, 503, "refuses");
+  eq(requested.some(u => u.includes("Employees")), false, "and never pages the Airtable roster");
 });
 
 await test("pendingExpenses: resolves by 'Job ID (Main)' text; never reads the mirror", async () => {
@@ -256,9 +242,9 @@ await test("pendingExpenses: resolves by 'Job ID (Main)' text; never reads the m
 });
 
 // ── Step B0: the main-base Jobs reads move to Neon ───────────────────────────
-// Airtable stays the fallback, so every case here also has to prove the
-// fallback still fires — a Neon-first read that can't fall back is worse than
-// no migration at all.
+// Neon is the only store these have. Airtable was the fallback until 2026-09-03;
+// now a failed read refuses, so the cases below prove BOTH halves — that Neon
+// answers, and that nothing reaches for Airtable when it doesn't.
 
 const NEON_FIXTURE = [
   // PO present → PO wins as the display.
@@ -339,13 +325,19 @@ await test("B0 zero rows is an ANSWER, not a reason to fall back", async () => {
      "must NOT fall back on empty, or a partial list gets served as a whole one");
 });
 
-await test("B0 Neon failure falls back to Airtable, whole list intact", async () => {
+await test("B0 Neon failure REFUSES — it does not serve the frozen Airtable list", async () => {
+  // ⚠⚠ THE INVERSION, 2026-09-03. This case used to assert the opposite, and
+  // the fallback was right while Airtable was still being written. It stopped
+  // being right at AIRTABLE_WRITES=off (2026-08-25): the Jobs table has been
+  // frozen since, so "the whole list intact" would now mean the list as it stood
+  // in August — missing every job created since, and a short list looks exactly
+  // like a complete one.
   seedMain();
   neonOn([]); neonFail = true;     // query errors
-  const r = json(await GET("jobs"));
-  eq(r._source, "airtable", "fell back");
-  eq(requested.some(u => u.includes(`/v0/${MAIN_BASE}/Jobs`)), true, "Airtable was read");
-  eq(r.jobs.length >= 1, true, "served the Airtable list, not an empty one");
+  const res = await GET("jobs");
+  eq(res.statusCode, 503, "refused");
+  eq(json(res).ok, false, "and says so");
+  eq(requested.some(u => u.includes(`/v0/${MAIN_BASE}/Jobs`)), false, "Airtable was NOT read");
 });
 
 await test("B0 templateContractors: dedupes and sorts from Neon", async () => {

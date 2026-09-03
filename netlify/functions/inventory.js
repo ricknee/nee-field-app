@@ -1,27 +1,37 @@
 // netlify/functions/inventory.js
 // NEE Inventory App v2 — Neon-backed
 //
-// Env vars: DATABASE_URL, AUTH_SECRET, and AIRTABLE_API_KEY + AIRTABLE_BASE_ID
-// for the MAIN base only.
+// Env vars: DATABASE_URL and AUTH_SECRET. That is the whole list.
 //
-// ⚠ INVENTORY_BASE_ID is no longer read. As of the write cutover (2026-08-12)
-// this file does not touch the Airtable INVENTORY base at all — not a read, not
-// a write, not a loader. Everything it once held lives in Neon.
-// The variable can be deleted from Netlify once the base itself is archived.
+// ⚠⚠ THIS FILE NO LONGER TOUCHES AIRTABLE AT ALL (2026-09-03). Not a read, not
+// a write, not a fallback, not a schema probe — there is no Airtable client in
+// here any more, and `ensureEnv()` does not ask for AIRTABLE_API_KEY or
+// AIRTABLE_BASE_ID. The inventory app is Postgres end to end.
 //
-// ⚠ AS OF THE IDENTITY CUTOVER, SLICE 4c (2026-08-24) THIS APP MAKES NO
-// AUTHORITATIVE AIRTABLE WRITE AT ALL. `handlePushExpenses` was the last one,
-// and it existed for exactly one reason: Airtable was the identity authority
-// for expenses. It is not any more (db/schema/058, 059) — pushed expenses are
-// born in Neon and the main base gets a best-effort MIRROR that nothing reads.
-// What is left pointing at the main base is: a handful of Neon-first reads with
-// an Airtable fallback (login, employees, the job pickers, the push's job
-// index), that mirror, and the `getExpenseFields` schema debug action.
-// See docs/PLAN-airtable-identity-cutover.md.
+// How it got here, because the order mattered:
+//   * 2026-08-12  the write cutover — 36 Airtable writes went to zero, and the
+//                 Airtable INVENTORY base stopped being read.
+//   * 2026-08-24  identity cutover slice 4c — pushed expenses are BORN in Neon
+//                 (db/schema/058, 059), so the main base got only a mirror.
+//   * 2026-08-25  AIRTABLE_WRITES=off — that mirror stopped executing.
+//   * 2026-09-03  this change — the eight Neon-first reads that still carried an
+//                 Airtable fallback now REFUSE (503), and the dead mirror and
+//                 the `getExpenseFields` schema probe are gone with them.
+//
+// ⚠ WHY THE FALLBACKS HAD TO GO RATHER THAN SIT THERE HARMLESSLY. Airtable has
+// received no write from this app since 2026-08-25, so every table it holds is
+// a frozen copy that drifts further from the truth each day. A fallback does not
+// fail — it ANSWERS, with yesterday's world, and nothing in the response says
+// so. That is this project's signature failure: it does not throw, it matches
+// nothing, or it matches something stale. Refusing is louder and is correct.
+//
+// ⛔ DO NOT ADD AN AIRTABLE CALL BACK TO THIS FILE. If something here needs data
+// that only Airtable has, that is a migration gap to close in Neon, not a fetch
+// to reintroduce. tests/inventory-*.test.mjs assert the absence.
+// See docs/PLAN-airtable-identity-cutover.md and docs/AUDIT-airtable-remaining.md.
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
-import { scrubFabricatingLinks, airtableWriteBlocked, SKIPPED_WRITE } from "./_airtable-write-guard.js";
-import { shadowLoginCheck, neonLoginCandidate, loginSource, neonEmployees } from "./_employees.js";
+import { neonLoginCandidate, neonEmployees } from "./_employees.js";
 // Both fail-soft by contract: neonExec for the last-login stamp, neonQuery for
 // the main-base job reads (Step B0). The driver is lazy-imported so the offline
 // test suites stay install-free.
@@ -41,10 +51,6 @@ import { randomUUID } from "node:crypto";
 // See docs/PLAN-expense-receipts.md §11.
 import { r2Enabled, jobDocsPrefix, expensePrefix, presignPut, R2Error } from "./_r2.js";
 
-const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
-const MAIN_BASE_ID     = process.env.AIRTABLE_BASE_ID;
-const API_ROOT_MAIN    = `https://api.airtable.com/v0/${MAIN_BASE_ID}`;
-
 function resp(code, body) {
   return {
     statusCode: code,
@@ -59,8 +65,6 @@ function resp(code, body) {
 }
 
 function ensureEnv() {
-  if (!AIRTABLE_API_KEY) throw new Error("Missing AIRTABLE_API_KEY");
-  if (!MAIN_BASE_ID)     throw new Error("Missing AIRTABLE_BASE_ID");
   if (!process.env.AUTH_SECRET) throw new Error("Missing AUTH_SECRET");
 }
 
@@ -93,54 +97,6 @@ function safeBodyAction(event) {
   catch { return undefined; }
 }
 
-function normalize(v) { return String(v || "").trim().toLowerCase(); }
-
-function gBool(fields, name) {
-  const v = fields[name];
-  if (typeof v === "boolean") return v;
-  if (typeof v === "number")  return v !== 0;
-  if (typeof v === "string")  return ["true","yes","1"].includes(v.trim().toLowerCase());
-  return false;
-}
-
-async function atFetch(root, path, options = {}) {
-  // See _airtable-write-guard.js — the push's expense mirror writes a Job link.
-  if (airtableWriteBlocked(path, options)) return SKIPPED_WRITE;
-  options = scrubFabricatingLinks(path, options);
-  const res = await fetch(`${root}/${path}`, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${AIRTABLE_API_KEY}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-  const text = await res.text();
-  let json = {};
-  try { json = text ? JSON.parse(text) : {}; } catch { json = { raw: text }; }
-  if (!res.ok) throw new Error(json?.error?.message || `Airtable error ${res.status}`);
-  return json;
-}
-
-async function fetchAll(root, table, opts = {}) {
-  const params = new URLSearchParams();
-  if (opts.filter)     params.set("filterByFormula", opts.filter);
-  if (opts.sortField)  params.set("sort[0][field]", opts.sortField);
-  if (opts.sortDir)    params.set("sort[0][direction]", opts.sortDir);
-  if (opts.maxRecords) params.set("maxRecords", String(opts.maxRecords));
-
-  const records = [];
-  let offset = null;
-  do {
-    const qs = new URLSearchParams(params);
-    if (offset) qs.set("offset", offset);
-    const data = await atFetch(root, `${encodeURIComponent(table)}?${qs}`, { method: "GET" });
-    records.push(...(data.records || []));
-    offset = data.offset || null;
-  } while (offset);
-  return records;
-}
-
 // ── LOGIN ──────────────────────────────────────────────
 // The People screen shows "Last login", and it has to mean the last login to
 // EITHER app. Only airtable.js stamped it at first, so anyone who lives in the
@@ -148,8 +104,7 @@ async function fetchAll(root, table, opts = {}) {
 // account is the one you'd want to switch off.
 //
 // neonExec, NOT neonWrite: this is cosmetic and a login must never fail
-// because Neon is unreachable. Called on both the Neon and Airtable paths, so
-// it keeps working if LOGIN_SOURCE is switched back.
+// because the stamp did not land.
 async function stampLastLogin(airtableId) {
   await neonExec("login.lastSeen",
     `UPDATE employees SET last_login_at = now() WHERE airtable_id = $1 OR id::text = $1`, [airtableId]);
@@ -159,72 +114,49 @@ async function handleLogin(body) {
   const { identifier, pin } = body || {};
   if (!identifier || !pin) return resp(400, { ok: false, error: "Missing name or PIN." });
 
-  // Stage 3, gated by LOGIN_SOURCE — see _employees.js and airtable.js's
-  // handleLogin, which this mirrors exactly. It has to: one token validates in
-  // BOTH apps, so if these two disagreed about who a login belongs to, a
-  // session minted here would carry the wrong identity over there.
-  if (loginSource() === "neon") {
-    const r = await neonLoginCandidate(identifier, pin);
-    if (r.ok) {
-      if (r.ambiguous) {
-        console.warn(`login[inventory]: refusing ambiguous identifier — ${r.n} employees match.`);
-        return resp(401, { ok: false, error: "That name matches more than one person. Use your username." });
-      }
-      if (!r.user) return resp(401, { ok: false, error: "Invalid name or PIN." });
-      await stampLastLogin(r.user.id);
-      return resp(200, {
-        ok: true, user: r.user, _source: "neon",
-        token: signToken({ id: r.user.id, role: r.user.role }),
-      });
-    }
-    console.warn("login[inventory]: Neon unavailable, falling back to Airtable.");
+  // ⚠⚠ NEON DECIDES, AND THERE IS NO AIRTABLE FALLBACK ANY MORE (2026-09-03).
+  // airtable.js's handleLogin mirrors this exactly, and the two must MOVE
+  // TOGETHER: one token validates in BOTH apps, so if these disagreed about who
+  // a login belongs to, a session minted here would carry the wrong identity
+  // over there. LOGIN_SOURCE is gone — there is only one source now.
+  //
+  // The fallback went for a reason stronger than tidiness. Airtable has taken no
+  // employee write since AIRTABLE_WRITES=off (2026-08-25), so its PIN column has
+  // been frozen and drifting ever since. A fallback login would accept a PIN the
+  // crew had already changed and refuse the one they actually use — failing OPEN
+  // on a retired credential, which is worse than not logging in at all. And it
+  // bought little even when it worked: with Neon down, every screen behind this
+  // one answers 503 anyway, so it admitted people to an app with no data in it.
+  //
+  // The matching rule is the UNION of what the two apps used to accept — full
+  // name, FIRST name, username, email — so nobody who could log in before has
+  // stopped being able to. See neonLoginCandidate in _employees.js.
+  const r = await neonLoginCandidate(identifier, pin);
+
+  // ⚠ `ok:false` is "no opinion" — DATABASE_URL unset, unreachable, timed out,
+  // SQL error — and is NOT the same as "wrong PIN". Answering 401 here would
+  // send the crew hunting for a credential problem that does not exist while
+  // the real fault is the database. Say what is actually wrong.
+  if (!r.ok) {
+    console.error("login[inventory]: Neon unavailable, refusing — no Airtable fallback since 2026-09-03.");
+    return resp(503, { ok: false, error: "Can't sign in right now — the database is unavailable. Try again in a moment." });
   }
+  if (r.ambiguous) {
+    console.warn(`login[inventory]: refusing ambiguous identifier — ${r.n} employees match.`);
+    return resp(401, { ok: false, error: "That name matches more than one person. Use your username." });
+  }
+  if (!r.user) return resp(401, { ok: false, error: "Invalid name or PIN." });
 
-  const records = await fetchAll(API_ROOT_MAIN, "Employees", { filter: `{Active}=1` });
-  const id = normalize(identifier);
-
-  const match = records.find(r => {
-    const f = r.fields || {};
-    const fullName  = normalize(f["Employee Name"] || "");
-    const firstName = fullName.split(" ")[0];
-    const username  = normalize(f["Username"] || "");
-    const savedPin  = String(f["PIN"] || "").trim();
-    return (fullName === id || firstName === id || username === id)
-      && savedPin !== ""
-      && savedPin === String(pin).trim();
+  await stampLastLogin(r.user.id);
+  return resp(200, {
+    ok: true, user: r.user, _source: "neon",
+    token: signToken({ id: r.user.id, role: r.user.role }),
   });
-
-  if (!match) {
-    await shadowLoginCheck("inventory", identifier, pin, null);
-    return resp(401, { ok: false, error: "Invalid name or PIN." });
-  }
-
-  const f       = match.fields || {};
-  // `Role` only. This used to read `Role New || Role`, which the field app
-  // never did — so the same person could be a different role depending on which
-  // app they opened. Worse, `Role New`'s options are employee/admin/viewer with
-  // **no `office`**, so a populated `Role New` would silently demote the office
-  // staff. `Role New` is empty on every record today; both apps now agree.
-  const rawRole = normalize(f["Role"] || "");
-  // Return the full canonical role (admin/office/viewer/employee) — both the
-  // picker and the server-side authz need the real role, not a collapsed one.
-  let role;
-  if      (rawRole === "admin")  role = "admin";
-  else if (rawRole === "office") role = "office";
-  else if (rawRole === "viewer") role = "viewer";
-  else                            role = "employee";
-  const user = { id: match.id, name: f["Employee Name"] || "Unknown", role };
-  // Stage 2 of the login flip. Shadowed here too, and separately labelled,
-  // because this app's matching rule is NOT the field app's — it accepts a
-  // first name and ignores email. See _employees.js.
-  await shadowLoginCheck("inventory", identifier, pin, user);
-  await stampLastLogin(user.id);
-  return resp(200, { ok: true, user, _source: "airtable", token: signToken({ id: user.id, role: user.role }) });
 }
 
 // ── EMPLOYEES (for name picker) ────────────────────────────
 async function handleEmployees() {
-  // Neon-first (Stage 4 of the employees migration). Ids stay AIRTABLE rec ids —
+  // Neon only. Ids are the dual handle — an Airtable-born employee keeps her rec
   // they flow into the cart and onto `Job ID (Main)`-style fields, so a Neon
   // uuid here would write garbage downstream.
   const neon = await neonEmployees(true);
@@ -234,26 +166,24 @@ async function handleEmployees() {
       employees: neon.map(e => ({ id: e.id, name: e.name, role: e.role })),
     });
   }
-  // null means Neon had no opinion, never "nobody works here" — an empty picker
-  // would look like a working screen with no staff.
-  const records = await fetchAll(API_ROOT_MAIN, "Employees", {
-    filter: `{Active}=1`,
-    sortField: "Employee Name",
-    sortDir: "asc"
-  });
-  const employees = records.map(r => ({
-    id:   r.id,
-    name: r.fields["Employee Name"] || "",
-    role: normalize(r.fields["Role"] || "")   // `Role` only — see handleLogin
-  }));
-  return resp(200, { ok: true, _source: "airtable", employees });
+  // ⚠ REFUSE, DO NOT FALL BACK (2026-09-03). `null` means Neon had no opinion,
+  // never "nobody works here" — an empty picker would look like a working screen
+  // with no staff. Airtable's Employees copy is frozen, so serving it would show
+  // yesterday's roster, including anyone deactivated since, with nothing in the
+  // response to say the answer was stale.
+  console.error("handleEmployees: Neon read failed, refusing to serve frozen Airtable data.");
+  return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
 }
 
 // ── Main-base job reads, served from Neon (Step B0) ─────────────────────────
 // The handlers below used to page the main NEE base's Jobs table over the
-// Airtable API. Neon's `jobs` is a complete mirror of it (112 rows, identity
-// columns refreshed hourly) and carries every column they need, so they read
-// Neon first and keep Airtable as the fallback.
+// Airtable API. Neon's `jobs` carries every column they need and is the system
+// of record now, so they read Neon and nothing else: a failed read REFUSES.
+//
+// ⚠ The old note called Neon "a complete mirror of it (112 rows, identity
+// columns refreshed hourly)". Both halves are dead: `_jobs-sync` was RETIRED
+// 2026-08-25, so nothing refreshes hourly, and jobs are born here now — Airtable
+// is the incomplete copy, not Neon.
 //
 // ⚠⚠ THESE USED TO RETURN `airtable_id` AS `id` AND TO FILTER OUT ANY ROW
 // WITHOUT ONE. Both were right when every job had a rec id. After
@@ -267,9 +197,7 @@ async function handleEmployees() {
 //
 // The old note said the rec id was load-bearing because the push writes it into
 // a LINKED-RECORD field on main-base Expenses, where a uuid would write garbage.
-// That is still true of the Airtable MIRROR — and it is now handled where it
-// actually happens, in `handlePushExpenses`, which drops the link rather than
-// sending a uuid into `typecast: true` (that combination CREATES a junk Job).
+// That mirror is GONE (2026-09-03), so the constraint is gone with it.
 // Everything else downstream already takes either handle: the ledger column is
 // text, `pendingFromNeon` re-emits it verbatim, and the native expense insert
 // resolves the job with `airtable_id = $1 OR id::text = $1`.
@@ -299,7 +227,7 @@ function mapNeonJob(r) {
 }
 
 // Returns an array on success, or null meaning "Neon had no opinion" so the
-// caller falls back to Airtable. `statuses` omitted = every job.
+// caller REFUSES (there is nothing to fall back to). `statuses` omitted = every job.
 //
 // The guard is `q?.rows` — the query SUCCEEDING — not `rows.length`. Falling
 // back on an empty result would be wrong twice over: an empty status set is a
@@ -318,10 +246,11 @@ async function neonJobs(statuses) {
   return q?.rows ? q.rows.map(mapNeonJob) : null;
 }
 
-// Every main-base job indexed by its Airtable record id, as
-// { id, taxable, display }. Used by the expense push to resolve the
-// `Job ID (Main)` text each transaction carries. Neon-first, Airtable fallback;
-// the shape is identical either way so the caller can't tell them apart.
+// Every job indexed by the handle the ledger speaks — `COALESCE(airtable_id,
+// id::text)`, so an Airtable-born job still answers to its rec id and a native
+// one to its uuid — as { id, taxable, display }. Used by the expense push to
+// resolve the `Job ID (Main)` text each transaction carries.
+// Neon only. Returns null when Neon has no opinion; the caller refuses.
 async function mainJobIndex() {
   const index = {};
   const neon = await neonJobs();
@@ -329,24 +258,21 @@ async function mainJobIndex() {
     neon.forEach(j => { index[j.id] = { id: j.id, taxable: j.taxable, display: j.name }; });
     return { index, source: "neon" };
   }
-  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {});
-  records.forEach(r => {
-    const f = r.fields || {};
-    index[r.id] = {
-      id: r.id,
-      taxable: (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable",
-      display: (f["Job PO"] || f["Job Name"] || "").trim(),
-    };
-  });
-  return { index, source: "airtable" };
+  // ⚠⚠ REFUSE, DO NOT FALL BACK (2026-09-03), and this one is a money path.
+  // Returning null rather than throwing is deliberate: the caller turns it into
+  // a 503 that says nothing was charged, where a rejected Promise.all would
+  // surface as a bare 500 and lose that sentence. Airtable's Jobs copy is
+  // frozen, and resolving a push against yesterday's job list is how material
+  // gets billed to the wrong job — or matches nothing and bills at cost.
+  console.error("mainJobIndex: Neon read failed, refusing to serve frozen Airtable data.");
+  return null;
 }
 
 // ── JOBS (the "log materials USED" cart picker) ──────────────
-// Reads the AWARDED set from the main NEE base (Awarded + Service Call
-// Scheduled + Ready to Invoice) — same filter/shape as handleAwardedJobs —
-// and returns main-base record IDs. submitCart stamps that id onto the
-// Inventory Transaction as "Job ID (Main)" text so the expense push can group
-// by a stable main-base id instead of name-matching the synced Jobs mirror
+// Reads the AWARDED set (Awarded + Service Call Scheduled + Ready to Invoice) —
+// same filter/shape as handleAwardedJobs — and returns the job handle. submitCart
+// stamps that handle onto the Inventory Transaction as "Job ID (Main)" text so
+// the expense push can group by a stable id instead of name-matching a mirror
 // (Drop-Jobs-mirror bet, Step B). Kept separate from handleAwardedJobs so the
 // two pickers can diverge later without coupling.
 async function handleJobs() {
@@ -357,28 +283,11 @@ async function handleJobs() {
       jobs: neon.map(j => ({ id: j.id, name: j.name })).filter(j => j.name),
     });
   }
-
-  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `OR({Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
-    sortField: "Job Name",
-    sortDir: "asc"
-  });
-  return resp(200, {
-    ok: true, _source: "airtable",
-    jobs: records
-      .map(r => {
-        const f = r.fields || {};
-        return {
-          id:   r.id,
-          // Prefer the "Name (PO)" display so the picker is disambiguated by PO.
-          name: f["Job PO"] || f["Job Name"] || ""
-        };
-      })
-      .filter(j => j.name)
-  });
+  console.error("handleJobs: Neon read failed, refusing to serve frozen Airtable data.");
+  return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
 }
 
-// ── ESTIMATING JOBS (from main NEE base, filtered by status) ──
+// ── ESTIMATING JOBS (from Neon, filtered by status) ──
 // For the Estimates feature — pulls jobs in New Lead, Estimating, Awarded,
 // Service Call Scheduled, or Ready to Invoice so estimates can be built
 // or revised for any of them (Ready to Invoice covers cases where a late
@@ -389,44 +298,13 @@ async function handleEstimatingJobs() {
   if (neon) {
     return resp(200, { ok: true, _source: "neon", jobs: neon.filter(j => j.name) });
   }
-
-  // Everything we need lives on the main NEE base Jobs table: the status filter,
-  // the "Name (PO)" display, tax status, and the contractor name. "Contractor Name
-  // (Text)" (= ARRAYJOIN({Contractor})) replaces the old "Contractor (Combined)"
-  // field from the synced inventory-base Jobs mirror, so there's no cross-base
-  // fetch or name-matching join anymore.
-  const mainRecs = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `OR({Job Status}='New Lead',{Job Status}='Estimating',{Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
-    sortField: "Job Name",
-    sortDir: "asc"
-  });
-
-  return resp(200, {
-    ok: true, _source: "airtable",
-    jobs: mainRecs
-      .map(r => {
-        const f       = r.fields || {};
-        const po      = f["Job PO"] || "";
-        const nm      = f["Job Name"] || "";
-        // Use the formatted "Name (PO)" field when available so the user picks
-        // a job that's already disambiguated by its PO (e.g. "Blue Ridge Poultry (GRB 126)")
-        const display = po || nm;
-        return {
-          id:         r.id,
-          name:       display,
-          status:     f["Job Status"]?.name || f["Job Status"] || "",
-          taxable:    (f["Tax Status"]?.name || f["Tax Status"] || "") === "Taxable",
-          contractor: (f["Contractor Name (Text)"] || "").trim()
-        };
-      })
-      .filter(j => j.name)
-  });
+  console.error("handleEstimatingJobs: Neon read failed, refusing to serve frozen Airtable data.");
+  return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
 }
 
-// ── DISTINCT CONTRACTORS (from main NEE base Jobs) ─────────
+// ── DISTINCT CONTRACTORS (from the Neon jobs table) ─────────
 // Used by the Save-as-Template modal to populate a contractor datalist and
-// by the Templates list filter pills. Reads "Contractor Name (Text)" off the
-// main base Jobs table (no longer the synced inventory-base Jobs mirror).
+// by the Templates list filter pills.
 async function handleTemplateContractors() {
   const dedupe = (names) =>
     [...new Set(names.map(c => (c || "").trim()).filter(Boolean))]
@@ -439,12 +317,8 @@ async function handleTemplateContractors() {
       contractors: dedupe(neon.map(j => j.contractor)),
     });
   }
-
-  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {});
-  return resp(200, {
-    ok: true, _source: "airtable",
-    contractors: dedupe(records.map(r => r.fields?.["Contractor Name (Text)"])),
-  });
+  console.error("handleTemplateContractors: Neon read failed, refusing to serve frozen Airtable data.");
+  return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
 }
 
 // ── AWARDED JOBS ONLY (for employee-side material ordering) ──
@@ -460,39 +334,24 @@ async function handleAwardedJobs() {
       jobs: neon.map(j => ({ id: j.id, name: j.name })).filter(j => j.name),
     });
   }
-
-  const records = await fetchAll(API_ROOT_MAIN, "Jobs", {
-    filter: `OR({Job Status}='Awarded',{Job Status}='Service Call Scheduled',{Job Status}='Ready to Invoice')`,
-    sortField: "Job Name",
-    sortDir: "asc"
-  });
-  return resp(200, {
-    ok: true, _source: "airtable",
-    jobs: records
-      .map(r => {
-        const f = r.fields || {};
-        return {
-          id:   r.id,
-          // Prefer the formula field that combines Job Name + PO ("Blue Ridge Poultry (GRB 126)")
-          // so material order PDFs and order lists show the PO right alongside the name.
-          // Falls back to Job Name if PO is missing on a particular job.
-          name: f["Job PO"] || f["Job Name"] || ""
-        };
-      })
-      .filter(j => j.name)
-  });
+  console.error("handleAwardedJobs: Neon read failed, refusing to serve frozen Airtable data.");
+  return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
 }
 
 // ── Reference data, served from Neon (Step B) ───────────────────────────────
 // Locations, Vendors, Inventory Items and Vendor Pricing live in Neon as of
-// `db/schema/029`. Same contract as the job reads above: Neon first, Airtable
-// as the fallback, `null` meaning "Neon had no opinion".
+// `db/schema/029`, and Neon is the only store they have — a failed read REFUSES
+// rather than serving the frozen Airtable copy, same as the job reads above.
 //
-// ⚠⚠ Ids stay AIRTABLE rec ids here too. They flow into the cart, onto
-// Inventory Transactions, into estimate and order lines, and into the expense
-// push. Airtable is still the identity authority for this slice, so every
-// query selects `airtable_id AS id`. A Neon uuid escaping into any of those is
-// the same class of bug as the job-picker trap at B0.
+// ⚠⚠ Ids are the DUAL HANDLE, not a rec id: every query emits
+// `COALESCE(airtable_id, id::text)`, so a row Airtable created still answers to
+// its rec id and a row born here answers to its uuid. They flow into the cart,
+// onto Inventory Transactions, into estimate and order lines, and into the
+// expense push, all of which take either form. The old note here said Airtable
+// was "still the identity authority for this slice, so every query selects
+// `airtable_id AS id`" — that stopped being true at the write cutover, and a
+// query that really did select a bare `airtable_id` would now hide every native
+// row, which is the job-picker trap at B0 in a different spelling.
 //
 // ⚠ The 14 location-derived quantity fields on Inventory Items are NOT here and
 // never will be — verified 2026-08-10 that nothing reads them. On-hand comes
@@ -1010,6 +869,12 @@ async function handlePendingExpenses() {
     return resp(503, { ok: false, error: "Pending expenses are unavailable right now. Please try again." });
   }
   const [itemRecords, mainJobs] = await Promise.all([itemIndex(), mainJobIndex()]);
+  // mainJobIndex() returns null when Neon has no opinion. Same reasoning as the
+  // chargeable rows above: no job index means every transaction would fall into
+  // `unmatched` and the screen would report the whole shop as unpushable.
+  if (!mainJobs) {
+    return resp(503, { ok: false, error: "Pending expenses are unavailable right now. Please try again." });
+  }
 
   const itemMap = itemRecords;   // itemIndex() already returns { id -> {name, cost, wireFtPerLb, …} }
 
@@ -1151,23 +1016,6 @@ async function handlePendingExpenses() {
     .sort((a, b) => String(a.jobName).localeCompare(String(b.jobName)));
 
   return resp(200, { ok: true, pending, unmatched: unmatchedList });
-}
-
-// ── DEBUG: GET EXPENSE FIELD IDS ──────────────────────────
-async function handleGetExpenseFields() {
-  try {
-    const res  = await fetch(`https://api.airtable.com/v0/meta/bases/${MAIN_BASE_ID}/tables`, {
-      headers: { Authorization: `Bearer ${AIRTABLE_API_KEY}` }
-    });
-    if (!res.ok) return resp(res.status, { ok: false, error: `Meta API error ${res.status} — token needs schema:read scope` });
-    const data  = await res.json();
-    const exp   = (data.tables || []).find(t => t.name === "Expenses");
-    if (!exp) return resp(404, { ok: false, error: "Expenses table not found" });
-    const fields = exp.fields.map(f => ({ id: f.id, name: f.name, type: f.type }));
-    return resp(200, { ok: true, fields });
-  } catch(e) {
-    return resp(500, { ok: false, error: e.message });
-  }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1370,13 +1218,11 @@ async function handlePushHistoryDetail(params) {
 //   3. Per-group marking happens immediately after each group's expense is
 //      created (not one trailing batch), so a mid-loop failure can't leave an
 //      earlier group charged-but-unmarked -- the original re-push foot-gun.
-// In Airtable this stays a read-then-write (no unique constraint); when this
-// slice moves to Neon the pushId becomes a UNIQUE column + INSERT ... ON CONFLICT.
-const EXP_PUSH_ID_FIELD = "flddMVlSELtNT48ez";  // Expenses -> Push ID (main base)
 // The vendor every pushed expense is booked against: "NEE Inventory" — material
 // coming off our own shelf rather than bought from a supplier for the job.
-// Module-level since slice 4c, because the Neon insert and the Airtable mirror
-// both need it and they are two functions now.
+// ⚠ Still a `rec…` string, and that is correct: it is the vendor HANDLE the Neon
+// insert resolves on, not an Airtable reference. Do not "modernise" it to a uuid
+// without moving the vendor row it points at.
 const NEE_VENDOR_ID = "recdVrxXdSOH0dlXO";
 // The two Inventory Transactions field ids that used to live here are gone with
 // the ledger cutover: `Push ID` and `Expense Created?` are Neon columns now and
@@ -1400,20 +1246,6 @@ async function markTransactionsPushed(txIds, pushId) {
         SET expense_created = true, push_id = $2, synced_at = now()
       WHERE id = ANY($1::uuid[])`,
     [txIds, String(pushId || "")]);
-}
-
-// Best-effort Airtable mirror. Never throws — the authoritative write already
-// landed in Neon, so an Airtable problem must not fail the user's push. Same
-// contract and same name as the field app's helper (airtable.js:1061); this is
-// the inventory app's copy, and the only place it needs one, because after this
-// slice the push is the app's only Airtable write of any kind.
-async function mirrorToAirtable(label, fn) {
-  try {
-    return await fn();
-  } catch (e) {
-    console.error(`mirrorToAirtable ${label} failed (ignored): ${e?.message || e}`);
-    return null;
-  }
 }
 
 // ── CREATE A PUSH'S EXPENSES IN NEON (cutover slice 4c, 2026-08-24) ────────
@@ -1637,49 +1469,6 @@ async function handlePushExpenses(body) {
     // tax row. Do not try to identify it by amount: on a credit push both rows
     // are negative, and on a cheap push the tax can round to the same figure.
     receiptTargets[pushId] = jobExpenseIds[0];
-
-    // ── The Airtable mirror. Best-effort, never blocking, and NEVER stamped
-    // back onto the Neon row.
-    //
-    // ⚠⚠ NEVER carry the rec id back to `expenses.airtable_id`. R2 receipt keys
-    // are `expenses/<handle>/` built from whatever id the client holds, and
-    // `listExpenseReceipts` lists ONE prefix — a handle that flips orphans every
-    // receipt already stored. Expenses are the one table in this cutover where
-    // the slice-1/2/3 stamp-back is unsafe.
-    //
-    // ⚠⚠ AND THE RESPONSE IS NEVER FED TO syncExpenseToNeon. That helper is
-    // `INSERT … ON CONFLICT (airtable_id)`, and a native row's airtable_id is
-    // NULL, so nothing conflicts — it would insert a SECOND expense for the same
-    // spend and both would count in GP.
-    //
-    // Kept at all only because the Airtable Expenses table is still the trigger
-    // bus for the automations that watch it. It goes when the base is archived.
-    // ⚠⚠ THE JOB LINK IS OMITTED FOR A NATIVE JOB, AND OMITTING IT IS THE SAFE
-    // HALF. `fldPNFIzq1grsdxYi` is a LINKED-RECORD field and this POST carries
-    // `typecast: true`, which for an unrecognised value does not fail — it
-    // CREATES a Job record named with that uuid, which the hourly _jobs-sync
-    // then imports as a real job. That is the slice-5 "Submitted By" trap with
-    // a worse blast radius. The mirror is a courtesy copy nothing reads; a
-    // jobless one is strictly better than a fabricated job in both stores.
-    const jobLink = String(jobId).startsWith("rec") ? [String(jobId)] : null;
-    const mirrorRecords = rows.map(r => ({ fields: {
-      ...(jobLink ? { "fldPNFIzq1grsdxYi": jobLink } : {}),
-      "fldlTUL8hsPkReBAB": [String(NEE_VENDOR_ID)],
-      // Manual Material COST — the input column, not the derived Total Cost
-      // (Actual). Writing the derived one double-counts credits in GP.
-      "fldwbLPIafVtmaSeb": r.amount,
-      "fldX2x2J0xkRyMY3y": "Materials",
-      "fldCCPYdyWAOGchWb": today,
-      "fldJTg0ekrdZ4Jqr6": "Not Reviewed",
-      "fld9Afieu4ofjvhSb": true,
-      [EXP_PUSH_ID_FIELD]: pushId,
-      "fldnSQEOnyq3sho5g": r.description
-    } }));
-    await mirrorToAirtable(`pushExpenses:${jobName}`, () =>
-      atFetch(API_ROOT_MAIN, encodeURIComponent("Expenses"), {
-        method: "POST",
-        body: JSON.stringify({ records: mirrorRecords, typecast: true })
-      }));
 
     // ── Mark THIS group's transactions immediately (guard #3). Best-effort: if
     // it fails the expense already carries the push ID, so a retry hits guard #1
@@ -3839,7 +3628,6 @@ export async function handler(event) {
       if (action === "stockLevels")       return await handleStockLevels(params);
       if (action === "stockLevelsAll")    return await handleStockLevelsAll();
       if (action === "reorderAlerts")     return await handleReorderAlerts();
-      if (action === "getExpenseFields")  return await handleGetExpenseFields();
       if (action === "estimatesList")     return await handleEstimatesList(params);
       if (action === "estimateGet")       return await handleEstimateGet(params);
       if (action === "estimateTemplatesList") return await handleEstimateTemplatesList(params);

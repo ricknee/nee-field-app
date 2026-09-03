@@ -204,21 +204,12 @@ globalThis.fetch = async (url, opts = {}) => {
 
   // ── Writes (POST/PATCH) ──
   if (method === "POST" && table === "Expenses") {
-    // The MIRROR. Best-effort by contract: when it fails the push must still
-    // succeed, because the money already landed in Neon.
-    if (airtableMirrorDown) throw new Error("Airtable 503");
-    const created = (body.records || []).map(r => {
-      const id = `recExp${++state.expSeq}`;
-      state.expenses.push({
-        id,
-        pushId:      r.fields?.[EXP_PUSH_ID_FIELD] || null,
-        jobId:       r.fields?.["fldPNFIzq1grsdxYi"]?.[0] || null,
-        amount:      r.fields?.["fldwbLPIafVtmaSeb"] ?? 0,
-        description: r.fields?.["fldnSQEOnyq3sho5g"] || "",
-      });
-      return { id, fields: r.fields };
-    });
-    return ok(created);
+    // ⚠⚠ THE MIRROR IS GONE (2026-09-03) and this throws, like every other
+    // branch here. It stopped executing at AIRTABLE_WRITES=off on 2026-08-25 and
+    // the code went with it. Throwing rather than recording is the point: a
+    // restored mirror would write into a base nothing reads and no longer
+    // receives anything else, so the record would look real and be a fiction.
+    throw new Error("Airtable POST to Expenses — the push has no mirror since 2026-09-03");
   }
   if (method === "PATCH" && table === "Inventory Transactions") {
     // Since the ledger cutover the pushed-mark is a Neon UPDATE and nothing
@@ -296,8 +287,7 @@ await test("4c: the expense is BORN IN NEON and the id returned is the Neon uuid
   // The push history's expense id list is what a person sees in Push History.
   // It must be the handle the rest of the app speaks, not a rec id.
   eq(state.neonExpenses[0].id.startsWith("neon-exp-"), true, "Neon minted the id");
-  eq(state.expenses.length, 1, "and Airtable got its mirror");
-  eq(state.expenses[0].pushId, "pid-native", "mirror carries the push id too");
+  eq(state.expenses.length, 0, "and Airtable got nothing — the mirror is gone (2026-09-03)");
 });
 
 await test("S2: a retried push reuses its history header instead of duplicating it", async () => {
@@ -360,7 +350,7 @@ await test("taxable push creates materials + tax expense, both stamped", async (
   eq(state.neonExpenses.length, 2, "both rows in Neon");
   eq(state.neonExpenses.every(e => e.pushId === "pid-tax"), true, "both expenses stamped");
   eq(state.neonExpenses[1].amount, 7.5, "tax is 7.5% of the materials total");
-  eq(state.expenses.length, 2, "and both mirrored");
+  eq(state.expenses.length, 0, "and NEITHER was mirrored — there is no mirror");
 });
 
 // ── The materials PDF is filed against the expense it documents ─────────────
@@ -405,7 +395,14 @@ await test("a refused group offers no receipt target either", async () => {
 // didn't get it" is cosmetic and "Neon didn't get it" means nothing was charged.
 // These three are the Step E cases, turned around.
 
-await test("4c: an Airtable mirror failure does NOT fail the push", async () => {
+await test("4c: the push makes NO Airtable call of any kind", async () => {
+  // ⚠⚠ INVERTED 2026-09-03. This case used to prove a mirror FAILURE didn't fail
+  // the push. There is no mirror to fail any more — the POST branch in the stub
+  // above throws if it is ever reached, so a reintroduced write shows up here as
+  // a failed push rather than as a silent extra record in a frozen base.
+  //
+  // `airtableMirrorDown` stays wired on purpose: if someone restores the mirror,
+  // this flag makes no difference and the case still fails on the throw.
   resetState(["tx1"]);
   airtableMirrorDown = true;
   const res = await PUSH([group("pid-mirror", ["tx1"])]);
@@ -414,7 +411,7 @@ await test("4c: an Airtable mirror failure does NOT fail the push", async () => 
   eq(r.ok, true, "ok:true — the money landed where it is read from");
   eq(r.created, 1, "charged");
   eq(state.neonExpenses.length, 1, "the expense exists in Neon");
-  eq(state.expenses.length, 0, "and nowhere in Airtable, which is fine");
+  eq(state.expenses.length, 0, "and nowhere in Airtable, because nothing was sent");
   eq(state.txns.tx1.pushed, true, "the transactions were still marked");
 });
 

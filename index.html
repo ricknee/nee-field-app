@@ -3889,6 +3889,27 @@
     return [addr.trim()];
   }
 
+  // The JOB's own address — the customer / job-site one — as mailing-label
+  // lines for the BILL TO default. Same two-line shape and trailing-comma
+  // convention as splitBillingAddressLines above, so the two stack cleanly.
+  //
+  // Returns [] when there is nothing to show, which is what makes the callers
+  // safe to write as an unconditional spread: 8 of 121 jobs have no street.
+  //
+  // ⚠ Partial addresses are normal and must not produce a stray comma or a
+  // lone "OH". Each line is dropped independently when empty.
+  function customerAddressLines(job) {
+    if (!job) return [];
+    const street = String(job.customerStreet || "").trim();
+    const cityStateZip = [
+      [job.customerCity || "", job.customerState || ""].filter(Boolean).map(s => String(s).trim()).filter(Boolean).join(", "),
+      String(job.customerZip || "").trim()
+    ].filter(Boolean).join(" ").trim();
+    // The comma belongs to the street line only when something follows it —
+    // a lone "123 Main St," with nothing under it reads as truncated.
+    return [street ? (cityStateZip ? `${street},` : street) : "", cityStateZip].filter(Boolean);
+  }
+
   function fmtDate(v) {
     if (!v || v === "—") return "—";
     try {
@@ -14766,19 +14787,30 @@
       window._invContractorEmail = contractorEmail;
 
       // BILL TO default:
-      //   Line 1:   "<Contractor Name> - <Job Name>"
-      //   Lines 2+: Contractor's Billing Address (blank lines stripped)
-      // No contractor link → Job Name only (preserves legacy data).
+      //   Contractor Name
+      //   Job Name
+      //   Customer / job-site address, when the job has one
+      //   Contractor's Billing Address (blank lines stripped)
+      // No contractor link → Job Name + customer address.
       // This default only seeds the textarea on a fresh open; saved invoices
       // rehydrate from snapshot in loadInvoiceForEdit, so manual edits stick.
+      //
+      // The customer address sits directly under the job name because on these
+      // documents the job name IS the customer — they belong together, and the
+      // contractor's own billing address follows as a separate block.
+      //
+      // ⚠ In practice this is the ONLY address on the page: 34 of 35 companies
+      // have no billing address on file, so before this the BILL TO box was two
+      // lines and no address at all.
       let billToAddress = "";
       if (contractorCo) {
         const lines = [contractorCo.name];
         if (job.name) lines.push(job.name);
+        customerAddressLines(job).forEach(l => lines.push(l));
         splitBillingAddressLines(contractorCo.billingAddress).forEach(l => lines.push(l));
         billToAddress = lines.join("\n");
       } else {
-        billToAddress = job.name || "";
+        billToAddress = [job.name || "", ...customerAddressLines(job)].filter(Boolean).join("\n");
       }
 
       // Detect Contract vs T&M billing — match either Job Type or Billing Method
@@ -16125,10 +16157,28 @@
     y += 12;
 
     // ── Bill To + P.O. row ──
-    const billH = 92;
     const billW = INNER_W * 0.6;
     const poW   = INNER_W * 0.36;
     const poX   = W - M - poW;
+
+    // ⚠ THE BOX GROWS WITH ITS CONTENT — it used to be a hardcoded 92pt.
+    // 92 fits exactly four 12pt lines (first baseline at y+30, ~14pt apart),
+    // and a contractor job already used all four: contractor, job name, and a
+    // two-line billing address. Adding the customer address made it six, and a
+    // fixed box does not clip in jsPDF — the text simply draws straight through
+    // the border and over the table below it. Nothing errors; the PDF just
+    // comes out wrong, which is only found by looking at one.
+    //
+    // 92 stays as the MINIMUM so every existing single- or two-line invoice
+    // keeps the exact proportions it has always printed with.
+    doc.setFont("helvetica","normal"); doc.setFontSize(12);
+    const billLines = doc.splitTextToSize(billTo, billW - 16);
+    // Height = first baseline (30) + the gaps between lines + descender room.
+    // ⚠ Deliberately NOT `n * 14`: that returns 94 for four lines, and four
+    // lines already fit the old 92. A REPRINT rebuilds the PDF from the stored
+    // snapshot, so a 2pt drift would make every reissued invoice differ from
+    // the one the customer already has. ≤4 lines must stay at exactly 92.
+    const billH = Math.max(92, 30 + (billLines.length - 1) * 14 + 12);
 
     // Bill To box
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.6);
@@ -16136,7 +16186,6 @@
     doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
     doc.text(theme.billToLabel || "BILL TO", M+9, y+15);
     doc.setFont("helvetica","normal"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
-    const billLines = doc.splitTextToSize(billTo, billW - 16);
     doc.text(billLines, M+9, y+30);
 
     // P.O. box
@@ -16971,19 +17020,20 @@
       } catch(e) { /* silently fall back */ }
       window._estContractorEmail = contractorEmail;
 
-      // BILL TO default mirrors the Invoice tab:
-      //   Line 1:   "<Contractor Name> - <Job Name>"
-      //   Lines 2+: Contractor's Billing Address (blank lines stripped)
-      // No contractor link → Job Name only. Saved estimates rehydrate from
-      // snapshot in loadEstimateForEdit, so manual edits stick.
+      // BILL TO default mirrors the Invoice tab EXACTLY — see the fuller note
+      // there. Contractor name, job name, the customer / job-site address when
+      // the job has one, then the contractor's billing address.
+      // No contractor link → Job Name + customer address. Saved estimates
+      // rehydrate from snapshot in loadEstimateForEdit, so manual edits stick.
       let billToAddress = "";
       if (contractorCo) {
         const lines = [contractorCo.name];
         if (job.name) lines.push(job.name);
+        customerAddressLines(job).forEach(l => lines.push(l));
         splitBillingAddressLines(contractorCo.billingAddress).forEach(l => lines.push(l));
         billToAddress = lines.join("\n");
       } else {
-        billToAddress = job.name || "";
+        billToAddress = [job.name || "", ...customerAddressLines(job)].filter(Boolean).join("\n");
       }
 
       // Seed default lines from the estimates list. If multiple, include them all; user can delete.

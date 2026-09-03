@@ -2622,6 +2622,44 @@ await test("est GP: 30% turns the GP % green, and the units cannot slip", async 
      "both the estimate card and the New Estimate modal use it — one screen agreeing with itself is not enough");
 });
 
+// ── BILL TO carries the customer address, and the box grows to hold it ───────
+// Owner's ask 2026-09-03. 34 of 35 companies have no billing address on file,
+// so before this the BILL TO block was two lines and no address at all.
+await test("PDF: BILL TO includes the customer address and the box grows for it", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // 1. ONE HELPER, BOTH TABS. The estimate and invoice BILL TO defaults are
+  //    deliberate mirrors; a fix applied to one and not the other is how they
+  //    start printing different addresses for the same job.
+  ok(/function customerAddressLines\(job\)/.test(html), "the address helper exists");
+  // Lookbehind excludes the declaration itself, which also reads
+  // "customerAddressLines(job)" and would inflate the count to 5.
+  ok((html.match(/(?<!function )customerAddressLines\(job\)/g) || []).length === 4,
+     "both seeds use it on both branches — contractor and no-contractor, invoice and estimate");
+
+  // 2. ⚠ THE BOX MUST GROW. jsPDF does not clip: a fixed height draws the extra
+  //    lines straight through the border and over the table beneath. Nothing
+  //    errors — the PDF is just wrong, and only looking at one would find it.
+  ok(!/const billH = 92;/.test(html), "billH is no longer a hardcoded 92");
+  ok(/const billH = Math\.max\(92, 30 \+ \(billLines\.length - 1\) \* 14 \+ 12\);/.test(html),
+     "it is computed from the actual split lines");
+
+  // 3. ⚠ ≤4 LINES MUST STILL BE EXACTLY 92. A reprint rebuilds the PDF from the
+  //    stored snapshot, so any drift here reissues every historical invoice at
+  //    a different size from the copy the customer already holds.
+  const billH = (n) => Math.max(92, 30 + (n - 1) * 14 + 12);
+  ok([1, 2, 3, 4].every(n => billH(n) === 92), "one to four lines keep the original 92pt exactly");
+  ok(billH(5) > 92 && billH(6) > billH(5), "five and six grow");
+
+  // 4. THE LINES ARE SPLIT BEFORE THE HEIGHT IS COMPUTED. Ordering matters:
+  //    splitTextToSize also wraps a long line, so the count is only right after
+  //    the font size is set and the split has run.
+  ok(html.indexOf("const billLines = doc.splitTextToSize(billTo") < html.indexOf("const billH = Math.max(92"),
+     "billLines is computed before billH, not after");
+});
+
 // ── db/schema/068 — the estimating rate comes from the crew, and old quotes freeze ──
 // The actual side has always priced each week at the rate in force that week.
 // The estimate side used one frozen literal. Now it reads the crew — but the

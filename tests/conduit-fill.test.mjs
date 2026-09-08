@@ -300,6 +300,197 @@ test("250.66(A)-(C) electrode caps are present and correct", () => {
   eq(G.GND_KCMIL[table] > G.GND_KCMIL[cap("rod").capCu], true, "so 250.66(A) caps it to 6 AWG");
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+//  TAB 3 — AMPACITY (Table 310.16 + 310.15(B)(1) + 310.15(C)(1))
+// ══════════════════════════════════════════════════════════════════════════
+const A = new Function(
+  html.slice(html.indexOf("const AMP_T310_16 = {"), html.indexOf("function ampRender()")) +
+  "\nreturn { AMP_T310_16, AMP_SIZES, AMP_AMBIENT, AMP_CCC, ampDerated, ampSmallestFor, AMP_AMB_DEFAULT };"
+)();
+
+test("Table 310.16: copper columns match the printed table", () => {
+  const cu = (s) => A.AMP_T310_16[s].cu;
+  eq(cu("#14").join(), "15,20,25",    "#14 — a real row the reference app omits");
+  eq(cu("#12").join(), "20,25,30",    "#12");
+  eq(cu("#6").join(),  "55,65,75",    "#6");
+  eq(cu("#4/0").join(),"195,230,260", "#4/0");
+  eq(cu("500").join(), "320,380,430", "500 kcmil");
+  eq(cu("1000").join(),"455,545,615", "1000 kcmil");
+});
+
+test("Table 310.16: aluminum columns match, and #14 has no aluminum row", () => {
+  const al = (s) => A.AMP_T310_16[s].al;
+  eq(al("#14"), null, "aluminum starts at 12 AWG");
+  eq(al("#12").join(), "20,20,25",    "#12 — 60° and 75° are the SAME, easy to mistype");
+  eq(al("#4/0").join(),"150,180,205", "#4/0");
+  eq(al("500").join(), "260,310,350", "500 kcmil");
+  eq(al("1000").join(),"375,445,500", "1000 kcmil");
+});
+
+test("310.15: the default row is the underated one", () => {
+  eq(A.AMP_AMBIENT[A.AMP_AMB_DEFAULT].f.join(), "1,1,1", "26–30°C is the table's own basis");
+  eq(A.AMP_CCC[0].f, 1, "1 to 3 conductors applies no adjustment");
+  eq(A.ampDerated("#6", "cu", A.AMP_AMB_DEFAULT, 0).join(), "55,65,75", "so it reads straight off");
+});
+
+test("ampacity derating multiplies ambient AND conductor count", () => {
+  // #6 copper 90° = 75 A. Six current-carrying conductors → ×0.80.
+  eq(A.ampDerated("#6", "cu", A.AMP_AMB_DEFAULT, 1)[2], 60, "75 × 0.80");
+  // …and at 41–45°C the 90° factor is 0.87, so 75 × 0.87 × 0.80.
+  const both = A.ampDerated("#6", "cu", 7, 1)[2];
+  eq(Math.abs(both - 75 * 0.87 * 0.80) < 1e-9, true, "both factors apply, not just one");
+});
+
+test("a hot ambient removes the columns that insulation cannot survive", () => {
+  const hot = A.ampDerated("#6", "cu", 10, 0);   // 56–60°C
+  eq(hot[0], null, "60°C wire is unusable at a 56–60°C ambient");
+  eq(hot[1] != null, true, "75°C wire still is");
+  const hotter = A.ampDerated("#6", "cu", 13, 0); // 71–75°C
+  eq(hotter[1], null, "and 75°C wire runs out too");
+  eq(hotter[2] != null, true, "only 90°C is left");
+});
+
+// ⚠ Sizing off the 90° column is the classic ampacity mistake — 110.14(C)
+// normally limits terminations to 75°C. The picker must never reach for [2].
+test("the load lookup sizes on the 75° column, per 110.14(C)", () => {
+  eq(A.ampSmallestFor(100, "cu", A.AMP_AMB_DEFAULT, 0).size, "#3",
+     "100 A copper → #3 (100 A at 75°), NOT #4 which only makes 100 A at 90°");
+  eq(A.ampSmallestFor(200, "cu", A.AMP_AMB_DEFAULT, 0).size, "#3/0", "200 A copper");
+  eq(A.ampSmallestFor(200, "al", A.AMP_AMB_DEFAULT, 0).size, "250",  "200 A aluminum");
+  eq(A.ampSmallestFor(9999, "cu", A.AMP_AMB_DEFAULT, 0), null, "off the table = no answer");
+  eq(A.ampSmallestFor(0, "cu", A.AMP_AMB_DEFAULT, 0), null, "nothing entered = no answer");
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+//  TAB 4 — VOLTAGE DROP (Chapter 9 Table 9)
+// ══════════════════════════════════════════════════════════════════════════
+const V = new Function(
+  html.slice(html.indexOf("const VD_T9 = {"), html.indexOf("function vdRender()")) +
+  "\nreturn { VD_T9, VD_SIZES, VD_CMIL, VD_RHO, vdCompute, vdSmallestUnder3 };"
+)();
+const vd = (o) => V.vdCompute({
+  sys:"ac", ph:"1", mat:"cu", cond:"steel", size:"#12", sets:"1",
+  len:"", amps:"", volts:"", pf:"1.0", ...o,
+});
+
+// ⚠⚠ THE BEST TEST IN THIS FILE. Table 9 prints an "effective Z at 0.85 PF"
+// column that this app does NOT use — it computes Ze from R and X_L instead.
+// So recomputing that column and checking it against what the NEC printed
+// validates the R values, the X values, the conduit-material indexing AND the
+// formula, all against a source the code never touches. If a single cell of
+// Table 9 were mistyped, this is what would catch it.
+test("Table 9: recomputing NEC's own 0.85 PF column reproduces it exactly", () => {
+  // size: [ Ze@0.85 in PVC, in aluminum conduit, in steel ] — as printed.
+  const PRINTED = {
+    "#12":  [1.7,   1.7,   1.7  ],
+    "#2":   [0.19,  0.19,  0.20 ],
+    "#1/0": [0.13,  0.13,  0.13 ],
+    "#4/0": [0.074, 0.078, 0.080],
+    "250":  [0.066, 0.070, 0.073],
+    "500":  [0.043, 0.048, 0.050],
+    "1000": [0.032, 0.036, 0.040],
+  };
+  // Tolerance is ONE unit in the last printed digit, not exact equality. The
+  // NEC computed that column from unrounded resistance and reactance, while
+  // this app only has the rounded R and X it also printed — so a cell can land
+  // one ulp away and still be right. 20 of the 21 checks below hit it exactly;
+  // #4/0 in aluminum conduit computes .0785 against a printed .078. Anything
+  // genuinely mistyped would be out by far more than one digit.
+  for (const [size, want] of Object.entries(PRINTED)) {
+    ["pvc", "al", "steel"].forEach((cond, i) => {
+      const r = vd({ size, cond, pf:"0.85", len:"1000", amps:"1", volts:"100" });
+      const dp = String(want[i]).split(".")[1]?.length || 0;
+      const ulp = Math.pow(10, -dp);
+      if (Math.abs(r.z - want[i]) > ulp * 1.0001) {
+        throw new Error(`${size} in ${cond}: NEC prints ${want[i]}, computed ${r.z.toFixed(dp + 2)}`);
+      }
+    });
+  }
+});
+
+// The guard for the bug above: if anyone "simplifies" these back to
+// Object.keys(), the lists silently reorder to kcmil-first and every
+// smallest-size search starts walking from 250 kcmil.
+test("size lists are explicitly ordered smallest-first, not Object.keys()", () => {
+  eq(A.AMP_SIZES[0], "#14", "ampacity list starts at the smallest conductor");
+  eq(V.VD_SIZES[0],  "#14", "voltage-drop list likewise");
+  eq(A.AMP_SIZES[13], "250", "…and kcmil sizes come after the AWG ones");
+  const ordered = (list, cmil) => list.every((s, i) =>
+    i === 0 || cmil(list[i - 1]) < cmil(s));
+  const areaOf = (s) => V.VD_CMIL[s] ?? { "700":700000, "800":800000, "900":900000 }[s];
+  eq(ordered(V.VD_SIZES, areaOf), true, "voltage-drop sizes ascend by area");
+  eq(ordered(A.AMP_SIZES, areaOf), true, "ampacity sizes ascend by area");
+});
+
+test("voltage drop: a hand calculation, 1-phase", () => {
+  // #12 copper, PVC, PF 1.0 → Ze is just R = 2.0 Ω/1000 ft.
+  // VD = 2 × 2.0 × 20 A × 100 ft / 1000 = 8.00 V on 120 V = 6.67%.
+  const r = vd({ size:"#12", cond:"pvc", len:"100", amps:"20", volts:"120" });
+  eq(r.z, 2.0, "at unity power factor Ze collapses to R");
+  eq(r.vd.toFixed(2), "8.00", "volts dropped");
+  eq(r.pct.toFixed(2), "6.67", "percent");
+  eq(r.atLoad.toFixed(1), "112.0", "volts at the load");
+});
+
+test("voltage drop: 3-phase uses √3, not 2", () => {
+  const one = vd({ size:"#12", cond:"pvc", len:"100", amps:"20", volts:"208", ph:"1" });
+  const three = vd({ size:"#12", cond:"pvc", len:"100", amps:"20", volts:"208", ph:"3" });
+  eq((three.vd / one.vd).toFixed(4), (Math.sqrt(3) / 2).toFixed(4), "ratio is √3/2");
+});
+
+test("voltage drop: parallel sets divide the drop", () => {
+  const one = vd({ size:"500", len:"200", amps:"400", volts:"480" });
+  const two = vd({ size:"500", len:"200", amps:"400", volts:"480", sets:"2" });
+  eq((one.vd / two.vd).toFixed(4), "2.0000", "two sets halve it");
+});
+
+// ⚠ This is why the form asks for conduit material at all. A calculator that
+// ignores the raceway understates drop on every steel run, and understating
+// is the direction that gets a motor started on low voltage.
+test("steel conduit produces MORE drop than PVC — the reason the field exists", () => {
+  const pvc   = vd({ size:"#4/0", cond:"pvc",   pf:"0.85", len:"300", amps:"150", volts:"480" });
+  const steel = vd({ size:"#4/0", cond:"steel", pf:"0.85", len:"300", amps:"150", volts:"480" });
+  if (!(steel.vd > pvc.vd)) throw new Error("steel must be worse than PVC");
+  eq(((steel.vd / pvc.vd - 1) * 100).toFixed(0), "8", "about 8% more drop at 0.85 PF");
+});
+
+test("DC ignores reactance and uses Table 8 dc resistance", () => {
+  // ρ × 1000 / cmil reproduces Table 8: #14 3.14, 1/0 0.122, 500 0.0258 Ω/kFT.
+  const chk = (size, mat, want) => {
+    const r = vd({ sys:"dc", mat, size, len:"100", amps:"10", volts:"120" });
+    if (Math.abs(r.z - want) / want > 0.005) {
+      throw new Error(`${size} ${mat}: expected ~${want} Ω/kFT, got ${r.z.toFixed(5)}`);
+    }
+  };
+  chk("#14",  "cu", 3.14);
+  chk("#1/0", "cu", 0.122);
+  chk("500",  "cu", 0.0258);
+  chk("500",  "al", 0.0424);
+  // DC is a two-wire loop, so it uses 2 even though "3-phase" is still set.
+  const a = vd({ sys:"dc", ph:"3", size:"500", len:"100", amps:"100", volts:"48" });
+  const b = vd({ sys:"dc", ph:"1", size:"500", len:"100", amps:"100", volts:"48" });
+  eq(a.vd, b.vd, "phase is meaningless on DC and must not change the answer");
+});
+
+test("Table 9 has no #14 aluminum, and the app says so instead of guessing", () => {
+  eq(V.VD_T9["#14"][5], null, "aluminum block is null at #14");
+  eq(vd({ size:"#14", mat:"al", len:"100", amps:"10", volts:"120" }).unavailable, true,
+     "reported as unavailable, not computed from a null");
+});
+
+test("the 3% suggestion finds a real size, or admits there isn't one", () => {
+  // 100 A at 120 V down a 200 ft run is a long way past 3% on #12.
+  const s = { sys:"ac", ph:"1", mat:"cu", cond:"pvc", size:"#12", sets:"1",
+              len:"200", amps:"100", volts:"120", pf:"1.0" };
+  const bad = V.vdCompute(s);
+  if (!(bad.pct > 3)) throw new Error("expected this run to be over 3%");
+  const best = V.vdSmallestUnder3(s);
+  if (!best) throw new Error("a size should exist");
+  if (!(best.pct <= 3)) throw new Error("the suggestion must actually be under 3%");
+  const check = V.vdCompute({ ...s, size: best.size });
+  eq(check.pct <= 3, true, "and recomputing at that size agrees");
+});
+
 // ── report ──
 console.log("\nAll Charts — Conduit Fill + Grounding (NEC) tests\n" + "-".repeat(48));
 for (const [mark, name] of log) console.log(` ${mark} ${name}`);

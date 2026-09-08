@@ -25382,10 +25382,11 @@
   //     "first row at or above your rating" rule, which is why the lookup box
   //     answers a 30 A breaker correctly with no 30 A row present.
   //   · 5000 A and 6000 A aluminum went 1200 → 1250 kcmil.
-  // ⚠⚠ The 4000 A aluminum cell is the ONE value sources genuinely disagree on
-  // (750 vs the older 800). 750 is what two current reproductions show and it
-  // is used here, but a 4000 A service is far outside anything this shop runs —
-  // check the book before quoting one. Rows 15 A–3000 A are unanimous.
+  // ✅ VERIFIED AGAINST THE OWNER'S 2023 CODE BOOK, 2026-09-08 — all 19 rows,
+  // photographed off the page. That settled the one cell web sources disagreed
+  // on (4000 A aluminum: 750, not the older 800) and confirmed 5000/6000 A at
+  // 1250. Do not "restore" 800/1200/1200 from an online table; those are the
+  // pre-2020 values that the reference app the crew used still shows.
   const GND_122 = [
     { amps:15,   cu:"14",  al:"12"   },
     { amps:20,   cu:"12",  al:"10"   },
@@ -25556,20 +25557,390 @@
     gndRender();
   }
 
+  // ── TAB 3: AMPACITY ───────────────────────────────────────────────────
+  // NEC Table 310.16 (allowable ampacities, 0–2000 V, not over three
+  // current-carrying conductors in a raceway, 30°C ambient), corrected for
+  // ambient by Table 310.15(B)(1) and adjusted for conductor count by
+  // 310.15(C)(1).
+  //
+  // ⚠ The reference app the crew uses labels this "Table 310.6". There is no
+  // such table — it is 310.16. (310.15(B)(16) was its name up to the 2017
+  // edition; it became 310.16 in 2020 when medium-voltage moved out to
+  // Article 311.) The VALUES in that app are correct; only the label is wrong.
+  //
+  // ⚠ That app also starts its list at #12. 14 AWG is a real row and it is
+  // included here, because leaving it out is how a 14 AWG run gets sized off
+  // the 12 AWG line.
+  //
+  // [60°C, 75°C, 90°C]; null = the size is not listed in that metal.
+  const AMP_T310_16 = {
+    "#14":  { cu:[15,20,25],     al:null },
+    "#12":  { cu:[20,25,30],     al:[20,20,25] },
+    "#10":  { cu:[30,35,40],     al:[25,30,35] },
+    "#8":   { cu:[40,50,55],     al:[30,40,45] },
+    "#6":   { cu:[55,65,75],     al:[40,50,60] },
+    "#4":   { cu:[70,85,95],     al:[55,65,75] },
+    "#3":   { cu:[85,100,110],   al:[65,75,85] },
+    "#2":   { cu:[95,115,130],   al:[75,90,100] },
+    "#1":   { cu:[110,130,150],  al:[85,100,115] },
+    "#1/0": { cu:[125,150,170],  al:[100,120,135] },
+    "#2/0": { cu:[145,175,195],  al:[115,135,150] },
+    "#3/0": { cu:[165,200,225],  al:[130,155,175] },
+    "#4/0": { cu:[195,230,260],  al:[150,180,205] },
+    "250":  { cu:[215,255,290],  al:[170,205,230] },
+    "300":  { cu:[240,285,320],  al:[190,230,255] },
+    "350":  { cu:[260,310,350],  al:[210,250,280] },
+    "400":  { cu:[280,335,380],  al:[225,270,305] },
+    "500":  { cu:[320,380,430],  al:[260,310,350] },
+    "600":  { cu:[355,420,475],  al:[285,340,385] },
+    "700":  { cu:[385,460,520],  al:[310,375,420] },
+    "750":  { cu:[400,475,535],  al:[320,385,435] },
+    "800":  { cu:[410,490,555],  al:[330,395,450] },
+    "900":  { cu:[435,520,585],  al:[355,425,480] },
+    "1000": { cu:[455,545,615],  al:[375,445,500] },
+  };
+  // ⚠⚠ SPELLED OUT, never Object.keys(AMP_T310_16). JavaScript hoists
+  // integer-like keys to the front of an object in ascending numeric order, so
+  // Object.keys() returns 250,300,…,1000 BEFORE #14,#12,… — the kcmil sizes
+  // first. That renders the table upside down and, worse, makes the smallest-
+  // size search walk it backwards: a 100 A load answered "250 kcmil" instead
+  // of "#3". Plausible, oversized, and completely silent. Caught by a test.
+  const AMP_SIZES = ["#14","#12","#10","#8","#6","#4","#3","#2","#1","#1/0",
+                     "#2/0","#3/0","#4/0","250","300","350","400","500","600",
+                     "700","750","800","900","1000"];
+
+  // Table 310.15(B)(1) — ambient correction, based on the table's 30°C.
+  // null = that insulation cannot be used at that ambient at all.
+  const AMP_AMBIENT = [
+    { label:"10°C or less (50°F or less)", f:[1.29,1.20,1.15] },
+    { label:"11–15°C (52–59°F)",           f:[1.22,1.15,1.12] },
+    { label:"16–20°C (61–68°F)",           f:[1.15,1.11,1.08] },
+    { label:"21–25°C (70–77°F)",           f:[1.08,1.05,1.04] },
+    { label:"26–30°C (79–86°F)",           f:[1.00,1.00,1.00] },
+    { label:"31–35°C (88–95°F)",           f:[0.91,0.94,0.96] },
+    { label:"36–40°C (97–104°F)",          f:[0.82,0.88,0.91] },
+    { label:"41–45°C (106–113°F)",         f:[0.71,0.82,0.87] },
+    { label:"46–50°C (115–122°F)",         f:[0.58,0.75,0.82] },
+    { label:"51–55°C (124–131°F)",         f:[0.41,0.67,0.76] },
+    { label:"56–60°C (133–140°F)",         f:[null,0.58,0.71] },
+    { label:"61–65°C (142–149°F)",         f:[null,0.47,0.65] },
+    { label:"66–70°C (151–158°F)",         f:[null,0.33,0.58] },
+    { label:"71–75°C (160–167°F)",         f:[null,null,0.50] },
+    { label:"76–80°C (169–176°F)",         f:[null,null,0.41] },
+    { label:"81–85°C (178–185°F)",         f:[null,null,0.29] },
+  ];
+  const AMP_AMB_DEFAULT = 4;   // 26–30°C, the row where every factor is 1.00
+
+  // 310.15(C)(1) — adjustment for more than three current-carrying conductors.
+  const AMP_CCC = [
+    { label:"1 to 3",     f:1.00 },
+    { label:"4 to 6",     f:0.80 },
+    { label:"7 to 9",     f:0.70 },
+    { label:"10 to 20",   f:0.50 },
+    { label:"21 to 30",   f:0.45 },
+    { label:"31 to 40",   f:0.40 },
+    { label:"41 and above", f:0.35 },
+  ];
+
+  const ampState = { mat:"cu", amb:AMP_AMB_DEFAULT, ccc:0, load:"" };
+
+  // Pure. Returns [60°, 75°, 90°] derated, with null where unusable.
+  function ampDerated(size, mat, ambIdx, cccIdx) {
+    const base = (AMP_T310_16[size] || {})[mat];
+    if (!base) return null;
+    const amb = AMP_AMBIENT[ambIdx] || AMP_AMBIENT[AMP_AMB_DEFAULT];
+    const ccc = (AMP_CCC[cccIdx] || AMP_CCC[0]).f;
+    return base.map((a, i) => amb.f[i] == null ? null : a * amb.f[i] * ccc);
+  }
+
+  // The 75° column, because 110.14(C) is what you actually terminate on.
+  // Deliberately NOT the 90° column — that one exists to derate from.
+  function ampSmallestFor(load, mat, ambIdx, cccIdx) {
+    if (!(load > 0)) return null;
+    for (const size of AMP_SIZES) {
+      const d = ampDerated(size, mat, ambIdx, cccIdx);
+      if (!d || d[1] == null) continue;
+      if (d[1] >= load) return { size, amps: d[1] };
+    }
+    return null;
+  }
+
+  // ── TAB 4: VOLTAGE DROP ───────────────────────────────────────────────
+  // The first tab that actually computes rather than looks up.
+  //
+  // AC uses NEC Chapter 9 TABLE 9 — ac resistance and reactance for 600 V
+  // cables, 3-phase, 60 Hz, 75°C, three single conductors in conduit — and the
+  // effective-impedance formula printed in Table 9's own notes:
+  //     Ze = R × PF + X_L × sin(arccos(PF))
+  // then
+  //     1-phase: VD = 2 × Ze × I × L / 1000
+  //     3-phase: VD = √3 × Ze × I × L / 1000
+  // divided by the number of parallel sets. L is the ONE-WAY run; the 2 and
+  // the √3 are what account for the return path, which is why the length box
+  // says 1-way and must not be doubled by the user as well.
+  //
+  // ⚠ THIS IS WHY THE FORM ASKS FOR CONDUIT MATERIAL, and it is not a detail:
+  // steel conduit raises reactance about 25% over PVC or aluminum (#4/0 goes
+  // .041 → .051 ohm/kFT) because the magnetic raceway concentrates the field.
+  // A calculator that ignores the raceway understates drop on every steel run,
+  // and understating is the dangerous direction.
+  //
+  // ⚠ Table 9 is a 75°C, 60 Hz, three-single-conductors-in-conduit table. Used
+  // for a 1-phase circuit it is the ordinary industry approximation, not an
+  // exact model. It is what every VD calculator and the NEC examples do.
+  //
+  // Layout per size: [ X(PVC/Al), X(steel), Rcu(PVC), Rcu(Al), Rcu(steel),
+  //                    Ral(PVC), Ral(Al), Ral(steel) ]  — all ohms per 1000 ft.
+  // null in the aluminum block = Table 9 does not list that size in aluminum.
+  const VD_T9 = {
+    "#14":  [0.058, 0.073, 3.1,   3.1,   3.1,   null,  null,  null ],
+    "#12":  [0.054, 0.068, 2.0,   2.0,   2.0,   3.2,   3.2,   3.2  ],
+    "#10":  [0.050, 0.063, 1.2,   1.2,   1.2,   2.0,   2.0,   2.0  ],
+    "#8":   [0.052, 0.065, 0.78,  0.78,  0.78,  1.3,   1.3,   1.3  ],
+    "#6":   [0.051, 0.064, 0.49,  0.49,  0.49,  0.81,  0.81,  0.81 ],
+    "#4":   [0.048, 0.060, 0.31,  0.31,  0.31,  0.51,  0.51,  0.51 ],
+    "#3":   [0.047, 0.059, 0.25,  0.25,  0.25,  0.40,  0.41,  0.40 ],
+    "#2":   [0.045, 0.057, 0.19,  0.20,  0.20,  0.32,  0.32,  0.32 ],
+    "#1":   [0.046, 0.057, 0.15,  0.16,  0.16,  0.25,  0.26,  0.25 ],
+    "#1/0": [0.044, 0.055, 0.12,  0.13,  0.12,  0.20,  0.21,  0.20 ],
+    "#2/0": [0.043, 0.054, 0.10,  0.10,  0.10,  0.16,  0.16,  0.16 ],
+    "#3/0": [0.042, 0.052, 0.077, 0.082, 0.079, 0.13,  0.13,  0.13 ],
+    "#4/0": [0.041, 0.051, 0.062, 0.067, 0.063, 0.10,  0.11,  0.10 ],
+    "250":  [0.041, 0.052, 0.052, 0.057, 0.054, 0.085, 0.090, 0.086],
+    "300":  [0.041, 0.051, 0.044, 0.049, 0.045, 0.071, 0.076, 0.072],
+    "350":  [0.040, 0.050, 0.038, 0.043, 0.039, 0.061, 0.066, 0.063],
+    "400":  [0.040, 0.049, 0.033, 0.038, 0.035, 0.054, 0.059, 0.055],
+    "500":  [0.039, 0.048, 0.027, 0.032, 0.029, 0.043, 0.048, 0.045],
+    "600":  [0.039, 0.048, 0.023, 0.028, 0.025, 0.036, 0.041, 0.038],
+    "750":  [0.038, 0.048, 0.019, 0.024, 0.021, 0.029, 0.034, 0.031],
+    "1000": [0.037, 0.046, 0.015, 0.019, 0.018, 0.023, 0.027, 0.025],
+  };
+
+  // DC has no reactance, so Table 9 does not apply. Chapter 9 Table 8's dc
+  // resistance at 75°C is reproduced by its own stated resistivities,
+  // R(ohm/1000 ft) = ρ × 1000 / circular mils, with ρ = 12.9 for uncoated
+  // copper and 21.2 for aluminum. Spot-checked against Table 8's printed
+  // values (#14 3.14, 1/0 0.122, 500 0.0258, 500 Al 0.0424) and pinned in
+  // tests/conduit-fill.test.mjs — it lands within half a percent everywhere,
+  // which is far inside the uncertainty of the load current itself.
+  const VD_RHO = { cu: 12.9, al: 21.2 };
+  const VD_CMIL = {
+    "#14":4110, "#12":6530, "#10":10380, "#8":16510, "#6":26240, "#4":41740,
+    "#3":52620, "#2":66360, "#1":83690, "#1/0":105600, "#2/0":133100,
+    "#3/0":167800, "#4/0":211600, "250":250000, "300":300000, "350":350000,
+    "400":400000, "500":500000, "600":600000, "750":750000, "1000":1000000,
+  };
+  // Spelled out for the same reason as AMP_SIZES — see the warning there.
+  // Ascending order is load-bearing here too: vdSmallestUnder3() walks it and
+  // returns the first size that passes.
+  const VD_SIZES = ["#14","#12","#10","#8","#6","#4","#3","#2","#1","#1/0",
+                    "#2/0","#3/0","#4/0","250","300","350","400","500","600",
+                    "750","1000"];
+
+  const vdState = { sys:"ac", ph:"1", mat:"cu", cond:"steel", size:"#14",
+                    sets:"1", len:"", amps:"", volts:"", pf:"1.0" };
+
+  // Pure. Returns null when the size/material pair is not in Table 9.
+  function vdCompute(s) {
+    const row = VD_T9[s.size];
+    if (!row) return null;
+    const len   = parseFloat(s.len)   || 0;
+    const amps  = parseFloat(s.amps)  || 0;
+    const volts = parseFloat(s.volts) || 0;
+    const sets  = Math.max(1, parseInt(s.sets, 10) || 1);
+    let pf = parseFloat(s.pf);
+    if (!(pf > 0 && pf <= 1)) pf = 1;
+
+    let z, basis;
+    if (s.sys === "dc") {
+      z = VD_RHO[s.mat] * 1000 / VD_CMIL[s.size];
+      basis = `Chapter 9 Table 8 dc resistance, ${z.toFixed(4)} Ω/1000 ft`;
+    } else {
+      // PVC and aluminum conduit share Table 9's first reactance column;
+      // only steel gets the second.
+      const x = s.cond === "steel" ? row[1] : row[0];
+      const rIdx = (s.mat === "al" ? 5 : 2) + (s.cond === "pvc" ? 0 : s.cond === "al" ? 1 : 2);
+      const r = row[rIdx];
+      if (r == null) return { unavailable:true };
+      z = r * pf + x * Math.sin(Math.acos(pf));
+      basis = `Chapter 9 Table 9 — R ${r} Ω, X_L ${x} Ω per 1000 ft, ` +
+              `Ze = R×PF + X×sin(arccos PF) = ${z.toFixed(4)} Ω/1000 ft at PF ${pf}`;
+    }
+
+    const k = (s.sys === "dc" || s.ph === "1") ? 2 : Math.sqrt(3);
+    const vd = k * z * amps * len / 1000 / sets;
+    const ready = len > 0 && amps > 0;
+    return {
+      ready, z, vd, pf, sets, basis,
+      pct: volts > 0 ? (vd / volts) * 100 : null,
+      atLoad: volts > 0 ? volts - vd : null,
+      phaseLabel: s.sys === "dc" ? "DC" : (s.ph === "3" ? "3-phase" : "1-phase"),
+    };
+  }
+
+  // The analogue of "minimum size allowed" on the conduit-fill tab: the
+  // smallest size in the table that lands at or under 3%.
+  function vdSmallestUnder3(s) {
+    const volts = parseFloat(s.volts) || 0;
+    if (!volts) return null;
+    for (const size of VD_SIZES) {
+      const r = vdCompute({ ...s, size });
+      if (!r || r.unavailable || !r.ready || r.pct == null) continue;
+      if (r.pct <= 3) return { size, pct: r.pct };
+    }
+    return null;
+  }
+
+  function vdRender() {
+    const dc = vdState.sys === "dc";
+    $("vdPh").style.display = dc ? "none" : "";
+    $("vdCond").style.display = dc ? "none" : "";
+    document.querySelectorAll("#vdSys label").forEach(l =>
+      l.classList.toggle("on", l.querySelector("input").value === vdState.sys));
+    document.querySelectorAll("#vdPh label").forEach(l =>
+      l.classList.toggle("on", l.querySelector("input").value === vdState.ph));
+
+    const r = vdCompute(vdState);
+    const v = $("vdVerdict");
+    v.classList.remove("ok", "bad");
+
+    if (r && r.unavailable) {
+      $("vdOut").textContent = "—";
+      $("vdSub").textContent = `Table 9 does not list ${vdState.size} in aluminum.`;
+      $("vdBasis").textContent = "";
+      $("vdSuggest").style.display = "none";
+      return;
+    }
+    if (!r || !r.ready) {
+      $("vdOut").textContent = "—";
+      $("vdSub").textContent = "Fill in length, load and volts.";
+      $("vdBasis").textContent = "";
+      $("vdSuggest").style.display = "none";
+      return;
+    }
+
+    const pct = r.pct;
+    if (pct != null) v.classList.add(pct <= 3 ? "ok" : "bad");
+    $("vdOut").textContent = r.vd.toFixed(2) + " V" + (pct != null ? `  ·  ${pct.toFixed(2)}%` : "");
+    $("vdSub").textContent =
+      `${r.phaseLabel}, ${vdState.size} ${vdState.mat === "al" ? "aluminum" : "copper"}` +
+      `${r.sets > 1 ? `, ${r.sets} sets` : ""}` +
+      (r.atLoad != null ? ` — about ${r.atLoad.toFixed(1)} V at the load.` : ".");
+    $("vdBasis").textContent = r.basis;
+
+    const sug = $("vdSuggest");
+    if (pct != null && pct > 3) {
+      const best = vdSmallestUnder3(vdState);
+      sug.style.display = "";
+      sug.innerHTML = best
+        ? `Smallest size in Table 9 that comes in at or under 3% here: <b>${esc(best.size)}</b> ` +
+          `(${best.pct.toFixed(2)}%). Upsizing for voltage drop pulls <b>250.122(B)</b> in — ` +
+          `the equipment ground has to grow proportionally.`
+        : `Nothing in Table 9 gets this run under 3%. Shorten it, raise the voltage, ` +
+          `or run more sets in parallel.`;
+    } else {
+      sug.style.display = "none";
+    }
+  }
+
+  function ampRender() {
+    document.querySelectorAll("#ampMat label").forEach(l =>
+      l.classList.toggle("on", l.querySelector("input").value === ampState.mat));
+
+    const amb = AMP_AMBIENT[ampState.amb];
+    const ccc = AMP_CCC[ampState.ccc];
+    // Trim a trailing .0 so an underated table still reads like the paper one.
+    const fmt = (v) => v == null ? "–"
+      : (Math.abs(v - Math.round(v)) < 0.05 ? String(Math.round(v)) : v.toFixed(1));
+
+    $("ampTable").innerHTML =
+      `<thead><tr><th>Wire size</th><th>60°C (140°F)</th><th>75°C (167°F)</th><th>90°C (194°F)</th></tr></thead><tbody>` +
+      AMP_SIZES.map(s => {
+        const d = ampDerated(s, ampState.mat, ampState.amb, ampState.ccc);
+        if (!d) return `<tr><td>${esc(s)}</td><td colspan="3" style="color:var(--line-2);">not listed in aluminum</td></tr>`;
+        return `<tr><td>${esc(s)}</td>` +
+               `<td class="cu">${fmt(d[0])}</td><td>${fmt(d[1])}</td><td class="cu">${fmt(d[2])}</td></tr>`;
+      }).join("") + `</tbody>`;
+
+    const derated = ampState.amb !== AMP_AMB_DEFAULT || ampState.ccc !== 0;
+    $("ampTitle").textContent = derated
+      ? "Table 310.16 — corrected and adjusted"
+      : "Table 310.16 — allowable ampacity";
+    $("ampBasis").textContent = derated
+      ? `Table 310.16 × ${amb.f.map(f => f == null ? "n/a" : f.toFixed(2)).join(" / ")} ` +
+        `(ambient ${amb.label}, Table 310.15(B)(1)) × ${ccc.f.toFixed(2)} ` +
+        `(${ccc.label} current-carrying conductors, 310.15(C)(1)).`
+      : `Table 310.16 as printed — 30°C ambient, not over three current-carrying conductors.`;
+
+    const load = parseFloat(ampState.load) || 0;
+    const box = $("ampVerdict");
+    if (!load) { box.style.display = "none"; return; }
+    box.style.display = "";
+    const hit = ampSmallestFor(load, ampState.mat, ampState.amb, ampState.ccc);
+    box.classList.toggle("ok", !!hit);
+    box.classList.toggle("bad", !hit);
+    if (!hit) {
+      $("ampOut").textContent = "nothing in the table";
+      $("ampSub").textContent = `${load} A needs parallel sets or a larger conductor than 1000 kcmil.`;
+    } else {
+      $("ampOut").textContent = hit.size;
+      $("ampSub").textContent =
+        `${load} A on ${ampState.mat === "al" ? "aluminum" : "copper"} — ` +
+        `${hit.size} carries ${fmt(hit.amps)} A in the 75° column, which is the one 110.14(C) ` +
+        `normally limits you to.`;
+    }
+  }
+
+  function ampBuild() {
+    $("ampAmb").innerHTML = AMP_AMBIENT.map((a, i) =>
+      `<option value="${i}"${i === AMP_AMB_DEFAULT ? " selected" : ""}>${esc(a.label)}</option>`).join("");
+    $("ampCcc").innerHTML = AMP_CCC.map((c, i) =>
+      `<option value="${i}">${esc(c.label)}</option>`).join("");
+    $("ampMat").addEventListener("change", (e) => {
+      if (e.target.name !== "ampMat") return;
+      ampState.mat = e.target.value; ampRender();
+    });
+    $("ampAmb").addEventListener("input", (e) => { ampState.amb = +e.target.value; ampRender(); });
+    $("ampCcc").addEventListener("input", (e) => { ampState.ccc = +e.target.value; ampRender(); });
+    $("ampLoad").addEventListener("input", (e) => { ampState.load = e.target.value; ampRender(); });
+    ampRender();
+  }
+
+  function vdBuild() {
+    $("vdSize").innerHTML = VD_SIZES.map(s =>
+      `<option value="${esc(s)}">${esc(s)}${/^\d/.test(s) ? " kcmil" : ""}</option>`).join("");
+    $("vdSets").innerHTML = [1,2,3,4,5,6,8,10].map(n =>
+      `<option value="${n}">${n === 1 ? "1 set" : n + " sets in parallel"}</option>`).join("");
+    $("vdSys").addEventListener("change", (e) => {
+      if (e.target.name !== "vdSys") return;
+      vdState.sys = e.target.value; vdRender();
+    });
+    $("vdPh").addEventListener("change", (e) => {
+      if (e.target.name !== "vdPh") return;
+      vdState.ph = e.target.value; vdRender();
+    });
+    [["vdMat","mat"],["vdCond","cond"],["vdSize","size"],["vdSets","sets"],
+     ["vdLen","len"],["vdAmps","amps"],["vdVolts","volts"],["vdPf","pf"]]
+      .forEach(([id, key]) => $(id).addEventListener("input", (e) => {
+        vdState[key] = e.target.value; vdRender();
+      }));
+    vdRender();
+  }
+
   function switchChartTab(id) {
     document.querySelectorAll("#chartsTabs .chart-tab").forEach(b => {
       const on = b.dataset.chart === id;
       b.classList.toggle("active", on);
       if (on) $("chartsTitle").textContent = b.textContent;
     });
-    ["fill","grounding","ampacity","support","vdrop","motors"].forEach(k => {
+    ["fill","grounding","ampacity","vdrop","motors"].forEach(k => {
       const p = $("chartPanel-" + k);
       if (p) p.style.display = (k === id) ? "" : "none";
     });
   }
 
   function openCharts() {
-    if (!cfState._built) { cfBuild(); gndBuild(); cfState._built = true; }
+    if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); cfState._built = true; }
     $("chartsModal").style.display = "flex";
     pushBackEntry("charts", () => { $("chartsModal").style.display = "none"; });
   }
@@ -26089,7 +26460,6 @@
       <button type="button" class="chart-tab active" data-chart="fill">Conduit Fill</button>
       <button type="button" class="chart-tab" data-chart="grounding">Grounding</button>
       <button type="button" class="chart-tab" data-chart="ampacity">Ampacity</button>
-      <button type="button" class="chart-tab" data-chart="support">Cable Support</button>
       <button type="button" class="chart-tab" data-chart="vdrop">Voltage Drop</button>
       <button type="button" class="chart-tab" data-chart="motors">Motors</button>
     </div>
@@ -26200,9 +26570,97 @@
         </div>
       </div>
     </div>
-    <div id="chartPanel-ampacity"  class="charts-soon" style="display:none;">Ampacity — coming soon.</div>
-    <div id="chartPanel-support"   class="charts-soon" style="display:none;">Cable Support — coming soon.</div>
-    <div id="chartPanel-vdrop"     class="charts-soon" style="display:none;">Voltage Drop — coming soon.</div>
+    <!-- ── AMPACITY ── -->
+    <div id="chartPanel-ampacity" style="display:none;">
+      <div class="gnd-switch" id="ampMat">
+        <label class="on"><input type="radio" name="ampMat" value="cu" checked /> Copper</label>
+        <label><input type="radio" name="ampMat" value="al" /> Aluminum</label>
+      </div>
+
+      <div class="cf-section-title">Ambient temperature</div>
+      <select id="ampAmb" class="edit-input"></select>
+      <div class="cf-section-title">Current-carrying conductors in the raceway</div>
+      <select id="ampCcc" class="edit-input"></select>
+
+      <div class="cf-section-title">Load (optional)</div>
+      <input id="ampLoad" class="edit-input" type="number" inputmode="decimal" min="0" step="1"
+             placeholder="Amps — to find the smallest conductor that carries it" />
+      <div class="cf-verdict" id="ampVerdict" style="margin-top:12px; display:none;">
+        <div>Smallest conductor: <strong id="ampOut">—</strong></div>
+        <div class="cf-sub" id="ampSub"></div>
+      </div>
+
+      <div class="cf-section-title" id="ampTitle">Table 310.16 — allowable ampacity</div>
+      <div class="gnd-wrap"><table class="gnd-table" id="ampTable"></table></div>
+      <div class="gnd-note" id="ampBasis"></div>
+
+      <div class="gnd-note gnd-cap">
+        <b>110.14(C) — the column you size from is usually NOT the 90° column.</b>
+        Terminations are rated 60°C at 100 A or less and 75°C above that unless the equipment is
+        listed otherwise, so a 90°C conductor is normally limited to the <b>75° column</b>. The 90°
+        column is there so you have headroom to derate <i>from</i> — it is not the number you put
+        on a breaker.<br />
+        <b>240.4(D)</b> caps the overcurrent device regardless of any of this:
+        <b>14 AWG → 15 A, 12 AWG → 20 A, 10 AWG → 30 A</b> copper.
+      </div>
+    </div>
+    <!-- ── VOLTAGE DROP ── -->
+    <div id="chartPanel-vdrop" style="display:none;">
+      <div class="gnd-switch" id="vdSys">
+        <label class="on"><input type="radio" name="vdSys" value="ac" checked /> AC</label>
+        <label><input type="radio" name="vdSys" value="dc" /> DC</label>
+      </div>
+      <div class="gnd-switch" id="vdPh">
+        <label class="on"><input type="radio" name="vdPh" value="1" checked /> 1-Phase</label>
+        <label><input type="radio" name="vdPh" value="3" /> 3-Phase</label>
+      </div>
+
+      <div class="cf-section-title">Conductor and raceway</div>
+      <div class="gnd-row">
+        <select id="vdMat" class="edit-input">
+          <option value="cu">Copper</option>
+          <option value="al">Aluminum</option>
+        </select>
+        <select id="vdCond" class="edit-input">
+          <option value="steel">Steel conduit</option>
+          <option value="al">Aluminum conduit</option>
+          <option value="pvc">PVC conduit</option>
+        </select>
+      </div>
+
+      <div class="cf-section-title">Circuit</div>
+      <div class="gnd-row">
+        <select id="vdSize" class="edit-input"></select>
+        <select id="vdSets" class="edit-input"></select>
+      </div>
+      <div class="gnd-row" style="margin-top:8px;">
+        <input id="vdLen"   class="edit-input" type="number" inputmode="decimal" min="0" step="1"
+               placeholder="Length — 1 way (ft)" />
+        <input id="vdAmps"  class="edit-input" type="number" inputmode="decimal" min="0" step="0.1"
+               placeholder="Load (amps)" />
+      </div>
+      <div class="gnd-row" style="margin-top:8px;">
+        <input id="vdVolts" class="edit-input" type="number" inputmode="decimal" min="0" step="1"
+               placeholder="Volts" />
+        <input id="vdPf"    class="edit-input" type="number" inputmode="decimal" min="0" max="1" step="0.01"
+               value="1.0" placeholder="Power factor" />
+      </div>
+
+      <div class="cf-verdict" id="vdVerdict" style="margin-top:14px;">
+        <div>Voltage drop: <strong id="vdOut">—</strong></div>
+        <div class="cf-sub" id="vdSub">Fill in length, load and volts.</div>
+      </div>
+      <div class="gnd-note gnd-cap" id="vdSuggest" style="display:none;"></div>
+
+      <div class="gnd-note" id="vdBasis"></div>
+      <div class="gnd-note">
+        <b>3% and 5% are not code.</b> They are Informational Notes to 210.19(A) and 215.2(A) —
+        recommendations, not requirements, and an inspector cannot fail you on them alone.
+        They are still what the drawings usually call for.<br />
+        If you <b>do</b> upsize the ungrounded conductors for voltage drop, <b>250.122(B)</b> says the
+        equipment grounding conductor has to grow in the same proportion. That one <i>is</i> code.
+      </div>
+    </div>
     <div id="chartPanel-motors"    class="charts-soon" style="display:none;">Motors — coming soon.</div>
 
   </div>

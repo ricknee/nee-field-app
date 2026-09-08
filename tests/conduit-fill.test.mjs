@@ -560,6 +560,19 @@ test("three-phase locked rotor is reported missing, never estimated", () => {
   eq(r.amps, undefined, "and no number is offered");
 });
 
+// ⚠ Regression guard for a real bug: the voltage list was keyed off MODE
+// alone, so switching to Locked Rotor swapped in Table 430.251(A)'s short
+// 115/208/230 list even on three phase — silently removing 460 V, which is
+// most of the three-phase work. The list is per (mode × phase).
+test("Locked Rotor on three phase keeps 460 V and 575 V in the list", () => {
+  eq(M.MOT_1P_LRA_V.includes(460), false, "430.251(A) genuinely has no 460 V");
+  eq(M.MOT_3P_V.includes(460), true,  "but the three-phase list must");
+  eq(M.MOT_3P_V.includes(575), true,  "…and 575 V");
+  eq(M.MOT_3P_V.includes(200), true,  "…and 200 V, which 430.251(A) also lacks");
+  // The FLC path must keep answering at 460 V regardless of what LRA can do.
+  eq(mot({ ph:"3", hp:"10", v:"460" }).amps, 14, "10 HP at 460 V still reads");
+});
+
 test("Article 430 sizing multipliers", () => {
   // 10 HP, 3-phase, 460 V → 14 A from Table 430.250.
   const z = M.motSizing(14);

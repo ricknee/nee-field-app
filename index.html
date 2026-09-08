@@ -25930,9 +25930,15 @@
         l.classList.toggle("on",
           l.querySelector("input").value === (id === "motPh" ? motState.ph : motState.mode))));
 
+    // ⚠ The voltage list is per (mode × phase), not per mode. Table 430.251(A)
+    // is 115/208/230 with NO 200 V column, so locked-rotor on SINGLE phase
+    // gets its own short list — but three phase must keep the full
+    // 115/200/208/230/460/575, or picking Locked Rotor silently removes 460 V
+    // from a screen where 460 V is most of the work.
     const lra = motState.mode === "lra";
-    const hps = lra ? Object.keys(MOT_1P_LRA) : (motState.ph === "3" ? MOT_3P_HP : MOT_1P_HP);
-    const vs  = lra ? MOT_1P_LRA_V : (motState.ph === "3" ? MOT_3P_V : MOT_1P_V);
+    const p3  = motState.ph === "3";
+    const hps = (lra && !p3) ? Object.keys(MOT_1P_LRA) : (p3 ? MOT_3P_HP : MOT_1P_HP);
+    const vs  = (lra && !p3) ? MOT_1P_LRA_V : (p3 ? MOT_3P_V : MOT_1P_V);
     // Keep the selection if the new list still has it; otherwise fall to first.
     if (!hps.includes(motState.hp)) motState.hp = hps[0];
     if (!vs.includes(+motState.v))  motState.v  = String(vs[0]);
@@ -25950,12 +25956,12 @@
     if (r.missing) {
       $("motLabel").textContent = "Locked rotor current";
       $("motOut").textContent = "not loaded";
-      $("motSub").textContent = "Three-phase locked rotor is Table 430.251(B).";
+      $("motSub").textContent = "Look it up in Table 430.251(B) for now.";
       $("motNote").innerHTML =
-        "<b>Table 430.251(B) is not in the app yet.</b> It is deliberately absent rather than " +
-        "estimated — Table 430.251(A) works out to exactly 6× the single-phase full-load " +
-        "current, but assuming the three-phase table follows the same rule would be a guess " +
-        "wearing a code reference's clothes. Single-phase locked rotor is loaded and correct.";
+        "<b>Table 430.251(B) isn't loaded yet.</b> It is left out rather than estimated: the " +
+        "single-phase table happens to be exactly 6× full-load current, but the three-phase one " +
+        "does not follow that rule, and a guessed number here would size a disconnect. " +
+        "Single-phase locked rotor is loaded and correct.";
       return;
     }
     if (!r.amps) {

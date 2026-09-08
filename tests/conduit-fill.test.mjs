@@ -1,4 +1,4 @@
-// Tier-1 regression harness for the All Charts → Conduit Fill calculator
+// Tier-1 regression harness for the All Charts calculators (index.html)
 // ---------------------------------------------------------------------------
 // This one is unusual: the code under test lives INSIDE index.html, because
 // sw.js is cache-first for separate .js assets and a stale conduit table is
@@ -223,8 +223,85 @@ test("an empty form computes nothing rather than dividing by zero", () => {
   eq(r.pct.every(p => p === null), true, "no percentages");
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+//  TAB 2 — GROUNDING (Tables 250.122 and 250.66)
+// ══════════════════════════════════════════════════════════════════════════
+const G = new Function(
+  html.slice(html.indexOf("const GND_122 = ["), html.indexOf("function gndRender()")) +
+  "\nreturn { GND_122, GND_66, GND_KCMIL, GND_66_CAPS, gnd122Row, gnd66Row };"
+)();
+
+test("Table 250.122: the rows match the 2023 NEC — no 30 A or 40 A row", () => {
+  eq(G.GND_122.length, 19, "row count");
+  eq(G.GND_122[0].amps, 15, "starts at 15 A");
+  eq(G.GND_122[2].amps, 60, "⚠ the 2023 table jumps 20 → 60; no 30 A or 40 A row");
+  eq(G.GND_122[G.GND_122.length - 1].amps, 6000, "ends at 6000 A");
+  const at = (a) => G.GND_122.find(r => r.amps === a);
+  eq(at(20).cu, "12", "20 A copper");   eq(at(20).al, "10", "20 A aluminum");
+  eq(at(100).cu, "8", "100 A copper");  eq(at(200).cu, "6", "200 A copper");
+  eq(at(400).cu, "3", "400 A copper — the one people guess wrong as 4");
+  eq(at(1200).al, "250", "1200 A aluminum");
+});
+
+// The whole reason the missing 30 A / 40 A rows are harmless: "not exceeding"
+// means you take the next row UP, so the answer is the same one the older
+// table printed explicitly. If this ever regressed to "nearest" or "floor",
+// a 30 A circuit would quietly be told 12 AWG.
+test("250.122 lookup rounds UP to the next row — a 30 A breaker gets 10 AWG", () => {
+  eq(G.gnd122Row(30).amps, 60, "30 A lands on the 60 A row");
+  eq(G.gnd122Row(30).cu, "10", "…which is 10 AWG copper, as the old table said");
+  eq(G.gnd122Row(40).cu, "10", "40 A likewise");
+  eq(G.gnd122Row(15).cu, "14", "an exact row match still works");
+  eq(G.gnd122Row(20).cu, "12", "exact");
+  eq(G.gnd122Row(225).cu, "4", "225 A takes the 300 A row, not the 200");
+  eq(G.gnd122Row(0), null, "nothing entered = no answer");
+  eq(G.gnd122Row(7000), null, "past the table = no answer, not the last row");
+});
+
+test("Table 250.66: 7 rows, matching the utility standard and the app", () => {
+  eq(G.GND_66.length, 7, "row count");
+  eq(G.GND_66[0].gecCu, "8",   "2 or smaller → 8 AWG copper");
+  eq(G.GND_66[0].gecAl, "6",   "…6 aluminum");
+  eq(G.GND_66[3].gecCu, "2",   "over 3/0 through 350 → 2 AWG copper");
+  eq(G.GND_66[3].gecAl, "1/0", "…1/0 aluminum");
+  eq(G.GND_66[6].gecCu, "3/0", "over 1100 → 3/0 copper");
+  eq(G.GND_66[6].gecAl, "250", "…250 kcmil aluminum");
+});
+
+test("250.66 lookup picks the row by conductor material, not one column", () => {
+  // 4/0 is row 3 read as copper (over 3/0 through 350) but row 2 as aluminum
+  // (4/0 or 250) — reading the wrong column is a one-size error in the answer.
+  eq(G.gnd66Row(G.GND_KCMIL["4/0"], "cu").gecCu, "2", "4/0 copper service → 2 AWG");
+  eq(G.gnd66Row(G.GND_KCMIL["4/0"], "al").gecCu, "4", "4/0 aluminum service → 4 AWG");
+  eq(G.gnd66Row(G.GND_KCMIL["2"], "cu").gecCu, "8", "#2 copper → 8 AWG");
+  eq(G.gnd66Row(500, "cu").gecCu, "1/0", "500 kcmil copper");
+  eq(G.gnd66Row(2000, "cu").gecCu, "3/0", "past the last bound stays on the last row");
+});
+
+test("250.66 parallel sets are sized on combined area, not one conductor", () => {
+  const one = G.gnd66Row(G.GND_KCMIL["350"], "cu").gecCu;
+  const two = G.gnd66Row(G.GND_KCMIL["350"] * 2, "cu").gecCu;
+  eq(one, "2",   "one 350 kcmil copper → 2 AWG");
+  eq(two, "2/0", "two in parallel = 700 kcmil, which is the 'over 600' row → 2/0");
+});
+
+// ⚠ These caps live in the section text, not the table. Without them the app
+// tells you to run 3/0 to a ground rod, which is legal but is money in a ditch.
+test("250.66(A)-(C) electrode caps are present and correct", () => {
+  const cap = (id) => G.GND_66_CAPS.find(c => c.id === id);
+  eq(cap("rod").capCu, "6", "250.66(A) rod/pipe/plate → 6 AWG copper max");
+  eq(cap("rod").capAl, "4", "…4 AWG aluminum max");
+  eq(cap("cee").capCu, "4", "250.66(B) concrete-encased → 4 AWG copper max");
+  eq(cap("ring").ring, true, "250.66(C) ground ring is capped by the ring itself");
+  eq(G.GND_66_CAPS[0].capCu, null, "the default applies no cap");
+  // The cap has to actually bite: a 1000 kcmil copper service to a ground rod.
+  const table = G.gnd66Row(1000, "cu").gecCu;
+  eq(table, "2/0", "the table alone says 2/0");
+  eq(G.GND_KCMIL[table] > G.GND_KCMIL[cap("rod").capCu], true, "so 250.66(A) caps it to 6 AWG");
+});
+
 // ── report ──
-console.log("\nAll Charts → Conduit Fill (NEC Chapter 9) tests\n" + "-".repeat(48));
+console.log("\nAll Charts — Conduit Fill + Grounding (NEC) tests\n" + "-".repeat(48));
 for (const [mark, name] of log) console.log(` ${mark} ${name}`);
 console.log("-".repeat(48));
 console.log(`${pass} passed, ${fail} failed\n`);

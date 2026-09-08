@@ -555,6 +555,41 @@
     .cf-res.na .pc { color:var(--line-2); }
     .cf-res.pick { outline:2px solid var(--accent); outline-offset:-1px; }
 
+    /* ── GROUNDING TAB ── */
+    .gnd-switch { display:flex; gap:8px; margin-bottom:16px; }
+    .gnd-switch label {
+      flex:1; display:flex; align-items:center; justify-content:center; gap:8px;
+      padding:11px 8px; border:1px solid var(--line-2); border-radius:9px;
+      background:var(--panel); font-size:13px; font-weight:600; cursor:pointer;
+      text-align:center; color:var(--text);
+    }
+    .gnd-switch label.on { border-color:var(--accent); background:var(--accent-glow); color:var(--accent); }
+    .gnd-switch input { width:16px; height:16px; flex:none; }
+    .gnd-row { display:flex; gap:8px; flex-wrap:wrap; }
+    .gnd-row > * { flex:1; min-width:130px; }
+    .gnd-wrap {
+      overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--panel);
+    }
+    .gnd-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .gnd-table th, .gnd-table td {
+      padding:7px 8px; border-bottom:1px solid var(--line); text-align:center; white-space:nowrap;
+    }
+    .gnd-table th {
+      background:var(--panel-2); font-size:11px; text-transform:uppercase;
+      letter-spacing:0.4px; color:var(--muted); font-weight:700;
+    }
+    .gnd-table tr:last-child td { border-bottom:none; }
+    /* Copper in the same orange the crew already reads on the paper charts. */
+    .gnd-table .cu { color:var(--yellow); font-weight:700; }
+    .gnd-table tr.hit td { background:var(--accent-glow); }
+    .gnd-table tr.hit td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+    .gnd-note {
+      font-size:12px; color:var(--muted); line-height:1.55; margin-top:12px;
+      border-left:3px solid var(--line-2); padding-left:11px;
+    }
+    .gnd-note b { color:var(--text); }
+    .gnd-cap { border-left-color:var(--yellow); }
+
     @media (max-width: 820px) {
       .cf-wire-grid { grid-template-columns:repeat(4,1fr); }
       .cf-res-grid  { grid-template-columns:repeat(4,1fr); }
@@ -25327,6 +25362,195 @@
     cfRender();
   }
 
+  // ── TAB 2: GROUNDING — Tables 250.122 and 250.66 ──────────────────────
+  // Two pure lookup tables, no arithmetic. The value added over reading them
+  // off paper is (a) finding your row without counting across, and (b) the
+  // rules printed BESIDE the table that change its answer — see the notes in
+  // the markup and the electrode caps below. A table on its own is where
+  // people over-pull grounding conductors.
+  //
+  // ⚠ EDITION MATTERS HERE, unlike Chapter 9. Table 250.122 was revised in the
+  // 2020 NEC and this is the 2023 shape:
+  //   · the 30 A and 40 A rows are GONE — the table jumps 20 → 60. Nothing is
+  //     lost: it reads "not exceeding", so a 30 A or 40 A circuit takes the
+  //     60 A row and still lands on 10 AWG copper. gnd122Row() implements that
+  //     "first row at or above your rating" rule, which is why the lookup box
+  //     answers a 30 A breaker correctly with no 30 A row present.
+  //   · 5000 A and 6000 A aluminum went 1200 → 1250 kcmil.
+  // ⚠⚠ The 4000 A aluminum cell is the ONE value sources genuinely disagree on
+  // (750 vs the older 800). 750 is what two current reproductions show and it
+  // is used here, but a 4000 A service is far outside anything this shop runs —
+  // check the book before quoting one. Rows 15 A–3000 A are unanimous.
+  const GND_122 = [
+    { amps:15,   cu:"14",  al:"12"   },
+    { amps:20,   cu:"12",  al:"10"   },
+    { amps:60,   cu:"10",  al:"8"    },
+    { amps:100,  cu:"8",   al:"6"    },
+    { amps:200,  cu:"6",   al:"4"    },
+    { amps:300,  cu:"4",   al:"2"    },
+    { amps:400,  cu:"3",   al:"1"    },
+    { amps:500,  cu:"2",   al:"1/0"  },
+    { amps:600,  cu:"1",   al:"2/0"  },
+    { amps:800,  cu:"1/0", al:"3/0"  },
+    { amps:1000, cu:"2/0", al:"4/0"  },
+    { amps:1200, cu:"3/0", al:"250"  },
+    { amps:1600, cu:"4/0", al:"350"  },
+    { amps:2000, cu:"250", al:"400"  },
+    { amps:2500, cu:"350", al:"600"  },
+    { amps:3000, cu:"400", al:"600"  },
+    { amps:4000, cu:"500", al:"750"  },
+    { amps:5000, cu:"700", al:"1250" },
+    { amps:6000, cu:"800", al:"1250" },
+  ];
+
+  // Chapter 9 Table 8 circular mils, for putting a size on a number line.
+  // Used to place a service conductor in a 250.66 row and to compare a table
+  // answer against an electrode cap.
+  const GND_KCMIL = {
+    "14":4.11, "12":6.53, "10":10.38, "8":16.51, "6":26.24, "4":41.74, "3":52.62,
+    "2":66.36, "1":83.69, "1/0":105.6, "2/0":133.1, "3/0":167.8, "4/0":211.6,
+    "250":250, "300":300, "350":350, "400":400, "500":500, "600":600, "700":700,
+    "750":750, "800":800, "900":900, "1000":1000, "1250":1250, "1500":1500,
+    "1750":1750, "2000":2000,
+  };
+  const GND_66_SIZES = ["8","6","4","3","2","1","1/0","2/0","3/0","4/0","250","300",
+                        "350","400","500","600","700","750","800","900","1000",
+                        "1250","1500","1750","2000"];
+
+  // cuMax/alMax are the UPPER bound of each row in kcmil, so the lookup is
+  // "first row whose bound you are at or under".
+  const GND_66 = [
+    { cu:"2 or smaller",          al:"1/0 or smaller",        gecCu:"8",   gecAl:"6",   cuMax:66.36,  alMax:105.6 },
+    { cu:"1 or 1/0",              al:"2/0 or 3/0",            gecCu:"6",   gecAl:"4",   cuMax:105.6,  alMax:167.8 },
+    { cu:"2/0 or 3/0",            al:"4/0 or 250",            gecCu:"4",   gecAl:"2",   cuMax:167.8,  alMax:250   },
+    { cu:"Over 3/0 through 350",  al:"Over 250 through 500",  gecCu:"2",   gecAl:"1/0", cuMax:350,    alMax:500   },
+    { cu:"Over 350 through 600",  al:"Over 500 through 900",  gecCu:"1/0", gecAl:"3/0", cuMax:600,    alMax:900   },
+    { cu:"Over 600 through 1100", al:"Over 900 through 1750", gecCu:"2/0", gecAl:"4/0", cuMax:1100,   alMax:1750  },
+    { cu:"Over 1100",             al:"Over 1750",             gecCu:"3/0", gecAl:"250", cuMax:Infinity, alMax:Infinity },
+  ];
+
+  // ⚠⚠ THE PART THAT SAVES REAL MONEY. Table 250.66 alone will tell you to run
+  // 3/0 to a ground rod. 250.66(A)-(C) cap that hard, and the caps are in the
+  // section text rather than the table, so a table-only chart never shows them.
+  const GND_66_CAPS = [
+    { id:"",     label:"Other / more than one electrode type", capCu:null, capAl:null, note:"" },
+    { id:"rod",  label:"Rod, pipe or plate electrode only",    capCu:"6",  capAl:"4",
+      note:"<b>250.66(A)</b> — connected only to rod, pipe or plate electrode(s), and not continuing on to an electrode that needs a larger conductor, the GEC need not be larger than <b>6 AWG copper</b> or <b>4 AWG aluminum</b>." },
+    { id:"cee",  label:"Concrete-encased electrode only",      capCu:"4",  capAl:null,
+      note:"<b>250.66(B)</b> — connected only to a concrete-encased electrode, the GEC need not be larger than <b>4 AWG copper</b>." },
+    { id:"ring", label:"Ground ring only",                     capCu:null, capAl:null, ring:true,
+      note:"<b>250.66(C)</b> — connected only to a ground ring, the GEC need not be larger than <b>the ground-ring conductor itself</b> (2 AWG copper minimum)." },
+  ];
+
+  const gndState = { table:"122", amps:"", mat:"cu", size:"4/0", smat:"cu", par:1, omat:"cu", elec:"" };
+
+  // "Not exceeding" — the first row at or above the rating. This is what makes
+  // a 30 A breaker answer 10 AWG without the table having a 30 A row.
+  function gnd122Row(amps) {
+    if (!(amps > 0)) return null;
+    return GND_122.find(r => amps <= r.amps) || null;
+  }
+  function gnd66Row(kcmil, serviceMat) {
+    const key = serviceMat === "al" ? "alMax" : "cuMax";
+    return GND_66.find(r => kcmil <= r[key]) || GND_66[GND_66.length - 1];
+  }
+
+  function gndRender() {
+    const on122 = gndState.table === "122";
+    $("gndPanel-122").style.display = on122 ? "" : "none";
+    $("gndPanel-66").style.display  = on122 ? "none" : "";
+    document.querySelectorAll("#gndSwitch label").forEach(l => {
+      l.classList.toggle("on", l.querySelector("input").value === gndState.table);
+    });
+
+    // ── 250.122 ──
+    const amps = parseInt(gndState.amps, 10) || 0;
+    const row122 = gnd122Row(amps);
+    const v122 = $("gnd122Verdict");
+    v122.classList.toggle("ok", !!row122);
+    if (!amps) {
+      $("gnd122Out").textContent = "—";
+      $("gnd122Sub").textContent = "Enter the rating of the breaker or fuse ahead of the equipment.";
+    } else if (!row122) {
+      $("gnd122Out").textContent = "off the table";
+      $("gnd122Sub").textContent = "Table 250.122 stops at 6000 A.";
+    } else {
+      $("gnd122Out").textContent = row122[gndState.mat] + (GND_KCMIL[row122[gndState.mat]] >= 250 ? " kcmil" : " AWG");
+      $("gnd122Sub").textContent = amps === row122.amps
+        ? `${amps} A — read directly off the ${row122.amps} A row.`
+        : `${amps} A falls under the "${row122.amps} A not exceeding" row.`;
+    }
+    $("gnd122Table").innerHTML =
+      `<thead><tr><th>OCPD amps</th><th>Copper</th><th>Aluminum</th></tr></thead><tbody>` +
+      GND_122.map(r =>
+        `<tr class="${row122 === r ? "hit" : ""}"><td>${r.amps}</td>` +
+        `<td class="cu">${esc(r.cu)}</td><td>${esc(r.al)}</td></tr>`).join("") +
+      `</tbody>`;
+
+    // ── 250.66 ──
+    const kc = (GND_KCMIL[gndState.size] || 0) * (parseInt(gndState.par, 10) || 1);
+    const row66 = gnd66Row(kc, gndState.smat);
+    const tableAns = gndState.omat === "al" ? row66.gecAl : row66.gecCu;
+    const cap = GND_66_CAPS.find(c => c.id === gndState.elec) || GND_66_CAPS[0];
+    const capSize = gndState.omat === "al" ? cap.capAl : cap.capCu;
+
+    let ans = tableAns, capped = false;
+    if (capSize && GND_KCMIL[tableAns] > GND_KCMIL[capSize]) { ans = capSize; capped = true; }
+
+    $("gnd66Verdict").classList.add("ok");
+    $("gnd66OutSize").textContent = ans + (GND_KCMIL[ans] >= 250 ? " kcmil" : " AWG");
+    const par = parseInt(gndState.par, 10) || 1;
+    $("gnd66Sub").textContent =
+      `${par > 1 ? par + " × " : ""}${gndState.size} ${gndState.smat === "al" ? "aluminum" : "copper"}` +
+      `${par > 1 ? ` = ${Math.round(kc)} kcmil per phase` : ""} → table says ${tableAns}` +
+      (capped ? `, capped to ${ans}` : "") + ".";
+
+    const capBox = $("gnd66Cap");
+    if (cap.note && (capped || cap.ring)) {
+      capBox.style.display = "";
+      capBox.innerHTML = cap.note +
+        (capped ? `<br />Table 250.66 would have said <b>${esc(tableAns)}</b> here.` : "");
+    } else if (cap.note) {
+      capBox.style.display = "";
+      capBox.innerHTML = cap.note + "<br />The table answer is already at or under that, so it stands.";
+    } else {
+      capBox.style.display = "none";
+    }
+
+    $("gnd66Table").innerHTML =
+      `<thead><tr><th>Service — Cu</th><th>Service — Al</th><th>GEC Cu</th><th>GEC Al</th></tr></thead><tbody>` +
+      GND_66.map(r =>
+        `<tr class="${row66 === r ? "hit" : ""}">` +
+        `<td class="cu">${esc(r.cu)}</td><td>${esc(r.al)}</td>` +
+        `<td class="cu">${esc(r.gecCu)}</td><td>${esc(r.gecAl)}</td></tr>`).join("") +
+      `</tbody>`;
+  }
+
+  function gndBuild() {
+    $("gnd66Size").innerHTML = GND_66_SIZES.map(s =>
+      `<option value="${esc(s)}"${s === gndState.size ? " selected" : ""}>` +
+      `${esc(s)}${GND_KCMIL[s] >= 250 ? " kcmil" : " AWG"}</option>`).join("");
+    $("gnd66Par").innerHTML = [1,2,3,4,5,6].map(n =>
+      `<option value="${n}">${n === 1 ? "Single run" : n + " in parallel"}</option>`).join("");
+    $("gnd66Elec").innerHTML = GND_66_CAPS.map(c =>
+      `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join("");
+
+    $("gndSwitch").addEventListener("change", (e) => {
+      if (e.target.name !== "gndTable") return;
+      gndState.table = e.target.value;
+      gndRender();
+    });
+    const bind = (id, key) => $(id).addEventListener("input", (e) => {
+      gndState[key] = e.target.value;
+      gndRender();
+    });
+    bind("gnd122Amps", "amps"); bind("gnd122Mat", "mat");
+    bind("gnd66Size", "size");  bind("gnd66Mat", "smat");
+    bind("gnd66Par", "par");    bind("gnd66Out", "omat");
+    bind("gnd66Elec", "elec");
+    gndRender();
+  }
+
   function switchChartTab(id) {
     document.querySelectorAll("#chartsTabs .chart-tab").forEach(b => {
       const on = b.dataset.chart === id;
@@ -25340,7 +25564,7 @@
   }
 
   function openCharts() {
-    if (!cfState._built) { cfBuild(); cfState._built = true; }
+    if (!cfState._built) { cfBuild(); gndBuild(); cfState._built = true; }
     $("chartsModal").style.display = "flex";
     pushBackEntry("charts", () => { $("chartsModal").style.display = "none"; });
   }
@@ -25903,7 +26127,74 @@
     </div>
 
     <!-- ── PLACEHOLDERS ── -->
-    <div id="chartPanel-grounding" class="charts-soon" style="display:none;">Grounding — coming soon.</div>
+    <!-- ── GROUNDING ── -->
+    <div id="chartPanel-grounding" style="display:none;">
+      <div class="gnd-switch" id="gndSwitch">
+        <label class="on"><input type="radio" name="gndTable" value="122" checked /> 250.122 — Equipment Ground</label>
+        <label><input type="radio" name="gndTable" value="66" /> 250.66 — Grounding Electrode</label>
+      </div>
+
+      <!-- 250.122 -->
+      <div id="gndPanel-122">
+        <div class="cf-section-title">Overcurrent device rating</div>
+        <div class="gnd-row">
+          <input id="gnd122Amps" class="edit-input" type="number" inputmode="numeric" min="0" step="1"
+                 placeholder="Breaker / fuse amps" />
+          <select id="gnd122Mat" class="edit-input">
+            <option value="cu">Copper EGC</option>
+            <option value="al">Aluminum EGC</option>
+          </select>
+        </div>
+        <div class="cf-verdict" id="gnd122Verdict" style="margin-top:12px;">
+          <div>Equipment grounding conductor: <strong id="gnd122Out">—</strong></div>
+          <div class="cf-sub" id="gnd122Sub">Enter the rating of the breaker or fuse ahead of the equipment.</div>
+        </div>
+
+        <div class="cf-section-title">Table 250.122 — Equipment Grounding Conductor</div>
+        <div class="gnd-wrap"><table class="gnd-table" id="gnd122Table"></table></div>
+        <div class="gnd-note">
+          <b>250.122(A)</b> — the EGC never has to be larger than the circuit conductors it runs with.<br />
+          <b>250.122(B)</b> — if the ungrounded conductors were <b>upsized for voltage drop</b>, the EGC must be
+          increased in the same proportion by circular-mil area. This is the most-missed rule in the article.<br />
+          <b>250.122(F)</b> — parallel runs get a full-size EGC <b>in every raceway</b>, each sized from the
+          one overcurrent device.
+        </div>
+      </div>
+
+      <!-- 250.66 -->
+      <div id="gndPanel-66" style="display:none;">
+        <div class="cf-section-title">Largest ungrounded service-entrance conductor</div>
+        <div class="gnd-row">
+          <select id="gnd66Size" class="edit-input"></select>
+          <select id="gnd66Mat" class="edit-input">
+            <option value="cu">Copper service conductor</option>
+            <option value="al">Aluminum / Cu-clad service</option>
+          </select>
+        </div>
+        <div class="gnd-row" style="margin-top:8px;">
+          <select id="gnd66Par" class="edit-input"></select>
+          <select id="gnd66Out" class="edit-input">
+            <option value="cu">Copper GEC</option>
+            <option value="al">Aluminum GEC</option>
+          </select>
+        </div>
+        <div class="cf-section-title">Electrode it connects to</div>
+        <select id="gnd66Elec" class="edit-input"></select>
+
+        <div class="cf-verdict" id="gnd66Verdict" style="margin-top:12px;">
+          <div>Grounding electrode conductor: <strong id="gnd66OutSize">—</strong></div>
+          <div class="cf-sub" id="gnd66Sub">Pick your service conductor above.</div>
+        </div>
+        <div class="gnd-note gnd-cap" id="gnd66Cap" style="display:none;"></div>
+
+        <div class="cf-section-title">Table 250.66 — Grounding Electrode Conductor</div>
+        <div class="gnd-wrap"><table class="gnd-table" id="gnd66Table"></table></div>
+        <div class="gnd-note">
+          Parallel sets are sized on the <b>combined circular-mil area</b> of one phase, which is what the
+          parallel selector above does.
+        </div>
+      </div>
+    </div>
     <div id="chartPanel-ampacity"  class="charts-soon" style="display:none;">Ampacity — coming soon.</div>
     <div id="chartPanel-support"   class="charts-soon" style="display:none;">Cable Support — coming soon.</div>
     <div id="chartPanel-vdrop"     class="charts-soon" style="display:none;">Voltage Drop — coming soon.</div>

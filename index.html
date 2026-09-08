@@ -25224,7 +25224,11 @@
       const p = r.pct[i];
       let cls = "na", txt = "–";
       if (p != null) {
-        txt = p.toFixed(1);
+        // Past 99% the exact figure stops carrying information — it is "no,
+        // and not close" either way — and a 4-digit number wrecks the column
+        // width on a phone. 4 × 750 kcmil in 1/2" is 1049.8%; nobody needs
+        // the .8. Clamping also matches the paper-chart apps the crew reads.
+        txt = p > 99 ? "99+" : p.toFixed(1);
         if (p > r.allowed) cls = "over";
         else if (p > r.allowed - 5) cls = "tight";
         else cls = "fits";

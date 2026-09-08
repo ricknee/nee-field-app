@@ -98,6 +98,24 @@ test("Table 4 vector: the same 9 × #12 THHN in FMC", () => {
   eq(CF_TRADE[r.minIdx], "1/2", "minimum size allowed");
 });
 
+// A third independent vector off the same app, and a much better one than the
+// first two: it mixes THREE conductor sizes, lands in a different conduit type,
+// and its answer is a mid-table trade size rather than the smallest one.
+test("mixed sizes vector: 1 × #1/0 + 1 × 500 + 2 × 750 THHN in PVC-40", () => {
+  const r = run({ qty: { "#1/0": 1, "500": 1, "750": 2 }, conduit: "PVC40" });
+  eq(r.count, 4, "conductor count");
+  eq(r.area.toFixed(4), "2.9920", "total conductor area");
+  const p = r.pct.map(pct1);
+  eq(p[5],  "90.9", '2"');
+  eq(p[6],  "63.7", '2-1/2"');
+  eq(p[7],  "41.2", '3"');
+  eq(p[8],  "30.7", '3-1/2"');
+  eq(p[9],  "23.8", '4"');
+  eq(p[10], "15.1", '5"');
+  eq(p[11], "10.5", '6"');
+  eq(CF_TRADE[r.minIdx], "3-1/2", '3" is 41.2% — just over the 40% line');
+});
+
 test("Table 1: allowed percentage by conductor count", () => {
   eq(cfAllowedPct(1, false), 53, "1 conductor");
   eq(cfAllowedPct(2, false), 31, "2 conductors");

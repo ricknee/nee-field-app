@@ -491,6 +491,86 @@ test("the 3% suggestion finds a real size, or admits there isn't one", () => {
   eq(check.pct <= 3, true, "and recomputing at that size agrees");
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+//  TAB 5 — MOTORS (Tables 430.248, 430.250, 430.251(A))
+// ══════════════════════════════════════════════════════════════════════════
+const M = new Function(
+  html.slice(html.indexOf("const MOT_1P_V = ["), html.indexOf("function motRender()")) +
+  "\nreturn { MOT_1P_FLC, MOT_3P_FLC, MOT_1P_LRA, MOT_1P_V, MOT_3P_V, MOT_1P_LRA_V," +
+  " MOT_1P_HP, MOT_3P_HP, motLookup, motSizing };"
+)();
+const mot = (o) => M.motLookup({ ph:"1", mode:"flc", hp:"1/6", v:"115", ...o });
+
+test("Table 430.248: single-phase full-load current", () => {
+  eq(mot({ hp:"1/6", v:"115" }).amps, 4.4,  "1/6 HP at 115 V");
+  eq(mot({ hp:"1/2", v:"115" }).amps, 9.8,  "1/2 HP at 115 V");
+  eq(mot({ hp:"1/2", v:"230" }).amps, 4.9,  "…and half that at 230 V");
+  eq(mot({ hp:"5",   v:"230" }).amps, 28,   "5 HP at 230 V");
+  eq(mot({ hp:"10",  v:"115" }).amps, 100,  "10 HP at 115 V");
+  eq(mot({ hp:"1/6", v:"115" }).table, "430.248", "cited table");
+});
+
+test("Table 430.250: three-phase full-load current", () => {
+  const m3 = (hp, v) => mot({ ph:"3", hp, v });
+  eq(m3("1/2", "115").amps, 4.4,  "1/2 HP at 115 V — same 4.4 as 1φ 1/6 HP, a real coincidence");
+  eq(m3("5",   "230").amps, 15.2, "5 HP at 230 V");
+  eq(m3("10",  "460").amps, 14,   "10 HP at 460 V — the everyday one");
+  eq(m3("50",  "460").amps, 65,   "50 HP at 460 V");
+  eq(m3("200", "460").amps, 240,  "200 HP at 460 V");
+  eq(m3("100", "575").amps, 99,   "100 HP at 575 V");
+});
+
+// Table 430.250 stops listing 115 V above 2 HP. Reporting that honestly
+// matters more than it looks: silently falling back to another column would
+// hand over a current for a motor that does not exist at that voltage.
+test("a horsepower/voltage pair the table does not list says so", () => {
+  eq(mot({ ph:"3", hp:"5", v:"115" }).notListed, true, "no 5 HP at 115 V three-phase");
+  eq(mot({ ph:"3", hp:"5", v:"115" }).amps, undefined, "and no number is invented");
+  eq(mot({ ph:"1", hp:"10", v:"460" }).notListed, true, "430.248 has no 460 V column at all");
+});
+
+test("Table 430.251(A): single-phase locked rotor, and it has no 200 V column", () => {
+  eq(M.MOT_1P_LRA_V.join(), "115,208,230", "115 / 208 / 230 only");
+  eq(mot({ mode:"lra", hp:"1/2", v:"115" }).amps, 58.8, "1/2 HP at 115 V");
+  eq(mot({ mode:"lra", hp:"10",  v:"230" }).amps, 300,  "10 HP at 230 V");
+  eq(mot({ mode:"lra", hp:"1/6", v:"115" }).notListed, true, "430.251(A) starts at 1/2 HP");
+});
+
+// A cross-check, not the storage mechanism: 430.251(A) is exactly 6× 430.248.
+// If a locked-rotor cell were mistyped this catches it, and if a full-load
+// cell were mistyped it catches that too.
+test("430.251(A) is exactly 6× 430.248 — cross-checks BOTH tables at once", () => {
+  for (const hp of Object.keys(M.MOT_1P_LRA)) {
+    [115, 230].forEach(v => {
+      const flc = M.MOT_1P_FLC[hp][M.MOT_1P_V.indexOf(v)];
+      const lra = M.MOT_1P_LRA[hp][M.MOT_1P_LRA_V.indexOf(v)];
+      if (Math.abs(lra - flc * 6) > 0.05) {
+        throw new Error(`${hp} HP at ${v} V: LRA ${lra} vs 6 × FLC ${flc} = ${flc * 6}`);
+      }
+    });
+  }
+});
+
+// ⚠ Deliberately absent, not derived. The 6× identity above holds for the
+// single-phase table; assuming it holds for 430.251(B) would be a guess
+// presented as a code lookup.
+test("three-phase locked rotor is reported missing, never estimated", () => {
+  const r = mot({ ph:"3", mode:"lra", hp:"10", v:"460" });
+  eq(r.missing, "430.251(B)", "named so the user knows what to go look up");
+  eq(r.amps, undefined, "and no number is offered");
+});
+
+test("Article 430 sizing multipliers", () => {
+  // 10 HP, 3-phase, 460 V → 14 A from Table 430.250.
+  const z = M.motSizing(14);
+  eq(z.conductor.toFixed(1),  "17.5", "430.22 — 125%");
+  eq(z.disconnect.toFixed(1), "16.1", "430.110(A) — 115%");
+  eq(z.breaker.toFixed(1),    "35.0", "430.52 — inverse-time breaker 250% max");
+  eq(z.fuseDE.toFixed(1),     "24.5", "430.52 — dual-element fuse 175% max");
+  eq(z.fuseNTD.toFixed(1),    "42.0", "430.52 — non-time-delay fuse 300% max");
+  eq(M.motSizing(0), null, "nothing in, nothing out");
+});
+
 // ── report ──
 console.log("\nAll Charts — Conduit Fill + Grounding (NEC) tests\n" + "-".repeat(48));
 for (const [mark, name] of log) console.log(` ${mark} ${name}`);

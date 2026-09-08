@@ -25557,6 +25557,87 @@
     gndRender();
   }
 
+  // ── TAB 5: MOTORS ─────────────────────────────────────────────────────
+  // Full-load current from NEC Table 430.248 (single phase) and Table 430.250
+  // (three phase); locked-rotor from Table 430.251(A).
+  //
+  // ⚠ 430.6(A)(1): these TABLE values — never the nameplate — size the
+  // conductors, the overcurrent device and the disconnect. The nameplate FLA
+  // is used for the overload device and nothing else. Getting that backwards
+  // is the most common Article 430 mistake, so the screen says it.
+  //
+  // Column order: 1φ = [115, 200, 208, 230]; 3φ = [115, 200, 208, 230, 460, 575].
+  // null = the table does not list that horsepower at that voltage.
+  const MOT_1P_V = [115, 200, 208, 230];
+  const MOT_1P_FLC = {
+    "1/6":[4.4,2.5,2.4,2.2],   "1/4":[5.8,3.3,3.2,2.9],   "1/3":[7.2,4.1,4.0,3.6],
+    "1/2":[9.8,5.6,5.4,4.9],   "3/4":[13.8,7.9,7.6,6.9],  "1":[16,9.2,8.8,8.0],
+    "1.5":[20,11.5,11.0,10],   "2":[24,13.8,13.2,12],     "3":[34,19.6,18.7,17],
+    "5":[56,32.2,30.8,28],     "7.5":[80,46.0,44.0,40],   "10":[100,57.5,55.0,50],
+  };
+  const MOT_3P_V = [115, 200, 208, 230, 460, 575];
+  const MOT_3P_FLC = {
+    "1/2":[4.4,2.5,2.4,2.2,1.1,0.9],    "3/4":[6.4,3.7,3.5,3.2,1.6,1.3],
+    "1":[8.4,4.8,4.6,4.2,2.1,1.7],      "1.5":[12.0,6.9,6.6,6.0,3.0,2.4],
+    "2":[13.6,7.8,7.5,6.8,3.4,2.7],     "3":[null,11.0,10.6,9.6,4.8,3.9],
+    "5":[null,17.5,16.7,15.2,7.6,6.1],  "7.5":[null,25.3,24.2,22,11,9],
+    "10":[null,32.2,30.8,28,14,11],     "15":[null,48.3,46.2,42,21,17],
+    "20":[null,62.1,59.4,54,27,22],     "25":[null,78.2,74.8,68,34,27],
+    "30":[null,92,88,80,40,32],         "40":[null,120,114,104,52,41],
+    "50":[null,150,143,130,65,52],      "60":[null,177,169,154,77,62],
+    "75":[null,221,211,192,96,77],      "100":[null,285,273,248,124,99],
+    "125":[null,359,343,312,156,125],   "150":[null,414,396,360,180,144],
+    "200":[null,552,528,480,240,192],
+  };
+  // ⚠ Table 430.251(A) has NO 200 V column — it is 115 / 208 / 230 only.
+  // Its values are exactly 6 × Table 430.248, which is a useful sanity check
+  // but is NOT how they are stored: they are transcribed, and the 6× identity
+  // is asserted in the test instead.
+  const MOT_1P_LRA_V = [115, 208, 230];
+  const MOT_1P_LRA = {
+    "1/2":[58.8,32.5,29.4], "3/4":[82.8,45.8,41.4], "1":[96,53,48],
+    "1.5":[120,66,60],      "2":[144,80,72],        "3":[204,113,102],
+    "5":[336,186,168],      "7.5":[480,265,240],    "10":[600,332,300],
+  };
+  const MOT_1P_HP = ["1/6","1/4","1/3","1/2","3/4","1","1.5","2","3","5","7.5","10"];
+  const MOT_3P_HP = ["1/2","3/4","1","1.5","2","3","5","7.5","10","15","20","25",
+                     "30","40","50","60","75","100","125","150","200"];
+
+  const motState = { ph:"1", mode:"flc", hp:"1/6", v:"115" };
+
+  function motLookup(s) {
+    if (s.mode === "lra") {
+      // ⚠ Three-phase locked rotor is Table 430.251(B), which is NOT loaded.
+      // Deliberately absent rather than derived: 430.251(A) happens to be 6×
+      // FLC, but assuming the same holds for (B) would be a guess dressed as
+      // code. Says so on screen instead.
+      if (s.ph === "3") return { missing:"430.251(B)" };
+      const row = MOT_1P_LRA[s.hp];
+      if (!row) return { notListed:true };
+      const i = MOT_1P_LRA_V.indexOf(+s.v);
+      if (i === -1) return { noVolt:true };
+      return { amps: row[i], table:"430.251(A)", label:"Locked rotor current" };
+    }
+    const row = (s.ph === "3" ? MOT_3P_FLC : MOT_1P_FLC)[s.hp];
+    if (!row) return { notListed:true };
+    const i = (s.ph === "3" ? MOT_3P_V : MOT_1P_V).indexOf(+s.v);
+    if (i === -1 || row[i] == null) return { notListed:true };
+    return { amps: row[i], table: s.ph === "3" ? "430.250" : "430.248",
+             label:"Full load current" };
+  }
+
+  // Article 430 sizing off the TABLE full-load current.
+  function motSizing(flc) {
+    if (!(flc > 0)) return null;
+    return {
+      conductor: flc * 1.25,   // 430.22 — 125% of table FLC
+      disconnect: flc * 1.15,  // 430.110(A) — at least 115%
+      breaker: flc * 2.50,     // 430.52 Table — inverse-time breaker max 250%
+      fuseDE: flc * 1.75,      // 430.52 Table — dual-element time-delay max 175%
+      fuseNTD: flc * 3.00,     // 430.52 Table — non-time-delay max 300%
+    };
+  }
+
   // ── TAB 3: AMPACITY ───────────────────────────────────────────────────
   // NEC Table 310.16 (allowable ampacities, 0–2000 V, not over three
   // current-carrying conductors in a raceway, 30°C ambient), corrected for
@@ -25843,6 +25924,90 @@
     }
   }
 
+  function motRender() {
+    ["motPh", "motMode"].forEach(id =>
+      document.querySelectorAll("#" + id + " label").forEach(l =>
+        l.classList.toggle("on",
+          l.querySelector("input").value === (id === "motPh" ? motState.ph : motState.mode))));
+
+    const lra = motState.mode === "lra";
+    const hps = lra ? Object.keys(MOT_1P_LRA) : (motState.ph === "3" ? MOT_3P_HP : MOT_1P_HP);
+    const vs  = lra ? MOT_1P_LRA_V : (motState.ph === "3" ? MOT_3P_V : MOT_1P_V);
+    // Keep the selection if the new list still has it; otherwise fall to first.
+    if (!hps.includes(motState.hp)) motState.hp = hps[0];
+    if (!vs.includes(+motState.v))  motState.v  = String(vs[0]);
+    $("motHp").innerHTML = hps.map(h =>
+      `<option value="${esc(h)}"${h === motState.hp ? " selected" : ""}>${esc(h)} HP</option>`).join("");
+    $("motV").innerHTML = vs.map(v =>
+      `<option value="${v}"${v === +motState.v ? " selected" : ""}>${v} V</option>`).join("");
+
+    const r = motLookup(motState);
+    const v = $("motVerdict");
+    v.classList.toggle("ok", !!r.amps);
+    v.classList.toggle("bad", !r.amps);
+    $("motSizing").style.display = (r.amps && !lra) ? "" : "none";
+
+    if (r.missing) {
+      $("motLabel").textContent = "Locked rotor current";
+      $("motOut").textContent = "not loaded";
+      $("motSub").textContent = "Three-phase locked rotor is Table 430.251(B).";
+      $("motNote").innerHTML =
+        "<b>Table 430.251(B) is not in the app yet.</b> It is deliberately absent rather than " +
+        "estimated — Table 430.251(A) works out to exactly 6× the single-phase full-load " +
+        "current, but assuming the three-phase table follows the same rule would be a guess " +
+        "wearing a code reference's clothes. Single-phase locked rotor is loaded and correct.";
+      return;
+    }
+    if (!r.amps) {
+      $("motLabel").textContent = lra ? "Locked rotor current" : "Full load current";
+      $("motOut").textContent = "not listed";
+      $("motSub").textContent = `${motState.hp} HP at ${motState.v} V is not a row in that table.`;
+      $("motNote").textContent = "";
+      return;
+    }
+
+    $("motLabel").textContent = r.label;
+    $("motOut").textContent = r.amps + " A";
+    $("motSub").textContent =
+      `${motState.hp} HP, ${motState.ph === "3" ? "three" : "single"} phase, ${motState.v} V — ` +
+      `NEC Table ${r.table}.`;
+    $("motNote").innerHTML = lra
+      ? "Locked-rotor current is what sizes the <b>disconnecting means</b> and the controller " +
+        "(430.110, 430.109). It is not the running current."
+      : "";
+
+    if (lra) return;
+    const z = motSizing(r.amps);
+    const rows = [
+      ["Conductor ampacity, minimum", z.conductor, "430.22 — 125% of table FLC"],
+      ["Disconnect rating, minimum",  z.disconnect, "430.110(A) — at least 115%"],
+      ["Inverse-time breaker, max",   z.breaker,   "430.52 — 250%"],
+      ["Time-delay (dual-element) fuse, max", z.fuseDE,  "430.52 — 175%"],
+      ["Non-time-delay fuse, max",    z.fuseNTD,   "430.52 — 300%"],
+    ];
+    $("motTable").innerHTML =
+      `<thead><tr><th style="text-align:left;">What</th><th>Amps</th><th>Rule</th></tr></thead><tbody>` +
+      rows.map(([what, amps, rule]) =>
+        `<tr><td style="text-align:left;">${esc(what)}</td>` +
+        `<td class="cu">${amps.toFixed(1)}</td>` +
+        `<td style="color:var(--muted); font-size:12px;">${esc(rule)}</td></tr>`).join("") +
+      `</tbody>`;
+  }
+
+  function motBuild() {
+    $("motPh").addEventListener("change", (e) => {
+      if (e.target.name !== "motPh") return;
+      motState.ph = e.target.value; motRender();
+    });
+    $("motMode").addEventListener("change", (e) => {
+      if (e.target.name !== "motMode") return;
+      motState.mode = e.target.value; motRender();
+    });
+    $("motHp").addEventListener("input", (e) => { motState.hp = e.target.value; motRender(); });
+    $("motV").addEventListener("input",  (e) => { motState.v  = e.target.value; motRender(); });
+    motRender();
+  }
+
   function ampRender() {
     document.querySelectorAll("#ampMat label").forEach(l =>
       l.classList.toggle("on", l.querySelector("input").value === ampState.mat));
@@ -25940,7 +26105,7 @@
   }
 
   function openCharts() {
-    if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); cfState._built = true; }
+    if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); motBuild(); cfState._built = true; }
     $("chartsModal").style.display = "flex";
     pushBackEntry("charts", () => { $("chartsModal").style.display = "none"; });
   }
@@ -26661,7 +26826,42 @@
         equipment grounding conductor has to grow in the same proportion. That one <i>is</i> code.
       </div>
     </div>
-    <div id="chartPanel-motors"    class="charts-soon" style="display:none;">Motors — coming soon.</div>
+    <!-- ── MOTORS ── -->
+    <div id="chartPanel-motors" style="display:none;">
+      <div class="gnd-switch" id="motPh">
+        <label class="on"><input type="radio" name="motPh" value="1" checked /> 1-Phase</label>
+        <label><input type="radio" name="motPh" value="3" /> 3-Phase</label>
+      </div>
+      <div class="gnd-switch" id="motMode">
+        <label class="on"><input type="radio" name="motMode" value="flc" checked /> Full Load Current</label>
+        <label><input type="radio" name="motMode" value="lra" /> Locked Rotor Amps</label>
+      </div>
+
+      <div class="gnd-row">
+        <select id="motHp" class="edit-input"></select>
+        <select id="motV" class="edit-input"></select>
+      </div>
+
+      <div class="cf-verdict ok" id="motVerdict" style="margin-top:14px;">
+        <div><span id="motLabel">Full load current</span>: <strong id="motOut">—</strong></div>
+        <div class="cf-sub" id="motSub"></div>
+      </div>
+
+      <div id="motSizing">
+        <div class="cf-section-title">Sizing this motor circuit</div>
+        <div class="gnd-wrap"><table class="gnd-table" id="motTable"></table></div>
+        <div class="gnd-note">
+          <b>430.6(A)(1)</b> — conductors, overcurrent and the disconnect are sized from the
+          <b>table</b> value above, <b>not the nameplate</b>. The nameplate FLA is what you use for
+          the overload device (430.32), and only that.<br />
+          Breaker and fuse figures are the <b>maximums</b> of Table 430.52. Start at the smallest
+          standard size that will carry the starting current, and only work up toward these if it
+          will not start.
+        </div>
+      </div>
+
+      <div class="gnd-note" id="motNote"></div>
+    </div>
 
   </div>
 </div>

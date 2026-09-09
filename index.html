@@ -21721,6 +21721,14 @@
   async function openVendorInvoices() {
     $("vendorInvoiceModal").style.display = "flex";
     pushBackEntry("vendorInvoices", () => { $("vendorInvoiceModal").style.display = "none"; });
+    // ⚠ THE JOB PICKER IS BUILT FROM `state.jobs`, WHICH THIS SCREEN DOES NOT OWN.
+    // Open the modal before loadJobs() has finished — easy on a phone, where the
+    // menu is reachable while the list is still coming down — and the picker is
+    // built from an empty array. It renders perfectly: a <select> containing
+    // nothing but "— Pick a job —", with no error and nothing to suggest the
+    // list is missing rather than empty. Fetch what we need instead of assuming
+    // somebody else already did.
+    if (!(state.jobs || []).length) { try { await loadJobs(); } catch {} }
     await loadVendorInvoices();
   }
   window.openVendorInvoices = openVendorInvoices;
@@ -21795,16 +21803,18 @@
     const settled = all.filter(r => r.status !== "needs_review");
     const c = viData.counts || {};
 
-    // Only jobs someone would actually charge material to. Sorted by name
-    // because the reviewer is looking for a customer, not a PO number — but the
-    // PO is shown on every option, since that is what the invoice says.
-    const jobOpts = (state.jobs || [])
-      .slice()
-      .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
-      // `j.po` is the full Job PO string ("Joe Yoder (CAJ 436)") — shown because
-      // the reviewer is holding an invoice that names a PO, not a customer.
+    // Sorted by name because the reviewer is looking for a customer, not a PO
+    // number — but the PO is on every option, since that is what the invoice says.
+    const jobs = (state.jobs || []).slice()
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    const jobOpts = jobs
+      // `j.po` is the full Job PO string ("Joe Yoder (CAJ 436)").
       .map(j => `<option value="${esc(j.id)}">${esc(j.name)}${j.po ? ` — ${esc(j.po)}` : ""}</option>`)
       .join("");
+    // ⚠ An empty picker must SAY it is empty. A <select> holding only its
+    // placeholder looks identical whether there are no jobs or the job list
+    // never arrived, and the second one is a bug wearing the first one's face.
+    const noJobs = jobs.length === 0;
 
     const row = (r) => {
       const isPending = r.status === "needs_review";
@@ -21840,12 +21850,16 @@
           </div>
           ${isPending ? `
           <div class="vi-actions">
-            <select id="viJob-${esc(r.id)}">
-              <option value="">— Pick a job —</option>
-              ${jobOpts}
-            </select>
+            ${noJobs
+              ? `<div class="vi-reason">The job list didn't load, so there's nothing to
+                   pick from. Tap Refresh below.</div>`
+              : `<select id="viJob-${esc(r.id)}">
+                   <option value="">— Pick a job — (${jobs.length})</option>
+                   ${jobOpts}
+                 </select>`}
             <div class="vi-btns">
-              <button class="btn btn-primary btn-sm" onclick="viAssign('${esc(r.id)}')">Add to job</button>
+              <button class="btn btn-primary btn-sm" ${noJobs ? "disabled" : ""}
+                      onclick="viAssign('${esc(r.id)}')">Add to job</button>
               <button class="btn btn-sm" onclick="viDismiss('${esc(r.id)}')">Dismiss</button>
             </div>
           </div>` : ""}
@@ -21871,9 +21885,18 @@
       <div style="margin-top:12px; display:flex; gap:8px;">
         <button class="btn btn-sm" onclick="viToggleSettled()">
           ${viShowSettled ? "Hide" : "Show"} the ones already dealt with</button>
-        <button class="btn btn-sm" onclick="loadVendorInvoices()">↺ Refresh</button>
+        <button class="btn btn-sm" onclick="viRefresh()">↺ Refresh</button>
       </div>`;
   }
+
+  // Refresh reloads the JOBS too, not just the invoices — the picker is the
+  // half of this screen most likely to be the stale one, and "tap Refresh" is
+  // useless advice if Refresh doesn't fetch the thing that's missing.
+  async function viRefresh() {
+    try { await loadJobs(); } catch {}
+    await loadVendorInvoices();
+  }
+  window.viRefresh = viRefresh;
 
   async function viToggleSettled() {
     viShowSettled = !viShowSettled;

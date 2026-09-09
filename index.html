@@ -426,6 +426,34 @@
        version of it, and it must not read as a cancel. */
     .vi-reviewed { width: 100%; margin-top: 2px; }
 
+    /* Vendor / status filters. Chips rather than a <select>: there are two
+       vendors, the counts belong ON the control, and a phone shows the whole
+       set at once instead of hiding it behind a tap. */
+    .vi-filters {
+      display: flex; flex-direction: column; gap: 6px;
+      margin-bottom: 12px; padding-bottom: 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .vi-chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+    .vi-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 11px; font: inherit; font-size: 13px; font-weight: 600;
+      color: var(--muted); background: var(--panel);
+      border: 1px solid var(--line-2); border-radius: 999px;
+      cursor: pointer; white-space: nowrap;
+    }
+    .vi-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .vi-chip.on {
+      background: var(--accent); border-color: var(--accent); color: #fff;
+    }
+    /* The count reads as part of the chip, not as a second control. */
+    .vi-chip-n {
+      font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+      padding: 1px 6px; border-radius: 999px;
+      background: var(--panel-3); color: var(--muted);
+    }
+    .vi-chip.on .vi-chip-n { background: rgba(255,255,255,0.25); color: #fff; }
+
     .pto-bar {
       height: 8px; border-radius: 999px; background: var(--line);
       overflow: hidden; margin: 8px 0 4px;
@@ -21733,7 +21761,12 @@
   // missing from a job's GP, with nothing that would ever mention it. That is
   // why the button carries a badge.
   let viData = null;
-  let viShowSettled = false;
+  // "" = every vendor. Otherwise the canonical vendor_name, e.g. "Wolff Brothers".
+  let viVendor = "";
+  // "waiting" = still needs a person. "all" = everything, reviewed included —
+  // which is the point of the vendor filter: "show me every CED invoice" is a
+  // question about history, not about the queue.
+  let viStatusFilter = "waiting";
   // The jobs the picker offers, shared between the render and the wiring so the
   // two cannot disagree about what "job 3" in the list means.
   let viPickerJobs = [];
@@ -21762,7 +21795,11 @@
   async function loadVendorInvoices() {
     const host = $("vendorInvoiceBody");
     try {
-      viData = await apiGet("vendorInvoices", viShowSettled ? { status: "all" } : {});
+      // Always fetch everything and filter in the browser. The two filters are
+      // instant that way, and the server's `counts` (which drives the badge) is
+      // computed over the whole table regardless. The read is LIMIT 500,
+      // newest first — revisit if this ever runs for enough years to hit that.
+      viData = await apiGet("vendorInvoices", { status: "all" });
     } catch (e) {
       // ⚠ The backend answers 503 rather than an empty list when Neon is
       // unreachable, precisely so this can say "unavailable" instead of
@@ -21937,8 +21974,46 @@
   function renderVendorInvoices() {
     if (!viData) return `<div class="clock-note">Loading…</div>`;
     const all = viData.invoices || [];
-    const pending = all.filter(r => r.status === "needs_review");
-    const settled = all.filter(r => r.status !== "needs_review");
+
+    // The vendors to offer. The two the backend accepts, plus anything actually
+    // present — so a vendor added later shows up here without a code change,
+    // and a chip is never offered for a vendor with no invoices behind it.
+    const vendors = [...new Set(["CED", "Wolff Brothers", ...all.map(r => r.vendor)])]
+      .filter(v => v && all.some(r => r.vendor === v))
+      .sort();
+
+    const inVendor = all.filter(r => !viVendor || r.vendor === viVendor);
+    const pending = inVendor.filter(r => r.status === "needs_review");
+    const settled = inVendor.filter(r => r.status !== "needs_review");
+    // Counts are per-vendor and shown ON the chip, so "no CED invoices waiting"
+    // is visible without selecting CED to find out.
+    const waitingFor = (v) => all.filter(r => r.status === "needs_review" && (!v || r.vendor === v)).length;
+    const totalFor   = (v) => all.filter(r => !v || r.vendor === v).length;
+
+    // ⚠ esc() escapes & < > and " — NOT the apostrophe. These handlers put the
+    // value inside a single-quoted JS string, and "Lowe's" is already a real
+    // vendor name in this system, so the day a third supplier is added the
+    // button would silently stop working. Escape it for the JS string too.
+    const jsStr = (v) => esc(String(v ?? "")).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    const chip = (label, value) => {
+      const on = viVendor === value;
+      const n = viStatusFilter === "waiting" ? waitingFor(value) : totalFor(value);
+      return `<button class="vi-chip${on ? " on" : ""}" onclick="viSetVendor('${jsStr(value)}')">
+                ${esc(label)} <span class="vi-chip-n">${n}</span></button>`;
+    };
+    const filterBar = `
+      <div class="vi-filters">
+        <div class="vi-chiprow">
+          ${chip("All vendors", "")}
+          ${vendors.map(v => chip(v, v)).join("")}
+        </div>
+        <div class="vi-chiprow">
+          <button class="vi-chip${viStatusFilter === "waiting" ? " on" : ""}"
+                  onclick="viSetStatus('waiting')">Waiting on me</button>
+          <button class="vi-chip${viStatusFilter === "all" ? " on" : ""}"
+                  onclick="viSetStatus('all')">Everything</button>
+        </div>
+      </div>`;
     const c = viData.counts || {};
 
     // Only jobs material can actually be charged to — owner's call 2026-09-09.
@@ -22011,11 +22086,12 @@
         </div>`;
     };
 
+    const who = viVendor ? esc(viVendor) : "";
     const pendHtml = pending.length
-      ? pending.map(row).join("")
-      : `<div class="clock-note">Nothing waiting — every invoice found its job.</div>`;
+      ? `<div class="section-header">Waiting on me (${pending.length})</div>${pending.map(row).join("")}`
+      : `<div class="clock-note">Nothing waiting${who ? ` from ${who}` : " — every invoice found its job"}.</div>`;
 
-    const settledHtml = !viShowSettled ? "" : `
+    const settledHtml = viStatusFilter !== "all" ? "" : `
       <div class="section-header" style="margin-top:14px;">Already dealt with (${settled.length})</div>
       ${settled.length ? settled.map(row).join("") : `<div class="clock-note">Nothing yet.</div>`}`;
 
@@ -22025,11 +22101,10 @@
         PO matches. These are the ones that didn't.
         ${c.matched ? ` <span style="color:var(--muted);">${c.matched} placed automatically so far.</span>` : ""}
       </div>
+      ${filterBar}
       ${pendHtml}
       ${settledHtml}
       <div style="margin-top:12px; display:flex; gap:8px;">
-        <button class="btn btn-sm" onclick="viToggleSettled()">
-          ${viShowSettled ? "Hide" : "Show"} the ones already dealt with</button>
         <button class="btn btn-sm" onclick="viRefresh()">↺ Refresh</button>
       </div>`;
   }
@@ -22043,11 +22118,27 @@
   }
   window.viRefresh = viRefresh;
 
-  async function viToggleSettled() {
-    viShowSettled = !viShowSettled;
-    await loadVendorInvoices();
+  // Both filters redraw from the data already in hand — no refetch, so they are
+  // instant and a slow connection can't make the screen feel broken.
+  function viSetVendor(v) {
+    viVendor = v || "";
+    // Picking a vendor is a question about that vendor's whole history, not
+    // about today's queue — so it shows everything unless you narrow it back.
+    if (viVendor) viStatusFilter = "all";
+    viRedraw();
   }
-  window.viToggleSettled = viToggleSettled;
+  window.viSetVendor = viSetVendor;
+
+  function viSetStatus(s) { viStatusFilter = s; viRedraw(); }
+  window.viSetStatus = viSetStatus;
+
+  function viRedraw() {
+    const host = $("vendorInvoiceBody");
+    if (!host) return;
+    host.innerHTML = renderVendorInvoices();
+    wireViPickers();
+  }
+
   window.loadVendorInvoices = loadVendorInvoices;
 
   // Puts the invoice on a job as a Materials expense. The backend does the

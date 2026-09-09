@@ -9824,12 +9824,19 @@ async function settleVendorInvoice(inv, jobId, reason, authUser) {
   });
   if (!expenseId) throw new Error("vendorInvoice: expense create returned no id");
 
+  // ⚠ RESOLVE THE NAME, DON'T STORE THE TOKEN'S ID. The session token carries
+  // `{id, role}` and nothing else — `authUser.name` is always undefined, so the
+  // old `name || id` fallback stored a raw rec id on every row and printed it
+  // on screen ("Reviewed, no job · recxH3WzXlvhl7z9u"). COALESCE keeps the id
+  // as a last resort so the audit trail is never empty.
   await neonWrite("vendorInvoice.settle",
     `UPDATE vendor_invoices
         SET status = 'matched', job_id = $2, expense_id = $3, match_reason = $4,
-            resolved_at = now(), resolved_by = $5
+            resolved_at = now(),
+            resolved_by = COALESCE(
+              (SELECT name FROM employees WHERE airtable_id = $5 OR id::text = $5), $5)
       WHERE id = $1`,
-    [inv.id, jobId, expenseId, reason, authUser?.name || authUser?.id || null]);
+    [inv.id, jobId, expenseId, reason, authUser?.id ? String(authUser.id) : null]);
 
   return expenseId;
 }
@@ -10085,13 +10092,16 @@ async function handleVendorInvoiceMarkReviewed(body, authUser) {
   let rows;
   try {
     rows = await neonWrite("vendorInvoice.markReviewed",
+      // Same name resolution as settleVendorInvoice — see the note there.
       `UPDATE vendor_invoices
           SET status = 'reviewed', match_reason = 'reviewed-no-job', note = $2,
-              resolved_at = now(), resolved_by = $3
+              resolved_at = now(),
+              resolved_by = COALESCE(
+                (SELECT name FROM employees WHERE airtable_id = $3 OR id::text = $3), $3)
         WHERE id::text = $1 AND status = 'needs_review'
         RETURNING id`,
       [String(invoiceId), note ? String(note).slice(0, 500) : null,
-       authUser?.name || authUser?.id || null]);
+       authUser?.id ? String(authUser.id) : null]);
   } catch (e) {
     return resp(502, { ok: false, error: `Couldn't mark it reviewed: ${String(e?.message || e)}` });
   }

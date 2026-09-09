@@ -42,12 +42,18 @@ import {
   listDeletedJobPhotos, listJobDocs,
   jobPrintsPrefix, sanitizePrintName, listJobPrints, listDeletedJobPrints,
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
-  expensePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
+  expensePrefix, vendorInvoicePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
   listByPrefix, liftPrefix, fleetPrefix, presignEquipThumbPut,
   listLiftPhotos, deleteLiftPhoto, deleteAllLiftPhotos,
   presignGet, presignGetDownload, payrollPrefix,
 } from "./_r2.js";
+
+// Vendor-invoice inbox (db/schema/069). Pure functions — no network, no env.
+import {
+  normalizePoCode, JOB_PO_CODE_SQL, matchJobByPoCode,
+  amountToExpenseFields, canonicalVendor,
+} from "./_vendor-invoices.js";
 
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
@@ -625,6 +631,21 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // so it's manager-only. Adding, ticking and removing a single item are all
   // _NON_VIEWER — the crew keeps the list, that's the point of it.
   "deleteChecklist",
+  // ── Vendor-invoice inbox (db/schema/069) ────────────────────────────────
+  // `vendorInvoiceIntake` is the BOT's endpoint, and admin+office is the tier
+  // because that is the bot's own role: it signs in as the `cedautomation`
+  // employee, which is `office`. Deliberately not a shared-secret header — it
+  // holds a real session token already and the whole authz model here is
+  // role-based; a second credential scheme would be a second thing to leak.
+  //
+  // ⚠ This action CREATES EXPENSES without a human in the loop, which is why it
+  // does not sit at the _NON_VIEWER default a write would otherwise get. An
+  // employee POSTing a fabricated invoice would be posting money onto a job.
+  "vendorInvoiceIntake",
+  // Assigning a parked invoice to a job is the moment it becomes a cost, and
+  // dismissing one is the moment it stops being anyone's problem. Same tier as
+  // approveExpense and updateJobBillableRate — back-office money ops.
+  "vendorInvoiceAssign", "vendorInvoiceDismiss",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -685,6 +706,11 @@ const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "
 // scope and terms text that ends up on the estimate anyway.
 const _ADMIN_OFFICE_READS = new Set([
   "jobPhotosDeleted", "jobDocs", "jobPrintsDeleted", "estimateTemplatesAll",
+  // The vendor-invoice review queue (db/schema/069). It lists supplier invoices
+  // with their totals and a link to the PDF, and every action offered on the
+  // rows it returns is _ADMIN_OFFICE, so the read matches. It is also the only
+  // place an invoice that matched NO job is visible at all.
+  "vendorInvoices",
 ]);
 
 function authzFor(method, action) {
@@ -9700,6 +9726,373 @@ async function handleAddGeneralExpense(body, authUser) {
   return resp(200, { ok: true, id: String(neonId) });
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * VENDOR-INVOICE INBOX — db/schema/069, docs/PLAN-vendor-invoice-review.md
+ * ═════════════════════════════════════════════════════════════════════════
+ * CED and Wolff invoices arrive here first and become expenses second. The
+ * external bot (signed in as the `cedautomation` employee) posts EVERY invoice
+ * to `vendorInvoiceIntake`; this file decides whether the PO matches a job.
+ * One match creates the expense immediately, exactly as the bot used to do it
+ * itself. Zero or two or more park in `vendor_invoices` for a person.
+ *
+ * ⚠ NO AIRTABLE MIRROR, ANYWHERE IN THIS SECTION, AND THAT IS DELIBERATE.
+ * `handleAddGeneralExpense` still POSTs one because it predates the cutover and
+ * the call site is inert under AIRTABLE_WRITES=off. This feature was built
+ * after it, the base is being archived, and a mirror of a table Airtable has no
+ * column for would be pure liability — a second copy nothing reads, that a
+ * re-enabled sync could one day import as duplicate expenses. Neon is the only
+ * store here.
+ */
+
+// Resolve the vendor's `expense_vendors` handle, so the created expense carries
+// the same `vendor_name` as the 215 the bot has already written.
+//
+// ⚠ Returns the UUID, not the rec id, and createExpenseNative resolves it with
+// `airtable_id = $8 OR id::text = $8` so either form works. Do NOT "simplify"
+// this to a rec id: this feature has no Airtable side at all, and hard-coding a
+// rec id here would make the vendor name on a CED expense depend on a base
+// scheduled for archival.
+async function vendorHandleFor(vendorName) {
+  const q = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS handle FROM expense_vendors
+      WHERE lower(name) = lower($1) LIMIT 1`, [vendorName]);
+  return q?.rows?.[0]?.handle || null;
+}
+
+// Jobs whose PO code equals this one. Returns [] on a Neon failure — the caller
+// MUST distinguish that from "no job matched", which is why this throws instead
+// of returning empty on error.
+//
+// ⚠⚠ A read failure here must never look like a miss. If it did, a five-second
+// Neon blip would park a day of invoices that all had perfectly good POs, and
+// the only symptom would be a queue that looked busy. Nothing would throw and
+// nothing would be logged as wrong.
+async function jobsMatchingPoCode(poCode) {
+  const q = await neonQuery(
+    `SELECT j.id, j.name, j.status FROM jobs j WHERE ${JOB_PO_CODE_SQL} = $1`, [poCode]);
+  if (!q || q.error) throw new Error(`vendorInvoice: job PO lookup failed — ${q?.error || "Neon unavailable"}`);
+  return q.rows || [];
+}
+
+// Store the invoice PDF. FAILS SOFT, like every other R2 path in this app: an
+// invoice with no readable PDF still shows its parsed figures and can still be
+// assigned to a job. Losing the picture is bad; losing the money is worse.
+async function storeVendorInvoicePdf(invoiceId, pdfBase64) {
+  try {
+    if (!r2Enabled()) return null;
+    const bytes = Buffer.from(String(pdfBase64), "base64");
+    // The samples are 15–26 KB. This cap is two orders of magnitude above that
+    // and still well under Netlify's request ceiling, so hitting it means the
+    // bot sent something that is not one supplier invoice.
+    if (!bytes.length || bytes.length > 8 * 1024 * 1024) return null;
+    const key = `${vendorInvoicePrefix(invoiceId)}invoice.pdf`;
+    const url = await presignPut(key, "application/pdf", 300);
+    const put = await fetch(url, {
+      method: "PUT", body: bytes, headers: { "Content-Type": "application/pdf" },
+    });
+    if (!put.ok) {
+      console.error(`vendorInvoicePdf: R2 PUT ${put.status} for ${invoiceId}`);
+      return null;
+    }
+    return key;
+  } catch (e) {
+    console.error(`vendorInvoicePdf: ${String(e?.message || e)}`);
+    return null;
+  }
+}
+
+// Create the expense for an invoice and mark the row resolved. Shared by the
+// automatic path and the by-hand one so they cannot drift — the whole reason
+// intake takes every invoice rather than only the failures.
+async function settleVendorInvoice(inv, jobId, reason, authUser) {
+  const vendorHandle = await vendorHandleFor(inv.vendor_name);
+  const { manualMaterialCost, materialCredit } = amountToExpenseFields(inv.amount);
+
+  const expenseId = await createExpenseNative({
+    jobId: String(jobId),
+    expenseType: "Materials",
+    expenseDate: inv.invoice_date ? String(inv.invoice_date).slice(0, 10) : null,
+    // Matches every one of the 215 the bot has written: supplier material is
+    // billable to the customer unless somebody says otherwise on the expense.
+    billable: true,
+    manualMaterialCost, materialCredit,
+    vendorId: vendorHandle,
+    // The bot's own naming convention, kept verbatim so the new rows sort and
+    // read beside the old ones: "CED Invoice 0171-1063885".
+    description: `${inv.vendor_name} Invoice ${inv.invoice_no}`,
+    authUser,
+  });
+  if (!expenseId) throw new Error("vendorInvoice: expense create returned no id");
+
+  await neonWrite("vendorInvoice.settle",
+    `UPDATE vendor_invoices
+        SET status = 'matched', job_id = $2, expense_id = $3, match_reason = $4,
+            resolved_at = now(), resolved_by = $5
+      WHERE id = $1`,
+    [inv.id, jobId, expenseId, reason, authUser?.name || authUser?.id || null]);
+
+  return expenseId;
+}
+
+// ── THE BOT'S ENDPOINT ────────────────────────────────────────────────────
+// POST { vendor, invoiceNo, po, invoiceDate, amount, taxAmount, pdfBase64? }
+//
+// Idempotent on (vendor, invoiceNo). The bot polls a folder on a daily timer,
+// so re-sending yesterday's invoice is the NORMAL case — the same shape as the
+// inventory push's `push_id` guard, and for the same reason: without it a retry
+// charges the job a second time and nothing anywhere complains.
+async function handleVendorInvoiceIntake(body, authUser) {
+  const { vendor, invoiceNo, po, invoiceDate, amount, taxAmount, pdfBase64 } = body || {};
+
+  // ⚠ An unrecognised vendor is REFUSED, not stored under whatever name came in.
+  // A Gmail filter pointed at the wrong label, or a parser reading the wrong
+  // letterhead, should be a 400 the bot's log shows — not a silent new vendor
+  // account whose invoices land in a queue nobody connects to the mistake.
+  const vendorName = canonicalVendor(vendor);
+  if (!vendorName) return resp(400, { ok: false, error: `Unknown vendor: ${String(vendor || "")}. Expected CED or Wolff.` });
+
+  const invNo = String(invoiceNo || "").trim();
+  if (!invNo) return resp(400, { ok: false, error: "Missing invoiceNo." });
+
+  const poText = po == null ? null : String(po).trim() || null;
+  const poCode = normalizePoCode(poText);
+  const amt    = amountToExpenseFields(amount);
+  // Stored signed; amountToExpenseFields splits it into the two expense columns
+  // only at the moment an expense is actually created.
+  const signed = amt.materialCredit != null ? -amt.materialCredit : amt.manualMaterialCost;
+
+  // ON CONFLICT DO NOTHING, then read back. The unique index is on the
+  // NORMALISED pair, so "0171-1055250" and "0171 1055250" are the same invoice.
+  let rows;
+  try {
+    rows = await neonWrite("vendorInvoice.intake",
+      `INSERT INTO vendor_invoices
+         (vendor_name, invoice_no, po_text, po_code, invoice_date, amount, tax_amount, match_reason)
+       VALUES ($1, $2, $3, $4, $5::date, $6::numeric, $7::numeric, 'pending')
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [vendorName, invNo, poText, poCode,
+       invoiceDate ? String(invoiceDate) : null,
+       signed,
+       amountToExpenseFields(taxAmount).manualMaterialCost]);
+  } catch (e) {
+    return resp(502, { ok: false, error: `Couldn't record the invoice: ${String(e?.message || e)}` });
+  }
+
+  if (!rows?.length) {
+    // Already had it. Report what happened to it the first time, so a bot that
+    // retries can tell "already an expense" from "still waiting for a human".
+    const prior = await neonQuery(
+      `SELECT id, status, job_id, expense_id, match_reason FROM vendor_invoices
+        WHERE upper(regexp_replace(vendor_name, '[^A-Za-z0-9]', '', 'g')) = upper(regexp_replace($1, '[^A-Za-z0-9]', '', 'g'))
+          AND upper(regexp_replace(invoice_no,  '[^A-Za-z0-9]', '', 'g')) = upper(regexp_replace($2, '[^A-Za-z0-9]', '', 'g'))`,
+      [vendorName, invNo]);
+    const p = prior?.rows?.[0] || null;
+    return resp(200, { ok: true, duplicate: true, id: p?.id || null, status: p?.status || null,
+                       jobId: p?.job_id || null, expenseId: p?.expense_id || null });
+  }
+
+  const id = rows[0].id;
+
+  // PDF first, so an invoice that parks is reviewable the moment it appears.
+  if (pdfBase64) {
+    const key = await storeVendorInvoicePdf(id, pdfBase64);
+    if (key) {
+      try {
+        await neonWrite("vendorInvoice.pdf", `UPDATE vendor_invoices SET pdf_key = $2 WHERE id = $1`, [id, key]);
+      } catch (e) { console.error(`vendorInvoice.pdf: ${String(e?.message || e)}`); }
+    }
+  }
+
+  // Match.
+  let candidates;
+  try {
+    candidates = poCode ? await jobsMatchingPoCode(poCode) : [];
+  } catch (e) {
+    // The row exists and is parked. Say so honestly rather than reporting a
+    // clean park — a 502 is what tells the bot's operator the lookup broke.
+    await neonWrite("vendorInvoice.parkErr",
+      `UPDATE vendor_invoices SET match_reason = 'lookup-failed' WHERE id = $1`, [id]).catch(() => {});
+    return resp(502, { ok: false, id, status: "needs_review",
+                       error: `Recorded, but the job lookup failed: ${String(e?.message || e)}` });
+  }
+
+  const { jobId, reason } = matchJobByPoCode(poCode, candidates);
+
+  if (!jobId) {
+    await neonWrite("vendorInvoice.park",
+      `UPDATE vendor_invoices SET match_reason = $2 WHERE id = $1`, [id, reason]);
+    return resp(200, { ok: true, id, status: "needs_review", reason,
+                       candidates: candidates.map(c => ({ id: c.id, name: c.name })) });
+  }
+
+  try {
+    const expenseId = await settleVendorInvoice(
+      { id, vendor_name: vendorName, invoice_no: invNo, invoice_date: invoiceDate, amount: signed },
+      jobId, reason, authUser);
+    return resp(200, { ok: true, id, status: "matched", jobId, expenseId });
+  } catch (e) {
+    // ⚠ The invoice row survives as `needs_review`. That is the point of writing
+    // it before creating the expense: a failure here leaves the invoice visible
+    // on the review screen rather than dropped on the floor, which is exactly
+    // the hole this whole feature exists to close.
+    await neonWrite("vendorInvoice.settleErr",
+      `UPDATE vendor_invoices SET match_reason = 'expense-create-failed' WHERE id = $1`, [id]).catch(() => {});
+    return resp(502, { ok: false, id, status: "needs_review",
+                       error: `Matched job but couldn't create the expense: ${String(e?.message || e)}` });
+  }
+}
+
+// ── THE REVIEW QUEUE ──────────────────────────────────────────────────────
+// GET ?action=vendorInvoices[&status=needs_review|matched|dismissed|all]
+//
+// FAILS CLOSED (503) on a Neon failure rather than answering with an empty
+// list. An empty queue and an unreachable database look identical on screen,
+// and "nothing to review" is the one answer this screen must never guess at.
+async function handleVendorInvoices(params, authUser) {
+  const want = String(params?.status || "needs_review");
+  const all  = want === "all";
+
+  const q = await neonQuery(
+    `SELECT vi.id, vi.vendor_name, vi.invoice_no, vi.po_text, vi.po_code,
+            vi.invoice_date, vi.amount, vi.tax_amount, vi.status, vi.match_reason,
+            vi.pdf_key, vi.received_at, vi.resolved_at, vi.resolved_by, vi.note,
+            vi.job_id, vi.expense_id, j.name AS job_name,
+            COALESCE(j.po_locked, j.po) AS job_po
+       FROM vendor_invoices vi
+       LEFT JOIN jobs j ON j.id = vi.job_id
+      WHERE ($1::boolean OR vi.status = $2)
+      ORDER BY vi.received_at DESC
+      LIMIT 500`, [all, want]);
+
+  if (!q || q.error) {
+    console.error(`vendorInvoices: Neon read FAILED — refusing to answer with an empty queue: ${q?.error || "unavailable"}`);
+    return resp(503, { ok: false, error: "The invoice queue is unavailable right now. Try again shortly." });
+  }
+
+  // For a parked invoice, name the jobs it COULD be — the ambiguous case is
+  // unreadable without it ("2 Barn" tells the reviewer nothing; "Harlin Smith
+  // or Rebecca Smith" tells them everything).
+  const rows = await Promise.all((q.rows || []).map(async r => ({
+    id: r.id,
+    vendor: r.vendor_name,
+    invoiceNo: r.invoice_no,
+    poText: r.po_text,
+    poCode: r.po_code,
+    invoiceDate: r.invoice_date ? String(r.invoice_date).slice(0, 10) : null,
+    amount: r.amount == null ? null : Number(r.amount),
+    taxAmount: r.tax_amount == null ? null : Number(r.tax_amount),
+    status: r.status,
+    reason: r.match_reason,
+    receivedAt: r.received_at,
+    resolvedAt: r.resolved_at,
+    resolvedBy: r.resolved_by,
+    note: r.note,
+    jobId: r.job_id,
+    jobName: r.job_name,
+    jobPo: r.job_po,
+    expenseId: r.expense_id,
+    // Presigned, short-lived, and null when R2 is unconfigured or the bot never
+    // sent a PDF. The screen shows the parsed figures either way.
+    pdfUrl: r.pdf_key ? await presignGet(r.pdf_key).catch(() => null) : null,
+  })));
+
+  // The candidates for every ambiguous row, in ONE query rather than one per
+  // row — there are only ever a handful, but the N+1 shape is how a review
+  // screen becomes slow enough that nobody opens it.
+  const ambiguous = (q.rows || []).filter(r => r.match_reason === "ambiguous-po" && r.po_code);
+  if (ambiguous.length) {
+    const codes = [...new Set(ambiguous.map(r => r.po_code))];
+    const cq = await neonQuery(
+      `SELECT j.id, j.name, j.status, ${JOB_PO_CODE_SQL} AS code
+         FROM jobs j WHERE ${JOB_PO_CODE_SQL} = ANY($1::text[])`, [codes]);
+    const byCode = new Map();
+    for (const c of (cq?.rows || [])) {
+      if (!byCode.has(c.code)) byCode.set(c.code, []);
+      byCode.get(c.code).push({ id: c.id, name: c.name, status: c.status });
+    }
+    for (const row of rows) {
+      if (row.reason === "ambiguous-po") row.candidates = byCode.get(row.poCode) || [];
+    }
+  }
+
+  const counts = { needsReview: 0, matched: 0, dismissed: 0 };
+  const cq = await neonQuery(`SELECT status, count(*)::int AS n FROM vendor_invoices GROUP BY status`);
+  for (const c of (cq?.rows || [])) {
+    if (c.status === "needs_review") counts.needsReview = c.n;
+    else if (c.status === "matched") counts.matched = c.n;
+    else if (c.status === "dismissed") counts.dismissed = c.n;
+  }
+
+  return resp(200, { ok: true, invoices: rows, counts });
+}
+
+// ── ASSIGN A PARKED INVOICE TO A JOB ──────────────────────────────────────
+// POST { invoiceId, jobId } → creates the expense, marks the row matched.
+async function handleVendorInvoiceAssign(body, authUser) {
+  const { invoiceId, jobId } = body || {};
+  if (!invoiceId || !jobId) return resp(400, { ok: false, error: "Missing invoiceId or jobId." });
+
+  const q = await neonQuery(
+    `SELECT id, vendor_name, invoice_no, invoice_date, amount, status, expense_id
+       FROM vendor_invoices WHERE id::text = $1`, [String(invoiceId)]);
+  if (!q || q.error) return resp(503, { ok: false, error: "The invoice queue is unavailable right now." });
+  const inv = q.rows?.[0];
+  if (!inv) return resp(404, { ok: false, error: "That invoice is no longer in the queue." });
+
+  // ⚠⚠ THE DOUBLE-CHARGE GUARD, and it is the whole reason this reads before it
+  // writes. Two people with the screen open, or one impatient double-tap, would
+  // otherwise create the SAME supplier invoice as two expenses on the job. It
+  // would look right on both screens and be wrong in the GP.
+  if (inv.status !== "needs_review") {
+    return resp(409, { ok: false, error: `That invoice was already ${inv.status}.`,
+                       status: inv.status, expenseId: inv.expense_id });
+  }
+
+  // The job must exist. `isJobHandle` is not enough on its own — it validates
+  // the SHAPE of an id, and a well-formed uuid for a job that was deleted would
+  // otherwise write an expense pointing at nothing.
+  const jq = await neonQuery(`SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1`, [String(jobId)]);
+  const realJobId = jq?.rows?.[0]?.id;
+  if (!realJobId) return resp(400, { ok: false, error: "That job no longer exists." });
+
+  try {
+    const expenseId = await settleVendorInvoice(inv, realJobId, "manual", authUser);
+    return resp(200, { ok: true, id: inv.id, status: "matched", jobId: realJobId, expenseId });
+  } catch (e) {
+    return resp(502, { ok: false, error: `Couldn't create the expense: ${String(e?.message || e)}` });
+  }
+}
+
+// ── DISMISS ───────────────────────────────────────────────────────────────
+// POST { invoiceId, note? } — for the invoice that is genuinely nobody's job
+// cost: a statement, a duplicate the vendor re-sent under a new number, an
+// overhead purchase. Kept as a row, never deleted: "why is there no expense for
+// this invoice" is a question somebody asks months later, and a dismissed row
+// with a note answers it.
+async function handleVendorInvoiceDismiss(body, authUser) {
+  const { invoiceId, note } = body || {};
+  if (!invoiceId) return resp(400, { ok: false, error: "Missing invoiceId." });
+
+  let rows;
+  try {
+    rows = await neonWrite("vendorInvoice.dismiss",
+      `UPDATE vendor_invoices
+          SET status = 'dismissed', match_reason = 'dismissed', note = $2,
+              resolved_at = now(), resolved_by = $3
+        WHERE id::text = $1 AND status = 'needs_review'
+        RETURNING id`,
+      [String(invoiceId), note ? String(note).slice(0, 500) : null,
+       authUser?.name || authUser?.id || null]);
+  } catch (e) {
+    return resp(502, { ok: false, error: `Couldn't dismiss it: ${String(e?.message || e)}` });
+  }
+  // Same guard as assign: the WHERE clause carries it, so a second tap changes
+  // nothing and says so rather than silently re-stamping who dismissed it.
+  if (!rows?.length) return resp(409, { ok: false, error: "That invoice was already dealt with." });
+  return resp(200, { ok: true, id: rows[0].id, status: "dismissed" });
+}
+
 // Edit an existing expense. Managers may edit any; an employee may edit only
 // their own unreviewed one (enforced by guardExpenseMutation). Fields mirror
 // the add form; amount/credit follow the same credit-only rule (set the one
@@ -15075,6 +15468,7 @@ export async function handler(event) {
       if (action === "jobChecklist")       return await handleJobChecklist(params);
       if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
+      if (action === "vendorInvoices")     return await handleVendorInvoices(params, authUser);
       if (action === "expenseReceiptSummary") return await handleExpenseReceiptSummary(params, authUser);
       if (action === "deletedExpenseReceipts") return await handleDeletedExpenseReceipts(params, authUser);
       if (action === "generator")          return await handleGenerator(params);
@@ -15244,6 +15638,11 @@ export async function handler(event) {
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);
       if (body.action === "addLiftExpense")       return await handleAddLiftExpense(body, authUser);
       if (body.action === "addGeneralExpense")    return await handleAddGeneralExpense(body, authUser);
+      // Vendor-invoice inbox (db/schema/069). Intake is the bot's; the other two
+      // back the review screen.
+      if (body.action === "vendorInvoiceIntake")  return await handleVendorInvoiceIntake(body, authUser);
+      if (body.action === "vendorInvoiceAssign")  return await handleVendorInvoiceAssign(body, authUser);
+      if (body.action === "vendorInvoiceDismiss") return await handleVendorInvoiceDismiss(body, authUser);
       if (body.action === "createVendor")         return await handleCreateVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }

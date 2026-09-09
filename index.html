@@ -118,6 +118,17 @@
 
     .topbar-menu-wrap { position: relative; flex: none; }
     .topbar-menu-btn { font-size: 18px !important; line-height: 1; padding: 3px 9px !important; }
+    /* ⚠ A badge on a button INSIDE a closed menu is invisible, which is the
+       whole value of the badge gone. Anything in there that needs attention
+       raises this dot on the ☰ itself — otherwise "there are 4 invoices nobody
+       has placed" is information you only get by going looking for it, and
+       nobody goes looking for something they don't know is there. */
+    .topbar-menu-wrap { position: relative; }
+    .topbar-menu-btn.has-alert::after {
+      content: ""; position: absolute; top: 1px; right: 1px;
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #dc2626; box-shadow: 0 0 0 2px var(--panel, #fff);
+    }
     .topbar-menu {
       position: absolute;
       top: calc(100% + 8px);
@@ -2863,6 +2874,15 @@
           <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
           <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
           <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
+          <!-- Supplier invoices whose PO matched no job, or matched two.
+               admin-only (= admin + office here) matches the backend's
+               _ADMIN_OFFICE tier on vendorInvoices/vendorInvoiceAssign — this is
+               back-office money work, the same tier as approving an expense.
+               Sits beside 💰 Invoices because that is where someone goes looking
+               for money owed; the badge is what actually brings them here. An
+               invoice nobody sees is material cost missing from a job's GP, and
+               nothing anywhere else would ever mention it. -->
+          <button id="btnVendorInvoices" class="btn btn-sm admin-only hidden" type="button">🧾 Invoice Review<span id="vendorInvoiceBadge"></span></button>
           <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
           <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
           <button id="btnWhosWorking" class="btn btn-sm strict-admin-only hidden" type="button">🟢 Who's Working</button>
@@ -4498,6 +4518,10 @@
       // Pending-request count on the 🌴 Time Off button, so a request waiting on
       // you is visible without opening anything. Strict admin only.
       if (typeof refreshTimeOffBadge === "function") refreshTimeOffBadge().catch(() => {});
+      // Same idea on 🧾 Invoice Review, admin+office: a supplier invoice sitting
+      // unplaced is material cost missing from a job's GP, and this badge is the
+      // only thing anywhere that would ever mention it.
+      if (typeof refreshVendorInvoiceBadge === "function") refreshVendorInvoiceBadge().catch(() => {});
       // Acts on ?clock=in / ?clock=out from the home-screen icon. Here rather than
       // at page load so it runs AFTER login — otherwise a tap on an expired
       // session would silently do nothing and the person would walk away
@@ -14783,6 +14807,8 @@
     if (wwBtn) wwBtn.addEventListener("click", openWhosWorking);
     const toBtn = $("btnTimeOff");
     if (toBtn) toBtn.addEventListener("click", openTimeOff);
+    const viBtn = $("btnVendorInvoices");
+    if (viBtn) viBtn.addEventListener("click", openVendorInvoices);
     const mySchBtn = $("btnMySchedule");
     if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
     const myHoursBtn = $("btnMyHours");
@@ -21630,6 +21656,222 @@
   }
   window.wwToggleAdd = wwToggleAdd;
 
+  // ── 🧾 INVOICE REVIEW — CED/Wolff invoices the PO couldn't place ──────────
+  // The bot posts every supplier invoice to `vendorInvoiceIntake`; the backend
+  // matches its PO against jobs.po_locked and creates the expense itself when
+  // exactly one job matches. What lands here is the remainder: no PO on the
+  // paper, a PO no job has, or a PO two jobs share.
+  //
+  // ⚠ THIS SCREEN IS THE ONLY PLACE THOSE EXIST. Before it they were a PDF in
+  // pCloud and an expense that never got created — material cost quietly
+  // missing from a job's GP, with nothing that would ever mention it. That is
+  // why the button carries a badge.
+  let viData = null;
+  let viShowSettled = false;
+
+  async function openVendorInvoices() {
+    $("vendorInvoiceModal").style.display = "flex";
+    pushBackEntry("vendorInvoices", () => { $("vendorInvoiceModal").style.display = "none"; });
+    await loadVendorInvoices();
+  }
+  window.openVendorInvoices = openVendorInvoices;
+
+  function closeVendorInvoices() {
+    popBackEntry("vendorInvoices");
+    $("vendorInvoiceModal").style.display = "none";
+  }
+  window.closeVendorInvoices = closeVendorInvoices;
+
+  async function loadVendorInvoices() {
+    const host = $("vendorInvoiceBody");
+    try {
+      viData = await apiGet("vendorInvoices", viShowSettled ? { status: "all" } : {});
+    } catch (e) {
+      // ⚠ The backend answers 503 rather than an empty list when Neon is
+      // unreachable, precisely so this can say "unavailable" instead of
+      // "nothing to review". Do not collapse this into an empty state.
+      viData = null;
+      if (host) host.innerHTML =
+        `<div class="clock-note" style="color:#991b1b;">${esc(e.message || "The queue is unavailable right now.")}</div>`;
+      return;
+    }
+    if (host) host.innerHTML = renderVendorInvoices();
+    renderVendorInvoiceBadge();
+  }
+
+  function renderVendorInvoiceBadge() {
+    const el = $("vendorInvoiceBadge");
+    if (!el) return;
+    const n = viData?.counts?.needsReview || 0;
+    el.textContent = n ? ` (${n})` : "";
+    el.style.color = n ? "#b91c1c" : "";
+    el.style.fontWeight = n ? "800" : "";
+    // ⚠ The count above sits INSIDE the ☰ menu, so it is invisible until someone
+    // opens it — and nobody opens a menu looking for something they don't know
+    // is there. This raises the dot on the ☰ button itself.
+    $("topbarMenuBtn")?.classList.toggle("has-alert", n > 0);
+  }
+
+  // Checked once when a role is applied, so the count is right without opening
+  // anything — same reasoning as the Time Off badge.
+  async function refreshVendorInvoiceBadge() {
+    const role = (state.user?.role || "").toLowerCase();
+    if (role !== "admin" && role !== "office") return;
+    try { viData = await apiGet("vendorInvoices"); renderVendorInvoiceBadge(); } catch {}
+  }
+  window.refreshVendorInvoiceBadge = refreshVendorInvoiceBadge;
+
+  const viMoney = (n) => (n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Number(n)).toFixed(2)}`);
+
+  // Plain English, because the reason decides what the reviewer does next: a PO
+  // the parser never found means look at the paper, a PO no job has means the
+  // job was never created or the PO was mistyped, and two jobs sharing one PO
+  // means pick.
+  const VI_REASON = {
+    "no-po-on-invoice":      "No PO on the invoice",
+    "no-job-match":          "No job has this PO",
+    "ambiguous-po":          "Two jobs share this PO",
+    "lookup-failed":         "The job lookup failed — retry",
+    "expense-create-failed": "Matched a job but the expense failed — retry",
+    "pending":               "Still being matched",
+  };
+
+  function renderVendorInvoices() {
+    if (!viData) return `<div class="clock-note">Loading…</div>`;
+    const all = viData.invoices || [];
+    const pending = all.filter(r => r.status === "needs_review");
+    const settled = all.filter(r => r.status !== "needs_review");
+    const c = viData.counts || {};
+
+    // Only jobs someone would actually charge material to. Sorted by name
+    // because the reviewer is looking for a customer, not a PO number — but the
+    // PO is shown on every option, since that is what the invoice says.
+    const jobOpts = (state.jobs || [])
+      .slice()
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
+      // `j.po` is the full Job PO string ("Joe Yoder (CAJ 436)") — shown because
+      // the reviewer is holding an invoice that names a PO, not a customer.
+      .map(j => `<option value="${esc(j.id)}">${esc(j.name)}${j.po ? ` — ${esc(j.po)}` : ""}</option>`)
+      .join("");
+
+    const row = (r) => {
+      const isPending = r.status === "needs_review";
+      // The candidates for an ambiguous PO, named. "2 Barn" tells the reviewer
+      // nothing; "Harlin Smith or Rebecca Smith" tells them everything.
+      const cands = (r.candidates || []).length
+        ? `<div style="font-size:12px; color:#92400e;">Could be:
+             ${r.candidates.map(c2 => esc(c2.name)).join(" &nbsp;·&nbsp; ")}</div>`
+        : "";
+      const settledLine = isPending ? "" : `
+        <div style="font-size:12px; color:var(--muted);">
+          ${r.status === "matched"
+            ? `→ ${esc(r.jobName || "job")}${r.resolvedBy ? ` · by ${esc(r.resolvedBy)}` : ""}`
+            : `Dismissed${r.resolvedBy ? ` by ${esc(r.resolvedBy)}` : ""}${r.note ? ` — “${esc(r.note)}”` : ""}`}
+        </div>`;
+
+      return `
+        <div class="ww-row" style="align-items:flex-start;">
+          <div style="min-width:0; flex:1;">
+            <div style="font-weight:700;">
+              ${esc(r.vendor)} · ${esc(r.invoiceNo)} · ${viMoney(r.amount)}
+            </div>
+            <div style="font-size:12px; color:var(--muted);">
+              ${r.invoiceDate ? esc(r.invoiceDate) : "no date"} ·
+              PO on paper: ${r.poText ? `<strong>${esc(r.poText)}</strong>` : "<em>none found</em>"}
+              ${isPending ? ` · <span style="color:#b91c1c;">${esc(VI_REASON[r.reason] || r.reason || "Needs review")}</span>` : ""}
+            </div>
+            ${cands}
+            ${settledLine}
+            ${r.pdfUrl
+              ? `<a href="${esc(r.pdfUrl)}" target="_blank" rel="noopener"
+                    style="font-size:12px; font-weight:600;">📄 Open the invoice</a>`
+              : `<span style="font-size:12px; color:var(--muted);">No PDF stored</span>`}
+          </div>
+          ${isPending ? `
+          <div style="display:flex; flex-direction:column; gap:6px; flex:none; min-width:230px;">
+            <select id="viJob-${esc(r.id)}" class="edit-input" style="font-size:13px;">
+              <option value="">— Pick a job —</option>
+              ${jobOpts}
+            </select>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-primary btn-sm" style="flex:1;"
+                      onclick="viAssign('${esc(r.id)}')">Add to job</button>
+              <button class="btn btn-sm" onclick="viDismiss('${esc(r.id)}')">Dismiss</button>
+            </div>
+          </div>` : ""}
+        </div>`;
+    };
+
+    const pendHtml = pending.length
+      ? pending.map(row).join("")
+      : `<div class="clock-note">Nothing waiting — every invoice found its job.</div>`;
+
+    const settledHtml = !viShowSettled ? "" : `
+      <div class="section-header" style="margin-top:14px;">Already dealt with (${settled.length})</div>
+      ${settled.length ? settled.map(row).join("") : `<div class="clock-note">Nothing yet.</div>`}`;
+
+    return `
+      <div class="clock-note" style="margin-bottom:10px;">
+        CED and Wolff invoices arrive automatically and go straight onto the job when the
+        PO matches. These are the ones that didn't.
+        ${c.matched ? ` <span style="color:var(--muted);">${c.matched} placed automatically so far.</span>` : ""}
+      </div>
+      ${pendHtml}
+      ${settledHtml}
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-sm" onclick="viToggleSettled()">
+          ${viShowSettled ? "Hide" : "Show"} the ones already dealt with</button>
+        <button class="btn btn-sm" onclick="loadVendorInvoices()">↺ Refresh</button>
+      </div>`;
+  }
+
+  async function viToggleSettled() {
+    viShowSettled = !viShowSettled;
+    await loadVendorInvoices();
+  }
+  window.viToggleSettled = viToggleSettled;
+  window.loadVendorInvoices = loadVendorInvoices;
+
+  // Puts the invoice on a job as a Materials expense. The backend does the
+  // creating, so a credit memo lands in the credit column and a normal invoice
+  // in the cost column without the client having to know the difference.
+  async function viAssign(invoiceId) {
+    const jobId = $(`viJob-${invoiceId}`)?.value;
+    if (!jobId) { alert("Pick a job first."); return; }
+    const inv = (viData?.invoices || []).find(r => r.id === invoiceId);
+    const jobName = (state.jobs || []).find(j => j.id === jobId)?.name || "that job";
+    if (!confirm(`Add ${inv ? `${inv.vendor} ${inv.invoiceNo} (${viMoney(inv.amount)})` : "this invoice"} to ${jobName} as a materials expense?`))
+      return;
+    try {
+      await apiPost("vendorInvoiceAssign", { invoiceId, jobId });
+      showAppToast(`Added to ${jobName}.`);
+      await loadVendorInvoices();
+    } catch (e) {
+      // A 409 means somebody else already dealt with it — reload rather than
+      // leaving a stale row on screen inviting a second attempt.
+      if (e.status === 409) { alert(e.message || "That one was already dealt with."); await loadVendorInvoices(); return; }
+      alert(e.message || "Couldn't add it.");
+    }
+  }
+  window.viAssign = viAssign;
+
+  // For the invoice that is genuinely nobody's job cost — a statement, a
+  // duplicate under a new number, an overhead purchase. The row is kept, never
+  // deleted: "why is there no expense for this invoice" gets asked months later.
+  async function viDismiss(invoiceId) {
+    const note = prompt("Why is this one not a job cost? (optional, but it's what answers the question later)");
+    if (note === null) return;
+    try {
+      await apiPost("vendorInvoiceDismiss", { invoiceId, note });
+      showAppToast("Dismissed.");
+      await loadVendorInvoices();
+    } catch (e) {
+      if (e.status === 409) { alert(e.message || "That one was already dealt with."); await loadVendorInvoices(); return; }
+      alert(e.message || "Couldn't dismiss it.");
+    }
+  }
+  window.viDismiss = viDismiss;
+
   // ── 🌴 TIME OFF — the admin queue and the bulk actions ────────────────────
   // Deliberately NOT on People: approving is queue work, done top-to-bottom, and
   // holiday fill / rollover span everybody. Per-person allowance and booking live
@@ -26385,6 +26627,20 @@
     </div>
     <div class="payroll-modal-body">
       <div id="timeOffBody">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- VENDOR INVOICE REVIEW — CED/Wolff invoices the PO match couldn't place.
+     See db/schema/069_vendor_invoices.sql and docs/PLAN-vendor-invoice-review.md. -->
+<div id="vendorInvoiceModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width:820px;">
+    <div class="payroll-modal-header">
+      <h2>🧾 Invoice Review</h2>
+      <button onclick="closeVendorInvoices()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div id="vendorInvoiceBody">Loading…</div>
     </div>
   </div>
 </div>

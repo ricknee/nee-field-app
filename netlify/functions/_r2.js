@@ -823,6 +823,22 @@ export function expensePrefix(expenseId) {
   return `expenses/${String(expenseId)}/`;
 }
 
+// Supplier invoice PDFs waiting to be reviewed (db/schema/069). One object per
+// invoice, keyed on the `vendor_invoices` row's uuid.
+//
+// A new top-level prefix, which is the point: like `expenses/`, it is excluded
+// from the recycle bin's lifecycle rule by construction, because that rule
+// matches the literal `_deleted/` prefix and nothing here ever moves there.
+// These are the supplier's own paperwork for money the company owes — the one
+// class of file that must still be there in seven years.
+//
+// Keyed on the Neon uuid rather than an Airtable rec id because there is no
+// Airtable side to this feature at all: `vendor_invoices` is Neon-native and
+// was created after the write cutover.
+export function vendorInvoicePrefix(invoiceId) {
+  return `vendor-invoices/${String(invoiceId)}/`;
+}
+
 // Payroll run archives — the generated PDF and its machine-readable twin.
 // Keyed on the NEON uuid, not the Airtable rec id, unlike photos and receipts.
 // Those two are stuck on rec ids because thousands of objects already sit under

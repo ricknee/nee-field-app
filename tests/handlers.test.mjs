@@ -5694,6 +5694,112 @@ await test("clock: no handler is Airtable-bound, and switch takes a native job",
      "and the client refuses to match on a missing id at all");
 });
 
+// ── Vendor-invoice inbox (db/schema/069) ─────────────────────────────────────
+// The pure half is tested directly. These four functions decide whether a
+// supplier invoice becomes a cost on a job automatically or waits for a person,
+// so they are the highest-consequence logic in the feature and the only part
+// that can be checked offline.
+await test("vendorInvoice: the two vendors' PO spellings reduce to the same code", async () => {
+  const { normalizePoCode } = await import("../netlify/functions/_vendor-invoices.js");
+  // ⚠ THE ACTUAL PRODUCTION SAMPLES. PDF.co's CED template reads "CAJ 436";
+  // its Wolff template reads "CAJ436" off the same job's paperwork; and
+  // jobs.po_locked spells it "Joe Yoder (CAJ 436)". Compare any two literally
+  // and nothing matches — which reads as "no such job", not as a bug.
+  eq(normalizePoCode("CAJ 436"), "CAJ436", "CED spelling");
+  eq(normalizePoCode("CAJ436"),  "CAJ436", "Wolff spelling");
+  eq(normalizePoCode("caj-436"), "CAJ436", "punctuation and case");
+  eq(normalizePoCode(""),   null, "empty is null, not an empty string");
+  eq(normalizePoCode("  "), null, "whitespace-only is null too");
+  eq(normalizePoCode(null), null, "and so is a missing PO");
+});
+
+await test("vendorInvoice: TWO matching jobs park — they never get guessed between", async () => {
+  const { matchJobByPoCode } = await import("../netlify/functions/_vendor-invoices.js");
+  // ⚠⚠ NOT HYPOTHETICAL. "Harlin Smith (2 Barn)" and "Rebecca Smith (2 Barn)"
+  // both reduce to 2BARN in production today. Taking the first row would put
+  // one customer's material on another customer's job, where nothing surfaces
+  // it: the job still has a plausible cost and the invoice still looks filed.
+  const two = matchJobByPoCode("2BARN", [{ id: "a" }, { id: "b" }]);
+  eq(two.jobId, null, "no job is chosen");
+  eq(two.reason, "ambiguous-po", "and the reason says why, so the screen can offer both");
+
+  eq(matchJobByPoCode("CAJ436", [{ id: "j1" }]).jobId, "j1", "one match settles");
+  eq(matchJobByPoCode("CAJ436", [{ id: "j1" }]).reason, "auto");
+  eq(matchJobByPoCode("NOPE", []).reason, "no-job-match", "zero matches park");
+  // Distinct from the above on purpose: an unreadable PO needs the parser
+  // looked at, a readable one that matches nothing needs the job looked up.
+  eq(matchJobByPoCode(null, [{ id: "j1" }]).reason, "no-po-on-invoice",
+     "no PO at all parks even when candidates were somehow passed");
+});
+
+await test("vendorInvoice: Wolff's TRAILING minus is a credit, not a NaN", async () => {
+  const { parseSignedAmount, amountToExpenseFields } =
+    await import("../netlify/functions/_vendor-invoices.js");
+  // ⚠ The live Wolff sample's total is "773.85-". Number("773.85-") is NaN,
+  // which would store NULL — a returned $773 of gear costing the job nothing
+  // back, with no error anywhere.
+  eq(parseSignedAmount("773.85-"), -773.85, "trailing minus");
+  eq(parseSignedAmount("-773.85"), -773.85, "leading minus");
+  eq(parseSignedAmount("(773.85)"), -773.85, "parenthesised");
+  eq(parseSignedAmount("13,446.00"), 13446, "thousands separator (CED's shape)");
+  eq(parseSignedAmount("$1,063.08"), 1063.08, "currency symbol");
+  eq(parseSignedAmount(""), null, "blank is null, NOT zero");
+  eq(parseSignedAmount("n/a"), null, "and so is unparseable text");
+
+  // ⚠⚠ COST AND CREDIT ARE TWO COLUMNS, NOT ONE SIGNED ONE. v_expenses and
+  // every GP rollup read them separately and subtract the credit themselves, so
+  // a credit written as a negative cost is counted twice.
+  const credit = amountToExpenseFields("773.85-");
+  eq(credit.manualMaterialCost, null, "a credit leaves the cost column NULL");
+  eq(credit.materialCredit, 773.85, "and lands positive in the credit column");
+  const cost = amountToExpenseFields("13,446.00");
+  eq(cost.manualMaterialCost, 13446, "a normal invoice is a cost");
+  eq(cost.materialCredit, null, "with no credit");
+});
+
+await test("vendorInvoice: an unrecognised vendor is refused, not stored", async () => {
+  const { canonicalVendor } = await import("../netlify/functions/_vendor-invoices.js");
+  // The canonical spelling is expense_vendors.name — what the 215 expenses the
+  // bot has already written carry — NOT how the letterhead spells itself.
+  eq(canonicalVendor("CED"), "CED");
+  eq(canonicalVendor("CED CONSOLIDATED ELECTRICAL DISTRIBUTORS, INC."), "CED");
+  eq(canonicalVendor("Wolff"), "Wolff Brothers");
+  eq(canonicalVendor("Wolf Bros Supply"), "Wolff Brothers", "the pCloud folder's spelling");
+  eq(canonicalVendor("WOLFF BROS. SUPPLY, INC."), "Wolff Brothers");
+  // ⚠ A Gmail filter on the wrong label, or a parser reading the wrong
+  // letterhead, must be a 400 in the bot's log — not a silent new vendor whose
+  // invoices pile up in a queue nobody connects to the mistake.
+  eq(canonicalVendor("Home Depot"), null, "an unexpected vendor gets no canonical name");
+  eq(canonicalVendor(""), null);
+});
+
+await test("vendorInvoice: STATIC — the inbox writes NOTHING to Airtable", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const start = src.indexOf("async function handleVendorInvoiceIntake");
+  const end   = src.indexOf("// Edit an existing expense.");
+  ok(start > 0 && end > start, "the vendor-invoice region is locatable");
+  const region = src.slice(start, end);
+  // The base is being archived. A mirror of a table Airtable has no column for
+  // would be a second copy nothing reads — and one a re-enabled sync could
+  // import back as duplicate expenses.
+  ok(!/\batFetch\(/.test(region),        "no intake/assign/dismiss path calls atFetch");
+  ok(!/mirrorToAirtable\(/.test(region), "and none of them mirrors either");
+
+  // The queue read FAILS CLOSED. An empty list and an unreachable database look
+  // identical on screen, and "nothing to review" is the one answer this screen
+  // must never guess.
+  const list = src.slice(src.indexOf("async function handleVendorInvoices"), start > 0 ? src.length : 0);
+  ok(/refusing to answer with an empty queue/.test(src), "the queue read refuses rather than answering empty");
+  ok(/resp\(503, \{ ok: false, error: "The invoice queue is unavailable/.test(src), "and it says 503");
+
+  // The double-charge guards. Both are the read-then-write kind, and both are
+  // what stop one impatient double-tap becoming two expenses on a job.
+  ok(/if \(inv\.status !== "needs_review"\)/.test(src), "assign refuses an already-settled invoice");
+  ok(/AND status = 'needs_review'\n\s*RETURNING id/.test(src), "dismiss carries the guard in its WHERE clause");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

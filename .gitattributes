@@ -1,0 +1,34 @@
+# Keep the WORKING TREE on LF, not just the repo.
+#
+# ⚠ WHY THIS EXISTS — found 2026-09-09, and it cost half an hour of chasing
+# nine "failures" that were not failures.
+#
+# This machine has `core.autocrlf=true`, so every clone, checkout, rebase or
+# merge rewrites the working tree to CRLF. The repo content is LF either way —
+# git normalises on the way in — so `git diff` shows nothing and the commit is
+# clean. But `tests/handlers.test.mjs` is largely STATIC tests: they readFileSync
+# airtable.js / index.html and assert against the source text, and several
+# patterns match a literal `\n`. Against a CRLF working copy those see `\r\n`
+# and fail.
+#
+# Nine tests went red at once immediately after a rebase, with no code change
+# behind any of them. The failures name real invariants ("the reconcile writes
+# NOTHING", "dismiss carries the guard in its WHERE clause"), so they read as
+# genuine regressions — which is exactly the wrong thing for the repo's ONLY
+# automated check to do. A suite that cries wolf after every checkout is a suite
+# people learn to skip.
+#
+# `eol=lf` pins the working tree regardless of anyone's autocrlf setting, so the
+# text the tests scan is the text that was committed.
+#
+# The alternative — rewriting every assertion to be line-ending agnostic — fixes
+# today's nine and leaves the next one to be written as a trap.
+
+* text=auto eol=lf
+
+# Binary-ish things that must never be touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.ico binary

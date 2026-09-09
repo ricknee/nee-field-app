@@ -117,7 +117,13 @@
     .topbar-row2::-webkit-scrollbar { display: none; }
 
     .topbar-menu-wrap { position: relative; flex: none; }
-    .topbar-menu-btn { font-size: 18px !important; line-height: 1; padding: 3px 9px !important; }
+    /* The ☰ styles itself completely, because it is deliberately excluded from
+       the `.topbar-row2 > .btn` compact rule (see the note there). */
+    .topbar-menu-btn {
+      font-size: 18px !important; line-height: 1; padding: 3px 9px !important;
+      border-radius: 999px !important; width: auto !important;
+      white-space: nowrap; flex-shrink: 0;
+    }
     /* ⚠ A badge on a button INSIDE a closed menu is invisible, which is the
        whole value of the badge gone. Anything in there that needs attention
        raises this dot on the ☰ itself — otherwise "there are 4 invoices nobody
@@ -134,6 +140,15 @@
       top: calc(100% + 8px);
       right: 0;
       min-width: 190px;
+      /* ⚠ An absolutely-positioned box anchored `right: 0` grows LEFTWARD, and
+         its containing block here is the ~40px ☰ wrapper sitting at the right
+         edge of the screen. Nothing stops it running off the left of the phone
+         except a cap — which is how half this menu ended up off-screen. Capped
+         to the space that actually exists. */
+      max-width: min(280px, calc(100vw - 28px));
+      /* Belt and braces: if a future label is longer than the cap, it wraps
+         inside the panel rather than widening it back off the screen. */
+      overflow-wrap: anywhere;
       padding: 6px;
       background: var(--panel);
       border: 1px solid var(--line);
@@ -195,8 +210,21 @@
 
     .user-badge.admin { border-color: var(--accent); color: var(--accent); }
 
-    /* Compact topbar buttons */
-    .topbar-row2 .btn, .topbar-row2 .btn-danger-sm {
+    /* Compact topbar buttons — DIRECT CHILDREN OF THE ROW ONLY.
+       ⚠⚠ THE `>` IS LOAD-BEARING. This used to be `.topbar-row2 .btn`, a
+       descendant selector, and once the overflow actions moved into the ☰ menu
+       those buttons were STILL descendants of the row — so this rule kept
+       applying to them. It carries `width: auto !important` and
+       `border-radius: 999px !important`, and it sits AFTER `.topbar-menu .btn`'s
+       `width: 100% !important`. Equal specificity, both !important, later wins:
+       the menu items rendered as loose auto-width pills instead of full-width
+       rows, which blew the panel wider than the phone and pushed half of it off
+       the left edge of the screen.
+       The ☰ itself is NOT a direct child (it lives inside .topbar-menu-wrap) and
+       is deliberately NOT added back here — it carries its own size, and adding
+       it to this rule would override that with the 11px meant for the row. */
+    .topbar-row2 > .btn,
+    .topbar-row2 > .btn-danger-sm {
       font-size: 11px !important;
       padding: 4px 10px !important;
       border-radius: 999px !important;

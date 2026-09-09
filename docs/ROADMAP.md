@@ -5,7 +5,66 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 
 **This file is the running order.** If something isn't on it, it's a detour — see §7.
 
-*Last updated 2026-08-08.*
+*Last updated 2026-09-08.*
+
+---
+
+# ▶ WHERE THIS STANDS — 2026-09-08. READ THIS BEFORE ANYTHING BELOW IT.
+
+**Everything under this banner was written while Airtable was still wired in.** The reasoning is
+kept because it is still the reasoning, but **the state has moved past it**: the app no longer
+reads or writes Airtable in normal operation, and Neon is the system of record. Where an older
+section and this banner disagree, **this banner is right**.
+
+The two system maps were re-measured the same day and carry the full picture:
+**`docs/SYSTEM-MAP.md`** (agent-readable, read this one first) and **`docs/SYSTEM-MAP.html`**
+(the "Where this stands" section at the top). The ordered work list is still
+**`docs/AUDIT-airtable-remaining.md`**.
+
+## What has happened since this file was last accurate
+
+| | |
+|---|---|
+| **The cord is cut (2026-08-25)** | `AIRTABLE_WRITES=off` — the app writes **nothing** to Airtable. Both hourly pulls (`syncJobs`, `syncBillingTables`) are **retired**. ⚠⚠ Re-enabling one would not "resume syncing", it would **overwrite**: every app edit since the cut is newer than Airtable's copy. |
+| **Reads refuse rather than fall back** | 39 read handlers answer **503** instead of serving a frozen copy. **Three fallbacks remain**, all value-returning helpers: `guardExpenseMutation`, `computePayrollDateRanges`, `handlePayrollBonusesRollup`. |
+| **Identity cutover COMPLETE (2026-08-24)** | `JOB_CREATE_SOURCE=native` — **jobs are born in Neon**. ⚠ The app is now the only source of the `Job PO` string and `markup_pct`. ⚠⚠ Never stamp the Airtable rec id onto a native job; the mirror's id lives in `jobs.airtable_mirror_id`, a skip list and nothing else. |
+| **Billing allocations** | Neon-native for **every** row, not just native ones (2026-08-25). `bill_rate` is written on every allocation — a NULL rate values those hours at **$0** while they still print. |
+| **Inventory app is Airtable-free (2026-09-03)** | `inventory.js` has **no Airtable client at all**. `handleLogin` lost its fallback in **both** apps the same commit; `LOGIN_SOURCE` is retired — delete it from the Netlify dashboard. |
+| **Estimating money model** | Estimated GP had counted the material markup as a **cost** for five years (schema `065`); bought-in cost + sales tax now have a home (`066`/`067`); the estimating labor rate comes from the crew while old quotes keep theirs (`068`). |
+| **Google contact sync** | Built and **proved against live Google**, still **inert** (`GOOGLE_CONTACTS` unset). It replaces the five Make scenarios — see the correction in §5. |
+| **All Charts (2026-09-08)** | Five NEC field calculators in the field app. Not migration work; pure client-side, no network call. |
+
+## ⬜ What is left, in the owner's order
+
+1. **The three read fallbacks above**, plus two not in that count: `handlePeople`'s roster
+   fallback, and the People screen's Airtable **writes** (inert under `AIRTABLE_WRITES=off`).
+   Then delete the unreachable Airtable read branches.
+2. **PAT read-only for a week → archive both bases.** Evidence, not a calendar: no Airtable read
+   in the logs across a full pay period first. Then delete `INVENTORY_BASE_ID` and
+   `LOGIN_SOURCE` — both already do nothing.
+3. **Finish the Google contact sync**, and the order *is* the work: Google still holds **9 of the
+   13 duplicate people twice** — merge those in Google's own *Merge & fix* first, re-run
+   `contactDuplicates` until each second id reads dead, apply `contactMerge`, then
+   `GOOGLE_CONTACTS=dry` and **read it** before `on`. ⚠⚠ 230 of 240 contacts already exist in
+   **both** accounts; the stored ids are the only thing between a cold start and ~230 duplicates
+   twice over, on address books live on people's phones.
+4. **Prevailing wage** — `docs/PLAN-prevailing-wage.md`, ~10-12 h, parked by the owner.
+5. **Two owner-gated switches — pending, not abandoned.** `TIME_CLOCK_PAYROLL` (QB Time is still
+   the book of record; the gate is the reconciliation agreeing, never a date) and
+   `GENERATOR_SERVICE_CALLS` (the first run makes six overdue generators eligible at once and
+   **every job created burns a PO that cannot be handed back** — dry-run it).
+
+## ✅ Check these first when work resumes
+
+1. `GET ?action=integrityCheck` — nine SELECT-only checks; anything non-zero is new.
+2. **Any 503 reading "Can't load that right now"** — that is a read conversion done wrong: a
+   screen that should show an **empty list** showing an error instead. Two-minute fix.
+3. **Re-query production after the next real run.** Eleven defects were found by hand in one day
+   and **not one of them threw** — a native row does not crash a query, it *matches nothing*,
+   which is indistinguishable from "there is no data". A green deploy is not evidence.
+
+⚠ **The daily 2-minute check below is still live and still correct**, but its heartbeat moved:
+`sync_state('hourly_pull')` is the liveness signal now that `jobs.synced_at` no longer moves.
 
 ---
 
@@ -24,7 +83,7 @@ read and write it directly, and Make.com is reduced to the handful of jobs only 
 | **Estimates** | ✅ **In Neon since 2026-08-07 (Step 4e, estimates half)** — read + all four writes, templates, sent-estimate PDFs, and the snapshot cascade. **Estimate PDFs are in R2**, off Airtable's expiring URLs. |
 | **Invoices** | ✅ **In Neon since 2026-08-08 (Step 4e)** — both reads (job tab + the all-invoices view) and both write paths. The **contract-billing chain is ported and reproduces 51/51 on every field** (`db/schema/015`). Totals serve the **computed** figure, not the stored copy that goes stale when an allocation changes. |
 | **Jobsite photos** | ✅ Never touched Airtable — R2 from day one |
-| **Employees + LOGIN** | ✅ **In Neon since 2026-08-08 — both apps.** `LOGIN_SOURCE=neon` is an env-var **kill switch** (rollback in ~30 s, no code revert). Verified on prod: `_source:"neon"`, the **Airtable rec id** not the Neon uuid, right person and role. Employees were the last Airtable-owned dimension. **Cost rates are Neon's too** — the ETL no longer loads `labor_cost_rates`. ⬜ ~16 secondary read sites still hit Airtable (cleanup, §4). |
+| **Employees + LOGIN** | ✅ **In Neon since 2026-08-08 — both apps.** ⚠ **`LOGIN_SOURCE` was RETIRED 2026-09-03 — delete it from the dashboard**; both apps call `neonLoginCandidate` and only that, and an unreachable Neon answers **503**, not a fallback. It went because it had *inverted*: Airtable's PIN and `Active` columns froze at `AIRTABLE_WRITES=off`, so falling back would accept a PIN the crew had already changed and admit someone deactivated since — failing **open** on a retired credential. *(Originally recorded as an env-var kill switch, rollback in ~30 s, no code revert.)* Verified on prod: `_source:"neon"`, the **Airtable rec id** not the Neon uuid, right person and role. Employees were the last Airtable-owned dimension. **Cost rates are Neon's too** — the ETL no longer loads `labor_cost_rates`. ⬜ ~16 secondary read sites still hit Airtable (cleanup, §4). |
 | **People admin** | ✅ **New 2026-08-08** — there was no employee screen in either app. `👥 People`: Active/Former roster, **access toggle that actually ends live sessions** (30-day stateless tokens meant unchecking `Active` did nothing to a signed-in phone — a leaver kept access for a month), Show/Change PIN, full edit, add a person, and cost-rate history with raise-vs-correct. `docs/PLAN-employee-admin.md` |
 | **Time clock (in-app)** | ✅ **FEATURE-COMPLETE, SOAKING.** Build paused 2026-08-11 — owner: *"this needs to soak with qb time still operating and source of truth. ill be back to finish when i feel like its safe to do so."* `TIME_CLOCK=on` so the crew punches; **`TIME_CLOCK_PAYROLL` unset — QuickBooks Time is STILL the source of truth** and the crew double-enters. 🔴 **Do not flip it on a schedule.** The gate is the **QB-vs-clock reconciliation agreeing** (Who's Working → vs QuickBooks), and the decision is the owner's, not a consequence of time passing. Next session here should be verification, not building. `docs/PLAN-time-clock.md` |
 | **Inventory app** | ✅ **DONE — reads AND writes, 2026-08-12.** Reads: A (Jobs mirror dropped), B0, B, C (**on-hand derived**), D (estimating), E. Writes: **36 → 0.** The ledger, push history, reorder points, items, locations, vendors, pricing and the whole estimating cluster are **born in Postgres**; the loader is deleted (`79b1b56`); every one of those reads **fails closed**. Re-measured from code 2026-08-19 (`docs/AUDIT-inventory-app.md`): **zero reads and zero writes to the Airtable inventory base.** ⬜ What is left is **not code** — undeploy one dead automation, archive the base, drop `INVENTORY_BASE_ID` (~1 h, owner). ⚠ Stock figures show the ledger rather than a drifted cache, so they read lower and raise more alerts; that is the correction. ⚠⚠ **Items and locations went native, and three READERS were still keyed on the rec id alone** — fixed 2026-08-20 (`f9c908e`, `db/schema/043`): the dual handle now lives in `v_stock_levels` as `item_handle`/`location_handle`. Stock moved into an app-created location was being lost silently. ⬜ The per-ft **cost engine is a separate future build**, after the migration finishes — not part of it. |
@@ -40,6 +99,14 @@ anything read it** — `db/schema/012`, `013`, `014`, `015`.
 expenses, estimates and invoices (R2 receipt keys, sent-PDF back-links and billing allocations
 all key on rec ids), and every write still mirrors to it. What changed is that **nothing reads
 Airtable to answer a question any more** unless Neon fails.
+
+> ⚠ **CORRECTED 2026-08-25 — read the banner at the top.** "Every write still mirrors to it" is
+> **no longer true**: `AIRTABLE_WRITES=off` and the app writes nothing to Airtable at all. Nor
+> does "unless Neon fails" still hold — 39 read handlers now **refuse (503)** rather than serve a
+> frozen copy, and only three value-returning fallbacks remain. Airtable's rec ids are still the
+> handle stored R2 keys and back-links speak, which is why the base is archived rather than
+> deleted — but jobs, expenses, estimates, invoices, employees and payroll runs are now **born in
+> Neon** (identity cutover, 2026-08-24).
 
 **The inventory track is now done too** (§4 — A, B0, B, C, D, E all prod-smoked 2026-08-11), so
 neither app needs Airtable to answer a question. What remains is listed in §7 and the cleanup
@@ -618,7 +685,7 @@ Not everything should move. These have no API route for us:
   > — not a scramble to re-register with pCloud.
 - **pCloud PDF filing** (`4723276`)
 - **QB Time job creation + Trello cards** (`4509804`) — could move eventually; no reason to.
-- **Google contact sync** (`4729925`)
+- ~~**Google contact sync** (`4729925`)~~ — ⚠ **NO LONGER TRUE (2026-08-27).** All five Sync → Google scenarios are **deactivated** and replaced by `netlify/functions/_google-contacts.js`, which talks to the People API directly (OAuth refresh tokens, no npm dependency). The Make fallback was not merely optional, it was **unsafe**: `4729925` reads the contact *from* Airtable and writes the person id *back* to it, so under `AIRTABLE_WRITES=off` a reactivated scenario would sync and then **lose the id** — the exact duplicate-generating failure. 👉 Moving a **trigger** to the app says nothing about the **middle**: grep the blueprint for `"module": "airtable:` before calling any scenario Airtable-free.
 
 Getting off Airtable does **not** mean getting off Make. Different goals.
 
@@ -652,7 +719,7 @@ because they're next:
 | ~~Panel schedules~~ | — | ✅ **Built 2026-08-05**, ⬜ needs a prod smoke test. `⚡ Panels` beside Prints: name + voltage + circuit count, odd-left/even-right grid, fill-down, PDF export. **First domain born in Neon rather than migrated to it** — `db/schema/007_panel_schedules.sql`, no Airtable table, writes fail closed. Slices 3-4 (watts/amps/poles, save-PDF-to-Prints) not built. `docs/PLAN-panel-schedules.md` |
 | ~~Job checklists~~ | — | ✅ **Built 2026-08-05**, ⬜ needs a prod smoke test. `✅ Lists` in the job action row, badge = items still outstanding. Name a list, type items one per line, tick them off loading the truck; ticked drops to a collapsed "Loaded" section rather than being deleted. **Second domain born in Neon** — `db/schema/008_job_checklists.sql`. Ticks are optimistic with a localStorage replay queue, because the shop is where signal dies. **First feature that takes work away from Trello rather than sitting beside it.** `docs/PLAN-job-checklists.md` |
 | **A real GP audit — "can I trust these numbers?"** | ~8-10 h | Owner's ask 2026-08-10. `docs/PLAN-gp-audit.md`. ⚠ **Every verification in this file proves Neon matches AIRTABLE — and `006` exists because Airtable was wrong four ways at once.** A faithful copy of a wrong number is still wrong, so none of the green ticks above actually answer the question. Three slices: input completeness (SQL only), a plausibility/outlier pass, and — the only one that really answers it — **reconciling 5-8 finished jobs against QuickBooks**, the one external anchor. Scoped 2026-08-10 and the news is good: 2026 hours are **0.4% unlinked**, so this is a confirmation exercise, not a rescue. The two real leads are the **2025 hours (61.6% unlinked)** if any such job is still open, and **Strongsville DG**, still unexplained. Needs an owner QB export for slice 3. |
-| R2 lifecycle rule | ~15 min | Add prefix `_deleted/` in the Cloudflare dashboard |
+| R2 lifecycle rule | ~15 min | Add prefix `_deleted/` in the Cloudflare dashboard. ⚠⚠ **Scope it to that prefix, never bucket-wide** — one bucket holds every domain, including `expenses/` receipts wanted years later at audit time and `payroll/` run PDFs (the artifact people were paid from). Nothing ever moves those into `_deleted/`, so a prefix-scoped rule cannot reach them and a bucket-wide one would. While you are in the console: **public access and the `r2.dev` subdomain should be OFF** — every read is a signed, expiring URL. |
 | Retire JotForm photos | ~10 min | ~Aug 8, after a week's soak. Pause form + scenario `4522457` |
 | Offline photo upload queue | ? | Wait until crews actually hit it |
 | Unify estimates bet | large | `docs/BET-unify-estimates.md`. Blocked on GP formulas reaching Neon |
@@ -671,7 +738,16 @@ because they're next:
 
 ---
 
-# ▶ START HERE — what's next (2026-08-07)
+# ▶ START HERE — what's next
+
+> ## ⏸ SUPERSEDED 2026-09-08 — the current answer to "what's next" is the banner at the TOP of this file.
+>
+> Everything in this section is the 2026-08-07/08 answer and is kept as the record of how the
+> migration was run. It was written before the cord was cut, before the identity cutover, and
+> before the inventory app left Airtable. **Do not take work from it without checking the banner
+> first** — several of its "next" items are done, and two of its cautions have inverted.
+
+*Original section header: (2026-08-07)*
 
 > ## 📋 READ `docs/AUDIT-airtable-remaining.md` FIRST — added 2026-08-09
 >

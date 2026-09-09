@@ -116,10 +116,25 @@
 
     .topbar-row2::-webkit-scrollbar { display: none; }
 
-    .topbar-menu-wrap { position: relative; flex: none; }
+    /* ⚠⚠ NO `position: relative` HERE, AND THAT IS THE POINT.
+       The ☰ is NOT at the right edge of the screen — it sits inline in a
+       left-aligned flex row, right after "All Charts", about a third of the way
+       across. Making this the panel's containing block therefore anchored a
+       280px-wide dropdown to a point 150px from the left, and `right: 0` grows
+       LEFTWARD, so most of the menu opened off the side of the phone.
+       Without it the containing block is `.topbar-row2`, which spans the whole
+       bar, so `right: 0` means the right edge of the SCREEN — where a dropdown
+       from a top-bar menu button belongs, and independent of wherever the ☰
+       happens to sit as buttons are added or hidden by role.
+       `margin-left: auto` then pushes the ☰ itself to that same edge, so the
+       panel reads as hanging off the button rather than floating away from it. */
+    .topbar-menu-wrap { flex: none; margin-left: auto; }
     /* The ☰ styles itself completely, because it is deliberately excluded from
-       the `.topbar-row2 > .btn` compact rule (see the note there). */
+       the `.topbar-row2 > .btn` compact rule (see the note there).
+       `position: relative` is for the alert dot below — it used to sit on the
+       wrapper, which worked only because the wrapper hugs the button. */
     .topbar-menu-btn {
+      position: relative;
       font-size: 18px !important; line-height: 1; padding: 3px 9px !important;
       border-radius: 999px !important; width: auto !important;
       white-space: nowrap; flex-shrink: 0;
@@ -129,7 +144,6 @@
        raises this dot on the ☰ itself — otherwise "there are 4 invoices nobody
        has placed" is information you only get by going looking for it, and
        nobody goes looking for something they don't know is there. */
-    .topbar-menu-wrap { position: relative; }
     .topbar-menu-btn.has-alert::after {
       content: ""; position: absolute; top: 1px; right: 1px;
       width: 8px; height: 8px; border-radius: 50%;
@@ -140,11 +154,10 @@
       top: calc(100% + 8px);
       right: 0;
       min-width: 190px;
-      /* ⚠ An absolutely-positioned box anchored `right: 0` grows LEFTWARD, and
-         its containing block here is the ~40px ☰ wrapper sitting at the right
-         edge of the screen. Nothing stops it running off the left of the phone
-         except a cap — which is how half this menu ended up off-screen. Capped
-         to the space that actually exists. */
+      /* Anchored `right: 0` against `.topbar-row2` (see .topbar-menu-wrap), so
+         this is the right edge of the bar. A box positioned that way grows
+         LEFTWARD, so it still needs a cap or a long label could walk it off the
+         other side; 28px is the .topbar's 14px of padding either side. */
       max-width: min(280px, calc(100vw - 28px));
       /* Belt and braces: if a future label is longer than the cap, it wraps
          inside the panel rather than widening it back off the screen. */

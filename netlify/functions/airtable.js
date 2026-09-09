@@ -643,9 +643,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // employee POSTing a fabricated invoice would be posting money onto a job.
   "vendorInvoiceIntake",
   // Assigning a parked invoice to a job is the moment it becomes a cost, and
-  // dismissing one is the moment it stops being anyone's problem. Same tier as
+  // marking one reviewed is the moment it stops being anyone's problem. Same tier as
   // approveExpense and updateJobBillableRate — back-office money ops.
-  "vendorInvoiceAssign", "vendorInvoiceDismiss",
+  "vendorInvoiceAssign", "vendorInvoiceMarkReviewed",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -9944,7 +9944,7 @@ async function handleVendorInvoiceIntake(body, authUser) {
 }
 
 // ── THE REVIEW QUEUE ──────────────────────────────────────────────────────
-// GET ?action=vendorInvoices[&status=needs_review|matched|dismissed|all]
+// GET ?action=vendorInvoices[&status=needs_review|matched|reviewed|all]
 //
 // FAILS CLOSED (503) on a Neon failure rather than answering with an empty
 // list. An empty queue and an unreachable database look identical on screen,
@@ -10016,12 +10016,12 @@ async function handleVendorInvoices(params, authUser) {
     }
   }
 
-  const counts = { needsReview: 0, matched: 0, dismissed: 0 };
+  const counts = { needsReview: 0, matched: 0, reviewed: 0 };
   const cq = await neonQuery(`SELECT status, count(*)::int AS n FROM vendor_invoices GROUP BY status`);
   for (const c of (cq?.rows || [])) {
     if (c.status === "needs_review") counts.needsReview = c.n;
     else if (c.status === "matched") counts.matched = c.n;
-    else if (c.status === "dismissed") counts.dismissed = c.n;
+    else if (c.status === "reviewed") counts.reviewed = c.n;
   }
 
   return resp(200, { ok: true, invoices: rows, counts });
@@ -10064,33 +10064,41 @@ async function handleVendorInvoiceAssign(body, authUser) {
   }
 }
 
-// ── DISMISS ───────────────────────────────────────────────────────────────
-// POST { invoiceId, note? } — for the invoice that is genuinely nobody's job
-// cost: a statement, a duplicate the vendor re-sent under a new number, an
-// overhead purchase. Kept as a row, never deleted: "why is there no expense for
-// this invoice" is a question somebody asks months later, and a dismissed row
-// with a note answers it.
-async function handleVendorInvoiceDismiss(body, authUser) {
+// ── MARK REVIEWED ─────────────────────────────────────────────────────────
+// POST { invoiceId, note? } — the invoice a person has looked at and decided
+// does not belong on any job: a statement, a duplicate the vendor re-sent under
+// a new number, an overhead purchase, shop stock.
+//
+// ⚠ THIS WAS CALLED "dismiss" AND THE WORD WAS THE PROBLEM (schema 070). The
+// screen is Invoice REVIEW and the queue status is needs_REVIEW, but the exit
+// was called something that reads as *rejected*. So the button nobody wanted to
+// press was the one needed for the commonest real case — a genuine bill that
+// simply is not one job's material cost.
+//
+// The row is KEPT, never deleted. "Why is there no expense for this invoice" is
+// a question somebody asks months later, and a reviewed row with a note is the
+// only thing that answers it.
+async function handleVendorInvoiceMarkReviewed(body, authUser) {
   const { invoiceId, note } = body || {};
   if (!invoiceId) return resp(400, { ok: false, error: "Missing invoiceId." });
 
   let rows;
   try {
-    rows = await neonWrite("vendorInvoice.dismiss",
+    rows = await neonWrite("vendorInvoice.markReviewed",
       `UPDATE vendor_invoices
-          SET status = 'dismissed', match_reason = 'dismissed', note = $2,
+          SET status = 'reviewed', match_reason = 'reviewed-no-job', note = $2,
               resolved_at = now(), resolved_by = $3
         WHERE id::text = $1 AND status = 'needs_review'
         RETURNING id`,
       [String(invoiceId), note ? String(note).slice(0, 500) : null,
        authUser?.name || authUser?.id || null]);
   } catch (e) {
-    return resp(502, { ok: false, error: `Couldn't dismiss it: ${String(e?.message || e)}` });
+    return resp(502, { ok: false, error: `Couldn't mark it reviewed: ${String(e?.message || e)}` });
   }
   // Same guard as assign: the WHERE clause carries it, so a second tap changes
-  // nothing and says so rather than silently re-stamping who dismissed it.
+  // nothing and says so rather than silently re-stamping who reviewed it.
   if (!rows?.length) return resp(409, { ok: false, error: "That invoice was already dealt with." });
-  return resp(200, { ok: true, id: rows[0].id, status: "dismissed" });
+  return resp(200, { ok: true, id: rows[0].id, status: "reviewed" });
 }
 
 // Edit an existing expense. Managers may edit any; an employee may edit only
@@ -15642,7 +15650,7 @@ export async function handler(event) {
       // back the review screen.
       if (body.action === "vendorInvoiceIntake")  return await handleVendorInvoiceIntake(body, authUser);
       if (body.action === "vendorInvoiceAssign")  return await handleVendorInvoiceAssign(body, authUser);
-      if (body.action === "vendorInvoiceDismiss") return await handleVendorInvoiceDismiss(body, authUser);
+      if (body.action === "vendorInvoiceMarkReviewed") return await handleVendorInvoiceMarkReviewed(body, authUser);
       if (body.action === "createVendor")         return await handleCreateVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }

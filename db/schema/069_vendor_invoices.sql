@@ -82,6 +82,9 @@ CREATE TABLE IF NOT EXISTS vendor_invoices (
 
   -- needs_review → matched | dismissed. A matched row is history; it is never
   -- re-matched, because the expense it points at is already costing a job.
+  -- ⚠ 'dismissed' WAS RENAMED TO 'reviewed' THE SAME DAY — see 070. The word
+  -- read as *rejected*, which made it the wrong button for the commonest real
+  -- case. This constraint is dropped and replaced there.
   status        text NOT NULL DEFAULT 'needs_review'
                 CHECK (status IN ('needs_review', 'matched', 'dismissed')),
 

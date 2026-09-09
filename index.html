@@ -397,17 +397,24 @@
     .vi-reason { font-size: 12px; font-weight: 600; color: var(--red); }
     .vi-cands  { font-size: 12px; color: var(--yellow); }
     .vi-pdf    { font-size: 13px; font-weight: 600; margin-top: 2px; display: inline-block; }
-    /* width:100% rather than a min-width — the picker fits the column it is
-       given. A min-width here is what pushed the whole row off the side of a
-       phone in the first place. */
-    .vi-actions select {
-      width: 100%; max-width: 100%;
-      padding: 8px 10px; font-size: 14px;
-      border: 1px solid var(--line); border-radius: 8px;
-      background: var(--panel); color: var(--text);
+    /* The job typeahead. Reuses the Schedule screen's .sch-job-* component, with
+       two overrides for this container.
+       ⚠ THE RESULT LIST IS INLINE HERE, NOT ABSOLUTE. .payroll-modal-body sets
+       `overflow-x: hidden`, which per spec computes overflow-y to `auto` — so it
+       is a scroll container, and an absolutely-positioned dropdown inside it gets
+       cut off at the modal's edge. Letting the list push the row down instead is
+       both immune to that and better on a phone, where an overlay covers the
+       invoice you are reading in order to place it. */
+    .vi-pick .sch-job-results {
+      position: static; margin-top: 4px; box-shadow: none;
+      max-height: 220px;
     }
+    .vi-pick .sch-job-search { padding: 8px 10px; font-size: 14px; }
     .vi-btns { display: flex; gap: 6px; }
     .vi-btns .btn { flex: 1; white-space: nowrap; }
+    /* Sits apart from "Add to job": it is the other decision, not a weaker
+       version of it, and it must not read as a cancel. */
+    .vi-reviewed { width: 100%; margin-top: 2px; }
 
     .pto-bar {
       height: 8px; border-radius: 999px; background: var(--line);
@@ -21717,6 +21724,9 @@
   // why the button carries a badge.
   let viData = null;
   let viShowSettled = false;
+  // The jobs the picker offers, shared between the render and the wiring so the
+  // two cannot disagree about what "job 3" in the list means.
+  let viPickerJobs = [];
 
   async function openVendorInvoices() {
     $("vendorInvoiceModal").style.display = "flex";
@@ -21753,7 +21763,87 @@
       return;
     }
     if (host) host.innerHTML = renderVendorInvoices();
+    wireViPickers();
     renderVendorInvoiceBadge();
+  }
+
+  // ── The job typeahead on each pending row ─────────────────────────────────
+  // Same component the Schedule screen uses (.sch-job-search / .sch-job-results),
+  // reused rather than re-invented so it looks and behaves identically. A native
+  // <select> of 120 jobs is unusable on a phone — that is what this replaces.
+  //
+  // Wired after every render rather than once: the rows are rebuilt by innerHTML,
+  // so these are always fresh elements and there is no old listener to leak.
+  function wireViPickers() {
+    const host = $("vendorInvoiceBody");
+    if (!host) return;
+    host.querySelectorAll(".vi-pick").forEach(wrap => {
+      const input   = wrap.querySelector("input.sch-job-search");
+      const hidden  = wrap.querySelector("input.vi-job-id");
+      const results = wrap.querySelector(".sch-job-results");
+      if (!input || !hidden || !results) return;
+      let activeIdx = -1;
+
+      const draw = (q) => {
+        const ql = String(q || "").trim().toLowerCase();
+        // Matches the PO as well as the name, because the person doing this is
+        // holding an invoice that names a PO — often the only thing they have.
+        const hits = ql
+          ? viPickerJobs.filter(j =>
+              (j.name || "").toLowerCase().includes(ql) ||
+              (j.po   || "").toLowerCase().includes(ql))
+          : viPickerJobs;
+        activeIdx = -1;
+        results.innerHTML = hits.length
+          ? hits.slice(0, 30).map((j, i) =>
+              `<div class="sch-job-result" data-id="${esc(j.id)}" data-idx="${i}">
+                 ${esc(j.name)}
+                 ${j.po ? `<span class="contractor">${esc(j.po)} · ${esc(j.status || "")}</span>` : ""}
+               </div>`).join("")
+          : `<div class="sch-job-result-empty">No matching job</div>`;
+        results.classList.add("open");
+        results.querySelectorAll(".sch-job-result").forEach(rowEl => {
+          // mousedown, not click — blur fires first on a click and would close
+          // the list before the selection registered.
+          rowEl.onmousedown = (ev) => { ev.preventDefault(); pick(rowEl.dataset.id); };
+        });
+      };
+
+      const pick = (jobId) => {
+        const j = viPickerJobs.find(x => x.id === jobId);
+        hidden.value = jobId || "";
+        input.value = j ? j.name + (j.po ? ` — ${j.po}` : "") : "";
+        input.classList.toggle("has-pick", !!j);
+        results.classList.remove("open");
+      };
+
+      input.addEventListener("input", () => {
+        // ⚠ Typing INVALIDATES the previous pick. Without this, editing the text
+        // after choosing leaves the old job id in the hidden field, and the
+        // invoice goes onto a job whose name is no longer on screen.
+        hidden.value = "";
+        input.classList.remove("has-pick");
+        draw(input.value);
+      });
+      input.addEventListener("focus", () => draw(input.value));
+      input.addEventListener("blur", () => setTimeout(() => results.classList.remove("open"), 150));
+      input.addEventListener("keydown", (e) => {
+        const rows = results.querySelectorAll(".sch-job-result");
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault();
+          activeIdx = e.key === "ArrowDown"
+            ? Math.min(activeIdx + 1, rows.length - 1)
+            : Math.max(activeIdx - 1, 0);
+          rows.forEach((el, i) => el.classList.toggle("active", i === activeIdx));
+          if (rows[activeIdx]) rows[activeIdx].scrollIntoView({ block: "nearest" });
+        } else if (e.key === "Enter" && activeIdx >= 0 && rows[activeIdx]) {
+          e.preventDefault();
+          pick(rows[activeIdx].dataset.id);
+        } else if (e.key === "Escape") {
+          results.classList.remove("open");
+        }
+      });
+    });
   }
 
   function renderVendorInvoiceBadge() {
@@ -21787,6 +21877,10 @@
   // the parser never found means look at the paper, a PO no job has means the
   // job was never created or the PO was mistyped, and two jobs sharing one PO
   // means pick.
+  // The only statuses an invoice can be charged to. Owner's call: an estimate or
+  // a lead has no costs yet, and Not Awarded never will.
+  const VI_JOB_STATUSES = new Set(["awarded", "ready to invoice", "completed"]);
+
   const VI_REASON = {
     "no-po-on-invoice":      "No PO on the invoice",
     "no-job-match":          "No job has this PO",
@@ -21803,18 +21897,22 @@
     const settled = all.filter(r => r.status !== "needs_review");
     const c = viData.counts || {};
 
-    // Sorted by name because the reviewer is looking for a customer, not a PO
-    // number — but the PO is on every option, since that is what the invoice says.
-    const jobs = (state.jobs || []).slice()
+    // Only jobs material can actually be charged to — owner's call 2026-09-09.
+    // An estimate or a lead has no costs yet, and a Not Awarded job never will,
+    // so offering them is offering a way to put money somewhere wrong.
+    //
+    // ⚠ This deliberately EXCLUDES "Service Call Scheduled", which does buy
+    // material. If a service-call invoice ever needs placing, that status has to
+    // come back — the symptom will be a job you cannot find in the picker, not
+    // an error.
+    const jobs = (state.jobs || [])
+      .filter(j => VI_JOB_STATUSES.has((j.status || "").toLowerCase()))
       .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    const jobOpts = jobs
-      // `j.po` is the full Job PO string ("Joe Yoder (CAJ 436)").
-      .map(j => `<option value="${esc(j.id)}">${esc(j.name)}${j.po ? ` — ${esc(j.po)}` : ""}</option>`)
-      .join("");
-    // ⚠ An empty picker must SAY it is empty. A <select> holding only its
+    // ⚠ An empty picker must SAY it is empty. A control holding only its
     // placeholder looks identical whether there are no jobs or the job list
     // never arrived, and the second one is a bug wearing the first one's face.
     const noJobs = jobs.length === 0;
+    viPickerJobs = jobs;
 
     const row = (r) => {
       const isPending = r.status === "needs_review";
@@ -21828,7 +21926,7 @@
         <div class="vi-sub">
           ${r.status === "matched"
             ? `→ ${esc(r.jobName || "job")}${r.resolvedBy ? ` · by ${esc(r.resolvedBy)}` : ""}`
-            : `Dismissed${r.resolvedBy ? ` by ${esc(r.resolvedBy)}` : ""}${r.note ? ` — “${esc(r.note)}”` : ""}`}
+            : `✓ Reviewed, no job${r.resolvedBy ? ` · ${esc(r.resolvedBy)}` : ""}${r.note ? ` — “${esc(r.note)}”` : ""}`}
         </div>`;
 
       return `
@@ -21851,17 +21949,22 @@
           ${isPending ? `
           <div class="vi-actions">
             ${noJobs
-              ? `<div class="vi-reason">The job list didn't load, so there's nothing to
-                   pick from. Tap Refresh below.</div>`
-              : `<select id="viJob-${esc(r.id)}">
-                   <option value="">— Pick a job — (${jobs.length})</option>
-                   ${jobOpts}
-                 </select>`}
+              ? `<div class="vi-reason">No awarded, ready-to-invoice or completed jobs
+                   loaded — nothing to pick from. Tap Refresh below.</div>`
+              : `<div class="sch-job-search-wrap vi-pick" data-inv="${esc(r.id)}">
+                   <input type="text" class="sch-job-search" autocomplete="off"
+                          placeholder="Type to find a job (${jobs.length})" />
+                   <input type="hidden" class="vi-job-id" value="" />
+                   <div class="sch-job-results"></div>
+                 </div>`}
             <div class="vi-btns">
               <button class="btn btn-primary btn-sm" ${noJobs ? "disabled" : ""}
                       onclick="viAssign('${esc(r.id)}')">Add to job</button>
-              <button class="btn btn-sm" onclick="viDismiss('${esc(r.id)}')">Dismiss</button>
             </div>
+            <!-- Its own row, not beside "Add to job": it is the other decision,
+                 not a lesser version of the same one. -->
+            <button class="btn btn-sm vi-reviewed" onclick="viMarkReviewed('${esc(r.id)}')"
+                    title="Not going on any job — record why and clear it">✓ Reviewed, no job</button>
           </div>` : ""}
         </div>`;
     };
@@ -21909,10 +22012,19 @@
   // creating, so a credit memo lands in the credit column and a normal invoice
   // in the cost column without the client having to know the difference.
   async function viAssign(invoiceId) {
-    const jobId = $(`viJob-${invoiceId}`)?.value;
-    if (!jobId) { alert("Pick a job first."); return; }
+    const wrap = document.querySelector(`.vi-pick[data-inv="${CSS.escape(invoiceId)}"]`);
+    const jobId = wrap?.querySelector("input.vi-job-id")?.value;
+    // ⚠ Typed-but-not-chosen is NOT a selection. The hidden field is cleared on
+    // every keystroke, so text in the box with no id behind it means the person
+    // never picked from the list — say so rather than silently doing nothing.
+    if (!jobId) {
+      alert(wrap?.querySelector("input.sch-job-search")?.value?.trim()
+        ? "Pick the job from the list — typing the name isn't enough."
+        : "Pick a job first.");
+      return;
+    }
     const inv = (viData?.invoices || []).find(r => r.id === invoiceId);
-    const jobName = (state.jobs || []).find(j => j.id === jobId)?.name || "that job";
+    const jobName = viPickerJobs.find(j => j.id === jobId)?.name || "that job";
     if (!confirm(`Add ${inv ? `${inv.vendor} ${inv.invoiceNo} (${viMoney(inv.amount)})` : "this invoice"} to ${jobName} as a materials expense?`))
       return;
     try {
@@ -21928,22 +22040,27 @@
   }
   window.viAssign = viAssign;
 
-  // For the invoice that is genuinely nobody's job cost — a statement, a
-  // duplicate under a new number, an overhead purchase. The row is kept, never
-  // deleted: "why is there no expense for this invoice" gets asked months later.
-  async function viDismiss(invoiceId) {
-    const note = prompt("Why is this one not a job cost? (optional, but it's what answers the question later)");
+  // "I've looked at this and it isn't going on a job." A statement, a duplicate
+  // the vendor re-sent under a new number, an overhead purchase, shop stock.
+  //
+  // The row is KEPT, never deleted, and the note is the whole point of it:
+  // "why is there no expense for this invoice" is a question somebody asks
+  // months later, and this is the only thing that will answer it.
+  async function viMarkReviewed(invoiceId) {
+    const inv = (viData?.invoices || []).find(r => r.id === invoiceId);
+    const what = inv ? `${inv.vendor} ${inv.invoiceNo} (${viMoney(inv.amount)})` : "this invoice";
+    const note = prompt(`${what}\n\nWhy isn't this going on a job? (optional — but it's what answers the question months from now)`);
     if (note === null) return;
     try {
-      await apiPost("vendorInvoiceDismiss", { invoiceId, note });
-      showAppToast("Dismissed.");
+      await apiPost("vendorInvoiceMarkReviewed", { invoiceId, note });
+      showAppToast("Marked reviewed.");
       await loadVendorInvoices();
     } catch (e) {
       if (e.status === 409) { alert(e.message || "That one was already dealt with."); await loadVendorInvoices(); return; }
-      alert(e.message || "Couldn't dismiss it.");
+      alert(e.message || "Couldn't mark it reviewed.");
     }
   }
-  window.viDismiss = viDismiss;
+  window.viMarkReviewed = viMarkReviewed;
 
   // ── 🌴 TIME OFF — the admin queue and the bulk actions ────────────────────
   // Deliberately NOT on People: approving is queue work, done top-to-bottom, and

@@ -57,7 +57,7 @@ bot ──POST vendorInvoiceIntake──▶ vendor_invoices row (+ PDF in R2)
       (unchanged behaviour)     / no-po-on-invoice        (both jobs named on screen)
                                         │
                                 🧾 Invoice Review
-                                 assign │ dismiss
+                                 assign │ reviewed
 ```
 
 ### Why the app does the matching, not the bot
@@ -124,7 +124,7 @@ sync could one day import back as duplicate expenses.
 | `netlify/functions/_vendor-invoices.js` | PO normalisation, the match rule, signed amounts, vendor aliases — pure, no network |
 | `netlify/functions/airtable.js` | 4 actions + `settleVendorInvoice`; authz entries |
 | `netlify/functions/_r2.js` | `vendorInvoicePrefix` — a new top-level `vendor-invoices/` prefix |
-| `index.html` | 🧾 Invoice Review button + badge, modal, `viAssign` / `viDismiss` |
+| `index.html` | 🧾 Invoice Review button + badge, modal, `viAssign` / `viMarkReviewed` + the job typeahead |
 | `tests/handlers.test.mjs` | 5 cases, all offline |
 
 ### Actions
@@ -134,7 +134,7 @@ sync could one day import back as duplicate expenses.
 | `vendorInvoiceIntake` | POST | admin+office | the bot's; idempotent on (vendor, invoice no) |
 | `vendorInvoices` | GET | admin+office | the queue; **fails closed (503)**, never an empty list |
 | `vendorInvoiceAssign` | POST | admin+office | creates the expense, marks matched |
-| `vendorInvoiceDismiss` | POST | admin+office | keeps the row, records why |
+| `vendorInvoiceMarkReviewed` | POST | admin+office | not going on any job; keeps the row, records why |
 
 `vendorInvoiceIntake` sits at `_ADMIN_OFFICE` rather than the `_NON_VIEWER` default a
 write would otherwise get, because **it creates expenses with no human in the loop** —
@@ -209,5 +209,5 @@ the job twice and nothing complains.
   nothing here consumes them.
 - **No email/alert on a parked invoice.** The badge on the top bar is the whole
   notification, matching 🌴 Time Off. Revisit if invoices sit for days.
-- **No delete.** A dismissed invoice keeps its row and its note — "why is there no
+- **No delete.** A reviewed invoice keeps its row and its note — "why is there no
   expense for this invoice" gets asked months later.

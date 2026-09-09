@@ -5784,7 +5784,7 @@ await test("vendorInvoice: STATIC — the inbox writes NOTHING to Airtable", asy
   // The base is being archived. A mirror of a table Airtable has no column for
   // would be a second copy nothing reads — and one a re-enabled sync could
   // import back as duplicate expenses.
-  ok(!/\batFetch\(/.test(region),        "no intake/assign/dismiss path calls atFetch");
+  ok(!/\batFetch\(/.test(region),        "no intake/assign/review path calls atFetch");
   ok(!/mirrorToAirtable\(/.test(region), "and none of them mirrors either");
 
   // The queue read FAILS CLOSED. An empty list and an unreachable database look
@@ -5797,7 +5797,7 @@ await test("vendorInvoice: STATIC — the inbox writes NOTHING to Airtable", asy
   // The double-charge guards. Both are the read-then-write kind, and both are
   // what stop one impatient double-tap becoming two expenses on a job.
   ok(/if \(inv\.status !== "needs_review"\)/.test(src), "assign refuses an already-settled invoice");
-  ok(/AND status = 'needs_review'\n\s*RETURNING id/.test(src), "dismiss carries the guard in its WHERE clause");
+  ok(/AND status = 'needs_review'\n\s*RETURNING id/.test(src), "markReviewed carries the guard in its WHERE clause");
 });
 
 // ── report ──

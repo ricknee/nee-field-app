@@ -144,7 +144,7 @@ There is no sandbox — this hits production. To test safely:
 1. Send one call with an obviously fake `invoiceNo` (e.g. `TEST-001`) and a `po` that
    matches nothing. Expect `{"ok":true,"status":"needs_review","reason":"no-job-match"}`.
 2. Confirm it appears in the app under **☰ → 🧾 Invoice Review**.
-3. Dismiss it from that screen. Test rows are cleared that way, not by deleting.
+3. Clear it with **✓ Reviewed, no job** on that screen. Test rows are cleared that way, not by deleting.
 
 Do **not** test with a `po` that matches a real job — that creates a real expense on
 that job.
@@ -156,8 +156,8 @@ that job.
 The call returning 200 is not the proof. What landed is.
 
 After the next real batch, open **☰ → 🧾 Invoice Review** in the field app. Everything
-the MiniBee printed should also be sitting there, with its PDF, a job picker and a
-Dismiss button. The ☰ button carries a red dot while any are waiting.
+the MiniBee printed should also be sitting there, with its PDF, a searchable job picker
+and a **✓ Reviewed, no job** button. The ☰ carries a red dot while any are waiting.
 
 - **Nothing there** — the call isn't landing. Check the bearer token first; a 401 may be
   getting swallowed.

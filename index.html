@@ -109,11 +109,35 @@
       align-items: center;
       gap: 6px;
       flex-wrap: nowrap;
-      overflow-x: auto;
+      position: relative;
+      overflow: visible;
       padding-bottom: 2px;
     }
 
     .topbar-row2::-webkit-scrollbar { display: none; }
+
+    .topbar-menu-wrap { position: relative; flex: none; }
+    .topbar-menu-btn { font-size: 18px !important; line-height: 1; padding: 3px 9px !important; }
+    .topbar-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      min-width: 190px;
+      padding: 6px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      z-index: 110;
+    }
+    .topbar-menu[hidden] { display: none; }
+    .topbar-menu .btn, .topbar-menu .btn-danger-sm {
+      display: block;
+      width: 100% !important;
+      margin: 2px 0;
+      text-align: left;
+      border-radius: 8px !important;
+    }
 
     .brand {
       display: flex;
@@ -161,23 +185,6 @@
       flex-shrink: 0;
       width: auto !important;
     }
-
-    /* Employee top-bar button order. The DOM order of .topbar-row2 is tuned for
-       the admin row; employees see a different (much smaller) subset, and the
-       order that reads well for admin doesn't for them. Reordering with
-       flexbox `order` rather than by moving the markup leaves the admin /
-       office / viewer row exactly as it was — one DOM, two orderings.
-       Refresh and Log Out are pinned last on purpose: `order` defaults to 0,
-       so without an explicit value they'd float ahead of everything given a
-       positive order. Adding a top-bar button employees can see? Give it an
-       order here too, or it lands at the front. */
-    body.role-employee #btnMySchedule { order: 1; }
-    body.role-employee #btnMyHours    { order: 2; }
-    body.role-employee #btnFleet      { order: 3; }
-    body.role-employee #btnMileage    { order: 4; }
-    body.role-employee #btnAllCharts  { order: 5; }
-    body.role-employee #refreshBtn    { order: 6; }
-    body.role-employee #logoutBtn     { order: 7; }
 
     /* ── TIME CLOCK ──
        The pill is a live state, so it pulses. Anything permanently animated in a
@@ -2831,46 +2838,33 @@
     </div>
     <div class="topbar-row2">
       <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ New Project</button>
-      <!-- ⏱ My Hours sits here, second, because admin reads this row in DOM order
-           (no `order` applies to them) and this is a button an admin reaches for
-           daily. Moving it does NOT disturb employees: they get an explicit
-           `body.role-employee #btnMyHours { order: 2 }` in the CSS above, which
-           overrides DOM position entirely. Office and viewer never see it —
-           .payroll-eligible-only is admin + employee. -->
-      <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
-      <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
-      <!-- Fleet is intentionally ungated (like ⛽ Mileage below): crews service
-           the trucks, so every signed-in role gets it. The backend already
-           agrees — fleetVehicles/fleetServiceHistory are open reads and all
-           five fleet writes fall through to _NON_VIEWER in authzFor. -->
-      <button id="btnFleet" class="btn btn-sm" type="button">🚗 Fleet</button>
-      <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
-      <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
-      <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
-      <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
-      <!-- strict-admin-only, not admin-only: the roster shows every person's
-           true cost rate, so office is excluded here exactly as it is in the
-           backend's _ADMIN tier for `people`/`setEmployeeActive`. -->
-      <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
-      <!-- strict-admin-only, matching the backend's _ADMIN tier on clockRoster:
-           this shows where every person is right now and can start or stop their
-           paid time. Office is excluded from payroll everywhere else, so it is
-           excluded here. -->
-      <button id="btnWhosWorking" class="btn btn-sm strict-admin-only hidden" type="button">🟢 Who's Working</button>
-      <!-- Its own button rather than a section inside Who's Working: that screen is
-           "who is on site right now", which is not the same question as "decisions
-           about time off". The badge is the point — a pending request you only see
-           if you happen to open the right screen is a request that sits for a week. -->
-      <button id="btnTimeOff" class="btn btn-sm strict-admin-only hidden" type="button">🌴 Time Off<span id="timeOffBadge"></span></button>
-      <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
-      <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
       <!-- Ungated like Fleet and Mileage — it's a code reference, not company
            data, and the crew is who needs it. It reads NOTHING from the
            backend, so there is no authzFor tier to pick: the whole thing is
            static NEC tables and arithmetic in the browser. -->
       <button id="btnAllCharts" class="btn btn-sm" type="button">📐 All Charts</button>
-      <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
-      <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
+      <div class="topbar-menu-wrap">
+        <button id="topbarMenuBtn" class="btn btn-sm topbar-menu-btn" type="button"
+                aria-label="Open menu" aria-expanded="false" aria-controls="topbarMenu">☰</button>
+        <div id="topbarMenu" class="topbar-menu" hidden>
+          <!-- These retain their original IDs and role classes so existing
+               authorization visibility and event wiring continue to apply. -->
+          <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
+          <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
+          <button id="btnFleet" class="btn btn-sm" type="button">🚗 Fleet</button>
+          <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
+          <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
+          <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
+          <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
+          <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
+          <button id="btnWhosWorking" class="btn btn-sm strict-admin-only hidden" type="button">🟢 Who's Working</button>
+          <button id="btnTimeOff" class="btn btn-sm strict-admin-only hidden" type="button">🌴 Time Off<span id="timeOffBadge"></span></button>
+          <button id="btnMySchedule" class="btn btn-sm non-admin-only hidden" type="button">📅 My Schedule</button>
+          <button id="btnMileage" class="btn btn-sm" type="button">⛽ Mileage</button>
+          <button id="refreshBtn" class="btn btn-sm" type="button">↺ Refresh</button>
+          <button id="logoutBtn" class="btn btn-danger-sm" type="button">Log Out</button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -14704,11 +14698,36 @@
     }
   }
 
+  function closeTopbarMenu() {
+    const menu = $("topbarMenu");
+    const button = $("topbarMenuBtn");
+    if (!menu || !button) return;
+    menu.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  }
+
   function wireEvents() {
     $("loginBtn").addEventListener("click", handleLogin);
     [$("loginId"), $("loginPin")].forEach(el => {
       el.addEventListener("keydown", e => { if (e.key === "Enter") handleLogin(); });
     });
+
+    const topbarMenu = $("topbarMenu");
+    const topbarMenuBtn = $("topbarMenuBtn");
+    if (topbarMenu && topbarMenuBtn) {
+      topbarMenuBtn.addEventListener("click", e => {
+        e.stopPropagation();
+        topbarMenu.hidden = !topbarMenu.hidden;
+        topbarMenuBtn.setAttribute("aria-expanded", String(!topbarMenu.hidden));
+      });
+      topbarMenu.addEventListener("click", () => closeTopbarMenu());
+      document.addEventListener("click", e => {
+        if (!topbarMenu.parentElement.contains(e.target)) closeTopbarMenu();
+      });
+      document.addEventListener("keydown", e => {
+        if (e.key === "Escape") closeTopbarMenu();
+      });
+    }
 
     $("logoutBtn").addEventListener("click", () => { clearUser(); });
     $("refreshBtn").addEventListener("click", loadJobs);

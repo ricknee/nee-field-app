@@ -495,6 +495,38 @@
     }
     .vi-chip.on .vi-chip-n { background: rgba(255,255,255,0.25); color: #fff; }
 
+    /* One job's invoices from the selected vendor. Collapsed by default — the
+       header carries the count and the running total, which is usually the whole
+       answer; open it only to see the individual tickets. */
+    .vi-group {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 10px 12px; margin-bottom: 6px;
+      font: inherit; font-size: 14px; text-align: left;
+      background: var(--panel-2); color: var(--text);
+      border: 1px solid var(--line); border-radius: 10px;
+      cursor: pointer;
+    }
+    .vi-group:hover { border-color: var(--accent); }
+    .vi-group.open { border-color: var(--accent); background: var(--accent-glow); }
+    .vi-group-caret { color: var(--muted); flex: none; font-size: 11px; }
+    /* min-width:0 so a long job name truncates instead of shoving the total off
+       the row — the total is the number people came for. */
+    .vi-group-name {
+      font-weight: 700; flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .vi-group-po {
+      flex: none; font-size: 11px; font-weight: 600; color: var(--muted);
+      background: var(--panel); border: 1px solid var(--line-2);
+      border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+    }
+    .vi-group-meta {
+      flex: none; font-size: 12px; font-weight: 700; color: var(--muted);
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+    }
+    /* Indented so an open group reads as belonging to its header. */
+    .vi-group-body { margin: 0 0 10px 10px; }
+
     .pto-bar {
       height: 8px; border-radius: 999px; background: var(--line);
       overflow: hidden; margin: 8px 0 4px;
@@ -21808,6 +21840,9 @@
   // which is the point of the vendor filter: "show me every CED invoice" is a
   // question about history, not about the queue.
   let viStatusFilter = "waiting";
+  // Which job groups are expanded. A Set of job ids, kept across redraws so
+  // changing the vendor filter doesn't collapse what you just opened.
+  const viOpenJobs = new Set();
   // The jobs the picker offers, shared between the render and the wiring so the
   // two cannot disagree about what "job 3" in the list means.
   let viPickerJobs = [];
@@ -22072,7 +22107,9 @@
     const noJobs = jobs.length === 0;
     viPickerJobs = jobs;
 
-    const row = (r) => {
+    // `inGroup` suppresses the "→ Job name" line: inside a job group the header
+    // has already said which job, and repeating it on every row is noise.
+    const row = (r, inGroup) => {
       const isPending = r.status === "needs_review";
       const isCredit = r.amount != null && Number(r.amount) < 0;
       // The candidates for an ambiguous PO, named. "2 Barn" tells the reviewer
@@ -22083,7 +22120,7 @@
       const settledLine = isPending ? "" : `
         <div class="vi-sub">
           ${r.status === "matched"
-            ? `→ ${esc(r.jobName || "job")}${r.resolvedBy ? ` · by ${esc(r.resolvedBy)}` : ""}`
+            ? `${inGroup ? "" : `→ ${esc(r.jobName || "job")}`}${r.resolvedBy ? `${inGroup ? "" : " · "}by ${esc(r.resolvedBy)}` : ""}`
             : `✓ Reviewed, no job${r.resolvedBy ? ` · ${esc(r.resolvedBy)}` : ""}${r.note ? ` — “${esc(r.note)}”` : ""}`}
         </div>`;
 
@@ -22132,9 +22169,54 @@
       ? `<div class="section-header">Waiting on me (${pending.length})</div>${pending.map(row).join("")}`
       : `<div class="clock-note">Nothing waiting${who ? ` from ${who}` : " — every invoice found its job"}.</div>`;
 
+    // ── Placed invoices, GROUPED BY JOB ──────────────────────────────────
+    // "Show me every CED invoice on Bethel School" is the question this screen
+    // gets asked once invoices start landing, and a flat list can't answer it.
+    // Collapsed by default: the header carries the count and the running total,
+    // which is usually the whole answer — open it only to see the individual
+    // tickets.
+    const onJobs = settled.filter(r => r.status === "matched" && r.jobId);
+    const noJob  = settled.filter(r => !(r.status === "matched" && r.jobId));
+
+    const byJob = new Map();
+    for (const r of onJobs) {
+      if (!byJob.has(r.jobId)) byJob.set(r.jobId, { name: r.jobName, po: r.jobPo, rows: [] });
+      byJob.get(r.jobId).rows.push(r);
+    }
+    const groups = [...byJob.entries()]
+      .sort((a, b) => (a[1].name || "").localeCompare(b[1].name || ""));
+
+    const groupHtml = groups.map(([jobId, g]) => {
+      const open  = viOpenJobs.has(jobId);
+      const total = g.rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+      // The PO code alone ("MIB 433"), not the whole "Bethel School (MIB 433)"
+      // string — the job name is already right beside it.
+      const code = (g.po || "").match(/\(([^)]*)\)/)?.[1] || g.po || "";
+      return `
+        <button class="vi-group${open ? " open" : ""}" onclick="viToggleJob('${jsStr(jobId)}')">
+          <span class="vi-group-caret">${open ? "▾" : "▸"}</span>
+          <span class="vi-group-name">${esc(g.name || "Unnamed job")}</span>
+          ${code ? `<span class="vi-group-po">${esc(code)}</span>` : ""}
+          <span class="vi-group-meta">${g.rows.length} · ${viMoney(total)}</span>
+        </button>
+        ${open ? `<div class="vi-group-body">${g.rows.map(r => row(r, true)).join("")}</div>` : ""}`;
+    }).join("");
+
     const settledHtml = viStatusFilter !== "all" ? "" : `
-      <div class="section-header" style="margin-top:14px;">Already dealt with (${settled.length})</div>
-      ${settled.length ? settled.map(row).join("") : `<div class="clock-note">Nothing yet.</div>`}`;
+      <div class="section-header" style="margin-top:16px;">
+        On jobs (${onJobs.length})${viVendor ? ` — ${who}` : ""}</div>
+      ${groups.length ? groupHtml : `<div class="clock-note">
+        Nothing placed yet.
+        <!-- ⚠ Say this plainly. The ~215 expenses the bot created BEFORE it
+             started posting here never passed through this table, so a job
+             showing two invoices does NOT mean two is all it ever had. Letting
+             someone conclude otherwise about money is the whole failure mode
+             this app keeps hitting. -->
+        <span style="color:var(--muted);">Only counts invoices since the automation
+        started sending them here — anything the bot placed before that is on the
+        job, but not listed here.</span></div>`}
+      <div class="section-header" style="margin-top:16px;">Reviewed, no job (${noJob.length})</div>
+      ${noJob.length ? noJob.map(r => row(r, false)).join("") : `<div class="clock-note">Nothing yet.</div>`}`;
 
     return `
       <div class="clock-note" style="margin-bottom:10px;">
@@ -22172,6 +22254,12 @@
 
   function viSetStatus(s) { viStatusFilter = s; viRedraw(); }
   window.viSetStatus = viSetStatus;
+
+  function viToggleJob(jobId) {
+    if (viOpenJobs.has(jobId)) viOpenJobs.delete(jobId); else viOpenJobs.add(jobId);
+    viRedraw();
+  }
+  window.viToggleJob = viToggleJob;
 
   function viRedraw() {
     const host = $("vendorInvoiceBody");

@@ -410,6 +410,16 @@
       max-height: 220px;
     }
     .vi-pick .sch-job-search { padding: 8px 10px; font-size: 14px; }
+    /* Status headings inside the picker. Sticky so the group a row belongs to is
+       still named after you have scrolled past its heading — with 58 Completed
+       jobs the heading would otherwise leave the screen almost immediately. */
+    .vi-pick .sch-job-group {
+      position: sticky; top: 0; z-index: 1;
+      padding: 5px 10px; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--muted); background: var(--panel-3);
+      border-bottom: 1px solid var(--line);
+    }
     .vi-btns { display: flex; gap: 6px; }
     .vi-btns .btn { flex: 1; white-space: nowrap; }
     /* Sits apart from "Add to job": it is the other decision, not a weaker
@@ -21794,12 +21804,26 @@
               (j.po   || "").toLowerCase().includes(ql))
           : viPickerJobs;
         activeIdx = -1;
+        // Grouped by status, in VI_JOB_STATUS_ORDER. viPickerJobs is already
+        // sorted that way and .filter preserves order, so a group is always
+        // contiguous and a heading is just "the status changed".
+        //
+        // ⚠ Headings are NOT .sch-job-result, so the keyboard nav below — which
+        // selects on that class — skips straight over them and never lands on a
+        // row that cannot be picked.
+        let lastRank = null;
         results.innerHTML = hits.length
-          ? hits.slice(0, 30).map((j, i) =>
-              `<div class="sch-job-result" data-id="${esc(j.id)}" data-idx="${i}">
-                 ${esc(j.name)}
-                 ${j.po ? `<span class="contractor">${esc(j.po)} · ${esc(j.status || "")}</span>` : ""}
-               </div>`).join("")
+          ? hits.slice(0, 40).map((j, i) => {
+              const rank = viStatusRank(j.status);
+              const head = rank !== lastRank
+                ? `<div class="sch-job-group">${esc(j.status || "Other")}</div>` : "";
+              lastRank = rank;
+              return head +
+                `<div class="sch-job-result" data-id="${esc(j.id)}" data-idx="${i}">
+                   ${esc(j.name)}
+                   ${j.po ? `<span class="contractor">${esc(j.po)}</span>` : ""}
+                 </div>`;
+            }).join("")
           : `<div class="sch-job-result-empty">No matching job</div>`;
         results.classList.add("open");
         results.querySelectorAll(".sch-job-result").forEach(rowEl => {
@@ -21877,9 +21901,20 @@
   // the parser never found means look at the paper, a PO no job has means the
   // job was never created or the PO was mistyped, and two jobs sharing one PO
   // means pick.
-  // The only statuses an invoice can be charged to. Owner's call: an estimate or
-  // a lead has no costs yet, and Not Awarded never will.
-  const VI_JOB_STATUSES = new Set(["awarded", "ready to invoice", "completed"]);
+  // The only statuses an invoice can be charged to, IN THE ORDER THEY ARE
+  // OFFERED. Owner's call: an estimate or a lead has no costs yet, and Not
+  // Awarded never will.
+  //
+  // One list, not a Set for membership plus a separate array for order — those
+  // two drift, and the way you find out is a job that is pickable but sorts
+  // last, or sorts first and cannot be picked.
+  //
+  // ⚠ The ORDER is the feature. 58 of the 83 chargeable jobs are Completed, so
+  // by name alone the four jobs someone is actively buying material for sit
+  // buried among five years of finished ones. Awarded first puts the likely
+  // answer on screen before anybody types.
+  const VI_JOB_STATUS_ORDER = ["awarded", "ready to invoice", "completed"];
+  const viStatusRank = (s) => VI_JOB_STATUS_ORDER.indexOf(String(s || "").toLowerCase());
 
   const VI_REASON = {
     "no-po-on-invoice":      "No PO on the invoice",
@@ -21906,8 +21941,10 @@
     // come back — the symptom will be a job you cannot find in the picker, not
     // an error.
     const jobs = (state.jobs || [])
-      .filter(j => VI_JOB_STATUSES.has((j.status || "").toLowerCase()))
-      .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      .filter(j => viStatusRank(j.status) >= 0)
+      // Status group first, then name inside the group.
+      .sort((a, b) => viStatusRank(a.status) - viStatusRank(b.status)
+                   || (a.name || "").localeCompare(b.name || ""));
     // ⚠ An empty picker must SAY it is empty. A control holding only its
     // placeholder looks identical whether there are no jobs or the job list
     // never arrived, and the second one is a bug wearing the first one's face.

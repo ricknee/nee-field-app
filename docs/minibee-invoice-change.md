@@ -34,6 +34,24 @@ read pCloud. So the review screen stays empty unless the MiniBee sends to it.
 
 ---
 
+## The token
+
+The bot already logs in and holds a token — **reuse it, don't add a second login.**
+For reference, that call is:
+
+```
+POST https://hub.northeasternelec.com/.netlify/functions/airtable
+Content-Type: application/json
+
+{ "action": "login", "identifier": "<the bot's username>", "pin": "<its PIN>" }
+```
+
+It answers `{ "ok": true, "user": {...}, "token": "…" }`. The token lasts 30 days and
+goes on every later call as `Authorization: Bearer <token>`.
+
+⚠ **The credentials are already in the bot's own config. Do not copy them into a chat,
+a prompt, or this file.** Read them from wherever the existing code reads them.
+
 ## The call
 
 Same host, same bearer token the bot already holds from its login.
@@ -147,6 +165,30 @@ Dismiss button. The ☰ button carries a red dot while any are waiting.
   been dropping more invoices than the paper suggested.
 
 ---
+
+## Check the finished code against this list
+
+These are the mistakes most likely to be made here, in order of how much they cost and
+how quietly they do it. Every one of them produces code that runs fine and looks right.
+
+- [ ] **The amount is passed through as-is.** Search the diff for `parseFloat`,
+      `Number(`, `.replace('-','')`, `Math.abs`, `.trim()` on the amount. A Wolff credit
+      arrives as `773.85-`; anything that "fixes" that string turns a refund into a
+      charge. The app wants the raw value. **This is the expensive one.**
+- [ ] **The PO is passed through as-is** — spaces, case and all. No `.replace(/\s/g,'')`,
+      no uppercasing, no stripping. The app does that itself, on both sides of the
+      comparison.
+- [ ] **A missing PO omits the field or sends `null`** — not `""`, not `"N/A"`, not
+      `"unknown"`. Those are strings that match no job and read as a real PO on screen.
+- [ ] **The matched path is untouched.** `addGeneralExpense` still fires for invoices
+      whose PO matched, and the new call did not get added to that branch as well. An
+      invoice must not go down both paths.
+- [ ] **`status:"matched"` from the new call does NOT then also call
+      `addGeneralExpense`.** The expense already exists; calling again bills the job twice.
+- [ ] **Errors don't halt the batch.** One bad invoice should be logged and skipped, not
+      stop the other nine.
+- [ ] **No credentials were hardcoded** into the new code, and none ended up in a log line.
+- [ ] **The test used a fake invoice number and a PO matching no job** — not a real one.
 
 ## Optional, later — not part of this change
 

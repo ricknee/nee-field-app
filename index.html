@@ -360,6 +360,55 @@
     .ww-row.is-paused { background: #fffbeb; }
     .ww-row.is-stale  { background: #fef2f2; border-color: #fca5a5; }
 
+    /* ── 🧾 Invoice Review rows ──────────────────────────────────────────
+       Their OWN classes, deliberately not .ww-row. That class is built for a
+       one-line row and carries `white-space: nowrap` + ellipsis on every child
+       of its first column — which silently clipped the vendor, the amount, the
+       PO and the reason down to nothing on a phone, and its non-wrapping flex
+       pushed the job picker off the side of the screen. An invoice needs four
+       lines and a full-width control; it is a card, not a row. */
+    .vi-row {
+      display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start;
+      padding: 12px 14px; margin-bottom: 8px;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: var(--panel-2);
+    }
+    /* Pending is the only state that wants attention; a settled one is history. */
+    .vi-row.is-pending { background: #fffbeb; border-color: #fcd34d; }
+    /* Both tracks may wrap onto their own line — the basis is what decides at
+       which width that happens, so no media query is needed. */
+    .vi-main    { flex: 1 1 250px; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .vi-actions { flex: 1 1 210px; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+    @media (min-width: 620px) { .vi-actions { flex: 0 0 236px; } }
+
+    .vi-head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      gap: 10px; flex-wrap: wrap;
+    }
+    .vi-vendor { font-weight: 700; font-size: 15px; }
+    .vi-amount {
+      font-weight: 800; font-size: 16px; white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    /* A credit memo is not a smaller charge, it is the opposite sign. Wolff
+       sends them often enough that they must not read as an ordinary invoice. */
+    .vi-amount.is-credit { color: var(--green); }
+    .vi-sub    { font-size: 12px; color: var(--muted); }
+    .vi-reason { font-size: 12px; font-weight: 600; color: var(--red); }
+    .vi-cands  { font-size: 12px; color: var(--yellow); }
+    .vi-pdf    { font-size: 13px; font-weight: 600; margin-top: 2px; display: inline-block; }
+    /* width:100% rather than a min-width — the picker fits the column it is
+       given. A min-width here is what pushed the whole row off the side of a
+       phone in the first place. */
+    .vi-actions select {
+      width: 100%; max-width: 100%;
+      padding: 8px 10px; font-size: 14px;
+      border: 1px solid var(--line); border-radius: 8px;
+      background: var(--panel); color: var(--text);
+    }
+    .vi-btns { display: flex; gap: 6px; }
+    .vi-btns .btn { flex: 1; white-space: nowrap; }
+
     .pto-bar {
       height: 8px; border-radius: 999px; background: var(--line);
       overflow: hidden; margin: 8px 0 4px;
@@ -21721,7 +21770,10 @@
   }
   window.refreshVendorInvoiceBadge = refreshVendorInvoiceBadge;
 
-  const viMoney = (n) => (n == null ? "—" : `${n < 0 ? "−" : ""}$${Math.abs(Number(n)).toFixed(2)}`);
+  // Thousands separators: these are supply-house invoices and a five-figure one
+  // is normal — "$15368.45" is a number you have to stop and count.
+  const viMoney = (n) => (n == null ? "—" :
+    `${n < 0 ? "−" : ""}$${Math.abs(Number(n)).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 
   // Plain English, because the reason decides what the reviewer does next: a PO
   // the parser never found means look at the paper, a PO no job has means the
@@ -21756,46 +21808,44 @@
 
     const row = (r) => {
       const isPending = r.status === "needs_review";
+      const isCredit = r.amount != null && Number(r.amount) < 0;
       // The candidates for an ambiguous PO, named. "2 Barn" tells the reviewer
       // nothing; "Harlin Smith or Rebecca Smith" tells them everything.
       const cands = (r.candidates || []).length
-        ? `<div style="font-size:12px; color:#92400e;">Could be:
-             ${r.candidates.map(c2 => esc(c2.name)).join(" &nbsp;·&nbsp; ")}</div>`
+        ? `<div class="vi-cands">Could be: ${r.candidates.map(c2 => esc(c2.name)).join(" · ")}</div>`
         : "";
       const settledLine = isPending ? "" : `
-        <div style="font-size:12px; color:var(--muted);">
+        <div class="vi-sub">
           ${r.status === "matched"
             ? `→ ${esc(r.jobName || "job")}${r.resolvedBy ? ` · by ${esc(r.resolvedBy)}` : ""}`
             : `Dismissed${r.resolvedBy ? ` by ${esc(r.resolvedBy)}` : ""}${r.note ? ` — “${esc(r.note)}”` : ""}`}
         </div>`;
 
       return `
-        <div class="ww-row" style="align-items:flex-start;">
-          <div style="min-width:0; flex:1;">
-            <div style="font-weight:700;">
-              ${esc(r.vendor)} · ${esc(r.invoiceNo)} · ${viMoney(r.amount)}
+        <div class="vi-row${isPending ? " is-pending" : ""}">
+          <div class="vi-main">
+            <div class="vi-head">
+              <span class="vi-vendor">${esc(r.vendor)}</span>
+              <span class="vi-amount${isCredit ? " is-credit" : ""}">${
+                isCredit ? `${viMoney(Math.abs(r.amount))} credit` : viMoney(r.amount)}</span>
             </div>
-            <div style="font-size:12px; color:var(--muted);">
-              ${r.invoiceDate ? esc(r.invoiceDate) : "no date"} ·
-              PO on paper: ${r.poText ? `<strong>${esc(r.poText)}</strong>` : "<em>none found</em>"}
-              ${isPending ? ` · <span style="color:#b91c1c;">${esc(VI_REASON[r.reason] || r.reason || "Needs review")}</span>` : ""}
-            </div>
+            <div class="vi-sub">Invoice ${esc(r.invoiceNo)}${r.invoiceDate ? ` · ${esc(r.invoiceDate)}` : ""}</div>
+            <div class="vi-sub">PO on paper: ${r.poText ? `<strong>${esc(r.poText)}</strong>` : "<em>none found</em>"}</div>
+            ${isPending ? `<div class="vi-reason">${esc(VI_REASON[r.reason] || r.reason || "Needs review")}</div>` : ""}
             ${cands}
             ${settledLine}
             ${r.pdfUrl
-              ? `<a href="${esc(r.pdfUrl)}" target="_blank" rel="noopener"
-                    style="font-size:12px; font-weight:600;">📄 Open the invoice</a>`
-              : `<span style="font-size:12px; color:var(--muted);">No PDF stored</span>`}
+              ? `<a class="vi-pdf" href="${esc(r.pdfUrl)}" target="_blank" rel="noopener">📄 Open the invoice</a>`
+              : `<span class="vi-sub">No PDF stored</span>`}
           </div>
           ${isPending ? `
-          <div style="display:flex; flex-direction:column; gap:6px; flex:none; min-width:230px;">
-            <select id="viJob-${esc(r.id)}" class="edit-input" style="font-size:13px;">
+          <div class="vi-actions">
+            <select id="viJob-${esc(r.id)}">
               <option value="">— Pick a job —</option>
               ${jobOpts}
             </select>
-            <div style="display:flex; gap:6px;">
-              <button class="btn btn-primary btn-sm" style="flex:1;"
-                      onclick="viAssign('${esc(r.id)}')">Add to job</button>
+            <div class="vi-btns">
+              <button class="btn btn-primary btn-sm" onclick="viAssign('${esc(r.id)}')">Add to job</button>
               <button class="btn btn-sm" onclick="viDismiss('${esc(r.id)}')">Dismiss</button>
             </div>
           </div>` : ""}

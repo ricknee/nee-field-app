@@ -21913,7 +21913,16 @@
   // by name alone the four jobs someone is actively buying material for sit
   // buried among five years of finished ones. Awarded first puts the likely
   // answer on screen before anybody types.
-  const VI_JOB_STATUS_ORDER = ["awarded", "ready to invoice", "completed"];
+  //
+  // ⚠⚠ "Service Call Scheduled" is the JOB STATUS and is SINGULAR. The job TYPE
+  // for the same work is "Service Calls", PLURAL — and that exact mismatch is
+  // why a Make scenario gated on "Service Call" never fired once in production.
+  // Taken from `handleStartServiceCall`, which writes the value
+  // (`status = 'Service Call Scheduled'`, airtable.js), not from the UI label.
+  // Get it wrong and no service-call job appears here, with nothing to say why.
+  const VI_JOB_STATUS_ORDER = [
+    "awarded", "ready to invoice", "service call scheduled", "completed",
+  ];
   const viStatusRank = (s) => VI_JOB_STATUS_ORDER.indexOf(String(s || "").toLowerCase());
 
   const VI_REASON = {
@@ -21935,11 +21944,7 @@
     // Only jobs material can actually be charged to — owner's call 2026-09-09.
     // An estimate or a lead has no costs yet, and a Not Awarded job never will,
     // so offering them is offering a way to put money somewhere wrong.
-    //
-    // ⚠ This deliberately EXCLUDES "Service Call Scheduled", which does buy
-    // material. If a service-call invoice ever needs placing, that status has to
-    // come back — the symptom will be a job you cannot find in the picker, not
-    // an error.
+    // Everything else is offered, in VI_JOB_STATUS_ORDER.
     const jobs = (state.jobs || [])
       .filter(j => viStatusRank(j.status) >= 0)
       // Status group first, then name inside the group.

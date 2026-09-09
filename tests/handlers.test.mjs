@@ -5800,6 +5800,44 @@ await test("vendorInvoice: STATIC — the inbox writes NOTHING to Airtable", asy
   ok(/AND status = 'needs_review'\n\s*RETURNING id/.test(src), "markReviewed carries the guard in its WHERE clause");
 });
 
+await test("vendorInvoice: every pickable job status is a REAL status", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+
+  // The client's list of statuses an invoice may be charged to.
+  const m = html.match(/const VI_JOB_STATUS_ORDER = \[([\s\S]*?)\];/);
+  ok(m, "VI_JOB_STATUS_ORDER is findable");
+  const picked = [...m[1].matchAll(/"([^"]+)"/g)].map(x => x[1]);
+  ok(picked.length >= 3, `got ${picked.length} pickable statuses`);
+
+  // The server's authoritative whitelist, from handleUpdateJobStatus.
+  const v = src.match(/const VALID = \[([\s\S]*?)\];/);
+  ok(v, "the server's VALID job-status list is findable");
+  const valid = [...v[1].matchAll(/"([^"]+)"/g)].map(x => x[1].toLowerCase());
+
+  // ⚠⚠ THE SINGULAR/PLURAL TRAP, THIRD APPEARANCE. The job STATUS is
+  // "Service Call Scheduled"; the job TYPE for the same work is "Service Calls",
+  // plural. A Make scenario gated on "Service Call" never fired once in
+  // production because of exactly this. Here the cost would be quieter still: a
+  // status that matches nothing simply hides every job in it, with no error and
+  // nothing on screen to say a group is missing.
+  for (const p of picked) {
+    ok(valid.includes(p), `"${p}" is a real job status (server VALID list)`);
+  }
+  ok(picked.includes("service call scheduled"),
+     "service calls are pickable — owner's call 2026-09-09");
+  // Order is the feature: 58 of 83 chargeable jobs are Completed, so it must
+  // sort last or it buries everything someone is actually working on.
+  eq(picked[0], "awarded", "awarded is offered first");
+  eq(picked[picked.length - 1], "completed", "completed sorts last");
+  // Never offer a job that cannot have costs.
+  for (const bad of ["new lead", "estimating", "not awarded"]) {
+    ok(!picked.includes(bad), `"${bad}" is NOT offered — it can have no material cost`);
+  }
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

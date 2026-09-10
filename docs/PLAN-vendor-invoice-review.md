@@ -130,7 +130,7 @@ material cost, so the job's GP reads *better* than it is. That is the same shape
 estimate-GP bug that ran five years unnoticed — the error was always in the direction
 that flatters the number, and **nobody chases a number that looks good.**
 
-### The four accepted vendors
+### The five accepted vendors
 
 `ACCEPTED_VENDORS` in `_vendor-invoices.js` is the single list; the 400 message and the
 review screen's vendor chips are both built from it.
@@ -141,6 +141,7 @@ review screen's vendor chips are both built from it.
 | `Wolff`, `Wolf Bros Supply`, `WOLFF BROS. SUPPLY, INC.` | Wolff Brothers |
 | `Lowe's`, `Lowes`, `Lowe’s`, `LOWE'S HOME CENTERS, LLC` | Lowe's |
 | `Contractor Lighting & Supply` / `… and Supply` | Contractor Lighting & Supply |
+| `Home Depot` / `THE HOME DEPOT` / `HOME DEPOT #4512` | Home Depot |
 
 ⚠⚠ **The right-hand column is load-bearing and is not a label.** `vendorHandleFor`
 looks the vendor up with `lower(name) = lower($1)`; a name matching no `expense_vendors`
@@ -150,6 +151,12 @@ characteristic silent failure. Both new names were read out of Neon on 2026-09-0
 before the aliases were written: `Lowe's` still carries an Airtable rec id
 (`recNZLNmYciizye23`), Contractor Lighting is native and has only a uuid. Both forms
 work because `createExpenseNative` resolves `airtable_id = $8 OR id::text = $8`.
+Home Depot (`recwkYML0GVfOonxp`) was verified the same way on 2026-09-10.
+
+⚠ **The allowlist is not "any vendor we know".** `expense_vendors` holds dozens of
+names — Menards among them — and being in that table does not make a supplier
+acceptable here. This list is the set whose invoices a bot is trusted to turn into money
+unattended; everything else is a 400 a person has to look at.
 
 ⚠ **Adding a vendor is two places, not one:** the alias here *and* a matching
 `expense_vendors` row. Checking only the first gives an endpoint that accepts the

@@ -5964,7 +5964,12 @@ await test("vendorInvoice: an unrecognised vendor is refused, not stored", async
   // ⚠ A Gmail filter on the wrong label, or a parser reading the wrong
   // letterhead, must be a 400 in the bot's log — not a silent new vendor whose
   // invoices pile up in a queue nobody connects to the mistake.
-  eq(canonicalVendor("Home Depot"), null, "an unexpected vendor gets no canonical name");
+  // ⚠ Menards is a REAL vendor in expense_vendors with real expenses against it,
+  // and it is still refused here. Being a known supplier is not what this list
+  // means: it is the set whose invoices a bot may turn into money unattended.
+  // (This case used to be "Home Depot" — which became an accepted vendor on
+  // 2026-09-10, so it had to be replaced by one that is genuinely not.)
+  eq(canonicalVendor("Menards"), null, "an unexpected vendor gets no canonical name");
   eq(canonicalVendor(""), null);
 });
 
@@ -5993,10 +5998,18 @@ await test("vendorInvoice: Lowe's and Contractor Lighting map to their EXACT rec
     eq(canonicalVendor(spelling), "Contractor Lighting & Supply", `"${spelling}"`);
   }
 
-  // The four accepted vendors, and nothing else. A hard-coded "Expected CED or
+  // Home Depot, added 2026-09-10. The receipts say "THE HOME DEPOT" and the card
+  // statement adds a store number, which must not read as a different supplier.
+  for (const spelling of ["Home Depot", "THE HOME DEPOT", "home depot",
+                          "HOME DEPOT #4512", "HOME DEPOT U.S.A., INC.", "homedepot.com"]) {
+    eq(canonicalVendor(spelling), "Home Depot", `"${spelling}"`);
+  }
+
+  // The accepted vendors, and nothing else. A hard-coded "Expected CED or
   // Wolff" in the 400 message is what this list exists to stop.
-  eq(ACCEPTED_VENDORS.length, 4, "four vendors");
-  for (const n of ["CED", "Wolff Brothers", "Lowe's", "Contractor Lighting & Supply"]) {
+  eq(ACCEPTED_VENDORS.length, 5, "five vendors");
+  for (const n of ["CED", "Wolff Brothers", "Lowe's", "Contractor Lighting & Supply",
+                   "Home Depot"]) {
     ok(ACCEPTED_VENDORS.includes(n), `${n} is accepted`);
   }
 
@@ -6010,12 +6023,14 @@ await test("vendorInvoice: Lowe's and Contractor Lighting map to their EXACT rec
   // round would quietly file their invoices as Lowe's.
   eq(canonicalVendor("Lowe Electric Supply"), null, "a different supplier entirely");
   eq(canonicalVendor("Contractor Supply Co"), null, "'contractor' alone is not enough");
-  eq(canonicalVendor("Home Depot"), null, "still refused");
+  eq(canonicalVendor("Menards"), null, "a real vendor that is still not on the allowlist");
+  eq(canonicalVendor("Home Improvement Depot"), null, "'depot' alone is not enough either");
 
   // The dedupe key is normalised vendor + invoice no. Four distinct buckets, or
   // one vendor's invoice number silently blocks another vendor's.
   const norm = (v) => v.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-  eq(new Set(ACCEPTED_VENDORS.map(norm)).size, 4, "no two vendors share a dedupe bucket");
+  eq(new Set(ACCEPTED_VENDORS.map(norm)).size, ACCEPTED_VENDORS.length,
+     "no two vendors share a dedupe bucket");
 });
 
 await test("vendorInvoice: a ZERO balance is not a credit — the bot says so, we never infer", async () => {
@@ -6116,6 +6131,7 @@ const VI_VENDORS = {
   "wolff brothers":               "recWOLFFVENDOR01",
   "lowe's":                       "recNZLNmYciizye23",
   "contractor lighting & supply": "6c773531-8e07-4e2c-b05e-6476ea8dd846",
+  "home depot":                   "recwkYML0GVfOonxp",
 };
 const VI_JOB = { id: "3a1e77c0-0000-4000-8000-000000000001", name: "Joe Yoder (CAJ 436)", status: "Awarded" };
 const viPost = (b, tok = OFFICE_TOK) => POST("vendorInvoiceIntake", b, tok);
@@ -6126,6 +6142,7 @@ await test("vendorInvoiceIntake: a UNIQUE job match creates the expense, with th
     ["Contractor Lighting and Supply", "Contractor Lighting & Supply", "2096.49", 2096.49],
     ["CED",                            "CED",                          "13,446.00", 13446],
     ["WOLFF BROS. SUPPLY, INC.",       "Wolff Brothers",               "773.85",  773.85],
+    ["THE HOME DEPOT",                 "Home Depot",                   "126.81",  126.81],
   ]) {
     const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
     const res = await viPost({ vendor, invoiceNo: "INV-1", po: "CAJ 436",
@@ -6163,6 +6180,7 @@ await test("vendorInvoiceIntake: NO job match parks — Lowe's 86961 'up', CLS 0
   for (const [vendor, canonical, invoiceNo, po, amount] of [
     ["Lowe's",                      "Lowe's",                       "86961",      "up",          "11.08"],
     ["Contractor Lighting & Supply","Contractor Lighting & Supply", "0000315339", "Miller Shop", "2096.49"],
+    ["THE HOME DEPOT",              "Home Depot",                   "WC91234567", "shop",        "84.17"],
   ]) {
     const vi = viOn({ jobsByCode: {}, vendors: VI_VENDORS });
     const b = json(await viPost({ vendor, invoiceNo, po, amount }));
@@ -6203,7 +6221,8 @@ await test("vendorInvoiceIntake: an AMBIGUOUS PO parks and offers both — it ne
     { id: "3a1e77c0-0000-4000-8000-00000000000b", name: "Rebecca Smith (2 Barn)", status: "Completed" },
   ];
   for (const [vendor, canonical] of [["Lowes", "Lowe's"],
-                                     ["Contractor Lighting and Supply", "Contractor Lighting & Supply"]]) {
+                                     ["Contractor Lighting and Supply", "Contractor Lighting & Supply"],
+                                     ["HOME DEPOT #4512", "Home Depot"]]) {
     const vi = viOn({ jobsByCode: { "2BARN": two }, vendors: VI_VENDORS });
     const b = json(await viPost({ vendor, invoiceNo: "AMB-1", po: "2 Barn", amount: "500.00" }));
     eq(b.status, "needs_review", `${canonical}: parks`);
@@ -6223,6 +6242,11 @@ await test("vendorInvoiceIntake: a DUPLICATE retry charges nothing twice", async
   for (const [first, retry, canonical] of [
     ["Lowe's", "LOWES", "Lowe's"],
     ["Contractor Lighting & Supply", "contractor lighting and supply", "Contractor Lighting & Supply"],
+    // ⚠ The store number is the realistic retry difference for Home Depot: the
+    // same receipt read twice can come back "THE HOME DEPOT" and
+    // "HOME DEPOT #4512". Both must land in the same dedupe bucket, or the
+    // second send charges the job again.
+    ["THE HOME DEPOT", "HOME DEPOT #4512", "Home Depot"],
   ]) {
     const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
     const a = json(await viPost({ vendor: first, invoiceNo: "0000315339", po: "CAJ 436", amount: "2096.49" }));
@@ -6259,7 +6283,8 @@ await test("vendorInvoiceIntake: a PDF never blocks the money — it fails SOFT"
   // is exactly the case that matters: the invoice must still be recorded and
   // still land on the job. Losing the picture is bad; losing the money is worse.
   for (const [vendor, canonical] of [["Lowe's", "Lowe's"],
-                                     ["Contractor Lighting & Supply", "Contractor Lighting & Supply"]]) {
+                                     ["Contractor Lighting & Supply", "Contractor Lighting & Supply"],
+                                     ["Home Depot", "Home Depot"]]) {
     const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
     const pdf = Buffer.from("%PDF-1.4 sample invoice").toString("base64");
     const b = json(await viPost({ vendor, invoiceNo: "PDF-1", po: "CAJ 436", amount: "100.00", pdfBase64: pdf }));
@@ -6309,6 +6334,38 @@ await test("vendorInvoiceIntake: an explicit credit lands in the CREDIT column, 
   }
 });
 
+await test("vendorInvoiceIntake: a Home Depot RETURN is a credit, not a smaller charge", async () => {
+  // Requirement: credits/returns go through the existing logic, unchanged. Home
+  // Depot returns are common — a run to the store that came back — and there are
+  // two ways one can arrive, both of which must land in `material_credit`.
+  // ⚠ NOT as a negative manual_material_cost: v_expenses and every GP rollup
+  // read the two columns separately and subtract the credit themselves, so a
+  // credit written as a negative cost is counted twice.
+  for (const [label, body] of [
+    ["a signed amount",  { amount: "-84.17" }],
+    ["a trailing minus", { amount: "84.17-" }],
+    ["the bot's flag",   { amount: "84.17", isCredit: true }],
+  ]) {
+    const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+    json(await viPost({ vendor: "THE HOME DEPOT", invoiceNo: `RET-${label.length}`,
+                        po: "CAJ 436", ...body }));
+    const e = vi.expenses[0];
+    eq(e.materialCredit, 84.17, `${label}: lands in the credit column`);
+    eq(e.manualMaterialCost, null, `${label}: and NOT as a negative cost`);
+    eq(e.vendorHandle, "recwkYML0GVfOonxp", `${label}: on the real Home Depot record`);
+    eq(vi.invoices[0].amount, -84.17, `${label}: stored signed on the invoice row`);
+    viOff();
+  }
+
+  // ⚠ And an ordinary Home Depot purchase is still a cost. The credit path must
+  // not have swallowed the normal one.
+  const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+  json(await viPost({ vendor: "Home Depot", invoiceNo: "BUY-1", po: "CAJ 436", amount: "84.17" }));
+  eq(vi.expenses[0].manualMaterialCost, 84.17, "a purchase is a cost");
+  eq(vi.expenses[0].materialCredit, null, "with no credit");
+  viOff();
+});
+
 await test("vendorInvoiceIntake: invoiceNo is still required, and an unknown vendor is still refused", async () => {
   const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
 
@@ -6321,9 +6378,10 @@ await test("vendorInvoiceIntake: invoiceNo is still required, and an unknown ven
   // ⚠ A Gmail filter on the wrong label must be a 400 in the bot's log, not a
   // silent new vendor account. And the message has to NAME the accepted list —
   // a stale "Expected CED or Wolff" points the operator at the wrong problem.
-  const bad = await viPost({ vendor: "Home Depot", invoiceNo: "1", po: "CAJ 436", amount: "5.00" });
+  const bad = await viPost({ vendor: "Menards", invoiceNo: "1", po: "CAJ 436", amount: "5.00" });
   eq(bad.statusCode, 400, "unknown vendor → 400");
-  for (const n of ["CED", "Wolff Brothers", "Lowe's", "Contractor Lighting & Supply"]) {
+  for (const n of ["CED", "Wolff Brothers", "Lowe's", "Contractor Lighting & Supply",
+                   "Home Depot"]) {
     ok(json(bad).error.includes(n), `the refusal names ${n}`);
   }
   eq(vi.invoices.length, 0, "and nothing was stored under a name nobody agreed to");

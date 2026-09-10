@@ -22099,7 +22099,7 @@
     // present — so a vendor added later shows up here without a code change,
     // and a chip is never offered for a vendor with no invoices behind it.
     const vendors = [...new Set(["CED", "Wolff Brothers", "Lowe's",
-                                 "Contractor Lighting & Supply",
+                                 "Contractor Lighting & Supply", "Home Depot",
                                  ...all.map(r => r.vendor)])]
       .filter(v => v && all.some(r => r.vendor === v))
       .sort();

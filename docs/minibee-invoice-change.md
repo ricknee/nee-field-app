@@ -95,11 +95,17 @@ Content-Type: application/json
 | `Wolff`, `Wolf Bros Supply`, `WOLFF BROS. SUPPLY, INC.` | **Wolff Brothers** |
 | `Lowe's`, `Lowes`, `Lowe’s`, `LOWE'S HOME CENTERS, LLC` | **Lowe's** |
 | `Contractor Lighting & Supply`, `Contractor Lighting and Supply` | **Contractor Lighting & Supply** |
+| `Home Depot`, `THE HOME DEPOT`, `HOME DEPOT #4512`, `HOME DEPOT U.S.A., INC.` | **Home Depot** |
 
 Matching is case-insensitive, and both the straight `'` and the curly `’` apostrophe
-are accepted for Lowe's. Anything that reads as none of the four is a **400** — a Gmail
-filter on the wrong label should be loud in the bot's log, not a silent new vendor
-account whose invoices pile up in a queue nobody connects to the mistake.
+are accepted for Lowe's. A Home Depot store number after the name is fine — `#4512` is
+the same supplier, not a new one. Anything that reads as none of the five is a **400** —
+a Gmail filter on the wrong label should be loud in the bot's log, not a silent new
+vendor account whose invoices pile up in a queue nobody connects to the mistake.
+
+⚠ **Being a supplier we buy from is not the same as being on this list.** Menards, for
+instance, is a real vendor with real expenses against it and is still refused here. This
+list is the set whose paperwork a bot is trusted to turn into money unattended.
 
 These are the same values the bot already extracts in order to create an expense.
 Nothing new has to be parsed.

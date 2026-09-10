@@ -180,7 +180,13 @@ export function decodeInvoicePdf(pdfBase64) {
 // Verified against Neon 2026-09-09: "Lowe's" (recNZLNmYciizye23) and
 // "Contractor Lighting & Supply" (6c773531-…, native, no rec id) both exist and
 // are spelled exactly as below. The curly apostrophe in "Lowe’s" is an INPUT
-// spelling only — the stored name uses the straight one.
+// spelling only — the stored name uses the straight one. "Home Depot"
+// (recwkYML0GVfOonxp) verified the same way 2026-09-10.
+//
+// ⚠ THE ALLOWLIST IS NOT "ANY VENDOR WE KNOW". `expense_vendors` holds dozens of
+// names — Menards among them — and being in that table does NOT make a supplier
+// acceptable here. This list is the set whose invoices a bot is trusted to turn
+// into money unattended; everything else is a 400 somebody has to look at.
 //
 // ⚠ ADDING A VENDOR IS TWO PLACES: an alias here AND an `expense_vendors` row.
 // Doing only the first gives an endpoint that accepts the invoice and files it
@@ -201,6 +207,14 @@ const VENDOR_ALIASES = [
   // without caring which, and without caring about a trailing ", INC.".
   [/^contractor\s+lighting\b|contractor\s+lighting\s*(?:&|and)\s*supply/i,
                                                             "Contractor Lighting & Supply"],
+  // Home Depot: the receipts say "THE HOME DEPOT", the card statement says
+  // "HOME DEPOT #4512", and the legal name is "HOME DEPOT U.S.A., INC." The
+  // leading "The" is optional and so is the space, because the domain spells it
+  // "homedepot".
+  // ⚠ The store number after the name is why this stops at \b rather than
+  // anchoring the whole string — "HOME DEPOT #4512" is one vendor, not a new one
+  // per store.
+  [/^(?:the\s+)?home\s*depot\b/i,                           "Home Depot"],
 ];
 
 // The canonical names this inbox accepts, in alias order. Exported so the

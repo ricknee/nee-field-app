@@ -6721,8 +6721,32 @@ await test("vendorInvoice: the preview draws to a CANVAS, and never strands the 
 
   // ⚠ FAILS SOFT INTO THE THING THAT ALWAYS WORKS. A preview is a convenience;
   // the PDF is the record. A dead overlay with no way out is not acceptable.
-  ok(/Couldn't draw this invoice here[\s\S]{0,200}Open the PDF instead/.test(html),
+  ok(/Couldn't draw this document here[\s\S]{0,200}Open the PDF instead/.test(html),
      "a render failure still offers the PDF");
+  ok(/Couldn't show this receipt here[\s\S]{0,200}Open it instead/.test(html),
+     "and an image that won't load offers the file");
+
+  // ⚠ IMAGES NEVER TOUCH pdf.js. Half the expense receipts are phone photos;
+  // putting those through a PDF renderer would only invent a way to fail.
+  ok(/if \(!isPdf\) \{[\s\S]{0,800}im\.src = url;\s*return;/.test(html),
+     "a non-PDF is shown as an image and returns before the library loads");
+  // And the early return is BEFORE ensurePdfJs, not merely near it.
+  ok(html.indexOf("im.src = url;") < html.indexOf("await ensurePdfJs()"),
+     "the image path never reaches the loader");
+
+  // One viewer, two callers. The invoice queue and the expense receipt grid ask
+  // the same question of the same overlay.
+  ok(/window\.openDocPreview = openDocPreview;/.test(html), "the viewer is shared");
+  ok(/return openDocPreview\(\{\s*url: r\.pdfUrl, isPdf: true,/.test(html),
+     "the invoice queue goes through it");
+  ok(/openDocPreview\(\{ url: r\.url, isPdf: !!r\.isPdf, title: r\.name \|\| "Receipt" \}\)/.test(html),
+     "and so does an expense receipt tile");
+
+  // ⚠ The receipt tile carries the KEY, not the presigned URL — same reason as
+  // the invoice row. It used to be a bare <a target="_blank"> to that URL.
+  ok(/class="rcpt-open" data-key="\$\{esc\(r\.key\)\}"/.test(html), "the tile carries its key");
+  ok(!/<a href="\$\{esc\(r\.url\)\}" target="_blank"/.test(html),
+     "and no longer links straight out to the file");
 
   // The mobile back button closes it, per the app's standing rule for anything
   // full-screen.

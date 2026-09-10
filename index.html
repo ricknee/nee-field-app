@@ -7170,11 +7170,22 @@
       ? `<button type="button" class="rcpt-restore" data-key="${esc(r.key)}" style="background:none; border:none; cursor:pointer; font-size:11px; color:var(--blue); padding:2px;">↩ Restore</button>`
       : `<button type="button" class="rcpt-del" data-key="${esc(r.key)}" style="background:none; border:none; cursor:pointer; font-size:11px; color:var(--red); padding:2px;">🗑 Delete</button>`);
 
+    // ⚠ PREVIEWS IN PLACE — it used to be an <a target="_blank"> straight to the
+    // presigned URL, so checking a receipt meant a round trip out to the device's
+    // PDF reader and back, once per expense, on a screen where you are working
+    // through 46 of them. The overlay keeps an "Open" button for when the real
+    // file is actually wanted.
+    //
+    // Carries the KEY, not the URL: these are presigned links full of query
+    // parameters and they have no business in an inline handler. renderExpense-
+    // Receipts resolves the key against the loaded list.
     return `<div style="${mode === "deleted" ? "opacity:.6;" : ""}">
-        <a href="${esc(r.url)}" target="_blank" rel="noopener" style="text-decoration:none; color:inherit;">
+        <button type="button" class="rcpt-open" data-key="${esc(r.key)}" data-mode="${esc(mode)}"
+                style="display:block; width:100%; background:none; border:0; padding:0; font:inherit;
+                       text-align:left; color:inherit; cursor:pointer;">
           ${tile}
           <div style="font-size:11px; margin-top:4px; color:var(--muted);">${esc(r.isPdf ? "PDF" : "Photo")} · ${esc(date)}${kb ? " · " + esc(kb) : ""}</div>
-        </a>
+        </button>
         ${action}
       </div>`;
   }
@@ -7204,6 +7215,14 @@
       expReceiptState.showDeleted = !expReceiptState.showDeleted;
       renderExpenseReceipts();
     };
+    // Resolve the key against whichever list the tile came from — a deleted
+    // receipt is still previewable, and it lives in a different array.
+    grid.querySelectorAll(".rcpt-open").forEach(b =>
+      b.onclick = () => {
+        const src = b.dataset.mode === "deleted" ? del : list;
+        const r = src.find(x => x.key === b.dataset.key);
+        if (r) openDocPreview({ url: r.url, isPdf: !!r.isPdf, title: r.name || "Receipt" });
+      });
     grid.querySelectorAll(".rcpt-del").forEach(b =>
       b.onclick = () => mutateReceipt("deleteExpenseReceipts", b.dataset.key, "Deleting"));
     grid.querySelectorAll(".rcpt-restore").forEach(b =>
@@ -22438,9 +22457,11 @@
   }
 
   function viPreviewMsg(html) {
-    const m = $("viPreviewMsg"), c = $("viPreviewCanvas");
+    const m = $("viPreviewMsg"), c = $("viPreviewCanvas"), im = $("viPreviewImg");
     if (!m || !c) return;
-    m.innerHTML = html; m.style.display = ""; c.style.display = "none";
+    m.innerHTML = html; m.style.display = "";
+    c.style.display = "none";
+    if (im) { im.style.display = "none"; im.removeAttribute("src"); }
   }
 
   async function viRenderPdfPage() {
@@ -22469,19 +22490,29 @@
     $("viPreviewNext").disabled = viPdfPage >= n;
   }
 
-  async function viPreview(id) {
-    const r = (viData?.invoices || []).find(x => String(x.id) === String(id));
-    if (!r || !r.pdfUrl) return;
+  // The document viewer, shared by the invoice queue and by expense receipts.
+  // Both answer the same question — "what does this piece of paper say" — and
+  // neither is worth a trip out to the device's PDF reader and back.
+  //
+  // `isPdf: false` shows the file as an image and never touches pdf.js: half of
+  // the expense receipts are phone photos, and running those through a PDF
+  // renderer would only invent a way for them to fail.
+  async function openDocPreview(opts) {
+    const url = opts && opts.url;
+    if (!url) return;
+    const title = (opts && opts.title) || "";
+    const isPdf = !opts || opts.isPdf !== false;
 
-    // ⚠ A token per open. Tapping Preview on a second invoice while the first is
-    // still fetching would otherwise let the slower one finish last and paint
-    // the WRONG invoice — with the right title above it, which is exactly the
-    // kind of wrong that gets believed.
+    // ⚠ A token per open. Tapping Preview on a second document while the first
+    // is still fetching would otherwise let the slower one finish last and paint
+    // the WRONG one — with the right title above it, which is exactly the kind
+    // of wrong that gets believed.
     const myToken = ++viPdfToken;
     viPdfDoc = null; viPdfPage = 1;
 
-    $("viPreviewTitle").textContent = `${r.vendor} · Invoice ${r.invoiceNo}`;
-    $("viPreviewOpen").href = r.pdfUrl;
+    $("viPreviewTitle").textContent = title;
+    $("viPreviewOpen").href = url;
+    $("viPreviewOpen").textContent = isPdf ? "📄 PDF" : "🖼 Open";
     $("viPreviewPg").textContent = "";
     $("viPreviewPrev").style.display = "none";
     $("viPreviewNext").style.display = "none";
@@ -22496,24 +22527,53 @@
       viPdfDoc = null;
     });
 
+    // An image needs no library and no worker — just show it.
+    if (!isPdf) {
+      const im = $("viPreviewImg");
+      im.onload = () => {
+        if (myToken !== viPdfToken) return;
+        $("viPreviewMsg").style.display = "none";
+        im.style.display = "";
+      };
+      im.onerror = () => {
+        if (myToken !== viPdfToken) return;
+        viPreviewMsg(`Couldn't show this receipt here.<br><br>
+          <a href="${esc(url)}" target="_blank" rel="noopener">🖼 Open it instead</a>`);
+      };
+      im.src = url;
+      return;
+    }
+
     try {
       await ensurePdfJs();
       if (myToken !== viPdfToken) return;
       window.pdfjsLib.GlobalWorkerOptions.workerSrc =
         "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-      const doc = await window.pdfjsLib.getDocument({ url: r.pdfUrl }).promise;
+      const doc = await window.pdfjsLib.getDocument({ url }).promise;
       if (myToken !== viPdfToken) return;
       viPdfDoc = doc;
       await viRenderPdfPage();
     } catch (e) {
       if (myToken !== viPdfToken) return;
       // ⚠ FAILS SOFT INTO THE THING THAT ALWAYS WORKS. A preview is a
-      // convenience; the PDF itself is the record. Never leave the reviewer
-      // staring at a dead overlay with no way to the document.
-      viPreviewMsg(`Couldn't draw this invoice here.<br><br>
-        <a href="${esc(r.pdfUrl)}" target="_blank" rel="noopener">📄 Open the PDF instead</a>`);
-      console.error(`viPreview: ${String(e?.message || e)}`);
+      // convenience; the document itself is the record. Never leave the reviewer
+      // staring at a dead overlay with no way to reach it.
+      viPreviewMsg(`Couldn't draw this document here.<br><br>
+        <a href="${esc(url)}" target="_blank" rel="noopener">📄 Open the PDF instead</a>`);
+      console.error(`docPreview: ${String(e?.message || e)}`);
     }
+  }
+  window.openDocPreview = openDocPreview;
+
+  // The invoice queue's Preview button. Takes the ROW ID and looks the URL up
+  // here — a presigned R2 link has no business inside an inline handler.
+  function viPreview(id) {
+    const r = (viData?.invoices || []).find(x => String(x.id) === String(id));
+    if (!r || !r.pdfUrl) return;
+    return openDocPreview({
+      url: r.pdfUrl, isPdf: true,
+      title: `${r.vendor} · Invoice ${r.invoiceNo}`,
+    });
   }
   window.viPreview = viPreview;
 
@@ -28653,6 +28713,9 @@
   </div>
   <div class="vi-prev-body" id="viPreviewBody">
     <canvas id="viPreviewCanvas" class="vi-prev-canvas" style="display:none;"></canvas>
+    <!-- Expense receipts arrive as phone photos as often as PDFs, and an image
+         needs no library at all — pdf.js would only be a way to fail on one. -->
+    <img id="viPreviewImg" class="vi-prev-canvas" style="display:none;" alt="" />
     <div class="vi-prev-msg" id="viPreviewMsg">Loading…</div>
   </div>
 </div>

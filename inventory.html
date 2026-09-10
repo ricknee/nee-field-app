@@ -2154,6 +2154,40 @@ function renderUnmatchedWarning(unmatched, showCost) {
   return html;
 }
 
+// "Sep 4" from a 'YYYY-MM-DD'.
+// ⚠ SPLIT, NOT new Date(v). new Date("2026-09-04") is parsed as UTC midnight and
+// renders as Sep 3 for anyone west of UTC — which is everyone here. Same trap
+// fmtDate avoids in the field app.
+function pushShortDate(ymd) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || ""));
+  if (!m) return "";
+  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Re-stamp this job's unpushed material at today's cost.
+//
+// ⚠ Scoped to the one job, because the button sits beside that job's Push. The
+// backend takes the main-base job id and touches nothing else on the list.
+async function refreshJobPrices(idx) {
+  var pending = window._pendingExpenses || [];
+  var g = pending[idx];
+  if (!g) return;
+  var moved = g.lines.filter(function(l) { return l.priceMoved; }).length;
+  if (!confirm("Update " + moved + " item" + (moved === 1 ? "" : "s") + " on " + g.jobName +
+               " to today's prices?\n\nOnly material that has not been pushed yet is changed.")) return;
+  try {
+    var d = await apiPost({ action: "refreshPendingPrices", jobId: g.jobId });
+    showToast("✓ " + (d.updated || 0) + " line" + (d.updated === 1 ? "" : "s") + " repriced");
+    // Re-read rather than patching in place: the push total, the tax and the
+    // grand total all derive from these numbers, and recomputing them here would
+    // be a second implementation of the sum that decides what a customer pays.
+    await loadPushPending();
+  } catch (e) {
+    showToast("Reprice failed: " + e.message, true);
+  }
+}
+
 function renderPushExpenses() {
   var body    = document.getElementById("push-body");
   var pending = window._pendingExpenses || [];
@@ -2178,6 +2212,15 @@ function renderPushExpenses() {
     html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;">';
     html += '<div style="font-size:15px;font-weight:700;flex:1;">' + g.jobName + '</div>';
     html += '<div style="font-size:11px;padding:2px 8px;border-radius:10px;background:' + (g.taxable ? 'rgba(52,152,219,.2)' : 'rgba(46,204,113,.2)') + ';color:' + (g.taxable ? 'var(--blue)' : 'var(--green)') + ';flex-shrink:0;">' + (g.taxable ? 'Taxable' : 'Tax Exempt') + '</div>';
+    // Beside Push, and only when something would actually change — a button
+    // offering to reprice material whose price has not moved is a button that
+    // teaches you to ignore it.
+    var moved = g.lines.filter(function(l) { return l.priceMoved; }).length;
+    if (moved) {
+      html += '<button onclick="refreshJobPrices(' + idx + ')" title="' + moved +
+        ' item' + (moved === 1 ? '' : 's') + ' cost a different amount today" ' +
+        'style="background:none;border:1px solid var(--gold);border-radius:8px;color:var(--gold);font-size:12px;font-weight:700;padding:6px 12px;cursor:pointer;flex-shrink:0;">↻ Prices (' + moved + ')</button>';
+    }
     html += '<button onclick="pushOneJob(' + idx + ')" style="background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-size:12px;font-weight:700;padding:6px 12px;cursor:pointer;flex-shrink:0;">Push</button>';
     html += '</div>';
 
@@ -2186,9 +2229,24 @@ function renderPushExpenses() {
       var qtyLabel = l.wireFt > 0
         ? (Math.abs(l.qty) + ' lbs (' + l.wireFt.toLocaleString() + ' ft)')
         : ('×' + Math.abs(l.qty));
-      html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:3px 0;border-bottom:1px solid var(--border);">';
-      html += '<span>' + l.item + (isReturn ? ' (return)' : '') + ' ' + qtyLabel + '</span>';
-      html += '<span>' + (isReturn ? '−' : '') + '$' + Math.abs(l.total).toFixed(2) + '</span></div>';
+      // When it was logged. A line can gather several transactions, so a span
+      // shows both ends — collapsing a week onto one date would misdate the
+      // material, and this column exists precisely to say when it was used.
+      var dTxt = l.dateFrom
+        ? (l.dateTo && l.dateTo !== l.dateFrom
+            ? pushShortDate(l.dateFrom) + '–' + pushShortDate(l.dateTo)
+            : pushShortDate(l.dateFrom))
+        : '';
+      // The old price struck through beside the new one, so a repriced line
+      // shows what it moved FROM rather than just quietly reading differently.
+      var moveTxt = l.priceMoved
+        ? '<span style="color:var(--gold);font-size:11px;margin-left:6px;white-space:nowrap;">now $' +
+            Number(l.liveCost).toFixed(2) + '</span>'
+        : '';
+      html += '<div style="display:flex;align-items:baseline;gap:8px;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:3px 0;border-bottom:1px solid var(--border);">';
+      html += '<span style="flex:0 0 auto;min-width:82px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;">' + dTxt + '</span>';
+      html += '<span style="flex:1 1 auto;min-width:0;">' + l.item + (isReturn ? ' (return)' : '') + ' ' + qtyLabel + moveTxt + '</span>';
+      html += '<span style="flex:0 0 auto;">' + (isReturn ? '−' : '') + '$' + Math.abs(l.total).toFixed(2) + '</span></div>';
     });
 
     html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:6px 0 2px;">';

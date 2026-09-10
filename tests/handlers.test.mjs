@@ -4556,10 +4556,32 @@ await test("no bare `WHERE airtable_id = $n` — the dual-handle guard", async (
     // escape within the same clause, hence the small window.
     const lines = src.split("\n");
     lines.forEach((l, i) => {
-      const m = l.match(/(?:\w+\.)?job_airtable_id\s*=\s*(\$\d+)/);
+      const m = l.match(/(?:(\w+)\.)?job_airtable_id\s*=\s*(\$\d+)/);
       if (!m) return;
+      const alias = m[1], param = m[2];
       const window = lines.slice(Math.max(0, i - 1), i + 4).join("\n");
-      if (window.includes(`id::text = ${m[1]}`)) return;
+      if (window.includes(`id::text = ${param}`)) return;
+      // ⚠ inventory_transactions is the EXCEPTION, and it is a real one rather
+      // than a waiver. Everywhere else `job_airtable_id` is a child row's copy
+      // of an Airtable rec id and is NULL for a native job — which is the hole
+      // this rule exists to close. On a transaction the same column name holds
+      // the HANDLE the ledger speaks: submitCart stamps `COALESCE(airtable_id,
+      // id::text)` straight in, and mainJobIndex keys on that same expression,
+      // so the two match by construction for native and Airtable-born jobs
+      // alike. Verified against production 2026-09-10 — 536 rec-shaped rows and
+      // one uuid-shaped, which under the general rule could not exist.
+      // Allowlisted by shape, like the time_entries case above.
+      //
+      // Matched on the ALIAS, and looking back only as far as the top of the
+      // statement: `UPDATE inventory_transactions t` must be what `t.` refers
+      // to. A bare `/inventory_transactions/` anywhere nearby would also exempt
+      // an unrelated statement that merely followed one, which is how an
+      // allowlist stops being an allowlist.
+      const stmt = lines.slice(Math.max(0, i - 15), i + 1).join("\n");
+      const owner = alias
+        ? new RegExp(`inventory_transactions\\s+${alias}\\b`)
+        : /(?:UPDATE|FROM|INTO)\s+inventory_transactions\b/;
+      if (owner.test(stmt)) return;
       offenders.push(`${f}:${i + 1} filters job_airtable_id with no uuid path — ${l.trim().slice(0, 70)}`);
     });
   }
@@ -6910,6 +6932,64 @@ await test("preview: a multi-page PDF is one continuous scroll, and bounded in m
   // The arrows still exist, but they JUMP within the scroll now.
   ok(/entry\.div\.scrollIntoView\(\{ behavior: "smooth", block: "start" \}\)/.test(html),
      "the arrows scroll rather than swapping the rendered page");
+});
+
+await test("push expenses: repricing touches UNPUSHED material only, and only this job", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/inventory.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../inventory.html", import.meta.url)), "utf8");
+
+  const fn = src.slice(src.indexOf("async function handleRefreshPendingPrices"));
+  const body = fn.slice(0, fn.indexOf("\nasync function handlePushExpenses"));
+
+  // ⚠⚠ A PUSHED TRANSACTION IS MONEY ALREADY CHARGED. Re-stamping one would
+  // change what an invoice was based on after the fact, with nothing on any
+  // screen to show that it moved.
+  ok(/AND t\.expense_created = false/.test(body), "unpushed rows only");
+  ok(/AND t\.txn_type IN \('Use','Return'\)/.test(body), "and only chargeable types");
+
+  // ⚠ Scoped to one job — the button sits beside that job's Push, and quietly
+  // repricing every other job on the list would be the wrong kind of surprise.
+  ok(/AND \(\$1::text IS NULL OR t\.job_airtable_id = \$1\)/.test(body), "scoped by job");
+  ok(/const jobId = body\?\.jobId \? String\(body\.jobId\) : null;/.test(body), "from the request");
+
+  // Only rows that would actually change, or the count reports every pending
+  // line as repriced and tells the user nothing about what moved.
+  ok(/IS DISTINCT FROM i\.default_unit_cost/.test(body), "only rows that differ");
+  // NULL cost is a missing figure, not a price of zero.
+  ok(/AND i\.default_unit_cost IS NOT NULL/.test(body), "an item with no cost on file is skipped");
+
+  // It writes money, so it sits at the same tier as the push it precedes.
+  ok(/"refreshPendingPrices",\/\/ re-stamps unpushed material/.test(src),
+     "the action is in the admin write set");
+  ok(/if \(body\.action === "refreshPendingPrices"\) return await handleRefreshPendingPrices\(body\);/.test(src),
+     "and is dispatched");
+
+  // ⚠ FOURTH APPEARANCE of the JS-Date trap. The driver returns a DATE column as
+  // a JS Date; String(d).slice(0,10) gives "Wed Aug 12". Format in Postgres.
+  ok(/to_char\(txn_date, 'YYYY-MM-DD'\) AS txn_ymd/.test(src), "the entry date is to_char'd");
+  ok(!/String\(r\.txn_date\)/.test(src), "and never stringified in JS");
+
+  // ⚠ And the same trap's twin on the client: new Date("2026-09-04") is UTC
+  // midnight and renders as Sep 3 for anyone west of UTC — everyone here.
+  ok(/function pushShortDate\(ymd\)/.test(html), "the client formats the date itself");
+  ok(/new Date\(Number\(m\[1\]\), Number\(m\[2\]\) - 1, Number\(m\[3\]\)\)/.test(html),
+     "by splitting the parts, not by parsing the string");
+
+  // A line can gather several transactions; collapsing a week onto one date
+  // would misdate the material, which is what this column exists to report.
+  ok(/if \(!line\.firstDate \|\| ymd < line\.firstDate\) line\.firstDate = ymd;/.test(src),
+     "both ends of a multi-day line are kept");
+  ok(/l\.dateTo && l\.dateTo !== l\.dateFrom/.test(html), "and shown as a span when they differ");
+
+  // The button appears only when something would change — one that offers to
+  // reprice unchanged material teaches you to ignore it.
+  ok(/var moved = g\.lines\.filter\(function\(l\) \{ return l\.priceMoved; \}\)\.length;/.test(html),
+     "the reprice button counts what actually moved");
+  ok(/if \(moved\) \{/.test(html), "and is hidden when nothing has");
+  // The totals are re-read, not patched — they decide what a customer pays.
+  ok(/await loadPushPending\(\);/.test(html), "the list is reloaded after repricing");
 });
 
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {

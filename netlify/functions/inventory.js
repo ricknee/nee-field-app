@@ -78,6 +78,7 @@ const _ADMIN_WRITES = new Set([
   "pushExpenses",        // pushes material cost into job Expenses (money)
   "jobDocUploadUrl",     // archives the materials PDF — same tier as the push it documents
   "pushReceiptUploadUrl",// attaches that PDF to the expense — same tier, same reason
+  "refreshPendingPrices",// re-stamps unpushed material at today's cost (money)
   "updateItemCost", "createItem", "itemUpdate", "itemDelete",   // catalog / pricing
   "locationSave", "vendorSave", "vendorPricingSave", "vendorPricingDelete", // reference data
   "bulkPreview", "bulkApply",   // spreadsheet upload
@@ -829,8 +830,12 @@ async function handlePendingExpenses() {
   // rewrite of the part that decides what a customer is charged.
   const pendingFromNeon = async () => {
     const q = await neonQuery(
+      // ⚠ txn_date is formatted by POSTGRES. The driver returns a DATE column as
+      // a JS Date, and String(d).slice(0,10) on one yields "Wed Aug 12" — the
+      // bug this codebase has now written four times. to_char settles it.
       `SELECT id, item_airtable_id, quantity, txn_type, unit_cost_snapshot,
-              job_airtable_id, job_name
+              job_airtable_id, job_name,
+              to_char(txn_date, 'YYYY-MM-DD') AS txn_ymd
          FROM inventory_transactions
         WHERE expense_created = false AND txn_type IN ('Use','Return')
         ORDER BY txn_date ASC NULLS LAST`);
@@ -849,6 +854,7 @@ async function handlePendingExpenses() {
         "Unit Cost (Snapshot)": r.unit_cost_snapshot === null ? undefined : Number(r.unit_cost_snapshot),
         "Job ID (Main)":       r.job_airtable_id || undefined,
         "Job Name":            r.job_name || undefined,
+        "Txn Date":            r.txn_ymd || undefined,
       },
     }));
   };
@@ -969,11 +975,26 @@ async function handlePendingExpenses() {
         name:        itemData.name || itemId,
         wireFtPerLb: itemData.wireFtPerLb || 0,
         netQty:      0,
-        totalCost:   0
+        totalCost:   0,
+        // When the material was logged. A LINE can gather several transactions,
+        // so both ends are kept — one date on a line that actually spans a week
+        // would be a quiet lie about when the job used the material.
+        firstDate:   null,
+        lastDate:    null,
+        // The item's cost TODAY, alongside the snapshots that were stamped when
+        // each transaction was entered. The screen compares them so a price that
+        // has moved since is visible before the push, not after.
+        liveCost:    Number(itemData.cost || 0)
       };
     }
-    jobGroups[jobKey].items[itemId].netQty    += delta;
-    jobGroups[jobKey].items[itemId].totalCost += lineValue;
+    const line = jobGroups[jobKey].items[itemId];
+    line.netQty    += delta;
+    line.totalCost += lineValue;
+    const ymd = f["Txn Date"];
+    if (ymd) {
+      if (!line.firstDate || ymd < line.firstDate) line.firstDate = ymd;
+      if (!line.lastDate  || ymd > line.lastDate)  line.lastDate  = ymd;
+    }
   });
 
   // Build the pending array for the UI — one entry per job
@@ -984,12 +1005,21 @@ async function handlePendingExpenses() {
         // Effective per-unit cost for display = totalCost / netQty
         // (handles mixed-snapshot case correctly)
         const effectiveCost = i.netQty !== 0 ? i.totalCost / i.netQty : 0;
+        const cost = Math.round(effectiveCost * 100) / 100;
+        const live = Math.round(Number(i.liveCost || 0) * 100) / 100;
         return {
           item:   i.name,
           qty:    i.netQty,
-          cost:   Math.round(effectiveCost * 100) / 100,
+          cost,
           total:  Math.round(i.totalCost * 100) / 100,
-          wireFt: i.wireFtPerLb > 0 ? Math.round(Math.abs(i.netQty) * i.wireFtPerLb) : 0
+          wireFt: i.wireFtPerLb > 0 ? Math.round(Math.abs(i.netQty) * i.wireFtPerLb) : 0,
+          dateFrom: i.firstDate || null,
+          dateTo:   i.lastDate  || null,
+          // ⚠ Only meaningful against a real live cost. An item with no cost on
+          // file reads as 0, and "the price dropped to zero" is not a repricing
+          // worth offering — it is a missing figure.
+          liveCost: live > 0 ? live : null,
+          priceMoved: live > 0 && Math.abs(live - cost) >= 0.005
         };
       });
 
@@ -1299,6 +1329,45 @@ async function createPushExpensesNative({ jobId, expenseDate, pushId, rows }) {
      RETURNING id`,
     params);
   return (created || []).map(r => String(r.id));
+}
+
+// ── REFRESH PENDING PRICES ─────────────────────────────
+// Re-stamp UNPUSHED material at the item's current cost.
+//
+// A transaction's `unit_cost_snapshot` is taken when the material is logged, and
+// that is right: the push must charge what the paperwork said at the time, and
+// re-deriving it live would silently reprice history. But material can sit in
+// the pending list for days, and if a vendor moves a price in between there was
+// no way to correct it short of deleting the transaction and re-entering it —
+// which loses the date it was actually used.
+//
+// ⚠ UNPUSHED ONLY. `expense_created = false` is not a filter for tidiness: a
+// pushed transaction is money already charged to a customer, and re-stamping one
+// would change what an invoice was based on after the fact, with nothing on any
+// screen to show it moved.
+//
+// ⚠ Scoped to ONE job when jobId is given. The screen offers this per job beside
+// that job's Push button, and a button that quietly repriced every other job on
+// the list would be the wrong kind of surprise.
+async function handleRefreshPendingPrices(body) {
+  const jobId = body?.jobId ? String(body.jobId) : null;
+
+  const rows = await neonWrite("refreshPendingPrices",
+    `UPDATE inventory_transactions t
+        SET unit_cost_snapshot = i.default_unit_cost
+       FROM inventory_items i
+      WHERE t.item_id = i.id
+        AND t.expense_created = false
+        AND t.txn_type IN ('Use','Return')
+        AND i.default_unit_cost IS NOT NULL
+        -- Only rows that would actually change. Without this the count reports
+        -- every pending line as "updated" and says nothing about what moved.
+        AND (t.unit_cost_snapshot IS DISTINCT FROM i.default_unit_cost)
+        AND ($1::text IS NULL OR t.job_airtable_id = $1)
+    RETURNING t.id`,
+    [jobId]);
+
+  return resp(200, { ok: true, updated: rows.length });
 }
 
 async function handlePushExpenses(body) {
@@ -3647,6 +3716,7 @@ export async function handler(event) {
       if (body.action === "receive")         return await handleReceive(body);
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);
+      if (body.action === "refreshPendingPrices") return await handleRefreshPendingPrices(body);
       if (body.action === "pushExpenses")    return await handlePushExpenses(body);
       if (body.action === "jobDocUploadUrl") return await handleJobDocUploadUrl(body);
       if (body.action === "pushReceiptUploadUrl") return await handlePushReceiptUploadUrl(body);

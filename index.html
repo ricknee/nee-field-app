@@ -438,6 +438,52 @@
     .vi-reason { font-size: 12px; font-weight: 600; color: var(--red); }
     .vi-cands  { font-size: 12px; color: var(--yellow); }
     .vi-pdf    { font-size: 13px; font-weight: 600; margin-top: 2px; display: inline-block; }
+    .vi-pdfrow { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+    /* The preview trigger is a <button> because it performs an action rather
+       than navigating; styled to sit beside the link so the pair reads as two
+       ways to see the same document. */
+    .vi-pdf-btn {
+      background: none; border: 0; padding: 0; font: inherit; font-size: 13px;
+      font-weight: 600; color: var(--accent); cursor: pointer;
+    }
+    .vi-pdf-btn:hover { text-decoration: underline; }
+
+    /* ── Invoice preview overlay ──────────────────────────────────────────
+       ⚠⚠ RENDERED WITH pdf.js TO A CANVAS, NOT SHOWN IN AN <iframe>.
+       An iframe/embed is the obvious way and it is the wrong one here: Android
+       Chrome does not render a PDF inline in an iframe — it offers a download or
+       shows nothing — and this app is used on a phone far more than on a desk.
+       A preview that silently blanks on the device it was asked for is worse
+       than no preview, because it reads as the app being broken.
+       pdf.js draws to a canvas and behaves the same everywhere. */
+    .vi-prev-back {
+      display: none; position: fixed; inset: 0; z-index: 10000;
+      background: rgba(0,0,0,.92); flex-direction: column;
+    }
+    .vi-prev-bar {
+      display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+      padding: 10px 12px; color: #fff;
+    }
+    .vi-prev-title {
+      flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .vi-prev-pg { font-size: 12px; opacity: .8; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    /* The scroll container. A tall invoice must scroll rather than shrink to
+       illegibility, which is what object-fit would do. */
+    .vi-prev-body {
+      flex: 1 1 auto; overflow: auto; -webkit-overflow-scrolling: touch;
+      display: flex; justify-content: center; align-items: flex-start;
+      padding: 0 8px 12px;
+    }
+    /* Rendered at a fixed high resolution and fitted by CSS, so a rotation or a
+       resize never needs a re-render — and pinch-zoom still finds real pixels. */
+    .vi-prev-canvas {
+      max-width: 100%; height: auto; background: #fff; border-radius: 6px;
+      box-shadow: 0 2px 16px rgba(0,0,0,.5);
+    }
+    .vi-prev-msg { color: #fff; font-size: 14px; text-align: center; padding: 40px 20px; }
+    .vi-prev-msg a { color: #fff; text-decoration: underline; }
     /* The job typeahead. Reuses the Schedule screen's .sch-job-* component, with
        two overrides for this container.
        ⚠ THE RESULT LIST IS INLINE HERE, NOT ABSOLUTE. .payroll-modal-body sets
@@ -22215,8 +22261,20 @@
             ${isPending ? `<div class="vi-reason">${esc(VI_REASON[r.reason] || r.reason || "Needs review")}</div>` : ""}
             ${cands}
             ${settledLine}
+            <!-- Preview first, because it is the one you want nearly every time:
+                 it answers "what does this ticket say" without leaving the
+                 screen you are working on. Opening the real PDF stays for when
+                 you want to zoom, print, or hand it to something else.
+                 ⚠ The handler takes the ROW ID, not the URL. r.pdfUrl is a
+                 presigned R2 link full of query parameters, and interpolating
+                 that into a single-quoted inline handler is a quoting accident
+                 waiting to happen. The id is a uuid. -->
             ${r.pdfUrl
-              ? `<a class="vi-pdf" href="${esc(r.pdfUrl)}" target="_blank" rel="noopener">📄 Open the invoice</a>`
+              ? `<div class="vi-pdfrow">
+                   <button type="button" class="vi-pdf vi-pdf-btn"
+                           onclick="viPreview('${esc(r.id)}')">👁 Preview</button>
+                   <a class="vi-pdf" href="${esc(r.pdfUrl)}" target="_blank" rel="noopener">📄 Open PDF</a>
+                 </div>`
               : `<span class="vi-sub">No PDF stored</span>`}
           </div>
           ${isPending ? `
@@ -22342,6 +22400,145 @@
     viRedraw();
   }
   window.viToggleJob = viToggleJob;
+
+  // ── Invoice preview ───────────────────────────────────────────────────────
+  // Draws the supplier's PDF on screen so a reviewer can read the ticket without
+  // leaving the queue. "Open PDF" is untouched beside it — this is the fast
+  // path, not a replacement.
+  //
+  // ⚠⚠ pdf.js TO A CANVAS, NOT AN <iframe>. The iframe version is four lines and
+  // does not work where it matters: Android Chrome refuses to render a PDF
+  // inline, offering a download or a blank frame instead, and this screen is
+  // used on a phone more than on a desk. A preview that blanks on the device it
+  // was asked for reads as a broken app, which is worse than no preview at all.
+  //
+  // Lazy-loaded, exactly like jsPDF above: the library is ~350 KB and most
+  // sessions never open a preview, so it must not be in the page's cost.
+  let viPdfDoc = null, viPdfPage = 1, viPdfToken = 0;
+
+  function ensurePdfJs() {
+    return new Promise((resolve, reject) => {
+      if (window.pdfjsLib) return resolve();
+      if (!document.getElementById("pdfjs-script")) {
+        const s = document.createElement("script");
+        s.id  = "pdfjs-script";
+        // v3 is the last UMD build — v4 ships as ESM and would not attach to
+        // window at all, which fails as "library never loaded" rather than as
+        // anything that points at the real cause.
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+        document.head.appendChild(s);
+      }
+      let tries = 20;
+      (function wait() {
+        if (window.pdfjsLib) resolve();
+        else if (--tries > 0) setTimeout(wait, 300);
+        else reject(new Error("Preview library failed to load"));
+      })();
+    });
+  }
+
+  function viPreviewMsg(html) {
+    const m = $("viPreviewMsg"), c = $("viPreviewCanvas");
+    if (!m || !c) return;
+    m.innerHTML = html; m.style.display = ""; c.style.display = "none";
+  }
+
+  async function viRenderPdfPage() {
+    const canvas = $("viPreviewCanvas");
+    if (!canvas || !viPdfDoc) return;
+    const page = await viPdfDoc.getPage(viPdfPage);
+    // Rendered at a FIXED width and fitted by CSS, so rotating the phone or
+    // resizing never needs a re-render — and a pinch-zoom lands on real pixels
+    // instead of a blurry upscale. Capped at 3× so a huge page can't allocate an
+    // absurd canvas on a low-end phone.
+    const base = page.getViewport({ scale: 1 });
+    const scale = Math.min(3, 1400 / base.width);
+    const vp = page.getViewport({ scale });
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+    $("viPreviewMsg").style.display = "none";
+    canvas.style.display = "";
+    const n = viPdfDoc.numPages;
+    $("viPreviewPg").textContent = n > 1 ? `${viPdfPage} / ${n}` : "";
+    // Paging controls appear only for a multi-page document — a one-page ticket
+    // showing dead arrows is clutter.
+    $("viPreviewPrev").style.display = n > 1 ? "" : "none";
+    $("viPreviewNext").style.display = n > 1 ? "" : "none";
+    $("viPreviewPrev").disabled = viPdfPage <= 1;
+    $("viPreviewNext").disabled = viPdfPage >= n;
+  }
+
+  async function viPreview(id) {
+    const r = (viData?.invoices || []).find(x => String(x.id) === String(id));
+    if (!r || !r.pdfUrl) return;
+
+    // ⚠ A token per open. Tapping Preview on a second invoice while the first is
+    // still fetching would otherwise let the slower one finish last and paint
+    // the WRONG invoice — with the right title above it, which is exactly the
+    // kind of wrong that gets believed.
+    const myToken = ++viPdfToken;
+    viPdfDoc = null; viPdfPage = 1;
+
+    $("viPreviewTitle").textContent = `${r.vendor} · Invoice ${r.invoiceNo}`;
+    $("viPreviewOpen").href = r.pdfUrl;
+    $("viPreviewPg").textContent = "";
+    $("viPreviewPrev").style.display = "none";
+    $("viPreviewNext").style.display = "none";
+    $("viPreviewBody").scrollTop = 0;
+    viPreviewMsg("Loading…");
+    $("viPreview").style.display = "flex";
+    // The mobile back button closes the preview instead of leaving the page —
+    // the app's standing rule for anything full-screen.
+    pushBackEntry("viPreview", () => {
+      viPdfToken++;                     // a back press abandons an in-flight load too
+      $("viPreview").style.display = "none";
+      viPdfDoc = null;
+    });
+
+    try {
+      await ensurePdfJs();
+      if (myToken !== viPdfToken) return;
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      const doc = await window.pdfjsLib.getDocument({ url: r.pdfUrl }).promise;
+      if (myToken !== viPdfToken) return;
+      viPdfDoc = doc;
+      await viRenderPdfPage();
+    } catch (e) {
+      if (myToken !== viPdfToken) return;
+      // ⚠ FAILS SOFT INTO THE THING THAT ALWAYS WORKS. A preview is a
+      // convenience; the PDF itself is the record. Never leave the reviewer
+      // staring at a dead overlay with no way to the document.
+      viPreviewMsg(`Couldn't draw this invoice here.<br><br>
+        <a href="${esc(r.pdfUrl)}" target="_blank" rel="noopener">📄 Open the PDF instead</a>`);
+      console.error(`viPreview: ${String(e?.message || e)}`);
+    }
+  }
+  window.viPreview = viPreview;
+
+  function viPreviewNav(delta) {
+    if (!viPdfDoc) return;
+    const n = viPdfDoc.numPages;
+    const next = Math.min(n, Math.max(1, viPdfPage + delta));
+    if (next === viPdfPage) return;
+    viPdfPage = next;
+    $("viPreviewBody").scrollTop = 0;
+    viRenderPdfPage();
+  }
+  window.viPreviewNav = viPreviewNav;
+
+  window.closeViPreview = function () {
+    // ⚠ popBackEntry does NOT run the close function — it sets suppressPopstate
+    // so the popstate handler drops the entry WITHOUT closing, precisely so a
+    // button press and a back press don't both close. So hide it here, the same
+    // way closeVendorInvoices does. The registered close fn is for the back
+    // button's path only.
+    viPdfToken++;                       // abandon any in-flight load
+    popBackEntry("viPreview");
+    $("viPreview").style.display = "none";
+    viPdfDoc = null;
+  };
 
   function viRedraw() {
     const host = $("vendorInvoiceBody");
@@ -28439,6 +28636,27 @@
 <!-- Full-size viewer. Separate from the grid modal so the phone back button
      closes the photo first and the gallery second, matching how back works
      everywhere else in the app. -->
+<!-- ── INVOICE PREVIEW (🧾 Invoice Review) ──────────────────────────────────
+     The supplier's own PDF, drawn on screen so a reviewer can read the ticket
+     without leaving the queue. "Open PDF" is kept alongside it — this replaces
+     nothing, it is the fast path.
+     ⚠ A CANVAS, not an iframe: Android Chrome will not render a PDF inline in
+     one, and this screen lives on a phone. See .vi-prev-back in the CSS. -->
+<div id="viPreview" class="vi-prev-back">
+  <div class="vi-prev-bar">
+    <span class="vi-prev-title" id="viPreviewTitle"></span>
+    <span class="vi-prev-pg" id="viPreviewPg"></span>
+    <button id="viPreviewPrev" onclick="viPreviewNav(-1)" class="btn btn-sm" style="font-size:14px; padding:6px 12px; display:none;">‹</button>
+    <button id="viPreviewNext" onclick="viPreviewNav(1)" class="btn btn-sm" style="font-size:14px; padding:6px 12px; display:none;">›</button>
+    <a id="viPreviewOpen" class="btn btn-sm" target="_blank" rel="noopener" style="font-size:13px; padding:6px 12px;">📄 PDF</a>
+    <button onclick="closeViPreview()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 12px;">&times;</button>
+  </div>
+  <div class="vi-prev-body" id="viPreviewBody">
+    <canvas id="viPreviewCanvas" class="vi-prev-canvas" style="display:none;"></canvas>
+    <div class="vi-prev-msg" id="viPreviewMsg">Loading…</div>
+  </div>
+</div>
+
 <div id="jobPhotoLightbox" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,.92); align-items:center; justify-content:center; flex-direction:column;">
   <div style="position:absolute; top:0; left:0; right:0; display:flex; align-items:center; justify-content:space-between; padding:10px 14px; gap:10px;">
     <span id="jobPhotoLightboxName" style="color:#fff; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>

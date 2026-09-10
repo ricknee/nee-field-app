@@ -6687,6 +6687,62 @@ await test("vendorInvoice: the vendor list totals are SIGNED, and hide when empt
   ok(!/placed automatically so far/.test(html), "and no longer claims it was automatic");
 });
 
+await test("vendorInvoice: the preview draws to a CANVAS, and never strands the reviewer", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // Both ways to see the document, side by side. Preview is the fast path; the
+  // PDF link is what you use to zoom, print or hand it to something else.
+  ok(/onclick="viPreview\('\$\{esc\(r\.id\)\}'\)">👁 Preview<\/button>/.test(html),
+     "every invoice with a PDF offers Preview");
+  ok(/📄 Open PDF<\/a>/.test(html), "and still offers the real PDF");
+
+  // ⚠ THE HANDLER TAKES THE ROW ID, NOT THE URL. r.pdfUrl is a presigned R2 link
+  // full of query parameters; interpolating one into a single-quoted inline
+  // handler is a quoting accident waiting to happen. The id is a uuid.
+  ok(!/viPreview\('\$\{esc\(r\.pdfUrl\)\}/.test(html), "the presigned URL is never put in the handler");
+
+  // ⚠⚠ CANVAS, NOT IFRAME. Android Chrome will not render a PDF inline in an
+  // iframe — it offers a download or shows nothing — and this screen is used on
+  // a phone more than on a desk. A preview that blanks on the device it was
+  // asked for reads as a broken app.
+  const overlay = html.slice(html.indexOf('<div id="viPreview"'), html.indexOf('<div id="jobPhotoLightbox"'));
+  ok(/<canvas id="viPreviewCanvas"/.test(overlay), "it renders into a canvas");
+  ok(!/<iframe|<embed|<object /.test(overlay), "and there is no iframe/embed anywhere in it");
+
+  // v3 is the last UMD build of pdf.js. v4 is ESM and would never attach to
+  // window, failing as "library never loaded" — a symptom that points nowhere
+  // near the real cause.
+  ok(/cdnjs\.cloudflare\.com\/ajax\/libs\/pdf\.js\/3\.\d+\.\d+\/pdf\.min\.js/.test(html),
+     "pdf.js v3 UMD, lazy-loaded like jsPDF");
+  ok(/GlobalWorkerOptions\.workerSrc[\s\S]{0,120}pdf\.worker\.min\.js/.test(html),
+     "and its worker is pointed at the matching build");
+
+  // ⚠ FAILS SOFT INTO THE THING THAT ALWAYS WORKS. A preview is a convenience;
+  // the PDF is the record. A dead overlay with no way out is not acceptable.
+  ok(/Couldn't draw this invoice here[\s\S]{0,200}Open the PDF instead/.test(html),
+     "a render failure still offers the PDF");
+
+  // The mobile back button closes it, per the app's standing rule for anything
+  // full-screen.
+  ok(/pushBackEntry\("viPreview"/.test(html), "a back entry is pushed");
+  // ⚠⚠ popBackEntry does NOT invoke the registered close fn — it sets
+  // suppressPopstate so the handler drops the entry without closing. A close
+  // button that only calls popBackEntry leaves the overlay on screen.
+  const closeFn = html.slice(html.indexOf("window.closeViPreview = function"));
+  const body = closeFn.slice(0, closeFn.indexOf("\n  };"));
+  ok(/popBackEntry\("viPreview"\)/.test(body), "the close button pops the back entry");
+  ok(/\$\("viPreview"\)\.style\.display = "none"/.test(body), "AND hides the overlay itself");
+
+  // ⚠ A stale load must not paint over a newer one. Tapping Preview on a second
+  // invoice while the first is still fetching would otherwise let the slower one
+  // finish last and draw the WRONG invoice under the right title.
+  ok(/const myToken = \+\+viPdfToken/.test(html), "each open takes a token");
+  ok((html.match(/if \(myToken !== viPdfToken\) return;/g) || []).length >= 3,
+     "and every await checks it before touching the DOM");
+});
+
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");

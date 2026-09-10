@@ -6804,6 +6804,55 @@ await test("estimating: a wire line's PRICE box follows the ft/lb toggle", async
   ok(/'  ·  ' \+ ftPerLb \+ ' ft\/lb'/.test(html), "and so does the initial render");
 });
 
+await test("expenses: the receipt icon opens the receipt in ONE click", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // The row button goes to the one-click path, not straight to the grid.
+  ok(/openReceiptOneClick\(btn\.dataset\.expenseId, btn\.dataset\.expenseLabel,\s*btn\.dataset\.receiptCount\)/.test(html),
+     "the expense row's receipt button takes the one-click path");
+  // The count is already known from the summary painted onto the row, so
+  // deciding costs no extra lookup.
+  ok(/btn\.dataset\.receiptCount = String\(info\.count\);/.test(html),
+     "and the count is remembered when the row is painted");
+
+  const fn = html.slice(html.indexOf("async function openReceiptOneClick"));
+  const body = fn.slice(0, fn.indexOf("\n  async function mutateReceipt"));
+
+  // Exactly one → preview. Anything else → the grid, which is what a choice or
+  // an attach actually needs.
+  ok(/if \(count !== 1\) return openExpenseReceipts\(expenseId, label\);/.test(body),
+     "only a single receipt skips the grid");
+
+  // ⚠⚠ AN UNKNOWN COUNT IS NOT ZERO. expenseReceiptSummary fails soft — it must
+  // never hold up the expenses tab — so a missing count means "not looked up".
+  // Treating it as a receipt to preview would open an empty overlay.
+  ok(/countAttr === undefined \|\| countAttr === "" \? null : Number\(countAttr\)/.test(body),
+     "an unpainted count is null, and null is not 1, so it falls through to the grid");
+
+  // ⚠ The summary was taken when the row rendered; a receipt may have been added
+  // or removed since. The fetched list is the authority, re-checked before the
+  // overlay is opened.
+  ok(/if \(list\.length !== 1\) return openExpenseReceipts\(expenseId, label\);/.test(body),
+     "the list re-checks the count before previewing");
+  ok(/catch \{[\s\S]{0,200}openExpenseReceipts\(expenseId, label\);/.test(body),
+     "and a failed read falls back to the grid rather than a dead overlay");
+
+  // One-click preview must not strand anyone who then wants to attach or delete.
+  ok(/onMore: \(\) => openExpenseReceipts\(expenseId, label\)/.test(body),
+     "the overlay offers a way through to the full receipts screen");
+  ok(/\$\("viPreviewMore"\)\.style\.display = viPreviewMoreFn \? "" : "none";/.test(html),
+     "and that button is hidden when there is nowhere to go — e.g. the invoice queue");
+
+  // ⚠ Two full-screen views, each pushing a back entry. Opening the grid over a
+  // still-open preview would stack them and cost two back presses to escape.
+  const more = html.slice(html.indexOf("window.viPreviewMore = function"));
+  const moreBody = more.slice(0, more.indexOf("\n  };"));
+  ok(moreBody.indexOf("closeViPreview()") < moreBody.indexOf("fn()"),
+     "the preview closes BEFORE the grid opens");
+});
+
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");

@@ -7075,6 +7075,10 @@
       btn.innerHTML = `<span style="position:relative; display:inline-block;">${inner}${badge}</span>`;
       btn.title = `${info.count} receipt${info.count === 1 ? "" : "s"} — click to view`;
       btn.style.opacity = "1";
+      // Remembered so the click can skip the grid when there is only one
+      // receipt to pick from — which is almost always, since the invoice bot
+      // attaches exactly one PDF per expense.
+      btn.dataset.receiptCount = String(info.count);
     });
   }
 
@@ -7227,6 +7231,46 @@
       b.onclick = () => mutateReceipt("deleteExpenseReceipts", b.dataset.key, "Deleting"));
     grid.querySelectorAll(".rcpt-restore").forEach(b =>
       b.onclick = () => mutateReceipt("restoreExpenseReceipts", b.dataset.key, "Restoring"));
+  }
+
+  // One tap from the expenses row to the receipt itself.
+  //
+  // The grid exists to CHOOSE between receipts, and there is almost never a
+  // choice: the invoice bot attaches exactly one PDF per expense, so opening a
+  // picker to pick the only item was a click that never earned itself — 46 times
+  // on a screen like the CED approval list.
+  //
+  // The count is already known from expenseReceiptSummary, painted onto the
+  // button when the row rendered, so this costs no extra lookup to decide.
+  // Anything OTHER than exactly one still gets the grid: zero needs the attach
+  // UI, and two or more is a real choice.
+  //
+  // ⚠ An UNKNOWN count falls through to the grid. The summary fails soft (it
+  // must never hold up the expenses tab), so a missing count means "not looked
+  // up", not "no receipts" — guessing preview there would open an empty overlay.
+  async function openReceiptOneClick(expenseId, label, countAttr) {
+    const count = countAttr === undefined || countAttr === "" ? null : Number(countAttr);
+    if (count !== 1) return openExpenseReceipts(expenseId, label);
+
+    try {
+      const d = await apiGet("expenseReceipts", { expenseId });
+      const list = (d && d.available) ? (d.receipts || []) : [];
+      // Re-check against what actually came back: the count came from a summary
+      // taken when the row rendered, and a receipt could have been added or
+      // removed since. The list is the authority.
+      if (list.length !== 1) return openExpenseReceipts(expenseId, label);
+      const r = list[0];
+      openDocPreview({
+        url: r.url, isPdf: !!r.isPdf, title: label || r.name || "Receipt",
+        // The way through to attach, delete and restore — the things the grid is
+        // actually for. Without this, one-click preview would strand anyone who
+        // opened a receipt and then wanted to replace it.
+        onMore: () => openExpenseReceipts(expenseId, label),
+      });
+    } catch {
+      // Storage unreachable, or the read failed. The grid says so properly.
+      openExpenseReceipts(expenseId, label);
+    }
   }
 
   async function mutateReceipt(action, key, verb) {
@@ -10885,7 +10929,8 @@
       // Wire receipt buttons — opens the attach/view modal for that expense.
       el.querySelectorAll(".exp-receipt-btn").forEach(btn => {
         btn.addEventListener("click", () =>
-          openExpenseReceipts(btn.dataset.expenseId, btn.dataset.expenseLabel));
+          openReceiptOneClick(btn.dataset.expenseId, btn.dataset.expenseLabel,
+                              btn.dataset.receiptCount));
       });
       // Then fill in what each expense actually has. Deliberately AFTER the
       // table renders and not awaited: the receipt lookup hits storage, and the
@@ -22434,6 +22479,8 @@
   // Lazy-loaded, exactly like jsPDF above: the library is ~350 KB and most
   // sessions never open a preview, so it must not be in the page's cost.
   let viPdfDoc = null, viPdfPage = 1, viPdfToken = 0;
+  // What the overlay's "🧾 All" button should do, or null to hide it.
+  let viPreviewMoreFn = null;
 
   function ensurePdfJs() {
     return new Promise((resolve, reject) => {
@@ -22513,6 +22560,8 @@
     $("viPreviewTitle").textContent = title;
     $("viPreviewOpen").href = url;
     $("viPreviewOpen").textContent = isPdf ? "📄 PDF" : "🖼 Open";
+    viPreviewMoreFn = (opts && typeof opts.onMore === "function") ? opts.onMore : null;
+    $("viPreviewMore").style.display = viPreviewMoreFn ? "" : "none";
     $("viPreviewPg").textContent = "";
     $("viPreviewPrev").style.display = "none";
     $("viPreviewNext").style.display = "none";
@@ -22587,6 +22636,15 @@
     viRenderPdfPage();
   }
   window.viPreviewNav = viPreviewNav;
+
+  // ⚠ CLOSE FIRST, THEN OPEN. Both are full-screen and both push a back entry;
+  // opening the grid underneath a preview that is still up would leave two
+  // stacked, and the back button would then need two presses to get anywhere.
+  window.viPreviewMore = function () {
+    const fn = viPreviewMoreFn;
+    window.closeViPreview();
+    if (fn) fn();
+  };
 
   window.closeViPreview = function () {
     // ⚠ popBackEntry does NOT run the close function — it sets suppressPopstate
@@ -28708,6 +28766,10 @@
     <span class="vi-prev-pg" id="viPreviewPg"></span>
     <button id="viPreviewPrev" onclick="viPreviewNav(-1)" class="btn btn-sm" style="font-size:14px; padding:6px 12px; display:none;">‹</button>
     <button id="viPreviewNext" onclick="viPreviewNav(1)" class="btn btn-sm" style="font-size:14px; padding:6px 12px; display:none;">›</button>
+    <!-- Shown only when the preview was opened straight off an expense row, as
+         the way through to attach/delete. Hidden otherwise, so the invoice queue
+         does not grow a button to a screen it has nothing to do with. -->
+    <button id="viPreviewMore" onclick="viPreviewMore()" class="btn btn-sm" style="font-size:13px; padding:6px 12px; display:none;">🧾 All</button>
     <a id="viPreviewOpen" class="btn btn-sm" target="_blank" rel="noopener" style="font-size:13px; padding:6px 12px;">📄 PDF</a>
     <button onclick="closeViPreview()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 12px;">&times;</button>
   </div>

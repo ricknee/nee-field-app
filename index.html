@@ -495,6 +495,50 @@
     }
     .vi-chip.on .vi-chip-n { background: rgba(255,255,255,0.25); color: #fff; }
 
+    /* ── Vendor filter: a LIST, not chips ─────────────────────────────────
+       It used to be .vi-chip, the same component as the status filter below.
+       That was the clutter: two INDEPENDENT filters rendered as six identical
+       pills in two rows, so the eye reads one confusing group instead of two
+       simple ones. A long vendor name ("Contractor Lighting & Supply") then
+       wrapped the vendor row onto three lines on a phone.
+       A list cannot wrap however long the name, aligns the money in a column
+       you can compare straight down — which is the point of showing totals at
+       all — and looks nothing like the status toggle, so the two filters stop
+       competing. */
+    .vi-vendors {
+      border: 1px solid var(--line); border-radius: 10px;
+      overflow: hidden; background: var(--panel-2);
+    }
+    .vi-vrow {
+      display: flex; align-items: center; gap: 10px; width: 100%;
+      padding: 9px 12px; border: 0; border-top: 1px solid var(--line);
+      background: none; color: inherit; font: inherit; text-align: left;
+      cursor: pointer;
+    }
+    .vi-vrow:first-child { border-top: 0; }
+    .vi-vrow:hover { background: var(--panel-3); }
+    .vi-vrow.on { background: var(--accent); color: #fff; }
+    /* The name yields; the numbers never do. An ellipsised vendor name is still
+       readable, a clipped total is a wrong number. */
+    .vi-vname {
+      flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 14px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    /* Fixed minimums so the columns line up down the list — that alignment IS
+       the feature. tabular-nums stops the digits jittering between rows. */
+    .vi-vn {
+      flex: 0 0 auto; min-width: 2.2em; text-align: right;
+      font-size: 12px; opacity: 0.7; font-variant-numeric: tabular-nums;
+    }
+    .vi-vsum {
+      flex: 0 0 auto; min-width: 6.4em; text-align: right;
+      font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums;
+    }
+    /* A vendor whose paperwork NETS to a credit is not a smaller bill — same
+       reasoning as .vi-amount.is-credit on the rows. */
+    .vi-vsum.is-credit { color: var(--green); }
+    .vi-vrow.on .vi-vsum.is-credit { color: #fff; }
+
     /* One job's invoices from the selected vendor. Collapsed by default — the
        header carries the count and the running total, which is usually the whole
        answer; open it only to see the individual tickets. */
@@ -22063,28 +22107,55 @@
     const inVendor = all.filter(r => !viVendor || r.vendor === viVendor);
     const pending = inVendor.filter(r => r.status === "needs_review");
     const settled = inVendor.filter(r => r.status !== "needs_review");
-    // Counts are per-vendor and shown ON the chip, so "no CED invoices waiting"
+    // Counts are per-vendor and shown in the list, so "no CED invoices waiting"
     // is visible without selecting CED to find out.
+    const rowsFor = (v) => all.filter(r =>
+      (!v || r.vendor === v) && (viStatusFilter !== "waiting" || r.status === "needs_review"));
     const waitingFor = (v) => all.filter(r => r.status === "needs_review" && (!v || r.vendor === v)).length;
     const totalFor   = (v) => all.filter(r => !v || r.vendor === v).length;
+    // The running total for a vendor, over whichever rows the status filter is
+    // showing — so the number always describes the list underneath it.
+    //
+    // ⚠ SUMMED SIGNED. A Wolff credit memo is negative and must SUBTRACT here;
+    // adding its absolute value would report a vendor owed more the more they
+    // refunded. A vendor whose paperwork nets to a credit shows negative, which
+    // is the true answer, and .vi-vsum.is-credit colours it as one.
+    const sumFor = (v) => rowsFor(v).reduce((n, r) => n + (Number(r.amount) || 0), 0);
 
     // ⚠ esc() escapes & < > and " — NOT the apostrophe. These handlers put the
     // value inside a single-quoted JS string, and "Lowe's" is already a real
     // vendor name in this system, so the day a third supplier is added the
     // button would silently stop working. Escape it for the JS string too.
     const jsStr = (v) => esc(String(v ?? "")).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-    const chip = (label, value) => {
+    const vRow = (label, value) => {
       const on = viVendor === value;
       const n = viStatusFilter === "waiting" ? waitingFor(value) : totalFor(value);
-      return `<button class="vi-chip${on ? " on" : ""}" onclick="viSetVendor('${jsStr(value)}')">
-                ${esc(label)} <span class="vi-chip-n">${n}</span></button>`;
+      const sum = sumFor(value);
+      return `<button class="vi-vrow${on ? " on" : ""}" onclick="viSetVendor('${jsStr(value)}')">
+                <span class="vi-vname">${esc(label)}</span>
+                <span class="vi-vn">${n}</span>
+                <span class="vi-vsum${sum < 0 ? " is-credit" : ""}">${viMoney(sum)}</span>
+              </button>`;
     };
+
+    // ⚠ THE VENDOR LIST IS HIDDEN WHEN IT WOULD SAY NOTHING. Two cases, and the
+    // first is what made this screen feel cluttered: with "Waiting on me" on and
+    // nothing waiting, it rendered four rows of "0 · $0.00" above an empty list —
+    // pure furniture, and the loudest thing on a screen whose actual message was
+    // "you're done". The second is a single supplier: "All vendors" and that one
+    // vendor are the same filter twice.
+    //
+    // The status toggle always stays, because it is the way BACK to the history
+    // from an empty queue.
+    const showVendors = (viStatusFilter === "waiting" ? waitingFor("") : totalFor("")) > 0
+                        && vendors.length > 1;
     const filterBar = `
       <div class="vi-filters">
-        <div class="vi-chiprow">
-          ${chip("All vendors", "")}
-          ${vendors.map(v => chip(v, v)).join("")}
-        </div>
+        ${showVendors ? `
+        <div class="vi-vendors">
+          ${vRow("All vendors", "")}
+          ${vendors.map(v => vRow(v, v)).join("")}
+        </div>` : ""}
         <div class="vi-chiprow">
           <button class="vi-chip${viStatusFilter === "waiting" ? " on" : ""}"
                   onclick="viSetStatus('waiting')">Waiting on me</button>
@@ -22229,7 +22300,11 @@
       <div class="clock-note" style="margin-bottom:10px;">
         Supplier invoices arrive automatically and go straight onto the job when the
         PO matches. These are the ones that didn't.
-        ${c.matched ? ` <span style="color:var(--muted);">${c.matched} placed automatically so far.</span>` : ""}
+        <!-- ⚠ "placed on a job", NOT "placed automatically". counts.matched is
+             every matched row, and match_reason is 'auto' OR 'manual' — so the
+             first invoice ever placed BY HAND off this screen was reported back
+             to the person who placed it as having been done automatically. -->
+        ${c.matched ? ` <span style="color:var(--muted);">${c.matched} placed on a job so far.</span>` : ""}
       </div>
       ${filterBar}
       ${pendHtml}

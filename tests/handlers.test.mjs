@@ -6592,6 +6592,43 @@ await test("vendorInvoice: STATIC — every invoice_date read is formatted by PO
      "the expense create goes through the backstop, not a slice");
 });
 
+await test("vendorInvoice: the vendor list totals are SIGNED, and hide when empty", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // ⚠⚠ SUMMED SIGNED. Wolff's credit memos are negative; summing absolute
+  // values would report a vendor as owed MORE the more they refunded, and the
+  // number would look perfectly plausible while being wrong in the direction
+  // that flatters the balance. Nobody chases a number that looks good.
+  ok(/const sumFor = \(v\) => rowsFor\(v\)\.reduce\(\(n, r\) => n \+ \(Number\(r\.amount\) \|\| 0\), 0\)/.test(html),
+     "sumFor adds the signed amount");
+  ok(!/Math\.abs\(r\.amount\)[\s\S]{0,40}reduce|reduce[\s\S]{0,80}Math\.abs\(r\.amount\)/.test(html),
+     "and never sums absolute values");
+  ok(/class="vi-vsum\$\{sum < 0 \? " is-credit" : ""\}/.test(html),
+     "a net credit is coloured as one, not shown as a smaller bill");
+
+  // The total must describe the list under it — so it follows the status filter,
+  // exactly as the count does.
+  ok(/const rowsFor = \(v\) => all\.filter\(r =>\s*\(!v \|\| r\.vendor === v\) && \(viStatusFilter !== "waiting" \|\| r\.status === "needs_review"\)\)/.test(html),
+     "the total respects the Waiting/Everything filter");
+
+  // ⚠ The vendor list hides when it would only say "0 · $0.00" four times, but
+  // the status toggle NEVER hides — it is the only way back to the history from
+  // an empty queue, and hiding it would strand the user on a blank screen.
+  ok(/const showVendors = \(viStatusFilter === "waiting" \? waitingFor\(""\) : totalFor\(""\)\) > 0\s*&& vendors\.length > 1/.test(html),
+     "the vendor list hides when empty or single-vendor");
+  const bar = html.slice(html.indexOf("const filterBar = `"), html.indexOf("const c = viData.counts"));
+  ok(/\$\{showVendors \? `/.test(bar), "the vendor list is what is conditional");
+  ok(/viSetStatus\('waiting'\)/.test(bar) && !/showVendors[\s\S]*viSetStatus\('waiting'\)[\s\S]*\{2,\}/.test(bar),
+     "the status toggle is outside that condition");
+
+  // ⚠ counts.matched includes match_reason 'manual'. The old copy told the
+  // person who had just placed an invoice BY HAND that it went on automatically.
+  ok(/placed on a job so far/.test(html), "the copy says 'placed on a job'");
+  ok(!/placed automatically so far/.test(html), "and no longer claims it was automatic");
+});
+
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");

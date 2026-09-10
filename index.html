@@ -501,6 +501,20 @@
       max-width: 100%; height: auto; background: #fff; border-radius: 6px;
       box-shadow: 0 2px 16px rgba(0,0,0,.5);
     }
+    /* Continuous scroll: every page stacked in one column. */
+    .vi-prev-pages {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 12px; width: 100%;
+    }
+    /* ⚠ THE PLACEHOLDER CARRIES THE PAGE'S ASPECT RATIO, set inline before
+       anything is drawn. Without it the column has no height until pages
+       render, so the scrollbar grows under the user's thumb and a scroll to
+       page 3 lands somewhere else entirely. */
+    .vi-prev-page {
+      width: 100%; background: #fff; border-radius: 6px; overflow: hidden;
+      box-shadow: 0 2px 16px rgba(0,0,0,.5);
+    }
+    .vi-prev-page canvas { width: 100%; height: auto; display: block; }
     .vi-prev-msg { color: #fff; font-size: 14px; text-align: center; padding: 40px 20px; }
     .vi-prev-msg a { color: #fff; text-decoration: underline; }
     /* The job typeahead. Reuses the Schedule screen's .sch-job-* component, with
@@ -22498,6 +22512,8 @@
   // Lazy-loaded, exactly like jsPDF above: the library is ~350 KB and most
   // sessions never open a preview, so it must not be in the page's cost.
   let viPdfDoc = null, viPdfPage = 1, viPdfToken = 0;
+  // The scroll column: one entry per page, and the observer that draws them.
+  let viPdfPages = [], viPdfObserver = null;
   // What the overlay's "🧾 All" button should do, or null to hide it.
   let viPreviewMoreFn = null;
 
@@ -22523,37 +22539,123 @@
   }
 
   function viPreviewMsg(html) {
-    const m = $("viPreviewMsg"), c = $("viPreviewCanvas"), im = $("viPreviewImg");
-    if (!m || !c) return;
+    const m = $("viPreviewMsg"), pg = $("viPreviewPages"), im = $("viPreviewImg");
+    if (!m) return;
     m.innerHTML = html; m.style.display = "";
-    c.style.display = "none";
+    if (pg) { pg.style.display = "none"; pg.textContent = ""; }
     if (im) { im.style.display = "none"; im.removeAttribute("src"); }
   }
 
-  async function viRenderPdfPage() {
-    const canvas = $("viPreviewCanvas");
-    if (!canvas || !viPdfDoc) return;
-    const page = await viPdfDoc.getPage(viPdfPage);
-    // Rendered at a FIXED width and fitted by CSS, so rotating the phone or
-    // resizing never needs a re-render — and a pinch-zoom lands on real pixels
-    // instead of a blurry upscale. Capped at 3× so a huge page can't allocate an
-    // absurd canvas on a low-end phone.
-    const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(3, 1400 / base.width);
-    const vp = page.getViewport({ scale });
-    canvas.width = Math.floor(vp.width);
-    canvas.height = Math.floor(vp.height);
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+  // Release the whole column. Called on every open and on close, so a closed
+  // preview is not holding a document's worth of canvases.
+  function viTeardownPages() {
+    if (viPdfObserver) { viPdfObserver.disconnect(); viPdfObserver = null; }
+    for (const p of viPdfPages) {
+      if (p.canvas) { p.canvas.width = 0; p.canvas.height = 0; }
+    }
+    viPdfPages = [];
+    const host = $("viPreviewPages");
+    if (host) { host.textContent = ""; host.style.display = "none"; }
+  }
+
+  // Draw ONE page into its placeholder.
+  //
+  // Rendered at a FIXED width and fitted by CSS, so rotating the phone or
+  // resizing never needs a re-render — and a pinch-zoom lands on real pixels
+  // instead of a blurry upscale. Capped at 3× so a huge page cannot allocate an
+  // absurd canvas on a low-end phone.
+  async function viDrawPage(entry, token) {
+    if (!entry || entry.busy || entry.canvas) return;
+    entry.busy = true;
+    try {
+      const base = entry.page.getViewport({ scale: 1 });
+      const scale = Math.min(3, 1400 / base.width);
+      const vp = entry.page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.floor(vp.width);
+      canvas.height = Math.floor(vp.height);
+      await entry.page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+      if (token !== viPdfToken) return;          // overlay closed or moved on
+      entry.div.textContent = "";
+      entry.div.appendChild(canvas);
+      entry.canvas = canvas;
+      viEvictFarPages(entry.n);
+    } catch (e) {
+      console.error(`viDrawPage ${entry.n}: ${String(e?.message || e)}`);
+    } finally { entry.busy = false; }
+  }
+
+  // ⚠⚠ MEMORY. A page canvas is ~1400×1800×4 bytes ≈ 10 MB. A three-page
+  // supplier invoice is nothing, but the input is whatever a vendor chose to
+  // send, and fifty pages held at once would take a phone down. Rendered pages
+  // more than two away from the one being read are released — the placeholder
+  // keeps its height, so scrolling stays stable and it simply redraws on the way
+  // back.
+  function viEvictFarPages(nearN) {
+    if (viPdfPages.length <= 6) return;          // ordinary documents: keep it all
+    for (const p of viPdfPages) {
+      if (p.canvas && Math.abs(p.n - nearN) > 2) {
+        p.canvas.width = 0; p.canvas.height = 0; // free the backing store
+        p.div.textContent = "";
+        p.canvas = null;
+      }
+    }
+  }
+
+  // Build the scroll column: one correctly-proportioned placeholder per page,
+  // drawn as it comes into view.
+  async function viBuildPages(doc, token) {
+    const host = $("viPreviewPages");
+    host.textContent = "";
+    viPdfPages = [];
+    if (viPdfObserver) { viPdfObserver.disconnect(); viPdfObserver = null; }
+
+    for (let n = 1; n <= doc.numPages; n++) {
+      const page = await doc.getPage(n);
+      if (token !== viPdfToken) return;
+      const vp = page.getViewport({ scale: 1 });
+      const div = document.createElement("div");
+      div.className = "vi-prev-page";
+      // Set BEFORE drawing so the column has its full height immediately.
+      div.style.aspectRatio = `${vp.width} / ${vp.height}`;
+      host.appendChild(div);
+      viPdfPages.push({ n, page, div, canvas: null, busy: false });
+    }
+
     $("viPreviewMsg").style.display = "none";
-    canvas.style.display = "";
-    const n = viPdfDoc.numPages;
-    $("viPreviewPg").textContent = n > 1 ? `${viPdfPage} / ${n}` : "";
-    // Paging controls appear only for a multi-page document — a one-page ticket
-    // showing dead arrows is clutter.
-    $("viPreviewPrev").style.display = n > 1 ? "" : "none";
-    $("viPreviewNext").style.display = n > 1 ? "" : "none";
-    $("viPreviewPrev").disabled = viPdfPage <= 1;
-    $("viPreviewNext").disabled = viPdfPage >= n;
+    host.style.display = "";
+
+    // rootMargin renders a screenful ahead, so scrolling meets finished pages
+    // rather than blank boxes.
+    viPdfObserver = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const entry = viPdfPages.find(p => p.div === e.target);
+        if (!entry) continue;
+        if (e.isIntersecting) {
+          viDrawPage(entry, token);
+          if (e.intersectionRatio > 0.3) viSetPageLabel(entry.n);
+        }
+      }
+    }, { root: $("viPreviewBody"), rootMargin: "600px 0px", threshold: [0, 0.3] });
+    viPdfPages.forEach(p => viPdfObserver.observe(p.div));
+
+    // Page 1 immediately — the observer fires asynchronously and an empty first
+    // screen would read as a failed load.
+    await viDrawPage(viPdfPages[0], token);
+    viSetPageLabel(1);
+  }
+
+  function viSetPageLabel(n) {
+    if (!viPdfDoc) return;
+    viPdfPage = n;
+    const total = viPdfDoc.numPages;
+    $("viPreviewPg").textContent = total > 1 ? `${n} / ${total}` : "";
+    // The arrows JUMP within the scroll; they no longer swap what is rendered.
+    // Kept because scrolling to page 7 of a long invoice by thumb is tedious.
+    $("viPreviewPrev").style.display = total > 1 ? "" : "none";
+    $("viPreviewNext").style.display = total > 1 ? "" : "none";
+    $("viPreviewPrev").disabled = n <= 1;
+    $("viPreviewNext").disabled = n >= total;
   }
 
   // The document viewer, shared by the invoice queue and by expense receipts.
@@ -22575,6 +22677,7 @@
     // of wrong that gets believed.
     const myToken = ++viPdfToken;
     viPdfDoc = null; viPdfPage = 1;
+    viTeardownPages();               // never carry the last document's canvases in
 
     $("viPreviewTitle").textContent = title;
     $("viPreviewOpen").href = url;
@@ -22593,6 +22696,7 @@
       viPdfToken++;                     // a back press abandons an in-flight load too
       $("viPreview").style.display = "none";
       viPdfDoc = null;
+      viTeardownPages();                // and releases the canvases with it
     });
 
     // An image needs no library and no worker — just show it.
@@ -22620,7 +22724,7 @@
       const doc = await window.pdfjsLib.getDocument({ url }).promise;
       if (myToken !== viPdfToken) return;
       viPdfDoc = doc;
-      await viRenderPdfPage();
+      await viBuildPages(doc, myToken);
     } catch (e) {
       if (myToken !== viPdfToken) return;
       // ⚠ FAILS SOFT INTO THE THING THAT ALWAYS WORKS. A preview is a
@@ -22645,14 +22749,20 @@
   }
   window.viPreview = viPreview;
 
+  // The arrows now JUMP within the scroll rather than swapping the rendered
+  // page. Kept alongside continuous scrolling because thumbing to page 7 of a
+  // long invoice is tedious, and the label needs something to drive it.
   function viPreviewNav(delta) {
-    if (!viPdfDoc) return;
+    if (!viPdfDoc || !viPdfPages.length) return;
     const n = viPdfDoc.numPages;
     const next = Math.min(n, Math.max(1, viPdfPage + delta));
     if (next === viPdfPage) return;
-    viPdfPage = next;
-    $("viPreviewBody").scrollTop = 0;
-    viRenderPdfPage();
+    const entry = viPdfPages[next - 1];
+    if (!entry) return;
+    // scrollIntoView on the placeholder, not a computed offset — the pages have
+    // their true heights from the aspect ratio, so the browser lands exactly.
+    entry.div.scrollIntoView({ behavior: "smooth", block: "start" });
+    viSetPageLabel(next);
   }
   window.viPreviewNav = viPreviewNav;
 
@@ -22675,6 +22785,7 @@
     popBackEntry("viPreview");
     $("viPreview").style.display = "none";
     viPdfDoc = null;
+    viTeardownPages();                  // and release the page canvases
   };
 
   function viRedraw() {
@@ -28797,7 +28908,8 @@
     <button onclick="closeViPreview()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 12px;">&times;</button>
   </div>
   <div class="vi-prev-body" id="viPreviewBody">
-    <canvas id="viPreviewCanvas" class="vi-prev-canvas" style="display:none;"></canvas>
+    <!-- One block per page, stacked and scrolled. Built by the renderer. -->
+    <div id="viPreviewPages" class="vi-prev-pages" style="display:none;"></div>
     <!-- Expense receipts arrive as phone photos as often as PDFs, and an image
          needs no library at all — pdf.js would only be a way to fail on one. -->
     <img id="viPreviewImg" class="vi-prev-canvas" style="display:none;" alt="" />

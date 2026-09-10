@@ -6708,7 +6708,8 @@ await test("vendorInvoice: the preview draws to a CANVAS, and never strands the 
   // a phone more than on a desk. A preview that blanks on the device it was
   // asked for reads as a broken app.
   const overlay = html.slice(html.indexOf('<div id="viPreview"'), html.indexOf('<div id="jobPhotoLightbox"'));
-  ok(/<canvas id="viPreviewCanvas"/.test(overlay), "it renders into a canvas");
+  ok(/<div id="viPreviewPages"/.test(overlay), "it renders into a stack of page canvases");
+  ok(/canvas = document\.createElement\("canvas"\)/.test(html), "drawn on a canvas, one per page");
   ok(!/<iframe|<embed|<object /.test(overlay), "and there is no iframe/embed anywhere in it");
   // The overlay's own markup must stay balanced — it is hand-written inside a
   // 1.2 MB file, and an unclosed div here swallows the rest of the document.
@@ -6865,6 +6866,50 @@ await test("expenses: the receipt icon opens the receipt in ONE click", async ()
   const moreBody = more.slice(0, more.indexOf("\n  };"));
   ok(moreBody.indexOf("closeViPreview()") < moreBody.indexOf("fn()"),
      "the preview closes BEFORE the grid opens");
+});
+
+await test("preview: a multi-page PDF is one continuous scroll, and bounded in memory", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // Every page is built up front as a placeholder and drawn as it comes near.
+  ok(/for \(let n = 1; n <= doc\.numPages; n\+\+\)/.test(html), "a block per page");
+  ok(/new IntersectionObserver\(/.test(html), "drawn lazily as they scroll into view");
+  ok(/rootMargin: "600px 0px"/.test(html),
+     "a screenful ahead, so scrolling meets finished pages rather than blank boxes");
+
+  // ⚠⚠ THE PLACEHOLDER CARRIES THE ASPECT RATIO, set before anything is drawn.
+  // Without it the column has no height until pages render — the scrollbar grows
+  // under the user's thumb, and a jump to page 3 lands somewhere else.
+  ok(/div\.style\.aspectRatio = `\$\{vp\.width\} \/ \$\{vp\.height\}`;/.test(html),
+     "each placeholder is correctly proportioned before it is drawn");
+
+  // ⚠⚠ MEMORY. ~10 MB per page canvas. Three pages is nothing, but the input is
+  // whatever a vendor chose to send, and fifty held at once takes a phone down.
+  ok(/function viEvictFarPages\(nearN\)/.test(html), "far pages are released");
+  ok(/p\.canvas\.width = 0; p\.canvas\.height = 0;/.test(html),
+     "and the backing store is actually freed, not just detached");
+  ok(/if \(viPdfPages\.length <= 6\) return;/.test(html),
+     "ordinary documents keep every page rendered");
+
+  // Closing must not leave a document's worth of canvases alive.
+  const closeFn = html.slice(html.indexOf("window.closeViPreview = function"));
+  ok(/viTeardownPages\(\);/.test(closeFn.slice(0, closeFn.indexOf("\n  };"))),
+     "the close button tears the column down");
+  const backFn = html.slice(html.indexOf('pushBackEntry("viPreview"'));
+  ok(/viTeardownPages\(\);/.test(backFn.slice(0, backFn.indexOf("});"))),
+     "and so does the back button");
+  ok(/viTeardownPages\(\);\s*\/\/ never carry the last document/.test(html),
+     "and a fresh open never inherits the last document's pages");
+
+  // Page 1 is drawn eagerly: the observer fires asynchronously and an empty
+  // first screen reads as a failed load.
+  ok(/await viDrawPage\(viPdfPages\[0\], token\);/.test(html), "page 1 is drawn immediately");
+
+  // The arrows still exist, but they JUMP within the scroll now.
+  ok(/entry\.div\.scrollIntoView\(\{ behavior: "smooth", block: "start" \}\)/.test(html),
+     "the arrows scroll rather than swapping the rendered page");
 });
 
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {

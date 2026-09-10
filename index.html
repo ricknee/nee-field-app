@@ -22134,7 +22134,12 @@
               <span class="vi-amount${isCredit ? " is-credit" : ""}">${
                 isCredit ? `${viMoney(Math.abs(r.amount))} credit` : viMoney(r.amount)}</span>
             </div>
-            <div class="vi-sub">Invoice ${esc(r.invoiceNo)}${r.invoiceDate ? ` · ${esc(r.invoiceDate)}` : ""}</div>
+            <!-- fmtDate, like every other date in this app. It printed the raw
+                 value, which is how "Wed Aug 12" got on screen for weeks: the
+                 backend was slicing a JS Date and this had nothing to reject it
+                 with. fmtDate also parses YYYY-MM-DD in LOCAL time, so the day
+                 doesn't shift backwards the way new Date("2026-08-12") would. -->
+            <div class="vi-sub">Invoice ${esc(r.invoiceNo)}${r.invoiceDate ? ` · ${esc(fmtDate(r.invoiceDate))}` : ""}</div>
             <div class="vi-sub">PO on paper: ${r.poText ? `<strong>${esc(r.poText)}</strong>` : "<em>none found</em>"}</div>
             ${isPending ? `<div class="vi-reason">${esc(VI_REASON[r.reason] || r.reason || "Needs review")}</div>` : ""}
             ${cands}

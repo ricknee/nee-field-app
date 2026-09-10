@@ -6710,6 +6710,20 @@ await test("vendorInvoice: the preview draws to a CANVAS, and never strands the 
   const overlay = html.slice(html.indexOf('<div id="viPreview"'), html.indexOf('<div id="jobPhotoLightbox"'));
   ok(/<canvas id="viPreviewCanvas"/.test(overlay), "it renders into a canvas");
   ok(!/<iframe|<embed|<object /.test(overlay), "and there is no iframe/embed anywhere in it");
+  // The overlay's own markup must stay balanced — it is hand-written inside a
+  // 1.2 MB file, and an unclosed div here swallows the rest of the document.
+  eq((overlay.match(/<div\b/g) || []).length, (overlay.match(/<\/div>/g) || []).length,
+     "the overlay's divs balance");
+
+  // A WINDOW, not a takeover: at 1400px of rendered page it filled an ultrawide
+  // edge to edge. Capped and centred, with the app still visible behind it —
+  // but full-bleed on a phone, where a margin only shrinks the text.
+  ok(/\.vi-prev-panel \{[\s\S]{0,220}width: min\(100%, 1040px\)/.test(html),
+     "the viewer sits in a width-capped panel");
+  ok(/@media \(max-width: 760px\) \{[\s\S]{0,200}\.vi-prev-panel \{ width: 100%; height: 100%;/.test(html),
+     "and goes full-bleed on a phone");
+  ok(/onclick="if \(event\.target === this\) closeViPreview\(\);"/.test(overlay),
+     "clicking the backdrop closes it, guarded on the target");
 
   // v3 is the last UMD build of pdf.js. v4 is ESM and would never attach to
   // window, failing as "library never loaded" — a symptom that points nowhere

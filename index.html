@@ -456,9 +456,28 @@
        A preview that silently blanks on the device it was asked for is worse
        than no preview, because it reads as the app being broken.
        pdf.js draws to a canvas and behaves the same everywhere. */
+    /* A WINDOW, not a takeover. At 1400 px of rendered page the document filled
+       an ultrawide monitor edge to edge, which is more screen than an invoice
+       needs and loses the context you were working in. The backdrop is now
+       translucent and the viewer sits in a centred panel, so the expenses list
+       stays visible behind it.
+       On a phone it goes back to full-bleed — there, every pixel is the
+       document, and a margin would just make the text smaller. */
     .vi-prev-back {
       display: none; position: fixed; inset: 0; z-index: 10000;
-      background: rgba(0,0,0,.92); flex-direction: column;
+      background: rgba(0,0,0,.66);
+      align-items: center; justify-content: center;
+      padding: 18px;
+    }
+    .vi-prev-panel {
+      display: flex; flex-direction: column;
+      width: min(100%, 1040px); height: min(100%, 940px); max-height: 100%;
+      background: #14161c; border-radius: 12px; overflow: hidden;
+      box-shadow: 0 12px 44px rgba(0,0,0,.55);
+    }
+    @media (max-width: 760px) {
+      .vi-prev-back  { padding: 0; background: rgba(0,0,0,.92); }
+      .vi-prev-panel { width: 100%; height: 100%; border-radius: 0; box-shadow: none; }
     }
     .vi-prev-bar {
       display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
@@ -28760,7 +28779,11 @@
      nothing, it is the fast path.
      ⚠ A CANVAS, not an iframe: Android Chrome will not render a PDF inline in
      one, and this screen lives on a phone. See .vi-prev-back in the CSS. -->
-<div id="viPreview" class="vi-prev-back">
+<!-- Clicking the dark area closes it, the way a windowed dialog should. Guarded
+     on the target so a click that started inside the panel — selecting text,
+     dragging on the page — never counts as a click on the backdrop. -->
+<div id="viPreview" class="vi-prev-back" onclick="if (event.target === this) closeViPreview();">
+ <div class="vi-prev-panel">
   <div class="vi-prev-bar">
     <span class="vi-prev-title" id="viPreviewTitle"></span>
     <span class="vi-prev-pg" id="viPreviewPg"></span>
@@ -28780,6 +28803,7 @@
     <img id="viPreviewImg" class="vi-prev-canvas" style="display:none;" alt="" />
     <div class="vi-prev-msg" id="viPreviewMsg">Loading…</div>
   </div>
+ </div>
 </div>
 
 <div id="jobPhotoLightbox" style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,.92); align-items:center; justify-content:center; flex-direction:column;">

@@ -95,12 +95,52 @@ export function parseSignedAmount(v) {
 // the credit again. Splitting here keeps `createExpenseNative`'s existing
 // credit-only contract intact — the same one handleAddGeneralExpense uses for
 // returned supplies.
-export function amountToExpenseFields(amount) {
+//
+// ⚠⚠ ZERO IS NEITHER, AND IT MUST NOT BECOME A CREDIT BY INFERENCE. Contractor
+// Lighting prints a running balance, so an ordinary charge can show a 0.00
+// balance — and a zero-balance CREDIT looks identical on the paper. Deciding
+// between them here would be guessing at the sign of real money from a number
+// that carries no sign, and the guess would be invisible: a charge filed as a
+// credit SUBTRACTS from the job's material cost, so the job's GP simply reads
+// better than it is. Nobody chases a number that looks good. The Mini Bee reads
+// the actual credit status off the document; `isCredit` is how it says so.
+//
+// `isCredit` is honoured only when explicitly `true`, and it can only ever turn
+// an amount INTO a credit, never out of one. A vendor that prints credit memos
+// with a minus (Wolff's trailing "773.85-") keeps working whether the bot sets
+// the flag, omits it, or sends it false.
+export function amountToExpenseFields(amount, isCredit) {
   const n = parseSignedAmount(amount);
-  if (n === null || n === 0) return { manualMaterialCost: null, materialCredit: null };
+  if (n === null) return { manualMaterialCost: null, materialCredit: null };
+  if (isCredit === true) {
+    const c = Math.abs(n);
+    return c === 0
+      ? { manualMaterialCost: null, materialCredit: null }
+      : { manualMaterialCost: null, materialCredit: c };
+  }
+  if (n === 0) return { manualMaterialCost: null, materialCredit: null };
   return n < 0
     ? { manualMaterialCost: null, materialCredit: Math.abs(n) }
     : { manualMaterialCost: n,    materialCredit: null };
+}
+
+// The invoice PDF, decoded and size-checked. It lives here — pure, no network —
+// so the CAP IS TESTABLE and is written down exactly once.
+//
+// The samples are 15–26 KB. This cap is two orders of magnitude above that and
+// still well under Netlify's request ceiling, so hitting it means the bot sent
+// something that is not one supplier invoice. Returns null rather than throwing,
+// because the PDF path fails SOFT: an invoice with no readable PDF still shows
+// its parsed figures and can still be assigned to a job. Losing the picture is
+// bad; losing the money is worse.
+export const INVOICE_PDF_MAX_BYTES = 8 * 1024 * 1024;
+
+export function decodeInvoicePdf(pdfBase64) {
+  if (!pdfBase64) return null;
+  let bytes;
+  try { bytes = Buffer.from(String(pdfBase64), "base64"); } catch { return null; }
+  if (!bytes.length || bytes.length > INVOICE_PDF_MAX_BYTES) return null;
+  return bytes;
 }
 
 // Vendors this inbox accepts. Kept as a list rather than "anything the bot
@@ -108,15 +148,48 @@ export function amountToExpenseFields(amount) {
 // pointed at the wrong Gmail label — lands as a rejected intake instead of
 // quietly opening an expense account for a vendor nobody agreed to.
 //
-// The value is the canonical `expenses.vendor_name` spelling, which is what the
-// existing 215 bot-written expenses already carry. Keep the right-hand side in
-// step with `expense_vendors.name`, not with how the PDF spells itself: the
-// invoices say "CED CONSOLIDATED ELECTRICAL DISTRIBUTORS, INC." and "WOLFF
-// BROS. SUPPLY, INC.".
+// ⚠ THE RIGHT-HAND SIDE IS `expense_vendors.name`, VERBATIM, AND IT IS LOAD-
+// BEARING — not a label. It is the canonical `expenses.vendor_name` the 215
+// bot-written expenses already carry, and `vendorHandleFor` looks it up with
+// `lower(name) = lower($1)`. A name matching no row resolves to NULL and the
+// expense is created with NO VENDOR AT ALL. It does not throw — the cost still
+// lands on the job, simply attributed to nobody, which is this system's
+// characteristic silent failure. So keep it in step with `expense_vendors`, NOT
+// with how the letterhead spells itself: the paper says "CED CONSOLIDATED
+// ELECTRICAL DISTRIBUTORS, INC." and "WOLFF BROS. SUPPLY, INC.".
+//
+// Verified against Neon 2026-09-09: "Lowe's" (recNZLNmYciizye23) and
+// "Contractor Lighting & Supply" (6c773531-…, native, no rec id) both exist and
+// are spelled exactly as below. The curly apostrophe in "Lowe’s" is an INPUT
+// spelling only — the stored name uses the straight one.
+//
+// ⚠ ADDING A VENDOR IS TWO PLACES: an alias here AND an `expense_vendors` row.
+// Doing only the first gives an endpoint that accepts the invoice and files it
+// against nobody.
 const VENDOR_ALIASES = [
   [/^ced\b|consolidated\s+electrical/i, "CED"],
   [/^wol[f]{1,2}\b|wolff\s+bros/i,      "Wolff Brothers"],
+  // Lowe's: the receipts say "LOWE'S", the bot's folder says "Lowes", and a
+  // copy-paste out of a PDF or a phone keyboard gives the curly "Lowe’s". All
+  // three are the same supplier.
+  // ⚠ THE `s` IS REQUIRED, and the apostrophe is what is optional — not the
+  // other way round. "Lowe Electric Supply" is a real electrical distributor,
+  // and an `s?` here would quietly file its invoices as Lowe's. Anchored at the
+  // start for the same reason.
+  [/^lowe['’]?s\b/i,                                        "Lowe's"],
+  // Contractor Lighting: the ampersand is spelled "&" on the letterhead and
+  // "and" by anyone typing it. Matching on the first two words covers both
+  // without caring which, and without caring about a trailing ", INC.".
+  [/^contractor\s+lighting\b|contractor\s+lighting\s*(?:&|and)\s*supply/i,
+                                                            "Contractor Lighting & Supply"],
 ];
+
+// The canonical names this inbox accepts, in alias order. Exported so the
+// rejection message and the review screen's vendor chips are built from the
+// same list a vendor is actually added to — a hard-coded "Expected CED or
+// Wolff" goes stale the moment this array grows, and points the bot's operator
+// at the wrong problem.
+export const ACCEPTED_VENDORS = VENDOR_ALIASES.map(([, name]) => name);
 
 export function canonicalVendor(v) {
   const s = String(v || "").trim();

@@ -64,6 +64,44 @@ const neonReply = (cols, rows) => {
            text: async () => JSON.stringify(body), json: async () => body };
 };
 
+// 2c) Mock the vendor-invoice inbox (db/schema/069). `vendorInvoiceIntake` is
+//     the only handler in this file that reads AND writes several Neon tables in
+//     one request — invoice in, job lookup, vendor lookup, expense out — so the
+//     interesting behaviour (a duplicate retry, an ambiguous PO, a PDF that
+//     can't be stored) only shows up end to end. This little in-memory store
+//     lets those run through the REAL handler with no database.
+//
+// ⚠ INERT UNLESS A CASE SETS IT. `mockVI` starts null and the router below is
+//   skipped entirely while it is, so no other case's Neon traffic can fall into
+//   these branches and start passing for the wrong reason.
+let mockVI = null;
+// The dedupe key's normalisation, mirroring vendor_invoices_dedupe exactly:
+// upper(regexp_replace(…, '[^A-Za-z0-9]', '', 'g')) on BOTH halves. Written out
+// here rather than imported so a change to the index has to be made twice on
+// purpose — this is what stops a retry becoming a second charge on a job.
+const viNorm = (v) => String(v ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+// ⚠ THE DRIVER SENDS EVERY PARAM AS A STRING. @neondatabase/serverless
+// serialises params to text over HTTP and lets Postgres coerce them at the
+// `$6::numeric` / `$5::boolean` casts. The router has to do the same coercion or
+// a case would assert against "11.08" and 11.08 would look like a failure —
+// worse, an assertion written the other way round would pass on a string that
+// Postgres was never going to accept. These two mirror the casts in the SQL.
+const viNum  = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
+const viBool = (v) => v === true || v === "true" || v === "t";
+function viOn(seed = {}) {
+  neonOn([]);                       // DATABASE_URL on; no employee fixtures needed
+  mockTables = {};                  // nothing for Airtable to answer with
+  lastFetch = null;                 // so cases can assert Airtable was never touched
+  mockVI = {
+    invoices: [], expenses: [], nextId: 1,
+    jobsByCode: seed.jobsByCode || {},   // normalised PO code -> [{id,name,status}]
+    vendors:    seed.vendors    || {},   // lower(expense_vendors.name) -> handle
+    jobsError:  seed.jobsError  || false,
+  };
+  return mockVI;
+}
+function viOff() { mockVI = null; neonOff(); }
+
 globalThis.fetch = async (url, opts) => {
   const method = (opts?.method || "GET").toUpperCase();
   // ⚠ The Neon branch comes FIRST and deliberately does NOT touch `lastFetch`.
@@ -100,6 +138,75 @@ globalThis.fetch = async (url, opts) => {
              .some(v => String(v || "").trim().toLowerCase() === String(id)));
       return neonReply(["handle", "name", "role"],
         rows.map(e => ({ handle: e.id, name: e.name, role: e.role ?? null })));
+    }
+    // ── vendor-invoice inbox ────────────────────────────────────────────
+    // ⚠ ORDER IS LOAD-BEARING HERE. `INSERT INTO expenses` contains subselects
+    //   on both `jobs` and `expense_vendors`, so it MUST be matched before the
+    //   branches for those two tables or an expense insert would be answered as
+    //   a vendor lookup and the intake would silently create no expense at all.
+    if (mockVI) {
+      const p = sent.params || [];
+      if (/INSERT INTO vendor_invoices/i.test(sql)) {
+        const [vendorName, invoiceNo, poText, poCode, invoiceDate, amount, taxAmount] = p;
+        // ON CONFLICT DO NOTHING on the normalised pair.
+        const dupe = mockVI.invoices.some(r =>
+          viNorm(r.vendor_name) === viNorm(vendorName) &&
+          viNorm(r.invoice_no)  === viNorm(invoiceNo));
+        if (dupe) return neonReply([], []);   // no RETURNING row — the retry path
+        const row = { id: `vi-${mockVI.nextId++}`, vendor_name: vendorName,
+                      invoice_no: invoiceNo, po_text: poText, po_code: poCode,
+                      invoice_date: invoiceDate,
+                      amount: viNum(amount), tax_amount: viNum(taxAmount),
+                      status: "needs_review", match_reason: "pending",
+                      job_id: null, expense_id: null, pdf_key: null, resolved_by: null };
+        mockVI.invoices.push(row);
+        return neonReply(["id"], [{ id: row.id }]);
+      }
+      if (/UPDATE vendor_invoices/i.test(sql)) {
+        const row = mockVI.invoices.find(r => r.id === p[0]);
+        if (row) {
+          if (/SET pdf_key/i.test(sql)) row.pdf_key = p[1];
+          else if (/status = 'matched'/i.test(sql)) {
+            row.status = "matched"; row.job_id = p[1]; row.expense_id = p[2];
+            row.match_reason = p[3]; row.resolved_by = p[4];
+          } else if (/match_reason = \$2/.test(sql)) row.match_reason = p[1];
+          else {
+            // The two literal-reason failure paths: 'lookup-failed' and
+            // 'expense-create-failed'.
+            const lit = /match_reason = '([a-z-]+)'/.exec(sql);
+            if (lit) row.match_reason = lit[1];
+          }
+        }
+        return neonReply([], []);
+      }
+      if (/FROM vendor_invoices/i.test(sql)) {
+        const hit = mockVI.invoices.filter(r =>
+          viNorm(r.vendor_name) === viNorm(p[0]) && viNorm(r.invoice_no) === viNorm(p[1]));
+        return neonReply(["id", "status", "job_id", "expense_id", "match_reason"], hit);
+      }
+      if (/INSERT INTO expenses/i.test(sql)) {
+        const e = { id: `exp-${mockVI.expenses.length + 1}`,
+                    jobHandle: p[1], expenseType: p[2], expenseDate: p[3],
+                    billable: viBool(p[4]),
+                    manualMaterialCost: viNum(p[5]), materialCredit: viNum(p[6]),
+                    vendorHandle: p[7], description: p[8], submittedBy: p[9] };
+        mockVI.expenses.push(e);
+        return neonReply(["id"], [{ id: e.id }]);
+      }
+      if (/FROM jobs j\b/i.test(sql)) {
+        // ⚠⚠ A LOOKUP FAILURE IS NOT A MISS. Answering [] here would make a
+        //    five-second Neon blip park a day of invoices that all had perfectly
+        //    good POs, with nothing thrown and nothing logged as wrong.
+        if (mockVI.jobsError) {
+          return { ok: false, status: 500, headers: { get: () => "text/plain" },
+                   text: async () => "jobs lookup exploded" };
+        }
+        return neonReply(["id", "name", "status"], mockVI.jobsByCode[p[0]] || []);
+      }
+      if (/FROM expense_vendors/i.test(sql)) {
+        const h = mockVI.vendors[String(p[0] ?? "").toLowerCase()];
+        return neonReply(["handle"], h ? [{ handle: h }] : []);
+      }
     }
     // Everything else — the last-login stamp above all — is a no-op success.
     // These cases are about who ANSWERS a login, not what it records afterwards.
@@ -5773,6 +5880,110 @@ await test("vendorInvoice: an unrecognised vendor is refused, not stored", async
   eq(canonicalVendor(""), null);
 });
 
+// ── The two vendors added 2026-09-09 ─────────────────────────────────────────
+await test("vendorInvoice: Lowe's and Contractor Lighting map to their EXACT record names", async () => {
+  const { canonicalVendor, ACCEPTED_VENDORS } =
+    await import("../netlify/functions/_vendor-invoices.js");
+
+  // ⚠⚠ THE RIGHT-HAND SIDE IS expense_vendors.name AND IT IS LOAD-BEARING.
+  // vendorHandleFor matches `lower(name) = lower($1)`; a name that matches no
+  // row hands createExpenseNative a NULL handle and the expense is created with
+  // NO VENDOR ON IT. Nothing throws — the cost lands on the job attributed to
+  // nobody. Both spellings below were read out of Neon on 2026-09-09.
+  for (const spelling of ["Lowe's", "Lowes", "Lowe’s", "LOWES", "lowe's",
+                          "LOWE'S HOME CENTERS, LLC"]) {
+    eq(canonicalVendor(spelling), "Lowe's", `"${spelling}"`);
+  }
+  // The straight apostrophe is the stored one; the curly is only ever an INPUT
+  // spelling (a phone keyboard, or a copy-paste out of the PDF).
+  eq(canonicalVendor("Lowe’s").indexOf("’"), -1, "the curly apostrophe never survives into the record name");
+
+  for (const spelling of ["Contractor Lighting & Supply",
+                          "Contractor Lighting and Supply",
+                          "CONTRACTOR LIGHTING & SUPPLY, INC.",
+                          "contractor lighting and supply"]) {
+    eq(canonicalVendor(spelling), "Contractor Lighting & Supply", `"${spelling}"`);
+  }
+
+  // The four accepted vendors, and nothing else. A hard-coded "Expected CED or
+  // Wolff" in the 400 message is what this list exists to stop.
+  eq(ACCEPTED_VENDORS.length, 4, "four vendors");
+  for (const n of ["CED", "Wolff Brothers", "Lowe's", "Contractor Lighting & Supply"]) {
+    ok(ACCEPTED_VENDORS.includes(n), `${n} is accepted`);
+  }
+
+  // ⚠ NO CROSS-MATCHING. The new patterns are anchored so they cannot swallow a
+  // vendor they don't own — and the existing two must still win their own names.
+  eq(canonicalVendor("CED"), "CED", "CED unchanged");
+  eq(canonicalVendor("Wolff Brothers"), "Wolff Brothers", "Wolff unchanged");
+  eq(canonicalVendor("Sunbelt Lowering Gear"), null, "not every word containing 'lowe'");
+  // ⚠ "Lowe Electric Supply" is a REAL electrical distributor. The `s` in the
+  // pattern is required and the apostrophe is what's optional — the other way
+  // round would quietly file their invoices as Lowe's.
+  eq(canonicalVendor("Lowe Electric Supply"), null, "a different supplier entirely");
+  eq(canonicalVendor("Contractor Supply Co"), null, "'contractor' alone is not enough");
+  eq(canonicalVendor("Home Depot"), null, "still refused");
+
+  // The dedupe key is normalised vendor + invoice no. Four distinct buckets, or
+  // one vendor's invoice number silently blocks another vendor's.
+  const norm = (v) => v.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  eq(new Set(ACCEPTED_VENDORS.map(norm)).size, 4, "no two vendors share a dedupe bucket");
+});
+
+await test("vendorInvoice: a ZERO balance is not a credit — the bot says so, we never infer", async () => {
+  const { amountToExpenseFields } = await import("../netlify/functions/_vendor-invoices.js");
+
+  // ⚠⚠ Contractor Lighting prints a running balance, so an ordinary charge can
+  // show 0.00 and a zero-balance CREDIT looks identical on the paper. Guessing
+  // would file a charge as a credit, which SUBTRACTS from the job's material
+  // cost — the job's GP then simply reads better than it is, and nobody chases
+  // a number that looks good. (The estimate-GP bug went five years for exactly
+  // that reason, in exactly that direction.)
+  const zero = amountToExpenseFields("0.00");
+  eq(zero.manualMaterialCost, null, "zero is not a cost");
+  eq(zero.materialCredit, null, "and it is emphatically not a credit");
+  eq(amountToExpenseFields(0).materialCredit, null, "numeric zero too");
+  eq(amountToExpenseFields("$0.00").materialCredit, null, "and a formatted one");
+
+  // The bot's explicit flag is the ONLY thing that turns a positive into a credit.
+  const flagged = amountToExpenseFields("2096.49", true);
+  eq(flagged.manualMaterialCost, null, "an explicit credit leaves the cost NULL");
+  eq(flagged.materialCredit, 2096.49, "and lands positive in the credit column");
+  // ⚠ It can only ever turn an amount INTO a credit, never out of one: Wolff's
+  // trailing minus keeps working whether the flag is absent or false.
+  eq(amountToExpenseFields("773.85-", false).materialCredit, 773.85, "false does NOT un-credit a minus");
+  eq(amountToExpenseFields("773.85-", undefined).materialCredit, 773.85, "nor does omitting it");
+  eq(amountToExpenseFields("773.85-", true).materialCredit, 773.85, "and true agrees with the minus");
+  // Flagged zero is still nothing at all — the flag says which column, not that
+  // there is money.
+  eq(amountToExpenseFields("0.00", true).materialCredit, null, "a flagged zero is still no money");
+  // And the ordinary path is untouched.
+  eq(amountToExpenseFields("11.08").manualMaterialCost, 11.08, "a plain charge is a cost");
+});
+
+await test("vendorInvoice: the PDF cap is 8 MB, and an oversized one fails SOFT", async () => {
+  const { decodeInvoicePdf, INVOICE_PDF_MAX_BYTES } =
+    await import("../netlify/functions/_vendor-invoices.js");
+  eq(INVOICE_PDF_MAX_BYTES, 8 * 1024 * 1024, "8 MB, unchanged");
+
+  // The real samples are 15–26 KB.
+  const sample = Buffer.from("%PDF-1.4 not really a pdf");
+  eq(decodeInvoicePdf(sample.toString("base64"))?.length, sample.length,
+     "an ordinary invoice decodes to its own bytes");
+
+  // ⚠ Returns null, never throws. The PDF path fails soft everywhere in this
+  // app: an invoice with no readable PDF still shows its parsed figures and can
+  // still be assigned to a job. Losing the picture is bad; losing the money is
+  // worse.
+  eq(decodeInvoicePdf(Buffer.alloc(INVOICE_PDF_MAX_BYTES + 1).toString("base64")), null,
+     "one byte over the cap is refused");
+  ok(decodeInvoicePdf(Buffer.alloc(INVOICE_PDF_MAX_BYTES).toString("base64")) !== null,
+     "exactly at the cap is allowed");
+  eq(decodeInvoicePdf(""), null, "no PDF at all");
+  eq(decodeInvoicePdf(null), null, "and a null one");
+  eq(decodeInvoicePdf("!!!!"), null, "unparseable base64 decodes to nothing, and that is null");
+});
+
 await test("vendorInvoice: STATIC — the inbox writes NOTHING to Airtable", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");
@@ -5798,6 +6009,265 @@ await test("vendorInvoice: STATIC — the inbox writes NOTHING to Airtable", asy
   // what stop one impatient double-tap becoming two expenses on a job.
   ok(/if \(inv\.status !== "needs_review"\)/.test(src), "assign refuses an already-settled invoice");
   ok(/AND status = 'needs_review'\n\s*RETURNING id/.test(src), "markReviewed carries the guard in its WHERE clause");
+});
+
+// ── vendorInvoiceIntake, END TO END ──────────────────────────────────────────
+// Everything above tests the pure half. These run the REAL handler against the
+// in-memory Neon router, because the parts that decide whether money lands on a
+// job — the dedupe retry, the ambiguous park, the expense the match creates —
+// only exist across several statements in one request. Lowe's and Contractor
+// Lighting & Supply were added 2026-09-09; CED and Wolff are re-asserted here
+// so "we didn't change the existing two" is a test rather than a claim.
+//
+// The vendor handles are the real ones from Neon: Lowe's still carries an
+// Airtable rec id, Contractor Lighting is native and has only a uuid. Both
+// forms have to work — createExpenseNative resolves `airtable_id = $8 OR
+// id::text = $8` precisely so they do.
+const VI_VENDORS = {
+  "ced":                          "recCEDVENDOR0001",
+  "wolff brothers":               "recWOLFFVENDOR01",
+  "lowe's":                       "recNZLNmYciizye23",
+  "contractor lighting & supply": "6c773531-8e07-4e2c-b05e-6476ea8dd846",
+};
+const VI_JOB = { id: "3a1e77c0-0000-4000-8000-000000000001", name: "Joe Yoder (CAJ 436)", status: "Awarded" };
+const viPost = (b, tok = OFFICE_TOK) => POST("vendorInvoiceIntake", b, tok);
+
+await test("vendorInvoiceIntake: a UNIQUE job match creates the expense, with the right vendor", async () => {
+  for (const [vendor, canonical, amount, expectCost] of [
+    ["Lowes",                          "Lowe's",                       "11.08",   11.08],
+    ["Contractor Lighting and Supply", "Contractor Lighting & Supply", "2096.49", 2096.49],
+    ["CED",                            "CED",                          "13,446.00", 13446],
+    ["WOLFF BROS. SUPPLY, INC.",       "Wolff Brothers",               "773.85",  773.85],
+  ]) {
+    const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+    const res = await viPost({ vendor, invoiceNo: "INV-1", po: "CAJ 436",
+                               invoiceDate: "2026-09-08", amount });
+    eq(res.statusCode, 200, `${canonical} status`);
+    const b = json(res);
+    eq(b.status, "matched", `${canonical} matched`);
+    eq(b.jobId, VI_JOB.id, `${canonical} got the job`);
+    ok(b.expenseId, `${canonical} created an expense`);
+
+    // The expense itself — this is the money.
+    eq(vi.expenses.length, 1, `${canonical}: exactly one expense`);
+    const e = vi.expenses[0];
+    eq(e.vendorHandle, VI_VENDORS[canonical.toLowerCase()],
+       `${canonical}: the vendor handle is the real record's`);
+    eq(e.manualMaterialCost, expectCost, `${canonical}: cost`);
+    eq(e.materialCredit, null, `${canonical}: not a credit`);
+    eq(e.expenseType, "Materials", `${canonical}: type`);
+    eq(e.billable, true, `${canonical}: billable, like all 215 the bot has written`);
+    // The bot's own naming convention, kept verbatim so new rows read beside old.
+    eq(e.description, `${canonical} Invoice INV-1`, `${canonical}: description`);
+    // ⚠ The row is resolved, not left pending — a matched invoice is history.
+    eq(vi.invoices[0].status, "matched", `${canonical}: the invoice row is settled`);
+    eq(vi.invoices[0].match_reason, "auto", `${canonical}: reason`);
+    // ⚠ NO AIRTABLE, ANYWHERE. This feature was built after the write cutover.
+    eq(lastFetch, null, `${canonical}: nothing was sent to Airtable`);
+    viOff();
+  }
+});
+
+await test("vendorInvoiceIntake: NO job match parks — Lowe's 86961 'up', CLS 0000315339 'Miller Shop'", async () => {
+  // ⚠⚠ THE TWO INVOICES WAITING ON THE MINI BEE, 2026-09-09. Both PO codes were
+  // checked against production the same day: "UP" matches 0 jobs and
+  // "MILLERSHOP" matches 0. Neither may become an expense on a guessed job.
+  for (const [vendor, canonical, invoiceNo, po, amount] of [
+    ["Lowe's",                      "Lowe's",                       "86961",      "up",          "11.08"],
+    ["Contractor Lighting & Supply","Contractor Lighting & Supply", "0000315339", "Miller Shop", "2096.49"],
+  ]) {
+    const vi = viOn({ jobsByCode: {}, vendors: VI_VENDORS });
+    const b = json(await viPost({ vendor, invoiceNo, po, amount }));
+    eq(b.status, "needs_review", `${canonical}: parks`);
+    eq(b.reason, "no-job-match", `${canonical}: because no job has that PO`);
+    eq(b.candidates.length, 0, `${canonical}: nothing to offer`);
+    eq(vi.expenses.length, 0, `${canonical}: NO expense was created`);
+
+    const row = vi.invoices[0];
+    eq(row.status, "needs_review", `${canonical}: still waiting for a person`);
+    // ⚠ THE RAW CODE IS PRESERVED. The reviewer has to see what the paper
+    // actually said — "up" and "Miller Shop" are what makes the row resolvable
+    // by hand at all; the normalised form only says what failed to match.
+    eq(row.po_text, po, `${canonical}: the Mini Bee's raw PO is kept verbatim`);
+    eq(row.po_code, po.replace(/[^A-Za-z0-9]/g, "").toUpperCase(), `${canonical}: normalised alongside it`);
+    eq(row.invoice_no, invoiceNo, `${canonical}: invoice number kept as sent`);
+    viOff();
+  }
+});
+
+await test("vendorInvoiceIntake: leading zeros on an invoice number are NEVER dropped", async () => {
+  // ⚠ "0000315339" is a string, not a number. A parser or a spreadsheet that
+  // rounds it to 315339 makes the retry look like a different invoice, and the
+  // dedupe guard stops guarding — which is a second charge on a job.
+  const vi = viOn({ jobsByCode: {}, vendors: VI_VENDORS });
+  await viPost({ vendor: "Contractor Lighting & Supply", invoiceNo: "0000315339",
+                 po: "Miller Shop", amount: "2096.49" });
+  eq(vi.invoices[0].invoice_no, "0000315339", "stored with its leading zeros");
+  viOff();
+});
+
+await test("vendorInvoiceIntake: an AMBIGUOUS PO parks and offers both — it never guesses", async () => {
+  // ⚠⚠ NOT HYPOTHETICAL. "Harlin Smith (2 Barn)" and "Rebecca Smith (2 Barn)"
+  // both reduce to 2BARN in production today. Taking the first row would put one
+  // customer's material on another customer's job, where nothing surfaces it.
+  const two = [
+    { id: "3a1e77c0-0000-4000-8000-00000000000a", name: "Harlin Smith (2 Barn)",  status: "Awarded" },
+    { id: "3a1e77c0-0000-4000-8000-00000000000b", name: "Rebecca Smith (2 Barn)", status: "Completed" },
+  ];
+  for (const [vendor, canonical] of [["Lowes", "Lowe's"],
+                                     ["Contractor Lighting and Supply", "Contractor Lighting & Supply"]]) {
+    const vi = viOn({ jobsByCode: { "2BARN": two }, vendors: VI_VENDORS });
+    const b = json(await viPost({ vendor, invoiceNo: "AMB-1", po: "2 Barn", amount: "500.00" }));
+    eq(b.status, "needs_review", `${canonical}: parks`);
+    eq(b.reason, "ambiguous-po", `${canonical}: and says WHY — an unreadable PO needs a different fix`);
+    eq(b.candidates.length, 2, `${canonical}: both are offered to the reviewer`);
+    eq(b.candidates[0].name, "Harlin Smith (2 Barn)", `${canonical}: named, so a person can choose`);
+    eq(vi.expenses.length, 0, `${canonical}: NO expense — neither job is charged`);
+    eq(vi.invoices[0].match_reason, "ambiguous-po", `${canonical}: recorded on the row too`);
+    viOff();
+  }
+});
+
+await test("vendorInvoiceIntake: a DUPLICATE retry charges nothing twice", async () => {
+  // The bot polls a folder on a timer, so re-sending yesterday's invoice is the
+  // NORMAL case. Without the guard a retry is a second expense on the job and
+  // nothing anywhere complains.
+  for (const [first, retry, canonical] of [
+    ["Lowe's", "LOWES", "Lowe's"],
+    ["Contractor Lighting & Supply", "contractor lighting and supply", "Contractor Lighting & Supply"],
+  ]) {
+    const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+    const a = json(await viPost({ vendor: first, invoiceNo: "0000315339", po: "CAJ 436", amount: "2096.49" }));
+    eq(a.status, "matched", `${canonical}: first send matches`);
+    eq(vi.expenses.length, 1, `${canonical}: one expense`);
+
+    // ⚠ The retry comes back with a DIFFERENT vendor spelling and a differently
+    // punctuated invoice number, because that is what the two parsers actually
+    // do. The dedupe index normalises both halves, so it is still one invoice.
+    const b = json(await viPost({ vendor: retry, invoiceNo: "0000-315339", po: "CAJ 436", amount: "2096.49" }));
+    eq(b.duplicate, true, `${canonical}: the retry is recognised`);
+    eq(b.status, "matched", `${canonical}: and reports what happened the FIRST time`);
+    eq(b.jobId, VI_JOB.id, `${canonical}: pointing at the job it already landed on`);
+    ok(b.expenseId, `${canonical}: and the expense it already created`);
+    eq(vi.expenses.length, 1, `${canonical}: STILL one expense — the job is not charged twice`);
+    eq(vi.invoices.length, 1, `${canonical}: and still one invoice row`);
+    viOff();
+  }
+
+  // A retry of a PARKED invoice reports that it is still waiting, so the bot's
+  // operator can tell "already an expense" from "still needs a person".
+  const vi = viOn({ jobsByCode: {}, vendors: VI_VENDORS });
+  await viPost({ vendor: "Lowe's", invoiceNo: "86961", po: "up", amount: "11.08" });
+  const again = json(await viPost({ vendor: "Lowes", invoiceNo: "86961", po: "up", amount: "11.08" }));
+  eq(again.duplicate, true, "the parked invoice is recognised on retry");
+  eq(again.status, "needs_review", "and is still waiting");
+  eq(again.expenseId, null, "with no expense behind it");
+  eq(vi.invoices.length, 1, "and no second row in the queue");
+  viOff();
+});
+
+await test("vendorInvoiceIntake: a PDF never blocks the money — it fails SOFT", async () => {
+  // R2 is unconfigured in this suite (r2Status clears the four vars above), which
+  // is exactly the case that matters: the invoice must still be recorded and
+  // still land on the job. Losing the picture is bad; losing the money is worse.
+  for (const [vendor, canonical] of [["Lowe's", "Lowe's"],
+                                     ["Contractor Lighting & Supply", "Contractor Lighting & Supply"]]) {
+    const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+    const pdf = Buffer.from("%PDF-1.4 sample invoice").toString("base64");
+    const b = json(await viPost({ vendor, invoiceNo: "PDF-1", po: "CAJ 436", amount: "100.00", pdfBase64: pdf }));
+    eq(b.status, "matched", `${canonical}: the match still happens`);
+    eq(vi.expenses.length, 1, `${canonical}: and the expense is still created`);
+    eq(vi.invoices[0].pdf_key, null, `${canonical}: with no pdf_key, because R2 could not take it`);
+
+    // An oversized PDF is refused by the cap, and that too must not block intake.
+    const huge = Buffer.alloc(9 * 1024 * 1024).toString("base64");
+    const c = json(await viPost({ vendor, invoiceNo: "PDF-2", po: "CAJ 436", amount: "100.00", pdfBase64: huge }));
+    eq(c.status, "matched", `${canonical}: a 9 MB attachment does not fail the invoice`);
+    eq(vi.expenses.length, 2, `${canonical}: the expense is still created`);
+    viOff();
+  }
+});
+
+await test("vendorInvoiceIntake: an explicit credit lands in the CREDIT column, a zero balance in neither", async () => {
+  // ⚠⚠ The Mini Bee sends the credit status; this endpoint never infers it from
+  // a zero balance. Contractor Lighting prints a running balance, so a 0.00
+  // charge and a 0.00 credit look identical on the paper — and a charge filed as
+  // a credit SUBTRACTS from the job's material cost, making the GP read better
+  // than it is. That error is invisible: nobody chases a good-looking number.
+  let vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+  json(await viPost({ vendor: "Contractor Lighting & Supply", invoiceNo: "CR-1",
+                      po: "CAJ 436", amount: "2096.49", isCredit: true }));
+  eq(vi.expenses[0].materialCredit, 2096.49, "the flagged credit is a credit");
+  eq(vi.expenses[0].manualMaterialCost, null, "and NOT a negative cost — the GP views subtract it themselves");
+  eq(vi.invoices[0].amount, -2096.49, "stored signed on the invoice row");
+  viOff();
+
+  // The same invoice WITHOUT the flag is an ordinary charge.
+  vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+  json(await viPost({ vendor: "Contractor Lighting & Supply", invoiceNo: "CR-2",
+                      po: "CAJ 436", amount: "2096.49" }));
+  eq(vi.expenses[0].manualMaterialCost, 2096.49, "unflagged is a cost");
+  eq(vi.expenses[0].materialCredit, null, "not a credit");
+  viOff();
+
+  // And a zero balance is neither, flagged or not.
+  for (const isCredit of [undefined, true, false]) {
+    vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+    json(await viPost({ vendor: "Contractor Lighting & Supply", invoiceNo: `Z-${String(isCredit)}`,
+                        po: "CAJ 436", amount: "0.00", isCredit }));
+    eq(vi.expenses[0].materialCredit, null, `zero with isCredit=${isCredit} is not a credit`);
+    eq(vi.expenses[0].manualMaterialCost, null, `zero with isCredit=${isCredit} is not a cost`);
+    viOff();
+  }
+});
+
+await test("vendorInvoiceIntake: invoiceNo is still required, and an unknown vendor is still refused", async () => {
+  const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS });
+
+  for (const invoiceNo of [undefined, "", "   "]) {
+    const res = await viPost({ vendor: "Lowe's", invoiceNo, po: "CAJ 436", amount: "11.08" });
+    eq(res.statusCode, 400, `invoiceNo ${JSON.stringify(invoiceNo)} → 400`);
+    eq(json(res).error, "Missing invoiceNo.", "with the same message as before");
+  }
+
+  // ⚠ A Gmail filter on the wrong label must be a 400 in the bot's log, not a
+  // silent new vendor account. And the message has to NAME the accepted list —
+  // a stale "Expected CED or Wolff" points the operator at the wrong problem.
+  const bad = await viPost({ vendor: "Home Depot", invoiceNo: "1", po: "CAJ 436", amount: "5.00" });
+  eq(bad.statusCode, 400, "unknown vendor → 400");
+  for (const n of ["CED", "Wolff Brothers", "Lowe's", "Contractor Lighting & Supply"]) {
+    ok(json(bad).error.includes(n), `the refusal names ${n}`);
+  }
+  eq(vi.invoices.length, 0, "and nothing was stored under a name nobody agreed to");
+  eq(vi.expenses.length, 0, "nor any expense");
+  viOff();
+});
+
+await test("vendorInvoiceIntake: a failed job LOOKUP is a 502, never a quiet park", async () => {
+  // ⚠⚠ If a Neon blip read as "no job matched", a five-second outage would park
+  // a day of invoices that all had perfectly good POs — and the only symptom
+  // would be a queue that looked busy. Nothing would throw. The row still
+  // survives as needs_review; what changes is that the bot's operator is told.
+  const vi = viOn({ jobsByCode: { CAJ436: [VI_JOB] }, vendors: VI_VENDORS, jobsError: true });
+  const res = await viPost({ vendor: "Lowe's", invoiceNo: "BLIP-1", po: "CAJ 436", amount: "11.08" });
+  eq(res.statusCode, 502, "the bot is told the lookup broke");
+  eq(json(res).status, "needs_review", "the invoice is still visible on the review screen");
+  eq(vi.invoices[0].match_reason, "lookup-failed", "and the row says so, not 'no-job-match'");
+  eq(vi.expenses.length, 0, "no expense on a guessed job");
+  viOff();
+});
+
+await test("vendorInvoiceIntake: role gate — admin+office only, and the bot is office", async () => {
+  const vi = viOn({ jobsByCode: {}, vendors: VI_VENDORS });
+  const body = { vendor: "Lowe's", invoiceNo: "ROLE-1", po: "up", amount: "11.08" };
+  eq((await viPost(body, EMP_TOK)).statusCode, 403, "employee");
+  eq((await viPost(body, VIEWER_TOK)).statusCode, 403, "viewer");
+  eq((await viPost(body, null)).statusCode, 401, "no token at all");
+  eq(vi.invoices.length, 0, "and none of those stored anything");
+  // The `cedautomation` bot signs in as `office` — the tier this action sits at.
+  eq(json(await viPost(body, OFFICE_TOK)).status, "needs_review", "office (the bot) is accepted");
+  eq(json(await viPost({ ...body, invoiceNo: "ROLE-2" }, ADMIN_TOK)).status, "needs_review", "and so is admin");
+  viOff();
 });
 
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {

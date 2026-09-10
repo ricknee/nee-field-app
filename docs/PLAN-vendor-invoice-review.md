@@ -1,8 +1,13 @@
-# Vendor-invoice review — CED and Wolff invoices that can't find their job
+# Vendor-invoice review — supplier invoices that can't find their job
 
-**Status: BUILT 2026-09-09. Inert until the bot is repointed** — nothing writes to
-`vendor_invoices` yet, so the 🧾 Invoice Review button shows an empty queue and no
-badge. Flipping it on is a change to the bot, not a deploy. See §4.
+**Status: LIVE 2026-09-09.** The Mini Bee is sending and `vendor_invoices` has real
+rows. **Lowe's and Contractor Lighting & Supply were added the same day** — four
+vendors are accepted now, not two.
+
+⚠ The bot runs on a **separate box that is unreachable from this repo.** Its only
+fingerprint here is the `cedautomation` employee; grepping this codebase finds nothing
+of it. Changing what it sends is a change over there, not a deploy here — see §4 for
+the contract, and `docs/minibee-invoice-change.md` for the copy handed to that project.
 
 ---
 
@@ -107,6 +112,49 @@ A credit goes to the expense's **`material_credit`**, a normal invoice to
 every GP rollup read them separately and subtract the credit themselves, so a credit
 written as a negative cost is counted twice.
 
+### ⚠ A zero balance is NOT a credit  *(added with Contractor Lighting, 2026-09-09)*
+
+Contractor Lighting prints a **running balance**, so an ordinary charge can show
+`0.00` — and a zero-balance *credit* looks identical on the paper. Nothing in the
+number says which it is, so the endpoint does not guess: `0.00` lands in **neither**
+expense column. The Mini Bee reads the real credit status off the document and says so
+with `"isCredit": true`; a signed amount (Wolff's trailing minus) still works exactly
+as before.
+
+The flag is honoured **only when explicitly `true`**, and it can only ever turn an
+amount *into* a credit, never out of one — so a bot that sends `false`, or omits it,
+cannot accidentally convert a credit memo back into a charge.
+
+Why this is worth a section: a charge filed as a credit **subtracts** from the job's
+material cost, so the job's GP reads *better* than it is. That is the same shape as the
+estimate-GP bug that ran five years unnoticed — the error was always in the direction
+that flatters the number, and **nobody chases a number that looks good.**
+
+### The four accepted vendors
+
+`ACCEPTED_VENDORS` in `_vendor-invoices.js` is the single list; the 400 message and the
+review screen's vendor chips are both built from it.
+
+| Accepted spellings (case-insensitive) | `expense_vendors.name` |
+|---|---|
+| `CED`, `CED CONSOLIDATED ELECTRICAL DISTRIBUTORS, INC.` | CED |
+| `Wolff`, `Wolf Bros Supply`, `WOLFF BROS. SUPPLY, INC.` | Wolff Brothers |
+| `Lowe's`, `Lowes`, `Lowe’s`, `LOWE'S HOME CENTERS, LLC` | Lowe's |
+| `Contractor Lighting & Supply` / `… and Supply` | Contractor Lighting & Supply |
+
+⚠⚠ **The right-hand column is load-bearing and is not a label.** `vendorHandleFor`
+looks the vendor up with `lower(name) = lower($1)`; a name matching no `expense_vendors`
+row resolves to NULL and the expense is created **with no vendor on it**. Nothing
+throws — the cost lands on the job attributed to nobody, which is this system's
+characteristic silent failure. Both new names were read out of Neon on 2026-09-09
+before the aliases were written: `Lowe's` still carries an Airtable rec id
+(`recNZLNmYciizye23`), Contractor Lighting is native and has only a uuid. Both forms
+work because `createExpenseNative` resolves `airtable_id = $8 OR id::text = $8`.
+
+⚠ **Adding a vendor is two places, not one:** the alias here *and* a matching
+`expense_vendors` row. Checking only the first gives an endpoint that accepts the
+invoice and files it against nobody.
+
 ### No Airtable, anywhere
 
 `vendor_invoices` is Neon-native and was built after `AIRTABLE_WRITES=off`. There is
@@ -159,12 +207,13 @@ Content-Type: application/json
 
 {
   "action":      "vendorInvoiceIntake",
-  "vendor":      "CED",                  // or "Wolff" — anything else is a 400
-  "invoiceNo":   "0171-1063885",         // required
+  "vendor":      "CED",                  // one of the four above — anything else is a 400
+  "invoiceNo":   "0171-1063885",         // required; a STRING, leading zeros and all
   "po":          "CAJ 436",              // as read off the paper; null/omitted is fine
   "invoiceDate": "2026-08-28",           // YYYY-MM-DD
   "amount":      "1063.08",              // string or number; "773.85-" is a credit
   "taxAmount":   "0.00",
+  "isCredit":    false,                  // optional; ONLY from the document, never inferred
   "pdfBase64":   "JVBERi0xLjQK…"         // optional, ≤ 8 MB decoded
 }
 ```

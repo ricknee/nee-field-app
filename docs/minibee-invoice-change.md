@@ -78,13 +78,28 @@ Content-Type: application/json
 | Field | Required | Notes |
 |---|---|---|
 | `action` | yes | exactly `vendorInvoiceIntake` |
-| `vendor` | yes | must read as CED or Wolff. The full letterhead name works — `"WOLFF BROS. SUPPLY, INC."` and `"CED CONSOLIDATED ELECTRICAL DISTRIBUTORS, INC."` both resolve. Anything else is a 400. |
-| `invoiceNo` | yes | the supplier's invoice number |
+| `vendor` | yes | one of the four below. The full letterhead name works. Anything else is a 400. |
+| `invoiceNo` | yes | the supplier's invoice number, **as a string** — see the leading-zeros note below |
 | `po` | no | the PO **exactly as read off the paper**. Omit or send `null` when the parser found none. |
 | `invoiceDate` | no | `YYYY-MM-DD` |
 | `amount` | no | string or number, **signed** — see below |
 | `taxAmount` | no | same |
+| `isCredit` | no | `true` only when the document itself says it is a credit. See below — the app never infers this. |
 | `pdfBase64` | no | the invoice PDF, base64, under 8 MB decoded. Strongly recommended: without it the review screen shows figures but no invoice. Observed sizes are 15–26 KB. |
+
+### The four vendors
+
+| Send anything that reads as | Lands as (the app's vendor record) |
+|---|---|
+| `CED`, `CED CONSOLIDATED ELECTRICAL DISTRIBUTORS, INC.` | **CED** |
+| `Wolff`, `Wolf Bros Supply`, `WOLFF BROS. SUPPLY, INC.` | **Wolff Brothers** |
+| `Lowe's`, `Lowes`, `Lowe’s`, `LOWE'S HOME CENTERS, LLC` | **Lowe's** |
+| `Contractor Lighting & Supply`, `Contractor Lighting and Supply` | **Contractor Lighting & Supply** |
+
+Matching is case-insensitive, and both the straight `'` and the curly `’` apostrophe
+are accepted for Lowe's. Anything that reads as none of the four is a **400** — a Gmail
+filter on the wrong label should be loud in the bot's log, not a silent new vendor
+account whose invoices pile up in a queue nobody connects to the mistake.
 
 These are the same values the bot already extracts in order to create an expense.
 Nothing new has to be parsed.
@@ -112,6 +127,20 @@ what it needs.
    invoice as *no PO on the invoice*, which is a different problem from *no job has
    this PO* and is handled differently at the other end.
 
+4. **The invoice number is a string, and its leading zeros are part of it.** Contractor
+   Lighting's numbers look like `0000315339`. Anything that puts one through a numeric
+   type — a spreadsheet cell, a `Number()`, a JSON int — turns it into `315339`, and the
+   next retry then looks like a *different* invoice. The duplicate guard stops guarding,
+   and the job is charged twice.
+
+5. **A zero balance is not a credit.** Contractor Lighting prints a running balance, so
+   an ordinary charge can show `0.00` — and a zero-balance credit looks the same on the
+   paper. The app will **not** guess between them: a `0.00` invoice lands as neither a
+   cost nor a credit. If the document says it is a credit, say so with `"isCredit": true`
+   (or send the amount signed, which is what Wolff's trailing minus already does). Filing
+   a charge as a credit *subtracts* from the job's material cost, so the job's profit
+   simply reads better than it is — and nobody ever chases a number that looks good.
+
 ---
 
 ## Responses
@@ -124,7 +153,7 @@ the batch.
 | `{ok:true, status:"needs_review", reason, id}` | Parked for a person. `reason` is `no-po-on-invoice`, `no-job-match` or `ambiguous-po`. | Normal outcome. Log and continue. |
 | `{ok:true, status:"matched", jobId, expenseId}` | The app matched a job the bot didn't, and created the expense itself. Its PO matching is more forgiving about spacing. | Success. **Do not also call `addGeneralExpense`** — the expense already exists. |
 | `{ok:true, duplicate:true, id, status}` | Already had this invoice. Nothing written. | Success. Continue. |
-| `400 {ok:false, error}` | Vendor wasn't CED or Wolff, or `invoiceNo` was empty. | Log loudly — something upstream is wrong. |
+| `400 {ok:false, error}` | Vendor wasn't one of the four, or `invoiceNo` was empty. The message names the accepted list. | Log loudly — something upstream is wrong. |
 | `401` | Token expired or missing. | Log in again and retry. |
 | `502 {ok:false, id, error}` | Recorded, but something failed afterwards. The invoice is on the review screen. | Safe to retry. |
 
@@ -187,8 +216,33 @@ how quietly they do it. Every one of them produces code that runs fine and looks
       `addGeneralExpense`.** The expense already exists; calling again bills the job twice.
 - [ ] **Errors don't halt the batch.** One bad invoice should be logged and skipped, not
       stop the other nine.
+- [ ] **The invoice number keeps its leading zeros.** `"0000315339"`, not `315339`. Check
+      any spreadsheet cell, `Number()`, `parseInt` or JSON int it passes through. Losing
+      them defeats the duplicate guard, and the second send charges the job again.
+- [ ] **`isCredit` is only ever set from what the document says.** Never from the total
+      being zero, negative, or small. When in doubt, leave it off — the app then reads
+      the sign, and an unflagged charge is merely a charge.
 - [ ] **No credentials were hardcoded** into the new code, and none ended up in a log line.
 - [ ] **The test used a fake invoice number and a PO matching no job** — not a real one.
+
+---
+
+## Added 2026-09-09 — Lowe's and Contractor Lighting & Supply
+
+The endpoint accepted only CED and Wolff until this date. Both new vendors are live now,
+so the two invoices the bot has been holding can be sent as they are. Both are expected
+to **park**, because their PO codes match no job — checked against production the same
+day:
+
+| Vendor | Invoice | PO / customer code | Total | Expected |
+|---|---|---|---|---|
+| Lowe's | `86961` | `up` | 11.08 | `{"ok":true,"status":"needs_review","reason":"no-job-match"}` |
+| Contractor Lighting & Supply | `0000315339` | `Miller Shop` | 2096.49 | `{"ok":true,"status":"needs_review","reason":"no-job-match"}` |
+
+Send them raw — `"up"` and `"Miller Shop"` are the PO text exactly as it should arrive.
+Neither was created by hand at the app end, so the first send is a real first send and
+the duplicate guard has nothing to trip on. Both will appear under
+**☰ → 🧾 Invoice Review**, filed under their own vendor chip.
 
 ## Optional, later — not part of this change
 

@@ -52,7 +52,8 @@ import {
 // Vendor-invoice inbox (db/schema/069). Pure functions — no network, no env.
 import {
   normalizePoCode, JOB_PO_CODE_SQL, matchJobByPoCode,
-  amountToExpenseFields, canonicalVendor,
+  amountToExpenseFields, canonicalVendor, ACCEPTED_VENDORS,
+  decodeInvoicePdf,
 } from "./_vendor-invoices.js";
 
 /* ============================================================================
@@ -9729,7 +9730,9 @@ async function handleAddGeneralExpense(body, authUser) {
 /* ══════════════════════════════════════════════════════════════════════════
  * VENDOR-INVOICE INBOX — db/schema/069, docs/PLAN-vendor-invoice-review.md
  * ═════════════════════════════════════════════════════════════════════════
- * CED and Wolff invoices arrive here first and become expenses second. The
+ * Supplier invoices arrive here first and become expenses second. The accepted
+ * vendors are CED, Wolff Brothers, Lowe's and Contractor Lighting & Supply —
+ * the list lives in `ACCEPTED_VENDORS` in _vendor-invoices.js, not here. The
  * external bot (signed in as the `cedautomation` employee) posts EVERY invoice
  * to `vendorInvoiceIntake`; this file decides whether the PO matches a job.
  * One match creates the expense immediately, exactly as the bot used to do it
@@ -9780,11 +9783,10 @@ async function jobsMatchingPoCode(poCode) {
 async function storeVendorInvoicePdf(invoiceId, pdfBase64) {
   try {
     if (!r2Enabled()) return null;
-    const bytes = Buffer.from(String(pdfBase64), "base64");
-    // The samples are 15–26 KB. This cap is two orders of magnitude above that
-    // and still well under Netlify's request ceiling, so hitting it means the
-    // bot sent something that is not one supplier invoice.
-    if (!bytes.length || bytes.length > 8 * 1024 * 1024) return null;
+    // Decode and size-check in one place — the 8 MB cap is INVOICE_PDF_MAX_BYTES
+    // in _vendor-invoices.js, where it is pure and covered by tests.
+    const bytes = decodeInvoicePdf(pdfBase64);
+    if (!bytes) return null;
     const key = `${vendorInvoicePrefix(invoiceId)}invoice.pdf`;
     const url = await presignPut(key, "application/pdf", 300);
     const put = await fetch(url, {
@@ -9849,21 +9851,27 @@ async function settleVendorInvoice(inv, jobId, reason, authUser) {
 // inventory push's `push_id` guard, and for the same reason: without it a retry
 // charges the job a second time and nothing anywhere complains.
 async function handleVendorInvoiceIntake(body, authUser) {
-  const { vendor, invoiceNo, po, invoiceDate, amount, taxAmount, pdfBase64 } = body || {};
+  const { vendor, invoiceNo, po, invoiceDate, amount, taxAmount, pdfBase64,
+          isCredit } = body || {};
 
   // ⚠ An unrecognised vendor is REFUSED, not stored under whatever name came in.
   // A Gmail filter pointed at the wrong label, or a parser reading the wrong
   // letterhead, should be a 400 the bot's log shows — not a silent new vendor
   // account whose invoices land in a queue nobody connects to the mistake.
   const vendorName = canonicalVendor(vendor);
-  if (!vendorName) return resp(400, { ok: false, error: `Unknown vendor: ${String(vendor || "")}. Expected CED or Wolff.` });
+  if (!vendorName) return resp(400, { ok: false,
+    error: `Unknown vendor: ${String(vendor || "")}. Expected one of: ${ACCEPTED_VENDORS.join(", ")}.` });
 
   const invNo = String(invoiceNo || "").trim();
   if (!invNo) return resp(400, { ok: false, error: "Missing invoiceNo." });
 
   const poText = po == null ? null : String(po).trim() || null;
   const poCode = normalizePoCode(poText);
-  const amt    = amountToExpenseFields(amount);
+  // ⚠ `isCredit` comes from the BOT, which read it off the document. It is never
+  // inferred here — in particular a 0.00 balance (Contractor Lighting prints a
+  // running one) is NOT a credit, it is zero. Guessing would silently subtract
+  // real money from a job's material cost and make its GP read better than it is.
+  const amt    = amountToExpenseFields(amount, isCredit === true);
   // Stored signed; amountToExpenseFields splits it into the two expense columns
   // only at the moment an expense is actually created.
   const signed = amt.materialCredit != null ? -amt.materialCredit : amt.manualMaterialCost;
@@ -9881,7 +9889,11 @@ async function handleVendorInvoiceIntake(body, authUser) {
       [vendorName, invNo, poText, poCode,
        invoiceDate ? String(invoiceDate) : null,
        signed,
-       amountToExpenseFields(taxAmount).manualMaterialCost]);
+       // Same flag, so a credit flagged by the bot and a credit signed with a
+       // minus store IDENTICALLY. Two inputs that mean the same thing must not
+       // produce two different rows, or a later reader has to know which route
+       // an invoice came in by.
+       amountToExpenseFields(taxAmount, isCredit === true).manualMaterialCost]);
   } catch (e) {
     return resp(502, { ok: false, error: `Couldn't record the invoice: ${String(e?.message || e)}` });
   }

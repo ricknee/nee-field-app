@@ -22054,7 +22054,9 @@
     // The vendors to offer. The two the backend accepts, plus anything actually
     // present — so a vendor added later shows up here without a code change,
     // and a chip is never offered for a vendor with no invoices behind it.
-    const vendors = [...new Set(["CED", "Wolff Brothers", ...all.map(r => r.vendor)])]
+    const vendors = [...new Set(["CED", "Wolff Brothers", "Lowe's",
+                                 "Contractor Lighting & Supply",
+                                 ...all.map(r => r.vendor)])]
       .filter(v => v && all.some(r => r.vendor === v))
       .sort();
 
@@ -22220,7 +22222,7 @@
 
     return `
       <div class="clock-note" style="margin-bottom:10px;">
-        CED and Wolff invoices arrive automatically and go straight onto the job when the
+        Supplier invoices arrive automatically and go straight onto the job when the
         PO matches. These are the ones that didn't.
         ${c.matched ? ` <span style="color:var(--muted);">${c.matched} placed automatically so far.</span>` : ""}
       </div>

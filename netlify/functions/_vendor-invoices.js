@@ -133,6 +133,25 @@ export function amountToExpenseFields(amount, isCredit) {
 // because the PDF path fails SOFT: an invoice with no readable PDF still shows
 // its parsed figures and can still be assigned to a job. Losing the picture is
 // bad; losing the money is worse.
+// A date-only 'YYYY-MM-DD', or null. The BACKSTOP for expense dates, not the
+// mechanism — every caller formats with `to_char(col, 'YYYY-MM-DD')` in SQL.
+//
+// ⚠⚠ THIS BUG HAS BEEN WRITTEN THREE TIMES IN THIS CODEBASE. `String(v).slice(0, 10)`
+// is right for a date string off the wire and garbage for the JS Date the Neon
+// driver returns for a DATE column: it yields "Wed Aug 12", which Postgres
+// refuses with `invalid input syntax for type date`. Here that took down the
+// whole assignment — a real $2,096.49 invoice could not be placed on its job.
+// `toISOString().slice(0, 10)` is not the fix either: it shifts the day
+// backwards for anyone west of UTC.
+//
+// So this accepts ONLY the shape SQL produces, and returns null for anything
+// else rather than passing an unknown one through to be rejected downstream.
+export function ymdOrNull(v) {
+  if (v === null || v === undefined || v === "") return null;
+  const m = /^(\d{4}-\d{2}-\d{2})$/.exec(String(v).trim());
+  return m ? m[1] : null;
+}
+
 export const INVOICE_PDF_MAX_BYTES = 8 * 1024 * 1024;
 
 export function decodeInvoicePdf(pdfBase64) {

@@ -53,10 +53,19 @@ function neonOn(employees) {
   mockNeonEmployees = employees;
 }
 function neonOff() { delete process.env.DATABASE_URL; mockNeonEmployees = []; }
-const neonReply = (cols, rows) => {
+// `types` optionally overrides a column's Postgres type OID (default 25 = text).
+//
+// ⚠ THIS IS NOT DECORATION. The driver parses the wire text according to these
+// OIDs, so declaring a column as 1082 (DATE) makes it hand back a real JS Date —
+// which is the whole reason `String(d).slice(0,10)` produced "Wed Aug 12" in
+// production and could not be reproduced by a stub that called everything text.
+// A mock that types every column as text will pass a test the real driver fails.
+const PG_DATE_OID = 1082;
+const neonReply = (cols, rows, types) => {
   const body = {
     command: "SELECT", rowCount: rows.length, rowAsArray: false,
-    fields: cols.map((n, i) => ({ name: n, dataTypeID: 25, tableID: 0, columnID: i + 1,
+    fields: cols.map((n, i) => ({ name: n, dataTypeID: (types && types[n]) || 25,
+                                  tableID: 0, columnID: i + 1,
                                   dataTypeSize: -1, dataTypeModifier: -1, format: "text" })),
     rows: rows.map(r => cols.map(c => (c in r ? r[c] : null))),
   };
@@ -88,6 +97,17 @@ const viNorm = (v) => String(v ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase()
 // Postgres was never going to accept. These two mirror the casts in the SQL.
 const viNum  = (v) => (v === null || v === undefined || v === "" ? null : Number(v));
 const viBool = (v) => v === true || v === "true" || v === "t";
+// What `$5::date` does to whatever spelling the bot sent. Postgres is lenient
+// here — it takes "2026-08-12", "08/12/2026" and even "Wed Aug 12" (it accepts
+// and ignores the weekday name) — which is exactly why the raw string must
+// never be reused downstream: the COLUMN is clean, the input was not.
+const viYmd = (v) => {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(/^\d{4}-\d{2}-\d{2}/.test(s) ? s : `${s} 2026`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+};
 function viOn(seed = {}) {
   neonOn([]);                       // DATABASE_URL on; no employee fixtures needed
   mockTables = {};                  // nothing for Airtable to answer with
@@ -155,12 +175,17 @@ globalThis.fetch = async (url, opts) => {
         if (dupe) return neonReply([], []);   // no RETURNING row — the retry path
         const row = { id: `vi-${mockVI.nextId++}`, vendor_name: vendorName,
                       invoice_no: invoiceNo, po_text: poText, po_code: poCode,
-                      invoice_date: invoiceDate,
+                      // Postgres's `$5::date` normalises whatever spelling the
+                      // bot sent; the mock does the same so RETURNING's to_char
+                      // has something realistic to hand back.
+                      invoice_date: viYmd(invoiceDate),
                       amount: viNum(amount), tax_amount: viNum(taxAmount),
                       status: "needs_review", match_reason: "pending",
                       job_id: null, expense_id: null, pdf_key: null, resolved_by: null };
         mockVI.invoices.push(row);
-        return neonReply(["id"], [{ id: row.id }]);
+        // RETURNING id, to_char(invoice_date, 'YYYY-MM-DD') — text, both of them.
+        return neonReply(["id", "invoice_date"],
+                         [{ id: row.id, invoice_date: row.invoice_date }]);
       }
       if (/UPDATE vendor_invoices/i.test(sql)) {
         const row = mockVI.invoices.find(r => r.id === p[0]);
@@ -179,10 +204,30 @@ globalThis.fetch = async (url, opts) => {
         }
         return neonReply([], []);
       }
+      // The ASSIGN read — one invoice by id. Distinguished from the dedupe read
+      // below by its WHERE clause, not by its columns.
+      if (/FROM vendor_invoices WHERE id::text = \$1/i.test(sql)) {
+        const row = mockVI.invoices.find(r => r.id === p[0]);
+        if (!row) return neonReply([], []);
+        const cols = ["id", "vendor_name", "invoice_no", "invoice_date", "amount", "status", "expense_id"];
+        // ⚠⚠ THE POINT OF THIS BRANCH. If the handler asked for to_char, it gets
+        // text and everything downstream works. If it selected the bare column,
+        // it gets DATE — and the driver hands the handler a JS Date, exactly as
+        // production does. That is the difference the live bug lived in.
+        const usedToChar = /to_char\(\s*invoice_date/i.test(sql);
+        return neonReply(cols, [row],
+          usedToChar ? undefined : { invoice_date: PG_DATE_OID });
+      }
       if (/FROM vendor_invoices/i.test(sql)) {
         const hit = mockVI.invoices.filter(r =>
           viNorm(r.vendor_name) === viNorm(p[0]) && viNorm(r.invoice_no) === viNorm(p[1]));
         return neonReply(["id", "status", "job_id", "expense_id", "match_reason"], hit);
+      }
+      // Assign's job-existence check. `FROM jobs j` (the PO lookup) is a
+      // different query and is matched separately below.
+      if (/FROM jobs WHERE airtable_id = \$1/i.test(sql)) {
+        const hit = Object.values(mockVI.jobsByCode).flat().filter(j => j.id === p[0]);
+        return neonReply(["id"], hit.map(j => ({ id: j.id })));
       }
       if (/INSERT INTO expenses/i.test(sql)) {
         const e = { id: `exp-${mockVI.expenses.length + 1}`,
@@ -6268,6 +6313,102 @@ await test("vendorInvoiceIntake: role gate — admin+office only, and the bot is
   eq(json(await viPost(body, OFFICE_TOK)).status, "needs_review", "office (the bot) is accepted");
   eq(json(await viPost({ ...body, invoiceNo: "ROLE-2" }, ADMIN_TOK)).status, "needs_review", "and so is admin");
   viOff();
+});
+
+await test("vendorInvoiceAssign: placing a PARKED invoice on a job actually works", async () => {
+  // ⚠⚠ THE LIVE FAILURE, 2026-09-10. Contractor Lighting 0000315339 ($2,096.49,
+  // PO "Miller Shop") parked correctly, and then assigning it to Miller
+  // Excavating died with `expense.create: invalid input syntax for type date:
+  // "Wed Aug 12"`. The assign path had never been run against real data — the
+  // only prior row was marked "Reviewed, no job" — so nothing had exercised it.
+  const job = { id: "3a1e77c0-0000-4000-8000-0000000000c1", name: "Miller Excavating", status: "Awarded" };
+  const vi = viOn({ jobsByCode: { MILLERSHOP: [job] }, vendors: VI_VENDORS });
+
+  // Park it exactly as the Mini Bee did: no job has this PO.
+  vi.jobsByCode = {};                       // nothing matches at intake time
+  const parked = json(await viPost({ vendor: "Contractor Lighting & Supply",
+                                     invoiceNo: "0000315339", po: "Miller Shop",
+                                     invoiceDate: "2026-08-12", amount: "2096.49" }));
+  eq(parked.status, "needs_review", "parks first, as it did in production");
+  const invId = parked.id;
+
+  // Now a person picks the job off the screen.
+  vi.jobsByCode = { MILLERSHOP: [job] };    // so the id resolves
+  const res = await POST("vendorInvoiceAssign", { invoiceId: invId, jobId: job.id }, OFFICE_TOK);
+  eq(res.statusCode, 200, "the assignment succeeds");
+  const b = json(res);
+  eq(b.status, "matched", "and the invoice is settled");
+
+  const e = vi.expenses.at(-1);
+  // ⚠ THE ASSERTION THAT WOULD HAVE CAUGHT IT. The driver hands the handler a
+  // JS Date for the DATE column; String(d).slice(0,10) makes "Wed Aug 12".
+  eq(e.expenseDate, "2026-08-12", "the expense carries a real date, not 'Wed Aug 12'");
+  eq(e.manualMaterialCost, 2096.49, "and the money");
+  eq(e.vendorHandle, VI_VENDORS["contractor lighting & supply"], "and the right vendor");
+  eq(e.description, "Contractor Lighting & Supply Invoice 0000315339", "and the bot's naming");
+  eq(vi.invoices[0].status, "matched", "the row is resolved");
+  eq(vi.invoices[0].match_reason, "manual", "as a manual placement");
+
+  // ⚠ The double-charge guard: a second tap must not create a second expense.
+  const again = await POST("vendorInvoiceAssign", { invoiceId: invId, jobId: job.id }, OFFICE_TOK);
+  eq(again.statusCode, 409, "an already-settled invoice is refused");
+  eq(vi.expenses.length, 1, "and no second expense on the job");
+  viOff();
+});
+
+await test("vendorInvoice: a DATE column is never stringified in JS — 'Wed Aug 12'", async () => {
+  const { ymdOrNull } = await import("../netlify/functions/_vendor-invoices.js");
+
+  // ⚠⚠ THE LIVE BUG, 2026-09-10. The Neon driver returns a DATE column as a JS
+  // Date. `String(d).slice(0, 10)` on it yields "Wed Aug 12" — ten characters,
+  // so the slice looks like it worked — and Postgres then refuses the expense
+  // with `invalid input syntax for type date`. A real $2,096.49 Contractor
+  // Lighting invoice could not be placed on its job at all. The same expression
+  // ALSO fed the review screen, which is why every row printed "Wed Aug 12"
+  // instead of a date.
+  eq(String(new Date("2026-08-12T00:00:00Z")).slice(0, 10).length, 10,
+     "the broken expression yields exactly 10 chars — which is why it looked fine");
+  eq(ymdOrNull(String(new Date("2026-08-12T00:00:00Z")).slice(0, 10)), null,
+     "and ymdOrNull refuses it rather than passing it to Postgres");
+
+  eq(ymdOrNull("2026-08-12"), "2026-08-12", "what to_char produces is accepted");
+  eq(ymdOrNull(null), null);
+  eq(ymdOrNull(""), null);
+  // ⚠ A JS Date is refused outright. It must be formatted in SQL, not here —
+  // toISOString() would shift the day backwards for anyone west of UTC.
+  eq(ymdOrNull(new Date("2026-08-12T00:00:00Z")), null, "a Date object is NOT silently coerced");
+  eq(ymdOrNull("2026-08-12T00:00:00.000Z"), null, "nor is a full timestamp");
+  eq(ymdOrNull("08/12/2026"), null, "nor any other date spelling");
+});
+
+await test("vendorInvoice: STATIC — every invoice_date read is formatted by POSTGRES", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const start = src.indexOf("async function handleVendorInvoiceIntake");
+  const end   = src.indexOf("// Edit an existing expense.");
+  const region = src.slice(start, end);
+
+  // Three reads of invoice_date — intake's RETURNING, the queue list, and
+  // assign's SELECT — and all three must go through to_char. This is a STATIC
+  // guard because the failure is not a crash anywhere but the one call that
+  // happens to reach Postgres: the list just printed a wrong date for weeks.
+  eq((region.match(/to_char\(\s*(?:vi\.)?invoice_date, 'YYYY-MM-DD'\)/g) || []).length, 3,
+     "all three invoice_date reads use to_char");
+  // ⚠ `settleVendorInvoice` sits just ABOVE the intake handler, so it is outside
+  // the region above — check it against the whole file, or this guard silently
+  // asserts nothing about the one line that actually threw.
+  //
+  // ⚠ COMMENTS ARE STRIPPED FIRST. The comment explaining the old broken
+  // expression contains the old broken expression, so a naive scan matches the
+  // very note left to stop it coming back. The suite already carries one
+  // standing false positive of exactly this shape (`WHERE airtable_id = $1`
+  // quoted in an _allocations.js comment); don't add a second.
+  const codeOnly = src.replace(/^\s*\/\/.*$/gm, "");
+  ok(!/String\((?:inv|r)\.invoice_date\)/.test(codeOnly),
+     "no CODE anywhere stringifies the driver's JS Date");
+  ok(/expenseDate: ymdOrNull\(inv\.invoice_date\)/.test(src),
+     "the expense create goes through the backstop, not a slice");
 });
 
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {

@@ -53,7 +53,7 @@ import {
 import {
   normalizePoCode, JOB_PO_CODE_SQL, matchJobByPoCode,
   amountToExpenseFields, canonicalVendor, ACCEPTED_VENDORS,
-  decodeInvoicePdf,
+  decodeInvoicePdf, ymdOrNull,
 } from "./_vendor-invoices.js";
 
 /* ============================================================================
@@ -9813,7 +9813,15 @@ async function settleVendorInvoice(inv, jobId, reason, authUser) {
   const expenseId = await createExpenseNative({
     jobId: String(jobId),
     expenseType: "Materials",
-    expenseDate: inv.invoice_date ? String(inv.invoice_date).slice(0, 10) : null,
+    // ⚠⚠ BOTH CALLERS HAND THIS A to_char'd 'YYYY-MM-DD', AND NOTHING ELSE MAY.
+    // It used to be `String(inv.invoice_date).slice(0, 10)`, which is correct
+    // for a string off the wire and garbage for the JS Date the driver returns
+    // for a DATE column — it produced "Wed Aug 12" and Postgres rejected it, so
+    // assigning a real invoice to a job failed outright. The guard below is a
+    // backstop, not the mechanism: the normalising is done in SQL. It refuses
+    // rather than passing an unknown shape through, because a bad date here
+    // fails the expense create and takes the whole assignment with it.
+    expenseDate: ymdOrNull(inv.invoice_date),
     // Matches every one of the 215 the bot has written: supplier material is
     // billable to the customer unless somebody says otherwise on the expense.
     billable: true,
@@ -9885,7 +9893,13 @@ async function handleVendorInvoiceIntake(body, authUser) {
          (vendor_name, invoice_no, po_text, po_code, invoice_date, amount, tax_amount, match_reason)
        VALUES ($1, $2, $3, $4, $5::date, $6::numeric, $7::numeric, 'pending')
        ON CONFLICT DO NOTHING
-       RETURNING id`,
+       -- ⚠ The DATE COMES BACK FROM POSTGRES, normalised, and that is the only
+       -- form allowed downstream. The bot sends whatever the parser read
+       -- ("2026-08-12", "08/12/2026", "Wed Aug 12" — Postgres accepts all
+       -- three into a date column); handing that raw string to the expense
+       -- create is what broke the assign path, and the matched path here had
+       -- the same hole. One normaliser, and it is the database.
+       RETURNING id, to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date`,
       [vendorName, invNo, poText, poCode,
        invoiceDate ? String(invoiceDate) : null,
        signed,
@@ -9912,6 +9926,8 @@ async function handleVendorInvoiceIntake(body, authUser) {
   }
 
   const id = rows[0].id;
+  // Postgres's normalised 'YYYY-MM-DD', NOT the raw `invoiceDate` off the wire.
+  const invDateYmd = rows[0].invoice_date || null;
 
   // PDF first, so an invoice that parks is reviewable the moment it appears.
   if (pdfBase64) {
@@ -9947,7 +9963,7 @@ async function handleVendorInvoiceIntake(body, authUser) {
 
   try {
     const expenseId = await settleVendorInvoice(
-      { id, vendor_name: vendorName, invoice_no: invNo, invoice_date: invoiceDate, amount: signed },
+      { id, vendor_name: vendorName, invoice_no: invNo, invoice_date: invDateYmd, amount: signed },
       jobId, reason, authUser);
     return resp(200, { ok: true, id, status: "matched", jobId, expenseId });
   } catch (e) {
@@ -9973,8 +9989,15 @@ async function handleVendorInvoices(params, authUser) {
   const all  = want === "all";
 
   const q = await neonQuery(
+    // ⚠ THE DATE IS FORMATTED BY POSTGRES. Third time this bug has been written
+    // in this file (see handleClockPunches and the time-entry drill-down): the
+    // driver hands back a DATE column as a JS Date, so `String(d).slice(0,10)`
+    // yields "Wed Aug 12" — which is what the review screen printed for every
+    // invoice. `toISOString().slice(0,10)` is wrong too, shifting the day
+    // backwards for anyone west of UTC. to_char removes the guesswork.
     `SELECT vi.id, vi.vendor_name, vi.invoice_no, vi.po_text, vi.po_code,
-            vi.invoice_date, vi.amount, vi.tax_amount, vi.status, vi.match_reason,
+            to_char(vi.invoice_date, 'YYYY-MM-DD') AS invoice_date,
+            vi.amount, vi.tax_amount, vi.status, vi.match_reason,
             vi.pdf_key, vi.received_at, vi.resolved_at, vi.resolved_by, vi.note,
             vi.job_id, vi.expense_id, j.name AS job_name,
             COALESCE(j.po_locked, j.po) AS job_po
@@ -9998,7 +10021,7 @@ async function handleVendorInvoices(params, authUser) {
     invoiceNo: r.invoice_no,
     poText: r.po_text,
     poCode: r.po_code,
-    invoiceDate: r.invoice_date ? String(r.invoice_date).slice(0, 10) : null,
+    invoiceDate: r.invoice_date || null,   // already 'YYYY-MM-DD' from to_char
     amount: r.amount == null ? null : Number(r.amount),
     taxAmount: r.tax_amount == null ? null : Number(r.tax_amount),
     status: r.status,
@@ -10053,7 +10076,13 @@ async function handleVendorInvoiceAssign(body, authUser) {
   if (!invoiceId || !jobId) return resp(400, { ok: false, error: "Missing invoiceId or jobId." });
 
   const q = await neonQuery(
-    `SELECT id, vendor_name, invoice_no, invoice_date, amount, status, expense_id
+    // ⚠ to_char, not String().slice(0,10) — see handleVendorInvoices. This is
+    // the site that actually broke: the driver's JS Date sliced to "Wed Aug 12"
+    // and Postgres refused it with `invalid input syntax for type date`, so
+    // placing a real invoice on a job failed outright.
+    `SELECT id, vendor_name, invoice_no,
+            to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date,
+            amount, status, expense_id
        FROM vendor_invoices WHERE id::text = $1`, [String(invoiceId)]);
   if (!q || q.error) return resp(503, { ok: false, error: "The invoice queue is unavailable right now." });
   const inv = q.rows?.[0];

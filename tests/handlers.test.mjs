@@ -6743,6 +6743,43 @@ await test("vendorInvoice: the preview draws to a CANVAS, and never strands the 
      "and every await checks it before touching the DOM");
 });
 
+await test("estimating: a wire line's PRICE box follows the ft/lb toggle", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../inventory.html", import.meta.url)), "utf8");
+
+  // ⚠ The row used to read "120 ft × 9.58 = $27.59" — a quantity in feet times
+  // a price per POUND. Three numbers that cannot be multiplied together, sitting
+  // in a row that looked fine. There is a saved line in production carrying
+  // $0.3000 against a quantity in pounds: someone typed a per-foot price into
+  // the per-pound box, which is exactly what a mislabelled field invites.
+  ok(/var costPlaceholder = \(isWire && displayUnit === "ft"\) \? "\$ \/ ft" : "Cost";/.test(html),
+     "the box says which basis it wants");
+  ok(/value="' \+ visibleCost \+/.test(html), "and shows the price in that basis");
+
+  // Storage is unchanged: unitCost stays $/lb, exactly as qty stays lbs.
+  ok(/line\.unitCost = \(cIsWire && line\._displayUnit === "ft"\)\s*\?\s*\+\(rawCost \* cItem\.wireFtPerLb\)\.toFixed\(4\)/.test(html),
+     "a typed $/ft is converted to $/lb for storage");
+  ok(/line\._displayCost = rawCost;/.test(html),
+     "and the raw typed number is held so it does not round-trip under the cursor");
+
+  // ⚠⚠ Switching units must clear BOTH in-progress values. Leaving _displayCost
+  // set would keep a per-FOOT number visible in a box that just became
+  // per-POUND — the same confusion, now with the app's own encouragement.
+  const setUnit = html.slice(html.indexOf("function setEstLineUnit"));
+  const body = setUnit.slice(0, setUnit.indexOf("\n}"));
+  ok(/line\._displayQty = null;/.test(body) && /line\._displayCost = null;/.test(body),
+     "changing the toggle resets qty AND cost display state");
+
+  // ⚠⚠ THE CONVERSION IS PRINTED ON THE ROW. Every 12 AWG THHN item carries
+  // 41.67 ft/lb including the "(2 WIRE)" ones, which are two conductors and
+  // weigh twice as much per foot — so 2-wire lines cost about half what they
+  // should. Nothing on screen disagreed with that until the ft/lb was shown.
+  // A conversion the user cannot see is one they cannot check.
+  eq((html.match(/" ft\/lb"/g) || []).length, 1, "the hint refresh names the ft/lb");
+  ok(/'  ·  ' \+ ftPerLb \+ ' ft\/lb'/.test(html), "and so does the initial render");
+});
+
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");

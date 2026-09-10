@@ -6340,19 +6340,51 @@ function renderEstimateLines() {
     // plus $/ft when cost is known. Only rendered for wire lines.
     var wireHint = "";
     if (isWire) {
-      var pricePerFt = ftPerLb > 0 ? (cost / ftPerLb) : 0;
-      var altUnit    = displayUnit === "ft" ? "lbs" : "ft";
-      var altVal     = displayUnit === "ft" ? lbs : (lbs * ftPerLb);
-      var altTxt     = altUnit === "lbs"
+      // ⚠ THE HINT NAMES THE ft/lb IT USED, and that is the point of it now.
+      // Every 12 AWG THHN item carries 41.67 ft/lb — including the "(2 WIRE)"
+      // ones, which are two conductors and weigh twice as much per foot. That
+      // single wrong number silently halves the cost of every 2-wire line, and
+      // until it was printed on the row there was nothing on screen to disagree
+      // with. A conversion the user cannot see is a conversion they cannot
+      // check.
+      var altUnit = displayUnit === "ft" ? "lbs" : "ft";
+      var altVal  = displayUnit === "ft" ? lbs : (lbs * ftPerLb);
+      var altTxt  = altUnit === "lbs"
         ? altVal.toFixed(2) + " lbs"
         : altVal.toLocaleString("en-US", { maximumFractionDigits: 1 }) + " ft";
+      // In ft mode the price box is already $/ft, so showing $/ft again says
+      // nothing — show what it becomes in storage instead.
+      var costTxt = displayUnit === "ft"
+        ? (cost > 0 ? '  ·  $' + cost.toFixed(4) + ' / lb' : '')
+        : (ftPerLb > 0 && cost > 0 ? '  ·  $' + (cost / ftPerLb).toFixed(4) + ' / ft' : '');
       wireHint =
         '<div id="estl-hint-' + idx + '" style="grid-column:1 / -1;font-size:10px;color:var(--dim);padding:0 2px;margin-top:-2px;">' +
-          '= ' + altTxt + (pricePerFt > 0 ? '  ·  $' + pricePerFt.toFixed(4) + ' / ft' : '') +
+          '= ' + altTxt + costTxt + '  ·  ' + ftPerLb + ' ft/lb' +
         '</div>';
     }
 
     var qtyStep = isWire && displayUnit === "ft" ? "1" : "0.01";
+
+    // THE PRICE BOX FOLLOWS THE TOGGLE, exactly as the qty box already does.
+    // Before this it always showed $/lb, so a wire row in ft mode read
+    // "120 ft × 9.58 = $27.59" — three numbers that cannot be multiplied
+    // together. Rick spotted it on a 2-wire line, and there is already a saved
+    // line in the wild carrying $0.30 against a quantity in POUNDS: someone
+    // typed a per-foot price into a per-pound box, which is precisely what a
+    // mislabelled field invites.
+    //
+    // Storage is unchanged — line.unitCost stays $/lb, like line.qty stays lbs.
+    // _displayCost is transient UI state holding the raw number typed, so
+    // 0.6289 does not round-trip into 0.6288 while the cursor is still in it.
+    var visibleCost;
+    if (isWire && displayUnit === "ft") {
+      visibleCost = (l._displayCost !== undefined && l._displayCost !== null)
+        ? l._displayCost
+        : (ftPerLb > 0 ? +(cost / ftPerLb).toFixed(4) : 0);
+    } else {
+      visibleCost = cost;
+    }
+    var costPlaceholder = (isWire && displayUnit === "ft") ? "$ / ft" : "Cost";
 
     // Transient "was $X" trail left by Refresh Prices, so the user can see at a
     // glance which rows the reprice actually moved (and by how much) before
@@ -6379,9 +6411,9 @@ function renderEstimateLines() {
           'style="font-size:13px;padding:7px 6px;text-align:right;width:100%;box-sizing:border-box;" placeholder="Qty" />' +
         unitToggleHtml +
       '</div>' +
-      '<input type="number" step="0.0001" class="field-inp" id="estl-cost-' + idx + '" value="' + cost +
-        '" oninput="updateLineField(' + idx + ', \'unitCost\', parseFloat(this.value) || 0);" ' +
-        'style="font-size:13px;padding:7px 6px;text-align:right;" placeholder="Cost" />' +
+      '<input type="number" step="0.0001" class="field-inp" id="estl-cost-' + idx + '" value="' + visibleCost +
+        '" oninput="updateLineField(' + idx + ', \'unitCost\', this.value);" ' +
+        'style="font-size:13px;padding:7px 6px;text-align:right;" placeholder="' + costPlaceholder + '" />' +
       '<div id="estl-total-' + idx + '" style="text-align:right;font-weight:600;font-size:13px;color:var(--text);">' +
         fmtCurrency(lbs * cost) +
       '</div>' +
@@ -6436,8 +6468,11 @@ function setEstLineUnit(idx, unit) {
   var line = estimateState.current.lines[idx];
   if (!line) return;
   line._displayUnit = unit;
-  // Clear any in-progress display value so the input re-derives from stored lbs
+  // Clear any in-progress display values so both inputs re-derive from storage
+  // (qty from lbs, cost from $/lb). Leaving _displayCost set would keep showing
+  // a per-FOOT number in a box that has just become per-POUND.
   line._displayQty = null;
+  line._displayCost = null;
   refreshLines();
 }
 
@@ -6465,6 +6500,23 @@ function updateLineField(idx, field, value) {
       line._displayQty = raw;
       line.qty = raw;
     }
+  } else if (field === "unitCost") {
+    // Same unit-aware handling as qty, and for the same reason: in ft mode the
+    // box is $/ft, but line.unitCost is persisted as $/lb always. Wolff quotes
+    // this wire by the FOOT ($0.3073/ft single, $0.6289/ft for 2-conductor), so
+    // per-foot is the number actually on the paperwork — it should be typeable
+    // without anybody doing the conversion in their head.
+    var cItemMap = {};
+    allItems.forEach(function(i){ cItemMap[i.id] = i; });
+    var cItem   = line.itemId ? cItemMap[line.itemId] : null;
+    var cIsWire = !!(cItem && cItem.wireFtPerLb > 0);
+    var rawCost = parseFloat(value);
+    if (isNaN(rawCost)) rawCost = 0;
+
+    line._displayCost = rawCost;
+    line.unitCost = (cIsWire && line._displayUnit === "ft")
+      ? +(rawCost * cItem.wireFtPerLb).toFixed(4)
+      : rawCost;
   } else {
     line[field] = value;
   }
@@ -6500,13 +6552,17 @@ function updateLineField(idx, field, value) {
       if (item2 && item2.wireFtPerLb > 0) {
         var lbs2       = Number(line.qty) || 0;
         var cost2      = Number(line.unitCost) || 0;
-        var pricePerFt = cost2 / item2.wireFtPerLb;
-        var altUnit    = line._displayUnit === "ft" ? "lbs" : "ft";
-        var altVal     = line._displayUnit === "ft" ? lbs2 : (lbs2 * item2.wireFtPerLb);
-        var altTxt     = altUnit === "lbs"
+        // Must stay in step with the same string built in renderEstimateLines —
+        // including the ft/lb figure, which is the whole reason it is shown.
+        var altUnit = line._displayUnit === "ft" ? "lbs" : "ft";
+        var altVal  = line._displayUnit === "ft" ? lbs2 : (lbs2 * item2.wireFtPerLb);
+        var altTxt  = altUnit === "lbs"
           ? altVal.toFixed(2) + " lbs"
           : altVal.toLocaleString("en-US", { maximumFractionDigits: 1 }) + " ft";
-        hintEl.textContent = "= " + altTxt + (pricePerFt > 0 ? "  ·  $" + pricePerFt.toFixed(4) + " / ft" : "");
+        var costTxt2 = line._displayUnit === "ft"
+          ? (cost2 > 0 ? "  ·  $" + cost2.toFixed(4) + " / lb" : "")
+          : (cost2 > 0 ? "  ·  $" + (cost2 / item2.wireFtPerLb).toFixed(4) + " / ft" : "");
+        hintEl.textContent = "= " + altTxt + costTxt2 + "  ·  " + item2.wireFtPerLb + " ft/lb";
       }
     }
   }

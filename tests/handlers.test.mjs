@@ -84,6 +84,25 @@ const neonReply = (cols, rows, types) => {
 //   skipped entirely while it is, so no other case's Neon traffic can fall into
 //   these branches and start passing for the wrong reason.
 let mockVI = null;
+// Every request that reached R2, so a case can prove the copy really happened
+// rather than only that the code says it would.
+let mockR2 = [];
+// The four R2 vars, on and off together — `r2Enabled()` requires all of them,
+// and the suite runs with them UNSET by default (r2Status clears them), so a
+// case that wants the R2 path must switch it on and switch it back off.
+function r2On() {
+  mockR2 = [];
+  process.env.R2_ACCOUNT_ID = "acct123";
+  process.env.R2_ACCESS_KEY_ID = "ak";
+  process.env.R2_SECRET_ACCESS_KEY = "sk";
+  process.env.R2_BUCKET = "nee";
+}
+function r2Off() {
+  for (const k of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
+    delete process.env[k];
+  }
+  mockR2 = [];
+}
 // The dedupe key's normalisation, mirroring vendor_invoices_dedupe exactly:
 // upper(regexp_replace(…, '[^A-Za-z0-9]', '', 'g')) on BOTH halves. Written out
 // here rather than imported so a change to the index has to be made twice on
@@ -209,7 +228,11 @@ globalThis.fetch = async (url, opts) => {
       if (/FROM vendor_invoices WHERE id::text = \$1/i.test(sql)) {
         const row = mockVI.invoices.find(r => r.id === p[0]);
         if (!row) return neonReply([], []);
-        const cols = ["id", "vendor_name", "invoice_no", "invoice_date", "amount", "status", "expense_id"];
+        // pdf_key included — settleVendorInvoice copies it onto the expense as
+        // the receipt, and a mock that omits it makes that copy silently not
+        // happen. (It did, the first time this was written.)
+        const cols = ["id", "vendor_name", "invoice_no", "invoice_date", "amount",
+                      "status", "expense_id", "pdf_key"];
         // ⚠⚠ THE POINT OF THIS BRANCH. If the handler asked for to_char, it gets
         // text and everything downstream works. If it selected the bare column,
         // it gets DATE — and the driver hands the handler a JS Date, exactly as
@@ -256,6 +279,26 @@ globalThis.fetch = async (url, opts) => {
     // Everything else — the last-login stamp above all — is a no-op success.
     // These cases are about who ANSWERS a login, not what it records afterwards.
     return neonReply([], []);
+  }
+  // ── R2 ────────────────────────────────────────────────────────────────────
+  // ⚠ Like the Neon branch, this deliberately does NOT touch `lastFetch`. That
+  // variable means "the last AIRTABLE request" and a dozen fail-closed cases
+  // assert it is still null to prove nothing was mirrored; recording an R2 PUT
+  // in it would turn every one of those red for a write to a different service.
+  // ⚠⚠ aws4fetch calls `fetch(Request)` — ONE argument, an object. `String(url)`
+  // on it is "[object Request]", so a stub that only ever tests String(url)
+  // never sees an R2 call at all, and a case asserting the copy happened fails
+  // for a reason that has nothing to do with the copy. Read .url and .headers
+  // off the Request. (Same trap as the lifts/R2 work — see project memory.)
+  const r2Req = (url && typeof url === "object" && typeof url.url === "string") ? url : null;
+  const r2Href = r2Req ? r2Req.url : String(url);
+  if (r2Href.includes("r2.cloudflarestorage.com")) {
+    const headers = r2Req
+      ? Object.fromEntries([...r2Req.headers].map(([k, v]) => [k.toLowerCase(), v]))
+      : Object.fromEntries(Object.entries(opts?.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+    mockR2.push({ url: r2Href, method: (r2Req?.method || method).toUpperCase(), headers });
+    return { ok: true, status: 200, headers: { get: () => "application/xml" },
+             text: async () => "<CopyObjectResult/>", json: async () => ({}) };
   }
   lastFetch = { url: String(url), opts: opts || {} };
   if (String(url).includes("maps.googleapis.com")) {
@@ -6354,6 +6397,144 @@ await test("vendorInvoiceAssign: placing a PARKED invoice on a job actually work
   eq(again.statusCode, 409, "an already-settled invoice is refused");
   eq(vi.expenses.length, 1, "and no second expense on the job");
   viOff();
+});
+
+await test("vendorInvoice: the invoice PDF becomes the expense's RECEIPT", async () => {
+  const { vendorInvoiceReceiptKey, expensePrefix, vendorInvoicePrefix, contentTypeForKey,
+          isThumbKey, isDeletedReceiptKey } =
+    await import("../netlify/functions/_r2.js");
+
+  // The receipt lands under the EXPENSE's prefix — that is the whole point.
+  // listExpenseReceipts lists exactly one prefix, so an object anywhere else is
+  // invisible to the expense no matter what it is named.
+  const k = vendorInvoiceReceiptKey("exp-1", "0000315339");
+  eq(k, "expenses/exp-1/invoice-0000315339.pdf");
+  ok(k.startsWith(expensePrefix("exp-1")), "it is inside the expense's prefix");
+  ok(!k.startsWith(vendorInvoicePrefix("exp-1")), "and not left in the invoice inbox");
+
+  // It has to survive the helpers that read receipt keys.
+  eq(contentTypeForKey(k), "application/pdf", "opens in the PDF viewer, not the lightbox");
+  ok(!isThumbKey(k), "not mistaken for a thumbnail");
+  ok(!isDeletedReceiptKey("exp-1", k), "and not for a deleted one");
+
+  // ⚠ An invoice number is supplier text, not a key. Slashes and spaces would
+  // otherwise invent sub-prefixes inside the expense folder, where
+  // listExpenseReceipts still finds them but assertKeyInExpense-style reasoning
+  // about "one flat folder" quietly stops holding.
+  eq(vendorInvoiceReceiptKey("exp-1", "0171-1063885"), "expenses/exp-1/invoice-0171-1063885.pdf");
+  eq(vendorInvoiceReceiptKey("exp-1", "INV 12/34"), "expenses/exp-1/invoice-INV-12-34.pdf");
+  ok(!vendorInvoiceReceiptKey("exp-1", "a/b/c").slice("expenses/exp-1/".length).includes("/"),
+     "no invoice number can nest a folder");
+  eq(vendorInvoiceReceiptKey("exp-1", ""), "expenses/exp-1/invoice-unnumbered.pdf",
+     "a missing number still produces a usable key");
+  eq(vendorInvoiceReceiptKey("exp-1", null), "expenses/exp-1/invoice-unnumbered.pdf");
+});
+
+await test("vendorInvoiceAssign: the PDF really is copied onto the expense in R2", async () => {
+  // The static guard below proves the wiring; this proves the request. R2 is
+  // switched on so the real signer runs and the copy lands in the fetch stub.
+  r2On();
+  const job = { id: "3a1e77c0-0000-4000-8000-0000000000d1", name: "Miller Excavating", status: "Awarded" };
+  const vi = viOn({ jobsByCode: {}, vendors: VI_VENDORS });
+  try {
+    const pdf = Buffer.from("%PDF-1.4 supplier invoice").toString("base64");
+    const parked = json(await viPost({ vendor: "Contractor Lighting & Supply",
+                                       invoiceNo: "0000315339", po: "Miller Shop",
+                                       invoiceDate: "2026-08-12", amount: "2096.49",
+                                       pdfBase64: pdf }));
+    eq(parked.status, "needs_review", "parks, and its PDF is stored");
+    const stored = vi.invoices[0].pdf_key;
+    eq(stored, `vendor-invoices/${parked.id}/invoice.pdf`, "under the invoice's own prefix");
+
+    vi.jobsByCode = { MILLERSHOP: [job] };
+    const b = json(await POST("vendorInvoiceAssign", { invoiceId: parked.id, jobId: job.id }, OFFICE_TOK));
+    eq(b.status, "matched", "the assignment succeeds");
+
+    // The copy: a PUT to the EXPENSE's key, carrying the invoice's key as the
+    // copy source. That header is what makes it a copy rather than an upload.
+    const copies = mockR2.filter(r => r.method === "PUT" && r.headers?.["x-amz-copy-source"]);
+    eq(copies.length, 1, "exactly one copy was issued");
+    ok(copies[0].url.endsWith(`expenses/${b.expenseId}/invoice-0000315339.pdf`),
+       `landed on the expense: ${copies[0].url}`);
+    ok(copies[0].headers["x-amz-copy-source"].endsWith(`/${stored}`),
+       "copied FROM the invoice's stored PDF");
+
+    // ⚠⚠ THE ORIGINAL SURVIVES. vendor_invoices.pdf_key still points at it and
+    // the review screen's "Open the invoice" link is built from that.
+    eq(mockR2.filter(r => r.method === "DELETE").length, 0, "nothing was deleted");
+    eq(vi.invoices[0].pdf_key, stored, "and the invoice still points at its own copy");
+  } finally { viOff(); r2Off(); }
+});
+
+await test("vendorInvoice: a receipt-copy failure keeps the expense, it does not undo it", async () => {
+  // ⚠⚠ The expense EXISTS by the time the copy runs. If a copy failure threw,
+  // the caller's 502 branch would mark the invoice `expense-create-failed` — a
+  // real cost sitting on the job under a row claiming it never landed. That is
+  // strictly worse than a missing receipt, which a person can re-attach.
+  r2On();
+  const job = { id: "3a1e77c0-0000-4000-8000-0000000000d2", name: "Miller Excavating", status: "Awarded" };
+  const vi = viOn({ jobsByCode: {}, vendors: VI_VENDORS });
+  const realFetch = globalThis.fetch;
+  try {
+    const pdf = Buffer.from("%PDF-1.4 supplier invoice").toString("base64");
+    const parked = json(await viPost({ vendor: "Lowe's", invoiceNo: "86961", po: "up",
+                                       invoiceDate: "2026-09-08", amount: "11.08",
+                                       pdfBase64: pdf }));
+    vi.jobsByCode = { UP: [job] };
+
+    // Break R2 for the copy only.
+    globalThis.fetch = async (url, opts) => {
+      if (String(url?.url || url).includes("r2.cloudflarestorage.com") && (url?.headers?.get?.("x-amz-copy-source") || opts?.headers?.["x-amz-copy-source"])) {
+        return { ok: false, status: 500, headers: { get: () => "text/plain" },
+                 text: async () => "R2 is having a moment" };
+      }
+      return realFetch(url, opts);
+    };
+
+    const res = await POST("vendorInvoiceAssign", { invoiceId: parked.id, jobId: job.id }, OFFICE_TOK);
+    eq(res.statusCode, 200, "the assignment still succeeds");
+    eq(json(res).status, "matched", "and reports matched, because the expense is real");
+    eq(vi.expenses.length, 1, "the expense exists");
+    eq(vi.invoices[0].status, "matched", "and the invoice says so — NOT expense-create-failed");
+    eq(vi.invoices[0].match_reason, "manual");
+  } finally { globalThis.fetch = realFetch; viOff(); r2Off(); }
+});
+
+await test("vendorInvoice: STATIC — the receipt copy is wired to BOTH settle paths", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const r2  = readFileSync(fileURLToPath(new URL("../netlify/functions/_r2.js", import.meta.url)), "utf8");
+
+  // ⚠⚠ THE SILENT FAILURE THIS GUARDS. settleVendorInvoice copies `inv.pdf_key`,
+  // and BOTH callers have to supply it: assign reads it from the row, intake
+  // holds it from the upload it just did. Drop it from either and there is no
+  // error at all — just an expense with no paperwork, discovered months later by
+  // somebody who needed the invoice.
+  ok(/SELECT id, vendor_name, invoice_no,[\s\S]{0,200}expense_id, pdf_key/.test(src),
+     "assign SELECTs pdf_key");
+  ok(/amount: signed, pdf_key: pdfKey/.test(src),
+     "intake passes the key it just uploaded");
+  ok(/copyVendorInvoicePdfToExpense\(inv\.pdf_key, expenseId, inv\.invoice_no\)/.test(src),
+     "and the shared settle path is what does the copying, so the two cannot drift");
+
+  // ⚠ FAILS SOFT — and this one is stricter than the usual R2 rule, because the
+  // EXPENSE ALREADY EXISTS by the time the copy runs. A throw here would take
+  // the caller's 502 branch and mark the invoice `expense-create-failed`: a real
+  // cost on the job, and a row claiming it never landed.
+  const settle = src.slice(src.indexOf("async function settleVendorInvoice"),
+                           src.indexOf("// ── THE BOT'S ENDPOINT"));
+  ok(/try \{\s*await copyVendorInvoicePdfToExpense/.test(settle),
+     "the copy is inside a try");
+  ok(/catch \(e\) \{\s*console\.error\(`vendorInvoice\.receiptCopy/.test(settle),
+     "and a failure is logged, not thrown");
+
+  // ⚠⚠ COPY, NOT MOVE. vendor_invoices.pdf_key still points at the original and
+  // the review screen's "Open the invoice" link is built from it.
+  const copyFn = r2.slice(r2.indexOf("export async function copyVendorInvoicePdfToExpense"));
+  const body = copyFn.slice(0, copyFn.indexOf("\n}"));
+  ok(/copyObject\(/.test(body), "it copies");
+  ok(!/deleteObject\(|moveObject\(/.test(body), "and never deletes or moves the original");
 });
 
 await test("vendorInvoice: a DATE column is never stringified in JS — 'Wed Aug 12'", async () => {

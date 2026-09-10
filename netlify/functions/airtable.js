@@ -42,7 +42,8 @@ import {
   listDeletedJobPhotos, listJobDocs,
   jobPrintsPrefix, sanitizePrintName, listJobPrints, listDeletedJobPrints,
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
-  expensePrefix, vendorInvoicePrefix, listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
+  expensePrefix, vendorInvoicePrefix, copyVendorInvoicePdfToExpense,
+  listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
   listByPrefix, liftPrefix, fleetPrefix, presignEquipThumbPut,
   listLiftPhotos, deleteLiftPhoto, deleteAllLiftPhotos,
@@ -9834,6 +9835,27 @@ async function settleVendorInvoice(inv, jobId, reason, authUser) {
   });
   if (!expenseId) throw new Error("vendorInvoice: expense create returned no id");
 
+  // The invoice PDF becomes the expense's receipt, so the paperwork lives with
+  // the money — someone questioning this cost in two years opens the expense,
+  // not a review queue they have never heard of.
+  //
+  // ⚠ FAILS SOFT, like every R2 path in this app, and here that matters more
+  // than usual: the expense EXISTS by now. Throwing would send the caller down
+  // its 502 branch and mark the invoice `expense-create-failed`, when the
+  // expense create is the one thing that definitely worked — leaving a real
+  // cost on the job and a row saying it never landed. A missing receipt copy is
+  // recoverable by hand; a lying status is not.
+  //
+  // ⚠ COPY, not move: `vendor_invoices.pdf_key` still points at the original
+  // and the review screen's link is built from it. See _r2.js.
+  if (inv.pdf_key) {
+    try {
+      await copyVendorInvoicePdfToExpense(inv.pdf_key, expenseId, inv.invoice_no);
+    } catch (e) {
+      console.error(`vendorInvoice.receiptCopy: expense ${expenseId} kept, receipt NOT copied — ${String(e?.message || e)}`);
+    }
+  }
+
   // ⚠ RESOLVE THE NAME, DON'T STORE THE TOKEN'S ID. The session token carries
   // `{id, role}` and nothing else — `authUser.name` is always undefined, so the
   // old `name || id` fallback stored a raw rec id on every row and printed it
@@ -9930,11 +9952,16 @@ async function handleVendorInvoiceIntake(body, authUser) {
   const invDateYmd = rows[0].invoice_date || null;
 
   // PDF first, so an invoice that parks is reviewable the moment it appears.
+  // ⚠ The key is kept in scope: an invoice that matches a job on THIS request
+  // settles below, and settleVendorInvoice copies this PDF onto the expense as
+  // its receipt. Reading it back out of the row would be a second round trip
+  // for a value we are holding.
+  let pdfKey = null;
   if (pdfBase64) {
-    const key = await storeVendorInvoicePdf(id, pdfBase64);
-    if (key) {
+    pdfKey = await storeVendorInvoicePdf(id, pdfBase64);
+    if (pdfKey) {
       try {
-        await neonWrite("vendorInvoice.pdf", `UPDATE vendor_invoices SET pdf_key = $2 WHERE id = $1`, [id, key]);
+        await neonWrite("vendorInvoice.pdf", `UPDATE vendor_invoices SET pdf_key = $2 WHERE id = $1`, [id, pdfKey]);
       } catch (e) { console.error(`vendorInvoice.pdf: ${String(e?.message || e)}`); }
     }
   }
@@ -9963,7 +9990,8 @@ async function handleVendorInvoiceIntake(body, authUser) {
 
   try {
     const expenseId = await settleVendorInvoice(
-      { id, vendor_name: vendorName, invoice_no: invNo, invoice_date: invDateYmd, amount: signed },
+      { id, vendor_name: vendorName, invoice_no: invNo, invoice_date: invDateYmd,
+        amount: signed, pdf_key: pdfKey },
       jobId, reason, authUser);
     return resp(200, { ok: true, id, status: "matched", jobId, expenseId });
   } catch (e) {
@@ -10080,9 +10108,12 @@ async function handleVendorInvoiceAssign(body, authUser) {
     // the site that actually broke: the driver's JS Date sliced to "Wed Aug 12"
     // and Postgres refused it with `invalid input syntax for type date`, so
     // placing a real invoice on a job failed outright.
+    // ⚠ pdf_key is selected because settleVendorInvoice copies it onto the
+    // expense as a receipt. Leave it out and the copy silently never happens —
+    // no error, just an expense with no paperwork on it.
     `SELECT id, vendor_name, invoice_no,
             to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date,
-            amount, status, expense_id
+            amount, status, expense_id, pdf_key
        FROM vendor_invoices WHERE id::text = $1`, [String(invoiceId)]);
   if (!q || q.error) return resp(503, { ok: false, error: "The invoice queue is unavailable right now." });
   const inv = q.rows?.[0];

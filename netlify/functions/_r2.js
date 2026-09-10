@@ -839,6 +839,42 @@ export function vendorInvoicePrefix(invoiceId) {
   return `vendor-invoices/${String(invoiceId)}/`;
 }
 
+// Where a supplier invoice PDF lands once its invoice becomes an expense.
+//
+// Named from the invoice number rather than the upload convention's
+// `<stamp>-<NN>-<rand>` because this one has a name worth reading: the receipt
+// tile shows the key's last segment, and "invoice-0000315339.pdf" tells the
+// reviewer what they are looking at where "20260910143022-01-k3f9a1.pdf" does
+// not. Nothing parses a receipt stem — `contentTypeForKey` reads the extension,
+// `isThumbKey`/`isDeletedReceiptKey` match suffix and sub-prefix, and
+// `listExpenseReceipts` sorts on lastModified — so the stem is free.
+export function vendorInvoiceReceiptKey(expenseId, invoiceNo) {
+  const safe = String(invoiceNo ?? "").replace(/[^A-Za-z0-9._-]+/g, "-")
+                                      .replace(/^-+|-+$/g, "");
+  return `${expensePrefix(expenseId)}invoice-${safe || "unnumbered"}.pdf`;
+}
+
+// Put the invoice's own PDF on the expense it just became, so the paperwork
+// lives with the money.
+//
+// ⚠⚠ COPY, NEVER MOVE, and that is not a detail. `vendor_invoices.pdf_key`
+// still points at the original, and the review screen's "Open the invoice" link
+// is built from it — moving the object would break that link for every invoice
+// already settled, and leave the row pointing at nothing. Both records genuinely
+// want the file: `vendor-invoices/` is the permanent log of every invoice that
+// ever arrived, `expenses/` is what somebody opens when they question a cost
+// years later. Neither prefix is under the recycle bin's lifecycle rule, so
+// both copies persist. The objects are 15–26 KB; the duplication is free.
+//
+// Returns the destination key, or null when there was nothing to copy.
+export async function copyVendorInvoicePdfToExpense(srcKey, expenseId, invoiceNo,
+                                                    timeoutMs = DEFAULT_TIMEOUT_MS) {
+  if (!srcKey || !expenseId) return null;
+  const destKey = vendorInvoiceReceiptKey(expenseId, invoiceNo);
+  await copyObject(srcKey, destKey, timeoutMs);
+  return destKey;
+}
+
 // Payroll run archives — the generated PDF and its machine-readable twin.
 // Keyed on the NEON uuid, not the Airtable rec id, unlike photos and receipts.
 // Those two are stuck on rec ids because thousands of objects already sit under

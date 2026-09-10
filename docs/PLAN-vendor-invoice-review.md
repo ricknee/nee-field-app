@@ -155,6 +155,32 @@ work because `createExpenseNative` resolves `airtable_id = $8 OR id::text = $8`.
 `expense_vendors` row. Checking only the first gives an endpoint that accepts the
 invoice and files it against nobody.
 
+### The invoice PDF becomes the expense's receipt  *(2026-09-10)*
+
+When an invoice becomes an expense — automatically on a PO match, or by hand off
+the review screen — its PDF is copied to `expenses/<expenseId>/invoice-<no>.pdf`,
+so it shows up in the expense's normal Receipts tile. Someone questioning a cost
+two years from now opens the expense; they should not have to know a review queue
+exists.
+
+⚠⚠ **COPY, NEVER MOVE.** `vendor_invoices.pdf_key` still points at the original
+under `vendor-invoices/<id>/`, and the review screen's "Open the invoice" link is
+built from it — moving the object would break that link for every settled invoice
+and leave the row pointing at nothing. Both prefixes sit outside the recycle
+bin's lifecycle rule, so both copies persist. The files are 15–26 KB.
+
+⚠ **It fails SOFT, and this case is stricter than the usual R2 rule:** the expense
+already exists by the time the copy runs. A throw would take the caller's 502
+branch and mark the invoice `expense-create-failed` — a real cost on the job under
+a row claiming it never landed. A missing receipt is re-attachable by hand; a
+lying status is not.
+
+⚠ **`pdf_key` must be SELECTed** in the assign path and carried through in the
+intake path. `settleVendorInvoice` copies `inv.pdf_key`, and omitting it from
+either caller produces no error at all — just an expense with no paperwork,
+found months later by whoever needed the invoice. Both are pinned by a static
+test.
+
 ### No Airtable, anywhere
 
 `vendor_invoices` is Neon-native and was built after `AIRTABLE_WRITES=off`. There is

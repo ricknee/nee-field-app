@@ -6992,6 +6992,37 @@ await test("push expenses: repricing touches UNPUSHED material only, and only th
   ok(/await loadPushPending\(\);/.test(html), "the list is reloaded after repricing");
 });
 
+await test("materials receipt: wire carries BOTH $/lb and $/ft", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../inventory.html", import.meta.url)), "utf8");
+
+  // Wire is bought by the pound and pulled by the foot; the receipt carries
+  // both, the same way the qty column already shows lbs and ft.
+  ok(/doc\.text\("\$" \+ l\.cost\.toFixed\(2\) \+ " \/ lb", c3, y - 3/.test(html),
+     "the per-pound price is labelled");
+  ok(/\$" \+ \(Math\.abs\(l\.total\) \/ l\.wireFt\)\.toFixed\(4\) \+ " \/ ft"/.test(html),
+     "and a per-foot price sits under it");
+
+  // ⚠ DERIVED FROM THE LINE, not from the item's ft/lb. total ÷ ft is what this
+  // line actually worked out to per foot, so it cannot contradict the two
+  // numbers printed beside it — which a separate lookup eventually would, and
+  // a receipt that disagrees with itself is worse than one that omits the
+  // figure entirely.
+  ok(!/wireFtPerLb[\s\S]{0,60}\/ ft", c3/.test(html),
+     "the per-foot figure is not re-derived from the item record");
+
+  // 4dp: a per-foot price is cents-and-fractions, and rounding $0.6203 to $0.62
+  // on a customer-facing receipt loses the precision that makes it checkable
+  // against the supplier's own quote.
+  ok(/\/ l\.wireFt\)\.toFixed\(4\)/.test(html), "printed to four places");
+
+  // Non-wire rows keep the single plain figure — a "/ lb" on a box of staples
+  // would be nonsense.
+  ok(/\} else \{\s*doc\.text\("\$" \+ l\.cost\.toFixed\(2\), c3, y, \{ align: "right" \}\);/.test(html),
+     "non-wire rows are unchanged");
+});
+
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");

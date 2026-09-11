@@ -2824,10 +2824,27 @@ function generateReceiptPDF(g) {
         doc.text((isReturn ? "-" : "") + Math.abs(l.qty), c2, y, { align: "right" });
       }
 
-      // Unit cost
+      // Unit cost. Wire is bought and stocked by the POUND but pulled by the
+      // FOOT, so the receipt carries both — the same two-line treatment the qty
+      // column already gets, and for the same reason: one of those numbers is
+      // what the supplier charged and the other is what the job consumed.
+      //
+      // ⚠ DERIVED FROM THE LINE'S OWN MONEY AND FEET, not from the item's
+      // ft/lb. total ÷ ft is what this line actually worked out to per foot, so
+      // it cannot disagree with the two figures printed beside it — which a
+      // second lookup eventually would.
       if (l.cost > 0) {
         doc.setTextColor(100, 100, 100);
-        doc.text("$" + l.cost.toFixed(2), c3, y, { align: "right" });
+        if (isWire) {
+          doc.text("$" + l.cost.toFixed(2) + " / lb", c3, y - 3, { align: "right" });
+          doc.setFontSize(8);
+          doc.setTextColor(52, 120, 190);
+          doc.text("$" + (Math.abs(l.total) / l.wireFt).toFixed(4) + " / ft", c3, y + 1, { align: "right" });
+          doc.setFontSize(9);
+          doc.setTextColor(100, 100, 100);
+        } else {
+          doc.text("$" + l.cost.toFixed(2), c3, y, { align: "right" });
+        }
       }
 
       // Line total

@@ -250,14 +250,76 @@ Neither was created by hand at the app end, so the first send is a real first se
 the duplicate guard has nothing to trip on. Both will appear under
 **☰ → 🧾 Invoice Review**, filed under their own vendor chip.
 
-## Optional, later — not part of this change
+## Change 2 — send EVERY invoice here *(written 2026-09-10, ready to do)*
 
-The bot could eventually send **every** invoice, matched ones included, and let the app
-do all the PO matching. That puts the matching rule in one place instead of two that can
-drift, and gives a record of every invoice that ever arrived rather than only the
-failures. The endpoint already accepts this.
+The first change is live and working. This is the follow-on, and it is small on your
+side: **stop deciding whether the PO matches. Send every invoice to
+`vendorInvoiceIntake` and do whatever the response says.**
 
-It is a bigger change and is not needed. Make the small one above first.
+### Why
+
+Right now there are two matching rules — yours and the app's — and only the invoices
+*you* fail on are visible in the app. In one week that meant 32 CED invoices went
+straight onto jobs with no record in the review table at all. Consequences:
+
+- **A mis-matched invoice is invisible.** Nothing re-checks your match; the cost simply
+  appears on a job. If it landed on the wrong one, no screen anywhere says so.
+- **The log has holes.** `vendor_invoices` is meant to be the record of every supplier
+  invoice that ever arrived. The matched ones are missing from it, so the totals on the
+  review screen only describe a fraction of the money.
+- **The app's matcher is more forgiving than yours.** It reduces both sides to letters
+  and digits, so `CAJ 436`, `CAJ436` and `Joe Yoder (CAJ 436)` all agree. Some invoices
+  you currently give up on would match.
+
+### The change
+
+1. Delete the branch that decides whether the PO matches a job.
+2. POST **every** invoice to `vendorInvoiceIntake`, exactly as documented above.
+3. Act on the response:
+
+| Response | What it means | What you do |
+|---|---|---|
+| `status:"matched"` | The app matched the job **and created the expense** | **Nothing.** Do NOT call `addGeneralExpense`. |
+| `status:"needs_review"` | Parked for a person | Log and carry on. Normal. |
+| `duplicate:true` | Already had it | Log and carry on. Normal. |
+| `400` | Unknown vendor, or no `invoiceNo` | Log loudly — something upstream is wrong. |
+
+4. **Remove the `addGeneralExpense` call entirely.** After this change nothing in the bot
+   should create an expense directly. That call is what makes a double charge possible.
+
+### ⛔ DO NOT REPLAY OLD INVOICES
+
+**Send only invoices from the cutover forward. Do not backfill.**
+
+The duplicate guard on this endpoint keys on `vendor_invoices`, and **none of the
+invoices you placed the old way are in that table** — they went straight to expenses.
+Re-sending them would look brand new.
+
+The app now carries a second guard for exactly this: before creating an expense it looks
+for one already carrying the same description (`CED Invoice 0171-1063885` — both paths
+build that string identically). If it finds one it charges nothing, points the invoice at
+the existing expense and marks it `already-expensed`. Checked against production: that
+guard would catch 30 of the last 30 days' CED invoices.
+
+Treat that as a safety net, not a licence. It matches on description, so an invoice whose
+number was recorded differently the first time would slip past it — and the result is a
+job charged twice for the same material.
+
+### How to know it worked
+
+After the first real batch, in the app under **☰ → 🧾 Invoice Review**, switch to
+**Everything**:
+
+- **CED should now appear in the vendor list** with its invoices, where today it is
+  absent entirely. That is the single clearest signal the change took.
+- **"On jobs" should start climbing.** Those are the matched ones — before this change
+  that section only ever showed invoices placed by hand.
+- **"Waiting on me" should not grow much.** If everything suddenly needs review, the app
+  is not resolving POs that you were resolving — stop and say so, do not clear the queue
+  by hand.
+
+And in the expenses list: each job should have the **same number** of supplier expenses
+as before, not more. A count that doubles is the replay hazard above.
 
 ---
 

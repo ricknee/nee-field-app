@@ -9856,6 +9856,41 @@ async function storeVendorInvoicePdf(invoiceId, pdfBase64) {
 async function settleVendorInvoice(inv, jobId, reason, authUser) {
   const vendorHandle = await vendorHandleFor(inv.vendor_name);
   const { manualMaterialCost, materialCredit } = amountToExpenseFields(inv.amount);
+  const description = `${inv.vendor_name} Invoice ${inv.invoice_no}`;
+
+  // ⚠⚠ THE SECOND DUPLICATE GUARD, AND IT GUARDS A DIFFERENT DOOR.
+  // `vendor_invoices`' unique index stops the same invoice being INTAKEN twice.
+  // It cannot stop an invoice being EXPENSED twice, because the bot's original
+  // path — matching the PO itself and calling addGeneralExpense — never wrote a
+  // vendor_invoices row at all. 32 CED invoices reached the books that way in
+  // one week, and none of them are in that table.
+  //
+  // So the day the bot is repointed to send everything here (see
+  // docs/minibee-invoice-change.md), replaying any of that history would charge
+  // every one of those jobs a second time, silently: the intake is new, the
+  // dedupe index sees nothing, and a second expense simply appears.
+  //
+  // The description is the join. It is deterministic — "CED Invoice
+  // 0171-1063885" — and both paths build it the same way, which is why it was
+  // kept verbatim in the first place. Matching on it turns a double charge into
+  // a no-op that reports the expense already on the books.
+  const dupe = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS handle, job_id::text AS job_id
+       FROM expenses WHERE description = $1 LIMIT 1`, [description]);
+  if (dupe?.rows?.length) {
+    const existing = dupe.rows[0];
+    console.error(`vendorInvoice.settle: "${description}" is already an expense (${existing.handle}) — not charging it again`);
+    await neonWrite("vendorInvoice.settleDupe",
+      `UPDATE vendor_invoices
+          SET status = 'matched', job_id = $2, expense_id = $3::uuid,
+              match_reason = 'already-expensed', resolved_at = now(),
+              resolved_by = COALESCE(
+                (SELECT name FROM employees WHERE airtable_id = $4 OR id::text = $4), $4)
+        WHERE id = $1`,
+      [inv.id, existing.job_id, existing.handle.startsWith("rec") ? null : existing.handle,
+       authUser?.id ? String(authUser.id) : null]);
+    return existing.handle;
+  }
 
   const expenseId = await createExpenseNative({
     jobId: String(jobId),
@@ -9875,8 +9910,10 @@ async function settleVendorInvoice(inv, jobId, reason, authUser) {
     manualMaterialCost, materialCredit,
     vendorId: vendorHandle,
     // The bot's own naming convention, kept verbatim so the new rows sort and
-    // read beside the old ones: "CED Invoice 0171-1063885".
-    description: `${inv.vendor_name} Invoice ${inv.invoice_no}`,
+    // read beside the old ones: "CED Invoice 0171-1063885". It is also the key
+    // the duplicate guard above matches on, so it is load-bearing now — changing
+    // this format would silently reopen the double-charge door.
+    description,
     authUser,
   });
   if (!expenseId) throw new Error("vendorInvoice: expense create returned no id");

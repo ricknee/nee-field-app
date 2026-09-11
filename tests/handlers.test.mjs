@@ -136,6 +136,9 @@ function viOn(seed = {}) {
     jobsByCode: seed.jobsByCode || {},   // normalised PO code -> [{id,name,status}]
     vendors:    seed.vendors    || {},   // lower(expense_vendors.name) -> handle
     jobsError:  seed.jobsError  || false,
+    // description -> { handle, job_id }: expenses that already exist by some
+    // other route. Empty by default, so every other case behaves as before.
+    alreadyExpensed: seed.alreadyExpensed || {},
   };
   return mockVI;
 }
@@ -212,7 +215,13 @@ globalThis.fetch = async (url, opts) => {
           if (/SET pdf_key/i.test(sql)) row.pdf_key = p[1];
           else if (/status = 'matched'/i.test(sql)) {
             row.status = "matched"; row.job_id = p[1]; row.expense_id = p[2];
-            row.match_reason = p[3]; row.resolved_by = p[4];
+            // ⚠ The reason is a PARAMETER on the ordinary settle and a LITERAL
+            // on the already-expensed one. Assuming the positional form made the
+            // mock record the user id as the match reason — a stub that reads
+            // its own statement loosely will happily confirm the wrong thing.
+            const lit = /match_reason = '([a-z-]+)'/.exec(sql);
+            row.match_reason = lit ? lit[1] : p[3];
+            row.resolved_by = p[p.length - 1];
           } else if (/match_reason = \$2/.test(sql)) row.match_reason = p[1];
           else {
             // The two literal-reason failure paths: 'lookup-failed' and
@@ -251,6 +260,14 @@ globalThis.fetch = async (url, opts) => {
       if (/FROM jobs WHERE airtable_id = \$1/i.test(sql)) {
         const hit = Object.values(mockVI.jobsByCode).flat().filter(j => j.id === p[0]);
         return neonReply(["id"], hit.map(j => ({ id: j.id })));
+      }
+      // The double-charge guard's lookup: is this invoice already an expense?
+      // Seeded by `alreadyExpensed` — a description -> {handle, job_id} map
+      // standing in for the rows the bot's OLD addGeneralExpense path wrote,
+      // which have no vendor_invoices row to dedupe against.
+      if (/FROM expenses WHERE description = \$1/i.test(sql)) {
+        const hit = mockVI.alreadyExpensed[String(p[0])];
+        return neonReply(["handle", "job_id"], hit ? [hit] : []);
       }
       if (/INSERT INTO expenses/i.test(sql)) {
         const e = { id: `exp-${mockVI.expenses.length + 1}`,
@@ -6615,6 +6632,43 @@ await test("vendorInvoice: STATIC — the receipt copy is wired to BOTH settle p
   const body = copyFn.slice(0, copyFn.indexOf("\n}"));
   ok(/copyObject\(/.test(body), "it copies");
   ok(!/deleteObject\(|moveObject\(/.test(body), "and never deletes or moves the original");
+});
+
+await test("vendorInvoiceIntake: an invoice the BOT already expensed is not charged twice", async () => {
+  // ⚠⚠ THE HAZARD IN REPOINTING THE BOT. Its original path matched the PO
+  // itself and called addGeneralExpense — writing NO vendor_invoices row. 32 CED
+  // invoices reached the books that way in a single week. The dedupe index on
+  // vendor_invoices cannot see any of them, so the day the bot starts sending
+  // everything here, replaying that history would charge each of those jobs a
+  // second time and nothing would complain.
+  const job = { id: "3a1e77c0-0000-4000-8000-0000000000e1", name: "Joe Yoder (CAJ 436)", status: "Awarded" };
+  const vi = viOn({
+    jobsByCode: { CAJ436: [job] },
+    vendors: VI_VENDORS,
+    // The expense the bot wrote the old way. The description is the join — both
+    // paths build it identically, which is why that format is load-bearing.
+    alreadyExpensed: {
+      "CED Invoice 0171-1063885": { handle: "recOLDEXPENSE001", job_id: job.id },
+    },
+  });
+
+  const b = json(await viPost({ vendor: "CED", invoiceNo: "0171-1063885",
+                               po: "CAJ 436", amount: "1063.08" }));
+  eq(b.status, "matched", "it still reports matched — the cost IS on the job");
+  eq(b.expenseId, "recOLDEXPENSE001", "pointing at the expense that already exists");
+  eq(vi.expenses.length, 0, "and NO second expense was created");
+  eq(vi.invoices[0].match_reason, "already-expensed",
+     "the row says why, so this is visible rather than looking like a normal match");
+  eq(vi.invoices[0].status, "matched", "and it is settled, not left in the queue");
+
+  // ⚠ An invoice that is NOT already an expense must still go through normally —
+  // the guard must not swallow the ordinary path.
+  const c = json(await viPost({ vendor: "CED", invoiceNo: "0171-9999999",
+                               po: "CAJ 436", amount: "50.00" }));
+  eq(c.status, "matched", "a genuinely new invoice still settles");
+  eq(vi.expenses.length, 1, "and creates its expense");
+  eq(vi.expenses[0].description, "CED Invoice 0171-9999999", "under the shared naming convention");
+  viOff();
 });
 
 await test("vendorInvoice: a DATE column is never stringified in JS — 'Wed Aug 12'", async () => {

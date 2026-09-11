@@ -53,7 +53,7 @@ import {
 // Vendor-invoice inbox (db/schema/069). Pure functions — no network, no env.
 import {
   normalizePoCode, JOB_PO_CODE_SQL, matchJobByPoCode,
-  amountToExpenseFields, canonicalVendor, ACCEPTED_VENDORS,
+  amountToExpenseFields, parseSignedAmount, canonicalVendor, ACCEPTED_VENDORS,
   decodeInvoicePdf, ymdOrNull,
 } from "./_vendor-invoices.js";
 
@@ -648,6 +648,11 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // does not sit at the _NON_VIEWER default a write would otherwise get. An
   // employee POSTing a fabricated invoice would be posting money onto a job.
   "vendorInvoiceIntake",
+  // Backfilling the log for an invoice that is ALREADY an expense. It creates no
+  // expense and changes none — but it writes a row asserting that a given cost
+  // came from a given supplier invoice, which is a claim about money's
+  // provenance, and it reads an expense to do it. Same tier as the rest.
+  "linkExistingVendorInvoice",
   // Assigning a parked invoice to a job is the moment it becomes a cost, and
   // marking one reviewed is the moment it stops being anyone's problem. Same tier as
   // approveExpense and updateJobBillableRate — back-office money ops.
@@ -10089,6 +10094,167 @@ async function handleVendorInvoiceIntake(body, authUser) {
   }
 }
 
+// ── BACKFILL: LINK AN INVOICE TO AN EXPENSE THAT ALREADY EXISTS ───────────
+// POST { vendor, invoiceNo, po, invoiceDate, amount, jobId, expenseId, pdfKey,
+//        receivedAt? }
+//
+// Writes ONE `vendor_invoices` row describing an invoice that is already on the
+// books. It exists because the bot's original path — match the PO itself, call
+// addGeneralExpense — never wrote a vendor_invoices row, so the log has holes
+// exactly where the system worked. 32 CED invoices in one week landed that way.
+//
+// ⛔ IT CREATES NO EXPENSE, AND TOUCHES NO EXPENSE. Not created, not updated,
+// not reviewed, not billed, not deleted. The expense named in the request must
+// already exist and is read ONLY to prove the link is genuine — the single write
+// in this handler is the INSERT below. Anything else would make a
+// "reconciliation" tool capable of moving money, which is the one thing it must
+// never be.
+//
+// ⚠⚠ EVERY CHECK IS REPEATED INSIDE THE INSERT'S WHERE CLAUSE, and that is the
+// atomicity. The reads above it exist only to say WHICH check failed, because a
+// 400 that does not name the mismatch is useless to whoever is reconciling. The
+// driver is HTTP and its transaction() cannot branch between statements, so a
+// transaction wrapping read-then-write would not close the gap between them
+// anyway. One guarded statement does: the row cannot land unless the expense
+// still matches at the moment of writing.
+async function handleLinkExistingVendorInvoice(body, authUser) {
+  const { vendor, invoiceNo, po, invoiceDate, amount, jobId, expenseId, pdfKey,
+          receivedAt } = body || {};
+
+  const bad = (error) => resp(400, { ok: false, error });
+
+  // ── shape ──
+  const vendorName = canonicalVendor(vendor);
+  if (!vendorName) return bad(`Unknown vendor: ${String(vendor || "")}. Expected one of: ${ACCEPTED_VENDORS.join(", ")}.`);
+  const invNo = String(invoiceNo || "").trim();
+  if (!invNo)                 return bad("Missing invoiceNo.");
+  if (!expenseId)             return bad("Missing expenseId.");
+  if (!jobId)                 return bad("Missing jobId.");
+  if (!pdfKey)                return bad("Missing pdfKey.");
+  const poText = po == null ? null : String(po).trim() || null;
+  if (!poText)                return bad("Missing po.");
+  const invDate = ymdOrNull(invoiceDate);
+  if (!invDate)               return bad("invoiceDate must be YYYY-MM-DD.");
+  const amt = parseSignedAmount(amount);
+  if (amt === null)           return bad("Missing or unparseable amount.");
+
+  // ── the expense, read-only ──
+  const eq2 = await neonQuery(
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS handle, e.id::text AS uuid,
+            COALESCE(j.airtable_id, j.id::text)  AS job_handle, j.id::text AS job_uuid,
+            e.vendor_name, e.description,
+            e.manual_material_cost::float8 AS cost,
+            e.material_credit::float8      AS credit,
+            e.total_cost_actual::float8    AS total_actual
+       FROM expenses e LEFT JOIN jobs j ON j.id = e.job_id
+      WHERE e.airtable_id = $1 OR e.id::text = $1`, [String(expenseId)]);
+  if (!eq2 || eq2.error) return resp(503, { ok: false, error: "Can't reach the database right now." });
+  if (!eq2.rows?.length) return bad(`No expense found for ${String(expenseId)}.`);
+  const e = eq2.rows[0];
+
+  // ── 3. it belongs to the supplied job ──
+  const wantJob = String(jobId);
+  if (e.job_handle !== wantJob && e.job_uuid !== wantJob) {
+    return bad(`That expense is on job ${e.job_handle || "(none)"}, not ${wantJob}.`);
+  }
+
+  // ── 4. the vendor agrees ──
+  // Compared through canonicalVendor so "CED CONSOLIDATED…" and "CED" are the
+  // same claim, but the EXPENSE's stored name is what must resolve — an expense
+  // filed against a different supplier is a different invoice.
+  if (canonicalVendor(e.vendor_name) !== vendorName) {
+    return bad(`That expense's vendor is "${e.vendor_name || "(none)"}", not ${vendorName}.`);
+  }
+
+  // ── 5. the invoice number appears in the description ──
+  // Normalised on both sides: the description is "CED Invoice 0171-1063885" and
+  // the same number can arrive as "0171 1063885". Leading zeros are preserved by
+  // comparing as text, never as numbers.
+  const norm = (v) => String(v ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  if (!norm(e.description).includes(norm(invNo))) {
+    return bad(`Invoice ${invNo} does not appear in that expense's description ("${e.description || ""}").`);
+  }
+
+  // ── 6. the amount matches, to the cent ──
+  // ⚠ A CREDIT IS A SEPARATE COLUMN, NOT A NEGATIVE COST. v_expenses and every
+  // GP rollup read the two apart, so a credit memo must match material_credit
+  // and arrive negative; a charge must match the cost (or the actual total,
+  // which is what a legacy row carries).
+  const cents = (n) => (n === null || n === undefined ? null : Math.round(Number(n) * 100));
+  const want = cents(amt);
+  const isCredit = amt < 0;
+  const candidates = isCredit
+    ? [cents(e.credit === null ? null : -Math.abs(e.credit))]
+    : [cents(e.cost), cents(e.total_actual)];
+  if (!candidates.some(c => c !== null && c === want)) {
+    return bad(isCredit
+      ? `Amount ${amt} does not match that expense's credit (${e.credit ?? "none"}).`
+      : `Amount ${amt} does not match that expense's cost (${e.cost ?? "none"}) or total (${e.total_actual ?? "none"}).`);
+  }
+
+  // ── 7. the PDF is a receipt on THAT expense ──
+  // ⚠ Prefix alone is not enough — "expenses/<handle>/" can be typed. The key
+  // must be an object that is actually there, so this lists the expense's
+  // receipts and looks for it. R2 unconfigured is a 503, not a pass: unverified
+  // is not the same as verified.
+  const key = String(pdfKey);
+  if (!key.startsWith(expensePrefix(e.handle))) {
+    return bad(`That pdfKey is not under this expense's receipts (${expensePrefix(e.handle)}).`);
+  }
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Receipt storage isn't configured, so the pdfKey can't be verified." });
+  let receipts;
+  try { receipts = await listExpenseReceipts(e.handle); }
+  catch (err) { return resp(503, { ok: false, error: `Couldn't read that expense's receipts: ${String(err?.message || err)}` }); }
+  if (!receipts.some(r => r.key === key)) {
+    return bad(`No receipt with that key on this expense (${receipts.length} present).`);
+  }
+
+  // ── the single write ──
+  // Every check above is restated in the WHERE so the row cannot be written
+  // against an expense that changed underneath it. ON CONFLICT DO NOTHING gives
+  // idempotency through the existing (vendor, invoice_no) unique index.
+  let rows;
+  try {
+    rows = await neonWrite("vendorInvoice.linkExisting",
+      `INSERT INTO vendor_invoices
+         (vendor_name, invoice_no, po_text, po_code, invoice_date, amount,
+          status, job_id, expense_id, match_reason, pdf_key,
+          received_at, resolved_at, resolved_by, note)
+       SELECT $1, $2, $3, $4, $5::date, $6::numeric,
+              'matched', e.job_id, e.id, 'historical-expense-link', $7,
+              COALESCE($8::timestamptz, now()), now(),
+              'Historical reconciliation',
+              'Linked to pre-existing expense; no expense created'
+         FROM expenses e
+        WHERE (e.airtable_id = $9 OR e.id::text = $9)
+          AND e.job_id IS NOT NULL
+          AND upper(regexp_replace(e.description, '[^A-Za-z0-9]', '', 'g'))
+              LIKE '%' || upper(regexp_replace($2, '[^A-Za-z0-9]', '', 'g')) || '%'
+       ON CONFLICT DO NOTHING
+       RETURNING id::text AS id, expense_id::text AS expense_id`,
+      [vendorName, invNo, poText, normalizePoCode(poText), invDate, amt,
+       key, receivedAt ? String(receivedAt) : null, String(expenseId)]);
+  } catch (err) {
+    return resp(502, { ok: false, error: `Couldn't record the link: ${String(err?.message || err)}` });
+  }
+
+  if (!rows?.length) {
+    // Either the unique index rejected it, or the guarded SELECT matched
+    // nothing. Tell those apart — the first is a no-op, the second is a failure.
+    const prior = await neonQuery(
+      `SELECT id::text AS id, status, expense_id::text AS expense_id FROM vendor_invoices
+        WHERE upper(regexp_replace(vendor_name, '[^A-Za-z0-9]', '', 'g')) = upper(regexp_replace($1, '[^A-Za-z0-9]', '', 'g'))
+          AND upper(regexp_replace(invoice_no,  '[^A-Za-z0-9]', '', 'g')) = upper(regexp_replace($2, '[^A-Za-z0-9]', '', 'g'))`,
+      [vendorName, invNo]);
+    const p = prior?.rows?.[0];
+    if (p) return resp(200, { ok: true, duplicate: true, status: "matched", existingId: p.id });
+    return bad("The expense stopped matching before the link could be written — nothing was changed.");
+  }
+
+  return resp(200, { ok: true, status: "matched", vendorInvoiceId: rows[0].id,
+                     expenseId: rows[0].expense_id, createdExpense: false });
+}
+
 // ── THE REVIEW QUEUE ──────────────────────────────────────────────────────
 // GET ?action=vendorInvoices[&status=needs_review|matched|reviewed|all]
 //
@@ -15815,6 +15981,7 @@ export async function handler(event) {
       // Vendor-invoice inbox (db/schema/069). Intake is the bot's; the other two
       // back the review screen.
       if (body.action === "vendorInvoiceIntake")  return await handleVendorInvoiceIntake(body, authUser);
+      if (body.action === "linkExistingVendorInvoice") return await handleLinkExistingVendorInvoice(body, authUser);
       if (body.action === "vendorInvoiceAssign")  return await handleVendorInvoiceAssign(body, authUser);
       if (body.action === "vendorInvoiceMarkReviewed") return await handleVendorInvoiceMarkReviewed(body, authUser);
       if (body.action === "createVendor")         return await handleCreateVendor(body);

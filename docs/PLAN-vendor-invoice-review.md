@@ -188,6 +188,47 @@ either caller produces no error at all — just an expense with no paperwork,
 found months later by whoever needed the invoice. Both are pinned by a static
 test.
 
+### `linkExistingVendorInvoice` — filling the holes in the log  *(2026-09-10)*
+
+`POST { vendor, invoiceNo, po, invoiceDate, amount, jobId, expenseId, pdfKey,
+receivedAt? }` → writes ONE `vendor_invoices` row for an invoice that is already
+an expense.
+
+It exists because the bot's original path — match the PO itself, call
+`addGeneralExpense` — never wrote a `vendor_invoices` row, so the log is missing
+exactly the invoices where the system worked. 33 CED expenses in one week, none
+of them in the table.
+
+⛔ **IT CREATES NO EXPENSE AND CHANGES NONE.** Not created, not updated, not
+reviewed, not billed, not deleted. The named expense must already exist and is
+read only to prove the link is genuine. There is exactly one write in the handler
+and it is the `vendor_invoices` INSERT — a static test asserts the absence of
+`createExpenseNative`, `addGeneralExpense`, and any write to `expenses`.
+
+Seven checks, all 400 on failure with nothing written: the expense exists; it is
+on the supplied job; its vendor resolves to the supplied vendor; the normalised
+invoice number appears in its description; the amount matches to the cent (a
+credit must match `material_credit` **and arrive negative** — a credit is a
+separate column, not a negative cost); and `pdfKey` is a receipt that actually
+exists under that expense's prefix. R2 unconfigured is a **503**, not a pass —
+unverified is not verified.
+
+⚠ **Every check is repeated inside the INSERT's WHERE clause, and that is the
+atomicity.** The reads above it exist only to name which check failed. The Neon
+HTTP driver's `transaction()` cannot branch between statements, so a transaction
+wrapping read-then-write would not close the gap between them; one guarded
+statement does — the row cannot land against an expense that changed after it was
+read.
+
+Idempotent through the existing `(vendor, invoice_no)` unique index: a re-run
+returns `{ duplicate: true, status: "matched", existingId }` and writes nothing.
+Success returns `{ ok: true, status: "matched", vendorInvoiceId, expenseId,
+createdExpense: false }`.
+
+Rows land with `match_reason = 'historical-expense-link'`, `resolved_by =
+'Historical reconciliation'` and a note saying no expense was created — so a
+backfilled row never reads as a real-time match on the review screen.
+
 ### No Airtable, anywhere
 
 `vendor_invoices` is Neon-native and was built after `AIRTABLE_WRITES=off`. There is
@@ -214,6 +255,7 @@ sync could one day import back as duplicate expenses.
 |---|---|---|---|
 | `vendorInvoiceIntake` | POST | admin+office | the bot's; idempotent on (vendor, invoice no) |
 | `vendorInvoices` | GET | admin+office | the queue; **fails closed (503)**, never an empty list |
+| `linkExistingVendorInvoice` | POST | admin+office | **backfill only** — records an invoice whose expense already exists. Creates NO expense. |
 | `vendorInvoiceAssign` | POST | admin+office | creates the expense, marks matched |
 | `vendorInvoiceMarkReviewed` | POST | admin+office | not going on any job; keeps the row, records why |
 

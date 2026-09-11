@@ -87,6 +87,8 @@ let mockVI = null;
 // Every request that reached R2, so a case can prove the copy really happened
 // rather than only that the code says it would.
 let mockR2 = [];
+// What the bucket contains, for cases that read receipts back.
+let mockR2Keys = [];
 // The four R2 vars, on and off together — `r2Enabled()` requires all of them,
 // and the suite runs with them UNSET by default (r2Status clears them), so a
 // case that wants the R2 path must switch it on and switch it back off.
@@ -139,6 +141,8 @@ function viOn(seed = {}) {
     // description -> { handle, job_id }: expenses that already exist by some
     // other route. Empty by default, so every other case behaves as before.
     alreadyExpensed: seed.alreadyExpensed || {},
+    // handle/uuid -> the expense row the backfill link reads.
+    expensesById: seed.expensesById || {},
   };
   return mockVI;
 }
@@ -188,6 +192,37 @@ globalThis.fetch = async (url, opts) => {
     //   a vendor lookup and the intake would silently create no expense at all.
     if (mockVI) {
       const p = sent.params || [];
+      // ── The backfill link. Matched BEFORE the intake INSERT below, because
+      // both start "INSERT INTO vendor_invoices" and their parameters are in
+      // completely different orders — reading this one with the intake's
+      // positions would write a plausible row full of the wrong values.
+      if (/historical-expense-link/.test(sql)) {
+        const [vendorName, invoiceNo, poText, poCode, invDate, amount, key, recvAt, expHandle] = p;
+        // The guarded SELECT: the expense must still match.
+        const exp = mockVI.expensesById[String(expHandle)];
+        const normX = (v) => String(v ?? "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+        if (!exp || !exp.job_id || !normX(exp.description).includes(normX(invoiceNo))) {
+          return neonReply([], []);                    // guarded SELECT matched nothing
+        }
+        const dupe = mockVI.invoices.some(r =>
+          viNorm(r.vendor_name) === viNorm(vendorName) && viNorm(r.invoice_no) === viNorm(invoiceNo));
+        if (dupe) return neonReply([], []);            // ON CONFLICT DO NOTHING
+        const row = { id: `vi-${mockVI.nextId++}`, vendor_name: vendorName, invoice_no: invoiceNo,
+                      po_text: poText, po_code: poCode, invoice_date: invDate,
+                      amount: viNum(amount), status: "matched", job_id: exp.job_id,
+                      expense_id: exp.uuid, match_reason: "historical-expense-link",
+                      pdf_key: key, received_at: recvAt, resolved_by: "Historical reconciliation",
+                      note: "Linked to pre-existing expense; no expense created" };
+        mockVI.invoices.push(row);
+        return neonReply(["id", "expense_id"], [{ id: row.id, expense_id: exp.uuid }]);
+      }
+      // The backfill's read-only expense lookup.
+      if (/FROM expenses e LEFT JOIN jobs j/i.test(sql)) {
+        const exp = mockVI.expensesById[String(p[0])];
+        return neonReply(["handle", "uuid", "job_handle", "job_uuid", "vendor_name",
+                          "description", "cost", "credit", "total_actual"],
+                         exp ? [exp] : []);
+      }
       if (/INSERT INTO vendor_invoices/i.test(sql)) {
         const [vendorName, invoiceNo, poText, poCode, invoiceDate, amount, taxAmount] = p;
         // ON CONFLICT DO NOTHING on the normalised pair.
@@ -314,6 +349,20 @@ globalThis.fetch = async (url, opts) => {
       ? Object.fromEntries([...r2Req.headers].map(([k, v]) => [k.toLowerCase(), v]))
       : Object.fromEntries(Object.entries(opts?.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
     mockR2.push({ url: r2Href, method: (r2Req?.method || method).toUpperCase(), headers });
+    // A ListObjectsV2 call. `mockR2Keys` is the bucket's contents for the test;
+    // listByPrefix parses this XML, so it has to be the real shape or the
+    // receipt check silently sees an empty bucket and every link is refused.
+    if (/[?&]list-type=2/.test(r2Href)) {
+      const prefix = decodeURIComponent((/[?&]prefix=([^&]*)/.exec(r2Href) || [, ""])[1]);
+      const body =
+        `<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated>` +
+        mockR2Keys.filter(k => k.startsWith(prefix)).map(k =>
+          `<Contents><Key>${k}</Key><Size>1024</Size>` +
+          `<LastModified>2026-09-01T00:00:00.000Z</LastModified></Contents>`).join("") +
+        `</ListBucketResult>`;
+      return { ok: true, status: 200, headers: { get: () => "application/xml" },
+               text: async () => body, json: async () => ({}) };
+    }
     return { ok: true, status: 200, headers: { get: () => "application/xml" },
              text: async () => "<CopyObjectResult/>", json: async () => ({}) };
   }
@@ -6669,6 +6718,159 @@ await test("vendorInvoiceIntake: an invoice the BOT already expensed is not char
   eq(vi.expenses.length, 1, "and creates its expense");
   eq(vi.expenses[0].description, "CED Invoice 0171-9999999", "under the shared naming convention");
   viOff();
+});
+
+// ── linkExistingVendorInvoice — backfill only, never money ───────────────────
+const LNK_EXP = {
+  handle: "recOLDEXP0000001", uuid: "7c3b1a20-0000-4000-8000-00000000ab01",
+  job_handle: "rec2s6PxJ761sS9R4", job_uuid: "368552a2-ce25-4de2-9d0f-a7b01a3f3de6",
+  job_id: "368552a2-ce25-4de2-9d0f-a7b01a3f3de6",
+  vendor_name: "CED", description: "CED Invoice 0171-1063885",
+  cost: 1063.08, credit: null, total_actual: 1063.08,
+};
+const LNK_KEY = "expenses/recOLDEXP0000001/invoice-0171-1063885.pdf";
+function lnkOn(extra) {
+  r2On(); mockR2Keys = [LNK_KEY];
+  return viOn({ vendors: VI_VENDORS, jobsByCode: {},
+                expensesById: { [LNK_EXP.handle]: LNK_EXP, [LNK_EXP.uuid]: LNK_EXP, ...(extra || {}) } });
+}
+const LNK_BODY = {
+  vendor: "CED", invoiceNo: "0171-1063885", po: "CAJ 436", invoiceDate: "2026-08-28",
+  amount: "1063.08", jobId: LNK_EXP.job_handle, expenseId: LNK_EXP.handle, pdfKey: LNK_KEY,
+};
+const lnk = (over, tok = OFFICE_TOK) =>
+  POST("linkExistingVendorInvoice", { ...LNK_BODY, ...(over || {}) }, tok);
+
+await test("linkExistingVendorInvoice: links history, and creates NO expense", async () => {
+  const vi = lnkOn();
+  try {
+    const res = await lnk();
+    eq(res.statusCode, 200, "accepted");
+    const b = json(res);
+    eq(b.status, "matched");
+    eq(b.createdExpense, false, "and says so explicitly in the response");
+    eq(b.expenseId, LNK_EXP.uuid, "pointing at the expense that already existed");
+    ok(b.vendorInvoiceId, "with the new row's id");
+
+    // ⛔ THE INVARIANT. This tool exists to fill in a log, and a log that can
+    // charge a customer is not a log.
+    eq(vi.expenses.length, 0, "NOT ONE expense was created");
+
+    const row = vi.invoices[0];
+    eq(row.status, "matched");
+    eq(row.match_reason, "historical-expense-link", "distinguishable from a real-time match");
+    eq(row.resolved_by, "Historical reconciliation");
+    eq(row.note, "Linked to pre-existing expense; no expense created");
+    eq(row.pdf_key, LNK_KEY, "carrying the receipt already on the expense");
+    eq(row.po_text, "CAJ 436", "the raw PO");
+    eq(row.po_code, "CAJ436", "and its normalised form");
+    eq(row.amount, 1063.08);
+    eq(lastFetch, null, "and nothing went to Airtable");
+  } finally { viOff(); r2Off(); }
+});
+
+await test("linkExistingVendorInvoice: every mismatch is a 400 that writes nothing", async () => {
+  // ⚠ Each of these is a way the reconciliation could attach an invoice to the
+  // WRONG expense. A link is a claim about where a cost came from; a wrong one
+  // is worse than a missing one, because it looks reconciled.
+  for (const [label, over] of [
+    ["unknown vendor",        { vendor: "Menards" }],
+    ["missing invoiceNo",     { invoiceNo: "  " }],
+    ["missing po",            { po: "" }],
+    ["bad invoiceDate",       { invoiceDate: "Aug 28 2026" }],
+    ["unparseable amount",    { amount: "n/a" }],
+    ["no such expense",       { expenseId: "recNOPE0000000001" }],
+    ["wrong job",             { jobId: "recSOMEOTHERJOB01" }],
+    ["wrong vendor for expense", { vendor: "Wolff Brothers", invoiceNo: "0171-1063885" }],
+    ["invoice no not in description", { invoiceNo: "0171-9999999" }],
+    ["amount does not match", { amount: "1063.09" }],
+    ["pdfKey on another expense", { pdfKey: "expenses/recSOMEONEELSE/invoice.pdf" }],
+    ["pdfKey not actually there", { pdfKey: "expenses/recOLDEXP0000001/not-uploaded.pdf" }],
+  ]) {
+    const vi = lnkOn();
+    try {
+      const res = await lnk(over);
+      eq(res.statusCode, 400, `${label} → 400`);
+      ok(json(res).error, `${label} explains itself`);
+      eq(vi.invoices.length, 0, `${label}: no vendor_invoices row`);
+      eq(vi.expenses.length, 0, `${label}: and certainly no expense`);
+    } finally { viOff(); r2Off(); }
+  }
+});
+
+await test("linkExistingVendorInvoice: a credit must match the CREDIT column", async () => {
+  // ⚠⚠ A credit is a separate column, not a negative cost. v_expenses and every
+  // GP rollup read the two apart, so a credit memo linked against the cost
+  // column would be asserting the wrong provenance for real money.
+  const creditExp = { ...LNK_EXP, handle: "recCREDITEXP0001",
+                      uuid: "7c3b1a20-0000-4000-8000-00000000ab02",
+                      description: "CED Invoice 0171-CR0001",
+                      cost: null, credit: 773.85, total_actual: null };
+  const key = "expenses/recCREDITEXP0001/invoice-0171-CR0001.pdf";
+  r2On(); mockR2Keys = [key];
+  const vi = viOn({ vendors: VI_VENDORS, jobsByCode: {},
+                    expensesById: { [creditExp.handle]: creditExp } });
+  try {
+    const good = await lnk({ expenseId: creditExp.handle, invoiceNo: "0171-CR0001",
+                             amount: "-773.85", pdfKey: key });
+    eq(good.statusCode, 200, "a negative amount matching material_credit links");
+    eq(vi.invoices[0].amount, -773.85, "stored signed");
+    eq(vi.expenses.length, 0, "and still no expense");
+
+    // The same figure POSITIVE must not link — that would claim a credit was a charge.
+    viOff(); r2Off(); r2On(); mockR2Keys = [key];
+    const vi2 = viOn({ vendors: VI_VENDORS, jobsByCode: {},
+                       expensesById: { [creditExp.handle]: creditExp } });
+    const bad2 = await lnk({ expenseId: creditExp.handle, invoiceNo: "0171-CR0001",
+                             amount: "773.85", pdfKey: key });
+    eq(bad2.statusCode, 400, "a positive amount against a credit-only expense is refused");
+    eq(vi2.invoices.length, 0, "and writes nothing");
+  } finally { viOff(); r2Off(); }
+});
+
+await test("linkExistingVendorInvoice: re-running it is a no-op", async () => {
+  const vi = lnkOn();
+  try {
+    const first = json(await lnk());
+    eq(first.status, "matched");
+    const again = await lnk();
+    eq(again.statusCode, 200, "the retry is not an error");
+    const b = json(again);
+    eq(b.duplicate, true, "it reports the row already exists");
+    eq(b.status, "matched");
+    eq(b.existingId, first.vendorInvoiceId, "naming the row it found");
+    eq(vi.invoices.length, 1, "and there is still exactly one");
+    eq(vi.expenses.length, 0, "with no expense either time");
+  } finally { viOff(); r2Off(); }
+});
+
+await test("linkExistingVendorInvoice: STATIC — it cannot create an expense", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const fn = src.slice(src.indexOf("async function handleLinkExistingVendorInvoice"));
+  const body = fn.slice(0, fn.indexOf("// ── THE REVIEW QUEUE"));
+
+  // ⛔ The whole point. Not created, not updated, not reviewed, not billed, not
+  // deleted — the expense is read, and nothing else.
+  ok(!/createExpenseNative|addGeneralExpense/.test(body), "it never creates an expense");
+  ok(!/UPDATE expenses|DELETE FROM expenses|INSERT INTO expenses/i.test(body),
+     "and never writes to the expenses table at all");
+  // Exactly one write statement in the whole handler.
+  eq((body.match(/neonWrite\(/g) || []).length, 1, "exactly one write");
+  ok(/INSERT INTO vendor_invoices/.test(body), "and it is the vendor_invoices insert");
+
+  // Gated with the rest of the invoice actions.
+  ok(/"linkExistingVendorInvoice",/.test(src), "admin+office");
+  ok(/if \(body\.action === "linkExistingVendorInvoice"\) return await handleLinkExistingVendorInvoice\(body, authUser\);/.test(src),
+     "and dispatched");
+
+  // ⚠ The checks are REPEATED IN THE INSERT so the row cannot land against an
+  // expense that changed after it was read. The HTTP driver's transaction()
+  // cannot branch between statements, so one guarded statement is the atomicity.
+  ok(/WHERE \(e\.airtable_id = \$9 OR e\.id::text = \$9\)/.test(body),
+     "the insert re-resolves the expense by either handle");
+  ok(/ON CONFLICT DO NOTHING/.test(body), "idempotent through the existing unique index");
 });
 
 await test("vendorInvoice: a DATE column is never stringified in JS — 'Wed Aug 12'", async () => {

@@ -594,6 +594,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // Which city tax applies to a job's work. Same tier as the billable rate: a job
   // setting that moves money, so admin+office, not the whole crew.
   "updateJobCityTax",
+  // How a job bills — Contract vs T&M. The highest-consequence of these three:
+  // it decides whether an invoice is a percentage of expected revenue or the sum
+  // of actual labour and materials.
+  "updateJobType",
   // Whether a job shows on the clock. Same tier — it decides where people's hours
   // can land, which is a money question even though it looks like a display one.
   "updateJobClockVisibility",
@@ -2934,6 +2938,48 @@ async function handleUpdateJobCityTax(body) {
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
 
   return resp(200, { ok: true, jobId, cityTax: rows[0].city_tax ?? null });
+}
+
+// ── JOB SETTING: how this job bills ────────────────────────────────────────
+// Contract vs Time & Material vs Service Calls.
+//
+// ⚠⚠ THIS DECIDES WHAT AN INVOICE IS MADE OF, and until now it could only be
+// chosen when the job was created. A Contract job invoices as ONE line — a
+// percentage of expected revenue — while a T&M job bills actual labour off the
+// time entries and actual materials off the expenses. A job that was quoted as a
+// contract and then ran as T&M therefore proposed the wrong invoice entirely,
+// and the only route out was to know that and override every line by hand.
+// Trail Cabinet (CLT 256) is the first one to do it in production.
+//
+// ⚠ The stored spellings are exact and non-obvious: "Time & Material" is
+// singular with an ampersand, and "Service Calls" is PLURAL — the same plural
+// that stopped a Make scenario firing for months, and that the GP formula got
+// wrong for years. Whitelisted here against the values actually in the column
+// so a new spelling cannot be introduced through this door.
+const JOB_TYPE_OPTS = ["Contract", "Time & Material", "Service Calls"];
+
+async function handleUpdateJobType(body) {
+  const { jobId, jobType } = body || {};
+  if (!jobId || !isJobHandle(jobId)) {
+    return resp(400, { ok: false, error: "Missing or invalid jobId." });
+  }
+  const raw = jobType == null ? null : String(jobType).trim();
+  const value = (raw === "" ? null : raw);
+  // null is allowed — "not yet decided" is a real state, and it is what 0 jobs
+  // hold today only because creation always asks. Clearing it makes a job
+  // invoice as T&M, which is the safer of the two defaults: it bills what
+  // actually happened rather than a percentage of a number nobody re-checked.
+  if (value !== null && !JOB_TYPE_OPTS.includes(value)) {
+    return resp(400, { ok: false, error: `Unknown job type: ${value}` });
+  }
+
+  const rows = await neonWrite("job.setType",
+    `UPDATE jobs SET job_type = $2 WHERE airtable_id = $1 OR id::text = $1
+     RETURNING COALESCE(airtable_id, id::text) AS handle, job_type`,
+    [String(jobId), value]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
+
+  return resp(200, { ok: true, jobId, jobType: rows[0].job_type ?? null });
 }
 
 // ── JOB SETTING: does this job appear on the time clock ────────────────────
@@ -15668,6 +15714,7 @@ export async function handler(event) {
       if (body.action === "logMileage")           return await handleLogMileage(body);
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);
       if (body.action === "updateJobCityTax")     return await handleUpdateJobCityTax(body);
+      if (body.action === "updateJobType")        return await handleUpdateJobType(body);
       if (body.action === "updateJobClockVisibility") return await handleUpdateJobClockVisibility(body);
       if (body.action === "addFleetService")      return await handleAddFleetService(body);
       if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);

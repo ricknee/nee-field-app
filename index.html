@@ -10140,6 +10140,30 @@
          overrides its status is behaving unusually, and that is worth seeing
          the moment you open it rather than hiding behind a disclosure.
       */""}
+      ${/*
+         How the job bills. NOT collapsed — unlike clock visibility, this is
+         meaningful on every job, and it decides what the invoice is made of:
+         Contract builds one line from expected revenue, T&M bills the actual
+         labour and materials. Trail Cabinet (CLT 256) was quoted as a contract
+         and ran as T&M, and until this control existed the only way out was to
+         know that and override every line of the invoice by hand.
+      */""}
+      <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
+        <span style="font-size:12px; color:var(--muted);">💵 Bills as</span>
+        <select id="jobTypeSelect" class="edit-input" style="min-width:200px; font-size:13px;">
+          <option value=""                 ${!job.type ? "selected" : ""}>Not set — bills as T&amp;M</option>
+          <option value="Contract"         ${String(job.type || "") === "Contract"         ? "selected" : ""}>Contract — % of contract amount</option>
+          <option value="Time &amp; Material" ${String(job.type || "") === "Time & Material" ? "selected" : ""}>Time &amp; Material — actual labor + materials</option>
+          <option value="Service Calls"    ${String(job.type || "") === "Service Calls"    ? "selected" : ""}>Service Calls</option>
+        </select>
+        <button id="jobTypeSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
+        <span id="jobTypeMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+        <span id="jobTypeErr" style="font-size:12px; color:var(--red); display:none;"></span>
+        <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
+          Decides what a NEW invoice is built from. Invoices already sent are unaffected —
+          they are their own record and nothing here rewrites them.
+        </span>
+      </div>
       <details id="jobClockVisBox" ${job.clockVisibility ? "open" : ""} style="margin-bottom:14px;">
         <summary style="cursor:pointer; font-size:12px; color:${job.clockVisibility ? "var(--accent)" : "var(--muted)"}; padding:4px 2px; list-style:none;">
           ⏱ On the clock: <b>${
@@ -10170,6 +10194,34 @@
   }
 
   function wireJobCityTaxBar(job) {
+    // How the job bills. Wired here alongside the other two job settings so all
+    // three live in one place.
+    const typeSel = $("jobTypeSelect");
+    const typeBtn = $("jobTypeSaveBtn");
+    if (typeSel && typeBtn) {
+      typeBtn.onclick = async () => {
+        const msg = $("jobTypeMsg"), terr = $("jobTypeErr");
+        msg.style.display = "none"; terr.style.display = "none";
+        typeBtn.disabled = true;
+        try {
+          const value = typeSel.value || null;
+          await apiPost("updateJobType", { jobId: job.id, jobType: value });
+          // ⚠ Keep the in-memory job in step. The invoice builder reads job.type
+          // to decide Contract vs T&M, so without this you would change the
+          // setting, build an invoice in the same session, and get the OLD shape
+          // back with nothing on screen to explain why.
+          job.type = value;
+          const idx = (state.jobs || []).findIndex(j => j.id === job.id);
+          if (idx >= 0) state.jobs[idx].type = value;
+          msg.style.display = "inline";
+          setTimeout(() => { msg.style.display = "none"; }, 2500);
+        } catch (e) {
+          terr.textContent = e.message || "Couldn't save";
+          terr.style.display = "inline";
+        } finally { typeBtn.disabled = false; }
+      };
+    }
+
     const sel = $("jobCityTaxSelect");
     const btn = $("jobCityTaxSaveBtn");
     if (!sel || !btn) return;

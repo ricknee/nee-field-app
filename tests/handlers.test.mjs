@@ -7023,6 +7023,54 @@ await test("materials receipt: wire carries BOTH $/lb and $/ft", async () => {
      "non-wire rows are unchanged");
 });
 
+await test("updateJobType: the spellings are the stored ones, and it is admin+office", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  // ⚠⚠ THE EXACT STORED SPELLINGS. "Time & Material" is singular with an
+  // ampersand; "Service Calls" is PLURAL — the same plural that stopped a Make
+  // scenario firing for months and that the GP formula had wrong for years. A
+  // value written through this door that no query matches would leave the job
+  // billing as T&M by fallthrough, with nothing on screen to say so.
+  const m = src.match(/const JOB_TYPE_OPTS = \[([^\]]*)\]/);
+  ok(m, "the whitelist is findable");
+  const opts = [...m[1].matchAll(/"([^"]+)"/g)].map(x => x[1]);
+  eq(opts.length, 3, "three types");
+  for (const t of ["Contract", "Time & Material", "Service Calls"]) {
+    ok(opts.includes(t), `"${t}" is offered`);
+  }
+  ok(!opts.includes("Service Call"), "and NOT the singular that matches no row");
+  ok(!opts.includes("T&M"), "nor the abbreviation nobody stores");
+
+  // Every option the UI offers must be one the server will accept, or the save
+  // 400s on a value the app itself proposed.
+  const sel = html.slice(html.indexOf('<select id="jobTypeSelect"'));
+  const uiVals = [...sel.slice(0, sel.indexOf("</select>")).matchAll(/<option value="([^"]*)"/g)]
+    .map(x => x[1].replace(/&amp;/g, "&")).filter(Boolean);
+  for (const v of uiVals) ok(opts.includes(v), `the picker's "${v}" is accepted by the server`);
+
+  // Dual handle — a native job has no rec id, and a bare airtable_id match would
+  // silently update nothing and report success.
+  ok(/UPDATE jobs SET job_type = \$2 WHERE airtable_id = \$1 OR id::text = \$1/.test(src),
+     "resolves by either handle");
+  ok(/if \(!rows\?\.length\) return resp\(404, \{ ok: false, error: "Job not found\." \}\);/.test(src),
+     "and a match of nothing is a 404, not a silent success");
+
+  // It decides what an invoice is made of, so it sits with the other money
+  // settings rather than with the crew-editable ones.
+  ok(/"updateJobType",/.test(src), "gated admin+office");
+  ok(/if \(body\.action === "updateJobType"\)\s+return await handleUpdateJobType\(body\);/.test(src),
+     "and is dispatched");
+
+  // ⚠ The invoice builder reads job.type, so the in-memory copy must follow the
+  // save — otherwise you change the setting, build an invoice in the same
+  // session, and get the old shape with nothing to explain why.
+  ok(/job\.type = value;[\s\S]{0,160}state\.jobs\[idx\]\.type = value;/.test(html),
+     "the client updates its cached job after saving");
+});
+
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {
   const { readFileSync } = await import("node:fs");
   const { fileURLToPath } = await import("node:url");

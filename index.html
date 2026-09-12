@@ -1365,6 +1365,12 @@
       padding: 1px 5px;
       font-weight: 700;
     }
+    /* Turns the ▸ into a ▾ when the box is open. Without this the summary is
+       indistinguishable from a static label — which is exactly how it was
+       reported on the first smoke test. */
+    .pw-disclose[open] > summary .pw-chev { transform: rotate(90deg); }
+    .pw-disclose > summary::-webkit-details-marker { display: none; }
+
     /* The invalid state: flagged prevailing wage with no usable rate, so the
        hours are quietly costing the ordinary employee rate. */
     .pw-badge.pw-broken {
@@ -10238,12 +10244,22 @@
     const broken = on && (job.pwRateMissing === true || !rate);
     const money = v => (v == null ? "—" : `$${Number(v).toFixed(2)}`);
     return `
-      <details id="jobPwBox" ${on ? "open" : ""} style="margin-bottom:14px;">
-        <summary style="cursor:pointer; font-size:12px; color:${broken ? "var(--red)" : on ? "var(--accent)" : "var(--muted)"}; padding:4px 2px; list-style:none;">
-          🏛 Prevailing wage: <b>${on ? "YES" : "No"}</b>${
+      ${/*
+         ⚠ THE CHEVRON AND THE BOX ARE NOT DECORATION — found in the first smoke
+         test, 2026-09-12. Copied from the "On the clock" line above, this summary
+         had list-style:none and no affordance of any kind, so it rendered as a
+         line of static text reading "Prevailing wage: No" and the owner reported
+         the control as MISSING. It was open the whole time; nothing said so.
+         A disclosure nobody can see is a feature nobody has.
+      */""}
+      <details id="jobPwBox" class="pw-disclose" ${on ? "open" : ""} style="margin-bottom:14px;">
+        <summary style="cursor:pointer; font-size:12px; color:${broken ? "var(--red)" : on ? "var(--accent)" : "var(--muted)"}; padding:8px 10px; list-style:none; background:var(--panel-2); border:1px solid ${broken ? "var(--red)" : "var(--line)"}; border-radius:10px; display:flex; align-items:center; gap:7px;">
+          <span class="pw-chev" style="display:inline-block; transition:transform .15s;">▸</span>
+          <span>🏛 Prevailing wage: <b>${on ? "YES" : "No"}</b>${
             broken ? " — ⚠ NO RATE SET, hours are costing the normal rate"
           : on ? ` — ${esc(rate.classification || "rate set")} · ${money(rate.straightLoaded)}/hr loaded`
-          : ""}
+          : ""}</span>
+          <span style="margin-left:auto; font-size:11px; opacity:.75;">${on ? "edit" : "set"}</span>
         </summary>
         <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-top:6px; background:var(--panel-2); border:1px solid ${broken ? "var(--red)" : "var(--line)"}; border-radius:10px; flex-wrap:wrap;">
           <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700;">

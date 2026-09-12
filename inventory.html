@@ -8864,23 +8864,30 @@ function redownloadOrderPDF() {
 }
 
 // ── EMAIL AN ORDER ────────────────────────────────────────
-// Opens a new email with the To, subject and the whole item list typed in.
-// Gmail on a computer, the phone's own mail app on a phone.
+// The email carries the order PDF and NOTHING typed: To and subject are filled,
+// the body is empty, and the message is yours to write. (The first version put
+// the whole item list in the body; owner reversed that 2026-09-12.)
 //
-// ⚠ No attachment, BY DESIGN. Neither a Gmail compose link nor mailto: can
-// carry a file (a browser security rule), so the list goes in the body, where
-// the supplier reads it without opening anything. The PDF can still download
-// alongside for dragging in. docs/PLAN-email-documents.md has the attachment
-// routes (a Gmail draft via the API) and why they are a bigger build.
+// ⚠ A LINK CANNOT CARRY AN ATTACHMENT — neither mailto: nor a Gmail compose URL,
+// a browser security rule. So the route depends on the device:
+//   * PHONE — navigator.share({ files: [pdf], title }). The share sheet opens
+//     with the PDF genuinely attached; pick Gmail. `title` becomes the subject
+//     where the app honours it. ⚠ NEVER put `text` beside `files`: iOS silently
+//     drops the whole share (learned on job photos). A share cannot carry a
+//     recipient either, so the address goes on the clipboard to paste into To.
+//   * COMPUTER — the PDF downloads and Gmail opens with To and subject filled;
+//     drag the PDF in. Chosen by POINTER, not by canShare(): desktop Chrome on
+//     Windows can share files, but only to the Windows share sheet (Mail,
+//     Outlook), never to Gmail in the browser.
+// A real attachment on a computer needs a server-side Gmail draft —
+// docs/PLAN-email-documents.md, Slice 3.
 //
-// ⚠ The mail window opens INSIDE the click handler, never after an await:
-// a popup opened after an await is blocked. The rep list is fetched when the
-// dialog opens, so nothing is left to wait for by the time Send is pressed.
+// ⚠ Everything happens INSIDE the Send click, with no await before the share
+// or the window.open — both are refused once the gesture is spent. jsPDF builds
+// synchronously, and a row's ✉️ loads its order when the dialog OPENS, so there
+// is nothing left to wait for at Send.
 
 var ORDER_EMAIL_RECENT_KEY = "nee_order_email_recent";
-// Past this, a compose URL risks being cut off. The full text goes on the
-// clipboard instead and the email says to paste it.
-var ORDER_EMAIL_MAX_URL = 6000;
 var orderEmailContacts = null;   // supplier reps, fetched once per page load
 
 function oeEsc(s) {
@@ -8905,7 +8912,7 @@ function rememberOrderEmail(addr) {
 }
 
 // Vendor notes as they will print: the unsaved text in the box wins, same rule
-// redownloadOrderPDF uses, so the email and the PDF never disagree.
+// redownloadOrderPDF uses, so the emailed PDF matches the downloaded one.
 // Only for the order that is OPEN on the detail screen — screens keep their DOM
 // when hidden, so from a list row that box belongs to some other order.
 function orderVendorText(o) {
@@ -8916,24 +8923,22 @@ function orderVendorText(o) {
   return v;
 }
 
-function buildOrderEmail(o) {
-  var num   = o.orderId ? " #" + o.orderId : "";
-  var job   = o.jobName || "this job";
-  var notes = orderVendorText(o);
-  // Same order as the PDF, so the email and the printout read line for line.
-  var lines = (o.lines || []).slice().sort(sortLineItemsByCategory);
+function orderEmailSubject(o) {
+  return "Materials Order" + (o.orderId ? " #" + o.orderId : "") + " — " + (o.jobName || "Order");
+}
 
-  var out = ["Hi,", "", "Please see materials order" + num + " for " + job + "."];
-  if (notes) out.push("", "Notes: " + notes);
-  out.push("");
-  lines.forEach(function(l) {
-    out.push(fmtQty(l.qty) + (l.isBox ? " box" : "") + " — " + (l.itemName || l.description || "Item"));
-  });
-  out.push("", lines.length + (lines.length === 1 ? " item" : " items"), "", "Thanks,");
-  if (currentUser && currentUser.name) out.push(currentUser.name);
-  out.push("Northeastern Electric, Inc.");
-
-  return { subject: "Materials Order" + num + " — " + (o.jobName || "Order"), body: out.join("\n") };
+// What generateOrderPDF takes. From the TARGET order, never orderState.current —
+// a row's ✉️ emails an order that was never opened.
+function orderPdfPayload(o) {
+  return {
+    orderId:   o.orderId || "",
+    jobName:   o.jobName,
+    vendor:    orderVendorText(o),
+    createdBy: o.createdBy,
+    lines:     (o.lines || []).map(function(l) {
+      return { itemName: l.itemName || l.description || "Item", qty: l.qty, isBox: !!l.isBox, category: l.category || "" };
+    })
+  };
 }
 
 function copyTextToClipboard(text) {
@@ -8962,7 +8967,7 @@ function orderEmailIsPhone() {
 
 // The order being emailed. Not orderState.current: the ✉️ on a row of My
 // Orders / Active Orders emails an order that was never opened, so the dialog
-// loads it itself — before Send, so Send still opens the mail window inside
+// loads it itself — before Send, so Send still shares or opens Gmail inside
 // its own click.
 var orderEmailTarget = null;
 
@@ -8996,16 +9001,14 @@ function openOrderEmail(orderId) {
         '<div id="oe-picks" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">' +
           '<span style="font-size:11px;color:var(--dim);">Loading supplier reps…</span>' +
         '</div>' +
-        '<label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;color:var(--text);cursor:pointer;">' +
-          '<input type="checkbox" id="oe-pdf" ' + (phone ? "" : "checked") + ' style="width:16px;height:16px;" />' +
-          'Also download the PDF (to drag into the email)' +
-        '</label>' +
-        '<div style="font-size:11px;color:var(--dim);margin-top:10px;">' +
-          (phone ? "Your mail app" : "Gmail") + ' opens with the item list typed in. Check it, then press Send.' +
+        '<div id="oe-hint" style="font-size:12px;color:var(--dim);margin-top:14px;line-height:1.4;">' +
+          (phone
+            ? "The share sheet opens with the order PDF attached — pick Gmail and write your message. The address above is copied, so paste it into To."
+            : "The order PDF downloads and Gmail opens with To and the subject filled in. Drag the PDF into the email and write your message.") +
         '</div>' +
         '<div style="display:flex;gap:8px;margin-top:14px;">' +
-          '<button id="oe-copy" onclick="copyOrderEmailText()" ' + (loadingOrder ? "disabled " : "") + 'style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:11px;cursor:pointer;font-size:13px;">Copy text</button>' +
-          '<button id="oe-send" onclick="sendOrderEmail()" ' + (loadingOrder ? "disabled " : "") + 'style="flex:2;background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:11px;cursor:pointer;font-size:14px;">Open email</button>' +
+          '<button id="oe-send" onclick="sendOrderEmail()" ' + (loadingOrder ? "disabled " : "") + 'style="flex:1;background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:11px;cursor:pointer;font-size:14px;">' +
+            (phone ? "📎 Share PDF" : "Open Gmail + download PDF") + '</button>' +
         '</div>' +
       '</div>' +
     '</div>';
@@ -9025,10 +9028,8 @@ function openOrderEmail(orderId) {
       orderEmailTarget = d.order;
       var t = document.getElementById("oe-title");
       if (t) t.textContent = "✉️ Email " + (d.order.orderId ? "Order #" + d.order.orderId : "Order");
-      ["oe-copy", "oe-send"].forEach(function(id) {
-        var b = document.getElementById(id);
-        if (b) b.disabled = false;
-      });
+      var b = document.getElementById("oe-send");
+      if (b) b.disabled = false;
     }).catch(function(ex) {
       if (seq !== openOrderEmail.seq) return;
       closeOrderEmail();
@@ -9082,14 +9083,6 @@ function closeOrderEmail() {
   if (dlg) dlg.remove();
 }
 
-function copyOrderEmailText() {
-  var o = orderEmailTarget;
-  if (!o) return;
-  var mail = buildOrderEmail(o);
-  if (copyTextToClipboard("Subject: " + mail.subject + "\n\n" + mail.body)) showToast("Email text copied");
-  else showToast("Couldn't copy — your browser blocked it", true);
-}
-
 function sendOrderEmail() {
   var o = orderEmailTarget;
   if (!o) return;
@@ -9099,41 +9092,45 @@ function sendOrderEmail() {
   var bad = addrs.filter(function(a) { return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a); });
   if (bad.length) { showToast("\"" + bad[0] + "\" doesn't look like an email address", true); return; }
   to = addrs.join(",");
+  if (to) rememberOrderEmail(to);
 
-  var mail  = buildOrderEmail(o);
-  var phone = orderEmailIsPhone();
-  var build = function(body) {
-    return phone
-      ? "mailto:" + addrs.map(encodeURIComponent).join(",") +
-        "?subject=" + encodeURIComponent(mail.subject) + "&body=" + encodeURIComponent(body)
-      : "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to) +
-        "&su=" + encodeURIComponent(mail.subject) + "&body=" + encodeURIComponent(body);
-  };
-  var url = build(mail.body);
-  var tooLong = url.length > ORDER_EMAIL_MAX_URL;
-  if (tooLong) {
-    copyTextToClipboard(mail.body);
-    url = build("The item list for this order is on your clipboard — paste it here (Ctrl+V / long-press → Paste).");
+  var subject = orderEmailSubject(o);
+  var phone   = orderEmailIsPhone();
+
+  // ── Phone: share the PDF itself ──
+  if (phone && navigator.share) {
+    var file = generateOrderPDF(orderPdfPayload(o), { asFile: true });
+    var canShare = false;
+    try { canShare = !!(file && navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) {}
+    if (canShare) {
+      // Clipboard BEFORE the share: once the sheet is up the page loses focus,
+      // and a clipboard write from an unfocused page is refused.
+      if (to) copyTextToClipboard(to);
+      navigator.share({ files: [file], title: subject }).then(function() {
+        closeOrderEmail();
+      }).catch(function(e) {
+        if (e && e.name === "AbortError") return;   // backed out of the sheet — dialog stays for a retry
+        if (e && e.name === "NotAllowedError") { showToast("Tap Share PDF once more", true); return; }
+        showToast("Couldn't share: " + (e.message || e), true);
+      });
+      return;
+    }
+    // A phone browser that cannot share files falls through to the mail app.
   }
 
-  if (phone) window.location.href = url;
-  else window.open(url, "_blank", "noopener");
-
-  if (to) rememberOrderEmail(to);
-  var wantPdf = document.getElementById("oe-pdf");
-  wantPdf = !!(wantPdf && wantPdf.checked);
+  // ── Computer (or a phone that cannot share files): download + compose ──
+  // Empty body on purpose — Gmail adds your signature and you write the rest.
+  if (phone) {
+    // The download goes first here: navigating to mailto: can cut it off.
+    generateOrderPDF(orderPdfPayload(o));
+    window.location.href = "mailto:" + addrs.map(encodeURIComponent).join(",") +
+      "?subject=" + encodeURIComponent(subject);
+  } else {
+    window.open("https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to) +
+      "&su=" + encodeURIComponent(subject), "_blank", "noopener");
+    generateOrderPDF(orderPdfPayload(o));
+  }
   closeOrderEmail();
-  // From the TARGET, not orderState.current — a row's ✉️ never opened the order.
-  if (wantPdf) generateOrderPDF({
-    orderId:   o.orderId || "",
-    jobName:   o.jobName,
-    vendor:    orderVendorText(o),
-    createdBy: o.createdBy,
-    lines:     (o.lines || []).map(function(l) {
-      return { itemName: l.itemName || l.description || "Item", qty: l.qty, isBox: !!l.isBox, category: l.category || "" };
-    })
-  });
-  if (tooLong) showToast("Big order — the item list is on your clipboard, paste it into the email");
 }
 
 function confirmCompleteOrder() {
@@ -9812,7 +9809,7 @@ async function saveEditOrder() {
 // ═══════════════════════════════════════════════════════════
 // ORDER PDF GENERATOR (gray logo, no prices, vendor-friendly)
 // ═══════════════════════════════════════════════════════════
-function generateOrderPDF(order) {
+function generateOrderPDF(order, opts) {
   if (typeof window.jspdf === "undefined" || typeof window.jspdf.jsPDF === "undefined") {
     showToast("PDF library not loaded", true);
     return;
@@ -9974,7 +9971,11 @@ function generateOrderPDF(order) {
 
     var safeJob  = (order.jobName || "Order").replace(/[^a-z0-9]/gi, "_").substring(0, 40);
     var datePart = today.toISOString().split("T")[0];
-    doc.save("NEE_Order_" + safeJob + "_" + datePart + ".pdf");
+    var filename = "NEE_Order_" + safeJob + "_" + datePart + ".pdf";
+    // asFile: hand the PDF back for the phone share sheet (Email order) instead
+    // of downloading it. Synchronous, so the caller is still inside its click.
+    if (opts && opts.asFile) return new File([doc.output("blob")], filename, { type: "application/pdf" });
+    doc.save(filename);
 
     showToast("PDF downloaded");
   } catch(err) {

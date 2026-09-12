@@ -29,6 +29,7 @@ process.env.DATABASE_URL      = "postgresql://u:p@fake.neon.tech/db";
 //    `fields` list — the @neondatabase/serverless wire contract; objects throw
 //    "c.map is not a function".
 let neonDown  = false;
+let vendorContactSql = "";   // the SQL the vendorContacts read sent
 let neonItems = [];      // {airtable_id, name, category, product_size, unit_of_measure, barcode, default_unit_cost, wire_ft_per_lb}
 let neonLocs  = [];      // {airtable_id, name, location_type}
 let neonPricing = [];    // one row per pricing line, joined shape
@@ -386,6 +387,12 @@ globalThis.fetch = async (url, opts = {}) => {
       payload = neonReply(["airtable_id", "id", "name", "category", "product_size",
                            "unit_of_measure", "barcode", "default_unit_cost", "wire_ft_per_lb"],
         rows.map(i => ({ ...i, airtable_id: i.airtable_id || i.id, id: i.airtable_id || i.id })));
+    } else if (/FROM vendor_contacts vc/i.test(sql)) {
+      // The Email-an-order recipient picker. The WHERE is Postgres's job, so
+      // the SQL text is kept for a test to check the filter is really there.
+      vendorContactSql = sql;
+      payload = neonReply(["id", "name", "role", "email", "vendor"],
+        [{ id: "vc-1", name: "Bob Huskins", role: "Sales Rep", email: "bob@cedalliance.com", vendor: "CED" }]);
     } else {
       payload = neonReply([], []);
     }
@@ -1318,6 +1325,32 @@ await test("S4: deleting an estimate cascades, and a miss is a 404", async () =>
   estMissing.add("e5717a7e-9999-4999-8999-999999999999");
   const missing = await POST({ action: "estimateDelete", id: "e5717a7e-9999-4999-8999-999999999999" });
   eq(missing.statusCode, 404, "a delete that removed nothing does not report success");
+});
+
+await test("vendorContacts: the email picker gets reps WITH an address, any role may read it", async () => {
+  reset();
+  vendorContactSql = "";
+  // GET signs as an employee — the person who raised the order emails it.
+  const r = await GET("vendorContacts");
+  eq(r.statusCode, 200, "an employee can load the picker");
+  const d = json(r);
+  eq(d.contacts.length, 1, "one rep");
+  eq(d.contacts[0].email, "bob@cedalliance.com", "email");
+  eq(d.contacts[0].vendor, "CED", "vendor name for the chip label");
+  // A rep with no address is noise in a recipient picker, and an inactive one
+  // has left the supplier. Both filters live in SQL, so check they are there.
+  ok(/NULLIF\(TRIM\(vc\.primary_email\), ''\) IS NOT NULL/.test(vendorContactSql), "reps without an email are excluded");
+  ok(/vc\.active/.test(vendorContactSql), "inactive reps are excluded");
+  // The rep's supplier is an EXPENSE vendor (db/schema/071), not a `vendors` row.
+  ok(/JOIN expense_vendors ev ON ev\.id = vc\.vendor_id/.test(vendorContactSql), "joins the right supplier table");
+});
+
+await test("vendorContacts: Neon down REFUSES, never an empty picker", async () => {
+  reset();
+  neonDown = true;
+  const r = await GET("vendorContacts");
+  eq(r.statusCode, 503, "\"couldn't look\" is not \"nobody to send to\"");
+  neonDown = false;
 });
 
 console.log("\ninventory.js reference tables — Steps B + C + D\n" + "-".repeat(46));

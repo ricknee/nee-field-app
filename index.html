@@ -7853,6 +7853,14 @@
     return r === "admin" || r === "office";
   }
 
+  // "Mark order complete" is the inventory app's ✓ Mark Complete from the list
+  // side, and there anyone who can see the order may press it — the person who
+  // picks it up is the one who knows it arrived. So every role but viewer.
+  function canCompleteOrderList() {
+    const r = (state.user && state.user.role) || "";
+    return !!r && r !== "viewer";
+  }
+
   // ── The job's lists ────────────────────────────────────────────────────────
   window.openJobLists = async function() {
     const job = state.selected;
@@ -8008,7 +8016,15 @@
           ${open.length ? `${open.length} to go` : (done.length ? "All loaded 🎉" : "Nothing on this list yet")}
         </span>
         ${pending ? `<span style="font-size:11px; color:var(--yellow); font-weight:600;">${pending} tick${pending === 1 ? "" : "s"} waiting for signal</span>` : ""}
-        ${canDeleteLists() ? `<button type="button" id="ckDeleteListBtn" class="btn btn-sm" style="font-size:11px; color:var(--red); margin-left:auto;">🗑 Delete list</button>` : ""}
+        <span style="margin-left:auto; display:flex; gap:6px; align-items:center;">
+          ${listState.list && listState.list.fromOrder && listState.list.orderStatus === "Active" && canCompleteOrderList()
+            ? `<button type="button" id="ckCompleteOrderBtn" class="btn btn-sm" style="font-size:11px; color:var(--green);" title="Picked up or delivered: ticks every line and marks the order complete in the inventory app">✓ Mark order complete</button>`
+            : ""}
+          ${listState.list && listState.list.fromOrder && listState.list.orderStatus === "Complete"
+            ? `<span style="font-size:11px; color:var(--green); font-weight:600;">✓ Order complete</span>`
+            : ""}
+          ${canDeleteLists() ? `<button type="button" id="ckDeleteListBtn" class="btn btn-sm" style="font-size:11px; color:var(--red);">🗑 Delete list</button>` : ""}
+        </span>
       </div>
       ${listState.list && listState.list.fromOrder ? `
         <div style="font-size:11px; color:var(--muted); margin:-4px 0 10px;">
@@ -8062,6 +8078,8 @@
     if (toggle) toggle.onclick = () => { listState.showDone = !listState.showDone; renderChecklist(); };
     const delList = $("ckDeleteListBtn");
     if (delList) delList.onclick = deleteWholeChecklist;
+    const completeOrder = $("ckCompleteOrderBtn");
+    if (completeOrder) completeOrder.onclick = completeOrderFromList;
 
     wireChecklistDrag();
 
@@ -8282,6 +8300,26 @@
       renderChecklist();
     } catch (e) {
       $("ckAddStatus").textContent = "Couldn't remove it: " + e.message;
+    }
+  }
+
+  // Picked up or delivered: the order goes to Complete in the inventory app and
+  // every line here is ticked. One-way — reactivating the order later does not
+  // untick anything, and a wrong tick is one tap to undo.
+  async function completeOrderFromList() {
+    const l = listState.list;
+    if (!l || !l.fromOrder) return;
+    const label = l.orderNumber ? `order #${l.orderNumber}` : "this order";
+    if (!confirm(`Mark ${label} complete?\n\nEvery line on this list gets ticked, and the order is marked complete in the inventory app.`)) return;
+    const btn = $("ckCompleteOrderBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Marking…"; }
+    try {
+      await apiPost("completeOrderChecklist", { listId: l.id });
+      showAppToast(`${label.charAt(0).toUpperCase() + label.slice(1)} marked complete ✓`);
+      await openChecklist(l.id);
+    } catch (e) {
+      $("ckAddStatus").textContent = "Couldn't mark it complete: " + e.message;
+      if (btn) { btn.disabled = false; btn.textContent = "✓ Mark order complete"; }
     }
   }
 

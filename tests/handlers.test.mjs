@@ -1828,7 +1828,19 @@ await test('checklists: without DATABASE_URL they fail CLOSED, not soft', async 
   eq((await GET('jobChecklist', { listId: 'l1' })).statusCode, 503, 'read 503s');
   eq((await POST('setChecklistItemDone', { itemId: 'i1', done: true })).statusCode, 503, 'tick 503s');
   eq((await POST('updateChecklistItem', { itemId: 'i1', body: '300ft PVC' })).statusCode, 503, 'edit 503s');
+  eq((await POST('completeOrderChecklist', { listId: '3f2504e0-4f89-11d3-9a0c-0305e82c3301' })).statusCode, 503, 'complete 503s');
   eq((await POST('deleteChecklist', { listId: 'l1' })).statusCode, 503, 'delete 503s');
+});
+
+await test('checklists: "mark order complete" from a list — crew may, viewer may not, ids checked', async () => {
+  mockTables = JOB_ONLY();
+  const good = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+  // Same tier as the inventory app's Mark Complete: whoever picks it up marks it.
+  ok((await POST('completeOrderChecklist', { listId: good }, EMP_TOK)).statusCode !== 403, 'employee may complete an order');
+  eq((await POST('completeOrderChecklist', { listId: good }, VIEWER_TOK)).statusCode, 403, 'viewer may not');
+  eq((await POST('completeOrderChecklist', {})).statusCode, 400, 'listId required');
+  // A malformed id would abort the UPDATE on the uuid cast — refused up front.
+  eq((await POST('completeOrderChecklist', { listId: 'not-a-uuid' })).statusCode, 400, 'bad id refused');
 });
 
 // ── session revocation: "deactivate" must mean "logged out" ──

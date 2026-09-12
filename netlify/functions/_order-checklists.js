@@ -170,6 +170,50 @@ export async function syncOrderChecklist(orderId, before, actor) {
   return { listId, added: d.added.length, changed: d.changed.length, removed: d.removed.length };
 }
 
+// ── COMPLETE: the two places move together ───────────────────────────────────
+// Owner's ask (2026-09-12): an order picked up or delivered is marked complete
+// ONCE, from either app, and both sides follow — the order goes to Complete and
+// every line on its list is ticked.
+//
+// Deliberately ONE-WAY. Reactivating an order does NOT untick its list: those
+// ticks may be real (half the order did arrive), and wiping them would destroy
+// the record of what came. A wrong tick is one tap to undo on the list.
+
+// Ticks every open line on an order's list. Returns how many it ticked (0 when
+// the order has no list — a restock order, or one older than 074 unmatched).
+export async function tickOrderChecklist(orderId, actor) {
+  const rows = await neonWrite("orderChecklist.tickAll",
+    `UPDATE checklist_items i
+        SET done = true, done_at = now(), done_by = $2
+       FROM job_checklists c
+      WHERE c.material_order_id = $1::uuid
+        AND i.checklist_id = c.id
+        AND NOT i.done
+      RETURNING i.checklist_id`,
+    [String(orderId), actor || null]);
+  if (rows.length) {
+    await neonWrite("orderChecklist.tickTouch",
+      `UPDATE job_checklists SET updated_at = now() WHERE material_order_id = $1::uuid`, [String(orderId)]);
+  }
+  return rows.length;
+}
+
+// From the LIST side: mark the list's order Complete and tick every line.
+// Returns null when the list is not an order list.
+export async function completeOrderFromChecklist(listId, actor) {
+  const rows = await neonWrite("orderChecklist.completeOrder",
+    `UPDATE material_orders o
+        SET status = 'Complete', synced_at = now()
+       FROM job_checklists c
+      WHERE c.id = $1::uuid AND o.id = c.material_order_id
+      RETURNING o.id, o.order_number`,
+    [String(listId)]);
+  const order = rows[0];
+  if (!order) return null;
+  const ticked = await tickOrderChecklist(order.id, actor);
+  return { orderId: order.id, orderNumber: Number(order.order_number), ticked };
+}
+
 // Deleting an order takes its list with it — unless someone has ticked a line,
 // in which case the list is a delivery record and stays (the FK nulls out).
 export async function dropOrderChecklistIfUntouched(orderId) {

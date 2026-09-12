@@ -51,7 +51,7 @@ import { randomUUID } from "node:crypto";
 // See docs/PLAN-expense-receipts.md §11.
 import { r2Enabled, jobDocsPrefix, expensePrefix, presignPut, R2Error } from "./_r2.js";
 // An order mirrored as a list on its job (db/schema/074). Neon only.
-import { readOrderLineMap, syncOrderChecklist, dropOrderChecklistIfUntouched } from "./_order-checklists.js";
+import { readOrderLineMap, syncOrderChecklist, dropOrderChecklistIfUntouched, tickOrderChecklist } from "./_order-checklists.js";
 
 function resp(code, body) {
   return {
@@ -547,6 +547,40 @@ async function deleteTxn(id) {
 // For the pricing picker and the manage screen. There was no such action
 // before: vendors were only ever reached through an item's pricing rows,
 // because you added them in Airtable.
+// ── SUPPLIER REPS — who an order can be emailed to ───────────────────────────
+// Backs the recipient picker on "Email order". Only reps with an address are
+// returned, because a name you can't send to is noise in that picker.
+//
+// ⚠ vendor_contacts.vendor_id references EXPENSE_VENDORS, not `vendors` — the
+// two supplier tables are different (db/schema/071). The 4 rows in `vendors`
+// carry no email at all, which is why this reads the reps and not them.
+//
+// Any signed-in role, like every other read here: whoever raises an order is
+// the person who emails it, and that is often an employee.
+async function handleVendorContacts() {
+  const q = await neonQuery(
+    `SELECT vc.id,
+            TRIM(CONCAT_WS(' ', vc.first_name, vc.last_name)) AS name,
+            vc.role,
+            TRIM(vc.primary_email) AS email,
+            ev.name AS vendor
+       FROM vendor_contacts vc
+       LEFT JOIN expense_vendors ev ON ev.id = vc.vendor_id
+      WHERE vc.active AND NULLIF(TRIM(vc.primary_email), '') IS NOT NULL
+      ORDER BY ev.name NULLS LAST, vc.last_name, vc.first_name`);
+  if (q?.rows) {
+    return resp(200, {
+      ok: true, _source: "neon",
+      contacts: q.rows.map(r => ({
+        id: r.id, name: r.name || "", role: r.role || "", email: r.email, vendor: r.vendor || "",
+      })),
+    });
+  }
+  // Refuse rather than answer "no reps": the picker would read as "nobody to
+  // send to" when the truth is "couldn't look". The address box still works.
+  return resp(503, { ok: false, error: "Supplier contacts are unavailable right now." });
+}
+
 async function handleVendors(params) {
   const all = params?.all === "1";
   const q = await neonQuery(
@@ -3440,13 +3474,27 @@ async function handleOrderUpdate(body) {
     if (lines.length) await createOrderLinesHelper(id, lines);
   }
 
-  // A status-only change ("Complete") cannot move the list, so it is not synced.
-  // Vendor notes can — they are part of the list's name.
+  // A status change cannot move the list's LINES, so it is not synced — vendor
+  // notes can, because they are part of the list's name.
   let checklist;
   if (beforeFailed) {
     checklist = { error: "The order saved, but its list on the job couldn't be updated." };
   } else if (replacing || vendor !== undefined) {
     checklist = await orderChecklistSoft(id, before, editedBy);
+  }
+
+  // Marking the order Complete ticks every line on its list — picked up or
+  // delivered means it all came. One-way: Reactivate leaves ticks alone (see
+  // tickOrderChecklist). Fail-soft for the same reason as the sync: the status
+  // has already landed, and the response says what didn't.
+  if (status === "Complete") {
+    try {
+      const ticked = await tickOrderChecklist(id, String(editedBy || "").trim() || null);
+      checklist = { ...(checklist || {}), ticked };
+    } catch (e) {
+      console.error(`orderUpdate ${id}: list not ticked: ${e?.message || e}`);
+      checklist = { ...(checklist || {}), error: "The order is complete, but its list on the job couldn't be ticked off." };
+    }
   }
 
   return resp(200, { ok: true, id, checklist });
@@ -3745,6 +3793,7 @@ export async function handler(event) {
       if (action === "awardedJobs")       return await handleAwardedJobs();
       if (action === "locations")         return await handleLocations(params);
       if (action === "vendors")           return await handleVendors(params);
+      if (action === "vendorContacts")    return await handleVendorContacts();
       if (action === "items")             return await handleItems();
       if (action === "history")           return await handleHistory(params);
       if (action === "pendingExpenses")   return await handlePendingExpenses();

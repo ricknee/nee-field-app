@@ -8693,9 +8693,12 @@ function renderOrdersList() {
           '</div>' +
           (o.vendor ? '<div style="font-size:12px;color:var(--gold);margin-top:3px;font-style:italic;">' + o.vendor + '</div>' : '') +
         '</div>' +
-        '<div style="text-align:right;">' +
+        '<div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:8px;">' +
           '<span style="display:inline-block;background:' + statusColor + ';color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:0.5px;">' +
             o.status + '</span>' +
+          // stopPropagation: the row itself opens the order, this must not.
+          '<button type="button" onclick="event.stopPropagation();openOrderEmail(\'' + o.id + '\')" title="Email this order" ' +
+            'style="background:var(--navy);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;font-weight:600;padding:5px 10px;cursor:pointer;">✉️ Email</button>' +
         '</div>' +
       '</div></div>';
   }).join("");
@@ -8807,7 +8810,10 @@ function renderOrderDetail() {
     : "";
 
   // Assemble rows — put PDF+Edit together, then Status on its own row if admin, then Delete
-  var row1 = '<div style="display:flex;gap:8px;margin-top:18px;">' + pdfBtn + editBtn + '</div>';
+  // Email — same audience as the PDF: whoever can see the order can send it.
+  var emailBtn = '<button onclick="openOrderEmail()" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;flex:1;">✉️ Email</button>';
+
+  var row1 = '<div style="display:flex;gap:8px;margin-top:18px;">' + pdfBtn + emailBtn + editBtn + '</div>';
   var row2 = statusBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + statusBtn + '</div>' : "";
   var row3 = deleteBtn ? '<div style="display:flex;gap:8px;margin-top:8px;">' + deleteBtn + '</div>' : "";
   var actions = row1 + row2 + row3;
@@ -8857,10 +8863,283 @@ function redownloadOrderPDF() {
   });
 }
 
+// ── EMAIL AN ORDER ────────────────────────────────────────
+// Opens a new email with the To, subject and the whole item list typed in.
+// Gmail on a computer, the phone's own mail app on a phone.
+//
+// ⚠ No attachment, BY DESIGN. Neither a Gmail compose link nor mailto: can
+// carry a file (a browser security rule), so the list goes in the body, where
+// the supplier reads it without opening anything. The PDF can still download
+// alongside for dragging in. docs/PLAN-email-documents.md has the attachment
+// routes (a Gmail draft via the API) and why they are a bigger build.
+//
+// ⚠ The mail window opens INSIDE the click handler, never after an await:
+// a popup opened after an await is blocked. The rep list is fetched when the
+// dialog opens, so nothing is left to wait for by the time Send is pressed.
+
+var ORDER_EMAIL_RECENT_KEY = "nee_order_email_recent";
+// Past this, a compose URL risks being cut off. The full text goes on the
+// clipboard instead and the email says to paste it.
+var ORDER_EMAIL_MAX_URL = 6000;
+var orderEmailContacts = null;   // supplier reps, fetched once per page load
+
+function oeEsc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function(c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+
+function orderEmailRecent() {
+  try {
+    var v = JSON.parse(localStorage.getItem(ORDER_EMAIL_RECENT_KEY) || "[]");
+    return Array.isArray(v) ? v.filter(function(s) { return typeof s === "string" && s; }) : [];
+  } catch (e) { return []; }
+}
+
+function rememberOrderEmail(addr) {
+  try {
+    var list = orderEmailRecent().filter(function(a) { return a.toLowerCase() !== addr.toLowerCase(); });
+    list.unshift(addr);
+    localStorage.setItem(ORDER_EMAIL_RECENT_KEY, JSON.stringify(list.slice(0, 8)));
+  } catch (e) {}
+}
+
+// Vendor notes as they will print: the unsaved text in the box wins, same rule
+// redownloadOrderPDF uses, so the email and the PDF never disagree.
+// Only for the order that is OPEN on the detail screen — screens keep their DOM
+// when hidden, so from a list row that box belongs to some other order.
+function orderVendorText(o) {
+  var v = o.vendor || "";
+  var onDetail = o === orderState.current && document.getElementById("s-order").classList.contains("active");
+  var inp = onDetail ? document.getElementById("order-detail-vendor") : null;
+  if (inp && inp.value.trim() !== v) v = inp.value.trim();
+  return v;
+}
+
+function buildOrderEmail(o) {
+  var num   = o.orderId ? " #" + o.orderId : "";
+  var job   = o.jobName || "this job";
+  var notes = orderVendorText(o);
+  // Same order as the PDF, so the email and the printout read line for line.
+  var lines = (o.lines || []).slice().sort(sortLineItemsByCategory);
+
+  var out = ["Hi,", "", "Please see materials order" + num + " for " + job + "."];
+  if (notes) out.push("", "Notes: " + notes);
+  out.push("");
+  lines.forEach(function(l) {
+    out.push(fmtQty(l.qty) + (l.isBox ? " box" : "") + " — " + (l.itemName || l.description || "Item"));
+  });
+  out.push("", lines.length + (lines.length === 1 ? " item" : " items"), "", "Thanks,");
+  if (currentUser && currentUser.name) out.push(currentUser.name);
+  out.push("Northeastern Electric, Inc.");
+
+  return { subject: "Materials Order" + num + " — " + (o.jobName || "Order"), body: out.join("\n") };
+}
+
+function copyTextToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  try {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:-1000px;opacity:0;";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch (e) { return false; }
+}
+
+function orderEmailIsPhone() {
+  try { return window.matchMedia("(pointer:coarse)").matches; } catch (e) { return false; }
+}
+
+// The order being emailed. Not orderState.current: the ✉️ on a row of My
+// Orders / Active Orders emails an order that was never opened, so the dialog
+// loads it itself — before Send, so Send still opens the mail window inside
+// its own click.
+var orderEmailTarget = null;
+
+function openOrderEmail(orderId) {
+  closeOrderEmail();
+  var onDetail = !!(orderState.current && document.getElementById("s-order").classList.contains("active") &&
+                    (!orderId || orderState.current.id === orderId));
+  if (!orderId && !onDetail) return;
+  orderEmailTarget = onDetail ? orderState.current : null;
+  var o = orderEmailTarget;
+  var loadingOrder = !o;
+
+  var recent = orderEmailRecent();
+  var phone  = orderEmailIsPhone();
+  var overlay = document.createElement("div");
+  overlay.id = "order-email-dlg";
+  overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.65);" +
+    "z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:20px;";
+  overlay.onclick = function(e) { if (e.target === overlay) closeOrderEmail(); };
+  overlay.innerHTML =
+    '<div style="background:var(--navy);border:1px solid var(--border);border-radius:12px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);">' +
+        '<h3 id="oe-title" style="margin:0;font-size:15px;color:var(--text);">✉️ Email ' +
+          oeEsc(o && o.orderId ? "Order #" + o.orderId : "Order") + '</h3>' +
+        '<button onclick="closeOrderEmail()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
+      '</div>' +
+      '<div style="padding:14px 16px;">' +
+        '<label class="field-lbl" for="oe-to">To</label>' +
+        '<input type="email" id="oe-to" class="field-inp" autocomplete="off" placeholder="name@supplier.com" ' +
+          'value="' + oeEsc(recent[0] || "") + '" onkeydown="if(event.key===\'Enter\'){event.preventDefault();sendOrderEmail();}" />' +
+        '<div id="oe-picks" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;">' +
+          '<span style="font-size:11px;color:var(--dim);">Loading supplier reps…</span>' +
+        '</div>' +
+        '<label style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:13px;color:var(--text);cursor:pointer;">' +
+          '<input type="checkbox" id="oe-pdf" ' + (phone ? "" : "checked") + ' style="width:16px;height:16px;" />' +
+          'Also download the PDF (to drag into the email)' +
+        '</label>' +
+        '<div style="font-size:11px;color:var(--dim);margin-top:10px;">' +
+          (phone ? "Your mail app" : "Gmail") + ' opens with the item list typed in. Check it, then press Send.' +
+        '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:14px;">' +
+          '<button id="oe-copy" onclick="copyOrderEmailText()" ' + (loadingOrder ? "disabled " : "") + 'style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:11px;cursor:pointer;font-size:13px;">Copy text</button>' +
+          '<button id="oe-send" onclick="sendOrderEmail()" ' + (loadingOrder ? "disabled " : "") + 'style="flex:2;background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-weight:700;padding:11px;cursor:pointer;font-size:14px;">Open email</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  overlay.addEventListener("keydown", function(e) { if (e.key === "Escape") closeOrderEmail(); });
+  document.body.appendChild(overlay);
+
+  var inp = document.getElementById("oe-to");
+  if (inp && !phone) { inp.focus(); try { inp.select(); } catch (e) {} }
+
+  // Opened from a list row: load the order now. `seq` drops a slow answer that
+  // arrives after this dialog was closed and another order's opened.
+  openOrderEmail.seq = (openOrderEmail.seq || 0) + 1;
+  var seq = openOrderEmail.seq;
+  if (loadingOrder) {
+    apiGet("orderGet", { id: orderId }).then(function(d) {
+      if (seq !== openOrderEmail.seq || !document.getElementById("order-email-dlg")) return;
+      orderEmailTarget = d.order;
+      var t = document.getElementById("oe-title");
+      if (t) t.textContent = "✉️ Email " + (d.order.orderId ? "Order #" + d.order.orderId : "Order");
+      ["oe-copy", "oe-send"].forEach(function(id) {
+        var b = document.getElementById(id);
+        if (b) b.disabled = false;
+      });
+    }).catch(function(ex) {
+      if (seq !== openOrderEmail.seq) return;
+      closeOrderEmail();
+      showToast("Couldn't load that order: " + (ex.message || ex), true);
+    });
+  }
+
+  if (orderEmailContacts) {
+    renderOrderEmailPicks();
+  } else {
+    apiGet("vendorContacts").then(function(d) {
+      orderEmailContacts = d.contacts || [];
+      renderOrderEmailPicks();
+    }).catch(function() {
+      var box = document.getElementById("oe-picks");
+      if (box) box.innerHTML = '<span style="font-size:11px;color:var(--dim);">Couldn\'t load supplier reps — type the address.</span>';
+    });
+  }
+}
+
+// Recent addresses first (the Wolff Bros address typed once lands here), then
+// every supplier rep on file.
+function renderOrderEmailPicks() {
+  var box = document.getElementById("order-email-dlg") && document.getElementById("oe-picks");
+  if (!box) return;
+  var reps = orderEmailContacts || [];
+  var repEmails = {};
+  reps.forEach(function(r) { repEmails[String(r.email).toLowerCase()] = true; });
+  var recent = orderEmailRecent().filter(function(a) { return !repEmails[a.toLowerCase()]; }).slice(0, 4);
+
+  var chip = function(addr, label, title) {
+    return '<button type="button" data-addr="' + oeEsc(addr) + '" title="' + oeEsc(title) + '" ' +
+      'style="background:var(--navy-lt);border:1px solid var(--border);border-radius:14px;color:var(--text);font-size:12px;padding:5px 10px;cursor:pointer;">' +
+      oeEsc(label) + '</button>';
+  };
+  var html = recent.map(function(a) { return chip(a, "🕘 " + a, a); }).join("") +
+    reps.map(function(r) {
+      return chip(r.email, (r.name || r.email) + (r.vendor ? " · " + r.vendor : ""), r.email);
+    }).join("");
+  box.innerHTML = html || '<span style="font-size:11px;color:var(--dim);">No supplier reps on file — type the address.</span>';
+  box.querySelectorAll("button[data-addr]").forEach(function(b) {
+    b.onclick = function() {
+      var inp = document.getElementById("oe-to");
+      if (inp) { inp.value = b.getAttribute("data-addr"); inp.focus(); }
+    };
+  });
+}
+
+function closeOrderEmail() {
+  var dlg = document.getElementById("order-email-dlg");
+  if (dlg) dlg.remove();
+}
+
+function copyOrderEmailText() {
+  var o = orderEmailTarget;
+  if (!o) return;
+  var mail = buildOrderEmail(o);
+  if (copyTextToClipboard("Subject: " + mail.subject + "\n\n" + mail.body)) showToast("Email text copied");
+  else showToast("Couldn't copy — your browser blocked it", true);
+}
+
+function sendOrderEmail() {
+  var o = orderEmailTarget;
+  if (!o) return;
+  var inp = document.getElementById("oe-to");
+  var to  = inp ? inp.value.trim() : "";
+  var addrs = to ? to.split(/[,;]/).map(function(a) { return a.trim(); }).filter(Boolean) : [];
+  var bad = addrs.filter(function(a) { return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(a); });
+  if (bad.length) { showToast("\"" + bad[0] + "\" doesn't look like an email address", true); return; }
+  to = addrs.join(",");
+
+  var mail  = buildOrderEmail(o);
+  var phone = orderEmailIsPhone();
+  var build = function(body) {
+    return phone
+      ? "mailto:" + addrs.map(encodeURIComponent).join(",") +
+        "?subject=" + encodeURIComponent(mail.subject) + "&body=" + encodeURIComponent(body)
+      : "https://mail.google.com/mail/?view=cm&fs=1&to=" + encodeURIComponent(to) +
+        "&su=" + encodeURIComponent(mail.subject) + "&body=" + encodeURIComponent(body);
+  };
+  var url = build(mail.body);
+  var tooLong = url.length > ORDER_EMAIL_MAX_URL;
+  if (tooLong) {
+    copyTextToClipboard(mail.body);
+    url = build("The item list for this order is on your clipboard — paste it here (Ctrl+V / long-press → Paste).");
+  }
+
+  if (phone) window.location.href = url;
+  else window.open(url, "_blank", "noopener");
+
+  if (to) rememberOrderEmail(to);
+  var wantPdf = document.getElementById("oe-pdf");
+  wantPdf = !!(wantPdf && wantPdf.checked);
+  closeOrderEmail();
+  // From the TARGET, not orderState.current — a row's ✉️ never opened the order.
+  if (wantPdf) generateOrderPDF({
+    orderId:   o.orderId || "",
+    jobName:   o.jobName,
+    vendor:    orderVendorText(o),
+    createdBy: o.createdBy,
+    lines:     (o.lines || []).map(function(l) {
+      return { itemName: l.itemName || l.description || "Item", qty: l.qty, isBox: !!l.isBox, category: l.category || "" };
+    })
+  });
+  if (tooLong) showToast("Big order — the item list is on your clipboard, paste it into the email");
+}
+
 function confirmCompleteOrder() {
   var o = orderState.current;
   if (!o || !o.id) return;
-  if (!confirm("Mark this order complete? Use this when the materials have been picked up or delivered. It will move out of the active list.")) return;
+  if (!confirm("Mark this order complete? Use this when the materials have been picked up or delivered. It will move out of the active list, and every line on its list on the job gets ticked.")) return;
   doUpdateOrderStatus(o.id, "Complete");
 }
 
@@ -8872,8 +9151,13 @@ function reactivateOrder() {
 
 async function doUpdateOrderStatus(id, status) {
   try {
-    await apiPost({ action: "orderUpdate", id: id, status: status });
-    showToast(status === "Complete" ? "Order marked complete" : "Order reactivated");
+    var d = await apiPost({ action: "orderUpdate", id: id, status: status, editedBy: currentUser ? currentUser.name : "" });
+    // Complete also ticks the order's list on the job (db/schema/074) — say what
+    // happened there, including when it couldn't.
+    var cl = d && d.checklist;
+    if (status === "Complete" && cl && cl.error) showToast("Order marked complete — " + cl.error, true);
+    else if (status === "Complete" && cl && cl.ticked) showToast("Order marked complete · " + cl.ticked + " line" + (cl.ticked === 1 ? "" : "s") + " ticked on the job's list");
+    else showToast(status === "Complete" ? "Order marked complete" : "Order reactivated");
     loadOrdersCount();
     // Reload detail
     await openOrder(id);

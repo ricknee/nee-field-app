@@ -10,6 +10,9 @@ import { neonLoginCandidate, neonEmployees, neonEmployeeById,
          isEmployeeHandle } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
 import { neonEnabled, neonQuery, neonExec, neonWrite, shadowCompare } from "./_neon.js";
+// An inventory order's list on its job (db/schema/074): "Mark order complete"
+// from the list side. The sync that builds those lists lives in inventory.js.
+import { completeOrderFromChecklist } from "./_order-checklists.js";
 // Shared with inventory.js — the materials push writes expenses too (Step E).
 // The switch is read inside the module, not here — every entry point gates
 // itself, so a caller can never forget to. The response's `allocation.skipped`
@@ -15779,6 +15782,9 @@ function mapChecklist(row) {
     // Generated from an inventory order (db/schema/074). The client uses it to
     // say that editing a line here does not change the order.
     fromOrder: row.material_order_id != null,
+    // Only present on the single-list read (handleJobChecklist joins the order).
+    orderNumber: row.order_number != null ? Number(row.order_number) : undefined,
+    orderStatus: row.order_status || undefined,
     open: row.open != null ? Number(row.open) : undefined,
     done: row.done_count != null ? Number(row.done_count) : undefined,
   };
@@ -15819,8 +15825,13 @@ async function handleJobChecklist(params) {
   if (!listId) return resp(400, { ok: false, error: "Missing listId." });
   if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
 
+  // The order's number and status ride along for an order list (db/schema/074),
+  // so the list can offer "order received" only while the order is still open.
   const rows = await neonWrite("checklists.get",
-    `SELECT * FROM job_checklists WHERE id::text = $1`, [String(listId)]);
+    `SELECT c.*, o.order_number, o.status AS order_status
+       FROM job_checklists c
+       LEFT JOIN material_orders o ON o.id = c.material_order_id
+      WHERE c.id::text = $1`, [String(listId)]);
   const list = rows?.[0];
   if (!list) return resp(404, { ok: false, error: "List not found." });
 
@@ -15979,6 +15990,21 @@ async function handleDeleteChecklistItem(body) {
     `DELETE FROM checklist_items WHERE id::text = $1 RETURNING id`, [String(itemId)]);
   if (!rows?.length) return resp(404, { ok: false, error: "Item not found." });
   return resp(200, { ok: true });
+}
+
+// "Mark order complete" on an order's list (db/schema/074): the order goes to
+// Complete in the inventory app and every line on the list is ticked — the same
+// thing the inventory app's ✓ Mark Complete does, from the other side.
+// _NON_VIEWER, matching Mark Complete there: whoever picks the order up marks it.
+async function handleCompleteOrderChecklist(body, authUser) {
+  const listId = body?.listId;
+  if (!listId) return resp(400, { ok: false, error: "Missing listId." });
+  if (!/^[0-9a-f-]{36}$/i.test(String(listId))) return resp(400, { ok: false, error: "Bad list id." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const done = await completeOrderFromChecklist(listId, authUser?.name || null);
+  if (!done) return resp(404, { ok: false, error: "That list isn't from an inventory order." });
+  return resp(200, { ok: true, ...done });
 }
 
 async function handleDeleteChecklist(body) {
@@ -16262,6 +16288,7 @@ export async function handler(event) {
       if (body.action === "deleteChecklistItem")  return await handleDeleteChecklistItem(body);
       if (body.action === "reorderChecklistItems") return await handleReorderChecklistItems(body);
       if (body.action === "deleteChecklist")      return await handleDeleteChecklist(body);
+      if (body.action === "completeOrderChecklist") return await handleCompleteOrderChecklist(body, authUser);
       if (body.action === "deleteJobPrints")      return await handleDeleteJobPrints(body);
       if (body.action === "restoreJobPrints")     return await handleRestoreJobPrints(body);
       if (body.action === "purgeJobPrints")       return await handlePurgeJobPrints(body);

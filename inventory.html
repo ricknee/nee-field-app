@@ -117,6 +117,13 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .combo-opt:last-child{border-bottom:none;}
 .combo-opt:hover,.combo-opt.active{background:var(--slate);}
 .combo-empty{padding:12px 14px;color:var(--dim);font-size:13px;font-style:italic;}
+/* Order item picker — the keyboard-highlighted row. Hover keeps its own inline
+   style, so a mouse pass and the arrow keys never fight over one class. */
+.oip-row.hi{background:var(--slate) !important;box-shadow:inset 3px 0 0 var(--gold);}
+/* Keyboard hints only mean something where there IS a keyboard. */
+.kbd-hint{display:none;font-size:11px;color:var(--dim);margin-top:6px;text-align:center;}
+@media (hover:hover) and (pointer:fine){ .kbd-hint{display:block;} }
+.kbd-hint kbd{background:var(--navy-mid);border:1px solid var(--border);border-radius:4px;padding:0 5px;font-family:inherit;font-size:10px;color:var(--text);}
 
 /* Qty */
 .qty-row{display:flex;align-items:center;gap:8px;}
@@ -8480,8 +8487,8 @@ function sectionHtml(title, color, group, defaultExpanded) {
         '<div style="font-weight:600;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + it.itemName + '</div>' +
         '<div style="font-size:11px;color:var(--dim);margin-top:3px;">' + stockInfo + '</div>' +
       '</div>' +
-      '<input type="number" step="0.01" min="0" class="field-inp" value="' + (it.orderQty || 0) +
-        '" onfocus="selectQtyOnFocus(this)" ' +
+      '<input type="number" step="0.01" min="0" class="field-inp ord-qty" value="' + (it.orderQty || 0) +
+        '" onfocus="selectQtyOnFocus(this)" onkeydown="onOrderQtyKey(event)" ' +
         'oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
       boxBtn +
@@ -9040,6 +9047,7 @@ function renderJobOrderItems() {
     var nameHtml = isMisc
       ? '<input type="text" class="field-inp" id="jol-desc-' + idx + '" value="' + (it.itemName || "").replace(/"/g, "&quot;") +
           '" placeholder="Misc description" oninput="orderState.buildItems[' + idx + '].itemName=this.value;" ' +
+          'onkeydown="onOrderMiscDescKey(event,' + idx + ')" ' +
           'style="font-size:13px;padding:7px 9px;" />'
       : '<div style="font-weight:600;font-size:13px;padding:7px 0;overflow:hidden;text-overflow:ellipsis;">' + (it.itemName || "Item") + '</div>';
 
@@ -9054,8 +9062,8 @@ function renderJobOrderItems() {
 
     return '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 46px 24px;gap:6px;align-items:center;">' +
       '<div style="min-width:0;">' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
-      '<input type="number" step="0.01" min="0" class="field-inp" id="jol-qty-' + idx + '" value="' + (it.orderQty || 0) +
-        '" onfocus="selectQtyOnFocus(this)" ' +
+      '<input type="number" step="0.01" min="0" class="field-inp ord-qty" id="jol-qty-' + idx + '" value="' + (it.orderQty || 0) +
+        '" onfocus="selectQtyOnFocus(this)" onkeydown="onOrderQtyKey(event)" ' +
         'oninput="orderState.buildItems[' + idx + '].orderQty=parseFloat(this.value)||0;" ' +
         'style="font-size:13px;padding:7px 6px;text-align:right;" />' +
       boxBtn +
@@ -9068,7 +9076,8 @@ function renderJobOrderItems() {
     '<div style="display:flex;gap:8px;margin-top:8px;">' +
       '<button onclick="openOrderItemPicker()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">+ Add Item</button>' +
       '<button onclick="addMiscJobOrderItem()" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">+ Misc Line</button>' +
-    '</div>';
+    '</div>' +
+    '<div class="kbd-hint"><kbd>/</kbd> add item · <kbd>↑</kbd><kbd>↓</kbd> <kbd>Enter</kbd> pick · type qty, <kbd>Enter</kbd> for the next item · <kbd>Esc</kbd> close</div>';
 
   return '<div id="job-order-items-block">' +
     '<label class="field-lbl">Items to Order (' + items.length + ')</label>' +
@@ -9100,6 +9109,75 @@ function selectQtyOnFocus(el) {
     try { el.select(); } catch (e) {}
   }, 0);
 }
+
+// ── ORDER KEYBOARD FLOW ───────────────────────────────────
+// Type an item → ↑↓ → Enter → type the qty (already selected) → Enter → the
+// picker opens for the next one. Esc closes the picker, "/" or "+" opens it.
+// Nothing here writes state the mouse path doesn't: every qty box still commits
+// through its own oninput, and a pick still goes through addItemToOrderBuild.
+
+// "+ Add Item" exists on exactly two screens: a job-based order build, and a
+// saved order in edit mode. An estimate-built order has no picker.
+function orderAddItemAvailable() {
+  var active = document.querySelector(".screen.active");
+  if (!active) return false;
+  if (active.id === "s-order-build") return orderState.buildContext === "job";
+  if (active.id === "s-order") return !!orderState.editingOrder;
+  return false;
+}
+
+// Scoped to the visible screen for the same reason refreshJobOrderItems is:
+// the build and edit screens both emit #jol-qty-N and both keep their DOM.
+function focusOrderQty(idx) {
+  var scope = document.querySelector(".screen.active") || document;
+  var el = scope.querySelector("#jol-qty-" + idx);
+  if (!el) return;
+  el.focus();
+  try { el.scrollIntoView({ block: "nearest" }); } catch (e) {}
+}
+
+function onOrderQtyKey(e) {
+  if (e.key !== "Enter" || e.isComposing) return;
+  e.preventDefault();
+  if (orderAddItemAvailable()) {
+    e.target.blur();
+    openOrderItemPicker();
+    return;
+  }
+  // Estimate-built order: the lines are already there, so step to the next qty.
+  var scope = document.querySelector(".screen.active") || document;
+  var boxes = Array.prototype.slice.call(scope.querySelectorAll("input.ord-qty"));
+  var next = boxes[boxes.indexOf(e.target) + 1];
+  if (next) next.focus(); else e.target.blur();
+}
+
+// A Misc line's description sits left of its qty — Enter walks to it.
+function onOrderMiscDescKey(e, idx) {
+  if (e.key !== "Enter" || e.isComposing) return;
+  e.preventDefault();
+  focusOrderQty(idx);
+}
+
+document.addEventListener("keydown", function(e) {
+  if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+  // The barcode camera sits on top of the picker — leave both alone under it.
+  var scan = document.getElementById("scan-overlay");
+  if (scan && scan.style.display !== "none") return;
+
+  if (document.getElementById("order-item-picker")) {
+    if (e.key === "Escape") { e.preventDefault(); closeOrderItemPicker(); }
+    return;
+  }
+
+  if (e.key !== "/" && e.key !== "+") return;
+  var t = e.target;
+  var tag = t && t.tagName;
+  // Never steal the key from something being typed into.
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+  if (!orderAddItemAvailable()) return;
+  e.preventDefault();
+  openOrderItemPicker();
+});
 
 function refreshJobOrderItems() {
   // Scope to the VISIBLE screen. This block's id is emitted by both the order
@@ -9150,7 +9228,7 @@ function openOrderItemPicker() {
         '<button onclick="closeOrderItemPicker()" style="background:none;border:none;color:var(--dim);font-size:22px;cursor:pointer;line-height:1;">×</button>' +
       '</div>' +
       '<div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;gap:8px;">' +
-        '<input type="text" id="order-item-search-inp" class="field-inp" placeholder="Search items…" autocomplete="off" oninput="onOrderItemSearch()" style="flex:1;" />' +
+        '<input type="text" id="order-item-search-inp" class="field-inp" placeholder="Search items…" autocomplete="off" oninput="onOrderItemSearch()" onkeydown="onOrderItemSearchKey(event)" style="flex:1;" />' +
         '<button onclick="startScan(\'orderitem\')" title="Scan barcode" style="background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:18px;padding:0 12px;cursor:pointer;">⬛</button>' +
       '</div>' +
       '<div id="order-item-results" style="flex:1;overflow-y:auto;padding:8px;"></div>' +
@@ -9174,6 +9252,33 @@ function onOrderItemSearch() {
   renderOrderItemResults(q);
 }
 
+// Which result row ↑↓ has landed on. Reset to the top on every re-render, so
+// Enter straight after typing takes the best match.
+var orderPickerHi = 0;
+
+function paintOrderPickerHi() {
+  var rows = document.querySelectorAll("#order-item-results .oip-row");
+  rows.forEach(function(r, i) { r.classList.toggle("hi", i === orderPickerHi); });
+  var hi = rows[orderPickerHi];
+  if (hi) { try { hi.scrollIntoView({ block: "nearest" }); } catch (e) {} }
+}
+
+function onOrderItemSearchKey(e) {
+  if (e.isComposing) return;
+  var rows = document.querySelectorAll("#order-item-results .oip-row");
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!rows.length) return;
+    orderPickerHi += (e.key === "ArrowDown" ? 1 : -1);
+    orderPickerHi = Math.max(0, Math.min(rows.length - 1, orderPickerHi));
+    paintOrderPickerHi();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    var row = rows[orderPickerHi];
+    if (row) addItemToOrderBuild(row.getAttribute("data-item-id"), { focusQty: true });
+  }
+}
+
 function renderOrderItemResults(q) {
   var results = document.getElementById("order-item-results");
   if (!results) return;
@@ -9193,7 +9298,7 @@ function renderOrderItemResults(q) {
     var rightSide = isAdmin && i.cost > 0
       ? '<div style="font-size:13px;color:var(--text);font-weight:600;text-align:right;">' + fmtCurrency(i.cost) + '</div>'
       : '<div style="font-size:11px;color:var(--dim);text-align:right;">' + (i.uom || "") + '</div>';
-    return '<div onclick="addItemToOrderBuild(\'' + i.id + '\')" ' +
+    return '<div class="oip-row" data-item-id="' + i.id + '" onclick="addItemToOrderBuild(\'' + i.id + '\', { focusQty: orderPickerFinePointer() })" ' +
       'style="padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;gap:10px;" ' +
       'onmouseover="this.style.background=\'var(--navy-lt)\';" onmouseout="this.style.background=\'transparent\';">' +
       '<div style="flex:1;min-width:0;">' +
@@ -9203,15 +9308,24 @@ function renderOrderItemResults(q) {
       rightSide +
     '</div>';
   }).join("");
+  orderPickerHi = 0;
+  paintOrderPickerHi();
 }
 
-function addItemToOrderBuild(itemId) {
+// A mouse click on a desktop should land in the qty box too — but a TAP on a
+// phone must not, or every pick throws the keyboard up over the list.
+function orderPickerFinePointer() {
+  try { return window.matchMedia("(hover:hover) and (pointer:fine)").matches; } catch (e) { return false; }
+}
+
+function addItemToOrderBuild(itemId, opts) {
   var item = allItems.find(function(i) { return i.id === itemId; });
   if (!item) return;
   if (!orderState.buildItems) orderState.buildItems = [];
 
   // Check if item is already in the order — bump qty instead of duplicating
   var existing = orderState.buildItems.find(function(it) { return it.itemId === itemId; });
+  var lineIdx = existing ? orderState.buildItems.indexOf(existing) : orderState.buildItems.length;
   if (existing) {
     existing.orderQty = (Number(existing.orderQty) || 0) + 1;
     existing.include = true;
@@ -9235,6 +9349,11 @@ function addItemToOrderBuild(itemId) {
     // Estimate-based build uses its own render path — update the items array and re-render
     renderOrderBuild();
   }
+
+  // Keyboard pick (or a desktop click): straight into the new line's qty, with
+  // the 1 selected so the first digit replaces it. A repeat pick lands on the
+  // line it bumped. Barcode scans pass no opts and stay put.
+  if (opts && opts.focusQty) focusOrderQty(lineIdx);
 }
 
 // ═══════════════════════════════════════════════════════════

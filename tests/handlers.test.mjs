@@ -3037,8 +3037,25 @@ await test("est GP: the burden rate is read from the crew, and old estimates kee
   // 2. THE RATE IS STAMPED AT CREATE, NOT RESOLVED AT READ. If the view were
   //    read on the way OUT instead, every existing quote would silently follow
   //    this year's payroll — which is the whole thing being prevented.
-  ok(/COALESCE\(\$13::numeric, \(SELECT burden_rate FROM v_estimating_labor_rate\), \$\{EST_LABOR_RATE\}\)/.test(src),
-     "the create resolves crew → constant and stamps the result");
+  //    ⚠ db/schema/072 inserted the prevailing-wage arm AHEAD of the crew rate,
+  //    so this can no longer match one literal string. The precedence is what
+  //    matters and it is asserted in order: explicit override → PW determination
+  //    → crew rate → the 32.50 constant as the last resort. A PW arm placed
+  //    after the crew rate would never fire, and nothing would error.
+  // ⚠ The end marker must be searched FROM the start marker: `const d =
+  // estDerived(` also appears ~900 lines earlier, and slicing to that returns "".
+  const burdenStart = src.indexOf("const BURDEN    = `COALESCE($13::numeric");
+  ok(burdenStart > -1, "the BURDEN expression is where the test expects it");
+  const burdenExpr = src.slice(burdenStart, src.indexOf("const d = estDerived(", burdenStart));
+  ok(burdenExpr.length > 0, "and the slice is non-empty");
+  ok(/\$13::numeric/.test(burdenExpr), "the create honours an explicit burden override first");
+  ok(burdenExpr.indexOf("v_pw_job_rate") > -1, "then the prevailing-wage determination");
+  ok(burdenExpr.indexOf("v_pw_job_rate") < burdenExpr.indexOf("v_estimating_labor_rate"),
+     "the PW arm comes BEFORE the crew rate, or a PW job silently costs at the crew rate");
+  ok(burdenExpr.indexOf("v_estimating_labor_rate") < burdenExpr.indexOf("EST_LABOR_RATE"),
+     "and the 32.50 constant stays the LAST resort");
+  ok(/effective_start <= COALESCE\(\$7::date, CURRENT_DATE\)/.test(burdenExpr),
+     "the PW rate is picked by the ESTIMATE DATE, not by today");
   const upd = src.slice(src.indexOf("async function handleUpdateEstimate"),
                         src.indexOf("async function handleUpdateEstimateStatus"));
   ok(/burden:\s+"COALESCE\(\$8, labor_burden_rate\)"/.test(upd),
@@ -3413,7 +3430,10 @@ await test("slice 6: the native create reproduces Airtable's two formulas", asyn
   // and is snapshotted permanently into every allocation written before anyone
   // notices.
   ok(/const DEFAULT_MARKUP_PCT = 0\.10;/.test(src), "a default markup exists");
-  ok(/DEFAULT_MARKUP_PCT\]\);/.test(src), "and the native insert actually sends it");
+  // ⚠ Was `DEFAULT_MARKUP_PCT]);` — markup used to be the LAST parameter. It is
+  // not any more (db/schema/072 appended the prevailing-wage ones), so match the
+  // parameter itself rather than its position in the list.
+  ok(/DEFAULT_MARKUP_PCT,\n/.test(src), "and the native insert actually sends it");
 
   // The rec id must never come back: _jobs-sync.js upserts ON CONFLICT
   // (airtable_id) hourly, so a stamped job would be overwritten from Airtable
@@ -7363,6 +7383,157 @@ await test("vendorInvoice: every pickable job status is a REAL status", async ()
   for (const bad of ["new lead", "estimating", "not awarded"]) {
     ok(!picked.includes(bad), `"${bad}" is NOT offered — it can have no material cost`);
   }
+});
+
+// ══ PREVAILING WAGE — db/schema/072, Step 1 of docs/PLAN-prevailing-wage.md ══
+// The build ships INERT, so almost nothing here can be proved by calling a
+// handler — the interesting behaviour only appears once a job is flagged, and
+// no job is. These are therefore mostly STATIC guards, in the same spirit as
+// the five that already exist: they stop a specific wrong spelling coming back.
+await test("PW: the resolver is ONE place, and all three GP numbers read it", async () => {
+  const fs = await import("node:fs/promises");
+  const sql = await fs.readFile(new URL("../db/schema/072_prevailing_wage.sql", import.meta.url), "utf8");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+
+  ok(/CREATE OR REPLACE VIEW v_pw_job_rate/.test(sql), "the resolver view exists");
+  // Filtered on the flag, so clearing PW disables the rate WITHOUT deleting the
+  // row someone typed off a determination sheet.
+  ok(/FROM pw_rates p\s+JOIN jobs j ON j\.id = p\.job_id\s+WHERE j\.prevailing_wage/.test(sql),
+     "and it is filtered on jobs.prevailing_wage, so clearing the flag disables the rate");
+  // est GP reads it at estimate-create; live + closeout share v_job_labor_cost_true.
+  ok(/v_pw_job_rate/.test(src), "the estimate create resolves through it");
+  ok((sql.match(/v_pw_job_rate/g) || []).length >= 2,
+     "and the cost view resolves through the same view, not a second copy of the rate maths");
+});
+
+await test("PW: ships INERT — no job flagged, and the flag defaults false", async () => {
+  const fs = await import("node:fs/promises");
+  const sql = await fs.readFile(new URL("../db/schema/072_prevailing_wage.sql", import.meta.url), "utf8");
+  ok(/ADD COLUMN prevailing_wage boolean NOT NULL DEFAULT false/.test(sql),
+     "every existing job is non-PW by default — the whole no-op proof rests on this");
+  ok(!/UPDATE jobs SET prevailing_wage = true/.test(sql),
+     "and the migration flags NOTHING; flipping a job is a separate, deliberate act");
+});
+
+await test("PW: the two-branch cost view is what makes the no-op provable", async () => {
+  const fs = await import("node:fs/promises");
+  const sql = await fs.readFile(new URL("../db/schema/072_prevailing_wage.sql", import.meta.url), "utf8");
+  // ⚠⚠ THE LOAD-BEARING ASSERTION. Branch A is today's proportional spread and
+  // is reached by every employee-week containing no PW time. Collapse the two
+  // branches into one "clever" formula and non-PW weeks stop being identical by
+  // CONSTRUCTION — they become identical only by arithmetic luck, which is
+  // exactly the kind of thing that silently stops being true.
+  ok(/NOT f\.has_pw/.test(sql), "branch A is restricted to weeks with NO prevailing-wage time");
+  ok(/WHERE f\.has_pw/.test(sql), "branch B only ever sees a week that actually contains PW work");
+  ok(/UNION ALL/.test(sql), "and they are unioned, not merged");
+  // The proportional formula must survive verbatim in branch A.
+  ok(/round\(jw\.allocated_hours \* \(\(w\.weekly_total_hours - 40::numeric\) \/ w\.weekly_total_hours\), 4\)/.test(sql),
+     "branch A keeps the ORIGINAL proportional overtime spread, expression for expression");
+  // db/schema/006 -> 024 -> 030: the PTO filter reads `class`, not `labor_type`.
+  // 068 reads `labor_type` for a different job. Getting this wrong does not
+  // error — it silently prices paid non-productive hours into job cost.
+  ok(/COALESCE\(t\.class, ''\) <> ALL \(ARRAY\['PTO'::text, 'Paid Holiday'::text\]\)/.test(sql),
+     "the PTO filter reads `class`, matching the view it replaces — NOT `labor_type`");
+});
+
+await test("PW: overtime is CHRONOLOGICAL in a PW week, and ambiguity is declared", async () => {
+  const fs = await import("node:fs/promises");
+  const sql = await fs.readFile(new URL("../db/schema/072_prevailing_wage.sql", import.meta.url), "utf8");
+  // Hours worked earlier in the week, by date. This is the whole of the rule:
+  // PW work happens at the start of the week, so it must not absorb overtime
+  // incurred later on a different job.
+  ok(/ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING/.test(sql),
+     "branch B accumulates hours by work date");
+  ok(/GREATEST\(c\.hours_before \+ c\.day_hours - 40::numeric, 0::numeric\)/.test(sql),
+     "and splits the day that crosses the 40th hour");
+  // Time entries carry no reliable start/end, so two jobs on the threshold day
+  // cannot be ordered. Proportion only THAT day and say so.
+  ok(/ot_order_ambiguous/.test(sql), "an unprovable same-day order is surfaced, not guessed");
+  ok(/'~unlinked'/.test(sql),
+     "unlinked time is its own bucket — it still consumes the first 40 hours of the week");
+});
+
+await test("PW: a flag with no rate is loud, never silently costed at the crew rate", async () => {
+  const fs = await import("node:fs/promises");
+  const sql = await fs.readFile(new URL("../db/schema/072_prevailing_wage.sql", import.meta.url), "utf8");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  ok(/pw_rate_missing/.test(sql), "the cost view raises pw_rate_missing");
+  ok(/pw_rate_missing/.test(src), "and it reaches the API rather than dying in the database");
+  ok(/CREATE UNIQUE INDEX pw_rates_one_open_per_job/.test(sql),
+     "a second open rate ERRORS rather than the lookup quietly picking one of two");
+  ok(/CREATE OR REPLACE VIEW v_pw_week_reconcile/.test(sql),
+     "and the reconciliation diagnostic exists — reallocating OT may never create or destroy cost");
+});
+
+await test("PW: setJobPrevailingWage is STRICT ADMIN — it restates a job's history", async () => {
+  const fs = await import("node:fs/promises");
+  eq((await POST("setJobPrevailingWage", { jobId: "recJ1", prevailingWage: false }, OFFICE_TOK)).statusCode,
+     403, "office blocked — this is a tier above city tax");
+  eq((await POST("setJobPrevailingWage", { jobId: "recJ1", prevailingWage: false }, VIEWER_TOK)).statusCode,
+     403, "viewer blocked");
+  eq((await GET("prevailingWageStatus", {}, OFFICE_TOK)).statusCode, 403, "and the diagnostic too");
+});
+
+await test("PW: the flag and its rate are ONE statement, in both write paths", async () => {
+  const fs = await import("node:fs/promises");
+  const jobs = await fs.readFile(new URL("../netlify/functions/_jobs.js", import.meta.url), "utf8");
+  const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  // ⚠ Two writes could leave the flag on with no rate behind if the second one
+  // failed — the exact invalid state the validator exists to prevent. A
+  // data-modifying CTE makes it atomic without a transaction helper.
+  ok(/WITH j AS \(\s*INSERT INTO jobs/.test(jobs),
+     "the native create writes the job and its rate in one statement");
+  ok(/INSERT INTO pw_rates[\s\S]{0,400}FROM j WHERE \$25::boolean/.test(jobs),
+     "and the rate arm writes zero rows when the flag is off — no second code path");
+  const flip = src.slice(src.indexOf("async function handleSetJobPrevailingWage"),
+                         src.indexOf("async function handlePrevailingWageStatus"));
+  ok(/WITH tgt AS/.test(flip) && /INSERT INTO pw_rates/.test(flip) && /UPDATE job_estimates/.test(flip),
+     "the retro-flip moves flag, rate and estimate re-stamp together or not at all");
+});
+
+await test("PW: the retro-flip RE-STAMPS estimates, or est GP silently half-works", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const flip = src.slice(src.indexOf("async function handleSetJobPrevailingWage"),
+                         src.indexOf("async function handlePrevailingWageStatus"));
+  // ⚠⚠ THE ONE THAT WILL NOT FIX ITSELF. Live and closeout GP come from views and
+  // move the instant the flag lands. est GP reads a STORED column stamped at
+  // create (db/schema/065, 068), so without this the actuals reprice and the
+  // quote keeps the crew rate forever — and nothing errors.
+  ok(/SET labor_burden_rate = res\.rate/.test(flip), "the stamped burden rate is rewritten");
+  ok(/estimated_labor_cost = round\(COALESCE\(e\.estimated_labor_hours, 0\) \* res\.rate, 2\)/.test(flip),
+     "and so is the stored cost the rollups actually read — the rate alone would not move est GP");
+  // The confirmation has to come BEFORE the write, with the count in it.
+  ok(/dryRun === true/.test(flip), "a dry run reports what will move before anything is written");
+  ok(/bookedHours/.test(flip) && /estimateCount/.test(flip),
+     "and it names the hour and estimate counts, so the restatement is not a surprise");
+});
+
+await test("PW: no Airtable field is created for it, in either direction", async () => {
+  const fs = await import("node:fs/promises");
+  const sql  = await fs.readFile(new URL("../db/schema/072_prevailing_wage.sql", import.meta.url), "utf8");
+  const jobs = await fs.readFile(new URL("../netlify/functions/_jobs.js", import.meta.url), "utf8");
+  // Neon-only, exactly like city_tax / clock_visibility / overhead. A PW flag
+  // mirrored out is a PW flag that can come back as a second, un-flagged job.
+  ok(/Neon-only/.test(sql), "the column comment says Neon-only out loud");
+  ok(!/"Prevailing Wage"/.test(jobs), "the mirror is never sent a Prevailing Wage field");
+  const sync = await fs.readFile(new URL("../netlify/functions/_jobs-sync.js", import.meta.url), "utf8");
+  ok(!/prevailing_wage/.test(sync), "and the (retired) job sync does not own or overwrite it");
+});
+
+await test("PW: the rate is SUPPLIED — overtime and burden are never derived", async () => {
+  const fs = await import("node:fs/promises");
+  const jobs = await fs.readFile(new URL("../netlify/functions/_jobs.js", import.meta.url), "utf8");
+  const v = jobs.slice(jobs.indexOf("export function normalisePwRate"),
+                       jobs.indexOf("// ── PO NUMBER"));
+  // `base * 1.5 + fringe` is a plausible guess at the OT figure and it is not
+  // authoritative — a determination may state an explicit rate, and fringe does
+  // not necessarily receive the premium. Deriving it would produce a number,
+  // just the wrong one, on every overtime hour of the job.
+  ok(!/\* 1\.5/.test(v), "the overtime rate is never computed from the base");
+  ok(/straight-time rate/.test(v) && /overtime rate/.test(v), "both are required inputs");
+  ok(/burden of \$\{burden\} looks like a percentage/.test(v),
+     "a 25 typed into a %-labelled box is REFUSED, not helpfully divided");
 });
 
 // ── report ──

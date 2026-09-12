@@ -1352,6 +1352,27 @@
       padding: 1px 5px;
     }
 
+    /* db/schema/072. Prevailing-wage jobs cost a different rate per hour, so it
+       has to be obvious which ones they are — in the list, on the job header and
+       in both clock job pickers. Deliberately not the same colour as ⚡ GEN: this
+       one changes what an hour is worth. */
+    .pw-badge {
+      font-size: 10px;
+      background: rgba(88,166,255,0.14);
+      border: 1px solid rgba(88,166,255,0.4);
+      color: #58a6ff;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-weight: 700;
+    }
+    /* The invalid state: flagged prevailing wage with no usable rate, so the
+       hours are quietly costing the ordinary employee rate. */
+    .pw-badge.pw-broken {
+      background: rgba(248,81,73,0.14);
+      border-color: rgba(248,81,73,0.45);
+      color: #f85149;
+    }
+
     .section-label {
       font-size: 10px;
       font-weight: 700;
@@ -5024,6 +5045,7 @@
               ${esc(job.status||"—")}
             </span>
             ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}
+            ${job.prevailingWage ? `<span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}" title="${job.pwRateMissing ? "Prevailing wage is on but no rate is set — hours are costing the normal rate" : "Prevailing wage job"}">🏛 PW</span>` : ""}
           </div>
         </div>`;
     });
@@ -5339,7 +5361,10 @@
     }
 
     // Project Info Tab
-    $("piJobName").textContent = val(job.name);
+    // ⚠ innerHTML, not textContent, because of the PW badge — so the name is
+    // escaped explicitly. A job name is customer-supplied text.
+    $("piJobName").innerHTML = esc(val(job.name)) + (job.prevailingWage
+      ? ` <span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}">🏛 PW</span>` : "");
     $("piJobPo").textContent = val(job.po);
     $("piJobStatus").innerHTML = atPill(job.status, STATUS_COLORS);
     $("piJobType").innerHTML = atPill(job.type, TYPE_COLORS);
@@ -10193,6 +10218,152 @@
     `;
   }
 
+  // ── Per-job prevailing wage (db/schema/072) ─────────────────────────────
+  // Collapsed unless the job IS prevailing wage, for the same reason the clock
+  // visibility box is: on 122 of 123 jobs the only correct answer is "no", and an
+  // always-open control that can never do anything is noise on a screen used all
+  // day for ordinary work. A job that IS prevailing wage is behaving unusually and
+  // is worth seeing the moment you open it.
+  //
+  // ⚠⚠ TURNING THIS ON RESTATES THE JOB'S WHOLE HISTORY — every hour ever booked
+  // is repriced and every saved estimate's burden rate is re-stamped. So the
+  // button runs a DRY RUN first and makes you confirm against the real counts.
+  // Restating is the point; being surprised by it is not.
+  function renderJobPrevailingWageBar(job) {
+    const on   = job.prevailingWage === true;
+    const rate = job.pwRate || null;
+    // The invalid state, called out in red. PW on with no usable rate does not
+    // error anywhere — the hours quietly fall back to the employee rate and the
+    // job reads completely normally. This is the only place that says so.
+    const broken = on && (job.pwRateMissing === true || !rate);
+    const money = v => (v == null ? "—" : `$${Number(v).toFixed(2)}`);
+    return `
+      <details id="jobPwBox" ${on ? "open" : ""} style="margin-bottom:14px;">
+        <summary style="cursor:pointer; font-size:12px; color:${broken ? "var(--red)" : on ? "var(--accent)" : "var(--muted)"}; padding:4px 2px; list-style:none;">
+          🏛 Prevailing wage: <b>${on ? "YES" : "No"}</b>${
+            broken ? " — ⚠ NO RATE SET, hours are costing the normal rate"
+          : on ? ` — ${esc(rate.classification || "rate set")} · ${money(rate.straightLoaded)}/hr loaded`
+          : ""}
+        </summary>
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-top:6px; background:var(--panel-2); border:1px solid ${broken ? "var(--red)" : "var(--line)"}; border-radius:10px; flex-wrap:wrap;">
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; font-weight:700;">
+            <input type="checkbox" id="jobPwOn" ${on ? "checked" : ""}> This job is prevailing wage
+          </label>
+          <div id="jobPwFields" style="flex-basis:100%; display:${on ? "block" : "none"};">
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-top:8px;">
+              <label style="font-size:11px; color:var(--muted);">Classification<br>
+                <input id="jobPwClass" class="edit-input" style="width:200px; font-size:13px;"
+                       placeholder="Electrician (Journeyman)" value="${esc(rate?.classification || "")}"></label>
+              <label style="font-size:11px; color:var(--muted);">Base $/hr<br>
+                <input id="jobPwBase" class="edit-input" type="number" step="0.0001" style="width:100px; font-size:13px;" value="${rate?.baseHourly ?? ""}"></label>
+              <label style="font-size:11px; color:var(--muted);">Fringe $/hr<br>
+                <input id="jobPwFringe" class="edit-input" type="number" step="0.0001" style="width:100px; font-size:13px;" value="${rate?.fringeHourly ?? ""}"></label>
+              <label style="font-size:11px; color:var(--muted);"><b>Straight $/hr</b><br>
+                <input id="jobPwStraight" class="edit-input" type="number" step="0.0001" style="width:110px; font-size:13px;" value="${rate?.straightHourly ?? ""}"></label>
+              <label style="font-size:11px; color:var(--muted);"><b>Overtime $/hr</b><br>
+                <input id="jobPwOt" class="edit-input" type="number" step="0.0001" style="width:110px; font-size:13px;" value="${rate?.overtimeHourly ?? ""}"></label>
+              <label style="font-size:11px; color:var(--muted);">Burden (0.25 = 25%)<br>
+                <input id="jobPwBurden" class="edit-input" type="number" step="0.0001" style="width:130px; font-size:13px;" value="${rate?.burdenPct ?? "0.25"}"></label>
+            </div>
+            ${/*
+               The plan is explicit that the OT figure is SUPPLIED, never derived:
+               a determination may state an explicit overtime rate, and fringe does
+               not necessarily receive the 1.5x premium. So base x 1.5 + fringe is
+               shown ONLY as a reasonableness check beside what you typed — it is
+               never written and never pre-fills the box.
+            */""}
+            <div id="jobPwPreview" style="flex-basis:100%; font-size:12px; color:var(--muted); margin-top:8px;"></div>
+          </div>
+          <div style="flex-basis:100%; display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap;">
+            <button id="jobPwSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save prevailing wage</button>
+            <span id="jobPwMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
+            <span id="jobPwErr" style="font-size:12px; color:var(--red); display:none;"></span>
+          </div>
+          <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
+            Enter the figures from the determination sheet exactly as published — the overtime rate is
+            taken from the sheet, not calculated. Saving re-costs every hour already booked to this job
+            and re-stamps the labour rate on its saved estimates, so it will move this job's GP.
+          </span>
+        </div>
+      </details>
+    `;
+  }
+
+  function wireJobPrevailingWageBar(job) {
+    const chk = $("jobPwOn"), btn = $("jobPwSaveBtn");
+    if (!chk || !btn) return;
+    const fields = $("jobPwFields");
+    const readRate = () => ({
+      classification: $("jobPwClass")?.value || null,
+      baseHourly:     $("jobPwBase")?.value,
+      fringeHourly:   $("jobPwFringe")?.value,
+      straightHourly: $("jobPwStraight")?.value,
+      overtimeHourly: $("jobPwOt")?.value,
+      burdenPct:      $("jobPwBurden")?.value,
+    });
+    const preview = () => {
+      const box = $("jobPwPreview");
+      if (!box) return;
+      const r = readRate();
+      const b = Number(r.baseHourly), f = Number(r.fringeHourly) || 0;
+      const s = Number(r.straightHourly), o = Number(r.overtimeHourly), bu = Number(r.burdenPct);
+      if (![s, o, bu].every(Number.isFinite) || !s) { box.textContent = ""; return; }
+      const sl = s * (1 + bu), ol = o * (1 + bu);
+      // The reasonableness check, clearly labelled as a check and not a value.
+      const derived = Number.isFinite(b) ? b * 1.5 + f : NaN;
+      const note = Number.isFinite(derived) && Math.abs(derived - o) > 0.005
+        ? ` <span style="color:var(--amber,#c90);">· note: base×1.5+fringe would be $${derived.toFixed(2)} — using the $${o.toFixed(2)} you entered, as published</span>`
+        : "";
+      box.innerHTML = `An hour on this job will cost <b>$${sl.toFixed(2)}</b> straight, ` +
+                      `<b>$${ol.toFixed(2)}</b> overtime (burden included).${note}`;
+    };
+    chk.onchange = () => { if (fields) fields.style.display = chk.checked ? "block" : "none"; preview(); };
+    ["jobPwBase","jobPwFringe","jobPwStraight","jobPwOt","jobPwBurden"]
+      .forEach(id => { const el = $(id); if (el) el.oninput = preview; });
+    preview();
+
+    btn.onclick = async () => {
+      const msg = $("jobPwMsg"), err = $("jobPwErr");
+      msg.style.display = "none"; err.style.display = "none";
+      btn.disabled = true;
+      try {
+        const on = chk.checked;
+        const payload = { jobId: job.id, prevailingWage: on, rate: on ? readRate() : null };
+        // ⚠ DRY RUN FIRST, ALWAYS. The counts come from the database, not from
+        // anything the page believes, so the confirmation cannot disagree with
+        // what is about to happen.
+        const pre = await apiPost("setJobPrevailingWage", { ...payload, dryRun: true });
+        const lines = [
+          on ? `Turn ON prevailing wage for "${pre.jobName}"?`
+             : `Turn OFF prevailing wage for "${pre.jobName}"?`,
+          "",
+          `${Number(pre.bookedHours).toFixed(2)} hours are already booked to this job.`,
+          `They will be re-costed, changing this job's GP.`,
+        ];
+        if (Number(pre.estimateCount) > 0) {
+          lines.push("",
+            `${pre.estimateCount} saved estimate${pre.estimateCount === 1 ? "" : "s"} ` +
+            `(${Number(pre.estimateHours).toFixed(2)} hours) will have the labour rate re-stamped.`);
+        }
+        if (!window.confirm(lines.join("\n"))) { btn.disabled = false; return; }
+
+        const res = await apiPost("setJobPrevailingWage", payload);
+        job.prevailingWage = res.prevailingWage === true;
+        job.pwRateMissing  = res.pwRateMissing === true;
+        const idx = (state.jobs || []).findIndex(j => j.id === job.id);
+        if (idx >= 0) { state.jobs[idx].prevailingWage = job.prevailingWage; }
+        msg.textContent = `✓ Saved — labour cost ${Number(res.laborCostBefore||0).toFixed(2)} → ${Number(res.laborCostAfter||0).toFixed(2)}`;
+        msg.style.display = "inline";
+        // The numbers on screen are now stale by definition, so reload the job
+        // rather than leaving a GP figure that no longer matches the database.
+        setTimeout(() => refreshJobPanel(job.id, true), 900);
+      } catch (e) {
+        err.textContent = e.message || "Couldn't save";
+        err.style.display = "inline";
+      } finally { btn.disabled = false; }
+    };
+  }
+
   function wireJobCityTaxBar(job) {
     // How the job bills. Wired here alongside the other two job settings so all
     // three live in one place.
@@ -11868,9 +12039,10 @@
     if (!host) return;
     const job = state.selected;
     if (!job || !isAdmin()) { host.classList.add("hidden"); host.innerHTML = ""; return; }
-    host.innerHTML = renderJobCityTaxBar(job);
+    host.innerHTML = renderJobCityTaxBar(job) + renderJobPrevailingWageBar(job);
     host.classList.remove("hidden");
     wireJobCityTaxBar(job);
+    wireJobPrevailingWageBar(job);
   }
 
   function refreshBirdDateView() {
@@ -19283,6 +19455,19 @@
     $("npNotes").value     = "";
 
     // Job Type defaults to Contract; user can change.
+    // db/schema/072. Reset PW with the rest of the form, or the next job created
+    // in the same session inherits a determination that has nothing to do with it.
+    const pwChk = $("npPrevailingWage");
+    if (pwChk) {
+      pwChk.checked = false;
+      const box = $("npPwFields");
+      if (box) box.style.display = "none";
+      pwChk.onchange = () => { if (box) box.style.display = pwChk.checked ? "block" : "none"; };
+      ["npPwClass","npPwBase","npPwFringe","npPwStraight","npPwOt"].forEach(id => {
+        const el = $(id); if (el) el.value = "";
+      });
+      const bu = $("npPwBurden"); if (bu) bu.value = "0.25";
+    }
     document.querySelectorAll('input[name="npJobType"]').forEach(r => { r.checked = false; });
     const contractR = document.querySelector('input[name="npJobType"][value="Contract"]');
     if (contractR) contractR.checked = true;
@@ -19540,6 +19725,22 @@
         notes:             $("npNotes").value
       };
       if (contactId) body.contactId = contactId;
+
+      // db/schema/072. Sent only when the box is ticked, so an ordinary create is
+      // byte-for-byte what it was. The server validates the rate BEFORE a PO
+      // number is allocated — a PO cannot be handed back, so a refusal must cost
+      // nothing.
+      if ($("npPrevailingWage")?.checked) {
+        body.prevailingWage = true;
+        body.pwRate = {
+          classification: $("npPwClass").value || null,
+          baseHourly:     $("npPwBase").value,
+          fringeHourly:   $("npPwFringe").value,
+          straightHourly: $("npPwStraight").value,
+          overtimeHourly: $("npPwOt").value,
+          burdenPct:      $("npPwBurden").value,
+        };
+      }
 
       const res = await apiPost("createJob", body);
       if (!res.ok || !res.job) throw new Error(res.error || "Create failed");
@@ -20644,7 +20845,12 @@
     box.innerHTML = shown.length ? shown.map(j => `
       <button type="button" class="clock-job${j.id === chosen ? " is-on" : ""}"
               onclick="clockPickJob('${esc(j.id)}','${esc(scope)}')">
-        <span>${esc(j.name || j.id)}</span>
+        <span>${esc(j.name || j.id)}${
+          /* db/schema/072. The badge is the ONLY thing the crew sees about
+             prevailing wage, and that is deliberate: there is no Normal/PW
+             choice to make. Picking the job IS picking the wage treatment, so
+             this tells them what picking it means, it does not ask them. */
+          j.prevailingWage ? ` <span class="pw-badge">🏛 PW</span>` : ""}</span>
         <span class="clock-job-status">${
           j.clockVisibility === "all" || j.clockVisibility === "admin"
             ? "overhead" : esc(j.status || "")}</span>
@@ -28512,6 +28718,35 @@
           <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Time & Material" /> Time &amp; Material</label>
           <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Warranty" /> Warranty</label>
           <label style="font-size:13px; display:flex; align-items:center; gap:5px; cursor:pointer;"><input type="radio" name="npJobType" value="Service Calls" /> Service Calls</label>
+        </div>
+        <!-- db/schema/072. Beside Job Type because it is the same KIND of answer:
+             it decides how the job's money works. Ticking it reveals the whole
+             determination inline rather than saving a flag now and a rate later —
+             a flag with no rate is an invalid state the server refuses, because
+             it does not error, it just quietly costs the hours at the normal
+             rate and looks completely fine. -->
+        <label style="font-size:13px; display:flex; align-items:center; gap:6px; cursor:pointer; margin-top:6px; font-weight:700;">
+          <input type="checkbox" id="npPrevailingWage" /> 🏛 Prevailing wage job
+        </label>
+        <div id="npPwFields" style="display:none; padding:8px 0 2px; border-top:1px solid var(--line); margin-top:6px;">
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+            <label style="font-size:11px; color:var(--muted);">Classification<br>
+              <input id="npPwClass" class="edit-input" style="width:190px; font-size:13px;" placeholder="Electrician (Journeyman)"></label>
+            <label style="font-size:11px; color:var(--muted);">Base $/hr<br>
+              <input id="npPwBase" class="edit-input" type="number" step="0.0001" style="width:95px; font-size:13px;"></label>
+            <label style="font-size:11px; color:var(--muted);">Fringe $/hr<br>
+              <input id="npPwFringe" class="edit-input" type="number" step="0.0001" style="width:95px; font-size:13px;"></label>
+            <label style="font-size:11px; color:var(--muted);"><b>Straight $/hr</b><br>
+              <input id="npPwStraight" class="edit-input" type="number" step="0.0001" style="width:105px; font-size:13px;"></label>
+            <label style="font-size:11px; color:var(--muted);"><b>Overtime $/hr</b><br>
+              <input id="npPwOt" class="edit-input" type="number" step="0.0001" style="width:105px; font-size:13px;"></label>
+            <label style="font-size:11px; color:var(--muted);">Burden (0.25 = 25%)<br>
+              <input id="npPwBurden" class="edit-input" type="number" step="0.0001" style="width:125px; font-size:13px;" value="0.25"></label>
+          </div>
+          <div style="font-size:11px; color:var(--muted); margin-top:6px;">
+            Enter the figures from the determination sheet exactly as published — the overtime rate is
+            taken from the sheet, not calculated from the base.
+          </div>
         </div>
       </div>
 

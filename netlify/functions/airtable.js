@@ -19,7 +19,7 @@ import { fireJobStatusWebhooks, fireServiceCallWebhook } from "./_job-webhooks.j
 // Creating a job lives in _jobs.js because there are now TWO callers — the New
 // Project form and the generator service-call check — and only one of them may
 // ever allocate a PO number. See the header of that file.
-import { createJobRecord, JobInputError, isJobHandle, jobCreateSource, jobsAreNative } from "./_jobs.js";
+import { createJobRecord, JobInputError, isJobHandle, jobCreateSource, jobsAreNative, normalisePwRate } from "./_jobs.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
@@ -555,6 +555,12 @@ const _ADMIN_POSTS = new Set([
   // Counting previously-uncounted punches as payroll hours. Admin only — this is the
   // action that turns the time clock into money.
   "promoteClockPunches",
+  // Flagging a job prevailing wage. STRICT ADMIN, a tier above the other job
+  // settings (city tax, clock visibility, billable rate sit at admin+office):
+  // this one RESTATES A JOB'S WHOLE HISTORY. It reprices every hour ever booked
+  // AND re-stamps the burden rate on estimates that have already been sent — the
+  // only action in this file that rewrites what a saved quote assumed.
+  "setJobPrevailingWage",
   // Punching somebody ELSE in or out. Deliberately separate actions from clockIn/
   // clockOut so the self-service path keeps the property that the employee can only
   // come from the token — the privilege is what's gated, not a parameter.
@@ -682,6 +688,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
 const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "people", "employeePin", "employeeRates",
+                              // db/schema/072. Names the specific misconfiguration the same
+                              // way r2Status does, because a PW job with no usable rate
+                              // produces a plausible number rather than an error.
+                              "prevailingWageStatus",
                               // Item 07 diagnostics. googleContactsReconcile reads every
                               // contact in both company address books, so it sits at strict
                               // admin with the roster rather than with office.
@@ -3011,6 +3021,216 @@ async function handleUpdateJobClockVisibility(body) {
      RETURNING airtable_id, clock_visibility`, [String(jobId), value]);
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
   return resp(200, { ok: true, jobId, clockVisibility: rows[0].clock_visibility ?? null });
+}
+
+// ── JOB SETTING: prevailing wage (db/schema/072, docs/PLAN-prevailing-wage.md) ──
+// PW belongs to the JOB. There is deliberately no Normal/PW toggle on the time
+// entry: the crew already picks a job, and two answers that can disagree produce
+// the most dangerous mismatch there is — the right hours on the right job at the
+// wrong cost. Choosing the job IS choosing the wage treatment.
+//
+// ⚠⚠ TURNING THIS ON RESTATES HISTORY, AND THAT IS THE POINT. Live GP and
+// closeout GP come from views, so they move the instant the flag lands. Est GP
+// does NOT: job_estimates.labor_burden_rate is STAMPED at create (db/schema/065,
+// 068), so without the re-stamp below the flag would silently half-work — actuals
+// repriced, the quote still costed at the crew rate. Restating is intended;
+// being surprised by it is not, which is why dryRun reports the hour count, the
+// estimate count and the GP delta BEFORE anything is written.
+//
+// ⚠ Neon-only. Do not add an Airtable field for this and do not let any sync own
+// it. Belt-and-braces today (AIRTABLE_WRITES=off, _jobs-sync.js retired) but the
+// rule stands for the day either is rewired: a PW flag mirrored out is a PW flag
+// that can come back as a second, un-flagged job.
+async function handleSetJobPrevailingWage(body) {
+  const { jobId, prevailingWage, rate, dryRun } = body || {};
+  if (!jobId || !isJobHandle(jobId)) {
+    return resp(400, { ok: false, error: "Missing or invalid jobId." });
+  }
+  const on = prevailingWage === true;
+
+  let pw = null;
+  if (on) {
+    // Reuses the create path's validator, so the two cannot drift into accepting
+    // different things. Throws JobInputError, which the dispatcher already maps to 400.
+    try { pw = normalisePwRate(rate); }
+    catch (e) { return resp(400, { ok: false, error: e?.message || "Invalid prevailing wage rate." }); }
+  }
+
+  // What the flip is about to move. Read BEFORE the write so the confirmation and
+  // the change cannot disagree, and so dryRun costs nothing.
+  const pre = await neonQuery(
+    `SELECT j.id, j.name, j.prevailing_wage,
+            COALESCE(c.total_hours, 0)     AS booked_hours,
+            COALESCE(c.labor_cost_live, 0) AS labor_cost_now,
+            (SELECT count(*) FROM job_estimates e WHERE e.job_id = j.id) AS estimate_count,
+            (SELECT COALESCE(sum(e.estimated_labor_hours), 0) FROM job_estimates e WHERE e.job_id = j.id) AS estimate_hours,
+            (SELECT COALESCE(sum(e.estimated_labor_cost), 0)  FROM job_estimates e WHERE e.job_id = j.id) AS estimate_cost_now,
+            f.gross_profit_live_dollar AS gp_live_now
+       FROM jobs j
+       LEFT JOIN v_job_labor_cost_true_by_job c ON c.job_id = j.id
+       LEFT JOIN v_job_financials_true        f ON f.id     = j.id
+      WHERE j.airtable_id = $1 OR j.id::text = $1`, [String(jobId)]);
+  if (!pre.rows?.length) return resp(404, { ok: false, error: "Job not found." });
+  const before = pre.rows[0];
+
+  if (dryRun === true) {
+    return resp(200, {
+      ok: true, dryRun: true, jobId,
+      jobName: before.name,
+      prevailingWageNow: before.prevailing_wage === true,
+      prevailingWageAfter: on,
+      bookedHours:    Number(before.booked_hours    || 0),
+      laborCostNow:   Number(before.labor_cost_now  || 0),
+      estimateCount:  Number(before.estimate_count  || 0),
+      estimateHours:  Number(before.estimate_hours  || 0),
+      estimateCostNow:Number(before.estimate_cost_now || 0),
+      grossProfitLiveNow: before.gp_live_now == null ? null : Number(before.gp_live_now),
+      rate: pw,
+    });
+  }
+
+  // ⚠⚠ ONE STATEMENT. The flag, the rate and the estimate re-stamp move together
+  // or not at all — a partial apply is precisely the invalid state (flag on, no
+  // rate / actuals repriced, quote not) this handler exists to make impossible.
+  //
+  // Turning PW OFF closes the open rate rather than deleting it: someone typed
+  // those figures off a determination sheet, and a closed row still prices the
+  // hours that were worked while it was in force. v_pw_job_rate filters on the
+  // flag anyway, so a closed row is inert either way.
+  const rows = await neonWrite("job.setPrevailingWage",
+    `WITH tgt AS (
+       SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1
+     ), upd AS (
+       UPDATE jobs SET prevailing_wage = $2::boolean
+        WHERE id = (SELECT id FROM tgt)
+        RETURNING id, airtable_id, prevailing_wage
+     ), closed AS (
+       UPDATE pw_rates SET effective_end = CURRENT_DATE
+        WHERE job_id = (SELECT id FROM tgt)
+          AND effective_end IS NULL
+          AND ($2::boolean = false OR true)
+        RETURNING id
+     ), ins AS (
+       INSERT INTO pw_rates (job_id, classification, base_hourly, fringe_hourly,
+                             straight_hourly, overtime_hourly, burden_pct, effective_start)
+       SELECT (SELECT id FROM tgt), $3::text, $4::numeric, $5::numeric, $6::numeric,
+              $7::numeric, $8::numeric, COALESCE($9::date, CURRENT_DATE)
+        WHERE $2::boolean
+       RETURNING id
+     ), restamp AS (
+       -- The est-GP half. Re-stamps the rate a quote assumed, which is the only
+       -- way est GP follows the flag: the column is a snapshot, not a formula.
+       -- estimated_labor_cost and the derived total are rebuilt from it in the
+       -- same breath, because the rollups read the STORED cost, not the rate.
+       UPDATE job_estimates e
+          SET labor_burden_rate = res.rate,
+              estimated_labor_cost = round(COALESCE(e.estimated_labor_hours, 0) * res.rate, 2)
+         FROM (SELECT CASE WHEN $2::boolean
+                           THEN round($6::numeric * (1 + $8::numeric), 4)
+                           ELSE COALESCE((SELECT burden_rate FROM v_estimating_labor_rate), ${EST_LABOR_RATE})
+                      END AS rate) res
+        WHERE e.job_id = (SELECT id FROM tgt)
+        RETURNING e.id
+     )
+     SELECT (SELECT airtable_id FROM upd) AS airtable_id,
+            (SELECT prevailing_wage FROM upd) AS prevailing_wage,
+            (SELECT count(*) FROM restamp) AS estimates_restamped,
+            (SELECT count(*) FROM closed)  AS rates_closed,
+            (SELECT count(*) FROM ins)     AS rates_created`,
+    [String(jobId), on,
+     pw?.classification ?? null, pw?.baseHourly ?? null, pw?.fringeHourly ?? null,
+     pw?.straightHourly ?? null, pw?.overtimeHourly ?? null, pw?.burdenPct ?? null,
+     pw?.effectiveStart ?? null]);
+
+  const r = rows?.[0] || {};
+
+  // Re-read so the response carries what the views ACTUALLY say now, not what we
+  // predicted they would say. Deploying is not evidence; neither is writing.
+  const post = await neonQuery(
+    `SELECT COALESCE(c.labor_cost_live, 0) AS labor_cost_after,
+            COALESCE(c.pw_hours, 0)        AS pw_hours,
+            c.pw_rate_missing,
+            c.ot_order_ambiguous,
+            f.gross_profit_live_dollar     AS gp_live_after
+       FROM jobs j
+       LEFT JOIN v_job_labor_cost_true_by_job c ON c.job_id = j.id
+       LEFT JOIN v_job_financials_true        f ON f.id     = j.id
+      WHERE j.airtable_id = $1 OR j.id::text = $1`, [String(jobId)]);
+  const after = post.rows?.[0] || {};
+
+  return resp(200, {
+    ok: true, jobId,
+    prevailingWage: r.prevailing_wage === true,
+    estimatesRestamped: Number(r.estimates_restamped || 0),
+    ratesCreated:       Number(r.rates_created || 0),
+    ratesClosed:        Number(r.rates_closed  || 0),
+    bookedHours:     Number(before.booked_hours || 0),
+    laborCostBefore: Number(before.labor_cost_now || 0),
+    laborCostAfter:  Number(after.labor_cost_after || 0),
+    pwHours:         Number(after.pw_hours || 0),
+    pwRateMissing:   after.pw_rate_missing === true,
+    otOrderAmbiguous:after.ot_order_ambiguous === true,
+    grossProfitLiveBefore: before.gp_live_now  == null ? null : Number(before.gp_live_now),
+    grossProfitLiveAfter:  after.gp_live_after == null ? null : Number(after.gp_live_after),
+  });
+}
+
+// ── PW DIAGNOSTIC — the loud half of db/schema/072 ─────────────────────────
+// The lesson that cost the most on 2026-08-25: eleven defects in one day and not
+// one of them threw. A PW job with no usable rate does not error either — it
+// prices at the employee rate and reads as an ordinary number. This is the
+// SELECT-only check that breaks that silence, in the same spirit as _integrity.js.
+async function handlePrevailingWageStatus() {
+  const q = await neonQuery(
+    `SELECT j.id::text AS job_id, COALESCE(j.airtable_id, j.id::text) AS handle,
+            j.name, j.job_type, j.status,
+            COALESCE(c.total_hours, 0)     AS booked_hours,
+            COALESCE(c.pw_hours, 0)        AS pw_hours,
+            COALESCE(c.labor_cost_live, 0) AS labor_cost,
+            COALESCE(c.pw_rate_missing, false)    AS pw_rate_missing,
+            COALESCE(c.ot_order_ambiguous, false) AS ot_order_ambiguous,
+            r.classification, r.straight_hourly, r.overtime_hourly, r.burden_pct,
+            r.straight_loaded, r.overtime_loaded, r.effective_start::text AS effective_start
+       FROM jobs j
+       LEFT JOIN v_job_labor_cost_true_by_job c ON c.job_id = j.id
+       LEFT JOIN v_pw_job_rate r ON r.job_id = j.id AND r.effective_end IS NULL
+      WHERE j.prevailing_wage
+      ORDER BY j.name`);
+
+  // Weeks where the 40-hour threshold fell on a day holding more than one job.
+  // Work date is all there is — time entries carry no reliable start/end — so
+  // that day's premium is split proportionally and SAID SO rather than invented
+  // from insertion order.
+  const amb = await neonQuery(
+    `SELECT count(*)::int AS weeks FROM v_pw_week_reconcile WHERE ot_order_ambiguous`);
+  const rec = await neonQuery(
+    `SELECT count(*)::int AS weeks_not_reconciling FROM v_pw_week_reconcile WHERE hours_delta <> 0`);
+
+  const jobs = (q.rows || []).map(r => ({
+    jobId: r.handle, name: r.name, jobType: r.job_type, status: r.status,
+    bookedHours: Number(r.booked_hours || 0),
+    pwHours: Number(r.pw_hours || 0),
+    laborCost: Number(r.labor_cost || 0),
+    pwRateMissing: r.pw_rate_missing === true,
+    otOrderAmbiguous: r.ot_order_ambiguous === true,
+    rate: r.straight_hourly == null ? null : {
+      classification: r.classification,
+      straightHourly: Number(r.straight_hourly), overtimeHourly: Number(r.overtime_hourly),
+      burdenPct: Number(r.burden_pct),
+      straightLoaded: Number(r.straight_loaded), overtimeLoaded: Number(r.overtime_loaded),
+      effectiveStart: r.effective_start,
+    },
+  }));
+
+  return resp(200, {
+    ok: true,
+    prevailingWageJobs: jobs.length,
+    // The two that mean something is WRONG rather than merely notable.
+    jobsMissingRate: jobs.filter(j => j.pwRateMissing || !j.rate).map(j => j.name),
+    weeksNotReconciling: Number(rec.rows?.[0]?.weeks_not_reconciling || 0),
+    ambiguousOvertimeWeeks: Number(amb.rows?.[0]?.weeks || 0),
+    jobs,
+  });
 }
 
 // ══ WHO'S WORKING — the admin roster ═════════════════════════════════════════
@@ -5783,7 +6003,7 @@ const JOB_SELECT = `
          j.tax_status, j.billing_method, j.customer_first_name, j.customer_last_name,
          j.address_street, j.address_city, j.address_state, j.address_zip,
          -- App-owned, Neon-only (no Airtable twin). See db/schema/020 and 027.
-         j.city_tax, j.clock_visibility, j.overhead,
+         j.city_tax, j.clock_visibility, j.overhead, j.prevailing_wage,
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.bird_date::text AS bird_date, j.workflow_status, j.billable_hourly_rate,
@@ -5816,11 +6036,25 @@ const JOB_SELECT = `
          f.materials_in_progress, f.gross_profit_live_dollar, f.gross_profit_live_pct,
          f.actual_job_cost_cogs, f.total_reviewed_costs, f.total_labor_cost_final,
          f.gross_profit_final_dollar, f.gross_profit_final_pct,
-         t.all_labor_reviewed
+         t.all_labor_reviewed,
+         -- db/schema/072. The rate itself, resolved through v_pw_job_rate so the
+         -- job screen shows what an hour on THIS job actually costs. pw_rate_missing
+         -- is the loud half: flag on with no rate covering the work date prices the
+         -- hours at the employee rate and would otherwise look completely normal.
+         t.pw_hours, t.pw_rate_missing, t.ot_order_ambiguous,
+         pw.straight_hourly AS pw_straight_hourly, pw.overtime_hourly AS pw_overtime_hourly,
+         pw.base_hourly AS pw_base_hourly, pw.fringe_hourly AS pw_fringe_hourly,
+         pw.burden_pct AS pw_burden_pct, pw.classification AS pw_classification,
+         pw.straight_loaded AS pw_straight_loaded, pw.overtime_loaded AS pw_overtime_loaded,
+         pw.effective_start::text AS pw_effective_start
     FROM jobs j
     LEFT JOIN v_job_rollups_true      r ON r.id = j.id
     LEFT JOIN v_job_financials_true   f ON f.id = j.id
-    LEFT JOIN v_job_labor_cost_true_by_job t ON t.job_id = j.id`;
+    LEFT JOIN v_job_labor_cost_true_by_job t ON t.job_id = j.id
+    -- The OPEN rate (effective_end IS NULL), which is the one the form edits and
+    -- the screen shows. pw_rates_one_open_per_job guarantees there is at most one,
+    -- so this cannot silently pick between two.
+    LEFT JOIN v_pw_job_rate pw ON pw.job_id = j.id AND pw.effective_end IS NULL`;
 
 const n  = v => (v === null || v === undefined ? null : Number(v));
 const s  = v => (v === null || v === undefined ? "" : String(v));
@@ -5909,6 +6143,29 @@ function mapJobFromNeon(r) {
     // shows normally. That is the right way round: during a Neon outage the app
     // cannot know, and showing a job it shouldn't beats hiding one it should.
     overhead: r.overhead === true,
+    // db/schema/072. Neon-only exactly like the three above — Airtable has no
+    // such column and must never be given one.
+    //
+    // ⚠ prevailingWage and pwRate are two different questions and the UI must not
+    // collapse them. The flag says the job is PW; the rate says what an hour costs.
+    // Flag on with no rate is an INVALID state that still returns numbers — the
+    // hours quietly fall back to the employee rate — so pwRateMissing is carried
+    // all the way to the screen rather than being inferred from a null rate.
+    prevailingWage: r.prevailing_wage === true,
+    pwRate: r.pw_straight_hourly == null ? null : {
+      classification: s(r.pw_classification),
+      baseHourly:     n(r.pw_base_hourly),
+      fringeHourly:   n(r.pw_fringe_hourly),
+      straightHourly: n(r.pw_straight_hourly),
+      overtimeHourly: n(r.pw_overtime_hourly),
+      burdenPct:      n(r.pw_burden_pct),
+      straightLoaded: n(r.pw_straight_loaded),
+      overtimeLoaded: n(r.pw_overtime_loaded),
+      effectiveStart: s(r.pw_effective_start),
+    },
+    pwHours: n(r.pw_hours) || 0,
+    pwRateMissing: r.pw_rate_missing === true,
+    otOrderAmbiguous: r.ot_order_ambiguous === true,
     customerStreet: s(r.address_street), customerCity: s(r.address_city),
     customerState: s(r.address_state), customerZip: s(r.address_zip),
     customerPhone: s(r.customer_phone), customerEmail: s(r.customer_email),
@@ -8203,7 +8460,30 @@ async function handleCreateJobEstimate(body) {
   // returns NULL if there are no current rates or no time history, and a NULL
   // reaching the multiplication would cost labor at $0/hr on every new estimate
   // — which reads as a spectacular GP, not as an outage.
-  const BURDEN    = `COALESCE($13::numeric, (SELECT burden_rate FROM v_estimating_labor_rate), ${EST_LABOR_RATE})`;
+  // db/schema/072. THE PREVAILING-WAGE ARM GOES FIRST, and it is the third and
+  // last consumer of the one resolver — est GP, live GP and closeout GP now all
+  // ask v_pw_job_rate and nothing else. Patching the three separately is the
+  // failure mode this whole design exists to prevent.
+  //
+  // ⚠ STAMPED, not derived. An estimate on a PW job records the determination
+  // rate that was in force when it was written, exactly as a non-PW estimate
+  // records the crew rate — db/schema/065's snapshotting rule, which exists so a
+  // later rate change cannot rewrite a quote that has already been sent and won.
+  // Retro-flipping a job to PW therefore has to RE-STAMP this column on its
+  // saved estimates; see handleSetJobPrevailingWage, which reports the count first.
+  //
+  // ⚠ The rate is picked by the ESTIMATE DATE, not by today, so backdating an
+  // estimate into a period an older determination covered costs it correctly.
+  // With no job flagged PW this subquery returns NULL on every row and the
+  // expression is character-for-character equivalent to what it replaced.
+  const BURDEN    = `COALESCE($13::numeric,
+    (SELECT r.straight_loaded FROM v_pw_job_rate r
+       JOIN jobs j3 ON j3.id = r.job_id
+      WHERE (j3.airtable_id = $1 OR j3.id::text = $1)
+        AND r.effective_start <= COALESCE($7::date, CURRENT_DATE)
+        AND (r.effective_end IS NULL OR r.effective_end >= COALESCE($7::date, CURRENT_DATE))
+      ORDER BY r.effective_start DESC LIMIT 1),
+    (SELECT burden_rate FROM v_estimating_labor_rate), ${EST_LABOR_RATE})`;
   const d = estDerived({
     hours: "$5::numeric", matRaw: "$10::numeric", matMarkup: "$11::numeric",
     matEntered: "$6::numeric", sellRate: SELL_RATE, burden: BURDEN,
@@ -15791,6 +16071,7 @@ export async function handler(event) {
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "integrityCheck")     return await handleIntegrityCheck();
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
+      if (action === "prevailingWageStatus") return await handlePrevailingWageStatus();
       if (action === "googleStatus")       return await handleGoogleStatus();
       if (action === "googleContactsReconcile") return await handleGoogleContactsReconcile(params);
       if (action === "contactDuplicates")  return await handleContactDuplicates();
@@ -15919,6 +16200,7 @@ export async function handler(event) {
       if (body.action === "updateJobCityTax")     return await handleUpdateJobCityTax(body);
       if (body.action === "updateJobType")        return await handleUpdateJobType(body);
       if (body.action === "updateJobClockVisibility") return await handleUpdateJobClockVisibility(body);
+      if (body.action === "setJobPrevailingWage") return await handleSetJobPrevailingWage(body);
       if (body.action === "addFleetService")      return await handleAddFleetService(body);
       if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);

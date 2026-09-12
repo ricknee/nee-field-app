@@ -107,6 +107,58 @@ export function makeAtFetch(apiKey, baseId) {
 
 const nz = (v) => { const s = String(v ?? "").trim(); return s || null; };
 
+// ── PREVAILING WAGE (db/schema/072) ────────────────────────────────────────
+// Validates a determination before anything is written. Shared by the create
+// path and the retro-flip so the two cannot drift into accepting different
+// things — the second-most-likely way to end up with a job priced wrong.
+//
+// ⚠ straight and overtime are BOTH required and NEITHER is derived. `base * 1.5
+// + fringe` is a plausible guess at the overtime figure and it is not
+// authoritative: a determination may state an explicit OT rate, and fringe does
+// not necessarily receive the premium. Guessing here would be invisible — it
+// produces a number, just the wrong one, on every overtime hour of the job.
+//
+// ⚠ burden is required too, for the same reason the rate is: a silent 25%
+// default is a number nobody typed, and a wrong burden misprices every single
+// hour rather than just the overtime ones.
+export function normalisePwRate(raw) {
+  const r = raw || {};
+  const num = (v, label, { required = true } = {}) => {
+    if (v === undefined || v === null || String(v).trim() === "") {
+      if (required) throw new JobInputError(`Prevailing wage: ${label} is required.`);
+      return 0;
+    }
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0) throw new JobInputError(`Prevailing wage: ${label} must be a number of 0 or more.`);
+    return n;
+  };
+  const base     = num(r.baseHourly,     "base hourly rate");
+  const fringe   = num(r.fringeHourly,   "fringe", { required: false });
+  const straight = num(r.straightHourly, "straight-time rate");
+  const overtime = num(r.overtimeHourly, "overtime rate");
+  // Burden is a fraction (0.25), not a percentage (25). A 25 typed into a field
+  // labelled % would load every hour by 2,500% — refuse rather than "helpfully"
+  // divide, because both readings are defensible and only the typist knows which.
+  const burden   = num(r.burdenPct, "burden");
+  if (burden > 3) {
+    throw new JobInputError(
+      `Prevailing wage: burden of ${burden} looks like a percentage. Enter it as a fraction — 0.25 for 25%.`);
+  }
+  if (straight <= 0) throw new JobInputError("Prevailing wage: the straight-time rate cannot be zero.");
+  if (overtime <= 0) throw new JobInputError("Prevailing wage: the overtime rate cannot be zero.");
+  const effectiveStart = nz(r.effectiveStart);
+  if (effectiveStart && !/^\d{4}-\d{2}-\d{2}$/.test(effectiveStart)) {
+    throw new JobInputError("Prevailing wage: the effective date must be YYYY-MM-DD.");
+  }
+  return {
+    classification: nz(r.classification),
+    baseHourly: base, fringeHourly: fringe,
+    straightHourly: straight, overtimeHourly: overtime,
+    burdenPct: burden,
+    effectiveStart,
+  };
+}
+
 // ── PO NUMBER (audit item 05, db/schema/039) ───────────────────────────────
 // One statement, so two people creating a job at the same instant cannot both
 // read the same value — the flaw Airtable's read-then-write has always had and
@@ -225,7 +277,7 @@ async function createJobNative(a) {
     atFetch, fields, poNumber, trimmedName, jobType, taxStatus, billing,
     trimmedContractorId, contractorName, generatorInstalled, notes,
     customerFirstName, customerLastName, customerPhone, customerEmail,
-    customerStreet, customerCity, customerState, customerZip,
+    customerStreet, customerCity, customerState, customerZip, pw,
   } = a;
 
   // ⚠ FAIL CLOSED. A job with no PO number is not a job: the PO is its identity
@@ -249,19 +301,36 @@ async function createJobNative(a) {
 
   // No ON CONFLICT: a native row has no natural key to conflict on, and every
   // call has already burned a fresh PO number, so a retry is a different job.
+  // ⚠⚠ THE JOB AND ITS PREVAILING-WAGE RATE ARE ONE STATEMENT, not two calls.
+  // A data-modifying CTE makes them atomic without a transaction helper: there is
+  // no instant at which the flag is on and the rate is absent. Two separate
+  // writes could leave exactly that state behind if the second one failed, and
+  // db/schema/072 is built on the premise that it cannot happen (trap 6).
+  //
+  // The pw_rates arm selects from the job insert, so it writes zero rows when
+  // $25 is false — no branch, no second code path to keep in step.
   const rows = await neonWrite("job.createNative",
-    `INSERT INTO jobs (name, status, job_type, tax_status, billing_method,
-                       contractor_at_id, contractor_name, contractor_code,
-                       po_number, po, po_locked, job_year,
-                       customer_first_name, customer_last_name, customer_phone,
-                       customer_email, address_street, address_city, address_state,
-                       address_zip, address_full, notes, generator_installed,
-                       markup_pct, synced_at)
-     VALUES ($1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,
-             $9::int,$10::text,$11::text,$12::int,
-             $13::text,$14::text,$15::text,$16::text,$17::text,$18::text,$19::text,
-             $20::text,$21::text,$22::text,$23::boolean,$24::numeric, now())
-     RETURNING id`,
+    `WITH j AS (
+       INSERT INTO jobs (name, status, job_type, tax_status, billing_method,
+                         contractor_at_id, contractor_name, contractor_code,
+                         po_number, po, po_locked, job_year,
+                         customer_first_name, customer_last_name, customer_phone,
+                         customer_email, address_street, address_city, address_state,
+                         address_zip, address_full, notes, generator_installed,
+                         markup_pct, prevailing_wage, synced_at)
+       VALUES ($1::text,$2::text,$3::text,$4::text,$5::text,$6::text,$7::text,$8::text,
+               $9::int,$10::text,$11::text,$12::int,
+               $13::text,$14::text,$15::text,$16::text,$17::text,$18::text,$19::text,
+               $20::text,$21::text,$22::text,$23::boolean,$24::numeric,$25::boolean, now())
+       RETURNING id
+     ), r AS (
+       INSERT INTO pw_rates (job_id, classification, base_hourly, fringe_hourly,
+                             straight_hourly, overtime_hourly, burden_pct, effective_start)
+       SELECT j.id, $26::text, $27::numeric, $28::numeric, $29::numeric, $30::numeric,
+              $31::numeric, COALESCE($32::date, CURRENT_DATE)
+         FROM j WHERE $25::boolean
+     )
+     SELECT id FROM j`,
     [trimmedName, "New Lead", jobType ? String(jobType).trim() : null,
      taxStatus || "Taxable", billing, trimmedContractorId,
      contractorName ? String(contractorName).trim() : null, contractorCode,
@@ -270,7 +339,11 @@ async function createJobNative(a) {
      nz(customerStreet), nz(customerCity),
      nz(customerState) ? nz(customerState).toUpperCase() : null,
      nz(customerZip), addressFull, nz(notes), generatorInstalled === true,
-     DEFAULT_MARKUP_PCT]);
+     DEFAULT_MARKUP_PCT,
+     pw ? true : false,
+     pw?.classification ?? null, pw?.baseHourly ?? null, pw?.fringeHourly ?? null,
+     pw?.straightHourly ?? null, pw?.overtimeHourly ?? null, pw?.burdenPct ?? null,
+     pw?.effectiveStart ?? null]);
 
   const neonId = rows?.[0]?.id ? String(rows[0].id) : null;
   if (!neonId) throw new Error("job.createNative: no id returned");
@@ -342,11 +415,22 @@ export async function createJobRecord(atFetch, input) {
     jobName, jobType, taxStatus, billingMethod, contractorId, contractorName, contactId,
     customerFirstName, customerLastName,
     customerStreet, customerCity, customerState, customerZip,
-    customerPhone, customerEmail, notes, generatorInstalled
+    customerPhone, customerEmail, notes, generatorInstalled,
+    prevailingWage, pwRate
   } = input || {};
 
   const trimmedName = String(jobName || "").trim();
   if (!trimmedName) throw new JobInputError("Job Name is required.");
+
+  // db/schema/072. ⚠ A FLAG WITH NO RATE IS AN INVALID STATE, so it is refused
+  // here rather than created and left to be noticed later. PW on with no usable
+  // rate does not error downstream — the hours quietly fall back to the employee
+  // rate and the job looks completely normal, which is the failure mode this
+  // whole build is trying to stop being possible.
+  //
+  // Validated BEFORE allocatePoNumber for the usual reason: a PO cannot be
+  // handed back, so a refusal must cost nothing.
+  const pw = prevailingWage === true ? normalisePwRate(pwRate) : null;
 
   const trimmedContractorId = String(contractorId || "").trim();
   if (!trimmedContractorId) throw new JobInputError("Contractor is required.");
@@ -431,8 +515,19 @@ export async function createJobRecord(atFetch, input) {
       atFetch, fields, poNumber, trimmedName, jobType, taxStatus, billing,
       trimmedContractorId, contractorName, generatorInstalled, notes,
       customerFirstName, customerLastName, customerPhone, customerEmail,
-      customerStreet, customerCity, customerState, customerZip,
+      customerStreet, customerCity, customerState, customerZip, pw,
     });
+  }
+
+  // ⚠ The non-native branch below cannot carry a PW rate: the job row it ends up
+  // with is written by the Airtable import, not here, so there is nothing to hang
+  // pw_rates on at this point. Refusing is honest — silently dropping the rate
+  // would create exactly the flag-with-no-rate state the validation above exists
+  // to prevent. Production is JOB_CREATE_SOURCE=native, so this is unreachable today.
+  if (pw) {
+    throw new JobInputError(
+      "Prevailing wage can only be set on a natively-created job. Set JOB_CREATE_SOURCE=native, " +
+      "or create the job first and turn on prevailing wage from the job screen.");
   }
 
   const record = await atFetch(`${encodeURIComponent(JOBS_TABLE)}`, {

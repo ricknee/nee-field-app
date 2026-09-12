@@ -6,14 +6,51 @@ not a menu of options.*
 
 ---
 
-## STATUS — read this first (2026-08-25)
+## STATUS — read this first (2026-09-12)
 
-**Step 0 done. Steps 1-4 not started — there is no PW code.** `grep prevailing_wage|pw_rates|
-app_settings` across every `.sql`/`.js`/`.mjs`/`.html` returns nothing but this file and
-SYSTEM-MAP. Effort below (~10-12 h) still reads right.
+**Steps 0 and 1 are DONE. `db/schema/072_prevailing_wage.sql` is live and the machine is INERT.**
+Zero jobs flagged, zero rows in `pw_rates`, zero PW cost rows. Steps 2-4 remain (~3 h), and
+**Step 2 is the only one that needs the township's determination sheet.**
 
-**Nothing blocks Step 1.** Its gate is *"no number moves"*, which needs no PW job to exist and no
-rate from the township. Step 2 alone waits on the Seneca determination sheet.
+**THE GATE PASSED, measured not assumed** (2026-09-12, against production after the view swap):
+
+| check | result |
+|---|---|
+| cost rows before / after | 924 / 924, **0 unmatched keys** |
+| `allocated_labor_cost` diffs | **0** (total $366,890.82 both sides) |
+| any-column diffs across all 13 original columns | **0** |
+| jobs compared | **123** (the plan says 117 — it has grown) |
+| live GP / closeout GP / est-GP labor diffs | **0 / 0 / 0** |
+| `v_pw_week_reconcile` hours_delta | **0.0000 on all 1,114 employee-weeks** |
+
+**Branch B was proved separately, on a throwaway Neon branch** — the no-op gate only exercises
+branch A, so passing it says nothing about whether the chronological path works. Flipping
+*Wheeling DG 31538* PW on that branch repriced it +$20,597.90 and moved eleven other jobs by
+between $5.59 and $405.92 — every one of them a job that **shared a week** with it, which is
+exactly what §"Overtime allocation" says chronological allocation should do. The arithmetic was
+checked by hand to the cent (see the worked example in `db/schema/072`'s header commit).
+
+⚠ **The hand-check disagreed with the view at first and the VIEW was right.** The week held an
+**unlinked 1.25 h travel entry** that the by-job query never showed. Unlinked hours consume the
+first 40 of the week and carry no cost to any job — get that wrong and every mixed week is
+mis-split. `v_pw_week_reconcile` exists to catch exactly that class of error.
+
+**Two things moved underneath Step 1 and made it SMALLER than costed:**
+
+1. ⚠⚠ **`app_settings` is NOT needed and was NOT built.** `db/schema/068` (2026-08-30) got there
+   first: it backfilled `labor_burden_rate` onto **all 96 estimates** and replaced the 32.50
+   literal with `v_estimating_labor_rate`. §6's proposed settings table would now be a **second**
+   home for a number that already has one. Dropped deliberately — do not add it back.
+2. **The est-GP re-check the plan demanded was re-run and is now stronger than "lossless".** All
+   96 estimates satisfy `estimated_labor_cost = round(hours × labor_burden_rate, 2)` exactly,
+   worst delta **$0.00**, and there are **no NULL rates left at all** — so the split the plan asked
+   for (NULL vs NOT NULL) has only one side now.
+
+**What Step 1 shipped:** the flag, `pw_rates`, `v_pw_job_rate` (the one resolver), the two-branch
+cost view, `v_pw_week_reconcile`, the PW arm on the estimate-create burden resolver, the
+create-job path, `setJobPrevailingWage` (dry-run first, re-stamps estimates), a
+`prevailingWageStatus` diagnostic, the job-detail bar, and PW badges on the job list, job header
+and both clock pickers. 10 new cases in `tests/handlers.test.mjs` (281 passed, 0 failed).
 
 **Two things moved underneath this plan after it was written. Both are folded into the sections
 below — this list is only so a returning reader knows to trust the revisions:**

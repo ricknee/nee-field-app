@@ -1,3 +1,5 @@
+import { CITY_TAX_SQL_LIST } from "./_city-taxes.js";
+
 // ── Hourly integrity checks ────────────────────────────────────────────────
 // Added 2026-08-25, after a day in which ELEVEN defects were found by hand and
 // not one of them threw. The pattern every single time: a query matched nothing,
@@ -191,27 +193,41 @@ export const CHECKS = [
     say: (r) => `${r.hours}h for ${r.employee_name} on ${r.work_date} names "${r.job_name}" but is not linked to it — paid, not costed`,
   },
   {
-    name: "prevailing-wage-picked-as-a-city-tax",
+    name: "city-tax-not-a-known-option",
     severity: "critical",
-    // ⚠⚠ 'Prevailing Wage' is an option in QuickBooks Time's **Taxes** list
-    // (custom field 65840) — sitting among Alliance Tax, Canton Tax and Massilon
-    // Tax — and that field flows straight into city_taxes, which drives payroll's
-    // city tax. A wage classification picked there becomes a tax.
+    // ⚠⚠ WATCHES THE COLUMN, NOT ONE BAD VALUE. The first version of this check
+    // matched `city_taxes ILIKE '%prevail%'`, because QuickBooks Time's **Taxes**
+    // list (custom field 65840) carries an option called 'Prevailing Wage' —
+    // sitting among Alliance Tax, Canton Tax and Massilon Tax — and that field
+    // flows straight into city_taxes, which drives payroll.
     //
-    // Nobody has ever picked it (0 entries, measured 2026-09-12) and the app
-    // rejects it on its own writes, but the QB pull does not validate what it is
-    // sent. Critical rather than warning because it is silent AND it is money:
-    // the person picking it is choosing something that reads as entirely
-    // reasonable, and two dropdowns offer a prevailing-wage-ish answer.
+    // That check knew ONE wrong answer in advance. Rename the option and it goes
+    // blind; and it said nothing about the six other off-list values already in
+    // the table. Validating against the real list catches all of them, plus
+    // whatever appears next, without anyone having to predict it.
     //
-    // The real fix is deleting the option in QuickBooks. This is the tripwire
-    // until someone does, and it scopes to zero the moment they do.
+    // Critical because it is silent AND it is money: the pull stores whatever
+    // QuickBooks sends without validating, and a city tax that matches no known
+    // option reads downstream as "no tax" rather than as an error.
+    //
+    // ⚠ SCOPED TO 45 DAYS, per the rule at the top of this file. Seven distinct
+    // off-list values exist historically (76 entries, newest 2025-09-05:
+    // 'Carrolton City Tax', 'N Canton Tax', 'Orrville Tax', 'Columbiana ' with a
+    // trailing space, 'LaunchApplication2', 'A Not Tax', 'Orrvile Tax'). Alarming
+    // on those every hour forever is how the one that matters gets ignored.
     sql: `SELECT employee_name, work_date, hours, job_name, city_taxes
             FROM time_entries
-           WHERE city_taxes ILIKE '%prevail%'`,
-    say: (r) => `${r.hours}h for ${r.employee_name} on ${r.work_date} has CITY TAX set to "${r.city_taxes}" ` +
-                `— that is a wage classification in the Taxes dropdown, not a tax. Fix the timesheet, ` +
-                `then delete that option in QuickBooks Time (custom field 65840).`,
+           WHERE city_taxes IS NOT NULL
+             AND city_taxes <> ''
+             AND city_taxes NOT IN (${CITY_TAX_SQL_LIST})
+             AND work_date > current_date - 45`,
+    say: (r) => `${r.hours}h for ${r.employee_name} on ${r.work_date} has CITY TAX "${r.city_taxes}", ` +
+                `which is not a known option — it will read as no tax. ` +
+                (/prevail/i.test(r.city_taxes || "")
+                  ? `That is a WAGE CLASSIFICATION in the Taxes dropdown, not a tax: fix the timesheet, ` +
+                    `then delete the option in QuickBooks Time (custom field 65840).`
+                  : `Either fix the timesheet or add the spelling to _city-taxes.js — ` +
+                    `whichever matches what QuickBooks actually offers.`),
   },
   {
     name: "pw-disagrees-with-quickbooks",

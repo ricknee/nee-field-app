@@ -19872,7 +19872,21 @@
     "Utica Tax",
     "Wadsworth Tax",
     "Akron Tax",   // kept from prior list so historical entries still pre-select
-    "Other"
+    "Other",
+    // ── Added 2026-09-12, after asking QuickBooks what it ACTUALLY offers ────
+    // Three values QuickBooks custom field 65840 can send that neither list
+    // recognised. Each fails silently — an unmatched city tax reads as no tax.
+    // "Carrolton City Tax" is QuickBooks' own one-L spelling and 30 timesheets
+    // already carry it; it sits ALONGSIDE the two-L version rather than
+    // replacing it, because accepting a value payroll really produces is the
+    // safe direction. Do NOT "correct" these.
+    // ⚠ This list is duplicated from netlify/functions/_city-taxes.js because a
+    // static page has no bundler and cannot import it. tests/handlers.test.mjs
+    // asserts the two are identical — that test is the only thing keeping them
+    // in step, so keep both sides in the same commit.
+    "Carrolton City Tax",
+    "Lisbon Tax",
+    "Loudenville Tax"
   ];
 
   // State

@@ -5,6 +5,7 @@ import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
+import { CITY_TAX_OPTS } from "./_city-taxes.js";
 import { neonLoginCandidate, neonEmployees, neonEmployeeById,
          isEmployeeHandle } from "./_employees.js";
 // Shadow-read helpers for the Neon migration. Fail-soft by contract — see _neon.js.
@@ -898,16 +899,12 @@ const WARRANTY_TYPE_OPTS = ["Parts & Labor", "Parts Only", "Extended", "Limited"
 // as English and correct as data: the value is stored as free text on a time entry
 // and anything that doesn't match verbatim silently falls back to "A No Tax"
 // downstream. Do NOT tidy the spellings on either side.
-const PR_CITY_TAX_OPTS = [
-  "A No Tax", "Alliance Tax", "Amherst Tax", "Ashland City Tax", "Austintown Tax",
-  "Canton Tax", "Carrollton City Tax", "Cleveland Tax", "Columbiana Tax",
-  "Cuyahoga Falls Tax", "Dennison City Tax", "Grafton Tax", "Green Tax",
-  "Hartville Tax", "Hayesville", "Madison City Tax", "Massilon Tax", "Medina Tax",
-  "Millersburg City Tax", "Minerva Tax", "N Canton", "New Philadephia",
-  "Orrville City Tax", "Rita Tax", "Salem Tax", "Sebring Tax", "Steubenville Tax",
-  "Streetsboro Tax", "Strongsville Tax", "Utica Tax", "Wadsworth Tax", "Akron Tax",
-  "Other",
-];
+// Moved to _city-taxes.js 2026-09-12 so the integrity check can validate against
+// the SAME list this file validates writes against — airtable.js imports
+// _integrity.js, so _integrity.js cannot import this file back without a cycle.
+// ⚠ The spellings are QuickBooks' own, typos included. See that file before
+// "fixing" any of them.
+const PR_CITY_TAX_OPTS = CITY_TAX_OPTS;
 
 // Warranties.Source — fallback "Standard" is the default for warranties
 // created from manufacturer templates at commissioning time.

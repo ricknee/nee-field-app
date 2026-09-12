@@ -7565,17 +7565,47 @@ await test("QB Service Item: recorded for COMPARISON — nothing prices from it"
      "scoped to 45 days, so a clean system reports ZERO — the house rule for every check");
 });
 
-await test("integrity: the two QuickBooks prevailing-wage tripwires exist", async () => {
+await test("integrity: the city-tax column is validated against the LIST, not one bad value", async () => {
   const fs = await import("node:fs/promises");
   const src = await fs.readFile(new URL("../netlify/functions/_integrity.js", import.meta.url), "utf8");
-  // 'Prevailing Wage' is an option in QB's TAXES list (65840), which flows into
-  // city_taxes and drives payroll. Never picked so far; nothing validates it.
-  ok(/name: "prevailing-wage-picked-as-a-city-tax"/.test(src), "the city-tax trap is watched");
-  ok(/city_taxes ILIKE '%prevail%'/.test(src), "and it matches on the actual column");
+  ok(/name: "city-tax-not-a-known-option"/.test(src), "the city-tax column is watched");
+  // ⚠ THE POINT OF THE REWRITE. Matching one known-bad string ('%prevail%') goes
+  // blind the moment somebody renames the option in QuickBooks, and says nothing
+  // about the six other off-list values already in the table.
+  ok(/city_taxes NOT IN \(\$\{CITY_TAX_SQL_LIST\}\)/.test(src),
+     "it validates against the real option list, so it cannot be evaded by a rename");
+  ok(/work_date > current_date - 45/.test(src),
+     "scoped to 45 days — 76 historical off-list rows would otherwise alarm forever");
   ok(/name: "pw-disagrees-with-quickbooks"/.test(src), "the two-systems reconciliation is watched");
-  // Severity matters: the tax one is silent AND money, so it is not a warning.
-  const tax = src.slice(src.indexOf('name: "prevailing-wage-picked-as-a-city-tax"'));
-  ok(/severity: "critical"/.test(tax.slice(0, 200)), "a wage class landing in a tax column is critical");
+  const tax = src.slice(src.indexOf('name: "city-tax-not-a-known-option"'));
+  ok(/severity: "critical"/.test(tax.slice(0, 200)),
+     "a city tax matching nothing reads as NO TAX downstream — critical, not a warning");
+});
+
+await test("city taxes: the backend and frontend lists are IDENTICAL", async () => {
+  const fs = await import("node:fs/promises");
+  const { CITY_TAX_OPTS } = await import("../netlify/functions/_city-taxes.js");
+  const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+  // index.html is a static page with no bundler, so it cannot import the module
+  // and keeps its own copy. THIS ASSERTION IS THE ONLY THING KEEPING THEM IN
+  // STEP: a value in one and not the other is a tax the app offers and refuses,
+  // or accepts and never shows.
+  const block = html.slice(html.indexOf("const PR_CITY_TAXES = ["));
+  // ⚠ Strip // comments BEFORE pulling the quoted values out: the comments in
+  // that block quote option names too, and counting those made this test read 38
+  // where the list holds 36.
+  const arr = block.slice(0, block.indexOf("];") + 2)
+                   .split("\n").filter(l => !l.trim().startsWith("//")).join("\n");
+  const front = [...arr.matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  eq(front.length, CITY_TAX_OPTS.length, "same number of options");
+  for (const v of CITY_TAX_OPTS) ok(front.includes(v), `frontend is missing "${v}"`);
+  for (const v of front) ok(CITY_TAX_OPTS.includes(v), `backend is missing "${v}"`);
+  // ⚠ QuickBooks' own misspellings, reproduced verbatim on BOTH sides. A value
+  // matched by string equality against what the pull stores; "fixing" a spelling
+  // here does not fix the data, it stops the data matching anything.
+  for (const typo of ["Massilon Tax", "New Philadephia", "Carrolton City Tax"]) {
+    ok(CITY_TAX_OPTS.includes(typo), `"${typo}" is QuickBooks' spelling and must survive`);
+  }
 });
 
 // ── report ──

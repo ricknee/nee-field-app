@@ -182,10 +182,22 @@ export async function runPull({ sql, token, since, dryRun = false }) {
       employee_id:     empId,
       work_date:       ts.date,
       duration_seconds: Number(ts.duration) || 0,
+      // ⚠⚠ 'Prevailing Wage' is an OPTION IN THIS LIST (65840, alongside Alliance
+      // Tax, Canton Tax, Massilon Tax…) and it is not a city tax. It has never
+      // been picked — 0 entries as of 2026-09-12 — and it is absent from the
+      // app's own PR_CITY_TAX_OPTS, but nothing here validates what QB sends, so
+      // it would land in city_taxes verbatim and reach payroll. The integrity
+      // check `prevailing-wage-picked-as-a-city-tax` is the tripwire; deleting
+      // the option in QuickBooks is the actual fix. See db/schema/073.
       city_taxes:      cf["65840"] || null,          // Taxes
       // Make maps customfield 71185 to BOTH Class and Labor Type. Replicated.
       class:           cf["71185"] || null,
       labor_type:      cf["71185"] || null,
+      // 71183 Service Item — 'LABOR' or 'LABOR:PREVAILING WAGE'.
+      // ⛔ RECORDED FOR COMPARISON ONLY. Prevailing wage is decided by the JOB
+      // (jobs.prevailing_wage); this is QuickBooks' independent answer, kept so
+      // the hourly run can notice the two drifting apart. Nothing prices from it.
+      service_item:    cf["71183"] || null,
       source:          "TSheets",
       notes:           ts.notes || null,
       // Make HARDCODES Billable = true and ignores customfield 71181. Replicated so
@@ -265,8 +277,12 @@ export async function runPull({ sql, token, since, dryRun = false }) {
     toWrite.push(r);
   }
 
+  // ⚠ TWO EXPLICIT COLUMN LISTS IN THIS FILE, neither a star select: this one and
+  // the tombstone list in the deletion block below. A column added here but not
+  // there is dropped the moment a timesheet is deleted, with no error.
   const COLS = ["qb_timesheet_id", "employee_name", "employee_id", "work_date", "duration_seconds",
-                "city_taxes", "class", "labor_type", "source", "notes", "billable", "job_id", "job_name"];
+                "city_taxes", "class", "labor_type", "service_item", "source", "notes", "billable",
+                "job_id", "job_name"];
 
   if (!dryRun && toWrite.length) {
     for (let i = 0; i < toWrite.length; i += 200) {
@@ -303,8 +319,8 @@ export async function runPull({ sql, token, since, dryRun = false }) {
       // also has no generated columns, so hours/week_start_date are plain and are
       // simply left null on the tombstone.
       const cols = ["qb_timesheet_id", "airtable_id", "employee_name", "employee_id", "work_date",
-                    "duration_seconds", "city_taxes", "class", "labor_type", "source", "notes",
-                    "billable", "job_id", "job_name", "labor_reviewed", "airtable_created_at"];
+                    "duration_seconds", "city_taxes", "class", "labor_type", "service_item", "source",
+                    "notes", "billable", "job_id", "job_name", "labor_reviewed", "airtable_created_at"];
       const list = cols.map(c => `"${c}"`).join(",");
       const moved = await sql.query(
         `WITH gone AS (

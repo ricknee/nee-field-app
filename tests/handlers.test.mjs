@@ -7536,6 +7536,48 @@ await test("PW: the rate is SUPPLIED — overtime and burden are never derived",
      "a 25 typed into a %-labelled box is REFUSED, not helpfully divided");
 });
 
+await test("QB Service Item: pulled across, and in BOTH column lists", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/qb-time-pull.js", import.meta.url), "utf8");
+  ok(/service_item:\s+cf\["71183"\]/.test(src), "custom field 71183 is mapped");
+  // ⚠ Two explicit column lists, neither a star select. A column in the upsert
+  // but not the tombstone is dropped the instant a timesheet is deleted in QB,
+  // with no error — the same shape of bug as the three rollup lists in 066.
+  const upsert = src.slice(src.indexOf("const COLS ="), src.indexOf("if (!dryRun && toWrite.length)"));
+  ok(/"service_item"/.test(upsert), "the upsert column list carries it");
+  const tomb = src.slice(src.indexOf("const cols = [\"qb_timesheet_id\", \"airtable_id\""));
+  ok(/"service_item"/.test(tomb.slice(0, 600)), "and so does the tombstone list");
+});
+
+await test("QB Service Item: recorded for COMPARISON — nothing prices from it", async () => {
+  const fs = await import("node:fs/promises");
+  const sql  = await fs.readFile(new URL("../db/schema/073_qb_service_item.sql", import.meta.url), "utf8");
+  const cost = await fs.readFile(new URL("../db/schema/072_prevailing_wage.sql", import.meta.url), "utf8");
+  // ⛔ THE LOAD-BEARING ONE. Prevailing wage is decided by the JOB. A second
+  // answer the crew can pick independently is the most dangerous mismatch
+  // available: the right hours on the right job at the wrong cost. If
+  // service_item ever reaches the cost view, that property is gone.
+  ok(!/service_item/.test(cost),
+     "the cost view never reads service_item — the JOB decides, and only the job");
+  ok(/COMPARISON ONLY/.test(sql), "and the column comment says so out loud");
+  ok(/CREATE OR REPLACE VIEW v_pw_source_disagreement/.test(sql), "the comparison view exists");
+  ok(/current_date - 45/.test(sql),
+     "scoped to 45 days, so a clean system reports ZERO — the house rule for every check");
+});
+
+await test("integrity: the two QuickBooks prevailing-wage tripwires exist", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/_integrity.js", import.meta.url), "utf8");
+  // 'Prevailing Wage' is an option in QB's TAXES list (65840), which flows into
+  // city_taxes and drives payroll. Never picked so far; nothing validates it.
+  ok(/name: "prevailing-wage-picked-as-a-city-tax"/.test(src), "the city-tax trap is watched");
+  ok(/city_taxes ILIKE '%prevail%'/.test(src), "and it matches on the actual column");
+  ok(/name: "pw-disagrees-with-quickbooks"/.test(src), "the two-systems reconciliation is watched");
+  // Severity matters: the tax one is silent AND money, so it is not a warning.
+  const tax = src.slice(src.indexOf('name: "prevailing-wage-picked-as-a-city-tax"'));
+  ok(/severity: "critical"/.test(tax.slice(0, 200)), "a wage class landing in a tax column is critical");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

@@ -191,6 +191,45 @@ export const CHECKS = [
     say: (r) => `${r.hours}h for ${r.employee_name} on ${r.work_date} names "${r.job_name}" but is not linked to it — paid, not costed`,
   },
   {
+    name: "prevailing-wage-picked-as-a-city-tax",
+    severity: "critical",
+    // ⚠⚠ 'Prevailing Wage' is an option in QuickBooks Time's **Taxes** list
+    // (custom field 65840) — sitting among Alliance Tax, Canton Tax and Massilon
+    // Tax — and that field flows straight into city_taxes, which drives payroll's
+    // city tax. A wage classification picked there becomes a tax.
+    //
+    // Nobody has ever picked it (0 entries, measured 2026-09-12) and the app
+    // rejects it on its own writes, but the QB pull does not validate what it is
+    // sent. Critical rather than warning because it is silent AND it is money:
+    // the person picking it is choosing something that reads as entirely
+    // reasonable, and two dropdowns offer a prevailing-wage-ish answer.
+    //
+    // The real fix is deleting the option in QuickBooks. This is the tripwire
+    // until someone does, and it scopes to zero the moment they do.
+    sql: `SELECT employee_name, work_date, hours, job_name, city_taxes
+            FROM time_entries
+           WHERE city_taxes ILIKE '%prevail%'`,
+    say: (r) => `${r.hours}h for ${r.employee_name} on ${r.work_date} has CITY TAX set to "${r.city_taxes}" ` +
+                `— that is a wage classification in the Taxes dropdown, not a tax. Fix the timesheet, ` +
+                `then delete that option in QuickBooks Time (custom field 65840).`,
+  },
+  {
+    name: "pw-disagrees-with-quickbooks",
+    severity: "warning",
+    // Two systems, two switches, no shared enforcement: this app costs prevailing
+    // wage off jobs.prevailing_wage, QuickBooks pays and certifies it off Service
+    // Item (71183). Neither is authoritative over the other BY DESIGN, so this
+    // check does not pick a winner — it says a human needs to reconcile them.
+    //
+    // Warning, not critical: a disagreement is usually a job flagged mid-stream,
+    // where the older hours legitimately predate the flag. It becomes critical
+    // only if it persists, which the 45-day window in the view surfaces.
+    sql: `SELECT employee_name, work_date, hours, job, service_item, disagreement
+            FROM v_pw_source_disagreement`,
+    say: (r) => `${r.hours}h for ${r.employee_name} on ${r.work_date} (${r.job}): ${r.disagreement} ` +
+                `[service item "${r.service_item}"]`,
+  },
+  {
     name: "clock-left-running",
     severity: "warning",
     // Operational rather than structural: nobody works an 18-hour shift, so this

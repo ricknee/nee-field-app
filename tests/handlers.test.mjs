@@ -1781,6 +1781,8 @@ await test('checklists: the crew keeps the list, only managers delete the whole 
   const writes = [
     ['createChecklist',      { jobId: 'recJ1', name: 'Supplies from shop' }],
     ['addChecklistItem',     { listId: 'l1', body: '200ft 2" PVC' }],
+    // Fixing "200ft" to "300ft" is the crew's own list, same tier as adding it.
+    ['updateChecklistItem',  { itemId: 'i1', body: '300ft 2" PVC' }],
     ['setChecklistItemDone', { itemId: 'i1', done: true }],
     ['deleteChecklistItem',  { itemId: 'i1' }],
   ];
@@ -1800,6 +1802,9 @@ await test('checklists: empty names and empty items are refused', async () => {
   eq((await POST('addChecklistItem', { listId: 'l1', body: '  ' })).statusCode, 400, 'blank item');
   eq((await POST('addChecklistItem', { body: 'PVC' })).statusCode, 400, 'listId required');
   eq((await POST('setChecklistItemDone', {})).statusCode, 400, 'itemId required');
+  // Emptying the box by accident must not quietly delete the pipe from the list.
+  eq((await POST('updateChecklistItem', { itemId: 'i1', body: '   ' })).statusCode, 400, 'an edit cannot blank a line');
+  eq((await POST('updateChecklistItem', { body: '300ft PVC' })).statusCode, 400, 'itemId required for an edit');
 });
 
 await test('checklists: reorder validates its id list before it renumbers anything', async () => {
@@ -1822,6 +1827,7 @@ await test('checklists: without DATABASE_URL they fail CLOSED, not soft', async 
   eq((await GET('jobChecklists', { jobId: 'recJ1' })).statusCode, 503, 'list 503s');
   eq((await GET('jobChecklist', { listId: 'l1' })).statusCode, 503, 'read 503s');
   eq((await POST('setChecklistItemDone', { itemId: 'i1', done: true })).statusCode, 503, 'tick 503s');
+  eq((await POST('updateChecklistItem', { itemId: 'i1', body: '300ft PVC' })).statusCode, 503, 'edit 503s');
   eq((await POST('deleteChecklist', { listId: 'l1' })).statusCode, 503, 'delete 503s');
 });
 

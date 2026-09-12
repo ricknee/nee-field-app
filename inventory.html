@@ -8571,10 +8571,19 @@ async function saveOrderAndGeneratePDF() {
       lines:     lines
     };
     if (contextEstimateId) payload.estimateId = contextEstimateId;
+    // The job's id, so the order becomes a list on that job in the field app
+    // (db/schema/074). A restock order is raised against a LOCATION and sends
+    // none — it has no job to put a list on.
+    var contextJobId = orderState.buildContext === "job"
+      ? (orderState.buildJob && !orderState.buildJob.isLocation ? orderState.buildJob.id : "")
+      : ((estimateState.current && estimateState.current.jobId) || "");
+    if (contextJobId) payload.jobId = contextJobId;
 
     var d = await apiPost(payload);
 
-    showToast("Order saved");
+    if (d.checklist && d.checklist.error) showToast("Order saved — " + d.checklist.error, true);
+    else if (d.checklist && d.checklist.listId) showToast("Order saved · added to the job's Lists");
+    else showToast("Order saved");
     // Generate PDF immediately using the working list (no refetch needed)
     generateOrderPDF({
       orderId:   d.orderId || "",   // autonumber from server, falls back to blank if unavailable
@@ -9491,15 +9500,18 @@ async function saveEditOrder() {
       };
     });
 
-    await apiPost({
+    var upd = await apiPost({
       action:       "orderUpdate",
       id:           orderState.editingOrderId,
       vendor:       orderState.buildVendor || "",
       lines:        lines,
-      replaceLines: true
+      replaceLines: true,
+      editedBy:     currentUser ? currentUser.name : ""
     });
 
-    showToast("Order updated");
+    // The job's list follows the order edit (db/schema/074) — say so if it couldn't.
+    if (upd && upd.checklist && upd.checklist.error) showToast("Order updated — " + upd.checklist.error, true);
+    else showToast("Order updated");
     orderState.editingOrder = false;
     orderState.buildItems = [];
     orderState.buildContext = null;

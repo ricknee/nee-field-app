@@ -15776,6 +15776,9 @@ function mapChecklist(row) {
     name: row.name,
     createdBy: row.created_by || "",
     updatedAt: row.updated_at,
+    // Generated from an inventory order (db/schema/074). The client uses it to
+    // say that editing a line here does not change the order.
+    fromOrder: row.material_order_id != null,
     open: row.open != null ? Number(row.open) : undefined,
     done: row.done_count != null ? Number(row.done_count) : undefined,
   };
@@ -15879,6 +15882,32 @@ async function handleAddChecklistItem(body, authUser) {
 
   await neonWrite("checklists.touch",
     `UPDATE job_checklists SET updated_at = now() WHERE id = $1::uuid`, [String(listId)]);
+  return resp(200, { ok: true, item: mapChecklistItem(rows[0]) });
+}
+
+// Fixing a line in place — "200ft" was meant to be "300ft". Before this the only
+// way was delete and retype, which also lost the line's position and its tick.
+// A blank body is refused rather than treated as a delete: emptying a box by
+// accident must not quietly remove the pipe from the list.
+//
+// A line generated from an inventory order (db/schema/074) may be edited like
+// any other. The edit changes the LIST only — the order is what was sent to the
+// vendor — and order_line_key is untouched, so a later edit to the ORDER still
+// finds this line.
+async function handleUpdateChecklistItem(body) {
+  const itemId = body?.itemId;
+  const text   = String(body?.body ?? body?.text ?? "").trim().slice(0, 300);
+  if (!itemId) return resp(400, { ok: false, error: "Missing itemId." });
+  if (!text)   return resp(400, { ok: false, error: "A line can't be blank — remove it instead." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Checklists are unavailable (database not configured)." });
+
+  const rows = await neonWrite("checklists.updateItem",
+    `UPDATE checklist_items SET body = $2 WHERE id::text = $1 RETURNING *`,
+    [String(itemId), text]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Item not found." });
+
+  await neonWrite("checklists.touchEdit",
+    `UPDATE job_checklists SET updated_at = now() WHERE id = $1::uuid`, [String(rows[0].checklist_id)]);
   return resp(200, { ok: true, item: mapChecklistItem(rows[0]) });
 }
 
@@ -16228,6 +16257,7 @@ export async function handler(event) {
       if (body.action === "deletePanelSchedule")  return await handleDeletePanelSchedule(body);
       if (body.action === "createChecklist")      return await handleCreateChecklist(body, authUser);
       if (body.action === "addChecklistItem")     return await handleAddChecklistItem(body, authUser);
+      if (body.action === "updateChecklistItem")  return await handleUpdateChecklistItem(body);
       if (body.action === "setChecklistItemDone") return await handleSetChecklistItemDone(body, authUser);
       if (body.action === "deleteChecklistItem")  return await handleDeleteChecklistItem(body);
       if (body.action === "reorderChecklistItems") return await handleReorderChecklistItems(body);

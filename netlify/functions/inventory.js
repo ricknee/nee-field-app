@@ -50,6 +50,8 @@ import { randomUUID } from "node:crypto";
 // jobsite photos use. Optional infrastructure — fails soft, never in ensureEnv.
 // See docs/PLAN-expense-receipts.md §11.
 import { r2Enabled, jobDocsPrefix, expensePrefix, presignPut, R2Error } from "./_r2.js";
+// An order mirrored as a list on its job (db/schema/074). Neon only.
+import { readOrderLineMap, syncOrderChecklist, dropOrderChecklistIfUntouched } from "./_order-checklists.js";
 
 function resp(code, body) {
   return {
@@ -3304,7 +3306,7 @@ async function handleOrderGet(params) {
 
 // ── CREATE ORDER ──────────────────────────────────────────
 async function handleOrderCreate(body) {
-  const { estimateId, jobName, vendor, createdBy, lines } = body || {};
+  const { estimateId, jobName, jobId, vendor, createdBy, lines } = body || {};
   if (!jobName || !jobName.trim()) return resp(400, { ok: false, error: "Job name is required." });
   if (!lines || !lines.length) return resp(400, { ok: false, error: "Order has no items." });
 
@@ -3319,20 +3321,48 @@ async function handleOrderCreate(body) {
   // deleted, and #32 was minted and deleted during the Step D smoke. Airtable
   // autonumbers never reclaim, max() does — seeding from max() would reissue a
   // number already printed on someone's order.
+  //
+  // job_id (db/schema/074) is resolved from the handle the picker served —
+  // COALESCE(airtable_id, id::text) — so both job forms land. A restock order
+  // sends no jobId and a handle that matches nothing leaves it NULL; either way
+  // the order still saves, it just gets no list on a job.
   const made = await neonWrite("orderCreate",
     `INSERT INTO material_orders
-       (order_number, estimate_id, job_name, vendor_notes, created_by, status, created_at, synced_at)
-     VALUES (nextval('material_order_number_seq'), $1, $2, $3, $4, 'Active', now(), now())
-     RETURNING id, order_number`,
+       (order_number, estimate_id, job_name, vendor_notes, created_by, status, created_at, synced_at, job_id)
+     VALUES (nextval('material_order_number_seq'), $1, $2, $3, $4, 'Active', now(), now(),
+             (SELECT id FROM jobs WHERE airtable_id = $5 OR id::text = $5 LIMIT 1))
+     RETURNING id, order_number, job_id`,
     [estimateId ? String(estimateId) : null, String(jobName).trim(),
-     String(vendor || "").trim() || null, String(createdBy || "").trim() || null]);
+     String(vendor || "").trim() || null, String(createdBy || "").trim() || null,
+     jobId ? String(jobId) : null]);
 
   const order = made[0];
   if (!order?.id) return resp(500, { ok: false, error: "Failed to create order." });
 
   await createOrderLinesHelper(order.id, lines);
 
-  return resp(200, { ok: true, id: order.id, orderId: Number(order.order_number) });
+  const checklist = await orderChecklistSoft(order.id, new Map(), createdBy);
+  // A jobId that resolved to nothing is worth saying out loud: the order is
+  // fine, but the crew will not find it under Lists and should not be left
+  // guessing why.
+  if (jobId && !order.job_id) checklist.error = "That job wasn't found, so no list was made on it.";
+
+  return resp(200, { ok: true, id: order.id, orderId: Number(order.order_number), checklist });
+}
+
+// ⚠ FAIL-SOFT, AND ONLY HERE. The order and its lines are already written by
+// the time this runs. Failing the request would tell the user the save failed,
+// they would press Save again, and that mints a SECOND order with a new number.
+// So a list that could not be made is reported in the response (`checklist.error`)
+// and the client says so — it is never silent, and it never costs a duplicate.
+// Re-saving the order through Edit re-runs the sync and heals a missing list.
+async function orderChecklistSoft(orderId, before, actor) {
+  try {
+    return await syncOrderChecklist(orderId, before, String(actor || "").trim() || null);
+  } catch (e) {
+    console.error(`orderChecklist ${orderId}: ${e?.message || e}`);
+    return { error: "The order saved, but its list on the job couldn't be updated." };
+  }
 }
 
 // ── HELPER: Create order lines in batches of 10 ──────────
@@ -3370,12 +3400,23 @@ async function deleteOrderLines(orderUuid) {
 
 // ── UPDATE ORDER (status / vendor / notes / lines) ────────────────
 async function handleOrderUpdate(body) {
-  const { id, status, vendor, lines, replaceLines } = body || {};
+  const { id, status, vendor, lines, replaceLines, editedBy } = body || {};
   if (!id) return resp(400, { ok: false, error: "Missing order id." });
 
   const touchesHeader = status !== undefined || vendor !== undefined;
   if (!touchesHeader && !replaceLines) {
     return resp(400, { ok: false, error: "Nothing to update." });
+  }
+
+  // The job list syncs by DIFFING the order (db/schema/074), and the lines are
+  // about to be replaced wholesale — so "before" has to be read now or it is
+  // gone. If this read fails the order edit still goes ahead; the list is simply
+  // not synced, and the response says so.
+  const replacing = !!(replaceLines && lines !== undefined);
+  let before = null, beforeFailed = false;
+  if (replacing) {
+    try { before = await readOrderLineMap(id); }
+    catch (e) { beforeFailed = true; console.error(`orderUpdate ${id}: list before-read failed: ${e?.message || e}`); }
   }
 
   if (touchesHeader) {
@@ -3394,18 +3435,33 @@ async function handleOrderUpdate(body) {
     if (!rows.length) return resp(404, { ok: false, error: "Order not found." });
   }
 
-  if (replaceLines && lines !== undefined) {
+  if (replacing) {
     await deleteOrderLines(id);
     if (lines.length) await createOrderLinesHelper(id, lines);
   }
 
-  return resp(200, { ok: true, id });
+  // A status-only change ("Complete") cannot move the list, so it is not synced.
+  // Vendor notes can — they are part of the list's name.
+  let checklist;
+  if (beforeFailed) {
+    checklist = { error: "The order saved, but its list on the job couldn't be updated." };
+  } else if (replacing || vendor !== undefined) {
+    checklist = await orderChecklistSoft(id, before, editedBy);
+  }
+
+  return resp(200, { ok: true, id, checklist });
 }
 
 // ── DELETE ORDER ──────────────────────────────────────────
 async function handleOrderDelete(body) {
   const { id } = body || {};
   if (!id) return resp(400, { ok: false, error: "Missing order id." });
+  // Its list on the job goes too — unless a line is ticked, in which case the
+  // list is a delivery record and stays. BEFORE the delete: afterwards the FK
+  // has nulled and the list can no longer be found by order. Fail-soft: a list
+  // left behind is untidy, a delete refused over it is worse.
+  try { await dropOrderChecklistIfUntouched(id); }
+  catch (e) { console.error(`orderDelete ${id}: list not dropped: ${e?.message || e}`); }
   // ON DELETE CASCADE takes the lines with it.
   const gone = await neonWrite("orderDelete",
     `DELETE FROM material_orders WHERE id = $1::uuid RETURNING id`, [id]);

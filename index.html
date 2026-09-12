@@ -1616,6 +1616,26 @@
       padding: 2px 4px;
     }
     .ck-del:hover { opacity: 1; color: var(--red); }
+    /* Edit a line in place — "200ft" should have been "300ft". Same quiet
+       styling as the delete button beside it, so the row doesn't get louder. */
+    .ck-edit {
+      flex: 0 0 auto;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      color: var(--muted);
+      opacity: 0.6;
+      padding: 2px 4px;
+    }
+    .ck-edit:hover { opacity: 1; color: var(--accent); }
+    .ck-body.editable { cursor: text; }
+    .ck-edit-inp {
+      flex: 1 1 auto;
+      min-width: 0;
+      font-size: 14px;
+      padding: 4px 8px;
+    }
     /* An item whose tick hasn't reached the server yet. It still reads as
        ticked — the tick is real to the user — but says so. */
     .ck-item.pending { border-style: dashed; border-color: var(--yellow); }
@@ -7877,7 +7897,7 @@
         ? `${open} to go${done ? ` · ${done} loaded` : ""}`
         : (done ? `all ${done} loaded` : "empty");
       return `<div class="panel-list-row" data-list-id="${esc(l.id)}">
-        <span style="font-size:18px; flex:none;">${open ? "📋" : "✅"}</span>
+        <span style="font-size:18px; flex:none;">${open ? (l.fromOrder ? "📦" : "📋") : "✅"}</span>
         <span style="flex:1 1 auto; min-width:0;">
           <span style="display:block; font-size:14px; font-weight:700;">${esc(l.name)}</span>
           <span style="display:block; font-size:11px; color:var(--muted);">${esc(sub)}</span>
@@ -7929,6 +7949,8 @@
     $("ckItemsModal").style.display = "flex";
     pushBackEntry("ckItems", () => { $("ckItemsModal").style.display = "none"; });
     listState.showDone = false;
+    listState.editingId = null;
+    listState.editDraft = null;
     ckAddDraft = "";
     try {
       const d = await apiGet("jobChecklist", { listId });
@@ -7964,12 +7986,21 @@
 
     // Only OPEN items get a grip. Order matters for what you still have to
     // load; once something is on the truck its position is history.
-    const itemRow = (i, draggable) => `<div class="ck-item${i.done ? " done" : ""}${i.pending ? " pending" : ""}" data-item-id="${esc(i.id)}">
+    // A line being edited swaps its text for an input in place — tap the text or
+    // ✎, fix "200ft" to "300ft", Enter. No delete-and-retype, so the line keeps
+    // its position and its tick.
+    const itemRow = (i, draggable) => {
+      const editing = listState.editingId === i.id;
+      return `<div class="ck-item${i.done ? " done" : ""}${i.pending ? " pending" : ""}" data-item-id="${esc(i.id)}">
       ${draggable ? `<span class="ck-grip" title="Drag to reorder">⠿</span>` : ""}
       <input type="checkbox" class="ck-box" ${i.done ? "checked" : ""} data-item-id="${esc(i.id)}" />
-      <span class="ck-body">${esc(i.body)}</span>
+      ${editing
+        ? `<input id="ckEditInput" class="edit-input ck-edit-inp" value="${esc(listState.editDraft ?? i.body)}" autocomplete="off" enterkeyhint="done" />`
+        : `<span class="ck-body editable" data-item-id="${esc(i.id)}">${esc(i.body)}</span>
+           <button type="button" class="ck-edit" data-item-id="${esc(i.id)}" title="Edit this line">✎</button>`}
       <button type="button" class="ck-del" data-item-id="${esc(i.id)}" title="Remove this line">✕</button>
     </div>`;
+    };
 
     $("ckItemsBody").innerHTML = `
       <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
@@ -7979,6 +8010,10 @@
         ${pending ? `<span style="font-size:11px; color:var(--yellow); font-weight:600;">${pending} tick${pending === 1 ? "" : "s"} waiting for signal</span>` : ""}
         ${canDeleteLists() ? `<button type="button" id="ckDeleteListBtn" class="btn btn-sm" style="font-size:11px; color:var(--red); margin-left:auto;">🗑 Delete list</button>` : ""}
       </div>
+      ${listState.list && listState.list.fromOrder ? `
+        <div style="font-size:11px; color:var(--muted); margin:-4px 0 10px;">
+          📦 From an inventory order. Editing a line here changes this list only — the order stays as sent.
+        </div>` : ""}
 
       <div id="ckOpenList" style="display:flex; flex-direction:column; gap:6px;">
         ${open.map(i => itemRow(i, open.length > 1)).join("")}
@@ -8008,6 +8043,21 @@
     body.querySelectorAll(".ck-del").forEach(b => {
       b.onclick = () => deleteChecklistItem(b.dataset.itemId);
     });
+    body.querySelectorAll(".ck-edit, .ck-body.editable").forEach(el => {
+      el.onclick = () => startEditChecklistItem(el.dataset.itemId);
+    });
+    const editInp = $("ckEditInput");
+    if (editInp) {
+      editInp.addEventListener("input", () => { listState.editDraft = editInp.value; });
+      editInp.addEventListener("keydown", (e) => {
+        if (e.key === "Enter")       { e.preventDefault(); saveEditChecklistItem(); }
+        else if (e.key === "Escape") { e.preventDefault(); cancelEditChecklistItem(); }
+      });
+      // Tapping away saves, the way a phone user expects a box to behave. The
+      // isConnected check matters: a re-render (a tick arriving) removes this
+      // input, and a blur fired by that removal is not the user leaving the box.
+      editInp.addEventListener("blur", () => { if (editInp.isConnected) saveEditChecklistItem(); });
+    }
     const toggle = $("ckDoneToggle");
     if (toggle) toggle.onclick = () => { listState.showDone = !listState.showDone; renderChecklist(); };
     const delList = $("ckDeleteListBtn");
@@ -8158,6 +8208,67 @@
     } catch (e) {
       // The typed text stays in the box, so nothing is lost to a failed add.
       status.textContent = `Couldn't add that: ${e.message}. It's still in the box — try again.`;
+    }
+  }
+
+  function startEditChecklistItem(itemId) {
+    const it = listState.items.find(i => i.id === itemId);
+    if (!it) return;
+    listState.editingId = itemId;
+    listState.editDraft = it.body;
+    renderChecklist();
+    const inp = $("ckEditInput");
+    if (inp) {
+      inp.focus();
+      // Caret at the end: the fix is usually the number at the front, but on a
+      // phone a full selection is one stray tap from wiping the whole line.
+      const n = inp.value.length;
+      try { inp.setSelectionRange(n, n); } catch (e) {}
+    }
+  }
+
+  function cancelEditChecklistItem() {
+    listState.editingId = null;
+    listState.editDraft = null;
+    renderChecklist();
+  }
+
+  // Not optimistic, unlike a tick. A tick made with no signal is still true —
+  // the pipe is on the truck. An edit that didn't save is just unsaved text, so
+  // it stays in the box with the error beside it until it lands.
+  async function saveEditChecklistItem() {
+    const itemId = listState.editingId;
+    if (!itemId || listState.editSaving) return;
+    const it = listState.items.find(i => i.id === itemId);
+    if (!it) { cancelEditChecklistItem(); return; }
+    const text = String(listState.editDraft ?? "").trim();
+    if (text === it.body) { cancelEditChecklistItem(); return; }
+    if (!text) {
+      cancelEditChecklistItem();
+      $("ckAddStatus").textContent = "A line can't be blank — use ✕ to remove it.";
+      return;
+    }
+    listState.editSaving = true;
+    $("ckAddStatus").textContent = "Saving…";
+    try {
+      const d = await apiPost("updateChecklistItem", { itemId, body: text });
+      it.body = d.item.body;
+      listState.editingId = null;
+      listState.editDraft = null;
+      renderChecklist();
+      $("ckAddStatus").textContent = "";
+    } catch (e) {
+      if (e.status === 404) {
+        listState.items = listState.items.filter(i => i.id !== itemId);
+        listState.editingId = null;
+        listState.editDraft = null;
+        renderChecklist();
+        $("ckAddStatus").textContent = "Someone else removed that line.";
+      } else {
+        $("ckAddStatus").textContent = `Couldn't save that edit: ${e.message}. It's still in the box — press Enter to try again.`;
+      }
+    } finally {
+      listState.editSaving = false;
     }
   }
 

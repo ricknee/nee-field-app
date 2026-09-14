@@ -118,7 +118,8 @@ import {
  *   FLEET ........ fleetVehicles 1999, fleetServiceHistory 2005, updateFleetVehicle 2016,
  *                  logMileage 2034, addFleetService 2075, updateFleetService 2096,
  *                  deleteFleetService 2116
- *   LIFTS ........ scissorLifts 2123, scissorLiftsByJob 1621, updateScissorLift 2129
+ *   LIFTS ........ scissorLifts 2123, scissorLiftsByJob 1621, updateScissorLift 2129,
+ *                  scissorLiftHistory (db/schema/075)
  *   GENERATOR .... generator 1532, getWarrantyTemplates 3016, getWarranties 3046,
  *                  addWarranty 3092, addGeneratorService 2936, commissionGenerator 3141
  *   SCHEDULE ..... scheduleEntries 3423, addScheduleEntry 3494, updateScheduleEntry 3518,
@@ -8950,12 +8951,55 @@ function mapLiftRow(r) {
   };
 }
 
+// ── Lift history (db/schema/075) ───────────────────────────────────────────
+// "Where was it last" = the most recent history row on a job OTHER than the one
+// the lift is on now, plus the day it left that job (the first later row with a
+// different job). A lift that went A → B → A answers B. Dates are formatted in
+// Postgres, never from a JS Date — the driver turns a date column into a Date,
+// and String(d).slice(0,10) has printed "Wed Aug 12" in production five times.
+const LIFT_LAST_JOB_SQL = `
+  SELECT DISTINCT ON (h.lift_id)
+         h.lift_id::text AS lift_id, h.current_job, h.assigned_to,
+         to_char((SELECT min(n.changed_at) FROM scissor_lift_history n
+                   WHERE n.lift_id = h.lift_id AND n.id > h.id
+                     AND n.current_job IS DISTINCT FROM h.current_job)
+                 AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS left_on
+    FROM scissor_lift_history h
+    JOIN scissor_lifts l ON l.id = h.lift_id
+   WHERE h.current_job IS NOT NULL
+     AND h.current_job IS DISTINCT FROM l.current_job
+   ORDER BY h.lift_id, h.id DESC`;
+
+// Who a lift can be assigned to: ACTIVE admins and employees. Owner's rule,
+// 2026-09-14. It replaced a hardcoded list in index.html that still offered two
+// people who had left; office and viewer accounts (and the invoice bot, which is
+// an "office" employee row) never drive a lift.
+const LIFT_ASSIGNEES_SQL = `
+  SELECT name FROM employees
+   WHERE active = true AND role IN ('admin', 'employee')
+     AND btrim(coalesce(name, '')) <> ''
+   ORDER BY name`;
+
 async function handleScissorLifts() {
   if (neonEnabled()) {
-    const q = await neonQuery(`${LIFT_SELECT}${LIFT_ORDER}`);
+    const [q, lastQ, empQ] = await Promise.all([
+      neonQuery(`${LIFT_SELECT}${LIFT_ORDER}`),
+      neonQuery(LIFT_LAST_JOB_SQL),
+      neonQuery(LIFT_ASSIGNEES_SQL),
+    ]);
     if (q?.rows) {
+      // Both extras fail SOFT: the lift list is the screen, and a missing "last
+      // job" line or picker is a worse screen, not a broken one. `assigneesOk`
+      // lets the client tell "nobody eligible" from "couldn't ask".
+      const last = new Map((lastQ?.rows || []).map(r => [r.lift_id, r]));
+      const lifts = q.rows.map(r => {
+        const l = mapLiftRow(r);
+        const p = last.get(l.id);
+        return { ...l, lastJob: p ? { job: p.current_job, assignedTo: p.assigned_to || "", leftOn: p.left_on || "" } : null };
+      });
       return resp(200, {
-        ok: true, lifts: await attachEquipPhotos("lifts", q.rows.map(mapLiftRow)),
+        ok: true, lifts: await attachEquipPhotos("lifts", lifts),
+        assignees: (empQ?.rows || []).map(r => r.name), assigneesOk: Array.isArray(empQ?.rows),
         _source: "neon", _ms: q.ms,
       });
     }
@@ -9229,15 +9273,23 @@ async function resolveLift(liftId) {
 // ── NEW 2026-08-05: add a lift ─────────────────────────────────────────────
 // Did not exist before — lifts could only be created in Airtable directly.
 // Born in Neon with no airtable_id; the Airtable mirror stamps one if it lands.
-async function handleCreateScissorLift(body) {
+async function handleCreateScissorLift(body, authUser) {
   const name = String(body?.name || "").trim();
   if (!name) return resp(400, { ok: false, error: "Missing lift name." });
 
+  // The lift and its first history row in ONE statement (db/schema/075), so a
+  // new lift's trail starts at the day it was added rather than at its first move.
   const rows = await neonWrite("lifts.insert",
-    `INSERT INTO scissor_lifts (name, status, current_job, assigned_to, notes)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    `WITH ins AS (
+       INSERT INTO scissor_lifts (name, status, current_job, assigned_to, notes)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *)
+     INSERT INTO scissor_lift_history
+            (lift_id, changed_by, status, current_job, assigned_to, date_deployed, notes, hooks_left, box_left)
+     SELECT ins.id, $6, ins.status, ins.current_job, ins.assigned_to, ins.date_deployed, ins.notes, ins.hooks_left, ins.box_left
+       FROM ins
+     RETURNING lift_id AS id`,
     [name, body?.status || "Available", body?.currentJob || null,
-     body?.assignedTo || null, body?.notes || null]);
+     body?.assignedTo || null, body?.notes || null, await actorName(authUser)]);
   const liftId = rows?.[0]?.id;
 
   const fields = { "Lift Name": name, "Status": body?.status || "Available" };
@@ -9374,7 +9426,36 @@ async function handleDeleteLiftPhoto(body) {
   return resp(200, { ok: true, deletedKey: key });
 }
 
-async function handleUpdateScissorLift(body) {
+// ── NEW 2026-09-14: a lift's history, newest first (db/schema/075) ─────────
+// Any signed-in role may read it, same as the lift list. Formatted in Postgres
+// (see LIFT_LAST_JOB_SQL for why). Capped at 200: at a few moves a week that is
+// years, and the card is not the place for more.
+async function handleScissorLiftHistory(params) {
+  const liftId = params?.liftId;
+  if (!liftId) return resp(400, { ok: false, error: "Missing liftId." });
+  const q = await neonQuery(
+    `SELECT h.changed_by, h.status, h.current_job, h.assigned_to, h.notes,
+            h.hooks_left, h.box_left, h.is_baseline,
+            to_char(h.changed_at AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS changed_on,
+            to_char(h.changed_at AT TIME ZONE 'America/New_York', 'FMHH12:MI AM') AS changed_time
+       FROM scissor_lift_history h
+       JOIN scissor_lifts l ON l.id = h.lift_id
+      WHERE l.id::text = $1 OR l.airtable_id = $1
+      ORDER BY h.id DESC LIMIT 200`, [String(liftId)]);
+  if (!q?.rows) {
+    console.error(`scissorLiftHistory: Neon read failed: ${q?.error || "not configured"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+  }
+  return resp(200, { ok: true, history: q.rows.map(r => ({
+    changedOn: r.changed_on || "", changedTime: r.changed_time || "",
+    changedBy: r.changed_by || "", status: r.status || "",
+    currentJob: r.current_job || "", assignedTo: r.assigned_to || "",
+    notes: r.notes || "", hooksLeft: r.hooks_left === true, boxLeft: r.box_left === true,
+    isBaseline: r.is_baseline === true,
+  })) });
+}
+
+async function handleUpdateScissorLift(body, authUser) {
   const { liftId, status, currentJob, assignedTo, dateDeployed, notes, hooksLeft, boxLeft } = body || {};
   if (!liftId) return resp(400, { ok: false, error: "Missing liftId." });
 
@@ -9393,8 +9474,25 @@ async function handleUpdateScissorLift(body) {
   if (hooksLeft    !== undefined) put("hooks_left", hooksLeft === true);
   if (boxLeft      !== undefined) put("box_left", boxLeft === true);
   if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
+  // The change and its history row in ONE statement (db/schema/075). Every
+  // sub-statement of a WITH sees the same snapshot, so `old` is the lift as it
+  // was BEFORE `upd` ran — that is what lets a single round-trip tell whether
+  // anything that says where the lift is actually moved. A notes-only save, or
+  // re-saving an unchanged card, updates the lift and adds no history row.
+  vals.push(await actorName(authUser));
   await neonWrite("lifts.update",
-    `UPDATE scissor_lifts SET ${sets.join(", ")} WHERE id = $1`, vals);
+    `WITH old AS (
+       SELECT status, current_job, assigned_to, hooks_left, box_left
+         FROM scissor_lifts WHERE id = $1),
+     upd AS (
+       UPDATE scissor_lifts SET ${sets.join(", ")} WHERE id = $1 RETURNING *)
+     INSERT INTO scissor_lift_history
+            (lift_id, changed_by, status, current_job, assigned_to, date_deployed, notes, hooks_left, box_left)
+     SELECT upd.id, $${vals.length}, upd.status, upd.current_job, upd.assigned_to, upd.date_deployed, upd.notes, upd.hooks_left, upd.box_left
+       FROM upd, old
+      WHERE (old.status, old.current_job, old.assigned_to, old.hooks_left, old.box_left)
+            IS DISTINCT FROM (upd.status, upd.current_job, upd.assigned_to, upd.hooks_left, upd.box_left)
+     RETURNING lift_id`, vals);
 
   if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id });
   const fields = {};
@@ -16168,6 +16266,7 @@ export async function handler(event) {
       if (action === "hoursByJob")                  return await handleHoursByJob();
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
+      if (action === "scissorLiftHistory") return await handleScissorLiftHistory(params);
       if (action === "jobInspections")     return await handleJobInspections(params);
       if (action === "jobEstimates")       return await handleJobEstimates(params);
       if (action === "estimateTemplates")  return await handleEstimateTemplates(params);
@@ -16229,8 +16328,8 @@ export async function handler(event) {
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);
       if (body.action === "approveExpense")       return await handleApproveExpense(body);
-      if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body);
-      if (body.action === "createScissorLift")    return await handleCreateScissorLift(body);
+      if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body, authUser);
+      if (body.action === "createScissorLift")    return await handleCreateScissorLift(body, authUser);
       if (body.action === "deleteScissorLift")    return await handleDeleteScissorLift(body);
       if (body.action === "liftPhotoUploadUrl")   return await handleLiftPhotoUploadUrl(body);
       if (body.action === "fleetPhotoUploadUrl")  return await handleFleetPhotoUploadUrl(body);

@@ -1052,6 +1052,13 @@
     .sl-field select:focus, .sl-field input:focus { border-color: var(--accent); }
     .sl-save-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
     .sl-save-msg { font-size: 11px; color: var(--green); display: none; }
+    .sl-last { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+    .sl-last b { color: var(--text); font-weight: 600; }
+    .sl-history { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; max-height: 260px; overflow-y: auto; }
+    .sl-history-row { font-size: 12px; color: var(--text); padding: 6px 0; border-bottom: 1px dashed var(--line); }
+    .sl-history-row:last-child { border-bottom: 0; }
+    .sl-history-when { font-size: 11px; font-weight: 700; color: var(--muted); }
+    .sl-history-note { font-size: 11px; color: var(--muted); }
 
     .edit-label {
       display: block;
@@ -14559,7 +14566,51 @@
   }
 
   // ── SCISSOR LIFTS ──
-  const SL_EMPLOYEES = ["Jeff Koehn","Scott Koehn","Patrick Gingerich","Nicholas Stoltzfus","Miles Unruh","Larry Unruh","Rick Unruh"];
+  // "Assigned To" is ACTIVE admins + employees, sent by the server with the lift
+  // list (owner, 2026-09-14). It used to be a hardcoded name list here that still
+  // offered two people who had left. A lift still assigned to someone who is no
+  // longer eligible keeps that name as a marked option, so saving the notes on
+  // that card cannot silently clear who has it.
+  function liftAssigneeOptions(assignees, current) {
+    const opts = assignees.map(n => `<option value="${esc(n)}" ${current===n?"selected":""}>${esc(n)}</option>`);
+    if (current && !assignees.includes(current)) {
+      opts.unshift(`<option value="${esc(current)}" selected>${esc(current)} (not active)</option>`);
+    }
+    return opts.join("");
+  }
+
+  // "Where was it last" — computed server-side from scissor_lift_history.
+  function renderLiftLastJob(lift) {
+    const p = lift.lastJob;
+    if (!p || !p.job) return "";
+    return `<div class="sl-last">Last job: <b>${esc(p.job)}</b>`
+      + (p.assignedTo ? ` · ${esc(p.assignedTo)}` : "")
+      + (p.leftOn ? ` · left ${esc(fmtDate(p.leftOn))}` : "")
+      + `</div>`;
+  }
+
+  // Inline expand rather than a modal, so there is no back-stack entry to keep
+  // balanced. Fetched on open, not with the list: the trail only grows.
+  async function toggleLiftHistory(btn) {
+    const box = btn.closest(".sl-card").querySelector(".sl-history");
+    if (box.style.display !== "none") { box.style.display = "none"; btn.textContent = "🕘 History"; return; }
+    box.style.display = ""; btn.textContent = "Hide history";
+    box.innerHTML = `<div class="sl-history-note">Loading…</div>`;
+    try {
+      const d = await apiGet("scissorLiftHistory", { liftId: btn.dataset.liftId });
+      const rows = d.history || [];
+      box.innerHTML = rows.length ? rows.map(h => `
+        <div class="sl-history-row">
+          <div class="sl-history-when">${esc(fmtDate(h.changedOn))} ${esc(h.changedTime || "")}</div>
+          <div><b>${esc(h.status || "—")}</b>${h.currentJob ? ` · ${esc(h.currentJob)}` : " · no job"}${h.assignedTo ? ` · ${esc(h.assignedTo)}` : ""}${h.hooksLeft ? " · 🪝" : ""}${h.boxLeft ? " · 📦" : ""}</div>
+          ${h.notes ? `<div class="sl-history-note">${esc(h.notes)}</div>` : ""}
+          <div class="sl-history-note">${h.isBaseline ? "Where it stood when history tracking began" : (h.changedBy ? "by " + esc(h.changedBy) : "")}</div>
+        </div>`).join("")
+        : `<div class="sl-history-note">No history yet.</div>`;
+    } catch (e) {
+      box.innerHTML = `<div class="sl-history-note" style="color:var(--red);">Couldn't load history: ${esc(e.message)}</div>`;
+    }
+  }
 
   async function openScissorLifts() {
     $("slModal").style.display = "flex";
@@ -14815,6 +14866,7 @@
     try {
       const d = await apiGet("scissorLifts");
       const lifts = d.lifts || [];
+      const assignees = d.assignees || [];
 
       // Self-healing thumbnail backfill: runs once, in the background, for any
       // lift photo that predates thumbnails. No admin button and nothing to
@@ -14865,6 +14917,7 @@
               <span class="sl-status-pill ${statusClass}">${esc(lift.status || "—")}</span>
             </div>
             ${renderLiftPhotos(lift)}
+            ${renderLiftLastJob(lift)}
             <div class="sl-field">
               <label>Status</label>
               <select data-lift-id="${esc(lift.id)}" class="sl-status-sel">
@@ -14888,7 +14941,7 @@
               <label>Assigned To</label>
               <select data-lift-id="${esc(lift.id)}" class="sl-emp-sel">
                 <option value="">— None —</option>
-                ${SL_EMPLOYEES.map(e => `<option value="${esc(e)}" ${lift.assignedTo===e?"selected":""}>${esc(e)}</option>`).join("")}
+                ${liftAssigneeOptions(assignees, lift.assignedTo)}
               </select>
             </div>
             <div class="sl-field">
@@ -14913,15 +14966,19 @@
             <div class="sl-save-row">
               <button data-lift-id="${esc(lift.id)}" class="sl-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save</button>
               <span data-lift-id="${esc(lift.id)}" class="sl-save-msg">✓ Saved</span>
+              <button data-lift-id="${esc(lift.id)}" class="sl-history-btn btn btn-sm" type="button" style="font-size:11px;">🕘 History</button>
               ${isAdmin() ? `<button data-lift-id="${esc(lift.id)}" data-lift-name="${esc(lift.name)}"
                 class="sl-retire-btn btn btn-sm" style="font-size:11px; margin-left:auto; color:var(--red);"
                 title="Remove this lift and its photos — for when one is sold">Retire</button>` : ""}
             </div>
+            <div class="sl-history" style="display:none;"></div>
           </div>`;
       }).join("");
 
       wireLiftPhotoControls();
       wireLiftRetire();
+      $("slGrid").querySelectorAll(".sl-history-btn").forEach(b =>
+        b.addEventListener("click", () => toggleLiftHistory(b)));
 
       // Wire save buttons
       $("slGrid").querySelectorAll(".sl-save-btn").forEach(btn => {

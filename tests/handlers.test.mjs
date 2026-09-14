@@ -7626,6 +7626,65 @@ await test("city taxes: the backend and frontend lists are IDENTICAL", async () 
   }
 });
 
+await test("lifts: a move is logged in the SAME statement, stamped with a name; history readable by the crew", async () => {
+  // db/schema/075. Owner, 2026-09-14: "i need history. be able to see where
+  // they were last." Before this every save overwrote the job and the person.
+  neonOn([]);
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  const LIFT = "11111111-1111-4111-8111-111111111111";
+  globalThis.fetch = async (url, opts) => {
+    if (String(url).includes("/sql") && process.env.DATABASE_URL === FAKE_NEON_URL) {
+      let sent = {};
+      try { sent = JSON.parse(opts?.body || "{}"); } catch { /* ignore */ }
+      const sql = String(sent.query || "");
+      seen.push({ sql, params: sent.params || [] });
+      if (/SELECT id, airtable_id, name FROM scissor_lifts/.test(sql))
+        return neonReply(["id", "airtable_id", "name"], [{ id: LIFT, airtable_id: null, name: "Lift #3" }]);
+      if (/SELECT name FROM employees WHERE airtable_id = \$1/.test(sql))
+        return neonReply(["name"], [{ name: "Rick Unruh" }]);
+      if (/UPDATE scissor_lifts/.test(sql))
+        return neonReply(["lift_id"], [{ lift_id: LIFT }]);
+      if (/FROM scissor_lift_history h/.test(sql))
+        return neonReply(["changed_by", "status", "current_job", "assigned_to", "notes", "hooks_left",
+                          "box_left", "is_baseline", "changed_on", "changed_time"],
+          [{ changed_by: "Rick Unruh", status: "On Job", current_job: "Bethel School", assigned_to: "Jeff Koehn",
+             notes: null, hooks_left: "f", box_left: "f", is_baseline: "f",
+             changed_on: "2026-09-14", changed_time: "9:05 AM" }]);
+    }
+    return realFetch(url, opts);
+  };
+  try {
+    const res = await POST("updateScissorLift",
+      { liftId: LIFT, status: "On Job", currentJob: "Bethel School", assignedTo: "Jeff Koehn" }, EMP_TOK);
+    eq(res.statusCode, 200, "an employee can still move a lift");
+    const w = seen.find(s => /UPDATE scissor_lifts/.test(s.sql));
+    ok(w, "the update ran");
+    // Two statements would let a save land with no history row after a blip.
+    ok(/INSERT INTO scissor_lift_history/.test(w.sql), "history is written by the SAME statement as the move");
+    ok(/IS DISTINCT FROM/.test(w.sql), "and only when something about where the lift is actually changed");
+    // The token carries { id, role } only — reading a name off it stamps a rec id.
+    eq(w.params[w.params.length - 1], "Rick Unruh", "stamped with a NAME resolved server-side");
+
+    const h = await GET("scissorLiftHistory", { liftId: LIFT }, EMP_TOK);
+    eq(h.statusCode, 200, "the crew can read a lift's history");
+    const row = json(h).history[0];
+    eq(row.currentJob, "Bethel School", "history row carries the job");
+    eq(row.changedOn, "2026-09-14", "date comes pre-formatted from Postgres, not a JS Date");
+  } finally {
+    globalThis.fetch = realFetch;
+    neonOff();
+  }
+
+  const fs = await import("node:fs/promises");
+  const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+  // Owner's rule: "should be only current employees and admin".
+  ok(/WHERE active = true AND role IN \('admin', 'employee'\)/.test(src),
+     "Assigned To offers ACTIVE admins and employees only");
+  ok(!/SL_EMPLOYEES/.test(html), "the hardcoded name list (which still offered people who had left) is gone");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

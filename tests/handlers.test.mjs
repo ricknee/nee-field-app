@@ -7685,6 +7685,121 @@ await test("lifts: a move is logged in the SAME statement, stamped with a name; 
   ok(!/SL_EMPLOYEES/.test(html), "the hardcoded name list (which still offered people who had left) is gone");
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+//  index.html: a ${name} that is never declared
+// ══════════════════════════════════════════════════════════════════════════
+// ⚠⚠ THE BUG THIS EXISTS FOR (fff3209, 2026-08-03 → 2026-09-15, six weeks).
+// The My Expenses row template interpolated `${receiptBtn}` and nothing in the
+// file ever declared it. That is a ReferenceError, thrown inside rows.map() and
+// swallowed by the surrounding catch, so every employee holding an unapproved
+// expense got "Couldn't load: receiptBtn is not defined" where their list
+// should have been. It reads as a network problem, so it was never reported as
+// a missing button — the same silent shape as every other defect in this app
+// that matches nothing rather than crashing where you can see it.
+//
+// The scan is deliberately OVER-PERMISSIVE about what counts as "declared": it
+// only fires on a name that appears nowhere else in the whole file as a
+// declaration, a parameter, an assignment, or a window.* export. A typo'd or
+// never-written variable is exactly that; a legitimate one never is.
+await test("index.html: every ${name} in a template literal is declared somewhere", async () => {
+  const fs = await import("node:fs/promises");
+  const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  const used = new Map();
+  for (const m of html.matchAll(/\$\{\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}/g)) {
+    if (!used.has(m[1])) used.set(m[1], html.slice(0, m.index).split("\n").length);
+  }
+  ok(used.size > 100, `found ${used.size} interpolated names — the scan is actually running`);
+
+  const declared = new Set();
+  const add = (s) => {
+    for (const part of String(s).split(/[,\s:=|&?()[\]{}]+/)) {
+      const nm = part.replace(/[^A-Za-z0-9_$]/g, "");
+      if (nm) declared.add(nm);
+    }
+  };
+  for (const rx of [
+    /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g,
+    // The SECOND declarator in `let a = 0, b = 0;` — missing this reported
+    // hitsReviewed as undeclared when it is right there beside hitsPending.
+    /,\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g,
+    /\bfunction\s+([A-Za-z_$][A-Za-z0-9_$]*)/g,
+    /\bclass\s+([A-Za-z_$][A-Za-z0-9_$]*)/g,
+    /\bwindow\.([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g,
+    /\bfunction\s*[A-Za-z0-9_$]*\s*\(([^)]*)\)/g,
+    /\(([^)]*)\)\s*=>/g,
+    // A BARE arrow parameter — `.map(ws => …)`. Without this the scan reports
+    // every single-argument arrow's parameter.
+    /([A-Za-z_$][A-Za-z0-9_$]*)\s*=>/g,
+    /\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g,
+    /\bcatch\s*\(\s*([A-Za-z_$][A-Za-z0-9_$]*)/g,
+    /\{([^{}]*)\}\s*=/g,
+  ]) for (const d of html.matchAll(rx)) add(d[1]);
+
+  const GLOBALS = new Set(["window", "document", "Math", "JSON", "Date", "Number",
+    "String", "Boolean", "Array", "Object", "console", "location", "navigator",
+    "localStorage", "sessionStorage", "undefined", "NaN", "Infinity"]);
+
+  const missing = [...used].filter(([n]) => !declared.has(n) && !GLOBALS.has(n));
+  ok(missing.length === 0,
+     missing.length
+       ? `undeclared in a template literal: ${missing.map(([n, l]) => `${n} (index.html:${l})`).join(", ")}`
+       : "no undeclared interpolations");
+});
+
+// ⚠ Approving an expense used to take its PAPERWORK off the screen with it: the
+// 🧾 button shared a <td> with Delete, and that whole cell was gated on
+// showActions, so the ✅ Reviewed tab had no way to reach the supplier PDF the
+// invoice bot had attached. Same in My Expenses, where an approved row rendered
+// only "✅ Approved". Looking at a bill you already approved is most of why
+// anyone opens those screens.
+await test("expenses: receipts are reachable on a REVIEWED expense, in both lists", async () => {
+  const fs = await import("node:fs/promises");
+  const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  // ── the job's Expenses tab ──
+  const row = html.slice(html.indexOf("function expenseRow(e, showActions)"),
+                         html.indexOf("// A group the user collapsed"));
+  ok(row.length > 200, "expenseRow is findable");
+  const receiptCell = row.indexOf('class="exp-receipt-btn"');
+  const deleteCell  = row.indexOf('class="exp-delete-btn"');
+  ok(receiptCell > -1 && deleteCell > -1, "both buttons are in the row");
+  // The receipt button must NOT be inside the approve-checkbox conditional. The
+  // tell is the `showActions ?` that opens just before it — after the fix the
+  // nearest preceding conditional belongs to Delete, which is INSIDE the cell.
+  const chk = row.indexOf('class="exp-review-chk"');
+  ok(chk < receiptCell, "the approve checkbox comes first, in its own gated cell");
+  ok(row.slice(chk, receiptCell).includes('` : ""}'),
+     "…and that gated cell is CLOSED before the receipt cell opens");
+
+  // The reviewed table gained a column, so the group-subtotal row must span it.
+  // ⚠ Anchored on "No reviewed expenses.", NOT on "function renderReviewedTab" —
+  // there are TWO functions by that name (time entries at ~10713, expenses at
+  // ~11202) and indexOf finds the time-entry one, which silently measured the
+  // wrong table.
+  const revHead = html.slice(html.indexOf("No reviewed expenses."),
+                             html.indexOf("const allPendingExpIds"));
+  // ⚠ /<th/ also matches "<thead" — hence the delimiter.
+  const ths = (revHead.match(/<th[ >]/g) || []).length;
+  eq(ths, 9, "the reviewed table has 9 columns (8 + receipts)");
+  ok(/colSpec === "pending" \? 4 : 3/.test(html),
+     "groupHeaderRow's trailing colspan is 3 for reviewed — 3+1+1+1+3 = 9");
+
+  // ── My Expenses (employee self-service) ──
+  const mine = html.slice(html.indexOf("const reviewed = e.reviewed === true"),
+                          html.indexOf("list.querySelectorAll(\".myexp-edit\")"));
+  ok(/const receiptBtn\s*=/.test(mine), "receiptBtn is DECLARED, not just interpolated");
+  const approved = mine.indexOf("✅ Approved");
+  const pending  = mine.indexOf("⬜ Pending");
+  ok(approved > -1 && pending > -1, "both branches are findable");
+  ok(mine.lastIndexOf("${receiptBtn}", approved) > mine.indexOf("const receiptBtn"),
+     "the APPROVED branch renders the receipts button");
+  ok(mine.lastIndexOf("${receiptBtn}", pending) > approved,
+     "and so does the pending branch");
+  // Edit and Delete are actions and stay pending-only.
+  ok(mine.indexOf("myexp-del") > approved, "delete is only in the pending branch");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

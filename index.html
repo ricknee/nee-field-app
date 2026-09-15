@@ -11149,11 +11149,18 @@
           ${showActions ? `
           <td style="text-align:center;">
             <input type="checkbox" data-expense-id="${esc(e.id)}" class="exp-review-chk" title="Mark as reviewed" style="cursor:pointer; width:16px; height:16px;" />
-          </td>
+          </td>` : ""}
+          <!-- ⚠ THE RECEIPT BUTTON IS NOT AN "ACTION" AND MUST NOT BE GATED WITH
+               ONE. It used to share this cell with Delete, so approving an
+               expense took its paperwork off the screen with it: the supplier
+               PDF the invoice bot attached was still in R2 and still on the
+               expense, but the ✅ Reviewed tab had no way to reach it. Looking
+               at the bill you already approved is the commonest reason to open
+               that tab at all. Delete stays pending-only — that IS an action. -->
           <td style="text-align:center;">
             <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(e.vendor || e.description || fmtDate(e.date))}" class="exp-receipt-btn" data-receipt-slot="${esc(e.id)}" title="Receipts" style="background:none; border:none; cursor:pointer; font-size:15px; opacity:0.75; padding:2px 4px; min-width:34px;">🧾</button>
-            <button data-expense-id="${esc(e.id)}" data-expense-label="${esc(fmtDate(e.date))} – ${esc(e.vendor || e.description || "")}" class="exp-delete-btn" title="Delete" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;">🗑</button>
-          </td>` : ""}
+            ${showActions ? `<button data-expense-id="${esc(e.id)}" data-expense-label="${esc(fmtDate(e.date))} – ${esc(e.vendor || e.description || "")}" class="exp-delete-btn" title="Delete" style="background:none; border:none; cursor:pointer; font-size:15px; color:var(--red); opacity:0.7; padding:2px 4px;">🗑</button>` : ""}
+          </td>
         </tr>`;
       }
 
@@ -11162,13 +11169,17 @@
       const isCollapsed = (g) =>
         window.__expGroupCollapsed.has(g.key) && !g.rows.some(r => hitIds.has(r.id));
 
-      // colSpec: "pending" → 10-col table (3|1|1|1|4)
-      //          "reviewed" → 8-col table (3|1|1|1|2)
+      // colSpec: "pending"  → 10-col table (3|1|1|1|4)  Type·Billable?·Approve·🧾🗑
+      //          "reviewed" →  9-col table (3|1|1|1|3)  Type·Billable?·🧾
+      // ⚠ A wrong colspan here does not throw and does not even look broken —
+      // the group subtotals just stop lining up with the columns above them,
+      // which reads as a styling quirk rather than as the row being short a
+      // cell. Recount these whenever a column is added to either table.
       function groupHeaderRow(group, colSpec) {
         const collapsed = isCollapsed(group);
         const chev      = collapsed ? "▸" : "▾";
         const countWord = group.count === 1 ? "entry" : "entries";
-        const trailingSpan = colSpec === "pending" ? 4 : 2;
+        const trailingSpan = colSpec === "pending" ? 4 : 3;
         return `<tr class="exp-group-header" data-group-key="${esc(group.key)}">
           <td colspan="3"><span class="exp-grp-chev">${chev}</span> <strong>${esc(group.label)}</strong> <span style="color:var(--muted);">(${group.count} ${countWord})</span></td>
           <td style="text-align:right;">${fmtCurrency(group.totalCost)}</td>
@@ -11214,7 +11225,7 @@
             <th>Date</th><th>Vendor</th><th>Description</th>
             <th style="text-align:right;">Total Cost</th><th>Markup %</th>
             <th style="text-align:right;">Billable Amt</th><th>Type</th>
-            <th>Billable?</th>
+            <th>Billable?</th><th></th>
           </tr></thead>
           <tbody>${body}</tbody>
         </table>`;
@@ -15189,8 +15200,24 @@
       list.innerHTML = rows.map(e => {
         const reviewed = e.reviewed === true || e.expenseStatus === "Reviewed";
         const amt = e.totalCost != null ? fmtCurrency(e.totalCost) : "—";
+        // ⚠⚠ THIS WAS INTERPOLATED WITHOUT EVER BEING DECLARED (fff3209,
+        // 2026-08-03). `${receiptBtn}` on an undeclared name is a ReferenceError,
+        // thrown inside rows.map() and swallowed by the catch below, so EVERY
+        // employee holding an unapproved expense saw "Couldn't load:
+        // receiptBtn is not defined" instead of their list. It reads as a
+        // network problem, which is why it sat there for six weeks — the same
+        // shape as every other failure in this app that matches nothing rather
+        // than crashing loudly.
+        const receiptBtn =
+          `<button class="btn btn-sm myexp-receipt" data-id="${esc(e.id)}"
+                   data-label="${esc(e.description || e.vendor || e.date || "Expense")}"
+                   type="button" title="Receipts"
+                   style="font-size:11px; padding:3px 8px;">🧾</button>`;
+        // Receipts show on an APPROVED expense too. Approving is not a reason to
+        // take the paperwork away — looking back at the bill is most of why
+        // anybody opens an old expense. Edit and Delete stay pending-only.
         const controls = reviewed
-          ? `<span style="font-size:11px; color:var(--green); font-weight:600; white-space:nowrap;">✅ Approved</span>`
+          ? `${receiptBtn}<span style="font-size:11px; color:var(--green); font-weight:600; white-space:nowrap;">✅ Approved</span>`
           : `${receiptBtn}<span style="font-size:11px; color:var(--muted); font-weight:600;">⬜ Pending</span>
              <button class="btn btn-sm myexp-edit" data-id="${esc(e.id)}" type="button" style="font-size:11px; padding:3px 8px;">✏</button>
              <button class="btn btn-sm myexp-del" data-id="${esc(e.id)}" type="button" style="font-size:11px; padding:3px 8px;">🗑</button>`;

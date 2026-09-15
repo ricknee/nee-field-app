@@ -853,6 +853,11 @@
     .cf-cell input::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
     .cf-cell input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
     .cf-cell input.filled { background:var(--accent-glow); font-weight:700; }
+    /* A size the selected insulation is not made in (compact stranding has no
+       #14-#10 and no #3). Dimmed but deliberately still EDITABLE: if you typed
+       a quantity and then switched to compact, you have to be able to clear it. */
+    .cf-cell.na label { color:var(--muted); opacity:.55; }
+    .cf-cell.na input { border-style:dashed; color:var(--muted); background:var(--panel-2); }
 
     .cf-extra-row { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
     .cf-extra-row input {
@@ -26923,6 +26928,37 @@
     { id:"RHW",  label:"RHH / RHW / RHW-2 — with outer covering",
       area:[0.0293,0.0353,0.0437,0.0835,0.1041,0.1333,0.1521,0.1750,0.2660,0.3039,0.3505,
             0.4072,0.4754,0.6291,0.7088,0.7870,0.8626,1.0082,1.2135,1.4272,1.7719] },
+
+    // ── Ch. 9 Table 5A — COMPACT copper and aluminum building wire ──
+    // Compact stranding squeezes the strands into the interstices, so the
+    // finished conductor is SMALLER than the same size in Table 5 and the pipe
+    // fills less. That is the whole point of these rows: 4 × 500 kcmil compact
+    // THHN is 0.6151 in² each instead of 0.7073, which is a trade size of pipe
+    // on a big feeder. Using Table 5 for compact wire is not unsafe, only
+    // expensive; using Table 5A for NON-compact wire undersizes the pipe, so
+    // these are separate picks in the dropdown rather than a checkbox that
+    // could be left on.
+    //
+    // ⚠ null = NOT MADE COMPACT IN THAT SIZE. Table 5A starts at #8 (and THHN
+    // at #6 — the #8 THHN cell is a dash in the book, not a blank), and it has
+    // no #3 at all. cfCompute REFUSES on a filled-in null rather than skipping
+    // it, because skipping would quietly UNDERSTATE the fill.
+    //
+    // ⚠ Table 5A also lists 700 and 900 kcmil, which CF_WIRE does not carry
+    // for any insulation type. Adding them means transcribing the 700/900 rows
+    // of Table 5 as well — do both together or the grid goes lopsided.
+    { id:"THHN-C", compact:true, label:"THHN / THWN / THWN-2 — compact",
+      area:[null,null,null,null,0.0452,0.0730,null,0.1017,0.1352,0.1590,0.1924,
+            0.2290,0.2733,0.3525,0.4071,0.4656,0.5216,0.6151,0.7620,0.9076,1.2370] },
+    { id:"XHHW-C", compact:true, label:"XHHW / XHHW-2 — compact",
+      area:[null,null,null,0.0394,0.0530,0.0730,null,0.1017,0.1352,0.1590,0.1885,
+            0.2290,0.2733,0.3421,0.4015,0.4536,0.5026,0.6082,0.7542,0.9331,1.1882] },
+    { id:"TW-C",   compact:true, label:"THW / THHW — compact",
+      area:[null,null,null,0.0510,0.0660,0.0881,null,0.1194,0.1698,0.1963,0.2332,
+            0.2733,0.3267,0.4128,0.4717,0.5281,0.5876,0.6939,0.8659,1.0386,1.2968] },
+    { id:"RHWS-C", compact:true, label:"RHH / RHW / RHW-2 — compact, no outer covering",
+      area:[null,null,null,0.0531,0.0683,0.0881,null,0.1194,0.1698,0.1963,0.2290,
+            0.2733,0.3217,0.4015,0.4596,0.5153,0.5741,0.6793,0.8413,1.0118,1.2968] },
   ];
 
   const cfState = {
@@ -26935,10 +26971,16 @@
     const ins  = CF_INSUL.find(i => i.id === input.insul)   || CF_INSUL[0];
     const cond = CF_CONDUIT.find(c => c.id === input.conduit) || CF_CONDUIT[0];
     let area = 0, count = 0;
+    const missing = [];
 
     CF_WIRE.forEach((sz, i) => {
       const n = Math.max(0, parseInt(input.qty[sz], 10) || 0);
       if (!n) return;
+      // A null area means the selected type is not made in that size (compact
+      // stranding — Table 5A). Collect it and let cfRender refuse. Dropping it
+      // silently would report a SMALLER fill than the pull actually has, which
+      // is the one direction of wrong answer that matters here.
+      if (ins.area[i] == null) { missing.push(sz); return; }
       count += n;
       area  += n * ins.area[i];
     });
@@ -26955,18 +26997,22 @@
     });
 
     const allowed = cfAllowedPct(count, !!input.nipple);
-    const pct = cond.area.map(a => (a == null || !count) ? null : (area / a) * 100);
+    // With a missing size in the pull, `area` is the total of only the sizes
+    // that DO exist — a real number, lower than the truth, and nothing about it
+    // looks wrong. So no percentage is offered at all until it is resolved.
+    const blocked = missing.length > 0;
+    const pct = cond.area.map(a => (blocked || a == null || !count) ? null : (area / a) * 100);
 
     // Areas ascend with trade size, so the first one at or under the allowed
     // percentage is the smallest that works. Skipping nulls is what makes
     // Type-EB's missing 2-1/2" land on 3" rather than on nothing.
     let minIdx = -1;
-    if (count) {
+    if (count && !blocked) {
       for (let i = 0; i < pct.length; i++) {
         if (pct[i] != null && pct[i] <= allowed) { minIdx = i; break; }
       }
     }
-    return { count, area, allowed, pct, minIdx, conduit: cond, insul: ins };
+    return { count, area, allowed, pct, minIdx, conduit: cond, insul: ins, missing };
   }
 
   function cfRenderExtras() {
@@ -26990,7 +27036,17 @@
 
     const vd = $("cfVerdict");
     vd.classList.remove("ok", "bad");
-    if (!r.count) {
+    // Checked BEFORE the empty case on purpose: if the only quantities entered
+    // are sizes this insulation is not made in, count is 0 and the form would
+    // otherwise read "enter some conductors" while the numbers sit right there.
+    if (r.missing.length) {
+      vd.classList.add("bad");
+      $("cfMinSize").textContent = "check sizes";
+      $("cfVerdictSub").textContent =
+        `${r.missing.join(", ")} ${r.missing.length === 1 ? "is" : "are"} not made as ` +
+        `compact wire (Ch. 9 Table 5A) — clear ${r.missing.length === 1 ? "it" : "them"} ` +
+        `or pick a standard insulation.`;
+    } else if (!r.count) {
       $("cfMinSize").textContent = "—";
       $("cfVerdictSub").textContent = "Enter conductor quantities below.";
     } else if (r.minIdx === -1) {
@@ -27029,15 +27085,22 @@
     }).join("");
 
     $("cfFootnote").textContent =
-      `Percent of total conduit area. NEC ${NEC_EDITION} Chapter 9, Tables 1, 4 and 5 · ` +
+      `Percent of total conduit area. NEC ${NEC_EDITION} Chapter 9, Tables 1, 4 and ` +
+      `${r.insul.compact ? "5A (compact)" : "5"} · ` +
       `${r.insul.label} · ${r.allowed}% allowed for ` +
       (cfState.nipple ? "a nipple ≤ 24 in. (Note 4)"
         : r.count === 1 ? "1 conductor" : r.count === 2 ? "2 conductors" : "over 2 conductors");
   }
 
   function cfBuild() {
-    $("cfInsul").innerHTML = CF_INSUL.map(i =>
-      `<option value="${esc(i.id)}">${esc(i.label)}</option>`).join("");
+    // Grouped so "compact" reads as a different table, not a different brand of
+    // THHN. The two groups share size labels but not areas — picking the wrong
+    // one is a silent one-trade-size error either way.
+    const cfOpts = (compact) => CF_INSUL.filter(i => !!i.compact === compact)
+      .map(i => `<option value="${esc(i.id)}">${esc(i.label)}</option>`).join("");
+    $("cfInsul").innerHTML =
+      `<optgroup label="Standard stranding — Table 5">${cfOpts(false)}</optgroup>` +
+      `<optgroup label="Compact stranding — Table 5A">${cfOpts(true)}</optgroup>`;
     $("cfConduit").innerHTML = CF_CONDUIT.map(c =>
       `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join("");
     $("cfWireGrid").innerHTML = CF_WIRE.map((sz, i) =>
@@ -27078,6 +27141,7 @@
       cfState.insul = e.target.value;
       $("cfWireTitle").textContent =
         "Wire sizes (AWG) / kcmil — " + (CF_INSUL.find(i => i.id === cfState.insul) || {}).label;
+      cfSyncWireAvail();
       cfRender();
     });
     $("cfConduit").addEventListener("change", (e) => {
@@ -27102,7 +27166,24 @@
     });
 
     $("cfWireTitle").textContent = "Wire sizes (AWG) / kcmil — " + CF_INSUL[0].label;
+    cfSyncWireAvail();
     cfRender();
+  }
+
+  // Dims the sizes the selected insulation is not made in. It does NOT disable
+  // them: a quantity typed under THHN then switched to compact has to stay
+  // clearable, and cfCompute refuses on it anyway, so this is a hint and the
+  // verdict is the guard.
+  function cfSyncWireAvail() {
+    const ins = CF_INSUL.find(i => i.id === cfState.insul) || CF_INSUL[0];
+    CF_WIRE.forEach((sz, i) => {
+      const el = $("cfq" + i);
+      if (!el) return;
+      const made = ins.area[i] != null;
+      el.placeholder = made ? "" : "—";
+      el.title = made ? "" : `${sz} is not made as a compact conductor (Table 5A)`;
+      el.parentElement.classList.toggle("na", !made);
+    });
   }
 
   function cfClear() {

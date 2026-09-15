@@ -177,11 +177,120 @@ test("Table 5: TW and RHW* converge at #6 and stay equal (they do in the NEC)", 
   }
 });
 
+// ── Table 5A — compact stranded building wire ──────────────────────────────
+// Compact wire is physically smaller than the same size in Table 5, so these
+// rows are the whole reason the feature exists: on a big feeder they are worth
+// a trade size of pipe. The failure mode to guard is picking the compact
+// column for NON-compact wire, which undersizes the conduit and does not throw.
+
+test("Table 5A: compact THHN is transcribed correctly at the sizes that matter", () => {
+  const c = CF_INSUL.find(i => i.id === "THHN-C").area;
+  const at = (sz) => c[CF_WIRE.indexOf(sz)];
+  eq(at("#6"),   0.0452, "#6 compact THHN");
+  eq(at("#2"),   0.1017, "#2");
+  eq(at("#1/0"), 0.1590, "1/0");
+  eq(at("#4/0"), 0.2733, "4/0");
+  eq(at("250"),  0.3525, "250 kcmil");
+  eq(at("500"),  0.6151, "500 kcmil");
+  eq(at("1000"), 1.2370, "1000 kcmil");
+  // Table 5A prints a DASH, not a number, for #8 THHN — it is not made.
+  eq(at("#8"),   null,   "#8 compact THHN is a dash in the book");
+  eq(at("#3"),   null,   "Table 5A has no #3 in any column");
+  eq(CF_WIRE.slice(0, 3).every(sz => at(sz) === null), true, "and nothing below #8");
+});
+
+test("Table 5A: the other three columns are not copies of the THHN one", () => {
+  const at = (id, sz) => CF_INSUL.find(i => i.id === id).area[CF_WIRE.indexOf(sz)];
+  eq(at("XHHW-C", "#8"),  0.0394, "#8 compact XHHW — made, unlike THHN");
+  eq(at("TW-C",   "#8"),  0.0510, "#8 compact THW/THHW");
+  eq(at("RHWS-C", "#8"),  0.0531, "#8 compact RHH*");
+  // 2/0 is where THHN and XHHW part company in Table 5A (.1924 vs .1885);
+  // 4 sizes either side of it they are identical, so a lazy copy passes
+  // everywhere except here.
+  eq(at("THHN-C", "#2/0"), 0.1924, "2/0 compact THHN");
+  eq(at("XHHW-C", "#2/0"), 0.1885, "2/0 compact XHHW — NOT the same number");
+  eq(at("THHN-C", "#3/0"), at("XHHW-C", "#3/0"), "but 3/0 genuinely is the same");
+});
+
+// ⚠ ONE documented exception, and it is a flag on Table 5 rather than on 5A.
+// In Table 5 the app groups "TW / THW / THHW / THW-2" as a single row, and at
+// #8 those are NOT one number in the NEC: TW is thinner than THW. The app
+// carries TW's 0.0437, and compact THW is 0.0510 — larger, which is physically
+// impossible for the same insulation. That is evidence the standard row is
+// holding the TW value where a THW pull needs the THW one. It is an
+// UNDERSIZING error, so it is pinned here as open rather than guessed at;
+// resolving it needs the book, not another website.
+const KNOWN_INVERSION = new Set(["TW-C:#8"]);
+
+test("compact is smaller than standard at every size it is made in", () => {
+  const PAIRS = [["THHN-C","THHN"], ["XHHW-C","XHHW"], ["TW-C","TW"], ["RHWS-C","RHWS"]];
+  for (const [cid, sid] of PAIRS) {
+    const c = CF_INSUL.find(i => i.id === cid).area;
+    const s = CF_INSUL.find(i => i.id === sid).area;
+    CF_WIRE.forEach((sz, i) => {
+      if (c[i] == null) return;
+      if (KNOWN_INVERSION.has(`${cid}:${sz}`)) return;
+      if (!(c[i] < s[i])) {
+        throw new Error(`${cid} ${sz}: compact ${c[i]} is not below standard ${s[i]}`);
+      }
+    });
+  }
+});
+
+test("the one known inversion is still exactly the one documented above", () => {
+  const at = (id, sz) => CF_INSUL.find(i => i.id === id).area[CF_WIRE.indexOf(sz)];
+  eq(at("TW", "#8"),   0.0437, "standard row still carries TW's #8 value");
+  eq(at("TW-C", "#8"), 0.0510, "compact THW #8 is still larger — the open question");
+  eq(KNOWN_INVERSION.size, 1, "if this grew, something was transcribed wrong");
+});
+
+// The payoff vector: the same eight conductors, one pipe size apart.
+test("8 × 1/0 THHN in EMT: compact makes 2\", standard needs 2-1/2\"", () => {
+  const c = run({ qty: { "#1/0": 8 }, insul: "THHN-C", conduit: "EMT" });
+  eq(c.count, 8, "conductor count");
+  eq(c.area.toFixed(4), "1.2720", "compact total area");
+  eq(c.pct.map(pct1)[5], "37.9", '2" EMT');
+  eq(CF_TRADE[c.minIdx], "2", "fits 2\" at 37.9%");
+
+  const s = run({ qty: { "#1/0": 8 }, insul: "THHN", conduit: "EMT" });
+  eq(s.area.toFixed(4), "1.4840", "standard total area");
+  eq(s.pct.map(pct1)[5], "44.2", '2" EMT — over the 40% line');
+  eq(CF_TRADE[s.minIdx], "2-1/2", "so standard THHN takes the next size up");
+});
+
+// ⚠ THE FAILURE THIS FEATURE COULD HAVE SHIPPED. A #12 in a compact pull has
+// no Table 5A area. Skipping it would still return a number — a SMALLER one —
+// and "1/2 in. is fine" would print with nothing marked wrong. So a filled-in
+// size that is not made compact suppresses the whole answer.
+test("a size not made compact refuses instead of quietly shrinking the pull", () => {
+  const r = run({ qty: { "#12": 3, "#1/0": 8 }, insul: "THHN-C", conduit: "EMT" });
+  eq(r.missing.join(","), "#12", "the offending size is named, not dropped");
+  eq(r.minIdx, -1, "no minimum size is offered");
+  eq(r.pct.every(p => p === null), true, "and no percentage at all is shown");
+});
+
+test("a compact pull of ONLY unmade sizes is a refusal, not an empty form", () => {
+  const r = run({ qty: { "#14": 2, "#8": 1 }, insul: "THHN-C" });
+  eq(r.count, 0, "nothing countable");
+  eq(r.missing.join(","), "#14,#8", "both named, in grid order");
+  const ok = run({ qty: { "#8": 1 }, insul: "XHHW-C" });
+  eq(ok.missing.length, 0, "…but #8 IS made in compact XHHW, so that one computes");
+  eq(ok.area.toFixed(4), "0.0394", "compact XHHW #8");
+});
+
+test("standard insulation types have no holes and never refuse", () => {
+  for (const id of ["THHN", "XHHW", "TW", "RHWS", "RHW"]) {
+    const r = run({ qty: { "#14": 1, "#3": 1, "1000": 1 }, insul: id });
+    eq(r.missing.length, 0, `${id} should be made in every size in the grid`);
+    eq(r.count, 3, `${id} counts all three`);
+  }
+});
+
 test("every table is complete and aligned", () => {
   eq(CF_TRADE.length, 12, "trade sizes");
   eq(CF_WIRE.length, 21, "wire sizes");
   eq(CF_CONDUIT.length, 12, "conduit types");
-  eq(CF_INSUL.length, 5, "insulation types");
+  eq(CF_INSUL.length, 9, "insulation types — 5 standard (Table 5) + 4 compact (Table 5A)");
   for (const c of CF_CONDUIT) {
     eq(c.area.length, CF_TRADE.length, `${c.id} area row length`);
     if (!c.area.some(v => v != null)) throw new Error(`${c.id} has no sizes at all`);
@@ -192,8 +301,12 @@ test("every table is complete and aligned", () => {
   for (const i of CF_INSUL) {
     eq(i.area.length, CF_WIRE.length, `${i.id} area row length`);
     for (const v of i.area) {
-      if (!(v > 0)) throw new Error(`${i.id} has a non-positive area`);
+      // null is legal ONLY on a compact row — Table 5A is not made in every
+      // size. A null on a standard row would be a deleted number, not a gap.
+      if (v == null && i.compact) continue;
+      if (!(v > 0)) throw new Error(`${i.id} has a non-positive or missing area`);
     }
+    if (!i.area.some(v => v != null)) throw new Error(`${i.id} has no sizes at all`);
   }
 });
 
@@ -208,10 +321,17 @@ test("areas ascend monotonically — catches a transposed digit", () => {
     }
   }
   for (const i of CF_INSUL) {
-    for (let k = 1; k < i.area.length; k++) {
-      if (i.area[k] <= i.area[k - 1]) {
-        throw new Error(`${i.id} at ${CF_WIRE[k]}: ${i.area[k]} follows ${i.area[k - 1]}`);
+    // Compact rows have holes, so compare against the last REAL value rather
+    // than the previous index — otherwise a null reads as 0 and every row after
+    // a gap "ascends" trivially.
+    let prev = null, prevSz = null;
+    for (let k = 0; k < i.area.length; k++) {
+      const v = i.area[k];
+      if (v == null) continue;
+      if (prev != null && v <= prev) {
+        throw new Error(`${i.id} at ${CF_WIRE[k]}: ${v} follows ${prevSz}'s ${prev}`);
       }
+      prev = v; prevSz = CF_WIRE[k];
     }
   }
 });

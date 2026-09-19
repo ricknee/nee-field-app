@@ -13501,7 +13501,46 @@
    */
   const pwsState = { companies: [], company: null, specs: [], deleted: [], showDeleted: false };
 
+  // ⚠ THESE CONTROLS CANNOT BE WIRED IN wireEvents(), and shipping them there
+  // is exactly the bug the People modal already paid for — see the note on
+  // wirePeopleControls(). init() calls wireEvents() from a script block around
+  // line 12730, while this modal's markup sits near the bottom of <body>, so
+  // at wire time $("pwsAddSpecBtn") is still null and addEventListener is
+  // never reached. Nothing throws. The symptom is a button that renders,
+  // enables, styles itself correctly — and does nothing when tapped, which is
+  // precisely what went to production on 2026-09-19.
+  //
+  // The giveaway that it is THIS bug and not a broken handler: openPowerSpecs
+  // and the company cards work fine, because the ☰ entry is in the top bar
+  // (parsed early) and the cards use inline onclick, which the parser attaches
+  // itself. Only the listeners added by script were lost.
+  //
+  // The _wired guard matters because openPowerSpecs() is also the reopen path
+  // — without it every open would stack another listener, and one tap would
+  // open two file pickers.
+  function wirePowerSpecControls() {
+    const addCo = $("pwsAddCoBtn");
+    if (addCo && !addCo._wired) {
+      addCo._wired = true;
+      addCo.addEventListener("click", () => {
+        $("pwsAddCoForm").style.display = "";
+        $("pwsCoMsg").textContent = "";
+        $("pwsCoName").focus();
+      });
+    }
+    const cancel = $("pwsCoCancelBtn");
+    if (cancel && !cancel._wired) {
+      cancel._wired = true;
+      cancel.addEventListener("click", () => { $("pwsAddCoForm").style.display = "none"; });
+    }
+    const save = $("pwsCoSaveBtn");
+    if (save && !save._wired) { save._wired = true; save.addEventListener("click", savePowerCompany); }
+    const addSpec = $("pwsAddSpecBtn");
+    if (addSpec && !addSpec._wired) { addSpec._wired = true; addSpec.addEventListener("click", addPowerCompanySpecs); }
+  }
+
   async function openPowerSpecs() {
+    wirePowerSpecControls();
     $("powerSpecsModal").style.display = "flex";
     pushBackEntry("powerSpecs", () => { $("powerSpecsModal").style.display = "none"; });
     pwsShowList();
@@ -15932,23 +15971,11 @@
     if (slBtn) slBtn.addEventListener("click", openScissorLifts);
     const fleetBtn = $("btnFleet");
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
-    // Power company specs. The modal's own controls are wired here too — it
-    // lives at the END of the document, so unlike btnPeople's modal the parser
-    // has already reached it by the time init() runs.
+    // ONLY the top-bar button is wired here, for the same reason btnPeople is:
+    // the Power Co. Specs modal lives at the bottom of <body> and does not
+    // exist yet. Its own controls are wired in wirePowerSpecControls().
     const pwsBtn = $("btnPowerSpecs");
     if (pwsBtn) pwsBtn.addEventListener("click", openPowerSpecs);
-    const pwsAddCo = $("pwsAddCoBtn");
-    if (pwsAddCo) pwsAddCo.addEventListener("click", () => {
-      $("pwsAddCoForm").style.display = "";
-      $("pwsCoMsg").textContent = "";
-      $("pwsCoName").focus();
-    });
-    const pwsCoCancel = $("pwsCoCancelBtn");
-    if (pwsCoCancel) pwsCoCancel.addEventListener("click", () => { $("pwsAddCoForm").style.display = "none"; });
-    const pwsCoSave = $("pwsCoSaveBtn");
-    if (pwsCoSave) pwsCoSave.addEventListener("click", savePowerCompany);
-    const pwsAddSpec = $("pwsAddSpecBtn");
-    if (pwsAddSpec) pwsAddSpec.addEventListener("click", addPowerCompanySpecs);
     const payrollBtn = $("btnPayroll");
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
     const hoursByJobBtn = $("btnHoursByJob");

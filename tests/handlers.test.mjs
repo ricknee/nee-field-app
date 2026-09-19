@@ -7790,6 +7790,40 @@ await test("lifts: a move is logged in the SAME statement, stamped with a name; 
 // only fires on a name that appears nowhere else in the whole file as a
 // declaration, a parameter, an assignment, or a window.* export. A typo'd or
 // never-written variable is exactly that; a legitimate one never is.
+await test("index.html: the Power Co. Specs modal wires its own controls on OPEN, not in wireEvents", async () => {
+  const fsp = await import("node:fs/promises");
+  const html = await fsp.readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  // The bug this guards, which shipped on 2026-09-19: the modal's markup sits
+  // near the bottom of <body>, and init() calls wireEvents() from a script
+  // block far above it. At wire time the buttons are still null, so
+  // addEventListener is never reached — nothing throws, and "+ Add Specs"
+  // renders, enables and styles itself correctly while doing nothing at all
+  // when tapped. The People modal's tabs paid for this exact lesson first.
+  const openIdx = html.indexOf("async function openPowerSpecs()");
+  const modalIdx = html.indexOf('id="powerSpecsModal"');
+  const wireIdx = html.indexOf('const pwsBtn = $("btnPowerSpecs");');
+  ok(openIdx > 0 && modalIdx > 0 && wireIdx > 0, "the feature is still here to check");
+
+  // The structural fact that MAKES it a bug — asserted rather than assumed, so
+  // that moving the modal higher retires this guard honestly instead of
+  // leaving it passing for the wrong reason.
+  ok(wireIdx < modalIdx,
+     "wireEvents still runs before the modal markup — so script-added listeners on it would be lost");
+
+  const wiredLazily = html.slice(html.indexOf("function wirePowerSpecControls()"), openIdx);
+  for (const id of ["pwsAddCoBtn", "pwsCoSaveBtn", "pwsCoCancelBtn", "pwsAddSpecBtn"]) {
+    ok(wiredLazily.includes(id), `${id} is wired in wirePowerSpecControls()`);
+    // ...and NOT in wireEvents, where it would silently never attach.
+    const inWireEvents = html.slice(wireIdx, wireIdx + 2000);
+    ok(!inWireEvents.includes(id), `${id} is NOT wired in wireEvents()`);
+  }
+  ok(html.slice(openIdx, openIdx + 400).includes("wirePowerSpecControls()"),
+     "openPowerSpecs() calls it, so the controls are live before anyone can tap them");
+  // Reopening must not stack a second listener — one tap, one file picker.
+  ok(wiredLazily.includes("_wired"), "the _wired guard survives, because open is also the reopen path");
+});
+
 await test("index.html: every ${name} in a template literal is declared somewhere", async () => {
   const fs = await import("node:fs/promises");
   const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");

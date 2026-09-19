@@ -758,6 +758,97 @@ export async function purgeJobPrint(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) 
   return { key: k, purged: true };
 }
 
+// ── Power company specs ────────────────────────────────────────────────────
+// The utility's own construction standards — Ohio Edison, AEP and the rest —
+// as PDFs, attached to the COMPANY rather than to any job. The same sheet
+// governs every job that utility touches, so filing it per job would mean the
+// same document uploaded dozens of times and, worse, a crew finding the
+// 2019 revision on one job and the 2026 one on the next.
+//
+// Mechanically this IS the prints feature — presigned PUT/GET, the folder is
+// the record, nothing in Postgres — with the job id swapped for a company id.
+// The two deliberate inherited properties:
+//
+//  1. READING IS OPEN TO EVERY SIGNED-IN ROLE, like _prints and unlike _docs.
+//     A crew standing at a meter base needing to know the utility's clearance
+//     is the entire audience. Writing is manager-only (_ADMIN_OFFICE), because
+//     a spec is a claim about what the utility requires.
+//  2. The ORIGINAL FILENAME survives. "OE Service Standards Rev 12-2025.pdf"
+//     is how anyone knows which revision they are holding.
+//
+// ⚠ The id in the key is ALWAYS the Neon `power_companies.id` uuid, never the
+// dual COALESCE(airtable_id, id::text) handle the pickers speak. Those two are
+// the same string for the 9 synced utilities and different for anything born
+// native, and `createPowerCompany` stamps `airtable_id` after the fact if the
+// Airtable mirror ever comes back on. A key built from the dual handle would
+// therefore change identity under a row that did not move, stranding every
+// spec already filed under it. The handlers resolve the handle to the uuid
+// before they touch a key — see powerCoSpecContext in airtable.js.
+export const POWERCO_ROOT = "powerco/";
+export const SPECS_SEGMENT = "_specs";
+
+export function powerCoSpecsPrefix(companyId) {
+  return `${POWERCO_ROOT}${String(companyId)}/${SPECS_SEGMENT}/`;
+}
+
+export function isPowerCoSpecKey(companyId, key) {
+  return String(key).startsWith(powerCoSpecsPrefix(companyId));
+}
+
+// Binned NESTED inside the company's own specs segment, for the same two
+// reasons prints are: the top-level `_deleted/` root is swept by the photo bin
+// listing and carries a 30-day expiry lifecycle rule. A superseded utility
+// standard should leave when someone says so, not evaporate on a timer.
+const SPEC_DELETED_SEGMENT = "_deleted/";
+
+export function isPowerCoSpecDeletedKey(companyId, key) {
+  return String(key).startsWith(powerCoSpecsPrefix(companyId) + SPEC_DELETED_SEGMENT);
+}
+
+function assertKeyInPowerCoSpecs(companyId, key) {
+  const k = String(key || "");
+  if (!isPowerCoSpecKey(companyId, k) || k.includes("..")) {
+    throw new R2Error("That spec does not belong to this power company", "KEY_OUTSIDE_COMPANY");
+  }
+  return k;
+}
+
+// buildPrintList, not a copy of it: a spec row renders exactly like a print row
+// — name, size, isPdf, a preview URL and a download URL — and the one thing
+// that would justify a second builder (a thumbnail) is absent from both.
+export async function listPowerCoSpecs(companyId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(powerCoSpecsPrefix(companyId), timeoutMs);
+  return await buildPrintList(objects.filter(o => !isPowerCoSpecDeletedKey(companyId, o.key)), "uploadedAt");
+}
+
+export async function listDeletedPowerCoSpecs(companyId, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(powerCoSpecsPrefix(companyId) + SPEC_DELETED_SEGMENT, timeoutMs);
+  return await buildPrintList(objects, "deletedAt");
+}
+
+export async function softDeletePowerCoSpec(companyId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPowerCoSpecs(companyId, key);
+  if (isPowerCoSpecDeletedKey(companyId, k)) return { key: k, moved: false };
+  const filename = k.slice(k.lastIndexOf("/") + 1);
+  return await moveObject(k, powerCoSpecsPrefix(companyId) + SPEC_DELETED_SEGMENT + filename, timeoutMs);
+}
+
+export async function restorePowerCoSpec(companyId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPowerCoSpecs(companyId, key);
+  if (!isPowerCoSpecDeletedKey(companyId, k)) return { key: k, moved: false };
+  const filename = k.slice(k.lastIndexOf("/") + 1);
+  return await moveObject(k, powerCoSpecsPrefix(companyId) + filename, timeoutMs);
+}
+
+export async function purgePowerCoSpec(companyId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPowerCoSpecs(companyId, key);
+  if (!isPowerCoSpecDeletedKey(companyId, k)) {
+    throw new R2Error("Only specs already deleted can be permanently removed", "NOT_DELETED");
+  }
+  await deleteObject(k, timeoutMs);
+  return { key: k, purged: true };
+}
+
 // The album a binned photo goes back to: '' when it was loose, else the name.
 export function deletedFromAlbum(jobId, key) {
   const k = String(key);

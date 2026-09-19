@@ -3220,6 +3220,7 @@
           <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
           <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
           <button id="btnFleet" class="btn btn-sm" type="button">🚗 Fleet</button>
+          <button id="btnPowerSpecs" class="btn btn-sm" type="button">⚡ Power Co. Specs</button>
           <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
           <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
           <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
@@ -13486,6 +13487,296 @@
     return `<span class="fleet-type-pill ${cls}">${esc(type||"—")}</span>`;
   }
 
+  /* ── Power company specs ──────────────────────────────────────────────
+   * The utility's construction standards, filed against the UTILITY rather
+   * than a job: one copy of "Ohio Edison service requirements", not one per
+   * job that Ohio Edison touches. Storage is the job-prints machinery with a
+   * company id in place of the job id, so a spec row renders with the same
+   * printRow vocabulary (icon, size, preview link, download link).
+   *
+   * Reading is open to every signed-in role — that is the feature, the same
+   * as prints. Adding and removing gate on isAdmin(), matching the server's
+   * _ADMIN_OFFICE tier on those actions; the UI gate is a convenience, the
+   * server's is the one that counts.
+   */
+  const pwsState = { companies: [], company: null, specs: [], deleted: [], showDeleted: false };
+
+  async function openPowerSpecs() {
+    $("powerSpecsModal").style.display = "flex";
+    pushBackEntry("powerSpecs", () => { $("powerSpecsModal").style.display = "none"; });
+    pwsShowList();
+    await loadPowerCompanies();
+  }
+
+  function closePowerSpecs() {
+    popBackEntry("powerSpecs");
+    $("powerSpecsModal").style.display = "none";
+  }
+  window.closePowerSpecs = closePowerSpecs;
+
+  function pwsShowList() {
+    $("pwsListView").style.display = "";
+    $("pwsDetailView").classList.remove("active");
+    $("pwsAddCoBtn").style.display = isAdmin() ? "" : "none";
+    $("pwsAddCoForm").style.display = "none";
+  }
+  window.pwsShowList = pwsShowList;
+
+  async function loadPowerCompanies() {
+    $("pwsCompanyGrid").innerHTML = `<div class="loading-msg">Loading power companies...</div>`;
+    try {
+      const d = await apiGet("powerCompaniesWithSpecs");
+      pwsState.companies = d.companies || [];
+      // available:false means the bucket is off, not that nothing is filed.
+      // Saying so beats rendering "0 specs" against every utility, which is
+      // the same wrong answer a missing row gives.
+      $("pwsListStatus").textContent = d.available === false
+        ? "Spec storage isn't configured — counts unavailable."
+        : `${pwsState.companies.length} power compan${pwsState.companies.length === 1 ? "y" : "ies"}`;
+      renderPowerCompanyGrid();
+    } catch (e) {
+      $("pwsCompanyGrid").innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function renderPowerCompanyGrid() {
+    const list = pwsState.companies;
+    if (!list.length) { $("pwsCompanyGrid").innerHTML = `<div class="empty-msg">No power companies yet.</div>`; return; }
+    $("pwsCompanyGrid").innerHTML = list.map(co => {
+      const count = co.specCount === null || co.specCount === undefined
+        ? "—"
+        : `${co.specCount} spec${co.specCount === 1 ? "" : "s"}`;
+      return `
+      <div class="fleet-vehicle-card" onclick="openPowerCompanySpecs('${esc(co.id)}')">
+        <div class="fleet-vehicle-card-header">
+          <span class="fleet-vehicle-card-title">${esc(co.name)}</span>
+        </div>
+        <div class="fleet-vehicle-card-body">
+          <div class="fleet-stat"><span class="fleet-stat-label">Specs on file</span><span class="fleet-stat-value">${esc(count)}</span></div>
+          ${co.region ? `<div class="fleet-stat"><span class="fleet-stat-label">Region</span><span class="fleet-stat-value">${esc(co.region)}</span></div>` : ""}
+          ${co.notes ? `<div class="fleet-stat"><span class="fleet-stat-label">Notes</span><span class="fleet-stat-value">${esc(co.notes)}</span></div>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  async function openPowerCompanySpecs(companyId) {
+    const co = pwsState.companies.find(c => c.id === companyId);
+    if (!co) return;
+    pwsState.company = co;
+    pwsState.showDeleted = false;
+
+    $("pwsListView").style.display = "none";
+    $("pwsDetailView").classList.add("active");
+    $("pwsDetailTitle").textContent = co.name;
+    $("pwsAddSpecBtn").style.display = isAdmin() ? "" : "none";
+    await refreshPowerCompanySpecs();
+  }
+  window.openPowerCompanySpecs = openPowerCompanySpecs;
+
+  async function refreshPowerCompanySpecs() {
+    const co = pwsState.company;
+    if (!co) return;
+    $("pwsSpecsStatus").textContent = "Loading…";
+    try {
+      const d = await apiGet("powerCompanySpecs", { companyId: co.id });
+      pwsState.specs = d.specs || [];
+      if (d.available === false) {
+        pwsState.deleted = [];
+        $("pwsSpecsList").innerHTML = "";
+        $("pwsSpecsStatus").textContent = d.reason === "not-configured"
+          ? "Spec storage isn't configured."
+          : "Spec storage is unavailable right now.";
+        return;
+      }
+      // Only admin/office may read the bin, so only they ask for it. An
+      // employee asking would get a 403 and turn a working screen into an
+      // error for a list they can do nothing with anyway.
+      pwsState.deleted = [];
+      if (isAdmin()) {
+        try {
+          const dd = await apiGet("powerCompanySpecsDeleted", { companyId: co.id });
+          pwsState.deleted = dd.specs || [];
+        } catch (e) { console.warn("[power-specs] bin", e); }
+      }
+      renderPowerCompanySpecs();
+    } catch (e) {
+      $("pwsSpecsStatus").textContent = `Error: ${e.message}`;
+    }
+  }
+
+  function renderPowerCompanySpecs() {
+    const list = pwsState.specs;
+    const del  = pwsState.deleted;
+
+    const parts = [];
+    if (!list.length) {
+      parts.push("No specs on file for this utility yet.");
+    } else {
+      const bytes = list.reduce((sum, sp) => sum + (Number(sp.size) || 0), 0);
+      parts.push(`${list.length} spec${list.length === 1 ? "" : "s"} · ${printSize(bytes)}`);
+    }
+    if (del.length) {
+      parts.push(`<a href="#" id="pwsToggleDeleted" style="color:var(--blue); text-decoration:underline;">${
+        pwsState.showDeleted ? "hide" : "show"} ${del.length} deleted</a> <span style="font-size:11px;">(kept until deleted forever)</span>`);
+    }
+    $("pwsSpecsStatus").innerHTML = parts.join(" · ");
+
+    $("pwsSpecsList").innerHTML = list.map(sp => powerSpecRow(sp, "live")).join("")
+      + (pwsState.showDeleted ? del.map(sp => powerSpecRow(sp, "deleted")).join("") : "");
+
+    const toggle = $("pwsToggleDeleted");
+    if (toggle) toggle.onclick = (e) => {
+      e.preventDefault();
+      pwsState.showDeleted = !pwsState.showDeleted;
+      renderPowerCompanySpecs();
+    };
+
+    const host = $("pwsSpecsList");
+    host.querySelectorAll(".pws-del").forEach(b =>
+      b.onclick = () => mutatePowerSpec("deletePowerCompanySpecs", b.dataset.key, "Deleting",
+        "Remove this spec from the utility?\n\nIt is kept and can be restored."));
+    host.querySelectorAll(".pws-restore").forEach(b =>
+      b.onclick = () => mutatePowerSpec("restorePowerCompanySpecs", b.dataset.key, "Restoring", ""));
+    host.querySelectorAll(".pws-purge").forEach(b =>
+      b.onclick = () => mutatePowerSpec("purgePowerCompanySpecs", b.dataset.key, "Deleting permanently",
+        "Delete this spec PERMANENTLY?\n\nThis frees the storage and cannot be undone."));
+  }
+
+  function powerSpecRow(sp, mode) {
+    const stamp = mode === "deleted" ? sp.deletedAt : sp.uploadedAt;
+    const when  = stamp ? new Date(stamp).toLocaleDateString() : "";
+    const meta  = [printSize(sp.size), when].filter(Boolean).join(" · ");
+
+    const dl = sp.downloadUrl
+      ? `<a href="${esc(sp.downloadUrl)}" style="font-size:12px; color:var(--blue); padding:4px 6px; text-decoration:none;">⭳</a>`
+      : "";
+    const actions = !isAdmin() ? "" : (mode === "deleted"
+      ? `<button type="button" class="pws-restore" data-key="${esc(sp.key)}" style="background:none; border:none; cursor:pointer; font-size:12px; color:var(--blue); padding:4px 6px;">↩ Restore</button>
+         <button type="button" class="pws-purge" data-key="${esc(sp.key)}" style="background:none; border:none; cursor:pointer; font-size:12px; color:var(--red); padding:4px 6px;">✕ Delete forever</button>`
+      : `<button type="button" class="pws-del" data-key="${esc(sp.key)}" style="background:none; border:none; cursor:pointer; font-size:12px; color:var(--red); padding:4px 6px;">🗑 Delete</button>`);
+
+    // The whole row is the link — a gloved thumb on a phone shouldn't have to
+    // find the filename text — and target=_blank hands the PDF to the
+    // browser's own viewer, which beats anything we could render.
+    return `<div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2); ${mode === "deleted" ? "opacity:.6;" : ""}">
+        <a href="${esc(sp.url)}" target="_blank" rel="noopener" style="flex:1; min-width:0; display:flex; align-items:center; gap:10px; text-decoration:none; color:inherit;">
+          <span style="font-size:22px; flex:none;">${printIcon(sp)}</span>
+          <span style="min-width:0;">
+            <span style="display:block; font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(sp.name)}</span>
+            <span style="display:block; font-size:11px; color:var(--muted);">${esc(meta)}</span>
+          </span>
+        </a>
+        <span style="flex:none; display:flex; align-items:center;">${dl}${actions}</span>
+      </div>`;
+  }
+
+  async function mutatePowerSpec(action, key, verb, confirmMsg) {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    const status = $("pwsSpecsStatus");
+    status.textContent = `${verb}…`;
+    try {
+      await apiPost(action, { companyId: pwsState.company.id, keys: [key] });
+      await refreshPowerCompanySpecs();
+    } catch (e) {
+      status.textContent = `${verb} failed: ${e.message}`;
+    }
+  }
+
+  async function addPowerCompanySpecs() {
+    const input = document.createElement("input");
+    // No `capture`: a utility standard comes off a PC, downloaded from the
+    // utility's site — never a phone camera.
+    input.type = "file";
+    input.accept = ".pdf,image/*,application/pdf";
+    input.multiple = true;
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", async () => {
+      const files = Array.from(input.files || []);
+      input.remove();
+      if (files.length) await uploadPowerCompanySpecs(files);
+    });
+    input.click();
+  }
+
+  async function uploadPowerCompanySpecs(files) {
+    const status = $("pwsSpecsStatus");
+    const MAX = 15;   // matches the server's per-request cap
+    if (files.length > MAX) {
+      status.textContent = `Too many at once — taking the first ${MAX}.`;
+      files = files.slice(0, MAX);
+    }
+
+    // A spec's key IS its filename, so re-uploading a name that already exists
+    // replaces it. Usually the intent ("here is the 2026 revision") but never
+    // something to do silently — the old file goes without passing through
+    // the bin.
+    const existing = new Set(pwsState.specs.map(sp => (sp.name || "").toLowerCase()));
+    const clashes = files.filter(f => existing.has(String(f.name || "").toLowerCase()));
+    if (clashes.length) {
+      const names = clashes.slice(0, 5).map(f => `• ${f.name}`).join("\n");
+      if (!confirm(`${clashes.length} file${clashes.length === 1 ? " is" : "s are"} already on this utility:\n\n${names}${
+        clashes.length > 5 ? "\n…" : ""}\n\nUploading will REPLACE the existing version${clashes.length === 1 ? "" : "s"}. Continue?`)) {
+        files = files.filter(f => !existing.has(String(f.name || "").toLowerCase()));
+        if (!files.length) { status.textContent = "Nothing uploaded."; return; }
+      }
+    }
+
+    try {
+      status.textContent = "Preparing…";
+      const d = await apiPost("powerCompanySpecUploadUrls", {
+        companyId: pwsState.company.id,
+        files: files.map(f => ({ name: f.name, contentType: f.type })),
+      });
+      const uploads = d.uploads || [];
+      if (uploads.length !== files.length) throw new Error("Upload could not be prepared");
+
+      let done = 0, failed = 0, lastErr = "";
+      for (let i = 0; i < files.length; i++) {
+        status.textContent = `Uploading ${i + 1} of ${files.length} — ${files[i].name} (${printSize(files[i].size)})…`;
+        try {
+          // The signed URL commits to the content type the SERVER chose, so
+          // send that one back, not the browser's guess.
+          await putToR2(uploads[i].putUrl, files[i], uploads[i].contentType);
+          done++;
+        } catch (err) {
+          failed++; lastErr = err.message || String(err);
+          console.error("[power-spec-upload] failed", err);
+        }
+      }
+
+      await refreshPowerCompanySpecs();
+      if (failed) status.textContent = `${done} added, ${failed} failed. ${lastErr}`;
+      else showAppToast(`${done} spec${done === 1 ? "" : "s"} added ✓`);
+    } catch (e) {
+      console.error("[power-spec-upload]", e);
+      await refreshPowerCompanySpecs();
+      status.textContent = `Upload failed: ${e.message}`;
+    }
+  }
+
+  async function savePowerCompany() {
+    const name = $("pwsCoName").value.trim();
+    const msg  = $("pwsCoMsg");
+    if (!name) { msg.textContent = "Name is required."; return; }
+    msg.textContent = "Saving…";
+    try {
+      await apiPost("createPowerCompany", {
+        name,
+        utilityRegion: $("pwsCoRegion").value.trim(),
+        notes: $("pwsCoNotes").value.trim(),
+      });
+      $("pwsCoName").value = ""; $("pwsCoRegion").value = ""; $("pwsCoNotes").value = "";
+      msg.textContent = "";
+      $("pwsAddCoForm").style.display = "none";
+      await loadPowerCompanies();
+      showAppToast("Power company added ✓");
+    } catch (e) {
+      msg.textContent = `Could not add it: ${e.message}`;
+    }
+  }
+
   async function openFleet() {
     $("fleetModal").style.display = "flex";
     pushBackEntry("fleet", () => { $("fleetModal").style.display = "none"; });
@@ -15622,6 +15913,23 @@
     if (slBtn) slBtn.addEventListener("click", openScissorLifts);
     const fleetBtn = $("btnFleet");
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
+    // Power company specs. The modal's own controls are wired here too — it
+    // lives at the END of the document, so unlike btnPeople's modal the parser
+    // has already reached it by the time init() runs.
+    const pwsBtn = $("btnPowerSpecs");
+    if (pwsBtn) pwsBtn.addEventListener("click", openPowerSpecs);
+    const pwsAddCo = $("pwsAddCoBtn");
+    if (pwsAddCo) pwsAddCo.addEventListener("click", () => {
+      $("pwsAddCoForm").style.display = "";
+      $("pwsCoMsg").textContent = "";
+      $("pwsCoName").focus();
+    });
+    const pwsCoCancel = $("pwsCoCancelBtn");
+    if (pwsCoCancel) pwsCoCancel.addEventListener("click", () => { $("pwsAddCoForm").style.display = "none"; });
+    const pwsCoSave = $("pwsCoSaveBtn");
+    if (pwsCoSave) pwsCoSave.addEventListener("click", savePowerCompany);
+    const pwsAddSpec = $("pwsAddSpecBtn");
+    if (pwsAddSpec) pwsAddSpec.addEventListener("click", addPowerCompanySpecs);
     const payrollBtn = $("btnPayroll");
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
     const hoursByJobBtn = $("btnHoursByJob");
@@ -28448,6 +28756,69 @@
 </div>
 
 <!-- MILEAGE UPDATE MODAL -->
+<div id="powerSpecsModal" class="fleet-modal-backdrop" style="display:none;">
+  <div class="fleet-modal">
+    <div class="fleet-modal-header">
+      <h2>⚡ Power Company Specs</h2>
+      <button onclick="closePowerSpecs()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="fleet-modal-body">
+
+      <!-- Company list -->
+      <div id="pwsListView">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+          <div id="pwsListStatus" style="font-size:12px; color:var(--muted);"></div>
+          <button id="pwsAddCoBtn" class="btn btn-primary btn-sm" type="button" style="font-size:12px; display:none;">+ Add Power Company</button>
+        </div>
+
+        <!-- Add-company form. Hidden until asked for, and only ever shown to
+             admin/office — the same tier the server puts the spec writes at. -->
+        <div id="pwsAddCoForm" class="fleet-add-form" style="display:none;">
+          <div style="font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:12px;">New Power Company</div>
+          <div class="fleet-form-grid">
+            <div>
+              <label class="edit-label">Name</label>
+              <input type="text" id="pwsCoName" class="edit-input" placeholder="e.g. Ohio Edison" />
+            </div>
+            <div>
+              <label class="edit-label">Utility Region</label>
+              <input type="text" id="pwsCoRegion" class="edit-input" placeholder="optional" />
+            </div>
+            <div class="full">
+              <label class="edit-label">Notes</label>
+              <input type="text" id="pwsCoNotes" class="edit-input" placeholder="optional" />
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; margin-top:12px; align-items:center;">
+            <button id="pwsCoSaveBtn" class="btn btn-primary btn-sm" type="button" style="font-size:12px;">Save</button>
+            <button id="pwsCoCancelBtn" class="btn btn-sm" type="button" style="font-size:12px;">Cancel</button>
+            <span id="pwsCoMsg" style="font-size:12px; color:var(--red);"></span>
+          </div>
+        </div>
+
+        <div id="pwsCompanyGrid" class="fleet-vehicles-grid">
+          <div class="loading-msg">Loading power companies...</div>
+        </div>
+      </div>
+
+      <!-- One company's specs -->
+      <div id="pwsDetailView" class="fleet-detail">
+        <div class="fleet-detail-header">
+          <button class="fleet-back-btn" onclick="pwsShowList()">← Back to Power Companies</button>
+          <span id="pwsDetailTitle" style="font-weight:700; font-size:18px; color:var(--text);"></span>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+          <div id="pwsSpecsStatus" style="font-size:12px; color:var(--muted);"></div>
+          <button id="pwsAddSpecBtn" class="btn btn-primary btn-sm" type="button" style="font-size:12px; display:none;">+ Add Specs</button>
+        </div>
+        <div id="pwsSpecsList" style="display:flex; flex-direction:column; gap:8px;"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
 <div id="mileageModal" class="fleet-modal-backdrop" style="display:none;">
   <div class="fleet-modal" style="max-width:500px;">
     <div class="fleet-modal-header">

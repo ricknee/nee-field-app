@@ -46,6 +46,8 @@ import {
   listDeletedJobPhotos, listJobDocs,
   jobPrintsPrefix, sanitizePrintName, listJobPrints, listDeletedJobPrints,
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
+  powerCoSpecsPrefix, listPowerCoSpecs, listDeletedPowerCoSpecs,
+  softDeletePowerCoSpec, restorePowerCoSpec, purgePowerCoSpec,
   expensePrefix, vendorInvoicePrefix, copyVendorInvoicePdfToExpense,
   listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
@@ -668,6 +670,16 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // marking one reviewed is the moment it stops being anyone's problem. Same tier as
   // approveExpense and updateJobBillableRate — back-office money ops.
   "vendorInvoiceAssign", "vendorInvoiceMarkReviewed",
+  // ── Power company specs ──────────────────────────────────────────────
+  // Uploading sits here rather than at the _NON_VIEWER default that
+  // jobPrintUploadUrls deliberately keeps. A print is a drawing for ONE job
+  // and a crew photographing a marked-up sheet is the feature; a utility
+  // standard governs EVERY job that utility touches, comes off the utility's
+  // own website rather than a jobsite, and is a claim about what the utility
+  // REQUIRES. Being wrong about that fails an inspection. Removing and
+  // purging follow the prints rule, for the reason they follow it there.
+  "powerCompanySpecUploadUrls", "deletePowerCompanySpecs",
+  "restorePowerCompanySpecs", "purgePowerCompanySpecs",
 ]);
 
 // NOTE: there was a `_GRANT_AUTH_ACTIONS` bypass here, letting the pCloud
@@ -737,6 +749,13 @@ const _ADMIN_OFFICE_READS = new Set([
   // rows it returns is _ADMIN_OFFICE, so the read matches. It is also the only
   // place an invoice that matched NO job is visible at all.
   "vendorInvoices",
+  // The specs bin, matching its own restore/purge tier exactly as
+  // jobPrintsDeleted matches its. `powerCompanySpecs` and
+  // `powerCompaniesWithSpecs` are deliberately ABSENT from every set here so
+  // authzFor returns null: a crew at a meter base reading the utility's
+  // clearance requirement without an office login IS the feature, the same
+  // way it is for jobPrints.
+  "powerCompanySpecsDeleted",
 ]);
 
 function authzFor(method, action) {
@@ -15605,6 +15624,221 @@ async function handlePurgeJobPrints(body) {
   return await bulkPhotoOp(body, "purgeJobPrints", (jobId, key) => purgeJobPrint(jobId, key), "prints");
 }
 
+/* ── Power company specs ────────────────────────────────────────────────────
+ * The utility's own construction standards, attached to the POWER COMPANY.
+ * Ohio Edison's service requirements govern every Ohio Edison job, so they
+ * live once, on the utility, instead of being re-uploaded per job — and a crew
+ * cannot end up reading the 2019 revision on one job and the 2026 on the next.
+ *
+ * Storage is the prints machinery with a company id in place of the job id:
+ * presigned PUT/GET, the folder is the record, nothing in Postgres. So there
+ * is NO MIGRATION here, deliberately — a table holding a filename and an R2
+ * key would be a second place for the same fact to be wrong, and the bucket
+ * already answers "what specs does this utility have" authoritatively.
+ *
+ * Tiers match prints, one step tighter on the write:
+ *   read   - any signed-in role. A crew at a meter base needing the utility's
+ *            clearance is the whole point; `powerCompanySpecs` is therefore
+ *            absent from every set in authzFor.
+ *   write  - _ADMIN_OFFICE. Unlike a print, nobody uploads a utility standard
+ *            from a jobsite: it comes off the utility's website, and the file
+ *            is a claim about what the utility REQUIRES. Being wrong about
+ *            that fails an inspection.
+ */
+
+// Every picker in this app speaks the dual handle — COALESCE(airtable_id,
+// id::text) — but an R2 key must not. See the note on powerCoSpecsPrefix:
+// `airtable_id` can be stamped onto a native row after the fact, which would
+// move a company's identity without moving the row and strand every spec
+// already filed under the old string. So each handler resolves the handle to
+// the immutable uuid first, and a company that doesn't resolve is a 404
+// rather than an empty list — "no specs yet" and "no such utility" are
+// different answers, and this app's most expensive lesson is that a silent
+// no-match reads exactly like no data.
+// Shared front half of every spec handler: the id check, then the lookup that
+// turns a picker handle into the immutable uuid an R2 key is built from.
+//
+// ⚠ THE THREE FAILURES HERE ARE THREE DIFFERENT ANSWERS, deliberately. An
+// outage is 503, an unknown utility is 404, and only a real miss is a real
+// miss. Collapsing them — returning "not found" when the database is simply
+// unreachable — is this app's most expensive recurring bug in miniature: a
+// native row does not crash a query, it matches nothing, and "matched nothing"
+// is indistinguishable from "there is nothing" unless the code says which.
+// Here it would tell someone the utility they are standing in front of does
+// not exist.
+async function powerCoSpecContext(handleId) {
+  const h = String(handleId || "").trim();
+  if (!h) return { error: resp(400, { ok: false, error: "Missing companyId." }) };
+  if (!neonEnabled()) {
+    return { error: resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." }) };
+  }
+  const q = await neonQuery(
+    `SELECT id::text AS id FROM power_companies WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [h]);
+  if (q?.error) {
+    console.error(`powerCoSpecContext: lookup failed for ${h.slice(0, 60)} — ${q.error}`);
+    return { error: resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." }) };
+  }
+  const uuid = q?.rows?.[0]?.id;
+  if (!uuid) return { error: resp(404, { ok: false, error: "Power company not found." }) };
+  return { uuid };
+}
+
+async function handlePowerCompanySpecs(params) {
+  const companyId = params?.companyId;
+  if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
+  // Soft-fail like jobPrints: an unconfigured bucket disables the feature, it
+  // does not break the screen that offers it.
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", specs: [] });
+
+  const ctx = await powerCoSpecContext(companyId);
+  if (ctx.error) return ctx.error;
+
+  try {
+    return resp(200, { ok: true, available: true, specs: await listPowerCoSpecs(ctx.uuid) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "powerCompanySpecs"), specs: [] });
+  }
+}
+
+// The specs bin. Admin/office, matching the restore and purge actions on it.
+async function handlePowerCompanySpecsDeleted(params) {
+  const companyId = params?.companyId;
+  if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
+  if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", specs: [] });
+
+  const ctx = await powerCoSpecContext(companyId);
+  if (ctx.error) return ctx.error;
+
+  try {
+    return resp(200, { ok: true, available: true, specs: await listDeletedPowerCoSpecs(ctx.uuid) });
+  } catch (e) {
+    return resp(200, { ok: true, available: false, ...r2Unavailable(e, "powerCompanySpecsDeleted"), specs: [] });
+  }
+}
+
+// Presigned PUTs straight to R2 — the bytes never pass through this function,
+// which is what makes a 40 MB utility standard possible at all against
+// Netlify's 4.5 MB payload cap.
+//
+// Content type and filename go through the PRINT helpers unchanged. A spec and
+// a print are the same kind of object (a document whose original name is its
+// revision marker), and a second sanitizer would be a second place for the
+// path-traversal rules to drift out of agreement.
+async function handlePowerCompanySpecUploadUrls(body) {
+  const companyId = body?.companyId;
+  const files = Array.isArray(body?.files) ? body.files : [];
+  if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
+  if (!files.length) return resp(400, { ok: false, error: "No files requested." });
+  if (files.length > 15) return resp(400, { ok: false, error: "Too many specs at once (max 15)." });
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Spec storage isn't configured." });
+
+  const ctx = await powerCoSpecContext(companyId);
+  if (ctx.error) return ctx.error;
+
+  try {
+    // Same replace-on-same-name rule as prints — "here is the new revision" is
+    // the common case — and the client warns first, having already listed what
+    // is there.
+    const seen = new Set();
+    const uploads = await Promise.all(files.map(async (f, i) => {
+      const contentType = printContentType(f?.contentType, f?.name);
+      let name = sanitizePrintName(f?.name);
+      if (!name) name = `spec-${String(i + 1).padStart(2, "0")}${contentType === "application/pdf" ? ".pdf" : ""}`;
+      if (seen.has(name.toLowerCase())) name = `${i + 1}-${name}`;
+      seen.add(name.toLowerCase());
+
+      const key = `${powerCoSpecsPrefix(ctx.uuid)}${name}`;
+      return { key, name, putUrl: await presignPut(key, contentType), contentType };
+    }));
+    return resp(200, { ok: true, uploads });
+  } catch (e) {
+    const { reason } = r2Unavailable(e, "powerCompanySpecUploadUrls");
+    return resp(502, { ok: false, error: "Could not prepare the upload.", reason });
+  }
+}
+
+// bulkPhotoOp is job-scoped (it calls jobExists), so specs get their own small
+// version rather than a jobId parameter that would mean nothing here. The cap
+// is the same backstop against a 504: every key is an R2 round trip and
+// Netlify gives a synchronous function ten seconds.
+async function bulkPowerCoSpecOp(body, label, fn) {
+  const companyId = body?.companyId;
+  const keys = Array.isArray(body?.keys) ? body.keys : [];
+  if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
+  if (!keys.length) return resp(400, { ok: false, error: "No specs selected." });
+  if (keys.length > BULK_PHOTO_MAX) {
+    return resp(400, { ok: false, error: `Too many specs in one request (max ${BULK_PHOTO_MAX}).` });
+  }
+  if (!r2Enabled()) return resp(503, { ok: false, error: "Spec storage isn't configured." });
+
+  const ctx = await powerCoSpecContext(companyId);
+  if (ctx.error) return ctx.error;
+
+  let done = 0;
+  const failures = [];
+  for (const key of keys) {
+    try { await fn(ctx.uuid, key); done++; }
+    catch (e) {
+      // KEY_OUTSIDE_COMPANY means the client sent a key belonging to another
+      // utility — a bug or someone probing. Log it loudly either way.
+      if (e instanceof R2Error && e.code === "KEY_OUTSIDE_COMPANY") {
+        console.error(`${label}: rejected key outside company ${ctx.uuid}: ${String(key).slice(0, 120)}`);
+      }
+      failures.push({ key, error: String(e?.message || e).slice(0, 160) });
+    }
+  }
+  return resp(200, { ok: failures.length === 0, done, failed: failures.length, failures });
+}
+
+async function handleDeletePowerCompanySpecs(body) {
+  return await bulkPowerCoSpecOp(body, "deletePowerCompanySpecs", (id, key) => softDeletePowerCoSpec(id, key));
+}
+
+async function handleRestorePowerCompanySpecs(body) {
+  return await bulkPowerCoSpecOp(body, "restorePowerCompanySpecs", (id, key) => restorePowerCoSpec(id, key));
+}
+
+// Permanent, and the only thing that reclaims the storage. The specs bin sits
+// outside the lifecycle rule that expires deleted photos after 30 days, so
+// nothing here leaves on its own.
+async function handlePurgePowerCompanySpecs(body) {
+  return await bulkPowerCoSpecOp(body, "purgePowerCompanySpecs", (id, key) => purgePowerCoSpec(id, key));
+}
+
+// Backs the Power Company Specs screen: every utility with a spec COUNT, so
+// the list shows which standards are on file without a round trip per row.
+// One R2 listing per company, run concurrently; a bucket that is off or
+// unreachable degrades to a count of null rather than failing the screen,
+// which is the same soft-fail contract the individual spec reads honour.
+async function handlePowerCompaniesWithSpecs() {
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+  }
+  const q = await neonQuery(
+    `SELECT id::text AS uuid, COALESCE(airtable_id, id::text) AS id, name,
+            COALESCE(utility_region, '') AS region, COALESCE(notes, '') AS notes
+       FROM power_companies
+      WHERE coalesce(name,'') <> '' ORDER BY name`);
+  if (!q?.rows?.length) {
+    // Same judgement as handleGetPowerCompanies: this list cannot legitimately
+    // come back empty, and Airtable is frozen, so saying the database is
+    // unavailable beats handing back yesterday's world.
+    console.error(`powerCompaniesWithSpecs: Neon returned nothing — ${q?.error || "no rows"}`);
+    return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
+  }
+
+  const r2On = r2Enabled();
+  const companies = await Promise.all(q.rows.map(async (r) => {
+    let specCount = null;
+    if (r2On) {
+      try { specCount = (await listPowerCoSpecs(r.uuid)).length; }
+      catch (e) { r2Unavailable(e, "powerCompaniesWithSpecs"); }
+    }
+    return { id: r.id, name: r.name || "", region: r.region, notes: r.notes, specCount };
+  }));
+  return resp(200, { ok: true, available: r2On, companies });
+}
+
 /* ── Panel schedules (docs/PLAN-panel-schedules.md) ─────────────────────────
  * The grid that goes in the panel door: circuit numbers down both sides, odd on
  * the left, even on the right, and what each breaker feeds.
@@ -16285,6 +16519,9 @@ export async function handler(event) {
       if (action === "getInspectionAgencies") return await handleGetInspectionAgencies();
       if (action === "inspectorsForAgency")   return await handleGetInspectorsForAgency(params);
       if (action === "getPowerCompanies")           return await handleGetPowerCompanies();
+      if (action === "powerCompaniesWithSpecs")     return await handlePowerCompaniesWithSpecs();
+      if (action === "powerCompanySpecs")           return await handlePowerCompanySpecs(params);
+      if (action === "powerCompanySpecsDeleted")    return await handlePowerCompanySpecsDeleted(params);
       if (action === "getContactsForPowerCompany")  return await handleGetContactsForPowerCompany(params);
       return resp(400, { ok: false, error: "Unknown GET action." });
     }
@@ -16295,6 +16532,10 @@ export async function handler(event) {
       if (body.action === "updateJobStatus")      return await handleUpdateJobStatus(body);
       if (body.action === "updatePowerCo")        return await handleUpdatePowerCo(body);
       if (body.action === "createPowerCompany")   return await handleCreatePowerCompany(body);
+      if (body.action === "powerCompanySpecUploadUrls") return await handlePowerCompanySpecUploadUrls(body);
+      if (body.action === "deletePowerCompanySpecs")    return await handleDeletePowerCompanySpecs(body);
+      if (body.action === "restorePowerCompanySpecs")   return await handleRestorePowerCompanySpecs(body);
+      if (body.action === "purgePowerCompanySpecs")     return await handlePurgePowerCompanySpecs(body);
       if (body.action === "createPowerContact")   return await handleCreatePowerContact(body);
       if (body.action === "updateTimeEntry")      return await handleUpdateTimeEntry(body);
       if (body.action === "updateTimeEntryPayroll") return await handleUpdateTimeEntryPayroll(body);

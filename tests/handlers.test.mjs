@@ -1471,6 +1471,95 @@ await test('prints: any non-viewer may upload, only admin/office may remove', as
   ok((await GET('jobPrintsDeleted', { jobId: 'recJ1' }, OFFICE_TOK)).statusCode !== 403, 'office can');
 });
 
+// ── power company specs ──
+// Same machinery as prints with a company id in place of the job id, so these
+// cover the three things that differ: who may write, what an outage answers,
+// and that a spec key can never address another utility's shelf.
+await test('power specs: EVERY signed-in role can read them, like prints', async () => {
+  setR2();
+  // A crew at a meter base needing the utility's clearance is the audience.
+  // If this ever needs a token tier, the feature has been misunderstood.
+  for (const tok of [EMP_TOK, VIEWER_TOK, OFFICE_TOK, ADMIN_TOK]) {
+    ok((await GET('powerCompanySpecs', { companyId: 'recPC1' }, tok)).statusCode !== 403, 'specs readable');
+    ok((await GET('powerCompaniesWithSpecs', {}, tok)).statusCode !== 403, 'company list readable');
+  }
+});
+
+await test('power specs: only admin/office may add or remove one', async () => {
+  setR2();
+  // The deliberate contrast with prints, which any non-viewer may upload. A
+  // print is one job's drawing and a crew photographing a marked-up sheet is
+  // the feature; a utility standard governs every job that utility touches and
+  // asserts what the utility REQUIRES — wrong about that, an inspection fails.
+  const files = { companyId: 'recPC1', files: [{ name: 'OE Service Standards.pdf', contentType: 'application/pdf' }] };
+  eq((await POST('powerCompanySpecUploadUrls', files, EMP_TOK)).statusCode, 403, 'employee may not upload');
+  eq((await POST('powerCompanySpecUploadUrls', files, VIEWER_TOK)).statusCode, 403, 'viewer may not upload');
+  ok((await POST('powerCompanySpecUploadUrls', files, OFFICE_TOK)).statusCode !== 403, 'office may');
+  ok((await POST('jobPrintUploadUrls', { jobId: 'recJ1', files: files.files }, EMP_TOK)).statusCode !== 403,
+     'and a PRINT is still uploadable by the crew — the two must not converge');
+
+  const body = { companyId: 'recPC1', keys: ['powerco/abc/_specs/OE.pdf'] };
+  for (const action of ['deletePowerCompanySpecs', 'restorePowerCompanySpecs', 'purgePowerCompanySpecs']) {
+    eq((await POST(action, body, EMP_TOK)).statusCode, 403, `${action} employee`);
+    eq((await POST(action, body, VIEWER_TOK)).statusCode, 403, `${action} viewer`);
+    ok((await POST(action, body, OFFICE_TOK)).statusCode !== 403, `${action} office allowed`);
+  }
+  eq((await GET('powerCompanySpecsDeleted', { companyId: 'recPC1' }, EMP_TOK)).statusCode, 403, 'employee cannot browse the bin');
+  ok((await GET('powerCompanySpecsDeleted', { companyId: 'recPC1' }, OFFICE_TOK)).statusCode !== 403, 'office can');
+});
+
+await test('power specs: an OUTAGE is 503, never "no such utility"', async () => {
+  // The distinction this whole file exists to protect. A native row does not
+  // crash a query, it matches nothing — so a lookup that cannot run must say
+  // the database is down, not that the utility someone is standing in front of
+  // does not exist. 404 here would send them looking for a data-entry mistake.
+  setR2();
+  neonOff();
+  const r = await GET('powerCompanySpecs', { companyId: 'recPC1' }, ADMIN_TOK);
+  eq(r.statusCode, 503, 'outage is 503');
+  ok(!/not found/i.test(r.body), 'and does not claim the utility is missing');
+
+  // A missing id is a client bug and answers 400 before any of that.
+  eq((await GET('powerCompanySpecs', {}, ADMIN_TOK)).statusCode, 400, 'missing companyId');
+  eq((await POST('powerCompanySpecUploadUrls', { files: [{ name: 'x.pdf' }] }, ADMIN_TOK)).statusCode, 400, 'upload needs a companyId');
+  eq((await POST('powerCompanySpecUploadUrls', { companyId: 'recPC1', files: [] }, ADMIN_TOK)).statusCode, 400, 'upload needs files');
+});
+
+await test('power specs: R2 off → soft available:false, never a 500', async () => {
+  // Same fail-soft contract as jobPrints: an unconfigured bucket disables the
+  // feature, it does not break the screen offering it. Checked BEFORE the
+  // company lookup, so it holds during a Neon outage too.
+  clearR2();
+  neonOff();
+  const b = json(await GET('powerCompanySpecs', { companyId: 'recPC1' }, ADMIN_TOK));
+  ok(b.ok, 'ok'); eq(b.available, false, 'available'); eq(b.reason, 'not-configured', 'reason');
+  eq(b.specs.length, 0, 'specs');
+  setR2();
+});
+
+await test('power specs live under the utility, and cannot address another one', async () => {
+  const r2 = await import('../netlify/functions/_r2.js');
+  // Keyed on the Neon uuid, NOT the COALESCE(airtable_id, id::text) handle the
+  // pickers speak: airtable_id can be stamped onto a native row after the fact,
+  // which would move a company's identity without moving the row and strand
+  // every spec already filed under it.
+  eq(r2.powerCoSpecsPrefix('7f3c-uuid'), 'powerco/7f3c-uuid/_specs/', 'prefix');
+  ok(r2.isPowerCoSpecKey('7f3c-uuid', 'powerco/7f3c-uuid/_specs/OE Rev 12-2025.pdf'), 'detects a spec');
+  ok(!r2.isPowerCoSpecKey('7f3c-uuid', 'powerco/OTHER-uuid/_specs/AEP.pdf'), "another utility's shelf is not this one");
+  // Specs live outside the job tree entirely, so none of the job listings can
+  // pick one up and none of the job key guards can be pointed at one.
+  ok(!r2.isPrintKey('recJ1', 'powerco/7f3c-uuid/_specs/OE.pdf'), 'not a job print');
+  ok(!r2.isDocKey('recJ1', 'powerco/7f3c-uuid/_specs/OE.pdf'), 'not a job doc');
+  // The bin is NESTED inside the utility's own segment, for the reason the
+  // prints bin is: the top-level _deleted/ root carries a 30-day expiry
+  // lifecycle rule, and a superseded utility standard should leave when
+  // someone says so, not evaporate on a timer.
+  const binned = 'powerco/7f3c-uuid/_specs/_deleted/OE.pdf';
+  ok(r2.isPowerCoSpecDeletedKey('7f3c-uuid', binned), 'binned spec detected');
+  ok(r2.isPowerCoSpecKey('7f3c-uuid', binned), 'still inside the utility prefix');
+  ok(!r2.isDeletedKey('recJ1', binned), 'not in the photo bin');
+});
+
 await test('prints live outside the photo gallery and outside the photo bin', async () => {
   const r2 = await import('../netlify/functions/_r2.js');
   eq(r2.jobPrintsPrefix('recJ1'), 'jobs/recJ1/_prints/', 'prefix');

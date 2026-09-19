@@ -13685,10 +13685,29 @@
 
   async function addPowerCompanySpecs() {
     const input = document.createElement("input");
-    // No `capture`: a utility standard comes off a PC, downloaded from the
-    // utility's site — never a phone camera.
     input.type = "file";
-    input.accept = ".pdf,image/*,application/pdf";
+    // ⚠ NO `accept` FILTER, AND THAT IS THE FIX, not an oversight.
+    //
+    // This started as ".pdf,image/*,application/pdf" — the same shape the
+    // prints picker uses — and on Android that made it IMPOSSIBLE to attach a
+    // spec at all. Chrome turns `accept` into an intent MIME filter, and with
+    // `image/*` in the list the system picker opens on photos: Downloads is
+    // reachable but every PDF in it is greyed out. Which is precisely where a
+    // utility standard lives, because you get one by downloading it from the
+    // utility's website on the device in your hand.
+    //
+    // Extension entries (".pdf") make it worse rather than better — Android
+    // matches on MIME type, and several OEM file providers ignore
+    // EXTRA_MIME_TYPES and honour only the first type they are given.
+    //
+    // Filtering to "application/pdf" alone would fix Android and then quietly
+    // block the photographed spec page, so the filter goes entirely: the OS
+    // shows its own file browser, and the server already decides the content
+    // type from what actually arrives (printContentType), storing anything
+    // unrecognised as a plain download rather than coercing it.
+    //
+    // No `capture` either — a utility standard comes off a download, never a
+    // camera, and capture would make picking a file impossible.
     input.multiple = true;
     input.style.display = "none";
     document.body.appendChild(input);

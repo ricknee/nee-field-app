@@ -938,6 +938,41 @@
       font-size:10px; color:var(--yellow); border:1px solid var(--yellow); border-radius:4px;
       padding:0 4px; white-space:nowrap;
     }
+
+    /* ── LOAD CALC TAB ──
+       One card per load. Every flex child that holds an input or select gets
+       min-width:0 — see the iPhone note above .cf-wire-grid; a bare flex item
+       holding an <input> refuses to shrink below ~150px. */
+    .lc-bar { display:flex; gap:6px; align-items:center; margin-bottom:8px; }
+    .lc-bar select { flex:1 1 auto; min-width:0; }
+    .lc-bar .btn { flex:none; font-size:12px; }
+    .lc-line {
+      border:1px solid var(--line); border-radius:10px; background:var(--panel);
+      padding:8px; margin-bottom:8px;
+    }
+    .lc-line.err { border-color:var(--red); }
+    .lc-r { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+    .lc-r + .lc-r { margin-top:6px; }
+    .lc-r > * { min-width:0; }
+    .lc-r .edit-input { width:auto; padding:7px 8px; }
+    .lc-r .lc-desc { flex:1 1 auto; font-weight:600; }
+    .lc-r .lc-type { flex:1 1 100%; }
+    .lc-r .lc-qty  { flex:0 0 58px; text-align:center; }
+    .lc-r .lc-val  { flex:1 1 80px; }
+    .lc-r .lc-unit { flex:0 1 auto; }
+    .lc-r .lc-lv, .lc-r .lc-start { flex:1 1 105px; }
+    .lc-times { font-size:12px; color:var(--muted); flex:none; }
+    .lc-x {
+      flex:none; background:none; border:none; color:var(--muted); font-size:16px;
+      cursor:pointer; padding:4px 8px; font-family:inherit;
+    }
+    .lc-calc { font-size:12px; color:var(--muted); margin-top:6px; }
+    .lc-line.err .lc-calc { color:var(--red); font-weight:600; }
+    .lc-table td:first-child, .lc-table th:first-child { text-align:left; white-space:normal; }
+    .lc-table td.rule { white-space:normal; text-align:left; color:var(--muted); font-size:12px; }
+    .lc-table tr.tot td { font-weight:700; background:var(--panel-2); }
+    .lc-gen-row { display:flex; gap:10px; flex-wrap:wrap; }
+    .lc-gen-row > .cf-verdict { flex:1 1 260px; min-width:0; margin-bottom:10px; }
     #genModelsTable a, #genHead a { color:var(--accent); text-decoration:none; }
 
     @media (max-width: 820px) {
@@ -28956,20 +28991,615 @@
     vdRender();
   }
 
+  // ── TAB 7: LOAD CALC ──────────────────────────────────────────────────
+  // A service / feeder load calculation the NEC way — Article 220 Part III,
+  // the standard method for a non-dwelling building — and a generator size,
+  // standby and prime, off the same load list.
+  //
+  // WHY IT EXISTS. Trail Cabinet's engineered panel schedules (E3.0/E3.1)
+  // showed 253 A on the MDP. Those are Revit panel schedules, and Revit's
+  // default puts the 220.44 RECEPTACLE factor — first 10 kVA at 100%, the
+  // rest at 50% — on every load tagged "Power": CNC routers, forklift
+  // chargers, saws. It reproduces to the VA on all six panels. The same loads
+  // worked the NEC way come to ~391 A: the 400 A main still holds, but with
+  // ~9 A to spare, not ~147. So here every rule hangs off a load TYPE the
+  // person entering it picks, a demand factor is never applied to a type the
+  // code does not give it to, and every line of the answer names its section.
+  //
+  // Rules, per type:
+  //   Lighting ........ 125% — continuous (215.2(A)(1), 230.42(A)(1)); and not
+  //                     less than floor area × Table 220.12 when area is given.
+  //   Receptacles ..... 180 VA a yoke (220.14(I)); 220.44 — first 10 kVA at
+  //                     100%, the remainder at 50%.
+  //   Motors .......... 100%. Entered in HP, the TABLE full-load current is
+  //                     used, never the nameplate (430.6(A)(1)). Plus 25% of
+  //                     the single LARGEST motor (430.24), hermetic
+  //                     compressors included (440.33).
+  //   Heat / cool ..... 220.60 noncoincident loads: only the larger side
+  //                     counts. A fan that runs in both modes counts either way.
+  //   Kitchen ......... Table 220.56 by number of units, never less than the
+  //                     two largest together.
+  //   Other ........... 125% if continuous (3 h or more), otherwise 100%.
+  //
+  // VA is added arithmetically, the way the NEC calculation is done. Revit sums
+  // real and reactive power separately, which is why its panel totals come out
+  // LOWER than the sum of its own load classifications — Trail Cabinet's MDP
+  // classes add to 221,617 VA while its total reads 210,748. That is a power-
+  // factor refinement the NEC standard method does not use.
+  //
+  // ⚠ NOT covered, and the screen says so: dwelling units, Table 220.42
+  // lighting demand factors, 220.87 existing-service sizing, fire pumps, and
+  // the neutral. A line entered in VA is taken as given.
+  const LC_SQRT3 = Math.sqrt(3);
+  const LC_SYSTEMS = [
+    { id:"480-3", label:"277/480 V three phase",           v:480, ph:"3" },
+    { id:"208-3", label:"120/208 V three phase",           v:208, ph:"3" },
+    { id:"240-3", label:"120/240 V three phase (high leg)", v:240, ph:"3" },
+    { id:"240-1", label:"120/240 V single phase",          v:240, ph:"1" },
+  ];
+  // The voltage one load is connected at — only asked for when the load is
+  // entered in amps or HP, because that is when it changes the VA.
+  const LC_LOAD_V = [
+    { id:"480-3", label:"480 V 3φ", v:480, ph:"3" },
+    { id:"208-3", label:"208 V 3φ", v:208, ph:"3" },
+    { id:"240-3", label:"240 V 3φ", v:240, ph:"3" },
+    { id:"120-1", label:"120 V 1φ", v:120, ph:"1" },
+    { id:"208-1", label:"208 V 1φ", v:208, ph:"1" },
+    { id:"240-1", label:"240 V 1φ", v:240, ph:"1" },
+    { id:"277-1", label:"277 V 1φ", v:277, ph:"1" },
+    { id:"480-1", label:"480 V 1φ", v:480, ph:"1" },
+  ];
+  // Nominal system voltage → the motor-table column rated for it. Motors are
+  // rated 115/230/460 V for 120/240/480 V systems; 208 has its own column.
+  // 277 V has none in either table, so a motor there must be entered in amps.
+  const LC_MOTOR_COL = { 120:115, 208:208, 240:230, 480:460 };
+  const LC_TYPES = [
+    { id:"motor",   label:"Motor / motor-driven equipment", motor:true },
+    { id:"cool",    label:"A/C, RTU, heat pump — cooling",  motor:true },
+    { id:"heat",    label:"Heating only (electric heat, heater fans)" },
+    { id:"fan",     label:"HVAC fan — runs heating AND cooling", motor:true },
+    { id:"light",   label:"Lighting" },
+    { id:"recep",   label:"Receptacles (general)" },
+    { id:"kitchen", label:"Commercial kitchen equipment" },
+    { id:"cont",    label:"Other — continuous, 3 h or more" },
+    { id:"other",   label:"Other — not continuous" },
+  ];
+  // Table 220.12, general lighting load by non-dwelling occupancy, VA/ft² (NEC 2023).
+  // ⚠ Transcribed from recall, NOT from the owner's book — every other table in
+  // All Charts came off a page. It only ever RAISES the lighting line (it is a
+  // floor), so a wrong entry cannot shrink an answer, but it must be checked
+  // against a photo of the page; the screen says so until it is (LC_T220_12_CHECKED).
+  const LC_T220_12_CHECKED = false;
+  const LC_T220_12 = [
+    ["Automotive facility", 1.5], ["Convention center", 1.4], ["Courthouse", 1.4],
+    ["Dormitory", 1.5], ["Exercise center", 1.4], ["Fire station", 1.3],
+    ["Gymnasium", 1.7], ["Health care clinic", 1.6], ["Hospital", 1.6],
+    ["Hotel / motel", 1.7], ["Library", 1.5], ["Manufacturing facility", 2.2],
+    ["Motion picture theater", 1.6], ["Museum", 1.6], ["Office", 1.3],
+    ["Parking garage", 0.3], ["Penitentiary", 1.2], ["Performing arts theater", 1.5],
+    ["Police station", 1.3], ["Post office", 1.6], ["Religious facility", 2.2],
+    ["Restaurant", 1.5], ["Retail", 1.9], ["School / university", 1.5],
+    ["Sports arena", 1.5], ["Town hall", 1.4], ["Transportation", 1.2],
+    ["Warehouse", 1.2], ["Workshop", 1.7],
+  ];
+  // 240.6(A) standard ampere ratings.
+  const LC_STD_OCPD = [15, 20, 25, 30, 35, 40, 45, 50, 60, 70, 80, 90, 100, 110, 125,
+    150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 600, 700, 800, 1000, 1200,
+    1600, 2000, 2500, 3000, 4000, 5000, 6000];
+  // Starting kVA as a multiple of running kVA — TYPICAL figures, labelled as
+  // such on screen. Across the line ≈ 6× (a NEMA design B motor's locked rotor);
+  // a soft starter is usually set to 300–400% current limit; a VFD holds
+  // starting to about 150%. The real number is the nameplate code letter.
+  const LC_START = {
+    atl:  { label:"Across the line", mult:6 },
+    soft: { label:"Soft starter",    mult:3.5 },
+    vfd:  { label:"VFD",             mult:1.5 },
+  };
+  const LC_REC_VA = 180;
+
+  function lcNum(x) {
+    const n = parseFloat(x);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function lcMotorFlc(hp, lv) {
+    const tv = LC_MOTOR_COL[lv.v];
+    if (!tv) return null;
+    const cols = lv.ph === "3" ? MOT_3P_V : MOT_1P_V;
+    const i = cols.indexOf(tv);
+    const row = (lv.ph === "3" ? MOT_3P_FLC : MOT_1P_FLC)[hp];
+    return (i !== -1 && row && row[i] != null) ? row[i] : null;
+  }
+
+  // One load line → VA. `blank` = no size typed yet (ignored, but counted so
+  // the screen can say so). `err` = typed but unusable — and an error REFUSES
+  // the total rather than leaving the line out, because a total that silently
+  // skipped a load reads exactly like a right answer, only smaller.
+  function lcLineVA(l) {
+    const vRaw = String(l.val ?? "").trim();
+    if (vRaw === "") return { blank:true };
+    const qRaw = String(l.qty ?? "").trim();
+    const qty = qRaw === "" ? 1 : lcNum(qRaw);
+    if (qty == null || qty < 0) return { err:"the quantity isn't a number" };
+    const lv = LC_LOAD_V.find(x => x.id === l.lv);
+    const mult = lv && lv.ph === "3" ? LC_SQRT3 : 1;
+    let unitVA, flc = null;
+    if (l.unit === "hp") {
+      if (!lv) return { err:"pick the motor's voltage" };
+      flc = lcMotorFlc(vRaw, lv);
+      if (flc == null) {
+        return { err:`${vRaw} HP at ${lv.label} is not in Table ${lv.ph === "3" ? "430.250" : "430.248"} — enter its amps instead` };
+      }
+      unitVA = flc * lv.v * mult;
+    } else {
+      const n = lcNum(vRaw);
+      if (n == null || n < 0) return { err:"the size isn't a number" };
+      if (l.unit === "a") {
+        if (!lv) return { err:"pick the voltage those amps are at" };
+        unitVA = n * lv.v * mult;
+      } else if (l.unit === "kva") unitVA = n * 1000;
+      else if (l.unit === "rec") unitVA = n * LC_REC_VA;
+      else unitVA = n;
+    }
+    return { qty, unitVA, va: qty * unitVA, flc };
+  }
+
+  function lcCompute(c) {
+    const sys = LC_SYSTEMS.find(s => s.id === c.sys) || LC_SYSTEMS[0];
+    const div = sys.ph === "3" ? sys.v * LC_SQRT3 : sys.v;
+    const lines = (c.lines || []).map(l => ({ l, ...lcLineVA(l) }));
+    const errors = lines.filter(x => x.err);
+    const blanks = lines.filter(x => x.blank && String(x.l.desc || "").trim());
+    const sum = { motor:0, cool:0, heat:0, fan:0, light:0, recep:0, kitchen:0, cont:0, other:0 };
+    const kitchenUnits = [];
+    for (const x of lines) {
+      if (x.blank || x.err) continue;
+      const t = sum[x.l.type] != null ? x.l.type : "other";
+      sum[t] += x.va;
+      if (t === "kitchen") for (let k = 0; k < Math.round(x.qty); k++) kitchenUnits.push(x.unitVA);
+    }
+    const connected = Object.values(sum).reduce((a, b) => a + b, 0);
+
+    // Lighting — 220.12 is a FLOOR under the actual fixtures, then 125%.
+    const sqft = lcNum(c.sqft);
+    const occ = LC_T220_12.find(o => o[0] === c.occ) || null;
+    const areaVA = (sqft > 0 && occ) ? sqft * occ[1] : null;
+    const lightBase = Math.max(sum.light, areaVA || 0);
+    const lightD = lightBase * 1.25;
+
+    const recepD = Math.min(sum.recep, 10000) + 0.5 * Math.max(0, sum.recep - 10000);
+
+    const kn = kitchenUnits.length;
+    const kf = kn === 0 ? 0 : kn <= 2 ? 1 : kn === 3 ? 0.9 : kn === 4 ? 0.8 : kn === 5 ? 0.7 : 0.65;
+    const two = kitchenUnits.slice().sort((a, b) => b - a).slice(0, 2).reduce((a, b) => a + b, 0);
+    const kitchenD = kn ? Math.max(sum.kitchen * kf, two) : 0;
+
+    // 220.60 — whichever side is larger; ties go to cooling, the side whose
+    // compressors also feed the largest-motor figure.
+    const coolWins = sum.cool >= sum.heat;
+    const hvacD = sum.fan + Math.max(sum.cool, sum.heat);
+
+    // 430.24 / 440.33 — 25% of the largest single motor, taken per UNIT (a line
+    // of six garage door openers is six motors, not one big one). Compressors
+    // only count if cooling is the side that was kept.
+    let big = null;
+    for (const x of lines) {
+      if (x.blank || x.err) continue;
+      const t = x.l.type;
+      if (!(t === "motor" || t === "fan" || (t === "cool" && coolWins))) continue;
+      if (!big || x.unitVA > big.unitVA) big = { desc: String(x.l.desc || "").trim(), unitVA: x.unitVA };
+    }
+    const bigD = big ? big.unitVA * 0.25 : 0;
+    const contD = sum.cont * 1.25;
+
+    const total = lightD + recepD + sum.motor + bigD + hvacD + kitchenD + contD + sum.other;
+    const refused = errors.length > 0;
+    const amps = refused ? null : total / div;
+    const std = amps == null ? null : (LC_STD_OCPD.find(s => s >= amps - 1e-9) || null);
+    return {
+      sys, div, lines, errors, blanks, sum, connected, connectedAmps: connected / div,
+      sqft, occ, areaVA, lightBase, lightD, recepD, kn, kf, two, kitchenD,
+      coolWins, hvacD, big, bigD, contD,
+      total: refused ? null : total, amps, std,
+    };
+  }
+
+  // Generator size for the calculation above. kW is on the Generators tab's
+  // own basis (genAmps: 3φ at 0.8 pf with 1.73, 1φ at 1.0), so the kW here
+  // and the amps there are the same number seen from both ends.
+  function lcGen(c, r) {
+    if (r.amps == null || !(r.total > 0)) return null;
+    const { v, ph } = r.sys;
+    const kwAt = (a) => ph === "3" ? a * v * 1.73 * 0.8 / 1000 : a * v / 1000;
+    const meas = lcNum(c.measA);
+    const add = Math.max(0, lcNum(c.addA) || 0);
+    const hasMeas = meas != null && meas > 0;
+    // Same shape as 220.87: the measured peak at 125%, plus what was added since.
+    const runA = hasMeas ? meas * 1.25 + add : null;
+    let start = null;
+    for (const x of r.lines) {
+      if (x.blank || x.err) continue;
+      const t = LC_TYPES.find(y => y.id === x.l.type);
+      if (!t || !t.motor) continue;
+      const how = LC_START[x.l.start] ? x.l.start : "atl";
+      const kva = x.unitVA / 1000 * LC_START[how].mult;
+      if (!start || kva > start.kva) start = { desc: String(x.l.desc || "").trim(), runKva: x.unitVA / 1000, kva, how };
+    }
+    const primeA = hasMeas ? runA : r.amps;
+    return {
+      standbyA: r.amps, standbyKw: kwAt(r.amps),
+      primeA, primeKw: kwAt(primeA), fromMeas: hasMeas, meas, add, start,
+    };
+  }
+
+  // Trail Cabinet, Millersburg — the loads off the engineer's E3.0/E3.1 panel
+  // schedules (M. A. Lehman P.E., job 2566), grouped by what they are, as VA
+  // read off the schedule cells. It is the worked example on screen AND the
+  // test vector: Revit's 253 A against the NEC's ~391 A.
+  // [description, type, qty, value, unit, load voltage, start]
+  const LC_EXAMPLE = {
+    name: "Trail Cabinet — E3.0 / E3.1", sys: "480-3", sqft: "", occ: "", measA: "160", addA: "",
+    lines: [
+      ["SCM CNC — MDP", "motor", 1, 22440, "va"],
+      ["Air compressor — MDP", "motor", 1, 9201, "va"],
+      ["Nederman dust collection, 10 HP — MDP", "motor", 2, "10", "hp", "480-3"],
+      ["Forklift charger NW — MDP", "cont", 1, 13440, "va"],
+      ["Forklift charger SE — MDP", "cont", 1, 14400, "va"],
+      ["RTU-1 — MDP", "cool", 1, 49029, "va"],
+      ["RTU-2 — MDP", "cool", 1, 27423, "va"],
+      ["RTU-3 — MDP", "cool", 1, 27423, "va"],
+      ["CU-1, CU-2 — IP-1", "cool", 2, 3492, "va"],
+      ["Shop lighting — IP-1", "light", 1, 6600, "va"],
+      ["Lighting: 1st floor, mezzanine, exterior — IP-2", "light", 1, 2544, "va"],
+      ["Receptacles: showroom, restrooms, mezzanine — IP-2", "recep", 1, 17460, "va"],
+      ["Refrigerators — IP-2", "other", 2, 600, "va"],
+      ["Microwaves — IP-2", "other", 4, 1200, "va"],
+      ["Tankless water heater (gas) — IP-2", "other", 1, 200, "va"],
+      ["Furnace fans F-1, F-2 — IP-2", "fan", 2, 1320, "va"],
+      ["Tube heaters (gas) — IP-2", "heat", 2, 1152, "va"],
+      ["Receptacles: shop — Panel A", "recep", 1, 4440, "va"],
+      ["Kreg pocket hole machines — Panel A", "motor", 4, 2040, "va"],
+      ["Garage door openers — Panel A", "motor", 6, 1680, "va"],
+      ["Presto lift tables — Panel A", "motor", 1, 1725, "va"],
+      ["Chop saws + face frame saws — Panel A", "motor", 5, 1800, "va"],
+      ["Downdraft tables — Panel A", "motor", 5, 1495, "va"],
+      ["Shrink + trim wrappers — Panel A", "motor", 2, 1320, "va"],
+      ["Motor building — Panel A", "other", 1, 828, "va"],
+      ["Table saws — Panel B", "motor", 3, 2990, "va"],
+      ["Blum hinge drills — Panel B", "motor", 3, 1100, "va"],
+      ["Lockmiter — Panel B", "motor", 1, 4290, "va"],
+      ["Edgebander — Panel B", "motor", 1, 13800, "va"],
+      ["CNC conveyor — Panel B", "motor", 1, 2199, "va"],
+      ["CNC lift table — Panel B", "motor", 1, 3300, "va"],
+    ],
+  };
+  function lcExampleCalc() {
+    const e = LC_EXAMPLE;
+    return {
+      name: e.name, sys: e.sys, sqft: e.sqft, occ: e.occ, measA: e.measA, addA: e.addA,
+      lines: e.lines.map(([desc, type, qty, val, unit, lv, start]) => ({
+        desc, type, qty: String(qty), val: String(val), unit, lv: lv || e.sys, start: start || "atl",
+      })),
+    };
+  }
+
+  // ── Load Calc: screen ──
+  // Saved in localStorage per device. Every read and write is wrapped: private
+  // mode or a full quota must cost the save, never the calculator.
+  const LC_STORE = "nee_loadcalc_v1";
+  const lcState = { calcs: {}, cur: null };
+
+  function lcNewLine(sysId) {
+    return { desc:"", type:"motor", qty:"1", val:"", unit:"va",
+             lv: LC_LOAD_V.some(x => x.id === sysId) ? sysId : "480-3", start:"atl" };
+  }
+  function lcId() { return "lc" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+  function lcBlank(name) {
+    return { id: lcId(), name, sys:"480-3", sqft:"", occ:"", measA:"", addA:"", lines:[lcNewLine("480-3")] };
+  }
+  function lcLoad() {
+    try {
+      const d = JSON.parse(localStorage.getItem(LC_STORE) || "null");
+      if (d && d.calcs && typeof d.calcs === "object") { lcState.calcs = d.calcs; lcState.cur = d.cur; }
+    } catch { /* unreadable — start fresh below */ }
+    if (!lcState.calcs[lcState.cur]) {
+      const ids = Object.keys(lcState.calcs);
+      if (ids.length) lcState.cur = ids[0];
+      else { const c = lcBlank("Load calc 1"); lcState.calcs[c.id] = c; lcState.cur = c.id; }
+    }
+  }
+  function lcSave() {
+    try { localStorage.setItem(LC_STORE, JSON.stringify({ calcs: lcState.calcs, cur: lcState.cur })); } catch {}
+  }
+  function lcCur() { return lcState.calcs[lcState.cur]; }
+
+  const lcKva = (va) => (va / 1000).toFixed(1) + " kVA";
+  const lcAmp = (a) => a.toFixed(1) + " A";
+
+  function lcRenderHeader() {
+    const c = lcCur();
+    $("lcPick").innerHTML = Object.values(lcState.calcs).map(x =>
+      `<option value="${esc(x.id)}"${x.id === c.id ? " selected" : ""}>${esc(x.name || "Untitled")}</option>`).join("");
+    $("lcName").value = c.name || "";
+    $("lcSys").innerHTML = LC_SYSTEMS.map(s =>
+      `<option value="${s.id}"${s.id === c.sys ? " selected" : ""}>${esc(s.label)}</option>`).join("");
+    $("lcSqft").value = c.sqft || "";
+    $("lcOcc").innerHTML = `<option value="">Occupancy — Table 220.12</option>` + LC_T220_12.map(([n, u]) =>
+      `<option value="${esc(n)}"${n === c.occ ? " selected" : ""}>${esc(n)} — ${u} VA/ft²</option>`).join("");
+    $("lcMeasA").value = c.measA || "";
+    $("lcAddA").value = c.addA || "";
+  }
+
+  function lcLineHtml(l, i) {
+    const t = LC_TYPES.find(x => x.id === l.type) || LC_TYPES[0];
+    const units = [["va","VA"], ["kva","kVA"], ["a","amps"]];
+    if (t.motor) units.push(["hp","HP"]);
+    if (l.type === "recep") units.push(["rec","receptacles"]);
+    const lv = LC_LOAD_V.find(x => x.id === l.lv) || LC_LOAD_V[0];
+    const hps = lv.ph === "3" ? MOT_3P_HP : MOT_1P_HP;
+    const val = l.unit === "hp"
+      ? `<select class="edit-input lc-val" data-f="val"><option value="">HP…</option>` +
+          // A horsepower this voltage's table lacks stays SHOWN and selected
+          // (see the voltage-change note in lcBuild) so the card says what it holds.
+          (l.val && !hps.includes(l.val) ? `<option value="${esc(l.val)}" selected>${esc(l.val)} HP — not in table</option>` : "") +
+          hps.map(h => `<option value="${esc(h)}"${h === l.val ? " selected" : ""}>${esc(h)} HP</option>`).join("") + `</select>`
+      : `<input class="edit-input lc-val" data-f="val" type="number" inputmode="decimal" min="0" step="any" value="${esc(l.val)}" placeholder="${l.unit === "rec" ? "How many" : "Size"}" />`;
+    return `<div class="lc-line" data-i="${i}">
+      <div class="lc-r">
+        <input class="edit-input lc-desc" data-f="desc" value="${esc(l.desc)}" placeholder="What is it? (RTU-1, table saw…)" />
+        <button type="button" class="lc-x" data-act="del" title="Remove this load">✕</button>
+      </div>
+      <div class="lc-r">
+        <select class="edit-input lc-type" data-f="type">${LC_TYPES.map(x =>
+          `<option value="${x.id}"${x.id === l.type ? " selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
+      </div>
+      <div class="lc-r">
+        <input class="edit-input lc-qty" data-f="qty" type="number" inputmode="numeric" min="0" step="1" value="${esc(l.qty)}" placeholder="1" title="How many" />
+        <span class="lc-times">×</span>
+        ${val}
+        <select class="edit-input lc-unit" data-f="unit">${units.map(([u, n]) =>
+          `<option value="${u}"${u === l.unit ? " selected" : ""}>${n}</option>`).join("")}</select>
+        ${(l.unit === "a" || l.unit === "hp") ? `<select class="edit-input lc-lv" data-f="lv">${LC_LOAD_V.map(x =>
+          `<option value="${x.id}"${x.id === l.lv ? " selected" : ""}>at ${esc(x.label)}</option>`).join("")}</select>` : ""}
+        ${t.motor ? `<select class="edit-input lc-start" data-f="start">${Object.entries(LC_START).map(([k, s]) =>
+          `<option value="${k}"${k === l.start ? " selected" : ""}>${esc(s.label)}</option>`).join("")}</select>` : ""}
+      </div>
+      <div class="lc-calc" id="lcCalc-${i}"></div>
+    </div>`;
+  }
+
+  function lcRenderLines() {
+    const c = lcCur();
+    $("lcLines").innerHTML = c.lines.map(lcLineHtml).join("") ||
+      `<div class="gnd-note">No loads yet — add the first one.</div>`;
+  }
+
+  function lcRender() {
+    const c = lcCur();
+    const r = lcCompute(c);
+
+    // Per-line result, under each card.
+    r.lines.forEach((x, i) => {
+      const el = $("lcCalc-" + i);
+      if (!el) return;
+      el.closest(".lc-line").classList.toggle("err", !!x.err);
+      if (x.err) { el.textContent = "⚠ " + x.err; return; }
+      if (x.blank) { el.textContent = ""; return; }
+      el.textContent = (x.qty !== 1 ? `${x.qty} × ${lcKva(x.unitVA)} = ` : "= ") + lcKva(x.va) +
+        (x.flc != null ? ` — ${x.flc} A per motor, Table ${(LC_LOAD_V.find(v => v.id === x.l.lv) || {}).ph === "3" ? "430.250" : "430.248"}` : "");
+    });
+
+    const vd = $("lcVerdict");
+    const sysTxt = r.sys.label;
+    vd.classList.remove("ok", "bad");
+    if (r.errors.length) {
+      vd.classList.add("bad");
+      $("lcOut").textContent = "not calculated";
+      $("lcStd").textContent = "—";
+      $("lcSub").textContent = `${r.errors.length} load${r.errors.length === 1 ? " needs" : "s need"} fixing (marked in red). ` +
+        "The total is withheld rather than calculated without them.";
+    } else if (!(r.total > 0)) {
+      $("lcOut").textContent = "—"; $("lcStd").textContent = "—";
+      $("lcSub").textContent = "Add the loads below.";
+    } else {
+      vd.classList.add("ok");
+      $("lcOut").textContent = `${lcKva(r.total)} → ${lcAmp(r.amps)}`;
+      $("lcStd").textContent = r.std ? `${r.std} A` : "over 6,000 A";
+      $("lcSub").textContent = `${sysTxt}. Next standard size up, 240.6(A). ` +
+        `Everything at 100% (connected) would be ${lcKva(r.connected)} → ${lcAmp(r.connectedAmps)}.` +
+        // Said HERE as well as in the note under the table: on a phone that note
+        // is thirty cards away, and an uncounted load makes this number too small.
+        (r.blanks.length ? ` ⚠ ${r.blanks.length} named load${r.blanks.length === 1 ? " has" : "s have"} no size and ${r.blanks.length === 1 ? "is" : "are"} not counted.` : "");
+    }
+
+    // Breakdown.
+    const s = r.sum, rows = [];
+    const push = (what, conn, rule, dem) => rows.push({ what, conn, rule, dem });
+    if (s.light || r.areaVA) {
+      const fromArea = r.areaVA != null && r.areaVA > s.light;
+      push("Lighting", s.light,
+        (fromArea ? `Floor area sets it: ${r.sqft.toLocaleString()} ft² × ${r.occ[1]} VA (220.12, ${r.occ[0]}) = ${lcKva(r.areaVA)}. ` : "") +
+        "125% — continuous (215.2, 230.42)", r.lightD);
+    }
+    if (s.recep) push("Receptacles", s.recep, "220.44 — first 10 kVA at 100%, the rest at 50%", r.recepD);
+    if (s.motor) push("Motors & equipment", s.motor, "100%, 430.24", s.motor);
+    if (r.big) push("Largest motor +25%", null, `430.24 / 440.33 — ${r.big.desc || "largest motor"}, ${lcKva(r.big.unitVA)}`, r.bigD);
+    if (s.cool || s.heat || s.fan) {
+      const parts = [];
+      if (s.cool) parts.push(`cooling ${lcKva(s.cool)}`);
+      if (s.heat) parts.push(`heating ${lcKva(s.heat)}`);
+      push("Heating & cooling", s.cool + s.heat + s.fan,
+        `220.60 — only the larger of ${parts.join(" / ")} counts` + (s.fan ? `, plus fans that run either way (${lcKva(s.fan)})` : ""),
+        r.hvacD);
+    }
+    if (s.kitchen) push("Kitchen equipment", s.kitchen,
+      `Table 220.56 — ${r.kn} unit${r.kn === 1 ? "" : "s"} at ${Math.round(r.kf * 100)}%` +
+      (r.kitchenD > s.kitchen * r.kf + 1e-6 ? `, raised to the two largest together (${lcKva(r.two)})` : ""), r.kitchenD);
+    if (s.cont) push("Other — continuous", s.cont, "125% (215.2, 230.42)", r.contD);
+    if (s.other) push("Other", s.other, "100%", s.other);
+
+    $("lcTable").innerHTML = rows.length
+      ? `<thead><tr><th>Load</th><th>Connected</th><th style="text-align:left;">Rule</th><th>Counted</th></tr></thead><tbody>` +
+        rows.map(x => `<tr><td>${esc(x.what)}</td><td>${x.conn == null ? "—" : lcKva(x.conn)}</td>` +
+          `<td class="rule">${esc(x.rule)}</td><td class="cu">${lcKva(x.dem)}</td></tr>`).join("") +
+        (r.total != null
+          ? `<tr class="tot"><td>Total</td><td>${lcKva(r.connected)}</td><td class="rule">÷ ${r.sys.ph === "3" ? `(${r.sys.v} V × √3)` : `${r.sys.v} V`}</td>` +
+            `<td class="cu">${lcKva(r.total)}<br>${lcAmp(r.amps)}</td></tr>` : "") +
+        `</tbody>`
+      : `<tbody><tr><td style="color:var(--muted);">Nothing entered yet.</td></tr></tbody>`;
+
+    const warn = [];
+    if (r.blanks.length) warn.push(`<b>${r.blanks.length}</b> load${r.blanks.length === 1 ? " has" : "s have"} a name but no size, and ${r.blanks.length === 1 ? "is" : "are"} not counted.`);
+    if (!(r.sqft > 0) || !r.occ) warn.push("No floor area and occupancy — the 220.12 minimum lighting load is <b>not checked</b>.");
+    else if (!LC_T220_12_CHECKED) warn.push("The Table 220.12 VA/ft² values have <b>not yet been checked against the code book</b>.");
+    $("lcWarn").innerHTML = warn.join("<br />");
+    $("lcWarn").style.display = warn.length ? "" : "none";
+
+    lcRenderGen(c, r);
+  }
+
+  function lcRenderGen(c, r) {
+    const g = lcGen(c, r);
+    const box = $("lcGen");
+    if (!g) {
+      box.innerHTML = `<div class="gnd-note">A generator size appears once the load calculation has a total.</div>`;
+      return;
+    }
+    const fmtK = (k) => (Math.abs(k - Math.round(k)) < 0.05 ? String(Math.round(k)) : k.toFixed(1));
+    const models = (kw, basis) => {
+      const m = genModels({ ph: r.sys.ph, kw: String(kw), basis, brand: "" });
+      if (!m.rows.length) return `<div class="cf-sub">No model in the list carries ${fmtK(kw)} kW ${basis} within 2× — see the Generators tab.</div>`;
+      return `<div class="cf-sub" style="margin-top:6px;">Smallest real models:</div>` +
+        m.rows.slice(0, 5).map(([brand, model, fuel, sb, pr, phs, url]) =>
+          `<div class="cf-sub">• <b>${esc(brand)}</b> ` +
+          (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(model)}</a>` : esc(model)) +
+          ` (${esc(fuel)}) — ${fmtK(basis === "prime" ? pr : sb)} kW ${basis}</div>`).join("");
+    };
+    const at = `${r.sys.v} V ${r.sys.ph === "3" ? "3φ" : "1φ"}`;
+    const primeWhy = g.fromMeas
+      ? `Measured ${fmtK(g.meas)} A × 125%` + (g.add ? ` + ${fmtK(g.add)} A added` : "") + ` = ${lcAmp(g.primeA)}.`
+      : `No measured peak entered, so this is the full calculated load — conservative. A measured peak usually brings it down.`;
+    const st = g.start;
+    box.innerHTML =
+      `<div class="lc-gen-row">` +
+        `<div class="cf-verdict ok"><div>Standby: <strong>${fmtK(g.standbyKw)} kW</strong></div>` +
+          `<div class="cf-sub">Carries the full calculated ${lcAmp(g.standbyA)} at ${esc(at)}.</div>` +
+          models(g.standbyKw, "standby") + `</div>` +
+        `<div class="cf-verdict ok"><div>Prime: <strong>${fmtK(g.primeKw)} kW</strong></div>` +
+          `<div class="cf-sub">${esc(primeWhy)}</div>` +
+          models(g.primeKw, "prime") + `</div>` +
+      `</div>` +
+      (st ? `<div class="gnd-note gnd-cap"><b>Motor starting.</b> The hardest start is <b>${esc(st.desc || "the largest motor")}</b>: ` +
+        `${st.runKva.toFixed(1)} kVA running, about <b>${fmtK(st.kva)} kVA</b> to start ${esc(LC_START[st.how].label.toLowerCase())} ` +
+        `(typical ${LC_START[st.how].mult}×; the nameplate code letter gives the real figure). ` +
+        `Check it against the <b>motor starting kVA</b> on the chosen set's spec sheet at the voltage dip you can live with. ` +
+        `A soft starter or VFD on that motor is often cheaper than the next generator size up.</div>` : "") +
+      `<div class="gnd-note">kW at 0.8 power factor on three phase (1.0 on single), the same basis as the Generators tab — ` +
+      `so the amps there and the kW here are the same number.</div>`;
+  }
+
+  function lcBuild() {
+    lcLoad();
+    lcRenderHeader(); lcRenderLines(); lcRender();
+
+    const commit = () => { lcSave(); lcRender(); };
+    $("lcPick").addEventListener("input", (e) => {
+      lcState.cur = e.target.value; lcSave();
+      lcRenderHeader(); lcRenderLines(); lcRender();
+    });
+    $("lcName").addEventListener("input", (e) => {
+      lcCur().name = e.target.value; lcSave();
+      const opt = $("lcPick").querySelector(`option[value="${CSS.escape(lcState.cur)}"]`);
+      if (opt) opt.textContent = e.target.value || "Untitled";
+    });
+    $("lcNew").addEventListener("click", () => {
+      const c = lcBlank(`Load calc ${Object.keys(lcState.calcs).length + 1}`);
+      c.sys = lcCur().sys; c.lines = [lcNewLine(c.sys)];
+      lcState.calcs[c.id] = c; lcState.cur = c.id; lcSave();
+      lcRenderHeader(); lcRenderLines(); lcRender();
+      $("lcName").focus(); $("lcName").select();
+    });
+    // The example is a COPY — editing it never damages the reference, and
+    // pressing Example again always gives the clean original.
+    $("lcExample").addEventListener("click", () => {
+      const c = { id: lcId(), ...lcExampleCalc() };
+      lcState.calcs[c.id] = c; lcState.cur = c.id; lcSave();
+      lcRenderHeader(); lcRenderLines(); lcRender();
+    });
+    $("lcDel").addEventListener("click", () => {
+      const c = lcCur();
+      if (!confirm(`Delete “${c.name || "Untitled"}” from this device?\n\nIts ${c.lines.length} load${c.lines.length === 1 ? "" : "s"} go with it.`)) return;
+      delete lcState.calcs[c.id];
+      lcState.cur = null;
+      lcLoad();          // falls to another saved calc, or a fresh blank one
+      lcSave();
+      lcRenderHeader(); lcRenderLines(); lcRender();
+    });
+    $("lcSys").addEventListener("input", (e) => { lcCur().sys = e.target.value; commit(); });
+    $("lcSqft").addEventListener("input", (e) => { lcCur().sqft = e.target.value; commit(); });
+    $("lcOcc").addEventListener("input", (e) => { lcCur().occ = e.target.value; commit(); });
+    $("lcMeasA").addEventListener("input", (e) => { lcCur().measA = e.target.value; commit(); });
+    $("lcAddA").addEventListener("input", (e) => { lcCur().addA = e.target.value; commit(); });
+    $("lcAdd").addEventListener("click", () => {
+      const c = lcCur();
+      // A new line copies the previous one's type and voltage — loads get
+      // entered in runs (six saws, then four RTUs), so that saves a tap each.
+      const prev = c.lines[c.lines.length - 1];
+      const l = lcNewLine(c.sys);
+      if (prev) { l.type = prev.type; l.lv = prev.lv; }
+      c.lines.push(l); lcSave();
+      lcRenderLines(); lcRender();
+      const cards = $("lcLines").querySelectorAll(".lc-desc");
+      if (cards.length) cards[cards.length - 1].focus();
+    });
+
+    // Typing only recalculates — re-rendering the cards would take the caret
+    // out of the box being typed in. A change to type / unit / voltage DOES
+    // re-render, because it changes which fields the card shows.
+    $("lcLines").addEventListener("input", (e) => {
+      const card = e.target.closest(".lc-line");
+      const f = e.target.dataset.f;
+      if (!card || !f) return;
+      const l = lcCur().lines[+card.dataset.i];
+      if (!l) return;
+      l[f] = e.target.value;
+      if (f === "type") {
+        const t = LC_TYPES.find(x => x.id === l.type);
+        if (l.unit === "hp" && !(t && t.motor)) { l.unit = "va"; l.val = ""; }
+        if (l.unit === "rec" && l.type !== "recep") { l.unit = "va"; l.val = ""; }
+      }
+      if (f === "unit") l.val = "";      // 12 amps is not 12 HP — never carry the number across
+      // ⚠ A voltage change KEEPS the horsepower even when the new voltage's
+      // table has no such row. Clearing it (the first version did) turned a
+      // 25 HP motor into a blank line and the total quietly fell by 28 kVA;
+      // kept, it is an error on the card and the total is refused.
+      lcSave();
+      if (f === "type" || f === "unit" || f === "lv") lcRenderLines();
+      lcRender();
+    });
+    $("lcLines").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-act='del']");
+      if (!b) return;
+      const i = +b.closest(".lc-line").dataset.i;
+      lcCur().lines.splice(i, 1); lcSave();
+      lcRenderLines(); lcRender();
+    });
+  }
+
   function switchChartTab(id) {
     document.querySelectorAll("#chartsTabs .chart-tab").forEach(b => {
       const on = b.dataset.chart === id;
       b.classList.toggle("active", on);
       if (on) $("chartsTitle").textContent = b.textContent;
     });
-    ["fill","grounding","ampacity","vdrop","motors","generators"].forEach(k => {
+    ["fill","grounding","ampacity","vdrop","motors","generators","loadcalc"].forEach(k => {
       const p = $("chartPanel-" + k);
       if (p) p.style.display = (k === id) ? "" : "none";
     });
   }
 
   function openCharts() {
-    if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); motBuild(); genBuild(); cfState._built = true; }
+    if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); motBuild(); genBuild(); lcBuild(); cfState._built = true; }
     $("chartsModal").style.display = "flex";
     pushBackEntry("charts", () => { $("chartsModal").style.display = "none"; });
   }
@@ -29549,10 +30179,9 @@
 </div>
 
 <!-- ── ALL CHARTS MODAL — NEC field calculators ─────────────────────────────
-     Six tabs planned; Conduit Fill is the only one built. The other five
-     render a placeholder rather than being absent, so the strip's shape is
-     the roadmap and adding one later is a panel swap, not a re-layout.
-     Everything here is client-side: static NEC Chapter 9 tables + arithmetic.
+     Seven tabs, all built. Load Calc (tab 7) keeps its load lists in
+     localStorage on the device; every other tab holds no state at all.
+     Everything here is client-side: static NEC tables + arithmetic.
      No apiGet, no apiPost, no action in the dispatcher, nothing to authorize.
      That also makes it work with no signal, which is the point of putting it
      in the field app at all. -->
@@ -29569,6 +30198,7 @@
       <button type="button" class="chart-tab" data-chart="vdrop">Voltage Drop</button>
       <button type="button" class="chart-tab" data-chart="motors">Motors</button>
       <button type="button" class="chart-tab" data-chart="generators">Generators</button>
+      <button type="button" class="chart-tab" data-chart="loadcalc">Load Calc</button>
     </div>
   </div>
 
@@ -29852,6 +30482,71 @@
           the smaller of the <b>engine</b> and the <b>head</b>. Ratings hold to 1,000 m; derate 4% for
           45°C ambient, and 4% from 1,000 to 1,500 m altitude. Source: Marelli catalogue COMCATPOW003_B (09/2021).
         </div>
+      </div>
+    </div>
+
+    <!-- ── LOAD CALC ── service size by NEC Article 220, then a generator for it.
+         Saved per device in localStorage (lcSave), not on the job: this is a
+         calculator, and a half-entered load list must survive the phone locking. -->
+    <div id="chartPanel-loadcalc" style="display:none;">
+      <div class="lc-bar">
+        <select id="lcPick" class="edit-input"></select>
+        <button type="button" class="btn btn-sm" id="lcNew">+ New</button>
+        <button type="button" class="btn btn-sm" id="lcExample">Example</button>
+        <button type="button" class="btn btn-sm" id="lcDel" title="Delete this calculation">🗑</button>
+      </div>
+      <input id="lcName" class="edit-input" placeholder="Name this calculation — job, building…" />
+
+      <div class="cf-section-title">Service</div>
+      <select id="lcSys" class="edit-input"></select>
+      <div class="gnd-row" style="margin-top:8px;">
+        <input id="lcSqft" class="edit-input" type="number" inputmode="numeric" min="0" step="any" placeholder="Floor area, sq ft" />
+        <select id="lcOcc" class="edit-input"></select>
+      </div>
+
+      <div class="cf-verdict" id="lcVerdict" style="margin-top:14px;">
+        <div>Calculated load: <strong id="lcOut">—</strong></div>
+        <div>Minimum service / main: <strong id="lcStd">—</strong></div>
+        <div class="cf-sub" id="lcSub">Add the loads below.</div>
+      </div>
+
+      <div class="cf-section-title">Loads</div>
+      <div id="lcLines"></div>
+      <button type="button" class="btn btn-sm" id="lcAdd" style="font-size:12px;">+ Add load</button>
+
+      <div class="cf-section-title">How it adds up — NEC Article 220</div>
+      <div class="gnd-wrap"><table class="gnd-table lc-table" id="lcTable"></table></div>
+      <div class="gnd-note gnd-cap" id="lcWarn" style="display:none;"></div>
+      <div class="gnd-note">
+        <b>Pick the type honestly — it decides the rule.</b> The 220.44 receptacle factor (first 10 kVA
+        at 100%, the rest at 50%) is for <b>receptacles only</b>. Engineering software often puts it on
+        every “power” load — saws, CNCs, chargers — which is how a drawing ends up showing far less
+        than the code calculation.<br />
+        <b>Continuous</b> = runs 3 hours or more (battery chargers, EV chargers, process heat): counted at 125%.<br />
+        <b>A multi-compressor RTU</b> starts one compressor at a time. For the largest-motor and starting
+        figures, the whole unit is conservative; enter the unit's largest compressor separately if you know it.<br />
+        <b>Not covered here:</b> dwelling units (220.82 and the other optional methods), Table 220.42 lighting
+        demand factors, sizing an existing service from its demand record (220.87), fire pumps (Art. 695), and the neutral.
+      </div>
+
+      <div class="cf-section-title">Generator</div>
+      <div class="gnd-row">
+        <input id="lcMeasA" class="edit-input" type="number" inputmode="decimal" min="0" step="any" placeholder="Measured peak amps (optional)" />
+        <input id="lcAddA" class="edit-input" type="number" inputmode="decimal" min="0" step="any" placeholder="+ amps added since" />
+      </div>
+      <div id="lcGen" style="margin-top:12px;"></div>
+      <div class="gnd-note">
+        <b>Standby</b> (utility is the power, generator backs it up through a transfer switch) is sized to the
+        <b>full calculated load</b> it can pick up — 702.4(B)(2)(a), unless load management sheds some.<br />
+        <b>Prime</b> (the generator <b>is</b> the power — off-grid, generator + solar) is sized to the load that
+        really runs. A stand-alone system may have less capacity than the calculated load, but never less than
+        its largest single piece of equipment — 710.15(A). A <b>measured</b> peak is the best evidence of what runs:
+        it is taken at 125%, plus whatever has been added since. Without one, prime falls back to the
+        calculated load, which is conservative. A spot clamp reading is good evidence for sizing a prime set, but it
+        is not a 220.87 demand record for a code calculation.<br />
+        <b>Solar does not shrink the generator</b> unless batteries carry the peaks — at night and under cloud the
+        generator carries everything alone. What solar changes is fuel and run hours; a diesel run lightly loaded
+        at midday wet-stacks, so keep it above about 30% load.
       </div>
     </div>
 

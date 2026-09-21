@@ -29155,6 +29155,9 @@
         if (!lv) return { err:"pick the voltage those amps are at" };
         unitVA = n * lv.v * mult;
       } else if (l.unit === "kva") unitVA = n * 1000;
+      // Straight off a panel schedule: a 3-pole breaker shows the same VA in
+      // each phase column, so the load is that number × 3.
+      else if (l.unit === "vaph") unitVA = n * 3;
       else if (l.unit === "rec") unitVA = n * LC_REC_VA;
       else unitVA = n;
     }
@@ -29316,6 +29319,39 @@
     };
   }
 
+  // The ENGINEER'S way — what a Revit panel schedule's "Load Classification"
+  // box does with the same loads, so the drawing's numbers can be reached and
+  // put beside the code calculation. NOT a code calculation; it is here so the
+  // owner can arrive at the engineer's figure himself and see where it parts.
+  //
+  // Revit sorts every load into one of three classes and gives each a demand
+  // factor: HVAC 100%, Lighting 100%, "Power" = first 10 kVA at 100% and the
+  // rest at 50% (the Table 220.47 receptacle rule, applied to everything that
+  // is not HVAC or lighting). It then combines the classes by POWER FACTOR —
+  // real and reactive power summed separately — not by adding VA. Reverse-
+  // engineered off Trail Cabinet's MDP: HVAC at 0.8 pf and the rest at 1.0
+  // reproduces its Total Conn. Load (296,919 VA) and Total Est. Demand
+  // (210,748 VA) to within 0.3%. The pf values are an inference, not printed
+  // on the sheet, so the screen shows the straight sum as well.
+  const LC_REVIT_HVAC_PF = 0.8;
+  function lcRevit(r) {
+    if (r.total == null) return null;
+    const s = r.sum;
+    const hvac = s.cool + s.heat + s.fan;
+    const light = s.light;
+    const power = s.motor + s.recep + s.kitchen + s.ev + s.cont + s.other;
+    const powerD = Math.min(power, 10000) + 0.5 * Math.max(0, power - 10000);
+    const q = Math.sqrt(1 - LC_REVIT_HVAC_PF * LC_REVIT_HVAC_PF);
+    const vec = (h, p, l) => Math.hypot(h * LC_REVIT_HVAC_PF + p + l, h * q);
+    const conn = vec(hvac, power, light), dem = vec(hvac, powerD, light);
+    return {
+      hvac, power, powerD, light,
+      powerPct: power ? powerD / power : 1,
+      connStraight: hvac + power + light, demStraight: hvac + powerD + light,
+      conn, dem, connA: conn / r.div, demA: dem / r.div,
+    };
+  }
+
   // ── Load Calc: screen ──
   // Saved in localStorage per device. Every read and write is wrapped: private
   // mode or a full quota must cost the save, never the calculator.
@@ -29365,7 +29401,7 @@
 
   function lcLineHtml(l, i) {
     const t = LC_TYPES.find(x => x.id === l.type) || LC_TYPES[0];
-    const units = [["va","VA"], ["kva","kVA"], ["a","amps"]];
+    const units = [["va","VA"], ["vaph","VA per phase (3-pole)"], ["kva","kVA"], ["a","amps"]];
     if (t.motor) units.push(["hp","HP"]);
     if (l.type === "recep") units.push(["rec","receptacles"]);
     const lv = LC_LOAD_V.find(x => x.id === l.lv) || LC_LOAD_V[0];
@@ -29495,6 +29531,27 @@
     }
     $("lcWarn").innerHTML = warn.join("<br />");
     $("lcWarn").style.display = warn.length ? "" : "none";
+
+    // The engineer's way, laid out like the Load Classification box on his sheet.
+    const rv = lcRevit(r);
+    const pct = (x) => (x * 100).toFixed(2) + "%";
+    $("lcRevit").innerHTML = !rv
+      ? `<tbody><tr><td style="color:var(--muted);">Appears once the code calculation has a total.</td></tr></tbody>`
+      // Short headers and VA without the unit: four columns of "115,803 VA"
+      // overran a 375px phone and hid the Demand column behind a sideways scroll.
+      : `<thead><tr><th>Class</th><th>Connected VA</th><th>Factor</th><th>Demand VA</th></tr></thead><tbody>` +
+        [["HVAC", rv.hvac, 1, rv.hvac], ["Power", rv.power, rv.powerPct, rv.powerD], ["Lighting", rv.light, 1, rv.light]]
+          .filter(x => x[1] > 0)
+          .map(([n, c, f, d]) => `<tr><td>${n}</td><td>${Math.round(c).toLocaleString()}</td><td>${pct(f)}</td><td>${Math.round(d).toLocaleString()}</td></tr>`).join("") +
+        `<tr class="tot"><td>Total Conn.</td><td>${Math.round(rv.conn).toLocaleString()}</td><td></td><td><b>${Math.round(rv.connA)} A</b></td></tr>` +
+        `<tr class="tot"><td>Total Est. Demand</td><td></td><td></td><td class="cu">${Math.round(rv.dem).toLocaleString()}<br><b>${Math.round(rv.demA)} A</b></td></tr>` +
+        `</tbody>`;
+    $("lcRevitNote").innerHTML = !rv ? "" :
+      `The three class lines added straight come to ${Math.round(rv.demStraight).toLocaleString()} VA ` +
+      `(${Math.round(rv.demStraight / r.div)} A). Revit combines them by power factor instead — HVAC at ${LC_REVIT_HVAC_PF}, ` +
+      `the rest at 1.0 — which is how its totals come out lower than its own lines. ` +
+      `<b>The code calculation above is ${Math.round(r.amps - rv.demA)} A higher</b>, almost all of it from the “Power” ` +
+      `line: ${pct(rv.powerPct)} is the receptacle rule (Table 220.47) applied to motors, chargers and machines, which the code counts at 100%.`;
 
     lcRenderGen(c, r);
   }
@@ -30573,6 +30630,16 @@
         (warehouses, hotels), the optional methods for schools (220.86) and new restaurants (220.88),
         sizing an existing service from its demand record (220.87), fire pumps (Art. 695), and the neutral (220.61).
         All section numbers are the 2023 NEC.
+      </div>
+
+      <div class="cf-section-title">The engineer's way — Revit panel schedule</div>
+      <div class="gnd-wrap"><table class="gnd-table lc-table" id="lcRevit"></table></div>
+      <div class="gnd-note" id="lcRevitNote"></div>
+      <div class="gnd-note">
+        This is how the <b>Load Classification</b> box on a Revit panel schedule gets its numbers, from the same
+        loads: every load is HVAC, Power or Lighting. Types here map as <b>HVAC</b> = cooling, heating and HVAC
+        fans; <b>Lighting</b> = lighting; <b>Power</b> = everything else. It is shown so you can reach the
+        drawing's figure and see where it parts from the code — it is <b>not</b> a code calculation.
       </div>
 
       <div class="cf-section-title">Generator</div>

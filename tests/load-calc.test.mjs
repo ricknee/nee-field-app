@@ -36,7 +36,7 @@ function slice(start, end) {
 const L = new Function(
   slice("const MOT_1P_V = [", "function motRender()") +
   slice("// ── TAB 7: LOAD CALC", "// ── Load Calc: screen ──") +
-  "\nreturn { lcCompute, lcGen, lcLineVA, lcExampleCalc, genModels, genAmps, LC_T220_42A, LC_STD_OCPD };"
+  "\nreturn { lcCompute, lcGen, lcLineVA, lcRevit, lcExampleCalc, genModels, genAmps, LC_T220_42A, LC_STD_OCPD };"
 )();
 
 // ── harness ──
@@ -195,6 +195,25 @@ test("Trail Cabinet — generator: standby off the full load, prime off the meas
   eq(withAdd.primeA, 230, "+ 30 A added since the measurement");
   const noMeas = L.lcGen({ ...c, measA: "" }, r);
   eq(noMeas.primeA, r.amps, "no measurement → prime falls back to the calculated load");
+});
+
+// The engineer's figures off the MDP schedule (E3.0): Total Conn. Load
+// 296,919 VA / 357 A, Total Est. Demand 210,748 VA / 253 A, Power at 52.65%.
+// The example's lines are read off the same schedules; the only known
+// difference is the two gas tube heaters, which he classed as Power and the
+// example classes as heating (2.3 kVA, ~1.5 A).
+test("Revit method — reaches the engineer's MDP numbers from the same loads", () => {
+  const r = L.lcCompute(L.lcExampleCalc());
+  const v = L.lcRevit(r);
+  eq(Math.abs(v.conn - 296919) / 296919 < 0.003, true, `Total Conn. Load ${Math.round(v.conn)} vs 296,919`);
+  eq(Math.round(v.connA), 357, "Total Conn. 357 A");
+  eq(Math.abs(v.demA - 253) < 2.5, true, `Total Est. Demand ${v.demA.toFixed(1)} A vs 253 A`);
+  eq(Math.abs(v.powerPct - 0.5265) < 0.002, true, `Power demand factor ${(v.powerPct * 100).toFixed(2)}% vs 52.65%`);
+  eq(Math.round(v.powerD), 10000 + Math.round(0.5 * (v.power - 10000)), "Power = 10 kVA + 50% of the rest");
+});
+
+test("the VA-per-phase unit takes a 3-pole schedule cell × 3", () => {
+  eq(L.lcLineVA({ type: "motor", qty: "1", val: "7480", unit: "vaph" }).va, 22440, "SCM CNC 7,480 per phase");
 });
 
 test("generator picks never offer a prime the spec sheet doesn't print", () => {

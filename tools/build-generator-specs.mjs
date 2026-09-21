@@ -125,7 +125,10 @@ for (const b of ["cummins", "generac", "kohler"]) {
   }
   console.log(`air-cooled ${b}: ${rows.length}`);
 }
+// Grouped by product line inside a brand, so Generac's two current
+// generations (Guardian, and the 2026 Power Zone line) don't interleave by kW.
 air.sort((a, b) => a.brand.localeCompare(b.brand) ||
+  String(a.product_line || "").localeCompare(String(b.product_line || "")) ||
   (a.standby_kw_lp ?? a.standby_kw_ng ?? 0) - (b.standby_kw_lp ?? b.standby_kw_ng ?? 0));
 
 const lines = [

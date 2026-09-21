@@ -28410,9 +28410,19 @@
   ];
   // @generated GEN_DATA end
 
-  function genAmps(kw, v, ph) {
+  // `pf` is the LOAD's power factor, three phase only. The chart's 0.8 is the
+  // default and is also the most amps the set can carry: a 3φ generator is
+  // rated at 0.8, so its alternator is sized for kW ÷ 0.8 kVA. A load closer
+  // to 1.0 (heaters, LEDs, VFDs, chargers) hits the ENGINE's kW limit first,
+  // at fewer amps — 150 kW at 480 V is 225.8 A at 0.8 but 180.6 A at 1.0.
+  // ⚠ Below 0.8 is refused (clamped), not computed: the formula would return
+  // MORE amps than the alternator is rated to carry. Single phase ignores
+  // pf — those sets and the chart are already rated at 1.0.
+  const GEN_PF = [0.8, 0.85, 0.9, 0.95, 1.0];
+  function genAmps(kw, v, ph, pf) {
     if (!(kw > 0) || !(v > 0)) return null;
-    return ph === "3" ? kw * 1000 / (v * 1.73 * 0.8) : kw * 1000 / v;
+    const p = Math.min(1, Math.max(0.8, +pf || 0.8));
+    return ph === "3" ? kw * 1000 / (v * 1.73 * p) : kw * 1000 / v;
   }
 
   // Rule of thumb: whichever rating you have, the other is 90% / ÷ 0.9.
@@ -28929,7 +28939,7 @@
     motRender();
   }
 
-  const genState = { ph:"1", v:"240", kw:"", basis:"standby", brand:"" };
+  const genState = { ph:"1", v:"240", kw:"", basis:"standby", brand:"", pf:"0.8" };
   // One remembered voltage per phase, so flipping 1φ → 3φ → 1φ comes back to
   // 240 rather than whatever the other list happened to start with.
   const genVFor = { "1":"240", "3":"480" };
@@ -28948,8 +28958,9 @@
     $("genQuick").innerHTML = (p3 ? GEN_QUICK_3P : GEN_QUICK_1P).map(k =>
       `<button type="button" class="gen-chip${+genState.kw === k ? " on" : ""}" data-kw="${k}">${k}</button>`).join("");
 
+    $("genPfRow").style.display = p3 ? "" : "none";
     const kw = parseFloat(genState.kw);
-    const v = +genState.v, ph = genState.ph;
+    const v = +genState.v, ph = genState.ph, pf = p3 ? +genState.pf : 1;
     const r = genRule(kw, genState.basis);
     const fmtA = (a) => a == null ? "—" : a.toFixed(1) + " A";
     const fmtK = (k) => (Math.abs(k - Math.round(k)) < 0.05 ? String(Math.round(k)) : k.toFixed(1));
@@ -28963,18 +28974,21 @@
     }
     out.style.display = "";
     $("genVerdict").classList.add("ok");
-    $("genSb").textContent = `${fmtK(r.standby)} kW → ${fmtA(genAmps(r.standby, v, ph))}`;
-    $("genPr").textContent = `${fmtK(r.prime)} kW → ${fmtA(genAmps(r.prime, v, ph))}`;
+    $("genSb").textContent = `${fmtK(r.standby)} kW → ${fmtA(genAmps(r.standby, v, ph, pf))}`;
+    $("genPr").textContent = `${fmtK(r.prime)} kW → ${fmtA(genAmps(r.prime, v, ph, pf))}`;
     $("genSub").textContent =
       `${p3 ? "Three" : "Single"} phase, ${v.toLocaleString()} V. ` +
-      (p3 ? "Amps = kW × 1000 ÷ (V × 1.73 × 0.8), 80% power factor."
+      (p3 ? `Amps = kW × 1000 ÷ (V × 1.73 × ${pf}), ${Math.round(pf * 100)}% power factor` +
+            (pf > 0.8 ? ` — the engine runs out of kW before the alternator is full; ` +
+                        `at the rated 0.8 it would carry ${fmtA(genAmps(r.standby, v, ph, 0.8))} standby.`
+                      : " — the rating the set is built to, and the most it can carry.")
           : "Amps = kW × 1000 ÷ V, 100% power factor.") +
       ` ${genState.basis === "prime" ? "Standby" : "Prime"} is the 90% rule of thumb — see real models below.`;
 
     // ── real models ──
     const m = genModels(genState);
     const basisWord = genState.basis === "prime" ? "prime" : "standby";
-    $("genModelsTitle").textContent = `Real models — smallest that carries ${fmtK(kw)} kW ${basisWord}`;
+    $("genModelsTitle").textContent = `Real models rated at least ${fmtK(kw)} kW ${basisWord}`;
     $("genModelsTable").innerHTML = m.rows.length
       ? `<thead><tr><th style="text-align:left;">Model</th><th>Fuel</th><th>Standby</th><th>Prime</th></tr></thead><tbody>` +
         m.rows.map(([brand, model, fuel, sb, pr, phs, url]) =>
@@ -28983,9 +28997,9 @@
             (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(model)}</a>` : esc(model)) +
             (phs ? "" : ` <span class="gen-q" title="The spec sheet or rating card does not list phase">phase?</span>`) +
           `</td><td>${esc(fuel)}</td>` +
-          `<td class="cu">${fmtK(sb)} kW<br><span class="gen-a">${fmtA(genAmps(sb, v, ph))}</span></td>` +
+          `<td class="cu">${fmtK(sb)} kW<br><span class="gen-a">${fmtA(genAmps(sb, v, ph, pf))}</span></td>` +
           `<td>${pr == null ? `<span class="gen-na">standby only</span>`
-                            : `${fmtK(pr)} kW<br><span class="gen-a">${fmtA(genAmps(pr, v, ph))}</span>`}</td></tr>`
+                            : `${fmtK(pr)} kW<br><span class="gen-a">${fmtA(genAmps(pr, v, ph, pf))}</span>`}</td></tr>`
         ).join("") + `</tbody>`
       : `<tbody><tr><td style="white-space:normal; color:var(--muted);">No ${esc(genState.brand || "")} model in the list ` +
         `carries ${fmtK(kw)} kW ${basisWord} on ${p3 ? "three" : "single"} phase.</td></tr></tbody>`;
@@ -29036,6 +29050,7 @@
     });
     $("genV").addEventListener("input", (e) => { genState.v = e.target.value; genRender(); });
     $("genKw").addEventListener("input", (e) => { genState.kw = e.target.value; genRender(); });
+    $("genPf").addEventListener("input", (e) => { genState.pf = e.target.value; genRender(); });
     $("genQuick").addEventListener("click", (e) => {
       const b = e.target.closest(".gen-chip");
       if (!b) return;
@@ -31059,10 +31074,19 @@
         <select id="genV" class="edit-input"></select>
       </div>
       <div class="gen-quick" id="genQuick"></div>
+      <div class="gnd-row" id="genPfRow" style="display:none; margin-top:10px;">
+        <select id="genPf" class="edit-input">
+          <option value="0.8">Load power factor 0.8 — motors (chart, most amps)</option>
+          <option value="0.85">Load power factor 0.85</option>
+          <option value="0.9">Load power factor 0.9 — mixed load</option>
+          <option value="0.95">Load power factor 0.95</option>
+          <option value="1">Load power factor 1.0 — heaters, LEDs, VFDs</option>
+        </select>
+      </div>
 
       <div class="cf-verdict" id="genVerdict" style="margin-top:14px;">
-        <div>Standby: <strong id="genSb">—</strong></div>
-        <div>Prime: <strong id="genPr">—</strong></div>
+        <div>Standby carries up to: <strong id="genSb">—</strong></div>
+        <div>Prime carries up to: <strong id="genPr">—</strong></div>
         <div class="cf-sub" id="genSub">Enter the generator's kW.</div>
       </div>
 

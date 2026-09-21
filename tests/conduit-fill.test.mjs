@@ -735,6 +735,19 @@ test("three-phase amps match the chart (80% pf, 1.73)", () => {
   eq(GN.GEN_3P_V.length, 17, "every voltage column on the chart");
 });
 
+// The load's power factor moves the amps at which a 3φ set runs out of ENGINE:
+// 0.8 (the chart, the rating) is the most it can carry. Below 0.8 would claim
+// more current than the alternator is rated for, so it is clamped, never computed.
+test("power factor: 0.8 is the chart and the ceiling; 1.0 is fewer amps", () => {
+  const p = (kw, v, pf) => +GN.genAmps(kw, v, "3", pf).toFixed(1);
+  eq(p(150, 480, 0.8), 225.8, "150 kW at 480 V, 0.8 — the chart cell");
+  eq(p(150, 480, undefined), 225.8, "no pf given = the chart");
+  eq(p(150, 480, 1.0), 180.6, "…but a heater/LED/VFD load maxes the engine at 180.6 A");
+  eq(p(150, 480, 0.9), 200.7, "0.9");
+  eq(p(150, 480, 0.6), 225.8, "0.6 is clamped to 0.8 — never more amps than the rating");
+  eq(+GN.genAmps(22, 240, "1", 0.8).toFixed(1), 91.7, "single phase ignores pf (rated at 1.0)");
+});
+
 test("rule of thumb: prime is 90% of standby, both ways", () => {
   eq(GN.genRule(100, "standby").prime, 90, "100 standby → 90 prime");
   eq(+GN.genRule(90, "prime").standby.toFixed(6), 100, "90 prime → 100 standby");

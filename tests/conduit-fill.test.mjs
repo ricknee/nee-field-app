@@ -817,6 +817,20 @@ test("air-cooled spec card: fuel-specific, blanks dropped, nothing converted", (
   eq(GN.genAirSpec(m, "ng").some(s => s.title === "Engine"), false, "an empty section is not shown");
 });
 
+test("air-cooled spec card: a printed gas-pipe table lands in the gas section, per fuel", () => {
+  const m = { brand:"X", model:"T2", standby_kw_ng:18,
+              other: { min_gas_pipe_npt: { ng: { "25ft":"1", "100ft":"1 1/4" }, lp: { "25ft":"3/4" } },
+                       fuel_exercise_cfh: { ng:71, lp:35 }, derating: { temp:"2% per 10°F" } } };
+  const gas = (f) => Object.fromEntries(GN.genAirSpec(m, f).find(s => s.title.startsWith("Gas")).rows);
+  eq(gas("ng")["Min. gas pipe, 100 ft run"], "1 1/4 in. NPT", "NG table");
+  eq(gas("lp")["Min. gas pipe, 25 ft run"], "3/4 in. NPT", "LP reads the LP column, not NG's");
+  eq("Min. gas pipe, 100 ft run" in gas("lp"), false, "…and only the lengths LP lists");
+  eq(gas("ng")["Fuel use while exercising"], "71 ft³/hr", "exercise burn per fuel");
+  const other = Object.fromEntries(GN.genAirSpec(m, "ng").find(s => s.title === "Other").rows);
+  eq("min gas pipe npt" in other, false, "not repeated as a blob under Other");
+  eq(other["derating"], "temp: 2% per 10°F", "nested fields read as text, not JSON");
+});
+
 test("air-cooled data: every model names a brand, a model and a source", () => {
   for (const m of GN.GEN_AIR) {
     if (!m.brand || !m.model) throw new Error("row without brand/model");

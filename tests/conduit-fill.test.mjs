@@ -709,7 +709,7 @@ test("Article 430 sizing multipliers", () => {
 // ══════════════════════════════════════════════════════════════════════════
 const GN = new Function(
   html.slice(html.indexOf("const GEN_1P_V = ["), html.indexOf("// ── TAB 3: AMPACITY")) +
-  "\nreturn { GEN_1P_V, GEN_3P_V, GEN_MODELS, GEN_MARELLI, genAmps, genRule, genModels, genMarelli };"
+  "\nreturn { GEN_1P_V, GEN_3P_V, GEN_MODELS, GEN_MARELLI, GEN_AIR, genAmps, genRule, genModels, genMarelli, genAirSpec };"
 )();
 const a1 = (kw, v) => +GN.genAmps(kw, v, "1").toFixed(1);
 const a3 = (kw, v) => +GN.genAmps(kw, v, "3").toFixed(1);
@@ -796,6 +796,33 @@ test("Marelli: an untabulated voltage is labelled, never derived", () => {
   eq(h.key, "3:480", "…from the 480 V column");
   eq(GN.genMarelli("1", 120, 10, 9).none, true, "1φ 120 V: Marelli tabulates nothing — no stand-in");
   eq(GN.genMarelli("1", 240, 10, 9).standby[0].startsWith("MXB-E"), true, "1φ 240 V zig-zag is tabulated");
+});
+
+// A spec line the sheet does not give must be ABSENT, not "0" or "—": a blank
+// 25%-load burn is not a sheet saying zero. And fuel picks its own columns.
+test("air-cooled spec card: fuel-specific, blanks dropped, nothing converted", () => {
+  const m = { brand:"X", model:"T1", standby_kw_ng:18, standby_kw_lp:20,
+              ng_inlet_pressure_inwc_min:5, ng_inlet_pressure_inwc_max:7,
+              lp_inlet_pressure_inwc_min:10, lp_inlet_pressure_inwc_max:12,
+              ng_cfh_100:300, lp_cfh_100:120, lp_gph_100:3.3, ng_cfh_25:null };
+  const flat = (f) => Object.fromEntries(GN.genAirSpec(m, f).flatMap(s => s.rows));
+  const ng = flat("ng"), lp = flat("lp");
+  eq(ng["Standby rating"], "18 kW", "NG rating");
+  eq(lp["Standby rating"], "20 kW", "LP rating");
+  eq(ng["Inlet pressure"], "5–7 in. W.C.", "NG pressure");
+  eq(lp["Inlet pressure"], "10–12 in. W.C.", "LP pressure");
+  eq(ng["Fuel use at 100% load"], "300 ft³/hr", "NG burn as printed");
+  eq(lp["Fuel use at 100% load"], "120 ft³/hr · 3.3 gal/hr", "LP keeps both units");
+  eq("Fuel use at 25% load" in ng, false, "a missing load point is not a row");
+  eq(GN.genAirSpec(m, "ng").some(s => s.title === "Engine"), false, "an empty section is not shown");
+});
+
+test("air-cooled data: every model names a brand, a model and a source", () => {
+  for (const m of GN.GEN_AIR) {
+    if (!m.brand || !m.model) throw new Error("row without brand/model");
+    if (!m.source_url) throw new Error(`${m.brand} ${m.model}: no spec-sheet source`);
+    if (m.standby_kw_ng == null && m.standby_kw_lp == null) throw new Error(`${m.brand} ${m.model}: no rating`);
+  }
 });
 
 // ── report ──

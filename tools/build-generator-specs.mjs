@@ -89,6 +89,45 @@ if (fs.existsSync(mf)) {
   console.log(`marelli: ${marelli.length} heads`);
 }
 
+// Air-cooled home units: the whole spec sheet per model, for the "Air-Cooled
+// Models" view (gas pressure, fuel burn, breaker, pad size…). Shipped as the
+// researched objects minus nothing but empty fields — these are read one at a
+// time, not scanned, so the verbose shape costs nothing at runtime.
+const air = [];
+for (const b of ["cummins", "generac", "kohler"]) {
+  const f = path.join(DIR, `aircooled_${b}.json`);
+  if (!fs.existsSync(f)) { console.log(`skip air-cooled ${b}`); continue; }
+  const rows = JSON.parse(fs.readFileSync(f, "utf8"));
+  for (const r of rows) {
+    if (!r.brand || !r.model) throw new Error(`aircooled_${b}: row without brand/model`);
+    const o = {};
+    for (const [k, v] of Object.entries(r)) {
+      if (v == null || v === "") continue;
+      if (typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length) continue;
+      o[k] = v;
+    }
+    // Cummins' air-cooled sheet (NAS-6254) prints rated AMPS only, no kW.
+    // The kW is taken from the same model's row on the Cummins rating card
+    // (already in cummins.json, with its own source) — never from amps × 240,
+    // which would be a conversion presented as a rating. RS20AC is the RS20A
+    // genset sold with a 200 A ATS, so it reads the RS20A card row.
+    for (const fuel of ["ng", "lp"]) {
+      if (o[`standby_kw_${fuel}`] != null) continue;
+      const base = o.model.replace(/^RS20AC\b/, "RS20A");
+      const card = models.find(m => m[0] === o.brand && m[2] === fuel.toUpperCase() &&
+                                    m[1].split(/[\s(]/)[0] === base);
+      if (card) {
+        o[`standby_kw_${fuel}`] = card[3];
+        o.kw_source = `kW from ${o.brand} rating card row "${card[1]}" (${card[6]}); the air-cooled sheet prints amps only`;
+      }
+    }
+    air.push(o);
+  }
+  console.log(`air-cooled ${b}: ${rows.length}`);
+}
+air.sort((a, b) => a.brand.localeCompare(b.brand) ||
+  (a.standby_kw_lp ?? a.standby_kw_ng ?? 0) - (b.standby_kw_lp ?? b.standby_kw_ng ?? 0));
+
 const lines = [
   BEGIN,
   "  // [brand, model, fuel, standby kW, prime kW (null = not published), phases (\"\" = not on the sheet), spec sheet]",
@@ -99,6 +138,10 @@ const lines = [
   "  const GEN_MARELLI = [",
   ...marelli.map(m => "    " + JSON.stringify(m) + ","),
   "  ];",
+  "  // Air-cooled home units — full spec sheet per model (docs/generator-specs/aircooled_*.json).",
+  "  const GEN_AIR = [",
+  ...air.map(m => "    " + JSON.stringify(m) + ","),
+  "  ];",
   END,
 ];
 
@@ -107,4 +150,4 @@ const a = html.indexOf(BEGIN), z = html.indexOf(END);
 if (a < 0 || z < 0) throw new Error("GEN_DATA markers not found in index.html");
 const eol = html.includes("\r\n") ? "\r\n" : "\n";
 fs.writeFileSync(HTML, html.slice(0, a) + lines.join(eol) + html.slice(z + END.length));
-console.log(`wrote ${models.length} models + ${marelli.length} Marelli heads into index.html`);
+console.log(`wrote ${models.length} models + ${marelli.length} Marelli heads + ${air.length} air-cooled into index.html`);

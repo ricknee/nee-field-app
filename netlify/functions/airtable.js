@@ -715,7 +715,7 @@ const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "
                               "googleStatus", "googleContactsReconcile", "contactDuplicates",
                               "clockRoster", "clockReconcile", "clockPunches",
                               // The approval queue + everyone's leave balances.
-                              "ptoRequests"]);
+                              "ptoRequests", "ptoHistory"]);
 
 // Admin+office reads. These mirror write tiers that are already _ADMIN_OFFICE,
 // so listing must match the actions available on what's listed:
@@ -2201,6 +2201,52 @@ async function handlePtoRequests(params) {
     missingAllowance: missing?.rows || [],
     _source: "neon",
   });
+}
+
+// ── ADMIN: time-off history — who was off which days, and the paid holidays ──
+// Read from TIME ENTRIES, not pto_requests: an entry is what was actually paid,
+// and the years before the request flow exist only as entries.
+//
+// ⚠ The old QB-era labels are inconsistent — Christmas 2025 is classed
+// "PD Vacation" under the job "Paid Holiday", and the reverse happens too. So a
+// day counts as a holiday if EITHER label says so, or it is on the company
+// holiday calendar. Job names are matched exactly-ish, never by a bare
+// '%holiday%', or a customer job like "Holiday Inn" would read as time off.
+const TIME_OFF_MATCH = `(t.class ILIKE ANY (ARRAY['%pto%','%holiday%','%vacation%'])
+     OR t.job_name ILIKE ANY (ARRAY['Paid Holiday%','Paid Vac%','PD Holiday%','PD Vacation%','PTO%']))`;
+
+async function handlePtoHistory(params) {
+  const year = Number(params?.year) || PTO_YEAR();
+
+  const days = await neonQuery(
+    `SELECT to_char(t.work_date, 'YYYY-MM-DD') AS day,
+            COALESCE(e.name, t.employee_name) AS employee,
+            CASE WHEN bool_or(h.holiday_date IS NOT NULL
+                              OR t.class ILIKE '%holiday%' OR t.job_name ILIKE '%holiday%')
+                 THEN 'holiday' ELSE 'pto' END AS kind,
+            max(h.name) AS holiday_name,
+            round(sum(t.hours), 2)::float8 AS hours,
+            max(r.note) AS note
+       FROM time_entries t
+       LEFT JOIN employees e ON e.id = t.employee_id
+       LEFT JOIN pto_requests r ON r.id = t.pto_request_id
+       LEFT JOIN company_holidays h ON h.holiday_date = t.work_date
+      WHERE t.work_date >= make_date($1, 1, 1) AND t.work_date < make_date($1 + 1, 1, 1)
+        AND ${TIME_OFF_MATCH}
+      GROUP BY 1, 2 ORDER BY 2, 1`, [year]);
+
+  // The calendar itself, with how many people got holiday hours on each date —
+  // a holiday nobody was paid for shows as 0 rather than disappearing.
+  const holidays = await neonQuery(
+    `SELECT to_char(h.holiday_date, 'YYYY-MM-DD') AS day, h.name, h.hours::float8,
+            (SELECT count(DISTINCT t.employee_id)::int FROM time_entries t
+              WHERE t.work_date = h.holiday_date AND ${TIME_OFF_MATCH}) AS people
+       FROM company_holidays h
+      WHERE extract(year FROM h.holiday_date) = $1
+      ORDER BY h.holiday_date`, [year]);
+
+  return resp(200, { ok: true, year,
+    days: days?.rows || [], holidays: holidays?.rows || [], _source: "neon" });
 }
 
 // ⚠ DOUBLE-BOOKING GUARD — the thing that makes backfilling safe.
@@ -16495,6 +16541,7 @@ export async function handler(event) {
       if (action === "clockPunches")                return await handleClockPunches(params);
       if (action === "ptoBalance")                  return await handlePtoBalance(params, authUser);
       if (action === "ptoRequests")                 return await handlePtoRequests(params);
+      if (action === "ptoHistory")                  return await handlePtoHistory(params);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();

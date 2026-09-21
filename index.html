@@ -23755,6 +23755,7 @@
     const host = $("timeOffBody");
     if (host) host.innerHTML = renderPtoAdmin();
     renderTimeOffBadge();
+    if (host && wwPto) loadPtoHistory();
   }
 
   // The badge is the whole reason this is a top-bar button. A request nobody sees
@@ -23848,11 +23849,79 @@
         twice — existing years are never overwritten.</div>
       <div id="wwRollOut" class="clock-note"></div>`;
 
+    const yr = new Date().getFullYear();
+    const histHtml = `
+      <div class="ww-head" style="margin-top:18px;">History</div>
+      <div class="ww-form">
+        <select id="ptoHistYear" class="ww-input" onchange="loadPtoHistory()">
+          ${[yr + 1, yr, yr - 1, yr - 2, yr - 3].map(y =>
+            `<option value="${y}"${y === ptoHistYear ? " selected" : ""}>${y}</option>`).join("")}
+        </select>
+      </div>
+      <div id="ptoHistOut"><div class="clock-note">Loading…</div></div>`;
+
     return `${missHtml}
       <div class="ww-head">Waiting on you${pend.length ? ` — ${pend.length}` : ""}</div>
       ${pendHtml}
+      ${histHtml}
       ${addHtml}`;
   }
+
+  // Who was off which days, and the paid holidays — read from the hours actually
+  // booked, so it covers the years before the request flow as well.
+  let ptoHistYear = new Date().getFullYear();
+  async function loadPtoHistory() {
+    const out = $("ptoHistOut");
+    if (!out) return;
+    ptoHistYear = Number($("ptoHistYear")?.value) || ptoHistYear;
+    out.innerHTML = `<div class="clock-note">Loading…</div>`;
+    let d;
+    try { d = await apiGet("ptoHistory", { year: ptoHistYear }); }
+    catch (e) { out.innerHTML = `<div class="clock-note">Couldn't load: ${esc(e.message)}</div>`; return; }
+
+    const today = wwToday();
+    const fmt = s => new Date(`${s}T12:00:00`).toLocaleDateString(undefined,
+      { weekday: "short", month: "short", day: "numeric" });
+
+    // One block per person, days listed under them, totals split PTO / holiday.
+    const byEmp = new Map();
+    for (const r of d.days || []) {
+      if (!byEmp.has(r.employee)) byEmp.set(r.employee, []);
+      byEmp.get(r.employee).push(r);
+    }
+    const people = [...byEmp.entries()].map(([name, rows]) => {
+      const sum = k => rows.filter(r => r.kind === k).reduce((s, r) => s + Number(r.hours), 0);
+      const pto = sum("pto"), hol = sum("holiday");
+      const lines = rows.map(r => `
+        <div class="clock-row">
+          <span>${esc(fmt(r.day))}${r.day > today ? ` <span style="color:var(--muted); font-size:11px;">· upcoming</span>` : ""}${
+            r.note ? ` <span style="color:var(--muted); font-size:11px;">“${esc(r.note)}”</span>` : ""}</span>
+          <span style="font-weight:700; color:${r.kind === "holiday" ? "#1d4ed8" : "var(--green)"};">
+            ${r.kind === "holiday" ? `🎉 ${esc(r.holiday_name || "Holiday")}` : "🌴 PTO"} · ${Number(r.hours).toFixed(1)} h</span>
+        </div>`).join("");
+      return `
+        <details style="margin:6px 0;">
+          <summary style="cursor:pointer; font-weight:700;">${esc(name)}
+            <span style="font-weight:400; font-size:12px; color:var(--muted);">
+              — ${pto ? `${ptoDaysLabel(pto)} PTO` : ""}${pto && hol ? " · " : ""}${hol ? `${ptoDaysLabel(hol)} holiday` : ""}
+            </span>
+          </summary>
+          ${lines}
+        </details>`;
+    }).join("");
+
+    const hols = (d.holidays || []).map(h => `
+      <div class="clock-row">
+        <span>${esc(fmt(h.day))} · ${esc(h.name)}</span>
+        <span style="color:var(--muted);">${h.people ? `${h.people} paid in app` : (h.day > today ? "upcoming" : "none booked in app")}</span>
+      </div>`).join("");
+
+    out.innerHTML = `
+      ${people || `<div class="clock-note">No time off recorded for ${d.year}.</div>`}
+      <div style="font-weight:700; margin-top:12px;">Paid holidays ${d.year}</div>
+      ${hols || `<div class="clock-note">No company holidays set for ${d.year}.</div>`}`;
+  }
+  window.loadPtoHistory = loadPtoHistory;
 
   // Books PTO for one person, from the form on their People card.
   async function ptoAdminAdd(employeeId) {

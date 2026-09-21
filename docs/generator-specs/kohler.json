@@ -1,0 +1,1681 @@
+[
+  {
+    "brand": "Kohler",
+    "model": "10RESV",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "NG",
+    "standby_kw": 9,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1",
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4254.pdf",
+    "note": "standby only (no prime rating published). 120/240 V 1ph only. Spec sheet G4-254."
+  },
+  {
+    "brand": "Kohler",
+    "model": "10RESV",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "LP",
+    "standby_kw": 10,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1",
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4254.pdf",
+    "note": "standby only (no prime rating published). 120/240 V 1ph only."
+  },
+  {
+    "brand": "Kohler",
+    "model": "12RESV",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "NG",
+    "standby_kw": 11,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1",
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4254.pdf",
+    "note": "standby only (no prime rating published). 120/240 V 1ph only."
+  },
+  {
+    "brand": "Kohler",
+    "model": "12RESV",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "LP",
+    "standby_kw": 12,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1",
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4254.pdf",
+    "note": "standby only (no prime rating published). 120/240 V 1ph only."
+  },
+  {
+    "brand": "Kohler",
+    "model": "14RCA / 14RCAL",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "NG",
+    "standby_kw": 12,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4270.pdf",
+    "note": "standby only (no prime rating published). 12 kW both 1ph and 3ph. 'L' suffix = ships with RXT ATS. Spec sheet G4-270 7/23f."
+  },
+  {
+    "brand": "Kohler",
+    "model": "14RCA / 14RCAL",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "LP",
+    "standby_kw": 14,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4270.pdf",
+    "note": "standby only (no prime rating published). 14 kW 1ph; 13 kW 3ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "20RCA / 20RCAL",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "NG",
+    "standby_kw": 18,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4272.pdf",
+    "note": "standby only (no prime rating published). 18 kW 1ph; 17 kW 3ph. Spec sheet G4-272 7/23f."
+  },
+  {
+    "brand": "Kohler",
+    "model": "20RCA / 20RCAL",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "LP",
+    "standby_kw": 20,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4272.pdf",
+    "note": "standby only (no prime rating published). 20 kW 1ph; 17 kW 3ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "26RCA / 26RCAL",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "NG",
+    "standby_kw": 24,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4315.pdf",
+    "note": "standby only (no prime rating published). 24 kW 1ph; 21 kW 3ph. Spec sheet G4-315."
+  },
+  {
+    "brand": "Kohler",
+    "model": "26RCA / 26RCAL",
+    "series": "Residential air-cooled (Kohler / Rehlko Home Energy)",
+    "fuel": "LP",
+    "standby_kw": 26,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4315.pdf",
+    "note": "standby only (no prime rating published). 26 kW 1ph; 22 kW 3ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "24RCLA",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "NG",
+    "standby_kw": 21,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4303.pdf",
+    "note": "standby only (no prime rating published). 21 kW 1ph and 3ph. Spec sheet G4-303."
+  },
+  {
+    "brand": "Kohler",
+    "model": "24RCLA",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "LP",
+    "standby_kw": 24,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4303.pdf",
+    "note": "standby only (no prime rating published). 24 kW 1ph; 23 kW 3ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "38RCLC",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "NG",
+    "standby_kw": 38,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4305.pdf",
+    "note": "standby only (no prime rating published). 38 kW 1ph (4E8.3 alt) and 3ph. Spec sheet G4-305."
+  },
+  {
+    "brand": "Kohler",
+    "model": "38RCLC",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "LP",
+    "standby_kw": 38,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4305.pdf",
+    "note": "standby only (no prime rating published). 38 kW 1ph and 3ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "48RCLC",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "NG",
+    "standby_kw": 48,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4306.pdf",
+    "note": "standby only (no prime rating published). 48 kW 1ph (4Q7BX alt) and 3ph. Spec sheet G4-306."
+  },
+  {
+    "brand": "Kohler",
+    "model": "48RCLC",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "LP",
+    "standby_kw": 50,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4306.pdf",
+    "note": "standby only (no prime rating published). 50 kW is the 3ph figure; 1ph (4Q7BX) is 48 kW."
+  },
+  {
+    "brand": "Kohler",
+    "model": "60RCLB",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "NG",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4307.pdf",
+    "note": "standby only (no prime rating published). 60 kW 3ph; 58 kW 1ph. Spec sheet G4-307."
+  },
+  {
+    "brand": "Kohler",
+    "model": "60RCLB",
+    "series": "Residential/light-commercial liquid-cooled (RCL)",
+    "fuel": "LP",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4307.pdf",
+    "note": "standby only (no prime rating published). 60 kW 1ph and 3ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG25",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 25,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4317.pdf",
+    "note": "standby only (no prime rating published). 25 kW all listed voltages. Spec sheet G4-317."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG25",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 25,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4317.pdf",
+    "note": "standby only (no prime rating published). 25 kW all listed voltages."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG30",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 30,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4318.pdf",
+    "note": "standby only (no prime rating published). 30 kW 3ph; 1ph 29-30 kW depending on alternator. Spec sheet G4-318."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG30",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 30,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4318.pdf",
+    "note": "standby only (no prime rating published). 30 kW 3ph; 1ph 28-29 kW depending on alternator."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG40",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 40,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4320.pdf",
+    "note": "standby only (no prime rating published). 40 kW 3ph; 1ph 37-40 kW depending on alternator. Spec sheet G4-320."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG40",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 40,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4320.pdf",
+    "note": "standby only (no prime rating published). 40 kW 3ph; 1ph 37-40 kW depending on alternator."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG50",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 50,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4321.pdf",
+    "note": "standby only (no prime rating published). 50 kW 3ph; 1ph 44-50 kW depending on alternator. Spec sheet G4-321."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG50",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 50,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4321.pdf",
+    "note": "standby only (no prime rating published). 50 kW 3ph; 1ph 44-50 kW depending on alternator."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG60",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4322.pdf",
+    "note": "standby only (no prime rating published). 60 kW 3ph; 1ph 57-60 kW depending on alternator. Spec sheet G4-322."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG60",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4322.pdf",
+    "note": "standby only (no prime rating published). 60 kW 3ph; 1ph 57-60 kW depending on alternator."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG80",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 80,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "120/208 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4330.pdf",
+    "note": "standby only (no prime rating published). 80 kW 3ph; 72 kW 1ph. Spec sheet G4-330."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG80",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 80,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "120/208 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4330.pdf",
+    "note": "standby only (no prime rating published). 80 kW 3ph; 73 kW 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG100",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 100,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "120/208 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4331.pdf",
+    "note": "standby only (no prime rating published). 100 kW 1ph and 3ph. Spec sheet G4-331."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG100",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 100,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "120/208 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4331.pdf",
+    "note": "standby only (no prime rating published). 100 kW 1ph and 3ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG125",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 125,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "120/208 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4332.pdf",
+    "note": "standby only (no prime rating published). 125 kW 3ph (120-125 at 120/240 3ph); 110 kW 1ph. Spec sheet G4-332."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG125",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 105,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "120/208 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4332.pdf",
+    "note": "standby only (no prime rating published). 105 kW 3ph and 1ph - LP is well below NG on this model."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG150",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 150,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4333.pdf",
+    "note": "standby only (no prime rating published). 150 kW 3ph (145 at 347/600 on one alternator); 135 kW 1ph. Spec sheet G4-333_7/26."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG150",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 150,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4333.pdf",
+    "note": "standby only (no prime rating published). 150 kW 3ph; 140 kW 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG180",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 180,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4334.pdf",
+    "note": "standby only (no prime rating published). 180 kW 3ph; 170 kW 1ph. Spec sheet G4-334."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG180",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 150,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4334.pdf",
+    "note": "standby only (no prime rating published). 150 kW 3ph; 140 kW 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG200",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 200,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4335.pdf",
+    "note": "standby only (no prime rating published). 200 kW 3ph only. Spec sheet G4-335."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KG200",
+    "series": "Industrial gaseous - KG series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 150,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4335.pdf",
+    "note": "standby only (no prime rating published). 150 kW 3ph only."
+  },
+  {
+    "brand": "Kohler",
+    "model": "250REZXB",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 260,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4189.pdf",
+    "note": "standby only (no prime rating published). Sheet lists 260 kW at 277/480 (250 kW at 220/380 on one alternator) despite the '250' model name; 230 kW 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "250REZXB",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 170,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4189.pdf",
+    "note": "standby only (no prime rating published). LP vapor 170 kW at every listed voltage (1ph and 3ph)."
+  },
+  {
+    "brand": "Kohler",
+    "model": "300REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 300,
+    "prime_kw": 270,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4296.pdf",
+    "note": "NG standby 130C rise / prime 105C rise, at 277/480. Spec sheet G4-296_2/26i."
+  },
+  {
+    "brand": "Kohler",
+    "model": "300REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 210,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4296.pdf",
+    "note": "LP vapor: standby only, prime not published for LP."
+  },
+  {
+    "brand": "Kohler",
+    "model": "350REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 350,
+    "prime_kw": 300,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4297.pdf",
+    "note": "350 kW standby at 277/480 (355 kW on the larger alternator); prime 300 kW. Prime range on sheet 275-305."
+  },
+  {
+    "brand": "Kohler",
+    "model": "350REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 240,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4297.pdf",
+    "note": "LP vapor: standby only, prime not published for LP."
+  },
+  {
+    "brand": "Kohler",
+    "model": "400REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 400,
+    "prime_kw": 360,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4298.pdf",
+    "note": "At 277/480; prime range on sheet 360-365. Spec sheet G4-298_2/26i."
+  },
+  {
+    "brand": "Kohler",
+    "model": "400REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 295,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "120/240 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4298.pdf",
+    "note": "LP vapor: standby only, prime not published for LP."
+  },
+  {
+    "brand": "Kohler",
+    "model": "450REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 450,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4299.pdf",
+    "note": "standby only (no prime rating published). 3ph only. Spec sheet G4-299_2/26i."
+  },
+  {
+    "brand": "Kohler",
+    "model": "450REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 295,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4299.pdf",
+    "note": "standby only (no prime rating published). LP vapor 295 kW."
+  },
+  {
+    "brand": "Kohler",
+    "model": "500REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "NG",
+    "standby_kw": 500,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4291.pdf",
+    "note": "standby only (no prime rating published). 3ph only. Spec sheet G4-291_2/26i."
+  },
+  {
+    "brand": "Kohler",
+    "model": "500REZXD",
+    "series": "Industrial gaseous - REZX series (Rehlko)",
+    "fuel": "LP",
+    "standby_kw": 295,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g4291.pdf",
+    "note": "standby only (no prime rating published). LP vapor 295 kW."
+  },
+  {
+    "brand": "Kohler",
+    "model": "15REOZK",
+    "series": "Industrial diesel - REOZK (Kohler KDI engine)",
+    "fuel": "Diesel",
+    "standby_kw": 17,
+    "prime_kw": 15,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5434.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. Varies by alternator: 16-17 kW standby / 14-15 kW prime 3ph; 1ph 14-17 / 13-15."
+  },
+  {
+    "brand": "Kohler",
+    "model": "20REOZK",
+    "series": "Industrial diesel - REOZK (Kohler KDI engine)",
+    "fuel": "Diesel",
+    "standby_kw": 24,
+    "prime_kw": 21,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5435.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. Varies by alternator: 20-24 standby / 19-21 prime; 1ph 22-24 / 20-21."
+  },
+  {
+    "brand": "Kohler",
+    "model": "30REOZK",
+    "series": "Industrial diesel - REOZK (Kohler KDI engine)",
+    "fuel": "Diesel",
+    "standby_kw": 31,
+    "prime_kw": 28,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5436.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. 29-31 standby / 26-28 prime depending on alternator; 1ph 23-29 / 21-26."
+  },
+  {
+    "brand": "Kohler",
+    "model": "40REOZK",
+    "series": "Industrial diesel - REOZK (Kohler KDI engine)",
+    "fuel": "Diesel",
+    "standby_kw": 42,
+    "prime_kw": 37,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5437.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. 1ph 37-40 standby / 34-36 prime. Tier 3 sheet."
+  },
+  {
+    "brand": "Kohler",
+    "model": "50REOZK",
+    "series": "Industrial diesel - REOZK (Kohler KDI engine)",
+    "fuel": "Diesel",
+    "standby_kw": 52,
+    "prime_kw": 47,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5438.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. 51-52 standby / 46-47 prime; 1ph 44-50 / 40-45."
+  },
+  {
+    "brand": "Kohler",
+    "model": "60REOZK",
+    "series": "Industrial diesel - REOZK (Kohler KDI engine)",
+    "fuel": "Diesel",
+    "standby_kw": 60,
+    "prime_kw": 54,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "127/220 3ph",
+      "120/240 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5439.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. 1ph 56-58 standby / 48-50 prime. Tier 3 sheet."
+  },
+  {
+    "brand": "Kohler",
+    "model": "80REOZJ4",
+    "series": "Industrial diesel - REOZJ4 (Tier 4 Final)",
+    "fuel": "Diesel",
+    "standby_kw": 85,
+    "prime_kw": 76,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5427.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. 1ph 78 standby / 70 prime."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD80",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 80,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5641.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 80 kW all voltages incl. 120/240 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD100",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 100,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5642.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 100 kW all voltages incl. 120/240 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD150",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 150,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5644.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 150 kW 3ph; 140 kW 120/240 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD200",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 200,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5646.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 3ph only."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD230",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 230,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5647.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 230 kW 3ph; 205 kW 120/240 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD250",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 250,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5648.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 250 kW 3ph; 230 kW 120/240 1ph."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD275",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 275,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5649.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 3ph only."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD300",
+    "series": "Industrial diesel - new KD series 80-300 kW (Rehlko, Tier 3 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 300,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5650.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 130C standby only; Rehlko product page shows prime 'n/a'. 3ph only."
+  },
+  {
+    "brand": "Kohler",
+    "model": "350REOZJC",
+    "series": "Industrial diesel - REOZJC (Tier 3 EPA)",
+    "fuel": "Diesel",
+    "standby_kw": 350,
+    "prime_kw": 320,
+    "continuous_kw": null,
+    "phase": "1 or 3",
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5618.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. 1ph 280-305 standby / 275 prime. Sheet header range 280-350 kW standby."
+  },
+  {
+    "brand": "Kohler",
+    "model": "400REOZJC",
+    "series": "Industrial diesel - REOZJC (Tier 3 EPA)",
+    "fuel": "Diesel",
+    "standby_kw": 400,
+    "prime_kw": 365,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5620.pdf",
+    "note": "Standby 130C rise / prime 105C rise, max at 277/480 3ph. Header range 315-400 standby; some alternators 380 standby / 345 prime at 130C/105C."
+  },
+  {
+    "brand": "Kohler",
+    "model": "500REOZJC",
+    "series": "Industrial diesel - REOZJC (Tier 3 EPA)",
+    "fuel": "Diesel",
+    "standby_kw": 510,
+    "prime_kw": null,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5622.pdf",
+    "note": "standby only (no prime rating published) - sheet lists 150C and 130C standby columns only. 130C standby at 277/480 is 475-510 kW depending on alternator (505 on the common one); 510 is the maximum. Header range 400-510."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD700",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 700,
+    "prime_kw": 630,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "230/400 3ph",
+      "240/416 3ph",
+      "254/440 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5651.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 670-700 standby / 600-630 prime by alternator/voltage."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD750",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 750,
+    "prime_kw": 680,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "230/400 3ph",
+      "240/416 3ph",
+      "254/440 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5652.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 670-750 standby / 600-680 prime."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD800",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 800,
+    "prime_kw": 720,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "240/416 3ph",
+      "254/440 3ph",
+      "277/480 3ph",
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "230/400 3ph",
+      "220/380 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5653.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 720-800 standby / 640-720 prime."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD900",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 900,
+    "prime_kw": 810,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "240/416 3ph",
+      "254/440 3ph",
+      "277/480 3ph",
+      "220/380 3ph",
+      "230/400 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5654.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 830-900 standby / 750-810 prime."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD1000",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 1000,
+    "prime_kw": 900,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "120/208 3ph",
+      "127/220 3ph",
+      "139/240 3ph",
+      "220/380 3ph",
+      "240/416 3ph",
+      "254/440 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "230/400 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5655.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 975-1000 standby / 810-900 prime."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD1250",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 1250,
+    "prime_kw": 1120,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "230/400 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "220/380 3ph",
+      "347/600 3ph",
+      "2400/4160 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5656.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 1180-1250 standby / 1070-1120 prime. 4160 V available."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD1500",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 1500,
+    "prime_kw": 1350,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "240/416 3ph",
+      "277/480 3ph",
+      "230/400 3ph",
+      "220/380 3ph",
+      "347/600 3ph",
+      "2400/4160 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5658.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 1300-1500 standby / 1150-1350 prime. 4160 V available."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD1600",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 1600,
+    "prime_kw": 1440,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "240/416 3ph",
+      "277/480 3ph",
+      "230/400 3ph",
+      "220/380 3ph",
+      "347/600 3ph",
+      "2400/4160 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5659.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 1410-1600 standby / 1260-1440 prime. 4160 V available."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD1750",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 1750,
+    "prime_kw": 1580,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "240/416 3ph",
+      "277/480 3ph",
+      "220/380 3ph",
+      "230/400 3ph",
+      "347/600 3ph",
+      "2400/4160 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5660.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Range 1590-1750 standby / 1400-1580 prime. 4160 V available."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD2000",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 2000,
+    "prime_kw": 1810,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "2400/4160 3ph",
+      "347/600 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "7200/12470 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5661.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized. Range 1850-2000 standby; prime 1810. MV to 13.8 kV available."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD2250",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 2250,
+    "prime_kw": 2040,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "2400/4160 3ph",
+      "347/600 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "7200/12470 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5662.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized. Range 1970-2250 standby / 1970-2040 prime."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD2500",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 2500,
+    "prime_kw": 2270,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "2400/4160 3ph",
+      "240/416 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "7200/12470 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5663.pdf",
+    "note": "Standby = 130C rise, prime = 125C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized. Range 1970-2500 standby / 1970-2270 prime."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD2800",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 2800,
+    "prime_kw": 2540,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "7200/12470 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "2400/4160 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5664.pdf",
+    "note": "Standby = 130C rise, prime = 105C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized; sheet shows 130C standby / 105C prime only. Range 2500-2800 / 2500-2540."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD3000",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 3000,
+    "prime_kw": 2720,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "7200/12470 3ph",
+      "2400/4160 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5665.pdf",
+    "note": "Standby = 130C rise, prime = 105C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized; 130C standby / 105C prime. Range 2800-3000 standby; prime 2720."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD3250",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 3250,
+    "prime_kw": 2950,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "7200/12470 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph",
+      "277/480 3ph",
+      "347/600 3ph",
+      "2400/4160 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5666.pdf",
+    "note": "Standby = 130C rise, prime = 105C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized; 130C standby / 105C prime. Range 3000-3250 standby; prime 2950."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD3500",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 3500,
+    "prime_kw": 3180,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "2400/4160 3ph",
+      "7200/12470 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph",
+      "277/480 3ph",
+      "347/600 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5667.pdf",
+    "note": "Standby = 130C rise, prime = 105C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized; 130C standby / 105C prime. Same at 480, 600 V and MV."
+  },
+  {
+    "brand": "Kohler",
+    "model": "KD4000",
+    "series": "Industrial diesel - KD series (Rehlko, Tier 2 EPA emergency)",
+    "fuel": "Diesel",
+    "standby_kw": 4000,
+    "prime_kw": 3640,
+    "continuous_kw": null,
+    "phase": "3",
+    "voltages": [
+      "2400/4160 3ph",
+      "7200/12470 3ph",
+      "7620/13200 3ph",
+      "7970/13800 3ph"
+    ],
+    "source_url": "https://techcomm.rehlko.com/techcomm/pdf/g5668.pdf",
+    "note": "Standby = 130C rise, prime = 105C rise, at 277/480 3ph. Sheet: DCC (data-center continuous) rating = same as standby (see TIB-101); ISO continuous (COP) not published. Emission-optimized; 130C standby / 105C prime. MEDIUM VOLTAGE ONLY on the 60 Hz sheet (4160 V-13.8 kV) - no 480 V option listed."
+  }
+]

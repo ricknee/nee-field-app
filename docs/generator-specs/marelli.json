@@ -1,0 +1,4073 @@
+{
+  "rating_basis": "Marelli Motori LV generators are Class H insulated as standard and rated in kVA at 0.8 pf lagging, 40 C ambient (IEC 60034), up to 1000 m, IP23 with no filters; kW = kVA x 0.8. 'Continuous duty' (Marelli also calls it prime: variable load, unlimited hours) is given at three temperature rises: 125/40 (Class H rise), 105/40 (Class F rise), 80/40 (Class B rise), each with 10% overload for 1 h in every 6 h. 'Stand-by' is for emergency supply during a utility outage, with no overload allowed, and comes in two figures: 150/40 (150 C rise at 40 C ambient, the ISO 8528-3 peak continuous rating, used here as standby_kva) and 163/27 (163 C rise at 27 C ambient, Marelli's own emergency-peak rating, which ISO does not define). Deratings: altitude 0.96 at <1500 m, 0.93 at <2000 m, 0.90 at <2500 m, 0.86 at <3000 m; ambient 0.96 at 45 C, 0.93 at 50 C, 0.90 at 55 C (1.04 at 30 C). kVA figures differ by connected voltage (380/416/440/460/480 V are tabulated separately).",
+  "source": {
+    "catalogue": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation)",
+    "url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+    "official_download_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+    "retrieved": "2026-09-21"
+  },
+  "rows": [
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 160 XA4",
+      "series": "MXB-E",
+      "frame": 160,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 12.5,
+      "class_f_cont_kva": 11.5,
+      "class_b_cont_kva": 10,
+      "standby_kva": 13.1,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 13.8,
+      "efficiency_pct_class_h_full_load": 81.1,
+      "inertia_kgm2": 0.09,
+      "weight_kg_b3": 83,
+      "kw_class_h_cont": 10,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 10,
+          "class_f_cont_kva": 9.2,
+          "class_b_cont_kva": 8,
+          "standby_163_27_kva": 11,
+          "standby_150_40_kva": 10.5
+        },
+        "416": {
+          "class_h_cont_kva": 10.8,
+          "class_f_cont_kva": 9.9,
+          "class_b_cont_kva": 8.7,
+          "standby_163_27_kva": 11.9,
+          "standby_150_40_kva": 11.4
+        },
+        "440": {
+          "class_h_cont_kva": 11.5,
+          "class_f_cont_kva": 10.5,
+          "class_b_cont_kva": 9.2,
+          "standby_163_27_kva": 12.6,
+          "standby_150_40_kva": 12
+        },
+        "460": {
+          "class_h_cont_kva": 12,
+          "class_f_cont_kva": 11,
+          "class_b_cont_kva": 9.6,
+          "standby_163_27_kva": 13.2,
+          "standby_150_40_kva": 12.6
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 5.9,
+            "class_f_cont_kva": 5.4,
+            "class_b_cont_kva": 4.7,
+            "standby_163_27_kva": 6.5,
+            "standby_150_40_kva": 6.2
+          },
+          "208": {
+            "class_h_cont_kva": 6.4,
+            "class_f_cont_kva": 5.9,
+            "class_b_cont_kva": 5.1,
+            "standby_163_27_kva": 7,
+            "standby_150_40_kva": 6.7
+          },
+          "220": {
+            "class_h_cont_kva": 6.8,
+            "class_f_cont_kva": 6.2,
+            "class_b_cont_kva": 5.4,
+            "standby_163_27_kva": 7.4,
+            "standby_150_40_kva": 7.1
+          },
+          "230": {
+            "class_h_cont_kva": 7.1,
+            "class_f_cont_kva": 6.5,
+            "class_b_cont_kva": 5.7,
+            "standby_163_27_kva": 7.8,
+            "standby_150_40_kva": 7.4
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 7.6,
+            "class_f_cont_kva": 6.9,
+            "class_b_cont_kva": 6,
+            "standby_163_27_kva": 8.3,
+            "standby_150_40_kva": 7.9
+          },
+          "240": {
+            "class_h_cont_kva": 7.9,
+            "class_f_cont_kva": 7.2,
+            "class_b_cont_kva": 6.3,
+            "standby_163_27_kva": 8.7,
+            "standby_150_40_kva": 8.3
+          },
+          "254": {
+            "class_h_cont_kva": 7.9,
+            "class_f_cont_kva": 7.2,
+            "class_b_cont_kva": 6.3,
+            "standby_163_27_kva": 8.7,
+            "standby_150_40_kva": 8.3
+          },
+          "266": {
+            "class_h_cont_kva": 8.3,
+            "class_f_cont_kva": 7.6,
+            "class_b_cont_kva": 6.6,
+            "standby_163_27_kva": 9.1,
+            "standby_150_40_kva": 8.7
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 160 SA4",
+      "series": "MXB-E",
+      "frame": 160,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 15.6,
+      "class_f_cont_kva": 14.3,
+      "class_b_cont_kva": 12.5,
+      "standby_kva": 16.4,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 17.2,
+      "efficiency_pct_class_h_full_load": 81.9,
+      "inertia_kgm2": 0.1,
+      "weight_kg_b3": 88,
+      "kw_class_h_cont": 12.5,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 12.5,
+          "class_f_cont_kva": 11.5,
+          "class_b_cont_kva": 10,
+          "standby_163_27_kva": 13.8,
+          "standby_150_40_kva": 13.1
+        },
+        "416": {
+          "class_h_cont_kva": 13.5,
+          "class_f_cont_kva": 12.4,
+          "class_b_cont_kva": 10.8,
+          "standby_163_27_kva": 14.9,
+          "standby_150_40_kva": 14.2
+        },
+        "440": {
+          "class_h_cont_kva": 14.3,
+          "class_f_cont_kva": 13.1,
+          "class_b_cont_kva": 11.5,
+          "standby_163_27_kva": 15.8,
+          "standby_150_40_kva": 15
+        },
+        "460": {
+          "class_h_cont_kva": 15,
+          "class_f_cont_kva": 13.7,
+          "class_b_cont_kva": 12,
+          "standby_163_27_kva": 16.5,
+          "standby_150_40_kva": 15.7
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 7.4,
+            "class_f_cont_kva": 6.8,
+            "class_b_cont_kva": 5.9,
+            "standby_163_27_kva": 8.1,
+            "standby_150_40_kva": 7.7
+          },
+          "208": {
+            "class_h_cont_kva": 8,
+            "class_f_cont_kva": 7.3,
+            "class_b_cont_kva": 6.4,
+            "standby_163_27_kva": 8.8,
+            "standby_150_40_kva": 8.4
+          },
+          "220": {
+            "class_h_cont_kva": 8.5,
+            "class_f_cont_kva": 7.7,
+            "class_b_cont_kva": 6.8,
+            "standby_163_27_kva": 9.3,
+            "standby_150_40_kva": 8.9
+          },
+          "230": {
+            "class_h_cont_kva": 8.8,
+            "class_f_cont_kva": 8.1,
+            "class_b_cont_kva": 7.1,
+            "standby_163_27_kva": 9.7,
+            "standby_150_40_kva": 9.3
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 9.5,
+            "class_f_cont_kva": 8.7,
+            "class_b_cont_kva": 7.6,
+            "standby_163_27_kva": 10.4,
+            "standby_150_40_kva": 9.9
+          },
+          "240": {
+            "class_h_cont_kva": 9.9,
+            "class_f_cont_kva": 9.1,
+            "class_b_cont_kva": 7.9,
+            "standby_163_27_kva": 10.9,
+            "standby_150_40_kva": 10.4
+          },
+          "254": {
+            "class_h_cont_kva": 9.8,
+            "class_f_cont_kva": 9,
+            "class_b_cont_kva": 7.9,
+            "standby_163_27_kva": 10.8,
+            "standby_150_40_kva": 10.3
+          },
+          "266": {
+            "class_h_cont_kva": 10.3,
+            "class_f_cont_kva": 9.5,
+            "class_b_cont_kva": 8.3,
+            "standby_163_27_kva": 11.3,
+            "standby_150_40_kva": 10.8
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 160 MX4",
+      "series": "MXB-E",
+      "frame": 160,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 18.8,
+      "class_f_cont_kva": 17.2,
+      "class_b_cont_kva": 15,
+      "standby_kva": 19.7,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 20.6,
+      "efficiency_pct_class_h_full_load": 84.5,
+      "inertia_kgm2": 0.11,
+      "weight_kg_b3": 97,
+      "kw_class_h_cont": 15,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 15,
+          "class_f_cont_kva": 13.7,
+          "class_b_cont_kva": 12,
+          "standby_163_27_kva": 16.5,
+          "standby_150_40_kva": 15.8
+        },
+        "416": {
+          "class_h_cont_kva": 16.3,
+          "class_f_cont_kva": 14.9,
+          "class_b_cont_kva": 13,
+          "standby_163_27_kva": 17.9,
+          "standby_150_40_kva": 17.1
+        },
+        "440": {
+          "class_h_cont_kva": 17.2,
+          "class_f_cont_kva": 15.8,
+          "class_b_cont_kva": 13.8,
+          "standby_163_27_kva": 18.9,
+          "standby_150_40_kva": 18
+        },
+        "460": {
+          "class_h_cont_kva": 18,
+          "class_f_cont_kva": 16.5,
+          "class_b_cont_kva": 14.4,
+          "standby_163_27_kva": 19.8,
+          "standby_150_40_kva": 18.9
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 8.9,
+            "class_f_cont_kva": 8.1,
+            "class_b_cont_kva": 7.1,
+            "standby_163_27_kva": 9.7,
+            "standby_150_40_kva": 9.3
+          },
+          "208": {
+            "class_h_cont_kva": 9.6,
+            "class_f_cont_kva": 8.8,
+            "class_b_cont_kva": 7.7,
+            "standby_163_27_kva": 10.5,
+            "standby_150_40_kva": 10.1
+          },
+          "220": {
+            "class_h_cont_kva": 10.1,
+            "class_f_cont_kva": 9.3,
+            "class_b_cont_kva": 8.1,
+            "standby_163_27_kva": 11.2,
+            "standby_150_40_kva": 10.6
+          },
+          "230": {
+            "class_h_cont_kva": 10.6,
+            "class_f_cont_kva": 9.7,
+            "class_b_cont_kva": 8.5,
+            "standby_163_27_kva": 11.7,
+            "standby_150_40_kva": 11.1
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 11.4,
+            "class_f_cont_kva": 10.4,
+            "class_b_cont_kva": 9.1,
+            "standby_163_27_kva": 12.5,
+            "standby_150_40_kva": 12
+          },
+          "240": {
+            "class_h_cont_kva": 11.9,
+            "class_f_cont_kva": 10.9,
+            "class_b_cont_kva": 9.5,
+            "standby_163_27_kva": 13.1,
+            "standby_150_40_kva": 12.5
+          },
+          "254": {
+            "class_h_cont_kva": 11.8,
+            "class_f_cont_kva": 10.8,
+            "class_b_cont_kva": 9.5,
+            "standby_163_27_kva": 13,
+            "standby_150_40_kva": 12.4
+          },
+          "266": {
+            "class_h_cont_kva": 12.4,
+            "class_f_cont_kva": 11.3,
+            "class_b_cont_kva": 9.9,
+            "standby_163_27_kva": 13.6,
+            "standby_150_40_kva": 13
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 160 MA4",
+      "series": "MXB-E",
+      "frame": 160,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 21.9,
+      "class_f_cont_kva": 20,
+      "class_b_cont_kva": 17.5,
+      "standby_kva": 23,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 24.1,
+      "efficiency_pct_class_h_full_load": 84.3,
+      "inertia_kgm2": 0.12,
+      "weight_kg_b3": 102,
+      "kw_class_h_cont": 17.5,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 17.5,
+          "class_f_cont_kva": 16,
+          "class_b_cont_kva": 14,
+          "standby_163_27_kva": 19.3,
+          "standby_150_40_kva": 18.4
+        },
+        "416": {
+          "class_h_cont_kva": 19,
+          "class_f_cont_kva": 17.4,
+          "class_b_cont_kva": 15.2,
+          "standby_163_27_kva": 20.9,
+          "standby_150_40_kva": 19.9
+        },
+        "440": {
+          "class_h_cont_kva": 20.1,
+          "class_f_cont_kva": 18.4,
+          "class_b_cont_kva": 16,
+          "standby_163_27_kva": 22.1,
+          "standby_150_40_kva": 21.1
+        },
+        "460": {
+          "class_h_cont_kva": 21,
+          "class_f_cont_kva": 19.2,
+          "class_b_cont_kva": 16.8,
+          "standby_163_27_kva": 23.1,
+          "standby_150_40_kva": 22
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 10.3,
+            "class_f_cont_kva": 9.5,
+            "class_b_cont_kva": 8.3,
+            "standby_163_27_kva": 11.4,
+            "standby_150_40_kva": 10.8
+          },
+          "208": {
+            "class_h_cont_kva": 11.2,
+            "class_f_cont_kva": 10.3,
+            "class_b_cont_kva": 8.9,
+            "standby_163_27_kva": 12.3,
+            "standby_150_40_kva": 11.7
+          },
+          "220": {
+            "class_h_cont_kva": 11.8,
+            "class_f_cont_kva": 10.8,
+            "class_b_cont_kva": 9.5,
+            "standby_163_27_kva": 13,
+            "standby_150_40_kva": 12.4
+          },
+          "230": {
+            "class_h_cont_kva": 12.4,
+            "class_f_cont_kva": 11.3,
+            "class_b_cont_kva": 9.9,
+            "standby_163_27_kva": 13.6,
+            "standby_150_40_kva": 13
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 13.3,
+            "class_f_cont_kva": 12.2,
+            "class_b_cont_kva": 10.6,
+            "standby_163_27_kva": 14.6,
+            "standby_150_40_kva": 14
+          },
+          "240": {
+            "class_h_cont_kva": 13.9,
+            "class_f_cont_kva": 12.7,
+            "class_b_cont_kva": 11.1,
+            "standby_163_27_kva": 15.3,
+            "standby_150_40_kva": 14.6
+          },
+          "254": {
+            "class_h_cont_kva": 13.8,
+            "class_f_cont_kva": 12.6,
+            "class_b_cont_kva": 11,
+            "standby_163_27_kva": 15.2,
+            "standby_150_40_kva": 14.5
+          },
+          "266": {
+            "class_h_cont_kva": 14.4,
+            "class_f_cont_kva": 13.2,
+            "class_b_cont_kva": 11.6,
+            "standby_163_27_kva": 15.9,
+            "standby_150_40_kva": 15.2
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 160 LA4",
+      "series": "MXB-E",
+      "frame": 160,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 25,
+      "class_f_cont_kva": 22.9,
+      "class_b_cont_kva": 20,
+      "standby_kva": 26.3,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 27.5,
+      "efficiency_pct_class_h_full_load": 86.8,
+      "inertia_kgm2": 0.14,
+      "weight_kg_b3": 116,
+      "kw_class_h_cont": 20,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 20,
+          "class_f_cont_kva": 18.3,
+          "class_b_cont_kva": 16,
+          "standby_163_27_kva": 22,
+          "standby_150_40_kva": 21
+        },
+        "416": {
+          "class_h_cont_kva": 21.7,
+          "class_f_cont_kva": 19.9,
+          "class_b_cont_kva": 17.3,
+          "standby_163_27_kva": 23.8,
+          "standby_150_40_kva": 22.8
+        },
+        "440": {
+          "class_h_cont_kva": 22.9,
+          "class_f_cont_kva": 21,
+          "class_b_cont_kva": 18.3,
+          "standby_163_27_kva": 25.2,
+          "standby_150_40_kva": 24.1
+        },
+        "460": {
+          "class_h_cont_kva": 24,
+          "class_f_cont_kva": 22,
+          "class_b_cont_kva": 19.2,
+          "standby_163_27_kva": 26.4,
+          "standby_150_40_kva": 25.2
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 11.8,
+            "class_f_cont_kva": 10.8,
+            "class_b_cont_kva": 9.4,
+            "standby_163_27_kva": 13,
+            "standby_150_40_kva": 12.4
+          },
+          "208": {
+            "class_h_cont_kva": 12.8,
+            "class_f_cont_kva": 11.7,
+            "class_b_cont_kva": 10.2,
+            "standby_163_27_kva": 14.1,
+            "standby_150_40_kva": 13.4
+          },
+          "220": {
+            "class_h_cont_kva": 13.5,
+            "class_f_cont_kva": 12.4,
+            "class_b_cont_kva": 10.8,
+            "standby_163_27_kva": 14.9,
+            "standby_150_40_kva": 14.2
+          },
+          "230": {
+            "class_h_cont_kva": 14.1,
+            "class_f_cont_kva": 13,
+            "class_b_cont_kva": 11.3,
+            "standby_163_27_kva": 15.5,
+            "standby_150_40_kva": 14.8
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 15.1,
+            "class_f_cont_kva": 13.9,
+            "class_b_cont_kva": 12.1,
+            "standby_163_27_kva": 16.6,
+            "standby_150_40_kva": 15.9
+          },
+          "240": {
+            "class_h_cont_kva": 15.8,
+            "class_f_cont_kva": 14.5,
+            "class_b_cont_kva": 12.6,
+            "standby_163_27_kva": 17.4,
+            "standby_150_40_kva": 16.6
+          },
+          "254": {
+            "class_h_cont_kva": 15.8,
+            "class_f_cont_kva": 14.4,
+            "class_b_cont_kva": 12.6,
+            "standby_163_27_kva": 17.3,
+            "standby_150_40_kva": 16.5
+          },
+          "266": {
+            "class_h_cont_kva": 16.5,
+            "class_f_cont_kva": 15.1,
+            "class_b_cont_kva": 13.2,
+            "standby_163_27_kva": 18.2,
+            "standby_150_40_kva": 17.3
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 180 XS4",
+      "series": "MXB-E",
+      "frame": 180,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 31.3,
+      "class_f_cont_kva": 28.6,
+      "class_b_cont_kva": 25,
+      "standby_kva": 32.8,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 34.4,
+      "efficiency_pct_class_h_full_load": 86.7,
+      "inertia_kgm2": 0.2,
+      "weight_kg_b3": 125,
+      "kw_class_h_cont": 25,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 25,
+          "class_f_cont_kva": 22.9,
+          "class_b_cont_kva": 20,
+          "standby_163_27_kva": 27.5,
+          "standby_150_40_kva": 26.3
+        },
+        "416": {
+          "class_h_cont_kva": 27.1,
+          "class_f_cont_kva": 24.8,
+          "class_b_cont_kva": 21.7,
+          "standby_163_27_kva": 29.8,
+          "standby_150_40_kva": 28.4
+        },
+        "440": {
+          "class_h_cont_kva": 28.6,
+          "class_f_cont_kva": 26.3,
+          "class_b_cont_kva": 22.9,
+          "standby_163_27_kva": 31.5,
+          "standby_150_40_kva": 30.1
+        },
+        "460": {
+          "class_h_cont_kva": 29.9,
+          "class_f_cont_kva": 27.4,
+          "class_b_cont_kva": 24,
+          "standby_163_27_kva": 32.9,
+          "standby_150_40_kva": 31.4
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 14.8,
+            "class_f_cont_kva": 13.5,
+            "class_b_cont_kva": 11.8,
+            "standby_163_27_kva": 16.2,
+            "standby_150_40_kva": 15.5
+          },
+          "208": {
+            "class_h_cont_kva": 16,
+            "class_f_cont_kva": 14.6,
+            "class_b_cont_kva": 12.8,
+            "standby_163_27_kva": 17.6,
+            "standby_150_40_kva": 16.8
+          },
+          "220": {
+            "class_h_cont_kva": 16.9,
+            "class_f_cont_kva": 15.5,
+            "class_b_cont_kva": 13.5,
+            "standby_163_27_kva": 18.6,
+            "standby_150_40_kva": 17.7
+          },
+          "230": {
+            "class_h_cont_kva": 17.7,
+            "class_f_cont_kva": 16.2,
+            "class_b_cont_kva": 14.1,
+            "standby_163_27_kva": 19.4,
+            "standby_150_40_kva": 18.6
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 16.7,
+            "class_f_cont_kva": 15.3,
+            "class_b_cont_kva": 13.4,
+            "standby_163_27_kva": 18.4,
+            "standby_150_40_kva": 17.6
+          },
+          "240": {
+            "class_h_cont_kva": 17.5,
+            "class_f_cont_kva": 16,
+            "class_b_cont_kva": 14,
+            "standby_163_27_kva": 19.3,
+            "standby_150_40_kva": 18.4
+          },
+          "254": {
+            "class_h_cont_kva": 17.5,
+            "class_f_cont_kva": 16,
+            "class_b_cont_kva": 14,
+            "standby_163_27_kva": 19.3,
+            "standby_150_40_kva": 18.4
+          },
+          "266": {
+            "class_h_cont_kva": 18.3,
+            "class_f_cont_kva": 16.8,
+            "class_b_cont_kva": 14.7,
+            "standby_163_27_kva": 20.2,
+            "standby_150_40_kva": 19.2
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 180 XB4",
+      "series": "MXB-E",
+      "frame": 180,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 37.5,
+      "class_f_cont_kva": 34.4,
+      "class_b_cont_kva": 30,
+      "standby_kva": 39.4,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 41.3,
+      "efficiency_pct_class_h_full_load": 88.2,
+      "inertia_kgm2": 0.22,
+      "weight_kg_b3": 137,
+      "kw_class_h_cont": 30,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 30,
+          "class_f_cont_kva": 27.5,
+          "class_b_cont_kva": 24,
+          "standby_163_27_kva": 33,
+          "standby_150_40_kva": 31.5
+        },
+        "416": {
+          "class_h_cont_kva": 32.5,
+          "class_f_cont_kva": 29.8,
+          "class_b_cont_kva": 26,
+          "standby_163_27_kva": 35.8,
+          "standby_150_40_kva": 34.1
+        },
+        "440": {
+          "class_h_cont_kva": 34.4,
+          "class_f_cont_kva": 31.5,
+          "class_b_cont_kva": 27.5,
+          "standby_163_27_kva": 37.8,
+          "standby_150_40_kva": 36.1
+        },
+        "460": {
+          "class_h_cont_kva": 35.9,
+          "class_f_cont_kva": 32.9,
+          "class_b_cont_kva": 28.8,
+          "standby_163_27_kva": 39.5,
+          "standby_150_40_kva": 37.7
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 17.7,
+            "class_f_cont_kva": 16.2,
+            "class_b_cont_kva": 14.2,
+            "standby_163_27_kva": 19.5,
+            "standby_150_40_kva": 18.6
+          },
+          "208": {
+            "class_h_cont_kva": 19.2,
+            "class_f_cont_kva": 17.6,
+            "class_b_cont_kva": 15.3,
+            "standby_163_27_kva": 21.1,
+            "standby_150_40_kva": 20.1
+          },
+          "220": {
+            "class_h_cont_kva": 20.3,
+            "class_f_cont_kva": 18.6,
+            "class_b_cont_kva": 16.2,
+            "standby_163_27_kva": 22.3,
+            "standby_150_40_kva": 21.3
+          },
+          "230": {
+            "class_h_cont_kva": 21.2,
+            "class_f_cont_kva": 19.4,
+            "class_b_cont_kva": 17,
+            "standby_163_27_kva": 23.3,
+            "standby_150_40_kva": 22.3
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 20.1,
+            "class_f_cont_kva": 18.4,
+            "class_b_cont_kva": 16.1,
+            "standby_163_27_kva": 22.1,
+            "standby_150_40_kva": 21.1
+          },
+          "240": {
+            "class_h_cont_kva": 21,
+            "class_f_cont_kva": 19.2,
+            "class_b_cont_kva": 16.8,
+            "standby_163_27_kva": 23.1,
+            "standby_150_40_kva": 22.1
+          },
+          "254": {
+            "class_h_cont_kva": 21,
+            "class_f_cont_kva": 19.2,
+            "class_b_cont_kva": 16.8,
+            "standby_163_27_kva": 23.1,
+            "standby_150_40_kva": 22.1
+          },
+          "266": {
+            "class_h_cont_kva": 22,
+            "class_f_cont_kva": 20.2,
+            "class_b_cont_kva": 17.6,
+            "standby_163_27_kva": 24.2,
+            "standby_150_40_kva": 23.1
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 180 SB4",
+      "series": "MXB-E",
+      "frame": 180,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 42.5,
+      "class_f_cont_kva": 39,
+      "class_b_cont_kva": 34,
+      "standby_kva": 44.6,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 46.8,
+      "efficiency_pct_class_h_full_load": 88.3,
+      "inertia_kgm2": 0.23,
+      "weight_kg_b3": 145,
+      "kw_class_h_cont": 34,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 34,
+          "class_f_cont_kva": 31.2,
+          "class_b_cont_kva": 27.2,
+          "standby_163_27_kva": 37.4,
+          "standby_150_40_kva": 35.7
+        },
+        "416": {
+          "class_h_cont_kva": 36.8,
+          "class_f_cont_kva": 33.8,
+          "class_b_cont_kva": 29.5,
+          "standby_163_27_kva": 40.5,
+          "standby_150_40_kva": 38.7
+        },
+        "440": {
+          "class_h_cont_kva": 39,
+          "class_f_cont_kva": 35.7,
+          "class_b_cont_kva": 31.2,
+          "standby_163_27_kva": 42.9,
+          "standby_150_40_kva": 40.9
+        },
+        "460": {
+          "class_h_cont_kva": 40.7,
+          "class_f_cont_kva": 37.3,
+          "class_b_cont_kva": 32.6,
+          "standby_163_27_kva": 44.8,
+          "standby_150_40_kva": 42.8
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 17.7,
+            "class_f_cont_kva": 16.2,
+            "class_b_cont_kva": 14.1,
+            "standby_163_27_kva": 19.4,
+            "standby_150_40_kva": 18.6
+          },
+          "208": {
+            "class_h_cont_kva": 19.2,
+            "class_f_cont_kva": 17.6,
+            "class_b_cont_kva": 15.3,
+            "standby_163_27_kva": 21.1,
+            "standby_150_40_kva": 20.1
+          },
+          "220": {
+            "class_h_cont_kva": 20.3,
+            "class_f_cont_kva": 18.6,
+            "class_b_cont_kva": 16.2,
+            "standby_163_27_kva": 22.3,
+            "standby_150_40_kva": 21.3
+          },
+          "230": {
+            "class_h_cont_kva": 21.2,
+            "class_f_cont_kva": 19.4,
+            "class_b_cont_kva": 16.9,
+            "standby_163_27_kva": 23.3,
+            "standby_150_40_kva": 22.2
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 22.8,
+            "class_f_cont_kva": 20.9,
+            "class_b_cont_kva": 18.2,
+            "standby_163_27_kva": 25,
+            "standby_150_40_kva": 23.9
+          },
+          "240": {
+            "class_h_cont_kva": 23.8,
+            "class_f_cont_kva": 21.8,
+            "class_b_cont_kva": 19,
+            "standby_163_27_kva": 26.2,
+            "standby_150_40_kva": 25
+          },
+          "254": {
+            "class_h_cont_kva": 23.8,
+            "class_f_cont_kva": 21.8,
+            "class_b_cont_kva": 19,
+            "standby_163_27_kva": 26.2,
+            "standby_150_40_kva": 25
+          },
+          "266": {
+            "class_h_cont_kva": 24.9,
+            "class_f_cont_kva": 22.8,
+            "class_b_cont_kva": 19.9,
+            "standby_163_27_kva": 27.4,
+            "standby_150_40_kva": 26.2
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 180 SC4",
+      "series": "MXB-E",
+      "frame": 180,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 50,
+      "class_f_cont_kva": 45.8,
+      "class_b_cont_kva": 40,
+      "standby_kva": 52.5,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 55,
+      "efficiency_pct_class_h_full_load": 89.2,
+      "inertia_kgm2": 0.26,
+      "weight_kg_b3": 156,
+      "kw_class_h_cont": 40,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 40,
+          "class_f_cont_kva": 36.7,
+          "class_b_cont_kva": 32,
+          "standby_163_27_kva": 44,
+          "standby_150_40_kva": 42
+        },
+        "416": {
+          "class_h_cont_kva": 43.3,
+          "class_f_cont_kva": 39.7,
+          "class_b_cont_kva": 34.7,
+          "standby_163_27_kva": 47.7,
+          "standby_150_40_kva": 45.5
+        },
+        "440": {
+          "class_h_cont_kva": 45.8,
+          "class_f_cont_kva": 42,
+          "class_b_cont_kva": 36.7,
+          "standby_163_27_kva": 50.4,
+          "standby_150_40_kva": 48.1
+        },
+        "460": {
+          "class_h_cont_kva": 47.9,
+          "class_f_cont_kva": 43.9,
+          "class_b_cont_kva": 38.3,
+          "standby_163_27_kva": 52.7,
+          "standby_150_40_kva": 50.3
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 20,
+            "class_f_cont_kva": 18.3,
+            "class_b_cont_kva": 16,
+            "standby_163_27_kva": 22,
+            "standby_150_40_kva": 21
+          },
+          "208": {
+            "class_h_cont_kva": 21.7,
+            "class_f_cont_kva": 19.9,
+            "class_b_cont_kva": 17.3,
+            "standby_163_27_kva": 23.8,
+            "standby_150_40_kva": 22.8
+          },
+          "220": {
+            "class_h_cont_kva": 22.9,
+            "class_f_cont_kva": 21,
+            "class_b_cont_kva": 18.3,
+            "standby_163_27_kva": 25.2,
+            "standby_150_40_kva": 24.1
+          },
+          "230": {
+            "class_h_cont_kva": 24,
+            "class_f_cont_kva": 22,
+            "class_b_cont_kva": 19.2,
+            "standby_163_27_kva": 26.4,
+            "standby_150_40_kva": 25.2
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 25.8,
+            "class_f_cont_kva": 23.7,
+            "class_b_cont_kva": 20.7,
+            "standby_163_27_kva": 28.4,
+            "standby_150_40_kva": 27.1
+          },
+          "240": {
+            "class_h_cont_kva": 27,
+            "class_f_cont_kva": 24.7,
+            "class_b_cont_kva": 21.6,
+            "standby_163_27_kva": 29.7,
+            "standby_150_40_kva": 28.4
+          },
+          "254": {
+            "class_h_cont_kva": 27,
+            "class_f_cont_kva": 24.7,
+            "class_b_cont_kva": 21.6,
+            "standby_163_27_kva": 29.7,
+            "standby_150_40_kva": 28.4
+          },
+          "266": {
+            "class_h_cont_kva": 28.3,
+            "class_f_cont_kva": 25.9,
+            "class_b_cont_kva": 22.6,
+            "standby_163_27_kva": 31.1,
+            "standby_150_40_kva": 29.7
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 180 MA4",
+      "series": "MXB-E",
+      "frame": 180,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 56.3,
+      "class_f_cont_kva": 51.6,
+      "class_b_cont_kva": 45,
+      "standby_kva": 59.1,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 61.9,
+      "efficiency_pct_class_h_full_load": 89.9,
+      "inertia_kgm2": 0.3,
+      "weight_kg_b3": 181,
+      "kw_class_h_cont": 45,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 45,
+          "class_f_cont_kva": 41.2,
+          "class_b_cont_kva": 36,
+          "standby_163_27_kva": 49.5,
+          "standby_150_40_kva": 47.3
+        },
+        "416": {
+          "class_h_cont_kva": 48.8,
+          "class_f_cont_kva": 44.7,
+          "class_b_cont_kva": 39,
+          "standby_163_27_kva": 53.6,
+          "standby_150_40_kva": 51.2
+        },
+        "440": {
+          "class_h_cont_kva": 51.6,
+          "class_f_cont_kva": 47.3,
+          "class_b_cont_kva": 41.3,
+          "standby_163_27_kva": 56.7,
+          "standby_150_40_kva": 54.1
+        },
+        "460": {
+          "class_h_cont_kva": 53.9,
+          "class_f_cont_kva": 49.4,
+          "class_b_cont_kva": 43.1,
+          "standby_163_27_kva": 59.3,
+          "standby_150_40_kva": 56.6
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 23.4,
+            "class_f_cont_kva": 21.4,
+            "class_b_cont_kva": 18.7,
+            "standby_163_27_kva": 25.7,
+            "standby_150_40_kva": 24.6
+          },
+          "208": {
+            "class_h_cont_kva": 25.4,
+            "class_f_cont_kva": 23.2,
+            "class_b_cont_kva": 20.3,
+            "standby_163_27_kva": 27.9,
+            "standby_150_40_kva": 26.6
+          },
+          "220": {
+            "class_h_cont_kva": 26.8,
+            "class_f_cont_kva": 24.6,
+            "class_b_cont_kva": 21.5,
+            "standby_163_27_kva": 29.5,
+            "standby_150_40_kva": 28.2
+          },
+          "230": {
+            "class_h_cont_kva": 28,
+            "class_f_cont_kva": 25.7,
+            "class_b_cont_kva": 22.4,
+            "standby_163_27_kva": 30.8,
+            "standby_150_40_kva": 29.4
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 30.3,
+            "class_f_cont_kva": 27.8,
+            "class_b_cont_kva": 24.2,
+            "standby_163_27_kva": 33.3,
+            "standby_150_40_kva": 31.8
+          },
+          "240": {
+            "class_h_cont_kva": 31.7,
+            "class_f_cont_kva": 29.1,
+            "class_b_cont_kva": 25.4,
+            "standby_163_27_kva": 34.9,
+            "standby_150_40_kva": 33.3
+          },
+          "254": {
+            "class_h_cont_kva": 31.7,
+            "class_f_cont_kva": 29.1,
+            "class_b_cont_kva": 25.4,
+            "standby_163_27_kva": 34.9,
+            "standby_150_40_kva": 33.3
+          },
+          "266": {
+            "class_h_cont_kva": 33.2,
+            "class_f_cont_kva": 30.4,
+            "class_b_cont_kva": 26.6,
+            "standby_163_27_kva": 36.5,
+            "standby_150_40_kva": 34.9
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 180 MC4",
+      "series": "MXB-E",
+      "frame": 180,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 62.5,
+      "class_f_cont_kva": 57.3,
+      "class_b_cont_kva": 50,
+      "standby_kva": 65.6,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 68.8,
+      "efficiency_pct_class_h_full_load": 90.3,
+      "inertia_kgm2": 0.32,
+      "weight_kg_b3": 189,
+      "kw_class_h_cont": 50,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 50,
+          "class_f_cont_kva": 45.8,
+          "class_b_cont_kva": 40,
+          "standby_163_27_kva": 55,
+          "standby_150_40_kva": 52.5
+        },
+        "416": {
+          "class_h_cont_kva": 54.2,
+          "class_f_cont_kva": 49.6,
+          "class_b_cont_kva": 43.3,
+          "standby_163_27_kva": 59.6,
+          "standby_150_40_kva": 56.9
+        },
+        "440": {
+          "class_h_cont_kva": 57.3,
+          "class_f_cont_kva": 52.5,
+          "class_b_cont_kva": 45.8,
+          "standby_163_27_kva": 63,
+          "standby_150_40_kva": 60.2
+        },
+        "460": {
+          "class_h_cont_kva": 59.9,
+          "class_f_cont_kva": 54.9,
+          "class_b_cont_kva": 47.9,
+          "standby_163_27_kva": 65.9,
+          "standby_150_40_kva": 62.9
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 25,
+            "class_f_cont_kva": 22.9,
+            "class_b_cont_kva": 20,
+            "standby_163_27_kva": 27.5,
+            "standby_150_40_kva": 26.3
+          },
+          "208": {
+            "class_h_cont_kva": 27.1,
+            "class_f_cont_kva": 24.8,
+            "class_b_cont_kva": 21.7,
+            "standby_163_27_kva": 29.8,
+            "standby_150_40_kva": 28.4
+          },
+          "220": {
+            "class_h_cont_kva": 28.6,
+            "class_f_cont_kva": 26.3,
+            "class_b_cont_kva": 22.9,
+            "standby_163_27_kva": 31.5,
+            "standby_150_40_kva": 30.1
+          },
+          "230": {
+            "class_h_cont_kva": 29.9,
+            "class_f_cont_kva": 27.4,
+            "class_b_cont_kva": 24,
+            "standby_163_27_kva": 32.9,
+            "standby_150_40_kva": 31.4
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 33.4,
+            "class_f_cont_kva": 30.6,
+            "class_b_cont_kva": 26.7,
+            "standby_163_27_kva": 36.7,
+            "standby_150_40_kva": 35.1
+          },
+          "240": {
+            "class_h_cont_kva": 34.9,
+            "class_f_cont_kva": 32,
+            "class_b_cont_kva": 27.9,
+            "standby_163_27_kva": 38.4,
+            "standby_150_40_kva": 36.6
+          },
+          "254": {
+            "class_h_cont_kva": 34.9,
+            "class_f_cont_kva": 32,
+            "class_b_cont_kva": 27.9,
+            "standby_163_27_kva": 38.4,
+            "standby_150_40_kva": 36.6
+          },
+          "266": {
+            "class_h_cont_kva": 36.5,
+            "class_f_cont_kva": 33.5,
+            "class_b_cont_kva": 29.2,
+            "standby_163_27_kva": 40.2,
+            "standby_150_40_kva": 38.4
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 180 LB4",
+      "series": "MXB-E",
+      "frame": 180,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 81.3,
+      "class_f_cont_kva": 74.5,
+      "class_b_cont_kva": 65,
+      "standby_kva": 85.3,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 89.4,
+      "efficiency_pct_class_h_full_load": 90.8,
+      "inertia_kgm2": 0.4,
+      "weight_kg_b3": 234,
+      "kw_class_h_cont": 65,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 65,
+          "class_f_cont_kva": 59.6,
+          "class_b_cont_kva": 52,
+          "standby_163_27_kva": 71.5,
+          "standby_150_40_kva": 68.3
+        },
+        "416": {
+          "class_h_cont_kva": 70.4,
+          "class_f_cont_kva": 64.5,
+          "class_b_cont_kva": 56.3,
+          "standby_163_27_kva": 77.5,
+          "standby_150_40_kva": 73.9
+        },
+        "440": {
+          "class_h_cont_kva": 74.5,
+          "class_f_cont_kva": 68.3,
+          "class_b_cont_kva": 59.6,
+          "standby_163_27_kva": 81.9,
+          "standby_150_40_kva": 78.2
+        },
+        "460": {
+          "class_h_cont_kva": 77.9,
+          "class_f_cont_kva": 71.4,
+          "class_b_cont_kva": 62.3,
+          "standby_163_27_kva": 85.7,
+          "standby_150_40_kva": 81.8
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 31.2,
+            "class_f_cont_kva": 28.6,
+            "class_b_cont_kva": 25,
+            "standby_163_27_kva": 34.3,
+            "standby_150_40_kva": 32.8
+          },
+          "208": {
+            "class_h_cont_kva": 33.8,
+            "class_f_cont_kva": 31,
+            "class_b_cont_kva": 27,
+            "standby_163_27_kva": 37.2,
+            "standby_150_40_kva": 35.5
+          },
+          "220": {
+            "class_h_cont_kva": 35.8,
+            "class_f_cont_kva": 32.8,
+            "class_b_cont_kva": 28.6,
+            "standby_163_27_kva": 39.3,
+            "standby_150_40_kva": 37.5
+          },
+          "230": {
+            "class_h_cont_kva": 37.4,
+            "class_f_cont_kva": 34.3,
+            "class_b_cont_kva": 29.9,
+            "standby_163_27_kva": 41.1,
+            "standby_150_40_kva": 39.2
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 44.6,
+            "class_f_cont_kva": 40.9,
+            "class_b_cont_kva": 35.7,
+            "standby_163_27_kva": 49,
+            "standby_150_40_kva": 46.8
+          },
+          "240": {
+            "class_h_cont_kva": 46.6,
+            "class_f_cont_kva": 42.7,
+            "class_b_cont_kva": 37.3,
+            "standby_163_27_kva": 51.3,
+            "standby_150_40_kva": 48.9
+          },
+          "254": {
+            "class_h_cont_kva": 46.6,
+            "class_f_cont_kva": 42.7,
+            "class_b_cont_kva": 37.3,
+            "standby_163_27_kva": 51.3,
+            "standby_150_40_kva": 48.9
+          },
+          "266": {
+            "class_h_cont_kva": 48.8,
+            "class_f_cont_kva": 44.7,
+            "class_b_cont_kva": 39,
+            "standby_163_27_kva": 53.7,
+            "standby_150_40_kva": 51.2
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 225 XA4",
+      "series": "MXB-E",
+      "frame": 225,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 88,
+      "class_f_cont_kva": 80,
+      "class_b_cont_kva": 70,
+      "standby_kva": 92,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 96,
+      "efficiency_pct_class_h_full_load": 89,
+      "inertia_kgm2": 0.71,
+      "weight_kg_b3": 280,
+      "kw_class_h_cont": 70.4,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 70,
+          "class_f_cont_kva": 64.2,
+          "class_b_cont_kva": 56,
+          "standby_163_27_kva": 77,
+          "standby_150_40_kva": 73.5
+        },
+        "416": {
+          "class_h_cont_kva": 75.8,
+          "class_f_cont_kva": 69.5,
+          "class_b_cont_kva": 60.7,
+          "standby_163_27_kva": 83.4,
+          "standby_150_40_kva": 79.6
+        },
+        "440": {
+          "class_h_cont_kva": 80.2,
+          "class_f_cont_kva": 73.5,
+          "class_b_cont_kva": 64.2,
+          "standby_163_27_kva": 88.2,
+          "standby_150_40_kva": 84.2
+        },
+        "460": {
+          "class_h_cont_kva": 83.9,
+          "class_f_cont_kva": 76.9,
+          "class_b_cont_kva": 67.1,
+          "standby_163_27_kva": 92.2,
+          "standby_150_40_kva": 88
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 35,
+            "class_f_cont_kva": 32.1,
+            "class_b_cont_kva": 28,
+            "standby_163_27_kva": 38.5,
+            "standby_150_40_kva": 36.8
+          },
+          "208": {
+            "class_h_cont_kva": 37.9,
+            "class_f_cont_kva": 34.8,
+            "class_b_cont_kva": 30.3,
+            "standby_163_27_kva": 41.7,
+            "standby_150_40_kva": 39.8
+          },
+          "220": {
+            "class_h_cont_kva": 40.1,
+            "class_f_cont_kva": 36.8,
+            "class_b_cont_kva": 32.1,
+            "standby_163_27_kva": 44.1,
+            "standby_150_40_kva": 42.1
+          },
+          "230": {
+            "class_h_cont_kva": 41.9,
+            "class_f_cont_kva": 38.4,
+            "class_b_cont_kva": 33.5,
+            "standby_163_27_kva": 46.1,
+            "standby_150_40_kva": 44
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 43.3,
+            "class_f_cont_kva": 39.7,
+            "class_b_cont_kva": 35.9,
+            "standby_163_27_kva": 49.3,
+            "standby_150_40_kva": 47.1
+          },
+          "240": {
+            "class_h_cont_kva": 43.3,
+            "class_f_cont_kva": 39.7,
+            "class_b_cont_kva": 34.6,
+            "standby_163_27_kva": 47.6,
+            "standby_150_40_kva": 45.5
+          },
+          "254": {
+            "class_h_cont_kva": 43.3,
+            "class_f_cont_kva": 39.7,
+            "class_b_cont_kva": 34.6,
+            "standby_163_27_kva": 47.6,
+            "standby_150_40_kva": 45.5
+          },
+          "266": {
+            "class_h_cont_kva": 45.3,
+            "class_f_cont_kva": 41.6,
+            "class_b_cont_kva": 36.3,
+            "standby_163_27_kva": 49.9,
+            "standby_150_40_kva": 47.6
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 225 XB4",
+      "series": "MXB-E",
+      "frame": 225,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 100,
+      "class_f_cont_kva": 92,
+      "class_b_cont_kva": 80,
+      "standby_kva": 105,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 110,
+      "efficiency_pct_class_h_full_load": 89.8,
+      "inertia_kgm2": 0.78,
+      "weight_kg_b3": 296,
+      "kw_class_h_cont": 80,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 80,
+          "class_f_cont_kva": 73.3,
+          "class_b_cont_kva": 64,
+          "standby_163_27_kva": 88,
+          "standby_150_40_kva": 84
+        },
+        "416": {
+          "class_h_cont_kva": 86.7,
+          "class_f_cont_kva": 79.4,
+          "class_b_cont_kva": 69.3,
+          "standby_163_27_kva": 95.3,
+          "standby_150_40_kva": 91
+        },
+        "440": {
+          "class_h_cont_kva": 91.7,
+          "class_f_cont_kva": 84,
+          "class_b_cont_kva": 73.3,
+          "standby_163_27_kva": 101,
+          "standby_150_40_kva": 96.3
+        },
+        "460": {
+          "class_h_cont_kva": 95.8,
+          "class_f_cont_kva": 87.8,
+          "class_b_cont_kva": 76.7,
+          "standby_163_27_kva": 105,
+          "standby_150_40_kva": 101
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 40,
+            "class_f_cont_kva": 36.7,
+            "class_b_cont_kva": 32,
+            "standby_163_27_kva": 44,
+            "standby_150_40_kva": 42
+          },
+          "208": {
+            "class_h_cont_kva": 43.3,
+            "class_f_cont_kva": 39.7,
+            "class_b_cont_kva": 34.7,
+            "standby_163_27_kva": 47.7,
+            "standby_150_40_kva": 45.5
+          },
+          "220": {
+            "class_h_cont_kva": 45.8,
+            "class_f_cont_kva": 42,
+            "class_b_cont_kva": 36.7,
+            "standby_163_27_kva": 50.4,
+            "standby_150_40_kva": 48.1
+          },
+          "230": {
+            "class_h_cont_kva": 47.9,
+            "class_f_cont_kva": 43.9,
+            "class_b_cont_kva": 38.3,
+            "standby_163_27_kva": 52.7,
+            "standby_150_40_kva": 50.3
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 49.2,
+            "class_f_cont_kva": 45.1,
+            "class_b_cont_kva": 41,
+            "standby_163_27_kva": 56.4,
+            "standby_150_40_kva": 53.8
+          },
+          "240": {
+            "class_h_cont_kva": 49.2,
+            "class_f_cont_kva": 45.1,
+            "class_b_cont_kva": 39.4,
+            "standby_163_27_kva": 54.1,
+            "standby_150_40_kva": 51.7
+          },
+          "254": {
+            "class_h_cont_kva": 49.2,
+            "class_f_cont_kva": 45.1,
+            "class_b_cont_kva": 39.4,
+            "standby_163_27_kva": 54.1,
+            "standby_150_40_kva": 51.7
+          },
+          "266": {
+            "class_h_cont_kva": 51.5,
+            "class_f_cont_kva": 47.2,
+            "class_b_cont_kva": 41.2,
+            "standby_163_27_kva": 56.7,
+            "standby_150_40_kva": 54.1
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 225 SB4",
+      "series": "MXB-E",
+      "frame": 225,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 125,
+      "class_f_cont_kva": 115,
+      "class_b_cont_kva": 100,
+      "standby_kva": 131,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 138,
+      "efficiency_pct_class_h_full_load": 91.2,
+      "inertia_kgm2": 0.92,
+      "weight_kg_b3": 335,
+      "kw_class_h_cont": 100,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 100,
+          "class_f_cont_kva": 91.7,
+          "class_b_cont_kva": 80,
+          "standby_163_27_kva": 110,
+          "standby_150_40_kva": 105
+        },
+        "416": {
+          "class_h_cont_kva": 108,
+          "class_f_cont_kva": 99.3,
+          "class_b_cont_kva": 86.7,
+          "standby_163_27_kva": 119,
+          "standby_150_40_kva": 114
+        },
+        "440": {
+          "class_h_cont_kva": 115,
+          "class_f_cont_kva": 105,
+          "class_b_cont_kva": 91.7,
+          "standby_163_27_kva": 126,
+          "standby_150_40_kva": 120
+        },
+        "460": {
+          "class_h_cont_kva": 120,
+          "class_f_cont_kva": 110,
+          "class_b_cont_kva": 95.8,
+          "standby_163_27_kva": 132,
+          "standby_150_40_kva": 126
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 46,
+            "class_f_cont_kva": 42.2,
+            "class_b_cont_kva": 36.8,
+            "standby_163_27_kva": 50.6,
+            "standby_150_40_kva": 48.3
+          },
+          "208": {
+            "class_h_cont_kva": 49.8,
+            "class_f_cont_kva": 45.7,
+            "class_b_cont_kva": 39.9,
+            "standby_163_27_kva": 54.8,
+            "standby_150_40_kva": 52.3
+          },
+          "220": {
+            "class_h_cont_kva": 52.7,
+            "class_f_cont_kva": 48.3,
+            "class_b_cont_kva": 42.2,
+            "standby_163_27_kva": 58,
+            "standby_150_40_kva": 55.3
+          },
+          "230": {
+            "class_h_cont_kva": 55.1,
+            "class_f_cont_kva": 50.5,
+            "class_b_cont_kva": 44.1,
+            "standby_163_27_kva": 60.6,
+            "standby_150_40_kva": 57.9
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 61.5,
+            "class_f_cont_kva": 56.4,
+            "class_b_cont_kva": 51.3,
+            "standby_163_27_kva": 70.5,
+            "standby_150_40_kva": 67.3
+          },
+          "240": {
+            "class_h_cont_kva": 61.5,
+            "class_f_cont_kva": 56.4,
+            "class_b_cont_kva": 49.2,
+            "standby_163_27_kva": 67.7,
+            "standby_150_40_kva": 64.6
+          },
+          "254": {
+            "class_h_cont_kva": 61.5,
+            "class_f_cont_kva": 56.4,
+            "class_b_cont_kva": 49.2,
+            "standby_163_27_kva": 67.7,
+            "standby_150_40_kva": 64.6
+          },
+          "266": {
+            "class_h_cont_kva": 64.4,
+            "class_f_cont_kva": 59,
+            "class_b_cont_kva": 51.5,
+            "standby_163_27_kva": 70.8,
+            "standby_150_40_kva": 67.6
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 225 MA4",
+      "series": "MXB-E",
+      "frame": 225,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 150,
+      "class_f_cont_kva": 137,
+      "class_b_cont_kva": 120,
+      "standby_kva": 158,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 165,
+      "efficiency_pct_class_h_full_load": 91.8,
+      "inertia_kgm2": 1.07,
+      "weight_kg_b3": 377,
+      "kw_class_h_cont": 120,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 120,
+          "class_f_cont_kva": 110,
+          "class_b_cont_kva": 96,
+          "standby_163_27_kva": 132,
+          "standby_150_40_kva": 126
+        },
+        "416": {
+          "class_h_cont_kva": 130,
+          "class_f_cont_kva": 119,
+          "class_b_cont_kva": 104,
+          "standby_163_27_kva": 143,
+          "standby_150_40_kva": 137
+        },
+        "440": {
+          "class_h_cont_kva": 138,
+          "class_f_cont_kva": 126,
+          "class_b_cont_kva": 110,
+          "standby_163_27_kva": 151,
+          "standby_150_40_kva": 144
+        },
+        "460": {
+          "class_h_cont_kva": 144,
+          "class_f_cont_kva": 132,
+          "class_b_cont_kva": 115,
+          "standby_163_27_kva": 158,
+          "standby_150_40_kva": 151
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 54,
+            "class_f_cont_kva": 49.5,
+            "class_b_cont_kva": 43.2,
+            "standby_163_27_kva": 59.4,
+            "standby_150_40_kva": 56.7
+          },
+          "208": {
+            "class_h_cont_kva": 58.5,
+            "class_f_cont_kva": 53.6,
+            "class_b_cont_kva": 46.8,
+            "standby_163_27_kva": 64.4,
+            "standby_150_40_kva": 61.4
+          },
+          "220": {
+            "class_h_cont_kva": 61.9,
+            "class_f_cont_kva": 56.7,
+            "class_b_cont_kva": 49.5,
+            "standby_163_27_kva": 68.1,
+            "standby_150_40_kva": 65
+          },
+          "230": {
+            "class_h_cont_kva": 64.7,
+            "class_f_cont_kva": 59.3,
+            "class_b_cont_kva": 51.8,
+            "standby_163_27_kva": 71.2,
+            "standby_150_40_kva": 67.9
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 73.8,
+            "class_f_cont_kva": 67.6,
+            "class_b_cont_kva": 61.2,
+            "standby_163_27_kva": 84.2,
+            "standby_150_40_kva": 80.3
+          },
+          "240": {
+            "class_h_cont_kva": 73.8,
+            "class_f_cont_kva": 67.6,
+            "class_b_cont_kva": 59,
+            "standby_163_27_kva": 81.2,
+            "standby_150_40_kva": 77.5
+          },
+          "254": {
+            "class_h_cont_kva": 73.8,
+            "class_f_cont_kva": 67.6,
+            "class_b_cont_kva": 59,
+            "standby_163_27_kva": 81.2,
+            "standby_150_40_kva": 77.5
+          },
+          "266": {
+            "class_h_cont_kva": 77.3,
+            "class_f_cont_kva": 70.8,
+            "class_b_cont_kva": 61.8,
+            "standby_163_27_kva": 85,
+            "standby_150_40_kva": 81.1
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 225 MB4",
+      "series": "MXB-E",
+      "frame": 225,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 169,
+      "class_f_cont_kva": 155,
+      "class_b_cont_kva": 135,
+      "standby_kva": 177,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 186,
+      "efficiency_pct_class_h_full_load": 92.4,
+      "inertia_kgm2": 1.17,
+      "weight_kg_b3": 407,
+      "kw_class_h_cont": 135.2,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 135,
+          "class_f_cont_kva": 124,
+          "class_b_cont_kva": 108,
+          "standby_163_27_kva": 149,
+          "standby_150_40_kva": 142
+        },
+        "416": {
+          "class_h_cont_kva": 146,
+          "class_f_cont_kva": 134,
+          "class_b_cont_kva": 117,
+          "standby_163_27_kva": 161,
+          "standby_150_40_kva": 154
+        },
+        "440": {
+          "class_h_cont_kva": 155,
+          "class_f_cont_kva": 142,
+          "class_b_cont_kva": 124,
+          "standby_163_27_kva": 170,
+          "standby_150_40_kva": 162
+        },
+        "460": {
+          "class_h_cont_kva": 162,
+          "class_f_cont_kva": 148,
+          "class_b_cont_kva": 129,
+          "standby_163_27_kva": 178,
+          "standby_150_40_kva": 170
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 64.8,
+            "class_f_cont_kva": 59.4,
+            "class_b_cont_kva": 51.8,
+            "standby_163_27_kva": 71.3,
+            "standby_150_40_kva": 68
+          },
+          "208": {
+            "class_h_cont_kva": 70.2,
+            "class_f_cont_kva": 64.3,
+            "class_b_cont_kva": 56.2,
+            "standby_163_27_kva": 77.2,
+            "standby_150_40_kva": 73.7
+          },
+          "220": {
+            "class_h_cont_kva": 74.3,
+            "class_f_cont_kva": 68.1,
+            "class_b_cont_kva": 59.4,
+            "standby_163_27_kva": 81.7,
+            "standby_150_40_kva": 78
+          },
+          "230": {
+            "class_h_cont_kva": 77.6,
+            "class_f_cont_kva": 71.1,
+            "class_b_cont_kva": 62.1,
+            "standby_163_27_kva": 85.4,
+            "standby_150_40_kva": 81.5
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 83.2,
+            "class_f_cont_kva": 76.3,
+            "class_b_cont_kva": 72.3,
+            "standby_163_27_kva": 99.4,
+            "standby_150_40_kva": 94.9
+          },
+          "240": {
+            "class_h_cont_kva": 83.2,
+            "class_f_cont_kva": 76.3,
+            "class_b_cont_kva": 66.6,
+            "standby_163_27_kva": 91.5,
+            "standby_150_40_kva": 87.4
+          },
+          "254": {
+            "class_h_cont_kva": 83.2,
+            "class_f_cont_kva": 76.3,
+            "class_b_cont_kva": 66.6,
+            "standby_163_27_kva": 91.5,
+            "standby_150_40_kva": 87.4
+          },
+          "266": {
+            "class_h_cont_kva": 87.1,
+            "class_f_cont_kva": 79.8,
+            "class_b_cont_kva": 69.7,
+            "standby_163_27_kva": 95.8,
+            "standby_150_40_kva": 91.5
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 225 LA4",
+      "series": "MXB-E",
+      "frame": 225,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 188,
+      "class_f_cont_kva": 172,
+      "class_b_cont_kva": 150,
+      "standby_kva": 197,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 206,
+      "efficiency_pct_class_h_full_load": 92.6,
+      "inertia_kgm2": 1.25,
+      "weight_kg_b3": 434,
+      "kw_class_h_cont": 150.4,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 150,
+          "class_f_cont_kva": 138,
+          "class_b_cont_kva": 120,
+          "standby_163_27_kva": 165,
+          "standby_150_40_kva": 158
+        },
+        "416": {
+          "class_h_cont_kva": 163,
+          "class_f_cont_kva": 149,
+          "class_b_cont_kva": 130,
+          "standby_163_27_kva": 179,
+          "standby_150_40_kva": 171
+        },
+        "440": {
+          "class_h_cont_kva": 172,
+          "class_f_cont_kva": 158,
+          "class_b_cont_kva": 138,
+          "standby_163_27_kva": 189,
+          "standby_150_40_kva": 181
+        },
+        "460": {
+          "class_h_cont_kva": 180,
+          "class_f_cont_kva": 165,
+          "class_b_cont_kva": 144,
+          "standby_163_27_kva": 198,
+          "standby_150_40_kva": 189
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 67.5,
+            "class_f_cont_kva": 61.9,
+            "class_b_cont_kva": 54,
+            "standby_163_27_kva": 74.3,
+            "standby_150_40_kva": 70.9
+          },
+          "208": {
+            "class_h_cont_kva": 73.1,
+            "class_f_cont_kva": 67,
+            "class_b_cont_kva": 58.5,
+            "standby_163_27_kva": 80.4,
+            "standby_150_40_kva": 76.8
+          },
+          "220": {
+            "class_h_cont_kva": 77.3,
+            "class_f_cont_kva": 70.9,
+            "class_b_cont_kva": 61.9,
+            "standby_163_27_kva": 85.1,
+            "standby_150_40_kva": 81.2
+          },
+          "230": {
+            "class_h_cont_kva": 80.9,
+            "class_f_cont_kva": 74.1,
+            "class_b_cont_kva": 64.7,
+            "standby_163_27_kva": 88.9,
+            "standby_150_40_kva": 84.9
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 92.5,
+            "class_f_cont_kva": 84.8,
+            "class_b_cont_kva": 76.1,
+            "standby_163_27_kva": 105,
+            "standby_150_40_kva": 99.9
+          },
+          "240": {
+            "class_h_cont_kva": 92.5,
+            "class_f_cont_kva": 84.8,
+            "class_b_cont_kva": 74,
+            "standby_163_27_kva": 102,
+            "standby_150_40_kva": 97.1
+          },
+          "254": {
+            "class_h_cont_kva": 92.5,
+            "class_f_cont_kva": 84.8,
+            "class_b_cont_kva": 74,
+            "standby_163_27_kva": 102,
+            "standby_150_40_kva": 97.1
+          },
+          "266": {
+            "class_h_cont_kva": 96.8,
+            "class_f_cont_kva": 88.8,
+            "class_b_cont_kva": 77.5,
+            "standby_163_27_kva": 107,
+            "standby_150_40_kva": 102
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 225 LB4",
+      "series": "MXB-E",
+      "frame": 225,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 206,
+      "class_f_cont_kva": 189,
+      "class_b_cont_kva": 165,
+      "standby_kva": 217,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 227,
+      "efficiency_pct_class_h_full_load": 93.1,
+      "inertia_kgm2": 1.8,
+      "weight_kg_b3": 471,
+      "kw_class_h_cont": 164.8,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 165,
+          "class_f_cont_kva": 151,
+          "class_b_cont_kva": 132,
+          "standby_163_27_kva": 182,
+          "standby_150_40_kva": 173
+        },
+        "416": {
+          "class_h_cont_kva": 179,
+          "class_f_cont_kva": 164,
+          "class_b_cont_kva": 143,
+          "standby_163_27_kva": 197,
+          "standby_150_40_kva": 188
+        },
+        "440": {
+          "class_h_cont_kva": 189,
+          "class_f_cont_kva": 173,
+          "class_b_cont_kva": 151,
+          "standby_163_27_kva": 208,
+          "standby_150_40_kva": 199
+        },
+        "460": {
+          "class_h_cont_kva": 198,
+          "class_f_cont_kva": 181,
+          "class_b_cont_kva": 158,
+          "standby_163_27_kva": 217,
+          "standby_150_40_kva": 208
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 72.6,
+            "class_f_cont_kva": 66.5,
+            "class_b_cont_kva": 58.1,
+            "standby_163_27_kva": 79.9,
+            "standby_150_40_kva": 76.2
+          },
+          "208": {
+            "class_h_cont_kva": 78.7,
+            "class_f_cont_kva": 72.1,
+            "class_b_cont_kva": 62.9,
+            "standby_163_27_kva": 86.5,
+            "standby_150_40_kva": 82.6
+          },
+          "220": {
+            "class_h_cont_kva": 83.2,
+            "class_f_cont_kva": 76.2,
+            "class_b_cont_kva": 66.6,
+            "standby_163_27_kva": 91.5,
+            "standby_150_40_kva": 87.3
+          },
+          "230": {
+            "class_h_cont_kva": 87,
+            "class_f_cont_kva": 79.7,
+            "class_b_cont_kva": 69.6,
+            "standby_163_27_kva": 95.7,
+            "standby_150_40_kva": 91.3
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 102,
+            "class_f_cont_kva": 93,
+            "class_b_cont_kva": 84.9,
+            "standby_163_27_kva": 117,
+            "standby_150_40_kva": 112
+          },
+          "240": {
+            "class_h_cont_kva": 102,
+            "class_f_cont_kva": 93,
+            "class_b_cont_kva": 81.2,
+            "standby_163_27_kva": 112,
+            "standby_150_40_kva": 107
+          },
+          "254": {
+            "class_h_cont_kva": 102,
+            "class_f_cont_kva": 93,
+            "class_b_cont_kva": 81.2,
+            "standby_163_27_kva": null,
+            "standby_150_40_kva": 107
+          },
+          "266": {
+            "class_h_cont_kva": 106,
+            "class_f_cont_kva": 97.4,
+            "class_b_cont_kva": 85,
+            "standby_163_27_kva": 117,
+            "standby_150_40_kva": 112
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "Zig-zag 1-ph 163/27 at 254 V printed \"1112\" (obvious typo, neighbours are 112-117); set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 250 SA4",
+      "series": "MXB-E",
+      "frame": 250,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 225,
+      "class_f_cont_kva": 206,
+      "class_b_cont_kva": 180,
+      "standby_kva": 236,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 248,
+      "efficiency_pct_class_h_full_load": 92.4,
+      "inertia_kgm2": 1.56,
+      "weight_kg_b3": 513,
+      "kw_class_h_cont": 180,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 180,
+          "class_f_cont_kva": 165,
+          "class_b_cont_kva": 144,
+          "standby_163_27_kva": 198,
+          "standby_150_40_kva": 189
+        },
+        "416": {
+          "class_h_cont_kva": 195,
+          "class_f_cont_kva": 179,
+          "class_b_cont_kva": 156,
+          "standby_163_27_kva": 215,
+          "standby_150_40_kva": 205
+        },
+        "440": {
+          "class_h_cont_kva": 206,
+          "class_f_cont_kva": 189,
+          "class_b_cont_kva": 165,
+          "standby_163_27_kva": 227,
+          "standby_150_40_kva": 217
+        },
+        "460": {
+          "class_h_cont_kva": 216,
+          "class_f_cont_kva": 198,
+          "class_b_cont_kva": 173,
+          "standby_163_27_kva": 237,
+          "standby_150_40_kva": 226
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 90,
+            "class_f_cont_kva": 82.5,
+            "class_b_cont_kva": 72,
+            "standby_163_27_kva": 99,
+            "standby_150_40_kva": 94.5
+          },
+          "208": {
+            "class_h_cont_kva": 97.5,
+            "class_f_cont_kva": 89.4,
+            "class_b_cont_kva": 78,
+            "standby_163_27_kva": 107,
+            "standby_150_40_kva": 102
+          },
+          "220": {
+            "class_h_cont_kva": 103,
+            "class_f_cont_kva": 94.5,
+            "class_b_cont_kva": 82.5,
+            "standby_163_27_kva": 113,
+            "standby_150_40_kva": 108
+          },
+          "230": {
+            "class_h_cont_kva": 108,
+            "class_f_cont_kva": 98.8,
+            "class_b_cont_kva": 86.3,
+            "standby_163_27_kva": 119,
+            "standby_150_40_kva": 113
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 118,
+            "class_f_cont_kva": 109,
+            "class_b_cont_kva": 94.7,
+            "standby_163_27_kva": 130,
+            "standby_150_40_kva": 124
+          },
+          "240": {
+            "class_h_cont_kva": 124,
+            "class_f_cont_kva": 114,
+            "class_b_cont_kva": 99,
+            "standby_163_27_kva": 136,
+            "standby_150_40_kva": 130
+          },
+          "254": {
+            "class_h_cont_kva": 124,
+            "class_f_cont_kva": 114,
+            "class_b_cont_kva": 99,
+            "standby_163_27_kva": 136,
+            "standby_150_40_kva": 130
+          },
+          "266": {
+            "class_h_cont_kva": 130,
+            "class_f_cont_kva": 119,
+            "class_b_cont_kva": 104,
+            "standby_163_27_kva": 143,
+            "standby_150_40_kva": 136
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 250 SB4",
+      "series": "MXB-E",
+      "frame": 250,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 250,
+      "class_f_cont_kva": 229,
+      "class_b_cont_kva": 200,
+      "standby_kva": 263,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 275,
+      "efficiency_pct_class_h_full_load": 92.7,
+      "inertia_kgm2": 1.64,
+      "weight_kg_b3": 541,
+      "kw_class_h_cont": 200,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 200,
+          "class_f_cont_kva": 183,
+          "class_b_cont_kva": 160,
+          "standby_163_27_kva": 220,
+          "standby_150_40_kva": 210
+        },
+        "416": {
+          "class_h_cont_kva": 217,
+          "class_f_cont_kva": 199,
+          "class_b_cont_kva": 173,
+          "standby_163_27_kva": 238,
+          "standby_150_40_kva": 228
+        },
+        "440": {
+          "class_h_cont_kva": 229,
+          "class_f_cont_kva": 210,
+          "class_b_cont_kva": 183,
+          "standby_163_27_kva": 252,
+          "standby_150_40_kva": 241
+        },
+        "460": {
+          "class_h_cont_kva": 240,
+          "class_f_cont_kva": 220,
+          "class_b_cont_kva": 192,
+          "standby_163_27_kva": 264,
+          "standby_150_40_kva": 252
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 100,
+            "class_f_cont_kva": 91.7,
+            "class_b_cont_kva": 80,
+            "standby_163_27_kva": 110,
+            "standby_150_40_kva": 105
+          },
+          "208": {
+            "class_h_cont_kva": 108,
+            "class_f_cont_kva": 99.3,
+            "class_b_cont_kva": 86.7,
+            "standby_163_27_kva": 119,
+            "standby_150_40_kva": 114
+          },
+          "220": {
+            "class_h_cont_kva": 115,
+            "class_f_cont_kva": 105,
+            "class_b_cont_kva": 91.7,
+            "standby_163_27_kva": 126,
+            "standby_150_40_kva": 120
+          },
+          "230": {
+            "class_h_cont_kva": 120,
+            "class_f_cont_kva": 110,
+            "class_b_cont_kva": 95.8,
+            "standby_163_27_kva": 132,
+            "standby_150_40_kva": 126
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 132,
+            "class_f_cont_kva": 121,
+            "class_b_cont_kva": 105,
+            "standby_163_27_kva": 145,
+            "standby_150_40_kva": 138
+          },
+          "240": {
+            "class_h_cont_kva": 138,
+            "class_f_cont_kva": 126,
+            "class_b_cont_kva": 110,
+            "standby_163_27_kva": 151,
+            "standby_150_40_kva": 144
+          },
+          "254": {
+            "class_h_cont_kva": 138,
+            "class_f_cont_kva": 126,
+            "class_b_cont_kva": 110,
+            "standby_163_27_kva": 151,
+            "standby_150_40_kva": 144
+          },
+          "266": {
+            "class_h_cont_kva": 144,
+            "class_f_cont_kva": 132,
+            "class_b_cont_kva": 115,
+            "standby_163_27_kva": 158,
+            "standby_150_40_kva": 151
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 250 MA4",
+      "series": "MXB-E",
+      "frame": 250,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 288,
+      "class_f_cont_kva": 263,
+      "class_b_cont_kva": 230,
+      "standby_kva": 302,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 316,
+      "efficiency_pct_class_h_full_load": 92.9,
+      "inertia_kgm2": 1.89,
+      "weight_kg_b3": 599,
+      "kw_class_h_cont": 230.4,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 230,
+          "class_f_cont_kva": 211,
+          "class_b_cont_kva": 184,
+          "standby_163_27_kva": 253,
+          "standby_150_40_kva": 242
+        },
+        "416": {
+          "class_h_cont_kva": 249,
+          "class_f_cont_kva": 228,
+          "class_b_cont_kva": 199,
+          "standby_163_27_kva": 274,
+          "standby_150_40_kva": 262
+        },
+        "440": {
+          "class_h_cont_kva": 264,
+          "class_f_cont_kva": 242,
+          "class_b_cont_kva": 211,
+          "standby_163_27_kva": 290,
+          "standby_150_40_kva": 277
+        },
+        "460": {
+          "class_h_cont_kva": 276,
+          "class_f_cont_kva": 253,
+          "class_b_cont_kva": 220,
+          "standby_163_27_kva": 303,
+          "standby_150_40_kva": 289
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 115,
+            "class_f_cont_kva": 105,
+            "class_b_cont_kva": 92,
+            "standby_163_27_kva": 127,
+            "standby_150_40_kva": 121
+          },
+          "208": {
+            "class_h_cont_kva": 125,
+            "class_f_cont_kva": 114,
+            "class_b_cont_kva": 99.7,
+            "standby_163_27_kva": 137,
+            "standby_150_40_kva": 131
+          },
+          "220": {
+            "class_h_cont_kva": 132,
+            "class_f_cont_kva": 121,
+            "class_b_cont_kva": 105,
+            "standby_163_27_kva": 145,
+            "standby_150_40_kva": 138
+          },
+          "230": {
+            "class_h_cont_kva": 138,
+            "class_f_cont_kva": 126,
+            "class_b_cont_kva": 110,
+            "standby_163_27_kva": 152,
+            "standby_150_40_kva": 146
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 151,
+            "class_f_cont_kva": 139,
+            "class_b_cont_kva": 121,
+            "standby_163_27_kva": 166,
+            "standby_150_40_kva": 159
+          },
+          "240": {
+            "class_h_cont_kva": 158,
+            "class_f_cont_kva": 145,
+            "class_b_cont_kva": 127,
+            "standby_163_27_kva": 174,
+            "standby_150_40_kva": 166
+          },
+          "254": {
+            "class_h_cont_kva": 158,
+            "class_f_cont_kva": 145,
+            "class_b_cont_kva": 127,
+            "standby_163_27_kva": 174,
+            "standby_150_40_kva": 166
+          },
+          "266": {
+            "class_h_cont_kva": 166,
+            "class_f_cont_kva": 152,
+            "class_b_cont_kva": 133,
+            "standby_163_27_kva": 182,
+            "standby_150_40_kva": 174
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 250 MB4",
+      "series": "MXB-E",
+      "frame": 250,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 313,
+      "class_f_cont_kva": 286,
+      "class_b_cont_kva": 250,
+      "standby_kva": 328,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 344,
+      "efficiency_pct_class_h_full_load": 93.4,
+      "inertia_kgm2": 2.09,
+      "weight_kg_b3": 652,
+      "kw_class_h_cont": 250.4,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 250,
+          "class_f_cont_kva": 229,
+          "class_b_cont_kva": 200,
+          "standby_163_27_kva": 275,
+          "standby_150_40_kva": 263
+        },
+        "416": {
+          "class_h_cont_kva": 271,
+          "class_f_cont_kva": 248,
+          "class_b_cont_kva": 217,
+          "standby_163_27_kva": 298,
+          "standby_150_40_kva": 284
+        },
+        "440": {
+          "class_h_cont_kva": 287,
+          "class_f_cont_kva": 263,
+          "class_b_cont_kva": 229,
+          "standby_163_27_kva": 315,
+          "standby_150_40_kva": 301
+        },
+        "460": {
+          "class_h_cont_kva": 300,
+          "class_f_cont_kva": 275,
+          "class_b_cont_kva": 240,
+          "standby_163_27_kva": 329,
+          "standby_150_40_kva": 315
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 125,
+            "class_f_cont_kva": 115,
+            "class_b_cont_kva": 100,
+            "standby_163_27_kva": 138,
+            "standby_150_40_kva": 131
+          },
+          "208": {
+            "class_h_cont_kva": 135,
+            "class_f_cont_kva": 124,
+            "class_b_cont_kva": 108,
+            "standby_163_27_kva": 149,
+            "standby_150_40_kva": 142
+          },
+          "220": {
+            "class_h_cont_kva": 143,
+            "class_f_cont_kva": 131,
+            "class_b_cont_kva": 115,
+            "standby_163_27_kva": 158,
+            "standby_150_40_kva": 150
+          },
+          "230": {
+            "class_h_cont_kva": 150,
+            "class_f_cont_kva": 137,
+            "class_b_cont_kva": 120,
+            "standby_163_27_kva": 165,
+            "standby_150_40_kva": 157
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 164,
+            "class_f_cont_kva": 151,
+            "class_b_cont_kva": 132,
+            "standby_163_27_kva": 181,
+            "standby_150_40_kva": 173
+          },
+          "240": {
+            "class_h_cont_kva": 172,
+            "class_f_cont_kva": 158,
+            "class_b_cont_kva": 138,
+            "standby_163_27_kva": 189,
+            "standby_150_40_kva": 181
+          },
+          "254": {
+            "class_h_cont_kva": 172,
+            "class_f_cont_kva": 158,
+            "class_b_cont_kva": 138,
+            "standby_163_27_kva": 189,
+            "standby_150_40_kva": 181
+          },
+          "266": {
+            "class_h_cont_kva": 180,
+            "class_f_cont_kva": 165,
+            "class_b_cont_kva": 144,
+            "standby_163_27_kva": 198,
+            "standby_150_40_kva": 189
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 250 LA4",
+      "series": "MXB-E",
+      "frame": 250,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 344,
+      "class_f_cont_kva": 315,
+      "class_b_cont_kva": 275,
+      "standby_kva": 361,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 378,
+      "efficiency_pct_class_h_full_load": 93.5,
+      "inertia_kgm2": 2.56,
+      "weight_kg_b3": 780,
+      "kw_class_h_cont": 275.2,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 275,
+          "class_f_cont_kva": 252,
+          "class_b_cont_kva": 220,
+          "standby_163_27_kva": 303,
+          "standby_150_40_kva": 289
+        },
+        "416": {
+          "class_h_cont_kva": 298,
+          "class_f_cont_kva": 273,
+          "class_b_cont_kva": 238,
+          "standby_163_27_kva": 328,
+          "standby_150_40_kva": 313
+        },
+        "440": {
+          "class_h_cont_kva": 315,
+          "class_f_cont_kva": 289,
+          "class_b_cont_kva": 252,
+          "standby_163_27_kva": 347,
+          "standby_150_40_kva": 331
+        },
+        "460": {
+          "class_h_cont_kva": 329,
+          "class_f_cont_kva": 302,
+          "class_b_cont_kva": 264,
+          "standby_163_27_kva": 362,
+          "standby_150_40_kva": 346
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 124,
+            "class_f_cont_kva": 113,
+            "class_b_cont_kva": 99,
+            "standby_163_27_kva": 136,
+            "standby_150_40_kva": 130
+          },
+          "208": {
+            "class_h_cont_kva": 134,
+            "class_f_cont_kva": 123,
+            "class_b_cont_kva": 107,
+            "standby_163_27_kva": 148,
+            "standby_150_40_kva": 141
+          },
+          "220": {
+            "class_h_cont_kva": 142,
+            "class_f_cont_kva": 130,
+            "class_b_cont_kva": 113,
+            "standby_163_27_kva": 156,
+            "standby_150_40_kva": 149
+          },
+          "230": {
+            "class_h_cont_kva": 148,
+            "class_f_cont_kva": 136,
+            "class_b_cont_kva": 119,
+            "standby_163_27_kva": 163,
+            "standby_150_40_kva": 156
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 164,
+            "class_f_cont_kva": 151,
+            "class_b_cont_kva": 132,
+            "standby_163_27_kva": 181,
+            "standby_150_40_kva": 173
+          },
+          "240": {
+            "class_h_cont_kva": 172,
+            "class_f_cont_kva": 158,
+            "class_b_cont_kva": 138,
+            "standby_163_27_kva": 189,
+            "standby_150_40_kva": 181
+          },
+          "254": {
+            "class_h_cont_kva": 172,
+            "class_f_cont_kva": 158,
+            "class_b_cont_kva": 138,
+            "standby_163_27_kva": 189,
+            "standby_150_40_kva": 181
+          },
+          "266": {
+            "class_h_cont_kva": 180,
+            "class_f_cont_kva": 165,
+            "class_b_cont_kva": 144,
+            "standby_163_27_kva": 198,
+            "standby_150_40_kva": 189
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MXB-E 250 LB4",
+      "series": "MXB-E",
+      "frame": 250,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 375,
+      "class_f_cont_kva": 344,
+      "class_b_cont_kva": 300,
+      "standby_kva": 394,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 413,
+      "efficiency_pct_class_h_full_load": 93.9,
+      "inertia_kgm2": 2.56,
+      "weight_kg_b3": 783,
+      "kw_class_h_cont": 300,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 300,
+          "class_f_cont_kva": 275,
+          "class_b_cont_kva": 240,
+          "standby_163_27_kva": 330,
+          "standby_150_40_kva": 315
+        },
+        "416": {
+          "class_h_cont_kva": 325,
+          "class_f_cont_kva": 298,
+          "class_b_cont_kva": 260,
+          "standby_163_27_kva": 356,
+          "standby_150_40_kva": 341
+        },
+        "440": {
+          "class_h_cont_kva": 344,
+          "class_f_cont_kva": 315,
+          "class_b_cont_kva": 275,
+          "standby_163_27_kva": 378,
+          "standby_150_40_kva": 361
+        },
+        "460": {
+          "class_h_cont_kva": 359,
+          "class_f_cont_kva": 329,
+          "class_b_cont_kva": 288,
+          "standby_163_27_kva": 395,
+          "standby_150_40_kva": 377
+        }
+      },
+      "single_phase": {
+        "note": "Single-phase output of the 12-lead three-phase machine (catalogue pp.21, 23), kVA at pf 0.8, 40 C.",
+        "parallel_connection": {
+          "190": {
+            "class_h_cont_kva": 135,
+            "class_f_cont_kva": 124,
+            "class_b_cont_kva": 108,
+            "standby_163_27_kva": 149,
+            "standby_150_40_kva": 142
+          },
+          "208": {
+            "class_h_cont_kva": 146,
+            "class_f_cont_kva": 134,
+            "class_b_cont_kva": 117,
+            "standby_163_27_kva": 161,
+            "standby_150_40_kva": 154
+          },
+          "220": {
+            "class_h_cont_kva": 155,
+            "class_f_cont_kva": 142,
+            "class_b_cont_kva": 124,
+            "standby_163_27_kva": 170,
+            "standby_150_40_kva": 162
+          },
+          "230": {
+            "class_h_cont_kva": 162,
+            "class_f_cont_kva": 148,
+            "class_b_cont_kva": 129,
+            "standby_163_27_kva": 178,
+            "standby_150_40_kva": 170
+          }
+        },
+        "zigzag_connection": {
+          "220": {
+            "class_h_cont_kva": 179,
+            "class_f_cont_kva": 164,
+            "class_b_cont_kva": 144,
+            "standby_163_27_kva": 197,
+            "standby_150_40_kva": 188
+          },
+          "240": {
+            "class_h_cont_kva": 188,
+            "class_f_cont_kva": 172,
+            "class_b_cont_kva": 150,
+            "standby_163_27_kva": 206,
+            "standby_150_40_kva": 197
+          },
+          "254": {
+            "class_h_cont_kva": 188,
+            "class_f_cont_kva": 172,
+            "class_b_cont_kva": 150,
+            "standby_163_27_kva": 206,
+            "standby_150_40_kva": 197
+          },
+          "266": {
+            "class_h_cont_kva": 196,
+            "class_f_cont_kva": 180,
+            "class_b_cont_kva": 157,
+            "standby_163_27_kva": 216,
+            "standby_150_40_kva": 206
+          }
+        }
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 315 SB4",
+      "series": "MJB",
+      "frame": 315,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 425,
+      "class_f_cont_kva": 389,
+      "class_b_cont_kva": 340,
+      "standby_kva": 450,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 467,
+      "efficiency_pct_class_h_full_load": 94,
+      "inertia_kgm2": 4.25,
+      "weight_kg_b3": 920,
+      "kw_class_h_cont": 340,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 360,
+          "class_f_cont_kva": 330,
+          "class_b_cont_kva": 288,
+          "standby_163_27_kva": 396,
+          "standby_150_40_kva": 382
+        },
+        "416": {
+          "class_h_cont_kva": 370,
+          "class_f_cont_kva": 339,
+          "class_b_cont_kva": 296,
+          "standby_163_27_kva": 407,
+          "standby_150_40_kva": 392
+        },
+        "440": {
+          "class_h_cont_kva": 400,
+          "class_f_cont_kva": 367,
+          "class_b_cont_kva": 320,
+          "standby_163_27_kva": 440,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 420,
+          "class_f_cont_kva": 385,
+          "class_b_cont_kva": 336,
+          "standby_163_27_kva": 462,
+          "standby_150_40_kva": 445
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 440 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. Ed. 10/2020 of the same catalogue lists this model as 6 leads; Ed. 09/2021 (used here) says 12. Confirm on the nameplate. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 315 MA4",
+      "series": "MJB",
+      "frame": 315,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 500,
+      "class_f_cont_kva": 458,
+      "class_b_cont_kva": 400,
+      "standby_kva": 530,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 550,
+      "efficiency_pct_class_h_full_load": 94.2,
+      "inertia_kgm2": 4.8,
+      "weight_kg_b3": 1060,
+      "kw_class_h_cont": 400,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 420,
+          "class_f_cont_kva": 385,
+          "class_b_cont_kva": 336,
+          "standby_163_27_kva": 462,
+          "standby_150_40_kva": 445
+        },
+        "416": {
+          "class_h_cont_kva": 430,
+          "class_f_cont_kva": 394,
+          "class_b_cont_kva": 344,
+          "standby_163_27_kva": 473,
+          "standby_150_40_kva": 456
+        },
+        "440": {
+          "class_h_cont_kva": 470,
+          "class_f_cont_kva": 431,
+          "class_b_cont_kva": 376,
+          "standby_163_27_kva": 517,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 490,
+          "class_f_cont_kva": 449,
+          "class_b_cont_kva": 392,
+          "standby_163_27_kva": 539,
+          "standby_150_40_kva": 519
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 517 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. Ed. 10/2020 of the same catalogue lists this model as 6 leads; Ed. 09/2021 (used here) says 12. Confirm on the nameplate. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 315 MB4",
+      "series": "MJB",
+      "frame": 315,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 550,
+      "class_f_cont_kva": 504,
+      "class_b_cont_kva": 440,
+      "standby_kva": 583,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 605,
+      "efficiency_pct_class_h_full_load": 94.8,
+      "inertia_kgm2": 5.68,
+      "weight_kg_b3": 1200,
+      "kw_class_h_cont": 440,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 460,
+          "class_f_cont_kva": 422,
+          "class_b_cont_kva": 368,
+          "standby_163_27_kva": 506,
+          "standby_150_40_kva": 488
+        },
+        "416": {
+          "class_h_cont_kva": 480,
+          "class_f_cont_kva": 440,
+          "class_b_cont_kva": 384,
+          "standby_163_27_kva": 528,
+          "standby_150_40_kva": 509
+        },
+        "440": {
+          "class_h_cont_kva": 520,
+          "class_f_cont_kva": 477,
+          "class_b_cont_kva": 416,
+          "standby_163_27_kva": 572,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 540,
+          "class_f_cont_kva": 495,
+          "class_b_cont_kva": 432,
+          "standby_163_27_kva": 594,
+          "standby_150_40_kva": 572
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 572 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. Ed. 10/2020 of the same catalogue lists this model as 6 leads; Ed. 09/2021 (used here) says 12. Confirm on the nameplate. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 355 SA4",
+      "series": "MJB",
+      "frame": 355,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 625,
+      "class_f_cont_kva": 573,
+      "class_b_cont_kva": 500,
+      "standby_kva": 662,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 687,
+      "efficiency_pct_class_h_full_load": 94.5,
+      "inertia_kgm2": 7.97,
+      "weight_kg_b3": 1250,
+      "kw_class_h_cont": 500,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 510,
+          "class_f_cont_kva": 467,
+          "class_b_cont_kva": 408,
+          "standby_163_27_kva": 561,
+          "standby_150_40_kva": 541
+        },
+        "416": {
+          "class_h_cont_kva": 540,
+          "class_f_cont_kva": 495,
+          "class_b_cont_kva": 432,
+          "standby_163_27_kva": 594,
+          "standby_150_40_kva": 572
+        },
+        "440": {
+          "class_h_cont_kva": 570,
+          "class_f_cont_kva": 522,
+          "class_b_cont_kva": 456,
+          "standby_163_27_kva": 627,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 610,
+          "class_f_cont_kva": 559,
+          "class_b_cont_kva": 488,
+          "standby_163_27_kva": 671,
+          "standby_150_40_kva": 647
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 627 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. Ed. 10/2020 of the same catalogue lists this model as 6 leads; Ed. 09/2021 (used here) says 12. Confirm on the nameplate. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 355 SB4",
+      "series": "MJB",
+      "frame": 355,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 695,
+      "class_f_cont_kva": 637,
+      "class_b_cont_kva": 556,
+      "standby_kva": 736,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 764,
+      "efficiency_pct_class_h_full_load": 95.1,
+      "inertia_kgm2": 9.29,
+      "weight_kg_b3": 1550,
+      "kw_class_h_cont": 556,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 600,
+          "class_f_cont_kva": 550,
+          "class_b_cont_kva": 480,
+          "standby_163_27_kva": 660,
+          "standby_150_40_kva": 636
+        },
+        "416": {
+          "class_h_cont_kva": 645,
+          "class_f_cont_kva": 591,
+          "class_b_cont_kva": 516,
+          "standby_163_27_kva": 710,
+          "standby_150_40_kva": 684
+        },
+        "440": {
+          "class_h_cont_kva": 665,
+          "class_f_cont_kva": 610,
+          "class_b_cont_kva": 532,
+          "standby_163_27_kva": 732,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 685,
+          "class_f_cont_kva": 628,
+          "class_b_cont_kva": 548,
+          "standby_163_27_kva": 754,
+          "standby_150_40_kva": 726
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 732 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. Ed. 10/2020 of the same catalogue lists this model as 6 leads; Ed. 09/2021 (used here) says 12. Confirm on the nameplate. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 355 MA4",
+      "series": "MJB",
+      "frame": 355,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 825,
+      "class_f_cont_kva": 756,
+      "class_b_cont_kva": 660,
+      "standby_kva": 874,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 907,
+      "efficiency_pct_class_h_full_load": 95.1,
+      "inertia_kgm2": 11.7,
+      "weight_kg_b3": 1800,
+      "kw_class_h_cont": 660,
+      "leads": 12,
+      "winding_note": "12 leads, reconnectable (winding code M0): 60 Hz series star 380*/416/440/460/480 V; series delta 220*-277 V; parallel star 190*/208/220/230/240 V; zig-zag (1-ph) 220*/240/254/266 V. *not available on MJB 400.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 700,
+          "class_f_cont_kva": 642,
+          "class_b_cont_kva": 560,
+          "standby_163_27_kva": 770,
+          "standby_150_40_kva": 742
+        },
+        "416": {
+          "class_h_cont_kva": 740,
+          "class_f_cont_kva": 678,
+          "class_b_cont_kva": 592,
+          "standby_163_27_kva": 814,
+          "standby_150_40_kva": 784
+        },
+        "440": {
+          "class_h_cont_kva": 775,
+          "class_f_cont_kva": 710,
+          "class_b_cont_kva": 620,
+          "standby_163_27_kva": 853,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 805,
+          "class_f_cont_kva": 738,
+          "class_b_cont_kva": 644,
+          "standby_163_27_kva": 886,
+          "standby_150_40_kva": 853
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 853 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. Ed. 10/2020 of the same catalogue lists this model as 6 leads; Ed. 09/2021 (used here) says 12. Confirm on the nameplate. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 355 MB4",
+      "series": "MJB",
+      "frame": 355,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 960,
+      "class_f_cont_kva": 880,
+      "class_b_cont_kva": 768,
+      "standby_kva": 1020,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 1056,
+      "efficiency_pct_class_h_full_load": 95.3,
+      "inertia_kgm2": 13.1,
+      "weight_kg_b3": 2050,
+      "kw_class_h_cont": 768,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 800,
+          "class_f_cont_kva": 733,
+          "class_b_cont_kva": 640,
+          "standby_163_27_kva": 880,
+          "standby_150_40_kva": 848
+        },
+        "416": {
+          "class_h_cont_kva": 880,
+          "class_f_cont_kva": 807,
+          "class_b_cont_kva": 704,
+          "standby_163_27_kva": 968,
+          "standby_150_40_kva": 933
+        },
+        "440": {
+          "class_h_cont_kva": 920,
+          "class_f_cont_kva": 843,
+          "class_b_cont_kva": 736,
+          "standby_163_27_kva": 1012,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 950,
+          "class_f_cont_kva": 871,
+          "class_b_cont_kva": 760,
+          "standby_163_27_kva": 1045,
+          "standby_150_40_kva": 1007
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 1012 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 400 MA4",
+      "series": "MJB",
+      "frame": 400,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 1175,
+      "class_f_cont_kva": 1077,
+      "class_b_cont_kva": 940,
+      "standby_kva": 1245,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 1300,
+      "efficiency_pct_class_h_full_load": 95.7,
+      "inertia_kgm2": 16.3,
+      "weight_kg_b3": 2250,
+      "kw_class_h_cont": 940,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 930,
+          "class_f_cont_kva": 852,
+          "class_b_cont_kva": 744,
+          "standby_163_27_kva": 1023,
+          "standby_150_40_kva": 986
+        },
+        "416": {
+          "class_h_cont_kva": 1070,
+          "class_f_cont_kva": 981,
+          "class_b_cont_kva": 856,
+          "standby_163_27_kva": 1177,
+          "standby_150_40_kva": 1134
+        },
+        "440": {
+          "class_h_cont_kva": 1120,
+          "class_f_cont_kva": 1027,
+          "class_b_cont_kva": 896,
+          "standby_163_27_kva": 1232,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 1120,
+          "class_f_cont_kva": 1027,
+          "class_b_cont_kva": 896,
+          "standby_163_27_kva": 1232,
+          "standby_150_40_kva": 1187
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 1232 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 400 MB4",
+      "series": "MJB",
+      "frame": 400,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 1320,
+      "class_f_cont_kva": 1210,
+      "class_b_cont_kva": 1055,
+      "standby_kva": 1400,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 1450,
+      "efficiency_pct_class_h_full_load": 95.7,
+      "inertia_kgm2": 17,
+      "weight_kg_b3": 2300,
+      "kw_class_h_cont": 1056,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 1020,
+          "class_f_cont_kva": 935,
+          "class_b_cont_kva": 816,
+          "standby_163_27_kva": 1122,
+          "standby_150_40_kva": 1081
+        },
+        "416": {
+          "class_h_cont_kva": 1200,
+          "class_f_cont_kva": 1100,
+          "class_b_cont_kva": 960,
+          "standby_163_27_kva": 1320,
+          "standby_150_40_kva": 1272
+        },
+        "440": {
+          "class_h_cont_kva": 1250,
+          "class_f_cont_kva": 1146,
+          "class_b_cont_kva": 1000,
+          "standby_163_27_kva": 1375,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 1250,
+          "class_f_cont_kva": 1146,
+          "class_b_cont_kva": 1000,
+          "standby_163_27_kva": 1375,
+          "standby_150_40_kva": 1325
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 1375 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 400 LA4",
+      "series": "MJB",
+      "frame": 400,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 1420,
+      "class_f_cont_kva": 1300,
+      "class_b_cont_kva": 1135,
+      "standby_kva": 1500,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 1560,
+      "efficiency_pct_class_h_full_load": 96,
+      "inertia_kgm2": 19.3,
+      "weight_kg_b3": 2550,
+      "kw_class_h_cont": 1136,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 1150,
+          "class_f_cont_kva": 1050,
+          "class_b_cont_kva": 920,
+          "standby_163_27_kva": 1265,
+          "standby_150_40_kva": 1220
+        },
+        "416": {
+          "class_h_cont_kva": 1320,
+          "class_f_cont_kva": 1210,
+          "class_b_cont_kva": 1050,
+          "standby_163_27_kva": 1450,
+          "standby_150_40_kva": 1400
+        },
+        "440": {
+          "class_h_cont_kva": 1370,
+          "class_f_cont_kva": 1250,
+          "class_b_cont_kva": 1100,
+          "standby_163_27_kva": 1500,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 1400,
+          "class_f_cont_kva": 1280,
+          "class_b_cont_kva": 1120,
+          "standby_163_27_kva": 1540,
+          "standby_150_40_kva": 1480
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 1500 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 400 LB4",
+      "series": "MJB",
+      "frame": 400,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 1625,
+      "class_f_cont_kva": 1490,
+      "class_b_cont_kva": 1300,
+      "standby_kva": 1720,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 1790,
+      "efficiency_pct_class_h_full_load": 96.3,
+      "inertia_kgm2": 22.5,
+      "weight_kg_b3": 2800,
+      "kw_class_h_cont": 1300,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 1300,
+          "class_f_cont_kva": 1190,
+          "class_b_cont_kva": 1040,
+          "standby_163_27_kva": 1430,
+          "standby_150_40_kva": 1380
+        },
+        "416": {
+          "class_h_cont_kva": 1450,
+          "class_f_cont_kva": 1330,
+          "class_b_cont_kva": 1160,
+          "standby_163_27_kva": 1595,
+          "standby_150_40_kva": 1540
+        },
+        "440": {
+          "class_h_cont_kva": 1520,
+          "class_f_cont_kva": 1400,
+          "class_b_cont_kva": 1220,
+          "standby_163_27_kva": 1670,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 1560,
+          "class_f_cont_kva": 1430,
+          "class_b_cont_kva": 1250,
+          "standby_163_27_kva": 1700,
+          "standby_150_40_kva": 1655
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 1670 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 450 MB4",
+      "series": "MJB",
+      "frame": 450,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 1800,
+      "class_f_cont_kva": 1650,
+      "class_b_cont_kva": 1440,
+      "standby_kva": 1900,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 1980,
+      "efficiency_pct_class_h_full_load": 96.3,
+      "inertia_kgm2": 29,
+      "weight_kg_b3": 3200,
+      "kw_class_h_cont": 1440,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 1460,
+          "class_f_cont_kva": 1340,
+          "class_b_cont_kva": 1170,
+          "standby_163_27_kva": 1610,
+          "standby_150_40_kva": 1550
+        },
+        "416": {
+          "class_h_cont_kva": 1620,
+          "class_f_cont_kva": 1480,
+          "class_b_cont_kva": 1300,
+          "standby_163_27_kva": 1780,
+          "standby_150_40_kva": 1720
+        },
+        "440": {
+          "class_h_cont_kva": 1720,
+          "class_f_cont_kva": 1580,
+          "class_b_cont_kva": 1380,
+          "standby_163_27_kva": 1890,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 1800,
+          "class_f_cont_kva": 1650,
+          "class_b_cont_kva": 1440,
+          "standby_163_27_kva": 1980,
+          "standby_150_40_kva": 1910
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 1890 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 450 LA4",
+      "series": "MJB",
+      "frame": 450,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 1980,
+      "class_f_cont_kva": 1815,
+      "class_b_cont_kva": 1580,
+      "standby_kva": 2100,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 2180,
+      "efficiency_pct_class_h_full_load": 96.3,
+      "inertia_kgm2": 34,
+      "weight_kg_b3": 3600,
+      "kw_class_h_cont": 1584,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 1600,
+          "class_f_cont_kva": 1470,
+          "class_b_cont_kva": 1280,
+          "standby_163_27_kva": 1760,
+          "standby_150_40_kva": 1700
+        },
+        "416": {
+          "class_h_cont_kva": 1740,
+          "class_f_cont_kva": 1590,
+          "class_b_cont_kva": 1390,
+          "standby_163_27_kva": 1910,
+          "standby_150_40_kva": 1840
+        },
+        "440": {
+          "class_h_cont_kva": 1840,
+          "class_f_cont_kva": 1690,
+          "class_b_cont_kva": 1470,
+          "standby_163_27_kva": 2020,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 1920,
+          "class_f_cont_kva": 1760,
+          "class_b_cont_kva": 1540,
+          "standby_163_27_kva": 2110,
+          "standby_150_40_kva": 2040
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 2020 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 450 LB4",
+      "series": "MJB",
+      "frame": 450,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 2250,
+      "class_f_cont_kva": 2062,
+      "class_b_cont_kva": 1800,
+      "standby_kva": 2385,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 2475,
+      "efficiency_pct_class_h_full_load": 96.4,
+      "inertia_kgm2": 38,
+      "weight_kg_b3": 4000,
+      "kw_class_h_cont": 1800,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 1700,
+          "class_f_cont_kva": 1560,
+          "class_b_cont_kva": 1360,
+          "standby_163_27_kva": 1870,
+          "standby_150_40_kva": 1800
+        },
+        "416": {
+          "class_h_cont_kva": 2000,
+          "class_f_cont_kva": 1830,
+          "class_b_cont_kva": 1600,
+          "standby_163_27_kva": 2200,
+          "standby_150_40_kva": 2120
+        },
+        "440": {
+          "class_h_cont_kva": 2100,
+          "class_f_cont_kva": 1920,
+          "class_b_cont_kva": 1680,
+          "standby_163_27_kva": 2310,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 2200,
+          "class_f_cont_kva": 2020,
+          "class_b_cont_kva": 1760,
+          "standby_163_27_kva": 2420,
+          "standby_150_40_kva": 2330
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 2310 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 500 SC4",
+      "series": "MJB",
+      "frame": 500,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 2400,
+      "class_f_cont_kva": 2200,
+      "class_b_cont_kva": 1920,
+      "standby_kva": 2540,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 2640,
+      "efficiency_pct_class_h_full_load": 96.5,
+      "inertia_kgm2": 44.2,
+      "weight_kg_b3": 4000,
+      "kw_class_h_cont": 1920,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 1900,
+          "class_f_cont_kva": 1740,
+          "class_b_cont_kva": 1520,
+          "standby_163_27_kva": 2090,
+          "standby_150_40_kva": 2010
+        },
+        "416": {
+          "class_h_cont_kva": 2220,
+          "class_f_cont_kva": 2030,
+          "class_b_cont_kva": 1780,
+          "standby_163_27_kva": 2440,
+          "standby_150_40_kva": 2350
+        },
+        "440": {
+          "class_h_cont_kva": 2280,
+          "class_f_cont_kva": 2090,
+          "class_b_cont_kva": 1820,
+          "standby_163_27_kva": 2510,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 2330,
+          "class_f_cont_kva": 2140,
+          "class_b_cont_kva": 1860,
+          "standby_163_27_kva": 2560,
+          "standby_150_40_kva": 2470
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 2510 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 500 MB4",
+      "series": "MJB",
+      "frame": 500,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 2635,
+      "class_f_cont_kva": 2415,
+      "class_b_cont_kva": 2100,
+      "standby_kva": 2790,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 2900,
+      "efficiency_pct_class_h_full_load": 96.5,
+      "inertia_kgm2": 50,
+      "weight_kg_b3": 4400,
+      "kw_class_h_cont": 2108,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 2150,
+          "class_f_cont_kva": 1970,
+          "class_b_cont_kva": 1720,
+          "standby_163_27_kva": 2370,
+          "standby_150_40_kva": 2280
+        },
+        "416": {
+          "class_h_cont_kva": 2430,
+          "class_f_cont_kva": 2230,
+          "class_b_cont_kva": 1940,
+          "standby_163_27_kva": 2670,
+          "standby_150_40_kva": 2580
+        },
+        "440": {
+          "class_h_cont_kva": 2500,
+          "class_f_cont_kva": 2290,
+          "class_b_cont_kva": 2000,
+          "standby_163_27_kva": 2750,
+          "standby_150_40_kva": null
+        },
+        "460": {
+          "class_h_cont_kva": 2550,
+          "class_f_cont_kva": 2340,
+          "class_b_cont_kva": 2040,
+          "standby_163_27_kva": 2810,
+          "standby_150_40_kva": 2700
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "440 V 150/40 standby printed as 2750 kVA, identical to the 163/27 figure -- a pattern repeated on most MJB rows, likely a catalogue column error; set to null. 208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    },
+    {
+      "manufacturer": "Marelli Motori",
+      "model": "MJB 500 MC4",
+      "series": "MJB",
+      "frame": 500,
+      "poles": 4,
+      "hz": 60,
+      "rpm": 1800,
+      "voltage": "480 V 3-ph (series star / high wye, 277 V L-N)",
+      "ambient_c": 40,
+      "pf": 0.8,
+      "class_h_cont_kva": 2700,
+      "class_f_cont_kva": 2470,
+      "class_b_cont_kva": 2160,
+      "standby_kva": 2860,
+      "standby_basis": "150/40 (150 C rise over 40 C ambient, ISO 8528-3 peak continuous)",
+      "standby_163_27_kva": 2970,
+      "efficiency_pct_class_h_full_load": 96.2,
+      "inertia_kgm2": 54.4,
+      "weight_kg_b3": 4800,
+      "kw_class_h_cont": 2160,
+      "leads": 6,
+      "winding_note": "6 leads (winding code 17-80): 60 Hz star 416/440/460/480 V, delta 240/254/266/277 V. No 208 V or zig-zag single-phase connection on 6-lead machines.",
+      "per_voltage_60hz": {
+        "380": {
+          "class_h_cont_kva": 2190,
+          "class_f_cont_kva": 2000,
+          "class_b_cont_kva": 1750,
+          "standby_163_27_kva": 2400,
+          "standby_150_40_kva": 2320
+        },
+        "416": {
+          "class_h_cont_kva": 2480,
+          "class_f_cont_kva": 2270,
+          "class_b_cont_kva": 2000,
+          "standby_163_27_kva": 2730,
+          "standby_150_40_kva": 2640
+        },
+        "440": {
+          "class_h_cont_kva": 2530,
+          "class_f_cont_kva": 2300,
+          "class_b_cont_kva": 2020,
+          "standby_163_27_kva": 2780,
+          "standby_150_40_kva": 2680
+        },
+        "460": {
+          "class_h_cont_kva": 2650,
+          "class_f_cont_kva": 2400,
+          "class_b_cont_kva": 2100,
+          "standby_163_27_kva": 2900,
+          "standby_150_40_kva": 2800
+        }
+      },
+      "single_phase": {
+        "note": "Catalogue gives no single-phase ratings for MJB frames."
+      },
+      "source_url": "https://www.fornaes.com/media/wujcwsg0/marelli.pdf",
+      "source_official_page": "https://www.marellimotori.com/download/mxb-e_mjb_mjh-generator-series-product-catalogue-power-generation/",
+      "source_doc": "Marelli Motori catalogue COMCATPOW003_B Ed. 09/2021 (MXB-E / MJB / MJH, Power generation), p.16 (480 V), pp.18-19 (380-460 V)",
+      "note": "208/240 V three-phase kVA is not tabulated by Marelli; do not derive it."
+    }
+  ]
+}

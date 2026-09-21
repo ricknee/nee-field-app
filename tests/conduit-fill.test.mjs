@@ -704,6 +704,100 @@ test("Article 430 sizing multipliers", () => {
   eq(M.motSizing(0), null, "nothing in, nothing out");
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+//  TAB 6 — GENERATORS (GeneratorJoe amp charts + manufacturer spec sheets)
+// ══════════════════════════════════════════════════════════════════════════
+const GN = new Function(
+  html.slice(html.indexOf("const GEN_1P_V = ["), html.indexOf("// ── TAB 3: AMPACITY")) +
+  "\nreturn { GEN_1P_V, GEN_3P_V, GEN_MODELS, GEN_MARELLI, genAmps, genRule, genModels, genMarelli };"
+)();
+const a1 = (kw, v) => +GN.genAmps(kw, v, "1").toFixed(1);
+const a3 = (kw, v) => +GN.genAmps(kw, v, "3").toFixed(1);
+
+// Cells read off the supplied PDFs, spread across both ends of each table and
+// across columns — so a changed constant (√3 for 1.73, a dropped 0.8) fails.
+test("single-phase amps match the chart (100% pf)", () => {
+  eq(a1(1, 120), 8.3, "1 kW at 120 V");
+  eq(a1(41, 240), 170.8, "41 kW at 240 V");
+  eq(a1(239, 240), 995.8, "239 kW at 240 V");
+  eq(a1(280, 120), 2333.3, "280 kW at 120 V — last row");
+});
+
+test("three-phase amps match the chart (80% pf, 1.73)", () => {
+  eq(a3(4, 480), 6.0, "4 kW at 480 V — first row");
+  eq(a3(155, 120), 933.3, "155 kW at 120 V — this is the cell that proves 1.73, not √3 (932.2)");
+  eq(a3(165, 450), 264.9, "165 kW at 450 V");
+  eq(a3(500, 208), 1736.9, "500 kW at 208 V");
+  eq(a3(1000, 480), 1505.3, "1000 kW at 480 V");
+  eq(a3(2000, 4160), 347.4, "2000 kW at 4160 V");
+  eq(a3(100, 11000), 6.6, "100 kW at 11 kV");
+  eq(a3(4000, 13800), 209.4, "4000 kW at 13.8 kV — last cell");
+  eq(GN.GEN_3P_V.length, 17, "every voltage column on the chart");
+});
+
+test("rule of thumb: prime is 90% of standby, both ways", () => {
+  eq(GN.genRule(100, "standby").prime, 90, "100 standby → 90 prime");
+  eq(+GN.genRule(90, "prime").standby.toFixed(6), 100, "90 prime → 100 standby");
+  eq(GN.genRule(0, "standby"), null, "nothing in, nothing out");
+});
+
+// ⚠ The real-model list must never invent a prime rating. A standby-only set
+// is skipped on a prime basis, and counted so the screen can say so.
+test("real models: never a prime the spec sheet does not print", () => {
+  for (const m of GN.GEN_MODELS) {
+    if (m[4] != null && !(m[4] <= m[3])) throw new Error(`${m[0]} ${m[1]}: prime ${m[4]} > standby ${m[3]}`);
+  }
+  const r = GN.genModels({ ph:"1", kw:"22", basis:"prime", brand:"" });
+  eq(r.rows.every(m => m[4] >= 22), true, "every prime-basis match has a published prime ≥ 22");
+  eq(r.standbyOnly > 0, true, "and the air-cooled 22 kW units are counted as left out");
+  const s = GN.genModels({ ph:"1", kw:"22", basis:"standby", brand:"Generac" });
+  eq(s.rows.some(m => m[1].startsWith("Guardian 22") && m[2] === "LP"), true, "Guardian 22 LP carries 22 kW standby");
+  eq(s.rows.some(m => m[1].startsWith("Guardian 22") && m[2] === "NG"), false,
+     "…but NOT on natural gas (19.5 kW) — the NG pick is the next size up");
+});
+
+test("real models: nothing over 2× the ask", () => {
+  const r = GN.genModels({ ph:"1", kw:"22", basis:"standby", brand:"" });
+  eq(r.rows.every(m => m[3] >= 22 && m[3] <= 44), true, "22 kW → 22…44 kW only");
+});
+
+test("real models: a three-phase-only set never answers a single-phase job", () => {
+  const r = GN.genModels({ ph:"1", kw:"300", basis:"standby", brand:"" });
+  eq(r.rows.every(m => m[5] === "" || m[5].includes("1")), true, "only 1φ-capable or unlisted");
+  // Cat's sheet reads "3-phase (1-phase not confirmed)" — it must not count as 1φ.
+  const d40 = GN.GEN_MODELS.find(m => m[0] === "Cat" && m[1] === "D40 GC");
+  if (d40) eq(d40[5], "3", "Cat D40 GC is 3φ until 1φ is confirmed");
+});
+
+test("the data block in index.html is what the JSON says", () => {
+  const dir = path.join(ROOT, "docs", "generator-specs");
+  let n = 0;
+  for (const b of ["generac", "cummins", "cat", "kohler"]) {
+    const f = path.join(dir, b + ".json");
+    if (!fs.existsSync(f)) continue;
+    const raw = JSON.parse(fs.readFileSync(f, "utf8"));
+    n += (Array.isArray(raw) ? raw : raw.rows).filter(r => typeof r.standby_kw === "number").length;
+  }
+  eq(GN.GEN_MODELS.length, n, "re-run tools/build-generator-specs.mjs after editing the JSON");
+});
+
+test("Marelli: picks the smallest head, on the chart's pf basis", () => {
+  // 100 kW standby 3φ 480 V → 125 kVA. MXB-E 225 XB4 standby is 105 (too small), SB4 is 131.
+  const h = GN.genMarelli("3", 480, 100, 90);
+  eq(h.standby[0], "MXB-E 225 SB4", "standby 150/40 ≥ 125 kVA");
+  // Prime 90 kW → 112.5 kVA Class H. XB4 is 100 (too small), SB4 is 125.
+  eq(h.prime[0], "MXB-E 225 SB4", "Class H continuous ≥ 112.5 kVA");
+  eq(h.ref, false, "480 V is tabulated");
+});
+
+test("Marelli: an untabulated voltage is labelled, never derived", () => {
+  const h = GN.genMarelli("3", 208, 100, 90);
+  eq(h.ref, true, "208 V three phase answers AT 480 V, flagged");
+  eq(h.key, "3:480", "…from the 480 V column");
+  eq(GN.genMarelli("1", 120, 10, 9).none, true, "1φ 120 V: Marelli tabulates nothing — no stand-in");
+  eq(GN.genMarelli("1", 240, 10, 9).standby[0].startsWith("MXB-E"), true, "1φ 240 V zig-zag is tabulated");
+});
+
 // ── report ──
 console.log("\nAll Charts — Conduit Fill + Grounding (NEC) tests\n" + "-".repeat(48));
 for (const [mark, name] of log) console.log(` ${mark} ${name}`);

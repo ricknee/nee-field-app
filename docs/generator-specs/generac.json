@@ -1,0 +1,1249 @@
+[
+  {
+    "brand": "Generac",
+    "model": "Guardian 10 kW (G007171/G007172)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "LP",
+    "standby_kw": 10,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/10-18kw-guardian-standby-generator-specsheet-en.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 10 kW (G007171/G007172)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "NG",
+    "standby_kw": 9,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/10-18kw-guardian-standby-generator-specsheet-en.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 14 kW (G007223/7224/7225-10)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "LP",
+    "standby_kw": 14,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/10-18kw-guardian-standby-generator-specsheet-en.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 14 kW (G007223/7224/7225-10)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "NG",
+    "standby_kw": 14,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/10-18kw-guardian-standby-generator-specsheet-en.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'; NG equals LP on this sheet (unusual for air-cooled - verify on nameplate)"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 18 kW (G007226/G007228-10)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "LP",
+    "standby_kw": 18,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/10-18kw-guardian-standby-generator-specsheet-en.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 18 kW (G007226/G007228-10)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "NG",
+    "standby_kw": 17,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/10-18kw-guardian-standby-generator-specsheet-en.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 22 kW (G007042/G007043-10/-11)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "LP",
+    "standby_kw": 22,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/20-24kw-guardian-standby-generator-specsheet.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 22 kW (G007042/G007043-10/-11)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "NG",
+    "standby_kw": 19.5,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/20-24kw-guardian-standby-generator-specsheet.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 24 kW (G007209/G007210-10)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "LP",
+    "standby_kw": 24,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/20-24kw-guardian-standby-generator-specsheet.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 24 kW (G007209/G007210-10)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "NG",
+    "standby_kw": 21,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/20-24kw-guardian-standby-generator-specsheet.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 26 kW (G007290/G007291-0)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "LP",
+    "standby_kw": 26,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/g007290-g007291-26kw-guardian-res-standby-generator-specsheet.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "Guardian 26 kW (G007290/G007291-0)",
+    "series": "Guardian (air-cooled)",
+    "fuel": "NG",
+    "standby_kw": 22.5,
+    "prime_kw": null,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/g007290-g007291-26kw-guardian-res-standby-generator-specsheet.pdf",
+    "note": "standby only (no prime rating published); sheet value is 'rated maximum continuous power capacity'"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG022 (RG02224)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "LP",
+    "standby_kw": 22,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; no 277/480 offering"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG022 (RG02224)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "NG",
+    "standby_kw": 22,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; no 277/480 offering"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG027 (RG02724)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "LP",
+    "standby_kw": 27,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; no 277/480 offering"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG027 (RG02724)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "NG",
+    "standby_kw": 25,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; no 277/480 offering"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG032 (RG03224)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "LP",
+    "standby_kw": 32,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG032 (RG03224)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "NG",
+    "standby_kw": 32,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG038 (RG03824)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "LP",
+    "standby_kw": 38,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG038 (RG03824)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "NG",
+    "standby_kw": 38,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/22kw-27kw-32kw-38kw-protector-qs-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG048 (RG04845)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "LP",
+    "standby_kw": 48,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/48kw-protector-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG048 (RG04845)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "NG",
+    "standby_kw": 48,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/48kw-protector-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG060 (RG06045)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "LP",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/48kw-protector-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; RG06024 on the QS sheet lists the same 60 kW"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG060 (RG06045)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "NG",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/48kw-protector-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; RG06024 on the QS sheet lists the same 60 kW"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG080 (RG08045)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "LP",
+    "standby_kw": 75,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/48kw-protector-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; LP is LOWER than NG on this model (75 vs 80 kW)"
+  },
+  {
+    "brand": "Generac",
+    "model": "RG080 (RG08045)",
+    "series": "Protector QS / RG (liquid-cooled gaseous)",
+    "fuel": "NG",
+    "standby_kw": 80,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/48kw-protector-standby-generator-specsheet.pdf",
+    "note": "Emergency Standby Power (ESP) rating only; no prime published; LP is LOWER than NG on this model (75 vs 80 kW)"
+  },
+  {
+    "brand": "Generac",
+    "model": "RD015",
+    "series": "Protector (diesel)",
+    "fuel": "Diesel",
+    "standby_kw": 15,
+    "prime_kw": 12,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/15kw-protector-standby-generator-specsheet-domestic.pdf",
+    "note": "prime published on sheet (80% of standby)"
+  },
+  {
+    "brand": "Generac",
+    "model": "RD020",
+    "series": "Protector (diesel)",
+    "fuel": "Diesel",
+    "standby_kw": 20,
+    "prime_kw": 16,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/15kw-protector-standby-generator-specsheet-domestic.pdf",
+    "note": "prime published on sheet (80% of standby)"
+  },
+  {
+    "brand": "Generac",
+    "model": "RD030",
+    "series": "Protector (diesel)",
+    "fuel": "Diesel",
+    "standby_kw": 30,
+    "prime_kw": 24,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/15kw-protector-standby-generator-specsheet-domestic.pdf",
+    "note": "prime published on sheet (80% of standby)"
+  },
+  {
+    "brand": "Generac",
+    "model": "RD048",
+    "series": "Protector (diesel)",
+    "fuel": "Diesel",
+    "standby_kw": 48,
+    "prime_kw": 38.4,
+    "phase": [
+      "1"
+    ],
+    "voltages": [
+      "120/240 1ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/15kw-protector-standby-generator-specsheet-domestic.pdf",
+    "note": "single-phase only; prime published on sheet (80% of standby)"
+  },
+  {
+    "brand": "Generac",
+    "model": "RD050",
+    "series": "Protector (diesel)",
+    "fuel": "Diesel",
+    "standby_kw": 50,
+    "prime_kw": 40,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://www.generac.com/globalassets/products/residential/standby-generators/spec-sheets/15kw-protector-standby-generator-specsheet-domestic.pdf",
+    "note": "three-phase only; prime published on sheet (80% of standby)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD010NA",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 10,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=ccdd9eb4-37f4-4f99-b876-280e608c0a78",
+    "note": "prime not printed on spec sheet (sheet refers to Prime bulletin 0187510SSB); 120/208 3ph listed as 10 kW/10 kVA"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD020NA",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 20,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=d91e99d6-5217-4bd8-afb4-7149ea6d36a2",
+    "note": "prime not printed on spec sheet (sheet refers to Prime bulletin 0187510SSB)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD030T",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 30,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=aeefefb8-5128-4798-959c-a209180d25e9",
+    "note": "no prime rating on spec sheet"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD050",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 50,
+    "prime_kw": 45,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=dca4a355-a989-4b4d-b119-3a485c60545c",
+    "note": "prime 45 kW/56 kVA printed on sheet (asterisked)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD080",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 80,
+    "prime_kw": 72,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=66bb9565-0fb8-47fa-ba5e-0e46574615f8",
+    "note": "prime printed on sheet (asterisked)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD100",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 100,
+    "prime_kw": 90,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=f1564259-17b3-4c1a-bb9a-1815ce425743",
+    "note": "prime printed on sheet (asterisked)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD150",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 150,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=038406f7-2b78-4351-8bca-daac0a1934a1",
+    "note": "prime not printed on spec sheet (sheet refers to Prime bulletin 0187510SSB); NOTE generac.com product page shows 'kW/kVA Prime: 150/188', which is the standby figure - ignore it"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD200",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 200,
+    "prime_kw": 180,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=6780da3b-9cbf-46eb-9f02-6e781fa71382",
+    "note": "prime printed on sheet (asterisked)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD250",
+    "series": "Industrial diesel (SD)",
+    "fuel": "Diesel",
+    "standby_kw": 250,
+    "prime_kw": 225,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=f00c03d7-74f3-4a42-a05f-721cac8cd5a8",
+    "note": "sheet prints standby as '250 kW, 281 kVA' - kVA is a sheet typo (0.8 pf gives 313)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD300 / MD300",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 300,
+    "prime_kw": 270,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=e644b3bf-2436-4826-a311-28a9b3415c5f",
+    "note": "one sheet covers SD300 & MD300; 120/208 and 120/240 are SD-only"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD400 / MD400",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 400,
+    "prime_kw": 360,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=e7ab7ed9-48fa-49b5-ad46-e8b898645d71",
+    "note": "120/208 and 120/240 are SD-only"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD500 / MD500 (15.2L)",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 500,
+    "prime_kw": 450,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=50061994-dd01-41fc-8bae-be3a10f75a71",
+    "note": "15.2L version; the 18.1L Tier 4 SD500 sheet publishes prime 456 kW instead"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD600 / MD600",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 600,
+    "prime_kw": 540,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=07122222-5451-44d7-b36b-d3412b3fdd48",
+    "note": "120/208 and 120/240 are SD-only"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD750 / MD750",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 750,
+    "prime_kw": 675,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=4932e773-7e42-4d09-85be-d64753378326",
+    "note": "prime printed on sheet"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD1000 / MD1000",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 1000,
+    "prime_kw": null,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=3ed0bdd8-7b2b-4ef7-b1ca-15e41e0816d1",
+    "note": "no prime rating on spec sheet"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD1250 / MD1250",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 1250,
+    "prime_kw": null,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=5be39f50-7e9c-450f-b494-491c6ceb5c53",
+    "note": "no prime rating on spec sheet"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD2250 / MD2250",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 2250,
+    "prime_kw": null,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=54786e7e-3da6-4d06-b5f6-a401eb37b3e9",
+    "note": "prime not printed on spec sheet (sheet refers to Prime bulletin 0187510SSB)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SD3000 / MD3000",
+    "series": "Industrial diesel (SD/MD)",
+    "fuel": "Diesel",
+    "standby_kw": 3000,
+    "prime_kw": null,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=01615783-93a2-4399-8fa1-ff4b266dc494",
+    "note": "no prime rating on spec sheet"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG045",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 45,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=b13a0803-579f-4f27-9b65-05af87620864",
+    "note": "standby only on sheet (no prime published); rating table headed 'Natural Gas/Propane Vapor' (same kW both fuels)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG045",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "LP",
+    "standby_kw": 45,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=b13a0803-579f-4f27-9b65-05af87620864",
+    "note": "standby only on sheet (no prime published); rating table headed 'Natural Gas/Propane Vapor' (same kW both fuels)"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG050NA",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 50,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=3094db93-f76d-4155-b94b-d8cb8cee5624",
+    "note": "standby only on sheet (no prime published); separate NG and Propane columns, both 50 kW"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG050NA",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "LP",
+    "standby_kw": 50,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=3094db93-f76d-4155-b94b-d8cb8cee5624",
+    "note": "standby only on sheet (no prime published); separate NG and Propane columns, both 50 kW"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG060",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=1fe1cea0-e4b9-43c7-89a8-4a7b2acac4d5",
+    "note": "standby only on sheet (no prime published); rating table headed 'Natural Gas/Propane Vapor'"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG060",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "LP",
+    "standby_kw": 60,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=1fe1cea0-e4b9-43c7-89a8-4a7b2acac4d5",
+    "note": "standby only on sheet (no prime published); rating table headed 'Natural Gas/Propane Vapor'"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG080",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 80,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=1e3b9364-d328-477e-94f2-1e0752af51ef",
+    "note": "standby only on sheet (no prime published); sheet lists fuel type Natural Gas only"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG100",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 100,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=3217f6a8-e981-4d33-a9c3-eeb31de94f77",
+    "note": "standby only on sheet (no prime published); fuel type 'Natural Gas, Propane Vapor', single rating table"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG100",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "LP",
+    "standby_kw": 100,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=3217f6a8-e981-4d33-a9c3-eeb31de94f77",
+    "note": "standby only on sheet (no prime published); fuel type 'Natural Gas, Propane Vapor', single rating table"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG150 (8.8L)",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 150,
+    "prime_kw": null,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=360d71ae-c585-4dfe-9d30-41d61414db4a",
+    "note": "standby only on sheet (no prime published); NG only"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG200",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 200,
+    "prime_kw": 180,
+    "phase": [
+      "1",
+      "3"
+    ],
+    "voltages": [
+      "120/240 1ph",
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=633f5365-f837-487f-802e-6ab8f0062c85",
+    "note": "NG only; standby is 'Standby/Demand Response'; prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG300",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 300,
+    "prime_kw": 270,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=93fef8b8-e062-4d9e-9bff-b522ee76c200",
+    "note": "NG only; prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG400",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 400,
+    "prime_kw": 360,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=d14f5755-15b9-407a-997d-660a3f29c484",
+    "note": "NG only; prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG500",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 500,
+    "prime_kw": 450,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=b59ddd5e-b956-44fd-9919-d7a81127606e",
+    "note": "NG only; prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG625",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 625,
+    "prime_kw": null,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=ddbb06c4-c9ec-4cbb-9ae9-b3d03aebf1af",
+    "note": "NG only; standby/demand response only, no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG750",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 750,
+    "prime_kw": null,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "120/208 3ph",
+      "120/240 3ph",
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=7dd51c6e-b169-4841-b8d2-b6d33573aba7",
+    "note": "NG only; standby/demand response only, no prime published"
+  },
+  {
+    "brand": "Generac",
+    "model": "SG1000",
+    "series": "Industrial gaseous (SG)",
+    "fuel": "NG",
+    "standby_kw": 1000,
+    "prime_kw": null,
+    "phase": [
+      "3"
+    ],
+    "voltages": [
+      "277/480 3ph",
+      "346/600 3ph"
+    ],
+    "source_url": "https://legacy.genconnect.generac.com/Media/vwDoc.axd?d=29eb8834-166f-4228-8059-d90dc01390b0",
+    "note": "NG only; standby/demand response only, no prime published"
+  }
+]

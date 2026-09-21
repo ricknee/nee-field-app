@@ -36,7 +36,7 @@ function slice(start, end) {
 const L = new Function(
   slice("const MOT_1P_V = [", "function motRender()") +
   slice("// ── TAB 7: LOAD CALC", "// ── Load Calc: screen ──") +
-  "\nreturn { lcCompute, lcGen, lcLineVA, lcExampleCalc, genModels, genAmps, LC_T220_12, LC_STD_OCPD };"
+  "\nreturn { lcCompute, lcGen, lcLineVA, lcExampleCalc, genModels, genAmps, LC_T220_42A, LC_STD_OCPD };"
 )();
 
 // ── harness ──
@@ -55,7 +55,24 @@ const line = (type, val, o = {}) => ({ desc: o.desc || type, type, qty: o.qty ??
 const calc = (lines, o = {}) => L.lcCompute({ sys: o.sys || "480-3", sqft: o.sqft || "", occ: o.occ || "", lines });
 
 // ══════════════════════════════════════════════════════════════════════════
-test("220.44 — receptacles: first 10 kVA at 100%, the rest at 50%", () => {
+// Every row of Table 220.42(A), read off the owner's 2023 book (page 70-95,
+// photographed 2026-09-21). The first version was typed from recall; it
+// matched, but only a pin keeps it that way.
+test("Table 220.42(A) matches the 2023 book, all 29 rows", () => {
+  const book = {
+    "Automotive facility": 1.5, "Convention center": 1.4, "Courthouse": 1.4, "Dormitory": 1.5,
+    "Exercise center": 1.4, "Fire station": 1.3, "Gymnasium": 1.7, "Health care clinic": 1.6,
+    "Hospital": 1.6, "Hotel / motel": 1.7, "Library": 1.5, "Manufacturing facility": 2.2,
+    "Motion picture theater": 1.6, "Museum": 1.6, "Office": 1.3, "Parking garage": 0.3,
+    "Penitentiary": 1.2, "Performing arts theater": 1.5, "Police station": 1.3, "Post office": 1.6,
+    "Religious facility": 2.2, "Restaurant": 1.5, "Retail": 1.9, "School / university": 1.5,
+    "Sports arena": 1.5, "Town hall": 1.4, "Transportation": 1.2, "Warehouse": 1.2, "Workshop": 1.7,
+  };
+  eq(L.LC_T220_42A.length, 29, "29 occupancies");
+  for (const [n, u] of L.LC_T220_42A) eq(u, book[n], n);
+});
+
+test("Table 220.47 — receptacles: first 10 kVA at 100%, the rest at 50%", () => {
   eq(calc([line("recep", 21900)]).recepD, 15950, "21,900 VA → 15,950");
   eq(calc([line("recep", 8000)]).recepD, 8000, "under 10 kVA is all counted");
   eq(calc([line("recep", 50, { unit: "rec" })]).sum.recep, 9000, "50 receptacles × 180 VA (220.14(I))");
@@ -66,13 +83,29 @@ test("the receptacle factor is NOT applied to motors (the Revit trap)", () => {
   eq(r1(r.total), r1(188794 * 1.25), "one motor load: 100% + 25% largest — never 10k + 50%");
 });
 
-test("lighting: 125%, with the 220.12 floor only ever raising it", () => {
+// ⚠ The table's note: its unit loads ALREADY include the 125%. The first
+// version multiplied the area figure by 1.25 again.
+test("lighting: fixtures at 125%, floored by Table 220.42(A) taken AS-IS", () => {
   eq(calc([line("light", 8000)]).lightD, 10000, "8,000 VA × 125%");
-  const office = L.LC_T220_12.find(o => o[0] === "Office");
   const r = calc([line("light", 5000)], { sqft: "10000", occ: "Office" });
-  eq(r1(r.lightD), r1(10000 * office[1] * 1.25), "floor area sets it when larger");
-  const r2 = calc([line("light", 50000)], { sqft: "10000", occ: "Office" });
-  eq(r2.lightD, 62500, "actual fixtures win when larger");
+  eq(r1(r.lightD), 13000, "10,000 ft² × 1.3 = 13,000 — NOT × 1.25 again (16,250)");
+  eq(r.lightFromArea, true, "floor area set it");
+  const r2 = calc([line("light", 11000)], { sqft: "10000", occ: "Office" });
+  eq(r2.lightD, 13750, "11,000 × 125% = 13,750 beats the 13,000 area figure");
+});
+
+test("220.43 — an office's receptacles are never below 1 VA/ft²", () => {
+  const r = calc([line("recep", 12000)], { sqft: "20000", occ: "Office" });
+  eq(r.recepD, 20000, "Table 220.47 gives 11,000; 20,000 ft² × 1 VA wins");
+  const w = calc([line("recep", 12000)], { sqft: "20000", occ: "Workshop" });
+  eq(w.recepD, 11000, "…and only for offices");
+});
+
+test("220.57 — each EV charger at 7,200 VA minimum, then 125% (625.42)", () => {
+  const r = calc([line("ev", 5000, { qty: "2" })]);
+  eq(r.sum.ev, 14400, "two 5 kVA chargers counted at 7,200 each");
+  eq(r.total, 18000, "× 125%");
+  eq(calc([line("ev", 11500)]).total, 14375, "a larger nameplate is used as-is");
 });
 
 test("motors: HP uses the TABLE FLC at the rated column for the system voltage", () => {
@@ -103,7 +136,9 @@ test("220.60 — only the larger of heating and cooling counts; fans count eithe
   eq(r.hvacD, 32000, "cooling 30k + fans 2k; the 20k of heat drops out");
   const h = calc([line("cool", 10000), line("heat", 40000)]);
   eq(h.hvacD, 40000, "heating wins");
-  eq(h.big, null, "…and a compressor on the side that lost is not the largest motor");
+  // 220.60, last sentence: the 125% stays on the larger motor / A/C load
+  // even when the A/C is the noncoincident load that was dropped.
+  eq(h.bigD, 2500, "…but the dropped compressor still carries the largest-motor 25%");
 });
 
 test("Table 220.56 — kitchen units, never below the two largest together", () => {

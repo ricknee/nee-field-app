@@ -28998,27 +28998,39 @@
   //
   // WHY IT EXISTS. Trail Cabinet's engineered panel schedules (E3.0/E3.1)
   // showed 253 A on the MDP. Those are Revit panel schedules, and Revit's
-  // default puts the 220.44 RECEPTACLE factor — first 10 kVA at 100%, the
-  // rest at 50% — on every load tagged "Power": CNC routers, forklift
+  // default puts the RECEPTACLE factor (2020's 220.44, 2023's Table 220.47) —
+  // first 10 kVA at 100%, the rest at 50% — on every load tagged "Power": CNC routers, forklift
   // chargers, saws. It reproduces to the VA on all six panels. The same loads
   // worked the NEC way come to ~391 A: the 400 A main still holds, but with
   // ~9 A to spare, not ~147. So here every rule hangs off a load TYPE the
   // person entering it picks, a demand factor is never applied to a type the
   // code does not give it to, and every line of the answer names its section.
   //
-  // Rules, per type:
-  //   Lighting ........ 125% — continuous (215.2(A)(1), 230.42(A)(1)); and not
-  //                     less than floor area × Table 220.12 when area is given.
-  //   Receptacles ..... 180 VA a yoke (220.14(I)); 220.44 — first 10 kVA at
-  //                     100%, the remainder at 50%.
-  //   Motors .......... 100%. Entered in HP, the TABLE full-load current is
-  //                     used, never the nameplate (430.6(A)(1)). Plus 25% of
-  //                     the single LARGEST motor (430.24), hermetic
-  //                     compressors included (440.33).
+  // Rules, per type — section numbers are NEC 2023, checked against the
+  // owner's book (pages 70-92 … 70-100, photographed 2026-09-21). 2023
+  // RENUMBERED Part III: the lighting table moved 220.12 → 220.42(A) and the
+  // non-dwelling receptacle factor 220.44 → 220.47. Web copies and older
+  // software still quote the 2020 numbers.
+  //   Lighting ........ actual fixtures at 125% (continuous, 215.2(A)(1) /
+  //                     230.42(A)(1)), but never less than floor area ×
+  //                     Table 220.42(A). ⚠ The table's own note: its unit
+  //                     loads ALREADY INCLUDE the 125% — the area figure is
+  //                     used as-is. Multiplying it again double-counts.
+  //   Receptacles ..... 180 VA a yoke (220.14(I)); Table 220.47 — first
+  //                     10 kVA at 100%, the remainder at 50%. Offices: not
+  //                     less than 1 VA/ft² (220.43).
+  //   Motors .......... 100% (220.50(A) → 430.24). Entered in HP, the TABLE
+  //                     full-load current is used, never the nameplate
+  //                     (430.6(A)(1)). Plus 25% of the single LARGEST motor,
+  //                     hermetic compressors included (220.50(B) → 440.33).
   //   Heat / cool ..... 220.60 noncoincident loads: only the larger side
-  //                     counts. A fan that runs in both modes counts either way.
+  //                     counts. A fan that runs in both modes counts either
+  //                     way. The dropped side's compressors STILL compete for
+  //                     the largest-motor 25% — 220.60's last sentence.
   //   Kitchen ......... Table 220.56 by number of units, never less than the
   //                     two largest together.
+  //   EV chargers ..... each at not less than 7,200 VA (220.57), and at 125%
+  //                     as a continuous load (625.42).
   //   Other ........... 125% if continuous (3 h or more), otherwise 100%.
   //
   // VA is added arithmetically, the way the NEC calculation is done. Revit sums
@@ -29027,9 +29039,11 @@
   // classes add to 221,617 VA while its total reads 210,748. That is a power-
   // factor refinement the NEC standard method does not use.
   //
-  // ⚠ NOT covered, and the screen says so: dwelling units, Table 220.42
-  // lighting demand factors, 220.87 existing-service sizing, fire pumps, and
-  // the neutral. A line entered in VA is taken as given.
+  // ⚠ NOT covered, and the screen says so: dwelling units (220.82–220.85),
+  // Table 220.45 lighting demand factors (warehouses, hotels), the optional
+  // methods for schools (220.86) and new restaurants (220.88), 220.87
+  // existing-service sizing, fire pumps, and the neutral (220.61). A line
+  // entered in VA is taken as given.
   const LC_SQRT3 = Math.sqrt(3);
   const LC_SYSTEMS = [
     { id:"480-3", label:"277/480 V three phase",           v:480, ph:"3" },
@@ -29061,16 +29075,19 @@
     { id:"light",   label:"Lighting" },
     { id:"recep",   label:"Receptacles (general)" },
     { id:"kitchen", label:"Commercial kitchen equipment" },
+    { id:"ev",      label:"EV charger (EVSE)" },
     { id:"cont",    label:"Other — continuous, 3 h or more" },
     { id:"other",   label:"Other — not continuous" },
   ];
-  // Table 220.12, general lighting load by non-dwelling occupancy, VA/ft² (NEC 2023).
-  // ⚠ Transcribed from recall, NOT from the owner's book — every other table in
-  // All Charts came off a page. It only ever RAISES the lighting line (it is a
-  // floor), so a wrong entry cannot shrink an answer, but it must be checked
-  // against a photo of the page; the screen says so until it is (LC_T220_12_CHECKED).
-  const LC_T220_12_CHECKED = false;
-  const LC_T220_12 = [
+  // Table 220.42(A), general lighting loads by non-dwelling occupancy, VA/ft²
+  // (NEC 2023, page 70-95 of the owner's book — all 29 rows checked against
+  // the photo 2026-09-21). ⚠ These INCLUDE the 125% continuous multiplier
+  // (the table's own note) — see lcCompute. Footnotes worth knowing when
+  // picking a row: armories/auditoriums → Gymnasium; lodge rooms → Hotel;
+  // industrial commercial loft → Manufacturing; banks → Office; commercial
+  // storage garages → Parking garage; clubs → Restaurant; barber/beauty and
+  // stores → Retail.
+  const LC_T220_42A = [
     ["Automotive facility", 1.5], ["Convention center", 1.4], ["Courthouse", 1.4],
     ["Dormitory", 1.5], ["Exercise center", 1.4], ["Fire station", 1.3],
     ["Gymnasium", 1.7], ["Health care clinic", 1.6], ["Hospital", 1.6],
@@ -29150,56 +29167,72 @@
     const lines = (c.lines || []).map(l => ({ l, ...lcLineVA(l) }));
     const errors = lines.filter(x => x.err);
     const blanks = lines.filter(x => x.blank && String(x.l.desc || "").trim());
-    const sum = { motor:0, cool:0, heat:0, fan:0, light:0, recep:0, kitchen:0, cont:0, other:0 };
+    const sum = { motor:0, cool:0, heat:0, fan:0, light:0, recep:0, kitchen:0, ev:0, cont:0, other:0 };
     const kitchenUnits = [];
+    let evRaised = 0;
     for (const x of lines) {
       if (x.blank || x.err) continue;
       const t = sum[x.l.type] != null ? x.l.type : "other";
+      if (t === "ev" && x.unitVA < 7200) {
+        // 220.57 — each EVSE at 7,200 VA or its nameplate, whichever is larger.
+        evRaised += x.qty;
+        x.unitVA = 7200; x.va = x.qty * 7200;
+      }
       sum[t] += x.va;
       if (t === "kitchen") for (let k = 0; k < Math.round(x.qty); k++) kitchenUnits.push(x.unitVA);
     }
     const connected = Object.values(sum).reduce((a, b) => a + b, 0);
 
-    // Lighting — 220.12 is a FLOOR under the actual fixtures, then 125%.
+    // Lighting — the actual fixtures at 125%, but never less than the
+    // Table 220.42(A) area figure, which ALREADY carries the 125% (the
+    // table's note) and so is compared as-is, not multiplied again.
     const sqft = lcNum(c.sqft);
-    const occ = LC_T220_12.find(o => o[0] === c.occ) || null;
+    const occ = LC_T220_42A.find(o => o[0] === c.occ) || null;
     const areaVA = (sqft > 0 && occ) ? sqft * occ[1] : null;
-    const lightBase = Math.max(sum.light, areaVA || 0);
-    const lightD = lightBase * 1.25;
+    const lightFixtures = sum.light * 1.25;
+    const lightFromArea = areaVA != null && areaVA > lightFixtures;
+    const lightD = lightFromArea ? areaVA : lightFixtures;
 
-    const recepD = Math.min(sum.recep, 10000) + 0.5 * Math.max(0, sum.recep - 10000);
+    // Receptacles — Table 220.47; an office is never below 1 VA/ft² (220.43).
+    const recepTable = Math.min(sum.recep, 10000) + 0.5 * Math.max(0, sum.recep - 10000);
+    const officeVA = (sqft > 0 && occ && occ[0] === "Office") ? sqft * 1 : null;
+    const recepFromArea = officeVA != null && officeVA > recepTable;
+    const recepD = recepFromArea ? officeVA : recepTable;
 
     const kn = kitchenUnits.length;
     const kf = kn === 0 ? 0 : kn <= 2 ? 1 : kn === 3 ? 0.9 : kn === 4 ? 0.8 : kn === 5 ? 0.7 : 0.65;
     const two = kitchenUnits.slice().sort((a, b) => b - a).slice(0, 2).reduce((a, b) => a + b, 0);
     const kitchenD = kn ? Math.max(sum.kitchen * kf, two) : 0;
 
-    // 220.60 — whichever side is larger; ties go to cooling, the side whose
-    // compressors also feed the largest-motor figure.
+    // 220.60 — only the larger of heating and cooling is counted.
     const coolWins = sum.cool >= sum.heat;
     const hvacD = sum.fan + Math.max(sum.cool, sum.heat);
 
     // 430.24 / 440.33 — 25% of the largest single motor, taken per UNIT (a line
     // of six garage door openers is six motors, not one big one). Compressors
-    // only count if cooling is the side that was kept.
+    // compete EVEN WHEN heating won 220.60 and the cooling load was dropped:
+    // 220.60's last sentence keeps the 125% on the larger of the motor load or
+    // the A/C load. (The first version excluded them, before the book was read.)
     let big = null;
     for (const x of lines) {
       if (x.blank || x.err) continue;
       const t = x.l.type;
-      if (!(t === "motor" || t === "fan" || (t === "cool" && coolWins))) continue;
+      if (!(t === "motor" || t === "fan" || t === "cool")) continue;
       if (!big || x.unitVA > big.unitVA) big = { desc: String(x.l.desc || "").trim(), unitVA: x.unitVA };
     }
     const bigD = big ? big.unitVA * 0.25 : 0;
+    const evD = sum.ev * 1.25;
     const contD = sum.cont * 1.25;
 
-    const total = lightD + recepD + sum.motor + bigD + hvacD + kitchenD + contD + sum.other;
+    const total = lightD + recepD + sum.motor + bigD + hvacD + kitchenD + evD + contD + sum.other;
     const refused = errors.length > 0;
     const amps = refused ? null : total / div;
     const std = amps == null ? null : (LC_STD_OCPD.find(s => s >= amps - 1e-9) || null);
     return {
       sys, div, lines, errors, blanks, sum, connected, connectedAmps: connected / div,
-      sqft, occ, areaVA, lightBase, lightD, recepD, kn, kf, two, kitchenD,
-      coolWins, hvacD, big, bigD, contD,
+      sqft, occ, areaVA, lightFixtures, lightFromArea, lightD,
+      recepTable, officeVA, recepFromArea, recepD, kn, kf, two, kitchenD,
+      coolWins, hvacD, big, bigD, evD, evRaised, contD,
       total: refused ? null : total, amps, std,
     };
   }
@@ -29324,7 +29357,7 @@
     $("lcSys").innerHTML = LC_SYSTEMS.map(s =>
       `<option value="${s.id}"${s.id === c.sys ? " selected" : ""}>${esc(s.label)}</option>`).join("");
     $("lcSqft").value = c.sqft || "";
-    $("lcOcc").innerHTML = `<option value="">Occupancy — Table 220.12</option>` + LC_T220_12.map(([n, u]) =>
+    $("lcOcc").innerHTML = `<option value="">Occupancy — Table 220.42(A)</option>` + LC_T220_42A.map(([n, u]) =>
       `<option value="${esc(n)}"${n === c.occ ? " selected" : ""}>${esc(n)} — ${u} VA/ft²</option>`).join("");
     $("lcMeasA").value = c.measA || "";
     $("lcAddA").value = c.addA || "";
@@ -29416,12 +29449,16 @@
     const s = r.sum, rows = [];
     const push = (what, conn, rule, dem) => rows.push({ what, conn, rule, dem });
     if (s.light || r.areaVA) {
-      const fromArea = r.areaVA != null && r.areaVA > s.light;
-      push("Lighting", s.light,
-        (fromArea ? `Floor area sets it: ${r.sqft.toLocaleString()} ft² × ${r.occ[1]} VA (220.12, ${r.occ[0]}) = ${lcKva(r.areaVA)}. ` : "") +
-        "125% — continuous (215.2, 230.42)", r.lightD);
+      push("Lighting", s.light, r.lightFromArea
+        ? `Floor area sets it: ${r.sqft.toLocaleString()} ft² × ${r.occ[1]} VA (Table 220.42(A), ${r.occ[0]}) — ` +
+          `the table already includes the 125%. Fixtures at 125% would be ${lcKva(r.lightFixtures)}.`
+        : "125% — continuous (215.2, 230.42)" +
+          (r.areaVA != null ? `; above the Table 220.42(A) minimum of ${lcKva(r.areaVA)}` : ""),
+        r.lightD);
     }
-    if (s.recep) push("Receptacles", s.recep, "220.44 — first 10 kVA at 100%, the rest at 50%", r.recepD);
+    if (s.recep || r.recepFromArea) push("Receptacles", s.recep, r.recepFromArea
+      ? `Office minimum sets it: ${r.sqft.toLocaleString()} ft² × 1 VA (220.43). Table 220.47 would give ${lcKva(r.recepTable)}.`
+      : "Table 220.47 — first 10 kVA at 100%, the rest at 50%", r.recepD);
     if (s.motor) push("Motors & equipment", s.motor, "100%, 430.24", s.motor);
     if (r.big) push("Largest motor +25%", null, `430.24 / 440.33 — ${r.big.desc || "largest motor"}, ${lcKva(r.big.unitVA)}`, r.bigD);
     if (s.cool || s.heat || s.fan) {
@@ -29435,6 +29472,8 @@
     if (s.kitchen) push("Kitchen equipment", s.kitchen,
       `Table 220.56 — ${r.kn} unit${r.kn === 1 ? "" : "s"} at ${Math.round(r.kf * 100)}%` +
       (r.kitchenD > s.kitchen * r.kf + 1e-6 ? `, raised to the two largest together (${lcKva(r.two)})` : ""), r.kitchenD);
+    if (s.ev) push("EV chargers", s.ev,
+      "125% — continuous (625.42)" + (r.evRaised ? `; ${r.evRaised} raised to the 7,200 VA minimum (220.57)` : ""), r.evD);
     if (s.cont) push("Other — continuous", s.cont, "125% (215.2, 230.42)", r.contD);
     if (s.other) push("Other", s.other, "100%", s.other);
 
@@ -29450,8 +29489,10 @@
 
     const warn = [];
     if (r.blanks.length) warn.push(`<b>${r.blanks.length}</b> load${r.blanks.length === 1 ? " has" : "s have"} a name but no size, and ${r.blanks.length === 1 ? "is" : "are"} not counted.`);
-    if (!(r.sqft > 0) || !r.occ) warn.push("No floor area and occupancy — the 220.12 minimum lighting load is <b>not checked</b>.");
-    else if (!LC_T220_12_CHECKED) warn.push("The Table 220.12 VA/ft² values have <b>not yet been checked against the code book</b>.");
+    if (!(r.sqft > 0) || !r.occ) warn.push("No floor area and occupancy — the Table 220.42(A) minimum lighting load is <b>not checked</b>.");
+    if (r.occ && (r.occ[0] === "Warehouse" || r.occ[0] === "Hotel / motel")) {
+      warn.push(`Table 220.45 lighting demand factors for a ${r.occ[0].toLowerCase()} are <b>not applied</b> — this answer is the larger, safe side.`);
+    }
     $("lcWarn").innerHTML = warn.join("<br />");
     $("lcWarn").style.display = warn.length ? "" : "none";
 
@@ -30518,15 +30559,20 @@
       <div class="gnd-wrap"><table class="gnd-table lc-table" id="lcTable"></table></div>
       <div class="gnd-note gnd-cap" id="lcWarn" style="display:none;"></div>
       <div class="gnd-note">
-        <b>Pick the type honestly — it decides the rule.</b> The 220.44 receptacle factor (first 10 kVA
-        at 100%, the rest at 50%) is for <b>receptacles only</b>. Engineering software often puts it on
-        every “power” load — saws, CNCs, chargers — which is how a drawing ends up showing far less
-        than the code calculation.<br />
+        <b>Pick the type honestly — it decides the rule.</b> The Table 220.47 receptacle factor (first
+        10 kVA at 100%, the rest at 50% — it was 220.44 before the 2023 code) is for <b>receptacles only</b>.
+        Engineering software often puts it on every “power” load — saws, CNCs, chargers — which is how a
+        drawing ends up showing far less than the code calculation.<br />
+        <b>Floor area:</b> Table 220.42(A)'s VA/ft² already includes the 125% continuous factor, so it is
+        compared with your fixtures at 125%, not multiplied again. Area is measured from the outside
+        dimensions (220.5(C)).<br />
         <b>Continuous</b> = runs 3 hours or more (battery chargers, EV chargers, process heat): counted at 125%.<br />
         <b>A multi-compressor RTU</b> starts one compressor at a time. For the largest-motor and starting
         figures, the whole unit is conservative; enter the unit's largest compressor separately if you know it.<br />
-        <b>Not covered here:</b> dwelling units (220.82 and the other optional methods), Table 220.42 lighting
-        demand factors, sizing an existing service from its demand record (220.87), fire pumps (Art. 695), and the neutral.
+        <b>Not covered here:</b> dwelling units (220.82–220.85), Table 220.45 lighting demand factors
+        (warehouses, hotels), the optional methods for schools (220.86) and new restaurants (220.88),
+        sizing an existing service from its demand record (220.87), fire pumps (Art. 695), and the neutral (220.61).
+        All section numbers are the 2023 NEC.
       </div>
 
       <div class="cf-section-title">Generator</div>
@@ -30543,7 +30589,9 @@
         its largest single piece of equipment — 710.15(A). A <b>measured</b> peak is the best evidence of what runs:
         it is taken at 125%, plus whatever has been added since. Without one, prime falls back to the
         calculated load, which is conservative. A spot clamp reading is good evidence for sizing a prime set, but it
-        is not a 220.87 demand record for a code calculation.<br />
+        is not a 220.87 demand record for a code calculation — that needs a year of demand data, or a 30-day
+        recording in 15-minute intervals. ⚠ The 30-day route is <b>not permitted once the service has solar,
+        wind, or any peak shaving</b> (220.87 Exception).<br />
         <b>Solar does not shrink the generator</b> unless batteries carry the peaks — at night and under cloud the
         generator carries everything alone. What solar changes is fuel and run hours; a diesel run lightly loaded
         at midday wet-stacks, so keep it above about 30% load.

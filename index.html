@@ -944,6 +944,18 @@
        min-width:0 — see the iPhone note above .cf-wire-grid; a bare flex item
        holding an <input> refuses to shrink below ~150px. */
     .lc-bar { display:flex; gap:6px; align-items:center; margin-bottom:8px; }
+    .lc-jobbar {
+      display:flex; gap:8px; align-items:center; margin-bottom:10px; padding:8px 10px;
+      border:1px solid var(--accent); border-radius:10px; background:var(--accent-glow);
+    }
+    .lc-jobname { flex:1 1 auto; min-width:0; font-weight:700; color:var(--accent); font-size:14px; }
+    .lc-guide { margin:10px 0 4px; font-size:13px; }
+    .lc-guide summary { cursor:pointer; color:var(--accent); font-weight:600; }
+    #chartPanel-loadcalc.lc-ro .lc-x, #chartPanel-loadcalc.lc-ro #lcAdd { display:none; }
+    /* View only must LOOK view only — disabled fields otherwise read as editable. */
+    #chartPanel-loadcalc.lc-ro input:disabled, #chartPanel-loadcalc.lc-ro select:disabled {
+      background:var(--panel-2); color:var(--text); opacity:.85; border-style:dashed;
+    }
     .lc-bar select { flex:1 1 auto; min-width:0; }
     .lc-bar .btn { flex:none; font-size:12px; }
     .lc-line {
@@ -1606,6 +1618,14 @@
       color: #d97706;
     }
     .action-btn.panels .count-badge { background: rgba(245,158,11,0.25); }
+
+    /* Load Calc — violet, to stand apart from the amber Panels beside it. */
+    .action-btn.loadcalc {
+      background: rgba(139,92,246,0.12);
+      border-color: rgba(139,92,246,0.40);
+      color: #7c3aed;
+    }
+    .action-btn.loadcalc .count-badge { background: rgba(139,92,246,0.25); }
 
     /* Lists — green, and the badge counts what's still OUTSTANDING, so a number
        here means "things to bring", not "things that exist". */
@@ -3403,6 +3423,9 @@
                things a crew opens on arrival, and both want to be reachable
                from whichever tab you happen to be on. -->
           <a id="btnJobPanels" href="#" class="action-btn panels disabled">⚡ Panels</a>
+          <!-- The job's saved load calculations (All Charts tab 7, scoped to
+               this job). Everyone can open them; admin/office save. -->
+          <a id="btnJobLoadCalc" href="#" class="action-btn loadcalc disabled">🔌 Load Calc</a>
           <!-- The badge here counts OPEN items across every list on the job, so
                "✅ Lists 7" means seven things still to bring. -->
           <a id="btnJobLists" href="#" class="action-btn lists disabled">✅ Lists</a>
@@ -5384,6 +5407,13 @@
       pn.classList.remove("disabled");
       pn.onclick = (e) => { e.preventDefault(); openJobPanels(); };
       loadPanelBadge(job.id);
+
+      // Load Calc — the job's saved load calculations. Read by everyone,
+      // saved by admin/office (the server enforces it; see lcCanEdit).
+      const lcb = $("btnJobLoadCalc");
+      lcb.classList.remove("disabled");
+      lcb.onclick = (e) => { e.preventDefault(); openJobLoadCalc(); };
+      loadLcBadge(job.id);
 
       // Lists — the crew's own checklists. Same open-to-everyone reasoning.
       const lb = $("btnJobLists");
@@ -28412,6 +28442,69 @@
     return { key, ref, needS, needP, standby: pick(3, needS), prime: pick(0, needP) };
   }
 
+  // Air-cooled home units: one model's spec sheet, laid out for the fuel
+  // picked. Returns [{ title, rows:[[label, value]] }] with every blank field
+  // DROPPED rather than shown as "—": a sheet that does not list 25% burn is
+  // not a sheet that says zero, and a row of dashes reads like one.
+  // Values are printed as the sheet gives them; nothing is converted, so
+  // "ft³/hr" and "gal/hr" stay whatever the manufacturer published.
+  function genAirSpec(m, fuel) {
+    const F = fuel === "ng" ? "ng" : "lp";
+    const n = (v, u) => v == null || v === "" ? null : `${v}${u ? " " + u : ""}`;
+    const range = (lo, hi, u) => lo == null && hi == null ? null
+      : lo != null && hi != null ? `${lo}–${hi} ${u}` : `${lo ?? hi} ${u}`;
+    const burn = [25, 50, 75, 100].map(p => {
+      const cfh = m[`${F}_cfh_${p}`], gph = F === "lp" ? m[`lp_gph_${p}`] : null;
+      const v = [n(cfh, "ft³/hr"), n(gph, "gal/hr")].filter(Boolean).join(" · ");
+      return v ? [`Fuel use at ${p}% load`, v] : null;
+    });
+    const sec = (title, rows) => ({ title, rows: rows.filter(r => r && r[1] != null && r[1] !== "") });
+    const dims = [m.length_in, m.width_in, m.height_in].every(v => v != null)
+      ? `${m.length_in} × ${m.width_in} × ${m.height_in} in (L × W × H)` : null;
+    const other = m.other && typeof m.other === "object"
+      ? Object.entries(m.other).map(([k, v]) => [k.replace(/_/g, " "), typeof v === "object" ? JSON.stringify(v) : String(v)])
+      : [];
+    return [
+      sec("Output", [
+        ["Standby rating", n(m[`standby_kw_${F}`], "kW")],
+        ["Rated amps at 240 V", n(m[`rated_amps_240_${F}`], "A")],
+        ["Output breaker", n(m.output_breaker_a, "A")],
+        ["Voltage", m.voltage ? `${m.voltage} V, ${m.phase === "3" ? "3" : "1"}-phase, ${m.hz || 60} Hz` : null],
+        ["Motor starting", m.motor_starting],
+      ]),
+      sec(F === "ng" ? "Gas — natural gas" : "Gas — LP (propane)", [
+        ["Inlet pressure", range(m[`${F}_inlet_pressure_inwc_min`], m[`${F}_inlet_pressure_inwc_max`], "in. W.C.")],
+        ["Fuel inlet", m.fuel_inlet_size],
+        ...burn,
+        ["Full-load input", m[`${F}_btu_hr_100`] != null ? `${Number(m[`${F}_btu_hr_100`]).toLocaleString()} BTU/hr` : null],
+      ]),
+      sec("Engine", [
+        ["Engine", m.engine],
+        ["Displacement", n(m.displacement_cc, "cc")],
+        ["Cylinders", n(m.cylinders)],
+        ["Speed", n(m.engine_rpm, "rpm")],
+        ["Oil capacity", n(m.oil_capacity_qt, "qt")],
+        ["Battery", m.battery],
+      ]),
+      sec("Size & sound", [
+        ["Dimensions", dims],
+        ["Weight", n(m.weight_lb, "lb")],
+        ["Enclosure", m.enclosure],
+        ["Sound", m.sound_dba != null ? `${m.sound_dba} dBA${m.sound_note ? " (" + m.sound_note + ")" : ""}` : null],
+        ["Sound, exercising", n(m.sound_dba_exercise, "dBA")],
+      ]),
+      sec("Power quality & service", [
+        ["THD", n(m.thd_pct, "%")],
+        ["Voltage regulation", m.voltage_regulation_pct != null ? `±${m.voltage_regulation_pct}%` : null],
+        ["Frequency regulation", m.frequency_regulation_pct != null ? `±${m.frequency_regulation_pct}%` : null],
+        ["Exercise", m.exercise],
+        ["Transfer switch", m.transfer_switch],
+        ["Warranty", m.warranty],
+      ]),
+      sec("Other", other),
+    ].filter(s => s.rows.length);
+  }
+
   // ── TAB 3: AMPACITY ───────────────────────────────────────────────────
   // NEC Table 310.16 (allowable ampacities, 0–2000 V, not over three
   // current-carrying conductors in a raceway, 30°C ambient), corrected for
@@ -29353,10 +29446,42 @@
   }
 
   // ── Load Calc: screen ──
-  // Saved in localStorage per device. Every read and write is wrapped: private
-  // mode or a full quota must cost the save, never the calculator.
+  // TWO MODES, one calculator (owner's call 2026-09-21, "per job + scratchpad"):
+  //   scratch — All Charts → Load Calc. Calcs live in localStorage on this
+  //             device (LC_STORE), for quick checks with no job. Admin/office
+  //             can "Save to a job…" to move one onto a job.
+  //   job     — 🔌 Load Calc on a job. The job's calcs live in Neon (load_calcs,
+  //             db/schema/076). Everyone can OPEN them; only admin/office can
+  //             change or save them (lcCanEdit — the server enforces it too).
+  //             The calc being worked on is `work`; every change also writes a
+  //             local DRAFT (lcDraftKey) that is cleared only once a save lands —
+  //             the panel-schedule rule, for the same no-signal reason.
+  // Every localStorage read and write is wrapped: private mode or a full quota
+  // must cost the save, never the calculator.
   const LC_STORE = "nee_loadcalc_v1";
-  const lcState = { calcs: {}, cur: null };
+  const lcState = { calcs: {}, cur: null, mode: "scratch", job: null, jobCalcs: [], work: null, dirty: false, busy: false };
+
+  function lcCanEdit() {
+    const r = (state.user && state.user.role) || "";
+    return r === "admin" || r === "office";
+  }
+  // What goes to the server / the draft: the inputs only. The answer is
+  // recomputed on open, so a corrected rule reaches every saved calc.
+  function lcData(c) {
+    return { sys: c.sys, sqft: c.sqft || "", occ: c.occ || "", measA: c.measA || "", addA: c.addA || "", lines: c.lines || [] };
+  }
+  function lcFromServer(x) {
+    const d = x.data || {};
+    return { id: x.id, name: x.name || "", sys: d.sys || "480-3", sqft: d.sqft || "", occ: d.occ || "",
+             measA: d.measA || "", addA: d.addA || "", lines: Array.isArray(d.lines) ? d.lines : [],
+             updatedBy: x.updatedBy || "", updatedAt: x.updatedAt || null };
+  }
+  function lcDraftKey() {
+    return lcState.job && lcState.work ? `nee_loadcalc_draft_${lcState.job.id}_${lcState.work.id || "new"}` : null;
+  }
+  function lcClearDraft(key) { try { if (key) localStorage.removeItem(key); } catch {} }
+  function lcSetStatus(msg) { const el = $("lcStatus"); if (el) el.textContent = msg || ""; }
+  function lcJobLabel(j) { return `${j.name || "Untitled job"}${j.po ? " — " + j.po : ""}`; }
 
   function lcNewLine(sysId) {
     return { desc:"", type:"motor", qty:"1", val:"", unit:"va",
@@ -29377,18 +29502,56 @@
       else { const c = lcBlank("Load calc 1"); lcState.calcs[c.id] = c; lcState.cur = c.id; }
     }
   }
+  // Called after EVERY change. Scratch: persist the device store. Job: mark
+  // unsaved and write the draft — the job's copy in Neon changes only on Save.
   function lcSave() {
+    if (lcState.mode === "job") {
+      if (!lcState.work) return;
+      lcState.dirty = true;
+      try { localStorage.setItem(lcDraftKey(), JSON.stringify({ name: lcState.work.name, data: lcData(lcState.work), at: Date.now() })); } catch {}
+      lcPaintSaveBtn();
+      return;
+    }
     try { localStorage.setItem(LC_STORE, JSON.stringify({ calcs: lcState.calcs, cur: lcState.cur })); } catch {}
   }
-  function lcCur() { return lcState.calcs[lcState.cur]; }
+  function lcCur() { return lcState.mode === "job" ? lcState.work : lcState.calcs[lcState.cur]; }
+  function lcPaintSaveBtn() {
+    const b = $("lcSaveBtn");
+    if (b) b.textContent = lcState.dirty ? "Save •" : "Save";
+  }
 
   const lcKva = (va) => (va / 1000).toFixed(1) + " kVA";
   const lcAmp = (a) => a.toFixed(1) + " A";
 
   function lcRenderHeader() {
     const c = lcCur();
-    $("lcPick").innerHTML = Object.values(lcState.calcs).map(x =>
-      `<option value="${esc(x.id)}"${x.id === c.id ? " selected" : ""}>${esc(x.name || "Untitled")}</option>`).join("");
+    const job = lcState.mode === "job";
+    const edit = !job || lcCanEdit();
+    if (job) {
+      // The job's saved calcs, plus the one being worked on if it is new.
+      const opts = lcState.jobCalcs.map(x =>
+        `<option value="${esc(x.id)}"${x.id === c.id ? " selected" : ""}>${esc(x.name || "Untitled")}</option>`);
+      if (!c.id) opts.unshift(`<option value="" selected>${esc(c.name || "New calculation")} (not saved)</option>`);
+      $("lcPick").innerHTML = opts.join("");
+    } else {
+      $("lcPick").innerHTML = Object.values(lcState.calcs).map(x =>
+        `<option value="${esc(x.id)}"${x.id === c.id ? " selected" : ""}>${esc(x.name || "Untitled")}</option>`).join("");
+    }
+    $("lcJobBar").style.display = job ? "" : "none";
+    if (job) $("lcJobName").textContent = `🔌 ${lcState.job.name}${edit ? "" : " · view only"}`;
+    $("lcSaveBtn").style.display = job && edit ? "" : "none";
+    lcPaintSaveBtn();
+    $("lcExample").style.display = job ? "none" : "";
+    ["lcNew", "lcClear", "lcDel"].forEach(id => { $(id).style.display = edit ? "" : "none"; });
+    // "Save to a job…" — scratch mode, admin/office only (they are the ones the server lets save).
+    const toJob = !job && lcCanEdit();
+    $("lcToJob").style.display = toJob ? "" : "none";
+    if (toJob) {
+      $("lcJobList").innerHTML = (state.jobs || []).map(j => `<option value="${esc(lcJobLabel(j))}"></option>`).join("");
+    }
+    // Read-only for the crew in job mode: every field disabled except the picker.
+    const panel = $("chartPanel-loadcalc");
+    panel.classList.toggle("lc-ro", !edit);
     $("lcName").value = c.name || "";
     $("lcSys").innerHTML = LC_SYSTEMS.map(s =>
       `<option value="${s.id}"${s.id === c.sys ? " selected" : ""}>${esc(s.label)}</option>`).join("");
@@ -29397,6 +29560,18 @@
       `<option value="${esc(n)}"${n === c.occ ? " selected" : ""}>${esc(n)} — ${u} VA/ft²</option>`).join("");
     $("lcMeasA").value = c.measA || "";
     $("lcAddA").value = c.addA || "";
+    lcApplyReadOnly();
+  }
+
+  // Disables every input in the tab except the calc picker and the guide
+  // when the viewer can't save — typing into a form that can never be saved
+  // would only look like it worked. Re-run after the cards re-render.
+  function lcApplyReadOnly() {
+    const ro = lcState.mode === "job" && !lcCanEdit();
+    $("chartPanel-loadcalc").querySelectorAll("input, select").forEach(el => {
+      if (el.id === "lcPick") return;
+      el.disabled = ro;
+    });
   }
 
   function lcLineHtml(l, i) {
@@ -29441,6 +29616,7 @@
     const c = lcCur();
     $("lcLines").innerHTML = c.lines.map(lcLineHtml).join("") ||
       `<div class="gnd-note">No loads yet — add the first one.</div>`;
+    lcApplyReadOnly();
   }
 
   function lcRender() {
@@ -29602,21 +29778,46 @@
 
     const commit = () => { lcSave(); lcRender(); };
     $("lcPick").addEventListener("input", (e) => {
+      if (lcState.mode === "job") {
+        if (!e.target.value) return;                    // the "(not saved)" entry is the current one
+        if (!lcLeaveOk()) { lcRenderHeader(); return; }
+        lcOpenJobCalc(e.target.value);
+        return;
+      }
       lcState.cur = e.target.value; lcSave();
       lcRenderHeader(); lcRenderLines(); lcRender();
     });
     $("lcName").addEventListener("input", (e) => {
       lcCur().name = e.target.value; lcSave();
-      const opt = $("lcPick").querySelector(`option[value="${CSS.escape(lcState.cur)}"]`);
-      if (opt) opt.textContent = e.target.value || "Untitled";
+      const sel = $("lcPick").selectedOptions[0];
+      if (sel) sel.textContent = (e.target.value || "Untitled") + (lcState.mode === "job" && !lcCur().id ? " (not saved)" : "");
     });
     $("lcNew").addEventListener("click", () => {
+      if (lcState.mode === "job") {
+        if (!lcLeaveOk()) return;
+        lcNewJobCalc(lcCur() ? lcCur().sys : "480-3");
+        $("lcName").focus(); $("lcName").select();
+        return;
+      }
       const c = lcBlank(`Load calc ${Object.keys(lcState.calcs).length + 1}`);
       c.sys = lcCur().sys; c.lines = [lcNewLine(c.sys)];
       lcState.calcs[c.id] = c; lcState.cur = c.id; lcSave();
       lcRenderHeader(); lcRenderLines(); lcRender();
       $("lcName").focus(); $("lcName").select();
     });
+    // Clear = empty the LOAD LIST, keep the name, service, area and job link.
+    $("lcClear").addEventListener("click", () => {
+      const c = lcCur();
+      const n = c.lines.filter(l => String(l.val || "").trim() || String(l.desc || "").trim()).length;
+      if (n && !confirm(`Remove all ${n} load${n === 1 ? "" : "s"} from “${c.name || "this calculation"}”?` +
+        (lcState.mode === "job" ? "\n\nNothing changes on the job until you tap Save." : ""))) return;
+      c.lines = [lcNewLine(c.sys)];
+      c.measA = ""; c.addA = "";
+      lcSave();
+      lcRenderHeader(); lcRenderLines(); lcRender();
+    });
+    $("lcSaveBtn").addEventListener("click", lcSaveToJob);
+    $("lcToJobBtn").addEventListener("click", lcMoveToJob);
     // The example is a COPY — editing it never damages the reference, and
     // pressing Example again always gives the clean original.
     $("lcExample").addEventListener("click", () => {
@@ -29624,8 +29825,27 @@
       lcState.calcs[c.id] = c; lcState.cur = c.id; lcSave();
       lcRenderHeader(); lcRenderLines(); lcRender();
     });
-    $("lcDel").addEventListener("click", () => {
+    $("lcDel").addEventListener("click", async () => {
       const c = lcCur();
+      if (lcState.mode === "job") {
+        if (!c.id) {                                    // never saved — just drop the draft
+          if (!confirm(`Discard “${c.name || "this calculation"}”? It was never saved to the job.`)) return;
+          lcClearDraft(lcDraftKey());
+          lcAfterJobChange();
+          return;
+        }
+        if (!confirm(`Delete “${c.name || "Untitled"}” from ${lcState.job.name}?\n\nEveryone loses it. This cannot be undone.`)) return;
+        lcSetStatus("Deleting…");
+        try {
+          await apiPost("deleteLoadCalc", { id: c.id });
+          lcClearDraft(lcDraftKey());
+          lcState.jobCalcs = lcState.jobCalcs.filter(x => x.id !== c.id);
+          lcPaintBadge(lcState.job.id, lcState.jobCalcs.length);
+          lcAfterJobChange();
+          lcSetStatus("Deleted.");
+        } catch (e) { lcSetStatus("Couldn't delete it: " + e.message); }
+        return;
+      }
       if (!confirm(`Delete “${c.name || "Untitled"}” from this device?\n\nIts ${c.lines.length} load${c.lines.length === 1 ? "" : "s"} go with it.`)) return;
       delete lcState.calcs[c.id];
       lcState.cur = null;
@@ -29684,11 +29904,162 @@
     });
   }
 
+  // ── Load Calc on a JOB ─────────────────────────────────────────────────
+  const lcBadge = { jobId: null, count: null };
+  function lcPaintBadge(jobId, n) {
+    if (jobId != null) { lcBadge.jobId = jobId; lcBadge.count = n; }
+    const btn = $("btnJobLoadCalc");
+    if (!btn || lcBadge.jobId !== (state.selected && state.selected.id)) return;
+    btn.innerHTML = `🔌 Load Calc${lcBadge.count ? ` <span class="count-badge">${lcBadge.count}</span>` : ""}`;
+  }
+  // Fire and forget, like the Panels badge — the job header never waits on it.
+  async function loadLcBadge(jobId) {
+    lcBadge.jobId = jobId; lcBadge.count = null; lcPaintBadge();
+    try {
+      const d = await apiGet("loadCalcs", { jobId });
+      if (lcBadge.jobId === jobId) lcPaintBadge(jobId, (d.calcs || []).length);
+    } catch { /* the button still opens; the badge is a nicety */ }
+  }
+
+  // Unsaved changes in job mode stay on the device as a draft, so leaving is
+  // never destructive — but say so, because the job's copy is not updated.
+  function lcLeaveOk() {
+    if (lcState.mode !== "job" || !lcState.dirty || !lcCanEdit()) return true;
+    return confirm("This calculation has changes that aren't saved to the job.\n\n" +
+      "Leave it anyway? The changes stay on this device and come back next time you open it.");
+  }
+
+  // Applies this device's unsaved draft, if one exists, over what was loaded.
+  function lcApplyDraft() {
+    let d = null;
+    try { d = JSON.parse(localStorage.getItem(lcDraftKey()) || "null"); } catch {}
+    if (!d || !d.data || !lcCanEdit()) return false;
+    const w = lcState.work;
+    w.name = d.name || w.name;
+    Object.assign(w, { sys: d.data.sys || w.sys, sqft: d.data.sqft || "", occ: d.data.occ || "",
+      measA: d.data.measA || "", addA: d.data.addA || "",
+      lines: Array.isArray(d.data.lines) ? d.data.lines : w.lines });
+    lcState.dirty = true;
+    return true;
+  }
+
+  function lcShowWork(msg) {
+    lcRenderHeader(); lcRenderLines(); lcRender();
+    const w = lcState.work;
+    lcSetStatus(msg || (w.id ? (w.updatedBy ? `Saved by ${w.updatedBy}` : "Saved on the job") +
+      (w.updatedAt ? ` · ${new Date(w.updatedAt).toLocaleDateString()}` : "") : "New — not saved to the job yet."));
+  }
+
+  function lcOpenJobCalc(id) {
+    const x = lcState.jobCalcs.find(c => c.id === id);
+    if (!x) return;
+    lcState.work = lcFromServer(x);
+    lcState.dirty = false;
+    const restored = lcApplyDraft();
+    lcShowWork(restored ? "↩ Restored unsaved changes from this device — tap Save to put them on the job." : "");
+  }
+
+  function lcNewJobCalc(sys) {
+    const n = lcState.jobCalcs.length + 1;
+    lcState.work = { id: null, name: n === 1 ? "Service load" : `Load calc ${n}`, sys: sys || "480-3",
+      sqft: "", occ: "", measA: "", addA: "", lines: [lcNewLine(sys || "480-3")], updatedBy: "", updatedAt: null };
+    lcState.dirty = false;
+    const restored = lcApplyDraft();
+    lcShowWork(restored ? "↩ Restored an unsaved new calculation from this device." : "");
+  }
+
+  // After a delete or discard: the newest remaining calc, or a fresh one.
+  function lcAfterJobChange() {
+    lcState.dirty = false;
+    if (lcState.jobCalcs.length) lcOpenJobCalc(lcState.jobCalcs[0].id);
+    else lcNewJobCalc("480-3");
+  }
+
+  window.openJobLoadCalc = async function() {
+    const job = state.selected;
+    if (!job) return;
+    openCharts();
+    switchChartTab("loadcalc");
+    lcState.mode = "job";
+    lcState.job = { id: job.id, name: job.name || "Untitled job" };
+    lcState.jobCalcs = [];
+    lcNewJobCalc("480-3");               // something to render while the list loads
+    lcState.dirty = false;
+    lcSetStatus("Loading this job's calculations…");
+    try {
+      const d = await apiGet("loadCalcs", { jobId: job.id });
+      if (!lcState.job || lcState.job.id !== job.id) return;   // another job opened meanwhile
+      lcState.jobCalcs = d.calcs || [];
+      lcPaintBadge(job.id, lcState.jobCalcs.length);
+      if (lcState.jobCalcs.length) lcOpenJobCalc(lcState.jobCalcs[0].id);
+      else if (lcCanEdit()) lcNewJobCalc("480-3");
+      else lcShowWork("No load calculations are saved on this job yet.");
+    } catch (e) {
+      lcSetStatus("Couldn't load this job's calculations: " + e.message);
+    }
+  };
+
+  async function lcSaveToJob() {
+    if (lcState.mode !== "job" || lcState.busy) return;
+    const w = lcState.work;
+    const oldKey = lcDraftKey();
+    lcState.busy = true;
+    $("lcSaveBtn").disabled = true;
+    lcSetStatus("Saving…");
+    try {
+      const d = await apiPost("saveLoadCalc", {
+        id: w.id || undefined, jobId: lcState.job.id,
+        name: (w.name || "").trim() || "Load calc", data: lcData(w),
+      });
+      // The draft is cleared only once the bytes are in Neon.
+      lcClearDraft(oldKey);
+      const saved = d.calc;
+      lcState.jobCalcs = [saved, ...lcState.jobCalcs.filter(x => x.id !== saved.id)];
+      lcPaintBadge(lcState.job.id, lcState.jobCalcs.length);
+      w.id = saved.id; w.name = saved.name; w.updatedBy = saved.updatedBy; w.updatedAt = saved.updatedAt;
+      lcState.dirty = false;
+      lcRenderHeader();
+      lcSetStatus(`Saved to ${lcState.job.name}${saved.updatedBy ? ` by ${saved.updatedBy}` : ""}.`);
+    } catch (e) {
+      lcSetStatus(`Couldn't save: ${e.message}. Your changes are kept on this device — try Save again when you have signal.`);
+    } finally {
+      lcState.busy = false;
+      $("lcSaveBtn").disabled = false;
+    }
+  }
+
+  // Scratchpad → a job. Saves a copy onto the job, then opens it there.
+  async function lcMoveToJob() {
+    const label = $("lcToJobPick").value.trim();
+    const job = (state.jobs || []).find(j => lcJobLabel(j) === label);
+    if (!job) { lcSetStatus("Pick the job from the list — start typing its name or PO."); return; }
+    const c = lcCur();
+    lcSetStatus("Saving to the job…");
+    try {
+      const d = await apiPost("saveLoadCalc", { jobId: job.id, name: (c.name || "").trim() || "Load calc", data: lcData(c) });
+      $("lcToJobPick").value = "";
+      lcState.mode = "job";
+      lcState.job = { id: job.id, name: job.name || "Untitled job" };
+      lcState.jobCalcs = [d.calc];
+      try { lcState.jobCalcs = (await apiGet("loadCalcs", { jobId: job.id })).calcs || [d.calc]; } catch {}
+      lcPaintBadge(job.id, lcState.jobCalcs.length);
+      lcOpenJobCalc(d.calc.id);
+      lcSetStatus(`Saved to ${job.name}. The scratch copy is still on this device.`);
+    } catch (e) {
+      lcSetStatus("Couldn't save it to the job: " + e.message);
+    }
+  }
+
   function switchChartTab(id) {
     document.querySelectorAll("#chartsTabs .chart-tab").forEach(b => {
       const on = b.dataset.chart === id;
       b.classList.toggle("active", on);
-      if (on) $("chartsTitle").textContent = b.textContent;
+      if (on) {
+        $("chartsTitle").textContent = b.textContent;
+        // Opened from a job straight onto the LAST tab, the strip would still be
+        // scrolled to the first ones on a phone and hide which tab is showing.
+        try { b.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch {}
+      }
     });
     ["fill","grounding","ampacity","vdrop","motors","generators","loadcalc"].forEach(k => {
       const p = $("chartPanel-" + k);
@@ -29698,10 +30069,20 @@
 
   function openCharts() {
     if (!cfState._built) { cfBuild(); gndBuild(); ampBuild(); vdBuild(); motBuild(); genBuild(); lcBuild(); cfState._built = true; }
+    // Opened from the top bar, Load Calc is the scratchpad. openJobLoadCalc
+    // calls this first and then switches into job mode itself.
+    if (lcState.mode === "job") {
+      lcState.mode = "scratch"; lcState.job = null; lcState.work = null; lcState.dirty = false;
+      lcRenderHeader(); lcRenderLines(); lcRender(); lcSetStatus("");
+    }
     $("chartsModal").style.display = "flex";
     pushBackEntry("charts", () => { $("chartsModal").style.display = "none"; });
   }
   function closeCharts() {
+    // Unsaved job changes are already a draft on this device; this only says so.
+    if (lcState.mode === "job" && lcState.dirty && lcCanEdit() &&
+        !confirm("This load calculation has changes that aren't saved to the job.\n\n" +
+                 "Close anyway? They stay on this device and come back next time you open it.")) return;
     popBackEntry("charts");
     $("chartsModal").style.display = "none";
   }
@@ -30587,13 +30968,45 @@
          Saved per device in localStorage (lcSave), not on the job: this is a
          calculator, and a half-entered load list must survive the phone locking. -->
     <div id="chartPanel-loadcalc" style="display:none;">
+      <!-- Two modes, one calculator. Opened from a JOB (🔌 Load Calc on the
+           job's action row) it edits that job's saved calcs, in Neon. Opened
+           from All Charts it is a scratchpad kept on this device, with
+           "Save to a job…" to move a calc onto a job. See lcState.mode. -->
+      <div id="lcJobBar" class="lc-jobbar" style="display:none;">
+        <div class="lc-jobname" id="lcJobName"></div>
+        <button type="button" class="btn btn-primary btn-sm" id="lcSaveBtn">Save</button>
+      </div>
       <div class="lc-bar">
         <select id="lcPick" class="edit-input"></select>
         <button type="button" class="btn btn-sm" id="lcNew">+ New</button>
         <button type="button" class="btn btn-sm" id="lcExample">Example</button>
+        <button type="button" class="btn btn-sm" id="lcClear" title="Remove every load from this calculation">Clear</button>
         <button type="button" class="btn btn-sm" id="lcDel" title="Delete this calculation">🗑</button>
       </div>
-      <input id="lcName" class="edit-input" placeholder="Name this calculation — job, building…" />
+      <input id="lcName" class="edit-input" placeholder="Name this calculation — service, generator, Panel A feeder…" />
+      <div id="lcStatus" class="cf-sub" style="min-height:16px;"></div>
+      <div id="lcToJob" class="lc-bar" style="display:none; margin-top:6px;">
+        <input id="lcToJobPick" class="edit-input" list="lcJobList" placeholder="Save to a job… (type the job name or PO)" style="flex:1 1 auto; min-width:0;" />
+        <datalist id="lcJobList"></datalist>
+        <button type="button" class="btn btn-sm" id="lcToJobBtn">Save to job</button>
+      </div>
+
+      <details class="lc-guide">
+        <summary>What to enter, and where to find it</summary>
+        <div class="gnd-wrap" style="margin-top:8px;"><table class="gnd-table lc-table">
+          <thead><tr><th>Field</th><th>What to enter</th><th>Where it comes from</th></tr></thead>
+          <tbody>
+            <tr><td>Service</td><td class="rule">Voltage and phase</td><td class="rule">MDP schedule header (“277/480V, 3 ph”), or the one-line</td></tr>
+            <tr><td>Floor area</td><td class="rule">Square feet, outside dimensions (220.5(C)), and the occupancy</td><td class="rule">Architectural plans</td></tr>
+            <tr><td>Loads</td><td class="rule">One line per breaker or piece of equipment. Qty for identical ones (6 saws = qty 6)</td><td class="rule">Panel schedules — type a 3-pole cell as <b>VA per phase (3-pole)</b>, the app × 3</td></tr>
+            <tr><td>RTUs / A/C</td><td class="rule">Amps = <b>MCA</b>, type “cooling”</td><td class="rule">Mechanical schedule or the unit's submittal sheet</td></tr>
+            <tr><td>Motors</td><td class="rule">HP (the NEC table is used) or nameplate amps</td><td class="rule">Equipment schedule, the nameplate</td></tr>
+            <tr><td>Lighting</td><td class="rule">VA, or measured amps</td><td class="rule">Lighting schedule, or a clamp reading on the lighting circuits</td></tr>
+            <tr><td>Type</td><td class="rule">What the load IS — it picks the rule</td><td class="rule">Chargers and anything on 3 h+ = continuous; receptacles only for general receptacles</td></tr>
+            <tr><td>Generator</td><td class="rule">Peak measured amps, and amps added since</td><td class="rule">A clamp on the service at the busiest time, A/C running</td></tr>
+          </tbody>
+        </table></div>
+      </details>
 
       <div class="cf-section-title">Service</div>
       <select id="lcSys" class="edit-input"></select>

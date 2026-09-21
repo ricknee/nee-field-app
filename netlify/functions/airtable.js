@@ -646,6 +646,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // panel is the person who knows what circuit 23 feeds, and gating that on
   // admin means it never gets written down.
   "deletePanelSchedule",
+  // Saved load calculations: owner's call 2026-09-21 — the crew can OPEN a
+  // job's calcs, only admin/office save or delete them. (Unlike panels: a
+  // load calc sizes a service and a generator, it is a design document.)
+  "saveLoadCalc", "deleteLoadCalc",
   // Same split for checklists: deleting the whole LIST takes every item with it,
   // so it's manager-only. Adding, ticking and removing a single item are all
   // _NON_VIEWER — the crew keeps the list, that's the point of it.
@@ -16138,6 +16142,94 @@ async function handleDeletePanelSchedule(body) {
   return resp(200, { ok: true });
 }
 
+/* ── LOAD CALCS (All Charts tab 7, db/schema/076_load_calcs.sql) ───────────
+ * A load calculation saved on a job. Neon-native like panel schedules: no
+ * Airtable table, `neonWrite` throughout, FAILS CLOSED — a calc the screen
+ * says is saved on the job and isn't would be found missing by the next person
+ * to open it on another phone.
+ *
+ * `data` is the calculator's own document (service, area, load lines,
+ * generator inputs) and is stored as given. Only its INPUTS are stored; the
+ * answer is recomputed on every open, so a corrected rule reaches old calcs.
+ * Reads are open to every signed-in role; saving AND deleting are admin/office
+ * (owner's call — a load calc is a design document, not a field record).
+ */
+const LOAD_CALC_MAX_BYTES = 200 * 1024;
+const LOAD_CALC_MAX_LINES = 500;
+
+function mapLoadCalc(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    data: row.data || {},
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by || "",
+  };
+}
+
+async function handleLoadCalcs(params) {
+  const jobId = params?.jobId;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Load calcs are unavailable (database not configured)." });
+  const rows = await neonWrite("loadCalcs.list",
+    `SELECT * FROM load_calcs
+      WHERE job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1 LIMIT 1)
+      ORDER BY updated_at DESC`,
+    [String(jobId)]);
+  return resp(200, { ok: true, calcs: (rows || []).map(mapLoadCalc) });
+}
+
+// Insert when no id, update when one is given. Validation runs BEFORE the
+// database check (the panel-schedule rule) so a bad body reports itself.
+async function handleSaveLoadCalc(body, authUser) {
+  const jobId = body?.jobId;
+  const name = String(body?.name || "").trim().slice(0, 120);
+  const data = body?.data;
+  if (!jobId) return resp(400, { ok: false, error: "Pick a job first." });
+  if (!name) return resp(400, { ok: false, error: "Give the calculation a name." });
+  if (!data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.lines)) {
+    return resp(400, { ok: false, error: "Nothing to save." });
+  }
+  if (data.lines.length > LOAD_CALC_MAX_LINES) {
+    return resp(400, { ok: false, error: `A calculation can hold ${LOAD_CALC_MAX_LINES} loads at most.` });
+  }
+  const json = JSON.stringify(data);
+  if (json.length > LOAD_CALC_MAX_BYTES) return resp(400, { ok: false, error: "That calculation is too large to save." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Load calcs are unavailable (database not configured)." });
+
+  const job = (await neonWrite("loadCalcs.job",
+    `SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [String(jobId)]))?.[0];
+  if (!job) return resp(404, { ok: false, error: "Job not found." });
+
+  let rows;
+  if (body?.id) {
+    // Scoped to the job as well as the id: a stale client can't move a calc
+    // onto another job by sending its id with a different jobId — that
+    // matches nothing and falls through to the 404 below.
+    rows = await neonWrite("loadCalcs.update",
+      `UPDATE load_calcs SET name = $3, data = $4::jsonb, updated_at = now(), updated_by = $5
+        WHERE id::text = $1 AND job_id = $2::uuid RETURNING *`,
+      [String(body.id), job.id, name, json, authUser?.name || null]);
+    if (!rows?.length) return resp(404, { ok: false, error: "That saved calculation is gone — it may have been deleted." });
+  } else {
+    rows = await neonWrite("loadCalcs.insert",
+      `INSERT INTO load_calcs (job_id, name, data, updated_by)
+       VALUES ($1::uuid, $2, $3::jsonb, $4) RETURNING *`,
+      [job.id, name, json, authUser?.name || null]);
+  }
+  return resp(200, { ok: true, calc: mapLoadCalc(rows[0]) });
+}
+
+async function handleDeleteLoadCalc(body) {
+  const id = body?.id;
+  if (!id) return resp(400, { ok: false, error: "Missing id." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Load calcs are unavailable (database not configured)." });
+  const rows = await neonWrite("loadCalcs.delete",
+    `DELETE FROM load_calcs WHERE id::text = $1 RETURNING id`, [String(id)]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Calculation not found." });
+  return resp(200, { ok: true });
+}
+
 /* ── Job checklists (docs/PLAN-job-checklists.md) ───────────────────────────
  * The Trello checklist a crew keeps per job — "Supplies from shop", "Punch
  * list" — brought into the app. Name a list, type items one per line, tick
@@ -16514,6 +16606,7 @@ export async function handler(event) {
       if (action === "jobPrintsDeleted")   return await handleJobPrintsDeleted(params);
       if (action === "panelSchedules")     return await handlePanelSchedules(params);
       if (action === "panelSchedule")      return await handlePanelSchedule(params);
+      if (action === "loadCalcs")          return await handleLoadCalcs(params);
       if (action === "jobChecklists")      return await handleJobChecklists(params);
       if (action === "jobChecklist")       return await handleJobChecklist(params);
       if (action === "jobDocs")            return await handleJobDocs(params);
@@ -16668,6 +16761,8 @@ export async function handler(event) {
       if (body.action === "createPanelSchedule")  return await handleCreatePanelSchedule(body, authUser);
       if (body.action === "savePanelSchedule")    return await handleSavePanelSchedule(body, authUser);
       if (body.action === "deletePanelSchedule")  return await handleDeletePanelSchedule(body);
+      if (body.action === "saveLoadCalc")         return await handleSaveLoadCalc(body, authUser);
+      if (body.action === "deleteLoadCalc")       return await handleDeleteLoadCalc(body);
       if (body.action === "createChecklist")      return await handleCreateChecklist(body, authUser);
       if (body.action === "addChecklistItem")     return await handleAddChecklistItem(body, authUser);
       if (body.action === "updateChecklistItem")  return await handleUpdateChecklistItem(body);

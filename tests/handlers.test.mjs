@@ -1853,6 +1853,38 @@ await test('panels: without DATABASE_URL they fail CLOSED, not soft', async () =
   eq((await POST('deletePanelSchedule', { panelId: 'p1' })).statusCode, 503, 'delete 503s');
 });
 
+// ── load calcs (All Charts tab 7, db/schema/076_load_calcs.sql) ──
+// Same offline reasoning as the panel tests: DATABASE_URL is unset, so a
+// handler that gets past authz and validation answers 503.
+// Owner's call 2026-09-21: the crew opens a job's calcs, only admin/office
+// change them — tighter than panel schedules on purpose.
+await test('load calcs: everyone reads, only admin/office save or delete', async () => {
+  mockTables = JOB_ONLY();
+  const save = { jobId: 'recJ1', name: 'Service', data: { sys: '480-3', lines: [] } };
+  for (const tok of [EMP_TOK, VIEWER_TOK, OFFICE_TOK, ADMIN_TOK]) {
+    ok((await GET('loadCalcs', { jobId: 'recJ1' }, tok)).statusCode !== 403, 'list readable');
+  }
+  eq((await POST('saveLoadCalc', save, EMP_TOK)).statusCode, 403, 'employee cannot save');
+  eq((await POST('saveLoadCalc', save, VIEWER_TOK)).statusCode, 403, 'viewer cannot save');
+  ok((await POST('saveLoadCalc', save, OFFICE_TOK)).statusCode !== 403, 'office saves');
+  ok((await POST('saveLoadCalc', save, ADMIN_TOK)).statusCode !== 403, 'admin saves');
+  eq((await POST('deleteLoadCalc', { id: 'c1' }, EMP_TOK)).statusCode, 403, 'employee cannot delete');
+  ok((await POST('deleteLoadCalc', { id: 'c1' }, OFFICE_TOK)).statusCode !== 403, 'office can delete');
+});
+
+await test('load calcs: a bad body is refused before the database, and it fails CLOSED', async () => {
+  mockTables = JOB_ONLY();
+  const ok1 = { jobId: 'recJ1', name: 'Service', data: { lines: [] } };
+  eq((await POST('saveLoadCalc', { ...ok1, jobId: '' })).statusCode, 400, 'job required');
+  eq((await POST('saveLoadCalc', { ...ok1, name: '  ' })).statusCode, 400, 'name required');
+  eq((await POST('saveLoadCalc', { ...ok1, data: null })).statusCode, 400, 'data required');
+  eq((await POST('saveLoadCalc', { ...ok1, data: { lines: 'x' } })).statusCode, 400, 'lines must be a list');
+  eq((await POST('saveLoadCalc', { ...ok1, data: { lines: new Array(501).fill({}) } })).statusCode, 400, 'too many loads');
+  eq((await POST('saveLoadCalc', ok1)).statusCode, 503, 'a good body with no database 503s');
+  eq((await GET('loadCalcs', { jobId: 'recJ1' })).statusCode, 503, 'list 503s');
+  eq((await POST('deleteLoadCalc', { id: 'c1' })).statusCode, 503, 'delete 503s');
+});
+
 // ── job checklists (docs/PLAN-job-checklists.md) ──
 // Same offline reasoning as the panel tests: DATABASE_URL is unset, so these
 // short-circuit to 503 and any "not 403" proves the tier without a database.

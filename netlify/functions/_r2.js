@@ -627,6 +627,41 @@ export function isPrintKey(jobId, key) {
   return String(key).startsWith(jobPrintsPrefix(jobId));
 }
 
+// ── Specs: a second list INSIDE the prints segment ─────────────────────────
+// Spec sheets (fixture cut sheets, gear submittals) were landing in Prints
+// beside the drawings, and a job with 40 PDFs in one list is a job where nobody
+// finds E-1. They get their own list, and it lives NESTED under _prints:
+//
+//   jobs/<id>/_prints/E-1.pdf                    a print
+//   jobs/<id>/_prints/_specs/LED Troffer.pdf     a spec
+//   jobs/<id>/_prints/_specs/_deleted/…          the specs bin
+//
+// Nested rather than a new top-level _specs segment because everything that
+// already keeps prints out of somewhere — the photo gallery (listJobPhotos),
+// the photo bin — then keeps specs out too, with no new exclusion anyone has
+// to remember. Same visibility as prints: every signed-in role reads it.
+//
+// The cost of nesting is that the PRINTS list must now skip _specs/, and every
+// prints helper must refuse a spec key, or a print delete could move a spec
+// into the prints bin. isJobFileKey does both.
+export const JOB_FILE_KINDS = ["prints", "specs"];
+
+export function jobFileKind(kind) {
+  return kind === "specs" ? "specs" : "prints";
+}
+
+export function jobFilesPrefix(jobId, kind = "prints") {
+  return jobFileKind(kind) === "specs"
+    ? `${jobPrintsPrefix(jobId)}_specs/`
+    : jobPrintsPrefix(jobId);
+}
+
+export function isJobFileKey(jobId, key, kind = "prints") {
+  const k = String(key);
+  if (!k.startsWith(jobFilesPrefix(jobId, kind))) return false;
+  return jobFileKind(kind) === "specs" || !k.startsWith(jobFilesPrefix(jobId, "specs"));
+}
+
 // Prints keep their ORIGINAL filename, unlike photos, which get a
 // server-generated one. "E-1 Rev B.pdf" is the revision system — renaming it
 // to 20260805-01-a3f9.pdf would throw away the only thing telling a crew which
@@ -675,16 +710,16 @@ export function sanitizePrintName(name) {
 //    reasoning as receipts, which are nested for the same reason.
 const PRINT_DELETED_SEGMENT = "_deleted/";
 
-export function isPrintDeletedKey(jobId, key) {
-  return String(key).startsWith(jobPrintsPrefix(jobId) + PRINT_DELETED_SEGMENT);
+export function isPrintDeletedKey(jobId, key, kind = "prints") {
+  return String(key).startsWith(jobFilesPrefix(jobId, kind) + PRINT_DELETED_SEGMENT);
 }
 
 // Mutating helpers refuse any key outside this job's PRINTS prefix — stricter
 // than assertKeyInJob, which would happily accept a photo key. A print delete
 // must never be able to point at the gallery.
-function assertKeyInPrints(jobId, key) {
+function assertKeyInPrints(jobId, key, kind = "prints") {
   const k = String(key || "");
-  if (!isPrintKey(jobId, k) || k.includes("..")) {
+  if (!isJobFileKey(jobId, k, kind) || k.includes("..")) {
     throw new R2Error("That print does not belong to this job", "KEY_OUTSIDE_JOB");
   }
   return k;
@@ -720,38 +755,44 @@ async function buildPrintList(objects, stamp) {
 // One job's prints, newest first, every URL pre-signed so the browser opens the
 // PDF straight from Cloudflare. No thumbnails: these are drawings, and the
 // browser's own viewer renders them better than any tile we could make.
-export async function listJobPrints(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const objects = await listByPrefix(jobPrintsPrefix(jobId), timeoutMs);
-  return await buildPrintList(objects.filter(o => !isPrintDeletedKey(jobId, o.key)), "uploadedAt");
+//
+// `kind` picks the list — "prints" (the default, and what every caller before
+// specs meant) or "specs". The prints listing is recursive over _prints/, so it
+// has to drop _specs/ itself; isJobFileKey does that.
+export async function listJobPrints(jobId, kind = "prints", timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(jobFilesPrefix(jobId, kind), timeoutMs);
+  return await buildPrintList(
+    objects.filter(o => isJobFileKey(jobId, o.key, kind) && !isPrintDeletedKey(jobId, o.key, kind)),
+    "uploadedAt");
 }
 
-export async function listDeletedJobPrints(jobId, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const objects = await listByPrefix(jobPrintsPrefix(jobId) + PRINT_DELETED_SEGMENT, timeoutMs);
+export async function listDeletedJobPrints(jobId, kind = "prints", timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const objects = await listByPrefix(jobFilesPrefix(jobId, kind) + PRINT_DELETED_SEGMENT, timeoutMs);
   return await buildPrintList(objects, "deletedAt");
 }
 
 // Soft delete: out of the list, into the nested bin, still recoverable. Uses
 // the single-object move — a print has no thumbnail to carry with it.
-export async function softDeleteJobPrint(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const k = assertKeyInPrints(jobId, key);
-  if (isPrintDeletedKey(jobId, k)) return { key: k, moved: false };
+export async function softDeleteJobPrint(jobId, key, kind = "prints", timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPrints(jobId, key, kind);
+  if (isPrintDeletedKey(jobId, k, kind)) return { key: k, moved: false };
   const filename = k.slice(k.lastIndexOf("/") + 1);
-  return await moveObject(k, jobPrintsPrefix(jobId) + PRINT_DELETED_SEGMENT + filename, timeoutMs);
+  return await moveObject(k, jobFilesPrefix(jobId, kind) + PRINT_DELETED_SEGMENT + filename, timeoutMs);
 }
 
-export async function restoreJobPrint(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const k = assertKeyInPrints(jobId, key);
-  if (!isPrintDeletedKey(jobId, k)) return { key: k, moved: false };
+export async function restoreJobPrint(jobId, key, kind = "prints", timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPrints(jobId, key, kind);
+  if (!isPrintDeletedKey(jobId, k, kind)) return { key: k, moved: false };
   const filename = k.slice(k.lastIndexOf("/") + 1);
-  return await moveObject(k, jobPrintsPrefix(jobId) + filename, timeoutMs);
+  return await moveObject(k, jobFilesPrefix(jobId, kind) + filename, timeoutMs);
 }
 
 // Permanent, no undo — and the only thing that actually reclaims storage, which
 // is why it exists. Refuses anything not already in the bin, so "delete
 // forever" can never be pointed at a live print by a bad key.
-export async function purgeJobPrint(jobId, key, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const k = assertKeyInPrints(jobId, key);
-  if (!isPrintDeletedKey(jobId, k)) {
+export async function purgeJobPrint(jobId, key, kind = "prints", timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const k = assertKeyInPrints(jobId, key, kind);
+  if (!isPrintDeletedKey(jobId, k, kind)) {
     throw new R2Error("Only prints already deleted can be permanently removed", "NOT_DELETED");
   }
   await deleteObject(k, timeoutMs);

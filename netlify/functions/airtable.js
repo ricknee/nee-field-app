@@ -44,7 +44,7 @@ import {
   thumbKeyFor, jobPrefix, albumSegment, sanitizeAlbum,
   moveJobPhoto, softDeleteJobPhoto, restoreJobPhoto, purgeJobPhoto,
   listDeletedJobPhotos, listJobDocs,
-  jobPrintsPrefix, sanitizePrintName, listJobPrints, listDeletedJobPrints,
+  jobFilesPrefix, jobFileKind, sanitizePrintName, listJobPrints, listDeletedJobPrints,
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
   powerCoSpecsPrefix, listPowerCoSpecs, listDeletedPowerCoSpecs,
   softDeletePowerCoSpec, restorePowerCoSpec, purgePowerCoSpec,
@@ -15562,15 +15562,23 @@ async function handleJobDocs(params) {
  * This does NOT replace pCloud. pCloud stays the office document tree; this is
  * a field-accessible copy of the drawings the crew actually needs.
  */
+//
+// Every prints action takes an optional `kind`: "prints" (the default, so a
+// client that never sends it keeps getting exactly what it always got) or
+// "specs" — the second list, for cut sheets and submittals, nested at
+// jobs/<id>/_prints/_specs/. Same tiers, same bin, same machinery; see the
+// note above jobFilesPrefix in _r2.js. Anything else collapses to "prints".
 async function handleJobPrints(params) {
   const jobId = params?.jobId;
+  const kind = jobFileKind(params?.kind);
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", prints: [] });
 
   if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
-    return resp(200, { ok: true, available: true, prints: await listJobPrints(jobId) });
+    const [prints, order] = await Promise.all([listJobPrints(jobId, kind), readJobFileOrder(jobId, kind)]);
+    return resp(200, { ok: true, available: true, kind, prints: applyJobFileOrder(prints, order) });
   } catch (e) {
     return resp(200, { ok: true, available: false, ...r2Unavailable(e, "jobPrints"), prints: [] });
   }
@@ -15579,13 +15587,14 @@ async function handleJobPrints(params) {
 // The prints bin. Admin/office only, matching the restore/purge actions on it.
 async function handleJobPrintsDeleted(params) {
   const jobId = params?.jobId;
+  const kind = jobFileKind(params?.kind);
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!r2Enabled()) return resp(200, { ok: true, available: false, reason: "not-configured", prints: [] });
 
   if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
 
   try {
-    return resp(200, { ok: true, available: true, prints: await listDeletedJobPrints(jobId) });
+    return resp(200, { ok: true, available: true, prints: await listDeletedJobPrints(jobId, kind) });
   } catch (e) {
     return resp(200, { ok: true, available: false, ...r2Unavailable(e, "jobPrintsDeleted"), prints: [] });
   }
@@ -15622,6 +15631,7 @@ function printContentType(raw, name) {
 // happens. Removing one is admin/office — see _ADMIN_OFFICE_POSTS.
 async function handleJobPrintUploadUrls(body) {
   const jobId = body?.jobId;
+  const kind = jobFileKind(body?.kind);
   const files = Array.isArray(body?.files) ? body.files : [];
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
   if (!files.length) return resp(400, { ok: false, error: "No files requested." });
@@ -15648,7 +15658,7 @@ async function handleJobPrintUploadUrls(body) {
       if (seen.has(name.toLowerCase())) name = `${i + 1}-${name}`;
       seen.add(name.toLowerCase());
 
-      const key = `${jobPrintsPrefix(jobId)}${name}`;
+      const key = `${jobFilesPrefix(jobId, kind)}${name}`;
       return { key, name, putUrl: await presignPut(key, contentType), contentType };
     }));
     return resp(200, { ok: true, uploads });
@@ -15660,18 +15670,74 @@ async function handleJobPrintUploadUrls(body) {
 
 // Soft delete — out of the list, into the prints bin, still restorable.
 async function handleDeleteJobPrints(body) {
-  return await bulkPhotoOp(body, "deleteJobPrints", (jobId, key) => softDeleteJobPrint(jobId, key), "prints");
+  const kind = jobFileKind(body?.kind);
+  return await bulkPhotoOp(body, "deleteJobPrints", (jobId, key) => softDeleteJobPrint(jobId, key, kind), kind);
 }
 
 async function handleRestoreJobPrints(body) {
-  return await bulkPhotoOp(body, "restoreJobPrints", (jobId, key) => restoreJobPrint(jobId, key), "prints");
+  const kind = jobFileKind(body?.kind);
+  return await bulkPhotoOp(body, "restoreJobPrints", (jobId, key) => restoreJobPrint(jobId, key, kind), kind);
 }
 
 // Permanent. This is the one that actually reclaims storage — a binned print
 // still costs, and the prints bin is deliberately outside the lifecycle rule
 // that expires deleted photos after 30 days, so nothing here leaves on its own.
 async function handlePurgeJobPrints(body) {
-  return await bulkPhotoOp(body, "purgeJobPrints", (jobId, key) => purgeJobPrint(jobId, key), "prints");
+  const kind = jobFileKind(body?.kind);
+  return await bulkPhotoOp(body, "purgeJobPrints", (jobId, key) => purgeJobPrint(jobId, key, kind), kind);
+}
+
+/* ── Hand-set order of a Prints / Specs list (db/schema/077) ────────────────
+ * The one thing about prints R2 cannot hold. Stored as FILENAMES, because a
+ * print's key already is its name — see the schema file for how a stale list
+ * degrades (it does, harmlessly, in both directions).
+ *
+ * The READ fails soft: an unreachable Neon shows the list newest-first, which
+ * is what it showed before ordering existed, and the drawings still open. The
+ * WRITE fails closed (neonWrite) — telling someone their order was saved when
+ * it wasn't would be found out by the next person to open the list.
+ */
+const JOB_FILE_ORDER_MAX = 500;
+
+async function readJobFileOrder(jobId, kind) {
+  const q = await neonQuery(
+    `SELECT names FROM job_file_order WHERE job_key = $1 AND kind = $2`,
+    [String(jobId), kind]);
+  if (q?.error) console.error(`readJobFileOrder: ignored, showing newest first — ${q.error}`);
+  return q?.rows?.[0]?.names || [];
+}
+
+// Files nobody has placed yet go FIRST (they arrive newest-first from R2), so
+// a fresh upload is on screen to be dragged; placed files follow in their saved
+// order. Matching is case-insensitive, the same way the upload clash check is.
+function applyJobFileOrder(prints, names) {
+  if (!names?.length) return prints;
+  const pos = new Map(names.map((n, i) => [String(n).toLowerCase(), i]));
+  const unplaced = prints.filter(p => !pos.has(String(p.name).toLowerCase()));
+  const placed = prints.filter(p => pos.has(String(p.name).toLowerCase()))
+    .sort((a, b) => pos.get(String(a.name).toLowerCase()) - pos.get(String(b.name).toLowerCase()));
+  return [...unplaced, ...placed];
+}
+
+// Any non-viewer, like upload: whoever puts the drawings on the job is who
+// knows E-1 comes before E-2. Nothing is moved in R2 — only the list changes.
+async function handleReorderJobPrints(body, authUser) {
+  const jobId = body?.jobId;
+  const kind = jobFileKind(body?.kind);
+  const names = Array.isArray(body?.names) ? body.names.map(n => String(n || "").trim()).filter(Boolean) : null;
+  if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
+  if (!names) return resp(400, { ok: false, error: "Missing names." });
+  if (names.length > JOB_FILE_ORDER_MAX) return resp(400, { ok: false, error: "Too many files to order." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Ordering is unavailable (database not configured)." });
+  if (!(await jobExists(jobId))) return resp(404, { ok: false, error: "Job not found." });
+
+  await neonWrite("jobFileOrder.save",
+    `INSERT INTO job_file_order (job_key, kind, names, updated_by)
+     VALUES ($1, $2, $3::text[], $4)
+     ON CONFLICT (job_key, kind) DO UPDATE
+       SET names = EXCLUDED.names, updated_at = now(), updated_by = EXCLUDED.updated_by`,
+    [String(jobId), kind, names.map(n => n.slice(0, 200)), authUser?.name || null]);
+  return resp(200, { ok: true });
 }
 
 /* ── Power company specs ────────────────────────────────────────────────────
@@ -16774,6 +16840,7 @@ export async function handler(event) {
       if (body.action === "deleteJobPrints")      return await handleDeleteJobPrints(body);
       if (body.action === "restoreJobPrints")     return await handleRestoreJobPrints(body);
       if (body.action === "purgeJobPrints")       return await handlePurgeJobPrints(body);
+      if (body.action === "reorderJobPrints")     return await handleReorderJobPrints(body, authUser);
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       // authUser is passed so the handler can refuse a self-lockout — the

@@ -1634,6 +1634,43 @@ await test('prints: purge refuses anything still live', async () => {
   ok(threw && threw.code === 'KEY_OUTSIDE_JOB', `another job's print is refused (got ${threw && threw.code})`);
 });
 
+await test('specs: a second list nested in _prints, kept out of Prints and out of the gallery', async () => {
+  const r2 = await import('../netlify/functions/_r2.js');
+  eq(r2.jobFilesPrefix('recJ1', 'specs'), 'jobs/recJ1/_prints/_specs/', 'specs prefix');
+  eq(r2.jobFilesPrefix('recJ1'), 'jobs/recJ1/_prints/', 'default is prints');
+  eq(r2.jobFileKind('bogus'), 'prints', 'unknown kind collapses to prints');
+  const spec = 'jobs/recJ1/_prints/_specs/LED Troffer.pdf';
+  // Nested under _prints, so every existing prints exclusion (the photo
+  // gallery, the photo bin) covers specs with no new rule to remember.
+  ok(r2.isPrintKey('recJ1', spec), 'inside the prints segment');
+  // ...but the prints LIST and every prints mutation must refuse it, or a
+  // print delete could move a spec into the prints bin.
+  ok(!r2.isJobFileKey('recJ1', spec, 'prints'), 'not a print');
+  ok(r2.isJobFileKey('recJ1', spec, 'specs'), 'is a spec');
+  ok(!r2.isJobFileKey('recJ1', 'jobs/recJ1/_prints/E-1.pdf', 'specs'), 'a print is not a spec');
+  // A print literally named "_specs" has no slash, so it is not a folder.
+  ok(r2.isJobFileKey('recJ1', 'jobs/recJ1/_prints/_specs', 'prints'), 'a file named _specs is still a print');
+  ok(r2.isPrintDeletedKey('recJ1', 'jobs/recJ1/_prints/_specs/_deleted/x.pdf', 'specs'), 'specs bin');
+  ok(!r2.isPrintDeletedKey('recJ1', 'jobs/recJ1/_prints/_specs/_deleted/x.pdf', 'prints'), 'not the prints bin');
+  let threw = null;
+  try { await r2.softDeleteJobPrint('recJ1', spec, 'prints'); } catch (e) { threw = e; }
+  ok(threw && threw.code === 'KEY_OUTSIDE_JOB', `a prints delete refuses a spec (got ${threw && threw.code})`);
+  threw = null;
+  try { await r2.purgeJobPrint('recJ1', spec, 'specs'); } catch (e) { threw = e; }
+  ok(threw && threw.code === 'NOT_DELETED', `specs purge refuses a live spec (got ${threw && threw.code})`);
+});
+
+await test('reorderJobPrints: viewer blocked, employee allowed by tier', async () => {
+  setR2();
+  mockTables = JOB_ONLY();
+  const body = { jobId: 'recJ1', kind: 'specs', names: ['b.pdf', 'a.pdf'] };
+  eq((await POST('reorderJobPrints', body, VIEWER_TOK)).statusCode, 403, 'viewer is read-only');
+  // Offline the write can't land, but it must fail on the database, not authz
+  // — whoever uploads the drawings is who knows E-1 comes before E-2.
+  ok((await POST('reorderJobPrints', body, EMP_TOK)).statusCode !== 403, 'employee allowed');
+  eq((await POST('reorderJobPrints', { jobId: 'recJ1' })).statusCode, 400, 'names required');
+});
+
 await test('recycle-bin actions: admin/office only, viewer and employee blocked', async () => {
   setR2();
   mockTables = JOB_ONLY();

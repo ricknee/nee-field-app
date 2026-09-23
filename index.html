@@ -3480,13 +3480,21 @@
           <div class="admin-only hidden" id="piEditToggleRow" style="display:flex; justify-content:flex-end; margin-bottom:8px;">
             <button id="piEditBtn" type="button" class="btn btn-sm" style="font-size:12px; padding:6px 12px;">✏ Edit</button>
           </div>
-          <!-- Save bar — visible only while in edit mode. Mirrors
-               #statusChangeRow exactly so the two save bars feel like
-               one UI in two places. Not tagged admin-only because the
-               auto-toggle would un-hide it for admins on login; instead
-               only the admin-only Edit button can reveal this bar. -->
+          <!-- The tab's ONE save bar (2026-09-23). It used to belong to the
+               edit panel alone, while City Tax, Bills as and On the clock each
+               carried their own Save — four buttons doing the same verb on one
+               screen, and no way to tell which one your change belonged to.
+               Now every ordinary edit on this tab is pending until this bar is
+               pressed, and the button NAMES what is pending.
+
+               Prevailing wage is deliberately NOT here: saving it re-costs
+               every hour ever booked to the job. See its own button.
+
+               Appears only when something has actually changed — owner's call.
+               Not tagged admin-only because the auto-toggle would un-hide it
+               for admins on login; refreshPiSaveBar decides instead. -->
           <div class="hidden" id="piSaveBar" style="align-items:center; gap:10px; padding: 10px 0 14px; flex-wrap:wrap;">
-            <label style="font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap;">Project Info:</label>
+            <label style="font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap;">Unsaved:</label>
             <button id="piSaveBtn" class="btn btn-primary btn-sm" type="button" style="font-size:13px;">Save</button>
             <span id="piSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
             <span id="piSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
@@ -4420,7 +4428,9 @@
    *  POWER CO PICKERS ............. 5096  contact-dropdown, company picker (5132),
    *                                       contact picker (5249), add-co/contact modals
    *                                       (5381), renderTypeahead (5576), save (5745)
-   *  JOB INFO EDIT / SAVE ......... 5815  address card, edit mode, saveJobInfo (5898),
+   *  JOB INFO EDIT / SAVE ......... 5815  address card, edit mode, the tab's ONE
+   *                                       save bar (PI_SECTIONS / refreshPiSaveBar /
+   *                                       savePiPending) and its section saves,
    *                                       handleStatusChange (5964)
    *  INSPECTIONS .................. 6001  loadInspections (6007), vendors (6198),
    *                                       agencies (6332), inspectors (6486), add-new
@@ -10512,9 +10522,6 @@
           <option value="">— Not set —</option>
           ${PR_CITY_TAXES.map(t => `<option value="${esc(t)}" ${t === cur ? "selected" : ""}>${esc(t)}</option>`).join("")}
         </select>
-        <button id="jobCityTaxSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
-        <span id="jobCityTaxSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
-        <span id="jobCityTaxSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
         <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
           Where work on this job is taxed. The mailing address doesn't decide it — a job can be
           outside city limits and owe nothing. Travel time is always “A No Tax”.
@@ -10550,9 +10557,6 @@
           <option value="Time &amp; Material" ${String(job.type || "") === "Time & Material" ? "selected" : ""}>Time &amp; Material — actual labor + materials</option>
           <option value="Service Calls"    ${String(job.type || "") === "Service Calls"    ? "selected" : ""}>Service Calls</option>
         </select>
-        <button id="jobTypeSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
-        <span id="jobTypeMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
-        <span id="jobTypeErr" style="font-size:12px; color:var(--red); display:none;"></span>
         <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
           Decides what a NEW invoice is built from. Invoices already sent are unaffected —
           they are their own record and nothing here rewrites them.
@@ -10574,9 +10578,6 @@
             <option value="admin"  ${job.clockVisibility === "admin"  ? "selected" : ""}>Overhead — always show, admin only</option>
             <option value="hidden" ${job.clockVisibility === "hidden" ? "selected" : ""}>Never show on the clock</option>
           </select>
-          <button id="jobClockVisSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save</button>
-          <span id="jobClockVisMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
-          <span id="jobClockVisErr" style="font-size:12px; color:var(--red); display:none;"></span>
           <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
             For overhead buckets like Shop Work and Office Work, which are jobs only because the clock
             has to pick something. Setting this means their status no longer decides whether the crew
@@ -10654,7 +10655,8 @@
             <div id="jobPwPreview" style="flex-basis:100%; font-size:12px; color:var(--muted); margin-top:8px;"></div>
           </div>
           <div style="flex-basis:100%; display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap;">
-            <button id="jobPwSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save prevailing wage</button>
+            
+            <button id="jobPwSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save &amp; re-cost every hour on this job</button>
             <span id="jobPwMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
             <span id="jobPwErr" style="font-size:12px; color:var(--red); display:none;"></span>
           </div>
@@ -10743,97 +10745,198 @@
     };
   }
 
-  function wireJobCityTaxBar(job) {
-    // How the job bills. Wired here alongside the other two job settings so all
-    // three live in one place.
-    const typeSel = $("jobTypeSelect");
-    const typeBtn = $("jobTypeSaveBtn");
-    if (typeSel && typeBtn) {
-      typeBtn.onclick = async () => {
-        const msg = $("jobTypeMsg"), terr = $("jobTypeErr");
-        msg.style.display = "none"; terr.style.display = "none";
-        typeBtn.disabled = true;
-        try {
-          const value = typeSel.value || null;
-          await apiPost("updateJobType", { jobId: job.id, jobType: value });
-          // ⚠ Keep the in-memory job in step. The invoice builder reads job.type
-          // to decide Contract vs T&M, so without this you would change the
-          // setting, build an invoice in the same session, and get the OLD shape
-          // back with nothing on screen to explain why.
-          job.type = value;
-          const idx = (state.jobs || []).findIndex(j => j.id === job.id);
-          if (idx >= 0) state.jobs[idx].type = value;
-          msg.style.display = "inline";
-          setTimeout(() => { msg.style.display = "none"; }, 2500);
-        } catch (e) {
-          terr.textContent = e.message || "Couldn't save";
-          terr.style.display = "inline";
-        } finally { typeBtn.disabled = false; }
-      };
-    }
+  /* ── ONE SAVE BAR FOR THE PROJECT INFO TAB ───────────────────────────────
+   * Four settings live on this tab and all of them used to carry their own
+   * Save button: the edit panel (address/phone/email/notes/completion date),
+   * City Tax, Bills as, and On the clock. Same verb, four buttons, and the
+   * inline ones sat right beside the panel's — so which button your change
+   * belonged to was a guess.
+   *
+   * Each section below knows three things: whether its control differs from
+   * the job on screen (dirty), what to call that in a sentence (label), and
+   * how to save itself (save). The bar shows when anything is dirty and names
+   * it; pressing it runs each dirty section in turn.
+   *
+   * ⚠ A section's save() must also update the in-memory job — state.selected
+   * AND its row in state.jobs. Several screens read those without re-fetching
+   * (the invoice builder reads job.type, the clock reads cityTax), so a save
+   * that only reaches the server looks like it did nothing until a reload.
+   *
+   * ⛔ Prevailing wage is NOT a section here. Saving it restates every hour
+   * ever booked to the job, and that must stay a button someone meant to press.
+   */
+  function piJob() { return state.selected || null; }
 
-    const sel = $("jobCityTaxSelect");
-    const btn = $("jobCityTaxSaveBtn");
-    if (!sel || !btn) return;
-    btn.onclick = async () => {
-      const msg = $("jobCityTaxSaveMsg"), err = $("jobCityTaxSaveErr");
-      msg.style.display = "none"; err.style.display = "none";
-      btn.disabled = true;
-      try {
-        const value = sel.value || null;
-        await apiPost("updateJobCityTax", { jobId: job.id, cityTax: value });
-        // Keep the in-memory job in step so the clock picks it up without a reload.
-        job.cityTax = value;
-        const idx = (state.jobs || []).findIndex(j => j.id === job.id);
-        if (idx >= 0) state.jobs[idx].cityTax = value;
-        const cur = $("jobCityTaxCurrent");
-        if (cur) {
-          cur.textContent = value == null ? "not set" : value;
-          cur.style.color = value == null ? "var(--muted)" : "var(--accent)";
-        }
-        msg.style.display = "inline";
-        setTimeout(() => { msg.style.display = "none"; }, 2500);
-      } catch (e) {
-        err.textContent = e.message || "Couldn't save";
-        err.style.display = "inline";
-      } finally { btn.disabled = false; }
+  function piSyncJob(patch) {
+    const job = piJob();
+    if (!job) return;
+    Object.assign(job, patch);
+    const idx = (state.jobs || []).findIndex(j => j.id === job.id);
+    if (idx >= 0) Object.assign(state.jobs[idx], patch);
+  }
+
+  // The edit panel's values, normalised the same way the save does — so the
+  // dirty check and the write can never disagree about what "changed" means.
+  function piInfoValues() {
+    return {
+      customerStreet: $("piEditStreet").value.trim(),
+      customerCity:   $("piEditCity").value.trim(),
+      customerState:  $("piEditState").value.trim().toUpperCase(),
+      customerZip:    $("piEditZip").value.trim(),
+      customerPhone:  $("piEditPhone").value.trim(),
+      customerEmail:  $("piEditEmail").value.trim(),
+      notes:          $("piEditNotes").value,
+      completionDate: $("piEditCompletionDate").value,   // "" or YYYY-MM-DD
     };
+  }
 
-    const visSel = $("jobClockVisSelect");
-    const visBtn = $("jobClockVisSaveBtn");
-    if (visSel && visBtn) {
-      visBtn.onclick = async () => {
-        const msg = $("jobClockVisMsg"), verr = $("jobClockVisErr");
-        msg.style.display = "none"; verr.style.display = "none";
-        visBtn.disabled = true;
-        try {
-          const value = visSel.value || null;
-          await apiPost("updateJobClockVisibility", { jobId: job.id, visibility: value });
-          // Keep the in-memory job in step so the clock picker reflects it without
-          // a reload — otherwise you'd set it and it wouldn't appear to work.
-          job.clockVisibility = value;
-          const idx = (state.jobs || []).findIndex(j => j.id === job.id);
-          if (idx >= 0) state.jobs[idx].clockVisibility = value;
-          // Repaint the collapsed summary, which shows the current setting — it
-          // is rendered once and would otherwise keep announcing the old value
-          // until the next job switch, i.e. exactly when you'd be checking it.
-          const sum = document.querySelector("#jobClockVisBox > summary");
-          if (sum) {
-            const label = value === "all"    ? "Overhead — everyone"
-                        : value === "admin"  ? "Overhead — admin only"
-                        : value === "hidden" ? "Never shown"
-                        :                      "Normal";
-            sum.innerHTML = `⏱ On the clock: <b>${label}</b>${value ? "" : " — the job's status decides"}`;
-            sum.style.color = value ? "var(--accent)" : "var(--muted)";
-          }
-          msg.style.display = "inline";
-          setTimeout(() => { msg.style.display = "none"; }, 2500);
-        } catch (e) {
-          verr.textContent = e.message || "Couldn't save";
-          verr.style.display = "inline";
-        } finally { visBtn.disabled = false; }
-      };
+  const PI_SECTIONS = [
+    {
+      key: "info",
+      label: "project info",
+      dirty() {
+        const panel = $("piEditPanel"), job = piJob();
+        // Not in edit mode: the panel's inputs are stale by definition.
+        if (!panel || panel.classList.contains("hidden") || !job) return false;
+        const v = piInfoValues();
+        return Object.keys(v).some(k => v[k] !== (job[k] || ""));
+      },
+      save: savePiInfo,
+    },
+    {
+      key: "cityTax",
+      label: "city tax",
+      dirty() {
+        const sel = $("jobCityTaxSelect"), job = piJob();
+        return !!sel && !!job && (sel.value || null) !== (job.cityTax || null);
+      },
+      save: savePiCityTax,
+    },
+    {
+      key: "type",
+      label: "bills as",
+      dirty() {
+        const sel = $("jobTypeSelect"), job = piJob();
+        return !!sel && !!job && (sel.value || null) !== (job.type || null);
+      },
+      save: savePiJobType,
+    },
+    {
+      key: "clock",
+      label: "on the clock",
+      dirty() {
+        const sel = $("jobClockVisSelect"), job = piJob();
+        return !!sel && !!job && (sel.value || null) !== (job.clockVisibility || null);
+      },
+      save: savePiClockVis,
+    },
+  ];
+
+  function piPending() {
+    return PI_SECTIONS.filter(sec => { try { return sec.dirty(); } catch { return false; } });
+  }
+
+  // Called from every control on the tab, and after every save. The bar is the
+  // only thing on screen that says there is unsaved work, so it has to be right
+  // after a re-render as well as after a keystroke.
+  function refreshPiSaveBar() {
+    const bar = $("piSaveBar"), btn = $("piSaveBtn");
+    if (!bar || !btn) return;
+    const pending = piPending();
+    if (!pending.length || !isAdmin()) { bar.classList.add("hidden"); return; }
+    btn.textContent = `Save — ${pending.map(p => p.label).join(", ")}`;
+    bar.classList.remove("hidden");
+    $("piSaveMsg").style.display = "none";
+    $("piSaveErr").style.display = "none";
+  }
+
+  // The one button. Runs each dirty section in turn rather than in parallel:
+  // these are separate endpoints and a half-applied save is easier to reason
+  // about — and to report — when it stops at the first failure.
+  async function savePiPending() {
+    const btn = $("piSaveBtn"), msg = $("piSaveMsg"), err = $("piSaveErr");
+    const pending = piPending();
+    if (!pending.length) return;
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    msg.style.display = "none";
+    err.style.display = "none";
+    const done = [];
+    try {
+      for (const sec of pending) { await sec.save(); done.push(sec.label); }
+      msg.textContent = `✓ Saved ${done.join(", ")}`;
+      msg.style.display = "inline";
+      setTimeout(() => { msg.style.display = "none"; }, 2500);
+      // Leaving edit mode repaints the read-only cards and re-renders the
+      // setting bars, which resets every control to what was just saved.
+      if (done.includes("project info")) exitEditMode();
+    } catch (e) {
+      // Name what DID land. "Couldn't save" over a half-applied change is how
+      // someone re-enters the two settings that already saved.
+      err.textContent = done.length
+        ? `✗ Saved ${done.join(", ")} — then failed: ${e.message || e}`
+        : `✗ Error: ${e.message || e}`;
+      err.style.display = "inline";
+    } finally {
+      btn.disabled = false;
     }
+    refreshPiSaveBar();
+  }
+
+  async function savePiCityTax() {
+    const job = piJob(), sel = $("jobCityTaxSelect");
+    const value = sel.value || null;
+    await apiPost("updateJobCityTax", { jobId: job.id, cityTax: value });
+    // Keep the in-memory job in step so the clock picks it up without a reload.
+    piSyncJob({ cityTax: value });
+    const cur = $("jobCityTaxCurrent");
+    if (cur) {
+      cur.textContent = value == null ? "not set" : value;
+      cur.style.color = value == null ? "var(--muted)" : "var(--accent)";
+    }
+  }
+
+  async function savePiJobType() {
+    const job = piJob(), sel = $("jobTypeSelect");
+    const value = sel.value || null;
+    await apiPost("updateJobType", { jobId: job.id, jobType: value });
+    // ⚠ Keep the in-memory job in step. The invoice builder reads job.type to
+    // decide Contract vs T&M, so without this you would change the setting,
+    // build an invoice in the same session, and get the OLD shape back with
+    // nothing on screen to explain why.
+    piSyncJob({ type: value });
+  }
+
+  async function savePiClockVis() {
+    const job = piJob(), sel = $("jobClockVisSelect");
+    const value = sel.value || null;
+    await apiPost("updateJobClockVisibility", { jobId: job.id, visibility: value });
+    // Keep the in-memory job in step so the clock picker reflects it without a
+    // reload — otherwise you'd set it and it wouldn't appear to work.
+    piSyncJob({ clockVisibility: value });
+    // Repaint the collapsed summary, which shows the current setting — it is
+    // rendered once and would otherwise keep announcing the old value until the
+    // next job switch, i.e. exactly when you'd be checking it.
+    const sum = document.querySelector("#jobClockVisBox > summary");
+    if (sum) {
+      const label = value === "all"    ? "Overhead — everyone"
+                  : value === "admin"  ? "Overhead — admin only"
+                  : value === "hidden" ? "Never shown"
+                  :                      "Normal";
+      sum.innerHTML = `⏱ On the clock: <b>${label}</b>${value ? "" : " — the job's status decides"}`;
+      sum.style.color = value ? "var(--accent)" : "var(--muted)";
+    }
+  }
+
+  // The three setting bars no longer save themselves — they just report that
+  // they are dirty, and the shared bar does the rest. Re-wired on every render
+  // because the bars are innerHTML'd per job.
+  function wireJobCityTaxBar(job) {
+    ["jobCityTaxSelect", "jobTypeSelect", "jobClockVisSelect"].forEach(id => {
+      const el = $(id);
+      if (el) el.onchange = refreshPiSaveBar;
+    });
+    refreshPiSaveBar();
   }
 
   async function wireBillableRateBar(job) {
@@ -12486,8 +12589,9 @@
     $("piCompletionDateView").classList.add("hidden");
     $("piEditPanel").classList.remove("hidden");
 
-    // Reveal the Save bar; flip the Edit button label.
-    $("piSaveBar").classList.remove("hidden");
+    // The bar is NOT revealed here any more: it appears when something is
+    // actually changed, which is now true of the inline settings too.
+    refreshPiSaveBar();
     const editBtn = $("piEditBtn");
     editBtn.textContent = "✕ Cancel";
     editBtn.dataset.mode = "edit";
@@ -12522,6 +12626,9 @@
       editBtn.dataset.mode = "view";
       editBtn.disabled = false;
     }
+    // Cancel discards the panel AND any un-saved setting change, because
+    // refreshJobCityTaxView has just re-rendered those controls from the job.
+    refreshPiSaveBar();
   }
 
   function handleEditToggle() {
@@ -12534,71 +12641,34 @@
     }
   }
 
-  async function saveJobInfo() {
-    if (!state.selected) return;
-    const job = state.selected;
-    const btn = $("piSaveBtn");
-    const msg = $("piSaveMsg");
-    const err = $("piSaveErr");
+  // One section of the tab, not the whole button: the bar owns the button
+  // state and the messages, this owns the write and the local repaint.
+  async function savePiInfo() {
+    const job = piJob();
+    if (!job) return;
+    const v = piInfoValues();
 
-    const customerStreet = $("piEditStreet").value.trim();
-    const customerCity   = $("piEditCity").value.trim();
-    const customerState  = $("piEditState").value.trim().toUpperCase();
-    const customerZip    = $("piEditZip").value.trim();
-    const customerPhone  = $("piEditPhone").value.trim();
-    const customerEmail  = $("piEditEmail").value.trim();
-    const notes          = $("piEditNotes").value;
-    const completionDate = $("piEditCompletionDate").value; // "" or YYYY-MM-DD
+    await apiPost("updateJobInfo", { jobId: job.id, ...v });
 
-    btn.disabled = true;
-    btn.textContent = "Saving…";
-    msg.style.display = "none";
-    err.style.display = "none";
+    // Update local state so subsequent reads (and re-entering edit
+    // mode) see the saved values.
+    piSyncJob(v);
+    // Reconstruct the formula-computed Job Address - Full client-side
+    // so the read-only card refreshes instantly.
+    piSyncJob({ address: buildJobAddress(v.customerStreet, v.customerCity, v.customerState, v.customerZip) });
 
-    try {
-      await apiPost("updateJobInfo", {
-        jobId: job.id,
-        customerStreet, customerCity, customerState, customerZip,
-        customerPhone, customerEmail, notes, completionDate
-      });
-
-      // Update local state so subsequent reads (and re-entering edit
-      // mode) see the saved values.
-      job.customerStreet = customerStreet;
-      job.customerCity   = customerCity;
-      job.customerState  = customerState;
-      job.customerZip    = customerZip;
-      job.customerPhone  = customerPhone;
-      job.customerEmail  = customerEmail;
-      job.notes          = notes;
-      job.completionDate = completionDate;
-      // Reconstruct the formula-computed Job Address - Full client-side
-      // so the read-only card refreshes instantly.
-      job.address = buildJobAddress(customerStreet, customerCity, customerState, customerZip);
-
-      // Mirror the saved values back to the read-only displays.
-      const piPhEl = $("piCustomerPhone");
-      if (job.customerPhone) {
-        piPhEl.innerHTML = `<a href="tel:${esc(job.customerPhone)}">${esc(job.customerPhone)}</a>`;
-      } else { piPhEl.textContent = "—"; }
-      const piEmEl = $("piCustomerEmail");
-      if (job.customerEmail) {
-        piEmEl.innerHTML = `<a href="mailto:${esc(job.customerEmail)}">${esc(job.customerEmail)}</a>`;
-      } else { piEmEl.textContent = "—"; }
-      refreshAddressCard();
-      const notesEl = $("piNotesText");
-      if (notesEl) notesEl.textContent = job.notes && job.notes.trim() ? job.notes : "—";
-
-      msg.style.display = "inline";
-      setTimeout(() => { msg.style.display = "none"; }, 2500);
-      exitEditMode();
-    } catch(e) {
-      err.textContent = "✗ Error: " + (e.message || e);
-      err.style.display = "inline";
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Save";
-    }
+    // Mirror the saved values back to the read-only displays.
+    const piPhEl = $("piCustomerPhone");
+    if (job.customerPhone) {
+      piPhEl.innerHTML = `<a href="tel:${esc(job.customerPhone)}">${esc(job.customerPhone)}</a>`;
+    } else { piPhEl.textContent = "—"; }
+    const piEmEl = $("piCustomerEmail");
+    if (job.customerEmail) {
+      piEmEl.innerHTML = `<a href="mailto:${esc(job.customerEmail)}">${esc(job.customerEmail)}</a>`;
+    } else { piEmEl.textContent = "—"; }
+    refreshAddressCard();
+    const notesEl = $("piNotesText");
+    if (notesEl) notesEl.textContent = job.notes && job.notes.trim() ? job.notes : "—";
   }
 
   // ── STATUS CHANGE (admin) ──
@@ -16155,7 +16225,16 @@
     const piEditBtn = $("piEditBtn");
     if (piEditBtn) piEditBtn.addEventListener("click", handleEditToggle);
     const piSaveBtn = $("piSaveBtn");
-    if (piSaveBtn) piSaveBtn.addEventListener("click", saveJobInfo);
+    if (piSaveBtn) piSaveBtn.addEventListener("click", savePiPending);
+    // The edit panel's inputs are static markup, so these bind once. Every one
+    // of them has to report, or the bar would miss the only field you touched.
+    ["piEditStreet", "piEditCity", "piEditState", "piEditZip", "piEditPhone",
+     "piEditEmail", "piEditNotes", "piEditCompletionDate"].forEach(id => {
+      const el = $(id);
+      if (!el) return;
+      el.addEventListener("input", refreshPiSaveBar);
+      el.addEventListener("change", refreshPiSaveBar);
+    });
     // CRITICAL: openNewProjectModal is a window.X = ... assignment that
     // hasn't executed yet at this point in source order, so a bare
     // identifier reference would ReferenceError and halt the rest of

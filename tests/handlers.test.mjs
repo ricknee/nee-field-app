@@ -7528,8 +7528,44 @@ await test("updateJobType: the spellings are the stored ones, and it is admin+of
   // ⚠ The invoice builder reads job.type, so the in-memory copy must follow the
   // save — otherwise you change the setting, build an invoice in the same
   // session, and get the old shape with nothing to explain why.
-  ok(/job\.type = value;[\s\S]{0,160}state\.jobs\[idx\]\.type = value;/.test(html),
+  //
+  // Since the tab's saves were merged behind one button (2026-09-23) this runs
+  // through piSyncJob, so BOTH halves are asserted: that the save calls it, and
+  // that it reaches state.jobs as well as state.selected. Updating only the
+  // selected job is the same bug wearing a helper's name.
+  ok(/apiPost\("updateJobType"[\s\S]{0,400}piSyncJob\(\{ type: value \}\)/.test(html),
      "the client updates its cached job after saving");
+  ok(/function piSyncJob\(patch\) \{[\s\S]{0,400}Object\.assign\(job, patch\)[\s\S]{0,300}Object\.assign\(state\.jobs\[idx\], patch\)/.test(html),
+     "and piSyncJob patches the selected job AND its row in the list");
+});
+
+// The Project Info tab carried four Save buttons doing the same verb — the
+// edit panel's, plus one each on City Tax, Bills as and On the clock — and the
+// inline ones sat beside the panel, so which button your change belonged to was
+// a guess. Merged behind one bar 2026-09-23. This guard is here because the
+// natural way to add the NEXT setting to that tab is to paste a bar with its
+// own Save in it.
+await test("Project Info: ONE save bar, and prevailing wage is not on it", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+
+  for (const id of ["jobCityTaxSaveBtn", "jobTypeSaveBtn", "jobClockVisSaveBtn"]) {
+    ok(!html.includes(id), `${id} is gone — the tab has one Save`);
+  }
+  ok(html.includes('id="piSaveBtn"'), "and that one is piSaveBtn");
+  // Each section reports dirtiness instead of saving itself, and the bar names
+  // what is pending rather than saying a bare "Save".
+  ok(/label: "city tax"/.test(html) && /label: "bills as"/.test(html) && /label: "on the clock"/.test(html),
+     "the settings are sections of the shared bar");
+  ok(/pending\.map\(p => p\.label\)\.join\(", "\)/.test(html), "the button names what is pending");
+
+  // ⛔ Prevailing wage keeps its own button (owner's call): saving it re-costs
+  // every hour ever booked to the job, so it must never ride along on a press
+  // meant for an address change.
+  ok(!/savePiPrevailingWage|key: "pw"/.test(html), "PW is NOT a section of the shared bar");
+  ok(/id="jobPwSaveBtn"[^>]*>Save &amp; re-cost every hour on this job</.test(html),
+     "and its button is named for what it actually does");
 });
 
 await test("vendorInvoice: every pickable job status is a REAL status", async () => {

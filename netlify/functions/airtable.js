@@ -4238,7 +4238,7 @@ async function handlePayrollHoursRollup(params) {
  * Committed work, in hours, against the hours left to do it in.
  *
  *   backlog  = Σ max(target − worked, 0)  over AWARDED jobs
- *   capacity = people × hours/day × working days left − approved PTO
+ *   capacity = people × hours/day × working days left − approved PTO (8 h/day)
  *
  * The arithmetic that depends on CHOICES (how many hours a day, whether to
  * work Saturdays) happens in the browser, because those are the knobs — "what
@@ -4293,8 +4293,20 @@ async function handleWorkload(params) {
      SELECT (SELECT through::text FROM bounds) AS through,
             count(*) FILTER (WHERE extract(isodow FROM d.day) < 6 AND h.holiday_date IS NULL)     AS working_days,
             count(*) FILTER (WHERE extract(isodow FROM d.day) < 6 AND h.holiday_date IS NOT NULL) AS holidays,
-            (SELECT COALESCE(sum(p.total_hours), 0) FROM v_pto_requests p, bounds
-              WHERE p.status = 'approved' AND p.end_date >= current_date AND p.start_date <= bounds.through) AS pto_hours
+            -- Approved PTO, a DAY at a time so it is clipped to the same window as
+            -- working_days (tomorrow → through): a request that started last week
+            -- only takes out what is still ahead. Owner's rule 2026-09-23: PTO is
+            -- figured on 8 h days, whatever hours/day the screen is set to — so a
+            -- day is 8 h (a half day stays 4). And only for people who COUNT:
+            -- a flagged-out person's week off was never in the capacity to begin with.
+            (SELECT COALESCE(sum(LEAST(pd.hours, 8)), 0)
+               FROM v_pto_request_days pd
+               JOIN pto_requests p ON p.id = pd.request_id
+               JOIN employees e    ON e.id = pd.employee_id, bounds
+              WHERE p.status = 'approved'
+                AND pd.work_date > current_date AND pd.work_date <= bounds.through
+                AND e.active AND e.counts_toward_capacity
+                AND COALESCE(e.role, '') NOT IN ('viewer', 'office')) AS pto_hours
        FROM d LEFT JOIN company_holidays h ON h.holiday_date = d.day`,
     [until]))?.[0] || {};
 

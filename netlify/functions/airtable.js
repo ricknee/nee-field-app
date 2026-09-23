@@ -246,10 +246,6 @@ const F = {
     projectComplete:     "Project Complete (Ready to Invoice)",
     milesFromShop:       "Miles from Shop",
     notes:               "Notes",
-    // The Airtable field is still called "Bird Date" and is not being renamed:
-    // it is frozen (AIRTABLE_WRITES=off) and the base is waiting to be archived,
-    // so the logical key moved and the field name did not. See db/schema/078.
-    completionDate:      "Bird Date",
     totalRevenueLive:          "Total Revenue (Live)",
     totalMaterialsLive:        "Total Materials (Live)",
     totalLaborCostLive:        "Total Labor Cost (Live)",
@@ -5952,7 +5948,6 @@ function mapJob(r) {
       startServiceCall:gBool(f,F.job.startServiceCall),serviceCallCreated:gBool(f,F.job.serviceCallCreated),
       projectComplete:gBool(f,F.job.projectComplete),milesFromShop:gNum(f,F.job.milesFromShop),
       notes:g(f,F.job.notes)||"",
-      completionDate:g(f,F.job.completionDate)||"",
       totalRevenueLive:gNum(f,F.job.totalRevenueLive),totalMaterialsLive:gNum(f,F.job.totalMaterialsLive),
       totalLaborCostLive:gNum(f,F.job.totalLaborCostLive),totalWireCost:gNum(f,F.job.totalWireCost),
       pipeCost:gNum(f,F.job.pipeCost),materialsInProgress:gNum(f,F.job.materialsInProgress),
@@ -13713,8 +13708,7 @@ async function handleGetScheduleEntries(params) {
       id: j.id,
       name:       g(f, F.job.name)       || "",
       contractor: g(f, F.job.contractor) || "",
-      status:     g(f, F.job.status)     || "",
-      completionDate: g(f, F.job.completionDate) || ""
+      status:     g(f, F.job.status)     || ""
     };
   });
   const empById = {};
@@ -13764,15 +13758,11 @@ async function handleGetScheduleEntries(params) {
   // Sort by start date ascending so the calendar renders chronologically
   filtered.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
 
-  // Target completion dates live on the Job. Surface any that fall in the
-  // requested window as a lightweight sibling array so the calendar can render
-  // a reminder pill on that day. Reuses the jobs we already fetched above — no
-  // extra Airtable round-trip.
-  const completionDates = Object.values(jobById)
-    .filter(j => j.completionDate && (!since || j.completionDate >= since) && (!until || j.completionDate <= until))
-    .map(j => ({ jobId: j.id, jobName: j.name, contractor: j.contractor, date: j.completionDate }));
-
-  return resp(200, { ok: true, entries: filtered, completionDates, _source: "airtable" });
+  // Completion dates are NEON-ONLY (db/schema/078). This branch only runs when
+  // Neon is unreachable, so there is nothing to serve: Airtable's copy is the
+  // frozen pre-cutover one and showing it would put retired dates on the
+  // calendar. Empty, not stale.
+  return resp(200, { ok: true, entries: filtered, completionDates: [], _source: "airtable" });
 }
 
 // ── Schedule writes: NEON-FIRST, Airtable the fail-soft mirror ─────────────
@@ -14393,15 +14383,19 @@ async function handleUpdateJobInfo(body) {
   if (customerPhone  !== undefined) fields["fldBf6EC5EQXsPFAQ"] = customerPhone  || "";
   if (customerEmail  !== undefined) fields["fldzGgNmRlSxwpSMX"] = customerEmail  || "";
   if (notes          !== undefined) fields["fldAuZAW19iYPBPxP"] = notes          || "";
-  // The completion date is a date-only field — send null (not "") to clear it,
-  // so an empty string never trips Airtable's date parsing. The field id is the
-  // old "Bird Date" one, which is deliberate: see db/schema/078.
-  if (completionDate !== undefined) fields["fldyKjtcqganpbhNc"] = completionDate || null;
+  // NOTE: the completion date has NO Airtable field here on purpose. It lives
+  // only in jobs.completion_date (db/schema/078) — the Airtable column it came
+  // from is frozen and unread, and writing it would be mirroring a value into a
+  // table waiting to be archived.
 
-  if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
+  // Whether there is anything to do is decided AFTER the Neon column list is
+  // built, below — a body carrying only a completion date has no Airtable field
+  // at all, and used to fall out here as "Nothing to update".
 
-  const data = await mirrorJobPatch("updateJobInfo", jobId, fields, { typecast: true });
-
+  // ⚠ NEON IS THE RECORD. The note below is kept for the history it carries,
+  // but read the write itself at the bottom: it is authoritative now, not a
+  // second copy.
+  //
   // ⚠ WRITE NEON TOO, or the edit silently reverts for up to an hour.
   // handleJobs and handleJobById are BOTH Neon-first, and Neon's `jobs` is a
   // one-way mirror refreshed HOURLY by _jobs-sync.js. Writing only Airtable —
@@ -14454,15 +14448,31 @@ async function handleUpdateJobInfo(body) {
       `${street || ""}, ${city || ""}, ${state || ""} ${zip || ""}`.trim() || null);
   }
 
-  if (nSets.length) {
-    // Fail-soft: Airtable already holds the authoritative write for these
-    // fields, so a Neon hiccup must not fail an edit the user watched succeed.
-    // The hourly sync repairs it.
-    await neonWrite("job.updateInfo",
-      `UPDATE jobs SET ${nSets.join(", ")} WHERE airtable_id = $1 OR id::text = $1`, nVals).catch(() => {});
+  if (!Object.keys(fields).length && !nSets.length) {
+    return resp(400, { ok: false, error: "Nothing to update." });
   }
 
-  return resp(200, { ok: true, updatedId: data.id });
+  // The Airtable mirror runs only if it has fields, and is skipped wholesale
+  // under AIRTABLE_WRITES=off. Its response is no longer read for anything but
+  // the echoed id.
+  const data = Object.keys(fields).length
+    ? await mirrorJobPatch("updateJobInfo", jobId, fields, { typecast: true })
+    : null;
+
+  // ⚠ AUTHORITATIVE, NOT FAIL-SOFT — changed 2026-09-23.
+  // This used to end in `.catch(() => {})` because Airtable held the real write
+  // and the hourly sync would repair Neon within the hour. BOTH of those are
+  // gone: AIRTABLE_WRITES=off skips the mirror and _jobs-sync.js is retired, so
+  // a swallowed failure here is an edit that vanishes with the screen still
+  // saying it saved — and the next person to open the job sees the old value.
+  // Failing the request is strictly better: the user retries and nothing is
+  // lost. Same reasoning as neonWrite's own header.
+  if (nSets.length) {
+    await neonWrite("job.updateInfo",
+      `UPDATE jobs SET ${nSets.join(", ")} WHERE airtable_id = $1 OR id::text = $1`, nVals);
+  }
+
+  return resp(200, { ok: true, updatedId: data?.id ?? null });
 }
 
 // The in-app New Project modal's endpoint. **The work moved to

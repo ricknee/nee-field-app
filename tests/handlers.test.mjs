@@ -580,59 +580,53 @@ await test("getNextInvoiceNumber: returns max + 1", async () => {
 });
 
 // ── completion date (was the poultry Bird Date until 2026-09-23, db/schema/078) ──
-await test("scheduleEntries: surfaces jobs' completion date in completionDates[]", async () => {
+// Airtable's "Bird Date" column is the frozen pre-cutover copy, so this branch
+// — which only runs when Neon is unreachable — must serve NOTHING rather than
+// put retired dates on the calendar. Empty, not stale.
+await test("scheduleEntries: the Airtable branch serves NO completion dates", async () => {
   mockTables = {
     "Schedule Entries": [],
     Jobs: [
       { id: "recDue", fields: { "Job Name": "Case Farms 2-Barn", "Contractor Name (Text)": "Case Farms", "Job Status": "Awarded", "Bird Date": "2026-08-15" } },
-      { id: "recNoDue", fields: { "Job Name": "Regular Job", "Job Status": "Awarded" } },
     ],
     Employees: [],
   };
   const b = json(await GET("scheduleEntries"));
   ok(b.ok, "ok");
-  eq(b.completionDates.length, 1, "only the job with a completion date");
-  eq(b.completionDates[0].jobId, "recDue", "jobId");
-  eq(b.completionDates[0].date, "2026-08-15", "date");
-  eq(b.completionDates[0].jobName, "Case Farms 2-Barn", "jobName");
+  eq(b.completionDates.length, 0, "the frozen Airtable copy is not served");
 });
 
-await test("scheduleEntries: completionDates respects since/until window", async () => {
-  mockTables = {
-    "Schedule Entries": [],
-    Jobs: [
-      { id: "recIn",  fields: { "Job Name": "In Window",  "Job Status": "Awarded", "Bird Date": "2026-08-15" } },
-      { id: "recOut", fields: { "Job Name": "Out Window", "Job Status": "Awarded", "Bird Date": "2027-01-01" } },
-    ],
-    Employees: [],
-  };
-  const b = json(await GET("scheduleEntries", { since: "2026-08-01", until: "2026-08-31" }));
-  eq(b.completionDates.length, 1, "windowed"); eq(b.completionDates[0].jobId, "recIn", "in-window job");
-});
-
-// The Neon branch can't run offline, so this is a static guard on the spelling.
+// The Neon branch can't run offline, so the live path is guarded statically.
 // A native job has NO airtable_id: emitting the bare column handed the calendar
 // an empty job id, so the pill drew and tapping it matched nothing — the silent
 // native-row failure mode again, found by reading rather than by an error.
-await test("scheduleEntries: the completion-date pill emits the DUAL HANDLE, not airtable_id", async () => {
+await test("scheduleEntries: the completion-date query emits the DUAL HANDLE and honours the window", async () => {
   const fs = await import("node:fs/promises");
   const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
-  const q = src.slice(src.indexOf("FROM jobs\n      WHERE completion_date IS NOT NULL") - 400,
-                      src.indexOf("FROM jobs\n      WHERE completion_date IS NOT NULL"));
+  const at = src.indexOf("FROM jobs\n      WHERE completion_date IS NOT NULL");
+  ok(at > 0, "the completion-date query is still there to guard");
+  const q = src.slice(at - 400, at + 300);
   ok(/COALESCE\(airtable_id, id::text\) AS job_id/.test(q), "selects COALESCE(airtable_id, id::text)");
   ok(!/SELECT airtable_id,/.test(q), "does not select airtable_id alone");
+  ok(/\$1 = '' OR completion_date >= \$1::date/.test(q), "honours since");
+  ok(/\$2 = '' OR completion_date <= \$2::date/.test(q), "honours until");
 });
 
-await test("updateJobInfo: writes the completion date to its field id; clears with null", async () => {
+// The completion date is NEON-ONLY. A body carrying nothing else has no
+// Airtable field at all, which used to fall out of the handler as "Nothing to
+// update" — the guard now counts the Neon columns too.
+await test("updateJobInfo: a completion date writes NO Airtable field, and is not 'nothing to update'", async () => {
   mockTables = {};
-  await POST("updateJobInfo", { jobId: "recJ1", completionDate: "2026-08-15" });
-  let fields = JSON.parse(lastFetch.opts.body).fields;
-  // Still the old "Bird Date" field id: Airtable is frozen and was deliberately
-  // not renamed with the column. See db/schema/078.
-  eq(fields["fldyKjtcqganpbhNc"], "2026-08-15", "sets the date on the completion-date field id");
-  await POST("updateJobInfo", { jobId: "recJ1", completionDate: "" });
-  fields = JSON.parse(lastFetch.opts.body).fields;
-  eq(fields["fldyKjtcqganpbhNc"], null, "empty clears to null (not empty string)");
+  lastFetch = null;
+  const r = await POST("updateJobInfo", { jobId: "recJ1", completionDate: "2026-08-15" });
+  eq(r.statusCode === 400, false, "not rejected as an empty body");
+  const body = lastFetch && lastFetch.opts && lastFetch.opts.body ? String(lastFetch.opts.body) : "";
+  ok(!body.includes("fldyKjtcqganpbhNc"), "the retired Bird Date field id is never sent");
+  // The other Project Info fields still mirror while AIRTABLE_WRITES is on.
+  await POST("updateJobInfo", { jobId: "recJ1", customerCity: "Dover" });
+  const fields = JSON.parse(lastFetch.opts.body).fields;
+  eq(fields["fld46JMp1z6E2DhJt"], "Dover", "address parts still patch Airtable");
+  ok(!("fldyKjtcqganpbhNc" in fields), "and still never the completion date");
 });
 
 // ── hours by job (first Neon-slice read pattern) ──

@@ -3,7 +3,7 @@
 **Owner's question, 2026-09-23:** *"How many hours do I have left working in the year, and how do my
 awarded projects' estimated hours compare?"* Two stages — one job, then all of them.
 
-Stage 1 shipped 2026-09-23. Stage 2 is designed here and **not built**.
+Both stages shipped 2026-09-23.
 
 ---
 
@@ -71,7 +71,9 @@ worked = hours_rollup                    -- every time entry on the job
 
 ## Stage 2 — the year’s workload (SHIPPED 2026-09-23)
 
-Its own top-bar button (owner's call), beside Prints/Panels: **📊 Workload**. Admin only.
+Its own top-bar button (owner's call): **📊 Workload**, in the ☰ menu beside 📊 Hours by Job — that
+is where someone already goes to ask *where did the time go*; this asks it forwards. Strict admin
+(`_ADMIN_READS`), like 📅 Schedule and 👥 People: it states the whole order book in hours.
 
 ```
 backlog  = Σ max(target − worked, 0)   over AWARDED jobs
@@ -87,8 +89,11 @@ capacity = people × hours/day × working days remaining − booked PTO
   the screen tidier, the screen is lying.
 * **Per-job table beneath**, biggest remaining first, with **last-worked date** — Bethel School shows
   93 h left but nobody has touched it since 28 Aug, and stalled work is not remaining work.
-* **People and hours/day are INPUTS, not constants.** Four people is true today; overtime is how a
-  600-hour gap actually closes, so the screen must let you ask "what if we work 50s".
+* **Hours/day and days/week are INPUTS** (remembered per browser), because the question is usually
+  *what if*: overtime is how a 600-hour gap actually closes. A six-day week scales the Mon–Fri day
+  count by `daysPerWeek/5` — an estimate of overtime capacity, not a promise about which Saturdays.
+* **Today it reads:** 2,814 h of work vs 2,184 h of crew time — **630 h over**, 17.6 weeks in hand
+  against 13.8 left, ≈157 h of overtime each. Plus the 12 uncounted jobs.
 
 ### Decisions taken (owner, 2026-09-23)
 
@@ -106,15 +111,6 @@ capacity = people × hours/day × working days remaining − booked PTO
   about one person, not his role (he is admin, as are Miles and Rick, who both count). Editable from
   the crew checkboxes on the screen, so the number is never a mystery.
 
-### Still open
-
-* Does a job's remaining work belong in the year at all when its **completion date** is next year?
-  Cheapest honest version: show backlog, and separately show the part due before 31 Dec
-  (🏁 Completion Date, `db/schema/078`).
-* Should `Ready to Invoice` count? Four jobs sit there with 628 h booked against 45 h estimated —
-  they look finished, so probably not, but ask rather than assume.
-* PTO booked for the rest of the year should come out of capacity; the allowance data exists.
-
 ---
 
 ## Files
@@ -124,4 +120,8 @@ capacity = people × hours/day × working days remaining − booked PTO
   `handleUpdateJobInfo`
 * `index.html` — `refreshJobHoursView()` (the strip), `piEditExpectedHours` (the input),
   `piInfoCurrent()` (the string/number normalisation the dirty check needs)
-* `tests/handlers.test.mjs` — validation, NULL-vs-0, and that "no target" stays a prompt
+* `db/schema/080_capacity_crew.sql` — `employees.counts_toward_capacity`, and why it is a flag
+* `netlify/functions/airtable.js` — `handleWorkload` (facts only) and `handleSetCapacityCrew`
+* `index.html` — `openWorkload` / `renderWorkload` (every what-if is computed client-side)
+* `tests/handlers.test.mjs` — validation, NULL-vs-0, "no target" stays a prompt, Awarded-only,
+  coverage rides with the total, and nobody named in the crew logic

@@ -629,6 +629,50 @@ await test("updateJobInfo: a completion date writes NO Airtable field, and is no
   ok(!("fldyKjtcqganpbhNc" in fields), "and still never the completion date");
 });
 
+// ── expected hours (db/schema/079, docs/PLAN-hours-capacity.md) ──
+// The hours target a job is measured against, and the unit the year-capacity
+// view sums. It is an OVERRIDE of the estimate rollup, which is why "" and 0
+// and "nobody has said" have to stay three different things.
+await test("updateJobInfo: expected hours refuses a non-number rather than writing NULL", async () => {
+  mockTables = {};
+  for (const bad of ["abc", "-5", "1e9"]) {
+    const r = await POST("updateJobInfo", { jobId: "recJ1", expectedHours: bad });
+    eq(r.statusCode, 400, `"${bad}" is refused`);
+  }
+  // ⚠ Silently discarding a typo would drop the job out of the year's backlog
+  // with nothing on screen to say so — the same shape as the twelve awarded
+  // jobs that had no estimate and no indication they were missing.
+  const err = json(await POST("updateJobInfo", { jobId: "recJ1", expectedHours: "abc" }));
+  ok(/number of hours/i.test(err.error || ""), "and says why");
+  // A number and a clear both get past validation to the write.
+  for (const good of ["1500", "0", ""]) {
+    const r = await POST("updateJobInfo", { jobId: "recJ1", expectedHours: good });
+    eq(r.statusCode === 400, false, `"${good}" is accepted by validation`);
+  }
+});
+
+await test("expected hours: NULL survives the read, and no target is a PROMPT not a dash", async () => {
+  const fs = await import("node:fs/promises");
+  const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+
+  // ⚠ n() would turn NULL into 0, and "no target" would become "a target of
+  // zero hours" — a job that reads 100% complete the moment anyone books an
+  // hour to it. The emit must keep null null.
+  ok(/expectedHours: r\.expected_hours == null \? null : Number\(r\.expected_hours\)/.test(src),
+     "the emit distinguishes NULL from 0");
+  ok(/j\.expected_hours,/.test(src), "and the column is selected");
+
+  // The dirty check compares a string box against a numeric column, so the
+  // job's side has to be normalised or every job opens dirty.
+  ok(/expectedHours:  job\.expectedHours == null \? "" : String\(job\.expectedHours\)/.test(html),
+     "piInfoCurrent normalises the job's value to a string");
+
+  // A dash is what let twelve awarded jobs go missing from the backlog.
+  ok(/no hours target set/.test(html), "the strip says there is no target");
+  ok(/missing from the year's workload/.test(html), "and what that costs");
+});
+
 // ── hours by job (first Neon-slice read pattern) ──
 await test("hoursByJob: groups by static Job Name (Text), sums hours, flags historical", async () => {
   mockTables = { "Time Entries": [

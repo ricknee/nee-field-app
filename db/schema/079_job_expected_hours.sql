@@ -1,0 +1,37 @@
+-- EXPECTED HOURS on a job — the hours target the Hours strip counts down, and
+-- the unit the year-capacity view adds up (docs/PLAN-hours-capacity.md).
+-- APPLIED to the default branch of Neon project damp-silence-99074350 on 2026-09-23.
+--
+-- Same convention as the other files here: applied BARE via the Neon MCP
+-- (which mangles inline SQL comments), with the reasoning kept here.
+--
+-- ── WHY A COLUMN AND NOT "JUST USE THE ESTIMATE ROLLUP" ────────────────────
+-- Measured 2026-09-23, before building any of this: of 21 AWARDED jobs, only 9
+-- carry an estimate. Trail Cabinet has 667 hours worked against no estimate at
+-- all. A backlog built from estimates alone counts 9 of 21 and reads LOW —
+-- it would say there is room in the year when there isn't, and nothing on the
+-- screen would show that twelve jobs were missing from the sum.
+--
+-- So the target is a property of the JOB, not of its estimates. This column is
+-- an OVERRIDE, deliberately nullable:
+--
+--     effective target = COALESCE(expected_hours, est_labor_hours_rollup)
+--
+-- NULL means "nobody has said" and the estimate rollup answers if there is one.
+-- It is NOT backfilled from the rollup, on purpose: a backfill would freeze
+-- today's estimate into a column that then stops tracking later change orders,
+-- and it would erase the distinction between "we estimated this" and "someone
+-- typed a number", which is exactly what the Hours strip shows as provenance.
+--
+-- ⚠ The rollup itself (v_job_rollups.est_labor_hours_rollup) sums estimates
+-- with status Archived/Completed, Sent or Approved — NOT Approved alone. That
+-- matters: Sullivan Pullet's 900 hours, the biggest piece of remaining work on
+-- the books, sit on a SENT estimate. Filtering to Approved would drop it and
+-- the total would simply look smaller. Keep the three-status set.
+--
+-- ⚠ Estimates are ADDITIVE, not versions. Bethel School has seven rows
+-- (1300 + 16 + 30 + 20 + …) because change orders land as new estimates, so
+-- summing is correct — but one bad row inflates a job's target silently, which
+-- is the reason a human can override it here.
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS expected_hours numeric(10,2);

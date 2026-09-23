@@ -3561,6 +3561,19 @@
                and it saves on its own like the billable rate does. -->
           <div class="admin-only hidden" id="piCityTaxView" style="margin-top:14px;"></div>
 
+          <!-- Estimated vs actual hours (docs/PLAN-hours-capacity.md). Admin/
+               office. Always rendered when the job HAS hours on either side —
+               including when there is no target, where it shows a prompt rather
+               than a dash. A dash is what let twelve awarded jobs go missing
+               from the year's backlog without anyone noticing. -->
+          <div class="admin-only hidden" id="piHoursView" style="margin-top:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;">
+            <div class="info-label" style="margin-bottom:6px;">⏱ Hours</div>
+            <div id="piHoursText" style="font-size:13px; color:var(--text); line-height:1.5;">—</div>
+            <div id="piHoursBarWrap" style="margin-top:8px; height:8px; background:var(--line); border-radius:99px; overflow:hidden; display:none;">
+              <div id="piHoursBar" style="height:100%; width:0; background:var(--accent); border-radius:99px;"></div>
+            </div>
+          </div>
+
           <!-- Target completion date (any job). Admin/office read-only view;
                hidden during edit mode where the date input takes over. Only
                rendered when a date is set (toggled in refreshCompletionDateView).
@@ -3601,6 +3614,12 @@
             <div style="margin-bottom:14px;">
               <label class="edit-label">🏁 Completion Date <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(target finish — counts down, shows on the schedule)</span></label>
               <input id="piEditCompletionDate" type="date" class="edit-input" />
+            </div>
+
+            <div style="margin-bottom:14px;">
+              <label class="edit-label">⏱ Expected Hours <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(the labour target for this job — blank uses the estimate)</span></label>
+              <input id="piEditExpectedHours" type="number" min="0" step="1" class="edit-input" placeholder="e.g. 1500" />
+              <div id="piExpectedHoursHint" style="font-size:11px; color:var(--muted); margin-top:4px;"></div>
             </div>
 
             <div>
@@ -10787,6 +10806,25 @@
       customerEmail:  $("piEditEmail").value.trim(),
       notes:          $("piEditNotes").value,
       completionDate: $("piEditCompletionDate").value,   // "" or YYYY-MM-DD
+      expectedHours:  $("piEditExpectedHours").value.trim(),   // "" or a number
+    };
+  }
+
+  // The same values read off the JOB, normalised the same way, so the dirty
+  // check compares like with like. expectedHours is the reason this exists: the
+  // job carries a number (or null) and the input carries a string, so a plain
+  // !== would call every job dirty the moment the panel opened.
+  function piInfoCurrent(job) {
+    return {
+      customerStreet: job.customerStreet || "",
+      customerCity:   job.customerCity   || "",
+      customerState:  job.customerState  || "",
+      customerZip:    job.customerZip    || "",
+      customerPhone:  job.customerPhone  || "",
+      customerEmail:  job.customerEmail  || "",
+      notes:          job.notes          || "",
+      completionDate: job.completionDate || "",
+      expectedHours:  job.expectedHours == null ? "" : String(job.expectedHours),
     };
   }
 
@@ -10798,8 +10836,8 @@
         const panel = $("piEditPanel"), job = piJob();
         // Not in edit mode: the panel's inputs are stale by definition.
         if (!panel || panel.classList.contains("hidden") || !job) return false;
-        const v = piInfoValues();
-        return Object.keys(v).some(k => v[k] !== (job[k] || ""));
+        const v = piInfoValues(), cur = piInfoCurrent(job);
+        return Object.keys(v).some(k => v[k] !== cur[k]);
       },
       save: savePiInfo,
     },
@@ -12538,6 +12576,61 @@
     wireJobPrevailingWageBar(job);
   }
 
+  /* ── ESTIMATED vs ACTUAL HOURS (docs/PLAN-hours-capacity.md) ─────────────
+   * One line answering "how are we doing on hours for this job", and the same
+   * target the year-capacity view adds up across awarded work.
+   *
+   *   target = expectedHours ?? estimate rollup     (see db/schema/079)
+   *   worked = hoursRollup — every time entry on the job
+   *
+   * ⚠ NO TARGET IS A PROMPT, NOT A DASH. Twelve of 21 awarded jobs had no
+   * estimate when this was built, and a dash is precisely why nobody knew. The
+   * strip says so and points at the box that fixes it.
+   */
+  const fmtHours = (n) => {
+    const v = Number(n) || 0;
+    // Hours are read at a glance; a trailing ".0" on 1,500 is noise, but 21.5
+    // rounded to 22 is a lie about a half day.
+    return (Math.round(v * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  };
+
+  function refreshJobHoursView() {
+    const view = $("piHoursView");
+    if (!view) return;
+    const job = state.selected;
+    if (!job || !isAdmin()) { view.classList.add("hidden"); return; }
+
+    const worked = Number(job.hoursRollup) || 0;
+    const est    = Number(job.estimatedLaborHoursRollup) || 0;
+    const target = job.expectedHours != null ? Number(job.expectedHours) : (est > 0 ? est : null);
+    const fromEstimate = job.expectedHours == null && est > 0;
+
+    // Nothing to say only when the job has neither a target nor an hour booked.
+    if (target == null && worked === 0) { view.classList.add("hidden"); return; }
+
+    const txt = $("piHoursText"), wrap = $("piHoursBarWrap"), bar = $("piHoursBar");
+    if (target == null) {
+      wrap.style.display = "none";
+      txt.innerHTML = `<b>${fmtHours(worked)} h</b> worked · <span style="color:var(--amber,#c90); font-weight:600;">no hours target set</span>
+        <span style="color:var(--muted);">— ✏ Edit to set Expected Hours, or this job is missing from the year's workload</span>`;
+      view.classList.remove("hidden");
+      return;
+    }
+
+    const left = target - worked;
+    const pct  = target > 0 ? (worked / target) * 100 : 0;
+    const over = left < 0;
+    const colour = over ? "var(--red)" : pct >= 90 ? "var(--amber,#c90)" : "var(--green)";
+    txt.innerHTML =
+      `<b>${fmtHours(target)} h</b> target · <b>${fmtHours(worked)} h</b> worked · ` +
+      `<span style="color:${colour}; font-weight:700;">${over ? `${fmtHours(-left)} h OVER` : `${fmtHours(left)} h left`}</span> ` +
+      `<span style="color:var(--muted);">(${Math.round(pct)}%${fromEstimate ? " · target from the estimate" : ""})</span>`;
+    wrap.style.display = "";
+    bar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    bar.style.background = colour;
+    view.classList.remove("hidden");
+  }
+
   function refreshCompletionDateView() {
     const view = $("piCompletionDateView");
     if (!view) return;
@@ -12579,6 +12672,16 @@
     $("piEditEmail").value  = job.customerEmail  || "";
     $("piEditNotes").value  = job.notes          || "";
     $("piEditCompletionDate").value = job.completionDate || "";
+    $("piEditExpectedHours").value  = job.expectedHours == null ? "" : String(job.expectedHours);
+    // Say what a blank box will fall back to, so leaving it empty is a choice
+    // rather than an oversight.
+    const hoursHint = $("piExpectedHoursHint");
+    if (hoursHint) {
+      const est = Number(job.estimatedLaborHoursRollup) || 0;
+      hoursHint.textContent = est > 0
+        ? `Blank uses the estimate: ${fmtHours(est)} h`
+        : "This job has no estimate — blank means it is not counted in the year's workload.";
+    }
 
     // Hide the editable read-only cards + notes view + bird-date view, show
     // the panel.
@@ -12587,6 +12690,7 @@
     $("piAddressCard").style.display = "none";
     $("piNotesView").classList.add("hidden");
     $("piCompletionDateView").classList.add("hidden");
+    $("piHoursView").classList.add("hidden");
     $("piEditPanel").classList.remove("hidden");
 
     // The bar is NOT revealed here any more: it appears when something is
@@ -12619,6 +12723,7 @@
     const notesView = $("piNotesView");
     if (notesView) notesView.classList.remove("hidden");
     refreshCompletionDateView();
+    refreshJobHoursView();
     refreshJobCityTaxView();
     const editBtn = $("piEditBtn");
     if (editBtn) {
@@ -12648,11 +12753,14 @@
     if (!job) return;
     const v = piInfoValues();
 
+    // expectedHours goes as a number or "" (which clears it). The server
+    // refuses anything else rather than writing NULL, so a typo is reported
+    // instead of quietly dropping the job out of the year view.
     await apiPost("updateJobInfo", { jobId: job.id, ...v });
 
     // Update local state so subsequent reads (and re-entering edit
     // mode) see the saved values.
-    piSyncJob(v);
+    piSyncJob({ ...v, expectedHours: v.expectedHours === "" ? null : Number(v.expectedHours) });
     // Reconstruct the formula-computed Job Address - Full client-side
     // so the read-only card refreshes instantly.
     piSyncJob({ address: buildJobAddress(v.customerStreet, v.customerCity, v.customerState, v.customerZip) });
@@ -16229,7 +16337,7 @@
     // The edit panel's inputs are static markup, so these bind once. Every one
     // of them has to report, or the bar would miss the only field you touched.
     ["piEditStreet", "piEditCity", "piEditState", "piEditZip", "piEditPhone",
-     "piEditEmail", "piEditNotes", "piEditCompletionDate"].forEach(id => {
+     "piEditEmail", "piEditNotes", "piEditCompletionDate", "piEditExpectedHours"].forEach(id => {
       const el = $(id);
       if (!el) return;
       el.addEventListener("input", refreshPiSaveBar);

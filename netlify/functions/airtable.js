@@ -6075,6 +6075,10 @@ const JOB_SELECT = `
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.completion_date::text AS completion_date, j.workflow_status, j.billable_hourly_rate,
+         -- The hours TARGET for this job, overriding the estimate rollup when
+         -- set. NULL means nobody has said — the rollup answers if there is one.
+         -- db/schema/079 and docs/PLAN-hours-capacity.md.
+         j.expected_hours,
          j.labor_billable_rate_at_id,
          -- The markup ACTUAL material is billed at (10% on every job today). The
          -- new-estimate form seeds its markup box from it, so estimated and
@@ -6248,6 +6252,10 @@ function mapJobFromNeon(r) {
     grossProfitLivePct: n(r.gross_profit_live_pct),
     workflowStatus: r.workflow_status ?? null,
     estimatedLaborHoursRollup: n(r.est_labor_hours_rollup), hoursRollup: n(r.hours_rollup),
+    // NULL stays NULL here rather than becoming 0 — "nobody has said" and "this
+    // job takes no hours" are different answers, and the Hours strip shows a
+    // different thing for each. n() would flatten them together.
+    expectedHours: r.expected_hours == null ? null : Number(r.expected_hours),
     billableHourlyRate: n(r.billable_hourly_rate),
     laborBillableRateId: r.labor_billable_rate_at_id || null,
     inspectionAgencyId: r.inspection_agency_at_id || null,
@@ -14367,7 +14375,7 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, generatorInstalled } = body || {};
+  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, expectedHours, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -14417,6 +14425,21 @@ async function handleUpdateJobInfo(body) {
   if (customerEmail  !== undefined) put("customer_email",  customerEmail  || null);
   if (notes          !== undefined) put("notes",           notes          || null);
   if (completionDate !== undefined) put("completion_date", completionDate || null, "::date");
+  // Hours target. "" clears it back to "nobody has said" — which is NOT the
+  // same as 0, so an empty box must never arrive as a zero. A number that
+  // isn't one is refused rather than written as NULL, because silently
+  // discarding a typed target is how a job drops out of the year view.
+  if (expectedHours !== undefined) {
+    const raw = String(expectedHours ?? "").trim();
+    if (raw === "") put("expected_hours", null, "::numeric");
+    else {
+      const nHours = Number(raw);
+      if (!Number.isFinite(nHours) || nHours < 0 || nHours > 100000) {
+        return resp(400, { ok: false, error: "Expected hours must be a number of hours." });
+      }
+      put("expected_hours", nHours, "::numeric");
+    }
+  }
   if (generatorInstalled !== undefined) put("generator_installed", generatorInstalled === true);
 
   // `address_full` is a FORMULA in Airtable, so Airtable recomputes it itself.

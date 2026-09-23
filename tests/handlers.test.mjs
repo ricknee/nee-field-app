@@ -673,6 +673,51 @@ await test("expected hours: NULL survives the read, and no target is a PROMPT no
   ok(/missing from the year's workload/.test(html), "and what that costs");
 });
 
+// ── the year's workload (db/schema/080, docs/PLAN-hours-capacity.md stage 2) ──
+await test("workload: strict admin, and the crew toggle with it", async () => {
+  mockTables = {};
+  eq((await GET("workload", {}, EMP_TOK)).statusCode, 403, "employee blocked");
+  eq((await GET("workload", {}, OFFICE_TOK)).statusCode, 403, "office blocked — this is the order book");
+  ok((await GET("workload", {}, ADMIN_TOK)).statusCode !== 403, "admin allowed");
+  eq((await POST("setCapacityCrew", { employeeId: "recE1", counts: false }, OFFICE_TOK)).statusCode, 403,
+     "office cannot change who counts as crew");
+  ok((await POST("setCapacityCrew", { employeeId: "recE1", counts: false }, ADMIN_TOK)).statusCode !== 403,
+     "admin can");
+  eq((await POST("setCapacityCrew", { counts: false }, ADMIN_TOK)).statusCode, 400, "employeeId required");
+});
+
+await test("workload: only AWARDED is backlog, and coverage rides with the total", async () => {
+  const fs = await import("node:fs/promises");
+  const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleWorkload"), src.indexOf("async function handleSetCapacityCrew"));
+
+  // ⛔ Owner's call 2026-09-23: "if it's ready to invoice then I'm fine working,
+  // just haven't invoiced". Those jobs carry 628 worked hours against 45
+  // estimated — counting them would queue finished work.
+  ok(/WHERE j\.status = 'Awarded'/.test(fn), "only Awarded jobs are backlog");
+  ok(!/Ready to Invoice/.test(fn.replace(/\/\/[^\n]*/g, "")), "Ready to Invoice is not in the query");
+
+  // ⚠⚠ 12 of 21 awarded jobs had no target when this was built. A backlog total
+  // without its coverage is a confident wrong answer.
+  ok(/missing: missing\.length/.test(fn) && /counted: counted\.length/.test(fn),
+     "the response carries coverage");
+  ok(/not counted\./.test(html), "and the screen states it");
+
+  // A job with no completion date counts as THIS year's: unknown is not a
+  // reason to look less busy.
+  ok(/!j\.completionDate \|\| j\.completionDate <= through/.test(fn), "undated work counts as due");
+
+  // Crew is a flag with a default, never a role test or a hardcoded list — the
+  // SALARIED-name-list hazard in CLAUDE.md, avoided on purpose.
+  ok(/e\.counts_toward_capacity AS counts/.test(fn), "crew comes from the flag");
+  // Comments may (and do) name him to explain WHY the flag exists; the code
+  // must not. Strip comments before asserting, or the explanation trips the
+  // guard that the explanation is there to justify.
+  const code = fn.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+  ok(!/Larry/.test(code), "and nobody is named in the logic");
+});
+
 // ── hours by job (first Neon-slice read pattern) ──
 await test("hoursByJob: groups by static Job Name (Text), sums hours, flags historical", async () => {
   mockTables = { "Time Entries": [

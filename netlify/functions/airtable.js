@@ -515,6 +515,9 @@ const _TIME_SELF_WRITES = new Set([
   "widgetLink",
 ]);
 const _ADMIN_POSTS = new Set([
+  // Who counts toward capacity. It changes a planning number for the whole
+  // company and sits on the roster, which is strict admin throughout.
+  "setCapacityCrew",
   "updateTimeEntryPayroll", "payrollRunCreate",
   // ⚠ Deleting a job estimate has NO STATUS GUARD — owner's explicit call
   // 2026-08-20 — so a Sent or Approved estimate can be erased. Strict admin
@@ -708,6 +711,12 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
 const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "people", "employeePin", "employeeRates",
+                              // The year's workload (docs/PLAN-hours-capacity.md). Strict
+                              // admin like the schedule and the roster: it states the whole
+                              // company's committed work in hours, and it names who is
+                              // counted as crew — closer to payroll than to back-office
+                              // money work, so office is excluded as it is there.
+                              "workload",
                               // db/schema/072. Names the specific misconfiguration the same
                               // way r2Status does, because a PW job with no usable rate
                               // produces a plausible number rather than an error.
@@ -4222,6 +4231,143 @@ async function handlePayrollHoursRollup(params) {
 // Airtable remains a complete, current copy — if Neon is unset, slow or broken, the
 // old path still returns the right answer. `_source` reports which one served the
 // request, so a silent, permanent fallback shows up instead of hiding.
+/* ── THE YEAR'S WORKLOAD (docs/PLAN-hours-capacity.md, stage 2) ────────────
+ * Committed work, in hours, against the hours left to do it in.
+ *
+ *   backlog  = Σ max(target − worked, 0)  over AWARDED jobs
+ *   capacity = people × hours/day × working days left − approved PTO
+ *
+ * The arithmetic that depends on CHOICES (how many hours a day, whether to
+ * work Saturdays) happens in the browser, because those are the knobs — "what
+ * if we work 50s" is the question this screen exists to answer. The server
+ * returns the facts.
+ *
+ * ⚠⚠ COVERAGE IS PART OF THE ANSWER, NOT A FOOTNOTE. When this was built, 12
+ * of 21 awarded jobs had no hours target at all, so a backlog total on its own
+ * understated the year by more than half the job count — and nothing about the
+ * number would have said so. `counted` / `missing` ride in the response so the
+ * screen cannot render the total without them.
+ *
+ * ⛔ 'Ready to Invoice' is NOT backlog — owner's call 2026-09-23: "if it's ready
+ * to invoice then I'm fine working, just haven't invoiced". Those jobs carry
+ * 628 worked hours against 45 estimated; counting them would queue finished
+ * work. Only status 'Awarded' is committed-but-unfinished.
+ *
+ * ⚠ CREW IS A FLAG, NOT A NUMBER (db/schema/080). Active payroll-eligible
+ * employees count unless someone is flagged out, so a new hire is included the
+ * day they exist. The crew rows come back named, because a capacity figure
+ * nobody can audit is a figure nobody believes.
+ */
+async function handleWorkload(params) {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "The workload view is unavailable (database not configured)." });
+
+  // The window: through the end of THIS calendar year unless asked otherwise,
+  // so "the year" means what the owner means by it.
+  const until = /^\d{4}-\d{2}-\d{2}$/.test(params?.until || "") ? params.until : null;
+
+  const jobs = await neonWrite("workload.jobs",
+    `SELECT COALESCE(j.airtable_id, j.id::text) AS job_id,
+            j.name, j.contractor_name,
+            j.completion_date::text AS completion_date,
+            j.expected_hours,
+            r.est_labor_hours_rollup AS est_hours,
+            r.hours_rollup           AS worked_hours,
+            (SELECT max(t.work_date)::text FROM time_entries t WHERE t.job_id = j.id) AS last_worked
+       FROM jobs j
+       JOIN v_job_rollups r ON r.id = j.id
+      WHERE j.status = 'Awarded'
+      ORDER BY j.name`);
+
+  // Working days left: weekdays from TOMORROW (today is mostly spent by the
+  // time anyone looks at this) to the end of the window, minus the company
+  // holidays the PTO screens already own. Never a hardcoded list.
+  const cap = (await neonWrite("workload.capacity",
+    `WITH bounds AS (
+       SELECT COALESCE($1::date, (date_trunc('year', current_date) + interval '1 year - 1 day')::date) AS through
+     ), d AS (
+       SELECT g::date AS day FROM bounds, generate_series(current_date + 1, bounds.through, interval '1 day') g
+     )
+     SELECT (SELECT through::text FROM bounds) AS through,
+            count(*) FILTER (WHERE extract(isodow FROM d.day) < 6 AND h.holiday_date IS NULL)     AS working_days,
+            count(*) FILTER (WHERE extract(isodow FROM d.day) < 6 AND h.holiday_date IS NOT NULL) AS holidays,
+            (SELECT COALESCE(sum(p.total_hours), 0) FROM v_pto_requests p, bounds
+              WHERE p.status = 'approved' AND p.end_date >= current_date AND p.start_date <= bounds.through) AS pto_hours
+       FROM d LEFT JOIN company_holidays h ON h.holiday_date = d.day`,
+    [until]))?.[0] || {};
+
+  // Named, so the screen can show its working: "4 counted — Jeff, Miles, Pat,
+  // Rick. Not counted: Larry."
+  const crew = (await neonWrite("workload.crew",
+    `SELECT COALESCE(e.airtable_id, e.id::text) AS handle, e.name,
+            e.counts_toward_capacity AS counts
+       FROM employees e
+      WHERE e.active AND COALESCE(e.role, '') NOT IN ('viewer', 'office')
+      ORDER BY e.name`)) || [];
+
+  const rows = (jobs || []).map(r => {
+    const worked = Number(r.worked_hours) || 0;
+    const est    = Number(r.est_hours) || 0;
+    // The same COALESCE the Hours strip uses — expected_hours OVERRIDES the
+    // estimate rollup, and a job with neither has NO target, which is a
+    // different thing from a target of zero. See db/schema/079.
+    const target = r.expected_hours != null ? Number(r.expected_hours) : (est > 0 ? est : null);
+    return {
+      jobId: r.job_id, name: r.name || "", contractor: r.contractor_name || "",
+      completionDate: r.completion_date || "",
+      target, worked,
+      remaining: target == null ? null : Math.max(target - worked, 0),
+      fromEstimate: r.expected_hours == null && est > 0,
+      lastWorked: r.last_worked || "",
+    };
+  });
+
+  const counted = rows.filter(j => j.target != null);
+  const missing = rows.filter(j => j.target == null);
+  const sum = (list) => Math.round(list.reduce((t, j) => t + (j.remaining || 0), 0) * 10) / 10;
+  const through = cap.through || "";
+
+  return resp(200, {
+    ok: true,
+    jobs: rows,
+    totals: {
+      backlog: sum(counted),
+      // Work whose completion date falls inside the window, so "committed" and
+      // "committed THIS year" can both be read — a job due in February is real
+      // work but it is not this year's problem. A job with NO completion date
+      // counts as this year's: unknown is not a reason to look less busy.
+      backlogDue: sum(counted.filter(j => !j.completionDate || j.completionDate <= through)),
+      jobs: rows.length, counted: counted.length, missing: missing.length,
+      missingNames: missing.map(j => j.name).slice(0, 25),
+    },
+    capacity: {
+      workingDays: Number(cap.working_days) || 0,
+      holidays: Number(cap.holidays) || 0,
+      ptoHours: Math.round((Number(cap.pto_hours) || 0) * 10) / 10,
+      crew: crew.map(c => ({ id: c.handle, name: c.name || "", counts: c.counts !== false })),
+      through,
+    },
+    _source: "neon",
+  });
+}
+
+// Take one person in or out of the capacity crew. Not derivable from role —
+// Larry is admin and excluded, Miles and Rick are admin and counted — so it is
+// recorded per person. Default true means a new hire needs no action.
+async function handleSetCapacityCrew(body) {
+  const employeeId = body?.employeeId;
+  const counts = body?.counts === true;
+  if (!employeeId) return resp(400, { ok: false, error: "Missing employeeId." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "The crew list is unavailable (database not configured)." });
+
+  const rows = await neonWrite("workload.setCrew",
+    `UPDATE employees SET counts_toward_capacity = $2
+      WHERE airtable_id = $1 OR id::text = $1
+      RETURNING name, counts_toward_capacity AS counts`,
+    [String(employeeId), counts]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Employee not found." });
+  return resp(200, { ok: true, name: rows[0].name, counts: rows[0].counts !== false });
+}
+
 async function handleHoursByJob() {
   if (neonEnabled()) {
     const [q, meta] = await Promise.all([
@@ -16746,6 +16892,7 @@ export async function handler(event) {
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();
+      if (action === "workload")                    return await handleWorkload(params);
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "scissorLiftHistory") return await handleScissorLiftHistory(params);
@@ -16883,6 +17030,7 @@ export async function handler(event) {
       if (body.action === "restoreJobPrints")     return await handleRestoreJobPrints(body);
       if (body.action === "purgeJobPrints")       return await handlePurgeJobPrints(body);
       if (body.action === "reorderJobPrints")     return await handleReorderJobPrints(body, authUser);
+      if (body.action === "setCapacityCrew")      return await handleSetCapacityCrew(body);
       if (body.action === "getJobInvoices")       return await handleGetJobInvoices(body);
       if (body.action === "updateJobNotes")       return await handleUpdateJobNotes(body);
       // authUser is passed so the handler can refuse a self-lockout — the

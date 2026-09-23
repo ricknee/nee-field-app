@@ -3312,6 +3312,12 @@
           <button id="btnPowerSpecs" class="btn btn-sm" type="button">⚡ Power Co. Specs</button>
           <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
           <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
+          <!-- The year's workload: committed hours vs hours left to do them in.
+               strict-admin like 📅 Schedule — it is the whole order book in one
+               number. Sits beside Hours by Job because that is where someone
+               already goes to ask "where did the time go"; this asks the same
+               question forwards. docs/PLAN-hours-capacity.md -->
+          <button id="btnWorkload" class="btn btn-sm strict-admin-only hidden" type="button">📊 Workload</button>
           <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
           <!-- Supplier invoices whose PO matched no job, or matched two.
                admin-only (= admin + office here) matches the backend's
@@ -16368,6 +16374,8 @@
     if (payrollBtn) payrollBtn.addEventListener("click", openPayroll);
     const hoursByJobBtn = $("btnHoursByJob");
     if (hoursByJobBtn) hoursByJobBtn.addEventListener("click", openHoursByJob);
+    const workloadBtn = $("btnWorkload");
+    if (workloadBtn) workloadBtn.addEventListener("click", openWorkload);
     const allInvBtn = $("btnAllInvoices");
     if (allInvBtn) allInvBtn.addEventListener("click", openAllInvoices);
     const schBtn = $("btnSchedule");
@@ -24654,6 +24662,177 @@
   // link) are flagged so the team can see them alongside current work.
   let hbjData = null; // last fetched { jobs, summary }
 
+  /* ── THE YEAR'S WORKLOAD (docs/PLAN-hours-capacity.md, stage 2) ──────────
+   * Committed hours against the hours left to work them.
+   *
+   * The server returns facts (jobs, working days, approved PTO, who the crew
+   * is). Everything that depends on a CHOICE is computed here and re-computed
+   * on every keystroke, because the question is usually "what if" — what if we
+   * work 50s, what if Saturdays count.
+   *
+   * ⚠ Capacity counts PEOPLE WHO ARE FLAGGED IN (db/schema/080), and the screen
+   * names them. A planning number nobody can audit is a number nobody believes,
+   * and "why does it say four" has a different answer every time someone is
+   * hired.
+   */
+  let wlData = null;
+
+  async function openWorkload() {
+    $("workloadModal").style.display = "flex";
+    pushBackEntry("workload", () => { $("workloadModal").style.display = "none"; });
+    $("wlHeadline").textContent = "Loading…";
+    $("wlBody").style.display = "none";
+    try {
+      const res = await apiGet("workload");
+      if (!res?.ok) throw new Error(res?.error || "Failed to load");
+      wlData = res;
+      // Remembered per browser: these are this office's working pattern, not a
+      // property of the data, and retyping them every open would make the
+      // "what if" the screen exists for cost more than it is worth.
+      try {
+        const saved = JSON.parse(localStorage.getItem("nee_workload_prefs") || "{}");
+        if (saved.hoursPerDay) $("wlHoursPerDay").value = saved.hoursPerDay;
+        if (saved.daysPerWeek) $("wlDaysPerWeek").value = saved.daysPerWeek;
+        $("wlDueOnly").checked = !!saved.dueOnly;
+      } catch { /* a browser that won't give us storage still gets the defaults */ }
+      ["wlHoursPerDay", "wlDaysPerWeek", "wlDueOnly"].forEach(id => {
+        const el = $(id);
+        if (el) { el.oninput = renderWorkload; el.onchange = renderWorkload; }
+      });
+      $("wlBody").style.display = "";
+      renderWorkload();
+    } catch (e) {
+      $("wlHeadline").textContent = "Couldn't load: " + e.message;
+    }
+  }
+  window.openWorkload = openWorkload;
+
+  function closeWorkload() {
+    popBackEntry("workload");
+    $("workloadModal").style.display = "none";
+  }
+  window.closeWorkload = closeWorkload;
+
+  function wlPrefs() {
+    const hoursPerDay = Math.max(1, Number($("wlHoursPerDay").value) || 8);
+    const daysPerWeek = Math.max(1, Math.min(7, Number($("wlDaysPerWeek").value) || 5));
+    const dueOnly = $("wlDueOnly").checked;
+    try {
+      localStorage.setItem("nee_workload_prefs", JSON.stringify({ hoursPerDay, daysPerWeek, dueOnly }));
+    } catch { /* never block the render on storage */ }
+    return { hoursPerDay, daysPerWeek, dueOnly };
+  }
+
+  function renderWorkload() {
+    if (!wlData) return;
+    const { hoursPerDay, daysPerWeek, dueOnly } = wlPrefs();
+    const cap = wlData.capacity || {};
+    const totals = wlData.totals || {};
+    const crew = (cap.crew || []);
+    const people = crew.filter(c => c.counts).length;
+
+    // Working days come back as Mon–Fri minus company holidays. Asking for a
+    // six-day week scales that up rather than inventing a calendar: five days
+    // becomes six, so the multiplier is daysPerWeek/5. It is an estimate of
+    // OVERTIME CAPACITY, not a promise about which Saturdays.
+    const workingDays = Number(cap.workingDays) || 0;
+    const dayFactor = daysPerWeek / 5;
+    const grossHours = people * hoursPerDay * workingDays * dayFactor;
+    const pto = Number(cap.ptoHours) || 0;
+    const capacity = Math.max(0, grossHours - pto);
+
+    const backlog = Number(dueOnly ? totals.backlogDue : totals.backlog) || 0;
+    const gap = backlog - capacity;
+    const weeksLeft = workingDays / 5;
+    const weeklyCapacity = people * hoursPerDay * daysPerWeek;
+    const weeksOfWork = weeklyCapacity > 0 ? backlog / weeklyCapacity : 0;
+
+    const through = cap.through ? fmtCompletionDate(cap.through) : "the year end";
+    $("wlHeadline").innerHTML =
+      `Committed work on <b>${totals.counted || 0}</b> awarded job${totals.counted === 1 ? "" : "s"}, ` +
+      `against <b>${workingDays}</b> working day${workingDays === 1 ? "" : "s"} to ${esc(through)} ` +
+      `(${cap.holidays || 0} holiday${cap.holidays === 1 ? "" : "s"} already excluded${pto ? `, ${fmtHours(pto)} h approved PTO deducted` : ""}).`;
+
+    const over = gap > 0;
+    const colour = over ? "var(--red)" : "var(--green)";
+    $("wlGap").innerHTML =
+      `<div style="font-size:13px; color:var(--muted); margin-bottom:6px;">Backlog vs capacity${dueOnly ? " — due before " + esc(through) : ""}</div>
+       <div style="font-size:15px; font-weight:700; line-height:1.6;">
+         <span>${fmtHours(backlog)} h of work</span>
+         <span style="color:var(--muted); font-weight:400;"> vs </span>
+         <span>${fmtHours(capacity)} h of crew time</span>
+       </div>
+       <div style="font-size:20px; font-weight:800; color:${colour}; margin-top:4px;">
+         ${over ? `${fmtHours(gap)} h OVER` : `${fmtHours(-gap)} h spare`}
+       </div>
+       <div style="font-size:12px; color:var(--muted); margin-top:4px;">
+         ${weeksOfWork.toFixed(1)} weeks of work in hand · ${weeksLeft.toFixed(1)} weeks left
+         ${over ? ` · ${people ? fmtHours(gap / people) : "—"} h each of overtime to close it` : ""}
+       </div>`;
+
+    // ⚠⚠ Never render the total without this line. See the modal's comment.
+    const missing = Number(totals.missing) || 0;
+    $("wlCoverage").innerHTML = missing
+      ? `<span style="color:var(--amber,#c90); font-weight:700;">⚠ ${totals.counted} of ${totals.jobs} awarded jobs have hours set — ${missing} not counted.</span>
+         <span style="color:var(--muted);">The real backlog is higher than the number above. Missing: ${esc((totals.missingNames || []).join(", "))}${missing > (totals.missingNames || []).length ? "…" : ""}</span>`
+      : `<span style="color:var(--green); font-weight:700;">✓ All ${totals.jobs} awarded jobs have hours set.</span>`;
+
+    const counted = crew.filter(c => c.counts).map(c => c.name);
+    const out = crew.filter(c => !c.counts).map(c => c.name);
+    $("wlCrew").innerHTML =
+      `<b>${people}</b> on the crew: ${esc(counted.join(", ") || "nobody")}` +
+      (out.length ? ` · <span style="color:var(--muted);">not counted: ${esc(out.join(", "))}</span>` : "") +
+      `<div style="margin-top:6px; display:flex; gap:12px; flex-wrap:wrap;">` +
+      crew.map(c => `<label style="display:flex; align-items:center; gap:5px;">
+          <input type="checkbox" class="wl-crew" data-id="${esc(c.id)}" ${c.counts ? "checked" : ""} /> ${esc(c.name)}
+        </label>`).join("") + `</div>`;
+
+    document.querySelectorAll(".wl-crew").forEach(box => {
+      box.onchange = async () => {
+        const id = box.dataset.id;
+        const row = crew.find(c => c.id === id);
+        box.disabled = true;
+        try {
+          await apiPost("setCapacityCrew", { employeeId: id, counts: box.checked });
+          if (row) row.counts = box.checked;
+          renderWorkload();
+        } catch (e) {
+          box.checked = !box.checked;   // the server said no; don't show a lie
+          showAppToast("Couldn't change the crew: " + (e.message || e), { kind: "warn" });
+        } finally { box.disabled = false; }
+      };
+    });
+
+    // Biggest remaining first, and every row carries its last-worked date:
+    // stalled work is not remaining work, and the total can't tell you which
+    // is which.
+    const rows = [...(wlData.jobs || [])]
+      .filter(j => !dueOnly || !j.completionDate || j.completionDate <= (cap.through || ""))
+      .sort((a, b) => (b.remaining ?? -1) - (a.remaining ?? -1));
+
+    $("wlList").innerHTML = rows.map(j => {
+      const noTarget = j.remaining == null;
+      const stale = j.lastWorked && ((Date.now() - new Date(j.lastWorked + "T00:00:00").getTime()) / 86400000) > 21;
+      return `<div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--line);">
+        <span style="flex:1; min-width:0;">
+          <span style="display:block; font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(j.name)}</span>
+          <span style="display:block; font-size:11px; color:var(--muted);">
+            ${esc(j.contractor || "")}${j.completionDate ? ` · due ${esc(fmtCompletionDate(j.completionDate))}` : ""}
+            ${j.lastWorked ? ` · last worked ${esc(fmtCompletionDate(j.lastWorked))}` : " · never worked"}
+            ${stale ? ` <span style="color:var(--amber,#c90);">· stalled</span>` : ""}
+          </span>
+        </span>
+        <span style="flex:none; text-align:right; font-size:12px;">
+          ${noTarget
+            ? `<span style="color:var(--amber,#c90); font-weight:700;">no target</span>
+               <span style="display:block; color:var(--muted); font-size:11px;">${fmtHours(j.worked)} h worked</span>`
+            : `<b style="font-size:14px;">${fmtHours(j.remaining)} h</b> left
+               <span style="display:block; color:var(--muted); font-size:11px;">${fmtHours(j.worked)} of ${fmtHours(j.target)}${j.fromEstimate ? " (est)" : ""}</span>`}
+        </span>
+      </div>`;
+    }).join("") || `<div style="font-size:12px; color:var(--muted);">No awarded jobs.</div>`;
+  }
+
   async function openHoursByJob() {
     $("hoursByJobModal").style.display = "flex";
     pushBackEntry("hoursByJob", () => { $("hoursByJobModal").style.display = "none"; });
@@ -30763,6 +30942,40 @@
 </div>
 
 <!-- HOURS BY JOB MODAL — all-time hours grouped by static job name (incl. historical) -->
+<!-- The year's workload (docs/PLAN-hours-capacity.md, stage 2). Committed work
+     in hours against the hours left to do it in.
+     ⚠⚠ The coverage line is NOT decoration: 12 of 21 awarded jobs had no hours
+     target when this was built, and a backlog total without its coverage is a
+     confident wrong answer. If it is ever dropped to tidy the screen, the
+     screen is lying. -->
+<div id="workloadModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width:860px;">
+    <div class="payroll-modal-header">
+      <h2>📊 Workload</h2>
+      <button onclick="closeWorkload()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div id="wlHeadline" style="font-size:13px; color:var(--muted);">Loading…</div>
+      <div id="wlBody" style="display:none;">
+        <div id="wlGap" style="margin:12px 0; padding:14px 16px; border-radius:12px; border:1px solid var(--line); background:var(--panel-2);"></div>
+        <div id="wlCoverage" style="font-size:12px; margin-bottom:12px;"></div>
+        <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:10px; font-size:12px; color:var(--muted);">
+          <label style="display:flex; align-items:center; gap:6px;">Hours a day
+            <input id="wlHoursPerDay" type="number" min="1" max="16" step="0.5" value="8"
+                   style="width:70px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; font-size:13px;" /></label>
+          <label style="display:flex; align-items:center; gap:6px;">Days a week
+            <input id="wlDaysPerWeek" type="number" min="1" max="7" step="1" value="5"
+                   style="width:70px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; font-size:13px;" /></label>
+          <label style="display:flex; align-items:center; gap:6px;">
+            <input id="wlDueOnly" type="checkbox" /> Only work due before the year ends</label>
+        </div>
+        <div id="wlCrew" style="font-size:12px; color:var(--muted); margin-bottom:12px;"></div>
+        <div id="wlList" style="max-height:46vh; overflow:auto;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="hoursByJobModal" class="payroll-modal-backdrop" style="display:none;">
   <div class="payroll-modal" style="max-width:760px;">
     <div class="payroll-modal-header">

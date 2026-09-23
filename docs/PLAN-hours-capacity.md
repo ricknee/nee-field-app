@@ -69,7 +69,7 @@ worked = hours_rollup                    -- every time entry on the job
 
 ---
 
-## Stage 2 — the year's workload (NOT BUILT)
+## Stage 2 — the year’s workload (SHIPPED 2026-09-23)
 
 Its own top-bar button (owner's call), beside Prints/Panels: **📊 Workload**. Admin only.
 
@@ -90,7 +90,23 @@ capacity = people × hours/day × working days remaining − booked PTO
 * **People and hours/day are INPUTS, not constants.** Four people is true today; overtime is how a
   600-hour gap actually closes, so the screen must let you ask "what if we work 50s".
 
-### Open questions for stage 2
+### Decisions taken (owner, 2026-09-23)
+
+* **`Ready to Invoice` is NOT backlog** — *“if it’s ready to invoice then I’m fine working, just haven’t
+  invoiced”*. Only `Awarded` counts. Those four jobs carry 628 worked hours against 45 estimated;
+  counting them would queue finished work.
+* **Work due next year still counts, and is also shown separately** — the *“only work due before the
+  year ends”* tick. A job with **no** completion date counts as this year’s: unknown is not a reason
+  to look less busy.
+* **Approved PTO comes out of capacity** (24 h ahead today). Pending requests do not — they are not
+  committed.
+* **Crew is a per-person FLAG, not a number** (`db/schema/080`). Active payroll-eligible employees
+  count unless flagged out, so *“if I hire somebody, an active employee, I want them included”*
+  happens with no action. **Larry Unruh is flagged out**: active, able, simply not scheduled — a fact
+  about one person, not his role (he is admin, as are Miles and Rick, who both count). Editable from
+  the crew checkboxes on the screen, so the number is never a mystery.
+
+### Still open
 
 * Does a job's remaining work belong in the year at all when its **completion date** is next year?
   Cheapest honest version: show backlog, and separately show the part due before 31 Dec

@@ -674,15 +674,20 @@ await test("expected hours: NULL survives the read, and no target is a PROMPT no
 });
 
 // ── the year's workload (db/schema/080, docs/PLAN-hours-capacity.md stage 2) ──
-await test("workload: strict admin, and the crew toggle with it", async () => {
+// Admin + OFFICE — owner's call 2026-09-23. Scheduling the work this describes
+// is office's job, and unlike `people` it carries no wage figure. The crew
+// toggle sits on the same screen and MUST match its tier: a checkbox that is
+// guaranteed to 403 reads as the feature being broken.
+await test("workload: admin and office, employee and viewer out — and the crew toggle matches", async () => {
   mockTables = {};
   eq((await GET("workload", {}, EMP_TOK)).statusCode, 403, "employee blocked");
-  eq((await GET("workload", {}, OFFICE_TOK)).statusCode, 403, "office blocked — this is the order book");
+  eq((await GET("workload", {}, VIEWER_TOK)).statusCode, 403, "viewer blocked");
   ok((await GET("workload", {}, ADMIN_TOK)).statusCode !== 403, "admin allowed");
-  eq((await POST("setCapacityCrew", { employeeId: "recE1", counts: false }, OFFICE_TOK)).statusCode, 403,
-     "office cannot change who counts as crew");
-  ok((await POST("setCapacityCrew", { employeeId: "recE1", counts: false }, ADMIN_TOK)).statusCode !== 403,
-     "admin can");
+  ok((await GET("workload", {}, OFFICE_TOK)).statusCode !== 403, "office allowed");
+  eq((await POST("setCapacityCrew", { employeeId: "recE1", counts: false }, EMP_TOK)).statusCode, 403,
+     "employee cannot change who counts as crew");
+  ok((await POST("setCapacityCrew", { employeeId: "recE1", counts: false }, OFFICE_TOK)).statusCode !== 403,
+     "office can — it is the same screen");
   eq((await POST("setCapacityCrew", { counts: false }, ADMIN_TOK)).statusCode, 400, "employeeId required");
 });
 

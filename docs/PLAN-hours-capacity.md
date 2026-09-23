@@ -72,8 +72,13 @@ worked = hours_rollup                    -- every time entry on the job
 ## Stage 2 — the year’s workload (SHIPPED 2026-09-23)
 
 Its own top-bar button (owner's call): **📊 Workload**, in the ☰ menu beside 📊 Hours by Job — that
-is where someone already goes to ask *where did the time go*; this asks it forwards. Strict admin
-(`_ADMIN_READS`), like 📅 Schedule and 👥 People: it states the whole order book in hours.
+is where someone already goes to ask *where did the time go*; this asks it forwards.
+
+**Admin + office** (`_ADMIN_OFFICE_READS`) — owner's call. It was strict admin for a day on the
+reasoning that the order book sits with payroll; it doesn't. Scheduling the work it describes is
+office's job, and unlike 👥 People it carries **no wage figure** — hours committed, hours left, and
+who is on the crew by name. The crew checkboxes (`setCapacityCrew`) sit at the **same** tier
+deliberately: a control that is guaranteed to 403 reads as a broken feature, not a locked one.
 
 ```
 backlog  = Σ max(target − worked, 0)   over AWARDED jobs

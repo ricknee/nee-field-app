@@ -515,9 +515,6 @@ const _TIME_SELF_WRITES = new Set([
   "widgetLink",
 ]);
 const _ADMIN_POSTS = new Set([
-  // Who counts toward capacity. It changes a planning number for the whole
-  // company and sits on the roster, which is strict admin throughout.
-  "setCapacityCrew",
   "updateTimeEntryPayroll", "payrollRunCreate",
   // ⚠ Deleting a job estimate has NO STATUS GUARD — owner's explicit call
   // 2026-08-20 — so a Sent or Approved estimate can be erased. Strict admin
@@ -584,6 +581,11 @@ const _ADMIN_POSTS = new Set([
   "fillHolidays", "ptoRollover",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
+  // Who counts toward capacity — the checkboxes on the Workload screen, so it
+  // matches that screen's tier. Offering office a control that is guaranteed to
+  // 403 is worse than not offering it: it reads as the feature being broken.
+  // It writes one boolean on an employee and no wage data.
+  "setCapacityCrew",
   // NOTE: deleteExpense is intentionally NOT here — it now defaults to
   // _NON_VIEWER and handleDeleteExpense enforces owner+unreviewed for
   // employees (admin/office may delete any). updateExpense likewise defaults
@@ -711,12 +713,6 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
 const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "people", "employeePin", "employeeRates",
-                              // The year's workload (docs/PLAN-hours-capacity.md). Strict
-                              // admin like the schedule and the roster: it states the whole
-                              // company's committed work in hours, and it names who is
-                              // counted as crew — closer to payroll than to back-office
-                              // money work, so office is excluded as it is there.
-                              "workload",
                               // db/schema/072. Names the specific misconfiguration the same
                               // way r2Status does, because a PW job with no usable rate
                               // produces a plausible number rather than an error.
@@ -768,6 +764,13 @@ const _ADMIN_OFFICE_READS = new Set([
   // clearance requirement without an office login IS the feature, the same
   // way it is for jobPrints.
   "powerCompanySpecsDeleted",
+  // The year's workload (docs/PLAN-hours-capacity.md) — owner's call 2026-09-23.
+  // It was strict admin for a day on the reasoning that the order book sits
+  // with payroll; it doesn't. It carries NO wage figure — hours committed,
+  // hours left, and who is on the crew by name — and scheduling the work it
+  // describes is office's job. The "people" roster stays strict admin because
+  // that one carries cost rates; this is the same names with the money left out.
+  "workload",
 ]);
 
 function authzFor(method, action) {

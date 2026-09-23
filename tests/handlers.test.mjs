@@ -709,9 +709,20 @@ await test("workload: only AWARDED is backlog, and coverage rides with the total
      "the response carries coverage");
   ok(/not counted\./.test(html), "and the screen states it");
 
-  // A job with no completion date counts as THIS year's: unknown is not a
-  // reason to look less busy.
-  ok(/!j\.completionDate \|\| j\.completionDate <= through/.test(fn), "undated work counts as due");
+  ok(/backlogDue: sum\(counted, "thisYear"\)/.test(fn), "due-this-year sums each job's this-year share");
+
+  // The split rule itself (owner 2026-09-23: "ryan brewer is awarded, but i wont
+  // start it for at least 2 months").
+  const fsrc = src.slice(src.indexOf("function thisYearShare"), src.indexOf("async function handleWorkload"));
+  const share = new Function(`${fsrc}; return thisYearShare;`)();
+  const T = "2026-12-31";
+  eq(share(null, {}, T), null, "no target stays null, never 0");
+  eq(share(100, {}, T), 100, "undated work counts in full");
+  eq(share(100, { start_date: "2027-01-10" }, T), 0, "starts after the year end → none of it");
+  eq(share(100, { start_date: "2026-11-20" }, T), 100, "a start with no finish can't be split → in full");
+  eq(share(100, { completion_date: "2026-11-01" }, T), 100, "finishes inside → all of it");
+  eq(share(100, { completion_date: "2027-02-01", wd_in_window: 20, wd_to_completion: 40 }, T), 50,
+     "runs past the year end → this year's share of its working days");
 
   // Crew is a flag with a default, never a role test or a hardcoded list — the
   // SALARIED-name-list hazard in CLAUDE.md, avoided on purpose.

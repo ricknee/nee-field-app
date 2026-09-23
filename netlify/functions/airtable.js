@@ -4261,6 +4261,29 @@ async function handlePayrollHoursRollup(params) {
  * day they exist. The crew rows come back named, because a capacity figure
  * nobody can audit is a figure nobody believes.
  */
+/* How much of a job's remaining hours fall inside the window (to `through`).
+ * Owner's ask 2026-09-23: an awarded job that won't start for two months
+ * should not read as this year's work in full.
+ *   - starts after the window        → none of it
+ *   - finishes after the window      → the share of its working days, from when
+ *                                      it can start (tomorrow, or the planned
+ *                                      start) to completion, that fall inside it
+ *   - otherwise (inside, or undated) → all of it: unknown is not a reason to
+ *                                      look less busy
+ * ⚠ A planned start with NO completion date counts in full. It says when work
+ * begins, not how long it runs, so there is nothing to split by — the screen
+ * asks for a completion date on those rather than guessing a pace.
+ */
+function thisYearShare(remaining, r, through) {
+  if (remaining == null) return null;
+  if (r.start_date && through && r.start_date > through) return 0;
+  if (r.completion_date && through && r.completion_date > through) {
+    const inside = Number(r.wd_in_window) || 0, total = Number(r.wd_to_completion) || 0;
+    return total > 0 ? Math.round(remaining * inside / total * 10) / 10 : remaining;
+  }
+  return remaining;
+}
+
 async function handleWorkload(params) {
   if (!neonEnabled()) return resp(503, { ok: false, error: "The workload view is unavailable (database not configured)." });
 
@@ -4268,18 +4291,34 @@ async function handleWorkload(params) {
   // so "the year" means what the owner means by it.
   const until = /^\d{4}-\d{2}-\d{2}$/.test(params?.until || "") ? params.until : null;
 
+  // Per job, the working days (Mon–Fri, not a company holiday) from when work can
+  // happen — tomorrow, or the planned start if that is later — to the year end
+  // and to the job's completion date. Their ratio is the share of a job that
+  // spans the year end which is THIS year's; see thisYear below.
   const jobs = await neonWrite("workload.jobs",
-    `SELECT COALESCE(j.airtable_id, j.id::text) AS job_id,
+    `WITH bounds AS (
+       SELECT COALESCE($1::date, (date_trunc('year', current_date) + interval '1 year - 1 day')::date) AS through
+     )
+     SELECT COALESCE(j.airtable_id, j.id::text) AS job_id,
             j.name, j.contractor_name,
             j.completion_date::text AS completion_date,
+            j.start_date::text      AS start_date,
             j.expected_hours,
             r.est_labor_hours_rollup AS est_hours,
             r.hours_rollup           AS worked_hours,
-            (SELECT max(t.work_date)::text FROM time_entries t WHERE t.job_id = j.id) AS last_worked
+            (SELECT max(t.work_date)::text FROM time_entries t WHERE t.job_id = j.id) AS last_worked,
+            (SELECT count(*) FROM generate_series(GREATEST(j.start_date, current_date + 1), b.through, interval '1 day') g
+              WHERE extract(isodow FROM g) < 6
+                AND NOT EXISTS (SELECT 1 FROM company_holidays h WHERE h.holiday_date = g::date)) AS wd_in_window,
+            CASE WHEN j.completion_date IS NOT NULL THEN
+            (SELECT count(*) FROM generate_series(GREATEST(j.start_date, current_date + 1), j.completion_date, interval '1 day') g
+              WHERE extract(isodow FROM g) < 6
+                AND NOT EXISTS (SELECT 1 FROM company_holidays h WHERE h.holiday_date = g::date)) END AS wd_to_completion
        FROM jobs j
        JOIN v_job_rollups r ON r.id = j.id
+       CROSS JOIN bounds b
       WHERE j.status = 'Awarded'
-      ORDER BY j.name`);
+      ORDER BY j.name`, [until]);
 
   // Working days left: weekdays from TOMORROW (today is mostly spent by the
   // time anyone looks at this) to the end of the window, minus the company
@@ -4326,11 +4365,13 @@ async function handleWorkload(params) {
     // estimate rollup, and a job with neither has NO target, which is a
     // different thing from a target of zero. See db/schema/079.
     const target = r.expected_hours != null ? Number(r.expected_hours) : (est > 0 ? est : null);
+    const remaining = target == null ? null : Math.max(target - worked, 0);
     return {
       jobId: r.job_id, name: r.name || "", contractor: r.contractor_name || "",
       completionDate: r.completion_date || "",
-      target, worked,
-      remaining: target == null ? null : Math.max(target - worked, 0),
+      startDate: r.start_date || "",
+      target, worked, remaining,
+      thisYear: thisYearShare(remaining, r, cap.through || ""),
       fromEstimate: r.expected_hours == null && est > 0,
       lastWorked: r.last_worked || "",
     };
@@ -4338,7 +4379,7 @@ async function handleWorkload(params) {
 
   const counted = rows.filter(j => j.target != null);
   const missing = rows.filter(j => j.target == null);
-  const sum = (list) => Math.round(list.reduce((t, j) => t + (j.remaining || 0), 0) * 10) / 10;
+  const sum = (list, key = "remaining") => Math.round(list.reduce((t, j) => t + (j[key] || 0), 0) * 10) / 10;
   const through = cap.through || "";
 
   return resp(200, {
@@ -4346,11 +4387,9 @@ async function handleWorkload(params) {
     jobs: rows,
     totals: {
       backlog: sum(counted),
-      // Work whose completion date falls inside the window, so "committed" and
-      // "committed THIS year" can both be read — a job due in February is real
-      // work but it is not this year's problem. A job with NO completion date
-      // counts as this year's: unknown is not a reason to look less busy.
-      backlogDue: sum(counted.filter(j => !j.completionDate || j.completionDate <= through)),
+      // The part of the backlog that falls inside the window — see thisYearShare.
+      // "Committed" and "committed THIS year" can both be read.
+      backlogDue: sum(counted, "thisYear"),
       jobs: rows.length, counted: counted.length, missing: missing.length,
       missingNames: missing.map(j => j.name).slice(0, 25),
     },
@@ -6235,7 +6274,8 @@ const JOB_SELECT = `
          j.city_tax, j.clock_visibility, j.overhead, j.prevailing_wage,
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
-         j.completion_date::text AS completion_date, j.workflow_status, j.billable_hourly_rate,
+         j.completion_date::text AS completion_date, j.start_date::text AS start_date,
+         j.workflow_status, j.billable_hourly_rate,
          -- The hours TARGET for this job, overriding the estimate rollup when
          -- set. NULL means nobody has said — the rollup answers if there is one.
          -- db/schema/079 and docs/PLAN-hours-capacity.md.
@@ -6406,6 +6446,7 @@ function mapJobFromNeon(r) {
     serviceCallCreated: r.service_call_created === true,
     projectComplete: r.project_complete === true,
     milesFromShop: n(r.miles_from_shop), notes: s(r.notes), completionDate: s(r.completion_date),
+    startDate: s(r.start_date),
     totalRevenueLive: n(r.total_revenue_live), totalMaterialsLive: n(r.total_materials_live),
     totalLaborCostLive: n(r.total_labor_cost_live), totalWireCost: n(r.total_wire_cost),
     pipeCost: n(r.pipe_cost), materialsInProgress: n(r.materials_in_progress),
@@ -14536,7 +14577,7 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, expectedHours, generatorInstalled } = body || {};
+  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, startDate, expectedHours, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -14586,6 +14627,17 @@ async function handleUpdateJobInfo(body) {
   if (customerEmail  !== undefined) put("customer_email",  customerEmail  || null);
   if (notes          !== undefined) put("notes",           notes          || null);
   if (completionDate !== undefined) put("completion_date", completionDate || null, "::date");
+  // Planned start — when work is expected to BEGIN, so 📊 Workload can tell a job
+  // that is ready now from one awarded but not starting for months. Reuses
+  // jobs.start_date: imported from Airtable's "Start Date", set on 1 of 21 awarded
+  // jobs, and read or written by nothing until this. Neon only, like the
+  // completion date above.
+  if (startDate !== undefined) {
+    if (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(startDate))) {
+      return resp(400, { ok: false, error: "Start date must be a date." });
+    }
+    put("start_date", startDate || null, "::date");
+  }
   // Hours target. "" clears it back to "nobody has said" — which is NOT the
   // same as 0, so an empty box must never arrive as a zero. A number that
   // isn't one is refused rather than written as NULL, because silently

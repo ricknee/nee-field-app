@@ -3619,6 +3619,11 @@
             </div>
 
             <div style="margin-bottom:14px;">
+              <label class="edit-label">🚧 Planned Start <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(when work begins — 📊 Workload counts only this year's share of the hours)</span></label>
+              <input id="piEditStartDate" type="date" class="edit-input" />
+            </div>
+
+            <div style="margin-bottom:14px;">
               <label class="edit-label">🏁 Completion Date <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(target finish — counts down, shows on the schedule)</span></label>
               <input id="piEditCompletionDate" type="date" class="edit-input" />
             </div>
@@ -10813,6 +10818,7 @@
       customerEmail:  $("piEditEmail").value.trim(),
       notes:          $("piEditNotes").value,
       completionDate: $("piEditCompletionDate").value,   // "" or YYYY-MM-DD
+      startDate:      $("piEditStartDate").value,        // "" or YYYY-MM-DD
       expectedHours:  $("piEditExpectedHours").value.trim(),   // "" or a number
     };
   }
@@ -10831,6 +10837,7 @@
       customerEmail:  job.customerEmail  || "",
       notes:          job.notes          || "",
       completionDate: job.completionDate || "",
+      startDate:      job.startDate      || "",
       expectedHours:  job.expectedHours == null ? "" : String(job.expectedHours),
     };
   }
@@ -12682,6 +12689,7 @@
     $("piEditEmail").value  = job.customerEmail  || "";
     $("piEditNotes").value  = job.notes          || "";
     $("piEditCompletionDate").value = job.completionDate || "";
+    $("piEditStartDate").value      = job.startDate      || "";
     $("piEditExpectedHours").value  = job.expectedHours == null ? "" : String(job.expectedHours);
     // Say what a blank box will fall back to, so leaving it empty is a choice
     // rather than an oversight.
@@ -24810,26 +24818,41 @@
     // Biggest remaining first, and every row carries its last-worked date:
     // stalled work is not remaining work, and the total can't tell you which
     // is which.
+    // "Due this year" shows each job's THIS-YEAR share (server: thisYearShare) —
+    // a job starting after the year end drops out, one running past it shows
+    // only the part that falls inside. A job with no target stays listed: it is
+    // the reason the total is short.
+    const shown = j => dueOnly ? j.thisYear : j.remaining;
     const rows = [...(wlData.jobs || [])]
-      .filter(j => !dueOnly || !j.completionDate || j.completionDate <= (cap.through || ""))
-      .sort((a, b) => (b.remaining ?? -1) - (a.remaining ?? -1));
+      .filter(j => !dueOnly || j.thisYear == null || j.thisYear > 0)
+      .sort((a, b) => (shown(b) ?? -1) - (shown(a) ?? -1));
 
+    const today = new Date().toISOString().slice(0, 10);
     $("wlList").innerHTML = rows.map(j => {
       const noTarget = j.remaining == null;
       const stale = j.lastWorked && ((Date.now() - new Date(j.lastWorked + "T00:00:00").getTime()) / 86400000) > 21;
+      const startsLater = j.startDate && j.startDate > today;
+      const split = dueOnly && !noTarget && j.thisYear < j.remaining;
+      // A future start with no finish can't be split across years, so it counts
+      // in full — say so, rather than let the start date look like it did nothing.
+      const needsFinish = startsLater && !j.completionDate && !noTarget;
       return `<div style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--line);">
         <span style="flex:1; min-width:0;">
           <span style="display:block; font-size:13px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(j.name)}</span>
           <span style="display:block; font-size:11px; color:var(--muted);">
-            ${esc(j.contractor || "")}${j.completionDate ? ` · due ${esc(fmtCompletionDate(j.completionDate))}` : ""}
+            ${esc(j.contractor || "")}${startsLater ? ` · <span style="color:var(--text); font-weight:600;">starts ${esc(fmtCompletionDate(j.startDate))}</span>` : ""}${j.completionDate ? ` · due ${esc(fmtCompletionDate(j.completionDate))}` : ""}
             ${j.lastWorked ? ` · last worked ${esc(fmtCompletionDate(j.lastWorked))}` : " · never worked"}
             ${stale ? ` <span style="color:var(--amber,#c90);">· stalled</span>` : ""}
+            ${needsFinish ? ` <span style="color:var(--amber,#c90);">· set a completion date to split it across years</span>` : ""}
           </span>
         </span>
         <span style="flex:none; text-align:right; font-size:12px;">
           ${noTarget
             ? `<span style="color:var(--amber,#c90); font-weight:700;">no target</span>
                <span style="display:block; color:var(--muted); font-size:11px;">${fmtHours(j.worked)} h worked</span>`
+            : split
+            ? `<b style="font-size:14px;">${fmtHours(j.thisYear)} h</b> this year
+               <span style="display:block; color:var(--muted); font-size:11px;">of ${fmtHours(j.remaining)} h left</span>`
             : `<b style="font-size:14px;">${fmtHours(j.remaining)} h</b> left
                <span style="display:block; color:var(--muted); font-size:11px;">${fmtHours(j.worked)} of ${fmtHours(j.target)}${j.fromEstimate ? " (est)" : ""}</span>`}
         </span>
@@ -30971,7 +30994,7 @@
             <input id="wlDaysPerWeek" type="number" min="1" max="7" step="1" value="5"
                    style="width:70px; padding:6px 8px; border:1px solid var(--line); border-radius:8px; font-size:13px;" /></label>
           <label style="display:flex; align-items:center; gap:6px;">
-            <input id="wlDueOnly" type="checkbox" /> Only work due before the year ends</label>
+            <input id="wlDueOnly" type="checkbox" /> Only this year's share (by start &amp; completion dates)</label>
         </div>
         <div id="wlCrew" style="font-size:12px; color:var(--muted); margin-bottom:12px;"></div>
         <div id="wlList" style="max-height:46vh; overflow:auto;"></div>

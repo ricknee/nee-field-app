@@ -111,7 +111,7 @@ export const JOB_FIELDS = [
   ["start_date",              "Start Date",                       nul],
   ["finish_date",             "Finish Date",                      nul],
   ["project_completed_at",    "Project Completed At",             nul],
-  ["bird_date",               "Bird Date",                        nul],
+  ["completion_date",         "Bird Date",                        nul],
   ["address_full",            "Job Address - Full",               nul],
   ["address_street",          "Job Site Street Address (Intake)",  nul],
   ["address_city",            "Job Site City (Intake)",            nul],

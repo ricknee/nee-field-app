@@ -246,7 +246,10 @@ const F = {
     projectComplete:     "Project Complete (Ready to Invoice)",
     milesFromShop:       "Miles from Shop",
     notes:               "Notes",
-    birdDate:            "Bird Date",
+    // The Airtable field is still called "Bird Date" and is not being renamed:
+    // it is frozen (AIRTABLE_WRITES=off) and the base is waiting to be archived,
+    // so the logical key moved and the field name did not. See db/schema/078.
+    completionDate:      "Bird Date",
     totalRevenueLive:          "Total Revenue (Live)",
     totalMaterialsLive:        "Total Materials (Live)",
     totalLaborCostLive:        "Total Labor Cost (Live)",
@@ -5949,7 +5952,7 @@ function mapJob(r) {
       startServiceCall:gBool(f,F.job.startServiceCall),serviceCallCreated:gBool(f,F.job.serviceCallCreated),
       projectComplete:gBool(f,F.job.projectComplete),milesFromShop:gNum(f,F.job.milesFromShop),
       notes:g(f,F.job.notes)||"",
-      birdDate:g(f,F.job.birdDate)||"",
+      completionDate:g(f,F.job.completionDate)||"",
       totalRevenueLive:gNum(f,F.job.totalRevenueLive),totalMaterialsLive:gNum(f,F.job.totalMaterialsLive),
       totalLaborCostLive:gNum(f,F.job.totalLaborCostLive),totalWireCost:gNum(f,F.job.totalWireCost),
       pipeCost:gNum(f,F.job.pipeCost),materialsInProgress:gNum(f,F.job.materialsInProgress),
@@ -6076,7 +6079,7 @@ const JOB_SELECT = `
          j.city_tax, j.clock_visibility, j.overhead, j.prevailing_wage,
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
-         j.bird_date::text AS bird_date, j.workflow_status, j.billable_hourly_rate,
+         j.completion_date::text AS completion_date, j.workflow_status, j.billable_hourly_rate,
          j.labor_billable_rate_at_id,
          -- The markup ACTUAL material is billed at (10% on every job today). The
          -- new-estimate form seeds its markup box from it, so estimated and
@@ -6242,7 +6245,7 @@ function mapJobFromNeon(r) {
     startServiceCall: r.start_service_call === true,
     serviceCallCreated: r.service_call_created === true,
     projectComplete: r.project_complete === true,
-    milesFromShop: n(r.miles_from_shop), notes: s(r.notes), birdDate: s(r.bird_date),
+    milesFromShop: n(r.miles_from_shop), notes: s(r.notes), completionDate: s(r.completion_date),
     totalRevenueLive: n(r.total_revenue_live), totalMaterialsLive: n(r.total_materials_live),
     totalLaborCostLive: n(r.total_labor_cost_live), totalWireCost: n(r.total_wire_cost),
     pipeCost: n(r.pipe_cost), materialsInProgress: n(r.materials_in_progress),
@@ -13660,19 +13663,24 @@ async function handleGetScheduleEntriesFromNeon(params) {
     notes:      r.notes || ""
   }));
 
-  const bd = await neonQuery(
-    `SELECT airtable_id, name, contractor_name, bird_date::text AS bird_date
+  // ⚠ COALESCE ON EMIT, not airtable_id alone. A job born in Neon has no rec
+  // id, so the old spelling handed the calendar an EMPTY job id: the pill still
+  // drew, and tapping it matched no job and did nothing. Every id this app
+  // emits is the dual handle — see the identity-cutover note in CLAUDE.md.
+  const cd = await neonQuery(
+    `SELECT COALESCE(airtable_id, id::text) AS job_id, name, contractor_name,
+            completion_date::text AS completion_date
        FROM jobs
-      WHERE bird_date IS NOT NULL
-        AND ($1 = '' OR bird_date >= $1::date)
-        AND ($2 = '' OR bird_date <= $2::date)`,
+      WHERE completion_date IS NOT NULL
+        AND ($1 = '' OR completion_date >= $1::date)
+        AND ($2 = '' OR completion_date <= $2::date)`,
     [since, until]);
-  const birdDates = (bd?.rows || []).map(r => ({
-    jobId: r.airtable_id, jobName: r.name || "",
-    contractor: r.contractor_name || "", date: r.bird_date
+  const completionDates = (cd?.rows || []).map(r => ({
+    jobId: r.job_id, jobName: r.name || "",
+    contractor: r.contractor_name || "", date: r.completion_date
   }));
 
-  return { entries, birdDates, ms: q.ms };
+  return { entries, completionDates, ms: q.ms };
 }
 
 async function handleGetScheduleEntries(params) {
@@ -13685,7 +13693,7 @@ async function handleGetScheduleEntries(params) {
 
   if (neonEnabled()) {
     const r = await handleGetScheduleEntriesFromNeon(params);
-    if (r) return resp(200, { ok: true, entries: r.entries, birdDates: r.birdDates,
+    if (r) return resp(200, { ok: true, entries: r.entries, completionDates: r.completionDates,
                               _source: "neon", _ms: r.ms });
     // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
     console.error("scheduleEntries: Neon read failed, refusing to serve frozen Airtable data");
@@ -13706,7 +13714,7 @@ async function handleGetScheduleEntries(params) {
       name:       g(f, F.job.name)       || "",
       contractor: g(f, F.job.contractor) || "",
       status:     g(f, F.job.status)     || "",
-      birdDate:   g(f, F.job.birdDate)   || ""
+      completionDate: g(f, F.job.completionDate) || ""
     };
   });
   const empById = {};
@@ -13756,15 +13764,15 @@ async function handleGetScheduleEntries(params) {
   // Sort by start date ascending so the calendar renders chronologically
   filtered.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
 
-  // Bird move-in dates live on the Job (poultry new-construction). Surface
-  // any that fall in the requested window as a lightweight sibling array so
-  // the calendar can render a reminder pill on that day. Reuses the jobs we
-  // already fetched above — no extra Airtable round-trip.
-  const birdDates = Object.values(jobById)
-    .filter(j => j.birdDate && (!since || j.birdDate >= since) && (!until || j.birdDate <= until))
-    .map(j => ({ jobId: j.id, jobName: j.name, contractor: j.contractor, date: j.birdDate }));
+  // Target completion dates live on the Job. Surface any that fall in the
+  // requested window as a lightweight sibling array so the calendar can render
+  // a reminder pill on that day. Reuses the jobs we already fetched above — no
+  // extra Airtable round-trip.
+  const completionDates = Object.values(jobById)
+    .filter(j => j.completionDate && (!since || j.completionDate >= since) && (!until || j.completionDate <= until))
+    .map(j => ({ jobId: j.id, jobName: j.name, contractor: j.contractor, date: j.completionDate }));
 
-  return resp(200, { ok: true, entries: filtered, birdDates, _source: "airtable" });
+  return resp(200, { ok: true, entries: filtered, completionDates, _source: "airtable" });
 }
 
 // ── Schedule writes: NEON-FIRST, Airtable the fail-soft mirror ─────────────
@@ -14369,7 +14377,7 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, birdDate, generatorInstalled } = body || {};
+  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -14385,9 +14393,10 @@ async function handleUpdateJobInfo(body) {
   if (customerPhone  !== undefined) fields["fldBf6EC5EQXsPFAQ"] = customerPhone  || "";
   if (customerEmail  !== undefined) fields["fldzGgNmRlSxwpSMX"] = customerEmail  || "";
   if (notes          !== undefined) fields["fldAuZAW19iYPBPxP"] = notes          || "";
-  // Bird Date is a date-only field — send null (not "") to clear it, so an
-  // empty string never trips Airtable's date parsing.
-  if (birdDate       !== undefined) fields["fldyKjtcqganpbhNc"] = birdDate || null;
+  // The completion date is a date-only field — send null (not "") to clear it,
+  // so an empty string never trips Airtable's date parsing. The field id is the
+  // old "Bird Date" one, which is deliberate: see db/schema/078.
+  if (completionDate !== undefined) fields["fldyKjtcqganpbhNc"] = completionDate || null;
 
   if (!Object.keys(fields).length) return resp(400, { ok: false, error: "Nothing to update." });
 
@@ -14413,7 +14422,7 @@ async function handleUpdateJobInfo(body) {
   if (customerPhone  !== undefined) put("customer_phone",  customerPhone  || null);
   if (customerEmail  !== undefined) put("customer_email",  customerEmail  || null);
   if (notes          !== undefined) put("notes",           notes          || null);
-  if (birdDate       !== undefined) put("bird_date",       birdDate || null, "::date");
+  if (completionDate !== undefined) put("completion_date", completionDate || null, "::date");
   if (generatorInstalled !== undefined) put("generator_installed", generatorInstalled === true);
 
   // `address_full` is a FORMULA in Airtable, so Airtable recomputes it itself.

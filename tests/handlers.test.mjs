@@ -579,25 +579,25 @@ await test("getNextInvoiceNumber: returns max + 1", async () => {
   eq(json(await POST("getNextInvoiceNumber")).nextNumber, 1701, "max+1");
 });
 
-// ── bird date (poultry move-in) ──
-await test("scheduleEntries: surfaces jobs' Bird Date in birdDates[]", async () => {
+// ── completion date (was the poultry Bird Date until 2026-09-23, db/schema/078) ──
+await test("scheduleEntries: surfaces jobs' completion date in completionDates[]", async () => {
   mockTables = {
     "Schedule Entries": [],
     Jobs: [
-      { id: "recBird", fields: { "Job Name": "Case Farms 2-Barn", "Contractor Name (Text)": "Case Farms", "Job Status": "Awarded", "Bird Date": "2026-08-15" } },
-      { id: "recNoBird", fields: { "Job Name": "Regular Job", "Job Status": "Awarded" } },
+      { id: "recDue", fields: { "Job Name": "Case Farms 2-Barn", "Contractor Name (Text)": "Case Farms", "Job Status": "Awarded", "Bird Date": "2026-08-15" } },
+      { id: "recNoDue", fields: { "Job Name": "Regular Job", "Job Status": "Awarded" } },
     ],
     Employees: [],
   };
   const b = json(await GET("scheduleEntries"));
   ok(b.ok, "ok");
-  eq(b.birdDates.length, 1, "only the job with a Bird Date");
-  eq(b.birdDates[0].jobId, "recBird", "jobId");
-  eq(b.birdDates[0].date, "2026-08-15", "date");
-  eq(b.birdDates[0].jobName, "Case Farms 2-Barn", "jobName");
+  eq(b.completionDates.length, 1, "only the job with a completion date");
+  eq(b.completionDates[0].jobId, "recDue", "jobId");
+  eq(b.completionDates[0].date, "2026-08-15", "date");
+  eq(b.completionDates[0].jobName, "Case Farms 2-Barn", "jobName");
 });
 
-await test("scheduleEntries: birdDates respects since/until window", async () => {
+await test("scheduleEntries: completionDates respects since/until window", async () => {
   mockTables = {
     "Schedule Entries": [],
     Jobs: [
@@ -607,15 +607,30 @@ await test("scheduleEntries: birdDates respects since/until window", async () =>
     Employees: [],
   };
   const b = json(await GET("scheduleEntries", { since: "2026-08-01", until: "2026-08-31" }));
-  eq(b.birdDates.length, 1, "windowed"); eq(b.birdDates[0].jobId, "recIn", "in-window job");
+  eq(b.completionDates.length, 1, "windowed"); eq(b.completionDates[0].jobId, "recIn", "in-window job");
 });
 
-await test("updateJobInfo: writes Bird Date field id; clears with null", async () => {
+// The Neon branch can't run offline, so this is a static guard on the spelling.
+// A native job has NO airtable_id: emitting the bare column handed the calendar
+// an empty job id, so the pill drew and tapping it matched nothing — the silent
+// native-row failure mode again, found by reading rather than by an error.
+await test("scheduleEntries: the completion-date pill emits the DUAL HANDLE, not airtable_id", async () => {
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const q = src.slice(src.indexOf("FROM jobs\n      WHERE completion_date IS NOT NULL") - 400,
+                      src.indexOf("FROM jobs\n      WHERE completion_date IS NOT NULL"));
+  ok(/COALESCE\(airtable_id, id::text\) AS job_id/.test(q), "selects COALESCE(airtable_id, id::text)");
+  ok(!/SELECT airtable_id,/.test(q), "does not select airtable_id alone");
+});
+
+await test("updateJobInfo: writes the completion date to its field id; clears with null", async () => {
   mockTables = {};
-  await POST("updateJobInfo", { jobId: "recJ1", birdDate: "2026-08-15" });
+  await POST("updateJobInfo", { jobId: "recJ1", completionDate: "2026-08-15" });
   let fields = JSON.parse(lastFetch.opts.body).fields;
-  eq(fields["fldyKjtcqganpbhNc"], "2026-08-15", "sets the date on the Bird Date field id");
-  await POST("updateJobInfo", { jobId: "recJ1", birdDate: "" });
+  // Still the old "Bird Date" field id: Airtable is frozen and was deliberately
+  // not renamed with the column. See db/schema/078.
+  eq(fields["fldyKjtcqganpbhNc"], "2026-08-15", "sets the date on the completion-date field id");
+  await POST("updateJobInfo", { jobId: "recJ1", completionDate: "" });
   fields = JSON.parse(lastFetch.opts.body).fields;
   eq(fields["fldyKjtcqganpbhNc"], null, "empty clears to null (not empty string)");
 });

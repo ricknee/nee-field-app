@@ -1,0 +1,33 @@
+-- BIRD DATE → PROJECT COMPLETION DATE.
+-- APPLIED to the default branch of Neon project damp-silence-99074350 on 2026-09-23.
+--
+-- Same convention as the other files here: applied BARE via the Neon MCP
+-- (which mangles inline SQL comments), with the reasoning kept here.
+--
+-- ── WHY A RENAME AND NOT A NEW COLUMN ──────────────────────────────────────
+-- `bird_date` was the poultry move-in date: the day birds arrive at a new
+-- barn, and so the deadline that job is built against. It did exactly what a
+-- target completion date does — a countdown card on Project Info and a pill on
+-- the schedule — but it only made sense on poultry jobs, which is three of
+-- them. Owner's call (2026-09-23): make it the date every job can carry.
+--
+-- The three existing values are KEPT and are now completion dates. A poultry
+-- job's bird date IS its completion deadline, so nothing is being misfiled:
+--   Gary Strauss / Case Farms       2026-07-29
+--   Big Little Farms / Aviary       2026-08-17
+--   Sullivan Pullet / Aviary        2027-02-01
+--
+-- ⚠ NOT the same thing as the "Work Completed / In-Service" date sketched in
+-- docs/PLAN-job-warranty-service-log.md. This one is a TARGET, set in advance
+-- and counted down to. That one is an ACTUAL, stamped when the work is done
+-- and used to start a warranty clock. If that gets built it needs its own
+-- column — do not overload this one.
+--
+-- ── AIRTABLE IS NOT RENAMED ────────────────────────────────────────────────
+-- The Airtable field stays "Bird Date" (fldyKjtcqganpbhNc). It is frozen —
+-- AIRTABLE_WRITES=off, no read path left for it — and the base is waiting to be
+-- archived, so renaming it there would be churn on a copy nothing reads. The
+-- F.job entry keeps the old Airtable NAME with the new logical key; see the
+-- note beside it in airtable.js.
+
+ALTER TABLE jobs RENAME COLUMN bird_date TO completion_date;

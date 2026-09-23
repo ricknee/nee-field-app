@@ -2775,17 +2775,17 @@
     .sch-block.sch-holiday strong { font-style: italic; font-weight: 600; }
     .sch-block.sch-holiday .crew  { font-style: italic; opacity: 0.85; }
 
-    /* Bird move-in reminder: poultry new-construction deadline. Blue fill
-       (matches the crew palette but distinct from the warm assignment colors)
-       so it reads as a heads-up, not a crew assignment. Clickable — opens the job. */
-    .sch-block.sch-bird {
+    /* Target completion date. Blue fill (matches the crew palette but distinct
+       from the warm assignment colors) so it reads as a heads-up, not a crew
+       assignment. Clickable — opens the job. */
+    .sch-block.sch-complete {
       background: #e3f2fd;
       color: #1565c0;
       border: 1px solid #90caf9;
       cursor: pointer;
     }
-    .sch-block.sch-bird strong { font-weight: 700; }
-    .sch-block.sch-bird .crew  { opacity: 0.9; }
+    .sch-block.sch-complete strong { font-weight: 700; }
+    .sch-block.sch-complete .crew  { opacity: 0.9; }
 
     /* Drag-to-move on desktop. Pills get a grab cursor + slight transparency
        while dragging; the day cell currently being hovered over highlights
@@ -3553,12 +3553,14 @@
                and it saves on its own like the billable rate does. -->
           <div class="admin-only hidden" id="piCityTaxView" style="margin-top:14px;"></div>
 
-          <!-- Bird move-in date (poultry new-construction). Admin-only read-only
-               view; hidden during edit mode where the date input takes over.
-               Only rendered when a date is set (toggled in refreshBirdDateView). -->
-          <div class="admin-only hidden" id="piBirdDateView" style="margin-top:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;">
-            <div class="info-label" style="margin-bottom:6px;">🐔 Bird Date</div>
-            <div id="piBirdDateText" style="font-size:13px; color:var(--text); line-height:1.5;">—</div>
+          <!-- Target completion date (any job). Admin/office read-only view;
+               hidden during edit mode where the date input takes over. Only
+               rendered when a date is set (toggled in refreshCompletionDateView).
+               Was the poultry-only 🐔 Bird Date until 2026-09-23 — same behaviour,
+               every job. See db/schema/078. -->
+          <div class="admin-only hidden" id="piCompletionDateView" style="margin-top:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px;">
+            <div class="info-label" style="margin-bottom:6px;">🏁 Completion Date</div>
+            <div id="piCompletionDateText" style="font-size:13px; color:var(--text); line-height:1.5;">—</div>
           </div>
 
           <!-- Edit Panel — replaces the read-only address/phone/email
@@ -3589,8 +3591,8 @@
             </div>
 
             <div style="margin-bottom:14px;">
-              <label class="edit-label">🐔 Bird Date <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(poultry move-in — shows on the schedule)</span></label>
-              <input id="piEditBirdDate" type="date" class="edit-input" />
+              <label class="edit-label">🏁 Completion Date <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(target finish — counts down, shows on the schedule)</span></label>
+              <input id="piEditCompletionDate" type="date" class="edit-input" />
             </div>
 
             <div>
@@ -12371,19 +12373,19 @@
     return [street || "", tail].filter(Boolean).join(", ").trim();
   }
 
-  // Formats a stored YYYY-MM-DD bird date to M/D/YYYY without constructing a
-  // Date (new Date("2026-07-17") parses as UTC midnight and can render as the
+  // Formats a stored YYYY-MM-DD completion date to M/D/YYYY without constructing
+  // a Date (new Date("2026-07-17") parses as UTC midnight and can render as the
   // day before in a western timezone). Returns the raw string if unparseable.
-  function fmtBirdDate(ymd) {
+  function fmtCompletionDate(ymd) {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
     if (!m) return ymd || "";
     return `${Number(m[2])}/${Number(m[3])}/${m[1]}`;
   }
 
-  // Days from today (exclusive) up to and including the bird date. Returns
-  // both the calendar total (weekends included) and the working-day count
-  // (Mon–Fri only). Negative total = the date has already passed.
-  function birdDaysUntil(ymd) {
+  // Days from today (exclusive) up to and including the completion date.
+  // Returns both the calendar total (weekends included) and the working-day
+  // count (Mon–Fri only). Negative total = the date has already passed.
+  function completionDaysUntil(ymd) {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || "");
     if (!m) return null;
     const target = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
@@ -12402,25 +12404,25 @@
     return { totalDays, working };
   }
 
-  // Human label for the countdown shown beside the bird date.
-  function birdCountdownLabel(ymd) {
-    const c = birdDaysUntil(ymd);
+  // Human label for the countdown shown beside the completion date.
+  function completionCountdownLabel(ymd) {
+    const c = completionDaysUntil(ymd);
     if (!c) return "";
-    if (c.totalDays === 0) return "birds move in today 🐔";
+    if (c.totalDays === 0) return "due today 🏁";
     if (c.totalDays < 0) {
       const n = Math.abs(c.totalDays);
-      return `bird date was ${n} day${n === 1 ? "" : "s"} ago`;
+      return `due ${n} day${n === 1 ? "" : "s"} ago`;
     }
     const t = `${c.totalDays} total day${c.totalDays === 1 ? "" : "s"}`;
     const w = `${c.working} working day${c.working === 1 ? "" : "s"}`;
     return `${t} · ${w} left`;
   }
 
-  // Bird move-in date read-only display. Admin-only, and only shown when a
-  // date is actually set (blank on every non-poultry job). Called from
-  // exitEditMode, which runs on each job switch and after Save.
+  // Completion-date read-only display. Admin/office, and only shown when a
+  // date is actually set. Called from exitEditMode, which runs on each job
+  // switch and after Save.
   // Renders and wires the per-job city tax control. Called alongside
-  // refreshBirdDateView from exitEditMode, which runs on every job switch — so the
+  // refreshCompletionDateView from exitEditMode, which runs on every job switch — so the
   // control always reflects the job actually on screen.
   function refreshJobCityTaxView() {
     const host = $("piCityTaxView");
@@ -12433,16 +12435,16 @@
     wireJobPrevailingWageBar(job);
   }
 
-  function refreshBirdDateView() {
-    const view = $("piBirdDateView");
+  function refreshCompletionDateView() {
+    const view = $("piCompletionDateView");
     if (!view) return;
     const job = state.selected;
-    const bd  = job && job.birdDate ? job.birdDate : "";
-    if (isAdmin() && bd) {
-      const txt = $("piBirdDateText");
+    const cd  = job && job.completionDate ? job.completionDate : "";
+    if (isAdmin() && cd) {
+      const txt = $("piCompletionDateText");
       if (txt) {
-        const countdown = birdCountdownLabel(bd);
-        txt.innerHTML = `${esc(fmtBirdDate(bd))}${countdown ? ` <span style="color:var(--muted); font-weight:600;">· ${esc(countdown)}</span>` : ""}`;
+        const countdown = completionCountdownLabel(cd);
+        txt.innerHTML = `${esc(fmtCompletionDate(cd))}${countdown ? ` <span style="color:var(--muted); font-weight:600;">· ${esc(countdown)}</span>` : ""}`;
       }
       view.classList.remove("hidden");
     } else {
@@ -12473,7 +12475,7 @@
     $("piEditPhone").value  = job.customerPhone  || "";
     $("piEditEmail").value  = job.customerEmail  || "";
     $("piEditNotes").value  = job.notes          || "";
-    $("piEditBirdDate").value = job.birdDate     || "";
+    $("piEditCompletionDate").value = job.completionDate || "";
 
     // Hide the editable read-only cards + notes view + bird-date view, show
     // the panel.
@@ -12481,7 +12483,7 @@
     $("piEmailCard").style.display   = "none";
     $("piAddressCard").style.display = "none";
     $("piNotesView").classList.add("hidden");
-    $("piBirdDateView").classList.add("hidden");
+    $("piCompletionDateView").classList.add("hidden");
     $("piEditPanel").classList.remove("hidden");
 
     // Reveal the Save bar; flip the Edit button label.
@@ -12512,7 +12514,7 @@
     // can reach edit mode in the first place, so this is not a permission gate.
     const notesView = $("piNotesView");
     if (notesView) notesView.classList.remove("hidden");
-    refreshBirdDateView();
+    refreshCompletionDateView();
     refreshJobCityTaxView();
     const editBtn = $("piEditBtn");
     if (editBtn) {
@@ -12546,7 +12548,7 @@
     const customerPhone  = $("piEditPhone").value.trim();
     const customerEmail  = $("piEditEmail").value.trim();
     const notes          = $("piEditNotes").value;
-    const birdDate       = $("piEditBirdDate").value; // "" or YYYY-MM-DD
+    const completionDate = $("piEditCompletionDate").value; // "" or YYYY-MM-DD
 
     btn.disabled = true;
     btn.textContent = "Saving…";
@@ -12557,7 +12559,7 @@
       await apiPost("updateJobInfo", {
         jobId: job.id,
         customerStreet, customerCity, customerState, customerZip,
-        customerPhone, customerEmail, notes, birdDate
+        customerPhone, customerEmail, notes, completionDate
       });
 
       // Update local state so subsequent reads (and re-entering edit
@@ -12569,7 +12571,7 @@
       job.customerPhone  = customerPhone;
       job.customerEmail  = customerEmail;
       job.notes          = notes;
-      job.birdDate       = birdDate;
+      job.completionDate = completionDate;
       // Reconstruct the formula-computed Job Address - Full client-side
       // so the read-only card refreshes instantly.
       job.address = buildJobAddress(customerStreet, customerCity, customerState, customerZip);
@@ -21156,7 +21158,7 @@
   // ═══════════════════════════════════════════════════════════════════════
   // Module state
   let schEntries        = [];     // entries from backend
-  let schBirdDates      = [];     // poultry bird move-in dates ({jobId,jobName,contractor,date})
+  let schCompletionDates = [];    // target job completion dates ({jobId,jobName,contractor,date})
   let schCrew           = [];     // active employees, role-filtered (for crew picker)
   let schJobs           = [];     // jobs for the dropdown
   let schRangeStart     = null;   // first day shown in calendar (Date)
@@ -21244,9 +21246,9 @@
   }
   window.closeSchedule = closeSchedule;
 
-  // Bird-date pill click: close the schedule and open the job behind it in the
-  // main field view. No-op selection if the job isn't in the loaded list.
-  window.schOpenBirdJob = function(jobId) {
+  // Completion-date pill click: close the schedule and open the job behind it
+  // in the main field view. No-op selection if the job isn't in the loaded list.
+  window.schOpenCompletionJob = function(jobId) {
     const job = (state.jobs || []).find(j => j.id === jobId);
     closeSchedule();
     if (job) selectJob(job);
@@ -24770,7 +24772,7 @@
       if (!entriesRes?.ok) throw new Error(entriesRes?.error || "Failed to load entries");
       if (!crewRes?.ok)    throw new Error(crewRes?.error    || "Failed to load crew");
       schEntries = entriesRes.entries || [];
-      schBirdDates = entriesRes.birdDates || [];
+      schCompletionDates = entriesRes.completionDates || [];
       // Filter crew: only employee or admin roles. Office + viewer get
       // hidden from the picker. If `role` is missing for some reason
       // (older records, backend hiccup), fall back to including the
@@ -24900,15 +24902,15 @@
                   </div>`;
         });
       }).join("");
-      // Bird move-in reminders for this day (poultry new-construction). Small
-      // amber pill, sits at the bottom of the stack. Click opens the job.
-      const birds = schBirdDates.filter(b => b.date === ymd);
-      const birdBlocks = birds.map(b => {
+      // Target completion dates falling on this day. Small blue pill, sits at
+      // the bottom of the stack. Click opens the job.
+      const dueToday = schCompletionDates.filter(b => b.date === ymd);
+      const completionBlocks = dueToday.map(b => {
         const label = b.jobName || b.contractor || "Job";
-        return `<div class="sch-block sch-bird" data-job-id="${esc(b.jobId)}"
-                     onclick="event.stopPropagation(); schOpenBirdJob('${esc(b.jobId)}')"
-                     title="🐔 Birds move in — ${esc(label)}">
-                  <strong>🐔 Birds</strong>
+        return `<div class="sch-block sch-complete" data-job-id="${esc(b.jobId)}"
+                     onclick="event.stopPropagation(); schOpenCompletionJob('${esc(b.jobId)}')"
+                     title="🏁 Target completion — ${esc(label)}">
+                  <strong>🏁 Due</strong>
                   <span class="crew">${esc(label)}</span>
                 </div>`;
       }).join("");
@@ -24929,7 +24931,7 @@
             <span class="sch-day-name">${dowName}</span>
             <span class="sch-day-num">${d.getDate()}</span>
           </div>
-          <div class="sch-day-blocks">${holidayBlock}${blocks}${birdBlocks}</div>
+          <div class="sch-day-blocks">${holidayBlock}${blocks}${completionBlocks}</div>
         </div>`;
     }).join("");
     // Wire drag/drop handlers (desktop, non-read-only)

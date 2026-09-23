@@ -12612,13 +12612,16 @@
     const target = job.expectedHours != null ? Number(job.expectedHours) : (est > 0 ? est : null);
     const fromEstimate = job.expectedHours == null && est > 0;
 
-    // Nothing to say only when the job has neither a target nor an hour booked.
-    if (target == null && worked === 0) { view.classList.add("hidden"); return; }
+    // Nothing to say only when the job has neither a target nor an hour booked —
+    // unless it is Awarded: Workload counts awarded jobs, so an unworked T&M job
+    // with no estimate would sit out of the year's total with nothing saying so.
+    const awarded = (job.status || "").toLowerCase() === "awarded";
+    if (target == null && worked === 0 && !awarded) { view.classList.add("hidden"); return; }
 
     const txt = $("piHoursText"), wrap = $("piHoursBarWrap"), bar = $("piHoursBar");
     if (target == null) {
       wrap.style.display = "none";
-      txt.innerHTML = `<b>${fmtHours(worked)} h</b> worked · <span style="color:var(--amber,#c90); font-weight:600;">no hours target set</span>
+      txt.innerHTML = `${worked > 0 ? `<b>${fmtHours(worked)} h</b> worked · ` : ""}<span style="color:var(--amber,#c90); font-weight:600;">no hours target set</span>
         <span style="color:var(--muted);">— ✏ Edit to set Expected Hours, or this job is missing from the year's workload</span>`;
       view.classList.remove("hidden");
       return;

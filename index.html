@@ -23681,6 +23681,8 @@
                  not a lesser version of the same one. -->
             <button class="btn btn-sm vi-reviewed" onclick="viMarkReviewed('${esc(r.id)}')"
                     title="Not going on any job — record why and clear it">✓ Reviewed, no job</button>
+            <button class="btn btn-sm vi-reviewed" style="color:var(--red);" onclick="viDelete('${esc(r.id)}')"
+                    title="Not a real invoice — unreadable, wrong page, a test. Removes it from the queue.">🗑 Delete</button>
           </div>` : ""}
         </div>`;
     };
@@ -24138,6 +24140,24 @@
     }
   }
   window.viMarkReviewed = viMarkReviewed;
+
+  // Not a real invoice — the bot couldn't read it, the wrong page, a test send.
+  // Only offered while it's waiting, so nothing already on a job can go this way.
+  // Kept server-side as 'deleted' (db/schema/081) so a re-send doesn't reappear.
+  async function viDelete(invoiceId) {
+    const inv = (viData?.invoices || []).find(r => r.id === invoiceId);
+    const what = inv ? `${inv.vendor} ${inv.invoiceNo} (${viMoney(inv.amount)})` : "this invoice";
+    if (!confirm(`Delete ${what}?\n\nIt comes off the queue and no expense is created.`)) return;
+    try {
+      await apiPost("vendorInvoiceDelete", { invoiceId });
+      showAppToast("Deleted.");
+      await loadVendorInvoices();
+    } catch (e) {
+      if (e.status === 409) { alert(e.message || "That one was already dealt with."); await loadVendorInvoices(); return; }
+      alert(e.message || "Couldn't delete it.");
+    }
+  }
+  window.viDelete = viDelete;
 
   // ── 🌴 TIME OFF — the admin queue and the bulk actions ────────────────────
   // Deliberately NOT on People: approving is queue work, done top-to-bottom, and

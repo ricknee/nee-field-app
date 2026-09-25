@@ -677,7 +677,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // Assigning a parked invoice to a job is the moment it becomes a cost, and
   // marking one reviewed is the moment it stops being anyone's problem. Same tier as
   // approveExpense and updateJobBillableRate — back-office money ops.
-  "vendorInvoiceAssign", "vendorInvoiceMarkReviewed",
+  "vendorInvoiceAssign", "vendorInvoiceMarkReviewed", "vendorInvoiceDelete",
   // ── Power company specs ──────────────────────────────────────────────
   // Uploading sits here rather than at the _NON_VIEWER default that
   // jobPrintUploadUrls deliberately keeps. A print is a drawing for ONE job
@@ -10935,7 +10935,9 @@ async function handleVendorInvoices(params, authUser) {
             COALESCE(j.po_locked, j.po) AS job_po
        FROM vendor_invoices vi
        LEFT JOIN jobs j ON j.id = vi.job_id
-      WHERE ($1::boolean OR vi.status = $2)
+      -- "Everything" still leaves out deleted rows (db/schema/081): they are
+      -- not invoices, only kept so a re-send dedupes.
+      WHERE (($1::boolean AND vi.status <> 'deleted') OR vi.status = $2)
       ORDER BY vi.received_at DESC
       LIMIT 500`, [all, want]);
 
@@ -11085,6 +11087,38 @@ async function handleVendorInvoiceMarkReviewed(body, authUser) {
   // nothing and says so rather than silently re-stamping who reviewed it.
   if (!rows?.length) return resp(409, { ok: false, error: "That invoice was already dealt with." });
   return resp(200, { ok: true, id: rows[0].id, status: "reviewed" });
+}
+
+// ── DELETE ────────────────────────────────────────────────────────────────
+// POST { invoiceId, note? } — not a real invoice: unreadable, the wrong page, a
+// test send (db/schema/081). Different from "reviewed", which is a real bill that
+// belongs on no job.
+//
+// ⚠ SOFT. The row stays with status 'deleted' and drops off the screen, because
+// the dedupe index is what stops the bot's retry putting it straight back.
+// Only from needs_review — the WHERE clause carries that, same as mark-reviewed,
+// so a matched invoice (an expense already on a job) can never be deleted here.
+async function handleVendorInvoiceDelete(body, authUser) {
+  const { invoiceId, note } = body || {};
+  if (!invoiceId) return resp(400, { ok: false, error: "Missing invoiceId." });
+
+  let rows;
+  try {
+    rows = await neonWrite("vendorInvoice.delete",
+      `UPDATE vendor_invoices
+          SET status = 'deleted', match_reason = 'deleted', note = $2,
+              resolved_at = now(),
+              resolved_by = COALESCE(
+                (SELECT name FROM employees WHERE airtable_id = $3 OR id::text = $3), $3)
+        WHERE id::text = $1 AND status = 'needs_review'
+        RETURNING id`,
+      [String(invoiceId), note ? String(note).slice(0, 500) : null,
+       authUser?.id ? String(authUser.id) : null]);
+  } catch (e) {
+    return resp(502, { ok: false, error: `Couldn't delete it: ${String(e?.message || e)}` });
+  }
+  if (!rows?.length) return resp(409, { ok: false, error: "That invoice was already dealt with." });
+  return resp(200, { ok: true, id: rows[0].id, status: "deleted" });
 }
 
 // Edit an existing expense. Managers may edit any; an employee may edit only
@@ -17126,6 +17160,7 @@ export async function handler(event) {
       if (body.action === "linkExistingVendorInvoice") return await handleLinkExistingVendorInvoice(body, authUser);
       if (body.action === "vendorInvoiceAssign")  return await handleVendorInvoiceAssign(body, authUser);
       if (body.action === "vendorInvoiceMarkReviewed") return await handleVendorInvoiceMarkReviewed(body, authUser);
+      if (body.action === "vendorInvoiceDelete")  return await handleVendorInvoiceDelete(body, authUser);
       if (body.action === "createVendor")         return await handleCreateVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }

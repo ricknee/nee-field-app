@@ -6510,6 +6510,22 @@ await test("vendorInvoice: STATIC — the inbox writes NOTHING to Airtable", asy
   // what stop one impatient double-tap becoming two expenses on a job.
   ok(/if \(inv\.status !== "needs_review"\)/.test(src), "assign refuses an already-settled invoice");
   ok(/AND status = 'needs_review'\n\s*RETURNING id/.test(src), "markReviewed carries the guard in its WHERE clause");
+
+  // Delete (db/schema/081) is SOFT and waiting-only: a matched invoice has an
+  // expense on a job, and an erased row would let the bot's re-send reappear.
+  const del = src.slice(src.indexOf("async function handleVendorInvoiceDelete"),
+                        src.indexOf("}", src.indexOf("status: \"deleted\" })")));
+  ok(/SET status = 'deleted'/.test(del), "delete is a status, not a row removal");
+  ok(!/DELETE FROM/i.test(del), "and never a DELETE FROM");
+  ok(/WHERE id::text = \$1 AND status = 'needs_review'/.test(del), "only a waiting invoice can be deleted");
+  ok(/vi\.status <> 'deleted'/.test(src), "and 'Everything' does not list deleted rows");
+});
+
+await test("vendorInvoiceDelete: back-office only, and needs an id", async () => {
+  mockTables = {};
+  eq((await POST("vendorInvoiceDelete", { invoiceId: "x" }, EMP_TOK)).statusCode, 403, "employee blocked");
+  eq((await POST("vendorInvoiceDelete", { invoiceId: "x" }, VIEWER_TOK)).statusCode, 403, "viewer blocked");
+  eq((await POST("vendorInvoiceDelete", {}, ADMIN_TOK)).statusCode, 400, "invoiceId required");
 });
 
 // ── vendorInvoiceIntake, END TO END ──────────────────────────────────────────

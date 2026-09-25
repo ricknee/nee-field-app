@@ -162,6 +162,15 @@
       /* Belt and braces: if a future label is longer than the cap, it wraps
          inside the panel rather than widening it back off the screen. */
       overflow-wrap: anywhere;
+      /* ⚠ The panel hangs off the STICKY top bar, so scrolling the page moves
+         the page under it, never the panel — anything past the bottom of a
+         phone screen was unreachable (Android, 2026-09-24). It scrolls itself.
+         The JS that opens it sets the exact height; this is the fallback. */
+      max-height: calc(100vh - 120px);
+      max-height: calc(100dvh - 120px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
       padding: 6px;
       background: var(--panel);
       border: 1px solid var(--line);
@@ -16329,6 +16338,14 @@
         e.stopPropagation();
         topbarMenu.hidden = !topbarMenu.hidden;
         topbarMenuBtn.setAttribute("aria-expanded", String(!topbarMenu.hidden));
+        // Fit the panel to the screen below where it opens, so the last item is
+        // reachable by scrolling the panel (see .topbar-menu). The top bar's
+        // height changes with the clock row and role buttons, hence measured.
+        if (!topbarMenu.hidden) {
+          const top = topbarMenu.getBoundingClientRect().top;
+          topbarMenu.style.maxHeight = `${Math.max(200, window.innerHeight - top - 12)}px`;
+          topbarMenu.scrollTop = 0;
+        }
       });
       topbarMenu.addEventListener("click", () => closeTopbarMenu());
       document.addEventListener("click", e => {

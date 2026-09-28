@@ -5743,12 +5743,64 @@ function labelSheetHtml(item) {
  * The category and search only FILTER the list; picks survive changing
  * category, so a run can mix "all EMT Fittings" with two PVC items. */
 var labelPicks = {};
-var labelCat = "", labelSearch = "";
+var labelCat = "", labelSearch = "", labelSize = "", labelColor = "";
+
+/* COLOR IS NOT A COLUMN. It lives in two places, measured 2026-09-28:
+ *   - product_size says "White" / "Light Almond" on the 95 devices, and
+ *   - wire and the like carry it in the NAME ("… BLACK", "RED …").
+ * So an item's color is its size when that IS a color, else the first color
+ * word in its name; and those two sizes are kept OUT of the size list, where
+ * "White" next to 3/4" would read as a mistake. LIGHT ALMOND is listed before
+ * ALMOND so the longer phrase wins. */
+var LABEL_COLORS = ["LIGHT ALMOND", "ALMOND", "WHITE", "IVORY", "BLACK", "BROWN", "GRAY", "GREY",
+                    "RED", "BLUE", "GREEN", "YELLOW", "ORANGE", "PURPLE", "PINK"];
+function labelTitleCase(s) { return s.toLowerCase().replace(/\b\w/g, function(c){ return c.toUpperCase(); }); }
+function labelIsColor(s) { return LABEL_COLORS.indexOf(String(s || "").trim().toUpperCase()) !== -1; }
+// Every color word in the name, in the order it appears, so striped wire is its
+// own color: "12 WHITE/BLACK (STRIPED) THHN" is "White/Black", never filed
+// under plain White beside the solid white.
+function labelItemColor(i) {
+  if (labelIsColor(i.size)) return labelTitleCase(String(i.size).trim());
+  var name = " " + String(i.name || "").toUpperCase().replace(/[^A-Z]+/g, " ") + " ";
+  var hits = [];
+  LABEL_COLORS.forEach(function(c){
+    var at = name.indexOf(" " + c + " ");
+    // ALMOND inside an already-found LIGHT ALMOND is the same word, not a second color.
+    if (at !== -1 && !hits.some(function(h){ return at >= h.at && at < h.at + h.c.length + 1; })) hits.push({ c: c, at: at });
+  });
+  hits.sort(function(a, b){ return a.at - b.at; });
+  return hits.map(function(h){ return labelTitleCase(h.c); }).join("/");
+}
+function labelItemSize(i) {
+  var s = String(i.size || "").trim();
+  return s && !labelIsColor(s) ? s : "";
+}
+// 1/2" < 3/4" < 1" < 1-1/4" … rather than alphabetical ("1\"" before "1/2\"").
+// Anything that isn't inches (12GA, 250MCM, 4x4) sorts after, alphabetically.
+function labelSizeRank(s) {
+  var m = /^(\d+)(?:-(\d+)\/(\d+))?"$/.exec(s) || /^(\d+)\/(\d+)"$/.exec(s);
+  if (!m) return null;
+  if (m.length === 3) return Number(m[1]) / Number(m[2]);
+  return Number(m[1]) + (m[2] ? Number(m[2]) / Number(m[3]) : 0);
+}
+function labelSizeSort(a, b) {
+  var ra = labelSizeRank(a), rb = labelSizeRank(b);
+  if (ra != null && rb != null) return ra - rb;
+  if (ra != null) return -1;
+  if (rb != null) return 1;
+  return a.localeCompare(b, undefined, { numeric: true });
+}
+// The category box is typed into, so it filters by CONTAINS: picking
+// "EMT Fittings" matches exactly, and typing "fitt" shows every *Fittings.
+function labelInCat(i) {
+  if (!labelCat) return true;
+  return searchNorm(i.cat || "Uncategorized").includes(searchNorm(labelCat.trim()));
+}
 var LABEL_MAX_TOTAL = 300;   // one DK-1208 roll is 400 labels
 
 function goLabelTest() {
   showScreen("labeltest");
-  labelPicks = {}; labelCat = ""; labelSearch = "";
+  labelPicks = {}; labelCat = ""; labelSearch = ""; labelSize = ""; labelColor = "";
   var body = document.getElementById("labeltest-body");
   body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
   var wait = setInterval(function(){
@@ -5779,7 +5831,9 @@ function labelTotal() {
 function labelShownItems() {
   var q = searchNorm(labelSearch.trim());
   return allItems.filter(function(i){
-    if (labelCat && (i.cat || "Uncategorized") !== labelCat) return false;
+    if (!labelInCat(i)) return false;
+    if (labelSize && labelItemSize(i) !== labelSize) return false;
+    if (labelColor && labelItemColor(i) !== labelColor) return false;
     if (q && !searchNorm(i.name).includes(q) && !searchNorm(i.barcode).includes(q)) return false;
     return true;
   }).sort(function(a, b){ return a.name.localeCompare(b.name); });
@@ -5788,16 +5842,15 @@ function labelShownItems() {
 // The frame is drawn once; only the list and the footer redraw, so typing in
 // the search box never loses focus.
 function renderLabelScreen() {
-  var counts = {};
-  allItems.forEach(function(i){ var c = i.cat || "Uncategorized"; counts[c] = (counts[c] || 0) + 1; });
-  var cats = Object.keys(counts).sort(function(a, b){ return a.localeCompare(b); });
+  var cats = [];
+  allItems.forEach(function(i){ var c = i.cat || "Uncategorized"; if (cats.indexOf(c) === -1) cats.push(c); });
+  cats.sort(function(a, b){ return a.localeCompare(b); });
+  initCombo("lbl-cat", cats, "", function(v){ labelCat = v || ""; renderLabelFacets(); renderLabelList(); });
   var btn = 'border:none;border-radius:10px;font-weight:700;padding:12px 6px;cursor:pointer;font-size:14px;';
   document.getElementById("labeltest-body").innerHTML =
     '<div class="field-group"><div class="field-lbl">Category</div>' +
-      '<select id="lbl-cat" class="field-inp" onchange="labelCat=this.value;renderLabelList()">' +
-        '<option value="">All categories (' + allItems.length + ')</option>' +
-        cats.map(function(c){ return '<option value="' + escapeAttr(c) + '">' + escapeHtml(c) + ' (' + counts[c] + ')</option>'; }).join("") +
-      '</select></div>' +
+      comboHTML("lbl-cat", "All categories — type to search") + '</div>' +
+    '<div id="lbl-facets" style="display:flex;gap:8px;"></div>' +
     '<div class="field-group"><input id="lbl-search" class="field-inp" type="search" placeholder="Filter by name or code…" ' +
       'oninput="labelSearch=this.value;renderLabelList()" /></div>' +
     '<div style="display:flex;gap:8px;margin:4px 0 8px;">' +
@@ -5816,7 +5869,38 @@ function renderLabelScreen() {
     '</div>' +
     '<button onclick="startScan(\'labeltest\')" style="width:100%;margin-top:14px;background:transparent;border:1px solid var(--border);border-radius:10px;color:var(--dim);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">📷 Scan a label to check what it holds</button>' +
     '<div id="lbl-scan-result" style="margin-top:10px;"></div>';
+  renderLabelFacets();
   renderLabelList();
+}
+
+// Size and Color list only what the chosen CATEGORY actually has, so the
+// choices are never a dead end; each is hidden when the category has none.
+// A choice the new category doesn't have is dropped rather than silently
+// emptying the list.
+function renderLabelFacets() {
+  var box = document.getElementById("lbl-facets");
+  if (!box) return;
+  var inCat = allItems.filter(labelInCat);
+  var sizes = [], colors = [];
+  inCat.forEach(function(i){
+    var s = labelItemSize(i), c = labelItemColor(i);
+    if (s && sizes.indexOf(s) === -1) sizes.push(s);
+    if (c && colors.indexOf(c) === -1) colors.push(c);
+  });
+  sizes.sort(labelSizeSort);
+  colors.sort();
+  if (sizes.indexOf(labelSize) === -1) labelSize = "";
+  if (colors.indexOf(labelColor) === -1) labelColor = "";
+  var sel = function(id, label, opts, cur, setter) {
+    if (!opts.length) return "";
+    return '<div class="field-group" style="flex:1;min-width:0;"><div class="field-lbl">' + label + '</div>' +
+      '<select id="' + id + '" class="field-inp" onchange="' + setter + '=this.value;renderLabelList()">' +
+        '<option value="">Any ' + label.toLowerCase() + '</option>' +
+        opts.map(function(o){ return '<option value="' + escapeAttr(o) + '"' + (o === cur ? " selected" : "") + '>' + escapeHtml(o) + '</option>'; }).join("") +
+      '</select></div>';
+  };
+  box.innerHTML = sel("lbl-size", "Size", sizes, labelSize, "labelSize") +
+                  sel("lbl-color", "Color", colors, labelColor, "labelColor");
 }
 
 function renderLabelList() {

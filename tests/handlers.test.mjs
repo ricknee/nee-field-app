@@ -8181,6 +8181,16 @@ await test("labels: the QR holds item.barcode verbatim, and the page is DK-1208"
   const sel = fn.slice(fn.indexOf("function labelSelectShown"), fn.indexOf("function labelReady"));
   ok(/labelShownItems\(\)\.forEach/.test(sel), "select-all acts on the SHOWN items only");
   ok(/if \(!i\.barcode\) return;/.test(sel), "and skips items with no code to put in a QR");
+
+  // Color is not a column: it's product_size on devices, else words in the name.
+  const cf = fn.slice(fn.indexOf("var LABEL_COLORS"), fn.indexOf("function labelInCat"));
+  const f = new Function(`${cf}; return { labelItemColor, labelItemSize, labelSizeSort };`)();
+  eq(f.labelItemColor({ name: "WHITE 15A TR RECP", size: "White" }), "White", "device color from size");
+  eq(f.labelItemSize({ name: "WHITE 15A TR RECP", size: "White" }), "", "and a color is never listed as a size");
+  eq(f.labelItemColor({ name: "12 WHITE/BLACK (STRIPED) THHN", size: "" }), "White/Black",
+     "striped wire is its own color, not plain White");
+  eq(f.labelItemColor({ name: "LIGHT ALMOND CABLE PLATE", size: "" }), "Light Almond", "Light Almond, not Almond");
+  eq(['1"', '1/2"', '12GA', '3/4"'].sort(f.labelSizeSort).join(" "), '1/2" 3/4" 1" 12GA', "inch sizes sort by size");
 });
 
 // ── report ──

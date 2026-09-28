@@ -8176,6 +8176,11 @@ await test("labels: the QR holds item.barcode verbatim, and the page is DK-1208"
   // shrunk to 38/90.3 ≈ 42 % on the first real print.
   ok(/@page\{size:38mm 90\.3mm;margin:0;\}/.test(html), "the print route is a portrait 38 × 90.3 page");
   ok(/format: \[LABEL_H, LABEL_W\], orientation: "portrait"/.test(fn), "and so is the PDF");
+
+  // "Select all" in one category must not tick every item in the shop.
+  const sel = fn.slice(fn.indexOf("function labelSelectShown"), fn.indexOf("function labelReady"));
+  ok(/labelShownItems\(\)\.forEach/.test(sel), "select-all acts on the SHOWN items only");
+  ok(/if \(!i\.barcode\) return;/.test(sel), "and skips items with no code to put in a QR");
 });
 
 // ── report ──

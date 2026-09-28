@@ -325,7 +325,7 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
     </button>
     <button class="big-btn" id="labeltest-btn" onclick="goLabelTest()" style="display:none">
-      <div class="ico">🏷</div><div><div class="lbl">Label Print Test</div><div class="sub">Print one QR bin label on the Brother (DK-1208)</div></div>
+      <div class="ico">🏷</div><div><div class="lbl">Print Labels</div><div class="sub">QR bin labels by category — Brother DK-1208</div></div>
     </button>
   </div>
 </div>
@@ -404,9 +404,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
   <div class="log-body" id="newitem-body"></div>
 </div>
 
-<!-- LABEL PRINT TEST (admin) — step 1 of docs/PLAN-barcode-labels.md -->
+<!-- PRINT LABELS (admin) — QR bin labels, docs/PLAN-barcode-labels.md -->
 <div id="s-labeltest" class="screen">
-  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Label Print Test</h2></div>
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>🏷 Print Labels</h2></div>
   <div class="log-body" id="labeltest-body"></div>
 </div>
 
@@ -5620,7 +5620,6 @@ var updatePriceItem = null;
  * prefix, a trimmed leading zero) scans as "not found" and nothing says why.
  */
 var LABEL_W = 90.3, LABEL_H = 38;   // mm, DK-1208
-var labelTestItem = null;
 
 function loadQrLib() {
   if (window.qrcode) return Promise.resolve();
@@ -5685,34 +5684,41 @@ function labelNameLayout(name) {
  * along the 90.3 mm length, y down the 38 mm height) and every point is mapped
  * onto the portrait page with P(x, y) = (LABEL_H − y, x): turned 90°, reading
  * top-to-bottom as it leaves the printer, right way up once stuck on a bin. */
-function buildLabelPdf(item, copies) {
+// One PDF, one page per label: every picked item × its quantity.
+// `list` = [{ item, copies }].
+function buildLabelPdf(list) {
   var jsPDF = window.jspdf.jsPDF;
   var doc = new jsPDF({ unit: "mm", format: [LABEL_H, LABEL_W], orientation: "portrait" });
-  var q = qrRuns(makeQr(item.barcode));
-  var lay = labelNameLayout(item.name);
-  var qrX = 3, qrY = 4, qrS = 30, cell = qrS / q.n;
   // A landscape rectangle (x, y, w, h) on the portrait page.
   var rectL = function(x, y, w, h) { doc.rect(LABEL_H - y - h, x, h, w, "F"); };
   // Text at landscape baseline (x, y), running along +x = down the page.
   var textL = function(str, x, y) { doc.text(str, LABEL_H - y, x, { angle: -90 }); };
-  for (var p = 0; p < copies; p++) {
-    if (p) doc.addPage([LABEL_H, LABEL_W], "portrait");
-    doc.setFillColor(0, 0, 0);
-    q.runs.forEach(function(run) {
-      // +0.1 mm into the next row: rows that merely touch rasterize with a
-      // hairline white seam between them (seen in the offline render).
-      rectL(qrX + run[1] * cell, qrY + run[0] * cell, run[2] * cell, cell + 0.1);
-    });
-    doc.setTextColor(0, 0, 0);
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(lay.pt);
-    lay.lines.forEach(function(line, i) {
-      textL(line, 36, qrY + lay.lineH * (i + 0.8));
-    });
-    doc.setFont("courier", "normal");
-    doc.setFontSize(8);
-    textL(String(item.barcode), 36, qrY + qrS - 0.5);
-  }
+  var first = true;
+  list.forEach(function(entry) {
+    var item = entry.item;
+    var q = qrRuns(makeQr(item.barcode));
+    var lay = labelNameLayout(item.name);
+    var qrX = 3, qrY = 4, qrS = 30, cell = qrS / q.n;
+    for (var p = 0; p < entry.copies; p++) {
+      if (!first) doc.addPage([LABEL_H, LABEL_W], "portrait");
+      first = false;
+      doc.setFillColor(0, 0, 0);
+      q.runs.forEach(function(run) {
+        // +0.1 mm into the next row: rows that merely touch rasterize with a
+        // hairline white seam between them (seen in the offline render).
+        rectL(qrX + run[1] * cell, qrY + run[0] * cell, run[2] * cell, cell + 0.1);
+      });
+      doc.setTextColor(0, 0, 0);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(lay.pt);
+      lay.lines.forEach(function(line, i) {
+        textL(line, 36, qrY + lay.lineH * (i + 0.8));
+      });
+      doc.setFont("courier", "normal");
+      doc.setFontSize(8);
+      textL(String(item.barcode), 36, qrY + qrS - 0.5);
+    }
+  });
   return doc;
 }
 
@@ -5730,78 +5736,187 @@ function labelSheetHtml(item) {
     '</div></div>';
 }
 
+/* ── 🏷 PRINT LABELS — pick by category, tick items, set how many ──────────
+ * Owner 2026-09-28, after the test printed right: "print labels by category
+ * and select which ones i want to print." Nothing is saved: the picks live in
+ * `labelPicks` for as long as the screen is open.
+ *   labelPicks[itemId] = copies   (absent = not picked)
+ * The category and search only FILTER the list; picks survive changing
+ * category, so a run can mix "all EMT Fittings" with two PVC items. */
+var labelPicks = {};
+var labelCat = "", labelSearch = "";
+var LABEL_MAX_TOTAL = 300;   // one DK-1208 roll is 400 labels
+
 function goLabelTest() {
   showScreen("labeltest");
-  labelTestItem = null;
+  labelPicks = {}; labelCat = ""; labelSearch = "";
   var body = document.getElementById("labeltest-body");
   body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
   var wait = setInterval(function(){
     if (!dataReady) return;
     clearInterval(wait);
-    loadQrLib().then(renderLabelTest).catch(function(e){
+    loadQrLib().then(renderLabelScreen).catch(function(e){
       body.innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>';
     });
   }, 300);
 }
 
-function renderLabelTest() {
-  var names = allItems.map(function(i){ return i.name; })
-    .sort(function(a, b){ return a.localeCompare(b); });
-  initCombo("lbl-item", names, "", onLabelTestItemPicked);
+function labelItemById(id) {
+  return allItems.find(function(i){ return String(i.id) === String(id); });
+}
+
+// The picks in list order, as buildLabelPdf wants them.
+function labelPickList() {
+  return Object.keys(labelPicks).map(function(id){
+    return { item: labelItemById(id), copies: labelPicks[id] };
+  }).filter(function(e){ return e.item && e.item.barcode && e.copies > 0; })
+    .sort(function(a, b){ return a.item.name.localeCompare(b.item.name); });
+}
+
+function labelTotal() {
+  return labelPickList().reduce(function(t, e){ return t + e.copies; }, 0);
+}
+
+function labelShownItems() {
+  var q = searchNorm(labelSearch.trim());
+  return allItems.filter(function(i){
+    if (labelCat && (i.cat || "Uncategorized") !== labelCat) return false;
+    if (q && !searchNorm(i.name).includes(q) && !searchNorm(i.barcode).includes(q)) return false;
+    return true;
+  }).sort(function(a, b){ return a.name.localeCompare(b.name); });
+}
+
+// The frame is drawn once; only the list and the footer redraw, so typing in
+// the search box never loses focus.
+function renderLabelScreen() {
+  var counts = {};
+  allItems.forEach(function(i){ var c = i.cat || "Uncategorized"; counts[c] = (counts[c] || 0) + 1; });
+  var cats = Object.keys(counts).sort(function(a, b){ return a.localeCompare(b); });
+  var btn = 'border:none;border-radius:10px;font-weight:700;padding:12px 6px;cursor:pointer;font-size:14px;';
   document.getElementById("labeltest-body").innerHTML =
-    '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);line-height:1.5;">' +
-      '<b>The test</b> — pick an item, then try <b>🖨 Print</b> first. If the label comes out shrunk, ' +
-      'cut off or on two labels, try <b>📄 PDF</b>, then <b>📤 Share → iPrint&amp;Label</b>. ' +
-      'Note which worked on Android and on iPhone. Then <b>📷 Scan</b> the printed label, and one of your ' +
-      '<b>existing</b> QR stickers, to see what each one holds.' +
+    '<div class="field-group"><div class="field-lbl">Category</div>' +
+      '<select id="lbl-cat" class="field-inp" onchange="labelCat=this.value;renderLabelList()">' +
+        '<option value="">All categories (' + allItems.length + ')</option>' +
+        cats.map(function(c){ return '<option value="' + escapeAttr(c) + '">' + escapeHtml(c) + ' (' + counts[c] + ')</option>'; }).join("") +
+      '</select></div>' +
+    '<div class="field-group"><input id="lbl-search" class="field-inp" type="search" placeholder="Filter by name or code…" ' +
+      'oninput="labelSearch=this.value;renderLabelList()" /></div>' +
+    '<div style="display:flex;gap:8px;margin:4px 0 8px;">' +
+      '<button onclick="labelSelectShown(true)" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:9px;cursor:pointer;font-size:13px;">✓ Select all shown</button>' +
+      '<button onclick="labelSelectShown(false)" style="flex:1;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-weight:600;padding:9px;cursor:pointer;font-size:13px;">Clear shown</button>' +
     '</div>' +
-    '<div class="field-group"><div class="field-lbl">Item</div>' +
-      comboHTML("lbl-item", "Search or pick an item…") +
+    '<div id="lbl-list"></div>' +
+    '<div id="lbl-preview" style="margin-top:14px;"></div>' +
+    '<div style="position:sticky;bottom:0;background:var(--navy);padding:10px 0 4px;margin-top:10px;border-top:1px solid var(--border);">' +
+      '<div id="lbl-total" style="font-size:13px;color:var(--dim);margin-bottom:8px;"></div>' +
+      '<div style="display:flex;gap:8px;">' +
+        '<button id="lbl-print-btn" onclick="labelPrint()" style="flex:2;' + btn + 'background:var(--gold);color:var(--navy);">🖨 Print</button>' +
+        '<button onclick="labelPdf()" style="flex:1;' + btn + 'background:var(--navy-lt);color:var(--text);border:1px solid var(--border);">📄 PDF</button>' +
+        '<button onclick="labelShare()" style="flex:1;' + btn + 'background:var(--navy-lt);color:var(--text);border:1px solid var(--border);">📤 Share</button>' +
+      '</div>' +
     '</div>' +
-    '<div id="lbl-details"></div>' +
-    '<button onclick="startScan(\'labeltest\')" style="width:100%;margin-top:14px;background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;">📷 Scan a label to check it</button>' +
+    '<button onclick="startScan(\'labeltest\')" style="width:100%;margin-top:14px;background:transparent;border:1px solid var(--border);border-radius:10px;color:var(--dim);font-weight:600;padding:10px;cursor:pointer;font-size:13px;">📷 Scan a label to check what it holds</button>' +
     '<div id="lbl-scan-result" style="margin-top:10px;"></div>';
+  renderLabelList();
 }
 
-function onLabelTestItemPicked(name) {
-  var box = document.getElementById("lbl-details");
-  if (!box) return;
-  var wanted = String(name || "").trim();
-  labelTestItem = wanted ? allItems.find(function(i){ return String(i.name || "").trim() === wanted; }) : null;
-  if (!labelTestItem) { box.innerHTML = ""; return; }
-  if (!labelTestItem.barcode) {
-    box.innerHTML = '<div class="empty" style="padding:16px;">This item has no barcode, so there is nothing to put in the QR. Pick another.</div>';
-    return;
+function renderLabelList() {
+  var list = document.getElementById("lbl-list");
+  if (!list) return;
+  var shown = labelShownItems();
+  if (!shown.length) {
+    list.innerHTML = '<div class="empty" style="padding:20px;">No items match.</div>';
+  } else {
+    list.innerHTML = shown.map(function(i){
+      var id = escapeAttr(i.id);
+      var n = labelPicks[i.id] || 0;
+      if (!i.barcode) {
+        return '<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border);opacity:.5;">' +
+          '<span style="width:22px;"></span>' +
+          '<span style="flex:1;min-width:0;font-size:13px;">' + escapeHtml(i.name) +
+            '<span style="display:block;font-size:11px;color:var(--muted);">no code — nothing to put in the QR</span></span></div>';
+      }
+      return '<div style="display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border);">' +
+        '<input type="checkbox" ' + (n ? "checked " : "") + 'onchange="labelToggle(\'' + id + '\',this.checked)" style="width:22px;height:22px;flex:none;" />' +
+        '<span onclick="labelToggle(\'' + id + '\',' + (n ? "false" : "true") + ')" style="flex:1;min-width:0;font-size:13px;cursor:pointer;">' + escapeHtml(i.name) +
+          '<span style="display:block;font-size:11px;color:var(--muted);font-family:monospace;">' + escapeHtml(i.barcode) + '</span></span>' +
+        (n
+          ? '<span style="display:flex;align-items:center;gap:4px;flex:none;">' +
+              '<button onclick="labelStep(\'' + id + '\',-1)" style="width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--navy-lt);color:var(--text);font-size:18px;cursor:pointer;">−</button>' +
+              '<span style="min-width:22px;text-align:center;font-weight:700;">' + n + '</span>' +
+              '<button onclick="labelStep(\'' + id + '\',1)" style="width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--navy-lt);color:var(--text);font-size:18px;cursor:pointer;">+</button>' +
+            '</span>'
+          : '') +
+      '</div>';
+    }).join("");
   }
-  var btn = 'flex:1;border:none;border-radius:10px;font-weight:700;padding:13px 6px;cursor:pointer;font-size:14px;';
-  box.innerHTML =
-    '<div style="margin:6px 0 4px;font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;">Preview (actual size 3.5" × 1.4")</div>' +
-    '<div style="background:#fff;border-radius:6px;padding:6px;overflow-x:auto;">' +
-      '<div style="width:90.3mm;margin:0 auto;box-shadow:0 0 0 1px #ccc;">' + labelSheetHtml(labelTestItem) + '</div>' +
-    '</div>' +
-    '<div class="field-group" style="margin-top:12px;"><div class="field-lbl">How many</div>' +
-      '<input id="lbl-copies" class="field-inp" type="number" min="1" max="20" value="1" inputmode="numeric" /></div>' +
-    '<div style="display:flex;gap:8px;margin-top:12px;">' +
-      '<button onclick="labelTestPrint()" style="' + btn + 'background:var(--gold);color:var(--navy);">🖨 Print</button>' +
-      '<button onclick="labelTestPdf()" style="' + btn + 'background:var(--navy-lt);color:var(--text);border:1px solid var(--border);">📄 PDF</button>' +
-      '<button onclick="labelTestShare()" style="' + btn + 'background:var(--navy-lt);color:var(--text);border:1px solid var(--border);">📤 Share</button>' +
-    '</div>';
+  renderLabelFooter();
 }
 
-function labelTestCopies() {
-  var n = Math.round(Number(document.getElementById("lbl-copies")?.value) || 1);
-  return Math.max(1, Math.min(20, n));
+function renderLabelFooter() {
+  var picks = labelPickList(), total = labelTotal();
+  var el = document.getElementById("lbl-total");
+  if (el) {
+    el.innerHTML = total
+      ? '<b style="color:var(--text);">' + total + ' label' + (total === 1 ? "" : "s") + '</b> for ' +
+        picks.length + ' item' + (picks.length === 1 ? "" : "s") +
+        (total > LABEL_MAX_TOTAL ? ' <span style="color:var(--red);">— over ' + LABEL_MAX_TOTAL + ', print in smaller batches</span>' : "")
+      : 'Tick the items to print.';
+  }
+  // Preview the first pick, so a long name's shrink-to-fit is visible before
+  // a roll is spent on it.
+  var pv = document.getElementById("lbl-preview");
+  if (pv) {
+    pv.innerHTML = picks.length
+      ? '<div style="margin-bottom:4px;font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;">Preview — ' + escapeHtml(picks[0].item.name) + '</div>' +
+        '<div style="background:#fff;border-radius:6px;padding:6px;overflow-x:auto;">' +
+          '<div style="width:90.3mm;margin:0 auto;box-shadow:0 0 0 1px #ccc;">' + labelSheetHtml(picks[0].item) + '</div></div>'
+      : "";
+  }
 }
 
-function labelTestFileName() {
-  return "label-" + String(labelTestItem.barcode).replace(/[^A-Za-z0-9-]/g, "") + ".pdf";
+function labelToggle(id, on) {
+  if (on) labelPicks[id] = labelPicks[id] || 1; else delete labelPicks[id];
+  renderLabelList();
 }
 
-function labelTestPrint() {
-  if (!labelTestItem) return;
+function labelStep(id, d) {
+  var n = (labelPicks[id] || 0) + d;
+  if (n <= 0) delete labelPicks[id]; else labelPicks[id] = Math.min(n, 50);
+  renderLabelList();
+}
+
+// Only what the category/search shows — "Select all" in PVC Fittings must not
+// quietly tick 800 other items. Items with no code are skipped: no QR to print.
+function labelSelectShown(on) {
+  labelShownItems().forEach(function(i){
+    if (!i.barcode) return;
+    if (on) labelPicks[i.id] = labelPicks[i.id] || 1; else delete labelPicks[i.id];
+  });
+  renderLabelList();
+}
+
+function labelReady() {
+  var total = labelTotal();
+  if (!total) { showToast("Tick at least one item", true); return false; }
+  if (total > LABEL_MAX_TOTAL) { showToast("That's " + total + " labels — print in batches of " + LABEL_MAX_TOTAL + " or fewer", true); return false; }
+  return true;
+}
+
+function labelFileName() {
+  var picks = labelPickList();
+  if (picks.length === 1) return "label-" + String(picks[0].item.barcode).replace(/[^A-Za-z0-9-]/g, "") + ".pdf";
+  return "labels-" + labelTotal() + ".pdf";
+}
+
+function labelPrint() {
+  if (!labelReady()) return;
   // Each label on its own PORTRAIT page, turned — see buildLabelPdf's note.
-  var html = "", n = labelTestCopies();
-  for (var i = 0; i < n; i++) html += '<div class="lbl-page">' + labelSheetHtml(labelTestItem) + '</div>';
+  var html = "";
+  labelPickList().forEach(function(e){
+    var one = '<div class="lbl-page">' + labelSheetHtml(e.item) + '</div>';
+    for (var i = 0; i < e.copies; i++) html += one;
+  });
   var holder = document.getElementById("label-print");
   holder.innerHTML = html;
   document.body.classList.add("printing-label");
@@ -5817,19 +5932,19 @@ function labelTestPrint() {
   }, 50);
 }
 
-function labelTestPdf() {
-  if (!labelTestItem) return;
-  try { buildLabelPdf(labelTestItem, labelTestCopies()).save(labelTestFileName()); showToast("PDF downloaded"); }
+function labelPdf() {
+  if (!labelReady()) return;
+  try { buildLabelPdf(labelPickList()).save(labelFileName()); showToast("PDF downloaded"); }
   catch (e) { showToast("PDF failed: " + (e.message || e), true); }
 }
 
 // Files only — no `text` alongside them, or some share targets drop the file.
-function labelTestShare() {
-  if (!labelTestItem) return;
+function labelShare() {
+  if (!labelReady()) return;
   var file;
   try {
-    var blob = buildLabelPdf(labelTestItem, labelTestCopies()).output("blob");
-    file = new File([blob], labelTestFileName(), { type: "application/pdf" });
+    var blob = buildLabelPdf(labelPickList()).output("blob");
+    file = new File([blob], labelFileName(), { type: "application/pdf" });
   } catch (e) { showToast("PDF failed: " + (e.message || e), true); return; }
   var ok = false;
   try { ok = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) {}

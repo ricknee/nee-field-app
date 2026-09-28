@@ -1,6 +1,7 @@
 # PLAN — 🏷 Print QR labels for bins (inventory app)
 
-**Status:** PLANNED, not built. Owner asked 2026-09-25: "click print barcode and be able to select
+**Status:** Step 1 (the spike) BUILT 2026-09-28, `091f0e2`: inventory home → 🏷 Label Print Test
+(admin). Waiting on the owner's results from Android and iPhone. Steps 2–5 not built. Owner asked 2026-09-25: "click print barcode and be able to select
 which barcodes and how many and be able to print em."
 **Decided with the owner, 2026-09-28:**
 - **Printer:** Brother **QL-820NWB** (Wi-Fi / Bluetooth / USB, 300 dpi).

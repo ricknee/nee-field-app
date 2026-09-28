@@ -89,11 +89,37 @@ jsdelivr, rendered to canvas then into jsPDF). No schema change until step 5.
 
 ⛔ Per CLAUDE.md, `inventory.js` has **no Airtable client**. Nothing here needs one; don't add one.
 
+## ✅ The roll: DK-1208 (owner, 2026-09-28: "I want to use this")
+
+**DK-1208 Large Address: 38 × 90.3 mm (1.4" × 3.5") die-cut**, already loaded in the printer.
+Die-cut, so every label is a fixed size and one PDF page = one label.
+
+**PDF page:** 90.3 × 38 mm, landscape. Keep content ~1.5–2 mm in from every edge; the QL series
+doesn't print to the very edge of a die-cut label. Confirm the real margin in the spike.
+
+```
+┌──────────────────────────────────────────────────────┐
+│ ┌──────────┐  1-1/2" EMT SET SCREW                   │
+│ │  QR      │  COUPLING                               │
+│ │  ~30 mm  │                                         │
+│ │  square  │  ║║│║║│║│║║│║  (Code 128, "Both" only)  │
+│ └──────────┘  78429720024                            │
+└──────────────────────────────────────────────────────┘
+```
+
+- **QR:** ~30 mm square on the left (38 mm tall, less margins and the QR quiet zone). Much bigger
+  than a phone needs, so it scans from arm's length.
+- **Right ~55 mm:** item name (up to 2–3 lines, auto-shrunk), then the value in plain text.
+- **"Both" mode:** Code 128 goes in the right column above the text. An 11-digit value packs into
+  Code 128 set C at ~35 mm wide at a safe bar width, so it fits. ⚠ A long **alphanumeric** value
+  (up to 21 chars) needs ~65 mm+ at the 300-dpi minimum bar width and **won't fit** in 55 mm. For
+  those, print QR only and say so in the preview, never squeeze the bars below 3 printer dots
+  (they stop scanning).
+
 ## Open questions for the owner (answer before step 1)
 
-1. **Which DK roll?** DK-1201 (29 × 90 mm die-cut address label, fits bins) or DK-2205 (62 mm
-   continuous, cut to length, roomier for 21-character codes). The page size and layout come
-   from this.
+1. ~~Which DK roll?~~ **DK-1208**, answered above.
 2. **Where do the labels go:** bins/shelves or the items themselves? Decides whether the location
-   prints on the label.
+   prints on the label (there's room for one short line).
 3. **Phone, office PC, or both?** Decides which gets tested first in the spike.
+4. **Today's QR labels:** how are they made, and what text do they hold?

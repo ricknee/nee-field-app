@@ -206,13 +206,18 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .lbl-txt{flex:1;min-width:0;height:30mm;display:flex;flex-direction:column;justify-content:space-between;}
 .lbl-name{font-weight:700;line-height:1.15;word-break:break-word;}
 .lbl-val{font-size:8pt;font-family:"Courier New",monospace;}
+/* ⚠ Printed PORTRAIT (38 × 90.3) with the landscape label turned 90° inside it:
+   the QL feeds DK-1208 narrow edge first, and a landscape page was shrunk to
+   ~42 % to fit (first real print, 2026-09-28). See buildLabelPdf. */
+.lbl-page{width:38mm;height:90.3mm;position:relative;overflow:hidden;background:#fff;}
+.lbl-page .lbl-sheet{position:absolute;top:0;left:0;transform-origin:0 0;transform:translate(38mm,0) rotate(90deg);}
 @media print{
-  @page{size:90.3mm 38mm;margin:0;}
+  @page{size:38mm 90.3mm;margin:0;}
   body.printing-label > *:not(#label-print){display:none !important;}
   body.printing-label{background:#fff !important;margin:0;}
   body.printing-label #label-print{display:block;}
-  body.printing-label .lbl-sheet{break-after:page;page-break-after:always;}
-  body.printing-label .lbl-sheet:last-child{break-after:auto;page-break-after:auto;}
+  body.printing-label .lbl-page{break-after:page;page-break-after:always;}
+  body.printing-label .lbl-page:last-child{break-after:auto;page-break-after:auto;}
 }
 </style>
 </head>
@@ -5672,29 +5677,41 @@ function labelNameLayout(name) {
   return { pt: 8, lines: all, lineH: 8 * 0.3528 * 1.15 };
 }
 
+/* ⚠⚠ THE PAGE IS PORTRAIT: 38 wide × 90.3 tall, with the label drawn TURNED.
+ * The QL feeds DK-1208 narrow edge first, so its driver's paper is 38 mm wide.
+ * A landscape 90.3 × 38 page was scaled to fit that width — the first real
+ * print (2026-09-28) came out at ~42 % in the top-left corner, which is
+ * exactly 38 / 90.3. So the label is laid out in landscape co-ordinates (x
+ * along the 90.3 mm length, y down the 38 mm height) and every point is mapped
+ * onto the portrait page with P(x, y) = (LABEL_H − y, x): turned 90°, reading
+ * top-to-bottom as it leaves the printer, right way up once stuck on a bin. */
 function buildLabelPdf(item, copies) {
   var jsPDF = window.jspdf.jsPDF;
-  var doc = new jsPDF({ unit: "mm", format: [LABEL_W, LABEL_H], orientation: "landscape" });
+  var doc = new jsPDF({ unit: "mm", format: [LABEL_H, LABEL_W], orientation: "portrait" });
   var q = qrRuns(makeQr(item.barcode));
   var lay = labelNameLayout(item.name);
   var qrX = 3, qrY = 4, qrS = 30, cell = qrS / q.n;
+  // A landscape rectangle (x, y, w, h) on the portrait page.
+  var rectL = function(x, y, w, h) { doc.rect(LABEL_H - y - h, x, h, w, "F"); };
+  // Text at landscape baseline (x, y), running along +x = down the page.
+  var textL = function(str, x, y) { doc.text(str, LABEL_H - y, x, { angle: -90 }); };
   for (var p = 0; p < copies; p++) {
-    if (p) doc.addPage([LABEL_W, LABEL_H], "landscape");
+    if (p) doc.addPage([LABEL_H, LABEL_W], "portrait");
     doc.setFillColor(0, 0, 0);
     q.runs.forEach(function(run) {
-      // +0.1 mm down into the next row: rows that merely touch rasterize with a
+      // +0.1 mm into the next row: rows that merely touch rasterize with a
       // hairline white seam between them (seen in the offline render).
-      doc.rect(qrX + run[1] * cell, qrY + run[0] * cell, run[2] * cell, cell + 0.1, "F");
+      rectL(qrX + run[1] * cell, qrY + run[0] * cell, run[2] * cell, cell + 0.1);
     });
     doc.setTextColor(0, 0, 0);
     doc.setFont("helvetica", "bold");
     doc.setFontSize(lay.pt);
     lay.lines.forEach(function(line, i) {
-      doc.text(line, 36, qrY + lay.lineH * (i + 0.8));
+      textL(line, 36, qrY + lay.lineH * (i + 0.8));
     });
     doc.setFont("courier", "normal");
     doc.setFontSize(8);
-    doc.text(String(item.barcode), 36, qrY + qrS - 0.5);
+    textL(String(item.barcode), 36, qrY + qrS - 0.5);
   }
   return doc;
 }
@@ -5782,8 +5799,9 @@ function labelTestFileName() {
 
 function labelTestPrint() {
   if (!labelTestItem) return;
+  // Each label on its own PORTRAIT page, turned — see buildLabelPdf's note.
   var html = "", n = labelTestCopies();
-  for (var i = 0; i < n; i++) html += labelSheetHtml(labelTestItem);
+  for (var i = 0; i < n; i++) html += '<div class="lbl-page">' + labelSheetHtml(labelTestItem) + '</div>';
   var holder = document.getElementById("label-print");
   holder.innerHTML = html;
   document.body.classList.add("printing-label");

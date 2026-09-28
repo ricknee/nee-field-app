@@ -8172,7 +8172,10 @@ await test("labels: the QR holds item.barcode verbatim, and the page is DK-1208"
   ok(calls.length >= 2 && calls.every(c => c === "makeQr(item.barcode)" || c === "makeQr(value)"),
      "every QR is built from item.barcode, untouched");
   ok(/qr\.addData\(String\(value\)\)/.test(fn), "and encoded as-is");
-  ok(/@page\{size:90\.3mm 38mm;margin:0;\}/.test(html), "the print route uses the same page size");
+  // ⚠ PORTRAIT. The QL feeds DK-1208 narrow edge first; a landscape page was
+  // shrunk to 38/90.3 ≈ 42 % on the first real print.
+  ok(/@page\{size:38mm 90\.3mm;margin:0;\}/.test(html), "the print route is a portrait 38 × 90.3 page");
+  ok(/format: \[LABEL_H, LABEL_W\], orientation: "portrait"/.test(fn), "and so is the PDF");
 });
 
 // ── report ──

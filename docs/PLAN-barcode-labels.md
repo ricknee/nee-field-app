@@ -1,7 +1,11 @@
 # PLAN — 🏷 Print QR labels for bins (inventory app)
 
-**Status:** Step 1 (the spike) BUILT 2026-09-28, `091f0e2`: inventory home → 🏷 Label Print Test
-(admin). Waiting on the owner's results from Android and iPhone. Steps 2–5 not built. Owner asked 2026-09-25: "click print barcode and be able to select
+**Status (2026-09-28):** the spike printed correctly once the page went **portrait** (`7668821`: the QL
+feeds DK-1208 narrow edge first; a landscape page came out at 38/90.3 ≈ 42 %). Steps 3 + 4a are
+**BUILT** (`b4dcf18`): inventory home → **🏷 Print Labels**, pick by category, tick items, −/+ quantity,
+Print / PDF / Share. **Open to every role**, not just admin (owner): it only prints.
+Not built: step 2 (a button on each item), the by-receiving shortcut, step 5 (codes for the 12
+un-coded items). Owner asked 2026-09-25: "click print barcode and be able to select
 which barcodes and how many and be able to print em."
 **Decided with the owner, 2026-09-28:**
 - **Printer:** Brother **QL-820NWB** (Wi-Fi / Bluetooth / USB, 300 dpi).

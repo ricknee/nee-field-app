@@ -280,6 +280,10 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goAddScrap()">
       <div class="ico">🪢</div><div><div class="lbl">Add Wire Scrap</div><div class="sub">Tag and hang a scrap coil</div></div>
     </button>
+    <!-- Everyone, not just admin (owner 2026-09-28): it only prints — reads the item list every role already loads, writes nothing. -->
+    <button class="big-btn" id="labeltest-btn" onclick="goLabelTest()">
+      <div class="ico">🏷</div><div><div class="lbl">Print Labels</div><div class="sub">QR bin labels by category — Brother DK-1208</div></div>
+    </button>
     <div class="sec-lbl">View</div>
     <button class="big-btn" onclick="goHistory()">
       <div class="ico">📋</div><div><div class="lbl">Recent Logs</div><div class="sub">Your last 50 transactions</div></div>
@@ -323,9 +327,6 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     </button>
     <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
-    </button>
-    <button class="big-btn" id="labeltest-btn" onclick="goLabelTest()" style="display:none">
-      <div class="ico">🏷</div><div><div class="lbl">Print Labels</div><div class="sub">QR bin labels by category — Brother DK-1208</div></div>
     </button>
   </div>
 </div>
@@ -1159,8 +1160,6 @@ function applyUser() {
   // Reorder alerts are visible to everyone — field guys need to know what's low too
   if (reorderBtn)  reorderBtn.style.display  = "flex";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
-  var labeltestBtn = document.getElementById("labeltest-btn");
-  if (labeltestBtn) labeltestBtn.style.display = isAdmin ? "flex" : "none";
   if (adminLbl)    adminLbl.style.display    = isAdmin ? "block" : "none";
   // Load reorder count badge for everyone (button now visible to all)
   loadReorderCount();

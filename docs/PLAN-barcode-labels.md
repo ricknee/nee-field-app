@@ -1,4 +1,4 @@
-# PLAN — 🏷 Print barcode labels (inventory app)
+# PLAN — 🏷 Print barcode & QR labels (inventory app)
 
 **Status:** PLANNED, not built. Owner asked 2026-09-25: "click print barcode and be able to select
 which barcodes and how many and be able to print em." Printer: **Brother QL-820NWB**
@@ -24,6 +24,21 @@ only symbology that fits the 203 non-numeric values. Numeric strings pack into C
 automatically, so the bars stay short.
 
 **Test to add:** a scan of a printed label round-trips to the stored string.
+
+## 🔳 QR codes: owner wants them printable too (2026-09-28)
+
+The crew **already scans QR codes and it "works well"**. `BarcodeDetector` includes `qr_code`,
+and the QR's text is matched against `barcode` like any other scan. So the labels must be able to
+print a QR code, not only Code 128:
+- **Label style picker:** `QR` / `Code 128` / `Both` (same value in each), remembered per device.
+  Default to **QR**, since it's what's in use.
+- A QR code encodes the stored string verbatim, so there's no check-digit trap. It needs one
+  **square** area, which fits the small DK-1201 label better than a 21-character Code 128 does.
+- Library: a small QR generator (e.g. `qrcode` from jsdelivr) rendered to canvas → jsPDF, same
+  path as the barcode.
+- ⬜ **Ask first:** how are today's QR labels made, and what text do they hold? New labels should
+  hold the **same** value, or the stickers already on the shelves and new ones would disagree.
+- The spike (step 1) prints and scans back **a QR label too**.
 
 ## How printing works (the constraint that shapes everything)
 

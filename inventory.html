@@ -195,9 +195,30 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .toast.show{transform:translateX(-50%) translateY(0);}
 ::-webkit-scrollbar{width:3px;}
 ::-webkit-scrollbar-thumb{background:var(--slate);border-radius:2px;}
+/* 🏷 QR bin labels (docs/PLAN-barcode-labels.md). DK-1208 = 90.3 × 38 mm die-cut,
+   one page per label. #label-print exists only for window.print(): the rest of the
+   app is hidden while body.printing-label is set, so the page the print dialog
+   sees is exactly the labels. @page is scoped by that class being present only
+   during a label print — nothing else in this app calls window.print(). */
+#label-print{display:none;}
+.lbl-sheet{width:90.3mm;height:38mm;box-sizing:border-box;padding:4mm 2mm 2mm 3mm;display:flex;gap:3mm;align-items:center;background:#fff;color:#000;overflow:hidden;font-family:Helvetica,Arial,sans-serif;}
+.lbl-sheet svg{width:30mm;height:30mm;flex:none;display:block;}
+.lbl-txt{flex:1;min-width:0;height:30mm;display:flex;flex-direction:column;justify-content:space-between;}
+.lbl-name{font-weight:700;line-height:1.15;word-break:break-word;}
+.lbl-val{font-size:8pt;font-family:"Courier New",monospace;}
+@media print{
+  @page{size:90.3mm 38mm;margin:0;}
+  body.printing-label > *:not(#label-print){display:none !important;}
+  body.printing-label{background:#fff !important;margin:0;}
+  body.printing-label #label-print{display:block;}
+  body.printing-label .lbl-sheet{break-after:page;page-break-after:always;}
+  body.printing-label .lbl-sheet:last-child{break-after:auto;page-break-after:auto;}
+}
 </style>
 </head>
 <body>
+<!-- Filled only while printing QR labels; see #label-print in the CSS. -->
+<div id="label-print"></div>
 
 <!-- LOGIN -->
 <div id="s-login" class="screen active">
@@ -298,6 +319,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
       <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
     </button>
+    <button class="big-btn" id="labeltest-btn" onclick="goLabelTest()" style="display:none">
+      <div class="ico">🏷</div><div><div class="lbl">Label Print Test</div><div class="sub">Print one QR bin label on the Brother (DK-1208)</div></div>
+    </button>
   </div>
 </div>
 
@@ -373,6 +397,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-newitem" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Add New Item</h2></div>
   <div class="log-body" id="newitem-body"></div>
+</div>
+
+<!-- LABEL PRINT TEST (admin) — step 1 of docs/PLAN-barcode-labels.md -->
+<div id="s-labeltest" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Label Print Test</h2></div>
+  <div class="log-body" id="labeltest-body"></div>
 </div>
 
 <!-- WIRE COST CALCULATOR (admin) -->
@@ -1124,6 +1154,8 @@ function applyUser() {
   // Reorder alerts are visible to everyone — field guys need to know what's low too
   if (reorderBtn)  reorderBtn.style.display  = "flex";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
+  var labeltestBtn = document.getElementById("labeltest-btn");
+  if (labeltestBtn) labeltestBtn.style.display = isAdmin ? "flex" : "none";
   if (adminLbl)    adminLbl.style.display    = isAdmin ? "block" : "none";
   // Load reorder count badge for everyone (button now visible to all)
   loadReorderCount();
@@ -5567,6 +5599,246 @@ var WEIGHED_WIRE_CATEGORIES = ["Wire | THHN", "Romex"];
 
 var updatePriceItem = null;
 
+/* ── 🏷 LABEL PRINT TEST — step 1 (the spike) of docs/PLAN-barcode-labels.md ──
+ * One real item's QR bin label on the Brother QL-820NWB, DK-1208 roll
+ * (90.3 × 38 mm die-cut). Read-only: it prints, it writes nothing.
+ *
+ * A web page cannot reach the printer itself (Bluetooth Classic, no sockets),
+ * so it offers the three routes the plan names, and the test is finding which
+ * one each phone gets right:
+ *   🖨 Print  — window.print() of a label-sized page (Android: Brother Print
+ *              Service Plugin; iPhone: AirPrint)
+ *   📄 PDF    — download a label-sized PDF, print it from the viewer
+ *   📤 Share  — the PDF to Brother iPrint&Label
+ * ⚠ The QR holds item.barcode VERBATIM. handleScanResult matches by exact
+ * string, so anything added to or taken from that value (a check digit, a
+ * prefix, a trimmed leading zero) scans as "not found" and nothing says why.
+ */
+var LABEL_W = 90.3, LABEL_H = 38;   // mm, DK-1208
+var labelTestItem = null;
+
+function loadQrLib() {
+  if (window.qrcode) return Promise.resolve();
+  return new Promise(function(resolve, reject) {
+    var s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js";
+    s.onload = function(){ resolve(); };
+    s.onerror = function(){ reject(new Error("QR library didn't load — check the connection")); };
+    document.head.appendChild(s);
+  });
+}
+
+// Level Q (~25% recoverable): bin labels get scuffed, and at 30 mm there is
+// room to spare for the extra modules.
+function makeQr(value) {
+  var qr = qrcode(0, "Q");
+  qr.addData(String(value));
+  qr.make();
+  return qr;
+}
+
+// The dark modules as horizontal runs, so each row is a few rectangles rather
+// than one per square — abutting squares can print hairline white seams.
+function qrRuns(qr) {
+  var n = qr.getModuleCount(), runs = [];
+  for (var r = 0; r < n; r++) {
+    var c = 0;
+    while (c < n) {
+      if (!qr.isDark(r, c)) { c++; continue; }
+      var start = c;
+      while (c < n && qr.isDark(r, c)) c++;
+      runs.push([r, start, c - start]);
+    }
+  }
+  return { n: n, runs: runs };
+}
+
+// Font size and line breaks for the name, worked out ONCE with jsPDF's own
+// metrics and used by both the PDF and the printed page, so the two routes
+// show the same label. Largest size whose lines fit 3 lines in the text box.
+function labelNameLayout(name) {
+  var doc = new window.jspdf.jsPDF({ unit: "mm", format: [LABEL_W, LABEL_H], orientation: "landscape" });
+  doc.setFont("helvetica", "bold");
+  var textW = 52, maxH = 24;
+  for (var pt = 16; pt >= 8; pt--) {
+    doc.setFontSize(pt);
+    var lines = doc.splitTextToSize(String(name || "").trim(), textW);
+    var lineH = pt * 0.3528 * 1.15;
+    if (lines.length <= 3 && lines.length * lineH <= maxH) return { pt: pt, lines: lines, lineH: lineH };
+  }
+  doc.setFontSize(8);
+  var all = doc.splitTextToSize(String(name || "").trim(), textW);
+  if (all.length > 3) { all = all.slice(0, 3); all[2] = all[2].replace(/.{0,2}$/, "…"); }
+  return { pt: 8, lines: all, lineH: 8 * 0.3528 * 1.15 };
+}
+
+function buildLabelPdf(item, copies) {
+  var jsPDF = window.jspdf.jsPDF;
+  var doc = new jsPDF({ unit: "mm", format: [LABEL_W, LABEL_H], orientation: "landscape" });
+  var q = qrRuns(makeQr(item.barcode));
+  var lay = labelNameLayout(item.name);
+  var qrX = 3, qrY = 4, qrS = 30, cell = qrS / q.n;
+  for (var p = 0; p < copies; p++) {
+    if (p) doc.addPage([LABEL_W, LABEL_H], "landscape");
+    doc.setFillColor(0, 0, 0);
+    q.runs.forEach(function(run) {
+      // +0.1 mm down into the next row: rows that merely touch rasterize with a
+      // hairline white seam between them (seen in the offline render).
+      doc.rect(qrX + run[1] * cell, qrY + run[0] * cell, run[2] * cell, cell + 0.1, "F");
+    });
+    doc.setTextColor(0, 0, 0);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(lay.pt);
+    lay.lines.forEach(function(line, i) {
+      doc.text(line, 36, qrY + lay.lineH * (i + 0.8));
+    });
+    doc.setFont("courier", "normal");
+    doc.setFontSize(8);
+    doc.text(String(item.barcode), 36, qrY + qrS - 0.5);
+  }
+  return doc;
+}
+
+function labelSheetHtml(item) {
+  var q = qrRuns(makeQr(item.barcode));
+  var lay = labelNameLayout(item.name);
+  var d = q.runs.map(function(r){ return "M" + r[1] + " " + r[0] + "h" + r[2] + "v1h-" + r[2] + "z"; }).join("");
+  return '<div class="lbl-sheet">' +
+    '<svg viewBox="0 0 ' + q.n + ' ' + q.n + '" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg">' +
+      '<path d="' + d + '" fill="#000"/></svg>' +
+    '<div class="lbl-txt">' +
+      '<div class="lbl-name" style="font-size:' + lay.pt + 'pt;">' +
+        lay.lines.map(escapeHtml).join("<br>") + '</div>' +
+      '<div class="lbl-val">' + escapeHtml(item.barcode) + '</div>' +
+    '</div></div>';
+}
+
+function goLabelTest() {
+  showScreen("labeltest");
+  labelTestItem = null;
+  var body = document.getElementById("labeltest-body");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+  var wait = setInterval(function(){
+    if (!dataReady) return;
+    clearInterval(wait);
+    loadQrLib().then(renderLabelTest).catch(function(e){
+      body.innerHTML = '<div class="empty">' + escapeHtml(e.message) + '</div>';
+    });
+  }, 300);
+}
+
+function renderLabelTest() {
+  var names = allItems.map(function(i){ return i.name; })
+    .sort(function(a, b){ return a.localeCompare(b); });
+  initCombo("lbl-item", names, "", onLabelTestItemPicked);
+  document.getElementById("labeltest-body").innerHTML =
+    '<div style="background:rgba(232,101,26,.08);border:1px solid rgba(232,101,26,.3);border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:var(--dim);line-height:1.5;">' +
+      '<b>The test</b> — pick an item, then try <b>🖨 Print</b> first. If the label comes out shrunk, ' +
+      'cut off or on two labels, try <b>📄 PDF</b>, then <b>📤 Share → iPrint&amp;Label</b>. ' +
+      'Note which worked on Android and on iPhone. Then <b>📷 Scan</b> the printed label, and one of your ' +
+      '<b>existing</b> QR stickers, to see what each one holds.' +
+    '</div>' +
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+      comboHTML("lbl-item", "Search or pick an item…") +
+    '</div>' +
+    '<div id="lbl-details"></div>' +
+    '<button onclick="startScan(\'labeltest\')" style="width:100%;margin-top:14px;background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;color:var(--text);font-weight:600;padding:12px;cursor:pointer;font-size:14px;">📷 Scan a label to check it</button>' +
+    '<div id="lbl-scan-result" style="margin-top:10px;"></div>';
+}
+
+function onLabelTestItemPicked(name) {
+  var box = document.getElementById("lbl-details");
+  if (!box) return;
+  var wanted = String(name || "").trim();
+  labelTestItem = wanted ? allItems.find(function(i){ return String(i.name || "").trim() === wanted; }) : null;
+  if (!labelTestItem) { box.innerHTML = ""; return; }
+  if (!labelTestItem.barcode) {
+    box.innerHTML = '<div class="empty" style="padding:16px;">This item has no barcode, so there is nothing to put in the QR. Pick another.</div>';
+    return;
+  }
+  var btn = 'flex:1;border:none;border-radius:10px;font-weight:700;padding:13px 6px;cursor:pointer;font-size:14px;';
+  box.innerHTML =
+    '<div style="margin:6px 0 4px;font-size:11px;color:var(--muted);letter-spacing:.05em;text-transform:uppercase;">Preview (actual size 3.5" × 1.4")</div>' +
+    '<div style="background:#fff;border-radius:6px;padding:6px;overflow-x:auto;">' +
+      '<div style="width:90.3mm;margin:0 auto;box-shadow:0 0 0 1px #ccc;">' + labelSheetHtml(labelTestItem) + '</div>' +
+    '</div>' +
+    '<div class="field-group" style="margin-top:12px;"><div class="field-lbl">How many</div>' +
+      '<input id="lbl-copies" class="field-inp" type="number" min="1" max="20" value="1" inputmode="numeric" /></div>' +
+    '<div style="display:flex;gap:8px;margin-top:12px;">' +
+      '<button onclick="labelTestPrint()" style="' + btn + 'background:var(--gold);color:var(--navy);">🖨 Print</button>' +
+      '<button onclick="labelTestPdf()" style="' + btn + 'background:var(--navy-lt);color:var(--text);border:1px solid var(--border);">📄 PDF</button>' +
+      '<button onclick="labelTestShare()" style="' + btn + 'background:var(--navy-lt);color:var(--text);border:1px solid var(--border);">📤 Share</button>' +
+    '</div>';
+}
+
+function labelTestCopies() {
+  var n = Math.round(Number(document.getElementById("lbl-copies")?.value) || 1);
+  return Math.max(1, Math.min(20, n));
+}
+
+function labelTestFileName() {
+  return "label-" + String(labelTestItem.barcode).replace(/[^A-Za-z0-9-]/g, "") + ".pdf";
+}
+
+function labelTestPrint() {
+  if (!labelTestItem) return;
+  var html = "", n = labelTestCopies();
+  for (var i = 0; i < n; i++) html += labelSheetHtml(labelTestItem);
+  var holder = document.getElementById("label-print");
+  holder.innerHTML = html;
+  document.body.classList.add("printing-label");
+  var done = function() {
+    document.body.classList.remove("printing-label");
+    holder.innerHTML = "";
+    window.removeEventListener("afterprint", done);
+  };
+  window.addEventListener("afterprint", done);
+  // Let the class apply before the dialog snapshots the page.
+  setTimeout(function(){
+    try { window.print(); } catch (e) { done(); showToast("Print failed: " + (e.message || e), true); }
+  }, 50);
+}
+
+function labelTestPdf() {
+  if (!labelTestItem) return;
+  try { buildLabelPdf(labelTestItem, labelTestCopies()).save(labelTestFileName()); showToast("PDF downloaded"); }
+  catch (e) { showToast("PDF failed: " + (e.message || e), true); }
+}
+
+// Files only — no `text` alongside them, or some share targets drop the file.
+function labelTestShare() {
+  if (!labelTestItem) return;
+  var file;
+  try {
+    var blob = buildLabelPdf(labelTestItem, labelTestCopies()).output("blob");
+    file = new File([blob], labelTestFileName(), { type: "application/pdf" });
+  } catch (e) { showToast("PDF failed: " + (e.message || e), true); return; }
+  var ok = false;
+  try { ok = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) {}
+  if (!ok) { showToast("This browser can't share files — use 📄 PDF", true); return; }
+  navigator.share({ files: [file] }).catch(function(e) {
+    if (e && e.name === "AbortError") return;
+    showToast("Couldn't share: " + (e.message || e), true);
+  });
+}
+
+// Shows the RAW value the camera read, and whether it is an item's barcode.
+// That comparison is the test: an existing sticker and a new label must hold
+// the same kind of value, or old and new stickers disagree on the shelf.
+function labelTestScanned(val) {
+  var box = document.getElementById("lbl-scan-result");
+  if (!box) return;
+  var item = allItems.find(function(i){ return i.barcode && i.barcode.toString() === String(val); });
+  box.innerHTML =
+    '<div style="background:var(--navy-lt);border:1px solid ' + (item ? 'var(--green)' : 'var(--red)') + ';border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5;">' +
+      '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;">The code holds</div>' +
+      '<div style="font-family:monospace;font-size:15px;word-break:break-all;">' + escapeHtml(val) + '</div>' +
+      (item
+        ? '<div style="margin-top:6px;color:var(--green);font-weight:700;">✓ Matches: ' + escapeHtml(item.name) + '</div>'
+        : '<div style="margin-top:6px;color:var(--red);font-weight:700;">✗ No item has this as its barcode</div>') +
+    '</div>';
+}
+
 function goUpdatePrice() {
   showScreen("updprice");
   updatePriceItem = null;
@@ -5966,6 +6238,9 @@ function stopScan() {
 }
 
 function handleScanResult(val) {
+  // The label test wants the RAW value, matched or not — "what does this
+  // sticker actually hold" is the question it exists to answer.
+  if (scanTarget === "labeltest") { labelTestScanned(val); return; }
   // Find item by barcode
   var item = allItems.find(function(i){ return i.barcode && i.barcode.toString() === val.toString(); });
   if (item) {

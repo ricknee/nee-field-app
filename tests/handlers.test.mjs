@@ -8158,6 +8158,23 @@ await test("expenses: receipts are reachable on a REVIEWED expense, in both list
   ok(mine.indexOf("myexp-del") > approved, "delete is only in the pending branch");
 });
 
+// ── 🏷 QR bin labels (docs/PLAN-barcode-labels.md) ──
+// The scanner matches a QR's text against item.barcode by EXACT string. A label
+// whose QR holds anything else — a check digit, a prefix, a number that lost its
+// leading zero — scans as "not found", and nothing says why.
+await test("labels: the QR holds item.barcode verbatim, and the page is DK-1208", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../inventory.html", import.meta.url)), "utf8");
+  const fn = html.slice(html.indexOf("var LABEL_W = 90.3"), html.indexOf("function goUpdatePrice()"));
+  ok(/var LABEL_W = 90\.3, LABEL_H = 38;/.test(fn), "label size is the DK-1208 roll");
+  const calls = fn.match(/makeQr\([^)]*\)/g) || [];
+  ok(calls.length >= 2 && calls.every(c => c === "makeQr(item.barcode)" || c === "makeQr(value)"),
+     "every QR is built from item.barcode, untouched");
+  ok(/qr\.addData\(String\(value\)\)/.test(fn), "and encoded as-is");
+  ok(/@page\{size:90\.3mm 38mm;margin:0;\}/.test(html), "the print route uses the same page size");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

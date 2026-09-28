@@ -1,44 +1,56 @@
-# PLAN — 🏷 Print barcode & QR labels (inventory app)
+# PLAN — 🏷 Print QR labels for bins (inventory app)
 
 **Status:** PLANNED, not built. Owner asked 2026-09-25: "click print barcode and be able to select
-which barcodes and how many and be able to print em." Printer: **Brother QL-820NWB**
-(Wi-Fi / Bluetooth / USB, DK rolls, 300 dpi).
+which barcodes and how many and be able to print em."
+**Decided with the owner, 2026-09-28:**
+- **Printer:** Brother **QL-820NWB** (Wi-Fi / Bluetooth / USB, 300 dpi).
+- **Roll:** **DK-1208**, already loaded.
+- **Labels go on bins.**
+- **QR code + description only, no barcode lines.**
+- **Phones:** **Android and iPhone** both.
 
-## Facts measured before planning (production, 2026-09-25)
+## Facts measured before planning (production)
 
 - `inventory_items`: **872 items, 860 with a barcode**, 12 without. `alternate_barcodes` is empty on
-  every row.
-- Barcode shapes: most are **11 digits** (`78618910494`), **203 are non-numeric**, 36 are 12-digit,
-  longest is 21 characters.
+  every row. Values: mostly 11 digits (`78618910494`), 203 non-numeric, longest 21 characters.
 - The scanner (`inventory.html`, `handleScanResult`) matches **by exact string**:
-  `i.barcode.toString() === val.toString()`. `BarcodeDetector` already accepts `code_128`; the iOS
-  ZXing fallback reads it too.
+  `i.barcode.toString() === val.toString()`. `BarcodeDetector` already accepts `qr_code`; the iOS
+  ZXing fallback reads QR too. The crew **already scans QR codes and it "works well"**.
 - jsPDF is already lazy-loaded from cdnjs in `inventory.html`.
+- Locations (`locations`) are the **shop and trucks** (Shop #1, #4 Transit, #6 Box Trailer…), not
+  bins. So a location line on a bin label would say "Shop #1" and tell nobody which bin, and it's
+  left off.
 
-## ⚠⚠ Print CODE 128, never UPC/EAN
+## What the QR holds: the item's `barcode`, verbatim
 
-An 11-digit value printed as UPC-A gets a **check digit appended**. The scanner then reads
-`786189104943`, the exact-match lookup finds nothing, and the item looks like it doesn't exist. Nothing
-throws. Code 128 encodes the stored string verbatim: digits, letters, any length. It is also the
-only symbology that fits the 203 non-numeric values. Numeric strings pack into Code 128 set C
-automatically, so the bars stay short.
+A QR code encodes any string exactly: digits, letters, leading zeros, 21 characters. There is no
+check-digit trap (the thing that ruled out UPC: an 11-digit value printed as UPC gains a 12th digit
+and stops matching). The scan lands in `handleScanResult` like any other.
+⚠ Assumed to match the QR stickers already in use, since those scan to the right item through the
+same exact-string match. **Confirm on one existing sticker during the spike**: scan it and compare
+to the item's barcode.
 
-**Test to add:** a scan of a printed label round-trips to the stored string.
+## The label: DK-1208, 38 × 90.3 mm die-cut
 
-## 🔳 QR codes: owner wants them printable too (2026-09-28)
+Die-cut, so every label is a fixed size and **one PDF page = one label**. Page 90.3 × 38 mm,
+landscape; keep content ~1.5–2 mm in from every edge (the QL series doesn't print to the edge of
+a die-cut label). The spike confirms the real margin.
 
-The crew **already scans QR codes and it "works well"**. `BarcodeDetector` includes `qr_code`,
-and the QR's text is matched against `barcode` like any other scan. So the labels must be able to
-print a QR code, not only Code 128:
-- **Label style picker:** `QR` / `Code 128` / `Both` (same value in each), remembered per device.
-  Default to **QR**, since it's what's in use.
-- A QR code encodes the stored string verbatim, so there's no check-digit trap. It needs one
-  **square** area, which fits the small DK-1201 label better than a 21-character Code 128 does.
-- Library: a small QR generator (e.g. `qrcode` from jsdelivr) rendered to canvas → jsPDF, same
-  path as the barcode.
-- ⬜ **Ask first:** how are today's QR labels made, and what text do they hold? New labels should
-  hold the **same** value, or the stickers already on the shelves and new ones would disagree.
-- The spike (step 1) prints and scans back **a QR label too**.
+```
+┌──────────────────────────────────────────────────────┐
+│ ┌──────────┐  1-1/2" EMT SET SCREW                   │
+│ │   QR     │  COUPLING                               │
+│ │  ~30 mm  │                                         │
+│ │  square  │                                         │
+│ └──────────┘  78429720024                  (small)   │
+└──────────────────────────────────────────────────────┘
+```
+- **QR:** ~30 mm square on the left, with its quiet zone. Big enough to scan a bin from arm's length.
+- **Description:** the item name, large, up to 3 lines, auto-shrunk to fit. Names run long, e.g.
+  `LIGHT ALMOND CABLE PLATE (TPCATVLA)`.
+- **The value in small print** at the bottom, so a scuffed QR can still be typed in by hand.
+- Library: a small QR generator (e.g. `qrcode` from jsdelivr, allowed by the CDN rule) → canvas →
+  jsPDF image. Error-correction level **M or Q**, because bin labels get scuffed.
 
 ## How printing works (the constraint that shapes everything)
 
@@ -46,80 +58,49 @@ A web page **cannot** reach the printer directly:
 - Raw TCP 9100 over Wi-Fi: browsers can't open sockets.
 - Web Bluetooth: the QL-820NWB is Bluetooth **Classic**, not BLE.
 - b-PAC SDK: Windows desktop only.
-- WebUSB: needs a driver swap, desktop Chrome only. Too fragile for the crew.
 
-**So the app builds a PDF sized exactly to the label roll, one page per label, and hands it to the
-OS print dialog:**
-- **Android:** Brother **Print Service Plugin** (Play Store). The printer then appears in Chrome's
-  print dialog over Wi-Fi.
-- **Windows:** the Brother QL driver, paper size set to the roll.
-- **Fallback:** Web Share the PDF to Brother **iPrint&Label**. Same mechanism as jobsite photo
-  sharing (`project_photo_sharing`); never send `text` alongside `files`.
+**So the app builds a label-sized PDF and hands it to the phone's print screen:**
+- **Android:** install Brother **Print Service Plugin** (Play Store). The printer then appears in
+  Chrome's print dialog over Wi-Fi.
+- **iPhone:** AirPrint, if the QL-820NWB supports it. Believed so, **not verified**; the spike
+  settles it. iOS picks the paper size itself, which is the likeliest thing to go wrong.
+- **Both, fallback:** **📤 Share** the PDF to Brother **iPrint&Label**. Same Web Share mechanism as
+  jobsite photo sharing (`project_photo_sharing`); never send `text` alongside `files`.
 
-**The one real risk:** Android's print path scaling the page or adding margins. That is why step 1
-is a spike, not a screen.
+**One-time setup (owner):** printer on the shop Wi-Fi (printer Menu → WLAN, or iPrint&Label's setup);
+phones on the same network; the plugin on Android phones.
 
 ## What the user sees
 
 - **☰ → 🏷 Print labels:** the batch screen.
   1. Search by name or barcode (reuse the existing `searchNorm` search); tick items.
-  2. Per-item quantity stepper (− / +).
-  3. Shortcuts: **by location** ("everything on Shelf B"), **by receiving / push**, **select all shown**.
-  4. Preview of the first label + total ("14 labels") → **Print** / **Share**.
+  2. A quantity stepper (− / +) for each item, default 1.
+  3. Shortcuts: **select all shown**, **everything in a category** (e.g. all "EMT Fittings" for a
+     bin rack), **everything from a receiving/push**.
+  4. Preview of the first label + total ("14 labels") → **🖨 Print** / **📤 Share**.
 - **🏷 Print label** on each item's screen: qty, then print.
-- **On the label:** item name (auto-shrunk; names run long, e.g.
-  `LIGHT ALMOND CABLE PLATE (TPCATVLA)`), the Code 128 barcode, and the human-readable value under it.
-- Remembered per device (`localStorage`, try/catch): label size, last quantities.
+- Remembered per device (`localStorage`, try/catch): last quantities.
 
 ## Build order
 
-1. **Spike:** one hard-coded label PDF, printed from the owner's Android phone **and** a PC, then
-   scanned back with the app's own scanner. Proves size, margins, and round-trip. Stop here if
-   Android scales it; fall back to the iPrint&Label share path.
+1. **Spike:** a hidden test button that prints one real item's label. Owner prints it from the
+   **Android** phone and an **iPhone**, then scans it back with the app, and scans one **existing**
+   QR sticker to confirm both hold the same kind of value. Proves size, margins, iOS behaviour,
+   round-trip. If a phone scales or crops, that phone uses 📤 Share → iPrint&Label.
 2. **Single label** from an item's screen.
 3. **Batch screen**: picker + quantities.
-4. **Shortcuts**: by location, by push/receipt, plus an offer to print labels after receiving.
-5. **Items with no barcode (12)**: "Generate barcode" creates an internal one (e.g. `NEE-00123`) and
-   saves it. **The only write in the whole feature.** It needs a uniqueness check against both
-   `barcode` and `alternate_barcodes`, or two items can share a code and the scanner picks
-   whichever comes first.
+4. **Shortcuts**: by category and by push/receipt, plus an offer to print labels after receiving.
+5. **Items with no barcode (12)**: "Generate code" creates an internal one (e.g. `NEE-00123`) and
+   saves it. **The only write in the whole feature.** Needs a uniqueness check against both
+   `barcode` and `alternate_barcodes`, or two items share a code and the scanner picks whichever
+   comes first.
 
-Steps 1–4 are read-only: inventory-app code plus one barcode library (JsBarcode from cdnjs or
-jsdelivr, rendered to canvas then into jsPDF). No schema change until step 5.
+Steps 1–4 are read-only: inventory-app code plus one QR library. No schema change until step 5.
 
 ⛔ Per CLAUDE.md, `inventory.js` has **no Airtable client**. Nothing here needs one; don't add one.
 
-## ✅ The roll: DK-1208 (owner, 2026-09-28: "I want to use this")
+## Parked ideas (owner: "leave it for now")
 
-**DK-1208 Large Address: 38 × 90.3 mm (1.4" × 3.5") die-cut**, already loaded in the printer.
-Die-cut, so every label is a fixed size and one PDF page = one label.
-
-**PDF page:** 90.3 × 38 mm, landscape. Keep content ~1.5–2 mm in from every edge; the QL series
-doesn't print to the very edge of a die-cut label. Confirm the real margin in the spike.
-
-```
-┌──────────────────────────────────────────────────────┐
-│ ┌──────────┐  1-1/2" EMT SET SCREW                   │
-│ │  QR      │  COUPLING                               │
-│ │  ~30 mm  │                                         │
-│ │  square  │  ║║│║║│║│║║│║  (Code 128, "Both" only)  │
-│ └──────────┘  78429720024                            │
-└──────────────────────────────────────────────────────┘
-```
-
-- **QR:** ~30 mm square on the left (38 mm tall, less margins and the QR quiet zone). Much bigger
-  than a phone needs, so it scans from arm's length.
-- **Right ~55 mm:** item name (up to 2–3 lines, auto-shrunk), then the value in plain text.
-- **"Both" mode:** Code 128 goes in the right column above the text. An 11-digit value packs into
-  Code 128 set C at ~35 mm wide at a safe bar width, so it fits. ⚠ A long **alphanumeric** value
-  (up to 21 chars) needs ~65 mm+ at the 300-dpi minimum bar width and **won't fit** in 55 mm. For
-  those, print QR only and say so in the preview, never squeeze the bars below 3 printer dots
-  (they stop scanning).
-
-## Open questions for the owner (answer before step 1)
-
-1. ~~Which DK roll?~~ **DK-1208**, answered above.
-2. **Where do the labels go:** bins/shelves or the items themselves? Decides whether the location
-   prints on the label (there's room for one short line).
-3. **Phone, office PC, or both?** Decides which gets tested first in the spike.
-4. **Today's QR labels:** how are they made, and what text do they hold?
+Identifying an item from a **photo** via Claude vision: suggest the top 3, never auto-pick, because
+118 PVC and 90 EMT fittings differ only by size. Filling a **new** item's form from a photo of its
+box is the more reliable variant.

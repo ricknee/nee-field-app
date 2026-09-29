@@ -8855,8 +8855,9 @@
         <button type="button" id="panelSaveBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 18px;">Save</button>
         <button type="button" id="panelPrintBtn" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">🖨 Print</button>
         <button type="button" id="panelPdfBtn" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">📄 Download PDF</button>
-        <!-- 📤 Share PDF → iPrint&Label is the reliable route for long tape; the
-             phone's print dialog (🖨) choked on it — see buildPanelStripsPdf. -->
+        <!-- 📤 Images → iPrint&Label is the route for long tape: the phone's print
+             dialog (🖨) choked on it, and iPrint&Label won't take a shared PDF on
+             Android — see panelStripOps. -->
         <span style="display:inline-flex; gap:4px; align-items:center; font-size:12px; color:var(--muted); flex-wrap:wrap;"
               title="Two strips on the Brother's DK-2205 continuous roll — odd circuits on one, even on the other">
           🏷 Strips:
@@ -8864,7 +8865,8 @@
             <option value="qo">QO ¾″ spacing</option>
             <option value="compact">Compact</option>
           </select>
-          <button type="button" id="panelStripShareBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">📤 PDF → iPrint&amp;Label</button>
+          <button type="button" id="panelStripShareBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">📤 Images → iPrint&amp;Label</button>
+          <button type="button" id="panelStripPdfBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">📄 PDF</button>
           <button type="button" id="panelStripPrintBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">🖨</button>
         </span>
         ${canDeletePanels() ? `<button type="button" id="panelDeleteBtn" class="btn btn-sm" style="font-size:12px; color:var(--red); margin-left:auto;">🗑 Delete panel</button>` : ""}
@@ -8894,7 +8896,8 @@
     $("panelSaveBtn").onclick  = savePanel;
     $("panelPdfBtn").onclick   = downloadPanelPdf;
     $("panelPrintBtn").onclick = printPanel;
-    $("panelStripShareBtn").onclick = () => sharePanelStripsPdf($("panelStripMode").value);
+    $("panelStripShareBtn").onclick = () => sharePanelStripImages($("panelStripMode").value);
+    $("panelStripPdfBtn").onclick   = () => downloadPanelStripsPdf($("panelStripMode").value);
     $("panelStripPrintBtn").onclick = () => printPanelStrips($("panelStripMode").value);
     const del = $("panelDeleteBtn");
     if (del) del.onclick = deletePanel;
@@ -9441,94 +9444,167 @@
     printHtmlPages(strip(true) + strip(false), `size: 62mm ${lengthMm}mm; margin: 0;`);
   }
 
-  /* The same two strips as a PDF, for Brother iPrint&Label.
-   * ⚠ WHY THIS EXISTS: the first real strip print (2026-09-28) went through the
-   * Android Brother Print Service Plugin, which offers only fixed continuous
-   * sizes (2.4″ × 39″) — it sat "receiving" for 11 minutes and ended in "Print
-   * Error". The plugin rasterizes the whole page over Wi-Fi. This PDF is vector
-   * (a few KB, not a 39″ bitmap) at the strips' exact length, and iPrint&Label
-   * drives continuous tape itself. Same geometry as printPanelStrips. */
-  async function buildPanelStripsPdf(mode) {
+  /* ── The strips as IMAGES (and a PDF), for Brother iPrint&Label ─────────────
+   * ⚠ WHY: the first real strip print (2026-09-28) went through the Android
+   * Brother Print Service Plugin, which offers only a fixed 2.4″ × 39″
+   * continuous size: it sat "receiving" for 11 minutes and ended in "Print
+   * Error". Next, a shared PDF: iPrint&Label is NOT a share target for PDFs on
+   * Android (it wasn't in the list). It takes pictures, so each strip is now a
+   * PNG at the QL's 300 dpi (62 mm = 732 px wide), exact length, one per bus side.
+   * The layout is one list of drawing ops in mm (panelStripOps), painted onto a
+   * canvas for the PNGs or into jsPDF for the PDF, so the two can't drift.
+   * Each painter supplies its own text measurer: the canvas's fonts aren't
+   * jsPDF's Helvetica, and "…" clipping must be measured in the font it's drawn in. */
+  function panelStripOps(odd, mode, measure) {
     const p = panelState.panel;
-    syncGridToState();
-    await ensureJsPDF();
     const pitch = PANEL_STRIP_PITCH[mode] || PANEL_STRIP_PITCH.compact;
     const { leftHeads, rightHeads } = panelPrintHeads();
     const rows = Math.ceil(p.circuits / 2);
     const L = +(PANEL_STRIP_PAD * 2 + PANEL_STRIP_HEAD + rows * pitch + 1).toFixed(2);
     const W = 62, X0 = 2.5, NUM_W = 10, DESC_W = W - X0 * 2 - NUM_W;
     const big = pitch >= 12;
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ unit: "mm", format: [W, L], orientation: "portrait" });
     const PT = 0.3528;   // mm per point
+    const ops = [];
+    const text = (s, x, y, size, style, align, grey) => ops.push({ t: "text", s, x, y, size, style, align, grey });
+    const rect = (x, y, w, h) => ops.push({ t: "rect", x, y, w, h });
     // One line, cut with "…" if it doesn't fit.
-    const clip = (text, width) => {
-      if (doc.getTextWidth(text) <= width) return text;
-      let t = text;
-      while (t.length && doc.getTextWidth(t + "…") > width) t = t.slice(0, -1);
+    const clip = (s, width, size, style) => {
+      if (measure(s, size, style) <= width) return s;
+      let t = s;
+      while (t.length && measure(t + "…", size, style) > width) t = t.slice(0, -1);
       return t.trimEnd() + "…";
     };
-    const strip = (odd, first) => {
-      if (!first) doc.addPage([W, L], "portrait");
-      const heads = odd ? leftHeads : rightHeads;
-      doc.setTextColor(0, 0, 0);
-      doc.setFont("helvetica", "bold"); doc.setFontSize(10);
-      doc.text(clip(`PANEL ${p.name.toUpperCase()} · ${odd ? "ODD" : "EVEN"} ${odd ? 1 : 2}–${odd ? rows * 2 - 1 : rows * 2}`, W - X0 * 2),
-               W / 2, PANEL_STRIP_PAD + PANEL_STRIP_HEAD / 2 + 1.2, { align: "center" });
-      doc.setDrawColor(51, 51, 51); doc.setLineWidth(0.25);
-      const top = PANEL_STRIP_PAD + PANEL_STRIP_HEAD;
-      for (let r = 0; r < rows; r++) {
-        const y = top + r * pitch;
-        doc.rect(X0, y, NUM_W, pitch);
-        doc.setFont("helvetica", "bold"); doc.setFontSize(big ? 12 : 8.5);
-        doc.text(String(odd ? r * 2 + 1 : r * 2 + 2), X0 + NUM_W / 2, y + pitch / 2 + (big ? 12 : 8.5) * PT * 0.35, { align: "center" });
-        const h = heads.get(r);
-        if (!h) continue;   // covered by a merged box above
-        const hgt = h.span * pitch, dx = X0 + NUM_W;
-        doc.rect(dx, y, DESC_W, hgt);
-        const merged = h.span > 1;
-        if (!h.desc) {
-          doc.setFont("helvetica", "italic"); doc.setFontSize(big ? 9 : 7.5); doc.setTextColor(85, 85, 85);
-          doc.text("spare", dx + 1.5, y + hgt / 2 + 1);
-          doc.setTextColor(0, 0, 0);
-          continue;
-        }
-        const fs = big ? 10.5 : 8.5;
-        doc.setFont("helvetica", merged ? "bold" : "normal"); doc.setFontSize(fs);
-        const inner = DESC_W - 3;
-        let lines = big ? doc.splitTextToSize(h.desc, inner) : [h.desc];
-        if (lines.length > 2) lines = [lines[0], clip(lines.slice(1).join(" "), inner)];
-        lines = lines.map(l => clip(l, inner));
-        const lh = fs * PT * 1.15;
-        const y0 = y + hgt / 2 - (lines.length - 1) * lh / 2 + fs * PT * 0.35;
-        lines.forEach((l, i) => {
-          if (merged) doc.text(l, dx + DESC_W / 2, y0 + i * lh, { align: "center" });
-          else doc.text(l, dx + 1.5, y0 + i * lh);
-        });
+    // Greedy word wrap into at most `max` lines; the last one clipped.
+    const wrap = (s, width, size, style, max) => {
+      const words = String(s).split(/\s+/), lines = [];
+      let cur = "";
+      for (let i = 0; i < words.length; i++) {
+        const next = cur ? cur + " " + words[i] : words[i];
+        if (measure(next, size, style) <= width || !cur) { cur = next; continue; }
+        lines.push(cur); cur = words[i];
+        if (lines.length === max - 1) { cur = words.slice(i).join(" "); break; }
       }
+      if (cur) lines.push(cur);
+      return lines.slice(0, max).map(l => clip(l, width, size, style));
     };
-    strip(true, true);
-    strip(false, false);
-    const safe = (s) => String(s || "").replace(/[\\/:*?"<>|]/g, "").trim();
-    return { doc, filename: `Panel ${safe(p.name)} strips ${mode === "qo" ? "QO" : "compact"}.pdf` };
+    const heads = odd ? leftHeads : rightHeads;
+    text(clip(`PANEL ${p.name.toUpperCase()} · ${odd ? "ODD" : "EVEN"} ${odd ? 1 : 2}–${odd ? rows * 2 - 1 : rows * 2}`, W - X0 * 2, 10, "bold"),
+         W / 2, PANEL_STRIP_PAD + PANEL_STRIP_HEAD / 2 + 1.2, 10, "bold", "center");
+    const top = PANEL_STRIP_PAD + PANEL_STRIP_HEAD;
+    for (let r = 0; r < rows; r++) {
+      const y = top + r * pitch;
+      rect(X0, y, NUM_W, pitch);
+      const nSize = big ? 12 : 8.5;
+      text(String(odd ? r * 2 + 1 : r * 2 + 2), X0 + NUM_W / 2, y + pitch / 2 + nSize * PT * 0.35, nSize, "bold", "center");
+      const h = heads.get(r);
+      if (!h) continue;   // covered by a merged box above
+      const hgt = h.span * pitch, dx = X0 + NUM_W;
+      rect(dx, y, DESC_W, hgt);
+      if (!h.desc) { text("spare", dx + 1.5, y + hgt / 2 + 1, big ? 9 : 7.5, "italic", "left", true); continue; }
+      const merged = h.span > 1;
+      const fs = big ? 10.5 : 8.5, style = merged ? "bold" : "normal", inner = DESC_W - 3;
+      const lines = big ? wrap(h.desc, inner, fs, style, 2) : [clip(h.desc, inner, fs, style)];
+      const lh = fs * PT * 1.15;
+      const y0 = y + hgt / 2 - (lines.length - 1) * lh / 2 + fs * PT * 0.35;
+      lines.forEach((l, i) => text(l, merged ? dx + DESC_W / 2 : dx + 1.5, y0 + i * lh, fs, style, merged ? "center" : "left"));
+    }
+    return { W, L, ops };
   }
 
-  async function sharePanelStripsPdf(mode) {
+  function panelStripFileBase(mode) {
+    const safe = (s) => String(s || "").replace(/[\\/:*?"<>|]/g, "").trim();
+    return `Panel ${safe(panelState.panel.name)} ${mode === "qo" ? "QO" : "compact"}`;
+  }
+
+  // 300 dpi, the QL-820NWB's own resolution, so iPrint&Label prints 1:1.
+  const PANEL_STRIP_DPI = 300;
+  function panelStripCanvas(odd, mode) {
+    const pxPerMm = PANEL_STRIP_DPI / 25.4;
+    const probe = document.createElement("canvas").getContext("2d");
+    const font = (size, style) =>
+      `${style === "bold" ? "bold " : style === "italic" ? "italic " : ""}${(size * 0.3528).toFixed(3)}px Helvetica, Arial, sans-serif`;
+    const measure = (s, size, style) => { probe.font = font(size, style); return probe.measureText(s).width; };
+    const { W, L, ops } = panelStripOps(odd, mode, measure);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(W * pxPerMm);
+    canvas.height = Math.round(L * pxPerMm);
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";                       // a PNG is transparent unless painted
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(pxPerMm, pxPerMm);                  // draw in mm from here on
+    ctx.strokeStyle = "#333"; ctx.lineWidth = 0.25;
+    for (const o of ops) {
+      if (o.t === "rect") { ctx.strokeRect(o.x, o.y, o.w, o.h); continue; }
+      ctx.font = font(o.size, o.style);
+      ctx.fillStyle = o.grey ? "#555" : "#000";
+      ctx.textAlign = o.align || "left";
+      ctx.fillText(o.s, o.x, o.y);
+    }
+    return canvas;
+  }
+
+  async function buildPanelStripsPdf(mode) {
+    syncGridToState();
+    await ensureJsPDF();
+    const { jsPDF } = window.jspdf;
+    // The strip length is only known after layout, and layout needs the doc to
+    // measure text — so start with a throwaway page and drop it at the end.
+    const doc = new jsPDF({ unit: "mm", format: [62, 100], orientation: "portrait" });
+    const measure = (s, size, style) => { doc.setFont("helvetica", style); doc.setFontSize(size); return doc.getTextWidth(s); };
+    [true, false].forEach((odd) => {
+      const { W, L, ops } = panelStripOps(odd, mode, measure);
+      doc.addPage([W, L], "portrait");
+      doc.setDrawColor(51, 51, 51); doc.setLineWidth(0.25);
+      for (const o of ops) {
+        if (o.t === "rect") { doc.rect(o.x, o.y, o.w, o.h); continue; }
+        doc.setFont("helvetica", o.style); doc.setFontSize(o.size);
+        doc.setTextColor(o.grey ? 85 : 0, o.grey ? 85 : 0, o.grey ? 85 : 0);
+        doc.text(o.s, o.x, o.y, o.align === "center" ? { align: "center" } : undefined);
+      }
+    });
+    doc.deletePage(1);
+    return { doc, filename: `${panelStripFileBase(mode)} strips.pdf` };
+  }
+
+  // Share the two PNGs (odd, even). Where a browser can't share files, they
+  // download instead, and iPrint&Label prints them from its photo picker.
+  async function sharePanelStripImages(mode) {
     if (!panelState.panel) return;
-    let built;
-    try { built = await buildPanelStripsPdf(mode); }
-    catch (e) { setPanelStatus("Couldn't build the strips PDF: " + e.message); return; }
-    const file = new File([built.doc.output("blob")], built.filename, { type: "application/pdf" });
+    syncGridToState();
+    setPanelStatus("Building strip images…");
+    let files;
+    try {
+      files = await Promise.all([true, false].map(odd => new Promise((resolve, reject) => {
+        panelStripCanvas(odd, mode).toBlob(b => b
+          ? resolve(new File([b], `${panelStripFileBase(mode)} ${odd ? "1 ODD" : "2 EVEN"}.png`, { type: "image/png" }))
+          : reject(new Error("the image couldn't be made")), "image/png");
+      })));
+    } catch (e) { setPanelStatus("Couldn't build the strips: " + e.message); return; }
     let canShare = false;
-    try { canShare = !!(navigator.canShare && navigator.canShare({ files: [file] })); } catch {}
+    try { canShare = !!(navigator.canShare && navigator.canShare({ files })); } catch {}
     if (canShare) {
-      // Files only — a `text` alongside them makes some targets drop the file.
-      try { await navigator.share({ files: [file] }); setPanelStatus("Pick iPrint&Label to print the strips."); }
-      catch (e) { if (e && e.name !== "AbortError") setPanelStatus("Couldn't share: " + (e.message || e)); }
+      // Files only — a `text` alongside them makes some targets drop the files.
+      try {
+        await navigator.share({ files });
+        setPanelStatus("Pick iPrint&Label — odd strip first, then even.");
+      } catch (e) {
+        if (e && e.name !== "AbortError") setPanelStatus("Couldn't share: " + (e.message || e));
+      }
       return;
     }
-    built.doc.save(built.filename);
-    setPanelStatus(`Downloaded ${built.filename} — open it in iPrint&Label.`);
+    files.forEach(f => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(f); a.download = f.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    });
+    setPanelStatus("Saved 2 strip images — open them from iPrint&Label's photo printing.");
+  }
+
+  async function downloadPanelStripsPdf(mode) {
+    if (!panelState.panel) return;
+    try { const b = await buildPanelStripsPdf(mode); b.doc.save(b.filename); setPanelStatus(`Downloaded ${b.filename}`); }
+    catch (e) { setPanelStatus("Couldn't build the strips PDF: " + e.message); }
   }
 
   async function downloadPanelPdf() {

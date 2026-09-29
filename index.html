@@ -3256,9 +3256,39 @@
       .pr-week-label { padding: 6px 10px; font-size: 12px; }
       .pr-add-btn-day { padding: 2px 8px; font-size: 10px; }
     }
+
+    /* ── 🖨 Printing (printHtmlPages) ────────────────────────────────────────
+       #appPrintArea is filled only while a print is up; every other child of
+       <body> is hidden, so the dialog sees exactly the sheet. The @page rule
+       is injected per print, not here — it is global, and different prints
+       need different paper. */
+    #appPrintArea { display: none; }
+    @media print {
+      body.printing-app > *:not(#appPrintArea) { display: none !important; }
+      body.printing-app { background: #fff !important; margin: 0; padding: 0; }
+      body.printing-app #appPrintArea { display: block; }
+    }
+    /* The panel schedule sheet — mirrors downloadPanelPdf. Heavier, darker
+       rules than screen convention: it gets read inside a door by torchlight. */
+    .pp-sheet { font-family: Helvetica, Arial, sans-serif; color: #0f0f0f; width: 512pt; }
+    .pp-title { text-align: center; font-weight: 700; font-size: 18pt; }
+    .pp-meta  { text-align: center; font-size: 10pt; color: #5a5a5a; margin-top: 4pt; }
+    .pp-date  { text-align: right; font-size: 8pt; color: #5a5a5a; margin: 2pt 0 4pt; }
+    .pp-grid  { width: 512pt; border-collapse: collapse; table-layout: fixed; }
+    .pp-grid th { background: #eef0f3; font-size: 8pt; font-weight: 700; color: #282828; height: 18pt;
+                  border: 0.7pt solid #5a5a5a; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .pp-grid td { height: 17pt; border: 0.7pt solid #5a5a5a; padding: 0 5pt; font-size: 9pt;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pp-grid tr { break-inside: avoid; page-break-inside: avoid; }
+    .pp-n { text-align: center; font-weight: 700; color: #191919; padding: 0 !important; }
+    .pp-c { text-align: center; }
+    .pp-merged { font-weight: 700; }
+    .pp-spare { font-style: italic; font-size: 8pt; color: #5f5f5f; }
   </style>
 </head>
 <body>
+<!-- Filled only while printing — see printHtmlPages and #appPrintArea. -->
+<div id="appPrintArea"></div>
 
 <!-- ═══════════════════════ LOGIN PAGE ═══════════════════════ -->
 <div id="loginPage" class="login-page">
@@ -8803,6 +8833,7 @@
 
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
         <button type="button" id="panelSaveBtn" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 18px;">Save</button>
+        <button type="button" id="panelPrintBtn" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">🖨 Print</button>
         <button type="button" id="panelPdfBtn" class="btn btn-sm" style="font-size:13px; padding:8px 16px;">📄 Download PDF</button>
         ${canDeletePanels() ? `<button type="button" id="panelDeleteBtn" class="btn btn-sm" style="font-size:12px; color:var(--red); margin-left:auto;">🗑 Delete panel</button>` : ""}
       </div>
@@ -8830,6 +8861,7 @@
     $("panelSpareBtn").onclick = fillBlanksWithSpare;
     $("panelSaveBtn").onclick  = savePanel;
     $("panelPdfBtn").onclick   = downloadPanelPdf;
+    $("panelPrintBtn").onclick = printPanel;
     const del = $("panelDeleteBtn");
     if (del) del.onclick = deletePanel;
     const discard = $("panelDraftDiscard");
@@ -9239,6 +9271,93 @@
    * is a statement: that breaker space exists and is unused. Dropping the row
    * would make a 42-way panel look like a 30-way one.
    */
+  // Row r holds circuit 2r+1 on the left and 2r+2 on the right.
+  // A ganged breaker is ONE description box spanning the circuits it occupies,
+  // with the line between them gone and the text centred over the whole span —
+  // the circuit numbers stay in their own boxes, because both spaces are still
+  // real spaces in the panel. `heads` maps a row index to the box that starts
+  // there; a row absent from it on that side is covered by the span above.
+  // Shared by the PDF and the 🖨 Print page so the two can never disagree.
+  function panelPrintHeads() {
+    const byNum = new Map(panelState.circuits.map(c => [c.number, c.description || ""]));
+    const blocks = panelBlocks();
+    const headsFor = (odd) => {
+      const m = new Map();
+      for (const b of blocks) {
+        const first = b.members[0];
+        if ((first % 2 === 1) !== odd) continue;
+        m.set(odd ? (first - 1) / 2 : (first - 2) / 2,
+              { span: b.members.length, desc: byNum.get(first) || "" });
+      }
+      return m;
+    };
+    return { leftHeads: headsFor(true), rightHeads: headsFor(false) };
+  }
+
+  /* ── 🖨 PRINT — the same sheet, straight to the print dialog ──────────────
+   * Owner 2026-09-28: "give me the option to print a pdf direct." A page cannot
+   * hand a PDF to a printer on a phone (Android downloads it; nothing prints),
+   * so this lays the schedule out as HTML and calls window.print() — the route
+   * the inventory app's QR labels proved on Android and iPhone. The layout
+   * mirrors downloadPanelPdf (34 | 222 | 222 | 34 pt, 17 pt rows, merged gang
+   * boxes, "spare") from the same panelPrintHeads(), so the two can't drift.
+   * The page rule is injected only for the print and removed after, because
+   * @page is global and later print routes need different paper. */
+  function printHtmlPages(html, pageCss) {
+    const holder = $("appPrintArea");
+    holder.innerHTML = html;
+    const style = document.createElement("style");
+    style.id = "appPrintPageRule";
+    style.textContent = `@media print { @page { ${pageCss} } }`;
+    document.head.appendChild(style);
+    document.body.classList.add("printing-app");
+    const done = () => {
+      document.body.classList.remove("printing-app");
+      holder.innerHTML = "";
+      style.remove();
+      window.removeEventListener("afterprint", done);
+    };
+    window.addEventListener("afterprint", done);
+    // Let the class and rule apply before the dialog snapshots the page.
+    setTimeout(() => {
+      try { window.print(); } catch (e) { done(); showAppToast("Print failed: " + (e.message || e), { kind: "warn" }); }
+    }, 50);
+  }
+
+  function printPanel() {
+    const p = panelState.panel;
+    if (!p) return;
+    syncGridToState();
+    const { leftHeads, rightHeads } = panelPrintHeads();
+    const jobName = (state.selected && state.selected.name) || "";
+    const meta = [p.voltage, jobName, p.fedFrom ? `Fed from ${p.fedFrom}` : "", p.location]
+      .filter(Boolean).join("   ·   ");
+    const desc = (h, side) => {
+      if (!h) return "";   // covered by a merged box above
+      const merged = h.span > 1;
+      const inner = h.desc
+        ? `<span class="pp-desc${merged ? " pp-merged" : ""}">${esc(h.desc)}</span>`
+        : `<span class="pp-spare">spare</span>`;
+      return `<td class="pp-d${merged ? " pp-c" : ""}"${merged ? ` rowspan="${h.span}"` : ""}>${inner}</td>`;
+    };
+    const rows = Math.ceil(p.circuits / 2);
+    let body = "";
+    for (let r = 0; r < rows; r++) {
+      body += `<tr><td class="pp-n">${r * 2 + 1}</td>${desc(leftHeads.get(r))}${desc(rightHeads.get(r))}<td class="pp-n">${r * 2 + 2}</td></tr>`;
+    }
+    printHtmlPages(`
+      <div class="pp-sheet">
+        <div class="pp-title">PANEL ${esc(p.name.toUpperCase())}</div>
+        ${meta ? `<div class="pp-meta">${esc(meta)}</div>` : ""}
+        <div class="pp-date">Printed ${esc(new Date().toLocaleDateString())}</div>
+        <table class="pp-grid">
+          <colgroup><col style="width:34pt"><col style="width:222pt"><col style="width:222pt"><col style="width:34pt"></colgroup>
+          <thead><tr><th>CKT</th><th>DESCRIPTION</th><th>DESCRIPTION</th><th>CKT</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>`, "size: letter; margin: 0.5in 45pt;");
+  }
+
   async function downloadPanelPdf() {
     const p = panelState.panel;
     if (!p) return;
@@ -9259,9 +9378,7 @@
     const ROW_H = 17, HEAD_H = 18;
     const jobName = (state.selected && state.selected.name) || "";
 
-    // Pairs: row i holds circuit 2i+1 on the left and 2i+2 on the right.
-    // Row r holds circuit 2r+1 on the left and 2r+2 on the right.
-    const byNum = new Map(panelState.circuits.map(c => [c.number, c.description || ""]));
+    const { leftHeads, rightHeads } = panelPrintHeads();
 
     let y = 0;
     const drawHeader = () => {
@@ -9302,24 +9419,6 @@
       const lines = doc.splitTextToSize(String(text), width - 8);
       return lines[0] || "";
     };
-
-    // A ganged breaker is ONE description box spanning the circuits it occupies,
-    // with the line between them gone and the text centred over the whole span —
-    // the circuit numbers stay in their own boxes, because both spaces are still
-    // real spaces in the panel. `heads` maps a row index to the box that starts
-    // there; a row absent from it on that side is covered by the span above.
-    const blocks = panelBlocks();
-    const headsFor = (odd) => {
-      const m = new Map();
-      for (const b of blocks) {
-        const first = b.members[0];
-        if ((first % 2 === 1) !== odd) continue;
-        m.set(odd ? (first - 1) / 2 : (first - 2) / 2,
-              { span: b.members.length, desc: byNum.get(first) || "" });
-      }
-      return m;
-    };
-    const leftHeads = headsFor(true), rightHeads = headsFor(false);
 
     // An empty circuit prints "spare" small and italic rather than as a blank —
     // a blank row reads as unfinished paperwork, "spare" reads as a decision.

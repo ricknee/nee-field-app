@@ -8865,7 +8865,7 @@
             <option value="qo">QO ¾″ spacing</option>
             <option value="compact">Compact</option>
           </select>
-          <button type="button" id="panelStripShareBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">📤 Images → iPrint&amp;Label</button>
+          <button type="button" id="panelStripShareBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">💾 Save images for iPrint&amp;Label</button>
           <button type="button" id="panelStripPdfBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">📄 PDF</button>
           <button type="button" id="panelStripPrintBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">🖨</button>
         </span>
@@ -8896,7 +8896,7 @@
     $("panelSaveBtn").onclick  = savePanel;
     $("panelPdfBtn").onclick   = downloadPanelPdf;
     $("panelPrintBtn").onclick = printPanel;
-    $("panelStripShareBtn").onclick = () => sharePanelStripImages($("panelStripMode").value);
+    $("panelStripShareBtn").onclick = () => savePanelStripImages($("panelStripMode").value);
     $("panelStripPdfBtn").onclick   = () => downloadPanelStripsPdf($("panelStripMode").value);
     $("panelStripPrintBtn").onclick = () => printPanelStrips($("panelStripMode").value);
     const del = $("panelDeleteBtn");
@@ -9566,39 +9566,35 @@
     return { doc, filename: `${panelStripFileBase(mode)} strips.pdf` };
   }
 
-  // Share the two PNGs (odd, even). Where a browser can't share files, they
-  // download instead, and iPrint&Label prints them from its photo picker.
-  async function sharePanelStripImages(mode) {
+  // SAVE the two PNGs (odd, even) to the device, then print them from inside
+  // iPrint&Label (its image/photo printing). Not a share: on Android,
+  // iPrint&Label is not a share target for PDFs OR images (2026-09-29, it was
+  // absent from both share lists) — it only opens files from inside itself.
+  // Dated names, because Android saves a repeat download as "… (1).png" and
+  // the picker would show yesterday's strips first (see downloadPanelPdf).
+  // The second download is delayed: Chrome can refuse a second file fired in
+  // the same tick as "multiple downloads".
+  async function savePanelStripImages(mode) {
     if (!panelState.panel) return;
     syncGridToState();
     setPanelStatus("Building strip images…");
+    const now = new Date(), pad = (n) => String(n).padStart(2, "0");
+    const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}${pad(now.getMinutes())}`;
     let files;
     try {
       files = await Promise.all([true, false].map(odd => new Promise((resolve, reject) => {
         panelStripCanvas(odd, mode).toBlob(b => b
-          ? resolve(new File([b], `${panelStripFileBase(mode)} ${odd ? "1 ODD" : "2 EVEN"}.png`, { type: "image/png" }))
+          ? resolve(new File([b], `${panelStripFileBase(mode)} ${odd ? "1 ODD" : "2 EVEN"} ${stamp}.png`, { type: "image/png" }))
           : reject(new Error("the image couldn't be made")), "image/png");
       })));
     } catch (e) { setPanelStatus("Couldn't build the strips: " + e.message); return; }
-    let canShare = false;
-    try { canShare = !!(navigator.canShare && navigator.canShare({ files })); } catch {}
-    if (canShare) {
-      // Files only — a `text` alongside them makes some targets drop the files.
-      try {
-        await navigator.share({ files });
-        setPanelStatus("Pick iPrint&Label — odd strip first, then even.");
-      } catch (e) {
-        if (e && e.name !== "AbortError") setPanelStatus("Couldn't share: " + (e.message || e));
-      }
-      return;
-    }
-    files.forEach(f => {
+    files.forEach((f, i) => setTimeout(() => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(f); a.download = f.name;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    });
-    setPanelStatus("Saved 2 strip images — open them from iPrint&Label's photo printing.");
+    }, i * 900));
+    setPanelStatus("Saved 2 strip images (ODD, EVEN) — open iPrint&Label → image printing and pick them.");
   }
 
   async function downloadPanelStripsPdf(mode) {

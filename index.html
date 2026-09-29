@@ -9427,7 +9427,6 @@
     const big = pitch >= 12;   // room for bigger text that can wrap to two lines
     const strip = (odd) => {
       const heads = odd ? leftHeads : rightHeads;
-      const first = odd ? 1 : 2, last = odd ? rows * 2 - 1 : rows * 2;
       let body = "";
       for (let r = 0; r < rows; r++) {
         const h = heads.get(r);
@@ -9437,7 +9436,7 @@
         body += `<tr style="height:${pitch}mm"><td class="ps-n">${odd ? r * 2 + 1 : r * 2 + 2}</td>${cell}</tr>`;
       }
       return `<div class="ps-strip${big ? " ps-big" : ""}" style="height:${lengthMm}mm">
-        <div class="ps-head">PANEL ${esc(p.name.toUpperCase())} · ${odd ? "ODD" : "EVEN"} ${first}–${last}</div>
+        <div class="ps-head">PANEL ${esc(p.name.toUpperCase())}</div>
         <table class="ps-grid"><colgroup><col style="width:10mm"><col></colgroup><tbody>${body}</tbody></table>
       </div>`;
     };
@@ -9488,7 +9487,9 @@
       return lines.slice(0, max).map(l => clip(l, width, size, style));
     };
     const heads = odd ? leftHeads : rightHeads;
-    text(clip(`PANEL ${p.name.toUpperCase()} · ${odd ? "ODD" : "EVEN"} ${odd ? 1 : 2}–${odd ? rows * 2 - 1 : rows * 2}`, W - X0 * 2, 10, "bold"),
+    // Just the panel — owner 2026-09-29: no "ODD 1–41" / "EVEN 2–42"; the
+    // circuit numbers down the strip already say which side it is.
+    text(clip(`PANEL ${p.name.toUpperCase()}`, W - X0 * 2, 10, "bold"),
          W / 2, PANEL_STRIP_PAD + PANEL_STRIP_HEAD / 2 + 1.2, 10, "bold", "center");
     const top = PANEL_STRIP_PAD + PANEL_STRIP_HEAD;
     for (let r = 0; r < rows; r++) {

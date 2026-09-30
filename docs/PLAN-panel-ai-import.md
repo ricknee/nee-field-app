@@ -68,6 +68,11 @@ for that panel."
 4. **Review flow** in the panel editor: highlighted uncertain cells, fill-blanks vs replace-with-diff.
 5. **Multi-panel sheets** and **pick from job Prints**.
 
-## Open
+## Step-1 test set (owner, 2026-09-30)
 
-- The 9 existing panels: which jobs' Prints hold their source sheets (needed for the step-1 score)?
+- **Trail Cabinet** (`rec2s6PxJ761sS9R4`, CLT 256): 4 panels (A, IP-1, MDP, Panel), 150 circuits.
+- **MT Liberty DG** (`recJL744eNhLJLvNy`, LIM 138): owner entering its panels **2026-09-30**. Asked to
+  upload the schedule sheet to the job's Prints first, plus a phone photo of it.
+- **Bethel School**: 5 panels (A, A1, Classroom (B), D (Gym), Kitchen (C)), 186 circuits, as a third set if
+  its prints exist.
+- ⬜ Confirm the source sheets are actually in each job's Prints before the spike.

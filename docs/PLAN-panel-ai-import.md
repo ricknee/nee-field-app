@@ -52,9 +52,9 @@ for that panel."
   is allowed to run. Plan for a **background function** that writes the result to a small Neon table
   (`panel_extract_jobs`: id, status, result JSON, error), with the client polling. Decide in the spike
   after timing real sheets.
-- **Breaker size needs UI too:** the editor, the 🖨 sheet / PDF and the DK-2205 strips have no amps
-  column today. Adding it is part of this build: an "A" box per circuit in the editor and an optional
-  column on the printouts.
+- **Breaker size needs UI too:** the editor has no amps box today. Adding it is part of this build: an
+  "A" box per circuit in the editor. ⛔ **NOT on the printouts** (owner 2026-09-30: "just showing on the
+  panels. Do not print."): the 🖨 sheet, PDF and DK-2205 strips stay exactly as they are.
 - **Cost:** small per schedule. Confirm current pricing before building.
 
 ## Build order
@@ -64,11 +64,10 @@ for that panel."
    count). Include a few **phone photos**, since that's half the owner's input. **Stop if it isn't good
    enough.** Also time each call; this decides sync vs background.
 2. **Server action** + (if needed) the background job and polling table.
-3. **Amps in the editor** (and optionally on the printouts).
+3. **Amps in the editor** (editor only, never printed).
 4. **Review flow** in the panel editor: highlighted uncertain cells, fill-blanks vs replace-with-diff.
 5. **Multi-panel sheets** and **pick from job Prints**.
 
 ## Open
 
-- Does the owner want amps on the **printed** sheet and strips, or only stored/visible in the editor?
 - The 9 existing panels: which jobs' Prints hold their source sheets (needed for the step-1 score)?

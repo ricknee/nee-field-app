@@ -8193,6 +8193,43 @@ await test("labels: the QR holds item.barcode verbatim, and the page is DK-1208"
   eq(['1"', '1/2"', '12GA', '3/4"'].sort(f.labelSizeSort).join(" "), '1/2" 3/4" 1" 12GA', "inch sizes sort by size");
 });
 
+// ── Panel editor gangs: each breaker carries its OWN pole count ──
+// It used to be a set of ticked circuits, and a run of ticks can't say where
+// one breaker ends: MT Liberty DG Panel R's six stacked 2-poles (2-24) opened
+// as four 3-poles on a 3-phase panel, and a save would have written them.
+await test("panels: stacked 2-poles stay 2-poles; poles cycle within the room they have", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const grab = (a, b) => html.slice(html.indexOf(a), html.indexOf(b, html.indexOf(a)));
+  const src = grab("  function panelMaxPoles()", "  // Is the grid stacked into one column?");
+  ok(!/\.tied\b|chunkRun/.test(html), "no tick-set / run-guessing left anywhere");
+  const make = (voltage, circuits, gangs) => new Function("panelState", "$",
+    `${src}; return { panelBlocks, panelRoomFor };`)(
+      { panel: { voltage, circuits }, gangs: new Map(gangs),
+        circuits: Array.from({ length: circuits }, (_, i) => ({ number: i + 1, description: "" })) },
+      () => null);
+  const shape = (blocks) => blocks.filter(b => b.poles > 1).map(b => b.members.join("-")).join(" ");
+
+  // Panel R as stored: 2-poles at 1,5,9,13,21 and 2,6,10,14,18,22.
+  const R = make("120/208V 3-Phase", 42, [[1,2],[5,2],[9,2],[13,2],[21,2],[2,2],[6,2],[10,2],[14,2],[18,2],[22,2]]);
+  eq(shape(R.panelBlocks()), "1-3 2-4 5-7 6-8 9-11 10-12 13-15 14-16 18-20 21-23 22-24",
+     "eleven 2-poles, none merged into a 3-pole");
+  eq(R.panelRoomFor(1), 2, "a 2-pole with another breaker below can't grow to 3P");
+  eq(R.panelRoomFor(17), 2, "17 can become a 2-pole with 19 — 21 starts the next breaker, so not 3P");
+  eq(R.panelRoomFor(19), 1, "19 can't gang at all: 21 is already a 2-pole");
+  eq(R.panelRoomFor(41), 1, "the last circuit on a side has no room");
+
+  // Panel A: three 3-poles stacked on one side stay three 3-poles.
+  const A = make("120/208V 3-Phase", 42, [[1,3],[7,3],[13,3],[37,3],[38,3],[26,2]]);
+  eq(shape(A.panelBlocks()), "1-3-5 7-9-11 13-15-17 26-28 37-39-41 38-40-42", "stacked 3-poles stay 3-poles");
+
+  // Single-phase caps at 2: a stored 3-pole shows as a 2-pole, and never grows.
+  const S = make("120/240V 1-Phase", 30, [[1,3],[5,2]]);
+  eq(shape(S.panelBlocks()), "1-3 5-7", "a 3-pole on a 1-phase panel clamps to 2");
+  eq(S.panelRoomFor(9), 2, "and room never exceeds 2 on single-phase");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

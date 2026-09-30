@@ -1818,17 +1818,23 @@
       align-items: flex-end;
       padding: 4px 0;
     }
-    /* The tie checkbox. Tick two circuits on the same side and they become one
-       breaker; the line between them goes and the description centres across
-       both. Untick the merged cell to break it apart again. */
-    .panel-tie {
+    /* The poles button: 1P / 2P / 3P, tap to cycle. A 2P or 3P breaker merges
+       its circuits into one cell with the description centred across them. */
+    .panel-poles {
       flex: 0 0 auto;
-      width: 15px;
-      height: 15px;
+      min-width: 30px;
+      height: 24px;
       margin: 0 1px;
+      padding: 0 4px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--muted);
       cursor: pointer;
-      accent-color: #d97706;
     }
+    .panel-poles.multi { border-color: #d97706; color: #d97706; background: rgba(217,119,6,0.08); }
     .panel-desc {
       flex: 1 1 auto;
       min-width: 0;
@@ -8588,7 +8594,9 @@
   // the loss. It is what makes the server's 409 guard live rather than
   // ceremonial: send it unconditionally and a second editor's shrink would be
   // rubber-stamped by whoever saved last.
-  const panelState = { jobId: null, panels: [], panel: null, circuits: [], dirty: false, shrinkOk: false, tied: new Set() };
+  // `gangs` maps a breaker's FIRST circuit to its pole count (2 or 3) — the same
+  // shape the database stores (panel_circuits.poles on the first circuit only).
+  const panelState = { jobId: null, panels: [], panel: null, circuits: [], dirty: false, shrinkOk: false, gangs: new Map() };
 
   // Offered as a datalist, not a <select> — these four cover almost everything
   // NEE touches, but a real building will eventually hold something that isn't
@@ -8768,13 +8776,12 @@
       panelState.dirty = false;
       panelState.shrinkOk = false;
 
-      // Rebuild the tie ticks from the stored spans. `poles` lives on the first
-      // circuit of a gang only, so a 2 on circuit 1 re-ticks 1 and 3.
-      panelState.tied = new Set();
+      // One entry per multi-pole breaker, keyed by its first circuit — exactly
+      // what is stored. Never re-derived from which circuits "look" tied.
+      panelState.gangs = new Map();
       for (const c of panelState.circuits) {
         const p = Number(c.poles);
-        if (p !== 2 && p !== 3) continue;
-        for (let i = 0; i < p; i++) panelState.tied.add(c.number + i * 2);
+        if (p === 2 || p === 3) panelState.gangs.set(c.number, p);
       }
 
       // A draft only exists if a previous save didn't land. Apply it over the
@@ -8910,14 +8917,17 @@
   }
 
   /* Ganged breakers.
-   * `panelState.tied` holds the circuit numbers whose tie box is ticked. A RUN
-   * of ticked circuits on the same side — 1 and 3, or 1, 3 and 5 — is one
-   * breaker: they merge into a single cell. A lone tick is not a span yet, it's
-   * a half-finished one, and renders as an ordinary row with the box ticked.
+   * Each breaker carries its OWN pole count: `panelState.gangs` maps its first
+   * circuit to 2 or 3, and a 1P/2P/3P button on the row cycles it.
    *
-   * Runs are capped at 3. A 4-pole breaker is not a thing on a panelboard, and
-   * without the cap two adjacent 2-pole breakers ticked back to back would
-   * silently become one 4-pole.
+   * ⚠⚠ This replaced a set of TICKED circuits (2026-09-30), and the reason is
+   * worth keeping: a run of ticks cannot say where one breaker ends and the next
+   * begins. Two 2-poles stacked on one side (1-3, 5-7) are the run 1,3,5,7, and
+   * the editor had to GUESS the split — on a 3-phase panel it guessed 3-poles.
+   * MT Liberty DG's Panel R (six 2-poles down the even side, 2 through 24)
+   * opened as four 3-poles, and saving would have written them. Storing the
+   * pole count per breaker removes the guess, and it is the database's own
+   * shape (panel_circuits.poles on the first circuit).
    */
   // How many spaces one breaker may occupy, decided by the PANEL, not by how
   // many boxes happen to be ticked in a row. A single-phase panel only ever
@@ -8930,48 +8940,40 @@
     return /3\s*-?\s*(phase|ph\b)|three\s*phase/i.test(v) ? 3 : 2;
   }
 
-  // Splits a run of N consecutive ticked circuits into breaker-sized gangs.
-  // Ticking 1,3,5,7 on a single-phase panel is TWO 2-pole breakers, not one
-  // 4-pole and not a 3-pole plus an orphan — that was the original bug.
-  // Full-size gangs are preferred, except where that would strand a single
-  // circuit: on a 3-phase panel a run of four is two 2-poles far more often
-  // than a 3-pole next to a lone 1-pole.
-  function chunkRun(len, cap) {
-    const out = [];
-    let left = len;
-    while (left > 0) {
-      let take = Math.min(cap, left);
-      if (take > 2 && left - take === 1) take = 2;
-      out.push(take);
-      left -= take;
-    }
-    return out;
-  }
-
+  // The breakers, in circuit order. A breaker spans its own pole count, clamped
+  // to what the panel allows (a 3-pole on a panel switched to single-phase
+  // shows as a 2-pole until the voltage says otherwise), to the panel's last
+  // circuit, and never into the next breaker: a span stops at a circuit that
+  // is itself the start of a multi-pole breaker.
   function panelBlocks() {
-    const tied = panelState.tied;
+    const gangs = panelState.gangs;
     const last = panelState.panel ? panelState.panel.circuits : 0;
     const cap = panelMaxPoles();
     const blocks = [];
     const covered = new Set();
     for (const c of panelState.circuits) {
       if (covered.has(c.number)) continue;
-      if (!tied.has(c.number)) { blocks.push({ members: [c.number], poles: 1 }); continue; }
-
-      // The whole unbroken run of ticks on this side, then cut into gangs.
-      const run = [c.number];
-      let next = c.number + 2;
-      while (tied.has(next) && next <= last) { run.push(next); next += 2; }
-
-      let i = 0;
-      for (const size of chunkRun(run.length, cap)) {
-        const members = run.slice(i, i + size);
-        i += size;
-        members.forEach(n => covered.add(n));
-        blocks.push({ members, poles: members.length });
+      const want = Math.min(gangs.get(c.number) || 1, cap);
+      const members = [c.number];
+      while (members.length < want) {
+        const next = members[members.length - 1] + 2;
+        if (next > last || (gangs.get(next) || 1) > 1) break;
+        members.push(next);
       }
+      members.forEach(n => covered.add(n));
+      blocks.push({ members, poles: members.length });
     }
     return blocks;
+  }
+
+  // How many poles a breaker starting at `num` could have: up to the panel's
+  // cap, stopping at the end of the panel or at the next multi-pole breaker.
+  function panelRoomFor(num) {
+    const last = panelState.panel ? panelState.panel.circuits : 0;
+    const cap = panelMaxPoles();
+    let k = 1;
+    while (k < cap && num + k * 2 <= last && (panelState.gangs.get(num + k * 2) || 1) === 1) k++;
+    return k;
   }
 
   // Is the grid stacked into one column? Same 640px breakpoint as the CSS, and
@@ -9016,8 +9018,8 @@
         ${ckt}
         <input class="panel-desc${v ? " has-val" : ""}${merged ? " merged" : ""}" data-ckt="${first}" value="${esc(v)}"
                placeholder="spare" autocomplete="off" enterkeyhint="next" />
-        <input type="checkbox" class="panel-tie" data-ckt="${first}" ${panelState.tied.has(first) ? "checked" : ""}
-               title="Tick two in a row on this side to gang them into one breaker (three on a 3-phase panel)" />
+        <button type="button" class="panel-poles${merged ? " multi" : ""}" data-ckt="${first}"
+                title="Poles on this breaker — tap to cycle 1P → 2P${panelMaxPoles() > 2 ? " → 3P" : ""}. A 2-pole takes this circuit and the next one down on this side.">${b.members.length}P</button>
         <button type="button" class="panel-fill" data-ckt="${first}" title="Copy this down the rest of this side">↓</button>
       </div>`;
     }).join("");
@@ -9027,8 +9029,8 @@
       `<div class="panel-col-head right" style="grid-column:2; grid-row:1; --panel-ord:1000;"><span class="ph-wide">Ckt — what it feeds</span><span class="ph-mob">Even circuits — 2, 4, 6…</span></div>` +
       body;
 
-    grid.querySelectorAll(".panel-tie").forEach(box => {
-      box.addEventListener("change", () => toggleTie(Number(box.dataset.ckt), box.checked));
+    grid.querySelectorAll(".panel-poles").forEach(btn => {
+      btn.addEventListener("click", () => cyclePanelPoles(Number(btn.dataset.ckt)));
     });
 
     grid.querySelectorAll(".panel-desc").forEach(inp => {
@@ -9057,17 +9059,23 @@
     updateFilledCount();
   }
 
-  // Unticking a MERGED cell breaks the whole gang apart, not just the circuit
-  // whose box was clicked — the merged cell only shows one box, so that click
-  // is the only way back out of a 3-pole.
-  function toggleTie(num, checked) {
+  // 1P → 2P → 3P → 1P, skipping sizes that don't fit: the panel's phase cap,
+  // its last circuit, or the next breaker down already being a multi-pole.
+  // Back to 1P splits the breaker into single circuits again.
+  function cyclePanelPoles(num) {
     syncGridToState();
-    if (checked) {
-      panelState.tied.add(num);
-    } else {
-      const block = panelBlocks().find(b => b.members[0] === num);
-      (block ? block.members : [num]).forEach(n => panelState.tied.delete(n));
+    const cur = (panelBlocks().find(b => b.members[0] === num) || { poles: 1 }).poles;
+    const room = panelRoomFor(num);
+    const next = cur + 1 > room ? 1 : cur + 1;
+    if (room === 1 && cur === 1) {
+      const below = num + 2;
+      const last = panelState.panel ? panelState.panel.circuits : 0;
+      setPanelStatus(below > last
+        ? `Circuit ${num} is the last on this side — no room for a 2-pole.`
+        : `Circuit ${below} is already part of a multi-pole breaker — set that one to 1P first.`);
+      return;
     }
+    if (next === 1) panelState.gangs.delete(num); else panelState.gangs.set(num, next);
     // A newly merged cell keeps the first circuit's description, unless it is
     // blank and one of the circuits swallowed by the merge has text — losing
     // typed words to a tick box would be the wrong trade.
@@ -9205,7 +9213,7 @@
       panelState.circuits = panelState.circuits.filter(c => c.number <= even);
       // Ties above the new top would otherwise survive as ticks on circuits
       // that no longer exist, and re-gang the wrong breakers if it grows back.
-      [...panelState.tied].forEach(n => { if (n > even) panelState.tied.delete(n); });
+      [...panelState.gangs.keys()].forEach(n => { if (n > even) panelState.gangs.delete(n); });
       // The user has now seen and accepted the number; the save may confirm.
       panelState.shrinkOk = true;
     } else if (even > p.circuits) {

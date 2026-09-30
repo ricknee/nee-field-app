@@ -68,6 +68,20 @@ for that panel."
 4. **Review flow** in the panel editor: highlighted uncertain cells, fill-blanks vs replace-with-diff.
 5. **Multi-panel sheets** and **pick from job Prints**.
 
+## ⏸ WHERE THIS STANDS (2026-09-30), read first when resuming
+
+- **No AI key exists yet.** Netlify's env has 23 variables and no Anthropic or OpenAI key (checked by
+  name only with `netlify env:list`, values never read). The owner is on the road; adding a key waits.
+- **Provider undecided.** The owner asked "Claude or ChatGPT?" The answer given: either can do this; let
+  the step-1 test decide on his own sheets. Keep the provider call behind one small function so it can be
+  swapped, and run both side by side if he gets both keys.
+  ⚠ A ChatGPT Plus / Claude Pro subscription is **not** API access: it needs a developer account
+  (console.anthropic.com or platform.openai.com) with its own billing.
+- **To resume:** (1) owner creates the developer key and adds it to Netlify as `ANTHROPIC_API_KEY` (or
+  `OPENAI_API_KEY`), or to the local `.env` for the spike only. It must never be pasted into chat.
+  (2) Confirm the name exists with `netlify env:list`, keys only. (3) Confirm the source sheets are in the
+  test jobs' Prints. (4) Run step 1.
+
 ## Step-1 test set (owner, 2026-09-30)
 
 - **Trail Cabinet** (`rec2s6PxJ761sS9R4`, CLT 256): 4 panels (A, IP-1, MDP, Panel), 150 circuits.

@@ -8230,6 +8230,24 @@ await test("panels: stacked 2-poles stay 2-poles; poles cycle within the room th
   eq(S.panelRoomFor(9), 2, "and room never exceeds 2 on single-phase");
 });
 
+// ── Approved time off shows on the schedule (owner 2026-10-02) ──
+// Read from pto_requests — never copied into schedule_entries, so a cancelled
+// request leaves the schedule by itself — and only APPROVED ones.
+await test("schedule: approved time off is read live from pto_requests, read-only on the grid", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const fn = src.slice(src.indexOf("async function handleGetScheduleEntriesFromNeon"), src.indexOf("async function handleGetScheduleEntries(params)"));
+  ok(/FROM pto_requests r[\s\S]*WHERE r\.status = 'approved'/.test(fn), "only approved requests");
+  ok(/type: "Time Off", pto: true/.test(fn), "emitted as Time Off entries flagged pto");
+  ok(/crewIds: \[r\.emp_id\]/.test(fn) && /COALESCE\(e\.airtable_id, e\.id::text\) AS emp_id/.test(fn),
+     "the person is the dual handle, same as the crew picker");
+  ok(!/INSERT INTO schedule_entries[\s\S]{0,400}pto/i.test(src), "never copied into schedule_entries");
+  ok(/if \(e\.pto\) \{/.test(html), "tapping it doesn't open the edit panel");
+  ok(/\$\{e\.pto \? "" : dragAttr\}/.test(html), "and it can't be dragged");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

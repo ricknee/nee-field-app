@@ -13919,6 +13919,41 @@ async function handleGetScheduleEntriesFromNeon(params) {
     contractor: r.contractor_name || "", date: r.completion_date
   }));
 
+  // APPROVED TIME OFF, straight from pto_requests — owner 2026-10-02: "when an
+  // employee has requested time off and it has been approved, i want it to show
+  // on the schedule … so that i dont schedule him in."
+  // Emitted as ordinary "Time Off" entries, so everything the grid already does
+  // with one applies for free: the 🏖 Off pill, the day panel's "Off:" line,
+  // and the double-booking banner when a job lands on the same person.
+  // READ, never copied into schedule_entries: a cancelled or declined request
+  // must leave the schedule by itself, and a copy would need someone to delete
+  // it. `pto: true` and the "pto:" id mark them read-only in the client — they
+  // are changed on 🌴 Time Off, not dragged around the calendar.
+  // Skipped on a job-filtered read: time off belongs to a person, not a job.
+  if (!jobId) {
+    const pto = await neonQuery(
+      `SELECT r.id::text AS id, r.start_date::text AS start_date, r.end_date::text AS end_date,
+              r.hours_per_day::float8 AS hours, r.note,
+              COALESCE(e.airtable_id, e.id::text) AS emp_id, e.name
+         FROM pto_requests r
+         JOIN employees e ON e.id = r.employee_id
+        WHERE r.status = 'approved'
+          AND ($1 = '' OR r.end_date >= $1::date)
+          AND ($2 = '' OR r.start_date <= $2::date)
+        ORDER BY r.start_date`,
+      [since, until]);
+    for (const r of (pto?.rows || [])) {
+      const part = r.hours && Number(r.hours) !== 8 ? ` (${Number(r.hours)} h/day)` : "";
+      entries.push({
+        id: `pto:${r.id}`, title: `Time off — ${r.name || ""}`, type: "Time Off", pto: true,
+        jobId: "", jobName: "", contractor: "", jobStatus: "",
+        startDate: r.start_date, endDate: r.end_date,
+        crewIds: [r.emp_id], crew: [r.name || ""],
+        notes: `Approved time off${part}${r.note ? " — " + r.note : ""}`,
+      });
+    }
+  }
+
   return { entries, completionDates, ms: q.ms };
 }
 

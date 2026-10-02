@@ -2852,6 +2852,11 @@
       user-select: none;
     }
     .sch-crew-pill.sel { background: var(--accent); color: white; border-color: var(--accent); }
+    /* Off during the dates being scheduled (approved time off or a Time Off entry).
+       Still tappable — a half day or a change of plan is the scheduler's call —
+       but it reads as "not available" at a glance. */
+    .sch-crew-pill.off { border-style: dashed; border-color: #dc2626; color: #dc2626; }
+    .sch-crew-pill.off.sel { background: #dc2626; color: white; }
     .sch-edit-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
     .sch-edit-actions .danger { background: white; color: #dc2626; border: 1px solid #dc2626; }
     .sch-edit-actions .danger:hover { background: #fee2e2; }
@@ -25677,7 +25682,9 @@
           const tooltip  = isTimeOff
             ? `${empName} — Time Off${e.notes ? " — " + e.notes : ""}`
             : `${empName} — ${e.jobName}${e.notes ? " — " + e.notes : ""}`;
-          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${dragAttr} data-entry-id="${esc(e.id)}" data-emp-id="${esc(cid)}" data-source-ymd="${esc(ymd)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+          // Approved time off (e.pto) comes from 🌴 Time Off and is changed
+          // there, so it is never draggable here.
+          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${e.pto ? "" : dragAttr} data-entry-id="${esc(e.id)}" data-emp-id="${esc(cid)}" data-source-ymd="${esc(ymd)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                        title="${esc(tooltip)}">
                     <strong>${esc(first)}</strong>
@@ -26143,11 +26150,22 @@
     if (crewLabel) crewLabel.textContent = isTimeOff ? "Who's off (tap to toggle)" : "Crew (tap to toggle)";
     const notesInp = $("schEditNotes");
     if (notesInp) notesInp.placeholder = isTimeOff ? "vacation, sick, personal..." : "rough-in, trim out, service...";
+    // The 🏖 "off these dates" marks only apply to a Job entry.
+    if ($("schCrewPills") && schCrew.length) renderCrewPills();
   }
 
   window.schEditEntry = function(entryId) {
     const e = schEntries.find(x => x.id === entryId);
     if (!e) return;
+    // Approved time off is read from the time-off requests, not stored as a
+    // schedule entry — there is nothing here to edit. Show the day instead.
+    if (e.pto) {
+      showAppToast(`${(e.crew && e.crew[0]) || "This person"} has approved time off — change it on 🌴 Time Off.`);
+      const targetDate = (schSelectedDate && e.startDate <= schSelectedDate && e.endDate >= schSelectedDate)
+        ? schSelectedDate : e.startDate;
+      if (targetDate) schShowDayDetail(targetDate);
+      return;
+    }
     // In read-only mode, don't open the edit panel — just show the
     // day-detail panel for the entry's start date so the user can see
     // who else is on it. (Tap-on-pill is otherwise the gateway to the
@@ -26309,11 +26327,27 @@
       wrap.innerHTML = `<span style="font-size:12px; color:var(--muted);">No crew loaded.</span>`;
       return;
     }
+    // Who is OFF somewhere inside the dates being scheduled — approved time off
+    // or a manual Time Off entry — so the picker says so before the save does.
+    // Only for a Job entry: marking someone off on a Time Off entry is the point.
+    const start = $("schEditStart").value, end = $("schEditEnd").value || start;
+    const offIds = new Set();
+    if (schEditingType !== "Time Off" && start) {
+      schEntries.forEach(e => {
+        if (e.type !== "Time Off" || e.id === schEditingId || !e.startDate) return;
+        if (e.startDate <= end && (e.endDate || e.startDate) >= start) (e.crewIds || []).forEach(id => offIds.add(id));
+      });
+    }
     wrap.innerHTML = schCrew.map(c => {
       const sel = schSelectedCrew.has(c.id) ? " sel" : "";
+      const off = offIds.has(c.id);
       const first = (c.name || "").split(" ")[0];
-      return `<span class="sch-crew-pill${sel}" data-id="${esc(c.id)}">${esc(first)}</span>`;
+      return `<span class="sch-crew-pill${sel}${off ? " off" : ""}" data-id="${esc(c.id)}"
+                    ${off ? `title="${esc(c.name)} has time off during these dates"` : ""}>${off ? "🏖 " : ""}${esc(first)}</span>`;
     }).join("");
+    // Re-mark when the dates change. Assigned, not added, so re-renders don't stack listeners.
+    $("schEditStart").onchange = renderCrewPills;
+    $("schEditEnd").onchange = renderCrewPills;
     wrap.querySelectorAll(".sch-crew-pill").forEach(p => {
       p.onclick = () => {
         const id = p.dataset.id;

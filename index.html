@@ -26120,12 +26120,14 @@
     $("schEditTitle").textContent = "New Entry";
     $("schDeleteBtn").style.display = "none";
     schApplyType();
-    // Pre-fill defaults
+    // Pre-fill defaults. One day — the day that was tapped, else today. The end
+    // date used to default to TOMORROW, so every new entry was two days unless
+    // someone remembered to fix it.
     populateJobDropdown(null);
-    const today = new Date();
-    const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
-    $("schEditStart").value = schYMD(today);
-    $("schEditEnd").value   = schYMD(tomorrow);
+    const day = schSelectedDate || schYMD(new Date());
+    $("schEditStart").value = day;
+    $("schEditEnd").value   = day;
+    schSetMultiDay(false);
     $("schEditNotes").value = "";
     renderCrewPills();
     $("schEditPanel").style.display = "";
@@ -26183,7 +26185,10 @@
     schApplyType();
     populateJobDropdown(e.jobId);
     $("schEditStart").value = e.startDate || "";
-    $("schEditEnd").value   = e.endDate   || "";
+    $("schEditEnd").value   = e.endDate   || e.startDate || "";
+    // An existing multi-day entry opens with its end date showing, so it can't
+    // be silently squashed to one day on save.
+    schSetMultiDay(!!(e.endDate && e.startDate && e.endDate !== e.startDate));
     $("schEditNotes").value = e.notes     || "";
     renderCrewPills();
     $("schEditPanel").style.display = "";
@@ -26346,7 +26351,12 @@
                     ${off ? `title="${esc(c.name)} has time off during these dates"` : ""}>${off ? "🏖 " : ""}${esc(first)}</span>`;
     }).join("");
     // Re-mark when the dates change. Assigned, not added, so re-renders don't stack listeners.
-    $("schEditStart").onchange = renderCrewPills;
+    // A single-day entry's end follows its date; a multi-day end can't fall before it.
+    $("schEditStart").onchange = () => {
+      const s = $("schEditStart").value, endEl = $("schEditEnd");
+      if (!schMultiDay || !endEl.value || endEl.value < s) endEl.value = s;
+      renderCrewPills();
+    };
     $("schEditEnd").onchange = renderCrewPills;
     wrap.querySelectorAll(".sch-crew-pill").forEach(p => {
       p.onclick = () => {
@@ -26363,16 +26373,29 @@
     schEditingId = null;
   };
 
+  // One date by default; "Multiple days" shows the end date. Hidden, the end
+  // date always equals the date, so a single-day entry never needs touching.
+  let schMultiDay = false;
+  window.schSetMultiDay = function(on) {
+    schMultiDay = !!on;
+    $("schEditEndWrap").style.display = on ? "" : "none";
+    $("schMultiDayLink").style.display = on ? "none" : "inline-block";
+    $("schEditStartLabel").textContent = on ? "Start Date" : "Date";
+    const s = $("schEditStart").value, endEl = $("schEditEnd");
+    if (!on || !endEl.value || endEl.value < s) endEl.value = s;
+    if ($("schCrewPills") && schCrew.length) renderCrewPills();
+  };
+
   window.schSaveEntry = async function() {
     const isTimeOff = schEditingType === "Time Off";
     const jobId     = isTimeOff ? "" : $("schEditJob").value;
     const startDate = $("schEditStart").value;
-    const endDate   = $("schEditEnd").value;
+    const endDate   = schMultiDay ? $("schEditEnd").value : startDate;
     const notes     = $("schEditNotes").value || "";
     const crewIds   = [...schSelectedCrew];
 
     if (!isTimeOff && !jobId) { alert("Pick a job."); return; }
-    if (!startDate)            { alert("Set a start date."); return; }
+    if (!startDate)            { alert("Set a date."); return; }
     if (!endDate)              { alert("Set an end date."); return; }
     if (endDate < startDate)   { alert("End date must be on or after start date."); return; }
     if (isTimeOff && !crewIds.length) { alert("Pick at least one person."); return; }
@@ -31493,13 +31516,20 @@
             <label>Notes (optional)</label>
             <input type="text" id="schEditNotes" placeholder="rough-in, trim out, vacation..." />
           </div>
+          <!-- ONE date by default — owner 2026-10-02: "i only schedule 1 day at a time".
+               The end date hides until "Multiple days" is tapped (vacations, long
+               jobs) and is set equal to the date otherwise. See schSetMultiDay. -->
           <div>
-            <label>Start Date</label>
+            <label id="schEditStartLabel">Date</label>
             <input type="date" id="schEditStart" />
+            <a href="#" id="schMultiDayLink" onclick="event.preventDefault(); schSetMultiDay(true)"
+               style="display:inline-block; margin-top:4px; font-size:11px; color:var(--accent);">+ Multiple days</a>
           </div>
-          <div>
+          <div id="schEditEndWrap" style="display:none;">
             <label>End Date</label>
             <input type="date" id="schEditEnd" />
+            <a href="#" onclick="event.preventDefault(); schSetMultiDay(false)"
+               style="display:inline-block; margin-top:4px; font-size:11px; color:var(--muted);">Just one day</a>
           </div>
         </div>
         <label style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.4px; color:var(--muted); display:block; margin-bottom:5px;" id="schCrewLabel">Crew (tap to toggle)</label>

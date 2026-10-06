@@ -8265,6 +8265,29 @@ await test("inspections: save writes Neon from Neon's own lookups and answers fr
   ok(!/\.catch\(\(\) => \{\}\)/.test(fn), "a failed Neon write is not swallowed");
 });
 
+// Equiprents' panel is mounted inverted on purpose: 1 at the BOTTOM, odds on the
+// RIGHT. The layout is run for real here, not grepped: a 6-circuit panel with a
+// 2-pole on 1-3, both ways up.
+await test("panels: upside-down prints 1 at the bottom, odds right, gang box on its top member", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const src = html.slice(html.indexOf("  function panelUpsideDown() {"), html.indexOf("  /* ── 🖨 PRINT — the same sheet"));
+  const run = (inv) => new Function("panelState", "panelBlocks", "$", `${src}; return panelPrintHeads();`)(
+    { panel: { circuits: 6 }, circuits: [1,2,3,4,5,6].map(n => ({ number: n, description: n === 1 ? "HEATER" : "" })) },
+    () => [{ members: [1, 3] }, { members: [2] }, { members: [4] }, { members: [5] }, { members: [6] }],
+    () => ({ checked: inv }));
+  const up = run(false);
+  ok([0,1,2].map(up.left.num).join() === "1,3,5" && [0,1,2].map(up.right.num).join() === "2,4,6", "normal: 1 top-left");
+  ok(up.left.heads.get(0)?.span === 2 && up.left.heads.get(0)?.desc === "HEATER", "normal: gang box starts on the 1 row");
+  const dn = run(true);
+  ok([0,1,2].map(dn.right.num).join() === "5,3,1", "inverted: odds on the RIGHT, 1 at the bottom");
+  ok([0,1,2].map(dn.left.num).join() === "6,4,2", "inverted: evens on the left, 2 at the bottom");
+  ok(dn.right.heads.get(1)?.span === 2 && dn.right.heads.get(1)?.desc === "HEATER" && !dn.right.heads.has(2),
+     "inverted: the 1-3 box starts on the 3 row and covers the 1 row");
+  ok(dn.odd === dn.right && dn.even === dn.left, "strips still pick their side by parity");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

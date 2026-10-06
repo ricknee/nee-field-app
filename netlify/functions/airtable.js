@@ -16320,6 +16320,9 @@ function mapPanel(row) {
     enclosure: row.enclosure || "",
     location: row.location || "",
     fedFrom: row.fed_from || "",
+    // Mounted inverted: circuit 1 at the bottom, odd bus on the right. Print
+    // layout only — see db/schema/082.
+    upsideDown: !!row.upside_down,
     notes: row.notes || "",
     updatedAt: row.updated_at,
     updatedBy: row.updated_by || "",
@@ -16476,7 +16479,7 @@ async function handleSavePanelSchedule(body, authUser) {
     `UPDATE panel_schedules
         SET name = $2, voltage = $3, circuits = $4, location = $5, fed_from = $6,
             feed = $7, mounting = $8, enclosure = $9, notes = $10,
-            updated_at = now(), updated_by = $11,
+            updated_at = now(), updated_by = $11, upside_down = $12,
             -- Column-to-column, NOT a parameter, so it deliberately keeps the bare
             -- airtable_id (slice 6 checked it). It heals a legacy panel whose
             -- job_airtable_id was set before job_id existed. A native job never
@@ -16491,7 +16494,8 @@ async function handleSavePanelSchedule(body, authUser) {
      String(body?.mounting ?? existing.mounting ?? "").trim() || null,
      String(body?.enclosure ?? existing.enclosure ?? "").trim() || null,
      String(body?.notes ?? existing.notes ?? "").trim() || null,
-     authUser?.name || null]);
+     authUser?.name || null,
+     body?.upsideDown != null ? body.upsideDown === true : !!existing.upside_down]);
 
   // Circuits arrive as the whole panel. Out-of-range numbers are dropped rather
   // than rejected: a stale editor open on a 42-way panel that someone else

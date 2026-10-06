@@ -8288,6 +8288,28 @@ await test("panels: upside-down prints 1 at the bottom, odds right, gang box on 
   ok(dn.odd === dn.right && dn.even === dn.left, "strips still pick their side by parity");
 });
 
+// The order PDF has ONE layout, used by both apps, and the field app builds it
+// live from the order (never a stored file) so an edit in the inventory app shows.
+await test("orders: one shared PDF layout, served network-first, built live in the field app", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const rd = (p) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), "utf8");
+  const shared = rd("../shared/order-pdf.js"), inv = rd("../inventory.html"), html = rd("../index.html"), sw = rd("../sw.js");
+  ok(/window\.neeBuildOrderPdf = function/.test(shared), "the layout lives in shared/order-pdf.js");
+  ok(!/doc\.text\("MATERIALS ORDER"/.test(inv), "inventory.html has no second copy of it");
+  ok(inv.includes('<script src="/shared/order-pdf.js"></script>'), "inventory loads it");
+  ok(/url\.pathname\.startsWith\('\/shared\/'\)[\s\S]{0,200}fetch\(event\.request\)/.test(sw), "sw.js fetches /shared/ network-first");
+  ok(/action=orderGet&id=/.test(html) && /neeBuildOrderPdf\(/.test(html), "field app builds it from the live order");
+  // It actually renders: a fake jsPDF records the calls.
+  const calls = [];
+  const doc = new Proxy({}, { get: (_, k) => k === "getTextWidth" ? () => 10 : (...a) => { calls.push([k, ...a]); } });
+  const win = { jspdf: { jsPDF: function () { return doc; } } };
+  new Function("window", shared)(win);
+  const b = win.neeBuildOrderPdf({ orderId: 47, jobName: "James Beatty", vendor: "Wolff", lines: [{ itemName: "1/2 EMT", qty: 500 }] });
+  ok(b.filename.startsWith("NEE_Order_James_Beatty_"), "filename");
+  ok(calls.some(c => c[0] === "text" && c[1] === "1/2 EMT"), "the line prints");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

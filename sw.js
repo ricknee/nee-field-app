@@ -106,6 +106,22 @@ self.addEventListener('fetch', event => {
     return;
   }
 
+  // /shared/ is CODE both apps load (shared/order-pdf.js), not a picture.
+  // Cache-first would pin a phone to the first version it ever saw, so it is
+  // network-first, falling back to the cached copy only when offline.
+  if (url.pathname.startsWith('/shared/')) {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        if (response && response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        }
+        return response;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
   // For everything else (fonts, images): cache first
   event.respondWith(
     caches.match(event.request).then(cached => {

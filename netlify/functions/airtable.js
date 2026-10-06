@@ -16656,6 +16656,8 @@ function mapChecklist(row) {
     // Generated from an inventory order (db/schema/074). The client uses it to
     // say that editing a line here does not change the order.
     fromOrder: row.material_order_id != null,
+    // The order itself, so the list can build its PDF (📄 Order PDF).
+    orderId: row.material_order_id || undefined,
     // Only present on the single-list read (handleJobChecklist joins the order).
     orderNumber: row.order_number != null ? Number(row.order_number) : undefined,
     orderStatus: row.order_status || undefined,

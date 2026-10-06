@@ -8263,6 +8263,9 @@
         </span>
         ${pending ? `<span style="font-size:11px; color:var(--yellow); font-weight:600;">${pending} tick${pending === 1 ? "" : "s"} waiting for signal</span>` : ""}
         <span style="margin-left:auto; display:flex; gap:6px; align-items:center;">
+          ${listState.list && listState.list.orderId
+            ? `<button type="button" id="ckOrderPdfBtn" class="btn btn-sm" style="font-size:11px;" title="The order as sent to the supplier — preview it and email it">📄 Order PDF</button>`
+            : ""}
           ${listState.list && listState.list.fromOrder && listState.list.orderStatus === "Active" && canCompleteOrderList()
             ? `<button type="button" id="ckCompleteOrderBtn" class="btn btn-sm" style="font-size:11px; color:var(--green);" title="Picked up or delivered: ticks every line and marks the order complete in the inventory app">✓ Mark order complete</button>`
             : ""}
@@ -8326,6 +8329,8 @@
     if (delList) delList.onclick = deleteWholeChecklist;
     const completeOrder = $("ckCompleteOrderBtn");
     if (completeOrder) completeOrder.onclick = completeOrderFromList;
+    const orderPdf = $("ckOrderPdfBtn");
+    if (orderPdf) orderPdf.onclick = openOrderPdf;
 
     wireChecklistDrag();
 
@@ -8546,6 +8551,58 @@
       renderChecklist();
     } catch (e) {
       $("ckAddStatus").textContent = "Couldn't remove it: " + e.message;
+    }
+  }
+
+  /* 📄 ORDER PDF — the order as sent to the supplier (owner 2026-10-06).
+   * Built LIVE from the inventory app's copy on every tap, never stored: an edit
+   * to the order in the inventory app shows here the next time, and there is no
+   * saved file for an edit path to forget to refresh. The layout is the same
+   * file the inventory app prints from, /shared/order-pdf.js, so a supplier gets
+   * one sheet whichever app sent it. Read through the INVENTORY function — that
+   * is where orders live, and one token is valid in both. No prices are on it,
+   * so every role that can see the list can see the PDF. */
+  function ensureOrderPdfLayout() {
+    return new Promise((resolve, reject) => {
+      if (window.neeBuildOrderPdf) return resolve();
+      const s = document.createElement("script");
+      s.src = "/shared/order-pdf.js";
+      s.onload  = () => window.neeBuildOrderPdf ? resolve() : reject(new Error("the PDF layout didn't load"));
+      s.onerror = () => reject(new Error("the PDF layout didn't load"));
+      document.head.appendChild(s);
+    });
+  }
+
+  let orderPdfUrl = null;
+  async function openOrderPdf() {
+    const l = listState.list;
+    if (!l || !l.orderId) return;
+    const btn = $("ckOrderPdfBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "Building…"; }
+    try {
+      const headers = { Accept: "application/json" };
+      if (state.user?.token) headers.Authorization = "Bearer " + state.user.token;
+      const r = await fetch(`/.netlify/functions/inventory?action=orderGet&id=${encodeURIComponent(l.orderId)}`, { headers });
+      const d = await r.json().catch(() => ({}));
+      if (r.status === 401 && state.user) clearUser();
+      if (!r.ok || d.ok === false || !d.order) throw new Error(d.error || "couldn't load the order");
+      const o = d.order;
+      if (!o.lines || !o.lines.length) throw new Error("the order has no items");
+      await Promise.all([ensureJsPDF(), ensureOrderPdfLayout()]);
+      const built = window.neeBuildOrderPdf({
+        orderId: o.orderId || "", jobName: o.jobName, vendor: o.vendor, createdBy: o.createdBy,
+        lines: o.lines.map(x => ({ itemName: x.itemName || x.description || "Item", qty: x.qty, isBox: !!x.isBox, category: x.category || "" })),
+      });
+      const file = new File([built.doc.output("blob")], built.filename, { type: "application/pdf" });
+      if (orderPdfUrl) URL.revokeObjectURL(orderPdfUrl);
+      orderPdfUrl = URL.createObjectURL(file);
+      // Same subject line the inventory app's ✉️ Email uses.
+      const subject = "Materials Order" + (o.orderId ? " #" + o.orderId : "") + " — " + (o.jobName || "Order");
+      openDocPreview({ url: orderPdfUrl, isPdf: true, title: subject, file, emailSubject: subject });
+    } catch (e) {
+      $("ckAddStatus").textContent = "Couldn't build the order PDF: " + e.message;
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "📄 Order PDF"; }
     }
   }
 
@@ -24208,6 +24265,8 @@
   let viPdfPages = [], viPdfObserver = null;
   // What the overlay's "🧾 All" button should do, or null to hide it.
   let viPreviewMoreFn = null;
+  // The in-page file behind the preview, when there is one — see viPreviewEmail.
+  let viPreviewFile = null, viPreviewSubject = "";
 
   function ensurePdfJs() {
     return new Promise((resolve, reject) => {
@@ -24375,6 +24434,13 @@
     $("viPreviewOpen").href = url;
     $("viPreviewOpen").textContent = isPdf ? "📄 PDF" : "🖼 Open";
     viPreviewMoreFn = (opts && typeof opts.onMore === "function") ? opts.onMore : null;
+    // A document built in the page (the order PDF) can be emailed. A presigned
+    // R2 link can't be attached by anything, so the button only shows with a file.
+    viPreviewFile = (opts && opts.file) || null;
+    viPreviewSubject = (opts && opts.emailSubject) || title;
+    $("viPreviewEmail").style.display = viPreviewFile ? "" : "none";
+    if (viPreviewFile) $("viPreviewOpen").setAttribute("download", viPreviewFile.name);
+    else $("viPreviewOpen").removeAttribute("download");
     $("viPreviewMore").style.display = viPreviewMoreFn ? "" : "none";
     $("viPreviewPg").textContent = "";
     $("viPreviewPrev").style.display = "none";
@@ -24465,6 +24531,34 @@
     const fn = viPreviewMoreFn;
     window.closeViPreview();
     if (fn) fn();
+  };
+
+  // ✉️ Email — the same two routes as the inventory app's order email.
+  // ⚠ A link cannot carry an attachment, so on a phone the PDF goes through the
+  // share sheet (pick Gmail, it arrives attached; files only — sending text with
+  // files makes some apps drop the file). On a computer it downloads and Gmail
+  // opens with the subject, and you drag the PDF in.
+  window.viPreviewEmail = async function () {
+    const f = viPreviewFile;
+    if (!f) return;
+    let canShare = false;
+    try { canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [f] })); } catch {}
+    const phone = window.matchMedia("(pointer:coarse)").matches;
+    if (phone && canShare) {
+      try { await navigator.share({ files: [f], title: viPreviewSubject }); }
+      catch (e) { if (e?.name !== "AbortError") showAppToast("Couldn't share: " + (e.message || e), { kind: "warn" }); }
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(f); a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    if (phone) {
+      window.location.href = "mailto:?subject=" + encodeURIComponent(viPreviewSubject);
+    } else {
+      window.open("https://mail.google.com/mail/?view=cm&fs=1&su=" + encodeURIComponent(viPreviewSubject), "_blank", "noopener");
+      showAppToast("PDF downloaded — drag it into the Gmail message.");
+    }
   };
 
   window.closeViPreview = function () {
@@ -33048,6 +33142,7 @@
          the way through to attach/delete. Hidden otherwise, so the invoice queue
          does not grow a button to a screen it has nothing to do with. -->
     <button id="viPreviewMore" onclick="viPreviewMore()" class="btn btn-sm" style="font-size:13px; padding:6px 12px; display:none;">🧾 All</button>
+    <button id="viPreviewEmail" onclick="viPreviewEmail()" class="btn btn-sm" style="font-size:13px; padding:6px 12px; display:none;">✉️ Email</button>
     <a id="viPreviewOpen" class="btn btn-sm" target="_blank" rel="noopener" style="font-size:13px; padding:6px 12px;">📄 PDF</a>
     <button onclick="closeViPreview()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 12px;">&times;</button>
   </div>

@@ -14581,63 +14581,73 @@ async function handleUpdateJobNotes(body) {
   return resp(200, { ok: true, updatedId: data?.id || jobId });
 }
 
-// Admin-only Inspections-tab edit. PATCHes four Job fields in a single call:
-//   - Inspection Agency       (fldyKKACyUqt9tcEL, linked)
-//   - Inspection Contacts     (fld9ApvXJqPhuDcm4, linked — single inspector)
-//   - Permit Number           (fldDKGllmOyyyf9qo, text)
-//   - Inspection Not Required (fldQ5VJgOYcQBxmCr, checkbox)
-// Empty agencyId / inspectorId clear their links; empty permitNumber clears
-// the text. Inspectors belong to a specific agency — if the agency is cleared,
-// the inspector link is force-cleared too (server-side guard against UI desync).
-// No typecast — all four targets are linked-records / text / checkbox; no
-// singleSelects in scope, so typecast would only mask broken input.
+// Admin-only Inspections-tab edit: agency, inspector, permit number, and the
+// "not required" checkbox.
+//
+// ⚠ NEON IS THE RECORD, and the lookups come from NEON TOO. This used to PATCH
+// Airtable first and copy the agency/inspector name, phone and email out of the
+// record Airtable returned. Under AIRTABLE_WRITES=off that record is
+// `{ id: null, fields: {} }`, so every save (a) nulled those columns and
+// (b) answered with mapJob(null record), and the client spliced it into
+// state.selected, which set the job's id to null. The card went blank and the
+// NEXT save sent no jobId at all ("Missing or invalid jobId."). Nothing threw.
+//
+// The stored ids keep the picker currency, COALESCE(airtable_id, id::text),
+// which is what the pickers emit and mapJobFromNeon hands back for preselection.
+// Inspectors belong to an agency, so clearing the agency force-clears the inspector.
 async function handleUpdateJobInspection(body) {
   const { jobId, agencyId, permitNumber, inspectorId, inspectionNotRequired } = body || {};
   if (!jobId || !isJobHandle(jobId)) {
     return resp(400, { ok: false, error: "Missing or invalid jobId." });
   }
-  // Resolve BOTH forms. The pickers emit rec ids by design (see
-  // handleGetInspectionAgencies), but a agency or inspector created since the
-  // last mirror can still arrive as a uuid, and this writes Airtable LINKED
-  // RECORD fields, which only accept rec ids.
   const ag  = await resolveAgencyIds(agencyId);
   const ins = await resolveInspectorIds(inspectorId);
+  // A supplied id that resolves to nothing is refused rather than saved as
+  // "no agency": silently clearing a pick is the failure this replaces.
+  if (String(agencyId || "").trim() && !ag.neon) {
+    return resp(400, { ok: false, error: "That inspection agency wasn't found." });
+  }
+  const hasAgency = !!ag.neon;
+  if (hasAgency && String(inspectorId || "").trim() && !ins.neon) {
+    return resp(400, { ok: false, error: "That inspector wasn't found." });
+  }
+  const insNeon = hasAgency ? ins.neon : null;
 
-  const fields = {};
-  const hasAgency = !!ag.rec;
-  fields["fldyKKACyUqt9tcEL"] = hasAgency ? [ag.rec] : [];
-  // Inspector belongs to an agency — if no agency, force-clear the inspector.
-  fields["fld9ApvXJqPhuDcm4"] = (hasAgency && ins.rec) ? [ins.rec] : [];
-  fields["fldDKGllmOyyyf9qo"] = permitNumber || "";
-  fields["fldQ5VJgOYcQBxmCr"] = !!inspectionNotRequired;
+  const rows = await neonWrite("job.updateInspection",
+    `UPDATE jobs j SET
+       inspection_agency_at_id    = COALESCE(a.airtable_id, a.id::text),
+       inspection_agency          = a.name,
+       inspection_agency_phone    = a.phone,
+       inspection_agency_email    = a.email,
+       inspection_scheduling_link = a.scheduling_link,
+       inspector_at_id            = COALESCE(c.airtable_id, c.id::text),
+       inspector_name             = c.inspector_name,
+       inspector_phone            = c.phone,
+       inspector_email            = c.email,
+       permit_number              = $4,
+       inspection_not_required    = $5
+     FROM (SELECT 1) one
+       LEFT JOIN inspection_agencies a ON a.id = $2::uuid
+       LEFT JOIN inspection_contacts c ON c.id = $3::uuid
+     WHERE j.airtable_id = $1 OR j.id::text = $1
+     RETURNING j.id`,
+    [jobId, ag.neon, insNeon, permitNumber || null, !!inspectionNotRequired]);
+  if (!rows.length) return resp(404, { ok: false, error: "Job not found." });
 
-  const data = await mirrorJobPatch("updateJob", jobId, fields);
+  // Mirror (inert under AIRTABLE_WRITES=off). Airtable linked fields take rec ids
+  // only, so a Neon-born agency/inspector mirrors as cleared.
+  await mirrorJobPatch("updateJob", jobId, {
+    "fldyKKACyUqt9tcEL": (hasAgency && ag.rec) ? [ag.rec] : [],
+    "fld9ApvXJqPhuDcm4": (insNeon && ins.rec) ? [ins.rec] : [],
+    "fldDKGllmOyyyf9qo": permitNumber || "",
+    "fldQ5VJgOYcQBxmCr": !!inspectionNotRequired,
+  });
 
-  // ⚠ WRITE NEON TOO — same bug 10b6e04 fixed in updateJobInfo, same cause.
-  // handleJobs and handleJobById are Neon-first and Neon's `jobs` is refreshed
-  // HOURLY, so an Airtable-only write here reverts on the next refresh. The
-  // denormalised name/phone/email columns are Airtable LOOKUPS through these
-  // links, so they are refreshed from the record Airtable just returned rather
-  // than recomputed — whatever the lookup resolved to is the truth.
-  const jf = data?.fields || {};
-  const look = (v) => { const x = Array.isArray(v) ? v[0] : v; return (x === undefined || x === "") ? null : x; };
-  await neonWrite("job.updateInspection",
-    `UPDATE jobs SET
-       inspection_agency_at_id = $2, inspection_agency = $3,
-       inspection_agency_phone = $4, inspection_agency_email = $5,
-       inspection_scheduling_link = $6,
-       inspector_at_id = $7, inspector_name = $8,
-       inspector_phone = $9, inspector_email = $10,
-       permit_number = $11, inspection_not_required = $12
-     WHERE airtable_id = $1 OR id::text = $1`,
-    [jobId, hasAgency ? ag.rec : null, look(jf[F.job.inspectionAgency]),
-     look(jf[F.job.inspectionAgencyPhone]), look(jf[F.job.inspectionAgencyEmail]),
-     look(jf[F.job.inspectionSchedulingLink]),
-     (hasAgency && ins.rec) ? ins.rec : null, look(jf[F.job.inspectionContacts]),
-     look(jf[F.job.inspectorPhone]), look(jf[F.job.inspectorEmail]),
-     permitNumber || null, !!inspectionNotRequired]).catch(() => {});
-
-  return resp(200, { ok: true, job: mapJob(data) });
+  const q = await neonQuery(`${JOB_SELECT} WHERE j.id = $1`, [rows[0].id]);
+  if (!q?.rows?.length) {
+    return resp(503, { ok: false, error: "Saved, but couldn't reload the job. Refresh to see it." });
+  }
+  return resp(200, { ok: true, job: mapJobFromNeon(q.rows[0]) });
 }
 
 // Single-call update for the Project Info edit form. PATCHes any subset

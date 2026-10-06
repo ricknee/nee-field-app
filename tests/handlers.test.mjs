@@ -8248,6 +8248,23 @@ await test("schedule: approved time off is read live from pto_requests, read-onl
   ok(/\$\{e\.pto \? "" : dragAttr\}/.test(html), "and it can't be dragged");
 });
 
+// Inspections-tab save answered with mapJob(the skipped Airtable PATCH) under
+// AIRTABLE_WRITES=off: the client got a job with id null, the card blanked, and
+// the next save failed "Missing or invalid jobId." Its Neon write copied the
+// agency/inspector names out of that same empty record, so it nulled them too.
+await test("inspections: save writes Neon from Neon's own lookups and answers from Neon", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const fn = src.slice(src.indexOf("async function handleUpdateJobInspection"), src.indexOf("async function handleUpdateJobInfo"));
+  ok(fn.length > 100, "handler found");
+  ok(!/mapJob\(/.test(fn), "never answers from the Airtable record");
+  ok(/mapJobFromNeon\(/.test(fn), "answers from a Neon re-read");
+  ok(/LEFT JOIN inspection_agencies a/.test(fn) && /LEFT JOIN inspection_contacts c/.test(fn),
+     "names/phones/emails come from Neon's agency and inspector tables");
+  ok(!/\.catch\(\(\) => \{\}\)/.test(fn), "a failed Neon write is not swallowed");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

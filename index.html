@@ -9760,6 +9760,15 @@
     // own 2.4″ × 1.1″ size, so a 62 × 29 mm page lands on one label each.
     ql_1209: { printer: "QL-820NWB (thermal)", name: "62 × 29 mm die-cut DK-1209", tape: 62, along: "h", len: 29, fixed: true, pt1: 30, pt2: 17,
                hint: "Phone: 🖨 Print → Brother QL-820NWB (Android: Brother Print Service Plugin · iPhone: AirPrint), paper 2.4″ × 1.1″. Printer on the same Wi-Fi / your hotspot." },
+    // DK-1208, 38 × 90.3 die-cut — the roll the QR bin labels already use, and
+    // the one in the printer (owner 2026-10-14). Reads like a big P-touch label:
+    // text runs along the 90 mm edge, so it is "w" like the TZe sizes.
+    // ⚠⚠ The QL feeds this roll NARROW EDGE FIRST, so the PAGE must be portrait
+    // 38 × 90.3 with the label turned 90° inside it — a landscape page printed at
+    // ~42 % in a corner on the bin labels (inventory.html .lbl-page). `portrait`
+    // makes printBreakerLabels do the same turn; the 💾 images stay landscape.
+    ql_1208: { printer: "QL-820NWB (thermal)", name: "38 × 90 mm die-cut DK-1208", tape: 38, along: "w", len: 90.3, fixed: true, portrait: true, pt1: 36, pt2: 20,
+               hint: "🖨 Print → Brother QL-820NWB, paper 1.4″ × 3.5″ (Large Address Label), Margins None. Computer or phone on the same Wi-Fi." },
   };
   // Where each printer's labels are best sent from — shown under the picker.
   const BREAKER_LABEL_HINTS = {
@@ -10098,13 +10107,24 @@
     const picked = breakerLabelsPicked();
     if (!picked.length) return;
     const opt = breakerLabelOpts();
+    // A portrait roll (DK-1208) gets the label turned 90° clockwise onto a
+    // tall page — the same turn as the bin labels' translate(38mm,0) rotate(90deg).
+    const sz = BREAKER_LABEL_SIZES[breakerLabelState.size] || {};
+    const pw = sz.portrait ? opt.h : opt.w, ph = sz.portrait ? opt.w : opt.h;
     const html = picked.map(({ blocks }) => {
-      const { canvas } = breakerLabelCanvas(blocks, opt);
-      return `<div style="width:${opt.w}mm; height:${opt.h}mm; page-break-after:always; break-after:page; overflow:hidden;">
-         <img src="${canvas.toDataURL("image/png")}" style="width:${opt.w}mm; height:${opt.h}mm; display:block;" />
+      let { canvas } = breakerLabelCanvas(blocks, opt);
+      if (sz.portrait) {
+        const r = document.createElement("canvas");
+        r.width = canvas.height; r.height = canvas.width;
+        const ctx = r.getContext("2d");
+        ctx.translate(r.width, 0); ctx.rotate(Math.PI / 2); ctx.drawImage(canvas, 0, 0);
+        canvas = r;
+      }
+      return `<div style="width:${pw}mm; height:${ph}mm; page-break-after:always; break-after:page; overflow:hidden;">
+         <img src="${canvas.toDataURL("image/png")}" style="width:${pw}mm; height:${ph}mm; display:block;" />
        </div>`;
     }).join("");
-    printHtmlPages(html, `size: ${opt.w}mm ${opt.h}mm; margin: 0;`);
+    printHtmlPages(html, `size: ${pw}mm ${ph}mm; margin: 0;`);
     setBreakerLabelsStatus(`Sent ${picked.length} label${picked.length === 1 ? "" : "s"} to print — pick the Brother, Margins: None, Scale: Default.`);
   }
 

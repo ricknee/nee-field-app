@@ -9750,6 +9750,14 @@
     d600_18: { printer: "PT-D600 (P-touch, USB to PC)", name: "18 mm TZe tape", tape: 18, along: "w", len: 100, pt1: 22, pt2: 13 },
     d600_24: { printer: "PT-D600 (P-touch, USB to PC)", name: "24 mm TZe tape", tape: 24, along: "w", len: 100, pt1: 30, pt2: 18 },
     ql_62:   { printer: "QL-820NWB (thermal)", name: "62 mm DK-2205 continuous", tape: 62, along: "h", len: 30, pt1: 30, pt2: 17 },
+    // Die-cut, so the length is the label's and can't be changed. This is the
+    // one-tap-ish route on a job site (owner 2026-10-14, Android + some iPhone):
+    // the phone's own print dialog — Brother Print Service Plugin / AirPrint —
+    // only knows Brother's fixed media sizes, and for DK-2205 that is a single
+    // 2.4″ × 39″ page (why 🖨 failed for the strips). DK-1209 is listed as its
+    // own 2.4″ × 1.1″ size, so a 62 × 29 mm page lands on one label each.
+    ql_1209: { printer: "QL-820NWB (thermal)", name: "62 × 29 mm die-cut DK-1209", tape: 62, along: "h", len: 29, fixed: true, pt1: 30, pt2: 17,
+               hint: "Phone: 🖨 Print → Brother QL-820NWB (Android: Brother Print Service Plugin · iPhone: AirPrint), paper 2.4″ × 1.1″. Printer on the same Wi-Fi / your hotspot." },
   };
   // Where each printer's labels are best sent from — shown under the picker.
   const BREAKER_LABEL_HINTS = {
@@ -9882,7 +9890,7 @@
     try {
       const p = JSON.parse(localStorage.getItem(BREAKER_LABEL_PREFS_KEY) || "null");
       if (p && BREAKER_LABEL_SIZES[p.size]) Object.assign(st, {
-        size: p.size, len: Number(p.len) || BREAKER_LABEL_SIZES[p.size].len,
+        size: p.size, len: (!BREAKER_LABEL_SIZES[p.size].fixed && Number(p.len)) || BREAKER_LABEL_SIZES[p.size].len,
         pt1: Number(p.pt1) || BREAKER_LABEL_SIZES[p.size].pt1, pt2: Number(p.pt2) || BREAKER_LABEL_SIZES[p.size].pt2,
       });
     } catch {}
@@ -9956,7 +9964,7 @@
       return Number.isFinite(v) && v >= lo && v <= hi ? v : fallback;
     };
     const readSizes = () => {
-      st.len = num("breakerLabelLen", 15, 300, st.len);
+      st.len = BREAKER_LABEL_SIZES[st.size].fixed ? BREAKER_LABEL_SIZES[st.size].len : num("breakerLabelLen", 15, 300, st.len);
       st.pt1 = num("breakerLabelPt1", 6, 72, st.pt1);
       st.pt2 = num("breakerLabelPt2", 5, 60, st.pt2);
       saveBreakerLabelPrefs();
@@ -9964,7 +9972,9 @@
     };
     const showSizes = () => {
       $("breakerLabelLen").value = st.len; $("breakerLabelPt1").value = st.pt1; $("breakerLabelPt2").value = st.pt2;
-      $("breakerLabelHint").textContent = BREAKER_LABEL_HINTS[BREAKER_LABEL_SIZES[st.size].printer] || "";
+      const sz = BREAKER_LABEL_SIZES[st.size];
+      $("breakerLabelLen").disabled = !!sz.fixed;   // a die-cut label is the length it is
+      $("breakerLabelHint").textContent = sz.hint || BREAKER_LABEL_HINTS[sz.printer] || "";
     };
     // A new printer/tape brings its own defaults — 30 pt doesn't fit on 12 mm,
     // and 100 mm of the QL's 62 mm roll is a lot of label.

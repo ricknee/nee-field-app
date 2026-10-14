@@ -1049,6 +1049,9 @@ async function handlePendingExpenses() {
           cost,
           total:  Math.round(i.totalCost * 100) / 100,
           wireFt: i.wireFtPerLb > 0 ? Math.round(Math.abs(i.netQty) * i.wireFtPerLb) : 0,
+          // So the screen can show a moved wire price per FOOT too — vendors quote
+          // by the foot, and $/lb alone can't be checked against the quote.
+          wireFtPerLb: i.wireFtPerLb > 0 ? Number(i.wireFtPerLb) : null,
           dateFrom: i.firstDate || null,
           dateTo:   i.lastDate  || null,
           // ⚠ Only meaningful against a real live cost. An item with no cost on

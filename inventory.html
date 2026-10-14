@@ -2285,9 +2285,15 @@ function renderPushExpenses() {
         : '';
       // The old price struck through beside the new one, so a repriced line
       // shows what it moved FROM rather than just quietly reading differently.
+      // On wire the per-foot figure rides along, since that is how the vendor
+      // quotes it — "$14.58/lb" can't be checked against a $0.35/ft invoice.
       var moveTxt = l.priceMoved
         ? '<span style="color:var(--gold);font-size:11px;margin-left:6px;white-space:nowrap;">now $' +
-            Number(l.liveCost).toFixed(2) + '</span>'
+            Number(l.liveCost).toFixed(2) +
+            (l.wireFtPerLb > 0
+              ? '/lb · $' + (Number(l.liveCost) / l.wireFtPerLb).toFixed(3) + '/ft'
+              : '') +
+            '</span>'
         : '';
       html += '<div style="display:flex;align-items:baseline;gap:8px;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:3px 0;border-bottom:1px solid var(--border);">';
       html += '<span style="flex:0 0 auto;min-width:82px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;">' + dTxt + '</span>';

@@ -9728,18 +9728,34 @@
    * iPrint&Label / Design&Print (they open files only from inside themselves
    * on Android, see savePanelStripImages) and 🖨, which prints those same PNGs
    * one per page. */
-  // The owner's two P-touch label makers (2026-10-13): PT-D460BT (Bluetooth,
-  // phone app P-touch Design&Print 2, TZe up to 18 mm) and PT-D600 (USB to a
-  // PC, Windows driver, TZe up to 24 mm). pt1/pt2 = default type sizes; the
-  // 24 mm pair is what printed "Table Saw #3" the way the owner liked it.
+  // The owner's label makers (2026-10-13), picked by printer then roll:
+  //  · PT-D460BT — P-touch, Bluetooth, phone app P-touch Design&Print 2, TZe ≤ 18 mm.
+  //  · PT-D600   — P-touch, USB to a PC, Windows driver, TZe ≤ 24 mm. Its driver
+  //                pages are all "<tape> × 100.1 mm", hence len 100.
+  //  · QL-820NWB — thermal, DK-2205 62 mm continuous (the panel strips' printer).
+  // `along` says which way the roll runs. On a P-touch the tape IS the label's
+  // height and `len` is how long it runs ("w"); on the QL the 62 mm roll is the
+  // label's WIDTH and `len` is how much roll it feeds ("h") — text runs across
+  // the roll, the way the strips do, which iPrint&Label prints 1:1.
+  // pt1/pt2 = default type sizes; the D600 24 mm pair is what printed
+  // "Table Saw #3" the way the owner liked it.
   const BREAKER_LABEL_SIZES = {
-    tze12: { name: "12 mm TZe tape", h: 12, pt1: 14, pt2: 8 },
-    tze18: { name: "18 mm TZe tape (max on D460BT)", h: 18, pt1: 22, pt2: 13 },
-    tze24: { name: "24 mm TZe tape (D600 only)", h: 24, pt1: 30, pt2: 18 },
+    d460_12: { printer: "PT-D460BT (P-touch, Bluetooth)", name: "12 mm TZe tape", tape: 12, along: "w", len: 100, pt1: 14, pt2: 8 },
+    d460_18: { printer: "PT-D460BT (P-touch, Bluetooth)", name: "18 mm TZe tape", tape: 18, along: "w", len: 100, pt1: 22, pt2: 13 },
+    d600_12: { printer: "PT-D600 (P-touch, USB to PC)", name: "12 mm TZe tape", tape: 12, along: "w", len: 100, pt1: 14, pt2: 8 },
+    d600_18: { printer: "PT-D600 (P-touch, USB to PC)", name: "18 mm TZe tape", tape: 18, along: "w", len: 100, pt1: 22, pt2: 13 },
+    d600_24: { printer: "PT-D600 (P-touch, USB to PC)", name: "24 mm TZe tape", tape: 24, along: "w", len: 100, pt1: 30, pt2: 18 },
+    ql_62:   { printer: "QL-820NWB (thermal)", name: "62 mm DK-2205 continuous", tape: 62, along: "h", len: 30, pt1: 30, pt2: 17 },
   };
-  const BREAKER_LABEL_LEN = 100;   // mm — the PT-D600 driver's only page length
+  // Where each printer's labels are best sent from — shown under the picker.
+  const BREAKER_LABEL_HINTS = {
+    "PT-D460BT (P-touch, Bluetooth)": "Phone: 💾 Save images, then open them in P-touch Design&Print 2.",
+    "PT-D600 (P-touch, USB to PC)": "Computer: 🖨 Print → Brother PT-D600, Margins None, Scale Default. Keep Length at 100 (the driver's page).",
+    "QL-820NWB (thermal)": "Phone: 💾 Save images, then iPrint&Label → image printing. Length = how much roll each label uses.",
+  };
+  const BREAKER_LABEL_DEFAULT = "d600_24";
   const BREAKER_LABEL_PREFS_KEY = "nee_breaker_label_prefs";
-  const breakerLabelState = { labels: [], size: "tze24", len: BREAKER_LABEL_LEN, pt1: 30, pt2: 18 };
+  const breakerLabelState = { labels: [], size: BREAKER_LABEL_DEFAULT, len: 100, pt1: 30, pt2: 18 };
 
   function panelDisplayName() {
     const n = String(panelState.panel.name || "").trim();
@@ -9758,47 +9774,59 @@
       .filter(l => l.line1 && !/^spare$/i.test(l.line1));
   }
 
-  /* Where the text goes, in mm. Font sizes are em sizes; ~0.72 em of a capital
-   * sits above the baseline, which is what gets centred. Line 1 is tried on one
-   * line and (if it has a space) split into two balanced lines; whichever lets
-   * it print bigger wins. Then, if the block is too tall for the tape, both
-   * lines scale down together. */
+  /* Where the text goes, in mm, on a W × H label. Font sizes are em sizes;
+   * ~0.72 em of a capital sits above the baseline, which is what gets centred.
+   * Each line is tried whole and split into two balanced lines (by printed
+   * width), every combination is fitted — shrunk to the width, then both
+   * scaled to the height — and the one that keeps BOTH lines closest to their
+   * set sizes wins (the worse of the two ratios), not line 1 at any cost: on
+   * the QL that rule printed a big line 1 over an unreadable line 2.
+   * The 62 mm QL label is narrow enough that "Fed from Panel B Circuit 27-31"
+   * needs the same wrap line 1 got for the P-touch. */
   function breakerLabelLayout(label, opt, measure) {
     const PT = 0.3528, CAP = 0.72;
-    const H = opt.h, L = opt.len;
+    const W = opt.w, H = opt.h;
     const mv = Math.max(1.2, H * 0.08), mh = 3;
-    const roomW = L - mh * 2, roomH = H - mv * 2;
+    const roomW = W - mh * 2, roomH = H - mv * 2;
     const want1 = opt.pt1 * PT, want2 = opt.pt2 * PT;
     const t1 = String(label.line1 || "").trim(), t2 = String(label.line2 || "").trim();
-    const fit = (lines1) => {
-      let s1 = want1, s2 = t2 ? want2 : 0;
-      for (const l of lines1) s1 = Math.min(s1, want1 * roomW / Math.max(measure(l, want1, true), 0.01));
-      if (t2) s2 = Math.min(s2, want2 * roomW / Math.max(measure(t2, want2, false), 0.01));
-      const gap = (k1, k2) => Math.max(k1, k2) * 0.28;
-      const heightOf = (a, b) => lines1.length * a * CAP + (lines1.length - 1) * gap(a, 0) + (t2 ? gap(a, b) + b * CAP : 0);
-      const kh = Math.min(1, roomH / heightOf(s1, s2));
-      s1 *= kh; s2 *= kh;
-      const rows = [];
-      let y = (H - heightOf(s1, s2)) / 2;
-      lines1.forEach((l, i) => { if (i) y += gap(s1, 0); y += s1 * CAP; rows.push({ s: l, size: s1, bold: true, y }); });
-      if (t2) { y += gap(s1, s2) + s2 * CAP; rows.push({ s: t2, size: s2, bold: false, y }); }
-      return { rows, s1, s2 };
-    };
-    let best = fit(t1 ? [t1] : []);
-    const words = t1.split(/\s+/);
-    if (best.s1 < want1 - 0.01 && words.length > 1) {
-      // The most even split by printed width, not by word count.
+    const splits = (t, size, bold) => {
+      if (!t) return [[]];
+      const out = [[t]], words = t.split(/\s+/);
       let pick = null;
       for (let i = 1; i < words.length; i++) {
         const a = words.slice(0, i).join(" "), b = words.slice(i).join(" ");
-        const w = Math.max(measure(a, want1, true), measure(b, want1, true));
+        const w = Math.max(measure(a, size, bold), measure(b, size, bold));
         if (!pick || w < pick.w) pick = { w, lines: [a, b] };
       }
-      const two = fit(pick.lines);
-      if (two.s1 > best.s1 + 0.01) best = two;
+      if (pick) out.push(pick.lines);
+      return out;
+    };
+    const fit = (l1, l2) => {
+      let s1 = want1, s2 = want2;
+      for (const l of l1) s1 = Math.min(s1, want1 * roomW / Math.max(measure(l, want1, true), 0.01));
+      for (const l of l2) s2 = Math.min(s2, want2 * roomW / Math.max(measure(l, want2, false), 0.01));
+      const gap = (k) => k * 0.28;
+      const rowsOf = (a, b) => [...l1.map(s => ({ s, size: a, bold: true })), ...l2.map(s => ({ s, size: b, bold: false }))];
+      const heightOf = (rows) => rows.reduce((h, r, i) => h + r.size * CAP + (i ? gap(Math.max(r.size, rows[i - 1].size)) : 0), 0);
+      const kh = Math.min(1, roomH / Math.max(heightOf(rowsOf(s1, s2)), 0.01));
+      s1 *= kh; s2 *= kh;
+      const rows = rowsOf(s1, s2);
+      let y = (H - heightOf(rows)) / 2;
+      rows.forEach((r, i) => { if (i) y += gap(Math.max(r.size, rows[i - 1].size)); y += r.size * CAP; r.y = y; });
+      return { rows, s1, s2, n: rows.length };
+    };
+    let best = null;
+    const worst = (f) => Math.min(t1 ? f.s1 / want1 : 1, t2 ? f.s2 / want2 : 1);
+    for (const l1 of splits(t1, want1, true)) for (const l2 of splits(t2, want2, false)) {
+      const f = fit(l1, l2);
+      f.score = worst(f);
+      // Least-shrunk line wins; then the bigger line 1; then fewer lines.
+      if (!best || f.score > best.score + 0.01 || (Math.abs(f.score - best.score) <= 0.01 &&
+          (f.s1 > best.s1 + 0.05 || (Math.abs(f.s1 - best.s1) <= 0.05 && f.n < best.n)))) best = f;
     }
-    const shrunk = best.s1 < want1 - 0.05 || (t2 && best.s2 < want2 - 0.05);
-    return { L, H, rows: best.rows, shrunk };
+    const shrunk = (t1 && best.s1 < want1 - 0.05) || (t2 && best.s2 < want2 - 0.05);
+    return { W, H, rows: best.rows, shrunk };
   }
 
   // 300 dpi like the strips; the P-touch prints at 180, and the apps / driver
@@ -9810,7 +9838,7 @@
     const measure = (s, mm, bold) => { probe.font = font(mm, bold); return probe.measureText(s).width / pxPerMm; };
     const lay = breakerLabelLayout(label, opt, measure);
     const canvas = document.createElement("canvas");
-    canvas.width = Math.round(lay.L * pxPerMm);
+    canvas.width = Math.round(lay.W * pxPerMm);
     canvas.height = Math.round(lay.H * pxPerMm);
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
@@ -9822,12 +9850,14 @@
       ctx.font = font(r.size, r.bold);
       ctx.fillText(r.s, canvas.width / 2, r.y * pxPerMm);
     }
-    return { canvas, L: lay.L, H: lay.H, shrunk: lay.shrunk };
+    return { canvas, shrunk: lay.shrunk };
   }
 
   function breakerLabelOpts() {
-    const s = breakerLabelState, sz = BREAKER_LABEL_SIZES[s.size] || BREAKER_LABEL_SIZES.tze24;
-    return { h: sz.h, len: s.len, pt1: s.pt1, pt2: s.pt2 };
+    const s = breakerLabelState, sz = BREAKER_LABEL_SIZES[s.size] || BREAKER_LABEL_SIZES[BREAKER_LABEL_DEFAULT];
+    return sz.along === "h"
+      ? { w: sz.tape, h: s.len, pt1: s.pt1, pt2: s.pt2 }
+      : { w: s.len, h: sz.tape, pt1: s.pt1, pt2: s.pt2 };
   }
 
   function saveBreakerLabelPrefs() {
@@ -9848,27 +9878,33 @@
     try {
       const p = JSON.parse(localStorage.getItem(BREAKER_LABEL_PREFS_KEY) || "null");
       if (p && BREAKER_LABEL_SIZES[p.size]) Object.assign(st, {
-        size: p.size, len: Number(p.len) || BREAKER_LABEL_LEN,
+        size: p.size, len: Number(p.len) || BREAKER_LABEL_SIZES[p.size].len,
         pt1: Number(p.pt1) || BREAKER_LABEL_SIZES[p.size].pt1, pt2: Number(p.pt2) || BREAKER_LABEL_SIZES[p.size].pt2,
       });
     } catch {}
     $("breakerLabelsTitle").textContent = `🏷 Breaker labels — ${panelDisplayName()}`;
     const labels = st.labels;
-    const opts = Object.entries(BREAKER_LABEL_SIZES)
-      .map(([k, v]) => `<option value="${k}"${k === st.size ? " selected" : ""}>${esc(v.name)}</option>`).join("");
+    // Grouped by printer: the owner picks the machine, then what's loaded in it.
+    const groups = new Map();
+    for (const [k, v] of Object.entries(BREAKER_LABEL_SIZES)) {
+      if (!groups.has(v.printer)) groups.set(v.printer, []);
+      groups.get(v.printer).push(`<option value="${k}"${k === st.size ? " selected" : ""}>${esc(v.printer.split(" ")[0])} · ${esc(v.name)}</option>`);
+    }
+    const opts = [...groups].map(([p, o]) => `<optgroup label="${esc(p)}">${o.join("")}</optgroup>`).join("");
     const cap = `display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;`;
     $("breakerLabelsBody").innerHTML = labels.length ? `
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
-        <label style="flex:1 1 200px;"><span style="${cap}">Tape</span>
+        <label style="flex:1 1 200px;"><span style="${cap}">Printer &amp; tape</span>
           <select id="breakerLabelSize" class="edit-input" style="font-size:13px; padding:6px 8px; width:100%;">${opts}</select></label>
-        <label style="flex:0 0 84px;" title="Must match the printer's page length — the PT-D600 driver only does 100 mm"><span style="${cap}">Length mm</span>
-          <input id="breakerLabelLen" type="number" min="30" max="300" step="5" class="edit-input" style="font-size:13px; width:100%;" value="${st.len}" /></label>
+        <label style="flex:0 0 84px;" title="How much tape/roll each label uses. PT-D600: keep at 100 — its driver's only page length."><span style="${cap}">Length mm</span>
+          <input id="breakerLabelLen" type="number" min="15" max="300" step="5" class="edit-input" style="font-size:13px; width:100%;" value="${st.len}" /></label>
         <label style="flex:0 0 84px;"><span style="${cap}">Line 1 pt</span>
           <input id="breakerLabelPt1" type="number" min="6" max="72" step="1" class="edit-input" style="font-size:13px; width:100%;" value="${st.pt1}" /></label>
         <label style="flex:0 0 84px;"><span style="${cap}">Line 2 pt</span>
           <input id="breakerLabelPt2" type="number" min="5" max="60" step="1" class="edit-input" style="font-size:13px; width:100%;" value="${st.pt2}" /></label>
-        <button type="button" id="breakerLabelDefaults" class="btn btn-sm" style="font-size:12px;" title="Sizes back to this tape's defaults, length back to 100 mm">Reset sizes</button>
+        <button type="button" id="breakerLabelDefaults" class="btn btn-sm" style="font-size:12px;" title="Type sizes and length back to this printer's defaults">Reset sizes</button>
       </div>
+      <div id="breakerLabelHint" style="font-size:12px; color:var(--text); background:var(--bg-soft, rgba(127,127,127,0.08)); border-radius:6px; padding:6px 10px; margin:-2px 0 10px;"></div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
         <button type="button" id="breakerLabelsAll" class="btn btn-sm" style="font-size:12px;">Select all</button>
         <button type="button" id="breakerLabelsNone" class="btn btn-sm" style="font-size:12px;">Select none</button>
@@ -9916,7 +9952,7 @@
       return Number.isFinite(v) && v >= lo && v <= hi ? v : fallback;
     };
     const readSizes = () => {
-      st.len = num("breakerLabelLen", 30, 300, st.len);
+      st.len = num("breakerLabelLen", 15, 300, st.len);
       st.pt1 = num("breakerLabelPt1", 6, 72, st.pt1);
       st.pt2 = num("breakerLabelPt2", 5, 60, st.pt2);
       saveBreakerLabelPrefs();
@@ -9924,17 +9960,18 @@
     };
     const showSizes = () => {
       $("breakerLabelLen").value = st.len; $("breakerLabelPt1").value = st.pt1; $("breakerLabelPt2").value = st.pt2;
+      $("breakerLabelHint").textContent = BREAKER_LABEL_HINTS[BREAKER_LABEL_SIZES[st.size].printer] || "";
     };
-    // A new tape brings its own default sizes — 30 pt doesn't fit on 12 mm.
-    $("breakerLabelSize").onchange = () => {
-      st.size = $("breakerLabelSize").value;
-      st.pt1 = BREAKER_LABEL_SIZES[st.size].pt1; st.pt2 = BREAKER_LABEL_SIZES[st.size].pt2;
+    // A new printer/tape brings its own defaults — 30 pt doesn't fit on 12 mm,
+    // and 100 mm of the QL's 62 mm roll is a lot of label.
+    const toDefaults = () => {
+      const sz = BREAKER_LABEL_SIZES[st.size];
+      st.len = sz.len; st.pt1 = sz.pt1; st.pt2 = sz.pt2;
       showSizes(); saveBreakerLabelPrefs(); paintAll();
     };
-    $("breakerLabelDefaults").onclick = () => {
-      st.len = BREAKER_LABEL_LEN; st.pt1 = BREAKER_LABEL_SIZES[st.size].pt1; st.pt2 = BREAKER_LABEL_SIZES[st.size].pt2;
-      showSizes(); saveBreakerLabelPrefs(); paintAll();
-    };
+    $("breakerLabelSize").onchange = () => { st.size = $("breakerLabelSize").value; toDefaults(); };
+    $("breakerLabelDefaults").onclick = toDefaults;
+    showSizes();
     ["breakerLabelLen", "breakerLabelPt1", "breakerLabelPt2"].forEach(id => { $(id).oninput = readSizes; });
     body.querySelectorAll(".bl-line1, .bl-line2").forEach(inp => {
       inp.oninput = () => {
@@ -10003,11 +10040,11 @@
     const opt = breakerLabelOpts();
     const html = picked.map(l => {
       const { canvas } = breakerLabelCanvas(l, opt);
-      return `<div style="width:${opt.len}mm; height:${opt.h}mm; page-break-after:always; break-after:page; overflow:hidden;">
-         <img src="${canvas.toDataURL("image/png")}" style="width:${opt.len}mm; height:${opt.h}mm; display:block;" />
+      return `<div style="width:${opt.w}mm; height:${opt.h}mm; page-break-after:always; break-after:page; overflow:hidden;">
+         <img src="${canvas.toDataURL("image/png")}" style="width:${opt.w}mm; height:${opt.h}mm; display:block;" />
        </div>`;
     }).join("");
-    printHtmlPages(html, `size: ${opt.len}mm ${opt.h}mm; margin: 0;`);
+    printHtmlPages(html, `size: ${opt.w}mm ${opt.h}mm; margin: 0;`);
     setBreakerLabelsStatus(`Sent ${picked.length} label${picked.length === 1 ? "" : "s"} to print — pick the Brother, Margins: None, Scale: Default.`);
   }
 

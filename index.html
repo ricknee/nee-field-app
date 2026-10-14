@@ -9713,19 +9713,33 @@
    * strips), so a print right after typing doesn't need a Save first.
    * A gang prints as first-last ("1-3", 3-pole "27-31"). Spares and blanks
    * aren't offered — there's nothing at the far end to label.
+   * Both lines can be edited per label and the type sizes set, for THIS print
+   * only — nothing here writes back to the panel.
+   *
+   * ⚠ FIXED LENGTH, on purpose. The PT-D600's Windows driver offers only
+   * 100 mm-long pages (every tape width is "… x 100.1 mm"), and the browser
+   * SHRINKS a longer page to fit. The first print laid each label out as long
+   * as its text: one long name made the page ~200 mm and the whole batch came
+   * out at half size. So every label is the Length box long (default 100 =
+   * the driver), and text that won't fit wraps line 1 onto two lines, then
+   * shrinks — that label alone, not the batch.
+   *
    * One painter (breakerLabelCanvas) feeds both routes — 💾 PNGs for
-   * iPrint&Label (it opens files only from inside itself on Android, see
-   * savePanelStripImages) and 🖨, which prints those same PNGs one per page. */
+   * iPrint&Label / Design&Print (they open files only from inside themselves
+   * on Android, see savePanelStripImages) and 🖨, which prints those same PNGs
+   * one per page. */
   // The owner's two P-touch label makers (2026-10-13): PT-D460BT (Bluetooth,
   // phone app P-touch Design&Print 2, TZe up to 18 mm) and PT-D600 (USB to a
-  // PC, Windows driver, TZe up to 24 mm). Both run as long as the text needs.
-  // h = across the tape, l = along it (null = as long as the text needs).
+  // PC, Windows driver, TZe up to 24 mm). pt1/pt2 = default type sizes; the
+  // 24 mm pair is what printed "Table Saw #3" the way the owner liked it.
   const BREAKER_LABEL_SIZES = {
-    tze12: { name: "12 mm TZe tape", h: 12, l: null },
-    tze18: { name: "18 mm TZe tape (max on D460BT)", h: 18, l: null },
-    tze24: { name: "24 mm TZe tape (D600 only)", h: 24, l: null },
+    tze12: { name: "12 mm TZe tape", h: 12, pt1: 14, pt2: 8 },
+    tze18: { name: "18 mm TZe tape (max on D460BT)", h: 18, pt1: 22, pt2: 13 },
+    tze24: { name: "24 mm TZe tape (D600 only)", h: 24, pt1: 30, pt2: 18 },
   };
-  const BREAKER_LABEL_SIZE_KEY = "nee_breaker_label_size";
+  const BREAKER_LABEL_LEN = 100;   // mm — the PT-D600 driver's only page length
+  const BREAKER_LABEL_PREFS_KEY = "nee_breaker_label_prefs";
+  const breakerLabelState = { labels: [], size: "tze24", len: BREAKER_LABEL_LEN, pt1: 30, pt2: 18 };
 
   function panelDisplayName() {
     const n = String(panelState.panel.name || "").trim();
@@ -9739,52 +9753,86 @@
       .map(b => {
         const first = b.members[0], last = b.members[b.members.length - 1];
         const ckt = b.members.length > 1 ? `${first}-${last}` : String(first);
-        return { key: ckt, ckt, line1: byNum.get(first) || "", line2: `Fed from ${panel} Circuit ${ckt}` };
+        return { key: ckt, ckt, line1: byNum.get(first) || "", line2: `Fed from ${panel} Circuit ${ckt}`, on: false };
       })
       .filter(l => l.line1 && !/^spare$/i.test(l.line1));
   }
 
-  function breakerLabelCanvas(label, sizeKey) {
-    const sz = BREAKER_LABEL_SIZES[sizeKey] || BREAKER_LABEL_SIZES.tze24;
+  /* Where the text goes, in mm. Font sizes are em sizes; ~0.72 em of a capital
+   * sits above the baseline, which is what gets centred. Line 1 is tried on one
+   * line and (if it has a space) split into two balanced lines; whichever lets
+   * it print bigger wins. Then, if the block is too tall for the tape, both
+   * lines scale down together. */
+  function breakerLabelLayout(label, opt, measure) {
+    const PT = 0.3528, CAP = 0.72;
+    const H = opt.h, L = opt.len;
+    const mv = Math.max(1.2, H * 0.08), mh = 3;
+    const roomW = L - mh * 2, roomH = H - mv * 2;
+    const want1 = opt.pt1 * PT, want2 = opt.pt2 * PT;
+    const t1 = String(label.line1 || "").trim(), t2 = String(label.line2 || "").trim();
+    const fit = (lines1) => {
+      let s1 = want1, s2 = t2 ? want2 : 0;
+      for (const l of lines1) s1 = Math.min(s1, want1 * roomW / Math.max(measure(l, want1, true), 0.01));
+      if (t2) s2 = Math.min(s2, want2 * roomW / Math.max(measure(t2, want2, false), 0.01));
+      const gap = (k1, k2) => Math.max(k1, k2) * 0.28;
+      const heightOf = (a, b) => lines1.length * a * CAP + (lines1.length - 1) * gap(a, 0) + (t2 ? gap(a, b) + b * CAP : 0);
+      const kh = Math.min(1, roomH / heightOf(s1, s2));
+      s1 *= kh; s2 *= kh;
+      const rows = [];
+      let y = (H - heightOf(s1, s2)) / 2;
+      lines1.forEach((l, i) => { if (i) y += gap(s1, 0); y += s1 * CAP; rows.push({ s: l, size: s1, bold: true, y }); });
+      if (t2) { y += gap(s1, s2) + s2 * CAP; rows.push({ s: t2, size: s2, bold: false, y }); }
+      return { rows, s1, s2 };
+    };
+    let best = fit(t1 ? [t1] : []);
+    const words = t1.split(/\s+/);
+    if (best.s1 < want1 - 0.01 && words.length > 1) {
+      // The most even split by printed width, not by word count.
+      let pick = null;
+      for (let i = 1; i < words.length; i++) {
+        const a = words.slice(0, i).join(" "), b = words.slice(i).join(" ");
+        const w = Math.max(measure(a, want1, true), measure(b, want1, true));
+        if (!pick || w < pick.w) pick = { w, lines: [a, b] };
+      }
+      const two = fit(pick.lines);
+      if (two.s1 > best.s1 + 0.01) best = two;
+    }
+    const shrunk = best.s1 < want1 - 0.05 || (t2 && best.s2 < want2 - 0.05);
+    return { L, H, rows: best.rows, shrunk };
+  }
+
+  // 300 dpi like the strips; the P-touch prints at 180, and the apps / driver
+  // scale it down to the tape.
+  function breakerLabelCanvas(label, opt) {
     const pxPerMm = PANEL_STRIP_DPI / 25.4;
-    const H = sz.h, margin = Math.max(1.5, H * 0.12);
     const font = (mm, bold) => `${bold ? "bold " : ""}${(mm * pxPerMm).toFixed(1)}px Helvetica, Arial, sans-serif`;
     const probe = document.createElement("canvas").getContext("2d");
-    const width = (s, mm, bold) => { probe.font = font(mm, bold); return probe.measureText(s).width / pxPerMm; };
-    // Cap heights as a share of the tape; line 1 is the one read from across a room.
-    let s1 = (H - margin * 2) * 0.52, s2 = (H - margin * 2) * 0.30;
-    let L = sz.l;
-    if (L) {
-      // Fixed length: shrink each line until it fits.
-      const room = L - margin * 2;
-      s1 = Math.min(s1, s1 * room / width(label.line1, s1, true));
-      s2 = Math.min(s2, s2 * room / width(label.line2, s2, false));
-    } else {
-      L = Math.max(width(label.line1, s1, true), width(label.line2, s2, false)) + margin * 2;
-      L = Math.max(L, H * 1.5);
-    }
+    const measure = (s, mm, bold) => { probe.font = font(mm, bold); return probe.measureText(s).width / pxPerMm; };
+    const lay = breakerLabelLayout(label, opt, measure);
     const canvas = document.createElement("canvas");
-    canvas.width = Math.round(L * pxPerMm);
-    canvas.height = Math.round(H * pxPerMm);
+    canvas.width = Math.round(lay.L * pxPerMm);
+    canvas.height = Math.round(lay.H * pxPerMm);
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#000";
     ctx.textAlign = "center";
     ctx.textBaseline = "alphabetic";
-    // Two lines centred as a block: ~0.72 em of ink above the baseline.
-    const gap = (s1 + s2) * 0.18;
-    const block = s1 * 0.72 + gap + s2 * 0.72;
-    const y1 = (H - block) / 2 + s1 * 0.72;
-    const y2 = y1 + gap + s2 * 0.72;
-    ctx.font = font(s1, true);  ctx.fillText(label.line1, canvas.width / 2, y1 * pxPerMm);
-    ctx.font = font(s2, false); ctx.fillText(label.line2, canvas.width / 2, y2 * pxPerMm);
-    return { canvas, L, H };
+    for (const r of lay.rows) {
+      ctx.font = font(r.size, r.bold);
+      ctx.fillText(r.s, canvas.width / 2, r.y * pxPerMm);
+    }
+    return { canvas, L: lay.L, H: lay.H, shrunk: lay.shrunk };
   }
 
-  function breakerLabelsSelected() {
-    const ticked = new Set([...document.querySelectorAll("#breakerLabelsBody .bl-tick:checked")].map(i => i.dataset.key));
-    return breakerLabelList().filter(l => ticked.has(l.key));
+  function breakerLabelOpts() {
+    const s = breakerLabelState, sz = BREAKER_LABEL_SIZES[s.size] || BREAKER_LABEL_SIZES.tze24;
+    return { h: sz.h, len: s.len, pt1: s.pt1, pt2: s.pt2 };
+  }
+
+  function saveBreakerLabelPrefs() {
+    const { size, len, pt1, pt2 } = breakerLabelState;
+    try { localStorage.setItem(BREAKER_LABEL_PREFS_KEY, JSON.stringify({ size, len, pt1, pt2 })); } catch {}
   }
 
   function setBreakerLabelsStatus(msg) {
@@ -9795,30 +9843,54 @@
   window.openBreakerLabels = function() {
     if (!panelState.panel) return;
     syncGridToState();
-    const labels = breakerLabelList();
-    let size = "tze24";
-    try { const s = localStorage.getItem(BREAKER_LABEL_SIZE_KEY); if (BREAKER_LABEL_SIZES[s]) size = s; } catch {}
+    const st = breakerLabelState;
+    st.labels = breakerLabelList();
+    try {
+      const p = JSON.parse(localStorage.getItem(BREAKER_LABEL_PREFS_KEY) || "null");
+      if (p && BREAKER_LABEL_SIZES[p.size]) Object.assign(st, {
+        size: p.size, len: Number(p.len) || BREAKER_LABEL_LEN,
+        pt1: Number(p.pt1) || BREAKER_LABEL_SIZES[p.size].pt1, pt2: Number(p.pt2) || BREAKER_LABEL_SIZES[p.size].pt2,
+      });
+    } catch {}
     $("breakerLabelsTitle").textContent = `🏷 Breaker labels — ${panelDisplayName()}`;
+    const labels = st.labels;
     const opts = Object.entries(BREAKER_LABEL_SIZES)
-      .map(([k, v]) => `<option value="${k}"${k === size ? " selected" : ""}>${esc(v.name)}</option>`).join("");
+      .map(([k, v]) => `<option value="${k}"${k === st.size ? " selected" : ""}>${esc(v.name)}</option>`).join("");
+    const cap = `display:block; font-size:10px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px;`;
     $("breakerLabelsBody").innerHTML = labels.length ? `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end; margin-bottom:10px;">
+        <label style="flex:1 1 200px;"><span style="${cap}">Tape</span>
+          <select id="breakerLabelSize" class="edit-input" style="font-size:13px; padding:6px 8px; width:100%;">${opts}</select></label>
+        <label style="flex:0 0 84px;" title="Must match the printer's page length — the PT-D600 driver only does 100 mm"><span style="${cap}">Length mm</span>
+          <input id="breakerLabelLen" type="number" min="30" max="300" step="5" class="edit-input" style="font-size:13px; width:100%;" value="${st.len}" /></label>
+        <label style="flex:0 0 84px;"><span style="${cap}">Line 1 pt</span>
+          <input id="breakerLabelPt1" type="number" min="6" max="72" step="1" class="edit-input" style="font-size:13px; width:100%;" value="${st.pt1}" /></label>
+        <label style="flex:0 0 84px;"><span style="${cap}">Line 2 pt</span>
+          <input id="breakerLabelPt2" type="number" min="5" max="60" step="1" class="edit-input" style="font-size:13px; width:100%;" value="${st.pt2}" /></label>
+        <button type="button" id="breakerLabelDefaults" class="btn btn-sm" style="font-size:12px;" title="Sizes back to this tape's defaults, length back to 100 mm">Reset sizes</button>
+      </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
-        <select id="breakerLabelSize" class="edit-input" style="font-size:13px; padding:6px 8px; width:auto;">${opts}</select>
         <button type="button" id="breakerLabelsAll" class="btn btn-sm" style="font-size:12px;">Select all</button>
         <button type="button" id="breakerLabelsNone" class="btn btn-sm" style="font-size:12px;">Select none</button>
         <span id="breakerLabelsCount" style="font-size:12px; color:var(--muted);"></span>
       </div>
+      <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Edit the wording below for this print only — it doesn't change the panel.</div>
       <div style="display:flex; flex-direction:column; gap:8px;">
-        ${labels.map(l => `
-          <label style="display:flex; gap:10px; align-items:center; padding:8px; border:1px solid var(--line); border-radius:8px; cursor:pointer;">
-            <input type="checkbox" class="bl-tick" data-key="${esc(l.key)}" style="width:20px; height:20px; margin:0; flex:none;" />
-            <span style="flex:none; min-width:46px; font-size:12px; font-weight:700; color:var(--muted);">${esc(l.ckt)}</span>
-            <span class="bl-preview" data-key="${esc(l.key)}" style="flex:1; min-width:0; overflow-x:auto;"></span>
-          </label>`).join("")}
+        ${labels.map((l, i) => `
+          <div style="display:flex; gap:10px; align-items:flex-start; padding:8px; border:1px solid var(--line); border-radius:8px;">
+            <input type="checkbox" class="bl-tick" data-i="${i}" style="width:20px; height:20px; margin:4px 0 0; flex:none;" />
+            <span style="flex:none; min-width:42px; font-size:12px; font-weight:700; color:var(--muted); padding-top:5px;">${esc(l.ckt)}</span>
+            <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:5px;">
+              <div class="bl-preview" data-i="${i}" style="overflow-x:auto;"></div>
+              <input class="edit-input bl-line1" data-i="${i}" style="width:100%; font-size:13px; font-weight:700;" value="${esc(l.line1)}" />
+              <input class="edit-input bl-line2" data-i="${i}" style="width:100%; font-size:12px;" value="${esc(l.line2)}" />
+              <span class="bl-note" data-i="${i}" style="font-size:11px; color:#b45309;"></span>
+            </div>
+          </div>`).join("")}
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
-        <button type="button" id="breakerLabelsSave" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 14px;">💾 Save images for iPrint&amp;Label</button>
-        <button type="button" id="breakerLabelsPrint" class="btn btn-sm" style="font-size:13px; padding:8px 14px;">🖨 Print</button>
+        <button type="button" id="breakerLabelsPrint" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 14px;">🖨 Print</button>
+        <button type="button" id="breakerLabelsSave" class="btn btn-sm" style="font-size:13px; padding:8px 14px;">💾 Save images (phone apps)</button>
       </div>
       <div id="breakerLabelsStatus" style="font-size:12px; color:var(--muted); margin-top:8px; min-height:16px;"></div>`
       : `<div class="empty-msg">No breakers with a name on this panel yet — type the loads in first.</div>`;
@@ -9827,30 +9899,61 @@
     pushBackEntry("breakerLabels", () => { $("breakerLabelsModal").style.display = "none"; });
     if (!labels.length) return;
 
-    const paintPreviews = () => {
-      const key = $("breakerLabelSize").value;
-      document.querySelectorAll("#breakerLabelsBody .bl-preview").forEach(slot => {
-        const l = labels.find(x => x.key === slot.dataset.key);
-        const { canvas } = breakerLabelCanvas(l, key);
-        canvas.style.cssText = "height:44px; width:auto; max-width:none; border:1px solid #bbb; border-radius:3px; background:#fff; display:block;";
-        slot.replaceChildren(canvas);
-      });
+    const body = $("breakerLabelsBody");
+    const paintOne = (i) => {
+      const { canvas, shrunk } = breakerLabelCanvas(labels[i], breakerLabelOpts());
+      canvas.style.cssText = "height:52px; width:auto; max-width:none; border:1px solid #bbb; border-radius:3px; background:#fff; display:block;";
+      body.querySelector(`.bl-preview[data-i="${i}"]`).replaceChildren(canvas);
+      body.querySelector(`.bl-note[data-i="${i}"]`).textContent = shrunk ? "Text shrunk to fit — shorten it, or make the label longer." : "";
     };
+    const paintAll = () => labels.forEach((_, i) => paintOne(i));
     const count = () => {
-      const n = document.querySelectorAll("#breakerLabelsBody .bl-tick:checked").length;
+      const n = labels.filter(l => l.on).length;
       $("breakerLabelsCount").textContent = `${n} of ${labels.length} selected`;
     };
-    const tickAll = (on) => { document.querySelectorAll("#breakerLabelsBody .bl-tick").forEach(i => { i.checked = on; }); count(); };
+    const num = (id, lo, hi, fallback) => {
+      const v = Number($(id).value);
+      return Number.isFinite(v) && v >= lo && v <= hi ? v : fallback;
+    };
+    const readSizes = () => {
+      st.len = num("breakerLabelLen", 30, 300, st.len);
+      st.pt1 = num("breakerLabelPt1", 6, 72, st.pt1);
+      st.pt2 = num("breakerLabelPt2", 5, 60, st.pt2);
+      saveBreakerLabelPrefs();
+      paintAll();
+    };
+    const showSizes = () => {
+      $("breakerLabelLen").value = st.len; $("breakerLabelPt1").value = st.pt1; $("breakerLabelPt2").value = st.pt2;
+    };
+    // A new tape brings its own default sizes — 30 pt doesn't fit on 12 mm.
     $("breakerLabelSize").onchange = () => {
-      try { localStorage.setItem(BREAKER_LABEL_SIZE_KEY, $("breakerLabelSize").value); } catch {}
-      paintPreviews();
+      st.size = $("breakerLabelSize").value;
+      st.pt1 = BREAKER_LABEL_SIZES[st.size].pt1; st.pt2 = BREAKER_LABEL_SIZES[st.size].pt2;
+      showSizes(); saveBreakerLabelPrefs(); paintAll();
+    };
+    $("breakerLabelDefaults").onclick = () => {
+      st.len = BREAKER_LABEL_LEN; st.pt1 = BREAKER_LABEL_SIZES[st.size].pt1; st.pt2 = BREAKER_LABEL_SIZES[st.size].pt2;
+      showSizes(); saveBreakerLabelPrefs(); paintAll();
+    };
+    ["breakerLabelLen", "breakerLabelPt1", "breakerLabelPt2"].forEach(id => { $(id).oninput = readSizes; });
+    body.querySelectorAll(".bl-line1, .bl-line2").forEach(inp => {
+      inp.oninput = () => {
+        const i = Number(inp.dataset.i);
+        labels[i][inp.classList.contains("bl-line1") ? "line1" : "line2"] = inp.value;
+        paintOne(i);
+      };
+    });
+    const tickAll = (on) => {
+      labels.forEach(l => { l.on = on; });
+      body.querySelectorAll(".bl-tick").forEach(i => { i.checked = on; });
+      count();
     };
     $("breakerLabelsAll").onclick = () => tickAll(true);
     $("breakerLabelsNone").onclick = () => tickAll(false);
-    document.querySelectorAll("#breakerLabelsBody .bl-tick").forEach(i => { i.onchange = count; });
+    body.querySelectorAll(".bl-tick").forEach(i => { i.onchange = () => { labels[Number(i.dataset.i)].on = i.checked; count(); }; });
     $("breakerLabelsSave").onclick = saveBreakerLabelImages;
     $("breakerLabelsPrint").onclick = printBreakerLabels;
-    paintPreviews();
+    paintAll();
     count();
   };
 
@@ -9859,12 +9962,18 @@
     $("breakerLabelsModal").style.display = "none";
   };
 
+  function breakerLabelsPicked() {
+    const picked = breakerLabelState.labels.filter(l => l.on && String(l.line1 || l.line2 || "").trim());
+    if (!picked.length) setBreakerLabelsStatus("Tick at least one breaker first.");
+    return picked;
+  }
+
   // One PNG per label, dated, downloads spaced out (Chrome refuses a burst as
   // "multiple downloads" — same reason as savePanelStripImages).
   async function saveBreakerLabelImages() {
-    const picked = breakerLabelsSelected();
-    if (!picked.length) { setBreakerLabelsStatus("Tick at least one breaker first."); return; }
-    const size = $("breakerLabelSize").value;
+    const picked = breakerLabelsPicked();
+    if (!picked.length) return;
+    const opt = breakerLabelOpts();
     const now = new Date(), pad = (n) => String(n).padStart(2, "0");
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}${pad(now.getMinutes())}`;
     const safe = (s) => String(s || "").replace(/[\\/:*?"<>|#]/g, "").trim();
@@ -9872,7 +9981,7 @@
     let files;
     try {
       files = await Promise.all(picked.map(l => new Promise((resolve, reject) => {
-        breakerLabelCanvas(l, size).canvas.toBlob(b => b
+        breakerLabelCanvas(l, opt).canvas.toBlob(b => b
           ? resolve(new File([b], `${safe(panelDisplayName())} ckt ${l.ckt} ${safe(l.line1)} ${stamp}.png`, { type: "image/png" }))
           : reject(new Error("the image couldn't be made")), "image/png");
       })));
@@ -9883,23 +9992,23 @@
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }, i * 900));
-    setBreakerLabelsStatus(`Saving ${files.length} label image${files.length === 1 ? "" : "s"} — open iPrint&Label → image printing and pick them.`);
+    setBreakerLabelsStatus(`Saving ${files.length} label image${files.length === 1 ? "" : "s"} — open them from inside the Brother app.`);
   }
 
-  // 🖨 The same PNGs, one per page sized to the label. Fine for short labels;
-  // only LONG continuous pages choked the Brother print service (see strips).
+  // 🖨 The same PNGs, one per page. Every page is the same Length × tape, which
+  // has to match the printer's page (PT-D600: 100 mm) or the browser rescales.
   function printBreakerLabels() {
-    const picked = breakerLabelsSelected();
-    if (!picked.length) { setBreakerLabelsStatus("Tick at least one breaker first."); return; }
-    const size = $("breakerLabelSize").value;
-    const imgs = picked.map(l => breakerLabelCanvas(l, size));
-    // Pages must share one @page size, so use the longest label for all.
-    const L = Math.max(...imgs.map(i => i.L)).toFixed(2), H = imgs[0].H;
-    const html = imgs.map(i =>
-      `<div style="width:${L}mm; height:${H}mm; display:flex; align-items:center; justify-content:center; page-break-after:always; break-after:page; overflow:hidden;">
-         <img src="${i.canvas.toDataURL("image/png")}" style="width:${i.L.toFixed(2)}mm; height:${H}mm; display:block;" />
-       </div>`).join("");
-    printHtmlPages(html, `size: ${L}mm ${H}mm; margin: 0;`);
+    const picked = breakerLabelsPicked();
+    if (!picked.length) return;
+    const opt = breakerLabelOpts();
+    const html = picked.map(l => {
+      const { canvas } = breakerLabelCanvas(l, opt);
+      return `<div style="width:${opt.len}mm; height:${opt.h}mm; page-break-after:always; break-after:page; overflow:hidden;">
+         <img src="${canvas.toDataURL("image/png")}" style="width:${opt.len}mm; height:${opt.h}mm; display:block;" />
+       </div>`;
+    }).join("");
+    printHtmlPages(html, `size: ${opt.len}mm ${opt.h}mm; margin: 0;`);
+    setBreakerLabelsStatus(`Sent ${picked.length} label${picked.length === 1 ? "" : "s"} to print — pick the Brother, Margins: None, Scale: Default.`);
   }
 
   async function downloadPanelPdf() {

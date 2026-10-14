@@ -9816,6 +9816,10 @@
       const out = [[b.text]], words = b.text.split(/\s+/);
       let pick = null;
       for (let i = 1; i < words.length; i++) {
+        // Never strand a panel name or circuit number from its word: the first
+        // DK-1208 print (2026-10-14) wrapped "Fed from Panel / B Circuit 1-3",
+        // and the owner wants the B to stay with Panel.
+        if (/^(panel|circuit|ckt)$/i.test(words[i - 1])) continue;
         const x = words.slice(0, i).join(" "), y = words.slice(i).join(" ");
         const w = Math.max(measure(x, b.size, b.bold), measure(y, b.size, b.bold));
         if (!pick || w < pick.w) pick = { w, lines: [x, y] };

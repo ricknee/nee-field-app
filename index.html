@@ -8937,7 +8937,8 @@
               title="Two strips on the Brother's DK-2205 continuous roll — odd circuits on one, even on the other">
           🏷 Strips:
           <select id="panelStripMode" class="edit-input" style="font-size:12px; padding:5px 6px; width:auto;">
-            <option value="qo">QO ¾″ spacing</option>
+            <option value="qo">QO / QOB ¾″ spacing</option>
+            <option value="hom">Homeline 1″ spacing</option>
             <option value="compact">Compact</option>
           </select>
           <button type="button" id="panelStripShareBtn" class="btn btn-sm" style="font-size:12px; padding:6px 10px;">💾 Save images for iPrint&amp;Label</button>
@@ -9502,7 +9503,10 @@
    * strips, one per bus side, each a column of [circuit | description] to stick
    * beside that side's breakers. Two row pitches, both asked for:
    *   - "qo":      19.05 mm = ¾", Square D QO's space per pole, so each row sits
-   *                beside its breaker and the strip is the breaker column's length
+   *                beside its breaker and the strip is the breaker column's length.
+   *                QOB (bolt-on) is the same ¾".
+   *   - "hom":     25.4 mm = 1", Square D Homeline's space per pole (owner does
+   *                Homeline sometimes, 2026-10-13; ⬜ he's measuring to confirm)
    *   - "compact": 6 mm ≈ the sheet's 17 pt rows, so the strip is no longer
    *                than that column on today's printed schedule
    * DK-2205 is 62 mm wide and feeds NARROW EDGE FIRST, so each strip is a
@@ -9512,7 +9516,7 @@
    * separates them. A gang is one merged box across its spaces, as on the sheet.
    * ⚠ Custom continuous length depends on the printer driver honouring the page
    * size — verified in headless Edge, NOT yet on the Brother. */
-  const PANEL_STRIP_PITCH = { qo: 19.05, compact: 6 };   // mm per circuit space
+  const PANEL_STRIP_PITCH = { qo: 19.05, hom: 25.4, compact: 6 };   // mm per circuit space
   const PANEL_STRIP_HEAD = 9, PANEL_STRIP_PAD = 3;         // mm
 
   function printPanelStrips(mode) {
@@ -9615,7 +9619,7 @@
 
   function panelStripFileBase(mode) {
     const safe = (s) => String(s || "").replace(/[\\/:*?"<>|]/g, "").trim();
-    return `Panel ${safe(panelState.panel.name)} ${mode === "qo" ? "QO" : "compact"}`;
+    return `Panel ${safe(panelState.panel.name)} ${({ qo: "QO", hom: "Homeline" })[mode] || "compact"}`;
   }
 
   // 300 dpi, the QL-820NWB's own resolution, so iPrint&Label prints 1:1.

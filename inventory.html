@@ -2269,9 +2269,12 @@ function renderPushExpenses() {
 
     g.lines.forEach(function(l) {
       var isReturn = l.qty < 0;
+      // A line sums several transactions, so 23.8 + 29.1 arrives as
+      // 52.900000000000006 — round for display only; the push uses the raw sum.
+      var absQty = Math.round(Math.abs(l.qty) * 100) / 100;
       var qtyLabel = l.wireFt > 0
-        ? (Math.abs(l.qty) + ' lbs (' + l.wireFt.toLocaleString() + ' ft)')
-        : ('×' + Math.abs(l.qty));
+        ? (absQty + ' lbs (' + l.wireFt.toLocaleString() + ' ft)')
+        : ('×' + absQty);
       // When it was logged. A line can gather several transactions, so a span
       // shows both ends — collapsing a week onto one date would misdate the
       // material, and this column exists precisely to say when it was used.
@@ -3023,9 +3026,12 @@ function renderMaterialReport() {
     // Line items — no prices, just item + qty (with ft for wire)
     g.lines.forEach(function(l) {
       var isReturn = l.qty < 0;
+      // A line sums several transactions, so 23.8 + 29.1 arrives as
+      // 52.900000000000006 — round for display only; the push uses the raw sum.
+      var absQty = Math.round(Math.abs(l.qty) * 100) / 100;
       var qtyLabel = l.wireFt > 0
-        ? (Math.abs(l.qty) + ' lbs (' + l.wireFt.toLocaleString() + ' ft)')
-        : ('×' + Math.abs(l.qty));
+        ? (absQty + ' lbs (' + l.wireFt.toLocaleString() + ' ft)')
+        : ('×' + absQty);
       html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:4px 0;border-bottom:1px solid var(--border);">';
       html += '<span style="flex:1;">' + escapeHtml(l.item) + (isReturn ? ' (return)' : '') + '</span>';
       html += '<span style="flex-shrink:0;">' + qtyLabel + '</span></div>';

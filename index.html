@@ -29333,7 +29333,28 @@
     return { kc, row: null, need, size: capped ? null : size, rule: capped ? "capset" : "note1" };
   }
 
+  // 250.122(B) — ungrounded conductors upsized for any reason other than
+  // 310.15(B)/(C) correction (in practice: voltage drop) → the wire-type EGC
+  // grows by the SAME RATIO of circular mils. Table EGC × (installed ÷
+  // minimum), then the next standard size up. 250.122(A) still caps it at the
+  // circuit conductor itself. The ratio uses the circuit conductors' own
+  // material for both sizes, so it holds when the EGC is the other metal.
+  const GND_122B_SIZES = ["14","12","10", ...GND_66_SIZES];
+  function gnd122bAnswer(egc, minSize, instSize, condMat, egcMat) {
+    const a = GND_KCMIL[minSize], b = GND_KCMIL[instSize], e = GND_KCMIL[egc];
+    if (!a || !b || !e) return null;
+    if (b <= a) return { ratio: b / a, size: egc, same: true };
+    const ratio = b / a, need = e * ratio;
+    let size = GND_122B_SIZES.find(s => GND_KCMIL[s] >= need - 1e-9) || "2000";
+    // Cap per 250.122(A) only when the EGC and the circuit conductors are the
+    // same metal — comparing a Cu EGC's area to Al conductors means nothing.
+    let capped = false;
+    if (egcMat === condMat && GND_KCMIL[size] > b) { size = instSize; capped = true; }
+    return { ratio, need, size, capped };
+  }
+
   const gndState = { table:"122", amps:"", mat:"cu", size:"4/0", smat:"cu", par:1, omat:"cu", elec:"",
+                     bMin:"", bInst:"", bCond:"cu",
                      bSize:"500", bMat:"cu", bPar:1, bOut:"cu", bMode:"each" };
 
   // "Not exceeding" — the first row at or above the rating. This is what makes
@@ -29379,6 +29400,39 @@
         `<tr class="${row122 === r ? "hit" : ""}"><td>${r.amps}</td>` +
         `<td class="cu">${esc(r.cu)}</td><td>${esc(r.al)}</td></tr>`).join("") +
       `</tbody>`;
+
+    // ── 250.122(B) ──
+    const u = s => s + (GND_KCMIL[s] >= 250 ? " kcmil" : " AWG");
+    const bv = $("gnd122bVerdict"), bn = $("gnd122bNote");
+    bn.style.display = "none";
+    if (!gndState.bMin || !gndState.bInst) {
+      bv.style.display = "none";
+    } else if (!row122) {
+      bv.style.display = "";
+      bv.classList.remove("ok");
+      $("gnd122bOut").textContent = "—";
+      $("gnd122bSub").textContent = "Enter the breaker / fuse amps above first.";
+    } else {
+      const egc = row122[gndState.mat];
+      const r = gnd122bAnswer(egc, gndState.bMin, gndState.bInst, gndState.bCond, gndState.mat);
+      bv.style.display = "";
+      bv.classList.add("ok");
+      if (r.same) {
+        $("gnd122bOut").textContent = u(egc);
+        $("gnd122bSub").textContent = `Not upsized (${gndState.bInst} is not bigger than ${gndState.bMin}) — the table answer stands.`;
+      } else {
+        $("gnd122bOut").textContent = u(r.size);
+        $("gnd122bSub").textContent =
+          `${u(gndState.bInst)} ÷ ${u(gndState.bMin)} = ${GND_KCMIL[gndState.bInst]} ÷ ${GND_KCMIL[gndState.bMin]} kcmil ` +
+          `= ×${r.ratio.toFixed(3)}. Table EGC ${egc} (${GND_KCMIL[egc]} kcmil) × ${r.ratio.toFixed(3)} ` +
+          `= ${r.need.toFixed(2)} kcmil → ${u(r.size)} (smallest size at or above that).`;
+        if (r.capped) {
+          bn.style.display = "";
+          bn.innerHTML = `<b>250.122(A)</b> — the EGC never has to be larger than the circuit conductors, ` +
+            `so it stops at <b>${esc(u(gndState.bInst))}</b>.`;
+        }
+      }
+    }
 
     // ── 250.66 ──
     const kc = (GND_KCMIL[gndState.size] || 0) * (parseInt(gndState.par, 10) || 1);
@@ -29484,6 +29538,11 @@
       gndState[key] = e.target.value;
       gndRender();
     });
+    const sizeOpts = (first) => `<option value="">${first}</option>` + GND_122B_SIZES.map(s =>
+      `<option value="${esc(s)}">${esc(s)}${GND_KCMIL[s] >= 250 ? " kcmil" : " AWG"}</option>`).join("");
+    $("gnd122bMin").innerHTML  = sizeOpts("— pick —");
+    $("gnd122bInst").innerHTML = sizeOpts("— pick —");
+    bind("gnd122bMin", "bMin"); bind("gnd122bInst", "bInst"); bind("gnd122bMat", "bCond");
     bind("gnd122Amps", "amps"); bind("gnd122Mat", "mat");
     bind("gnd66Size", "size");  bind("gnd66Mat", "smat");
     bind("gnd66Par", "par");    bind("gnd66Out", "omat");
@@ -30415,7 +30474,7 @@
       sug.innerHTML = best
         ? `Smallest size in Table 9 that comes in at or under 3% here: <b>${esc(best.size)}</b> ` +
           `(${best.pct.toFixed(2)}%). Upsizing for voltage drop pulls <b>250.122(B)</b> in — ` +
-          `the equipment ground has to grow proportionally.`
+          `the equipment ground has to grow proportionally — the Grounding tab, 250.122, works it out.`
         : `Nothing in Table 9 gets this run under 3%. Shorten it, raise the voltage, ` +
           `or run more sets in parallel.`;
     } else {
@@ -32483,12 +32542,33 @@
           <div class="cf-sub" id="gnd122Sub">Enter the rating of the breaker or fuse ahead of the equipment.</div>
         </div>
 
+        <div class="cf-section-title">Upsized for voltage drop? — 250.122(B)</div>
+        <div class="gnd-row">
+          <label style="display:block;min-width:130px;"><span class="cf-sub">Size required for the load</span>
+            <select id="gnd122bMin" class="edit-input" style="width:100%;"></select></label>
+          <label style="display:block;min-width:130px;"><span class="cf-sub">Size you're pulling</span>
+            <select id="gnd122bInst" class="edit-input" style="width:100%;"></select></label>
+        </div>
+        <div class="gnd-row" style="margin-top:8px;">
+          <select id="gnd122bMat" class="edit-input">
+            <option value="cu">Copper circuit conductors</option>
+            <option value="al">Aluminum / Cu-clad conductors</option>
+          </select>
+        </div>
+        <div class="cf-verdict" id="gnd122bVerdict" style="margin-top:12px;display:none;">
+          <div>Increased EGC: <strong id="gnd122bOut">—</strong></div>
+          <div class="cf-sub" id="gnd122bSub"></div>
+        </div>
+        <div class="gnd-note gnd-cap" id="gnd122bNote" style="display:none;"></div>
+
         <div class="cf-section-title">Table 250.122 — Equipment Grounding Conductor</div>
         <div class="gnd-wrap"><table class="gnd-table" id="gnd122Table"></table></div>
         <div class="gnd-note">
           <b>250.122(A)</b> — the EGC never has to be larger than the circuit conductors it runs with.<br />
           <b>250.122(B)</b> — if the ungrounded conductors were <b>upsized for voltage drop</b>, the EGC must be
-          increased in the same proportion by circular-mil area. This is the most-missed rule in the article.<br />
+          increased in the same proportion by circular-mil area. This is the most-missed rule in the article.
+          Upsizing required by 310.15(B) or (C) (ambient or bundling correction) does <b>not</b> trigger it.
+          Exception: a qualified person may size the EGC for an effective ground-fault path per 250.4(A)(5).<br />
           <b>250.122(F)</b> — parallel runs get a full-size EGC <b>in every raceway</b>, each sized from the
           one overcurrent device.
         </div>

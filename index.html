@@ -29301,7 +29301,40 @@
       note:"<b>250.66(C)</b> — connected only to a ground ring, the GEC need not be larger than <b>the ground-ring conductor itself</b> (2 AWG copper minimum)." },
   ];
 
-  const gndState = { table:"122", amps:"", mat:"cu", size:"4/0", smat:"cu", par:1, omat:"cu", elec:"" };
+  // Table 250.102(C)(1) — supply-side bonding jumper, main/system bonding
+  // jumper, and (via 250.24(C)) the service grounded conductor. Its first six
+  // rows are identical to 250.66, so it reuses GND_66's row bounds and
+  // answers; only the last row differs. 250.66 tops out at 3/0 Cu / 250 Al
+  // because a GEC goes to the earth. This jumper carries FAULT current back to
+  // the source, so above 1100 Cu / 1750 Al it keeps growing at 12½% of the
+  // supply area (Note 1). ✅ Checked against the owner's 2023 code book page,
+  // photographed 2026-10-14.
+  //
+  // Note 2 (over the table AND jumper material ≠ supply material) says to size
+  // as if the supply were the jumper's material at equivalent ampacity. That
+  // needs an ampacity table and a judgement call, so this screen REFUSES a
+  // number for that one case rather than guess at a conversion.
+  function gnd102Answer(sizeKey, smat, par, mode, omat) {
+    const each = parseInt(par, 10) || 1;
+    // 250.102(C)(2)(1): a jumper per raceway sizes off ONE raceway's conductor.
+    // (C)(2)(2) and a single run size off the sum of the parallel set.
+    const n = mode === "each" ? 1 : each;
+    const kc = (GND_KCMIL[sizeKey] || 0) * n;
+    const overMax = smat === "al" ? 1750 : 1100;
+    if (kc <= overMax) {
+      const row = gnd66Row(kc, smat);
+      return { kc, row, size: omat === "al" ? row.gecAl : row.gecCu, rule: "table" };
+    }
+    if (omat !== smat) return { kc, row: null, size: null, rule: "note2" };
+    const need = kc * 0.125;
+    const size = GND_66_SIZES.find(s => GND_KCMIL[s] >= need - 1e-9) || null;
+    // "…not required to be larger than the largest ungrounded conductor or set."
+    const capped = size && GND_KCMIL[size] > kc;
+    return { kc, row: null, need, size: capped ? null : size, rule: capped ? "capset" : "note1" };
+  }
+
+  const gndState = { table:"122", amps:"", mat:"cu", size:"4/0", smat:"cu", par:1, omat:"cu", elec:"",
+                     bSize:"500", bMat:"cu", bPar:1, bOut:"cu", bMode:"each" };
 
   // "Not exceeding" — the first row at or above the rating. This is what makes
   // a 30 A breaker answer 10 AWG without the table having a 30 A row.
@@ -29317,7 +29350,8 @@
   function gndRender() {
     const on122 = gndState.table === "122";
     $("gndPanel-122").style.display = on122 ? "" : "none";
-    $("gndPanel-66").style.display  = on122 ? "none" : "";
+    $("gndPanel-66").style.display  = gndState.table === "66"  ? "" : "none";
+    $("gndPanel-102").style.display = gndState.table === "102" ? "" : "none";
     document.querySelectorAll("#gndSwitch label").forEach(l => {
       l.classList.toggle("on", l.querySelector("input").value === gndState.table);
     });
@@ -29383,6 +29417,53 @@
         `<td class="cu">${esc(r.cu)}</td><td>${esc(r.al)}</td>` +
         `<td class="cu">${esc(r.gecCu)}</td><td>${esc(r.gecAl)}</td></tr>`).join("") +
       `</tbody>`;
+
+    // ── 250.102(C) ──
+    const bPar = parseInt(gndState.bPar, 10) || 1;
+    $("gnd102ModeWrap").style.display = bPar > 1 ? "" : "none";
+    const b = gnd102Answer(gndState.bSize, gndState.bMat, bPar, bPar > 1 ? gndState.bMode : "one", gndState.bOut);
+    const unit = s => s + (GND_KCMIL[s] >= 250 ? " kcmil" : " AWG");
+    const supName = `${gndState.bSize} ${gndState.bMat === "al" ? "aluminum" : "copper"}`;
+    const basis = bPar === 1 ? supName
+      : gndState.bMode === "each"
+        ? `${supName} in one raceway (a jumper in each of the ${bPar})`
+        : `${bPar} × ${supName} = ${Math.round(b.kc)} kcmil per phase (one jumper for all)`;
+    const rule = $("gnd102Rule");
+    $("gnd102Verdict").classList.toggle("ok", !!b.size);
+    if (b.rule === "table") {
+      $("gnd102OutSize").textContent = unit(b.size);
+      $("gnd102Sub").textContent = `${basis} → table row "${gndState.bMat === "al" ? b.row.al : b.row.cu}".`;
+      rule.style.display = "none";
+    } else if (b.rule === "note1") {
+      $("gnd102OutSize").textContent = unit(b.size);
+      $("gnd102Sub").textContent = `${basis} → 12½% = ${Math.round(b.need)} kcmil → next size up.`;
+      rule.style.display = "";
+      rule.innerHTML = `<b>Note 1</b> — over the table, so the jumper is <b>12½%</b> of the supply area ` +
+        `(${Math.round(b.kc)} kcmil × 0.125 = ${Math.round(b.need)} kcmil), rounded up to the next standard size.`;
+    } else if (b.rule === "capset") {
+      $("gnd102OutSize").textContent = "same as the supply conductor";
+      $("gnd102Sub").textContent = `${basis}.`;
+      rule.style.display = "";
+      rule.innerHTML = `<b>Note 1</b> — never required to be larger than the largest ungrounded conductor or set.`;
+    } else {
+      $("gnd102OutSize").textContent = "see Note 2";
+      $("gnd102Sub").textContent = `${basis} — over the table, with a different jumper material.`;
+      rule.style.display = "";
+      rule.innerHTML = `<b>Note 2</b> — over 1100 kcmil Cu / 1750 kcmil Al with mixed materials, size the jumper ` +
+        `as if the supply conductors were <b>${gndState.bOut === "al" ? "aluminum" : "copper"}</b> with the same ` +
+        `ampacity, then take 12½% of that. Pick that equivalent conductor and material above to get the number.`;
+    }
+    $("gnd102Table").innerHTML =
+      `<thead><tr><th>Supply — Cu</th><th>Supply — Al</th><th>Jumper Cu</th><th>Jumper Al</th></tr></thead><tbody>` +
+      GND_66.map((r, i) => {
+        const last = i === GND_66.length - 1;
+        const hit = last ? (b.rule !== "table") : b.row === r;
+        return `<tr class="${hit ? "hit" : ""}">` +
+          `<td class="cu">${esc(r.cu)}</td><td>${esc(r.al)}</td>` +
+          (last ? `<td colspan="2">See Notes 1 and 2 (12½%)</td>`
+                : `<td class="cu">${esc(r.gecCu)}</td><td>${esc(r.gecAl)}</td>`) + `</tr>`;
+      }).join("") +
+      `</tbody>`;
   }
 
   function gndBuild() {
@@ -29407,6 +29488,14 @@
     bind("gnd66Size", "size");  bind("gnd66Mat", "smat");
     bind("gnd66Par", "par");    bind("gnd66Out", "omat");
     bind("gnd66Elec", "elec");
+    $("gnd102Size").innerHTML = GND_66_SIZES.map(s =>
+      `<option value="${esc(s)}"${s === gndState.bSize ? " selected" : ""}>` +
+      `${esc(s)}${GND_KCMIL[s] >= 250 ? " kcmil" : " AWG"}</option>`).join("");
+    $("gnd102Par").innerHTML = [1,2,3,4,5,6,7,8].map(n =>
+      `<option value="${n}">${n === 1 ? "Single raceway" : n + " in parallel"}</option>`).join("");
+    bind("gnd102Size", "bSize"); bind("gnd102Mat", "bMat");
+    bind("gnd102Par", "bPar");   bind("gnd102Out", "bOut");
+    bind("gnd102Mode", "bMode");
     gndRender();
   }
 
@@ -32375,6 +32464,7 @@
       <div class="gnd-switch" id="gndSwitch">
         <label class="on"><input type="radio" name="gndTable" value="122" checked /> 250.122 — Equipment Ground</label>
         <label><input type="radio" name="gndTable" value="66" /> 250.66 — Grounding Electrode</label>
+        <label><input type="radio" name="gndTable" value="102" /> 250.102(C) — Supply-Side Bonding</label>
       </div>
 
       <!-- 250.122 -->
@@ -32435,6 +32525,53 @@
         <div class="gnd-note">
           Parallel sets are sized on the <b>combined circular-mil area</b> of one phase, which is what the
           parallel selector above does.
+        </div>
+      </div>
+
+      <!-- 250.102(C) -->
+      <div id="gndPanel-102" style="display:none;">
+        <div class="cf-section-title">Largest ungrounded supply conductor</div>
+        <div class="gnd-row">
+          <select id="gnd102Size" class="edit-input"></select>
+          <select id="gnd102Mat" class="edit-input">
+            <option value="cu">Copper supply conductor</option>
+            <option value="al">Aluminum / Cu-clad supply</option>
+          </select>
+        </div>
+        <div class="gnd-row" style="margin-top:8px;">
+          <select id="gnd102Par" class="edit-input"></select>
+          <select id="gnd102Out" class="edit-input">
+            <option value="cu">Copper jumper</option>
+            <option value="al">Aluminum / Cu-clad jumper</option>
+          </select>
+        </div>
+        <div id="gnd102ModeWrap" style="display:none;">
+          <div class="cf-section-title">Parallel in two or more raceways — 250.102(C)(2)</div>
+          <select id="gnd102Mode" class="edit-input">
+            <option value="each">(1) A jumper in each raceway</option>
+            <option value="one">(2) One jumper bonding all the raceways</option>
+          </select>
+        </div>
+
+        <div class="cf-verdict" id="gnd102Verdict" style="margin-top:12px;">
+          <div>Supply-side bonding jumper: <strong id="gnd102OutSize">—</strong></div>
+          <div class="cf-sub" id="gnd102Sub">Pick your supply conductor above.</div>
+        </div>
+        <div class="gnd-note gnd-cap" id="gnd102Rule" style="display:none;"></div>
+
+        <div class="cf-section-title">Table 250.102(C)(1) — Grounded Conductor, Main / System / Supply-Side Bonding Jumper</div>
+        <div class="gnd-wrap"><table class="gnd-table" id="gnd102Table"></table></div>
+        <div class="gnd-note">
+          <b>Note 1</b> — over 1100 kcmil copper or 1750 kcmil aluminum (parallel sets by equivalent area), the
+          grounded conductor or bonding jumper must be at least <b>12½%</b> of the area of the largest ungrounded
+          supply conductor or set, but never has to be larger than that conductor or set.<br />
+          <b>Note 2</b> — over those same sizes, if the supply conductors and the jumper are different materials,
+          size the jumper as if the supply conductors were the jumper's material with equivalent ampacity.<br />
+          <b>Note 3</b> — no service-entrance conductors: size from the service-entrance conductor that would be
+          required for the load served.<br />
+          <b>250.102(D)</b> — a bonding jumper on the <b>load side</b> of the service or of the first disconnect of a
+          separately derived system is sized from <b>Table 250.122</b> on the overcurrent device, not from this table.<br />
+          This same table also sets the minimum service <b>grounded (neutral) conductor</b> — 250.24(C).
         </div>
       </div>
     </div>

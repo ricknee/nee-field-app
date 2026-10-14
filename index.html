@@ -9718,7 +9718,9 @@
    * A gang prints as first-last ("1-3", 3-pole "27-31"). Spares and blanks
    * aren't offered — there's nothing at the far end to label.
    * Both lines can be edited per label and the type sizes set, for THIS print
-   * only — nothing here writes back to the panel.
+   * only — nothing here writes back to the panel. The panel's voltage can be
+   * added, and a breaker can print as ONE label or TWO (name / fed from +
+   * voltage) — see breakerLabelPieces.
    *
    * ⚠ FIXED LENGTH, on purpose. The PT-D600's Windows driver offers only
    * 100 mm-long pages (every tape width is "… x 100.1 mm"), and the browser
@@ -9767,7 +9769,7 @@
   };
   const BREAKER_LABEL_DEFAULT = "d600_24";
   const BREAKER_LABEL_PREFS_KEY = "nee_breaker_label_prefs";
-  const breakerLabelState = { labels: [], size: BREAKER_LABEL_DEFAULT, len: 100, pt1: 30, pt2: 18 };
+  const breakerLabelState = { labels: [], size: BREAKER_LABEL_DEFAULT, len: 100, pt1: 30, pt2: 18, split: "one", showVolt: true, volt: "" };
 
   function panelDisplayName() {
     const n = String(panelState.panel.name || "").trim();
@@ -9786,69 +9788,67 @@
       .filter(l => l.line1 && !/^spare$/i.test(l.line1));
   }
 
-  /* Where the text goes, in mm, on a W × H label. Font sizes are em sizes;
-   * ~0.72 em of a capital sits above the baseline, which is what gets centred.
-   * Each line is tried whole and split into two balanced lines (by printed
-   * width), every combination is fitted — shrunk to the width, then both
-   * scaled to the height — and the one that keeps BOTH lines closest to their
-   * set sizes wins (the worse of the two ratios), not line 1 at any cost: on
-   * the QL that rule printed a big line 1 over an unreadable line 2.
-   * The 62 mm QL label is narrow enough that "Fed from Panel B Circuit 27-31"
-   * needs the same wrap line 1 got for the P-touch. */
-  function breakerLabelLayout(label, opt, measure) {
-    const PT = 0.3528, CAP = 0.72;
+  /* Where the text goes, in mm, on a W × H label. `blocks` are the label's
+   * lines in order, each { text, size (mm, an em), bold }. Font sizes are em
+   * sizes; ~0.72 em of a capital sits above the baseline, which is what gets
+   * centred. Each block is tried whole and split into two balanced lines (by
+   * printed width), every combination is fitted — shrunk to the width, then all
+   * scaled to the height — and the one that keeps EVERY block closest to its
+   * set size wins (the worst ratio), not line 1 at any cost: on the QL that rule
+   * printed a big line 1 over an unreadable line 2. Ties go to the bigger first
+   * block, then to fewer lines. */
+  function breakerLabelLayout(blocks, opt, measure) {
+    const CAP = 0.72;
     const W = opt.w, H = opt.h;
     const mv = Math.max(1.2, H * 0.08), mh = 3;
     const roomW = W - mh * 2, roomH = H - mv * 2;
-    const want1 = opt.pt1 * PT, want2 = opt.pt2 * PT;
-    const t1 = String(label.line1 || "").trim(), t2 = String(label.line2 || "").trim();
-    const splits = (t, size, bold) => {
-      if (!t) return [[]];
-      const out = [[t]], words = t.split(/\s+/);
+    const live = blocks.map(b => ({ ...b, text: String(b.text || "").trim() })).filter(b => b.text);
+    const splits = (b) => {
+      const out = [[b.text]], words = b.text.split(/\s+/);
       let pick = null;
       for (let i = 1; i < words.length; i++) {
-        const a = words.slice(0, i).join(" "), b = words.slice(i).join(" ");
-        const w = Math.max(measure(a, size, bold), measure(b, size, bold));
-        if (!pick || w < pick.w) pick = { w, lines: [a, b] };
+        const x = words.slice(0, i).join(" "), y = words.slice(i).join(" ");
+        const w = Math.max(measure(x, b.size, b.bold), measure(y, b.size, b.bold));
+        if (!pick || w < pick.w) pick = { w, lines: [x, y] };
       }
       if (pick) out.push(pick.lines);
       return out;
     };
-    const fit = (l1, l2) => {
-      let s1 = want1, s2 = want2;
-      for (const l of l1) s1 = Math.min(s1, want1 * roomW / Math.max(measure(l, want1, true), 0.01));
-      for (const l of l2) s2 = Math.min(s2, want2 * roomW / Math.max(measure(l, want2, false), 0.01));
-      const gap = (k) => k * 0.28;
-      const rowsOf = (a, b) => [...l1.map(s => ({ s, size: a, bold: true })), ...l2.map(s => ({ s, size: b, bold: false }))];
-      const heightOf = (rows) => rows.reduce((h, r, i) => h + r.size * CAP + (i ? gap(Math.max(r.size, rows[i - 1].size)) : 0), 0);
-      const kh = Math.min(1, roomH / Math.max(heightOf(rowsOf(s1, s2)), 0.01));
-      s1 *= kh; s2 *= kh;
-      const rows = rowsOf(s1, s2);
+    const gap = (k) => k * 0.28;
+    const heightOf = (rows) => rows.reduce((h, r, i) => h + r.size * CAP + (i ? gap(Math.max(r.size, rows[i - 1].size)) : 0), 0);
+    const fit = (choice) => {
+      // Per block: shrink to the widest of its lines.
+      let sizes = live.map((b, i) => Math.min(b.size, ...choice[i].map(l => b.size * roomW / Math.max(measure(l, b.size, b.bold), 0.01))));
+      const rowsOf = (sz) => live.flatMap((b, i) => choice[i].map(s => ({ s, size: sz[i], bold: b.bold })));
+      const kh = Math.min(1, roomH / Math.max(heightOf(rowsOf(sizes)), 0.01));
+      sizes = sizes.map(s => s * kh);
+      const rows = rowsOf(sizes);
       let y = (H - heightOf(rows)) / 2;
       rows.forEach((r, i) => { if (i) y += gap(Math.max(r.size, rows[i - 1].size)); y += r.size * CAP; r.y = y; });
-      return { rows, s1, s2, n: rows.length };
+      return { rows, sizes, n: rows.length, score: Math.min(1, ...sizes.map((s, i) => s / live[i].size)) };
     };
+    // Every combination of whole/split per block (at most 2³ = 8 tries).
+    let combos = [[]];
+    for (const b of live) combos = combos.flatMap(c => splits(b).map(s => [...c, s]));
     let best = null;
-    const worst = (f) => Math.min(t1 ? f.s1 / want1 : 1, t2 ? f.s2 / want2 : 1);
-    for (const l1 of splits(t1, want1, true)) for (const l2 of splits(t2, want2, false)) {
-      const f = fit(l1, l2);
-      f.score = worst(f);
-      // Least-shrunk line wins; then the bigger line 1; then fewer lines.
+    for (const c of combos) {
+      const f = fit(c);
       if (!best || f.score > best.score + 0.01 || (Math.abs(f.score - best.score) <= 0.01 &&
-          (f.s1 > best.s1 + 0.05 || (Math.abs(f.s1 - best.s1) <= 0.05 && f.n < best.n)))) best = f;
+          ((f.sizes[0] || 0) > (best.sizes[0] || 0) + 0.05 ||
+           (Math.abs((f.sizes[0] || 0) - (best.sizes[0] || 0)) <= 0.05 && f.n < best.n)))) best = f;
     }
-    const shrunk = (t1 && best.s1 < want1 - 0.05) || (t2 && best.s2 < want2 - 0.05);
+    const shrunk = best.sizes.some((s, i) => s < live[i].size - 0.05);
     return { W, H, rows: best.rows, shrunk };
   }
 
   // 300 dpi like the strips; the P-touch prints at 180, and the apps / driver
   // scale it down to the tape.
-  function breakerLabelCanvas(label, opt) {
+  function breakerLabelCanvas(blocks, opt) {
     const pxPerMm = PANEL_STRIP_DPI / 25.4;
     const font = (mm, bold) => `${bold ? "bold " : ""}${(mm * pxPerMm).toFixed(1)}px Helvetica, Arial, sans-serif`;
     const probe = document.createElement("canvas").getContext("2d");
     const measure = (s, mm, bold) => { probe.font = font(mm, bold); return probe.measureText(s).width / pxPerMm; };
-    const lay = breakerLabelLayout(label, opt, measure);
+    const lay = breakerLabelLayout(blocks, opt, measure);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(lay.W * pxPerMm);
     canvas.height = Math.round(lay.H * pxPerMm);
@@ -9865,16 +9865,34 @@
     return { canvas, shrunk: lay.shrunk };
   }
 
+  /* What prints for one breaker: a list of labels, each a list of blocks.
+   * Owner 2026-10-14: on 18 mm tape one label is too crowded, so "Two labels"
+   * gives the name a label of its own — one line, as big as the tape allows —
+   * and puts "Fed from …" plus the panel's voltage on a second label beneath.
+   * Line 1 pt sizes the name; Line 2 pt sizes the fed-from and voltage lines. */
+  function breakerLabelPieces(label) {
+    const st = breakerLabelState, PT = 0.3528;
+    const name = { text: label.line1, size: st.pt1 * PT, bold: true };
+    const fed = { text: label.line2, size: st.pt2 * PT, bold: false };
+    const volt = st.showVolt && st.volt ? [{ text: st.volt, size: st.pt2 * PT, bold: false }] : [];
+    return st.split === "two" ? [[name], [fed, ...volt]] : [[name, fed, ...volt]];
+  }
+
+  // The panel's voltage as typed in its Voltage / Phase box — live, like the
+  // rest of this screen, so an unsaved edit still prints.
+  function panelVoltageText() {
+    const el = $("panelFieldVoltage");
+    return String((el ? el.value : panelState.panel.voltage) || "").trim();
+  }
+
   function breakerLabelOpts() {
     const s = breakerLabelState, sz = BREAKER_LABEL_SIZES[s.size] || BREAKER_LABEL_SIZES[BREAKER_LABEL_DEFAULT];
-    return sz.along === "h"
-      ? { w: sz.tape, h: s.len, pt1: s.pt1, pt2: s.pt2 }
-      : { w: s.len, h: sz.tape, pt1: s.pt1, pt2: s.pt2 };
+    return sz.along === "h" ? { w: sz.tape, h: s.len } : { w: s.len, h: sz.tape };
   }
 
   function saveBreakerLabelPrefs() {
-    const { size, len, pt1, pt2 } = breakerLabelState;
-    try { localStorage.setItem(BREAKER_LABEL_PREFS_KEY, JSON.stringify({ size, len, pt1, pt2 })); } catch {}
+    const { size, len, pt1, pt2, split, showVolt } = breakerLabelState;
+    try { localStorage.setItem(BREAKER_LABEL_PREFS_KEY, JSON.stringify({ size, len, pt1, pt2, split, showVolt })); } catch {}
   }
 
   function setBreakerLabelsStatus(msg) {
@@ -9887,12 +9905,15 @@
     syncGridToState();
     const st = breakerLabelState;
     st.labels = breakerLabelList();
+    st.volt = panelVoltageText();
     try {
       const p = JSON.parse(localStorage.getItem(BREAKER_LABEL_PREFS_KEY) || "null");
       if (p && BREAKER_LABEL_SIZES[p.size]) Object.assign(st, {
         size: p.size, len: (!BREAKER_LABEL_SIZES[p.size].fixed && Number(p.len)) || BREAKER_LABEL_SIZES[p.size].len,
         pt1: Number(p.pt1) || BREAKER_LABEL_SIZES[p.size].pt1, pt2: Number(p.pt2) || BREAKER_LABEL_SIZES[p.size].pt2,
       });
+      if (p && (p.split === "one" || p.split === "two")) st.split = p.split;
+      if (p && typeof p.showVolt === "boolean") st.showVolt = p.showVolt;
     } catch {}
     $("breakerLabelsTitle").textContent = `🏷 Breaker labels — ${panelDisplayName()}`;
     const labels = st.labels;
@@ -9910,26 +9931,40 @@
           <select id="breakerLabelSize" class="edit-input" style="font-size:13px; padding:6px 8px; width:100%;">${opts}</select></label>
         <label style="flex:0 0 84px;" title="How much tape/roll each label uses. PT-D600: keep at 100 — its driver's only page length."><span style="${cap}">Length mm</span>
           <input id="breakerLabelLen" type="number" min="15" max="300" step="5" class="edit-input" style="font-size:13px; width:100%;" value="${st.len}" /></label>
-        <label style="flex:0 0 84px;"><span style="${cap}">Line 1 pt</span>
+        <label style="flex:0 0 84px;" title="The equipment name"><span style="${cap}">Name pt</span>
           <input id="breakerLabelPt1" type="number" min="6" max="72" step="1" class="edit-input" style="font-size:13px; width:100%;" value="${st.pt1}" /></label>
-        <label style="flex:0 0 84px;"><span style="${cap}">Line 2 pt</span>
+        <label style="flex:0 0 84px;" title="The Fed from and voltage lines"><span style="${cap}">Fed from pt</span>
           <input id="breakerLabelPt2" type="number" min="5" max="60" step="1" class="edit-input" style="font-size:13px; width:100%;" value="${st.pt2}" /></label>
         <button type="button" id="breakerLabelDefaults" class="btn btn-sm" style="font-size:12px;" title="Type sizes and length back to this printer's defaults">Reset sizes</button>
       </div>
       <div id="breakerLabelHint" style="font-size:12px; color:var(--text); background:var(--bg-soft, rgba(127,127,127,0.08)); border-radius:6px; padding:6px 10px; margin:-2px 0 10px;"></div>
+      <div style="display:flex; gap:8px 14px; flex-wrap:wrap; align-items:center; margin-bottom:10px; font-size:13px;">
+        <span style="display:inline-flex; gap:4px; align-items:center;">
+          <span style="${cap} margin:0 4px 0 0;">Per breaker</span>
+          <select id="breakerLabelSplit" class="edit-input" style="font-size:13px; padding:5px 6px; width:auto;">
+            <option value="one"${st.split === "one" ? " selected" : ""}>One label</option>
+            <option value="two"${st.split === "two" ? " selected" : ""}>Two labels — name, then fed from</option>
+          </select>
+        </span>
+        <label style="display:inline-flex; gap:6px; align-items:center; cursor:pointer;">
+          <input type="checkbox" id="breakerLabelShowVolt"${st.showVolt ? " checked" : ""} style="width:18px; height:18px; margin:0;" />
+          Voltage
+        </label>
+        <input id="breakerLabelVolt" class="edit-input" style="flex:1 1 160px; min-width:140px; font-size:13px;" value="${esc(st.volt)}" placeholder="e.g. 120/208V 3-Phase" />
+      </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
         <button type="button" id="breakerLabelsAll" class="btn btn-sm" style="font-size:12px;">Select all</button>
         <button type="button" id="breakerLabelsNone" class="btn btn-sm" style="font-size:12px;">Select none</button>
         <span id="breakerLabelsCount" style="font-size:12px; color:var(--muted);"></span>
       </div>
-      <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Edit the wording below for this print only — it doesn't change the panel.</div>
+      <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">Edit the wording and voltage here for this print only — it doesn't change the panel.</div>
       <div style="display:flex; flex-direction:column; gap:8px;">
         ${labels.map((l, i) => `
           <div style="display:flex; gap:10px; align-items:flex-start; padding:8px; border:1px solid var(--line); border-radius:8px;">
             <input type="checkbox" class="bl-tick" data-i="${i}" style="width:20px; height:20px; margin:4px 0 0; flex:none;" />
             <span style="flex:none; min-width:42px; font-size:12px; font-weight:700; color:var(--muted); padding-top:5px;">${esc(l.ckt)}</span>
             <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:5px;">
-              <div class="bl-preview" data-i="${i}" style="overflow-x:auto;"></div>
+              <div class="bl-preview" data-i="${i}" style="overflow-x:auto; display:flex; flex-direction:column; gap:4px;"></div>
               <input class="edit-input bl-line1" data-i="${i}" style="width:100%; font-size:13px; font-weight:700;" value="${esc(l.line1)}" />
               <input class="edit-input bl-line2" data-i="${i}" style="width:100%; font-size:12px;" value="${esc(l.line2)}" />
               <span class="bl-note" data-i="${i}" style="font-size:11px; color:#b45309;"></span>
@@ -9949,15 +9984,22 @@
 
     const body = $("breakerLabelsBody");
     const paintOne = (i) => {
-      const { canvas, shrunk } = breakerLabelCanvas(labels[i], breakerLabelOpts());
-      canvas.style.cssText = "height:52px; width:auto; max-width:none; border:1px solid #bbb; border-radius:3px; background:#fff; display:block;";
-      body.querySelector(`.bl-preview[data-i="${i}"]`).replaceChildren(canvas);
-      body.querySelector(`.bl-note[data-i="${i}"]`).textContent = shrunk ? "Text shrunk to fit — shorten it, or make the label longer." : "";
+      const opt = breakerLabelOpts();
+      let anyShrunk = false;
+      const canvases = breakerLabelPieces(labels[i]).map(blocks => {
+        const { canvas, shrunk } = breakerLabelCanvas(blocks, opt);
+        anyShrunk = anyShrunk || shrunk;
+        canvas.style.cssText = "height:52px; width:auto; max-width:none; border:1px solid #bbb; border-radius:3px; background:#fff; display:block; flex:none; align-self:flex-start;";
+        return canvas;
+      });
+      body.querySelector(`.bl-preview[data-i="${i}"]`).replaceChildren(...canvases);
+      body.querySelector(`.bl-note[data-i="${i}"]`).textContent = anyShrunk ? "Text shrunk to fit — shorten it, or make the label longer." : "";
     };
     const paintAll = () => labels.forEach((_, i) => paintOne(i));
     const count = () => {
       const n = labels.filter(l => l.on).length;
-      $("breakerLabelsCount").textContent = `${n} of ${labels.length} selected`;
+      const per = st.split === "two" ? 2 : 1;
+      $("breakerLabelsCount").textContent = `${n} of ${labels.length} selected` + (n && per > 1 ? ` · ${n * per} labels` : "");
     };
     const num = (id, lo, hi, fallback) => {
       const v = Number($(id).value);
@@ -9987,6 +10029,9 @@
     $("breakerLabelDefaults").onclick = toDefaults;
     showSizes();
     ["breakerLabelLen", "breakerLabelPt1", "breakerLabelPt2"].forEach(id => { $(id).oninput = readSizes; });
+    $("breakerLabelSplit").onchange = () => { st.split = $("breakerLabelSplit").value; saveBreakerLabelPrefs(); paintAll(); count(); };
+    $("breakerLabelShowVolt").onchange = () => { st.showVolt = $("breakerLabelShowVolt").checked; saveBreakerLabelPrefs(); paintAll(); };
+    $("breakerLabelVolt").oninput = () => { st.volt = $("breakerLabelVolt").value; paintAll(); };
     body.querySelectorAll(".bl-line1, .bl-line2").forEach(inp => {
       inp.oninput = () => {
         const i = Number(inp.dataset.i);
@@ -10013,10 +10058,11 @@
     $("breakerLabelsModal").style.display = "none";
   };
 
+  // Every label to print, in order: each ticked breaker's one or two labels.
   function breakerLabelsPicked() {
     const picked = breakerLabelState.labels.filter(l => l.on && String(l.line1 || l.line2 || "").trim());
     if (!picked.length) setBreakerLabelsStatus("Tick at least one breaker first.");
-    return picked;
+    return picked.flatMap(l => breakerLabelPieces(l).map((blocks, k, all) => ({ l, blocks, part: all.length > 1 ? ` ${"ab"[k]}` : "" })));
   }
 
   // One PNG per label, dated, downloads spaced out (Chrome refuses a burst as
@@ -10031,9 +10077,9 @@
     setBreakerLabelsStatus("Building label images…");
     let files;
     try {
-      files = await Promise.all(picked.map(l => new Promise((resolve, reject) => {
-        breakerLabelCanvas(l, opt).canvas.toBlob(b => b
-          ? resolve(new File([b], `${safe(panelDisplayName())} ckt ${l.ckt} ${safe(l.line1)} ${stamp}.png`, { type: "image/png" }))
+      files = await Promise.all(picked.map(({ l, blocks, part }) => new Promise((resolve, reject) => {
+        breakerLabelCanvas(blocks, opt).canvas.toBlob(b => b
+          ? resolve(new File([b], `${safe(panelDisplayName())} ckt ${l.ckt}${part} ${safe(l.line1)} ${stamp}.png`, { type: "image/png" }))
           : reject(new Error("the image couldn't be made")), "image/png");
       })));
     } catch (e) { setBreakerLabelsStatus("Couldn't build the labels: " + e.message); return; }
@@ -10052,8 +10098,8 @@
     const picked = breakerLabelsPicked();
     if (!picked.length) return;
     const opt = breakerLabelOpts();
-    const html = picked.map(l => {
-      const { canvas } = breakerLabelCanvas(l, opt);
+    const html = picked.map(({ blocks }) => {
+      const { canvas } = breakerLabelCanvas(blocks, opt);
       return `<div style="width:${opt.w}mm; height:${opt.h}mm; page-break-after:always; break-after:page; overflow:hidden;">
          <img src="${canvas.toDataURL("image/png")}" style="width:${opt.w}mm; height:${opt.h}mm; display:block;" />
        </div>`;

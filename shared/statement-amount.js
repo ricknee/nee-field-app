@@ -19,6 +19,12 @@
   var MONEY = /\(?-?\$?\s?\d{1,3}(?:,\d{3})*\.\d{2}\)?-?|\(?-?\$?\s?\d+\.\d{2}\)?-?/g;
 
   var LABELS = [
+    // Wolff: "Total Balance Due: 40,346.28" at the foot of the last page. It
+    // also prints a "Balance Due <date>" subtotal per due date ABOVE that —
+    // those are pieces of the total, and the first one is often a small credit.
+    // Owner confirmed 2026-10-15 against the Apr 2 statement.
+    /total\s+balance\s+due/i,
+    // CED: "TOTAL DUE" heads the first column of the aging footer.
     /total\s+amount\s+due/i,
     /amount\s+due/i,
     /total\s+due/i,

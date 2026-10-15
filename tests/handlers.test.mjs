@@ -8565,6 +8565,14 @@ await test("statement-amount reader: picks the amount due, skips previous balanc
            "CODE: CDC = DISCOUNT CHARGEBACK • CRM = CREDIT MEMO •"]).amount, 19511.65,
      "CED: the figure under TOTAL DUE");
   eq(read(["PREVIOUS BALANCE DUE 50.00"]), null, "a previous balance is still skipped");
+  // Wolff Apr 2 2026, from the owner's screenshot: per-due-date subtotals, then
+  // the real figure. The first subtotal is a credit and was what got read.
+  eq(read(["02/28/2026 CE 9709912 000 PEB 430 618.17- 618.17-",
+           "Balance Due 03/31/2026 580.66-",
+           "03/30/2026 SO 21592346 000 STOCK 424.26 424.26",
+           "Balance Due 04/30/2026 40,926.94",
+           "Total Balance Due: 40,346.28"]).amount, 40346.28,
+     "Wolff: Total Balance Due, not the first Balance Due subtotal");
   eq(read(["PAST DUE 100.00"]), null, "past due alone is not the statement amount");
   eq(read(["Thank you for your business"]), null, "nothing found is null, not 0");
   ok(/AMOUNT DUE/.test(read(["AMOUNT DUE 10.00"]).evidence), "the line used comes back as evidence");

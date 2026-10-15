@@ -8558,6 +8558,13 @@ await test("statement-amount reader: picks the amount due, skips previous balanc
   eq(read(["Current 1-30 31-60 61-90 Over 90 Total Due", "500.00 25.00 0.00 0.00 0.00 525.00"]).amount, 525.00,
      "aging row: last column when the label is the last heading");
   eq(read(["BALANCE DUE 773.85-"]).amount, -773.85, "Wolff's trailing minus is a credit");
+  // CED's footer, from the owner's screenshot 2026-10-15: TOTAL DUE is the
+  // FIRST column, and PAST DUE on the same heading row must not veto it.
+  eq(read(["TOTAL DUE CURRENT / 1 - 30 PAST DUE 31 - 60",
+           "$19,511.65 $19,511.65 $0.00",
+           "CODE: CDC = DISCOUNT CHARGEBACK • CRM = CREDIT MEMO •"]).amount, 19511.65,
+     "CED: the figure under TOTAL DUE");
+  eq(read(["PREVIOUS BALANCE DUE 50.00"]), null, "a previous balance is still skipped");
   eq(read(["PAST DUE 100.00"]), null, "past due alone is not the statement amount");
   eq(read(["Thank you for your business"]), null, "nothing found is null, not 0");
   ok(/AMOUNT DUE/.test(read(["AMOUNT DUE 10.00"]).evidence), "the line used comes back as evidence");

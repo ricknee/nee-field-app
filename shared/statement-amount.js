@@ -62,21 +62,34 @@
     for (var k = 0; k < LABELS.length; k++) {
       for (var i = 0; i < L.length; i++) {
         var line = L[i];
-        if (!LABELS[k].test(line) || NOT.test(line)) continue;
+        if (!LABELS[k].test(line)) continue;
+        var idx = line.search(LABELS[k]);
+        var labelText = line.slice(idx).match(LABELS[k])[0];
+        // ⚠ The skip-list is checked against the LABEL and the words just before
+        // it ("Previous Balance"), NOT the whole line. CED's footer is a row of
+        // column headings — TOTAL DUE | CURRENT / 1 - 30 | PAST DUE … — and a
+        // whole-line check threw the real answer away because "PAST DUE" sits
+        // two columns over.
+        if (NOT.test(line.slice(Math.max(0, idx - 20), idx) + labelText)) continue;
         // The amount after the label on the same line. Text before the label
         // (an account number, a date) is not it.
-        var idx = line.search(LABELS[k]);
         var after = moneyIn(line.slice(idx));
         if (after.length) return { amount: after[after.length - 1], evidence: line };
-        // A header with its figure underneath. One amount below: that's it.
-        // Several (an aging row: Current | 30 | 60 | 90 | Total Due): only when
-        // the label is the LAST heading on its line, and then the last figure.
+        // A header with its figures underneath. One amount below: that's it.
+        // Several (an aging row): take the column the label heads — the LAST
+        // figure when the label is the last heading (Current | 30 | 60 | Total
+        // Due), the FIRST when it is the first (CED: TOTAL DUE | CURRENT / 1 -
+        // 30 | PAST DUE …). A label in the middle is ambiguous and reads nothing.
         var next = L[i + 1];
-        if (next && !NOT.test(next)) {
+        if (next) {
           var nx = moneyIn(next);
-          var labelIsLast = !/[A-Za-z]/.test(line.slice(idx).replace(LABELS[k], ""));
+          var labelIsLast  = !/[A-Za-z]/.test(line.slice(idx).replace(LABELS[k], ""));
+          var labelIsFirst = !/[A-Za-z]/.test(line.slice(0, idx));
           if (nx.length === 1 || (nx.length > 1 && labelIsLast)) {
             return { amount: nx[nx.length - 1], evidence: line + " / " + next };
+          }
+          if (nx.length > 1 && labelIsFirst) {
+            return { amount: nx[0], evidence: line + " / " + next };
           }
         }
       }

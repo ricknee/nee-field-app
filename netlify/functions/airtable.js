@@ -63,6 +63,12 @@ import {
   decodeInvoicePdf, ymdOrNull,
 } from "./_vendor-invoices.js";
 
+// Vendor STATEMENTS (db/schema/083). Reference documents only — see the module.
+import {
+  canonicalStatementVendor, STATEMENT_VENDORS, decodeStatementPdf, sha256Hex,
+  statementDateOrNull, vendorStatementKey, statementDownloadName,
+} from "./_vendor-statements.js";
+
 /* ============================================================================
  * SECTION MAP — airtable.js  (~3941 lines). Line numbers drift; grep to confirm.
  * Shape: one exported handler() (3831) dispatches on an `action` string —
@@ -678,6 +684,12 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // marking one reviewed is the moment it stops being anyone's problem. Same tier as
   // approveExpense and updateJobBillableRate — back-office money ops.
   "vendorInvoiceAssign", "vendorInvoiceMarkReviewed", "vendorInvoiceDelete",
+  // ── Vendor statements (db/schema/083) ───────────────────────────────────
+  // Intake is the bot's endpoint (the bot is `office`), same reasoning as
+  // vendorInvoiceIntake. A statement moves no money, but it shows what the
+  // company owes its suppliers, which is back-office reading — so the read and
+  // the review sit at the same tier.
+  "vendorStatementIntake", "reviewVendorStatement",
   // ── Power company specs ──────────────────────────────────────────────
   // Uploading sits here rather than at the _NON_VIEWER default that
   // jobPrintUploadUrls deliberately keeps. A print is a drawing for ONE job
@@ -757,6 +769,8 @@ const _ADMIN_OFFICE_READS = new Set([
   // rows it returns is _ADMIN_OFFICE, so the read matches. It is also the only
   // place an invoice that matched NO job is visible at all.
   "vendorInvoices",
+  // Supplier statements (db/schema/083) — matches its own intake/review tier.
+  "vendorStatements",
   // The specs bin, matching its own restore/purge tier exactly as
   // jobPrintsDeleted matches its. `powerCompanySpecs` and
   // `powerCompaniesWithSpecs` are deliberately ABSENT from every set here so
@@ -11121,6 +11135,209 @@ async function handleVendorInvoiceDelete(body, authUser) {
   return resp(200, { ok: true, id: rows[0].id, status: "deleted" });
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+ * VENDOR STATEMENTS — db/schema/083, _vendor-statements.js
+ * ═════════════════════════════════════════════════════════════════════════
+ * CED and Wolff monthly account statements, posted by the MiniBee bot and
+ * read on ☰ → 📑 Statements.
+ *
+ * ⛔ REFERENCE DOCUMENTS ONLY. Every handler in this section touches exactly
+ * one table, vendor_statements, and R2 under vendor-statements/. No expense is
+ * created, no job is matched, no invoice is read or written, nothing prints.
+ * tests/handlers.test.mjs asserts that statically — if you need one of those
+ * things here, it is a different feature.
+ */
+
+// Put the PDF in R2. Returns the key, or null on any failure (logged).
+async function storeVendorStatementPdf(statementId, bytes) {
+  try {
+    const key = vendorStatementKey(statementId);
+    const url = await presignPut(key, "application/pdf", 300);
+    const put = await fetch(url, {
+      method: "PUT", body: bytes, headers: { "Content-Type": "application/pdf" },
+    });
+    if (!put.ok) {
+      console.error(`vendorStatementPdf: R2 PUT ${put.status} for ${statementId}`);
+      return null;
+    }
+    return key;
+  } catch (e) {
+    console.error(`vendorStatementPdf: ${String(e?.message || e)}`);
+    return null;
+  }
+}
+
+// POST { vendor, pdfBase64, statementDate?, originalFilename?, gmailMessageId?,
+//        receivedAt? }
+// → 200 { ok, status:"created", id, pdfStored:true }
+// → 200 { ok, duplicate:true, id, status, pdfStored }
+//
+// ⚠ UNLIKE AN INVOICE, THE PDF IS REQUIRED AND R2 IS NOT OPTIONAL. An invoice
+// with no picture still carries its parsed figures; a statement row without its
+// PDF is nothing at all. So R2 unconfigured is a 503 BEFORE anything is written,
+// and a failed PUT after the insert is a 502 the bot retries — the retry dedupes
+// onto the row and stores the PDF then (the repair branch below). Without that
+// branch, the dedupe would make a single failed PUT permanent.
+async function handleVendorStatementIntake(body, authUser) {
+  const { vendor, pdfBase64, statementDate, originalFilename, gmailMessageId,
+          receivedAt } = body || {};
+
+  const vendorName = canonicalStatementVendor(vendor);
+  if (!vendorName) return resp(400, { ok: false,
+    error: `Unknown vendor: ${String(vendor || "")}. Expected one of: ${STATEMENT_VENDORS.join(", ")}.` });
+
+  const pdf = decodeStatementPdf(pdfBase64);
+  if (pdf.error) return resp(400, { ok: false, error: pdf.error });
+  const hash = sha256Hex(pdf.bytes);
+
+  if (!r2Enabled()) {
+    return resp(503, { ok: false, error: "PDF storage (R2) is not configured — nothing was recorded. Retry later." });
+  }
+
+  const ymd   = statementDateOrNull(statementDate);
+  const fname = originalFilename == null ? null : String(originalFilename).trim().slice(0, 255) || null;
+  const msgId = gmailMessageId == null ? null : String(gmailMessageId).trim().slice(0, 255) || null;
+  // receivedAt is optional — the email's own date, so a later import of old
+  // statements sorts where they belong rather than all on the import day.
+  const recv  = receivedAt && !Number.isNaN(Date.parse(String(receivedAt))) ? String(receivedAt) : null;
+
+  let rows;
+  try {
+    rows = await neonWrite("vendorStatement.intake",
+      `INSERT INTO vendor_statements
+         (vendor, statement_date, received_at, original_filename, gmail_message_id, content_hash)
+       VALUES ($1, $2::date, COALESCE($3::timestamptz, now()), $4, $5, $6)
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [vendorName, ymd, recv, fname, msgId, hash]);
+  } catch (e) {
+    return resp(502, { ok: false, error: `Couldn't record the statement: ${String(e?.message || e)}` });
+  }
+
+  if (!rows?.length) {
+    // Already have it — by content, or by this attachment of this email.
+    const prior = await neonQuery(
+      `SELECT id, status, pdf_key, content_hash FROM vendor_statements
+        WHERE content_hash = $1
+           OR ($2::text IS NOT NULL AND gmail_message_id = $2
+               AND lower(COALESCE(original_filename, '')) = lower(COALESCE($3::text, '')))
+        ORDER BY (content_hash = $1) DESC
+        LIMIT 1`, [hash, msgId, fname]);
+    const p = prior?.rows?.[0] || null;
+    let pdfStored = !!p?.pdf_key;
+    // The repair: an earlier attempt recorded the row but lost the PUT.
+    // ⚠ Only when the CONTENT matches — never write one PDF's bytes under a row
+    // that was matched by email id alone, or the stored file would not be the
+    // document the row's hash describes.
+    if (p && !p.pdf_key && p.content_hash === hash) {
+      const key = await storeVendorStatementPdf(p.id, pdf.bytes);
+      if (key) {
+        try {
+          await neonWrite("vendorStatement.pdfRepair",
+            `UPDATE vendor_statements SET pdf_key = $2 WHERE id = $1 AND pdf_key IS NULL`, [p.id, key]);
+          pdfStored = true;
+        } catch (e) { console.error(`vendorStatement.pdfRepair: ${String(e?.message || e)}`); }
+      }
+    }
+    return resp(200, { ok: true, duplicate: true, id: p?.id || null, status: p?.status || null, pdfStored });
+  }
+
+  const id = rows[0].id;
+  const key = await storeVendorStatementPdf(id, pdf.bytes);
+  if (!key) {
+    return resp(502, { ok: false, id, status: "new", pdfStored: false,
+                       error: "Recorded, but the PDF could not be stored. Re-send it — the retry will store it." });
+  }
+  try {
+    await neonWrite("vendorStatement.pdf", `UPDATE vendor_statements SET pdf_key = $2 WHERE id = $1`, [id, key]);
+  } catch (e) {
+    return resp(502, { ok: false, id, status: "new", pdfStored: false,
+                       error: `Recorded, but the PDF link could not be saved: ${String(e?.message || e)}. Re-send it.` });
+  }
+  return resp(200, { ok: true, status: "created", id, pdfStored: true });
+}
+
+// GET ?action=vendorStatements[&status=new|reviewed|all][&vendor=CED|Wolff]
+// FAILS CLOSED (503), same reason as vendorInvoices: an empty list and an
+// unreachable database must not look the same.
+async function handleVendorStatements(params, authUser) {
+  const want = ["new", "reviewed"].includes(String(params?.status)) ? String(params.status) : "all";
+  const vend = params?.vendor ? canonicalStatementVendor(params.vendor) : null;
+  if (params?.vendor && !vend) return resp(400, { ok: false, error: `Unknown vendor: ${String(params.vendor)}.` });
+
+  const q = await neonQuery(
+    // ⚠ to_char for the DATE — the driver hands back a JS Date otherwise.
+    `SELECT id, vendor, to_char(statement_date, 'YYYY-MM-DD') AS statement_date,
+            received_at, original_filename, gmail_message_id, content_hash, pdf_key,
+            status, reviewed_at, reviewed_by
+       FROM vendor_statements
+      WHERE ($1::text = 'all' OR status = $1)
+        AND ($2::text IS NULL OR vendor = $2)
+      ORDER BY COALESCE(statement_date, received_at::date) DESC, received_at DESC
+      LIMIT 500`, [want, vend]);
+  if (!q || q.error) {
+    console.error(`vendorStatements: Neon read FAILED: ${q?.error || "unavailable"}`);
+    return resp(503, { ok: false, error: "Statements are unavailable right now. Try again shortly." });
+  }
+
+  const statements = await Promise.all((q.rows || []).map(async r => ({
+    id: r.id,
+    vendor: r.vendor,
+    statementDate: r.statement_date || null,
+    receivedAt: r.received_at,
+    originalFilename: r.original_filename,
+    gmailMessageId: r.gmail_message_id,
+    contentHash: r.content_hash,
+    status: r.status,
+    reviewedAt: r.reviewed_at,
+    reviewedBy: r.reviewed_by,
+    pdfUrl: r.pdf_key ? await presignGet(r.pdf_key).catch(() => null) : null,
+    downloadUrl: r.pdf_key
+      ? await presignGetDownload(r.pdf_key,
+          statementDownloadName(r.vendor, r.statement_date, r.original_filename)).catch(() => null)
+      : null,
+  })));
+
+  // Counts over the whole table, per vendor and status — the badge and the
+  // chips both come from here, regardless of the filter asked for.
+  const counts = { new: 0, reviewed: 0, byVendor: {} };
+  for (const v of STATEMENT_VENDORS) counts.byVendor[v] = { new: 0, reviewed: 0 };
+  const cq = await neonQuery(`SELECT vendor, status, count(*)::int AS n FROM vendor_statements GROUP BY vendor, status`);
+  for (const c of (cq?.rows || [])) {
+    if (c.status !== "new" && c.status !== "reviewed") continue;
+    counts[c.status] += c.n;
+    if (counts.byVendor[c.vendor]) counts.byVendor[c.vendor][c.status] += c.n;
+  }
+
+  return resp(200, { ok: true, statements, counts, vendors: STATEMENT_VENDORS });
+}
+
+// POST { statementId } → 200 { ok, id, status:"reviewed", reviewedAt, reviewedBy }
+// 409 when it was already reviewed — the WHERE clause carries the guard, so a
+// double tap never re-stamps who reviewed it.
+async function handleReviewVendorStatement(body, authUser) {
+  const { statementId } = body || {};
+  if (!statementId) return resp(400, { ok: false, error: "Missing statementId." });
+
+  let rows;
+  try {
+    rows = await neonWrite("vendorStatement.review",
+      // Name resolved in SQL: the session token carries {id, role}, NO name.
+      `UPDATE vendor_statements
+          SET status = 'reviewed', reviewed_at = now(),
+              reviewed_by = COALESCE(
+                (SELECT name FROM employees WHERE airtable_id = $2 OR id::text = $2), $2)
+        WHERE id::text = $1 AND status = 'new'
+        RETURNING id, reviewed_at, reviewed_by`,
+      [String(statementId), authUser?.id ? String(authUser.id) : null]);
+  } catch (e) {
+    return resp(502, { ok: false, error: `Couldn't mark it reviewed: ${String(e?.message || e)}` });
+  }
+  if (!rows?.length) return resp(409, { ok: false, error: "That statement was already reviewed, or no longer exists." });
+  return resp(200, { ok: true, id: rows[0].id, status: "reviewed",
+                     reviewedAt: rows[0].reviewed_at, reviewedBy: rows[0].reviewed_by });
+}
+
 // Edit an existing expense. Managers may edit any; an employee may edit only
 // their own unreviewed one (enforced by guardExpenseMutation). Fields mirror
 // the add form; amount/credit follow the same credit-only rule (set the one
@@ -17018,6 +17235,7 @@ export async function handler(event) {
       if (action === "jobDocs")            return await handleJobDocs(params);
       if (action === "expenseReceipts")    return await handleExpenseReceipts(params, authUser);
       if (action === "vendorInvoices")     return await handleVendorInvoices(params, authUser);
+      if (action === "vendorStatements")   return await handleVendorStatements(params, authUser);
       if (action === "expenseReceiptSummary") return await handleExpenseReceiptSummary(params, authUser);
       if (action === "deletedExpenseReceipts") return await handleDeletedExpenseReceipts(params, authUser);
       if (action === "generator")          return await handleGenerator(params);
@@ -17212,6 +17430,8 @@ export async function handler(event) {
       if (body.action === "vendorInvoiceAssign")  return await handleVendorInvoiceAssign(body, authUser);
       if (body.action === "vendorInvoiceMarkReviewed") return await handleVendorInvoiceMarkReviewed(body, authUser);
       if (body.action === "vendorInvoiceDelete")  return await handleVendorInvoiceDelete(body, authUser);
+      if (body.action === "vendorStatementIntake") return await handleVendorStatementIntake(body, authUser);
+      if (body.action === "reviewVendorStatement") return await handleReviewVendorStatement(body, authUser);
       if (body.action === "createVendor")         return await handleCreateVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }

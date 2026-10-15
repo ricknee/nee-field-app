@@ -457,6 +457,29 @@
     }
     .vi-pdf-btn:hover { text-decoration: underline; }
 
+    /* ── 📑 Statements (db/schema/083) — reuses the .vi-* card, chips and
+       buttons so it looks like Invoice Review. A NEW statement is the one that
+       wants attention, same as a pending invoice. The card head is a button so
+       tapping it opens the details; the action row stays outside it. */
+    .vs-head-btn {
+      background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit;
+      text-align: left; cursor: pointer; width: 100%;
+      display: flex; flex-direction: column; gap: 3px;
+    }
+    .vs-file { font-size: 13px; overflow-wrap: anywhere; }
+    .vs-details {
+      margin-top: 6px; padding: 8px 10px; border-radius: 8px;
+      background: var(--panel-3); font-size: 12px; color: var(--muted);
+      display: grid; grid-template-columns: auto 1fr; gap: 3px 10px;
+    }
+    .vs-details b { color: var(--text); font-weight: 600; }
+    .vs-details span { overflow-wrap: anywhere; }
+    .vs-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .vs-actions .btn { flex: 1 1 auto; white-space: nowrap; }
+    /* Each rendered page is its own printed sheet. */
+    .vs-print-page { display: block; width: 100%; height: auto; page-break-after: always; break-after: page; }
+    .vs-print-page:last-child { page-break-after: auto; break-after: auto; }
+
     /* ── Invoice preview overlay ──────────────────────────────────────────
        ⚠⚠ RENDERED WITH pdf.js TO A CANVAS, NOT SHOWN IN AN <iframe>.
        An iframe/embed is the obvious way and it is the wrong one here: Android
@@ -3399,6 +3422,10 @@
                invoice nobody sees is material cost missing from a job's GP, and
                nothing anywhere else would ever mention it. -->
           <button id="btnVendorInvoices" class="btn btn-sm admin-only hidden" type="button">🧾 Invoice Review<span id="vendorInvoiceBadge"></span></button>
+          <!-- CED/Wolff account statements (db/schema/083). REFERENCE ONLY —
+               nothing on that screen creates an expense or touches a job.
+               admin-only (= admin + office) matches the backend tier. -->
+          <button id="btnVendorStatements" class="btn btn-sm admin-only hidden" type="button">📑 Statements<span id="vendorStatementBadge"></span></button>
           <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
           <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
           <button id="btnWhosWorking" class="btn btn-sm strict-admin-only hidden" type="button">🟢 Who's Working</button>
@@ -5081,6 +5108,8 @@
       // unplaced is material cost missing from a job's GP, and this badge is the
       // only thing anywhere that would ever mention it.
       if (typeof refreshVendorInvoiceBadge === "function") refreshVendorInvoiceBadge().catch(() => {});
+      // New CED/Wolff statements, same tier and same idea.
+      if (typeof refreshVendorStatementBadge === "function") refreshVendorStatementBadge().catch(() => {});
       // Acts on ?clock=in / ?clock=out from the home-screen icon. Here rather than
       // at page load so it runs AFTER login — otherwise a tap on an expired
       // session would silently do nothing and the person would walk away
@@ -17295,6 +17324,8 @@
     if (toBtn) toBtn.addEventListener("click", openTimeOff);
     const viBtn = $("btnVendorInvoices");
     if (viBtn) viBtn.addEventListener("click", openVendorInvoices);
+    const vsBtn = $("btnVendorStatements");
+    if (vsBtn) vsBtn.addEventListener("click", openVendorStatements);
     const mySchBtn = $("btnMySchedule");
     if (mySchBtn) mySchBtn.addEventListener("click", openMySchedule);
     const myHoursBtn = $("btnMyHours");
@@ -24360,7 +24391,9 @@
     // ⚠ The count above sits INSIDE the ☰ menu, so it is invisible until someone
     // opens it — and nobody opens a menu looking for something they don't know
     // is there. This raises the dot on the ☰ button itself.
-    $("topbarMenuBtn")?.classList.toggle("has-alert", n > 0);
+    // ⚠ Shared with 📑 Statements — each badge counts the other's too, or
+    // whichever refreshed last would clear the dot the other one raised.
+    $("topbarMenuBtn")?.classList.toggle("has-alert", n > 0 || (window._vsNewCount || 0) > 0);
   }
 
   // Checked once when a role is applied, so the count is right without opening
@@ -25015,6 +25048,226 @@
   }
 
   window.loadVendorInvoices = loadVendorInvoices;
+
+  // ── 📑 STATEMENTS — CED/Wolff account statements (db/schema/083) ──────────
+  // The bot posts each statement PDF to `vendorStatementIntake`. This screen
+  // lists them, previews/opens/prints them, and marks them reviewed.
+  //
+  // ⛔ REFERENCE ONLY. Nothing here creates an expense, picks a job, or touches
+  // an invoice — there is deliberately no job picker on this screen. And
+  // nothing prints by itself: Print only ever runs from the button.
+  let vsData = null;
+  let vsTab = "new";          // "new" | "reviewed"
+  let vsVendor = "";          // "" = all vendors, else "CED" | "Wolff"
+  const vsOpen = new Set();   // statement ids whose details are expanded
+  let vsPrinting = false;
+
+  async function openVendorStatements() {
+    $("vendorStatementModal").style.display = "flex";
+    pushBackEntry("vendorStatements", () => { $("vendorStatementModal").style.display = "none"; });
+    await loadVendorStatements();
+  }
+  window.openVendorStatements = openVendorStatements;
+
+  function closeVendorStatements() {
+    popBackEntry("vendorStatements");
+    $("vendorStatementModal").style.display = "none";
+  }
+  window.closeVendorStatements = closeVendorStatements;
+
+  async function loadVendorStatements() {
+    const host = $("vendorStatementBody");
+    try {
+      // Everything, filtered in the browser — both filters are then instant.
+      vsData = await apiGet("vendorStatements", { status: "all" });
+    } catch (e) {
+      // The backend answers 503, not an empty list, when Neon is down — so say
+      // "unavailable", never "no statements".
+      vsData = null;
+      if (host) host.innerHTML =
+        `<div class="clock-note" style="color:#991b1b;">${esc(e.message || "Statements are unavailable right now.")}</div>`;
+      return;
+    }
+    vsRedraw();
+    renderVendorStatementBadge();
+  }
+  window.loadVendorStatements = loadVendorStatements;
+
+  function renderVendorStatementBadge() {
+    const el = $("vendorStatementBadge");
+    const n = vsData?.counts?.new || 0;
+    window._vsNewCount = n;
+    if (el) {
+      el.textContent = n ? ` (${n})` : "";
+      el.style.color = n ? "#b91c1c" : "";
+      el.style.fontWeight = n ? "800" : "";
+    }
+    // Shared with Invoice Review's badge — see renderVendorInvoiceBadge.
+    const viN = viData?.counts?.needsReview || 0;
+    $("topbarMenuBtn")?.classList.toggle("has-alert", n > 0 || viN > 0);
+  }
+
+  async function refreshVendorStatementBadge() {
+    const role = (state.user?.role || "").toLowerCase();
+    if (role !== "admin" && role !== "office") return;
+    try { vsData = await apiGet("vendorStatements", { status: "all" }); renderVendorStatementBadge(); } catch {}
+  }
+  window.refreshVendorStatementBadge = refreshVendorStatementBadge;
+
+  function vsRedraw() {
+    const host = $("vendorStatementBody");
+    if (host) host.innerHTML = renderVendorStatements();
+  }
+
+  function renderVendorStatements() {
+    if (!vsData) return `<div class="clock-note">Loading…</div>`;
+    const all = vsData.statements || [];
+    const vendors = vsData.vendors || ["CED", "Wolff"];
+    const inTab = all.filter(s => s.status === vsTab);
+    const shown = inTab.filter(s => !vsVendor || s.vendor === vsVendor);
+    const nTab = (t) => all.filter(s => s.status === t && (!vsVendor || s.vendor === vsVendor)).length;
+    const nVendor = (v) => inTab.filter(s => !v || s.vendor === v).length;
+
+    const tabs = `
+      <div class="vi-chiprow">
+        <button class="vi-chip${vsTab === "new" ? " on" : ""}" onclick="vsSetTab('new')">
+          New <span class="vi-chip-n">${nTab("new")}</span></button>
+        <button class="vi-chip${vsTab === "reviewed" ? " on" : ""}" onclick="vsSetTab('reviewed')">
+          Reviewed <span class="vi-chip-n">${nTab("reviewed")}</span></button>
+      </div>`;
+    const vchip = (label, value) => `
+      <button class="vi-chip${vsVendor === value ? " on" : ""}" onclick="vsSetVendor('${esc(value)}')">
+        ${esc(label)} <span class="vi-chip-n">${nVendor(value)}</span></button>`;
+    const vendorChips = `
+      <div class="vi-chiprow">
+        ${vchip("All Vendors", "")}
+        ${vendors.map(v => vchip(v, v)).join("")}
+      </div>`;
+
+    const row = (s) => {
+      const isNew = s.status === "new";
+      const open = vsOpen.has(s.id);
+      const id = esc(s.id);
+      const details = open ? `
+        <div class="vs-details">
+          <b>Vendor</b><span>${esc(s.vendor)}</span>
+          <b>Statement date</b><span>${s.statementDate ? esc(fmtDate(s.statementDate)) : "— not read"}</span>
+          <b>Received</b><span>${s.receivedAt ? esc(new Date(s.receivedAt).toLocaleString("en-US")) : "—"}</span>
+          <b>File</b><span>${esc(s.originalFilename || "—")}</span>
+          <b>Status</b><span>${isNew ? "New" : "Reviewed"}</span>
+          ${!isNew ? `<b>Reviewed</b><span>${s.reviewedAt ? esc(new Date(s.reviewedAt).toLocaleString("en-US")) : ""}${s.reviewedBy ? ` · ${esc(s.reviewedBy)}` : ""}</span>` : ""}
+          <b>Email id</b><span>${esc(s.gmailMessageId || "—")}</span>
+          <b>SHA-256</b><span title="${esc(s.contentHash || "")}">${esc((s.contentHash || "").slice(0, 16))}…</span>
+        </div>` : "";
+      const pdf = s.pdfUrl
+        ? `<button class="btn btn-sm" onclick="vsPreview('${id}')">👁 Preview</button>
+           <a class="btn btn-sm" href="${esc(s.pdfUrl)}" target="_blank" rel="noopener">📄 Open PDF</a>
+           <button class="btn btn-sm" onclick="vsPrint('${id}')">🖨 Print</button>`
+        : `<span class="vi-sub">No PDF stored</span>`;
+      return `
+        <div class="vi-row${isNew ? " is-pending" : ""}">
+          <div class="vi-main">
+            <button type="button" class="vs-head-btn" onclick="vsToggle('${id}')" aria-expanded="${open}">
+              <span class="vi-head">
+                <span class="vi-vendor">${esc(s.vendor)}</span>
+                <span class="vi-sub">${open ? "▾" : "▸"} Details</span>
+              </span>
+              <span class="vi-sub">Statement ${s.statementDate ? `<strong>${esc(fmtDate(s.statementDate))}</strong>` : "<em>date not read</em>"}
+                · received ${esc(fmtDate(s.receivedAt))}</span>
+              <span class="vs-file">${esc(s.originalFilename || "(no filename)")}</span>
+              ${!isNew && s.reviewedBy ? `<span class="vi-sub">✓ Reviewed by ${esc(s.reviewedBy)}</span>` : ""}
+            </button>
+            ${details}
+            <div class="vs-actions">
+              ${pdf}
+              ${isNew ? `<button class="btn btn-primary btn-sm" onclick="vsMarkReviewed('${id}', this)">✓ Mark Reviewed</button>` : ""}
+            </div>
+          </div>
+        </div>`;
+    };
+
+    const empty = vsTab === "new"
+      ? `Nothing new${vsVendor ? ` from ${esc(vsVendor)}` : ""}.`
+      : `No reviewed statements${vsVendor ? ` from ${esc(vsVendor)}` : ""} yet.`;
+
+    return `
+      <div class="clock-note" style="margin-bottom:10px;">
+        CED and Wolff account statements, for reference. They never create an
+        expense or go on a job.
+      </div>
+      <div class="vi-filters">${tabs}${vendorChips}</div>
+      ${shown.length ? shown.map(row).join("") : `<div class="clock-note">${empty}</div>`}
+      <div style="margin-top:12px; display:flex; gap:8px;">
+        <button class="btn btn-sm" onclick="loadVendorStatements()">↺ Refresh</button>
+      </div>`;
+  }
+
+  window.vsSetTab = (t) => { vsTab = t === "reviewed" ? "reviewed" : "new"; vsRedraw(); };
+  window.vsSetVendor = (v) => { vsVendor = v || ""; vsRedraw(); };
+  window.vsToggle = (id) => { if (vsOpen.has(id)) vsOpen.delete(id); else vsOpen.add(id); vsRedraw(); };
+
+  const vsFind = (id) => (vsData?.statements || []).find(s => String(s.id) === String(id));
+  const vsTitle = (s) => `${s.vendor} statement${s.statementDate ? ` · ${fmtDate(s.statementDate)}` : ""}`;
+
+  // Same viewer as Invoice Review (pdf.js to canvas — works on Android).
+  window.vsPreview = (id) => {
+    const s = vsFind(id);
+    if (!s || !s.pdfUrl) return;
+    return openDocPreview({ url: s.pdfUrl, isPdf: true, title: vsTitle(s) });
+  };
+
+  // 🖨 Print through the device's own print dialog. Only ever from this button.
+  // ⚠ Not an <iframe>.print() of the PDF: Android Chrome won't render a PDF in
+  // an iframe, so it would print a blank page. The pages are drawn with pdf.js
+  // and handed to printHtmlPages — the route the panel schedule print uses.
+  window.vsPrint = async (id) => {
+    const s = vsFind(id);
+    if (!s || !s.pdfUrl || vsPrinting) return;
+    vsPrinting = true;
+    showAppToast("Preparing the statement for printing…");
+    try {
+      await ensurePdfJs();
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      const doc = await window.pdfjsLib.getDocument({ url: s.pdfUrl }).promise;
+      const imgs = [];
+      for (let n = 1; n <= doc.numPages; n++) {
+        const page = await doc.getPage(n);
+        const base = page.getViewport({ scale: 1 });
+        const vp = page.getViewport({ scale: Math.min(3, 1700 / base.width) });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.floor(vp.width); canvas.height = Math.floor(vp.height);
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+        imgs.push(canvas.toDataURL("image/jpeg", 0.92));
+        canvas.width = 0; canvas.height = 0;   // free it before the next page
+      }
+      doc.destroy?.();
+      const html = imgs.map(src =>
+        `<img class="vs-print-page" src="${src}" style="max-width:100%; max-height:100vh; width:auto; margin:0 auto;" alt="" />`).join("");
+      printHtmlPages(html, "margin: 0.25in");
+    } catch (e) {
+      console.error(`vsPrint: ${String(e?.message || e)}`);
+      showAppToast("Couldn't prepare the print — use Open PDF and print from there.", { kind: "warn" });
+    } finally {
+      vsPrinting = false;
+    }
+  };
+
+  window.vsMarkReviewed = async (id, btn) => {
+    if (btn) btn.disabled = true;
+    try {
+      await apiPost("reviewVendorStatement", { statementId: id });
+      showAppToast("Statement marked reviewed.");
+    } catch (e) {
+      if (e.status !== 409) {
+        if (btn) btn.disabled = false;
+        showAppToast("Couldn't mark it reviewed: " + (e.message || e), { kind: "warn" });
+        return;
+      }
+      showAppToast(e.message || "That statement was already reviewed.");
+    }
+    await loadVendorStatements();
+  };
 
   // Puts the invoice on a job as a Materials expense. The backend does the
   // creating, so a credit memo lands in the credit column and a normal invoice
@@ -32113,6 +32366,20 @@
     </div>
     <div class="payroll-modal-body">
       <div id="vendorInvoiceBody">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<!-- VENDOR STATEMENTS — CED/Wolff account statements. Reference only.
+     See db/schema/083_vendor_statements.sql. -->
+<div id="vendorStatementModal" class="payroll-modal-backdrop" style="display:none;">
+  <div class="payroll-modal" style="max-width:820px;">
+    <div class="payroll-modal-header">
+      <h2>📑 Statements</h2>
+      <button onclick="closeVendorStatements()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="payroll-modal-body">
+      <div id="vendorStatementBody">Loading…</div>
     </div>
   </div>
 </div>

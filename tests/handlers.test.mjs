@@ -148,6 +148,19 @@ function viOn(seed = {}) {
 }
 function viOff() { mockVI = null; neonOff(); }
 
+// 2d) Vendor STATEMENTS (db/schema/083) — an in-memory vendor_statements table.
+//     Inert unless a case sets it, like mockVI. `failPut` makes the next R2 PUTs
+//     fail, to prove a lost PDF is repaired by the bot's retry.
+let mockVS = null;
+function vsOn() {
+  neonOn([]);
+  mockTables = {};
+  lastFetch = null;
+  mockVS = { rows: [], nextId: 1, failPut: false, sql: [] };
+  return mockVS;
+}
+function vsOff() { mockVS = null; neonOff(); }
+
 globalThis.fetch = async (url, opts) => {
   const method = (opts?.method || "GET").toUpperCase();
   // ⚠ The Neon branch comes FIRST and deliberately does NOT touch `lastFetch`.
@@ -190,6 +203,55 @@ globalThis.fetch = async (url, opts) => {
     //   on both `jobs` and `expense_vendors`, so it MUST be matched before the
     //   branches for those two tables or an expense insert would be answered as
     //   a vendor lookup and the intake would silently create no expense at all.
+    if (mockVS) {
+      const p = sent.params || [];
+      mockVS.sql.push(sql);
+      const lc = (v) => String(v ?? "").toLowerCase();
+      if (/INSERT INTO vendor_statements/i.test(sql)) {
+        const [vendor, ymd, recv, fname, msgId, hash] = p;
+        const dupe = mockVS.rows.some(r => r.content_hash === hash ||
+          (msgId && r.gmail_message_id === msgId && lc(r.original_filename) === lc(fname)));
+        if (dupe) return neonReply([], []);
+        const row = { id: `vs-${mockVS.nextId++}`, vendor, statement_date: ymd || null,
+                      received_at: recv || "2026-10-15T12:00:00.000Z", original_filename: fname ?? null,
+                      gmail_message_id: msgId ?? null, content_hash: hash, pdf_key: null,
+                      status: "new", reviewed_at: null, reviewed_by: null };
+        mockVS.rows.push(row);
+        return neonReply(["id"], [{ id: row.id }]);
+      }
+      if (/UPDATE vendor_statements SET pdf_key/i.test(sql)) {
+        const row = mockVS.rows.find(r => r.id === p[0]);
+        if (row && (!/pdf_key IS NULL/.test(sql) || row.pdf_key == null)) row.pdf_key = p[1];
+        return neonReply([], []);
+      }
+      if (/UPDATE vendor_statements/i.test(sql) && /status = 'reviewed'/.test(sql)) {
+        const row = mockVS.rows.find(r => r.id === p[0] && r.status === "new");
+        if (!row) return neonReply([], []);
+        row.status = "reviewed"; row.reviewed_at = "2026-10-15T13:00:00.000Z"; row.reviewed_by = p[1];
+        return neonReply(["id", "reviewed_at", "reviewed_by"], [row]);
+      }
+      if (/GROUP BY vendor, status/i.test(sql)) {
+        const m = new Map();
+        for (const r of mockVS.rows) { const k = `${r.vendor}|${r.status}`; m.set(k, (m.get(k) || 0) + 1); }
+        return neonReply(["vendor", "status", "n"],
+          [...m].map(([k, n]) => ({ vendor: k.split("|")[0], status: k.split("|")[1], n: String(n) })),
+          { n: 23 });
+      }
+      if (/FROM vendor_statements\s+WHERE content_hash = \$1/i.test(sql)) {
+        const [hash, msgId, fname] = p;
+        const hit = mockVS.rows.filter(r => r.content_hash === hash ||
+          (msgId && r.gmail_message_id === msgId && lc(r.original_filename) === lc(fname)))
+          .sort((a, b) => (b.content_hash === hash) - (a.content_hash === hash));
+        return neonReply(["id", "status", "pdf_key", "content_hash"], hit.slice(0, 1));
+      }
+      if (/FROM vendor_statements/i.test(sql)) {
+        const [want, vend] = p;
+        const hit = mockVS.rows.filter(r => (want === "all" || r.status === want) && (!vend || r.vendor === vend));
+        return neonReply(["id", "vendor", "statement_date", "received_at", "original_filename",
+                          "gmail_message_id", "content_hash", "pdf_key", "status", "reviewed_at", "reviewed_by"], hit);
+      }
+      return neonReply([], []);
+    }
     if (mockVI) {
       const p = sent.params || [];
       // ── The backfill link. Matched BEFORE the intake INSERT below, because
@@ -349,6 +411,10 @@ globalThis.fetch = async (url, opts) => {
       ? Object.fromEntries([...r2Req.headers].map(([k, v]) => [k.toLowerCase(), v]))
       : Object.fromEntries(Object.entries(opts?.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
     mockR2.push({ url: r2Href, method: (r2Req?.method || method).toUpperCase(), headers });
+    if (mockVS?.failPut && (r2Req?.method || method).toUpperCase() === "PUT") {
+      return { ok: false, status: 500, headers: { get: () => "application/xml" },
+               text: async () => "<Error/>", json: async () => ({}) };
+    }
     // A ListObjectsV2 call. `mockR2Keys` is the bucket's contents for the test;
     // listByPrefix parses this XML, so it has to be the real shape or the
     // receipt check silently sees an empty bucket and every link is refused.
@@ -8308,6 +8374,158 @@ await test("orders: one shared PDF layout, served network-first, built live in t
   const b = win.neeBuildOrderPdf({ orderId: 47, jobName: "James Beatty", vendor: "Wolff", lines: [{ itemName: "1/2 EMT", qty: 500 }] });
   ok(b.filename.startsWith("NEE_Order_James_Beatty_"), "filename");
   ok(calls.some(c => c[0] === "text" && c[1] === "1/2 EMT"), "the line prints");
+});
+
+// ── VENDOR STATEMENTS (db/schema/083) ─────────────────────────────────────────
+// Reference documents only. The cases below prove the three actions work, dedupe,
+// and — statically — that nothing in the section can reach money.
+const VS_PDF  = Buffer.from("%PDF-1.4 CED statement September").toString("base64");
+const VS_PDF2 = Buffer.from("%PDF-1.4 Wolff statement September").toString("base64");
+const vsPost = (b, tok = OFFICE_TOK) => POST("vendorStatementIntake", b, tok);
+
+await test("vendorStatements: pure helpers — vendors, dates, PDF check, key", async () => {
+  const m = await import("../netlify/functions/_vendor-statements.js");
+  eq(m.canonicalStatementVendor("CED"), "CED");
+  eq(m.canonicalStatementVendor("CED CONSOLIDATED ELECTRICAL DISTRIBUTORS, INC."), "CED");
+  eq(m.canonicalStatementVendor("WOLFF BROS. SUPPLY, INC."), "Wolff");
+  eq(m.canonicalStatementVendor("Wolff Brothers"), "Wolff");
+  eq(m.canonicalStatementVendor("Lowe's"), null, "invoice vendors are NOT statement vendors");
+  eq(m.canonicalStatementVendor(""), null);
+  eq(m.statementDateOrNull("2026-09-30"), "2026-09-30");
+  eq(m.statementDateOrNull("09/30/2026"), "2026-09-30");
+  eq(m.statementDateOrNull("9/30/26"), "2026-09-30");
+  eq(m.statementDateOrNull("02/31/2026"), null, "an impossible date is null, not March");
+  eq(m.statementDateOrNull("Sept 30"), null);
+  eq(m.statementDateOrNull(null), null);
+  ok(m.decodeStatementPdf(VS_PDF).bytes, "a PDF decodes");
+  ok(m.decodeStatementPdf(Buffer.from("<html>").toString("base64")).error, "a non-PDF is refused");
+  ok(m.decodeStatementPdf("").error, "missing is refused");
+  ok(m.decodeStatementPdf(Buffer.concat([Buffer.from("%PDF-"), Buffer.alloc(9 * 1024 * 1024)]).toString("base64")).error,
+     "over 8 MB is refused");
+  eq(m.vendorStatementKey("abc"), "vendor-statements/abc/statement.pdf");
+  eq(m.statementDownloadName("CED", "2026-09-30", null), "CED statement 2026-09-30.pdf");
+  eq(m.statementDownloadName("CED", null, "stmt"), "stmt.pdf");
+});
+
+await test("vendorStatements: all three actions are admin+office only", async () => {
+  mockTables = {};
+  for (const tok of [EMP_TOK, VIEWER_TOK]) {
+    eq((await vsPost({ vendor: "CED", pdfBase64: VS_PDF }, tok)).statusCode, 403, "intake blocked");
+    eq((await GET("vendorStatements", {}, tok)).statusCode, 403, "list blocked");
+    eq((await POST("reviewVendorStatement", { statementId: "x" }, tok)).statusCode, 403, "review blocked");
+  }
+});
+
+await test("vendorStatementIntake: created, then a DUPLICATE by content and by email attachment", async () => {
+  const vs = vsOn(); r2On();
+  try {
+    const a = json(await vsPost({ vendor: "CED Consolidated Electrical", pdfBase64: VS_PDF,
+      statementDate: "09/30/2026", originalFilename: "CED_Stmt_0930.pdf", gmailMessageId: "msg-1" }));
+    eq(a.status, "created"); ok(a.id, "with an id"); eq(a.pdfStored, true);
+    eq(vs.rows[0].vendor, "CED"); eq(vs.rows[0].statement_date, "2026-09-30");
+    eq(vs.rows[0].pdf_key, `vendor-statements/${a.id}/statement.pdf`, "the PDF is in R2 under its own prefix");
+    ok(/^[0-9a-f]{64}$/.test(vs.rows[0].content_hash), "hashed server-side");
+    ok(mockR2.some(r => r.method === "PUT" && r.url.includes("vendor-statements/")), "really PUT to R2");
+
+    // Same bytes, different email — content hash catches it.
+    const b = json(await vsPost({ vendor: "CED", pdfBase64: VS_PDF, gmailMessageId: "msg-2" }));
+    eq(b.duplicate, true); eq(b.id, a.id); eq(b.status, "new");
+    // Same email + same attachment name, different bytes — the email guard catches it.
+    const c = json(await vsPost({ vendor: "CED", pdfBase64: VS_PDF2, gmailMessageId: "msg-1",
+                                  originalFilename: "ced_stmt_0930.PDF" }));
+    eq(c.duplicate, true, "same message + same filename is a duplicate");
+    // Same email, a DIFFERENT attachment — a second statement, kept.
+    const d = json(await vsPost({ vendor: "Wolff Bros", pdfBase64: VS_PDF2, gmailMessageId: "msg-1",
+                                  originalFilename: "Wolff_0930.pdf" }));
+    eq(d.status, "created", "one email can carry two statements");
+    eq(vs.rows.length, 2);
+    eq(vs.rows[1].vendor, "Wolff");
+  } finally { r2Off(); vsOff(); }
+});
+
+await test("vendorStatementIntake: refusals — vendor, PDF, and R2 unconfigured writes NOTHING", async () => {
+  const vs = vsOn();
+  try {
+    r2On();
+    eq((await vsPost({ vendor: "Lowe's", pdfBase64: VS_PDF })).statusCode, 400, "unknown vendor");
+    eq((await vsPost({ vendor: "CED" })).statusCode, 400, "no PDF");
+    eq((await vsPost({ vendor: "CED", pdfBase64: Buffer.from("not a pdf").toString("base64") })).statusCode, 400, "not a PDF");
+    r2Off();
+    eq((await vsPost({ vendor: "CED", pdfBase64: VS_PDF })).statusCode, 503, "no R2 → 503");
+    eq(vs.rows.length, 0, "and nothing was recorded by any of them");
+    ok(!vs.sql.some(s => /INSERT/i.test(s)), "not even an attempted insert");
+  } finally { r2Off(); vsOff(); }
+});
+
+await test("vendorStatementIntake: a failed PDF PUT is a 502, and the RETRY stores it", async () => {
+  const vs = vsOn(); r2On();
+  try {
+    vs.failPut = true;
+    const a = await vsPost({ vendor: "Wolff", pdfBase64: VS_PDF2, statementDate: "2026-09-30" });
+    eq(a.statusCode, 502, "the bot is told to retry");
+    eq(vs.rows.length, 1); eq(vs.rows[0].pdf_key, null);
+    vs.failPut = false;
+    const b = json(await vsPost({ vendor: "Wolff", pdfBase64: VS_PDF2, statementDate: "2026-09-30" }));
+    eq(b.duplicate, true); eq(b.pdfStored, true, "the retry repaired the missing PDF");
+    ok(vs.rows[0].pdf_key, "pdf_key is now set");
+    eq(vs.rows.length, 1, "still one row");
+  } finally { r2Off(); vsOff(); }
+});
+
+await test("vendorStatements + reviewVendorStatement: list, counts, review once", async () => {
+  const vs = vsOn(); r2On();
+  try {
+    const a = json(await vsPost({ vendor: "CED", pdfBase64: VS_PDF, statementDate: "2026-09-30" }));
+    json(await vsPost({ vendor: "Wolff", pdfBase64: VS_PDF2 }));
+    const l = json(await GET("vendorStatements", { status: "all" }, OFFICE_TOK));
+    eq(l.statements.length, 2);
+    eq(l.counts.new, 2); eq(l.counts.byVendor.CED.new, 1); eq(l.counts.byVendor.Wolff.new, 1);
+    ok(l.statements[0].pdfUrl && l.statements[0].downloadUrl, "presigned links");
+    eq(l.statements.find(s => s.id === a.id).statementDate, "2026-09-30");
+    eq((await GET("vendorStatements", { vendor: "Menards" }, OFFICE_TOK)).statusCode, 400);
+
+    eq((await POST("reviewVendorStatement", {}, OFFICE_TOK)).statusCode, 400, "statementId required");
+    const r = json(await POST("reviewVendorStatement", { statementId: a.id }, OFFICE_TOK));
+    eq(r.status, "reviewed"); eq(vs.rows[0].status, "reviewed");
+    eq((await POST("reviewVendorStatement", { statementId: a.id }, OFFICE_TOK)).statusCode, 409, "second tap is a 409");
+    const l2 = json(await GET("vendorStatements", { status: "all" }, ADMIN_TOK));
+    eq(l2.counts.new, 1); eq(l2.counts.reviewed, 1);
+  } finally { r2Off(); vsOff(); }
+});
+
+await test("vendorStatements: Neon down is a 503, never an empty list", async () => {
+  neonOff();
+  eq((await GET("vendorStatements", {}, OFFICE_TOK)).statusCode, 503);
+});
+
+await test("vendorStatements: STATIC — the section can never reach money", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const start = src.indexOf("async function storeVendorStatementPdf");
+  const end   = src.indexOf("// Edit an existing expense.");
+  ok(start > 0 && end > start, "the statements region is locatable");
+  const region = src.slice(start, end);
+  for (const [re, what] of [
+    [/\bexpenses\b/i, "the expenses table"], [/vendor_invoices/, "vendor_invoices"],
+    [/\bjobs\b/, "jobs"], [/addGeneralExpense|createExpenseNative|settleVendorInvoice/, "an expense creator"],
+    [/handleVendorInvoiceIntake|vendorInvoiceIntake/, "invoice intake"],
+    [/\batFetch\(|mirrorToAirtable\(/, "Airtable"], [/allocation/i, "billing allocations"],
+  ]) ok(!re.test(region), `no reference to ${what}`);
+  // Every table the SQL in this region names is vendor_statements (or employees,
+  // read for the reviewer's name).
+  const tables = [...region.matchAll(/\b(?:FROM|INTO|UPDATE|JOIN)\s+([a-z_]+)/g)].map(m => m[1]);
+  ok(tables.length >= 4, "found the SQL");
+  ok(tables.every(t => t === "vendor_statements" || t === "employees"),
+     `only vendor_statements is written — saw ${[...new Set(tables)].join(", ")}`);
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  const ui = html.slice(html.indexOf("// ── 📑 STATEMENTS"), html.indexOf("window.vsMarkReviewed"));
+  ok(ui.length > 1000, "the screen's code is locatable");
+  ok(!/vendorInvoiceAssign|addGeneralExpense|vendorInvoiceIntake/.test(ui), "the screen calls no money action");
+  // Print only from the button — never from load or render.
+  const loaders = ui.slice(0, ui.indexOf("window.vsPrint"));
+  ok(!/vsPrint\(|window\.print\(|printHtmlPages\(/.test(loaders.replace(/onclick="vsPrint\('\$\{id\}'\)"/g, "")),
+     "nothing prints automatically");
 });
 
 // ── report ──

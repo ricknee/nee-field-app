@@ -208,14 +208,16 @@ globalThis.fetch = async (url, opts) => {
       mockVS.sql.push(sql);
       const lc = (v) => String(v ?? "").toLowerCase();
       if (/INSERT INTO vendor_statements/i.test(sql)) {
-        const [vendor, ymd, recv, fname, msgId, hash] = p;
+        const [vendor, ymd, recv, fname, msgId, hash, amount] = p;
         const dupe = mockVS.rows.some(r => r.content_hash === hash ||
           (msgId && r.gmail_message_id === msgId && lc(r.original_filename) === lc(fname)));
         if (dupe) return neonReply([], []);
         const row = { id: `vs-${mockVS.nextId++}`, vendor, statement_date: ymd || null,
                       received_at: recv || "2026-10-15T12:00:00.000Z", original_filename: fname ?? null,
                       gmail_message_id: msgId ?? null, content_hash: hash, pdf_key: null,
-                      status: "new", reviewed_at: null, reviewed_by: null };
+                      status: "new", reviewed_at: null, reviewed_by: null,
+                      amount: viNum(amount), amount_source: viNum(amount) == null ? null : "bot",
+                      amount_evidence: null, amount_set_by: null };
         mockVS.rows.push(row);
         return neonReply(["id"], [{ id: row.id }]);
       }
@@ -223,6 +225,17 @@ globalThis.fetch = async (url, opts) => {
         const row = mockVS.rows.find(r => r.id === p[0]);
         if (row && (!/pdf_key IS NULL/.test(sql) || row.pdf_key == null)) row.pdf_key = p[1];
         return neonReply([], []);
+      }
+      if (/UPDATE vendor_statements\s+SET amount = /i.test(sql)) {
+        const [id, amount, source, evidence, who] = p;
+        // The guard in the WHERE clause: a "pdf" reading only fills a blank.
+        const row = mockVS.rows.find(r => r.id === id && (source === "manual" || r.amount == null));
+        if (!row) return neonReply([], []);
+        row.amount = viNum(amount);
+        row.amount_source = row.amount == null ? null : source;
+        row.amount_evidence = evidence ?? null;
+        row.amount_set_by = who;
+        return neonReply(["id", "amount", "amount_source"], [row]);
       }
       if (/UPDATE vendor_statements/i.test(sql) && /status = 'reviewed'/.test(sql)) {
         const row = mockVS.rows.find(r => r.id === p[0] && r.status === "new");
@@ -232,10 +245,16 @@ globalThis.fetch = async (url, opts) => {
       }
       if (/GROUP BY vendor, status/i.test(sql)) {
         const m = new Map();
-        for (const r of mockVS.rows) { const k = `${r.vendor}|${r.status}`; m.set(k, (m.get(k) || 0) + 1); }
-        return neonReply(["vendor", "status", "n"],
-          [...m].map(([k, n]) => ({ vendor: k.split("|")[0], status: k.split("|")[1], n: String(n) })),
-          { n: 23 });
+        for (const r of mockVS.rows) {
+          const k = `${r.vendor}|${r.status}`;
+          const g = m.get(k) || { n: 0, total: 0, missing: 0 };
+          g.n++; g.total += r.amount ?? 0; if (r.amount == null) g.missing++;
+          m.set(k, g);
+        }
+        return neonReply(["vendor", "status", "n", "total", "missing"],
+          [...m].map(([k, g]) => ({ vendor: k.split("|")[0], status: k.split("|")[1],
+                                    n: String(g.n), total: String(g.total), missing: String(g.missing) })),
+          { n: 23, missing: 23 });
       }
       if (/FROM vendor_statements\s+WHERE content_hash = \$1/i.test(sql)) {
         const [hash, msgId, fname] = p;
@@ -248,7 +267,8 @@ globalThis.fetch = async (url, opts) => {
         const [want, vend] = p;
         const hit = mockVS.rows.filter(r => (want === "all" || r.status === want) && (!vend || r.vendor === vend));
         return neonReply(["id", "vendor", "statement_date", "received_at", "original_filename",
-                          "gmail_message_id", "content_hash", "pdf_key", "status", "reviewed_at", "reviewed_by"], hit);
+                          "gmail_message_id", "content_hash", "pdf_key", "status", "reviewed_at", "reviewed_by",
+                          "amount", "amount_source", "amount_evidence", "amount_set_by"], hit);
       }
       return neonReply([], []);
     }
@@ -8491,6 +8511,63 @@ await test("vendorStatements + reviewVendorStatement: list, counts, review once"
     const l2 = json(await GET("vendorStatements", { status: "all" }, ADMIN_TOK));
     eq(l2.counts.new, 1); eq(l2.counts.reviewed, 1);
   } finally { r2Off(); vsOff(); }
+});
+
+await test("vendorStatements: amounts — bot, pdf fills a blank only, manual always wins, total to date", async () => {
+  const vs = vsOn(); r2On();
+  try {
+    const PDF3 = Buffer.from("%PDF-1.4 Wolff October").toString("base64");
+    const a = json(await vsPost({ vendor: "Wolff", pdfBase64: VS_PDF2, amount: "1,234.50" }));
+    eq(vs.rows[0].amount, 1234.5); eq(vs.rows[0].amount_source, "bot");
+    eq((await vsPost({ vendor: "Wolff", pdfBase64: PDF3, amount: "abc" })).statusCode, 400, "a bad amount is refused");
+    const b = json(await vsPost({ vendor: "Wolff", pdfBase64: PDF3 }));
+    const c = json(await vsPost({ vendor: "CED", pdfBase64: VS_PDF }));
+
+    const set = (body) => POST("setVendorStatementAmount", body, OFFICE_TOK);
+    eq((await set({ statementId: b.id, amount: "100", source: "guess" })).statusCode, 400, "source is checked");
+    eq((await set({ statementId: b.id, amount: "x", source: "pdf" })).statusCode, 400, "amount is checked");
+    eq(json(await set({ statementId: b.id, amount: "765.25", source: "pdf", evidence: "AMOUNT DUE 765.25" })).amountSource, "pdf");
+    eq((await set({ statementId: a.id, amount: "1.00", source: "pdf" })).statusCode, 409,
+       "a PDF reading never overwrites an amount that is already there");
+    eq(vs.rows[0].amount, 1234.5, "unchanged");
+    eq(json(await set({ statementId: b.id, amount: "765.52", source: "manual" })).amount, 765.52, "a person can correct it");
+
+    const l = json(await GET("vendorStatements", {}, OFFICE_TOK));
+    eq(l.counts.byVendor.Wolff.total, 2000.02, "Wolff total to date = 1234.50 + 765.52");
+    eq(l.counts.byVendor.Wolff.missing, 0);
+    eq(l.counts.byVendor.CED.total, 0); eq(l.counts.byVendor.CED.missing, 1, "the blank CED one is counted as missing");
+    const row = l.statements.find(s => s.id === b.id);
+    eq(row.amountSource, "manual"); eq(row.amount, 765.52);
+
+    eq(json(await set({ statementId: c.id, amount: null, source: "manual" })).amount, null, "manual can clear");
+    for (const tok of [EMP_TOK, VIEWER_TOK]) {
+      eq((await POST("setVendorStatementAmount", { statementId: b.id, amount: "1", source: "manual" }, tok)).statusCode, 403);
+    }
+  } finally { r2Off(); vsOff(); }
+});
+
+await test("statement-amount reader: picks the amount due, skips previous balance, refuses to guess", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../shared/statement-amount.js", import.meta.url)), "utf8");
+  const win = {};
+  new Function("window", src)(win);
+  const read = win.neeReadStatementAmount;
+  eq(read(["PREVIOUS BALANCE 9,999.00", "AMOUNT DUE $4,321.09"]).amount, 4321.09, "amount due, not previous balance");
+  eq(read(["Account AX-58965  Total Amount Due", "12,004.18"]).amount, 12004.18, "figure on the line below");
+  eq(read(["Current 1-30 31-60 61-90 Over 90 Total Due", "500.00 25.00 0.00 0.00 0.00 525.00"]).amount, 525.00,
+     "aging row: last column when the label is the last heading");
+  eq(read(["BALANCE DUE 773.85-"]).amount, -773.85, "Wolff's trailing minus is a credit");
+  eq(read(["PAST DUE 100.00"]), null, "past due alone is not the statement amount");
+  eq(read(["Thank you for your business"]), null, "nothing found is null, not 0");
+  ok(/AMOUNT DUE/.test(read(["AMOUNT DUE 10.00"]).evidence), "the line used comes back as evidence");
+  // pdf.js items → lines, top to bottom, left to right.
+  const lines = win.neeStatementLines([
+    { str: "4,000.00", transform: [1, 0, 0, 1, 400, 700] },
+    { str: "AMOUNT DUE", transform: [1, 0, 0, 1, 50, 700.5] },
+    { str: "Header", transform: [1, 0, 0, 1, 50, 760] },
+  ]);
+  eq(lines[0], "Header"); eq(lines[1], "AMOUNT DUE 4,000.00");
 });
 
 await test("vendorStatements: Neon down is a 503, never an empty list", async () => {

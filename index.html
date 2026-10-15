@@ -25090,8 +25090,94 @@
     }
     vsRedraw();
     renderVendorStatementBadge();
+    vsAutoRead();
   }
   window.loadVendorStatements = loadVendorStatements;
+
+  // ── Fill blank amounts from the PDF (db/schema/084) ──────────────────────
+  // For each statement with no amount, read the PDF's text with pdf.js and pick
+  // the amount with shared/statement-amount.js. A hit is saved as source "pdf"
+  // with the line it came from. The server only lets a "pdf" reading fill a
+  // BLANK, so this can never overwrite a number someone typed.
+  // Each statement is tried once per page load: one that can't be read stays
+  // blank and is counted as missing in the vendor total, rather than being
+  // re-tried on every redraw.
+  const vsTried = new Set();
+  let vsReading = false;
+
+  function ensureStatementReader() {
+    if (window.neeReadStatementAmount) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "/shared/statement-amount.js";
+      s.onload = () => window.neeReadStatementAmount ? resolve() : reject(new Error("reader missing"));
+      s.onerror = () => reject(new Error("reader failed to load"));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function vsReadAmountFromPdf(url) {
+    const doc = await window.pdfjsLib.getDocument({ url }).promise;
+    try {
+      // All pages: the amount box is on page 1 for most suppliers, but some
+      // print the statement total only at the end of the last page.
+      const lines = [];
+      for (let n = 1; n <= doc.numPages; n++) {
+        const tc = await (await doc.getPage(n)).getTextContent();
+        lines.push(...window.neeStatementLines(tc.items));
+      }
+      return window.neeReadStatementAmount(lines);
+    } finally { doc.destroy?.(); }
+  }
+
+  async function vsAutoRead() {
+    if (vsReading) return;
+    const todo = (vsData?.statements || []).filter(s => s.amount == null && s.pdfUrl && !vsTried.has(s.id));
+    if (!todo.length) return;
+    vsReading = true;
+    let saved = 0;
+    try {
+      await ensurePdfJs();
+      await ensureStatementReader();
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      for (const s of todo) {
+        vsTried.add(s.id);
+        try {
+          const hit = await vsReadAmountFromPdf(s.pdfUrl);
+          if (!hit) continue;
+          await apiPost("setVendorStatementAmount",
+            { statementId: s.id, amount: hit.amount, source: "pdf", evidence: hit.evidence });
+          saved++;
+        } catch (e) {
+          // 409 = someone set it meanwhile; anything else just leaves it blank.
+          if (e.status !== 409) console.error(`vsAutoRead ${s.id}: ${String(e?.message || e)}`);
+        }
+      }
+    } catch (e) {
+      console.error(`vsAutoRead: ${String(e?.message || e)}`);
+    } finally {
+      vsReading = false;
+    }
+    if (saved) await loadVendorStatements();
+  }
+
+  // ✎ Amount — type it, correct a wrong PDF reading, or clear it (empty).
+  window.vsEditAmount = async (id) => {
+    const s = vsFind(id);
+    if (!s) return;
+    const v = prompt(`${vsTitle(s)}\nStatement amount (leave empty to clear):`,
+                     s.amount == null ? "" : String(s.amount));
+    if (v === null) return;
+    try {
+      await apiPost("setVendorStatementAmount",
+        { statementId: id, amount: v.trim() === "" ? null : v.trim(), source: "manual" });
+    } catch (e) {
+      showAppToast("Couldn't save the amount: " + (e.message || e), { kind: "warn" });
+      return;
+    }
+    await loadVendorStatements();
+  };
 
   function renderVendorStatementBadge() {
     const el = $("vendorStatementBadge");
@@ -25144,6 +25230,26 @@
         ${vendors.map(v => vchip(v, v)).join("")}
       </div>`;
 
+    // ── Total to date (db/schema/084) — every statement's amount added
+    // together, New and Reviewed alike (owner, 2026-10-15). Shown per vendor;
+    // "All Vendors" shows each vendor's line, never one blended sum.
+    // ⚠ A statement with no amount yet is counted and SAID, so a partial
+    // total can't pass for a final one.
+    const byV = vsData.counts?.byVendor || {};
+    const totalLine = (v) => {
+      const c = byV[v] || {};
+      const n = (c.new || 0) + (c.reviewed || 0);
+      return `
+        <div class="vi-vrow" style="cursor:default;">
+          <span class="vi-vname">${esc(v)} — total to date</span>
+          <span class="vi-vn">${n} stmt${n === 1 ? "" : "s"}</span>
+          <span class="vi-vsum">${viMoney(c.total || 0)}</span>
+        </div>
+        ${c.missing ? `<div class="vi-reason" style="padding:2px 12px 6px;">
+          ${c.missing} ${esc(v)} statement${c.missing === 1 ? " has" : "s have"} no amount yet — not in this total.</div>` : ""}`;
+    };
+    const totals = `<div class="vi-vendors">${(vsVendor ? [vsVendor] : vendors).map(totalLine).join("")}</div>`;
+
     const row = (s) => {
       const isNew = s.status === "new";
       const open = vsOpen.has(s.id);
@@ -25156,6 +25262,10 @@
           <b>File</b><span>${esc(s.originalFilename || "—")}</span>
           <b>Status</b><span>${isNew ? "New" : "Reviewed"}</span>
           ${!isNew ? `<b>Reviewed</b><span>${s.reviewedAt ? esc(new Date(s.reviewedAt).toLocaleString("en-US")) : ""}${s.reviewedBy ? ` · ${esc(s.reviewedBy)}` : ""}</span>` : ""}
+          <b>Amount</b><span>${s.amount == null ? "— none yet" : esc(viMoney(s.amount))}${
+            s.amountSource ? ` · ${{ pdf: "read from the PDF", manual: "entered by hand", bot: "sent by the bot" }[s.amountSource] || esc(s.amountSource)}` : ""}${
+            s.amountSetBy && s.amountSource !== "bot" ? ` · ${esc(s.amountSetBy)}` : ""}</span>
+          ${s.amountEvidence ? `<b>Read from</b><span>“${esc(s.amountEvidence)}”</span>` : ""}
           <b>Email id</b><span>${esc(s.gmailMessageId || "—")}</span>
           <b>SHA-256</b><span title="${esc(s.contentHash || "")}">${esc((s.contentHash || "").slice(0, 16))}…</span>
         </div>` : "";
@@ -25170,8 +25280,10 @@
             <button type="button" class="vs-head-btn" onclick="vsToggle('${id}')" aria-expanded="${open}">
               <span class="vi-head">
                 <span class="vi-vendor">${esc(s.vendor)}</span>
-                <span class="vi-sub">${open ? "▾" : "▸"} Details</span>
+                <span class="vi-amount${s.amount != null && s.amount < 0 ? " is-credit" : ""}">${
+                  s.amount == null ? `<span class="vi-sub">no amount</span>` : viMoney(s.amount)}</span>
               </span>
+              <span class="vi-sub">${open ? "▾" : "▸"} Details</span>
               <span class="vi-sub">Statement ${s.statementDate ? `<strong>${esc(fmtDate(s.statementDate))}</strong>` : "<em>date not read</em>"}
                 · received ${esc(fmtDate(s.receivedAt))}</span>
               <span class="vs-file">${esc(s.originalFilename || "(no filename)")}</span>
@@ -25180,6 +25292,7 @@
             ${details}
             <div class="vs-actions">
               ${pdf}
+              <button class="btn btn-sm" onclick="vsEditAmount('${id}')">✎ Amount</button>
               ${isNew ? `<button class="btn btn-primary btn-sm" onclick="vsMarkReviewed('${id}', this)">✓ Mark Reviewed</button>` : ""}
             </div>
           </div>
@@ -25195,7 +25308,7 @@
         CED and Wolff account statements, for reference. They never create an
         expense or go on a job.
       </div>
-      <div class="vi-filters">${tabs}${vendorChips}</div>
+      <div class="vi-filters">${tabs}${vendorChips}${totals}</div>
       ${shown.length ? shown.map(row).join("") : `<div class="clock-note">${empty}</div>`}
       <div style="margin-top:12px; display:flex; gap:8px;">
         <button class="btn btn-sm" onclick="loadVendorStatements()">↺ Refresh</button>

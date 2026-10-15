@@ -689,7 +689,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // vendorInvoiceIntake. A statement moves no money, but it shows what the
   // company owes its suppliers, which is back-office reading — so the read and
   // the review sit at the same tier.
-  "vendorStatementIntake", "reviewVendorStatement",
+  "vendorStatementIntake", "reviewVendorStatement", "setVendorStatementAmount",
   // ── Power company specs ──────────────────────────────────────────────
   // Uploading sits here rather than at the _NON_VIEWER default that
   // jobPrintUploadUrls deliberately keeps. A print is a drawing for ONE job
@@ -11180,7 +11180,7 @@ async function storeVendorStatementPdf(statementId, bytes) {
 // branch, the dedupe would make a single failed PUT permanent.
 async function handleVendorStatementIntake(body, authUser) {
   const { vendor, pdfBase64, statementDate, originalFilename, gmailMessageId,
-          receivedAt } = body || {};
+          receivedAt, amount } = body || {};
 
   const vendorName = canonicalStatementVendor(vendor);
   if (!vendorName) return resp(400, { ok: false,
@@ -11200,16 +11200,26 @@ async function handleVendorStatementIntake(body, authUser) {
   // receivedAt is optional — the email's own date, so a later import of old
   // statements sorts where they belong rather than all on the import day.
   const recv  = receivedAt && !Number.isNaN(Date.parse(String(receivedAt))) ? String(receivedAt) : null;
+  // Optional (db/schema/084). Same parser as invoices, so Wolff's trailing
+  // minus is a negative, not NaN. A value that won't parse is a 400, not a
+  // quiet blank — the bot sent something and should hear it was wrong.
+  const amt = parseSignedAmount(amount);
+  if (amount != null && amount !== "" && amt === null) {
+    return resp(400, { ok: false, error: `amount is not a number: ${String(amount)}` });
+  }
 
   let rows;
   try {
     rows = await neonWrite("vendorStatement.intake",
       `INSERT INTO vendor_statements
-         (vendor, statement_date, received_at, original_filename, gmail_message_id, content_hash)
-       VALUES ($1, $2::date, COALESCE($3::timestamptz, now()), $4, $5, $6)
+         (vendor, statement_date, received_at, original_filename, gmail_message_id, content_hash,
+          amount, amount_source, amount_set_at)
+       VALUES ($1, $2::date, COALESCE($3::timestamptz, now()), $4, $5, $6,
+               $7::numeric, CASE WHEN $7::numeric IS NULL THEN NULL ELSE 'bot' END,
+               CASE WHEN $7::numeric IS NULL THEN NULL ELSE now() END)
        ON CONFLICT DO NOTHING
        RETURNING id`,
-      [vendorName, ymd, recv, fname, msgId, hash]);
+      [vendorName, ymd, recv, fname, msgId, hash, amt]);
   } catch (e) {
     return resp(502, { ok: false, error: `Couldn't record the statement: ${String(e?.message || e)}` });
   }
@@ -11269,7 +11279,8 @@ async function handleVendorStatements(params, authUser) {
     // ⚠ to_char for the DATE — the driver hands back a JS Date otherwise.
     `SELECT id, vendor, to_char(statement_date, 'YYYY-MM-DD') AS statement_date,
             received_at, original_filename, gmail_message_id, content_hash, pdf_key,
-            status, reviewed_at, reviewed_by
+            status, reviewed_at, reviewed_by,
+            amount, amount_source, amount_evidence, amount_set_by
        FROM vendor_statements
       WHERE ($1::text = 'all' OR status = $1)
         AND ($2::text IS NULL OR vendor = $2)
@@ -11291,6 +11302,10 @@ async function handleVendorStatements(params, authUser) {
     status: r.status,
     reviewedAt: r.reviewed_at,
     reviewedBy: r.reviewed_by,
+    amount: r.amount == null ? null : Number(r.amount),
+    amountSource: r.amount_source || null,
+    amountEvidence: r.amount_evidence || null,
+    amountSetBy: r.amount_set_by || null,
     pdfUrl: r.pdf_key ? await presignGet(r.pdf_key).catch(() => null) : null,
     downloadUrl: r.pdf_key
       ? await presignGetDownload(r.pdf_key,
@@ -11300,13 +11315,25 @@ async function handleVendorStatements(params, authUser) {
 
   // Counts over the whole table, per vendor and status — the badge and the
   // chips both come from here, regardless of the filter asked for.
+  // `total` is the owner's "total to date": every statement's amount added
+  // together, new and reviewed alike. `missing` counts statements with no amount
+  // yet, so the screen can say the total is partial instead of looking final.
   const counts = { new: 0, reviewed: 0, byVendor: {} };
-  for (const v of STATEMENT_VENDORS) counts.byVendor[v] = { new: 0, reviewed: 0 };
-  const cq = await neonQuery(`SELECT vendor, status, count(*)::int AS n FROM vendor_statements GROUP BY vendor, status`);
+  for (const v of STATEMENT_VENDORS) counts.byVendor[v] = { new: 0, reviewed: 0, total: 0, missing: 0 };
+  const cq = await neonQuery(
+    `SELECT vendor, status, count(*)::int AS n,
+            COALESCE(sum(amount), 0)::text AS total,
+            count(*) FILTER (WHERE amount IS NULL)::int AS missing
+       FROM vendor_statements GROUP BY vendor, status`);
   for (const c of (cq?.rows || [])) {
     if (c.status !== "new" && c.status !== "reviewed") continue;
     counts[c.status] += c.n;
-    if (counts.byVendor[c.vendor]) counts.byVendor[c.vendor][c.status] += c.n;
+    const bv = counts.byVendor[c.vendor];
+    if (!bv) continue;
+    bv[c.status] += c.n;
+    // Summed in cents so 0.1 + 0.2 never prints as 0.30000000000000004.
+    bv.total = Math.round((bv.total + Number(c.total || 0)) * 100) / 100;
+    bv.missing += Number(c.missing || 0);
   }
 
   return resp(200, { ok: true, statements, counts, vendors: STATEMENT_VENDORS });
@@ -11336,6 +11363,52 @@ async function handleReviewVendorStatement(body, authUser) {
   if (!rows?.length) return resp(409, { ok: false, error: "That statement was already reviewed, or no longer exists." });
   return resp(200, { ok: true, id: rows[0].id, status: "reviewed",
                      reviewedAt: rows[0].reviewed_at, reviewedBy: rows[0].reviewed_by });
+}
+
+// POST { statementId, amount, source: "pdf"|"manual", evidence? }
+// → 200 { ok, id, amount, amountSource }   (409 when a pdf reading was not applied)
+//
+// db/schema/084. `source:"pdf"` is the Statements screen filling a blank from
+// the PDF's text. It only ever fills a BLANK: the WHERE clause refuses to let a
+// machine reading overwrite an amount a person typed or the bot sent.
+// `source:"manual"` always applies, and `amount: null` with it clears the value.
+async function handleSetVendorStatementAmount(body, authUser) {
+  const { statementId, amount, source, evidence } = body || {};
+  if (!statementId) return resp(400, { ok: false, error: "Missing statementId." });
+  if (source !== "pdf" && source !== "manual") {
+    return resp(400, { ok: false, error: 'source must be "pdf" or "manual".' });
+  }
+  const amt = parseSignedAmount(amount);
+  const clearing = source === "manual" && (amount === null || amount === "");
+  if (amt === null && !clearing) return resp(400, { ok: false, error: `amount is not a number: ${String(amount)}` });
+
+  let rows;
+  try {
+    rows = await neonWrite("vendorStatement.amount",
+      `UPDATE vendor_statements
+          SET amount = $2::numeric,
+              amount_source = CASE WHEN $2::numeric IS NULL THEN NULL ELSE $3::text END,
+              amount_evidence = $4,
+              amount_set_at = now(),
+              amount_set_by = COALESCE(
+                (SELECT name FROM employees WHERE airtable_id = $5 OR id::text = $5), $5)
+        WHERE id::text = $1
+          AND ($3::text = 'manual' OR amount IS NULL)
+        RETURNING id, amount, amount_source`,
+      [String(statementId), clearing ? null : amt, source,
+       evidence ? String(evidence).slice(0, 300) : null,
+       authUser?.id ? String(authUser.id) : null]);
+  } catch (e) {
+    return resp(502, { ok: false, error: `Couldn't save the amount: ${String(e?.message || e)}` });
+  }
+  if (!rows?.length) {
+    return resp(409, { ok: false, error: source === "pdf"
+      ? "That statement already has an amount — not overwritten."
+      : "That statement no longer exists." });
+  }
+  return resp(200, { ok: true, id: rows[0].id,
+                     amount: rows[0].amount == null ? null : Number(rows[0].amount),
+                     amountSource: rows[0].amount_source });
 }
 
 // Edit an existing expense. Managers may edit any; an employee may edit only
@@ -17432,6 +17505,7 @@ export async function handler(event) {
       if (body.action === "vendorInvoiceDelete")  return await handleVendorInvoiceDelete(body, authUser);
       if (body.action === "vendorStatementIntake") return await handleVendorStatementIntake(body, authUser);
       if (body.action === "reviewVendorStatement") return await handleReviewVendorStatement(body, authUser);
+      if (body.action === "setVendorStatementAmount") return await handleSetVendorStatementAmount(body, authUser);
       if (body.action === "createVendor")         return await handleCreateVendor(body);
       return resp(400, { ok: false, error: "Unknown POST action." });
     }

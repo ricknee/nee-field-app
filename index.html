@@ -10193,13 +10193,11 @@
    * ⚠ No browser can reach a Bluetooth P-touch: Web Bluetooth speaks BLE GATT
    * and Brother publishes no web/BLE print protocol for it — printing is
    * iPrint&Label's job (Brother lists the PT-D460BT as supported). Getting the
-   * PNG INTO that app is the whole problem:
-   *  · 📤 Share opens Android's share sheet (Web Share, files). Whether
-   *    iPrint&Label is listed is up to the app, not us — it was ABSENT for
-   *    images on 2026-09-29 (see savePanelStripImages). Offered because it costs
-   *    nothing to look and newer app versions may add it; never relied on.
-   *  · 💾 Save is the route that works: PNGs land in Downloads, then
-   *    iPrint&Label → Image → pick them. */
+   * PNG INTO that app is the whole problem, and 💾 Save is the answer: PNGs
+   * land in Downloads, then iPrint&Label → Image → pick them.
+   * ⛔ No 📤 Share button: iPrint&Label is not an Android share target for
+   * images (2026-09-29, confirmed again by the owner 2026-10-16 on the S25
+   * Ultra). It shipped briefly in 17c1a85 and was removed — don't re-add it. */
   const BREAKER_PHONE_SIZE = "d460_18";
   const BREAKER_PHONE_DPI = 360;
   let breakerPhoneGen = 0;
@@ -10230,8 +10228,6 @@
       files = await Promise.all(items.map(it => breakerLabelPng(it.canvas, breakerLabelFileName(it.l, it.part))));
     } catch (e) { box.innerHTML = `<div class="empty-msg">Couldn't build the labels: ${esc(e.message)}</div>`; return; }
     if (gen !== breakerPhoneGen) return;   // a newer edit already rebuilt it
-    let canShare = false;
-    try { canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files })); } catch {}
     const totalMm = items.reduce((s, it) => s + it.len, 0);
     const btn = "font-size:14px; padding:10px 14px; flex:1 1 150px;";
     box.innerHTML = `
@@ -10240,23 +10236,18 @@
         ${items.length} label${items.length === 1 ? "" : "s"} · each as long as its text needs · about ${Math.round(totalMm / 10)} cm of tape</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
         <button type="button" id="blPhoneSave" class="btn btn-primary btn-sm" style="${btn}">💾 Save ${items.length === 1 ? "image" : `all ${items.length} images`}</button>
-        ${canShare ? `<button type="button" id="blPhoneShare" class="btn btn-sm" style="${btn}">📤 Share…</button>` : ""}
       </div>
       <ol style="font-size:12px; line-height:1.5; margin:0 0 12px; padding-left:20px;">
         <li>Tap <b>💾 Save</b> — the labels go to your phone's Downloads.</li>
         <li>Open <b>Brother iPrint&amp;Label</b>, connect the PT-D460BT (Bluetooth), make sure 18 mm tape is set.</li>
         <li>Choose <b>Image</b> printing and pick the saved labels (newest first — the file names carry the panel, circuit and time).</li>
       </ol>
-      ${canShare ? `<div style="font-size:11px; color:var(--muted); margin:-6px 0 12px;">📤 Share opens Android's share list. If iPrint&amp;Label is in it, send the labels straight there; if it isn't (it wasn't when last tried), use 💾 Save.</div>` : ""}
       <div style="display:flex; flex-direction:column; gap:10px;">
         ${items.map((it, i) => `
           <div style="border:1px solid var(--line); border-radius:8px; padding:8px;">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; font-size:12px;">
               <span><b>${esc(it.l.ckt)}${esc(it.part)}</b> · ${it.len} mm</span>
-              <span style="display:flex; gap:6px;">
-                <button type="button" class="btn btn-sm bl-phone-one" data-i="${i}" style="font-size:12px; padding:6px 10px;">💾</button>
-                ${canShare ? `<button type="button" class="btn btn-sm bl-phone-share" data-i="${i}" style="font-size:12px; padding:6px 10px;">📤</button>` : ""}
-              </span>
+              <button type="button" class="btn btn-sm bl-phone-one" data-i="${i}" style="font-size:12px; padding:6px 10px;">💾</button>
             </div>
             <div class="bl-phone-img" data-i="${i}" style="overflow-x:auto;"></div>
             ${it.shrunk ? `<div style="font-size:11px; color:#b45309; margin-top:4px;">Too long for one label (300 mm max) — text was shrunk. Shorten the wording.</div>` : ""}
@@ -10268,22 +10259,11 @@
       it.canvas.style.cssText = "display:block; box-sizing:border-box; width:100%; max-width:" + Math.round(it.len * 4) + "px; height:auto; border:1px solid #bbb; border-radius:3px; background:#fff;";
       box.querySelector(`.bl-phone-img[data-i="${i}"]`).replaceChildren(it.canvas);
     });
-    const share = async (list) => {
-      try {
-        await navigator.share({ files: list, title: "Breaker labels" });
-        setBreakerLabelsStatus("Shared. If iPrint&Label wasn't in the list, use 💾 Save and open the images from inside the app.");
-      } catch (e) {
-        if (e && e.name === "AbortError") return;
-        setBreakerLabelsStatus("Share didn't work here — use 💾 Save instead.");
-      }
-    };
     $("blPhoneSave").onclick = () => {
       downloadBreakerLabelFiles(files);
       setBreakerLabelsStatus(`Saving ${files.length} label image${files.length === 1 ? "" : "s"} to Downloads — then iPrint&Label → Image.`);
     };
-    if (canShare) $("blPhoneShare").onclick = () => share(files);
     box.querySelectorAll(".bl-phone-one").forEach(b => { b.onclick = () => downloadBreakerLabelFiles([files[Number(b.dataset.i)]]); });
-    box.querySelectorAll(".bl-phone-share").forEach(b => { b.onclick = () => share([files[Number(b.dataset.i)]]); });
     if (scroll) box.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 

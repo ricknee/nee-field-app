@@ -9880,16 +9880,39 @@
            (Math.abs((f.sizes[0] || 0) - (best.sizes[0] || 0)) <= 0.05 && f.n < best.n)))) best = f;
     }
     const shrunk = best.sizes.some((s, i) => s < live[i].size - 0.05);
-    return { W, H, rows: best.rows, shrunk };
+    return { W, H, rows: best.rows, shrunk, score: best.score };
   }
 
-  // 300 dpi like the strips; the P-touch prints at 180, and the apps / driver
-  // scale it down to the tape.
-  function breakerLabelCanvas(blocks, opt) {
-    const pxPerMm = PANEL_STRIP_DPI / 25.4;
+  // Font + text measurer at a given dpi, shared by the painter and autoLen.
+  function breakerLabelFonts(dpi) {
+    const pxPerMm = dpi / 25.4;
     const font = (mm, bold) => `${bold ? "bold " : ""}${(mm * pxPerMm).toFixed(1)}px Helvetica, Arial, sans-serif`;
     const probe = document.createElement("canvas").getContext("2d");
     const measure = (s, mm, bold) => { probe.font = font(mm, bold); return probe.measureText(s).width / pxPerMm; };
+    return { pxPerMm, font, measure };
+  }
+
+  /* 📱 The shortest label (mm along the tape) that prints these blocks as big
+   * as a 300 mm label would — i.e. no smaller than the tape height already
+   * forces. Continuous tape on the phone route has no driver page to match, so
+   * each label can be its own length. Binary search; layout is cheap. */
+  function breakerLabelAutoLen(blocks, tape, lo = 30, hi = 300) {
+    const { measure } = breakerLabelFonts(PANEL_STRIP_DPI);
+    const scoreAt = (len) => breakerLabelLayout(blocks, { w: len, h: tape }, measure).score;
+    const target = scoreAt(hi) - 0.005;
+    if (scoreAt(lo) >= target) return lo;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) / 2;
+      if (scoreAt(mid) >= target) hi = mid; else lo = mid;
+    }
+    return Math.ceil(hi);
+  }
+
+  // 300 dpi like the strips; the P-touch prints at 180, and the apps / driver
+  // scale it down to the tape. opt.dpi overrides (the phone route uses 360,
+  // an exact 2× of the D460BT's head).
+  function breakerLabelCanvas(blocks, opt) {
+    const { pxPerMm, font, measure } = breakerLabelFonts(opt.dpi || PANEL_STRIP_DPI);
     const lay = breakerLabelLayout(blocks, opt, measure);
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(lay.W * pxPerMm);
@@ -9912,11 +9935,12 @@
    * gives the name a label of its own — one line, as big as the tape allows —
    * and puts "Fed from …" plus the panel's voltage on a second label beneath.
    * Line 1 pt sizes the name; Line 2 pt sizes the fed-from and voltage lines. */
-  function breakerLabelPieces(label) {
+  function breakerLabelPieces(label, pts) {
     const st = breakerLabelState, PT = 0.3528;
-    const name = { text: label.line1, size: st.pt1 * PT, bold: true };
-    const fed = { text: label.line2, size: st.pt2 * PT, bold: false };
-    const volt = st.showVolt && st.volt ? [{ text: st.volt, size: st.pt2 * PT, bold: false }] : [];
+    const pt1 = pts ? pts.pt1 : st.pt1, pt2 = pts ? pts.pt2 : st.pt2;
+    const name = { text: label.line1, size: pt1 * PT, bold: true };
+    const fed = { text: label.line2, size: pt2 * PT, bold: false };
+    const volt = st.showVolt && st.volt ? [{ text: st.volt, size: pt2 * PT, bold: false }] : [];
     return st.split === "two" ? [[name], [fed, ...volt]] : [[name, fed, ...volt]];
   }
 
@@ -10016,8 +10040,10 @@
       <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; padding-top:12px; border-top:1px solid var(--line);">
         <button type="button" id="breakerLabelsPrint" class="btn btn-primary btn-sm" style="font-size:13px; padding:8px 14px;">🖨 Print</button>
         <button type="button" id="breakerLabelsSave" class="btn btn-sm" style="font-size:13px; padding:8px 14px;">💾 Save images (phone apps)</button>
+        <button type="button" id="breakerLabelsPhoneBtn" class="btn btn-sm" style="font-size:13px; padding:8px 14px;">📱 Brother Labels (Phone)</button>
       </div>
-      <div id="breakerLabelsStatus" style="font-size:12px; color:var(--muted); margin-top:8px; min-height:16px;"></div>`
+      <div id="breakerLabelsStatus" style="font-size:12px; color:var(--muted); margin-top:8px; min-height:16px;"></div>
+      <div id="breakerLabelsPhone" style="display:none; margin-top:10px; padding-top:12px; border-top:1px solid var(--line);"></div>`
       : `<div class="empty-msg">No breakers with a name on this panel yet — type the loads in first.</div>`;
 
     $("breakerLabelsModal").style.display = "flex";
@@ -10036,9 +10062,18 @@
       });
       body.querySelector(`.bl-preview[data-i="${i}"]`).replaceChildren(...canvases);
       body.querySelector(`.bl-note[data-i="${i}"]`).textContent = anyShrunk ? "Text shrunk to fit — shorten it, or make the label longer." : "";
+      phoneStale();
     };
     const paintAll = () => labels.forEach((_, i) => paintOne(i));
+    // 📱 panel, if open, rebuilds after any edit/tick (debounced — typing).
+    let phoneTimer = null;
+    const phoneStale = () => {
+      if ($("breakerLabelsPhone").style.display === "none") return;
+      clearTimeout(phoneTimer);
+      phoneTimer = setTimeout(() => renderBreakerLabelsPhone(false), 400);
+    };
     const count = () => {
+      phoneStale();
       const n = labels.filter(l => l.on).length;
       const per = st.split === "two" ? 2 : 1;
       $("breakerLabelsCount").textContent = `${n} of ${labels.length} selected` + (n && per > 1 ? ` · ${n * per} labels` : "");
@@ -10091,6 +10126,7 @@
     body.querySelectorAll(".bl-tick").forEach(i => { i.onchange = () => { labels[Number(i.dataset.i)].on = i.checked; count(); }; });
     $("breakerLabelsSave").onclick = saveBreakerLabelImages;
     $("breakerLabelsPrint").onclick = printBreakerLabels;
+    $("breakerLabelsPhoneBtn").onclick = () => renderBreakerLabelsPhone(true);
     paintAll();
     count();
   };
@@ -10109,29 +10145,146 @@
 
   // One PNG per label, dated, downloads spaced out (Chrome refuses a burst as
   // "multiple downloads" — same reason as savePanelStripImages).
-  async function saveBreakerLabelImages() {
-    const picked = breakerLabelsPicked();
-    if (!picked.length) return;
-    const opt = breakerLabelOpts();
+  // Dated, so a re-save never collides with an old copy in Downloads (the
+  // panel-PDF "(1)" trap).
+  function breakerLabelFileName(l, part) {
     const now = new Date(), pad = (n) => String(n).padStart(2, "0");
     const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}${pad(now.getMinutes())}`;
     const safe = (s) => String(s || "").replace(/[\\/:*?"<>|#]/g, "").trim();
-    setBreakerLabelsStatus("Building label images…");
-    let files;
-    try {
-      files = await Promise.all(picked.map(({ l, blocks, part }) => new Promise((resolve, reject) => {
-        breakerLabelCanvas(blocks, opt).canvas.toBlob(b => b
-          ? resolve(new File([b], `${safe(panelDisplayName())} ckt ${l.ckt}${part} ${safe(l.line1)} ${stamp}.png`, { type: "image/png" }))
-          : reject(new Error("the image couldn't be made")), "image/png");
-      })));
-    } catch (e) { setBreakerLabelsStatus("Couldn't build the labels: " + e.message); return; }
+    return `${safe(panelDisplayName())} ckt ${l.ckt}${part} ${safe(l.line1)} ${stamp}.png`;
+  }
+
+  function breakerLabelPng(canvas, name) {
+    return new Promise((resolve, reject) => canvas.toBlob(b => b
+      ? resolve(new File([b], name, { type: "image/png" }))
+      : reject(new Error("the image couldn't be made")), "image/png"));
+  }
+
+  function downloadBreakerLabelFiles(files) {
     files.forEach((f, i) => setTimeout(() => {
       const a = document.createElement("a");
       a.href = URL.createObjectURL(f); a.download = f.name;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }, i * 900));
+  }
+
+  async function saveBreakerLabelImages() {
+    const picked = breakerLabelsPicked();
+    if (!picked.length) return;
+    const opt = breakerLabelOpts();
+    setBreakerLabelsStatus("Building label images…");
+    let files;
+    try {
+      files = await Promise.all(picked.map(({ l, blocks, part }) =>
+        breakerLabelPng(breakerLabelCanvas(blocks, opt).canvas, breakerLabelFileName(l, part))));
+    } catch (e) { setBreakerLabelsStatus("Couldn't build the labels: " + e.message); return; }
+    downloadBreakerLabelFiles(files);
     setBreakerLabelsStatus(`Saving ${files.length} label image${files.length === 1 ? "" : "s"} — open them from inside the Brother app.`);
+  }
+
+  /* 📱 Brother Labels (Phone) — PT-D460BT, 18 mm TZe, from the phone on site.
+   * Fixed to the D460BT's 18 mm tape whatever the picker above says (that picker
+   * and its prefs belong to 🖨/💾 and stay untouched). Unlike 🖨 there's no driver
+   * page to match, so each label is only as long as its text needs
+   * (breakerLabelAutoLen). Name/Fed-from pt come from the picker when it's
+   * already on D460BT 18 mm, else that size's defaults.
+   *
+   * ⚠ No browser can reach a Bluetooth P-touch: Web Bluetooth speaks BLE GATT
+   * and Brother publishes no web/BLE print protocol for it — printing is
+   * iPrint&Label's job (Brother lists the PT-D460BT as supported). Getting the
+   * PNG INTO that app is the whole problem:
+   *  · 📤 Share opens Android's share sheet (Web Share, files). Whether
+   *    iPrint&Label is listed is up to the app, not us — it was ABSENT for
+   *    images on 2026-09-29 (see savePanelStripImages). Offered because it costs
+   *    nothing to look and newer app versions may add it; never relied on.
+   *  · 💾 Save is the route that works: PNGs land in Downloads, then
+   *    iPrint&Label → Image → pick them. */
+  const BREAKER_PHONE_SIZE = "d460_18";
+  const BREAKER_PHONE_DPI = 360;
+  let breakerPhoneGen = 0;
+
+  async function renderBreakerLabelsPhone(scroll) {
+    const box = $("breakerLabelsPhone");
+    if (!box) return;
+    const picked = breakerLabelsPicked();
+    box.style.display = "block";
+    const gen = ++breakerPhoneGen;
+    if (!picked.length) {
+      box.innerHTML = `<div class="empty-msg">Tick the breakers you want, then tap 📱 again.</div>`;
+      return;
+    }
+    setBreakerLabelsStatus("");
+    const st = breakerLabelState, sz = BREAKER_LABEL_SIZES[BREAKER_PHONE_SIZE];
+    const pts = st.size === BREAKER_PHONE_SIZE ? { pt1: st.pt1, pt2: st.pt2 } : { pt1: sz.pt1, pt2: sz.pt2 };
+    const items = picked.flatMap(({ l }) => breakerLabelPieces(l, pts).map((blocks, k, all) => {
+      const len = breakerLabelAutoLen(blocks, sz.tape);
+      const { canvas } = breakerLabelCanvas(blocks, { w: len, h: sz.tape, dpi: BREAKER_PHONE_DPI });
+      // Three lines at the default pt are ~3 % taller than 18 mm, so `shrunk`
+      // is true on nearly every label here — that's the tape, not the length.
+      // Only warn when the 300 mm cap is what made the text smaller.
+      return { l, part: all.length > 1 ? ` ${"ab"[k]}` : "", len, canvas, shrunk: len >= 300 };
+    }));
+    let files;
+    try {
+      files = await Promise.all(items.map(it => breakerLabelPng(it.canvas, breakerLabelFileName(it.l, it.part))));
+    } catch (e) { box.innerHTML = `<div class="empty-msg">Couldn't build the labels: ${esc(e.message)}</div>`; return; }
+    if (gen !== breakerPhoneGen) return;   // a newer edit already rebuilt it
+    let canShare = false;
+    try { canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files })); } catch {}
+    const totalMm = items.reduce((s, it) => s + it.len, 0);
+    const btn = "font-size:14px; padding:10px 14px; flex:1 1 150px;";
+    box.innerHTML = `
+      <div style="font-weight:700; font-size:14px; margin-bottom:4px;">📱 PT-D460BT · 18 mm tape</div>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+        ${items.length} label${items.length === 1 ? "" : "s"} · each as long as its text needs · about ${Math.round(totalMm / 10)} cm of tape</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+        <button type="button" id="blPhoneSave" class="btn btn-primary btn-sm" style="${btn}">💾 Save ${items.length === 1 ? "image" : `all ${items.length} images`}</button>
+        ${canShare ? `<button type="button" id="blPhoneShare" class="btn btn-sm" style="${btn}">📤 Share…</button>` : ""}
+      </div>
+      <ol style="font-size:12px; line-height:1.5; margin:0 0 12px; padding-left:20px;">
+        <li>Tap <b>💾 Save</b> — the labels go to your phone's Downloads.</li>
+        <li>Open <b>Brother iPrint&amp;Label</b>, connect the PT-D460BT (Bluetooth), make sure 18 mm tape is set.</li>
+        <li>Choose <b>Image</b> printing and pick the saved labels (newest first — the file names carry the panel, circuit and time).</li>
+      </ol>
+      ${canShare ? `<div style="font-size:11px; color:var(--muted); margin:-6px 0 12px;">📤 Share opens Android's share list. If iPrint&amp;Label is in it, send the labels straight there; if it isn't (it wasn't when last tried), use 💾 Save.</div>` : ""}
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        ${items.map((it, i) => `
+          <div style="border:1px solid var(--line); border-radius:8px; padding:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; font-size:12px;">
+              <span><b>${esc(it.l.ckt)}${esc(it.part)}</b> · ${it.len} mm</span>
+              <span style="display:flex; gap:6px;">
+                <button type="button" class="btn btn-sm bl-phone-one" data-i="${i}" style="font-size:12px; padding:6px 10px;">💾</button>
+                ${canShare ? `<button type="button" class="btn btn-sm bl-phone-share" data-i="${i}" style="font-size:12px; padding:6px 10px;">📤</button>` : ""}
+              </span>
+            </div>
+            <div class="bl-phone-img" data-i="${i}" style="overflow-x:auto;"></div>
+            ${it.shrunk ? `<div style="font-size:11px; color:#b45309; margin-top:4px;">Too long for one label (300 mm max) — text was shrunk. Shorten the wording.</div>` : ""}
+          </div>`).join("")}
+      </div>`;
+    // The canvases themselves are the preview — width-fitted so a long label
+    // still reads on a phone, never taller than a real 18 mm strip looks.
+    items.forEach((it, i) => {
+      it.canvas.style.cssText = "display:block; box-sizing:border-box; width:100%; max-width:" + Math.round(it.len * 4) + "px; height:auto; border:1px solid #bbb; border-radius:3px; background:#fff;";
+      box.querySelector(`.bl-phone-img[data-i="${i}"]`).replaceChildren(it.canvas);
+    });
+    const share = async (list) => {
+      try {
+        await navigator.share({ files: list, title: "Breaker labels" });
+        setBreakerLabelsStatus("Shared. If iPrint&Label wasn't in the list, use 💾 Save and open the images from inside the app.");
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        setBreakerLabelsStatus("Share didn't work here — use 💾 Save instead.");
+      }
+    };
+    $("blPhoneSave").onclick = () => {
+      downloadBreakerLabelFiles(files);
+      setBreakerLabelsStatus(`Saving ${files.length} label image${files.length === 1 ? "" : "s"} to Downloads — then iPrint&Label → Image.`);
+    };
+    if (canShare) $("blPhoneShare").onclick = () => share(files);
+    box.querySelectorAll(".bl-phone-one").forEach(b => { b.onclick = () => downloadBreakerLabelFiles([files[Number(b.dataset.i)]]); });
+    box.querySelectorAll(".bl-phone-share").forEach(b => { b.onclick = () => share([files[Number(b.dataset.i)]]); });
+    if (scroll) box.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   // 🖨 The same PNGs, one per page. Every page is the same Length × tape, which

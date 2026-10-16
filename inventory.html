@@ -1299,6 +1299,8 @@ function goLog(mode) {
   logMode = mode || "Use";
   cart = [];
   selectedItem = null;
+  logCat = "";
+  stockLevelsAllCache = null;   // counts in the category list are as of opening this screen
   // Title varies by mode:
   //   Use            → "Use on Job"
   //   Return         → "Return Items" (original flow — uses currentLocation)
@@ -1414,12 +1416,83 @@ function renderLogForm() {
   try { refreshFieldAppBackLink(); } catch(e) {}
 }
 
+// The category being browsed on this screen. Kept across Add to Cart, so the
+// list comes back after each item and several can be pulled from one category.
+var logCat = "";
+var logCatLoading = false;
+
 function renderItemSearch() {
+  var catSet = {};
+  allItems.forEach(function(i){ if (i.cat) catSet[i.cat] = true; });
+  initCombo("log-cat", Object.keys(catSet).sort(), logCat, function(val){ logCat = val; renderLogCatList(); });
+  if (logCat) setTimeout(renderLogCatList, 0);
   return '<div class="scan-row">' +
     '<input class="field-inp" id="item-search" type="text" placeholder="Search items…" autocomplete="off" oninput="onItemSearch()" style="flex:1;" />' +
     '<button class="scan-btn" onclick="startScan(\'item\')" title="Scan barcode">⬛</button>' +
-    '</div><div id="search-drop"></div>';
+    '</div><div id="search-drop"></div>' +
+    '<div style="margin-top:8px;">' + comboHTML("log-cat", "…or browse by category") + '</div>' +
+    '<div id="log-cat-result"></div>';
 }
+
+// Every item in the chosen category, with how many are on hand at the From
+// Location and in total. Counts come from the same stockLevelsAll cache Check
+// Stock uses; until it loads (or if it fails) the items list without counts.
+function renderLogCatList() {
+  var box = document.getElementById("log-cat-result");
+  if (!box) return;
+  if (!logCat) { box.innerHTML = ""; return; }
+
+  var items = allItems.filter(function(i){ return i.cat === logCat; })
+    .sort(function(a, b){ return a.name.localeCompare(b.name); });
+  if (!items.length) { box.innerHTML = '<div class="empty" style="padding:10px;">No items in ' + escapeAttr(logCat) + '</div>'; return; }
+
+  if (!stockLevelsAllCache && !logCatLoading) {
+    logCatLoading = true;
+    apiGet("stockLevelsAll")
+      .then(function(d){ stockLevelsAllCache = d.levels || []; })
+      .catch(function(){})
+      .then(function(){ logCatLoading = false; if (stockLevelsAllCache) renderLogCatList(); });
+  }
+
+  var locSel  = document.getElementById("log-from-loc");
+  var locName = (locSel && locSel.value) ? locSel.options[locSel.selectedIndex].text : "";
+  var here = {}, total = {};
+  (stockLevelsAllCache || []).forEach(function(lv){
+    if (!lv.itemId) return;
+    total[lv.itemId] = (total[lv.itemId] || 0) + (lv.qtyOnHand || 0);
+    if (locName && lv.locationName === locName) here[lv.itemId] = (here[lv.itemId] || 0) + (lv.qtyOnHand || 0);
+  });
+  function fmtQ(n){ return (+n.toFixed(2)).toLocaleString("en-US"); }
+
+  box.innerHTML =
+    '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:10px 0 6px;">' +
+      escapeAttr(logCat) + ' · ' + items.length + ' item' + (items.length === 1 ? '' : 's') + '</div>' +
+    '<div style="background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;overflow:hidden;">' +
+    items.map(function(i){
+      var countHtml = "";
+      if (stockLevelsAllCache) {
+        var t = total[i.id] || 0, h = here[i.id] || 0, uom = i.uom || "";
+        if (locName) {
+          countHtml = '<div style="text-align:right;white-space:nowrap;">' +
+            '<div style="font-size:14px;font-weight:700;color:' + (h > 0 ? '#4ade80' : 'var(--muted)') + ';">' + fmtQ(h) + ' ' + uom + '</div>' +
+            '<div style="font-size:11px;color:var(--dim);">' + (t !== h ? fmtQ(t) + ' all locations' : 'here') + '</div></div>';
+        } else {
+          countHtml = '<div style="font-size:14px;font-weight:700;white-space:nowrap;color:' + (t > 0 ? '#4ade80' : 'var(--muted)') + ';">' + fmtQ(t) + ' ' + uom + '</div>';
+        }
+      } else if (logCatLoading) {
+        countHtml = '<div style="font-size:11px;color:var(--muted);">…</div>';
+      }
+      return '<div class="drop-item" style="display:flex;align-items:center;justify-content:space-between;gap:10px;" onclick="pickItem(\'' + i.id + '\')">' +
+        '<div style="min-width:0;"><div class="drop-name" style="overflow-wrap:anywhere;">' + i.name + '</div>' +
+        '<div class="drop-meta">' + [i.size && ('size ' + i.size), i.uom].filter(Boolean).join(" · ") + '</div></div>' +
+        countHtml + '</div>';
+    }).join("") + '</div>';
+}
+
+// Changing From Location re-counts the category list for the new location.
+document.addEventListener("change", function(e){
+  if (e.target && e.target.id === "log-from-loc") renderLogCatList();
+});
 
 function onJobSearch() {
   var q    = (document.getElementById("log-job-search")?.value || "").trim().toLowerCase();

@@ -291,6 +291,10 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" onclick="goCheckStock()">
       <div class="ico">🔍</div><div><div class="lbl">Check Stock</div><div class="sub">See qty on hand at all locations</div></div>
     </button>
+    <!-- Admin-only, like every other place this app shows a cost. -->
+    <button class="big-btn" id="pricecheck-btn" onclick="goPriceCheck()" style="display:none">
+      <div class="ico">🏷️</div><div><div class="lbl">Price Check</div><div class="sub">Scan or type an item — see what it costs</div></div>
+    </button>
     <button class="big-btn" onclick="goMaterialReport()">
       <div class="ico">📄</div><div><div class="lbl">Material Report</div><div class="sub">By job — download a PDF for yourself</div></div>
     </button>
@@ -421,6 +425,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-updprice" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Update Item Price</h2></div>
   <div class="log-body" id="updprice-body"></div>
+</div>
+
+<!-- PRICE CHECK (admin) -->
+<div id="s-pricecheck" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Price Check</h2></div>
+  <div class="log-body" id="pricecheck-body"></div>
 </div>
 
 <!-- ADD WIRE SCRAP -->
@@ -1157,6 +1167,8 @@ function applyUser() {
   if (wirecostBtn) wirecostBtn.style.display = isAdmin ? "flex" : "none";
   var updpriceBtn = document.getElementById("updprice-btn");
   if (updpriceBtn) updpriceBtn.style.display = isAdmin ? "flex" : "none";
+  var pricecheckBtn = document.getElementById("pricecheck-btn");
+  if (pricecheckBtn) pricecheckBtn.style.display = isAdmin ? "flex" : "none";
   // Reorder alerts are visible to everyone — field guys need to know what's low too
   if (reorderBtn)  reorderBtn.style.display  = "flex";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
@@ -6140,6 +6152,120 @@ function labelTestScanned(val) {
     '</div>';
 }
 
+// ═══════════════════════════════════════════════════════════
+// PRICE CHECK (admin only)
+// Scan or type an item and the price is the first thing on screen. Check Stock
+// already shows the same numbers, but under every location card. Read-only:
+// changing a price is still Update Item Price / the Vendor Pricing editor.
+// ═══════════════════════════════════════════════════════════
+var priceCheckItemId = null;
+
+function goPriceCheck() {
+  showScreen("pricecheck");
+  priceCheckItemId = null;
+  document.getElementById("pricecheck-body").innerHTML =
+    '<div class="field-group"><div class="field-lbl">Item</div>' +
+    '<div class="scan-row">' +
+    '<input class="field-inp" id="pc-search" type="text" placeholder="Type a name or barcode…" autocomplete="off" oninput="onPriceCheckSearch()" onkeydown="onPriceCheckKey(event)" style="flex:1;" />' +
+    '<button class="scan-btn" onclick="startScan(\'price\')" title="Scan barcode">⬛</button>' +
+    '</div><div id="pc-drop"></div></div>' +
+    '<div id="pc-result"></div>';
+  // Focused so a Bluetooth/USB scanner (which types the code and hits Enter) works with no tap.
+  setTimeout(function(){ var el = document.getElementById("pc-search"); if (el) el.focus(); }, 50);
+}
+
+function onPriceCheckSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function() {
+    var q    = searchNorm(document.getElementById("pc-search")?.value || "").trim();
+    var drop = document.getElementById("pc-drop");
+    if (!drop || !q) { if (drop) drop.innerHTML = ""; return; }
+    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); }).slice(0, 50);
+    drop.innerHTML = hits.length
+      ? '<div class="search-drop">' + hits.map(function(i){
+          return '<div class="drop-item" onclick="showPriceCheck(\'' + i.id + '\')">' +
+            '<div class="drop-name">' + escapeHtml(i.name) + '</div>' +
+            '<div class="drop-meta">' + [i.cat, i.cost > 0 ? fmtCurrency(i.cost) + (i.uom ? ' / ' + i.uom : '') : 'no price'].filter(Boolean).map(escapeHtml).join(" · ") + '</div></div>';
+        }).join("") + '</div>'
+      : '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>';
+  }, 120);
+}
+
+// Enter on an exact barcode jumps straight to the item — that is what a
+// keyboard-wedge scanner sends. Otherwise Enter takes the only match, if there is one.
+function onPriceCheckKey(e) {
+  if (e.key !== "Enter") return;
+  var raw = String(document.getElementById("pc-search")?.value || "").trim();
+  if (!raw) return;
+  var item = allItems.find(function(i){ return i.barcode && String(i.barcode).trim() === raw; });
+  if (!item) {
+    var q = searchNorm(raw);
+    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); });
+    if (hits.length === 1) item = hits[0];
+  }
+  if (item) { e.preventDefault(); showPriceCheck(item.id); }
+}
+
+async function showPriceCheck(itemId) {
+  var item = allItems.find(function(i){ return i.id === itemId; });
+  if (!item) return;
+  priceCheckItemId = itemId;
+
+  var drop = document.getElementById("pc-drop");
+  var inp  = document.getElementById("pc-search");
+  if (drop) drop.innerHTML = "";
+  if (inp)  inp.value = "";   // cleared, not filled, so the next scan/type starts fresh
+
+  var cost = Number(item.cost) || 0;
+  var uom  = item.uom || "unit";
+  var html = '<div style="background:var(--navy-mid);border-radius:var(--r);padding:16px;margin-top:4px;">' +
+    '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">' +
+      '<div style="font-size:16px;font-weight:700;color:var(--text);flex:1;min-width:0;">' + escapeHtml(item.name) + '</div>' +
+      '<button onclick="goEditItem(\'' + item.id + '\')" style="background:var(--slate);border:none;border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:5px 12px;cursor:pointer;flex-shrink:0;">✎ Edit</button>' +
+    '</div>' +
+    '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + [item.cat, item.size && ('size ' + item.size), item.barcode && ('# ' + item.barcode)].filter(Boolean).map(escapeHtml).join(" · ") + '</div>' +
+    '<div style="margin-top:14px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);">Default unit cost</div>' +
+    '<div style="font-size:34px;font-weight:800;color:' + (cost > 0 ? 'var(--gold)' : 'var(--muted)') + ';line-height:1.1;">' +
+      (cost > 0 ? fmtCurrency(cost) + '<span style="font-size:15px;font-weight:600;color:var(--dim);"> / ' + escapeHtml(uom) + '</span>' : 'No price set') +
+    '</div>';
+  // Weighed wire is priced per lb; the per-ft figure is what people actually compare.
+  // The ft/lb used is printed alongside so a wrong conversion is visible, not hidden.
+  if (cost > 0 && item.wireFtPerLb > 0) {
+    html += '<div style="font-size:14px;color:var(--blue);font-weight:700;margin-top:4px;">≈ ' +
+      '$' + (cost / item.wireFtPerLb).toFixed(4) + ' / ft' +
+      '<span style="font-size:11px;color:var(--muted);font-weight:500;"> at ' + item.wireFtPerLb + ' ft/lb</span></div>';
+  }
+  html += '</div><div id="pc-vendors"></div>';
+  document.getElementById("pc-result").innerHTML = html;
+
+  var vEl = document.getElementById("pc-vendors");
+  vEl.innerHTML = '<div style="color:var(--dim);font-size:13px;padding:12px 2px;"><div class="spinner" style="display:inline-block;width:14px;height:14px;border-width:2px;vertical-align:middle;"></div> Loading vendor prices…</div>';
+  try {
+    var d = await apiGet("itemVendorPricing", { itemId: itemId });
+    if (priceCheckItemId !== itemId) return;   // a newer scan has replaced this one
+    var vendors = (d.vendors || []).filter(function(v){ return v.active !== false; });
+    if (!vendors.length) {
+      vEl.innerHTML = '<div style="color:var(--muted);font-size:12px;padding:12px 2px;">No vendor prices on file for this item.</div>';
+      return;
+    }
+    vEl.innerHTML =
+      '<div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:16px 0 8px;">Vendor prices</div>' +
+      vendors.map(function(v){
+        var meta = [v.partNumber && ('Part ' + v.partNumber), v.lastUpdate && ('updated ' + v.lastUpdate)].filter(Boolean).map(escapeHtml).join(" · ");
+        return '<div style="background:var(--navy-lt);border:1px solid ' + (v.preferred ? 'var(--gold)' : 'var(--border)') + ';border-radius:10px;padding:11px 14px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;">' +
+          '<div style="min-width:0;"><div style="font-size:14px;font-weight:600;">' + escapeHtml(v.vendorName || "—") +
+            (v.preferred ? ' <span style="font-size:10px;color:var(--gold);">★ preferred</span>' : '') + '</div>' +
+            (meta ? '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' + meta + '</div>' : '') + '</div>' +
+          '<div style="font-size:16px;font-weight:700;white-space:nowrap;">' + (v.unitCost > 0 ? fmtCurrency(v.unitCost) : '—') +
+            (v.uom ? '<span style="font-size:11px;color:var(--dim);font-weight:500;"> / ' + escapeHtml(v.uom) + '</span>' : '') + '</div>' +
+        '</div>';
+      }).join("");
+  } catch(ex) {
+    if (priceCheckItemId !== itemId) return;
+    vEl.innerHTML = '<div style="color:var(--red);font-size:12px;padding:12px 2px;">Couldn\'t load vendor prices: ' + escapeHtml(ex.message || String(ex)) + '</div>';
+  }
+}
+
 function goUpdatePrice() {
   showScreen("updprice");
   updatePriceItem = null;
@@ -6549,6 +6675,7 @@ function handleScanResult(val) {
     else if (scanTarget === "recv")    pickItemFor("recv", item.id);
     else if (scanTarget === "xfr")     pickItemFor("xfr", item.id);
     else if (scanTarget === "stock")   lookupStock(item.id);
+    else if (scanTarget === "price")   { showPriceCheck(item.id); return; }
     else if (scanTarget === "adj")     pickItemFor("adj", item.id);
     else if (scanTarget === "estitem") {
       // Estimate item picker — add directly to estimate, close modal

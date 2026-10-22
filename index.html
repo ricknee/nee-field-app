@@ -15736,8 +15736,11 @@
                 <option value="Needs Service">Needs Service</option>
                 <option value="__move">Move to another job…</option>
               </select>
-              <input type="text" class="job-lift-move edit-input" list="liftMoveJobList" placeholder="Type a job name or PO…" autocomplete="off"
-                     style="display:none; font-size:12px; padding:5px 8px; margin-top:6px;" />
+              <div class="job-lift-move-wrap" style="display:none; margin-top:6px;">
+                <input type="text" class="job-lift-move edit-input" placeholder="🔍 Search awarded jobs…" autocomplete="off"
+                       style="font-size:12px; padding:5px 8px;" />
+                <div class="job-lift-move-list" style="max-height:200px; overflow-y:auto; margin-top:4px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel-2);"></div>
+              </div>
             </div>
             <div style="margin-bottom:6px;">
               <label style="font-size:10px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:3px;">Left at Job</label>
@@ -15756,25 +15759,49 @@
             </div>
             <button data-lift-id="${esc(l.id)}" data-job="${esc(jobName)}" class="job-lift-save btn btn-primary btn-sm" style="width:100%; font-size:12px; margin-top:4px;">Save</button>
             <span class="job-lift-msg" style="font-size:11px; color:var(--green); display:none; margin-top:4px;">✓ Updated</span>
-          </div>`).join("") + `<datalist id="liftMoveJobList"></datalist>`;
+          </div>`).join("");
 
         // "Move to another job…" — a job-to-job move in one save, instead of
-        // Return to Shop here and Deploy over there. Labelled "name — PO" (as the
-        // load calc's job box does) so two jobs with one name can be told apart.
-        // Awarded first: that is where a lift is usually headed.
+        // Return to Shop here and Deploy over there. A visible, tappable list, not
+        // a <datalist>: Android shows a datalist only after you type, so it read
+        // as a bare text box. Awarded (and scheduled service-call) jobs only —
+        // that is where a lift goes. "name — PO" tells two same-named jobs apart.
         const moveJobs = (state.jobs || [])
-          .filter(j => j.name && j.name !== jobName)
-          .sort((a, b) => (String(a.status || "").toLowerCase() === "awarded" ? 0 : 1)
-                        - (String(b.status || "").toLowerCase() === "awarded" ? 0 : 1)
-                        || a.name.localeCompare(b.name));
+          .filter(j => j.name && j.name !== jobName &&
+                       ["awarded", "service call scheduled"].includes(String(j.status || "").toLowerCase()))
+          .sort((a, b) => a.name.localeCompare(b.name));
         const moveLabel = j => `${j.name}${j.po ? " — " + j.po : ""}`;
-        $("liftMoveJobList").innerHTML = moveJobs.map(j => `<option value="${esc(moveLabel(j))}"></option>`).join("");
+
+        const renderMoveList = (wrap) => {
+          const inp  = wrap.querySelector(".job-lift-move");
+          const box  = wrap.querySelector(".job-lift-move-list");
+          const q    = inp.value.trim().toLowerCase();
+          const hits = moveJobs.filter(j => !q || moveLabel(j).toLowerCase().includes(q));
+          box.innerHTML = hits.length
+            ? hits.map(j => {
+                const on = inp.dataset.jobName === j.name;
+                return `<div class="job-lift-move-opt" data-job-name="${esc(j.name)}"
+                             style="padding:9px 10px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--line);${on ? " background:var(--accent); color:#fff; font-weight:700;" : ""}">
+                          ${esc(j.name)}${j.po ? `<span style="font-size:11px; opacity:.7;"> — ${esc(j.po)}</span>` : ""}
+                        </div>`;
+              }).join("")
+            : `<div style="padding:9px 10px; font-size:12px; color:var(--muted);">${moveJobs.length ? "No awarded job matches" : "No awarded jobs"}</div>`;
+          box.querySelectorAll(".job-lift-move-opt").forEach(opt => {
+            opt.addEventListener("click", () => {
+              inp.dataset.jobName = opt.dataset.jobName;
+              inp.value = opt.dataset.jobName;
+              renderMoveList(wrap);
+            });
+          });
+        };
 
         list.querySelectorAll(".job-lift-status").forEach(s => {
+          const wrap = s.parentElement.querySelector(".job-lift-move-wrap");
+          const inp  = wrap.querySelector(".job-lift-move");
+          inp.addEventListener("input", () => { delete inp.dataset.jobName; renderMoveList(wrap); });
           s.addEventListener("change", () => {
-            const box = s.parentElement.querySelector(".job-lift-move");
-            box.style.display = s.value === "__move" ? "" : "none";
-            if (s.value === "__move") box.focus();
+            wrap.style.display = s.value === "__move" ? "" : "none";
+            if (s.value === "__move") renderMoveList(wrap);
           });
         });
 
@@ -15790,10 +15817,9 @@
             const boxLeft   = card.querySelector(".job-lift-box").checked;
             let newJob = status === "On Job" ? jobN : "";
             if (status === "__move") {
-              const label = card.querySelector(".job-lift-move").value.trim();
-              const dest  = moveJobs.find(j => moveLabel(j) === label)
-                         || moveJobs.find(j => j.name === label);
-              if (!dest) { alert("Pick a job from the list."); return; }
+              const picked = card.querySelector(".job-lift-move").dataset.jobName;
+              const dest   = moveJobs.find(j => j.name === picked);
+              if (!dest) { alert("Tap a job in the list first."); return; }
               status = "On Job"; newJob = dest.name;
             }
             btn.disabled = true; btn.textContent = "...";

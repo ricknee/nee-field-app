@@ -15734,7 +15734,10 @@
                 <option value="On Job">On Job</option>
                 <option value="Available">Return to Shop</option>
                 <option value="Needs Service">Needs Service</option>
+                <option value="__move">Move to another job…</option>
               </select>
+              <input type="text" class="job-lift-move edit-input" list="liftMoveJobList" placeholder="Type a job name or PO…" autocomplete="off"
+                     style="display:none; font-size:12px; padding:5px 8px; margin-top:6px;" />
             </div>
             <div style="margin-bottom:6px;">
               <label style="font-size:10px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:3px;">Left at Job</label>
@@ -15753,7 +15756,27 @@
             </div>
             <button data-lift-id="${esc(l.id)}" data-job="${esc(jobName)}" class="job-lift-save btn btn-primary btn-sm" style="width:100%; font-size:12px; margin-top:4px;">Save</button>
             <span class="job-lift-msg" style="font-size:11px; color:var(--green); display:none; margin-top:4px;">✓ Updated</span>
-          </div>`).join("");
+          </div>`).join("") + `<datalist id="liftMoveJobList"></datalist>`;
+
+        // "Move to another job…" — a job-to-job move in one save, instead of
+        // Return to Shop here and Deploy over there. Labelled "name — PO" (as the
+        // load calc's job box does) so two jobs with one name can be told apart.
+        // Awarded first: that is where a lift is usually headed.
+        const moveJobs = (state.jobs || [])
+          .filter(j => j.name && j.name !== jobName)
+          .sort((a, b) => (String(a.status || "").toLowerCase() === "awarded" ? 0 : 1)
+                        - (String(b.status || "").toLowerCase() === "awarded" ? 0 : 1)
+                        || a.name.localeCompare(b.name));
+        const moveLabel = j => `${j.name}${j.po ? " — " + j.po : ""}`;
+        $("liftMoveJobList").innerHTML = moveJobs.map(j => `<option value="${esc(moveLabel(j))}"></option>`).join("");
+
+        list.querySelectorAll(".job-lift-status").forEach(s => {
+          s.addEventListener("change", () => {
+            const box = s.parentElement.querySelector(".job-lift-move");
+            box.style.display = s.value === "__move" ? "" : "none";
+            if (s.value === "__move") box.focus();
+          });
+        });
 
         // Wire save buttons
         list.querySelectorAll(".job-lift-save").forEach(btn => {
@@ -15761,13 +15784,20 @@
             const liftId = btn.dataset.liftId;
             const jobN   = btn.dataset.job;
             const card   = btn.parentElement;
-            const status = card.querySelector(".job-lift-status").value;
+            let   status = card.querySelector(".job-lift-status").value;
             const notes  = card.querySelector(".job-lift-notes").value;
             const hooksLeft = card.querySelector(".job-lift-hooks").checked;
             const boxLeft   = card.querySelector(".job-lift-box").checked;
+            let newJob = status === "On Job" ? jobN : "";
+            if (status === "__move") {
+              const label = card.querySelector(".job-lift-move").value.trim();
+              const dest  = moveJobs.find(j => moveLabel(j) === label)
+                         || moveJobs.find(j => j.name === label);
+              if (!dest) { alert("Pick a job from the list."); return; }
+              status = "On Job"; newJob = dest.name;
+            }
             btn.disabled = true; btn.textContent = "...";
             try {
-              const newJob = status === "On Job" ? jobN : "";
               await apiPost("updateScissorLift", { liftId, status, currentJob: newJob, notes, hooksLeft, boxLeft });
               await loadJobLifts(jobN);
             } catch(e) {

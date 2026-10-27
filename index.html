@@ -9746,7 +9746,8 @@
    * device end of the run. Opens its own screen with a tick per breaker so
    * only the ones wanted get printed. Reads the editor's live state (like the
    * strips), so a print right after typing doesn't need a Save first.
-   * A gang prints as first-last ("1-3", 3-pole "27-31"). Spares and blanks
+   * A gang prints EVERY circuit ("1-3", 3-pole "7-9-11" — owner 2026-10-27;
+   * it was first-last, "7-11", which reads like a 2-pole). Spares and blanks
    * aren't offered — there's nothing at the far end to label.
    * Both lines can be edited per label and the type sizes set, for THIS print
    * only — nothing here writes back to the panel. The panel's voltage can be
@@ -9821,8 +9822,8 @@
     const panel = panelDisplayName();
     return panelBlocks()
       .map(b => {
-        const first = b.members[0], last = b.members[b.members.length - 1];
-        const ckt = b.members.length > 1 ? `${first}-${last}` : String(first);
+        const first = b.members[0];
+        const ckt = b.members.join("-");
         return { key: ckt, ckt, line1: byNum.get(first) || "", line2: `Fed from ${panel} Circuit ${ckt}`, on: false };
       })
       .filter(l => l.line1 && !/^spare$/i.test(l.line1));

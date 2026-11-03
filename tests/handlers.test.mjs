@@ -2947,6 +2947,19 @@ await test("slice 3: every estimate and invoice write fails CLOSED, and nothing 
   }
 });
 
+await test("job webhooks get a REAL id — a skipped Airtable write must not stand in for the job", async () => {
+  // AIRTABLE_WRITES=off makes the mirror PATCH resolve to SKIPPED_WRITE, which
+  // is truthy with id:null. `data || fallback` passed that through, so every
+  // Airtable-born job was awarded with no Trello card and no QB Time jobcode,
+  // silently (Envirowaste, 2026-11-03). Both call sites must test `data?.id`.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const calls = src.match(/fire(?:JobStatus|ServiceCall)Webhooks?\(data[^)]*\)/g) || [];
+  ok(calls.length === 2, `expected both webhook call sites, found ${calls.length}`);
+  for (const c of calls) ok(c.includes("data?.id ?"), `unsafe fallback: ${c}`);
+});
+
 await test("slice 3: the columns Airtable used to compute are computed here, and correctly", async () => {
   // These four cannot be exercised offline — they are SQL, and the harness has
   // no database — so they are asserted at source. Each one is a number that a

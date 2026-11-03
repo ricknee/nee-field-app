@@ -6827,7 +6827,13 @@ async function handleUpdateJobStatus(body) {
   // the automation flags out of Neon. Skipping the call entirely — which is what
   // this did first — meant a native job's status change created no pCloud folders
   // and no Trello card, silently. That is how Test 10 (MIT 301) got none.
-  const webhooks = await fireJobStatusWebhooks(data || { id: jobId, fields: {} }, atFetch);
+  // ⚠⚠ `data?.id`, NOT `data`. Under AIRTABLE_WRITES=off the PATCH resolves to
+  // SKIPPED_WRITE — `{ id: null, fields: {} }`, truthy — so `data || …` handed
+  // the webhooks a null id, the Neon lookup matched nothing, status read "" and
+  // NOTHING FIRED. Only Airtable-born jobs reach the PATCH, so native jobs kept
+  // working and hid it: Envirowaste, Fairway 4/7, WatersEdge 7, Charlie Burwell
+  // and Seneca were all awarded with no Trello card and no QB Time jobcode.
+  const webhooks = await fireJobStatusWebhooks(data?.id ? data : { id: jobId, fields: {} }, atFetch);
   return resp(200, { ok: true, updatedId: data?.id || jobId, ...(webhooks ? { webhooks } : {}) });
 }
 
@@ -7040,7 +7046,9 @@ async function handleStartServiceCall(body) {
   // it, the same conversion slice 2.5 did for the pCloud hook.
   // Same as updateJobStatus: the handle is enough, the module reads the rest
   // out of Neon.
-  const webhooks = await fireServiceCallWebhook(data || { id: jobId, fields: {} });
+  // `data?.id`, not `data` — a skipped Airtable write is truthy with a null id.
+  // See the same line in handleUpdateJobStatus.
+  const webhooks = await fireServiceCallWebhook(data?.id ? data : { id: jobId, fields: {} });
   return resp(200, { ok: true, updatedId: data?.id || jobId, ...(webhooks ? { webhooks } : {}) });
 }
 

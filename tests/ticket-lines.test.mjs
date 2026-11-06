@@ -89,6 +89,19 @@ t("a misread PER column fails its own line check", () => {
   const l = line(broken, "EMT-1/2"); l.unitPrice = 85; l.check = Math.abs(400 * 85 - 340) <= 0.015;
   eq(judgeTicket(broken, "1063.08").status, "mismatch");
 });
+t("Wolff with NO printed total: ok only when the lines equal the stored amount", () => {
+  // Strip the SALES TAX / PAY THIS AMOUNT rows, as on a tax-exempt ticket.
+  const pages = fx("wolff-wire").map(pg => pg.filter(i => i.y > 45));
+  const p = parseWolffPages(pages);
+  eq(p.printedTotal, null); eq(p.sumOk, false);
+  eq(judgeTicket(p, "1329.37").status, "ok");          // lines alone = stored amount
+  eq(judgeTicket(p, "1415.76").status, "mismatch");    // stored ≠ lines → still refused
+  eq(judgeTicket(p, null).status, "mismatch");         // nothing to check against → refused
+});
+t("a printed total that DISAGREES still fails, even if the stored amount matches the lines", () => {
+  const p = parseWolffPages(fx("wolff-wire")); p.total = p.printedTotal = 9999; p.sumOk = false;
+  eq(judgeTicket(p, "1329.37").status, "mismatch");
+});
 t("a dropped line breaks the sum → mismatch", () => {
   const short = parseCedPages(fx("ced-invoice"));
   short.lines.pop(); short.lineSum = Math.round(short.lines.reduce((s, l) => s + l.extension, 0) * 100) / 100;

@@ -205,6 +205,17 @@ export function judgeTicket(parsed, storedAmount) {
   const bad = parsed.lines.filter(l => !l.check);
   if (bad.length) return { status: "mismatch",
     note: `${bad.length} line(s) where qty × price ≠ extension, e.g. ${bad[0].vendorPart}` };
+  // ⚠ A Wolff ticket with NO printed tax/total row (first seen live 2026-11-06:
+  // Wolff 21889245-000, a tax-exempt $15,368.45 ticket — its 4 lines summed to
+  // the stored amount to the cent, but there was no "lines + tax = total" to
+  // check). Accept it ONLY when the total is genuinely absent AND every line's
+  // own math passed (checked above) AND the lines equal the amount the MiniBee
+  // stored for this ticket. A total that was found and disagrees still fails.
+  if (!parsed.sumOk && parsed.printedTotal == null && storedAmount != null &&
+      Math.abs(Math.abs(Number(storedAmount)) -
+               Math.abs(Math.round((parsed.lineSum + (parsed.tax || 0)) * 100) / 100)) <= 0.015) {
+    return { status: "ok", note: `${parsed.lines.length} lines; no printed total — lines match the stored amount ${storedAmount}` };
+  }
   if (!parsed.sumOk) return { status: "mismatch",
     note: `lines sum ${parsed.lineSum} does not match the printed total` };
   if (storedAmount != null && parsed.printedTotal != null &&

@@ -85,6 +85,10 @@ const _ADMIN_WRITES = new Set([
   "locationSave", "vendorSave", "vendorPricingSave", "vendorPricingDelete", // reference data
   "bulkPreview", "bulkApply",   // spreadsheet upload
   "syncItemCostToVendor",
+  // Supplier part-number queue (db/schema/087). The queue is a READ but sits
+  // here because it exposes what every supplier ticket charged — pricing is
+  // admin-tier everywhere else in this app.
+  "partNumbersQueue", "partLinkSave",
   "delete",              // transaction deletion
   "orderDelete", "estimateDelete", "estimateTemplateDelete", // destructive
 ]);
@@ -1098,6 +1102,111 @@ const PUSH_LINES_TABLE_ID = "tblloWlcSE7aXAX1o";  // Expense Push Lines
 // with the slice-2 cutover: the push history is written to Neon only, and the
 // Airtable tables are never touched again except by the loader reading the 34
 // historical rows.
+
+// ── NEW PART NUMBERS QUEUE (db/schema/085 + 087) ─────────────────────────────
+// Every supplier part number seen on a ticket (vendor_invoice_lines) that has
+// no decision yet in vendor_part_links — one row per (vendor, part), with how
+// often and how much it was bought, so the owner sorts the ones that matter.
+//
+// Only tickets whose lines passed all three checks (lines_status = 'ok') feed
+// this: a misread ticket must not put a phantom part — or a wrong price — in
+// front of anyone. Charges (cut charges, delivery) and credit lines are left
+// out: a credit is a return of something bought, not a purchase price.
+async function handlePartNumbersQueue() {
+  const q = await neonQuery(
+    `WITH bought AS (
+       SELECT v.vendor_name AS vendor, l.vendor_part, l.mfr, l.description, l.unit,
+              l.unit_price, l.qty, l.extension, l.line_no, v.id AS inv_id, v.invoice_date
+         FROM vendor_invoice_lines l
+         JOIN vendor_invoices v ON v.id = l.invoice_id
+        WHERE v.lines_status = 'ok' AND NOT l.is_charge AND l.qty > 0
+     ), agg AS (
+       SELECT vendor, vendor_part,
+              count(DISTINCT inv_id)::int                         AS tickets,
+              sum(qty)::float8                                   AS qty,
+              round(sum(extension), 2)::float8                   AS spend,
+              (array_agg(description ORDER BY invoice_date DESC NULLS LAST, line_no))[1] AS description,
+              (array_agg(mfr         ORDER BY invoice_date DESC NULLS LAST, line_no))[1] AS mfr,
+              (array_agg(unit        ORDER BY invoice_date DESC NULLS LAST, line_no))[1] AS unit,
+              (array_agg(unit_price  ORDER BY invoice_date DESC NULLS LAST, line_no))[1]::float8 AS last_price,
+              to_char(max(invoice_date), 'YYYY-MM-DD')           AS last_date
+         FROM bought GROUP BY vendor, vendor_part
+     )
+     SELECT a.* FROM agg a
+       LEFT JOIN vendor_part_links k ON k.vendor = a.vendor AND k.vendor_part = a.vendor_part
+      WHERE k.vendor IS NULL
+      ORDER BY a.spend DESC, a.tickets DESC`);
+  // Recent decisions, so a mis-tap can be undone from the same screen.
+  const recent = await neonQuery(
+    `SELECT k.vendor, k.vendor_part, k.status, k.unit_factor::float8 AS unit_factor,
+            COALESCE(i.airtable_id, i.id::text) AS item_id, i.name AS item_name,
+            k.decided_by, to_char(k.decided_at, 'YYYY-MM-DD') AS decided_on
+       FROM vendor_part_links k LEFT JOIN inventory_items i ON i.id = k.item_id
+      ORDER BY k.decided_at DESC LIMIT 25`);
+  const counts = await neonQuery(
+    `SELECT count(*) FILTER (WHERE status = 'linked')::int      AS linked,
+            count(*) FILTER (WHERE status = 'not_stocked')::int AS not_stocked
+       FROM vendor_part_links`);
+  if (!q || q.error || !recent || recent.error) {
+    return resp(503, { ok: false, error: `Couldn't read the part-number queue: ${q?.error || recent?.error || "database unavailable"}` });
+  }
+  return resp(200, {
+    ok: true,
+    waiting: q.rows.map(r => ({
+      vendor: r.vendor, vendorPart: r.vendor_part, mfr: r.mfr || "", description: r.description || "",
+      unit: r.unit, lastPrice: r.last_price, lastDate: r.last_date,
+      tickets: r.tickets, qty: r.qty, spend: r.spend,
+    })),
+    recent: recent.rows.map(r => ({
+      vendor: r.vendor, vendorPart: r.vendor_part, status: r.status, unitFactor: r.unit_factor,
+      itemId: r.item_id, itemName: r.item_name || "", decidedBy: r.decided_by || "", decidedOn: r.decided_on,
+    })),
+    linked: counts?.rows?.[0]?.linked ?? null,
+    notStocked: counts?.rows?.[0]?.not_stocked ?? null,
+  });
+}
+
+// POST { vendor, vendorPart, status: "linked" | "not_stocked" | "undo", itemId?, unitFactor? }
+// Upsert, so changing your mind is one more tap — never a duplicate row.
+async function handlePartLinkSave(body, authUser) {
+  const vendor     = String(body?.vendor || "").trim();
+  const vendorPart = String(body?.vendorPart || "").trim();
+  const status     = String(body?.status || "");
+  if (!vendor || !vendorPart) return resp(400, { ok: false, error: "Missing vendor or part number." });
+
+  if (status === "undo") {
+    await neonWrite("partLink.undo",
+      `DELETE FROM vendor_part_links WHERE vendor = $1 AND vendor_part = $2`, [vendor, vendorPart]);
+    return resp(200, { ok: true, undone: true });
+  }
+  if (status !== "linked" && status !== "not_stocked") {
+    return resp(400, { ok: false, error: `Unknown status: ${status}` });
+  }
+
+  let itemUuid = null;
+  if (status === "linked") {
+    if (!body?.itemId) return resp(400, { ok: false, error: "Pick the item this part number is." });
+    // Dual handle, like every item id in this app: rec id for the historical
+    // items, uuid for anything created since.
+    const it = await neonWrite("partLink.item",
+      `SELECT id FROM inventory_items WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [String(body.itemId)]);
+    if (!it.length) return resp(404, { ok: false, error: "That item no longer exists." });
+    itemUuid = it[0].id;
+  }
+  const factor = Number(body?.unitFactor) > 0 ? Number(body.unitFactor) : 1;
+  // The session token carries {id, role} and NO name (see the vendor-invoice
+  // notes) — so the name comes from the client and the id is the fallback.
+  const who = String(body?.decidedBy || authUser?.id || "");
+
+  await neonWrite("partLink.save",
+    `INSERT INTO vendor_part_links (vendor, vendor_part, status, item_id, unit_factor, decided_by, decided_at)
+     VALUES ($1, $2, $3, $4::uuid, $5, $6, now())
+     ON CONFLICT (vendor, vendor_part) DO UPDATE SET
+       status = EXCLUDED.status, item_id = EXCLUDED.item_id, unit_factor = EXCLUDED.unit_factor,
+       decided_by = EXCLUDED.decided_by, decided_at = now()`,
+    [vendor, vendorPart, status, itemUuid, factor, who]);
+  return resp(200, { ok: true });
+}
 
 // ── Materials Receipt number (db/schema/086) ─────────────────────────────────
 // Mint-or-read keyed on push_id, so a retried push gets the SAME number. Fails
@@ -3866,6 +3975,8 @@ export async function handler(event) {
       if (body.action === "jobDocUploadUrl") return await handleJobDocUploadUrl(body);
       if (body.action === "pushReceiptUploadUrl") return await handlePushReceiptUploadUrl(body);
       if (body.action === "createItem")        return await handleCreateItem(body);
+      if (body.action === "partNumbersQueue")  return await handlePartNumbersQueue();
+      if (body.action === "partLinkSave")      return await handlePartLinkSave(body, authUser);
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "itemUpdate")         return await handleItemUpdate(body);
       if (body.action === "itemDelete")         return await handleItemDelete(body);

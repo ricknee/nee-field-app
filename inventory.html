@@ -309,6 +309,9 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="push-btn" onclick="goPushExpenses()" style="display:none">
       <div class="ico">💰</div><div><div class="lbl">Push Expenses</div><div class="sub">Send material costs to job expenses</div></div>
     </button>
+    <button class="big-btn" id="partnums-btn" onclick="goPartNumbers()" style="display:none">
+      <div class="ico">🔗</div><div><div class="lbl">New Part Numbers</div><div class="sub" id="partnums-btn-sub">Match supplier part numbers to your items</div></div>
+    </button>
     <button class="big-btn" id="newitem-btn" onclick="goNewItem()" style="display:none">
       <div class="ico">➕</div><div><div class="lbl">Add New Item</div><div class="sub">Create a new inventory item</div></div>
     </button>
@@ -402,6 +405,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 <div id="s-newitem" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>Add New Item</h2></div>
   <div class="log-body" id="newitem-body"></div>
+</div>
+
+<!-- NEW PART NUMBERS (admin) — supplier part no. → inventory item, db/schema/087 -->
+<div id="s-partnums" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>🔗 New Part Numbers</h2></div>
+  <div class="log-body" id="partnums-body"></div>
 </div>
 
 <!-- PRINT LABELS (admin) — QR bin labels, docs/PLAN-barcode-labels.md -->
@@ -1147,6 +1156,9 @@ function applyUser() {
   if (adjBtn)      adjBtn.style.display      = isAdmin ? "flex" : "none";
   if (pushBtn)     pushBtn.style.display     = isAdmin ? "flex" : "none";
   if (newitemBtn)  newitemBtn.style.display  = isAdmin ? "flex" : "none";
+  // Supplier ticket prices are admin-tier (the server refuses everyone else too).
+  var partnumsBtn = document.getElementById("partnums-btn");
+  if (partnumsBtn) partnumsBtn.style.display = isAdmin ? "flex" : "none";
   var bulkBtn = document.getElementById("bulk-btn");
   if (bulkBtn) bulkBtn.style.display = isAdmin ? "flex" : "none";
   var managelocBtn = document.getElementById("manageloc-btn");
@@ -2809,6 +2821,352 @@ function downloadReceiptPDF(g) {
   } catch(e) {
     console.error("PDF download failed:", e);
   }
+}
+
+// ═══════════════════════════════════════════════════════════
+// NEW PART NUMBERS — supplier part no. → inventory item (schema 087)
+// ═══════════════════════════════════════════════════════════
+// Every CED / Wolff part number read off a ticket (schema 085) that has no
+// decision yet. Per row, one tap:
+//   ✓ Same as <item>   — it IS one of your items (any brand: items are generic)
+//   ➕ Add to inventory — you stock it; a new item prefilled from the ticket
+//   ✕ Not stocked      — job-direct / one-off; never asks again
+// Sorted by money spent, so the parts that matter come first. Nothing here
+// changes any price — that is the Prices screen (step 3), and only on a tap.
+var _pn = { waiting: [], recent: [], vendor: "all", q: "", open: null, shown: 40 };
+
+async function goPartNumbers() {
+  showScreen("partnums");
+  var body = document.getElementById("partnums-body");
+  body.innerHTML = '<div class="empty">Loading part numbers…</div>';
+  try {
+    var d = await apiPost({ action: "partNumbersQueue" });
+    _pn.waiting = d.waiting || [];
+    _pn.recent  = d.recent || [];
+    _pn.linked = d.linked; _pn.notStocked = d.notStocked;
+    _pn.open = null; _pn.shown = 40;
+    renderPartNumbers();
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Couldn\'t load: ' + escapeHtml(e.message || String(e)) + '</div>';
+  }
+}
+
+// ── Matching suggestions (client-side, against allItems) ────────────────────
+// Ticket text and item names spell the same thing differently ("3IN UNIV STRUT
+// CLAMP" vs '3" STRUT CLAMP', "1-1/4 STL S/SCR EMT CPLG" vs '1-1/4" EMT SET
+// SCREW COUPLING'). Normalise both, then score: the SIZE must agree when both
+// have one (a 3" clamp is never a 1" clamp), then shared words. It only
+// SUGGESTS — a person taps to confirm, so a wrong guess costs nothing.
+var PN_WORDS = {
+  CPLG: "COUPLING", CPLGS: "COUPLING", COUPLINGS: "COUPLING", CONN: "CONNECTOR", CON: "CONNECTOR",
+  ADPT: "ADAPTER", ADPTR: "ADAPTER", ADPTER: "ADAPTER", ADAPTOR: "ADAPTER", ADAP: "ADAPTER",
+  BSHG: "BUSHING", BUSH: "BUSHING", RGD: "RIGID", GALV: "RIGID", GALVANIZED: "RIGID",
+  RCPT: "RECEPTACLE", RECPT: "RECEPTACLE", REC: "RECEPTACLE", DPLX: "DUPLEX",
+  PLT: "PLATE", WALLPLATE: "PLATE", COV: "COVER", CVR: "COVER", SQ: "SQUARE",
+  ELBOW: "90", "90D": "90", LOCKNUT: "LOCKNUT", LKNT: "LOCKNUT", STRP: "STRAP", CLMP: "CLAMP",
+  SS: "SETSCREW", SCR: "SETSCREW", SETSCREW: "SETSCREW", COMP: "COMPRESSION",
+  SW: "SWITCH", WHT: "WHITE", BLK: "BLACK", GRN: "GREEN", BK: "BLACK", WH: "WHITE",
+  GRD: "GROUND", GND: "GROUND", SOL: "SOLID", SOLMC: "MC", MCAP: "MC", CBL: "CABLE", CABLE: "",
+  COND: "", STL: "", INSL: "", PLS: "", UNIV: "", PC: "", X: "", THE: "", AND: "", W: "", F: ""
+};
+function pnSize(text) {
+  // ⚠ CED writes mixed sizes with a SPACE ("49010 1 1/2''") — read as 1/2"
+  // that suggested the wrong size of pipe. Join it to "1-1/2" first.
+  var t = " " + String(text || "").toUpperCase().replace(/''/g, '"')
+                  .replace(/(\d+)\s+(\d+\/\d+)/g, "$1-$2") + " ";
+  var m = t.match(/[\s(#](\d+-\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?)\s*(?:"|IN\b|INCH)/) ||
+          t.match(/^\s*(\d+-\d+\/\d+|\d+\/\d+|\d+)\s/);
+  return m ? m[1] : null;
+}
+function pnWords(text) {
+  return String(text || "").toUpperCase()
+    // Cable gauge × conductors: CED "12/2", items "12-2" — one token for both,
+    // taken BEFORE fractions are stripped (or 12/2 would vanish as "a size").
+    .replace(/(^|[^\d\/-])(14|12|10|8|6)[\/-]([234])(?![\d\/])/g, "$1 W$2X$3 ")
+    .replace(/''/g, '"').replace(/\d+-\d+\/\d+|\d+\/\d+/g, " ")
+    .replace(/S\/SCR/g, " SETSCREW ").replace(/SET SCREW/g, " SETSCREW ")
+    .split(/[^A-Z0-9]+/).map(function (w) { return PN_WORDS.hasOwnProperty(w) ? PN_WORDS[w] : w; })
+    .filter(function (w) { return w && w.length > 1 && !/^\d{4,}$/.test(w) && !/^\d+$/.test(w); });
+}
+// CED conduit lines say almost nothing in the description ("EMT", "49008 1''")
+// — the type and size live in the PART NUMBER ("EMT-3/4", "PVC1-1/2",
+// "GALV-3/4"). Spell the part out ("EMT 3/4\"") and add it to the text, and
+// call CED's COND lines what the items call them: pipe.
+function pnText(row) {
+  var part = String(row.vendorPart || "").toUpperCase()
+    .replace(/^([A-Z]+)-?(\d+-\d+\/\d+|\d+\/\d+|\d+)(S80)?$/, function (m, kind, size, s80) {
+      return kind + " " + size + '" ' + (s80 ? "SCH 80" : "");
+    });
+  var extra = String(row.mfr || "").toUpperCase() === "COND" ? " PIPE SCH 40" : "";
+  return String(row.description || "") + " " + part + extra;
+}
+function pnSuggest(row) {
+  var text  = pnText(row);
+  // The part number's size wins when it has one: it is a catalogue code, not
+  // free text, so it can't be mis-spaced or abbreviated.
+  var size  = pnSize(pnText({ vendorPart: row.vendorPart })) || pnSize(row.description);
+  var words = pnWords(text);
+  if (!words.length) return [];
+  var scored = [];
+  (allItems || []).forEach(function (it) {
+    var isz = pnSize(it.name);
+    if (size && isz && isz !== size) return;          // sizes disagree → never the same part
+    var iw = pnWords(it.name);
+    var shared = words.filter(function (w) { return iw.indexOf(w) >= 0; }).length;
+    if (!shared) return;
+    var score = shared / Math.max(words.length, iw.length) + (size && isz === size ? 0.5 : 0);
+    scored.push({ item: it, score: score });
+  });
+  scored.sort(function (a, b) { return b.score - a.score; });
+  return scored.slice(0, 3).filter(function (s) { return s.score >= 0.35; }).map(function (s) { return s.item; });
+}
+
+function pnMoney(n) { return "$" + Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function pnPrice(n, unit) {
+  var v = Number(n || 0);
+  return "$" + (v < 1 ? v.toFixed(4).replace(/0{1,2}$/, "") : v.toFixed(2)) + "/" + (unit || "ea");
+}
+function pnShortDate(d) { if (!d) return ""; var p = d.split("-"); return (+p[1]) + "/" + (+p[2]) + "/" + p[0].slice(2); }
+
+function pnVisible() {
+  var q = _pn.q.trim().toUpperCase();
+  return _pn.waiting.filter(function (r) {
+    if (_pn.vendor !== "all" && r.vendor !== _pn.vendor) return false;
+    if (q && (r.vendorPart + " " + r.description + " " + r.mfr).toUpperCase().indexOf(q) < 0) return false;
+    return true;
+  });
+}
+
+function renderPartNumbers() {
+  var body = document.getElementById("partnums-body");
+  var rows = pnVisible();
+  var vendors = ["all"].concat(_pn.waiting.map(function (r) { return r.vendor; })
+    .filter(function (v, i, a) { return a.indexOf(v) === i; }));
+  var spend = rows.reduce(function (s, r) { return s + (r.spend || 0); }, 0);
+
+  var html = '<div style="font-size:13px;color:var(--dim);margin-bottom:10px;line-height:1.5;">' +
+    '<b style="color:var(--text);">' + _pn.waiting.length + '</b> part numbers waiting' +
+    (_pn.linked != null ? ' · ' + _pn.linked + ' matched · ' + _pn.notStocked + ' not stocked' : '') +
+    '<br><span style="font-size:12px;">Read off your CED &amp; Wolff tickets. Biggest spend first. Matching never changes a price.</span></div>';
+
+  html += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">' + vendors.map(function (v) {
+    var n = v === "all" ? _pn.waiting.length : _pn.waiting.filter(function (r) { return r.vendor === v; }).length;
+    var on = _pn.vendor === v;
+    return '<button onclick="_pn.vendor=\'' + v.replace(/'/g, "\\'") + '\';_pn.open=null;renderPartNumbers()" style="font-size:12px;padding:5px 10px;border-radius:14px;cursor:pointer;border:1px solid ' +
+      (on ? 'var(--gold);background:var(--gold);color:var(--navy);font-weight:700;' : 'var(--border);background:none;color:var(--dim);') + '">' +
+      (v === "all" ? "All" : escapeHtml(v)) + ' (' + n + ')</button>';
+  }).join("") + '</div>';
+
+  html += '<input id="pn-search" type="search" placeholder="Search part no. or description…" value="' + escapeHtml(_pn.q) + '" ' +
+    'oninput="_pn.q=this.value;_pn.shown=40;renderPartNumbersList()" ' +
+    'style="width:100%;box-sizing:border-box;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:var(--navy-lt);color:var(--text);font-size:14px;margin-bottom:10px;">';
+
+  html += '<div id="pn-list"></div>';
+  body.innerHTML = html;
+  renderPartNumbersList();
+}
+
+function renderPartNumbersList() {
+  var el = document.getElementById("pn-list");
+  if (!el) return;
+  var rows = pnVisible();
+  if (!rows.length) {
+    el.innerHTML = '<div class="empty">' + (_pn.waiting.length ? "Nothing matches that search." :
+      "🎉 All caught up — every part number on your tickets has been matched or marked.") + '</div>' + pnRecentHtml();
+    return;
+  }
+  var html = rows.slice(0, _pn.shown).map(function (r) { return pnRowHtml(r, _pn.waiting.indexOf(r)); }).join("");
+  if (rows.length > _pn.shown) {
+    html += '<button onclick="_pn.shown+=40;renderPartNumbersList()" style="width:100%;padding:10px;margin:6px 0 14px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--dim);cursor:pointer;">Show more (' + (rows.length - _pn.shown) + ' left)</button>';
+  }
+  el.innerHTML = html + pnRecentHtml();
+}
+
+function pnRowHtml(r, i) {
+  var open = _pn.open && _pn.open.i === i;
+  var btn = 'font-size:12px;padding:6px 10px;border-radius:8px;cursor:pointer;';
+  var h = '<div style="background:var(--navy-lt);border:1px solid ' + (open ? 'var(--gold)' : 'var(--border)') + ';border-radius:10px;padding:11px 12px;margin-bottom:8px;">';
+  h += '<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">' +
+    '<div style="min-width:0;"><span style="font-size:10px;font-weight:700;padding:1px 6px;border-radius:6px;background:var(--slate);color:var(--dim);margin-right:6px;">' + escapeHtml(r.vendor === "Wolff Brothers" ? "WOLFF" : r.vendor) + '</span>' +
+    '<b style="font-size:13px;">' + escapeHtml(r.vendorPart) + '</b>' + (r.mfr ? ' <span style="font-size:11px;color:var(--muted);">' + escapeHtml(r.mfr) + '</span>' : '') + '</div>' +
+    '<div style="font-size:13px;font-weight:700;color:var(--gold);white-space:nowrap;">' + pnMoney(r.spend) + '</div></div>';
+  h += '<div style="font-size:13px;color:var(--text);margin:3px 0;">' + escapeHtml(r.description) + '</div>';
+  h += '<div style="font-size:11px;color:var(--muted);">' + r.tickets + ' ticket' + (r.tickets === 1 ? '' : 's') +
+    ' · last ' + pnPrice(r.lastPrice, r.unit) + (r.lastDate ? ' on ' + pnShortDate(r.lastDate) : '') + '</div>';
+
+  // Suggestions
+  var sugg = pnSuggest(r);
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">';
+  sugg.forEach(function (it) {
+    h += '<button onclick="pnLink(' + i + ',\'' + String(it.id).replace(/'/g, "\\'") + '\')" style="' + btn + 'border:1px solid var(--green);background:rgba(46,204,113,.12);color:var(--green);font-weight:600;">✓ Same as ' +
+      escapeHtml(it.name) + (it.cost ? ' <span style="opacity:.75;font-weight:400;">(' + pnPrice(it.cost, it.uom) + ')</span>' : '') + '</button>';
+  });
+  h += '<button onclick="pnOpen(' + i + ',\'search\')" style="' + btn + 'border:1px solid var(--border);background:none;color:var(--dim);">🔎 ' + (sugg.length ? 'Other item…' : 'Find item…') + '</button>' +
+    '<button onclick="pnOpen(' + i + ',\'add\')" style="' + btn + 'border:1px solid var(--blue);background:none;color:var(--blue);">➕ Add to inventory</button>' +
+    '<button onclick="pnNotStocked(' + i + ')" style="' + btn + 'border:1px solid var(--border);background:none;color:var(--muted);">✕ Not stocked</button>';
+  h += '</div>';
+
+  if (open && _pn.open.mode === "search") h += pnSearchHtml(i);
+  if (open && _pn.open.mode === "add")    h += pnAddHtml(r, i);
+  return h + '</div>';
+}
+
+function pnOpen(i, mode) {
+  _pn.open = (_pn.open && _pn.open.i === i && _pn.open.mode === mode) ? null : { i: i, mode: mode, q: "" };
+  renderPartNumbersList();
+  setTimeout(function () { var el = document.getElementById(mode === "search" ? "pn-isearch" : "pn-add-name"); if (el) el.focus(); }, 50);
+}
+
+function pnSearchHtml(i) {
+  return '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;">' +
+    '<input id="pn-isearch" type="search" placeholder="Type to search your items…" value="' + escapeHtml(_pn.open.q || "") + '" ' +
+    'oninput="_pn.open.q=this.value;document.getElementById(\'pn-ires\').innerHTML=pnItemResults(' + i + ')" ' +
+    'style="width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--navy);color:var(--text);font-size:14px;">' +
+    '<div id="pn-ires">' + pnItemResults(i) + '</div></div>';
+}
+function pnItemResults(i) {
+  var q = String((_pn.open && _pn.open.q) || "").trim().toUpperCase();
+  if (q.length < 2) return '<div style="font-size:12px;color:var(--muted);padding:8px 2px;">Type at least 2 letters.</div>';
+  var terms = q.split(/\s+/);
+  var hits = (allItems || []).filter(function (it) {
+    var n = String(it.name || "").toUpperCase();
+    return terms.every(function (t) { return n.indexOf(t) >= 0; });
+  }).slice(0, 12);
+  if (!hits.length) return '<div style="font-size:12px;color:var(--muted);padding:8px 2px;">No items match — use ➕ Add to inventory if you stock it.</div>';
+  return hits.map(function (it) {
+    return '<div onclick="pnLink(' + i + ',\'' + String(it.id).replace(/'/g, "\\'") + '\')" style="padding:8px 6px;border-bottom:1px solid var(--border);cursor:pointer;font-size:13px;display:flex;justify-content:space-between;gap:8px;">' +
+      '<span>' + escapeHtml(it.name) + '</span><span style="color:var(--muted);white-space:nowrap;">' + (it.cost ? pnPrice(it.cost, it.uom) : '') + '</span></div>';
+  }).join("");
+}
+
+// Ticket descriptions carry a leading catalogue number ("077543 1-IN LB PVC
+// BODY") and inch marks as two apostrophes. Clean that up for a starting name;
+// the owner edits it before saving anyway.
+function pnCleanName(desc) {
+  return String(desc || "").toUpperCase().replace(/^\d{5,}\s+/, "").replace(/''/g, '"').replace(/\s+/g, " ").trim();
+}
+function pnAddHtml(r, i) {
+  var isWire = r.unit === "ft" && /THHN|XHHW|WIRE|CU\b|AL\b/i.test(r.description);
+  var cats = (allItems || []).map(function (it) { return it.cat; }).filter(Boolean)
+    .filter(function (c, k, a) { return a.indexOf(c) === k; }).sort();
+  var inp = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:var(--navy);color:var(--text);font-size:14px;';
+  var lbl = 'font-size:11px;color:var(--muted);margin:8px 0 3px;display:block;';
+  return '<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:6px;">' +
+    '<label style="' + lbl + '">Item name</label><input id="pn-add-name" value="' + escapeHtml(pnCleanName(r.description)) + '" style="' + inp + '">' +
+    '<label style="' + lbl + '">Category</label><input id="pn-add-cat" list="pn-cats" placeholder="Pick or type a category" style="' + inp + '">' +
+    '<datalist id="pn-cats">' + cats.map(function (c) { return '<option value="' + escapeHtml(c) + '">'; }).join("") + '</datalist>' +
+    '<div style="display:flex;gap:8px;">' +
+      '<div style="flex:1;"><label style="' + lbl + '">Unit</label><select id="pn-add-uom" onchange="pnAddUomChanged(' + i + ')" style="' + inp + '">' +
+        ['ea', 'ft', 'lb'].map(function (u) { return '<option' + (u === (isWire ? 'lb' : r.unit) ? ' selected' : '') + '>' + u + '</option>'; }).join("") +
+      '</select></div>' +
+      '<div style="flex:1;" id="pn-add-ftlb-wrap"' + (isWire ? '' : ' hidden') + '><label style="' + lbl + '">Feet per lb</label><input id="pn-add-ftlb" inputmode="decimal" placeholder="e.g. 41.67" oninput="pnAddCostHint(' + i + ')" style="' + inp + '"></div>' +
+    '</div>' +
+    '<label style="' + lbl + '">Cost <span id="pn-add-costhint" style="color:var(--dim);"></span></label><input id="pn-add-cost" inputmode="decimal" value="' + (isWire ? '' : Number(r.lastPrice || 0).toFixed(4).replace(/0{1,2}$/, '')) + '" style="' + inp + '">' +
+    '<label style="' + lbl + '">Barcode (for the bin label) — the box UPC if you have it</label><input id="pn-add-barcode" value="' + escapeHtml(r.vendorPart) + '" style="' + inp + '">' +
+    '<div style="display:flex;gap:8px;margin-top:10px;">' +
+      '<button onclick="pnAddSave(' + i + ')" id="pn-add-save" style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--gold);color:var(--navy);font-weight:700;cursor:pointer;">Add item &amp; match</button>' +
+      '<button onclick="_pn.open=null;renderPartNumbersList()" style="padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:none;color:var(--dim);cursor:pointer;">Cancel</button>' +
+    '</div></div>';
+}
+function pnAddUomChanged(i) {
+  var u = document.getElementById("pn-add-uom").value;
+  document.getElementById("pn-add-ftlb-wrap").hidden = u !== "lb";
+  pnAddCostHint(i);
+}
+// Weighed wire is stocked and costed per POUND (38 items do this) but tickets
+// price it per FOOT — so per-lb cost = per-ft price × feet per lb.
+function pnAddCostHint(i) {
+  var r = _pn.waiting[i];
+  var u = document.getElementById("pn-add-uom").value;
+  var hint = document.getElementById("pn-add-costhint");
+  var cost = document.getElementById("pn-add-cost");
+  if (u === "lb" && r.unit === "ft") {
+    var ftlb = parseFloat(document.getElementById("pn-add-ftlb").value);
+    if (ftlb > 0) {
+      cost.value = (r.lastPrice * ftlb).toFixed(4);
+      hint.textContent = "(per lb — ticket " + pnPrice(r.lastPrice, "ft") + " × " + ftlb + " ft/lb)";
+    } else { hint.textContent = "(per lb — enter feet per lb to work it out)"; }
+  } else {
+    hint.textContent = "(per " + u + ")";
+  }
+}
+
+async function pnLink(i, itemId) {
+  var r = _pn.waiting[i];
+  var it = (allItems || []).find(function (x) { return String(x.id) === String(itemId); });
+  try {
+    await apiPost({ action: "partLinkSave", vendor: r.vendor, vendorPart: r.vendorPart, status: "linked",
+                    itemId: itemId, decidedBy: currentUser && currentUser.name });
+    pnDone(i, { status: "linked", itemName: it ? it.name : "" });
+  } catch (e) { showToast("Couldn't save: " + e.message, true); }
+}
+async function pnNotStocked(i) {
+  var r = _pn.waiting[i];
+  try {
+    await apiPost({ action: "partLinkSave", vendor: r.vendor, vendorPart: r.vendorPart, status: "not_stocked",
+                    decidedBy: currentUser && currentUser.name });
+    pnDone(i, { status: "not_stocked" });
+  } catch (e) { showToast("Couldn't save: " + e.message, true); }
+}
+async function pnAddSave(i) {
+  var r = _pn.waiting[i];
+  var v = function (id) { var el = document.getElementById(id); return el ? el.value.trim() : ""; };
+  var name = v("pn-add-name").toUpperCase(), cat = v("pn-add-cat"), uom = v("pn-add-uom");
+  var cost = parseFloat(v("pn-add-cost")), ftlb = parseFloat(v("pn-add-ftlb"));
+  if (!name) { showToast("Give the item a name.", true); return; }
+  if (!cat)  { showToast("Pick a category — Print Labels and Check Stock group by it.", true); return; }
+  if (uom === "lb" && !(ftlb > 0)) { showToast("Weighed wire needs its feet per lb.", true); return; }
+  var btn = document.getElementById("pn-add-save");
+  if (btn) { btn.disabled = true; btn.textContent = "Saving…"; }
+  try {
+    var d = await apiPost({ action: "createItem", name: name, category: cat, uom: uom,
+      barcode: v("pn-add-barcode") || undefined, cost: cost > 0 ? cost : undefined,
+      wireFtPerLb: uom === "lb" ? ftlb : undefined, active: true });
+    allItems.push(d.item);
+    allItems.sort(function (a, b) { return a.name.localeCompare(b.name); });
+    // Two writes, not one transaction: if the link fails the item still exists
+    // and simply shows up as a suggestion next time — nothing is lost.
+    await apiPost({ action: "partLinkSave", vendor: r.vendor, vendorPart: r.vendorPart, status: "linked",
+                    itemId: d.item.id, decidedBy: currentUser && currentUser.name });
+    pnDone(i, { status: "linked", itemName: d.item.name, created: true });
+  } catch (e) {
+    showToast("Couldn't save: " + e.message, true);
+    if (btn) { btn.disabled = false; btn.textContent = "Add item & match"; }
+  }
+}
+
+// Move a decided row out of the queue and into "recent" (with Undo).
+function pnDone(i, how) {
+  var r = _pn.waiting[i];
+  _pn.waiting.splice(i, 1);
+  _pn.recent.unshift({ vendor: r.vendor, vendorPart: r.vendorPart, status: how.status, itemName: how.itemName || "",
+                       description: r.description, _row: r });
+  if (how.status === "linked") _pn.linked = (_pn.linked || 0) + 1; else _pn.notStocked = (_pn.notStocked || 0) + 1;
+  _pn.open = null;
+  showToast(how.status === "linked" ? "✓ " + r.vendorPart + " → " + how.itemName + (how.created ? " (new item)" : "")
+                                    : "✕ " + r.vendorPart + " marked not stocked");
+  renderPartNumbers();
+}
+async function pnUndo(k) {
+  var x = _pn.recent[k];
+  try {
+    await apiPost({ action: "partLinkSave", vendor: x.vendor, vendorPart: x.vendorPart, status: "undo" });
+    _pn.recent.splice(k, 1);
+    if (x.status === "linked") _pn.linked = Math.max(0, (_pn.linked || 1) - 1); else _pn.notStocked = Math.max(0, (_pn.notStocked || 1) - 1);
+    // Rows decided in an earlier visit have no cached row — reload to bring it back.
+    if (x._row) { _pn.waiting.push(x._row); _pn.waiting.sort(function (a, b) { return (b.spend || 0) - (a.spend || 0); }); renderPartNumbers(); }
+    else goPartNumbers();
+    showToast("Undone — " + x.vendorPart + " is back in the list");
+  } catch (e) { showToast("Couldn't undo: " + e.message, true); }
+}
+function pnRecentHtml() {
+  if (!_pn.recent.length) return "";
+  return '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:18px 0 6px;">Recently decided</div>' +
+    _pn.recent.slice(0, 15).map(function (x, k) {
+      return '<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:12px;padding:7px 2px;border-bottom:1px solid var(--border);color:var(--dim);">' +
+        '<span>' + escapeHtml(x.vendorPart) + ' → ' + (x.status === "linked" ? '<span style="color:var(--green);">' + escapeHtml(x.itemName || "item") + '</span>' : '<span style="color:var(--muted);">not stocked</span>') + '</span>' +
+        '<button onclick="pnUndo(' + k + ')" style="font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--border);background:none;color:var(--dim);cursor:pointer;">Undo</button></div>';
+    }).join("");
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -17698,6 +17698,8 @@
     // A new composition, so a new idempotency key. Held until a save is confirmed.
     invSaveKey = newSaveKey();
     window._invBackup = null;   // rebuilt below for T&M jobs only
+    window._invBackupJustSaved = false;
+    window._invEditingBackup = null;
     const el = $("invoiceBuilder");
     el.innerHTML = `<div class="loading-msg">Building invoice...</div>`;
 
@@ -18317,6 +18319,13 @@
               const reprintBtn = hasSnap
                 ? `<button data-inv-id="${esc(inv.id)}" class="inv-reprint-btn" style="font-size:11px; padding:4px 10px; border:1px solid var(--line); border-radius:5px; background:white; cursor:pointer;">📄 Reprint PDF</button>`
                 : `<span style="font-size:11px; color:var(--muted); font-style:italic;">no snapshot</span>`;
+              // T&M backup sheet saved inside the snapshot (invoices saved from
+              // 2026-11-06 on). Older invoices simply have no button.
+              let hasBackup = false;
+              if (hasSnap) { try { const s = typeof inv.snapshot === "string" ? JSON.parse(inv.snapshot) : inv.snapshot; hasBackup = !!s?.backup; } catch (e) {} }
+              const backupBtn = hasBackup
+                ? `<button data-inv-id="${esc(inv.id)}" class="inv-backup-btn" title="Reprint the T&M backup sheet saved with this invoice" style="font-size:11px; padding:4px 10px; border:1px solid var(--line); border-radius:5px; background:white; cursor:pointer; margin-right:4px;">📋 Backup</button>`
+                : "";
               const editBtn = hasSnap
                 ? `<button data-inv-id="${esc(inv.id)}" class="inv-edit-btn" style="font-size:11px; padding:4px 10px; border:1px solid var(--accent); border-radius:5px; background:var(--accent-glow); color:var(--accent); cursor:pointer; font-weight:600; margin-right:4px;" title="Load this invoice into the builder so you can edit and re-save it">✏ Edit</button>`
                 : "";
@@ -18351,7 +18360,7 @@
                   <td style="padding:8px;">${esc(type)}${pctStr}</td>
                   <td style="padding:8px;">${statusDropdown}</td>
                   <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
-                  <td style="padding:8px; text-align:right;">${editBtn}${reprintBtn}</td>
+                  <td style="padding:8px; text-align:right;">${editBtn}${backupBtn}${reprintBtn}</td>
                 </tr>
               `;
             }).join("")}
@@ -18368,6 +18377,17 @@
             const snap = typeof inv.snapshot === "string" ? JSON.parse(inv.snapshot) : inv.snapshot;
             reprintInvoicePDF(snap);
           } catch(e) {
+            alert("Couldn't read saved invoice snapshot: " + e.message);
+          }
+        });
+      });
+      listEl.querySelectorAll(".inv-backup-btn").forEach(btn => {
+        btn.addEventListener("click", () => {
+          const inv = invoices.find(i => i.id === btn.dataset.invId);
+          try {
+            const snap = typeof inv?.snapshot === "string" ? JSON.parse(inv.snapshot) : inv?.snapshot;
+            window.reprintBackupPDF(snap);
+          } catch (e) {
             alert("Couldn't read saved invoice snapshot: " + e.message);
           }
         });
@@ -18474,7 +18494,32 @@
         metadata:  { invoiceNumber: invNum }
       });
 
-      showAppToast("Uploaded to pCloud ✓", {
+      // T&M: the backup sheet goes up beside the invoice, into the same job
+      // folder, so the two are together when the invoice is sent. Same route
+      // (type "invoice") as the invoice itself.
+      // ⚠ A failure here is reported on its own — the invoice above has
+      // ALREADY uploaded, and "upload failed" would send someone to upload it
+      // a second time.
+      const isTM = !((invJobRef.type || "").toLowerCase() === "contract"
+                  || (invJobRef.billingMethod || "").toLowerCase() === "contract");
+      const b = isTM ? currentBackup() : null;
+      let backupNote = "";
+      if (b && (b.people.length || b.vendors.length)) {
+        try {
+          const meta = liveBackupMeta();
+          await uploadPDFToPCloud({
+            type: "invoice", jobId: invJobRef.id, jobNumber: invJobRef.po || "",
+            pdfDoc: buildInvoiceBackupPDFDoc(b, meta), filename: backupFilename(meta),
+            metadata: { invoiceNumber: invNum, kind: "tm-backup" }
+          });
+          backupNote = " + backup sheet";
+        } catch (e) {
+          console.error("[pcloud] backup sheet upload failed", e);
+          showAppToast(`Invoice uploaded, but the backup sheet didn't: ${e.message}`, { kind: "error" });
+        }
+      }
+
+      showAppToast(`Uploaded to pCloud ✓${backupNote ? " (invoice" + backupNote + ")" : ""}`, {
         kind: "ok",
         actionText: result.pcloudFolderUrl ? "Open Folder" : "",
         actionHref: result.pcloudFolderUrl || ""
@@ -18782,6 +18827,12 @@
       })),
       total:   totalAmount,    // ← persist authoritative total inside the snapshot too
       jobName: invJobRef?.name || "",
+      // T&M backup sheet figures (hours per person, material per supplier),
+      // kept with the invoice so Invoice History can reprint the sheet the
+      // customer got. An EDIT carries the original figures forward — by then
+      // the hours are billed and the unbilled rows describe the next invoice.
+      backup:  isContract ? null
+             : (window._invEditingId ? (window._invEditingBackup || null) : (window._invBackup || null)),
       savedAt: new Date().toISOString()
     });
 
@@ -18807,12 +18858,23 @@
         // but DO NOT bump the invoice number (that's create-new behavior).
         // The user can leave the tab now or hit "Cancel Edit" to start fresh.
         window._invEditingId = null;
+        // The screen still shows the edited invoice's number; the unbilled
+        // figures loaded with the tab belong to the NEXT invoice. Don't let
+        // Backup Sheet print one under the other — History reprints this one.
+        window._invBackup = null;
+        window._invEditingBackup = null;
+        window._invBackupJustSaved = true;
         const editBanner = $("inv-editing-banner");
         if (editBanner) editBanner.style.display = "none";
         const saveBtnEl = $("invSaveBtn");
         if (saveBtnEl) saveBtnEl.textContent = "💾 Save Invoice";
       } else {
-        // Fresh invoice flow: clear the # input and auto-fill the next number
+        // Fresh invoice flow: clear the # input and auto-fill the next number.
+        // The backup figures now belong to the saved invoice (in its snapshot);
+        // drop them here or the Backup Sheet button would print them under the
+        // NEXT invoice number that is about to be filled in.
+        window._invBackup = null;
+        window._invBackupJustSaved = true;
         const inp = $("invNum");
         if (inp) inp.value = "";
         autoFillInvoiceNumber();
@@ -19005,6 +19067,10 @@
     }));
     refreshInvLines();
 
+    // The sheet saved with this invoice, if any — printed by Backup Sheet and
+    // carried forward by an Update so editing never loses it.
+    window._invEditingBackup = snap.backup || null;
+
     // Flag that subsequent Save = update (not create).
     window._invEditingId = invoiceId;
 
@@ -19071,15 +19137,49 @@
   // ⚠ It describes what is UNBILLED right now. Opened on a saved invoice
   // (edit mode) those rows already belong to that invoice and this would
   // describe the NEXT one — so it refuses rather than print the wrong period.
+  // The figures travel inside the invoice SNAPSHOT (snap.backup) when the
+  // invoice is saved, so a saved invoice's sheet can be reprinted from
+  // Invoice History exactly as the customer got it — the same mechanism that
+  // reprints the invoice itself. No PDF is stored; it is rebuilt from those
+  // figures.
+
+  // "T&M for Invoice #1681 11-6-2026.pdf" — owner's naming (2026-11-06).
+  function backupFilename(meta) {
+    const [y, m, d] = String(meta.invDate || "").split("-");
+    const date = y ? `${+m}-${+d}-${y}` : "";
+    const who  = meta.invNum ? `Invoice #${meta.invNum}` : (meta.jobName || "invoice");
+    return `T&M for ${who}${date ? " " + date : ""}.pdf`;
+  }
+  function liveBackupMeta() {
+    return { invNum: $("invNum")?.value || "", po: $("invPO")?.value || "",
+             invDate: $("invDate")?.value || new Date().toISOString().slice(0, 10),
+             jobName: invJobRef?.name || "" };
+  }
+  // The sheet that belongs to what is on screen right now: a saved invoice's
+  // own figures in edit mode, else the unbilled rows this composer billed.
+  function currentBackup() {
+    return window._invEditingId ? (window._invEditingBackup || null) : (window._invBackup || null);
+  }
+
+  // Reprint from Invoice History.
+  window.reprintBackupPDF = function(snap) {
+    if (!snap?.backup) { alert("This invoice was saved before backup sheets were kept with invoices."); return; }
+    const meta = { invNum: snap.invNum || "", invDate: snap.invDate || "", po: snap.po || "", jobName: snap.jobName || "" };
+    ensureJsPDF().then(() => buildInvoiceBackupPDFDoc(snap.backup, meta).save(backupFilename(meta)))
+      .catch(() => alert("PDF library failed to load. Check your connection."));
+  };
+
   window.invBackupPDF = function() {
     if (!invJobRef) return;
-    if (window._invEditingId) {
-      alert("The backup sheet is built from unbilled hours and expenses, so it only works on a NEW invoice.\n\nThis invoice is already saved — its hours have been billed.");
+    if (window._invEditingId && !window._invEditingBackup) {
+      alert("This invoice was saved before backup sheets were kept with invoices, so there is no sheet to print for it.");
       return;
     }
-    const b = window._invBackup;
+    const b = currentBackup();
     if (!b || (!b.people.length && !b.vendors.length)) {
-      alert("Nothing to break down: there are no reviewed, unbilled hours or expenses on this job.\n\nReview the hours and expenses first, then reopen the invoice.");
+      alert(window._invBackupJustSaved
+        ? "That invoice is saved, and its backup sheet was saved with it.\n\nPrint it from Invoice History below — the 📋 Backup button on its row."
+        : "Nothing to break down: there are no reviewed, unbilled hours or expenses on this job.\n\nReview the hours and expenses first, then reopen the invoice.");
       return;
     }
     // The invoice lines are editable. If someone typed over Cost of Labor or
@@ -19095,15 +19195,12 @@
     if (diffs.length && !confirm("The backup sheet won't match the invoice:\n\n" + diffs.join("\n") +
                                  "\n\nThe sheet shows the actual hours and expenses. Make it anyway?")) return;
     ensureJsPDF().then(() => {
-      const doc = buildInvoiceBackupPDFDoc(b);
-      const invNum  = $("invNum")?.value || "";
-      const invDate = $("invDate")?.value || new Date().toISOString().slice(0, 10);
-      const jobName = invJobRef?.name || "";
-      doc.save(`NEE_Invoice_Backup_${invNum || jobName.replace(/[^a-zA-Z0-9]/g, "_")}_${invDate}.pdf`);
+      const meta = liveBackupMeta();
+      buildInvoiceBackupPDFDoc(b, meta).save(backupFilename(meta));
     }).catch(() => alert("PDF library failed to load. Check your connection."));
   };
 
-  function buildInvoiceBackupPDFDoc(b) {
+  function buildInvoiceBackupPDFDoc(b, meta) {
     const theme = INVOICE_THEME;
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit: "pt", format: "letter" });
@@ -19112,10 +19209,9 @@
     const C_BORDER = [180,180,180], C_HDR = theme.accent, C_WHITE = [255,255,255];
     const C_ALT = [245,248,252], C_TEXT = [30,30,30], C_MUTED = [100,100,100];
 
-    const invNum  = $("invNum")?.value || "";
-    const invDate = $("invDate")?.value || new Date().toISOString().slice(0, 10);
-    const po      = $("invPO")?.value || "";
-    const jobName = invJobRef?.name || "";
+    // Everything printed comes from `b` and `meta`, never the live screen, so
+    // a reprint from Invoice History matches the copy the customer received.
+    const { invNum = "", invDate = "", po = "", jobName = "" } = meta || {};
     const fmtD = d => { if (!d) return ""; const [y, m, dd] = d.split("-"); return `${+m}/${+dd}/${y}`; };
     const span = (f, t) => !f ? "" : (f === t ? fmtD(f) : `${fmtD(f)} – ${fmtD(t)}`);
     const allFrom = [...b.people, ...b.vendors].map(g => g.from).filter(Boolean).sort()[0] || "";
@@ -19148,7 +19244,7 @@
     if (po) doc.text(`P.O. ${po}`, W - M, y, { align: "right" });
     y += 15;
     doc.text(`Time & material detail${allFrom ? ` for work ${span(allFrom, allTo)}` : ""}` +
-             (invNum ? ` — supports Invoice # ${invNum}` : ""), M, y);
+             (invNum ? ` — Invoice # ${invNum}` : ""), M, y);
     y += 22;
 
     function newPageIfNeeded(need) {
@@ -19219,7 +19315,10 @@
     };
     if (b.vendors.length) sumLine("Materials", fmtCurrency(b.matTotal));
     if (b.people.length) sumLine(`Labor (${hrs(b.laborHours)} hrs)`, fmtCurrency(b.laborTotal));
-    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.4); doc.line(sx, y - 9, W - M, y - 9);
+    // Rule sits in the gap below the last line; the bold total starts a clear
+    // 14pt under it (it used to ride the rule).
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.4); doc.line(sx, y - 8, W - M, y - 8);
+    y += 6;
     sumLine("Labor & materials", fmtCurrency(b.laborTotal + b.matTotal), true);
 
     // ── Outer border + page numbers on every page ──

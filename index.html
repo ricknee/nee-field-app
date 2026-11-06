@@ -17697,6 +17697,7 @@
     invJobRef = job;
     // A new composition, so a new idempotency key. Held until a save is confirmed.
     invSaveKey = newSaveKey();
+    window._invBackup = null;   // rebuilt below for T&M jobs only
     const el = $("invoiceBuilder");
     el.innerHTML = `<div class="loading-msg">Building invoice...</div>`;
 
@@ -17877,6 +17878,62 @@
           ? matTotal
           : (hasPriorInvoices ? 0 : matFallback);
 
+        // ── Backup sheet data (invBackupPDF) ──────────────────────────────
+        // The customer-facing breakdown behind the two T&M lines: hours per
+        // person and material per supplier. Built from the SAME rows that
+        // produced laborTotal / matTotal above, so its totals are the invoice's
+        // totals — never a second calculation that could drift from it.
+        // ⚠ Only when the allocations were used. If a line came from the
+        // fallback formula there are no rows to break down, and a sheet that
+        // invented a split would contradict the invoice it is meant to explain.
+        {
+          const teById = new Map();
+          entries.forEach(e => { teById.set(e.id, e); if (e.airtableId) teById.set(e.airtableId, e); });
+          const byPerson = new Map();
+          allocLabor.forEach(a => {
+            const te = teById.get(a.timeEntryId) || teById.get(a.timeEntryAirtableId) || {};
+            const name = te.employee || "Unassigned";
+            const g = byPerson.get(name) || { name, hours: 0, amount: 0, from: "", to: "" };
+            g.hours  += Number(a.allocatedHours) || 0;
+            g.amount += Number(a.allocatedRevenue) || 0;
+            const d = String(te.workDate || "").slice(0, 10);
+            if (d && (!g.from || d < g.from)) g.from = d;
+            if (d && (!g.to   || d > g.to))   g.to   = d;
+            byPerson.set(name, g);
+          });
+          // Owner's call: "Other" and the in-house inventory pushes print as
+          // one "Misc. items" line — the customer needs the supply-house bills
+          // broken out, not our internal bookkeeping categories.
+          const MISC = "Misc. items";
+          const vendorLabel = v => {
+            const s = String(v || "").trim();
+            return (!s || /^other$/i.test(s) || /^nee inventory$/i.test(s)) ? MISC : s;
+          };
+          const expById = new Map(expenses.map(e => [e.id, e]));
+          const byVendor = new Map();
+          allocMaterial.forEach(a => {
+            const ex = expById.get(a.expenseId) || {};
+            const name = vendorLabel(ex.vendor);
+            const g = byVendor.get(name) || { name, count: 0, amount: 0, from: "", to: "" };
+            g.count  += 1;
+            g.amount += Number(a.allocatedMaterial) || 0;
+            const d = String(ex.date || "").slice(0, 10);
+            if (d && (!g.from || d < g.from)) g.from = d;
+            if (d && (!g.to   || d > g.to))   g.to   = d;
+            byVendor.set(name, g);
+          });
+          const people  = [...byPerson.values()].sort((a, b) => b.hours - a.hours);
+          // Biggest supplier first, Misc. always last.
+          const vendors = [...byVendor.values()]
+            .sort((a, b) => (a.name === MISC) - (b.name === MISC) || b.amount - a.amount);
+          window._invBackup = {
+            people, laborHours: +people.reduce((s, p) => s + p.hours, 0).toFixed(2),
+            laborTotal: laborTotal > 0 ? laborTotal : 0,
+            vendors, matTotal: matTotal > 0 ? matTotal : 0,
+            markupPct: Number(job.markupPct) || null,
+          };
+        }
+
         if (matAmount > 0) {
           invLines.push({
             id: "materials",
@@ -17991,6 +18048,7 @@
           <button class="inv-btn secondary" onclick="invResetLines()">↺ Reset Lines</button>
           <button class="inv-btn secondary" onclick="invAddLine()">+ Add Line</button>
           <button class="inv-btn" onclick="invGeneratePDF()">⬇ Download PDF</button>
+          ${isContract ? "" : `<button class="inv-btn secondary" onclick="invBackupPDF()" title="A separate sheet for the customer: hours per person and material per supplier, behind this invoice's two lines">📋 Backup Sheet</button>`}
           <button class="inv-btn green" onclick="invUploadToPCloud()">📁 Upload to pCloud</button>
           <button class="inv-btn green" onclick="invSaveToAirtable()" id="invSaveBtn">💾 Save Invoice</button>
         </div>
@@ -18999,6 +19057,181 @@
     ensureJsPDF().then(buildInvoicePDF)
       .catch(() => alert("PDF library failed to load. Check your connection."));
   };
+
+  // ── T&M BACKUP SHEET ───────────────────────────────────────────────────────
+  // A SEPARATE PDF that sits behind a T&M invoice and explains its two lines to
+  // the customer: hours per person, and material per supplier (CED, Wolff,
+  // Menards…) with markup included. The invoice itself is unchanged.
+  //
+  // Data: window._invBackup, built in loadInvoiceTab from the same unbilled
+  // allocation rows that produced "Cost of Labor" / "Cost of Materials".
+  // Owner's calls (2026-11-06): no bill rate shown; "Other" and NEE Inventory
+  // print together as one "Misc. items" line.
+  //
+  // ⚠ It describes what is UNBILLED right now. Opened on a saved invoice
+  // (edit mode) those rows already belong to that invoice and this would
+  // describe the NEXT one — so it refuses rather than print the wrong period.
+  window.invBackupPDF = function() {
+    if (!invJobRef) return;
+    if (window._invEditingId) {
+      alert("The backup sheet is built from unbilled hours and expenses, so it only works on a NEW invoice.\n\nThis invoice is already saved — its hours have been billed.");
+      return;
+    }
+    const b = window._invBackup;
+    if (!b || (!b.people.length && !b.vendors.length)) {
+      alert("Nothing to break down: there are no reviewed, unbilled hours or expenses on this job.\n\nReview the hours and expenses first, then reopen the invoice.");
+      return;
+    }
+    // The invoice lines are editable. If someone typed over Cost of Labor or
+    // Cost of Materials, the sheet (built from the actual rows) will not add up
+    // to the invoice — say so instead of handing the customer two documents
+    // that disagree.
+    const lineAmt = id => Number((invLines.find(l => l.id === id) || {}).amount) || 0;
+    const diffs = [];
+    if (Math.abs(lineAmt("labor") - b.laborTotal) > 0.01)
+      diffs.push(`Cost of Labor on the invoice: ${fmtCurrency(lineAmt("labor"))} — hours add up to ${fmtCurrency(b.laborTotal)}`);
+    if (Math.abs(lineAmt("materials") - b.matTotal) > 0.01)
+      diffs.push(`Cost of Materials on the invoice: ${fmtCurrency(lineAmt("materials"))} — expenses add up to ${fmtCurrency(b.matTotal)}`);
+    if (diffs.length && !confirm("The backup sheet won't match the invoice:\n\n" + diffs.join("\n") +
+                                 "\n\nThe sheet shows the actual hours and expenses. Make it anyway?")) return;
+    ensureJsPDF().then(() => {
+      const doc = buildInvoiceBackupPDFDoc(b);
+      const invNum  = $("invNum")?.value || "";
+      const invDate = $("invDate")?.value || new Date().toISOString().slice(0, 10);
+      const jobName = invJobRef?.name || "";
+      doc.save(`NEE_Invoice_Backup_${invNum || jobName.replace(/[^a-zA-Z0-9]/g, "_")}_${invDate}.pdf`);
+    }).catch(() => alert("PDF library failed to load. Check your connection."));
+  };
+
+  function buildInvoiceBackupPDFDoc(b) {
+    const theme = INVOICE_THEME;
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: "pt", format: "letter" });
+    const W = 612, M = 40, PAGE_H = 792, BORDER_PAD = 20, BOTTOM = 712;
+    const INNER_W = W - M * 2;
+    const C_BORDER = [180,180,180], C_HDR = theme.accent, C_WHITE = [255,255,255];
+    const C_ALT = [245,248,252], C_TEXT = [30,30,30], C_MUTED = [100,100,100];
+
+    const invNum  = $("invNum")?.value || "";
+    const invDate = $("invDate")?.value || new Date().toISOString().slice(0, 10);
+    const po      = $("invPO")?.value || "";
+    const jobName = invJobRef?.name || "";
+    const fmtD = d => { if (!d) return ""; const [y, m, dd] = d.split("-"); return `${+m}/${+dd}/${y}`; };
+    const span = (f, t) => !f ? "" : (f === t ? fmtD(f) : `${fmtD(f)} – ${fmtD(t)}`);
+    const allFrom = [...b.people, ...b.vendors].map(g => g.from).filter(Boolean).sort()[0] || "";
+    const allTo   = [...b.people, ...b.vendors].map(g => g.to).filter(Boolean).sort().pop() || "";
+    const hrs = h => (Math.round(h * 100) / 100).toFixed(2);
+
+    let y = 36;
+    // ── Header (same as the invoice) ──
+    try { doc.addImage(theme.logoB64(), "PNG", M, y, 72, 72); } catch (e) {}
+    const tx = M + 86;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.setTextColor(...C_TEXT);
+    doc.text("Northeastern Electric, Inc.", tx, y + 22);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(11); doc.setTextColor(...C_MUTED);
+    doc.text("5909 Bandy Rd", tx, y + 40);
+    doc.text("Homeworth OH 44634", tx, y + 54);
+    doc.text("Ohio License #22855", tx, y + 68);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(22); doc.setTextColor(...C_TEXT);
+    doc.text("INVOICE DETAIL", W - M, 52, { align: "right" });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
+    if (invNum) doc.text(`Invoice # ${invNum}`, W - M, 70, { align: "right" });
+    doc.text(`Date ${fmtD(invDate)}`, W - M, invNum ? 84 : 70, { align: "right" });
+    y += 86;
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.8); doc.line(M, y, W - M, y);
+    y += 18;
+
+    // ── Job / period ──
+    doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(...C_TEXT);
+    doc.text(jobName, M, y);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(...C_MUTED);
+    if (po) doc.text(`P.O. ${po}`, W - M, y, { align: "right" });
+    y += 15;
+    doc.text(`Time & material detail${allFrom ? ` for work ${span(allFrom, allTo)}` : ""}` +
+             (invNum ? ` — supports Invoice # ${invNum}` : ""), M, y);
+    y += 22;
+
+    function newPageIfNeeded(need) {
+      if (y + need <= BOTTOM) return false;
+      doc.addPage(); y = 40; return true;
+    }
+    // cols: [{ label, x, align }]; rows: arrays of strings
+    function table(title, cols, rows, totalRow) {
+      newPageIfNeeded(60);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(...C_TEXT);
+      doc.text(title, M, y); y += 8;
+      const header = () => {
+        doc.setFillColor(...C_HDR); doc.roundedRect(M, y, INNER_W, 20, 4, 4, "F");
+        doc.setFont("helvetica", "bold"); doc.setFontSize(9); doc.setTextColor(...C_WHITE);
+        cols.forEach(c => doc.text(c.label, c.x, y + 14, { align: c.align || "left" }));
+        y += 20;
+      };
+      header();
+      doc.setFontSize(10.5);
+      rows.forEach((r, i) => {
+        if (newPageIfNeeded(22)) header();
+        if (i % 2 === 1) { doc.setFillColor(...C_ALT); doc.rect(M, y, INNER_W, 20, "F"); }
+        doc.setFont("helvetica", "normal"); doc.setTextColor(...C_TEXT);
+        cols.forEach((c, k) => doc.text(String(r[k] ?? ""), c.x, y + 14, { align: c.align || "left" }));
+        doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.3); doc.line(M, y + 20, W - M, y + 20);
+        y += 20;
+      });
+      if (totalRow) {
+        newPageIfNeeded(24);
+        doc.setFont("helvetica", "bold"); doc.setTextColor(...C_TEXT);
+        cols.forEach((c, k) => totalRow[k] != null && doc.text(String(totalRow[k]), c.x, y + 15, { align: c.align || "left" }));
+        doc.setDrawColor(...C_HDR); doc.setLineWidth(0.8); doc.line(M, y + 21, W - M, y + 21);
+        y += 24;
+      }
+      y += 18;
+    }
+
+    // ── Labor: hours per person (no rate — owner's call) ──
+    if (b.people.length) {
+      table("Labor",
+        [{ label: "Employee", x: M + 10 }, { label: "Dates worked", x: M + 250 },
+         { label: "Hours", x: W - M - 8, align: "right" }],
+        b.people.map(p => [p.name, span(p.from, p.to), hrs(p.hours)]),
+        ["Total", null, `${hrs(b.laborHours)} hrs`]);
+    }
+
+    // ── Materials: per supplier, markup included ──
+    if (b.vendors.length) {
+      const mk = b.markupPct ? `${Math.round(b.markupPct * 100)}% markup` : "markup";
+      table(`Materials (amounts include ${mk})`,
+        [{ label: "Supplier", x: M + 10 }, { label: "Dates", x: M + 220 },
+         { label: "Bills", x: M + 380, align: "right" }, { label: "Amount", x: W - M - 8, align: "right" }],
+        b.vendors.map(v => [v.name, span(v.from, v.to), String(v.count), fmtCurrency(v.amount)]),
+        ["Total", null, null, fmtCurrency(b.matTotal)]);
+    }
+
+    // ── Summary — the two invoice lines, and what they add to ──
+    newPageIfNeeded(90);
+    const sx = W - M - 230;
+    const sumLine = (label, val, bold) => {
+      doc.setFont("helvetica", bold ? "bold" : "normal"); doc.setFontSize(bold ? 11 : 10);
+      doc.setTextColor(...(bold ? C_TEXT : C_MUTED));
+      doc.text(label, sx, y); doc.setTextColor(...C_TEXT); doc.text(val, W - M - 8, y, { align: "right" });
+      y += bold ? 18 : 15;
+    };
+    if (b.people.length) sumLine(`Labor (${hrs(b.laborHours)} hrs)`, fmtCurrency(b.laborTotal));
+    if (b.vendors.length) sumLine("Materials", fmtCurrency(b.matTotal));
+    doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.4); doc.line(sx, y - 9, W - M, y - 9);
+    sumLine("Labor & materials", fmtCurrency(b.laborTotal + b.matTotal), true);
+
+    // ── Outer border + page numbers on every page ──
+    const pages = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= pages; p++) {
+      doc.setPage(p);
+      doc.setDrawColor(70, 70, 70); doc.setLineWidth(2.2);
+      doc.roundedRect(BORDER_PAD, BORDER_PAD, W - BORDER_PAD * 2, PAGE_H - BORDER_PAD * 2, 8, 8);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(...C_MUTED);
+      doc.text("Northeastern Electric, Inc.  ·  330-257-0447  ·  rick@northeasternelec.com", M, PAGE_H - 34);
+      if (pages > 1) doc.text(`Page ${p} of ${pages}`, W - M, PAGE_H - 34, { align: "right" });
+    }
+    doc.setPage(pages);
+    return doc;
+  }
 
   // Theme presets — control title text, header fill color, and logo image.
   const INVOICE_THEME = {

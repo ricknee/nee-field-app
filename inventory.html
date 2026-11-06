@@ -2372,7 +2372,19 @@ function renderPushExpenses() {
       html += '<div style="display:flex;align-items:baseline;gap:8px;font-size:13px;color:' + (isReturn ? 'var(--red)' : 'var(--dim)') + ';padding:3px 0;border-bottom:1px solid var(--border);">';
       html += '<span style="flex:0 0 auto;min-width:82px;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;">' + dTxt + '</span>';
       html += '<span style="flex:1 1 auto;min-width:0;">' + l.item + (isReturn ? ' (return)' : '') + ' ' + qtyLabel + moveTxt + '</span>';
-      html += '<span style="flex:0 0 auto;">' + (isReturn ? '−' : '') + '$' + Math.abs(l.total).toFixed(2) + '</span></div>';
+      // Unit price, derived from the line's own total so it always multiplies
+      // back to the figure beside it (the server's `cost` is rounded to cents
+      // and is a blend when a line mixes snapshot prices). Wire is shown per
+      // FOOT — that is how the vendor quotes it — to 3 places, since a cent
+      // rounding on $0.35/ft is a 3% error.
+      var unitTxt = '';
+      if (l.wireFt > 0) {
+        unitTxt = '$' + (Math.abs(l.total) / l.wireFt).toFixed(3) + '/ft';
+      } else if (Math.abs(l.qty) > 0) {
+        unitTxt = '$' + (Math.abs(l.total) / Math.abs(l.qty)).toFixed(2) + '/ea';
+      }
+      html += '<span style="flex:0 0 auto;min-width:84px;text-align:right;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums;">' + unitTxt + '</span>';
+      html += '<span style="flex:0 0 auto;min-width:78px;text-align:right;font-variant-numeric:tabular-nums;">' + (isReturn ? '−' : '') + '$' + Math.abs(l.total).toFixed(2) + '</span></div>';
     });
 
     html += '<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--dim);padding:6px 0 2px;">';

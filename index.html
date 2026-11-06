@@ -19195,10 +19195,11 @@
         ["Total", null, `${hrs(b.laborHours)} hrs`]);
     }
 
-    // ── Materials: per supplier, markup included ──
+    // ── Materials: per supplier ──
+    // The amounts ARE the billed amounts (markup already in them), but the
+    // owner does not want the markup named on the customer's copy (2026-11-06).
     if (b.vendors.length) {
-      const mk = b.markupPct ? `${Math.round(b.markupPct * 100)}% markup` : "markup";
-      table(`Materials (amounts include ${mk})`,
+      table("Materials",
         [{ label: "Supplier", x: M + 10 }, { label: "Dates", x: M + 220 },
          { label: "Bills", x: M + 380, align: "right" }, { label: "Amount", x: W - M - 8, align: "right" }],
         b.vendors.map(v => [v.name, span(v.from, v.to), String(v.count), fmtCurrency(v.amount)]),

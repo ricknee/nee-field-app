@@ -19186,14 +19186,7 @@
       y += 18;
     }
 
-    // ── Labor: hours per person (no rate — owner's call) ──
-    if (b.people.length) {
-      table("Labor",
-        [{ label: "Employee", x: M + 10 }, { label: "Dates worked", x: M + 250 },
-         { label: "Hours", x: W - M - 8, align: "right" }],
-        b.people.map(p => [p.name, span(p.from, p.to), hrs(p.hours)]),
-        ["Total", null, `${hrs(b.laborHours)} hrs`]);
-    }
+    // Materials FIRST, labor below — owner's order (2026-11-06).
 
     // ── Materials: per supplier ──
     // The amounts ARE the billed amounts (markup already in them), but the
@@ -19206,6 +19199,15 @@
         ["Total", null, null, fmtCurrency(b.matTotal)]);
     }
 
+    // ── Labor: hours per person (no rate — owner's call) ──
+    if (b.people.length) {
+      table("Labor",
+        [{ label: "Employee", x: M + 10 }, { label: "Dates worked", x: M + 250 },
+         { label: "Hours", x: W - M - 8, align: "right" }],
+        b.people.map(p => [p.name, span(p.from, p.to), hrs(p.hours)]),
+        ["Total", null, `${hrs(b.laborHours)} hrs`]);
+    }
+
     // ── Summary — the two invoice lines, and what they add to ──
     newPageIfNeeded(90);
     const sx = W - M - 230;
@@ -19215,8 +19217,8 @@
       doc.text(label, sx, y); doc.setTextColor(...C_TEXT); doc.text(val, W - M - 8, y, { align: "right" });
       y += bold ? 18 : 15;
     };
-    if (b.people.length) sumLine(`Labor (${hrs(b.laborHours)} hrs)`, fmtCurrency(b.laborTotal));
     if (b.vendors.length) sumLine("Materials", fmtCurrency(b.matTotal));
+    if (b.people.length) sumLine(`Labor (${hrs(b.laborHours)} hrs)`, fmtCurrency(b.laborTotal));
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.4); doc.line(sx, y - 9, W - M, y - 9);
     sumLine("Labor & materials", fmtCurrency(b.laborTotal + b.matTotal), true);
 

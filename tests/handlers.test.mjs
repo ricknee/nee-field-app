@@ -7759,6 +7759,21 @@ await test("updateJobType: the spellings are the stored ones, and it is admin+of
      "and piSyncJob patches the selected job AND its row in the list");
 });
 
+await test("updateJobTaxStatus: two stored spellings, admin+office, a Project Info section", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const src  = readFileSync(fileURLToPath(new URL("../netlify/functions/airtable.js", import.meta.url)), "utf8");
+  const html = readFileSync(fileURLToPath(new URL("../index.html", import.meta.url)), "utf8");
+  // inventory.js treats anything but exactly "Taxable" as exempt, so only the
+  // two real spellings may be written — never null, never a variant.
+  ok(/const JOB_TAX_STATUS_OPTS = \["Taxable", "Tax Exempt"\];/.test(src), "whitelist");
+  ok(/UPDATE jobs SET tax_status = \$2 WHERE airtable_id = \$1 OR id::text = \$1/.test(src), "either handle");
+  ok(/"updateJobTaxStatus",/.test(src), "gated admin+office");
+  ok(/if \(body\.action === "updateJobTaxStatus"\)\s+return await handleUpdateJobTaxStatus\(body\);/.test(src), "dispatched");
+  ok(/key: "taxStatus",[\s\S]{0,400}save: savePiTaxStatus/.test(html), "a section of the one save bar");
+  ok(/apiPost\("updateJobTaxStatus"[\s\S]{0,200}piSyncJob\(\{ taxStatus: value \}\)/.test(html), "syncs the cached job");
+});
+
 // The Project Info tab carried four Save buttons doing the same verb — the
 // edit panel's, plus one each on City Tax, Bills as and On the clock — and the
 // inline ones sat beside the panel, so which button your change belonged to was

@@ -11640,6 +11640,17 @@
           they are their own record and nothing here rewrites them.
         </span>
       </div>
+      <div style="display:flex; align-items:center; gap:10px; padding:10px 14px; margin-bottom:14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
+        <span style="font-size:12px; color:var(--muted);">🧾 Sales tax</span>
+        <select id="jobTaxStatusSelect" class="edit-input" style="min-width:200px; font-size:13px;">
+          <option value="Taxable"    ${job.taxStatus !== "Tax Exempt" ? "selected" : ""}>Taxable</option>
+          <option value="Tax Exempt" ${job.taxStatus === "Tax Exempt" ? "selected" : ""}>Tax Exempt</option>
+        </select>
+        <span style="flex-basis:100%; font-size:11px; color:var(--muted);">
+          Decides whether pushing inventory to this job adds a sales-tax line. Pushes already
+          made are unaffected.
+        </span>
+      </div>
       <details id="jobClockVisBox" ${job.clockVisibility ? "open" : ""} style="margin-bottom:14px;">
         <summary style="cursor:pointer; font-size:12px; color:${job.clockVisibility ? "var(--accent)" : "var(--muted)"}; padding:4px 2px; list-style:none;">
           ⏱ On the clock: <b>${
@@ -11921,6 +11932,17 @@
       save: savePiJobType,
     },
     {
+      key: "taxStatus",
+      label: "sales tax",
+      dirty() {
+        const sel = $("jobTaxStatusSelect"), job = piJob();
+        // A job with no value displays as Taxable (the creation default), so
+        // compare against that — otherwise it would read dirty on open.
+        return !!sel && !!job && sel.value !== (job.taxStatus === "Tax Exempt" ? "Tax Exempt" : "Taxable");
+      },
+      save: savePiTaxStatus,
+    },
+    {
       key: "clock",
       label: "on the clock",
       dirty() {
@@ -12006,6 +12028,16 @@
     piSyncJob({ type: value });
   }
 
+  async function savePiTaxStatus() {
+    const job = piJob(), sel = $("jobTaxStatusSelect");
+    const value = sel.value;
+    await apiPost("updateJobTaxStatus", { jobId: job.id, taxStatus: value });
+    piSyncJob({ taxStatus: value });
+    // The info-box pill up top shows it too; repaint so the two never disagree.
+    const pill = $("piTaxStatus");
+    if (pill && (isAdmin() || isViewer())) pill.innerHTML = atPill(value, TAX_COLORS);
+  }
+
   async function savePiClockVis() {
     const job = piJob(), sel = $("jobClockVisSelect");
     const value = sel.value || null;
@@ -12031,7 +12063,7 @@
   // they are dirty, and the shared bar does the rest. Re-wired on every render
   // because the bars are innerHTML'd per job.
   function wireJobCityTaxBar(job) {
-    ["jobCityTaxSelect", "jobTypeSelect", "jobClockVisSelect"].forEach(id => {
+    ["jobCityTaxSelect", "jobTypeSelect", "jobTaxStatusSelect", "jobClockVisSelect"].forEach(id => {
       const el = $(id);
       if (el) el.onchange = refreshPiSaveBar;
     });

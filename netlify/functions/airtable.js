@@ -626,6 +626,8 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // it decides whether an invoice is a percentage of expected revenue or the sum
   // of actual labour and materials.
   "updateJobType",
+  // Taxable vs Tax Exempt — decides whether an inventory push adds sales tax.
+  "updateJobTaxStatus",
   // Whether a job shows on the clock. Same tier — it decides where people's hours
   // can land, which is a money question even though it looks like a display one.
   "updateJobClockVisibility",
@@ -3098,6 +3100,35 @@ async function handleUpdateJobType(body) {
   if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
 
   return resp(200, { ok: true, jobId, jobType: rows[0].job_type ?? null });
+}
+
+// ── JOB SETTING: is this job's material taxable ────────────────────────────
+// Read by the inventory app's Push Expenses: a Taxable job gets a sales-tax
+// expense line on every push, a Tax Exempt one doesn't. Until this existed it
+// could only be chosen when the job was created (Big Little Farms was born
+// Taxable and is not). Pushes already made are their own records — changing
+// this does not add or remove tax lines on them.
+// No null: the column holds only these two spellings, and an unset value would
+// read as "not Taxable" in inventory.js, i.e. silently exempt.
+const JOB_TAX_STATUS_OPTS = ["Taxable", "Tax Exempt"];
+
+async function handleUpdateJobTaxStatus(body) {
+  const { jobId, taxStatus } = body || {};
+  if (!jobId || !isJobHandle(jobId)) {
+    return resp(400, { ok: false, error: "Missing or invalid jobId." });
+  }
+  const value = String(taxStatus ?? "").trim();
+  if (!JOB_TAX_STATUS_OPTS.includes(value)) {
+    return resp(400, { ok: false, error: `Unknown tax status: ${value || "(blank)"}` });
+  }
+
+  const rows = await neonWrite("job.setTaxStatus",
+    `UPDATE jobs SET tax_status = $2 WHERE airtable_id = $1 OR id::text = $1
+     RETURNING COALESCE(airtable_id, id::text) AS handle, tax_status`,
+    [String(jobId), value]);
+  if (!rows?.length) return resp(404, { ok: false, error: "Job not found." });
+
+  return resp(200, { ok: true, jobId, taxStatus: rows[0].tax_status });
 }
 
 // ── JOB SETTING: does this job appear on the time clock ────────────────────
@@ -17497,6 +17528,7 @@ export async function handler(event) {
       if (body.action === "updateJobBillableRate") return await handleUpdateJobBillableRate(body);
       if (body.action === "updateJobCityTax")     return await handleUpdateJobCityTax(body);
       if (body.action === "updateJobType")        return await handleUpdateJobType(body);
+      if (body.action === "updateJobTaxStatus")   return await handleUpdateJobTaxStatus(body);
       if (body.action === "updateJobClockVisibility") return await handleUpdateJobClockVisibility(body);
       if (body.action === "setJobPrevailingWage") return await handleSetJobPrevailingWage(body);
       if (body.action === "addFleetService")      return await handleAddFleetService(body);

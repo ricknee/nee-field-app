@@ -19205,9 +19205,7 @@
         [{ label: "Employee", x: M + 10 }, { label: "Dates worked", x: M + 250 },
          { label: "Hours", x: W - M - 8, align: "right" }],
         b.people.map(p => [p.name, span(p.from, p.to), hrs(p.hours)]),
-        // Total in DOLLARS, not hours — owner's call (2026-11-06). Per-person
-        // dollars stay off: hours × dollars per person would print the rate.
-        ["Total", null, fmtCurrency(b.laborTotal)]);
+        ["Total", null, `${hrs(b.laborHours)} hrs`]);
     }
 
     // ── Summary — the two invoice lines, and what they add to ──
@@ -19220,7 +19218,7 @@
       y += bold ? 18 : 15;
     };
     if (b.vendors.length) sumLine("Materials", fmtCurrency(b.matTotal));
-    if (b.people.length) sumLine("Labor", fmtCurrency(b.laborTotal));
+    if (b.people.length) sumLine(`Labor (${hrs(b.laborHours)} hrs)`, fmtCurrency(b.laborTotal));
     doc.setDrawColor(...C_BORDER); doc.setLineWidth(0.4); doc.line(sx, y - 9, W - M, y - 9);
     sumLine("Labor & materials", fmtCurrency(b.laborTotal + b.matTotal), true);
 

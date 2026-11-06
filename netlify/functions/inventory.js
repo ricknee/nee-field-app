@@ -3976,7 +3976,7 @@ export async function handler(event) {
       if (body.action === "pushReceiptUploadUrl") return await handlePushReceiptUploadUrl(body);
       if (body.action === "createItem")        return await handleCreateItem(body);
       if (body.action === "partNumbersQueue")  return await handlePartNumbersQueue();
-      if (body.action === "partLinkSave")      return await handlePartLinkSave(body, authUser);
+      if (body.action === "partLinkSave")      return await handlePartLinkSave(body, authedUser(event));
       if (body.action === "updateItemCost")     return await handleUpdateItemCost(body);
       if (body.action === "itemUpdate")         return await handleItemUpdate(body);
       if (body.action === "itemDelete")         return await handleItemDelete(body);

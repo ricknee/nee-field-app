@@ -9,6 +9,10 @@ docs/SYSTEM-MAP.md
 # maths, cost structure). Regenerate any time with: node db/etl/gp-inventory.mjs
 docs/GP-FORMULA-INVENTORY.md
 
+# Supplier ticket PDFs and price sheets used to build the ticket reader — real
+# vendor pricing, commercially sensitive, and publish = "." would serve them.
+tickets/
+
 # Scratch / temp files (e.g. .gray_const_line.tmp)
 *.tmp
 

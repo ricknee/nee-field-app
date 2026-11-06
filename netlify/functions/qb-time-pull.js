@@ -51,6 +51,8 @@ import { backfillJobLinks } from "./_jobs-sync.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 import { runIntegrityChecks, reportIntegrity } from "./_integrity.js";
 import { makeAtFetch } from "./_jobs.js";
+import { readPendingTicketLines } from "./_ticket-lines.js";
+import { getObjectBytes, r2Enabled } from "./_r2.js";
 
 const QB = "https://rest.tsheets.com/api/v1";
 
@@ -469,6 +471,29 @@ export const handler = async () => {
     integrityReport = { ok: false, error: String(e?.message || e) };
   }
 
+  // ── Supplier ticket lines (_ticket-lines.js, db/schema/085) ──────────────
+  // Reads the line items off any CED/Wolff ticket PDF not read yet, so the
+  // inventory app can compare its costs with what was actually paid. READ-ONLY
+  // toward money: it writes vendor_invoice_lines and a status, never an expense
+  // and never a cost on file.
+  //
+  // Here rather than in vendorInvoiceIntake on purpose: intake is the MiniBee's
+  // path to creating expenses, and a PDF that fails to parse must never be able
+  // to fail that request. Reading on the hour also drains the backlog of tickets
+  // that arrived before this existed, with no separate backfill to remember.
+  //
+  // Capped at ~8 s and fails soft, like everything else above the timesheet pull.
+  let ticketReport = { ok: false, error: "R2 not configured" };
+  if (r2Enabled()) {
+    try {
+      ticketReport = await readPendingTicketLines((t, p) => sql.query(t, p), getObjectBytes,
+                                                  { limit: 40, budgetMs: 8000 });
+    } catch (e) {
+      console.error("qb-time-pull: ticket lines failed (continuing)", e);
+      ticketReport = { ok: false, error: String(e?.message || e) };
+    }
+  }
+
   const [state] = await sql.query(`SELECT watermark FROM sync_state WHERE key = 'qb_timesheets'`);
   const since = state?.watermark
     ? new Date(new Date(state.watermark).getTime() - WATERMARK_OVERLAP_MS)
@@ -477,6 +502,7 @@ export const handler = async () => {
   try {
     const report = { ...(await runPull({ sql, token, since })), jobLinks: linkReport,
                      generatorServiceCalls: generatorReport,
+                     ticketLines: ticketReport,
                      integrity: { failures: integrityReport.failures ?? null,
                                   brokenChecks: integrityReport.brokenChecks ?? null,
                                   findings: integrityReport.findings?.map(f => `${f.check}:${f.count}`) ?? [] } };

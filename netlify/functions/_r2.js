@@ -496,6 +496,20 @@ async function deleteObject(key, timeoutMs = DEFAULT_TIMEOUT_MS) {
   }
 }
 
+// Reads one object's bytes. For server-side work on a stored file — the ticket
+// reader (_ticket-lines.js) opens supplier PDFs with it. The browser never uses
+// this path; it downloads through presigned URLs.
+export async function getObjectBytes(key, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const c = config();
+  const client = await getClient();
+  const res = await withTimeout(
+    (signal) => client.fetch(`${c.endpoint}/${c.bucket}/${encodeURI(key)}`, { method: "GET", signal }),
+    timeoutMs
+  );
+  if (!res.ok) throw new R2Error(`R2 get failed: HTTP ${res.status}`, "HTTP_" + res.status);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 async function copyObject(srcKey, destKey, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const c = config();
   const client = await getClient();

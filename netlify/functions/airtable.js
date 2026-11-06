@@ -38,6 +38,7 @@ import {
   googleStatus, googleConfigured, googleContactsMode,
   getPerson, getPeopleBatch, listConnections, DESTINATIONS,
 } from "./_google-contacts.js";
+import { readPendingTicketLines } from "./_ticket-lines.js";
 
 import {
   r2Enabled, r2Status, r2SelfTest, listJobPhotos, presignPut,
@@ -48,7 +49,7 @@ import {
   softDeleteJobPrint, restoreJobPrint, purgeJobPrint,
   powerCoSpecsPrefix, listPowerCoSpecs, listDeletedPowerCoSpecs,
   softDeletePowerCoSpec, restorePowerCoSpec, purgePowerCoSpec,
-  expensePrefix, vendorInvoicePrefix, copyVendorInvoicePdfToExpense,
+  expensePrefix, vendorInvoicePrefix, copyVendorInvoicePdfToExpense, getObjectBytes,
   listExpenseReceipts, receiptFileKind, summarizeExpenseReceipts,
   softDeleteExpenseReceipt, restoreExpenseReceipt, listDeletedExpenseReceipts, R2Error,
   listByPrefix, liftPrefix, fleetPrefix, presignEquipThumbPut,
@@ -546,6 +547,10 @@ const _ADMIN_POSTS = new Set([
   // GENERATOR_SERVICE_CALLS on at all. Also runs unattended on the hourly
   // schedule; this action is the manual/preview door onto the same code.
   "generatorServiceCheck",
+  // Reads supplier ticket PDFs into vendor_invoice_lines (db/schema/085) now,
+  // instead of waiting for the hourly run. Admin because `reread` throws away a
+  // ticket's lines and reads them again; it never touches an expense or a cost.
+  "ticketLinesRun",
   // Merging duplicate contacts. Admin because it is the only action here that
   // DELETES a contact row, and because its input is a human decision that no
   // ranking can make — see the Mike Ware case in handleContactMerge.
@@ -729,6 +734,9 @@ const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "
                               // way r2Status does, because a PW job with no usable rate
                               // produces a plausible number rather than an error.
                               "prevailingWageStatus",
+                              // db/schema/085 — how many supplier tickets have been read,
+                              // and which ones failed their checks and why.
+                              "ticketLinesStatus",
                               // Item 07 diagnostics. googleContactsReconcile reads every
                               // contact in both company address books, so it sits at strict
                               // admin with the roster rather than with office.
@@ -15147,6 +15155,56 @@ async function handleCreateJob(body) {
 // Same job as r2Status: name the specific misconfiguration instead of leaving
 // somebody to infer it from the data afterwards. `native` here is the ONLY value
 // that means jobs are born in Neon.
+// ── SUPPLIER TICKET LINES (_ticket-lines.js, db/schema/085) ─────────────────
+// The hourly qb-time-pull reads ticket PDFs on its own. These two are the
+// "how is it doing" and "do it now" doors onto the same code.
+//
+// ticketLinesStatus — read-only: counts by status, and every ticket that did
+// NOT come back 'ok' with the reason. A vendor changing its invoice layout shows
+// up here as a wall of 'mismatch', never as a wrong price.
+async function handleTicketLinesStatus() {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database. DATABASE_URL is unset." });
+  const counts = await neonQuery(
+    `SELECT vendor_name, coalesce(lines_status, 'not read yet') AS status, count(*)::int AS n
+       FROM vendor_invoices
+      WHERE pdf_key IS NOT NULL AND status <> 'deleted'
+      GROUP BY 1, 2 ORDER BY 1, 2`);
+  const problems = await neonQuery(
+    `SELECT vendor_name, invoice_no, lines_status, lines_note,
+            to_char(lines_read_at, 'YYYY-MM-DD HH24:MI') AS read_at
+       FROM vendor_invoices
+      WHERE lines_status IN ('mismatch', 'unreadable')
+      ORDER BY lines_read_at DESC LIMIT 50`);
+  const lines = await neonQuery(`SELECT count(*)::int AS n FROM vendor_invoice_lines`);
+  if (counts?.error || problems?.error) {
+    return resp(503, { ok: false, error: counts?.error || problems?.error });
+  }
+  return resp(200, { ok: true, counts: counts.rows, problems: problems.rows,
+                     linesStored: lines?.rows?.[0]?.n ?? null });
+}
+
+// ticketLinesRun — POST { limit?, reread?: ["<invoice no>", …] }. `reread`
+// clears those tickets' lines and status first so they are read again (for after
+// a parser fix); otherwise it just reads the next batch of unread ones.
+async function handleTicketLinesRun(body) {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database. DATABASE_URL is unset." });
+  if (!r2Enabled())   return resp(503, { ok: false, error: "Needs R2 — the ticket PDFs live there." });
+  const reread = Array.isArray(body?.reread) ? body.reread.map(String).filter(Boolean) : [];
+  if (reread.length) {
+    await neonWrite("ticketLines.reread",
+      `WITH gone AS (
+         DELETE FROM vendor_invoice_lines
+          WHERE invoice_id IN (SELECT id FROM vendor_invoices WHERE invoice_no = ANY($1::text[])))
+       UPDATE vendor_invoices SET lines_status = NULL, lines_note = NULL, lines_read_at = NULL
+        WHERE invoice_no = ANY($1::text[])`, [reread]);
+  }
+  const limit = Math.min(Math.max(Number(body?.limit) || 15, 1), 40);
+  // ~8 s: a synchronous function is cut off at 10.
+  const report = await readPendingTicketLines((t, p) => neonWrite("ticketLines", t, p),
+                                              getObjectBytes, { limit, budgetMs: 7000 });
+  return resp(200, { ok: true, ...report });
+}
+
 // ── ON-DEMAND INTEGRITY CHECK ─────────────────────────────────────────────
 // The same checks the hourly pull runs (_integrity.js), reachable when someone
 // wants an answer NOW rather than at the top of the hour — after a big import,
@@ -17296,6 +17354,7 @@ export async function handler(event) {
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "integrityCheck")     return await handleIntegrityCheck();
+      if (action === "ticketLinesStatus")  return await handleTicketLinesStatus();
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
       if (action === "prevailingWageStatus") return await handlePrevailingWageStatus();
       if (action === "googleStatus")       return await handleGoogleStatus();
@@ -17411,6 +17470,7 @@ export async function handler(event) {
       if (body.action === "backfillContacts")     return await handleBackfillContacts();
       if (body.action === "contactMerge")         return await handleContactMerge(body, authUser);
       if (body.action === "generatorServiceCheck") return await handleGeneratorServiceCheck(body);
+      if (body.action === "ticketLinesRun")        return await handleTicketLinesRun(body);
       if (body.action === "payrollRunCreate")     return await handlePayrollRunCreate(body);
       if (body.action === "deleteExpense")        return await handleDeleteExpense(body, authUser);
       if (body.action === "updateExpense")        return await handleUpdateExpense(body, authUser);

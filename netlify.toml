@@ -28,7 +28,8 @@
 # dependency itself is declared in netlify/functions/package.json.
 [functions]
   node_bundler = "esbuild"
-  external_node_modules = ["@neondatabase/serverless"]
+  # unpdf (pdf.js) is lazy-imported by _ticket-lines.js to read supplier ticket PDFs.
+  external_node_modules = ["@neondatabase/serverless", "unpdf"]
 
 # QB Time -> Neon incremental pull. Hourly, not Make's nightly 9pm cadence: a pull is
 # cheap, and the nightly batch only existed because Make bills per operation.

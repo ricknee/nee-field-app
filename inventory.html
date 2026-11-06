@@ -2646,7 +2646,7 @@ async function openPushHistoryDetail(id) {
 
     // Description (the same string sent to the main base)
     if (p.description) {
-      html += '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;">Description sent to Airtable</div>';
+      html += '<div style="font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;">Description on the job expense</div>';
       html += '<div style="background:var(--navy-mid);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:12px;color:var(--dim);line-height:1.5;word-break:break-word;">' +
         p.description.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;") +
         '</div>';
@@ -2674,6 +2674,7 @@ function reprintPushHistoryPdf() {
     jobName:  p.jobName,
     taxable:  p.taxable,
     jobTotal: p.materialsTotal,
+    receiptNo: p.receiptNo || null,
     dateOverride: p.datePushed || null,
     lines: (p.lines || []).map(function(l) {
       return {
@@ -2706,8 +2707,14 @@ function reprintPushHistoryPdf() {
 // and the reason a retry re-downloads the PDF without filing a second copy.
 function stampReceiptTargets(groups, result) {
   var targets = (result && result.receiptTargets) || {};
+  // Receipt numbers (db/schema/086) come back for retries too, so a re-download
+  // prints the number the expense description already names.
+  var numbers = (result && result.receiptNumbers) || {};
   groups.forEach(function (g) {
-    if (g && g.pushId) g._expenseId = targets[g.pushId] || null;
+    if (g && g.pushId) {
+      g._expenseId = targets[g.pushId] || null;
+      g.receiptNo  = numbers[g.pushId] || null;
+    }
   });
 }
 
@@ -2784,11 +2791,18 @@ function downloadReceiptPDF(g) {
     var blob = new Blob([bytes], { type: "application/pdf" });
     var url  = URL.createObjectURL(blob);
     var a    = document.createElement("a");
-    var safe = (g.jobName || "job").replace(/[^a-z0-9]/gi, "_").substring(0, 30);
     var dateSrc = g.dateOverride ? new Date(g.dateOverride) : new Date();
-    var date = dateSrc.toISOString().split("T")[0];
     a.href     = url;
-    a.download = "NEE_Materials_" + safe + "_" + date + ".pdf";
+    if (g.receiptNo) {
+      // "Materials Receipt #1001 Trail Cabinet 11-6-2026.pdf" — same style as
+      // the field app's "T&M for Invoice #1681 11-6-2026.pdf".
+      var job = (g.jobName || "").replace(/[\\/:*?"<>|]/g, "").replace(/\s*\([^)]*\)\s*$/, "").trim();
+      var mdY = (dateSrc.getMonth() + 1) + "-" + dateSrc.getDate() + "-" + dateSrc.getFullYear();
+      a.download = "Materials Receipt #" + g.receiptNo + (job ? " " + job : "") + " " + mdY + ".pdf";
+    } else {
+      var safe = (g.jobName || "job").replace(/[^a-z0-9]/gi, "_").substring(0, 30);
+      a.download = "NEE_Materials_" + safe + "_" + dateSrc.toISOString().split("T")[0] + ".pdf";
+    }
     document.body.appendChild(a);
     a.click();
     setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
@@ -2887,7 +2901,9 @@ function generateReceiptPDF(g) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
     doc.setTextColor(232, 101, 26);
-    doc.text("MATERIALS RECEIPT", mg + 26, 21);
+    // The receipt number ties this PDF to the job's expense, whose description
+    // now just reads "Inventory materials — Receipt #1001 (…)".
+    doc.text("MATERIALS RECEIPT" + (g.receiptNo ? "  #" + g.receiptNo : ""), mg + 26, 21);
 
     doc.setTextColor(120, 120, 120);
     doc.setFontSize(8);
@@ -2915,8 +2931,12 @@ function generateReceiptPDF(g) {
     y += 10;
     y = drawTableHeader(y);
 
+    // Line sums carry float noise (23.6 + 7.2 = 30.800000000000004) — print
+    // at most two places. Display only; the push uses the raw figures.
+    function fmtQty(n) { return String(Math.round(Math.abs(n) * 100) / 100); }
+
     // ── TABLE ROWS ────────────────────────────────────────
-    g.lines.forEach(function(l, idx) {
+    function drawRow(l, idx) {
       var isReturn = l.qty < 0;
       var isWire   = l.wireFt > 0;
       var rowH     = isWire ? 11 : 7;
@@ -2951,7 +2971,7 @@ function generateReceiptPDF(g) {
       // Qty
       if (isWire) {
         doc.setTextColor(50, 50, 50);
-        doc.text(Math.abs(l.qty) + " lbs", c2, y - 3, { align: "right" });
+        doc.text(fmtQty(l.qty) + " lbs", c2, y - 3, { align: "right" });
         doc.setFontSize(8);
         doc.setTextColor(52, 120, 190);
         doc.text("(" + l.wireFt.toLocaleString() + " ft)", c2, y + 1, { align: "right" });
@@ -2959,7 +2979,7 @@ function generateReceiptPDF(g) {
         doc.setTextColor(50, 50, 50);
       } else {
         doc.setTextColor(50, 50, 50);
-        doc.text((isReturn ? "-" : "") + Math.abs(l.qty), c2, y, { align: "right" });
+        doc.text((isReturn ? "-" : "") + fmtQty(l.qty), c2, y, { align: "right" });
       }
 
       // Unit cost. Wire is bought and stocked by the POUND but pulled by the
@@ -2989,12 +3009,57 @@ function generateReceiptPDF(g) {
       doc.setTextColor(isReturn ? 160 : 30, 30, 30);
       var totalStr = (isReturn ? "-$" : "$") + Math.abs(l.total).toFixed(2);
       doc.text(totalStr, c4, y, { align: "right" });
-    });
+    }
+
+    // A bold subtotal row closing a section (owner's layout, 2026-11-06).
+    function drawSubtotal(label, amount, red) {
+      if (y + 9 > pageBottomLimit) y = newPage();
+      y += 8;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9);
+      doc.setTextColor(red ? 160 : 30, 30, 30);
+      doc.text(label, c1, y);
+      doc.text((amount < 0 ? "-$" : "$") + Math.abs(amount).toFixed(2), c4, y, { align: "right" });
+      doc.setDrawColor(red ? 160 : 120, red ? 30 : 120, red ? 30 : 120);
+      doc.setLineWidth(0.4);
+      doc.line(mg, y + 2.5, pW - mg, y + 2.5);
+      doc.setFont("helvetica", "normal");
+      y += 2;
+    }
+
+    // ── SECTIONS: material used first, then credits ───────
+    // Owner's layout (2026-11-06): what went ON the job, with its own total;
+    // then what came BACK to the shop, in red, with its total; then the
+    // arithmetic that joins them, so the grand total can be checked by eye.
+    // Each section keeps the order the lines arrived in.
+    var uses    = g.lines.filter(function (l) { return l.qty >= 0; });
+    var credits = g.lines.filter(function (l) { return l.qty < 0; });
+    var r2 = function (n) { return Math.round(n * 100) / 100; };
+    var usedTotal   = r2(uses.reduce(function (s, l) { return s + (Number(l.total) || 0); }, 0));
+    var creditTotal = r2(credits.reduce(function (s, l) { return s + (Number(l.total) || 0); }, 0));
+
+    uses.forEach(drawRow);
+    if (uses.length && credits.length) drawSubtotal("Materials used (" + uses.length + " items)", usedTotal, false);
+
+    if (credits.length) {
+      if (y + 20 > pageBottomLimit) y = newPage();
+      y += 11;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.setTextColor(160, 30, 30);
+      doc.text("CREDITS — returned to shop", c1, y);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      y += 1;
+      credits.forEach(drawRow);
+      drawSubtotal("Credits (" + credits.length + " items)", creditTotal, true);
+    }
 
     // ── TOTALS ────────────────────────────────────────────
     // Atomic block — Subtotal + (optional Sales Tax) + GRAND TOTAL pill stay
     // together on one page. If they won't fit, start a new page first.
-    var totalsBlockH = g.taxable ? 39 : 33;
+    var showMath = uses.length && credits.length;
+    var totalsBlockH = (g.taxable ? 39 : 33) + (showMath ? 12 : 0);
     if (y + totalsBlockH > pageBottomLimit) {
       y = newPage();
     }
@@ -3006,6 +3071,22 @@ function generateReceiptPDF(g) {
 
     var taxAmt   = g.taxable ? g.jobTotal * 0.075 : 0;
     var grandTot = g.jobTotal + taxAmt;
+
+    // The matching math: used − credits = materials subtotal.
+    if (showMath) {
+      y += 7;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(100, 100, 100);
+      doc.text("Materials used", c3 - 5, y, { align: "right" });
+      doc.setTextColor(30, 30, 30);
+      doc.text("$" + usedTotal.toFixed(2), c4, y, { align: "right" });
+      y += 6;
+      doc.setTextColor(160, 30, 30);
+      doc.text("Less credits", c3 - 5, y, { align: "right" });
+      doc.text("-$" + Math.abs(creditTotal).toFixed(2), c4, y, { align: "right" });
+      y -= 1;
+    }
 
     y += 7;
     doc.setFont("helvetica", "normal");

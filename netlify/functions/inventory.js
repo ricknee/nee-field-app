@@ -1099,6 +1099,23 @@ const PUSH_LINES_TABLE_ID = "tblloWlcSE7aXAX1o";  // Expense Push Lines
 // Airtable tables are never touched again except by the loader reading the 34
 // historical rows.
 
+// ── Materials Receipt number (db/schema/086) ─────────────────────────────────
+// Mint-or-read keyed on push_id, so a retried push gets the SAME number. Fails
+// soft (null): a missing number must never stop a push from charging.
+async function receiptNumberFor(pushId, jobName) {
+  if (!pushId) return null;
+  try {
+    const rows = await neonWrite("receiptNumber",
+      `INSERT INTO inventory_receipts (push_id, job_name) VALUES ($1, $2)
+       ON CONFLICT (push_id) DO UPDATE SET push_id = EXCLUDED.push_id
+       RETURNING receipt_no`, [String(pushId), String(jobName || "")]);
+    return rows?.[0]?.receipt_no != null ? Number(rows[0].receipt_no) : null;
+  } catch (e) {
+    console.warn("receiptNumberFor failed (push continues without a number):", e.message);
+    return null;
+  }
+}
+
 // ── Write a Push History header + lines.
 // Best-effort: if either write fails we log and continue so the main
 // expense push still appears as success to the user. The Push ID is
@@ -1228,6 +1245,7 @@ async function handlePushHistoryDetail(params) {
     `SELECT p.id, p.title, p.pushed_at, p.pushed_by, p.job_name, p.job_airtable_id,
             p.materials_total, p.tax_total, p.total_pushed, p.tx_count, p.item_count,
             p.taxable, p.expense_record_ids, p.description,
+            (SELECT r.receipt_no FROM inventory_receipts r WHERE r.push_id = p.push_id) AS receipt_no,
             l.id AS line_id, l.item_name, l.line_title, l.quantity, l.unit_cost,
             l.line_total, l.wire_ft
        FROM expense_pushes p
@@ -1257,6 +1275,8 @@ async function handlePushHistoryDetail(params) {
       taxable:       h.taxable === true,
       expenseIds:    h.expense_record_ids || "",
       description:   h.description || "",
+      // db/schema/086 — null for pushes made before receipts were numbered.
+      receiptNo:     h.receipt_no != null ? Number(h.receipt_no) : null,
       // Biggest dollars first, done in SQL. A push with no lines yields one row
       // of NULLs from the LEFT JOIN, which is not a line.
       lines: q.rows.filter(r => r.line_id).map(r => ({
@@ -1424,6 +1444,10 @@ async function handlePushExpenses(body) {
   // receipt on. Only FRESHLY CHARGED groups appear here: a guard #1 retry must
   // not upload a second copy of a receipt the original attempt already stored.
   const receiptTargets = {};
+  // Materials Receipt number per push id (db/schema/086), for the PDF header.
+  // Unlike receiptTargets this IS returned for a guard #1 retry: the re-download
+  // must print the same number the expense description already carries.
+  const receiptNumbers = {};
   let   txMarked      = 0;
   let   created       = 0;  // groups freshly charged this call
   let   alreadyPushed = 0;  // groups short-circuited by guard #1 (same pushId)
@@ -1504,6 +1528,9 @@ async function handlePushExpenses(body) {
     // retry short-circuits here. The mirror is decorative and the base is being
     // archived; the money is right in the store every reader reads.
     if (pushIdsWithExpenses.has(pushId)) {
+      // Same push id → the upsert hands back the number it already has.
+      const n = await receiptNumberFor(pushId, jobName);
+      if (n) receiptNumbers[pushId] = n;
       if (txList.length) {
         try { await markTransactionsPushed(txList, pushId); txMarked += txList.length; }
         catch (e) { console.warn("Idempotent re-mark failed (non-fatal):", e.message); }
@@ -1527,14 +1554,22 @@ async function handlePushExpenses(body) {
     // on the job (e.g. leftover vendor materials returned to shop post-push).
     if (jobTotal === 0) continue;
 
-    // Build description — show footage for wire items
-    const desc = lines.map(l => {
-      const sign = l.qty < 0 ? "−" : "";
-      const qtyStr = l.wireFt > 0
-        ? `${Math.abs(l.qty)}lbs (${l.wireFt.toLocaleString()}ft)`
-        : `${sign}${Math.abs(l.qty)}`;
-      return `${l.item} ×${qtyStr}`;
-    }).join(", ");
+    // ── Description: a POINTER to the Materials Receipt, not the item list.
+    // It used to list every line ("12 WHITE/BLACK THHN ×30.800000000000004lbs
+    // (1,283ft), 10 BLUE THHN …" — 70 items in one expense cell). The receipt
+    // PDF already itemises every line and is attached to this expense, so the
+    // description just names it (owner's call, 2026-11-06). Push History keeps
+    // its own full line snapshot in expense_push_lines regardless.
+    //
+    // The number is minted BEFORE the charge so the description carries it. If
+    // the mint fails the push still goes ahead — a receipt with no number is
+    // a cosmetic loss, a refused push is not — and the description says so.
+    const receiptNo = await receiptNumberFor(pushId, jobName);
+    if (receiptNo) receiptNumbers[pushId] = receiptNo;
+    const nUses    = lines.filter(l => (l.qty || 0) >= 0).length;
+    const nCredits = lines.length - nUses;
+    const counts   = nCredits ? `${nUses} items, ${nCredits} credits` : `${nUses} items`;
+    const desc     = `${receiptNo ? `Materials Receipt #${receiptNo}` : "see Materials Receipt"} (${counts})`;
 
     // Amount can be negative when the push is a net credit (returns > uses) —
     // it lands on the job as a credit line item.
@@ -1543,7 +1578,8 @@ async function handlePushExpenses(body) {
     // Tax carries the same sign as the materials total — a negative materials
     // push yields a negative tax credit, which is correct accounting.
     const jobTaxAmount = taxable ? Math.round(jobTotal * TAX_RATE * 100) / 100 : 0;
-    const taxDesc      = (jobTotal < 0 ? "Sales tax credit (7.5%) on returned materials — " : "Sales tax (7.5%) on inventory materials — ") + jobName;
+    const taxDesc      = (jobTotal < 0 ? "Sales tax credit (7.5%) on returned materials — " : "Sales tax (7.5%) on inventory materials — ") +
+                         (receiptNo ? `Receipt #${receiptNo} — ` : "") + jobName;
 
     const rows = [{ amount: matAmount, description: matDesc }];
     if (taxable) rows.push({ amount: jobTaxAmount, description: taxDesc });
@@ -1613,7 +1649,8 @@ async function handlePushExpenses(body) {
     staleSkipped,
     txCount:         txMarked,
     pushHistoryIds,
-    receiptTargets
+    receiptTargets,
+    receiptNumbers
   };
 
   // ── FAIL CLOSED on any group that could not be charged ─────────────────────

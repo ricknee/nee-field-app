@@ -76,6 +76,27 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .big-btn.gold:active{background:var(--gold-dk);}
 .loc-pill{display:inline-flex;align-items:center;gap:6px;background:var(--slate);border-radius:20px;padding:5px 12px;font-size:12px;color:var(--dim);cursor:pointer;border:none;}
 .loc-pill span{color:var(--gold);font-weight:600;}
+/* Home: where you're working from (docs/PLAN-inventory-usability.md #1) */
+.home-loc{display:flex;align-items:center;gap:10px;width:100%;background:transparent;border:1.5px dashed var(--border);border-radius:var(--r);padding:10px 14px;cursor:pointer;text-align:left;color:var(--dim);font-size:14px;}
+.home-loc b{color:var(--text);font-weight:600;}
+.home-loc .chg{margin-left:auto;color:var(--gold);font-size:13px;font-weight:600;white-space:nowrap;}
+.home-loc.unset{border-color:var(--gold);color:var(--gold);}
+.home-loc.unset b{color:var(--gold);}
+/* Home: Scan Item (#3) */
+.big-btn.scan-home{border-color:var(--gold);}
+.big-btn.scan-home .ico{font-size:24px;}
+/* Scan Item action sheet */
+.ss-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;display:flex;align-items:flex-end;justify-content:center;}
+.ss{background:var(--navy-mid);border:1px solid var(--border);border-radius:16px 16px 0 0;width:100%;max-width:560px;padding:18px 16px calc(18px + env(safe-area-inset-bottom));box-shadow:0 -8px 30px rgba(0,0,0,.4);}
+.ss-name{font-size:17px;font-weight:700;color:var(--text);}
+.ss-meta{font-size:12px;color:var(--dim);margin-top:3px;}
+.ss-qty{font-size:13px;color:var(--dim);margin:10px 0 14px;min-height:18px;}
+.ss-qty b{color:#4ade80;}
+.ss-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.ss-act{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:10px;padding:14px 10px;color:var(--text);font-size:15px;font-weight:600;cursor:pointer;text-align:center;}
+.ss-act:active{background:var(--slate);}
+.ss-act.primary{background:var(--gold);border-color:var(--gold);color:var(--navy);}
+.ss-close{width:100%;margin-top:10px;background:transparent;border:none;color:var(--dim);font-size:14px;padding:10px;cursor:pointer;}
 
 /* LOCATION PICKER */
 .loc-grid{display:flex;flex-direction:column;gap:8px;padding:16px;}
@@ -257,9 +278,17 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="hdr-out" onclick="logout()">Out</button>
   </div>
   <div class="home-body">
+    <!-- docs/PLAN-inventory-usability.md #1 + #3. Filled by updateLocPill(). -->
+    <button class="home-loc unset" id="home-loc" onclick="goPickLocation()">
+      <span>📍</span><span id="home-loc-text"><b>Pick where you're working from</b> — it fills in your screens</span>
+      <span class="chg" id="home-loc-chg">Pick</span>
+    </button>
+    <button class="big-btn scan-home" onclick="homeScan()">
+      <div class="ico">⬛</div><div><div class="lbl">Scan Item</div><div class="sub">Scan a label, then choose what to do</div></div>
+    </button>
     <div class="sec-lbl">Log materials</div>
     <button class="big-btn gold" onclick="goLog('Use')">
-      <div class="ico">📦</div><div><div class="lbl">Use on Job</div><div class="sub">Log items pulled for a job</div></div>
+      <div class="ico">📦</div><div><div class="lbl">Use on Job</div><div class="sub" id="use-btn-sub">Log items pulled for a job</div></div>
     </button>
     <button class="big-btn" onclick="goLog('Return')">
       <div class="ico">↩️</div><div><div class="lbl">Return Items</div><div class="sub">Put items back</div></div>
@@ -1183,6 +1212,43 @@ function applyUser() {
 function updateLocPill() {
   var nameEl = document.getElementById("loc-pill-name");
   if (nameEl) nameEl.textContent = currentLocation ? currentLocation.name : "Set location";
+  // The home-screen line (docs/PLAN-inventory-usability.md #1). Same value as
+  // the pill, said where people actually look. The location is only a DEFAULT
+  // for each screen's From/To picker — nothing here changes how stock moves.
+  var line = document.getElementById("home-loc");
+  var text = document.getElementById("home-loc-text");
+  var chg  = document.getElementById("home-loc-chg");
+  if (line && text && chg) {
+    if (currentLocation) {
+      line.classList.remove("unset");
+      text.innerHTML = "Working from: <b>" + escapeAttr(currentLocation.name) + "</b>";
+      chg.textContent = "Change";
+    } else {
+      line.classList.add("unset");
+      text.innerHTML = "<b>Pick where you're working from</b> — it fills in your screens";
+      chg.textContent = "Pick";
+    }
+  }
+}
+
+// "Continue on: <job>" on the Use on Job tile (#2). Use on Job already restores
+// the last job (nee_last_job, shared with the field app); this only says so
+// before the screen opens. A job that is no longer in the active list shows
+// the plain subtitle — the same rule renderLogForm uses, so the tile never
+// promises a job the screen won't fill in.
+function refreshHomeTiles() {
+  var sub = document.getElementById("use-btn-sub");
+  if (!sub) return;
+  var job = null;
+  try {
+    var lastId   = localStorage.getItem("nee_last_job_id") || "";
+    var lastName = localStorage.getItem("nee_last_job") || "";
+    if (lastId)          job = allJobs.find(function(j){ return j.id === lastId; }) || null;
+    if (!job && lastName) job = allJobs.find(function(j){ return j.name === lastName; }) || null;
+  } catch(e) {}
+  sub.innerHTML = job
+    ? "Continue on: <b>" + escapeAttr(job.name) + "</b>"
+    : "Log items pulled for a job";
 }
 
 document.addEventListener("keydown", function(e) {
@@ -1211,6 +1277,7 @@ async function preload() {
     allLocations = results[1].locations;
     allItems     = results[2].items;
     dataReady    = true;
+    refreshHomeTiles();
   } catch(ex) { console.error("Preload failed:", ex); }
 }
 
@@ -1233,6 +1300,15 @@ function navPushScreen(prevScreen) {
 }
 
 window.addEventListener("popstate", function() {
+  // The Scan Item sheet owns one history entry of its own (see openScanSheet).
+  // Back closes it; choosing an action closes it the same way and then runs
+  // the action, so the history depth and navBackStack never drift apart.
+  if (scanSheetOpen) {
+    var then = scanSheetThen;
+    closeScanSheetDom();
+    if (then) then();
+    return;
+  }
   if (navSuppressPopstate) {
     navSuppressPopstate = false;
     navBackStack.pop();
@@ -1274,6 +1350,7 @@ function goHome() {
   try { history.replaceState({ neeInvHome: true }, ""); } catch(e) {}
   document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
   document.getElementById("s-home").classList.add("active");
+  refreshHomeTiles();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1541,6 +1618,7 @@ function selectJob(id, name) {
   } catch(e) {}
   // Keep the "← Field App" header link in sync with the new selection
   try { refreshFieldAppBackLink(); } catch(e) {}
+  try { refreshHomeTiles(); } catch(e) {}
 }
 
 // Hide job dropdown when clicking elsewhere
@@ -7019,12 +7097,117 @@ function stopScan() {
   document.getElementById("scan-overlay").style.display = "none";
 }
 
+// ═══════════════════════════════════════════════════════════
+// SCAN ITEM from the home screen (docs/PLAN-inventory-usability.md #3)
+// ═══════════════════════════════════════════════════════════
+// Scan first, choose the action second. Each action opens the EXISTING screen
+// and selects the item exactly as that screen's own ⬛ button would — the
+// sheet is a shortcut into the normal flows, never a new way to move stock.
+var scanSheetOpen = false;
+var scanSheetThen = null;   // action to run once the sheet's history entry is popped
+
+function homeScan() {
+  if (!dataReady) { showToast("Still loading — try again in a moment", true); return; }
+  startScan("home");
+}
+
+function closeScanSheetDom() {
+  scanSheetOpen = false;
+  scanSheetThen = null;
+  var bg = document.getElementById("ss-bg");
+  if (bg) bg.remove();
+}
+
+// Close via history so the entry pushed on open is consumed; the popstate
+// handler then runs `then` (if any). Never leaves a stray back entry.
+function closeScanSheet(then) {
+  if (!scanSheetOpen) { if (then) then(); return; }
+  scanSheetThen = then || null;
+  history.back();
+}
+
+function scanSheetShow(html) {
+  closeScanSheetDom();
+  var bg = document.createElement("div");
+  bg.id = "ss-bg";
+  bg.className = "ss-bg";
+  bg.innerHTML = '<div class="ss" onclick="event.stopPropagation()">' + html +
+    '<button class="ss-close" onclick="closeScanSheet()">Cancel</button></div>';
+  bg.addEventListener("click", function(){ closeScanSheet(); });
+  document.body.appendChild(bg);
+  scanSheetOpen = true;
+  history.pushState({ neeInvScanSheet: true }, "");
+}
+
+function openScanSheet(item) {
+  var isAdmin = currentUser && currentUser.role === "admin";
+  var meta = [item.cat, item.size, item.uom].filter(Boolean).map(escapeAttr).join(" · ");
+  var id = String(item.id).replace(/'/g, "\\'");
+  scanSheetShow(
+    '<div class="ss-name">' + escapeAttr(item.name) + '</div>' +
+    (meta ? '<div class="ss-meta">' + meta + '</div>' : '') +
+    '<div class="ss-qty" id="ss-qty">Checking stock…</div>' +
+    '<div class="ss-grid">' +
+      '<button class="ss-act primary" onclick="scanAct(\'use\',\'' + id + '\')">📦 Use on Job</button>' +
+      '<button class="ss-act" onclick="scanAct(\'return\',\'' + id + '\')">↩️ Return</button>' +
+      '<button class="ss-act" onclick="scanAct(\'transfer\',\'' + id + '\')">🔄 Transfer</button>' +
+      '<button class="ss-act" onclick="scanAct(\'stock\',\'' + id + '\')">🔍 Check Stock</button>' +
+      // Adjust Stock is admin-only on the home screen; the shortcut keeps that.
+      (isAdmin ? '<button class="ss-act" onclick="scanAct(\'adjust\',\'' + id + '\')">✏️ Adjust</button>' : '') +
+    '</div>');
+
+  // Counts are a nicety: the sheet is usable before they arrive, and a failed
+  // read just removes the line rather than blocking the actions.
+  apiGet("stockLevels", { itemId: item.id, itemName: item.name }).then(function(d) {
+    var el = document.getElementById("ss-qty");
+    if (!el || !scanSheetOpen) return;
+    var levels = d.levels || [];
+    var uom = escapeAttr(item.uom || "");
+    var fmt = function(n){ return (+Number(n).toFixed(2)).toLocaleString("en-US"); };
+    var total = levels.reduce(function(s, lv){ return s + (Number(lv.qtyOnHand) || 0); }, 0);
+    var parts = [];
+    if (currentLocation) {
+      var here = levels.filter(function(lv){ return lv.locationName === currentLocation.name; })
+                       .reduce(function(s, lv){ return s + (Number(lv.qtyOnHand) || 0); }, 0);
+      parts.push("At " + escapeAttr(currentLocation.name) + ": <b>" + fmt(here) + " " + uom + "</b>");
+    }
+    parts.push("All locations: <b>" + fmt(total) + " " + uom + "</b>");
+    el.innerHTML = parts.join(" &nbsp;·&nbsp; ");
+  }).catch(function() {
+    var el = document.getElementById("ss-qty");
+    if (el) el.textContent = "";
+  });
+}
+
+function openScanNotFound(val) {
+  scanSheetShow(
+    '<div class="ss-name">No item has that barcode</div>' +
+    '<div class="ss-meta">Scanned: ' + escapeAttr(val) + '</div>' +
+    '<div class="ss-qty"></div>' +
+    '<div class="ss-grid">' +
+      '<button class="ss-act primary" onclick="closeScanSheet(goCheckStock)">🔍 Search instead</button>' +
+      '<button class="ss-act" onclick="closeScanSheet();homeScan()">⬛ Scan again</button>' +
+    '</div>');
+}
+
+function scanAct(action, id) {
+  var isAdmin = currentUser && currentUser.role === "admin";
+  closeScanSheet(function() {
+    if (action === "use")      { goLog("Use");    pickItem(id); }
+    if (action === "return")   { goLog("Return"); pickItem(id); }
+    if (action === "transfer") { goTransfer();    pickItemFor("xfr", id); }
+    if (action === "stock")    { goCheckStock();  lookupStock(id); }
+    if (action === "adjust" && isAdmin) { goAdjustment(); pickItemFor("adj", id); }
+  });
+}
+
 function handleScanResult(val) {
   // The label test wants the RAW value, matched or not — "what does this
   // sticker actually hold" is the question it exists to answer.
   if (scanTarget === "labeltest") { labelTestScanned(val); return; }
   // Find item by barcode
   var item = allItems.find(function(i){ return i.barcode && i.barcode.toString() === val.toString(); });
+  if (scanTarget === "home") { if (item) openScanSheet(item); else openScanNotFound(val); return; }
   if (item) {
     if (scanTarget === "item")    pickItem(item.id);
     else if (scanTarget === "recv")    pickItemFor("recv", item.id);

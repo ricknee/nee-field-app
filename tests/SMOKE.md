@@ -56,6 +56,15 @@ anything that upserts `job_estimates`.
 - [ ] Estimates, Inspections (+ inspector picker), Generator commissioning + warranties.
 - [ ] Scheduling (add/edit/delete, conflict banner), Fleet (mileage + service), Scissor lifts.
 - [ ] Inventory: receive, transfer, adjust, reorder alerts, estimate templates, orders.
+- [ ] **Inventory home** (`docs/PLAN-inventory-usability.md` #1–3):
+  - Location line: with no location set it reads "Pick where you're working from". Pick one, and the
+    line, the top pill and the From picker on Use on Job all show it. It survives a reload.
+  - Continue on: open a job in the field app, switch to inventory, and the Use on Job tile names it.
+    Log an item and it lands on that job. With no last job, or an archived one, it shows the plain subtitle.
+  - Scan Item, on **Android and iPhone** (different scanner paths): each menu button opens the right
+    screen with the item already selected. An employee sees no Adjust. Phone back and Cancel both close
+    the menu, and after choosing an action one back press returns home. An unknown barcode offers
+    Search instead / Scan again.
 
 ---
 

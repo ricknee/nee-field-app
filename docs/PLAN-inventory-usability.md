@@ -179,6 +179,102 @@ disappears instead of reading 0.
 
 ---
 
+## Round 4 — #7 faster entry (built 2026-11-07)
+
+**Correction to the original plan:** the +/− quantity buttons **already existed** on Use on
+Job, Receive and Transfer. Only the second half was new:
+
+- **Recent items.** Under the item search on Use on Job / Return / Return to Shop there's a
+  **Recent** row: the last 8 items this person added to a cart **on this device**, newest
+  first. Tapping one is exactly a search pick (`pickItem`).
+  - It lives in device storage (`nee_inv_recent_items_<user id>`), keyed per person so a
+    shared shop tablet doesn't mix two lists. That's a convenience, not a record, which is
+    why it isn't in the database.
+  - An item that's been retired drops off the row by itself.
+
+---
+
+## Next plans (written 2026-11-07, not built)
+
+### #11 — Edit the price where you see the item
+
+**Today.** A price can be changed in four places, and **every one already saves through
+the same action, `updateItemCost`**: inline on Use on Job (admin), inline on Recent Logs
+(admin), the **Update Item Price** screen, and the **Wire Cost Calculator** (for weighed
+wire, $/ft invoice → $/lb).
+
+**Change.** In the Check Stock result, admins get the same inline **Unit cost** box that Use
+on Job already has. It saves through `updateItemCost` and shows the same toast. For a
+weighed-wire item (`wireFtPerLb > 0`), a link instead reads **"Price from an invoice $/ft →"**
+and opens the Wire Cost Calculator with that item already picked.
+
+- **Keep the Update Item Price and Wire Cost Calculator buttons** in Admin · Setup for now.
+  Remove them only if, after a few weeks, nobody uses them.
+- No backend change. It's admin-only, the same tier `updateItemCost` already enforces.
+
+**Size:** small–medium.
+
+### #5b — One Return button (optional — recommend NOT yet)
+
+Merge Return Items and Return to Shop into one **Return** button whose first question is
+*"Was this from shop stock, or bought from a vendor for this job?"*. It then continues into
+today's two flows unchanged.
+
+**Recommendation: wait.** Round 2 already rewrote both subtitles to answer exactly that
+question. Merge only if the crew still picks the wrong one.
+
+**Size:** medium (it's a chooser in front of two existing flows).
+
+### #6 — Undo after logging (backend; its own build)
+
+**What makes it possible** (verified 2026-11-07):
+- **Stock is calculated from the logged entries** (`v_stock_levels` → `v_stock_on_hand`),
+  so removing the entries puts the stock back. Nothing else has to be reversed.
+- **Every cart submit already carries a `submit_id`** (the idempotency key, `ON CONFLICT
+  (submit_id, submit_line_no)`), so "everything from that submit" is one indexed lookup.
+
+**Change.**
+1. **Backend: a new action, `undoSubmit { submitId }`**, at the non-viewer tier. One
+   statement, all or nothing:
+   ```sql
+   DELETE FROM inventory_transactions
+    WHERE submit_id = $1
+      AND expense_created = false            -- never un-log what was already charged
+      AND txn_date > now() - interval '10 minutes'
+   RETURNING id
+   ```
+   Before deleting, it refuses with a clear message if **any** line of that submit is
+   already pushed or past the window. A partial undo would leave half a cart, which is
+   worse than none.
+2. **Ownership:** only the person who submitted (or an admin) can undo it.
+   ⚠ `entered_by` is a **name the browser sends**, not taken from the session token. So
+   this build must either stamp `entered_by` server-side from the token on `submitCart`
+   (the better fix, and worth doing anyway), or compare against the token's name.
+3. **Frontend:** after Submit, the success message becomes
+   **"✓ 3 items logged to Bethel · Undo"**, with the Undo button live for 2 minutes
+   (shorter than the server's 10, so a slow phone never offers an undo the server refuses).
+4. **Tests:** handler cases for undoing within the window, refusing a pushed line, refusing
+   after the window, refusing someone else's submit, and all-or-nothing behaviour.
+
+**Size:** large-ish (backend + frontend + tests). It's money-adjacent because it removes
+ledger rows that would otherwise be pushed, so it should get the full test treatment.
+
+### Found while planning #6 — the existing Recent Logs **Del** button
+
+1. **Everyone sees "Del", but only admins are allowed** (`delete` is in `_ADMIN_WRITES`).
+   An employee tapping it gets an error. **Fix:** show it to admins only (a one-line UI fix).
+2. ⚠ **An admin can delete an entry that's already been pushed to an expense**, with no
+   warning. `deleteTxn` deletes by id with no `expense_created` check. Stock goes back up,
+   but the **expense stays on the job**, so the job is charged for material the ledger says
+   never left. **Fix:** refuse (409) when `expense_created = true`, and say *"Already pushed
+   to <job> — fix the expense in the field app first."* That's small, and **worth doing
+   before #6**, because Undo uses the same rule.
+
+**Suggested order:** the Del fixes (small, and they close a money gap) → #11 → #6.
+Hold #5b.
+
+---
+
 ## Later — planned, not scheduled
 
 | # | Idea | What it touches | Size |

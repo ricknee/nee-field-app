@@ -134,6 +134,11 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .sel-item-box{background:rgba(232,160,32,.1);border:1.5px solid var(--gold);border-radius:10px;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px;}
 .sel-item-name{font-size:14px;font-weight:600;color:var(--gold);}
 .sel-item-meta{font-size:11px;color:var(--dim);margin-top:1px;}
+/* Recent items under the item search (docs/PLAN-inventory-usability.md #7) */
+.recent-lbl{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:10px 0 6px;}
+.recent-row{display:flex;flex-wrap:wrap;gap:6px;}
+.recent-chip{background:var(--navy-lt);border:1px solid var(--border);border-radius:16px;padding:7px 11px;color:var(--text);font-size:13px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.recent-chip:active{background:var(--slate);}
 .chg-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--dim);font-size:11px;padding:5px 8px;cursor:pointer;flex-shrink:0;}
 
 /* Searchable combo (typeable dropdown) */
@@ -1537,6 +1542,39 @@ function renderLogForm() {
 var logCat = "";
 var logCatLoading = false;
 
+// ── Recent items (docs/PLAN-inventory-usability.md #7) ───────────────────────
+// The last few items this person added to a cart on THIS device, newest first,
+// as one-tap chips under the search. Device-local on purpose: it is a
+// convenience, and the crew mostly carry their own phones. Keyed per user so a
+// shared shop tablet does not mix two people's lists. Tapping a chip is exactly
+// a search pick (pickItem) — nothing about logging changes.
+var RECENT_MAX = 8;
+function recentItemsKey() { return "nee_inv_recent_items_" + (currentUser && currentUser.id || "anon"); }
+function loadRecentItemIds() {
+  try { var a = JSON.parse(localStorage.getItem(recentItemsKey()) || "[]"); return Array.isArray(a) ? a : []; }
+  catch(e) { return []; }
+}
+function rememberRecentItem(id) {
+  if (!id) return;
+  var ids = loadRecentItemIds().filter(function(x){ return x !== id; });
+  ids.unshift(id);
+  try { localStorage.setItem(recentItemsKey(), JSON.stringify(ids.slice(0, RECENT_MAX))); } catch(e) {}
+}
+function renderRecentItems() {
+  // Only items still in the item list — a retired item quietly drops off.
+  var items = loadRecentItemIds()
+    .map(function(id){ return allItems.find(function(i){ return i.id === id; }); })
+    .filter(Boolean);
+  if (!items.length) return "";
+  return '<div class="recent-lbl">Recent</div><div class="recent-row">' +
+    items.map(function(i){
+      // Item handles are rec ids or uuids — no quotes — but escape anyway.
+      var idArg = escapeAttr(String(i.id).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+      return '<button class="recent-chip" onclick="pickItem(\'' + idArg + '\')" title="' +
+             escapeAttr(i.name) + '">' + escapeAttr(i.name) + '</button>';
+    }).join("") + '</div>';
+}
+
 function renderItemSearch() {
   var catSet = {};
   allItems.forEach(function(i){ if (i.cat) catSet[i.cat] = true; });
@@ -1546,6 +1584,7 @@ function renderItemSearch() {
     '<input class="field-inp" id="item-search" type="text" placeholder="Search items…" autocomplete="off" oninput="onItemSearch()" style="flex:1;" />' +
     '<button class="scan-btn" onclick="startScan(\'item\')" title="Scan barcode">⬛</button>' +
     '</div><div id="search-drop"></div>' +
+    renderRecentItems() +
     '<div style="margin-top:8px;">' + comboHTML("log-cat", "…or browse by category") + '</div>' +
     '<div id="log-cat-result"></div>';
 }
@@ -1775,6 +1814,7 @@ function addToCart() {
     notes:    desc,
     cartKey:  Date.now() + Math.random()
   });
+  rememberRecentItem(selectedItem.id);   // before clearItem(), which redraws the chips
 
   renderCart();
   clearItem();

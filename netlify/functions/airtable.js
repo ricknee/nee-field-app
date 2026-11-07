@@ -1,9 +1,11 @@
 // netlify/functions/airtable.js
 // Northeastern Electric Field App — Netlify Proxy
-// Reads env vars: AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AUTH_SECRET
+// Reads env vars: AUTH_SECRET, DATABASE_URL. Neon-backed despite the file name —
+// Airtable is retired (2026-11-07); AIRTABLE_API_KEY/AIRTABLE_BASE_ID are optional
+// and unused. See _airtable-write-guard.js.
 import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.js";
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
-import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
+import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, assertAirtableReadable, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
 import { CITY_TAX_OPTS } from "./_city-taxes.js";
 import { neonLoginCandidate, neonEmployees, neonEmployeeById,
@@ -462,9 +464,8 @@ function resp(code, body, extraHeaders) {
   };
 }
 
+// ⚠ Airtable is no longer required (retired 2026-11-07). Only the session key is.
 function ensureEnv() {
-  if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID)
-    throw new Error("Missing env vars AIRTABLE_API_KEY or AIRTABLE_BASE_ID");
   if (!process.env.AUTH_SECRET)
     throw new Error("Missing env var AUTH_SECRET");
 }
@@ -977,6 +978,8 @@ async function atFetch(path, options = {}) {
   // See _airtable-write-guard.js: a uuid in a linked-record field does not fail,
   // it FABRICATES the record. Every write in this file passes through here.
   if (airtableWriteBlocked(path, options)) return SKIPPED_WRITE;
+  // No key = Airtable retired: a read throws rather than reaching the network.
+  assertAirtableReadable(path);
   options = scrubFabricatingLinks(path, options);
   const res = await fetch(`${API_ROOT}/${path}`, {
     ...options,
@@ -3608,6 +3611,7 @@ function numOrNull(v) {
 // The endpoint addresses by record ID alone — no table in the path.
 async function uploadAirtableAttachment(recordId, fieldIdOrName, base64, filename, contentType) {
   ensureEnv();
+  if (!airtableWritesEnabled()) return null;   // retired / switched off — a mirror, never the record
   const url = `https://content.airtable.com/v0/${AIRTABLE_BASE_ID}/${recordId}/${encodeURIComponent(fieldIdOrName)}/uploadAttachment`;
   const res = await fetch(url, {
     method: "POST",
@@ -4036,7 +4040,10 @@ async function handlePayrollRunsList(params) {
        LEFT JOIN payroll_runs s ON s.supersedes_id = r.id
       ORDER BY r.pay_period_end DESC NULLS LAST, r.generated_at DESC NULLS LAST`);
 
-  if (q?.rows?.length && q.rows.every(r => r.pdf_key)) {
+  // ⚠ Neon only (Airtable retired 2026-11-07). A run with no pdf_key used to send
+  // the whole list to Airtable; every run has one (36/36 verified 2026-11-07), and
+  // one that ever lacks it is now listed with pdfAvailable:false, not hidden.
+  if (q?.rows) {
     const visible = showSuperseded ? q.rows : q.rows.filter(r => r.superseded !== true);
     const runs = await Promise.all(visible.map(async (r) => {
       // Named for the human, not for the object: the R2 key is a timestamp, and
@@ -4056,9 +4063,9 @@ async function handlePayrollRunsList(params) {
         superseded:        r.superseded === true,
         supersededByRunId: r.superseded_by_id || null,
         supersededByDate:  r.superseded_by_date ? new Date(r.superseded_by_date).toISOString() : null,
-        pdfUrl:            await presignGetDownload(r.pdf_key, filename),
+        pdfUrl:            r.pdf_key ? await presignGetDownload(r.pdf_key, filename) : null,
         pdfFilename:       filename,
-        pdfAvailable:      true,
+        pdfAvailable:      !!r.pdf_key,
       };
     }));
     return resp(200, { ok: true, runs, _source: "neon", _ms: q.ms });
@@ -4159,19 +4166,14 @@ async function computePayrollDateRanges(today) {
          FROM payroll_runs WHERE NOT superseded AND pay_period_end IS NOT NULL
         ORDER BY pay_period_end DESC LIMIT 1`);
     if (q?.rows?.length) lastEndYmd = q.rows[0].pay_period_end;
-    else console.error(`computePayrollDateRanges: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    else if (!q?.rows) throw unavailableError(`Can't load payroll right now — the database is unavailable. (${q?.error || "no result"})`);
+  } else {
+    throw unavailableError("Can't load payroll right now — the database is not configured.");
   }
-  // Airtable fallback, unchanged. Kept because an empty Neon here would silently
-  // shift every payroll figure rather than fail, which is the worst shape of bug
-  // this file has: a plausible wrong number on a screen people are paid from.
-  if (!lastEndYmd) {
-    const recentRuns = await fetchAll(PR_RUNS.table, {
-      filter: `NOT({Superseded})`,
-      sortField: "Pay Period End",
-      sortDir: "desc"
-    });
-    lastEndYmd = recentRuns.length ? (recentRuns[0].fields?.["Pay Period End"] || null) : null;
-  }
+  // ⚠ A FAILED read THROWS (the caller answers 500) rather than guessing a period:
+  // a guessed period silently shifts every payroll figure, the worst shape of bug
+  // this file has. Airtable used to be the fallback; it is retired (2026-11-07).
+  // Zero runs (a brand-new database) is a real answer and uses the default below.
   if (lastEndYmd) {
     const lastEnd = ymdToDate(lastEndYmd);
     payPeriodStart = shiftDays(lastEnd, 1);
@@ -4614,7 +4616,9 @@ async function handlePayrollBonusesRollup(params) {
   const year = parseInt(params?.year, 10) || new Date().getFullYear();
   const yearStart = `${year}-01-01`;
 
-  const employees = await employeesForPayroll().then(r => r ?? fetchAll(TABLES.employees));
+  // Neon only (Airtable retired 2026-11-07).
+  const employees = await employeesForPayroll();
+  if (!employees) return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   const empById = new Map(employees.map(e => [e.id, e]));
 
   // ── NEON-FIRST (audit item 02, second slice) ─────────────────────────────
@@ -4654,7 +4658,11 @@ async function handlePayrollBonusesRollup(params) {
           AND r.pay_period_end >= $1::date
         GROUP BY 1`, [yearStart]);
     if (q?.rows) { rows = q.rows; ms = q.ms; }
-    else console.error(`payrollBonusesRollup: Neon read failed, falling back to Airtable: ${q?.error || "no rows"}`);
+    else {
+      // Neon only (Airtable retired 2026-11-07).
+      console.error(`payrollBonusesRollup: Neon read failed: ${q?.error || "no rows"}`);
+      return resp(503, { ok: false, error: "Can't load bonuses right now — the database is unavailable. Try again in a moment." });
+    }
   }
 
   if (rows) {
@@ -4719,8 +4727,7 @@ async function handlePayrollEmployeeBonusHistory(params) {
   }
   const limit = Math.max(1, Math.min(50, parseInt(params?.limit, 10) || 5));
 
-  const empRecs = await employeeRecordById(employeeId)
-    .then(r => r ? [r] : fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }));
+  const empRecs = await employeeRecordById(employeeId).then(r => r ? [r] : []);   // Neon only
   // Defensive: if the employeeId belongs to office/viewer (or was constructed
   // by hand against a non-eligible role), don't leak any bonus history.
   const emp = empRecs[0];
@@ -4947,8 +4954,7 @@ async function handleMyHoursRollup(params) {
 
   // Neon-first, Airtable fallback (Stage 4). employeeRecordById returns an
   // Airtable-shaped record so the eligibility check below is unchanged.
-  const emp = (await employeeRecordById(employeeId))
-           ?? (await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }))[0];
+  const emp = await employeeRecordById(employeeId);   // Neon only (Airtable retired)
   if (!emp) return resp(404, { ok: false, error: "Employee not found." });
   if (!isPayrollEligibleRole(emp.fields)) {
     return resp(403, { ok: false, error: "Employee role is not payroll-eligible." });
@@ -5050,8 +5056,7 @@ async function handleMyHoursBreakdown(params) {
 
   // Neon-first, Airtable fallback (Stage 4). employeeRecordById returns an
   // Airtable-shaped record so the eligibility check below is unchanged.
-  const emp = (await employeeRecordById(employeeId))
-           ?? (await fetchAll(TABLES.employees, { filter: `RECORD_ID()="${employeeId}"` }))[0];
+  const emp = await employeeRecordById(employeeId);   // Neon only (Airtable retired)
   if (!emp) return resp(404, { ok: false, error: "Employee not found." });
   if (!isPayrollEligibleRole(emp.fields)) {
     return resp(403, { ok: false, error: "Employee role is not payroll-eligible." });
@@ -5302,6 +5307,13 @@ async function handlePeople() {
                ORDER BY effective_start_date DESC LIMIT 1) r ON true
       ORDER BY e.name`, []);
   const neonOk = !!(q && !q.error && Array.isArray(q.rows));
+  // ⚠ Neon only (Airtable retired 2026-11-07). This used to fall back to the
+  // Airtable roster — frozen since 2026-08-25, so it would show old names, roles
+  // and Active flags. An outage is now a 503 like every other screen.
+  if (!neonOk) {
+    console.error(`people: Neon read failed: ${q?.error || "no result"}`);
+    return resp(503, { ok: false, error: "Can't load people right now — the database is unavailable. Try again in a moment." });
+  }
   if (neonOk) {
     for (const r of q.rows) byAirtableId.set(String(r.airtable_id), r);
   }
@@ -5318,7 +5330,7 @@ async function handlePeople() {
         "Employee ID": r.employee_no || "", "Default Labor Type": r.labor_type || "",
         "Notes": r.notes || "", "First Name": r.first_name || "", "Last Name": r.last_name || "",
       } }))
-    : await fetchAll(TABLES.employees);
+    : [];
 
   // Leave, for the current year. Its own query rather than another LATERAL on the
   // one above: only the hourly employees have an allowance row at all, so joining
@@ -5423,14 +5435,12 @@ async function handleEmployeePin(params) {
   if (!employeeId || !isEmployeeHandle(employeeId)) {
     return resp(400, { ok: false, error: "Missing or invalid employeeId." });
   }
-  // Neon holds the PIN now (db/schema/017), and the People screen writes both
-  // stores, so read the one that login actually uses. Airtable is the fallback.
+  // Neon holds the PIN (db/schema/017) and login reads it. Neon only — Airtable
+  // is retired (2026-11-07), and its frozen PIN column would be a wrong answer.
   const q = await neonQuery(`SELECT pin FROM employees WHERE airtable_id = $1 OR id::text = $1`, [employeeId]);
-  let pin = (q && !q.error && q.rows?.length) ? String(q.rows[0].pin ?? "").trim() : null;
-  if (pin === null) {
-    const rec = await atFetch(`${encodeURIComponent(TABLES.employees)}/${employeeId}`, { method: "GET" });
-    pin = String(rec?.fields?.[F.emp.pin] ?? "").trim();
-  }
+  if (!q?.rows) return resp(503, { ok: false, error: "Can't read that PIN right now — the database is unavailable. Try again in a moment." });
+  if (!q.rows.length) return resp(404, { ok: false, error: "Employee not found." });
+  const pin = String(q.rows[0].pin ?? "").trim();
   // hasPin distinguishes "no PIN on record" from "couldn't read it" — an empty
   // PIN is not cosmetic, handleLogin refuses to match one, so the person
   // genuinely cannot log in until it is set.
@@ -7175,27 +7185,16 @@ async function guardExpenseMutation(expenseId, authUser) {
       uuid = r.uuid; airtableId = r.airtable_id || null;
       owner = r.submitted_by_at_id || null;
       reviewed = r.reviewed === true || String(r.expense_status || "") === "Reviewed";
-    } else if (q?.error) {
-      console.error(`guardExpenseMutation: Neon read failed, falling back: ${q.error}`);
+    } else if (!q?.rows) {
+      // Neon only (Airtable retired 2026-11-07): an outage is an outage, not a miss.
+      console.error(`guardExpenseMutation: Neon read failed: ${q?.error || "no result"}`);
+      return { ok: false, resp: resp(503, { ok: false, error: "Can't change that expense right now — the database is unavailable. Try again in a moment." }) };
     }
+  } else {
+    return { ok: false, resp: resp(503, { ok: false, error: "Can't change that expense right now — the database is unavailable. Try again in a moment." }) };
   }
 
-  if (!known) {
-    // A uuid can never resolve here, so refuse rather than let atFetch 404 into
-    // an unhandled throw.
-    if (!String(expenseId).startsWith("rec")) {
-      return { ok: false, resp: resp(404, { ok: false, error: "Expense not found." }) };
-    }
-    let rec;
-    try { rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`); }
-    catch { return { ok: false, resp: resp(404, { ok: false, error: "Expense not found." }) }; }
-    const f = rec.fields || {};
-    airtableId = rec.id;
-    const submitted = f["Submitted By"];
-    owner = (Array.isArray(submitted) ? submitted[0] : submitted) || null;
-    const status = f["Expense Status"]?.name || f["Expense Status"] || "";
-    reviewed = f["Reviewed"] === true || status === "Reviewed";
-  }
+  if (!known) return { ok: false, resp: resp(404, { ok: false, error: "Expense not found." }) };
 
   if (isMgr) return { ok: true, uuid, airtableId };
   if (owner !== authUser?.id) {
@@ -11550,14 +11549,13 @@ async function handleUpdateInspection(body) {
           RETURNING id, airtable_id`, vals);
       if (rows?.length) {
         airtableId = rows[0].airtable_id || airtableId;
-      } else if (!airtableId) {
-        // A uuid that matched nothing is a genuine miss, and there is no Airtable
-        // id to fall back to. Say so rather than silently doing nothing.
+      } else {
+        // Nothing in Neon matched, so this is a genuine miss. Say so rather than
+        // silently doing nothing. (A rec id used to fall through to Airtable,
+        // which is retired as of 2026-11-07, so that write would have been skipped
+        // while still reporting success.)
         return resp(404, { ok: false, error: `Inspection not found: ${idStr}` });
       }
-      // A rec id that matched no Neon row still falls through to Airtable below:
-      // nothing syncs these tables, so an inspection created in Airtable an hour
-      // ago legitimately has no Neon row yet.
     }
   }
 
@@ -11741,12 +11739,8 @@ async function handleCreateVendor(body) {
     existingId = dup.rows[0].id;
     existingName = dup.rows[0].name;
   } else if (!dup || dup.error) {
-    const safeName = escapeFormulaString(trimmedName.toLowerCase());
-    const existing = await fetchAll("Vendors", { filter: `LOWER({Vendor Name})="${safeName}"` });
-    if (existing.length > 0) {
-      existingId = existing[0].id;
-      existingName = existing[0].fields["Vendor Name"];
-    }
+    // Neon only (Airtable retired 2026-11-07): can't check for a duplicate, so don't create.
+    return resp(503, { ok: false, error: "Can't add a vendor right now — the database is unavailable. Try again in a moment." });
   }
   if (existingId) {
     return resp(409, {
@@ -11855,12 +11849,8 @@ async function handleCreateCompany(body) {
     existingId = dup.rows[0].id;
     existingName = dup.rows[0].name;
   } else if (!dup || dup.error) {
-    const safe = escapeFormulaString(trimmedName);
-    const existing = await fetchAll("Companies", { filter: `LOWER({Company Name})=LOWER("${safe}")` });
-    if (existing.length > 0) {
-      existingId = existing[0].id;
-      existingName = existing[0].fields["Company Name"];
-    }
+    // Neon only (Airtable retired 2026-11-07): can't check for a duplicate, so don't create.
+    return resp(503, { ok: false, error: "Can't add a company right now — the database is unavailable. Try again in a moment." });
   }
   if (existingId) {
     return resp(409, {
@@ -12471,6 +12461,9 @@ async function handleGetInspectorsForAgency(params) {
         return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
       }
     }
+    // An agency id Neon does not know has no inspectors. This used to fall
+    // through to Airtable, which is retired (2026-11-07).
+    return resp(200, { ok: true, inspectors: [], _source: "neon" });
   }
 
   let records;
@@ -13623,8 +13616,9 @@ async function handleGetWarranties(params) {
     }
   }
 
-  // A uuid with no Neon row cannot be looked up in Airtable at all — say so
-  // rather than 404ing as "Generator not found", which it isn't.
+  // A generator Neon does not know has no warranties we can show. This used to
+  // fall through to Airtable for a rec id; Airtable is retired (2026-11-07).
+  if (!ids.neon) return resp(200, { ok: true, warranties: [], _source: "neon-empty" });
   if (!ids.rec) return resp(200, { ok: true, warranties: [], _source: "neon-empty" });
 
   let assetId = "";
@@ -14316,7 +14310,9 @@ async function handleGetScheduleEntries(params) {
   // Names for the crew chips. Neon-first (Stage 4); a null means Neon couldn't
   // answer, not that nobody works here, so fall back rather than render a
   // schedule with every crew name blank.
-  const employees = (await employeesForPayroll()) ?? (await fetchAll(TABLES.employees));
+  // Neon only (Airtable retired 2026-11-07).
+  const employees = await employeesForPayroll();
+  if (!employees) return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable. Try again in a moment." });
   const jobById = {};
   jobs.forEach(j => {
     const f = j.fields || {};
@@ -15810,16 +15806,23 @@ async function mirrorJobPatch(label, jobHandle, fields, opts = {}) {
     }));
 }
 
+// An Error the top-level catch turns into a 503 (not a 500): the database is
+// down, the request was fine.
+function unavailableError(message) {
+  const e = new Error(message);
+  e.httpStatus = 503;
+  return e;
+}
+
 async function jobExists(jobId) {
   const id = String(jobId || "").trim();
   if (!id) return false;
 
+  // Neon only (Airtable retired 2026-11-07). A failed read THROWS rather than
+  // answering false: "Job not found" for a database outage would be a lie.
   const q = await neonQuery(`SELECT 1 FROM jobs WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [id]);
-  if (q?.rows?.length) return true;
-  if (q?.error) console.error(`jobExists: Neon check failed, asking Airtable — ${q.error}`);
-
-  const records = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(id)}"` });
-  return records.length > 0;
+  if (q?.rows) return q.rows.length > 0;
+  throw unavailableError(`Can't check that job right now — the database is unavailable. (${q?.error || "Neon not configured"})`);
 }
 
 /* ── Jobsite photos (docs/PLAN-job-photos.md, slice 1: read-only) ───────────
@@ -16025,13 +16028,8 @@ async function handleExpenseReceipts(params, authUser) {
     return resp(503, { ok: false, error: "Can't load receipts right now — the database is unavailable. Try again in a moment." });
   }
 
-  if (!known) {
-    let rec;
-    try { rec = await atFetch(`${encodeURIComponent("Expenses")}/${expenseId}`); }
-    catch { return resp(404, { ok: false, error: "Expense not found." }); }
-    const submitted = rec.fields?.["Submitted By"];
-    owner = (Array.isArray(submitted) ? submitted[0] : submitted) || null;
-  }
+  // Not in Neon = not found. (Used to ask Airtable; retired 2026-11-07.)
+  if (!known) return resp(404, { ok: false, error: "Expense not found." });
 
   const role = (authUser?.role || "").toLowerCase();
   if (role !== "admin" && role !== "office" && owner !== authUser?.id) {
@@ -16139,29 +16137,14 @@ async function handleExpenseReceiptSummary(params, authUser) {
       WHERE (e.job_airtable_id = $1 OR e.job_id = (SELECT id FROM jobs WHERE airtable_id = $1 OR id::text = $1))
         AND ($2 OR e.submitted_by_at_id = $3)`,
     [jobId, isMgr === true, authUser?.id || null]);
-  if (q?.rows?.length) visibleIds = q.rows.map(r => r.id);
-  // ⚠ ONLY AN ERROR STOPS THIS, not an empty result. Zero rows here means the
-  // expense is not in Neon, which the code below already handles; returning 503
-  // for that would break every legitimate miss.
-  else if (q?.error) {
-    console.error(`expenseReceiptSummary: Neon read FAILED — refusing to serve frozen Airtable data: ${q.error}`);
+  // ⚠ Neon only (Airtable retired 2026-11-07). Zero rows = a job with no
+  // expenses, which is common; it used to fall through to Airtable.
+  if (q?.rows) visibleIds = q.rows.map(r => r.id);
+  else {
+    console.error(`expenseReceiptSummary: Neon read FAILED — refusing to serve frozen Airtable data: ${q?.error || "no result"}`);
     return resp(503, { ok: false, error: "Can't load receipts right now — the database is unavailable. Try again in a moment." });
   }
 
-  if (visibleIds === null) {
-    const jobRecords = await fetchAll(TABLES.jobs, { filter: `RECORD_ID()="${escapeFormulaString(jobId)}"` });
-    if (!jobRecords.length) return resp(200, { ok: true, available: true, receipts: {} });
-
-    const safeName = escapeFormulaString(jobRecords[0].fields["Job Name"] || "");
-    const filter = `FIND("\n${safeName}\n", "\n" & ARRAYJOIN({Job}, "\n") & "\n")`;
-    const all = await fetchAll("Expenses", { filter });
-    const onJob = all.filter(r => Array.isArray(r.fields?.Job) && r.fields.Job.includes(jobId));
-
-    const visible = isMgr
-      ? onJob
-      : onJob.filter(r => Array.isArray(r.fields?.["Submitted By"]) && r.fields["Submitted By"].includes(authUser?.id));
-    visibleIds = visible.map(r => r.id);
-  }
 
   try {
     return resp(200, {
@@ -17613,6 +17596,8 @@ export async function handler(event) {
     return resp(405, { ok: false, error: "Method not allowed." });
   } catch (err) {
     console.error("NEE Proxy Error:", err);
-    return resp(500, { ok: false, error: err.message || "Server error." });
+    // `httpStatus` is set only by unavailableError() below — a database outage
+    // surfaced from a helper answers 503 like every other refused read.
+    return resp(err?.httpStatus || 500, { ok: false, error: err.message || "Server error." });
   }
 }

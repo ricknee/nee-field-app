@@ -24,7 +24,7 @@
 // condition was "status = New Lead AND Job PO Number is EMPTY", which a record
 // created with the number already in it never satisfies.
 import { neonWrite } from "./_neon.js";
-import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, SKIPPED_WRITE } from "./_airtable-write-guard.js";
+import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, assertAirtableReadable, AirtableRetiredError, SKIPPED_WRITE } from "./_airtable-write-guard.js";
 
 const AT_API = "https://api.airtable.com/v0";
 
@@ -86,12 +86,15 @@ export class JobInputError extends Error {
 // A standalone Airtable fetcher for callers that are not airtable.js — the
 // hourly scheduled function has no `atFetch` of its own. Deliberately the same
 // shape (path, options) so either can be injected interchangeably.
+// ⚠ No key is normal now (Airtable retired 2026-11-07): the returned fetcher
+// skips every write and refuses every read, so callers need no special case.
 export function makeAtFetch(apiKey, baseId) {
-  if (!apiKey || !baseId) throw new Error("makeAtFetch: apiKey and baseId are required");
   return async function atFetch(path, options = {}) {
     // See _airtable-write-guard.js — this one carries the native job's mirror,
     // which is the write that fabricated a Job on 2026-08-25.
     if (airtableWriteBlocked(path, options)) return SKIPPED_WRITE;
+    assertAirtableReadable(path);
+    if (!apiKey || !baseId) throw new AirtableRetiredError(path);
     options = scrubFabricatingLinks(path, options);
     const res = await fetch(`${AT_API}/${baseId}/${path}`, {
       ...options,

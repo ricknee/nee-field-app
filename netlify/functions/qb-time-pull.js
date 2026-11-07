@@ -426,10 +426,11 @@ export const handler = async () => {
   // gone and the note with it: a job created by this app is in `jobs` the moment
   // it is created, which is the whole point of being native.
   //
-  // ⚠⚠ THE LAST AIRTABLE DEPENDENCY IN THIS FUNCTION. The generator check needs
-  // an atFetch only to write the fail-soft MIRROR of a job it creates — the job
-  // itself is born in Neon. These two lines go when the mirrors go, and then
-  // this function touches Airtable nowhere at all.
+  // The generator check takes an atFetch only to write the fail-soft MIRROR of a
+  // job it creates — the job itself is born in Neon. ⚠ With no Airtable key
+  // (retired 2026-11-07) makeAtFetch skips that write, so the check RUNS. It used
+  // to be skipped entirely when the key was unset, which would have silently
+  // switched generator service calls off the day the key was deleted.
   //
   // The owner still wants generator service calls: the work is real and not yet
   // done. Kept live and INERT rather than removed.
@@ -442,14 +443,12 @@ export const handler = async () => {
   // Fails soft and is caught here on purpose: the timesheet pull is the job that
   // must not stop, and a generator reminder is the least urgent thing this
   // function does.
-  let generatorReport = { ok: false, error: "AIRTABLE_API_KEY / AIRTABLE_BASE_ID unset" };
-  if (atKey && atBase) {
-    try {
-      generatorReport = await runGeneratorServiceCheck(makeAtFetch(atKey, atBase));
-    } catch (e) {
-      console.error("qb-time-pull: generator service check failed", e);
-      generatorReport = { ok: false, error: String(e?.message || e) };
-    }
+  let generatorReport = { ok: false, error: "not run" };
+  try {
+    generatorReport = await runGeneratorServiceCheck(makeAtFetch(atKey, atBase));
+  } catch (e) {
+    console.error("qb-time-pull: generator service check failed", e);
+    generatorReport = { ok: false, error: String(e?.message || e) };
   }
 
   // ── Integrity checks (_integrity.js) ─────────────────────────────────────

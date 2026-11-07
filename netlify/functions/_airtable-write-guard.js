@@ -58,7 +58,39 @@ export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 // `Job PO`. It is dormant while JOB_CREATE_SOURCE=native, and _jobs.js refuses
 // loudly rather than letting it half-run — see the guard there.
 export function airtableWritesEnabled() {
+  // ⚠ NO KEY = NO WRITES (2026-11-07). Airtable is retired and the key is being
+  // removed from Netlify. Without it every write is skipped exactly as if
+  // AIRTABLE_WRITES=off, so deleting the key can never turn ~65 skipped mirrors
+  // into ~65 thrown errors, and _jobs.js's non-native create stays refused.
+  if (!airtableKeyPresent()) return false;
   return String(process.env.AIRTABLE_WRITES ?? "on").trim().toLowerCase() !== "off";
+}
+
+// ── AIRTABLE IS RETIRED (owner, 2026-11-07) ────────────────────────────────
+// The app has nothing to do with Airtable any more. `AIRTABLE_API_KEY` and
+// `AIRTABLE_BASE_ID` are optional and are being deleted from Netlify. With no
+// key, every atFetch (all three copies) behaves like this:
+//   • a write  → SKIPPED_WRITE, via airtableWritesEnabled() above;
+//   • a read   → throws AirtableRetiredError. No live code path reads Airtable
+//     (verified call site by call site, 2026-11-07); the reads left in the files
+//     sit behind `if (neonEnabled())` blocks that always return. If one is ever
+//     reached, it fails loudly instead of quietly serving a frozen copy.
+export function airtableKeyPresent() {
+  return !!(process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID);
+}
+
+export class AirtableRetiredError extends Error {
+  constructor(label) {
+    super(`Airtable is retired — refused a read of "${String(label || "").split("?")[0]}". This data must come from Neon.`);
+    this.name = "AirtableRetiredError";
+  }
+}
+
+/** Throws AirtableRetiredError when there is no key. Call before any Airtable network request. */
+export function assertAirtableReadable(label) {
+  if (airtableKeyPresent()) return;
+  console.error(`airtable-read: REFUSED (no key, Airtable retired) — ${String(label || "").split("?")[0]}`);
+  throw new AirtableRetiredError(label);
 }
 
 // What a skipped write resolves to. NOT null: ~65 call sites do `data?.id` or
@@ -81,7 +113,7 @@ export function airtableWriteBlocked(label, options) {
   const table = String(label || "").split("/")[0];
   if (!announced.has(table)) {
     announced.add(table);
-    console.log(`airtable-write: SKIPPED (AIRTABLE_WRITES=off) — ${table}. The Neon row is the record.`);
+    console.log(`airtable-write: SKIPPED (${airtableKeyPresent() ? "AIRTABLE_WRITES=off" : "no key, Airtable retired"}) — ${table}. The Neon row is the record.`);
   }
   return true;
 }

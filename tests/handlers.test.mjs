@@ -53,6 +53,13 @@ function neonOn(employees) {
   mockNeonEmployees = employees;
 }
 function neonOff() { delete process.env.DATABASE_URL; mockNeonEmployees = []; }
+// Run one case against the stub Neon, then put the default (no database) back.
+// Airtable is retired (2026-11-07), so anything that used to be decided from an
+// Airtable record is decided from Neon now and needs the stub switched on.
+async function withNeon(fn, employees = []) {
+  neonOn(employees);
+  try { return await fn(); } finally { neonOff(); }
+}
 // `types` optionally overrides a column's Postgres type OID (default 25 = text).
 //
 // ⚠ THIS IS NOT DECORATION. The driver parses the wire text according to these
@@ -197,6 +204,48 @@ globalThis.fetch = async (url, opts) => {
              .some(v => String(v || "").trim().toLowerCase() === String(id)));
       return neonReply(["handle", "name", "role"],
         rows.map(e => ({ handle: e.id, name: e.name, role: e.role ?? null })));
+    }
+    // jobExists — the shared job-id gate for photos/docs/prints. Neon-only since
+    // Airtable was retired (2026-11-07), so it answers from the same fixture the
+    // Airtable mock reads: a job in `mockTables.Jobs` exists, anything else does not.
+    if (/^SELECT 1 FROM jobs WHERE airtable_id = \$1 OR id::text = \$1 LIMIT 1$/.test(sql.trim())) {
+      const [id] = sent.params || [];
+      const hit = (mockTables.Jobs || []).some(r => r.id === id);
+      return neonReply(["?column?"], hit ? [{ "?column?": 1 }] : []);
+    }
+    // Employee lookups (neonEmployeeById / neonEmployees / employeePin), answered
+    // from the same `mockNeonEmployees` fixture login uses. Airtable used to be
+    // the fallback for all three; it is retired (2026-11-07).
+    if (/^SELECT COALESCE\(airtable_id, id::text\) AS handle, name, username, role, active, labor_type\s+FROM employees/.test(sql.trim())) {
+      const [id] = sent.params || [];
+      let rows = mockNeonEmployees || [];
+      if (/WHERE airtable_id = \$1 OR id::text = \$1/.test(sql)) rows = rows.filter(e => e.id === id);
+      else if (/WHERE active/.test(sql)) rows = rows.filter(e => e.active !== false);
+      return neonReply(["handle", "name", "username", "role", "active", "labor_type"],
+        rows.map(e => ({ handle: e.id, name: e.name ?? null, username: e.username ?? null, role: e.role ?? null,
+                         active: e.active === false ? "f" : "t", labor_type: e.laborType ?? null })),
+        { active: 16 });
+    }
+    if (/^SELECT pin FROM employees WHERE airtable_id = \$1 OR id::text = \$1$/.test(sql.trim())) {
+      const [id] = sent.params || [];
+      const e = (mockNeonEmployees || []).find(x => x.id === id);
+      return neonReply(["pin"], e ? [{ pin: e.pin ?? null }] : []);
+    }
+    // The expense ownership/lock lookups (guardExpenseMutation, expenseReceipts).
+    // Neon-only since 2026-11-07; answered from `mockTables.Expenses` so the
+    // ownership cases keep testing the same fixtures they always did. Only
+    // when no VI/VS store is active — those cases own their expenses table.
+    if (!mockVI && !mockVS && /FROM expenses WHERE airtable_id = \$1 OR id::text = \$1 LIMIT 1|FROM expenses\s+WHERE COALESCE\(airtable_id, id::text\) = \$1 LIMIT 1/.test(sql)) {
+      const [id] = sent.params || [];
+      const rec = (mockTables.Expenses || []).find(r => r.id === id);
+      const f = rec?.fields || {};
+      const sub = f["Submitted By"];
+      const st = f["Expense Status"]?.name || f["Expense Status"] || "";
+      return neonReply(["uuid", "airtable_id", "submitted_by_at_id", "reviewed", "expense_status"],
+        rec ? [{ uuid: `uuid-${rec.id}`, airtable_id: rec.id,
+                 submitted_by_at_id: (Array.isArray(sub) ? sub[0] : sub) || null,
+                 reviewed: f["Reviewed"] === true ? "t" : "f", expense_status: st }] : [],
+        { reviewed: 16 });
     }
     // ── vendor-invoice inbox ────────────────────────────────────────────
     // ⚠ ORDER IS LOAD-BEARING HERE. `INSERT INTO expenses` contains subselects
@@ -669,7 +718,9 @@ await test("getNextInvoiceNumber: returns max + 1", async () => {
 // Airtable's "Bird Date" column is the frozen pre-cutover copy, so this branch
 // — which only runs when Neon is unreachable — must serve NOTHING rather than
 // put retired dates on the calendar. Empty, not stale.
-await test("scheduleEntries: the Airtable branch serves NO completion dates", async () => {
+await test("scheduleEntries: with no database it serves NO frozen completion dates", async () => {
+  // Airtable is retired (2026-11-07): with no database the schedule refuses
+  // outright, or at the very least serves no completion dates. Never stale ones.
   mockTables = {
     "Schedule Entries": [],
     Jobs: [
@@ -678,8 +729,7 @@ await test("scheduleEntries: the Airtable branch serves NO completion dates", as
     Employees: [],
   };
   const b = json(await GET("scheduleEntries"));
-  ok(b.ok, "ok");
-  eq(b.completionDates.length, 0, "the frozen Airtable copy is not served");
+  ok(!b.ok || b.completionDates.length === 0, "the frozen Airtable copy is not served");
 });
 
 // The Neon branch can't run offline, so the live path is guarded statically.
@@ -1275,12 +1325,14 @@ await test("updateExpense: employee passes the guard, then fails CLOSED without 
 
 await test("updateExpense: employee edits someone else's → 403", async () => {
   mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Not Reviewed" } }] };
-  eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, OTHER_TOK)).statusCode, 403, "not owner");
+  await withNeon(async () =>
+    eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, OTHER_TOK)).statusCode, 403, "not owner"));
 });
 
 await test("updateExpense: employee edits an approved one → 403 (locked)", async () => {
   mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Reviewed", "Reviewed": true } }] };
-  eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, OWNER_TOK)).statusCode, 403, "locked after approval");
+  await withNeon(async () =>
+    eq((await POST("updateExpense", { expenseId: "recX1", amount: 75 }, OWNER_TOK)).statusCode, 403, "locked after approval"));
 });
 
 await test("updateExpense: admin still clears the guard on a reviewed expense", async () => {
@@ -1301,7 +1353,10 @@ await test("deleteExpense: ownership is enforced, and the delete fails CLOSED", 
   // deleted. It now takes either handle and throws.
   delete process.env.DATABASE_URL;
   mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmpOwner"], "Expense Status": "Not Reviewed" } }] };
-  eq((await POST("deleteExpense", { expenseId: "recX1" }, OTHER_TOK)).statusCode, 403, "not owner → still 403");
+  await withNeon(async () =>
+    eq((await POST("deleteExpense", { expenseId: "recX1" }, OTHER_TOK)).statusCode, 403, "not owner → still 403"));
+  // With no database at all the guard can't decide, so it refuses (503), never lets it through.
+  eq((await POST("deleteExpense", { expenseId: "recX1" }, OTHER_TOK)).statusCode, 503, "no database → refused, not allowed");
   const own = await POST("deleteExpense", { expenseId: "recX1" }, OWNER_TOK);
   ok(own.statusCode >= 500, `owner passes the guard, then the delete fails closed, got ${own.statusCode}`);
 
@@ -1362,13 +1417,18 @@ const EXPENSE = (submittedBy = 'recEmp', reviewed = false) => ({
 
 await test('expenseReceipts: employee sees own, not someone else\'s', async () => {
   setR2();
-  mockTables = EXPENSE('recEmp');
-  ok((await GET('expenseReceipts', { expenseId: 'recX1' }, EMP_TOK)).statusCode !== 403, 'own expense');
-  mockTables = EXPENSE('recSomeoneElse');
-  eq((await GET('expenseReceipts', { expenseId: 'recX1' }, EMP_TOK)).statusCode, 403, "someone else's");
-  // Admin and office are not scoped — same rule handleExpenses already applies.
-  ok((await GET('expenseReceipts', { expenseId: 'recX1' }, ADMIN_TOK)).statusCode !== 403, 'admin any');
-  ok((await GET('expenseReceipts', { expenseId: 'recX1' }, OFFICE_TOK)).statusCode !== 403, 'office any');
+  await withNeon(async () => {
+    mockTables = EXPENSE('recEmp');
+    ok((await GET('expenseReceipts', { expenseId: 'recX1' }, EMP_TOK)).statusCode !== 403, 'own expense');
+    mockTables = EXPENSE('recSomeoneElse');
+    eq((await GET('expenseReceipts', { expenseId: 'recX1' }, EMP_TOK)).statusCode, 403, "someone else's");
+    // Admin and office are not scoped — same rule handleExpenses already applies.
+    ok((await GET('expenseReceipts', { expenseId: 'recX1' }, ADMIN_TOK)).statusCode !== 403, 'admin any');
+    ok((await GET('expenseReceipts', { expenseId: 'recX1' }, OFFICE_TOK)).statusCode !== 403, 'office any');
+    // Not in Neon = not found. It used to ask Airtable; Airtable is retired.
+    mockTables = {};
+    eq((await GET('expenseReceipts', { expenseId: 'recX1' }, ADMIN_TOK)).statusCode, 404, 'unknown expense');
+  });
 });
 
 await test('receipt delete: manager-only, and the bin escapes the 30-day purge', async () => {
@@ -1462,8 +1522,9 @@ await test('receipt upload: validation and the reviewed-expense lock', async () 
   eq((await POST('expenseReceiptUploadUrls', { expenseId: 'recX1', files: many })).statusCode, 400, 'too many');
   // An approved expense is locked for employees — attaching reuses that window.
   mockTables = EXPENSE('recEmp', true);
-  eq((await POST('expenseReceiptUploadUrls',
-    { expenseId: 'recX1', files: [{ contentType: 'image/jpeg' }] }, EMP_TOK)).statusCode, 403, 'locked once reviewed');
+  await withNeon(async () =>
+    eq((await POST('expenseReceiptUploadUrls',
+      { expenseId: 'recX1', files: [{ contentType: 'image/jpeg' }] }, EMP_TOK)).statusCode, 403, 'locked once reviewed'));
 });
 
 // ── cross-job filter safety (docs/TODO.md sweep) ──
@@ -1550,9 +1611,12 @@ await test('jobPhotos: R2 unconfigured → soft available:false, never a 500', a
 });
 
 await test('jobPhotos: unknown job → 404 (before any storage call)', async () => {
-  setR2();
-  mockTables = { Jobs: [] };
-  eq((await GET('jobPhotos', { jobId: 'recNOPE' })).statusCode, 404, 'status');
+  // Neon-only since Airtable was retired (2026-11-07) — the job gate reads Neon.
+  await withNeon(async () => {
+    setR2();
+    mockTables = { Jobs: [] };
+    eq((await GET('jobPhotos', { jobId: 'recNOPE' })).statusCode, 404, 'status');
+  });
 });
 
 await test('jobPhotos: missing jobId → 400', async () => {
@@ -1573,9 +1637,12 @@ await test('jobPhotoUploadUrls: validates jobId, file list and batch size', asyn
 });
 
 await test('jobPhotoUploadUrls: unknown job → 404, never mints a key', async () => {
-  setR2();
-  mockTables = { Jobs: [] };
-  eq((await POST('jobPhotoUploadUrls', { jobId: 'recNOPE', files: [{ contentType: 'image/jpeg' }] })).statusCode, 404, 'status');
+  // Neon-only since Airtable was retired (2026-11-07) — the job gate reads Neon.
+  await withNeon(async () => {
+    setR2();
+    mockTables = { Jobs: [] };
+    eq((await POST('jobPhotoUploadUrls', { jobId: 'recNOPE', files: [{ contentType: 'image/jpeg' }] })).statusCode, 404, 'status');
+  });
 });
 
 await test('jobPhotoUploadUrls: R2 unconfigured → 503, not a 500', async () => {
@@ -1607,25 +1674,28 @@ await test('job notes: readable by every role, writable only by admin/office', a
 });
 
 await test('jobDocs: admin/office only — the materials PDF shows costs', async () => {
-  setR2();
-  mockTables = JOB_ONLY();
-  // The materials PDF itemises unit costs and job totals. handleExpenses
-  // already scopes employees to their own submissions and hides job totals;
-  // this must not become the back door around that.
-  eq((await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK)).statusCode, 403, 'employee blocked');
-  eq((await GET('jobDocs', { jobId: 'recJ1' }, VIEWER_TOK)).statusCode, 403, 'viewer blocked');
-  ok((await GET('jobDocs', { jobId: 'recJ1' }, OFFICE_TOK)).statusCode !== 403, 'office allowed');
-  ok((await GET('jobDocs', { jobId: 'recJ1' }, ADMIN_TOK)).statusCode !== 403, 'admin allowed');
+  // Neon-only since Airtable was retired (2026-11-07) — the job gate reads Neon.
+  await withNeon(async () => {
+    setR2();
+    mockTables = JOB_ONLY();
+    // The materials PDF itemises unit costs and job totals. handleExpenses
+    // already scopes employees to their own submissions and hides job totals;
+    // this must not become the back door around that.
+    eq((await GET('jobDocs', { jobId: 'recJ1' }, EMP_TOK)).statusCode, 403, 'employee blocked');
+    eq((await GET('jobDocs', { jobId: 'recJ1' }, VIEWER_TOK)).statusCode, 403, 'viewer blocked');
+    ok((await GET('jobDocs', { jobId: 'recJ1' }, OFFICE_TOK)).statusCode !== 403, 'office allowed');
+    ok((await GET('jobDocs', { jobId: 'recJ1' }, ADMIN_TOK)).statusCode !== 403, 'admin allowed');
 
-  clearR2();
-  const b = json(await GET('jobDocs', { jobId: 'recJ1' }));
-  eq(b.available, false, 'soft-fails when R2 is off'); eq(b.reason, 'not-configured', 'reason');
-  eq(b.docs.length, 0, 'docs');
+    clearR2();
+    const b = json(await GET('jobDocs', { jobId: 'recJ1' }));
+    eq(b.available, false, 'soft-fails when R2 is off'); eq(b.reason, 'not-configured', 'reason');
+    eq(b.docs.length, 0, 'docs');
 
-  setR2();
-  eq((await GET('jobDocs', {})).statusCode, 400, 'missing jobId');
-  mockTables = { Jobs: [] };
-  eq((await GET('jobDocs', { jobId: 'recNOPE' })).statusCode, 404, 'unknown job');
+    setR2();
+    eq((await GET('jobDocs', {})).statusCode, 400, 'missing jobId');
+    mockTables = { Jobs: [] };
+    eq((await GET('jobDocs', { jobId: 'recNOPE' })).statusCode, 404, 'unknown job');
+  });
 });
 
 await test('job docs live outside the photo gallery', async () => {
@@ -1898,14 +1968,17 @@ await test('moveJobPhotos: any non-viewer may re-file (reversible)', async () =>
 });
 
 await test('bulk photo ops: validate job and selection before touching storage', async () => {
-  setR2();
-  mockTables = JOB_ONLY();
-  eq((await POST('deleteJobPhotos', { keys: ['x'] })).statusCode, 400, 'no jobId');
-  eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: [] })).statusCode, 400, 'no keys');
-  const many = Array.from({ length: 13 }, (_, i) => `jobs/recJ1/${i}.jpg`);
-  eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: many })).statusCode, 400, 'too many');
-  mockTables = { Jobs: [] };
-  eq((await POST('deleteJobPhotos', { jobId: 'recNOPE', keys: ['jobs/recNOPE/a.jpg'] })).statusCode, 404, 'unknown job');
+  // Neon-only since Airtable was retired (2026-11-07) — the job gate reads Neon.
+  await withNeon(async () => {
+    setR2();
+    mockTables = JOB_ONLY();
+    eq((await POST('deleteJobPhotos', { keys: ['x'] })).statusCode, 400, 'no jobId');
+    eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: [] })).statusCode, 400, 'no keys');
+    const many = Array.from({ length: 13 }, (_, i) => `jobs/recJ1/${i}.jpg`);
+    eq((await POST('deleteJobPhotos', { jobId: 'recJ1', keys: many })).statusCode, 400, 'too many');
+    mockTables = { Jobs: [] };
+    eq((await POST('deleteJobPhotos', { jobId: 'recNOPE', keys: ['jobs/recNOPE/a.jpg'] })).statusCode, 404, 'unknown job');
+  });
 });
 
 await test('r2 mutation guard: a key from another job is refused', async () => {
@@ -3649,23 +3722,29 @@ await test("people: admin only", async () => {
   eq((await GET("people", {}, VIEWER_TOK)).statusCode, 403, "viewer refused");
 });
 
+
 await test("employeePin: strict admin only, and reports a missing PIN as missing", async () => {
   // A live credential. Office is excluded exactly as it is from `people`.
-  mockTables = { Employees: [
-    { id: "recHasPin", fields: { "Employee Name": "Has Pin", PIN: "4821" } },
-    { id: "recNoPin",  fields: { "Employee Name": "No Pin" } },
-  ] };
-  eq((await GET("employeePin", { employeeId: "recHasPin" }, EMP_TOK)).statusCode, 403, "employee refused");
-  eq((await GET("employeePin", { employeeId: "recHasPin" }, OFFICE_TOK)).statusCode, 403, "office refused");
-  eq((await GET("employeePin", { employeeId: "recHasPin" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
-  const b = json(await GET("employeePin", { employeeId: "recHasPin" }));
-  eq(b.pin, "4821", "admin gets the PIN");
-  eq(b.hasPin, true, "hasPin true");
-  // An empty PIN is not cosmetic — handleLogin refuses to match one, so the
-  // screen has to say so rather than render a blank.
-  const n = json(await GET("employeePin", { employeeId: "recNoPin" }));
-  eq(n.hasPin, false, "missing PIN reported as missing, not as an empty string");
-  eq((await GET("employeePin", {})).statusCode, 400, "no employeeId → 400");
+  // Neon only since Airtable was retired (2026-11-07): Neon holds the PIN login uses.
+  await withNeon(async () => {
+    eq((await GET("employeePin", { employeeId: "recHasPin" }, EMP_TOK)).statusCode, 403, "employee refused");
+    eq((await GET("employeePin", { employeeId: "recHasPin" }, OFFICE_TOK)).statusCode, 403, "office refused");
+    eq((await GET("employeePin", { employeeId: "recHasPin" }, VIEWER_TOK)).statusCode, 403, "viewer refused");
+    const b = json(await GET("employeePin", { employeeId: "recHasPin" }));
+    eq(b.pin, "4821", "admin gets the PIN");
+    eq(b.hasPin, true, "hasPin true");
+    // An empty PIN is not cosmetic — handleLogin refuses to match one, so the
+    // screen has to say so rather than render a blank.
+    const n = json(await GET("employeePin", { employeeId: "recNoPin" }));
+    eq(n.hasPin, false, "missing PIN reported as missing, not as an empty string");
+    eq((await GET("employeePin", { employeeId: "recNope" })).statusCode, 404, "unknown employee → 404");
+    eq((await GET("employeePin", {})).statusCode, 400, "no employeeId → 400");
+  }, [
+    { id: "recHasPin", name: "Has Pin", pin: "4821" },
+    { id: "recNoPin",  name: "No Pin",  pin: "" },
+  ]);
+  // No database: refuse. The frozen Airtable PIN would be a wrong answer.
+  eq((await GET("employeePin", { employeeId: "recHasPin" })).statusCode, 503, "no database → 503, never Airtable");
 });
 
 await test("setEmployeePin: admin only, digits only, and no duplicates", async () => {
@@ -4102,35 +4181,27 @@ await test("rates: a rate write with Neon down fails CLOSED", async () => {
 // from Neon must mean "ask Airtable", never "there are no employees". An empty
 // employee list in a payroll rollup drops people from a pay period without
 // erroring anywhere.
-await test("payroll reads: unreachable Neon falls back, nobody vanishes", async () => {
-  mockTables = {
-    Employees: [
-      { id: "recEmp1", fields: { "Employee Name": "Jeff Koehn", Role: "employee", Active: true } },
-      { id: "recOff1", fields: { "Employee Name": "Tisha",      Role: "office",   Active: true } },
-    ],
-    "Time Entries": [], Bonuses: [], "Payroll Runs": [],
-  };
+
+await test("payroll reads: an unreachable Neon REFUSES — Airtable is retired", async () => {
+  // These used to fall back to Airtable. Airtable is retired (2026-11-07) and its
+  // copy has been frozen since 2026-08-25, so a fallback would put a plausible
+  // wrong number on a screen people are paid from. An outage is a 503 now.
   for (const url of [undefined, "not-a-valid-connection-string"]) {
     if (url) process.env.DATABASE_URL = url; else delete process.env.DATABASE_URL;
     for (const a of ["payrollBonusesRollup", "payrollHoursBreakdown"]) {
-      const res = await GET(a, { today: "2026-08-09" });
-      ok(res.statusCode < 500, `${a} survives (DATABASE_URL=${url}) — got ${res.statusCode}`);
+      const res = await GET(a, { today: "2026-08-09", bucket: "ytd" });
+      ok(res.statusCode >= 500, `${a} refuses (DATABASE_URL=${url}) — got ${res.statusCode}`);
     }
-    // Office is not payroll-eligible and must stay refused on the fallback path
-    // too — the role gate travels with the record, whichever store answered.
-    //
-    // Single-row fixture on purpose: the mock does NOT apply filterByFormula,
-    // it returns every row for the table. With both employees present the
-    // fallback's RECORD_ID() filter is a no-op and [0] is whoever is listed
-    // first, so a two-row fixture would test the fixture, not the gate.
-    const both = mockTables;
-    mockTables = { ...both, Employees: [both.Employees[1]] };   // office only
-    eq((await GET("myHoursRollup", { employeeId: "recOff1", today: "2026-08-09" })).statusCode, 403, "office refused");
-    mockTables = { ...both, Employees: [] };
-    eq((await GET("myHoursRollup", { employeeId: "recNope", today: "2026-08-09" })).statusCode, 404, "unknown employee 404s");
-    mockTables = both;
   }
   delete process.env.DATABASE_URL;
+  // The role gate still sits in front of my-hours, read from Neon.
+  await withNeon(async () => {
+    eq((await GET("myHoursRollup", { employeeId: "recOff1", today: "2026-08-09" })).statusCode, 403, "office refused");
+    eq((await GET("myHoursRollup", { employeeId: "recNope", today: "2026-08-09" })).statusCode, 404, "unknown employee 404s");
+  }, [
+    { id: "recEmp1", name: "Jeff Koehn", role: "employee", active: true },
+    { id: "recOff1", name: "Tisha",      role: "office",   active: true },
+  ]);
 });
 
 await test("createVendor: gated by the signed token, not a body field", async () => {
@@ -4304,102 +4375,39 @@ await test("backfillTimeEntryEmployeeLinks is gone, not just unlisted", async ()
   eq((await POST("backfillTimeEntryEmployeeLinks", { confirm: "YES" })).statusCode, 400, "unknown action");
 });
 
-await test("hours breakdowns: answer without a database, REFUSE with a broken one", async () => {
-  // These two served the AIRTABLE Time Entries table, frozen by Step 3 on
-  // 2026-08-07, while the rollup tiles above them served Neon — so the
-  // drill-down disagreed with the tile it opened from, and drifted daily.
-  // They are Neon-first now. The fallback still exists and still works; it
-  // just reads a frozen table, which is why the log line says so out loud.
-  mockTables = {
-    Employees: [{ id: "recEmp1", fields: { "Employee Name": "Jeff Koehn", Role: "employee", Active: true } }],
-    "Time Entries": [], "Payroll Runs": [],
-  };
-  // ⚠ TWO DIFFERENT CASES, and 2026-08-25 split them apart. With NO
-  // DATABASE_URL the app has no database configured at all and Airtable is the
-  // only thing there is — that still answers. With a BROKEN one, Neon exists and
-  // failed, and serving the frozen Airtable copy instead would be a wrong number
-  // wearing a right number's clothes.
-  delete process.env.DATABASE_URL;
-  eq((await GET("payrollHoursBreakdown", { bucket: "ytd", today: "2026-08-09" })).statusCode, 200,
-     "no database configured at all: Airtable still answers");
-  eq((await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "ytd", today: "2026-08-09" })).statusCode, 200,
-     "same for the employee's own breakdown");
 
+await test("hours breakdowns: REFUSE without a working database", async () => {
+  // These once served the AIRTABLE Time Entries table, frozen since 2026-08-07.
+  // With Airtable retired (2026-11-07) there is nothing to fall back to: no
+  // database and a broken database are both an outage.
+  delete process.env.DATABASE_URL;
+  ok((await GET("payrollHoursBreakdown", { bucket: "ytd", today: "2026-08-09" })).statusCode >= 500,
+     "no database configured: refuse");
   process.env.DATABASE_URL = "not-a-valid-connection-string";
   eq((await GET("payrollHoursBreakdown", { bucket: "ytd", today: "2026-08-09" })).statusCode, 503,
      "database configured but FAILING: refuse, do not serve frozen hours");
-  eq((await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "ytd", today: "2026-08-09" })).statusCode, 503,
-     "same for the employee's own breakdown");
   delete process.env.DATABASE_URL;
-  // Bucket validation must survive ahead of either data path.
+  // Bucket validation must survive ahead of the data path.
   eq((await GET("payrollHoursBreakdown", { bucket: "lastTuesday" })).statusCode, 400, "bad bucket refused");
   eq((await GET("myHoursBreakdown", { employeeId: "recEmp1", bucket: "nope" })).statusCode, 400, "bad bucket refused");
 });
 
-await test("payroll bonuses: the Airtable fallback still works, and still excludes superseded runs", async () => {
-  // Both handlers went Neon-first (audit item 02, second slice). The money used
-  // to come from Airtable while the employee list already came from Neon, which
-  // is what made a handler count call them "migrated".
-  //
-  // These tests run offline, so DATABASE_URL is never reachable — which means
-  // this exercises exactly the branch a Neon outage takes. The restructure moved
-  // the two fetchAll calls inside an `else`, so a mistake there would be
-  // invisible in production until the day Neon blinked.
-  //
-  // ⚠ Superseded runs are the whole reason this logic is not a SUM. The period
-  // 2026-07-26 → 08-08 has six runs, five superseded; counting them all would
-  // multiply somebody's YTD bonus by six.
-  mockTables = {
-    Employees: [
-      { id: "recEmp1", fields: { "Employee Name": "Jeff Koehn",  Role: "employee", Active: true } },
-      { id: "recEmp2", fields: { "Employee Name": "Dana Office", Role: "office",   Active: true } },
-    ],
-    tbln9nU1BtFmTYMYB: [
-      { id: "recRunLive", fields: { "Superseded": false, "Generated At": "2026-05-01T13:41:42.000Z" } },
-      { id: "recRunDead", fields: { "Superseded": true,  "Generated At": "2026-05-01T13:44:02.000Z" } },
-    ],
-    tblpE3emzU3J1P5jx: [
-      { id: "recBon1", fields: { Amount: 500, Employee: ["recEmp1"], "Payroll Run": ["recRunLive"],
-                                 "Pay Period Start": "2026-01-25", "Pay Period End": "2026-02-07" } },
-      { id: "recBon2", fields: { Amount: 900, Employee: ["recEmp1"], "Payroll Run": ["recRunDead"],
-                                 "Pay Period Start": "2026-01-25", "Pay Period End": "2026-02-07" } },
-      { id: "recBon3", fields: { Amount: 250, Employee: ["recEmp2"], "Payroll Run": ["recRunLive"],
-                                 "Pay Period Start": "2026-01-25", "Pay Period End": "2026-02-07" } },
-    ],
-  };
+
+await test("payroll bonuses: Neon down is a 503, never an Airtable answer", async () => {
+  // Both handlers are Neon only since Airtable was retired (2026-11-07). The
+  // superseded-run exclusion is enforced in the Neon SQL (r.superseded IS NOT
+  // TRUE), which the static guards elsewhere in this file pin.
   delete process.env.DATABASE_URL;
-
   const roll = await GET("payrollBonusesRollup", { year: "2026" });
-  eq(roll.statusCode, 200, "rollup answers with Neon down");
-  eq(json(roll)._source, "airtable", "and says which store answered");
-  const emps = json(roll).employees;
-  const jeff = emps.find(e => e.id === "recEmp1");
-  ok(jeff, "the payroll-eligible employee is present");
-  eq(jeff.ytdBonus, 500, "the superseded run's 900 is excluded");
-  eq(emps.some(e => e.id === "recEmp2"), false, "office never appears in a payroll view");
-
-  const hist = await GET("payrollEmployeeBonusHistory", { employeeId: "recEmp1", limit: "5" });
-  eq(hist.statusCode, 200, "history answers with Neon down");
-  const bonuses = json(hist).bonuses;
-  eq(bonuses.length, 1, "only the live run's bonus survives");
-  eq(bonuses[0].id, "recBon1", "and it is the right one");
-  eq(bonuses[0].runGeneratedAt, "2026-05-01T13:41:42.000Z", "run timestamp comes through");
-
-  // The role guard sits ahead of both data paths — an office id must never
-  // return bonus history, whichever store is answering.
-  //
-  // ⚠ The mock returns every row of a table and ignores `filterByFormula`, so a
-  // by-record-id lookup here resolves to whatever sits FIRST in the array, not
-  // to the id asked for. Isolating the office employee is what actually puts the
-  // office record in front of the guard — leaving both in place tests nothing
-  // and quietly passes for the wrong reason.
-  mockTables.Employees = [{ id: "recEmp2", fields: { "Employee Name": "Dana Office", Role: "office", Active: true } }];
-  const leak = await GET("payrollEmployeeBonusHistory", { employeeId: "recEmp2" });
-  eq(leak.statusCode, 200, "office id answers");
-  eq(json(leak).bonuses.length, 0, "but with nothing in it");
-
+  eq(roll.statusCode, 503, "rollup refuses with Neon down");
+  // A malformed id is refused before any store is touched.
   eq((await GET("payrollEmployeeBonusHistory", { employeeId: "notARecordId" })).statusCode, 400,
      "a malformed employeeId is refused before either store is touched");
+  const src = await (await import("node:fs/promises")).readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handlePayrollBonusesRollup"),
+                       src.indexOf("async function handlePayrollEmployeeBonusHistory"));
+  ok(/r\.superseded IS NOT TRUE/.test(fn), "superseded runs are excluded in the Neon query");
+  ok(!/fetchAll\(/.test(fn.slice(0, fn.indexOf("if (rows)"))), "no Airtable read ahead of the Neon answer");
 });
 
 await test("job automation callback: a token signed for one job unlocks only that job", async () => {
@@ -4462,26 +4470,15 @@ await test("contacts: the picker can reach someone filed under another company",
   eq((await GET("listContactsByCompany", {})).statusCode, 400, "companyId is still required");
 });
 
-await test("people: renders off Airtable when Neon is unavailable", async () => {
-  // Fail-soft read. A roster missing hire dates beats an error page.
-  mockTables = { Employees: [
-    { id: "recE9", fields: {
-      "Employee Name": "Pat Gingerich", "Username": "pat", "Role": "employee",
-      "Role New": "employee", "Active": true, "Primary Email": "pat@example.com",
-      "Current True Cost Rate": 42.5,
-    } },
-  ] };
-  const b = json(await GET("people"));
-  eq(b.ok, true, "still answers");
-  eq(b.neonOk, false, "and admits the Neon half is missing rather than showing blanks as fact");
-  eq(b.people.length, 1, "one person");
-  eq(b.people[0].name, "Pat Gingerich", "name");
-  eq(b.people[0].active, true, "active flag");
-  eq(b.people[0].currentRate, 42.5, "rate off the live Airtable rollup");
-  // "Primary Email" — NOT "Email". F.emp.email names a column that does not
-  // exist, which is why login-by-email has never worked (plan problem 3).
-  eq(b.people[0].email, "pat@example.com", "reads the real email column");
-  eq(b.people[0].hiredOn, null, "Neon-owned column is null, not invented");
+
+await test("people: Neon unavailable is a 503, never the frozen Airtable roster", async () => {
+  // This used to render off Airtable. That roster has been frozen since
+  // 2026-08-25 (old names, roles, Active flags), and Airtable is retired as of
+  // 2026-11-07, so an outage is an outage here too.
+  delete process.env.DATABASE_URL;
+  const res = await GET("people");
+  eq(res.statusCode, 503, "refuses");
+  eq(json(res).ok, false, "and says so");
 });
 
 // ── TIME CLOCK (docs/PLAN-time-clock.md, db/schema/018_time_clock.sql) ──────
@@ -4931,49 +4928,55 @@ await test("payrollRunCreate: still validates its payload before any of that", a
 // FALLBACK path — which is the half worth pinning, because it is what protects
 // photos when Neon is down or a job's create-time insert failed.
 await test("job id gate: an unknown job is still refused by every handler that shares it", async () => {
-  setR2();
-  const GATED_GETS = ["jobPhotos", "jobPhotosDeleted", "jobDocs", "jobPrints", "jobPrintsDeleted"];
+  // Neon-only since Airtable was retired (2026-11-07) — the job gate reads Neon.
+  await withNeon(async () => {
+    setR2();
+    const GATED_GETS = ["jobPhotos", "jobPhotosDeleted", "jobDocs", "jobPrints", "jobPrintsDeleted"];
 
-  // ⚠ The Airtable mock ignores filterByFormula and hands back whatever is in
-  // `mockTables`, so "unknown job" has to be modelled as an EMPTY Jobs table.
-  // Leaving recJ1 in place would make every one of these pass for the wrong
-  // reason — which is exactly what an earlier draft of this test did.
-  mockTables = { Jobs: [] };
-  for (const a of GATED_GETS) {
-    eq((await GET(a, { jobId: "recNOPE" })).statusCode, 404, `${a} must 404 an unknown job`);
-  }
-  // createPanelSchedule and createChecklist share the same gate, but both
-  // return 503 for an unconfigured database BEFORE reaching it, so they are not
-  // reachable from this offline harness. Covered by the smoke test instead.
+    // ⚠ The Airtable mock ignores filterByFormula and hands back whatever is in
+    // `mockTables`, so "unknown job" has to be modelled as an EMPTY Jobs table.
+    // Leaving recJ1 in place would make every one of these pass for the wrong
+    // reason — which is exactly what an earlier draft of this test did.
+    mockTables = { Jobs: [] };
+    for (const a of GATED_GETS) {
+      eq((await GET(a, { jobId: "recNOPE" })).statusCode, 404, `${a} must 404 an unknown job`);
+    }
+    // createPanelSchedule and createChecklist share the same gate, but both
+    // return 503 for an unconfigured database BEFORE reaching it, so they are not
+    // reachable from this offline harness. Covered by the smoke test instead.
 
-  mockTables = JOB_ONLY();
-  for (const a of GATED_GETS) {
-    ok((await GET(a, { jobId: "recJ1" })).statusCode !== 404, `${a} must let a real job through`);
-  }
-  clearR2();
+    mockTables = JOB_ONLY();
+    for (const a of GATED_GETS) {
+      ok((await GET(a, { jobId: "recJ1" })).statusCode !== 404, `${a} must let a real job through`);
+    }
+    clearR2();
+  });
 });
 
 await test("expenseReceipts: the owner check survived moving off the Airtable record", async () => {
-  setR2();
-  // The handler used to fetch the whole expense for one field. It now reads
-  // Neon and falls back — so this exercises the fallback, and the RULE, which
-  // is what matters: an employee sees receipts only on their own expenses.
-  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recOther"] } }] };
-  eq((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode, 403,
-     "an employee cannot open someone else's receipts");
-  ok((await GET("expenseReceipts", { expenseId: "recX1" }, ADMIN_TOK)).statusCode !== 403, "admin can");
-  ok((await GET("expenseReceipts", { expenseId: "recX1" }, OFFICE_TOK)).statusCode !== 403, "office can");
+  // Neon-only since Airtable was retired (2026-11-07) — the job gate reads Neon.
+  await withNeon(async () => {
+    setR2();
+    // The handler used to fetch the whole expense for one field. It now reads
+    // Neon and falls back — so this exercises the fallback, and the RULE, which
+    // is what matters: an employee sees receipts only on their own expenses.
+    mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recOther"] } }] };
+    eq((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode, 403,
+       "an employee cannot open someone else's receipts");
+    ok((await GET("expenseReceipts", { expenseId: "recX1" }, ADMIN_TOK)).statusCode !== 403, "admin can");
+    ok((await GET("expenseReceipts", { expenseId: "recX1" }, OFFICE_TOK)).statusCode !== 403, "office can");
 
-  mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmp"] } }] };
-  ok((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode !== 403,
-     "but their own is fine");
+    mockTables = { Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmp"] } }] };
+    ok((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode !== 403,
+       "but their own is fine");
 
-  // An expense with no submitter is nobody's, not everybody's — legacy rows
-  // read that way in both stores.
-  mockTables = { Expenses: [{ id: "recX1", fields: {} }] };
-  eq((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode, 403,
-     "an unattributed expense is not an employee's");
-  clearR2();
+    // An expense with no submitter is nobody's, not everybody's — legacy rows
+    // read that way in both stores.
+    mockTables = { Expenses: [{ id: "recX1", fields: {} }] };
+    eq((await GET("expenseReceipts", { expenseId: "recX1" }, EMP_TOK)).statusCode, 403,
+       "an unattributed expense is not an employee's");
+    clearR2();
+  });
 });
 
 // ── source guard: neonQuery returns { rows, ms }, never an array ─────────────
@@ -5739,8 +5742,10 @@ await test("converted read handlers refuse rather than fall back", async () => {
 
   // And the ones deliberately NOT converted, because the length check IS the
   // answer. Converting jobExists would make every id "exist".
-  ok(/if \(q\?\.rows\?\.length\) return true;/.test(body("jobExists")),
-     "jobExists still guards on length — it is an existence check, not a list");
+  ok(/if \(q\?\.rows\) return q\.rows\.length > 0;/.test(body("jobExists")),
+     "jobExists answers from the row count — an existence check, not a list");
+  ok(/throw unavailableError\(/.test(body("jobExists")) && !/fetchAll\(/.test(body("jobExists")),
+     "and a failed read throws a 503 — never 'not found', never Airtable");
   // handleLogin's fallback is GONE as of 2026-09-03 — see the dedicated login
   // block above. It was the last of the four kept on purpose, and it went
   // because a frozen Airtable had turned it from a safety net into a way to fail
@@ -8646,6 +8651,88 @@ await test("vendorStatements: STATIC — the section can never reach money", asy
   const loaders = ui.slice(0, ui.indexOf("window.vsPrint"));
   ok(!/vsPrint\(|window\.print\(|printHtmlPages\(/.test(loaders.replace(/onclick="vsPrint\('\$\{id\}'\)"/g, "")),
      "nothing prints automatically");
+});
+
+// ── AIRTABLE IS RETIRED (2026-11-07): the app runs with NO key ───────────────
+// The production configuration once AIRTABLE_API_KEY / AIRTABLE_BASE_ID are
+// deleted from Netlify. Before this change, ensureEnv() threw on every request
+// without them, and the hourly pull silently skipped the generator check.
+// Each case here would have reached Airtable (or 500'd) before the change.
+await test("no Airtable key: the app answers from Neon and never contacts Airtable", async () => {
+  const savedKey = process.env.AIRTABLE_API_KEY, savedBase = process.env.AIRTABLE_BASE_ID;
+  const savedWrites = process.env.AIRTABLE_WRITES;
+  const realFetch = globalThis.fetch;
+  const airtableCalls = [];
+  delete process.env.AIRTABLE_API_KEY;
+  delete process.env.AIRTABLE_BASE_ID;
+  process.env.AIRTABLE_WRITES = "on";   // even switched ON, no key means no writes
+  globalThis.fetch = async (url, opts) => {
+    if (/airtable\.com/.test(String(url))) airtableCalls.push(String(url));
+    return realFetch(url, opts);
+  };
+  try {
+    mockTables = { Jobs: [{ id: "recJ1", fields: { "Job Name": "Bethel" } }],
+                   Expenses: [{ id: "recX1", fields: { "Submitted By": ["recEmp"] } }] };
+    await withNeon(async () => {
+      const cases = [
+        ["GET",  "people", {}],
+        ["GET",  "payrollRunsList", {}],
+        ["GET",  "expenseReceiptSummary", { jobId: "recJ1" }],
+        ["GET",  "expenseReceipts", { expenseId: "recNOPE" }],
+        ["GET",  "employeePin", { employeeId: "recNOPE" }],
+        ["GET",  "myHoursRollup", { employeeId: "recNOPE", today: "2026-11-07" }],
+        ["GET",  "payrollBonusesRollup", { year: "2026" }],
+        ["GET",  "inspectorsForAgency", { agencyId: "recNOAGENCY" }],
+        ["GET",  "getWarranties", { generatorId: "recNOGEN" }],
+        ["GET",  "jobPhotos", { jobId: "recNOPE" }],
+        ["POST", "updateInspection", { inspectionId: "recNOPE", status: "Passed" }],
+        ["POST", "deleteExpense", { expenseId: "recNOPE" }],
+      ];
+      for (const [m, action, p] of cases) {
+        const res = m === "GET" ? await GET(action, p) : await POST(action, p);
+        ok(res.statusCode !== 500, `${action}: no 500 without the key — got ${res.statusCode} ${res.body.slice(0, 120)}`);
+        ok(!/AIRTABLE_API_KEY|Airtable is retired/.test(res.body), `${action}: never fails on the missing key`);
+      }
+      setR2();   // with R2 off the handler soft-fails before it checks the job
+      try {
+        eq((await GET("jobPhotos", { jobId: "recNOPE" })).statusCode, 404, "an unknown job is still a 404");
+        eq((await GET("expenseReceipts", { expenseId: "recNOPE" })).statusCode, 404, "an unknown expense is a 404");
+      } finally { clearR2(); }
+      eq((await POST("updateInspection", { inspectionId: "recNOPE", status: "Passed" })).statusCode, 404,
+         "an unknown inspection is a 404, not a skipped write reported as success");
+    }, [{ id: "recEmp1", name: "Jeff Koehn", role: "employee", active: true, pin: "1234" }]);
+
+    // The standalone fetcher the hourly pull hands the generator check.
+    const { makeAtFetch } = await import("../netlify/functions/_jobs.js");
+    const { airtableWritesEnabled, AirtableRetiredError } = await import("../netlify/functions/_airtable-write-guard.js");
+    eq(airtableWritesEnabled(), false, "no key → writes disabled, whatever AIRTABLE_WRITES says");
+    const at = makeAtFetch(undefined, undefined);
+    const w = await at("Jobs", { method: "POST", body: "{}" });
+    eq(w.skipped, true, "a mirror write is skipped, not thrown");
+    let threw = null;
+    try { await at("Jobs/recX", { method: "GET" }); } catch (e) { threw = e; }
+    ok(threw instanceof AirtableRetiredError, "a read is refused loudly, never sent");
+
+    eq(airtableCalls.length, 0, `nothing reached Airtable — saw ${airtableCalls.join(", ")}`);
+  } finally {
+    globalThis.fetch = realFetch;
+    process.env.AIRTABLE_API_KEY = savedKey;
+    process.env.AIRTABLE_BASE_ID = savedBase;
+    if (savedWrites === undefined) delete process.env.AIRTABLE_WRITES; else process.env.AIRTABLE_WRITES = savedWrites;
+  }
+});
+
+await test("no Airtable key: STATIC — nothing requires it, and the hourly pull always runs the generator check", async () => {
+  const { readFileSync } = await import("node:fs");
+  const read = (f) => readFileSync(new URL(`../netlify/functions/${f}`, import.meta.url), "utf8")
+    .split("\n").map(l => l.replace(/\/\/.*$/, "")).join("\n");
+  const at = read("airtable.js");
+  const ensure = at.slice(at.indexOf("function ensureEnv()"), at.indexOf("function ensureEnv()") + 300);
+  ok(!/AIRTABLE_API_KEY|AIRTABLE_BASE_ID/.test(ensure), "ensureEnv does not require the Airtable key");
+  const pull = read("qb-time-pull.js");
+  ok(!/if \(atKey && atBase\)/.test(pull), "the generator check is not gated on the key");
+  const mk = read("_jobs.js");
+  ok(!/throw new Error\("makeAtFetch: apiKey and baseId are required"\)/.test(mk), "makeAtFetch accepts no key");
 });
 
 // ── report ──

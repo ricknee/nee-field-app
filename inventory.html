@@ -84,6 +84,15 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .home-loc.unset b{color:var(--gold);}
 /* Home: Scan Item (#3) */
 .big-btn.scan-home{border-color:var(--gold);}
+/* Admin "Needs attention" strip (docs/PLAN-inventory-usability.md #8) */
+.att{background:var(--navy-lt);border:1.5px solid var(--border);border-radius:var(--r);padding:10px 12px;}
+.att-h{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;}
+.att-chips{display:flex;flex-wrap:wrap;gap:8px;}
+.att-chip{background:var(--navy-mid);border:1px solid var(--border);border-radius:20px;padding:7px 12px;color:var(--text);font-size:13px;cursor:pointer;white-space:nowrap;}
+.att-chip b{color:var(--gold);}
+.att-chip:active{background:var(--slate);}
+.att-warn{display:block;width:100%;margin-top:8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.45);border-radius:10px;padding:8px 12px;color:#fca5a5;font-size:13px;text-align:left;cursor:pointer;}
+.att-ok{font-size:13px;color:#4ade80;}
 .big-btn.scan-home .ico{font-size:24px;}
 /* Scan Item action sheet */
 .ss-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;display:flex;align-items:flex-end;justify-content:center;}
@@ -283,6 +292,8 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
       <span>📍</span><span id="home-loc-text"><b>Pick where you're working from</b> — it fills in your screens</span>
       <span class="chg" id="home-loc-chg">Pick</span>
     </button>
+    <!-- #8: admins only. Filled by renderAttention(); hidden until something loads. -->
+    <div class="att" id="att-strip" style="display:none"></div>
     <button class="big-btn scan-home" onclick="homeScan()">
       <div class="ico">⬛</div><div><div class="lbl">Scan Item</div><div class="sub">Scan a label, then choose what to do</div></div>
     </button>
@@ -1216,10 +1227,9 @@ function applyUser() {
   if (adminSetupLbl) adminSetupLbl.style.display = isAdmin ? "block" : "none";
   var estLbl = document.getElementById("est-lbl");
   if (estLbl) estLbl.style.display = isAdmin ? "block" : "none";
-  // Load reorder count badge for everyone (button now visible to all)
-  loadReorderCount();
-  // Orders count badge loads for everyone (button is visible to all)
-  loadOrdersCount();
+  // Reorder + orders badges load for everyone (both buttons are visible to all);
+  // the admin "Needs attention" strip rides on the same requests (#8).
+  refreshHomeCounts();
 }
 
 function updateLocPill() {
@@ -1270,6 +1280,8 @@ document.addEventListener("keydown", function(e) {
 
 function logout() {
   currentUser = null; currentLocation = null;
+  attState = { pending: null, unmatched: null, partnums: null, orders: null, low: null };
+  renderAttention();
   clearSession();
   allJobs = []; allLocations = []; allItems = []; dataReady = false; cart = [];
   document.getElementById("inp-pin").value = "";
@@ -1364,6 +1376,7 @@ function goHome() {
   document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
   document.getElementById("s-home").classList.add("active");
   refreshHomeTiles();
+  try { refreshHomeCounts(); } catch(e) {}
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2423,7 +2436,7 @@ function renderPushExpenses() {
 
   var grandTotal = 0;
   pending.forEach(function(g, idx) {
-    var taxAmt   = g.taxable ? g.jobTotal * 0.075 : 0;
+    var taxAmt   = pushJobTax(g);   // shared with the home "Needs attention" strip
     var jobGrand = g.jobTotal + taxAmt;
     grandTotal  += jobGrand;
 
@@ -3518,7 +3531,7 @@ function generateReceiptPDF(g) {
     doc.setLineWidth(0.3);
     doc.line(mg + cW * 0.5, y, pW - mg, y);
 
-    var taxAmt   = g.taxable ? g.jobTotal * 0.075 : 0;
+    var taxAmt   = pushJobTax(g);   // shared with the home "Needs attention" strip
     var grandTot = g.jobTotal + taxAmt;
 
     // The matching math: used − credits = materials subtotal.
@@ -5120,7 +5133,8 @@ async function loadReorderCount() {
     var total  = Object.values(groups).reduce(function(s, arr){ return s + arr.length; }, 0);
     var lbl    = document.getElementById("reorder-btn-lbl");
     if (lbl) lbl.textContent = total > 0 ? "Reorder Alerts (" + total + ")" : "Reorder Alerts";
-  } catch(e) { /* silent */ }
+    attState.low = total; renderAttention();
+  } catch(e) { attState.low = null; renderAttention(); }
 }
 
 async function goReorderAlerts() {
@@ -9502,9 +9516,92 @@ var orderState = {
 };
 
 // ── ACTIVE ORDERS COUNT BADGE ─────────────────────────────
+// ═══════════════════════════════════════════════════════════
+// ADMIN "NEEDS ATTENTION" STRIP (docs/PLAN-inventory-usability.md #8)
+// ═══════════════════════════════════════════════════════════
+// Four numbers, all from actions that already exist. Open orders and items low
+// come from the SAME requests that drive the existing badges (loadOrdersCount,
+// loadReorderCount) — one request feeds both, never two.
+//
+// ⚠ null means "didn't load", 0 means "loaded, nothing there". A failed read
+//   HIDES its chip; it never shows 0. "Nothing to push" because a request
+//   failed is the silent wrong answer this system keeps getting bitten by.
+var attState = { pending: null, unmatched: null, partnums: null, orders: null, low: null };
+
+// The tax the Push Expenses screen adds per job. ONE definition, used by that
+// screen, its PDF and this strip, so the strip's $ always equals the screen's
+// grand total to the cent. (The server applies its own TAX_RATE at push time.)
+function pushJobTax(g) { return g.taxable ? g.jobTotal * 0.075 : 0; }
+function pushGrandTotal(pending) {
+  return (pending || []).reduce(function(s, g){ return s + g.jobTotal + pushJobTax(g); }, 0);
+}
+
+function attIsAdmin() { return !!(currentUser && currentUser.role === "admin"); }
+
+function renderAttention() {
+  var el = document.getElementById("att-strip");
+  if (!el) return;
+  if (!attIsAdmin()) { el.style.display = "none"; el.innerHTML = ""; return; }
+  var st = attState, chips = [], warn = "";
+  if (st.pending && st.pending.length) {
+    var n = st.pending.length;
+    chips.push('<button class="att-chip" onclick="goPushExpenses()">💰 <b>' + fmtCurrency(pushGrandTotal(st.pending)) +
+               '</b> to push · ' + n + ' job' + (n === 1 ? '' : 's') + '</button>');
+  }
+  if (st.partnums) chips.push('<button class="att-chip" onclick="goPartNumbers()">🔗 <b>' + st.partnums +
+               '</b> new part number' + (st.partnums === 1 ? '' : 's') + '</button>');
+  if (st.orders)   chips.push('<button class="att-chip" onclick="goOrders()">📦 <b>' + st.orders +
+               '</b> open order' + (st.orders === 1 ? '' : 's') + '</button>');
+  if (st.low)      chips.push('<button class="att-chip" onclick="goReorderAlerts()">🔴 <b>' + st.low +
+               '</b> item' + (st.low === 1 ? '' : 's') + ' low</button>');
+  if (st.unmatched && st.unmatched.length) {
+    var u = st.unmatched.length;
+    warn = '<button class="att-warn" onclick="goPushExpenses()">⚠ ' + u + ' job' + (u === 1 ? '' : 's') +
+           ' can\'t be pushed — check Push Expenses</button>';
+  }
+  var allLoaded = st.pending !== null && st.unmatched !== null && st.partnums !== null &&
+                  st.orders !== null && st.low !== null;
+  if (!chips.length && !warn) {
+    // "Nothing waiting" only when every number actually loaded. Otherwise say nothing.
+    if (allLoaded) {
+      el.innerHTML = '<div class="att-ok">✓ Nothing waiting</div>';
+      el.style.display = "block";
+    } else {
+      el.style.display = "none"; el.innerHTML = "";
+    }
+    return;
+  }
+  el.innerHTML = '<div class="att-h">Needs attention</div><div class="att-chips">' + chips.join("") + '</div>' + warn;
+  el.style.display = "block";
+}
+
+// The two numbers only the strip needs. Admin-only, and fired without await by
+// the callers, so home draws first and the strip fills in after.
+async function loadAttention() {
+  if (!attIsAdmin()) { renderAttention(); return; }
+  var pend = apiGet("pendingExpenses").then(function(d) {
+    attState.pending = d.pending || []; attState.unmatched = d.unmatched || [];
+  }).catch(function() { attState.pending = null; attState.unmatched = null; });
+  var pn = apiPost({ action: "partNumbersQueue" }).then(function(d) {
+    attState.partnums = (d.waiting || []).length;
+  }).catch(function() { attState.partnums = null; });
+  pend.then(renderAttention); pn.then(renderAttention);
+}
+
+// Everything the home screen counts, refreshed together: on login and on every
+// goHome(), so coming back after a push shows the new figure. No timers.
+function refreshHomeCounts() {
+  if (!currentUser) return;   // goHome can run before sign-in; nothing to count yet
+  loadReorderCount();
+  loadOrdersCount();
+  loadAttention();
+}
+
 async function loadOrdersCount() {
   try {
     var d = await apiGet("ordersCount");
+    attState.orders = Number(d.count) || 0;
+    renderAttention();
     var lbl = document.getElementById("orders-btn-lbl");
     if (lbl) {
       if (d.count > 0) {
@@ -9515,6 +9612,7 @@ async function loadOrdersCount() {
     }
   } catch(ex) {
     console.warn("Failed to load orders count:", ex);
+    attState.orders = null; renderAttention();
   }
 }
 

@@ -127,6 +127,58 @@ Deploy is a push to `main` after that pass.
 
 ---
 
+## Round 3 — #8 Admin "needs attention" strip (built 2026-11-07)
+
+**What it looks like.** It shows for **admins only**, at the top of home, under the location line:
+
+```
+┌ Needs attention ─────────────────────────────────────────────┐
+│ 💰 $2,481.30 to push · 5 jobs     🔗 37 new part numbers     │
+│ 📦 16 open orders                 🔴 14 items low            │
+│ ⚠ 2 jobs can't be pushed — check Push Expenses               │
+└───────────────────────────────────────────────────────────────┘
+```
+
+Each chip opens its screen: Push Expenses, New Part Numbers, Active Orders, Reorder Alerts.
+The ⚠ line opens Push Expenses too, because that's where the unmatched-job warning already lives.
+
+**No backend change.** All four numbers already have an action, and the data is small
+(checked 2026-11-07: 133 unpushed entries, 1,064 invoice lines, 878 items):
+
+| Chip | Source (existing) | Already loaded on home today? |
+|------|-------------------|-------------------------------|
+| $ to push / jobs / ⚠ unmatched | `pendingExpenses` → `pending[].jobTotal`, `taxable`; `unmatched[]` | no |
+| New part numbers | `partNumbersQueue` → `waiting.length` | no |
+| Open orders | `ordersCount` | **yes**, for the Active Orders badge |
+| Items low | `reorderAlerts` | **yes**, for the Reorder Alerts label |
+
+The two that already load are **reused**: one request feeds both the strip and the existing
+badge, never two. The two new ones load only for admins, after the home screen has drawn,
+so they never slow it down.
+
+**⚠ The dollar figure must equal the Push Expenses grand total, to the cent.** That screen
+adds **7.5% tax on taxable jobs** (`g.jobTotal * 0.075`). A strip that summed `jobTotal`
+alone would show a smaller number than the screen it opens. So the grand-total math moves
+into one shared function, `pushGrandTotal(pending)`, and the Push screen and the strip both
+call it. That's the only refactor in this round.
+
+**Rules:**
+- **A request that fails hides its chip; it never shows 0.** "0 to push" when the read
+  failed is exactly the silent wrong answer this system keeps getting bitten by.
+- With everything at zero the strip shrinks to one line: **✓ Nothing waiting**.
+- It refreshes on login and every time you come back home through `goHome()`, so after a
+  push, going home shows the new figure. No timers and no polling.
+- It's admin-only, so employees see nothing new. Office already doesn't get the inventory app.
+
+**Testing (manual, on main):** the strip's $ matches the Push Expenses grand total (try a
+taxable job). Each chip opens the right screen. Push something, go home, and the figure
+drops. An employee sees no strip. Kill the network for one request (devtools) and that chip
+disappears instead of reading 0.
+
+**Size:** medium, about one evening. It's `inventory.html` only.
+
+---
+
 ## Later — planned, not scheduled
 
 | # | Idea | What it touches | Size |

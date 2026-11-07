@@ -65,6 +65,7 @@ anything that upserts `job_estimates`.
     screen with the item already selected. An employee sees no Adjust. Phone back and Cancel both close
     the menu, and after choosing an action one back press returns home. An unknown barcode offers
     Search instead / Scan again.
+  - Needs attention (#8, admin only): the box's $ equals the Push Expenses grand total (include a taxable job). Each item opens its screen. Push something, go home, and the figure drops. An employee sees no box. A failed request hides its item; it never reads 0.
   - Home order (round 2): Job materials, Look up, Estimates (admin only), Stock & transfers, More, Admin · Daily, Admin · Setup. Signed in as an employee: no Estimates, Adjust or Admin sections, and every other button is still there and opens its screen.
 
 ---

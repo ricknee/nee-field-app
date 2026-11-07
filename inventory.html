@@ -286,44 +286,25 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn scan-home" onclick="homeScan()">
       <div class="ico">⬛</div><div><div class="lbl">Scan Item</div><div class="sub">Scan a label, then choose what to do</div></div>
     </button>
-    <div class="sec-lbl">Log materials</div>
+    <!-- Round 2 (docs/PLAN-inventory-usability.md #4, #5, #9, #10): the most-used
+         actions first, rare ones under "More", Admin split into Daily / Setup.
+         Ids and onclicks are unchanged — applyUser() still shows/hides by id. -->
+    <div class="sec-lbl">Job materials</div>
     <button class="big-btn gold" onclick="goLog('Use')">
       <div class="ico">📦</div><div><div class="lbl">Use on Job</div><div class="sub" id="use-btn-sub">Log items pulled for a job</div></div>
     </button>
+    <button class="big-btn" onclick="goEmployeeOrderJob()">
+      <div class="ico">🛒</div><div><div class="lbl">Order Materials</div><div class="sub">Request materials for an active job</div></div>
+    </button>
     <button class="big-btn" onclick="goLog('Return')">
-      <div class="ico">↩️</div><div><div class="lbl">Return Items</div><div class="sub">Put items back</div></div>
+      <div class="ico">↩️</div><div><div class="lbl">Return Items</div><div class="sub">Took it from shop stock and didn't use it — back on the shelf</div></div>
     </button>
     <button class="big-btn" onclick="goLog('ReturnToShop')">
-      <div class="ico">📦↩️</div><div><div class="lbl">Return to Shop</div><div class="sub">Leftover vendor materials → shop stock + job credit</div></div>
+      <div class="ico">📦↩️</div><div><div class="lbl">Return to Shop</div><div class="sub">Bought from a vendor for a job — leftovers into shop stock, the job gets the credit</div></div>
     </button>
-    <div class="sec-lbl">Stock & transfers</div>
-    <button class="big-btn" onclick="goReceive()">
-      <div class="ico">🚚</div><div><div class="lbl">Receive Stock</div><div class="sub">Add items from vendor</div></div>
-    </button>
-    <button class="big-btn" onclick="goTransfer()">
-      <div class="ico">🔄</div><div><div class="lbl">Transfer</div><div class="sub">Move items between locations</div></div>
-    </button>
-    <button class="big-btn" id="adj-btn" onclick="goAdjustment()" style="display:none">
-      <div class="ico">✏️</div><div><div class="lbl">Adjust Stock</div><div class="sub">Correct a count at a location</div></div>
-    </button>
-    <button class="big-btn" onclick="goAddScrap()">
-      <div class="ico">🪢</div><div><div class="lbl">Add Wire Scrap</div><div class="sub">Tag and hang a scrap coil</div></div>
-    </button>
-    <!-- Everyone, not just admin (owner 2026-09-28): it only prints — reads the item list every role already loads, writes nothing. -->
-    <button class="big-btn" id="labeltest-btn" onclick="goLabelTest()">
-      <div class="ico">🏷</div><div><div class="lbl">Print Labels</div><div class="sub">QR bin labels by category — Brother DK-1208</div></div>
-    </button>
-    <div class="sec-lbl">View</div>
-    <button class="big-btn" onclick="goHistory()">
-      <div class="ico">📋</div><div><div class="lbl">Recent Logs</div><div class="sub">Your last 50 transactions</div></div>
-    </button>
+    <div class="sec-lbl">Look up</div>
     <button class="big-btn" onclick="goCheckStock()">
       <div class="ico">🔍</div><div><div class="lbl">Check Stock</div><div class="sub" id="stock-btn-sub">See qty on hand at all locations</div></div>
-    </button>    <button class="big-btn" onclick="goMaterialReport()">
-      <div class="ico">📄</div><div><div class="lbl">Material Report</div><div class="sub">By job — download a PDF for yourself</div></div>
-    </button>
-    <button class="big-btn" onclick="goEmployeeOrderJob()">
-      <div class="ico">📦</div><div><div class="lbl">Order Materials</div><div class="sub">Request materials for an active job</div></div>
     </button>
     <button class="big-btn" onclick="goMyOrders()">
       <div class="ico">📋</div><div><div class="lbl">My Orders</div><div class="sub">View orders you've created</div></div>
@@ -334,30 +315,57 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
     <button class="big-btn" id="reorder-btn" onclick="goReorderAlerts()">
       <div class="ico">🔴</div><div><div class="lbl" id="reorder-btn-lbl">Reorder Alerts</div><div class="sub">Items below minimum stock level</div></div>
     </button>
-    <div class="sec-lbl" id="admin-lbl" style="display:none">Admin</div>
+    <button class="big-btn" onclick="goHistory()">
+      <div class="ico">🕘</div><div><div class="lbl">Recent Logs</div><div class="sub">Your last 50 transactions</div></div>
+    </button>
+    <button class="big-btn" onclick="goMaterialReport()">
+      <div class="ico">📄</div><div><div class="lbl">Material Report</div><div class="sub">By job — download a PDF for yourself</div></div>
+    </button>
+    <!-- Its own section, not an admin setting (#10). Still admin-only — applyUser() shows the label with the button. -->
+    <div class="sec-lbl" id="est-lbl" style="display:none">Estimates</div>
+    <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
+      <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
+    </button>
+    <div class="sec-lbl">Stock &amp; transfers</div>
+    <button class="big-btn" onclick="goReceive()">
+      <div class="ico">🚚</div><div><div class="lbl">Receive Stock</div><div class="sub">Add items from vendor</div></div>
+    </button>
+    <button class="big-btn" onclick="goTransfer()">
+      <div class="ico">🔄</div><div><div class="lbl">Transfer</div><div class="sub">Move items between locations</div></div>
+    </button>
+    <div class="sec-lbl">More</div>
+    <button class="big-btn" id="adj-btn" onclick="goAdjustment()" style="display:none">
+      <div class="ico">✏️</div><div><div class="lbl">Adjust Stock</div><div class="sub">Correct a count at a location</div></div>
+    </button>
+    <button class="big-btn" onclick="goAddScrap()">
+      <div class="ico">🪢</div><div><div class="lbl">Add Wire Scrap</div><div class="sub">Tag and hang a scrap coil</div></div>
+    </button>
+    <!-- Everyone, not just admin (owner 2026-09-28): it only prints — reads the item list every role already loads, writes nothing. -->
+    <button class="big-btn" id="labeltest-btn" onclick="goLabelTest()">
+      <div class="ico">🏷</div><div><div class="lbl">Print Labels</div><div class="sub">QR bin labels by category — Brother DK-1208</div></div>
+    </button>
+    <div class="sec-lbl" id="admin-lbl" style="display:none">Admin · Daily</div>
     <button class="big-btn" id="push-btn" onclick="goPushExpenses()" style="display:none">
       <div class="ico">💰</div><div><div class="lbl">Push Expenses</div><div class="sub">Send material costs to job expenses</div></div>
     </button>
     <button class="big-btn" id="partnums-btn" onclick="goPartNumbers()" style="display:none">
       <div class="ico">🔗</div><div><div class="lbl">New Part Numbers</div><div class="sub" id="partnums-btn-sub">Match supplier part numbers to your items</div></div>
     </button>
+    <div class="sec-lbl" id="admin-setup-lbl" style="display:none">Admin · Setup</div>
     <button class="big-btn" id="newitem-btn" onclick="goNewItem()" style="display:none">
       <div class="ico">➕</div><div><div class="lbl">Add New Item</div><div class="sub">Create a new inventory item</div></div>
+    </button>
+    <button class="big-btn" id="updprice-btn" onclick="goUpdatePrice()" style="display:none">
+      <div class="ico">💲</div><div><div class="lbl">Update Item Price</div><div class="sub">Edit default price on any non-wire-by-lb item</div></div>
+    </button>
+    <button class="big-btn" id="wirecost-btn" onclick="goWireCostCalc()" style="display:none">
+      <div class="ico">🧮</div><div><div class="lbl">Wire Cost Calculator</div><div class="sub">Convert $/ft invoice prices to $/lb</div></div>
     </button>
     <button class="big-btn" id="bulk-btn" onclick="goBulkUpload()" style="display:none">
       <div class="ico">📄</div><div><div class="lbl">Bulk Upload</div><div class="sub">Import a spreadsheet: prices, counts or new items</div></div>
     </button>
     <button class="big-btn" id="manageloc-btn" onclick="goManageLocations()" style="display:none">
       <div class="ico">📍</div><div><div class="lbl">Shops &amp; Trucks</div><div class="sub">Add or retire a stock location</div></div>
-    </button>
-    <button class="big-btn" id="wirecost-btn" onclick="goWireCostCalc()" style="display:none">
-      <div class="ico">🧮</div><div><div class="lbl">Wire Cost Calculator</div><div class="sub">Convert $/ft invoice prices to $/lb</div></div>
-    </button>
-    <button class="big-btn" id="updprice-btn" onclick="goUpdatePrice()" style="display:none">
-      <div class="ico">💲</div><div><div class="lbl">Update Item Price</div><div class="sub">Edit default price on any non-wire-by-lb item</div></div>
-    </button>
-    <button class="big-btn" id="estimates-btn" onclick="goEstimates()" style="display:none">
-      <div class="ico">📝</div><div><div class="lbl">Estimates</div><div class="sub">Create, view, and edit job estimates</div></div>
     </button>
   </div>
 </div>
@@ -1203,6 +1211,11 @@ function applyUser() {
   if (reorderBtn)  reorderBtn.style.display  = "flex";
   if (estimatesBtn) estimatesBtn.style.display = isAdmin ? "flex" : "none";
   if (adminLbl)    adminLbl.style.display    = isAdmin ? "block" : "none";
+  // Round 2 sections (docs/PLAN-inventory-usability.md #9, #10) follow the same rule.
+  var adminSetupLbl = document.getElementById("admin-setup-lbl");
+  if (adminSetupLbl) adminSetupLbl.style.display = isAdmin ? "block" : "none";
+  var estLbl = document.getElementById("est-lbl");
+  if (estLbl) estLbl.style.display = isAdmin ? "block" : "none";
   // Load reorder count badge for everyone (button now visible to all)
   loadReorderCount();
   // Orders count badge loads for everyone (button is visible to all)

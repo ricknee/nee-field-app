@@ -3,7 +3,9 @@
 Owner asked 2026-11-07: make the inventory app friendlier for crew and admin
 **without a major change**. Plan first, build after approval.
 
-**Round 1 (approved to plan): items 1, 2, 3.** Items 4–11 are listed at the end, planned
+**Status:** round 1 (items 1–3) shipped in `2a17630` and confirmed by the owner on 2026-11-07. Round 2 (4, 5 as subtitles only, 9, 10) shipped right after, as a reorder and rewording only. Next: 8, then 6 (which needs its own plan).
+
+**Round 1: items 1, 2, 3.** Items 4–11 are listed at the end, planned
 but not scheduled.
 
 Ground rules for every item:

@@ -296,6 +296,81 @@ Hold #5b.
 
 ---
 
+## Round 5 (2026-11-08): the owner chose Undo refills cart, Count a truck, Smarter search, Work offline
+
+- ✅ **Undo refills the cart** (`113114c`). After a confirmed undo, the same screen reopens
+  with the job, location and items.
+- ✅ **Smarter search** (`113114c`). One `searchItems()` for all 8 boxes: words in any order,
+  size and category, typo fallback, ranked.
+- ✅ Found on the way: Adjust Stock 404'd on app-made locations (`7759b7e`).
+
+### R5-A — Count a truck (PLAN, needs the owner's OK)
+
+**Goal:** stand at a truck (or shop), go down a list, type what's really there, and fix stock
+in one go.
+
+**Screen:** home → Stock & transfers → **📋 Count Stock**.
+1. Pick the location (defaults to "Working from").
+2. List every item that location has stock of, plus any item with a reorder minimum there,
+   grouped by category, each with a blank **Counted** box. "Show all items" adds the rest.
+   Search box at the top (the new search).
+3. Only rows you type into count. Blank means "didn't count it", **never "zero"**. A real zero
+   is typed as 0.
+4. **Review:** a list of only the differences ("12 RED THHN: system 40 lb → counted 32 lb, −8"),
+   then **Apply**.
+
+**Server: no new stock logic.** Apply calls the existing `bulkApply {type:"counts"}`. It
+re-reads on-hand at apply time and posts the difference as an Adjustment, so material logged
+mid-count isn't undone. Notes say "Truck count", and entered_by is stamped from the session.
+
+**Owner decisions:**
+- **Who can apply?** Today Adjust and Bulk Upload are admin-only. Options: (a) admin only;
+  (b) anyone counts, an admin reviews and applies (needs a saved "pending count", so more work);
+  (c) anyone applies. Recommendation: **(a) first**, add (b) if the crew should count their own trucks.
+- **Wire by weight:** count in lb, shown with ft, the same as the stock screens.
+
+**Size:** medium (one screen; it reuses the apply path). Tests: apply posts only typed rows,
+blank ≠ 0, and the reviewed delta is recomputed at apply.
+
+### R5-B — Work without signal (PLAN, needs the owner's OK)
+
+**Goal:** in a basement with no signal, Use on Job and Returns still work. The cart is held
+on the phone and sends itself when signal returns.
+
+**What makes it safe already:** every cart carries a `submit_id` and the server ignores a
+repeat (`ON CONFLICT`), so retrying the same cart any number of times can't double-log.
+
+**Change:**
+1. **Start without signal.** Today the app needs the network to load items, jobs and
+   locations. It will keep the last loaded lists on the phone (items ~878, jobs, locations)
+   and use them when offline, with a banner: "Offline — showing lists from 8:14 AM".
+2. **Submit offline.** If Submit can't reach the server (no response at all, not an error
+   answer), the cart and its `submit_id` go into a queue on the phone. The bar reads
+   "📶 Saved on this phone — will send when you have signal (1 waiting)".
+3. **Send later.** The app retries when signal returns (`online` event), on app open, and
+   every 30 s while anything waits. Each send is the same `submit_id`, so it's safe.
+   On success: "✓ 1 saved cart sent to <job>".
+4. **A queued cart that the server refuses** (e.g. a retired item) stays in the queue,
+   shown in red with the reason and Edit / Discard. It is never silently dropped.
+5. **Scope:** cart submits only (Use, Return, Return to Shop). Receive, Transfer, Adjust and
+   Orders stay online-only, with a clear "needs signal" message.
+
+**Owner decisions:**
+- **Date on a late-sent cart:** the server stamps the time it ARRIVES. Should the ledger
+  carry the time it was LOGGED on the phone instead? Recommendation: send the phone's time
+  and use it if it's within the last 7 days (otherwise the server time). It matters only for
+  reports by date.
+- **Undo for a queued cart:** not offered until it's sent. Before that, Discard removes it
+  from the queue.
+- **Stock shown offline** is as of the last load. It's labelled, not hidden.
+
+**Risks:** a phone that's never reopened keeps its queue, so the home screen and the Undo bar
+show "N carts waiting to send" until they go. Two phones can't conflict (each cart has its
+own id). Logging out with carts waiting asks first.
+
+**Size:** large-ish (app only, no server change except the optional phone timestamp).
+Tests: queue/retry with the same id, a refusal stays visible, and the offline lists load.
+
 ## Later — planned, not scheduled
 
 | # | Idea | What it touches | Size |

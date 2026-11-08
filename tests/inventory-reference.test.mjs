@@ -46,6 +46,13 @@ const txnMarks   = [];   // every markTransactionsPushed id-array
 let   txnReplay  = [];   // rows the replay SELECT returns for an already-submitted cart
 let   txnDeleteMisses = new Set();  // ids the DELETE should report as removing nothing
 let   txnPushed = new Set();        // ids that exist but are already pushed (expense_created)
+// #6 undo. Each submit is a list of lines {by, pushed, old}; the mock evaluates
+// the statement's all-or-nothing checks the way the real one does (proved on a
+// Neon branch 2026-11-08) and records which submits it actually deleted.
+let   undoSubmits = {};
+const undoDeleted = [];
+const EMP_NAMES = { recEmp: "Emp Test", recAdmin: "Admin Test" };
+let   empLookupDown = false;
 let   adjOnHand = 0;                // what v_stock_on_hand reports for the adjustment's pair
 const stockUpdates = [];            // every reorder-point UPDATE
 const stockCreates = [];            // every stock_settings upsert
@@ -240,7 +247,7 @@ globalThis.fetch = async (url, opts = {}) => {
       txnInsertSql.push(sql);
       for (let i = 0; i < n; i++) {
         txnWrites.push({ itemId: ps[i * 13], from: ps[i * 13 + 1], to: ps[i * 13 + 2],
-                         qty: ps[i * 13 + 4], type: ps[i * 13 + 5],
+                         qty: ps[i * 13 + 4], type: ps[i * 13 + 5], enteredBy: ps[i * 13 + 8],
                          submitId: ps[i * 13 + 11], lineNo: ps[i * 13 + 12] });
       }
       // A replay is modelled by returning FEWER rows than were sent, which is
@@ -293,6 +300,23 @@ globalThis.fetch = async (url, opts = {}) => {
     } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
       txnMarks.push(pgArray(body.params?.[0]));
       payload = neonReply([], []);
+    } else if (/FROM employees WHERE airtable_id = \$1 OR id::text = \$1/i.test(sql)) {
+      const nm = empLookupDown ? null : EMP_NAMES[body.params?.[0]];
+      payload = neonReply(["handle", "name", "username", "role", "active", "labor_type"],
+        nm ? [{ handle: body.params[0], name: nm, username: "", role: "Employee", active: true, labor_type: "" }] : []);
+    } else if (/WITH s AS \([\s\S]*FOR UPDATE[\s\S]*DELETE FROM inventory_transactions/i.test(sql)) {
+      const [sid, owner] = body.params || [];
+      const lines = undoSubmits[sid] || [];
+      const chk = {
+        n:        lines.length,
+        pushed:   lines.filter(l => l.pushed).length,
+        too_old:  lines.filter(l => l.old).length,
+        not_mine: owner == null ? 0 : lines.filter(l => l.by !== owner).length,
+      };
+      const go = chk.n > 0 && !chk.pushed && !chk.too_old && !chk.not_mine;
+      if (go) { undoDeleted.push(sid); delete undoSubmits[sid]; }
+      payload = neonReply(["n", "pushed", "too_old", "not_mine", "deleted"],
+        [{ ...chk, deleted: go ? chk.n : 0 }]);
     } else if (/SELECT expense_created FROM inventory_transactions WHERE id/i.test(sql)) {
       // The "why did nothing delete" lookup: pushed rows exist, misses do not.
       payload = neonReply(["expense_created"], txnPushed.has(body.params?.[0])
@@ -484,6 +508,7 @@ function reset() {
   neonDown = false; neonWrites.length = 0; atRequested.length = 0;
   txnWrites.length = 0; txnDeletes.length = 0;
   txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set(); txnPushed = new Set();
+  undoSubmits = {}; undoDeleted.length = 0; empLookupDown = false;
   txnInsertSql.length = 0;
   adjOnHand = 0;
   stockUpdates.length = 0; stockCreates.length = 0; stockMissing = new Set();
@@ -1275,6 +1300,98 @@ await test("Del: a pushed transaction is refused (409), never deleted", async ()
   eq(r.statusCode, 409,
      "deleting it would put the stock back while the job's expense stays charged");
   eq(json(r).pushed, true, "the app can tell 'already pushed' from 'not found'");
+});
+
+// ── #6 Undo after logging ─────────────────────────────────────────────────
+const cartBody = (extra = {}) => ({ action: "submitCart", locationId: "recLoc1",
+  jobName: "Bethel School", jobId: "recJob1", submitId: "cart-undo",
+  lines: [{ itemId: "recItemA", qty: 2, unitCost: 0.75 }], ...extra });
+
+await test("Undo prereq: submitCart stamps WHO from the session, not the body", async () => {
+  reset();
+  const r = await POST(cartBody({ enteredBy: "Somebody Else" }), TOK);
+  eq(r.statusCode, 200, "logged");
+  eq(txnWrites[0].enteredBy, "Emp Test",
+     "a name the browser sends would let anyone claim (and so undo) anyone's cart");
+});
+
+await test("Undo prereq: if the name lookup can't answer, logging still works", async () => {
+  reset();
+  empLookupDown = true;
+  const r = await POST(cartBody({ enteredBy: "Emp Test" }), TOK);
+  eq(r.statusCode, 200, "material is never refused over a name lookup");
+  eq(txnWrites[0].enteredBy, "Emp Test", "falls back to the sent name");
+});
+
+await test("Undo: the person who logged it can undo the whole submit", async () => {
+  reset();
+  undoSubmits["cart-undo"] = [{ by: "Emp Test" }, { by: "Emp Test" }];
+  const r = await POST({ action: "undoSubmit", submitId: "cart-undo" }, TOK);
+  eq(r.statusCode, 200, "undone");
+  eq(json(r).undone, 2, "every line of it");
+  eq(undoDeleted.join(), "cart-undo", "the statement deleted that submit");
+});
+
+await test("Undo: someone else's submit is refused (403), nothing deleted", async () => {
+  reset();
+  undoSubmits["cart-undo"] = [{ by: "Bob Other" }];
+  const r = await POST({ action: "undoSubmit", submitId: "cart-undo" }, TOK);
+  eq(r.statusCode, 403, "employees undo only their own");
+  eq(undoDeleted.length, 0, "nothing deleted");
+});
+
+await test("Undo: an admin can undo anyone's submit", async () => {
+  reset();
+  undoSubmits["cart-undo"] = [{ by: "Bob Other" }];
+  const r = await POST({ action: "undoSubmit", submitId: "cart-undo" }, ADMIN);
+  eq(r.statusCode, 200, "admin passes no owner");
+});
+
+await test("Undo: ONE pushed line refuses the WHOLE submit (409)", async () => {
+  reset();
+  undoSubmits["cart-undo"] = [{ by: "Emp Test" }, { by: "Emp Test", pushed: true }];
+  const r = await POST({ action: "undoSubmit", submitId: "cart-undo" }, TOK);
+  eq(r.statusCode, 409, "the job is already charged for it");
+  eq(json(r).reason, "pushed", "the app can say why");
+  eq(undoDeleted.length, 0, "and NOT half the cart — a partial undo is worse than none");
+});
+
+await test("Undo: past the window it is refused (409 too-old)", async () => {
+  reset();
+  undoSubmits["cart-undo"] = [{ by: "Emp Test", old: true }];
+  const r = await POST({ action: "undoSubmit", submitId: "cart-undo" }, TOK);
+  eq(r.statusCode, 409, "Undo is for just now, not editing history");
+  eq(json(r).reason, "too-old", "reason");
+  eq(undoDeleted.length, 0, "nothing deleted");
+});
+
+await test("Undo: an unknown submit is a 404, and a missing id a 400", async () => {
+  reset();
+  eq((await POST({ action: "undoSubmit", submitId: "nope" }, TOK)).statusCode, 404, "unknown");
+  eq((await POST({ action: "undoSubmit" }, TOK)).statusCode, 400, "missing");
+});
+
+await test("Undo: if WHO can't be confirmed, an employee's undo is refused (503)", async () => {
+  reset();
+  empLookupDown = true;
+  undoSubmits["cart-undo"] = [{ by: "Emp Test" }];
+  const r = await POST({ action: "undoSubmit", submitId: "cart-undo" }, TOK);
+  eq(r.statusCode, 503, "never guess ownership");
+  eq(undoDeleted.length, 0, "nothing deleted");
+});
+
+await test("Undo: a viewer can't call it", async () => {
+  reset();
+  const VIEWER = signToken({ id: "recView", role: "viewer" });
+  eq((await POST({ action: "undoSubmit", submitId: "cart-undo" }, VIEWER)).statusCode, 403, "viewer blocked");
+});
+
+await test("Undo: the guards and the lock live in the ONE statement", async () => {
+  const src = readFileSync(new URL("../netlify/functions/inventory.js", import.meta.url), "utf8");
+  const at = src.indexOf("async function handleUndoSubmit");
+  const fn = src.slice(at, at + 2600);
+  ok(/FOR UPDATE/.test(fn), "rows locked, so a push mid-request is seen, not raced");
+  ok(/chk\.pushed = 0 AND chk\.too_old = 0 AND chk\.not_mine = 0/.test(fn), "all-or-nothing in the DELETE itself");
 });
 
 await test("Del: the guard lives in the DELETE statement, not only in the app", async () => {

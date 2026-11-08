@@ -229,7 +229,19 @@ question. Merge only if the crew still picks the wrong one.
 
 **Size:** medium (it's a chooser in front of two existing flows).
 
-### #6 — Undo after logging (backend; its own build)
+### #6 — Undo after logging (backend; its own build) — ✅ BUILT 2026-11-08
+
+Shipped as planned:
+- `submitCart` stamps `entered_by` from the session (`neonEmployeeById`). If the lookup can't
+  answer, it falls back to the sent name rather than refuse to log material.
+- `undoSubmit { submitId }`, non-viewer tier, one statement: `FOR UPDATE` lock, then the
+  all-or-nothing checks (pushed / older than 10 min / not yours unless admin), then DELETE.
+  It answers 409 `pushed`/`too-old`, 403 not yours, 404 unknown, and 503 if WHO can't be confirmed.
+  The exact SQL was proved through an untyped `PREPARE` on a Neon branch (every case).
+- App: the post-submit toast became a bar, "✓ N items logged to <job> · Undo", for 2 minutes.
+  A refusal shows its reason in the bar. Logout clears it.
+- Tests: 11 "Undo" cases in `tests/inventory-reference.test.mjs`.
+- Not done (possible follow-up): putting the undone items back into the cart for a quick fix.
 
 **What makes it possible** (verified 2026-11-07):
 - **Stock is calculated from the logged entries** (`v_stock_levels` → `v_stock_on_hand`),

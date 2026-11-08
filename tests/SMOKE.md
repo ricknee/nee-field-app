@@ -69,6 +69,7 @@ anything that upserts `job_estimates`.
   - Recent items (#7): on Use on Job, add two items to the cart, then go back to the search. A Recent row shows them, newest first, and tapping one selects it. Signed in as someone else on the same device: their own list, not yours.
   - Recent Logs Del: as an employee, there's no Del button anywhere. As an admin, a pushed row shows "✓ pushed" and no Del; an unpushed row still deletes and its stock comes back.
   - Price on Check Stock (#11, admin): look up a normal item, change Unit cost, and Save. The big price updates, the toast shows, and a reload keeps it. A 10× change asks first. On a weighed-wire item, "Price from an invoice $/ft →" opens the Wire Calculator with that wire picked; save, press Back, and the new price shows. An employee sees no price or box.
+  - Undo (#6): submit a Use cart. Home shows "✓ N items logged to <job> · Undo". Tap Undo: the toast says it's undone, Recent Logs no longer has those lines, and Check Stock is back where it was. The bar disappears by itself after 2 minutes. As admin, push that job's material inside 2 minutes, then tap Undo: the bar says it's already pushed and nothing changes. Recent Logs still shows your own entries under your name.
   - Home order (round 2): Job materials, Look up, Estimates (admin only), Stock & transfers, More, Admin · Daily, Admin · Setup. Signed in as an employee: no Estimates, Adjust or Admin sections, and every other button is still there and opens its screen.
 
 ---

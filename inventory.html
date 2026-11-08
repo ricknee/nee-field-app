@@ -228,6 +228,13 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--green);color:#fff;font-weight:600;font-size:13px;padding:11px 22px;border-radius:30px;transition:transform .3s ease;z-index:200;white-space:nowrap;pointer-events:none;}
 .toast.err{background:var(--red);}
 .toast.show{transform:translateX(-50%) translateY(0);}
+/* #6 Undo bar: sits where the toast does (the toast, z 200, covers it briefly). */
+.undo-bar{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);width:calc(100% - 32px);max-width:480px;box-sizing:border-box;display:flex;align-items:center;gap:10px;background:var(--navy-lt);border:1px solid var(--green);border-radius:14px;padding:10px 10px 10px 14px;z-index:150;box-shadow:0 6px 24px rgba(0,0,0,.45);}
+.undo-bar .ub-msg{flex:1;min-width:0;font-size:13px;color:var(--text);line-height:1.3;}
+.undo-bar .ub-msg b{color:var(--green);}
+.undo-bar .ub-undo{background:var(--gold);border:none;border-radius:9px;color:var(--navy);font-family:inherit;font-size:14px;font-weight:700;padding:9px 16px;cursor:pointer;flex-shrink:0;}
+.undo-bar .ub-undo:disabled{opacity:.5;}
+.undo-bar .ub-x{background:transparent;border:none;color:var(--dim);font-size:18px;padding:4px 6px;cursor:pointer;flex-shrink:0;}
 ::-webkit-scrollbar{width:3px;}
 ::-webkit-scrollbar-thumb{background:var(--slate);border-radius:2px;}
 /* 🏷 QR bin labels (docs/PLAN-barcode-labels.md). DK-1208 = 90.3 × 38 mm die-cut,
@@ -581,6 +588,8 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 </div>
 
 <div class="toast" id="toast"></div>
+<!-- #6: "✓ N items logged to <job> · Undo", live for UNDO_UI_MS after a submit. -->
+<div class="undo-bar" id="undo-bar" style="display:none"></div>
 
 <script>
 // ═══════════════════════════════════════════════════════════
@@ -1284,6 +1293,7 @@ document.addEventListener("keydown", function(e) {
 });
 
 function logout() {
+  hideUndoBar();   // never leave someone else an Undo for your cart
   currentUser = null; currentLocation = null;
   attState = { pending: null, unmatched: null, partnums: null, orders: null, low: null };
   renderAttention();
@@ -1963,7 +1973,8 @@ async function submitCart() {
 
   try {
     await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: submitLocationId, enteredBy: currentUser.name, submitId: cartSubmitId });
-    showToast("✓ " + cart.length + " item" + (cart.length>1?"s":"") + " logged!");
+    // The confirmation carries the Undo (#6) instead of a plain toast.
+    showUndoBar(cartSubmitId, cart.length, jobName, logMode);
     cart = [];
     cartSubmitId = null;   // accepted — the next cart is a new submission
     goHome();
@@ -7423,6 +7434,64 @@ function handleScanResult(val) {
 // TOAST
 // ═══════════════════════════════════════════════════════════
 var toastTimer;
+// ── #6 Undo after logging ───────────────────────────────────────────────────
+// Offered for 2 minutes; the server allows 10. The gap is deliberate: a slow
+// phone or a tap at 1:59 must never be offered an undo the server then refuses.
+// The server is the real gate (owner, pushed, window, all-or-nothing).
+var UNDO_UI_MS = 2 * 60 * 1000;
+var undoState = null;   // { submitId, timer }
+
+function showUndoBar(submitId, count, jobName, mode) {
+  hideUndoBar();
+  if (!submitId) return;
+  var bar = document.getElementById("undo-bar");
+  if (!bar) return;
+  var what = count + " item" + (count === 1 ? "" : "s");
+  var verb = mode === "Use" ? "logged" + (jobName ? " to " : "")
+           : mode === "ReturnToShop" ? "returned to shop" + (jobName ? " from " : "")
+           : "returned" + (jobName ? " from " : "");
+  bar.innerHTML =
+    '<div class="ub-msg"><b>✓</b> ' + escapeHtml(what + " " + verb + (jobName || "")) + '</div>' +
+    '<button class="ub-undo" id="ub-undo" onclick="undoLastSubmit()">Undo</button>' +
+    '<button class="ub-x" onclick="hideUndoBar()" aria-label="Dismiss">✕</button>';
+  bar.style.display = "flex";
+  undoState = { submitId: submitId, timer: setTimeout(hideUndoBar, UNDO_UI_MS) };
+}
+
+function hideUndoBar() {
+  if (undoState && undoState.timer) clearTimeout(undoState.timer);
+  undoState = null;
+  var bar = document.getElementById("undo-bar");
+  if (bar) { bar.style.display = "none"; bar.innerHTML = ""; bar.style.borderColor = ""; }
+}
+
+async function undoLastSubmit() {
+  if (!undoState) return;
+  var sid = undoState.submitId;
+  var btn = document.getElementById("ub-undo");
+  if (btn) { btn.disabled = true; btn.textContent = "Undoing…"; }
+  try {
+    var r = await apiPost({ action: "undoSubmit", submitId: sid });
+    hideUndoBar();
+    showToast("↩ Undone — " + (r.undone || 0) + " line" + (r.undone === 1 ? "" : "s") + " removed, stock is back");
+    // Stock and the pending-push total just moved; refresh the home figures.
+    try { refreshHomeCounts(); } catch (e) {}
+  } catch (ex) {
+    // Refused (pushed / too late / not yours) or failed: say why IN the bar —
+    // the toast is one line and would clip it — and drop the Undo button, since
+    // retrying a refusal would only refuse again. Nothing was undone.
+    if (undoState && undoState.timer) clearTimeout(undoState.timer);
+    undoState = null;
+    var bar = document.getElementById("undo-bar");
+    if (!bar) return;
+    bar.style.borderColor = "var(--red)";
+    bar.innerHTML =
+      '<div class="ub-msg">Couldn\'t undo — nothing was changed. ' + escapeHtml(String(ex.message || ex)) + '</div>' +
+      '<button class="ub-x" onclick="hideUndoBar()" aria-label="Dismiss">✕</button>';
+    setTimeout(function(){ if (!undoState) hideUndoBar(); }, 10000);
+  }
+}
+
 function showToast(msg, isErr) {
   var t = document.getElementById("toast");
   t.textContent = msg;

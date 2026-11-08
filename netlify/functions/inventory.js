@@ -31,7 +31,7 @@
 // See docs/PLAN-airtable-identity-cutover.md and docs/AUDIT-airtable-remaining.md.
 import { signToken, authedUser, hasRole } from "./_auth.js";
 import { isSessionRevoked } from "./_revocation.js";
-import { neonLoginCandidate, neonEmployees } from "./_employees.js";
+import { neonLoginCandidate, neonEmployees, neonEmployeeById } from "./_employees.js";
 // Both fail-soft by contract: neonExec for the last-login stamp, neonQuery for
 // the main-base job reads (Step B0). The driver is lazy-imported so the offline
 // test suites stay install-free.
@@ -682,10 +682,18 @@ async function handleItems() {
 }
 
 // ── SUBMIT CART (multiple transactions at once) ────────────
-async function handleSubmitCart(body) {
-  const { lines, jobName, jobId, locationId, enteredBy, submitId } = body || {};
+async function handleSubmitCart(body, authUser) {
+  const { lines, jobName, jobId, locationId, submitId } = body || {};
   if (!lines || !lines.length) return resp(400, { ok: false, error: "No items in cart." });
   if (!locationId) return resp(400, { ok: false, error: "Missing location." });
+  // WHO logged it comes from the session, not the request body (#6). Undo is
+  // allowed only for the person who submitted, so a name the browser sends would
+  // let anyone claim anyone's cart. Login hands the client this same
+  // employees.name, so History's "your logs" filter matches as before. If the
+  // lookup can't answer, fall back to the sent name rather than refuse to log
+  // material — an undo then still needs that name to match, or an admin.
+  const me = authUser?.id ? await neonEmployeeById(authUser.id) : null;
+  const enteredBy = me?.name || String(body?.enteredBy || "");
 
   console.log(`submitCart: jobName="${jobName}" jobId="${jobId}" location="${locationId}" lines=${lines.length}`);
 
@@ -740,6 +748,71 @@ async function handleSubmitCart(body) {
   // ids instead of logging the material out of stock a second time.
   const ids = await insertTxns(rows, submitId ? String(submitId) : null);
   return resp(200, { ok: true, ids });
+}
+
+// ── UNDO A CART SUBMIT (#6, docs/PLAN-inventory-usability.md) ──────────────
+// Removes every ledger row of ONE submit. Stock is derived from the ledger
+// (v_stock_levels → v_stock_on_hand), so deleting the rows IS the reversal —
+// there is nothing else to put back.
+//
+// ⚠⚠ ALL OR NOTHING, in ONE statement. It refuses the whole submit if any line
+//   • is already pushed (expense_created) — the job is charged for it; undoing
+//     would put the stock back while the expense stays, the same money gap the
+//     Recent Logs Del guard closes;
+//   • is older than UNDO_WINDOW_MIN — Undo is for "oops, just now", not history
+//     editing; the app offers it for 2 minutes, well inside this;
+//   • was logged by someone else (unless the caller is an admin).
+// Half a cart undone would be worse than none: the user would believe the
+// mistake was gone. `FOR UPDATE` locks the submit's rows first, so a push that
+// marks them mid-request is seen and refused, not raced.
+const UNDO_WINDOW_MIN = 10;
+async function handleUndoSubmit(body, authUser) {
+  const submitId = String(body?.submitId || "").trim();
+  if (!submitId) return resp(400, { ok: false, error: "Missing submitId." });
+
+  const isAdmin = authUser?.role === "admin";
+  let owner = null;   // NULL = any owner (admin)
+  if (!isAdmin) {
+    const me = authUser?.id ? await neonEmployeeById(authUser.id) : null;
+    if (!me?.name) return resp(503, { ok: false, error: "Couldn't confirm who you are. Nothing was undone — please try again." });
+    owner = me.name;
+  }
+
+  const rows = await neonWrite("undoSubmit",
+    `WITH s AS (
+       SELECT id, expense_created, txn_date, entered_by
+         FROM inventory_transactions
+        WHERE submit_id = $1
+          FOR UPDATE
+     ), chk AS (
+       SELECT count(*)::int                                                     AS n,
+              count(*) FILTER (WHERE expense_created)::int                      AS pushed,
+              count(*) FILTER (WHERE txn_date <= now() - make_interval(mins => $3::int))::int AS too_old,
+              count(*) FILTER (WHERE $2::text IS NOT NULL
+                                 AND entered_by IS DISTINCT FROM $2::text)::int AS not_mine
+         FROM s
+     ), d AS (
+       DELETE FROM inventory_transactions t
+        USING chk
+        WHERE t.submit_id = $1
+          AND chk.n > 0 AND chk.pushed = 0 AND chk.too_old = 0 AND chk.not_mine = 0
+       RETURNING t.id
+     )
+     SELECT chk.n, chk.pushed, chk.too_old, chk.not_mine,
+            (SELECT count(*)::int FROM d) AS deleted
+       FROM chk`,
+    [submitId, owner, UNDO_WINDOW_MIN]);
+
+  const r = rows[0] || {};
+  const n = Number(r.n) || 0;
+  if (n === 0) return resp(404, { ok: false, error: "Nothing to undo — that submit wasn't found." });
+  if (Number(r.pushed) > 0) return resp(409, { ok: false, reason: "pushed",
+    error: "Too late to undo: this material has already been pushed to the job's expenses. Fix the expense in the field app instead." });
+  if (Number(r.not_mine) > 0) return resp(403, { ok: false, reason: "not-mine",
+    error: "Only the person who logged this (or an admin) can undo it." });
+  if (Number(r.too_old) > 0) return resp(409, { ok: false, reason: "too-old",
+    error: `Too late to undo (more than ${UNDO_WINDOW_MIN} minutes). Ask an admin to fix it in Recent Logs.` });
+  return resp(200, { ok: true, undone: Number(r.deleted) || 0 });
 }
 
 // ── RECEIVE ITEMS (with optional price update) ─────────────
@@ -3983,7 +4056,8 @@ export async function handler(event) {
     if (event.httpMethod === "POST") {
       const body = event.body ? JSON.parse(event.body) : {};
       if (body.action === "login")           return await handleLogin(body);
-      if (body.action === "submitCart")      return await handleSubmitCart(body);
+      if (body.action === "submitCart")      return await handleSubmitCart(body, authedUser(event));
+      if (body.action === "undoSubmit")      return await handleUndoSubmit(body, authedUser(event));
       if (body.action === "receive")         return await handleReceive(body);
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);

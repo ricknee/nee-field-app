@@ -142,6 +142,12 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .sel-item-meta{font-size:11px;color:var(--dim);margin-top:1px;}
 /* Recent items under the item search (docs/PLAN-inventory-usability.md #7) */
 .recent-lbl{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:10px 0 6px;}
+/* Recent is a tap-to-open line (#7 follow-up). A big tap target, own arrow. */
+details.recent > summary{list-style:none;cursor:pointer;padding:6px 0;margin:4px 0 2px;display:inline-flex;align-items:center;gap:6px;}
+details.recent > summary::-webkit-details-marker{display:none;}
+details.recent > summary::before{content:"▸";font-size:12px;transition:transform .15s;}
+details.recent[open] > summary::before{transform:rotate(90deg);}
+details.recent .recent-row{padding-bottom:4px;}
 .recent-row{display:flex;flex-wrap:wrap;gap:6px;}
 .recent-chip{background:var(--navy-lt);border:1px solid var(--border);border-radius:16px;padding:7px 11px;color:var(--text);font-size:13px;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .recent-chip:active{background:var(--slate);}
@@ -1590,13 +1596,22 @@ function renderRecentItems() {
     .map(function(id){ return allItems.find(function(i){ return i.id === id; }); })
     .filter(Boolean);
   if (!items.length) return "";
-  return '<div class="recent-lbl">Recent</div><div class="recent-row">' +
+  // Collapsed by default so it costs one line; open/closed is remembered on
+  // this device (a convenience only — losing it just means closed again).
+  var open = false;
+  try { open = localStorage.getItem("nee_inv_recent_open") === "1"; } catch (e) {}
+  return '<details class="recent"' + (open ? ' open' : '') + ' ontoggle="rememberRecentOpen(this)">' +
+    '<summary class="recent-lbl">Recent (' + items.length + ')</summary><div class="recent-row">' +
     items.map(function(i){
       // Item handles are rec ids or uuids — no quotes — but escape anyway.
       var idArg = escapeAttr(String(i.id).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
       return '<button class="recent-chip" onclick="pickItem(\'' + idArg + '\')" title="' +
              escapeAttr(i.name) + '">' + escapeAttr(i.name) + '</button>';
-    }).join("") + '</div>';
+    }).join("") + '</div></details>';
+}
+
+function rememberRecentOpen(el) {
+  try { localStorage.setItem("nee_inv_recent_open", el.open ? "1" : "0"); } catch (e) {}
 }
 
 function renderItemSearch() {

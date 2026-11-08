@@ -1407,6 +1407,14 @@ await test("Undo: the guards and the lock live in the ONE statement", async () =
   ok(/chk\.pushed = 0 AND chk\.too_old = 0 AND chk\.not_mine = 0/.test(fn), "all-or-nothing in the DELETE itself");
 });
 
+await test("ADJ: the location matches BOTH handle forms (a truck made in the app)", async () => {
+  const src = readFileSync(new URL("../netlify/functions/inventory.js", import.meta.url), "utf8");
+  const at = src.indexOf("async function handleAdjustment");
+  const fn = src.slice(at, at + 1800);
+  ok(/l\.airtable_id = \$2 OR l\.id::text = \$2/.test(fn),
+     "airtable_id alone 404s every location created since the cutover");
+});
+
 await test("Del: the guard lives in the DELETE statement, not only in the app", async () => {
   const src = readFileSync(new URL("../netlify/functions/inventory.js", import.meta.url), "utf8");
   const at = src.indexOf("async function deleteTxn");

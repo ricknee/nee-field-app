@@ -1927,7 +1927,11 @@ async function handleAdjustment(body) {
        FROM inventory_items i
        CROSS JOIN locations l
        LEFT JOIN v_stock_on_hand s ON s.item_id = i.id AND s.location_id = l.id
-      WHERE (i.airtable_id = $1 OR i.id::text = $1) AND l.airtable_id = $2`,
+      WHERE (i.airtable_id = $1 OR i.id::text = $1)
+        AND (l.airtable_id = $2 OR l.id::text = $2)`,
+    // ⚠ BOTH handle forms for the location too. It matched airtable_id only, so a
+    // shop or truck created in the app (uuid handle, no rec id) answered 404 —
+    // Adjust Stock simply refused every location made since the cutover.
     [String(itemId), String(locationId)]);
   if (!cur.length) return resp(404, { ok: false, error: "Item or location not found." });
 

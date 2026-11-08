@@ -304,7 +304,17 @@ Hold #5b.
   size and category, typo fallback, ranked.
 - ✅ Found on the way: Adjust Stock 404'd on app-made locations (`7759b7e`).
 
-### R5-A — Count a truck (PLAN, needs the owner's OK)
+### R5-A — Count a truck — ✅ BUILT 2026-11-08
+
+**Owner decision: the crew can count and apply, straight in, no approval.** Built as
+`countApply`, a non-viewer action. It's ONE statement (unnest + CTE) instead of bulkApply's
+per-row loop, so a 100-item truck can't time out halfway. It was proved on a Neon branch
+(+7, +1, unchanged, −1.5, unknown item, unknown location). `entered_by` comes from the session;
+the note is "Stock count". Screen: home → Stock & transfers → 📋 Count Stock. The half-done
+count is a per-person draft on the phone. A search shows all matches; otherwise only what's
+stocked there. Tests: 7 "Count:" cases.
+
+(Original plan, kept for reference:)
 
 **Goal:** stand at a truck (or shop), go down a list, type what's really there, and fix stock
 in one go.

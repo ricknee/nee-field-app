@@ -59,6 +59,18 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .hdr h2{font-size:16px;font-weight:600;flex:1;}
 .hdr-badge{font-size:11px;color:var(--dim);background:var(--slate);padding:3px 10px;border-radius:20px;white-space:nowrap;}
 .hdr-out{background:none;border:1px solid var(--border);border-radius:16px;color:var(--dim);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:5px 14px;white-space:nowrap;}
+/* Count Stock */
+.count-cat{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;}
+.count-row{display:flex;align-items:center;gap:10px;background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:9px 10px 9px 12px;margin-bottom:6px;}
+.count-row.done{border-color:rgba(46,204,113,.55);}
+.count-row .cr-main{flex:1;min-width:0;}
+.count-row .cr-name{font-size:14px;font-weight:600;color:var(--text);overflow-wrap:anywhere;}
+.count-row .cr-sys{font-size:11px;color:var(--dim);margin-top:2px;}
+.count-inp{width:78px;background:var(--navy-mid);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:16px;padding:8px;text-align:right;outline:none;flex-shrink:0;}
+.count-inp:focus{border-color:var(--gold);}
+.count-foot{padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:var(--navy-mid);border-top:1px solid var(--border);flex-shrink:0;}
+.count-diff{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--border);font-size:13px;}
+.count-diff b.up{color:var(--green);} .count-diff b.down{color:var(--red);}
 /* While a search box is focused on a phone: room below so it can scroll to the top, clear of the keyboard. */
 .kb-room{padding-bottom:65vh !important;}
 /* Home header wraps onto a second row for the account line (fits a phone). */
@@ -384,6 +396,9 @@ details.recent .recent-row{padding-bottom:4px;}
     <button class="big-btn" onclick="goTransfer()">
       <div class="ico">🔄</div><div><div class="lbl">Transfer</div><div class="sub">Move items between locations</div></div>
     </button>
+    <button class="big-btn" onclick="goCountStock()">
+      <div class="ico">📋</div><div><div class="lbl">Count Stock</div><div class="sub">Count a truck or shop and fix the numbers</div></div>
+    </button>
     <div class="sec-lbl">More</div>
     <button class="big-btn" id="adj-btn" onclick="goAdjustment()" style="display:none">
       <div class="ico">✏️</div><div><div class="lbl">Adjust Stock</div><div class="sub">Correct a count at a location</div></div>
@@ -487,6 +502,13 @@ details.recent .recent-row{padding-bottom:4px;}
 <div id="s-reorder" class="screen">
   <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>🔴 Reorder Alerts</h2><button onclick="loadReorderAlerts()" style="background:none;border:1px solid var(--border);border-radius:20px;color:var(--dim);font-size:12px;padding:5px 12px;cursor:pointer;" id="reorder-refresh-btn">↻</button></div>
   <div class="log-body" id="reorder-body"><div class="loading"><div class="spinner"></div><br>Loading…</div></div>
+</div>
+
+<!-- COUNT STOCK (docs/PLAN-inventory-usability.md R5-A) -->
+<div id="s-count" class="screen">
+  <div class="hdr"><button class="hdr-back" onclick="goHome()">‹</button><h2>📋 Count Stock</h2></div>
+  <div class="log-body" id="count-body"></div>
+  <div class="count-foot" id="count-foot" style="display:none"></div>
 </div>
 
 <!-- NEW ITEM -->
@@ -7475,6 +7497,229 @@ function handleScanResult(val) {
 // TOAST
 // ═══════════════════════════════════════════════════════════
 var toastTimer;
+// ── COUNT STOCK (R5-A) ──────────────────────────────────────────────────────
+// Type what is really on the truck/shelf; Review shows only the differences;
+// Apply sends every typed row to countApply, which posts the difference from
+// on-hand as read at THAT moment (so movement during the count isn't undone).
+// Blank means "didn't count it" — never zero. The draft is kept on the phone
+// so a phone call or reload doesn't lose a half-done count.
+var countState = { locId: "", entries: {}, showAll: false, q: "", levels: null };
+// Per person, like Recent items: a shared tablet must not hand one person's
+// half-done count to the next.
+function countDraftKey() { return "nee_inv_count_draft_" + ((currentUser && currentUser.id) || "anon"); }
+
+function countSaveDraft() {
+  try { localStorage.setItem(countDraftKey(), JSON.stringify({ locId: countState.locId, entries: countState.entries })); } catch (e) {}
+}
+function countClearDraft() { try { localStorage.removeItem(countDraftKey()); } catch (e) {} }
+function countEnteredIds() {
+  return Object.keys(countState.entries).filter(function(k){ return String(countState.entries[k]).trim() !== ""; });
+}
+function countLoc() { return allLocations.find(function(l){ return l.id === countState.locId; }) || null; }
+
+async function goCountStock() {
+  showScreen("count");
+  var body = document.getElementById("count-body");
+  if (!dataReady) {
+    body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
+    var t = setInterval(function(){ if (dataReady) { clearInterval(t); goCountStock(); } }, 300);
+    return;
+  }
+  var draft = null;
+  try { draft = JSON.parse(localStorage.getItem(countDraftKey()) || "null"); } catch (e) {}
+  countState.entries = (draft && draft.entries) || {};
+  countState.locId = (draft && draft.locId) || (currentLocation ? currentLocation.id : "");
+  if (countState.locId && !countLoc()) countState.locId = "";
+  countState.q = ""; countState.showAll = false;
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading stock…</div>';
+  try {
+    var d = await apiGet("stockLevelsAll");
+    countState.levels = d.levels || [];
+  } catch (ex) {
+    body.innerHTML = '<div class="empty">Couldn\'t load stock: ' + escapeAttr(ex.message || ex) + '</div>';
+    return;
+  }
+  renderCountScreen();
+}
+
+// On-hand at the chosen location, by item handle.
+function countSystemQty() {
+  var loc = countLoc(), m = {};
+  if (!loc) return m;
+  (countState.levels || []).forEach(function(lv){ if (lv.locationName === loc.name) m[lv.itemId] = lv; });
+  return m;
+}
+
+function renderCountScreen() {
+  var body = document.getElementById("count-body");
+  var locOpts = allLocations.map(function(l){
+    return '<option value="' + escapeAttr(l.id) + '"' + (l.id === countState.locId ? ' selected' : '') + '>' + escapeAttr(l.name) + '</option>';
+  }).join("");
+  body.innerHTML =
+    '<div class="field-group"><div class="field-lbl">Counting at</div>' +
+      '<select class="field-sel" id="count-loc" onchange="onCountLocChange(this)"><option value="">— Pick a truck or shop —</option>' + locOpts + '</select></div>' +
+    '<div style="font-size:12px;color:var(--dim);line-height:1.45;margin:-4px 0 4px;">Type what is really there. Leave a box <b>blank</b> if you didn\'t count it — blank never means zero.</div>' +
+    '<input class="field-inp" id="count-search" type="text" placeholder="Find an item…" autocomplete="off" oninput="onCountSearch(this)" value="' + escapeAttr(countState.q) + '" />' +
+    '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dim);margin:2px 0;">' +
+      '<input type="checkbox" id="count-all" onchange="onCountShowAll(this)"' + (countState.showAll ? ' checked' : '') + ' /> Show all items, not just what\'s stocked here</label>' +
+    '<div id="count-list"></div>';
+  renderCountList();
+}
+
+function renderCountList() {
+  var list = document.getElementById("count-list");
+  if (!list) return;
+  if (!countLoc()) { list.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--dim);">Pick where you are counting.</div>'; renderCountFoot(); return; }
+  var sys = countSystemQty();
+  var items;
+  if (countState.q) items = searchItems(countState.q);
+  else items = allItems.slice().sort(function(a, b){ return a.name.localeCompare(b.name); });
+  // Default: only what this location stocks, plus anything already typed. A
+  // SEARCH shows every match — if you're looking for it, it's probably there.
+  if (!countState.showAll && !countState.q) items = items.filter(function(i){ return sys[i.id] || String(countState.entries[i.id] || "").trim() !== ""; });
+  if (!items.length) {
+    list.innerHTML = '<div class="empty" style="padding:20px;text-align:center;color:var(--dim);">' +
+      (countState.q ? 'No items match.' : 'Nothing is stocked here yet. Tick "Show all items" to count anything.') + '</div>';
+    renderCountFoot(); return;
+  }
+  var groups = {}, order = [];
+  items.forEach(function(i){
+    var c = i.cat || "Other";
+    if (!groups[c]) { groups[c] = []; order.push(c); }
+    groups[c].push(i);
+  });
+  if (!countState.q) order.sort();
+  var html = '';
+  order.forEach(function(c){
+    html += '<div class="count-cat">' + escapeAttr(c) + '</div>';
+    groups[c].forEach(function(i){
+      var lv = sys[i.id];
+      var isWire = (lv && lv.wireWeight > 0) || i.wireFtPerLb > 0;
+      var uom = isWire ? 'lb' : (i.uom || 'ea');
+      var q = lv ? lv.qtyOnHand : 0;
+      var sysTxt = 'System: ' + fmtQty(q) + ' ' + escapeAttr(uom) +
+        (isWire && lv && lv.wireFt > 0 ? ' · ' + fmtQty(Math.round(lv.wireFt)) + ' ft' : '');
+      var val = countState.entries[i.id] != null ? countState.entries[i.id] : "";
+      html += '<div class="count-row' + (String(val).trim() !== "" ? ' done' : '') + '">' +
+        '<div class="cr-main"><div class="cr-name">' + escapeAttr(i.name) + '</div><div class="cr-sys">' + sysTxt + '</div></div>' +
+        '<input class="count-inp" type="text" inputmode="decimal" placeholder="—" data-item="' + escapeAttr(i.id) + '" value="' + escapeAttr(val) + '" oninput="onCountInput(this)" onfocus="this.select()" />' +
+        '<span style="font-size:11px;color:var(--muted);width:18px;">' + escapeAttr(uom) + '</span>' +
+      '</div>';
+    });
+  });
+  list.innerHTML = html;
+  renderCountFoot();
+}
+
+function renderCountFoot() {
+  var foot = document.getElementById("count-foot");
+  if (!foot) return;
+  var n = countEnteredIds().length;
+  foot.style.display = countLoc() ? "block" : "none";
+  foot.innerHTML = '<button class="primary-btn" onclick="countReview()"' + (n ? '' : ' disabled style="opacity:.5"') + '>' +
+    (n ? 'Review ' + n + ' counted item' + (n === 1 ? '' : 's') : 'Type a count to start') + '</button>';
+}
+
+function onCountInput(el) {
+  var id = el.getAttribute("data-item");
+  var v = el.value.replace(",", ".").trim();
+  if (v === "") delete countState.entries[id]; else countState.entries[id] = v;
+  var row = el.closest(".count-row");
+  if (row) row.classList.toggle("done", v !== "");
+  countSaveDraft();
+  renderCountFoot();   // only the footer; re-rendering the list would steal focus
+}
+function onCountSearch(el) {
+  countState.q = el.value;
+  clearTimeout(onCountSearch._t);
+  onCountSearch._t = setTimeout(renderCountList, 150);
+}
+function onCountShowAll(el) { countState.showAll = !!el.checked; renderCountList(); }
+function onCountLocChange(el) {
+  var n = countEnteredIds().length;
+  if (n && !confirm("Switch location? Your " + n + " count" + (n === 1 ? "" : "s") + " here will be cleared.")) {
+    el.value = countState.locId; return;
+  }
+  countState.locId = el.value; countState.entries = {};
+  countSaveDraft();
+  renderCountList();
+}
+
+async function countReview() {
+  var ids = countEnteredIds();
+  if (!ids.length) return;
+  var bad = ids.filter(function(id){ var n = Number(countState.entries[id]); return !isFinite(n) || n < 0; });
+  if (bad.length) { showToast(bad.length + " count" + (bad.length === 1 ? " isn't" : "s aren't") + " a number — fix the red ones", true); markCountBad(bad); return; }
+  var body = document.getElementById("count-body");
+  var foot = document.getElementById("count-foot");
+  body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Checking against stock…</div>';
+  foot.style.display = "none";
+  // Fresh figures for the review — someone may have logged material meanwhile.
+  try { countState.levels = (await apiGet("stockLevelsAll")).levels || []; } catch (e) {}
+  var sys = countSystemQty(), diffs = [], same = 0;
+  ids.forEach(function(id){
+    var item = allItems.find(function(i){ return i.id === id; });
+    if (!item) return;
+    var before = sys[id] ? sys[id].qtyOnHand : 0;
+    var after = Number(countState.entries[id]);
+    var delta = Math.round((after - before) * 10000) / 10000;
+    if (delta === 0) same++; else diffs.push({ item: item, before: before, after: after, delta: delta, wire: (sys[id] && sys[id].wireWeight > 0) || item.wireFtPerLb > 0 });
+  });
+  var loc = countLoc();
+  var html = '<div style="font-size:15px;font-weight:700;color:var(--text);">' + escapeAttr(loc ? loc.name : "") + '</div>' +
+    '<div style="font-size:12px;color:var(--dim);margin:2px 0 10px;">' + ids.length + ' counted · <b style="color:var(--text)">' + diffs.length + ' to change</b> · ' + same + ' already right</div>';
+  if (diffs.length) {
+    diffs.forEach(function(d){
+      var u = d.wire ? 'lb' : (d.item.uom || 'ea');
+      html += '<div class="count-diff"><span>' + escapeAttr(d.item.name) + '</span><span style="white-space:nowrap;">' +
+        fmtQty(d.before) + ' → ' + fmtQty(d.after) + ' ' + escapeAttr(u) + ' <b class="' + (d.delta > 0 ? 'up' : 'down') + '">' +
+        (d.delta > 0 ? '+' : '−') + fmtQty(Math.abs(d.delta)) + '</b></span></div>';
+    });
+    html += '<div style="font-size:11px;color:var(--muted);margin-top:8px;">Figures are rechecked the moment you apply, so anything logged in the meantime is kept.</div>';
+  } else {
+    html += '<div class="att-ok" style="padding:10px 0;">✓ Everything you counted matches. Nothing to change.</div>';
+  }
+  body.innerHTML = html;
+  foot.style.display = "block";
+  foot.innerHTML = '<div style="display:flex;gap:10px;">' +
+    '<button class="primary-btn" style="background:var(--slate);color:var(--text);flex:1;" onclick="renderCountScreen()">← Keep counting</button>' +
+    (diffs.length
+      ? '<button class="primary-btn" style="flex:1.4;" id="count-apply-btn" onclick="countApply()">Apply ' + diffs.length + ' change' + (diffs.length === 1 ? '' : 's') + '</button>'
+      : '<button class="primary-btn" style="flex:1.4;" onclick="countFinish()">Done</button>') +
+    '</div>';
+}
+
+function markCountBad(ids) {
+  ids.forEach(function(id){
+    var el = document.querySelector('.count-inp[data-item="' + (window.CSS && CSS.escape ? CSS.escape(id) : id) + '"]');
+    if (el) el.style.borderColor = "var(--red)";
+  });
+}
+
+async function countApply() {
+  var btn = document.getElementById("count-apply-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Applying…"; }
+  var ids = countEnteredIds();
+  try {
+    var r = await apiPost({ action: "countApply", locationId: countState.locId,
+      counts: ids.map(function(id){ return { itemId: id, counted: Number(countState.entries[id]) }; }),
+      enteredBy: currentUser && currentUser.name });
+    showToast("✓ Count saved — " + r.adjusted + " changed, " + r.unchanged + " already right" +
+              (r.missing ? " · " + r.missing + " not found" : ""), !!r.missing);
+    countFinish();
+  } catch (ex) {
+    showToast("Couldn't apply: " + (ex.message || ex), true);
+    if (btn) { btn.disabled = false; btn.textContent = "Try again"; }
+  }
+}
+
+function countFinish() {
+  countState.entries = {}; countClearDraft();
+  stockLevelsAllCache = null;   // other screens re-read stock
+  try { refreshHomeCounts(); } catch (e) {}
+  goHome();
+}
+
 // ── Item search: words in any order, close spellings, best first ───────────
 // Every item search box goes through searchItems(), so they all behave alike.
 //  • Each typed word must appear somewhere in the name, barcode, size or

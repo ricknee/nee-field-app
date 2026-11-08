@@ -53,6 +53,8 @@ let   undoSubmits = {};
 const undoDeleted = [];
 const EMP_NAMES = { recEmp: "Emp Test", recAdmin: "Admin Test" };
 let   empLookupDown = false;
+const countCalls = [];   // every countApply statement
+let   countSame = false; // model "everything counted matched on-hand"
 let   adjOnHand = 0;                // what v_stock_on_hand reports for the adjustment's pair
 const stockUpdates = [];            // every reorder-point UPDATE
 const stockCreates = [];            // every stock_settings upsert
@@ -228,6 +230,19 @@ globalThis.fetch = async (url, opts = {}) => {
     } else if (/UPDATE inventory_items SET default_unit_cost/i.test(sql)) {
       itemCostWrites.push({ handle: body.params?.[0], cost: body.params?.[1] });
       payload = neonReply(["id"], itemMissing.has(body.params?.[0]) ? [] : [{ id: NEW_ITEM }]);
+    } else if (/'Stock count'/.test(sql)) {
+      // countApply — one statement. Before the generic ledger-INSERT routes,
+      // which would otherwise catch it. Models it as proved on a Neon branch:
+      // unknown location → loc_found 0; unknown items skipped; every matched
+      // item differs (adjusted = matched) unless countSame.
+      const [loc, rawHandles, , by] = body.params || [];
+      const handles = pgArray(rawHandles);   // the driver sends arrays as '{a,b}'
+      const locOk = ["recLoc1", LOC1_UUID, NATIVE_LOC].includes(loc);
+      const known = handles.filter(h => ["recItemA", "recItemB", ITEMA_UUID, NATIVE_ITEM].includes(h));
+      countCalls.push({ loc, handles, by, sql });
+      payload = neonReply(["loc_found", "sent", "matched", "adjusted"],
+        [{ loc_found: locOk ? 1 : 0, sent: handles.length, matched: locOk ? known.length : 0,
+           adjusted: locOk && !countSame ? known.length : 0 }]);
     } else if (/'Adjustment',\s*\n?\s*\$4/.test(sql) || /\$3, 'Adjustment'/.test(sql)) {
       // The BULK count insert: 9 binds, a different shape from insertTxns.
       const ps = body.params || [];
@@ -510,6 +525,7 @@ function reset() {
   txnWrites.length = 0; txnDeletes.length = 0;
   txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set(); txnPushed = new Set();
   undoSubmits = {}; undoDeleted.length = 0; empLookupDown = false;
+  countCalls.length = 0; countSame = false;
   txnInsertSql.length = 0;
   adjOnHand = 0;
   stockUpdates.length = 0; stockCreates.length = 0; stockMissing = new Set();
@@ -1405,6 +1421,67 @@ await test("Undo: the guards and the lock live in the ONE statement", async () =
   const fn = src.slice(at, at + 2600);
   ok(/FOR UPDATE/.test(fn), "rows locked, so a push mid-request is seen, not raced");
   ok(/chk\.pushed = 0 AND chk\.too_old = 0 AND chk\.not_mine = 0/.test(fn), "all-or-nothing in the DELETE itself");
+});
+
+// ── R5-A Count stock ──────────────────────────────────────────────────────
+await test("Count: the crew can apply a count, stamped with their name from the session", async () => {
+  reset();
+  const r = await POST({ action: "countApply", locationId: "recLoc1", enteredBy: "Somebody Else",
+    counts: [{ itemId: "recItemA", counted: 12 }, { itemId: "recItemB", counted: 0 }] }, TOK);
+  eq(r.statusCode, 200, "an employee may count (owner, 2026-11-08)");
+  eq(json(r).adjusted, 2, "both differed");
+  eq(countCalls.length, 1, "ONE statement for the whole count, not a round trip per row");
+  eq(countCalls[0].by, "Emp Test", "who counted comes from the session, not the body");
+});
+
+await test("Count: nothing changes when every count matches", async () => {
+  reset(); countSame = true;
+  const j = json(await POST({ action: "countApply", locationId: "recLoc1",
+    counts: [{ itemId: "recItemA", counted: 5 }] }, TOK));
+  eq(j.adjusted, 0, "no adjustment"); eq(j.unchanged, 1, "reported as unchanged");
+});
+
+await test("Count: an unknown item is skipped and reported, not guessed", async () => {
+  reset();
+  const j = json(await POST({ action: "countApply", locationId: "recLoc1",
+    counts: [{ itemId: "recItemA", counted: 1 }, { itemId: "recGone", counted: 4 }] }, TOK));
+  eq(j.missing, 1, "the missing item is counted for the app to show");
+  eq(j.adjusted, 1, "the known one still applied");
+});
+
+await test("Count: bad input is refused before anything is written", async () => {
+  reset();
+  const p = (counts, extra = {}) => POST({ action: "countApply", locationId: "recLoc1", counts, ...extra }, TOK);
+  eq((await p([{ itemId: "recItemA", counted: -1 }])).statusCode, 400, "negative");
+  eq((await p([{ itemId: "recItemA", counted: "lots" }])).statusCode, 400, "not a number");
+  eq((await p([{ itemId: "recItemA", counted: 1 }, { itemId: "recItemA", counted: 2 }])).statusCode, 400,
+     "the same item twice would be adjusted twice from one on-hand figure");
+  eq((await p([])).statusCode, 400, "nothing counted");
+  eq((await POST({ action: "countApply", counts: [{ itemId: "recItemA", counted: 1 }] }, TOK)).statusCode, 400, "no location");
+  eq(countCalls.length, 0, "and none of them reached the database");
+});
+
+await test("Count: an unknown location is a 404", async () => {
+  reset();
+  const r = await POST({ action: "countApply", locationId: "recNowhere",
+    counts: [{ itemId: "recItemA", counted: 1 }] }, TOK);
+  eq(r.statusCode, 404, "never adjust stock at a location that doesn't exist");
+});
+
+await test("Count: a viewer can't apply a count", async () => {
+  reset();
+  const VIEWER = signToken({ id: "recView", role: "viewer" });
+  eq((await POST({ action: "countApply", locationId: "recLoc1",
+    counts: [{ itemId: "recItemA", counted: 1 }] }, VIEWER)).statusCode, 403, "viewer blocked");
+});
+
+await test("Count: the difference is computed from on-hand INSIDE the statement", async () => {
+  const src = readFileSync(new URL("../netlify/functions/inventory.js", import.meta.url), "utf8");
+  const at = src.indexOf("async function handleCountApply");
+  const fn = src.slice(at, at + 4000);
+  ok(/inp\.counted - COALESCE\(s\.qty_on_hand, 0\)/.test(fn),
+     "a delta from the phone would undo material logged during the count");
+  ok(/WHERE cur\.delta <> 0/.test(fn), "a matching count writes nothing");
 });
 
 await test("ADJ: the location matches BOTH handle forms (a truck made in the app)", async () => {

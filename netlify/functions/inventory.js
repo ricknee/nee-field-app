@@ -2612,6 +2612,78 @@ async function handleBulkApply(body) {
 
 
 
+// ── COUNT STOCK (round 5, docs/PLAN-inventory-usability.md R5-A) ───────────
+// Stand at a truck or shop, type what is really there, apply. Any signed-in
+// non-viewer may apply (owner, 2026-11-08: the crew counts their own trucks,
+// and it goes straight in). Stamped with the counter's name from the SESSION
+// and noted "Stock count", so every change is visible in Recent Logs.
+//
+// Same rule as Adjust and the bulk counts: post the DIFFERENCE from on-hand as
+// read RIGHT NOW, never a number computed on the phone — material logged while
+// someone was counting must not be undone by the count.
+//
+// ⚠ ONE statement for the whole count, unlike bulkApply's row loop (two round
+// trips per row). A full truck is ~100 items, and 200 sequential queries can
+// run past the function's time limit, leaving half a count applied.
+async function handleCountApply(body, authUser) {
+  const locationId = String(body?.locationId || "").trim();
+  const counts = Array.isArray(body?.counts) ? body.counts : [];
+  if (!locationId) return resp(400, { ok: false, error: "Pick a location." });
+  if (!counts.length) return resp(400, { ok: false, error: "Nothing counted." });
+  if (counts.length > BULK_MAX_ROWS) return resp(400, { ok: false, error: "Too many items in one count." });
+
+  const handles = [], qtys = [], seen = new Set();
+  for (const c of counts) {
+    const h = String(c?.itemId || "").trim();
+    const n = Number(c?.counted);
+    if (!h) return resp(400, { ok: false, error: "A counted row has no item." });
+    if (!Number.isFinite(n) || n < 0) return resp(400, { ok: false, error: "Counts must be 0 or more." });
+    // A duplicate would be adjusted twice from the same on-hand figure.
+    if (seen.has(h)) return resp(400, { ok: false, error: "The same item was counted twice." });
+    seen.add(h); handles.push(h); qtys.push(n);
+  }
+
+  const me = authUser?.id ? await neonEmployeeById(authUser.id) : null;
+  const enteredBy = me?.name || String(body?.enteredBy || "") || null;
+
+  const rows = await neonWrite("countApply",
+    `WITH input AS (
+       SELECT * FROM unnest($2::text[], $3::numeric[]) AS t(item_handle, counted)
+     ), loc AS (
+       SELECT id FROM locations WHERE airtable_id = $1::text OR id::text = $1::text LIMIT 1
+     ), cur AS (
+       SELECT i.id AS item_id, inp.item_handle, inp.counted,
+              round(inp.counted - COALESCE(s.qty_on_hand, 0), 4) AS delta
+         FROM input inp
+         JOIN inventory_items i ON i.airtable_id = inp.item_handle OR i.id::text = inp.item_handle
+         CROSS JOIN loc
+         LEFT JOIN v_stock_on_hand s ON s.item_id = i.id AND s.location_id = loc.id
+     ), ins AS (
+       INSERT INTO inventory_transactions
+         (txn_date, item_airtable_id, item_id, quantity, txn_type,
+          from_location_airtable_id, from_location_id,
+          to_location_airtable_id, to_location_id, notes, entered_by, synced_at)
+       SELECT now(), cur.item_handle, cur.item_id, abs(cur.delta), 'Adjustment',
+              CASE WHEN cur.delta < 0 THEN $1::text END, CASE WHEN cur.delta < 0 THEN loc.id END,
+              CASE WHEN cur.delta > 0 THEN $1::text END, CASE WHEN cur.delta > 0 THEN loc.id END,
+              'Stock count', $4::text, now()
+         FROM cur CROSS JOIN loc
+        WHERE cur.delta <> 0
+       RETURNING id
+     )
+     SELECT (SELECT count(*) FROM loc)::int   AS loc_found,
+            (SELECT count(*) FROM input)::int AS sent,
+            (SELECT count(*) FROM cur)::int   AS matched,
+            (SELECT count(*) FROM ins)::int   AS adjusted`,
+    [locationId, handles, qtys, enteredBy]);
+
+  const r = rows[0] || {};
+  if (!r.loc_found) return resp(404, { ok: false, error: "That location wasn't found." });
+  const missing = (Number(r.sent) || 0) - (Number(r.matched) || 0);
+  return resp(200, { ok: true, counted: Number(r.sent) || 0, adjusted: Number(r.adjusted) || 0,
+                     unchanged: (Number(r.matched) || 0) - (Number(r.adjusted) || 0), missing });
+}
+
 // ── DELETE ─────────────────────────────────────────────────
 async function handleDelete(body) {
   const { txId } = body || {};
@@ -4066,6 +4138,7 @@ export async function handler(event) {
       if (body.action === "login")           return await handleLogin(body);
       if (body.action === "submitCart")      return await handleSubmitCart(body, authedUser(event));
       if (body.action === "undoSubmit")      return await handleUndoSubmit(body, authedUser(event));
+      if (body.action === "countApply")      return await handleCountApply(body, authedUser(event));
       if (body.action === "receive")         return await handleReceive(body);
       if (body.action === "transfer")        return await handleTransfer(body);
       if (body.action === "adjustment")      return await handleAdjustment(body);

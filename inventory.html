@@ -59,6 +59,8 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .hdr h2{font-size:16px;font-weight:600;flex:1;}
 .hdr-badge{font-size:11px;color:var(--dim);background:var(--slate);padding:3px 10px;border-radius:20px;white-space:nowrap;}
 .hdr-out{background:none;border:1px solid var(--border);border-radius:16px;color:var(--dim);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:5px 14px;white-space:nowrap;}
+/* While a search box is focused on a phone: room below so it can scroll to the top, clear of the keyboard. */
+.kb-room{padding-bottom:65vh !important;}
 /* Home header wraps onto a second row for the account line (fits a phone). */
 #s-home .hdr{flex-wrap:wrap;row-gap:8px;}
 .hdr-acct{flex-basis:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px;color:var(--muted);}
@@ -7444,6 +7446,50 @@ function handleScanResult(val) {
 // TOAST
 // ═══════════════════════════════════════════════════════════
 var toastTimer;
+// ── Keep search results above the phone keyboard ───────────────────────────
+// The on-screen keyboard covers the bottom of the screen without shrinking our
+// scroll panels, so a search box low on the page showed its results UNDER the
+// keyboard. On a touch device, focusing any search or pick-list box scrolls it
+// near the top of its panel (adding temporary room at the bottom so it can get
+// there). One listener covers every such box, present and future.
+function isSearchBox(el) {
+  if (!el || el.tagName !== "INPUT") return false;
+  if (el.classList.contains("combo-inp")) return true;
+  if (/-search$/.test(el.id || "")) return true;
+  return /Search\(/.test(el.getAttribute("oninput") || "");
+}
+function scrollPanelOf(el) {
+  for (var p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+    var oy = getComputedStyle(p).overflowY;
+    if (oy === "auto" || oy === "scroll") return p;
+  }
+  return null;
+}
+document.addEventListener("focusin", function(e) {
+  var el = e.target;
+  if (!isSearchBox(el)) return;
+  try { if (!window.matchMedia("(pointer: coarse)").matches) return; } catch (x) { return; }
+  var panel = scrollPanelOf(el);
+  if (!panel) return;
+  // A dropdown list INSIDE its own small scroller (e.g. the estimate item
+  // picker) is the panel's job, not ours: only lift boxes in a page panel.
+  if (panel.clientHeight < window.innerHeight * 0.5) return;
+  clearTimeout(panel._kbDrop);
+  panel.classList.add("kb-room");
+  function lift() {
+    var top = el.getBoundingClientRect().top - panel.getBoundingClientRect().top;
+    if (top > 12) panel.scrollTop += top - 12;
+  }
+  // Twice: once now, once after the keyboard has finished sliding in.
+  setTimeout(lift, 60);
+  setTimeout(lift, 380);
+  el.addEventListener("blur", function onBlur() {
+    el.removeEventListener("blur", onBlur);
+    // Delayed so a tap on a result lands before the page shortens under it.
+    panel._kbDrop = setTimeout(function(){ panel.classList.remove("kb-room"); }, 600);
+  });
+});
+
 // ── #6 Undo after logging ───────────────────────────────────────────────────
 // Offered for 2 minutes; the server allows 10. The gap is deliberate: a slow
 // phone or a tap at 1:59 must never be offered an undo the server then refuses.

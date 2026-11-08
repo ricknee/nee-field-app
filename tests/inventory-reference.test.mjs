@@ -16,6 +16,8 @@
 // Run:  & "C:\Users\irick\nodejs\node.exe" tests/inventory-reference.test.mjs
 // ---------------------------------------------------------------------------
 
+import { readFileSync } from "node:fs";
+
 const MAIN_BASE = "appMain0000000000";
 const INV_BASE  = "appInv00000000000";
 process.env.AIRTABLE_API_KEY  = "test-key";
@@ -43,6 +45,7 @@ const txnDeletes = [];   // every DELETE FROM inventory_transactions id
 const txnMarks   = [];   // every markTransactionsPushed id-array
 let   txnReplay  = [];   // rows the replay SELECT returns for an already-submitted cart
 let   txnDeleteMisses = new Set();  // ids the DELETE should report as removing nothing
+let   txnPushed = new Set();        // ids that exist but are already pushed (expense_created)
 let   adjOnHand = 0;                // what v_stock_on_hand reports for the adjustment's pair
 const stockUpdates = [];            // every reorder-point UPDATE
 const stockCreates = [];            // every stock_settings upsert
@@ -290,12 +293,18 @@ globalThis.fetch = async (url, opts = {}) => {
     } else if (/UPDATE inventory_transactions[\s\S]*expense_created = true/i.test(sql)) {
       txnMarks.push(pgArray(body.params?.[0]));
       payload = neonReply([], []);
+    } else if (/SELECT expense_created FROM inventory_transactions WHERE id/i.test(sql)) {
+      // The "why did nothing delete" lookup: pushed rows exist, misses do not.
+      payload = neonReply(["expense_created"], txnPushed.has(body.params?.[0])
+        ? [{ expense_created: true }] : []);
     } else if (/DELETE FROM inventory_transactions/i.test(sql)) {
       txnDeletes.push(body.params?.[0]);
       // RETURNING id — an empty result is how "nothing was deleted" reaches the
-      // handler, and the handler now has to turn that into a 404.
-      payload = neonReply(["id"], txnDeleteMisses.has(body.params?.[0])
-        ? [] : [{ id: body.params?.[0] }]);
+      // handler, and the handler now has to turn that into a 404 (or 409 if pushed).
+      // A pushed row is skipped by the statement's own expense_created guard.
+      const skip = txnDeleteMisses.has(body.params?.[0])
+        || (txnPushed.has(body.params?.[0]) && /expense_created IS NOT TRUE/i.test(sql));
+      payload = neonReply(["id"], skip ? [] : [{ id: body.params?.[0] }]);
     } else if (/INSERT INTO material_estimates/i.test(sql)) {
       // The estimate is BORN here now — it returns its own uuid rather than
       // mirroring one Airtable handed over.
@@ -474,7 +483,7 @@ const json = (r) => JSON.parse(r.body);
 function reset() {
   neonDown = false; neonWrites.length = 0; atRequested.length = 0;
   txnWrites.length = 0; txnDeletes.length = 0;
-  txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set();
+  txnInserts.length = 0; txnMarks.length = 0; txnReplay = []; txnDeleteMisses = new Set(); txnPushed = new Set();
   txnInsertSql.length = 0;
   adjOnHand = 0;
   stockUpdates.length = 0; stockCreates.length = 0; stockMissing = new Set();
@@ -1256,6 +1265,31 @@ await test("S1: deleting a transaction that removed nothing is a 404, not a succ
   const missing = await POST({ action: "delete", txId: "22222222-2222-4222-8222-222222222222" });
   eq(missing.statusCode, 404,
      "on-hand would otherwise keep counting stock the user believes they removed");
+});
+
+await test("Del: a pushed transaction is refused (409), never deleted", async () => {
+  reset();
+  const id = "33333333-3333-4333-8333-333333333333";
+  txnPushed.add(id);
+  const r = await POST({ action: "delete", txId: id });
+  eq(r.statusCode, 409,
+     "deleting it would put the stock back while the job's expense stays charged");
+  eq(json(r).pushed, true, "the app can tell 'already pushed' from 'not found'");
+});
+
+await test("Del: the guard lives in the DELETE statement, not only in the app", async () => {
+  const src = readFileSync(new URL("../netlify/functions/inventory.js", import.meta.url), "utf8");
+  const at = src.indexOf("async function deleteTxn");
+  const fn = src.slice(at, at + 600);
+  eq(/DELETE FROM inventory_transactions[\s\S]*?expense_created IS NOT TRUE/.test(fn), true,
+     "a read-then-delete would let a push land in between");
+});
+
+await test("Del: history tells the app which rows are pushed", async () => {
+  const src = readFileSync(new URL("../netlify/functions/inventory.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleHistory"), src.indexOf("async function handleHistory") + 4000);
+  eq(/t\.expense_created/.test(fn) && /pushed:\s+r\.expense_created === true/.test(fn), true,
+     "without it the app shows Del on rows the server will refuse");
 });
 
 await test("D: the estimates list totals come from the view, not a stored rollup", async () => {

@@ -508,11 +508,24 @@ async function insertTxns(rows, submitId = null) {
 // — it upserts and never removes — so this has always had to be right. It now
 // also has to report failure, because on-hand keeps counting a transaction that
 // did not actually leave.
+//
+// ⚠⚠ NEVER A PUSHED ROW. Once a Use/Return is pushed, the job already carries an
+// expense for it. Deleting the ledger row then puts the stock back while the job
+// stays charged — material billed that, by the stock numbers, never left. The
+// guard is in the DELETE itself, not a read beforehand, so a push landing between
+// the check and the delete cannot slip through.
+// Returns "deleted" | "pushed" | "missing".
 async function deleteTxn(id) {
-  if (!id) return false;
+  if (!id) return "missing";
   const rows = await neonWrite("deleteTxn",
-    `DELETE FROM inventory_transactions WHERE id = $1::uuid RETURNING id`, [id]);
-  return rows.length > 0;
+    `DELETE FROM inventory_transactions
+      WHERE id = $1::uuid AND expense_created IS NOT TRUE
+      RETURNING id`, [id]);
+  if (rows.length > 0) return "deleted";
+  // Nothing removed: say WHY, because "already pushed" needs a different fix.
+  const left = await neonWrite("deleteTxn.why",
+    `SELECT expense_created FROM inventory_transactions WHERE id = $1::uuid`, [id]);
+  return left.length && left[0].expense_created === true ? "pushed" : "missing";
 }
 
 // ── KEEP NEON IN STEP AFTER AN ESTIMATE WRITE (Step D) ─────────────────────
@@ -805,7 +818,7 @@ async function handleHistory(params) {
   // presented as a right one. An error is the honest answer.
   const nq = await neonQuery(
     `SELECT t.id, t.txn_date, t.quantity, t.txn_type, t.notes, t.entered_by,
-            t.unit_cost_snapshot, t.item_airtable_id,
+            t.unit_cost_snapshot, t.item_airtable_id, t.expense_created,
             i.name AS item_name, i.unit_of_measure, i.default_unit_cost,
             fl.name AS from_name, tl.name AS to_name
        FROM inventory_transactions t
@@ -845,6 +858,8 @@ async function handleHistory(params) {
           job:       parts[0] || "",
           notes:     parts.slice(1).join(" | "),
           enteredBy: r.entered_by || "",
+          // The app hides Del on these; the server refuses them either way.
+          pushed:    r.expense_created === true,
         };
       }),
     });
@@ -2524,7 +2539,9 @@ async function handleDelete(body) {
   // see the id-currency note on handleHistory. Reporting a delete that removed
   // nothing would leave on-hand counting stock the user believes they removed.
   const gone = await deleteTxn(txId);
-  if (!gone) return resp(404, { ok: false, error: "Transaction not found." });
+  if (gone === "pushed") return resp(409, { ok: false, pushed: true,
+    error: "Already pushed to the job's expenses. Fix the expense in the field app instead — deleting this would put the stock back while the job stays charged." });
+  if (gone !== "deleted") return resp(404, { ok: false, error: "Transaction not found." });
   return resp(200, { ok: true, deleted: txId });
 }
 

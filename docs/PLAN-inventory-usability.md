@@ -259,7 +259,12 @@ question. Merge only if the crew still picks the wrong one.
 **Size:** large-ish (backend + frontend + tests). It's money-adjacent because it removes
 ledger rows that would otherwise be pushed, so it should get the full test treatment.
 
-### Found while planning #6 — the existing Recent Logs **Del** button
+### Found while planning #6 — the existing Recent Logs **Del** button — ✅ FIXED 2026-11-07
+
+Shipped: Del shows only for admins and only on unpushed rows. Pushed rows show "✓ pushed".
+The server refuses a pushed row with a 409; the guard is inside the DELETE statement
+(`expense_created IS NOT TRUE`), so a push landing mid-request can't slip through.
+Tests are in `tests/inventory-reference.test.mjs` ("Del: …").
 
 1. **Everyone sees "Del", but only admins are allowed** (`delete` is in `_ADMIN_WRITES`).
    An employee tapping it gets an error. **Fix:** show it to admins only (a one-line UI fix).

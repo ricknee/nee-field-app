@@ -2272,10 +2272,13 @@ function renderHistory() {
       html += '</div>';
       html += '<div class="tx-right"><div class="tx-qty">×' + Math.abs(tx.qty) + '</div>';
       if (isAdmin && tx.cost > 0) html += '<div class="tx-price">' + fmtCurrency(tx.total) + '</div>';
-      html += '<button class="tx-del" onclick="deleteTx(\'' + tx.id + '\')">Del</button>';
+      // Admin only (the server refuses everyone else), and never on a pushed row:
+      // that would put the stock back while the job stays charged.
+      if (isAdmin && !tx.pushed) html += '<button class="tx-del" onclick="deleteTx(\'' + tx.id + '\')">Del</button>';
       html += '</div></div>';
       html += '<div class="tx-tags">';
       html += '<span class="tag gold">' + tx.type + '</span>';
+      if (tx.pushed) html += '<span class="tag">✓ pushed</span>';
       if (tx.from) html += '<span class="tag">' + tx.from + '</span>';
       if (tx.to)   html += '<span class="tag">→ ' + tx.to + '</span>';
       html += '<span class="tag">' + tx.date + '</span>';

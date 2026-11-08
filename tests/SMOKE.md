@@ -67,6 +67,7 @@ anything that upserts `job_estimates`.
     Search instead / Scan again.
   - Needs attention (#8, admin only): the box's $ equals the Push Expenses grand total (include a taxable job). Each item opens its screen. Push something, go home, and the figure drops. An employee sees no box. A failed request hides its item; it never reads 0.
   - Recent items (#7): on Use on Job, add two items to the cart, then go back to the search. A Recent row shows them, newest first, and tapping one selects it. Signed in as someone else on the same device: their own list, not yours.
+  - Recent Logs Del: as an employee, there's no Del button anywhere. As an admin, a pushed row shows "✓ pushed" and no Del; an unpushed row still deletes and its stock comes back.
   - Home order (round 2): Job materials, Look up, Estimates (admin only), Stock & transfers, More, Admin · Daily, Admin · Setup. Signed in as an employee: no Estimates, Adjust or Admin sections, and every other button is still there and opens its screen.
 
 ---

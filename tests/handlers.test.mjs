@@ -4831,11 +4831,13 @@ await test("generator service calls: a dry run never depends on the switch", asy
 });
 
 // ── payroll archive → R2 (audit item 04, db/schema/052) ─────────────────────
-await test("payroll archive: copying every payroll PDF in the company is strict admin", async () => {
-  eq((await POST("copyPayrollFilesToR2", {}, EMP_TOK)).statusCode, 403, "the crew cannot");
-  eq((await POST("copyPayrollFilesToR2", {}, OFFICE_TOK)).statusCode, 403,
-     "nor office — payroll is the one tier office does not get");
-  eq((await POST("copyPayrollFilesToR2", {}, VIEWER_TOK)).statusCode, 403, "nor a viewer");
+await test("retired Airtable copy tools are gone: even an admin gets 'unknown action'", async () => {
+  // Removed 2026-11-08 (finished one-offs; Airtable is retired). A 400 proves
+  // nothing dispatches to them any more.
+  for (const a of ["copyLiftPhotosToR2", "copyFleetPhotosToR2", "copyEstimatePdfsToR2",
+                   "copyPayrollFilesToR2", "backfillContacts"]) {
+    eq((await POST(a, {}, ADMIN_TOK)).statusCode, 400, `${a} no longer exists`);
+  }
 });
 
 await test("payrollRunsList: a run with no pdf_key sends the WHOLE list back to Airtable", async () => {

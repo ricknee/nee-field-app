@@ -1229,6 +1229,11 @@ async function handlePartNumbersQueue() {
          FROM vendor_invoice_lines l
          JOIN vendor_invoices v ON v.id = l.invoice_id
         WHERE v.lines_status = 'ok' AND NOT l.is_charge AND l.qty > 0
+          -- A line with no part number can't be linked (a link is keyed on
+          -- vendor + part), and every blank-part line of a vendor would fold
+          -- into ONE card that mixes unrelated items (CED: a fan box, a plate,
+          -- conduit…) and refuses to save. Leave them out.
+          AND btrim(COALESCE(l.vendor_part, '')) <> ''
      ), agg AS (
        SELECT vendor, vendor_part,
               count(DISTINCT inv_id)::int                         AS tickets,

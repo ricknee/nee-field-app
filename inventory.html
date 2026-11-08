@@ -4107,12 +4107,14 @@ function renderAdjustForm() {
     '</div>' +
 
     '<div class="field-group"><div class="field-lbl">Location</div>' +
-    '<select class="field-sel" id="adj-loc"><option value="">— Select location —</option>' + locOpts + '</select></div>' +
+    '<select class="field-sel" id="adj-loc" onchange="showAdjCurrent()"><option value="">— Select location —</option>' + locOpts + '</select></div>' +
 
     '<div class="field-group"><div class="field-lbl">Item</div>' +
     '<div id="adj-item-area">' + renderItemSearchFor("adj") + '</div></div>' +
 
     '<div class="field-group" id="adj-count-area" style="display:none">' +
+    // What the records say is there now, so the count can be compared before saving.
+    '<div class="cr-sys" id="adj-current" style="font-size:14px;color:var(--dim);margin:0 0 10px;"></div>' +
     '<div class="field-lbl">Actual Count (what you physically counted)</div>' +
     '<div class="qty-row">' +
     '<button class="qty-pm" onclick="adjAdjQty(-1)">−</button>' +
@@ -4140,7 +4142,34 @@ function pickItemFor_adj_override(id) {
     '</div><button class="chg-btn" onclick="document.getElementById(\'adj-item-area\').innerHTML=renderItemSearchFor(\'adj\');adjItemData=null;document.getElementById(\'adj-count-area\').style.display=\'none\';hideWireToggle(\'adj\');">Change</button></div>';
   document.getElementById("adj-count-area").style.display = "block";
   configureWireToggle("adj");
+  showAdjCurrent();
   document.getElementById("adj-qty").focus();
+}
+
+// "Current: 12 ea" for the picked item at the picked location — green above
+// zero, red below, grey at zero (same as Count Stock). Re-run on location change.
+async function showAdjCurrent() {
+  var el = document.getElementById("adj-current");
+  if (!el) return;
+  var item = adjItemData;
+  var locId = document.getElementById("adj-loc")?.value;
+  var loc = allLocations.find(function(l){ return l.id === locId; });
+  if (!item || !loc) { el.innerHTML = ""; return; }
+  el.innerHTML = "Current: …";
+  try {
+    var d = await apiGet("stockLevels", { itemId: item.id, itemName: item.name });
+    if (adjItemData !== item || document.getElementById("adj-loc")?.value !== locId) return;   // changed meanwhile
+    var lv = (d.levels || []).find(function(x){ return x.locationName === loc.name; });
+    var q = lv ? Number(lv.qtyOnHand) || 0 : 0;
+    var isWire = (lv && lv.wireWeight > 0) || item.wireFtPerLb > 0;
+    var uom = isWire ? "lb" : (item.uom || "ea");
+    var color = q > 0 ? "var(--green)" : q < 0 ? "var(--red)" : "var(--dim)";
+    el.innerHTML = 'Current at ' + escapeAttr(loc.name) + ': <b style="color:' + color + ';font-size:16px;font-weight:800;">' +
+      fmtQty(q) + '</b> ' + escapeAttr(uom) +
+      (isWire && lv && lv.wireFt > 0 ? ' · ' + fmtQty(Math.round(lv.wireFt)) + ' ft' : '');
+  } catch (ex) {
+    el.innerHTML = '<span style="color:var(--muted);">Current: couldn\'t load</span>';
+  }
 }
 
 function adjAdjQty(d) {

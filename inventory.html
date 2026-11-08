@@ -7465,9 +7465,20 @@ function scrollPanelOf(el) {
   }
   return null;
 }
+// Any box you type into. Search boxes go to the top (their results need the
+// room below); every other box — quantity, cost, notes — moves only as far as
+// it must to sit above the keyboard, with room for the buttons just under it
+// (+/−, Add to Cart).
+function isTypingBox(el) {
+  if (!el) return false;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName !== "INPUT") return false;
+  return !/^(checkbox|radio|button|submit|file|range|color|hidden|date|time|datetime-local|month|week)$/i.test(el.type || "");
+}
 document.addEventListener("focusin", function(e) {
   var el = e.target;
-  if (!isSearchBox(el)) return;
+  if (!isTypingBox(el)) return;
+  var toTop = isSearchBox(el);
   try { if (!window.matchMedia("(pointer: coarse)").matches) return; } catch (x) { return; }
   var panel = scrollPanelOf(el);
   if (!panel) return;
@@ -7477,8 +7488,15 @@ document.addEventListener("focusin", function(e) {
   clearTimeout(panel._kbDrop);
   panel.classList.add("kb-room");
   function lift() {
-    var top = el.getBoundingClientRect().top - panel.getBoundingClientRect().top;
-    if (top > 12) panel.scrollTop += top - 12;
+    var r = el.getBoundingClientRect();
+    var top = r.top - panel.getBoundingClientRect().top;
+    if (toTop) { if (top > 12) panel.scrollTop += top - 12; return; }
+    // Visible height above the keyboard. visualViewport shrinks when the
+    // keyboard opens; window.innerHeight is the fallback.
+    var vv = window.visualViewport;
+    var visibleBottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+    var need = r.bottom + 90 - visibleBottom;     // 90px ≈ the row of buttons below
+    if (need > 0) panel.scrollTop += Math.min(need, Math.max(0, top - 12));
   }
   // Twice: once now, once after the keyboard has finished sliding in.
   setTimeout(lift, 60);

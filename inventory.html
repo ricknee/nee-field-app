@@ -1755,7 +1755,7 @@ function onItemSearch() {
     var drop = document.getElementById("search-drop");
     if (!drop) return;
     if (!q) { drop.innerHTML = ""; return; }
-    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); }).slice(0,50);
+    var hits = searchItems(q).slice(0,50);
     if (!hits.length) { drop.innerHTML = '<div class="search-drop"><div class="empty" style="padding:10px;">No items found</div></div>'; return; }
     drop.innerHTML = '<div class="search-drop">' + hits.map(function(i){
       return '<div class="drop-item" onclick="pickItem(\'' + i.id + '\')">' +
@@ -2010,8 +2010,12 @@ async function submitCart() {
 
   try {
     await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: submitLocationId, enteredBy: currentUser.name, submitId: cartSubmitId });
-    // The confirmation carries the Undo (#6) instead of a plain toast.
-    showUndoBar(cartSubmitId, cart.length, jobName, logMode);
+    // The confirmation carries the Undo (#6) instead of a plain toast. It keeps a
+    // copy of the cart so an Undo puts everything straight back to fix.
+    showUndoBar(cartSubmitId, cart.length, jobName, logMode, {
+      mode: logMode, jobName: jobName, jobId: jobId, locationId: submitLocationId,
+      items: JSON.parse(JSON.stringify(cart))
+    });
     cart = [];
     cartSubmitId = null;   // accepted — the next cart is a new submission
     goHome();
@@ -2085,7 +2089,7 @@ function onItemSearchFor(prefix) {
     var q = searchNorm(document.getElementById(prefix + "-search")?.value || "").trim();
     var drop = document.getElementById(prefix + "-drop");
     if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
-    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); }).slice(0,50);
+    var hits = searchItems(q).slice(0,50);
     drop.innerHTML = hits.length ? '<div class="search-drop">' + hits.map(function(i){
       return '<div class="drop-item" onclick="pickItemFor(\'' + prefix + '\',\'' + i.id + '\')">' +
         '<div class="drop-name">' + i.name + '</div>' +
@@ -4175,7 +4179,7 @@ function onStockSearchKey(e) {
   var item = allItems.find(function(i){ return i.barcode && String(i.barcode).trim() === raw; });
   if (!item) {
     var q = searchNorm(raw);
-    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); });
+    var hits = searchItems(q);
     if (hits.length === 1) item = hits[0];
   }
   if (item) { e.preventDefault(); lookupStock(item.id); }
@@ -4703,7 +4707,7 @@ function onStockSearch() {
     var q    = searchNorm(document.getElementById("stock-search")?.value || "").trim();
     var drop = document.getElementById("stock-drop");
     if (!drop || !q) { if(drop) drop.innerHTML=""; return; }
-    var hits = allItems.filter(function(i){ return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); }).slice(0,50);
+    var hits = searchItems(q).slice(0,50);
     drop.innerHTML = hits.length
       ? '<div class="search-drop">' + hits.map(function(i){
           return '<div class="drop-item" onclick="lookupStock(\'' + i.id + '\')">' +
@@ -6677,7 +6681,7 @@ function labelShownItems() {
     if (!labelInCat(i)) return false;
     if (labelSize && labelItemSize(i) !== labelSize) return false;
     if (labelColor && labelItemColor(i) !== labelColor) return false;
-    if (q && !searchNorm(i.name).includes(q) && !searchNorm(i.barcode).includes(q)) return false;
+    if (q && !itemMatches(i, q)) return false;
     return true;
   }).sort(function(a, b){ return a.name.localeCompare(b.name); });
 }
@@ -7471,6 +7475,70 @@ function handleScanResult(val) {
 // TOAST
 // ═══════════════════════════════════════════════════════════
 var toastTimer;
+// ── Item search: words in any order, close spellings, best first ───────────
+// Every item search box goes through searchItems(), so they all behave alike.
+//  • Each typed word must appear somewhere in the name, barcode, size or
+//    category, in ANY order: "emt 3/4" finds 3/4" EMT.
+//  • If that finds nothing, allow a typo per word (1 letter off; 2 for long
+//    words): "recptacle" still finds RECEPTACLE. Only as a fallback, so a
+//    correct search never gets padded with near-misses.
+//  • Ranked: name starts with the text, then name contains it, then every
+//    word in the name, then the rest (e.g. matched on category only).
+function itemHay(i) {
+  return searchNorm([i.name, i.barcode, i.size, i.cat].filter(Boolean).join(" "));
+}
+function searchWords(q) { return searchNorm(q).trim().split(/\s+/).filter(Boolean); }
+function itemMatches(i, q) {
+  var hay = itemHay(i);
+  return searchWords(q).every(function(w){ return hay.indexOf(w) !== -1; });
+}
+function editDistanceWithin(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return false;
+  var prev = [], cur, j;
+  for (j = 0; j <= b.length; j++) prev[j] = j;
+  for (var x = 1; x <= a.length; x++) {
+    cur = [x]; var rowMin = x;
+    for (j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[x - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > max) return false;
+    prev = cur;
+  }
+  return prev[b.length] <= max;
+}
+function itemMatchesLoosely(i, words) {
+  var hay = itemHay(i);
+  var hayWords = hay.split(/[\s\/(),\-"]+/).filter(Boolean);
+  return words.every(function(w) {
+    if (hay.indexOf(w) !== -1) return true;
+    if (w.length < 4) return false;               // too short to guess at
+    var max = w.length >= 7 ? 2 : 1;
+    return hayWords.some(function(h){ return editDistanceWithin(w, h, max); });
+  });
+}
+function searchItems(q) {
+  var words = searchWords(q);
+  if (!words.length) return [];
+  var hits = allItems.filter(function(i){ return itemMatches(i, q); });
+  if (!hits.length) hits = allItems.filter(function(i){ return itemMatchesLoosely(i, words); });
+  var whole = searchNorm(q).trim();
+  function rank(i) {
+    var n = searchNorm(i.name);
+    if (n.indexOf(whole) === 0) return 0;
+    if (n.indexOf(whole) !== -1) return 1;
+    var inName = words.every(function(w){ return n.indexOf(w) !== -1; });
+    // "1/2 emt": 1/2" EMT … starts with the first word, so it beats 1-1/2" EMT …
+    if (inName && n.indexOf(words[0]) === 0) return 2;
+    if (inName) return 3;
+    return 4;                                      // matched via size/category/typo
+  }
+  return hits
+    .map(function(i, k){ return { i: i, r: rank(i), k: k }; })
+    .sort(function(a, b){ return a.r - b.r || a.k - b.k; })
+    .map(function(x){ return x.i; });
+}
+
 // ── Keep search results above the phone keyboard ───────────────────────────
 // The on-screen keyboard covers the bottom of the screen without shrinking our
 // scroll panels, so a search box low on the page showed its results UNDER the
@@ -7540,7 +7608,7 @@ document.addEventListener("focusin", function(e) {
 var UNDO_UI_MS = 2 * 60 * 1000;
 var undoState = null;   // { submitId, timer }
 
-function showUndoBar(submitId, count, jobName, mode) {
+function showUndoBar(submitId, count, jobName, mode, snapshot) {
   hideUndoBar();
   if (!submitId) return;
   var bar = document.getElementById("undo-bar");
@@ -7554,7 +7622,22 @@ function showUndoBar(submitId, count, jobName, mode) {
     '<button class="ub-undo" id="ub-undo" onclick="undoLastSubmit()">Undo</button>' +
     '<button class="ub-x" onclick="hideUndoBar()" aria-label="Dismiss">✕</button>';
   bar.style.display = "flex";
-  undoState = { submitId: submitId, timer: setTimeout(hideUndoBar, UNDO_UI_MS) };
+  undoState = { submitId: submitId, snapshot: snapshot || null, timer: setTimeout(hideUndoBar, UNDO_UI_MS) };
+}
+
+// Reopen the log screen with an undone cart. A NEW submit id is minted on the
+// next Submit (cartSubmitId stays null), so the resubmit is its own submission.
+// Returns false if the screen can't be rebuilt right now (data not loaded).
+function refillCart(snap) {
+  if (!dataReady) return false;
+  goLog(snap.mode || "Use");
+  if (snap.jobName) selectJob(snap.jobId || "", snap.jobName);
+  var locSel = document.getElementById(snap.mode === "ReturnToShop" ? "log-dest-loc" : "log-from-loc");
+  if (locSel && snap.locationId) locSel.value = snap.locationId;
+  cart = snap.items.slice();
+  cartSubmitId = null;
+  renderCart();
+  return true;
 }
 
 function hideUndoBar() {
@@ -7567,14 +7650,22 @@ function hideUndoBar() {
 async function undoLastSubmit() {
   if (!undoState) return;
   var sid = undoState.submitId;
+  var snap = undoState.snapshot;
   var btn = document.getElementById("ub-undo");
   if (btn) { btn.disabled = true; btn.textContent = "Undoing…"; }
   try {
     var r = await apiPost({ action: "undoSubmit", submitId: sid });
     hideUndoBar();
-    showToast("↩ Undone — " + (r.undone || 0) + " line" + (r.undone === 1 ? "" : "s") + " removed, stock is back");
     // Stock and the pending-push total just moved; refresh the home figures.
     try { refreshHomeCounts(); } catch (e) {}
+    // Put the cart back (same screen, job, location, items) so the mistake is
+    // one edit away. Only AFTER the server said it's undone — never refill a
+    // cart whose lines are still logged, or a resubmit would log them twice.
+    if (snap && snap.items && snap.items.length && refillCart(snap)) {
+      showToast("↩ Undone — your items are back in the cart");
+    } else {
+      showToast("↩ Undone — " + (r.undone || 0) + " line" + (r.undone === 1 ? "" : "s") + " removed, stock is back");
+    }
   } catch (ex) {
     // Refused (pushed / too late / not yours) or failed: say why IN the bar —
     // the toast is one line and would clip it — and drop the Undo button, since
@@ -8286,7 +8377,7 @@ function renderEstimateItemResults(q) {
   var results = document.getElementById("est-item-results");
   if (!results) return;
   var items = q
-    ? allItems.filter(function(i) { return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); })
+    ? searchItems(q)
     : allItems.slice(0);
   items = items.slice(0, 50);
 
@@ -9177,7 +9268,7 @@ function renderTemplateItemResults(q) {
   var results = document.getElementById("tmpl-item-results");
   if (!results) return;
   var items = q
-    ? allItems.filter(function(i) { return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); })
+    ? searchItems(q)
     : allItems.slice(0);
   items = items.slice(0, 50);
 
@@ -11234,7 +11325,7 @@ function renderOrderItemResults(q) {
   var results = document.getElementById("order-item-results");
   if (!results) return;
   var items = q
-    ? allItems.filter(function(i) { return searchNorm(i.name).includes(q) || searchNorm(i.barcode).includes(q); })
+    ? searchItems(q)
     : allItems.slice(0);
   items = items.slice(0, 50);
 

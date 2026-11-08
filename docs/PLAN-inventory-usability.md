@@ -196,7 +196,11 @@ Job, Receive and Transfer. Only the second half was new:
 
 ## Next plans (written 2026-11-07, not built)
 
-### #11 — Edit the price where you see the item
+### #11 — Edit the price where you see the item — ✅ BUILT 2026-11-08
+
+Shipped as planned: `stockPriceHtml` / `saveStockCost` / `goWireCostCalcFor` in `inventory.html`.
+Save lights only for a real change, and a change of more than 3× either way asks first
+(slipped decimal). Back from the Wire Calculator redraws the price (popstate → `refreshStockPrice`).
 
 **Today.** A price can be changed in four places, and **every one already saves through
 the same action, `updateItemCost`**: inline on Use on Job (admin), inline on Recent Logs

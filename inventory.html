@@ -1352,6 +1352,8 @@ window.addEventListener("popstate", function() {
     document.querySelectorAll(".screen").forEach(function(s){ s.classList.remove("active"); });
     var el = document.getElementById("s-" + prev.screen);
     if (el) el.classList.add("active");
+    // A price saved in the Wire Calculator (#11 link) must show on return.
+    if (prev.screen === "stock") refreshStockPrice();
   }
 });
 
@@ -4735,15 +4737,23 @@ async function lookupStock(itemId) {
     // Price first, big — this screen doubles as the price check (there was a
     // separate Price Check tile; owner folded it in here to cut home-screen tiles).
     if (isAdmin) {
-      var cost = Number(stockItem.cost) || 0;
-      html += '<div style="margin-top:10px;font-size:26px;font-weight:800;line-height:1.1;color:' + (cost > 0 ? 'var(--gold)' : 'var(--muted)') + ';">' +
-        (cost > 0 ? fmtCurrency(cost) + '<span style="font-size:13px;font-weight:600;color:var(--dim);"> / ' + escapeHtml(stockItem.uom || 'unit') + '</span>'
-                  : '<span style="font-size:15px;">No price set</span>') + '</div>';
-      // Weighed wire is priced per lb; per-ft is what people compare. The ft/lb used
-      // is printed beside it so a wrong conversion is visible, not hidden.
-      if (cost > 0 && stockItem.wireFtPerLb > 0) {
-        html += '<div style="font-size:13px;color:var(--blue);font-weight:700;margin-top:3px;">≈ $' + (cost / stockItem.wireFtPerLb).toFixed(4) + ' / ft' +
-          '<span style="font-size:11px;color:var(--muted);font-weight:500;"> at ' + stockItem.wireFtPerLb + ' ft/lb</span></div>';
+      html += '<div id="stk-price">' + stockPriceHtml(stockItem) + '</div>';
+      // #11 (docs/PLAN-inventory-usability.md): change the price where you see it.
+      // Same updateItemCost action as every other price edit. Weighed wire is
+      // priced from an invoice's $/ft, so it goes to the Wire Calculator instead
+      // of taking a raw $/lb here.
+      if (stockItem.wireFtPerLb > 0) {
+        html += '<button onclick="goWireCostCalcFor(\'' + stockItem.id + '\')" style="margin-top:10px;background:var(--slate);border:none;border-radius:8px;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;padding:8px 12px;cursor:pointer;">🧮 Price from an invoice $/ft →</button>';
+      } else {
+        var curCost = Number(stockItem.cost) || 0;
+        html += '<div style="display:flex;align-items:center;gap:8px;margin-top:10px;">' +
+          '<span style="font-size:12px;color:var(--muted);">Unit cost $</span>' +
+          '<input id="stk-cost" type="number" min="0" step="0.01" inputmode="decimal" value="' + (curCost > 0 ? curCost : '') + '" placeholder="0.00" ' +
+            'oninput="onStockCostInput()" onkeydown="if(event.key===\'Enter\')saveStockCost()" onfocus="this.select()" ' +
+            'style="width:96px;background:var(--navy-lt);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;padding:7px 9px;outline:none;" />' +
+          '<span style="font-size:12px;color:var(--dim);">/ ' + escapeHtml(stockItem.uom || 'unit') + '</span>' +
+          '<button id="stk-cost-save" onclick="saveStockCost()" disabled style="margin-left:auto;background:var(--gold);border:none;border-radius:8px;color:var(--navy);font-family:inherit;font-size:13px;font-weight:700;padding:7px 14px;cursor:pointer;opacity:.4;">Save</button>' +
+        '</div>';
       }
     }
     html += '</div>';
@@ -4831,6 +4841,77 @@ async function lookupStock(itemId) {
   } catch(ex) {
     result.innerHTML = '<div class="empty">Error: ' + ex.message + '</div>';
   }
+}
+
+// The big price on the Check Stock card. Its own function so a save — here or
+// in the Wire Calculator — can redraw just this, not refetch the whole screen.
+function stockPriceHtml(item) {
+  var cost = Number(item.cost) || 0;
+  var html = '<div style="margin-top:10px;font-size:26px;font-weight:800;line-height:1.1;color:' + (cost > 0 ? 'var(--gold)' : 'var(--muted)') + ';">' +
+    (cost > 0 ? fmtCurrency(cost) + '<span style="font-size:13px;font-weight:600;color:var(--dim);"> / ' + escapeHtml(item.uom || 'unit') + '</span>'
+              : '<span style="font-size:15px;">No price set</span>') + '</div>';
+  // Weighed wire is priced per lb; per-ft is what people compare. The ft/lb used
+  // is printed beside it so a wrong conversion is visible, not hidden.
+  if (cost > 0 && item.wireFtPerLb > 0) {
+    html += '<div style="font-size:13px;color:var(--blue);font-weight:700;margin-top:3px;">≈ $' + (cost / item.wireFtPerLb).toFixed(4) + ' / ft' +
+      '<span style="font-size:11px;color:var(--muted);font-weight:500;"> at ' + item.wireFtPerLb + ' ft/lb</span></div>';
+  }
+  return html;
+}
+
+// Redraw the price (and box) after a save made elsewhere, e.g. coming Back from
+// the Wire Calculator. stockItem is the allItems object, so its cost is current.
+function refreshStockPrice() {
+  var el = document.getElementById("stk-price");
+  if (!el || !stockItem) return;
+  el.innerHTML = stockPriceHtml(stockItem);
+  var inp = document.getElementById("stk-cost");
+  if (inp) { var c = Number(stockItem.cost) || 0; inp.value = c > 0 ? c : ""; onStockCostInput(); }
+}
+
+// Save lights up only for a real change, so a stray tap can't re-save.
+function onStockCostInput() {
+  var inp = document.getElementById("stk-cost");
+  var btn = document.getElementById("stk-cost-save");
+  if (!inp || !btn || !stockItem) return;
+  var v = parseFloat(inp.value);
+  var ok = !isNaN(v) && v >= 0 && Math.abs(v - (Number(stockItem.cost) || 0)) > 1e-9;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? "1" : ".4";
+}
+
+async function saveStockCost() {
+  var inp = document.getElementById("stk-cost");
+  var btn = document.getElementById("stk-cost-save");
+  if (!inp || !btn || btn.disabled || !stockItem) return;
+  var item = stockItem;
+  var newCost = parseFloat(inp.value);
+  if (isNaN(newCost) || newCost < 0) { showToast("Enter a valid price", true); return; }
+  var old = Number(item.cost) || 0;
+  // A slipped decimal is the likely mistake ($1.50 → $15.00). Ask before a big jump.
+  if (old > 0 && (newCost > old * 3 || newCost < old / 3) &&
+      !confirm(item.name + "\n\n" + fmtCurrency(old) + " → " + fmtCurrency(newCost) + " per " + (item.uom || "unit") + "\n\nThat's a big change. Save it?")) return;
+  btn.disabled = true; btn.textContent = "Saving…";
+  try {
+    // item.id is the item's HANDLE (rec id or uuid); the backend resolves either.
+    await apiPost({ action: "updateItemCost", itemId: item.id, cost: newCost });
+    item.cost = newCost;   // the allItems object, so carts and other screens see it
+    showToast("✓ Price updated to $" + newCost.toFixed(2));
+    btn.textContent = "Save";
+    if (stockItem === item) refreshStockPrice();
+  } catch (ex) {
+    showToast("Price update failed: " + (ex.message || ex), true);
+    btn.textContent = "Save";
+    onStockCostInput();
+  }
+}
+
+// Check Stock → Wire Calculator with this item already picked. Back returns to
+// Check Stock, whose price refreshes in the popstate handler.
+function goWireCostCalcFor(itemId) {
+  var item = allItems.find(function(i){ return i.id === itemId; });
+  goWireCostCalc();
+  if (item && document.getElementById("ci-wc-item")) comboCommit("wc-item", item.name);
 }
 
 // ═══════════════════════════════════════════════════════════

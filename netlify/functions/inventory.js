@@ -892,6 +892,7 @@ async function handleHistory(params) {
   const nq = await neonQuery(
     `SELECT t.id, t.txn_date, t.quantity, t.txn_type, t.notes, t.entered_by,
             t.unit_cost_snapshot, t.item_airtable_id, t.expense_created,
+            COALESCE(i.airtable_id, i.id::text) AS item_handle,
             i.name AS item_name, i.unit_of_measure, i.default_unit_cost,
             fl.name AS from_name, tl.name AS to_name
        FROM inventory_transactions t
@@ -920,7 +921,10 @@ async function handleHistory(params) {
           id:        r.id,
           date:      dateStr,
           item:      r.item_name || r.item_airtable_id || "",
-          itemId:    r.item_airtable_id || "",
+          // The item's HANDLE, the same COALESCE the pickers serve. It used to be
+          // item_airtable_id alone, which is NULL for an item created in the app,
+          // so the admin cost box on Recent Logs silently did nothing for those.
+          itemId:    r.item_handle || r.item_airtable_id || "",
           uom:       r.unit_of_measure || "",
           cost,
           total:     Math.round(cost * qty * 100) / 100,

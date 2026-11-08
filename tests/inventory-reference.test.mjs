@@ -394,7 +394,8 @@ globalThis.fetch = async (url, opts = {}) => {
     } else if (/FROM inventory_transactions t/i.test(sql)) {
       // `id` first, not airtable_id — the ledger's handle is the uuid now.
       payload = neonReply(["id", "txn_date", "quantity", "txn_type", "notes", "entered_by",
-                           "unit_cost_snapshot", "item_airtable_id", "item_name", "unit_of_measure",
+                           "unit_cost_snapshot", "item_airtable_id", "expense_created", "item_handle",
+                           "item_name", "unit_of_measure",
                            "default_unit_cost", "from_name", "to_name"], neonHistory);
     } else if (/FROM locations/i.test(sql)) {
       payload = neonReply(["id", "name", "type"],
@@ -1290,6 +1291,18 @@ await test("S1: deleting a transaction that removed nothing is a 404, not a succ
   const missing = await POST({ action: "delete", txId: "22222222-2222-4222-8222-222222222222" });
   eq(missing.statusCode, 404,
      "on-hand would otherwise keep counting stock the user believes they removed");
+});
+
+await test("History: an item created in the app still carries an itemId", async () => {
+  reset();
+  neonHistory = [
+    { ...neonHistory[0], item_airtable_id: null, item_handle: NATIVE_ITEM },
+    { ...neonHistory[0], id: "44444444-4444-4444-8444-444444444444", item_handle: "recItemA" },
+  ];
+  const h = json(await GET("history", { all: "1" }));
+  eq(h.transactions[0].itemId, NATIVE_ITEM,
+     "the handle — an empty id made the Recent Logs cost box save nothing");
+  eq(h.transactions[1].itemId, "recItemA", "a carried-over item keeps its rec id");
 });
 
 await test("Del: a pushed transaction is refused (409), never deleted", async () => {

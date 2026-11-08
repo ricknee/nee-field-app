@@ -681,6 +681,16 @@ async function handleItems() {
   return resp(503, { ok: false, error: "Items are unavailable right now. Please try again." });
 }
 
+const QUEUED_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
+const QUEUED_CLOCK_SLACK_MS = 5 * 60 * 1000;
+function queuedLoggedAt(body, nowMs = Date.now()) {
+  if (body?.queued !== true || !body?.loggedAt) return null;
+  const t = Date.parse(String(body.loggedAt));
+  if (!Number.isFinite(t)) return null;
+  if (t > nowMs + QUEUED_CLOCK_SLACK_MS || t < nowMs - QUEUED_MAX_AGE_MS) return null;
+  return new Date(t).toISOString();
+}
+
 // ── SUBMIT CART (multiple transactions at once) ────────────
 async function handleSubmitCart(body, authUser) {
   const { lines, jobName, jobId, locationId, submitId } = body || {};
@@ -708,7 +718,14 @@ async function handleSubmitCart(body, authUser) {
     console.warn("Could not fetch item costs for snapshot fallback:", e.message);
   }
 
-  const now = new Date().toISOString();
+  // R5-B: a cart saved on a phone with no signal arrives late, flagged
+  // `queued`. Its ledger date is the time it was LOGGED on the phone (owner,
+  // 2026-11-08), so reports by date are right — but only if that time is
+  // believable: within the last 7 days and not ahead of the server by more than
+  // 5 minutes (a phone clock can be wrong). Otherwise the server's time. A live
+  // submit always gets server time, so the Undo window can't be skewed by a
+  // phone clock.
+  const now = queuedLoggedAt(body) || new Date().toISOString();
 
   // The whole cart in ONE insert. It used to be one Airtable POST per line in a
   // loop, so a failure halfway through left some of the material logged out of

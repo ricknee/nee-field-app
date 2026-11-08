@@ -342,7 +342,26 @@ mid-count isn't undone. Notes say "Truck count", and entered_by is stamped from 
 **Size:** medium (one screen; it reuses the apply path). Tests: apply posts only typed rows,
 blank ≠ 0, and the reviewed delta is recomputed at apply.
 
-### R5-B — Work without signal (PLAN, needs the owner's OK)
+### R5-B — Work without signal — ✅ BUILT 2026-11-08
+
+**Owner decision: a late-sent cart is dated with the PHONE's time.** `queuedLoggedAt()` uses it
+only when `queued:true`, it's within 7 days, and it's no more than 5 minutes in the future;
+otherwise server time. A live submit always gets server time, so Undo can't be skewed.
+
+Built as planned:
+- `preload()` saves jobs, locations and items on the phone (`nee_inv_offline_lists`). With no
+  signal, or after 8 s, it starts on them with the blue "Offline — lists from …" notice.
+- `apiGet`/`apiPost` mark `err.offline` (no answer, or not our JSON) and `err.status`.
+- `submitCart`: no answer, or 15 s, queues the cart in the per-person outbox
+  (`nee_inv_outbox_<id>`) with its `submit_id`. A resend is idempotent.
+- `flushOutbox`: on `online`, on return to the app, every 30 s, after a live load, and on
+  Send now. Oldest first. It stops at no-signal. 4xx (not 401/403/408/429) means refused: kept
+  in red with Edit & resend / Discard, never auto-resent. 5xx and 401 mean try later.
+- Logout asks if carts are waiting (except automatic expiry) and clears the saved lists.
+- `sw.js` v4: the offline fallback serves inventory.html for /inventory and /materials.
+- Tests: 4 "Offline:" handler cases, plus an outbox harness run (12 checks).
+
+(Original plan, kept for reference:)
 
 **Goal:** in a basement with no signal, Use on Job and Returns still work. The cart is held
 on the phone and sends itself when signal returns.

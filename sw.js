@@ -4,7 +4,7 @@
 // Bumped when the shell list changes, so the activate handler drops the old
 // cache. Without a bump, a phone that already installed v1 keeps serving the old
 // shell list and never picks up the manifest or the icon.
-const CACHE_NAME = 'nee-app-v3';
+const CACHE_NAME = 'nee-app-v4';   // v4: offline fallback serves the right app (inventory)
 
 // A weak cellular connection is often worse than being fully offline: fetch()
 // stays pending for a long time, so its rejection handler never gets a chance to
@@ -92,8 +92,12 @@ self.addEventListener('fetch', event => {
       }).catch(() => {})
     );
 
+    // Fall back to the RIGHT app. /inventory (and /materials, which redirects
+    // there) used to fall through to /index.html when that exact URL had not
+    // been cached yet — opening the field app instead of inventory, offline.
+    const isInventory = /^\/(inventory|materials)/.test(url.pathname);
     const cached = caches.match(event.request).then(response =>
-      response || caches.match('/index.html')
+      response || caches.match(isInventory ? '/inventory.html' : '/index.html')
     );
 
     const timeout = new Promise(resolve => {

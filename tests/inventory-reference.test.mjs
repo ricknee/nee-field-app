@@ -263,6 +263,7 @@ globalThis.fetch = async (url, opts = {}) => {
       for (let i = 0; i < n; i++) {
         txnWrites.push({ itemId: ps[i * 13], from: ps[i * 13 + 1], to: ps[i * 13 + 2],
                          qty: ps[i * 13 + 4], type: ps[i * 13 + 5], enteredBy: ps[i * 13 + 8],
+                         date: ps[i * 13 + 3],
                          submitId: ps[i * 13 + 11], lineNo: ps[i * 13 + 12] });
       }
       // A replay is modelled by returning FEWER rows than were sent, which is
@@ -1421,6 +1422,43 @@ await test("Undo: the guards and the lock live in the ONE statement", async () =
   const fn = src.slice(at, at + 2600);
   ok(/FOR UPDATE/.test(fn), "rows locked, so a push mid-request is seen, not raced");
   ok(/chk\.pushed = 0 AND chk\.too_old = 0 AND chk\.not_mine = 0/.test(fn), "all-or-nothing in the DELETE itself");
+});
+
+// ── R5-B Work without signal: the date on a late-sent cart ────────────────
+const minsAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+const nearNow = (iso) => Math.abs(Date.parse(iso) - Date.now()) < 60000;
+
+await test("Offline: a queued cart is dated when it was LOGGED on the phone", async () => {
+  reset();
+  const at = minsAgo(120);
+  eq((await POST(cartBody({ queued: true, loggedAt: at }), TOK)).statusCode, 200, "sent");
+  eq(txnWrites[0].date, at, "the phone's time, 2 hours ago (owner, 2026-11-08)");
+});
+
+await test("Offline: a live submit always gets SERVER time, whatever the phone says", async () => {
+  reset();
+  await POST(cartBody({ loggedAt: minsAgo(120) }), TOK);
+  ok(nearNow(txnWrites[0].date), "not queued → server time, so a phone clock can't skew Undo");
+});
+
+await test("Offline: an unbelievable phone time falls back to server time", async () => {
+  reset();
+  await POST(cartBody({ queued: true, loggedAt: minsAgo(60 * 24 * 10) }), TOK);
+  ok(nearNow(txnWrites[0].date), "older than 7 days → server time");
+  reset();
+  await POST(cartBody({ queued: true, loggedAt: new Date(Date.now() + 3600000).toISOString() }), TOK);
+  ok(nearNow(txnWrites[0].date), "an hour in the future → server time");
+  reset();
+  await POST(cartBody({ queued: true, loggedAt: "yesterday-ish" }), TOK);
+  ok(nearNow(txnWrites[0].date), "garbage → server time");
+});
+
+await test("Offline: resending a queued cart is safe — same submit id, no second log", async () => {
+  reset();
+  txnReplay = [{ id: "txn-original-1" }];   // the server already has this submit
+  const r = json(await POST(cartBody({ queued: true, loggedAt: minsAgo(30) }), TOK));
+  eq(r.ok, true, "a resend answers ok");
+  eq(r.ids.join(), "txn-original-1", "with the ORIGINAL rows, not new ones");
 });
 
 // ── R5-A Count stock ──────────────────────────────────────────────────────

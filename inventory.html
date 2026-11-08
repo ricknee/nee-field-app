@@ -59,6 +59,14 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .hdr h2{font-size:16px;font-weight:600;flex:1;}
 .hdr-badge{font-size:11px;color:var(--dim);background:var(--slate);padding:3px 10px;border-radius:20px;white-space:nowrap;}
 .hdr-out{background:none;border:1px solid var(--border);border-radius:16px;color:var(--dim);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:5px 14px;white-space:nowrap;}
+/* R5-B outbox / offline notice */
+.ob{border-radius:var(--r);padding:10px 12px;font-size:13px;line-height:1.4;}
+.ob-off{background:rgba(52,152,219,.10);border:1px solid rgba(52,152,219,.45);color:var(--text);}
+.ob-wait{background:rgba(232,101,26,.10);border:1px solid rgba(232,101,26,.5);color:var(--text);}
+.ob-bad{background:rgba(231,76,60,.10);border:1px solid rgba(231,76,60,.55);color:var(--text);margin-top:8px;}
+.ob-row{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.ob-btn{background:var(--slate);border:none;border-radius:8px;color:var(--text);font-family:inherit;font-size:12px;font-weight:600;padding:6px 11px;cursor:pointer;white-space:nowrap;}
+.ob + .ob{margin-top:8px;}
 /* Count Stock */
 .count-cat{font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;}
 .count-row{display:flex;align-items:center;gap:10px;background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:9px 10px 9px 12px;margin-bottom:6px;}
@@ -345,6 +353,8 @@ details.recent .recent-row{padding-bottom:4px;}
       <span class="chg" id="home-loc-chg">Pick</span>
     </button>
     <!-- #8: admins only. Filled by renderAttention(); hidden until something loads. -->
+    <!-- R5-B: offline notice + carts waiting to send. Filled by renderOutbox(). -->
+    <div id="outbox-strip" style="display:none"></div>
     <div class="att" id="att-strip" style="display:none"></div>
     <button class="big-btn scan-home" onclick="homeScan()">
       <div class="ico">⬛</div><div><div class="lbl">Scan Item</div><div class="sub">Scan a label, then choose what to do</div></div>
@@ -647,24 +657,38 @@ details.recent .recent-row{padding-bottom:4px;}
 // ═══════════════════════════════════════════════════════════
 const API = "/.netlify/functions/inventory";
 
+// Errors carry two flags the offline outbox (R5-B) relies on:
+//   err.offline — the request never got a proper answer (no signal, dropped,
+//                 or a gateway page instead of our JSON). Safe to retry later.
+//   err.status  — the HTTP status of a real answer (a refusal is 4xx).
+function apiNoAnswer(status) {
+  var e = new Error(status
+    ? "The server didn't answer properly (" + status + "). Try again."
+    : "No signal — this needs a connection. Try again when you have service.");
+  e.offline = true; e.status = status || 0;
+  return e;
+}
+async function apiAnswer(r) {
+  let d;
+  try { d = await r.json(); } catch (e) { throw apiNoAnswer(r.status); }
+  if (r.status === 401 && currentUser) logout(true); // session expired → back to login
+  if (!d.ok) { const e = new Error(d.error || "API error"); e.status = r.status; e.data = d; throw e; }
+  return d;
+}
 async function apiGet(action, params) {
   const qs = new URLSearchParams({ action, ...(params || {}) });
   const headers = {};
   if (currentUser && currentUser.token) headers["Authorization"] = "Bearer " + currentUser.token;
-  const r  = await fetch(`${API}?${qs}`, { headers });
-  const d  = await r.json();
-  if (r.status === 401 && currentUser) logout(); // session expired → back to login
-  if (!d.ok) throw new Error(d.error || "API error");
-  return d;
+  let r;
+  try { r = await fetch(`${API}?${qs}`, { headers }); } catch (e) { throw apiNoAnswer(0); }
+  return apiAnswer(r);
 }
 async function apiPost(body) {
   const headers = { "Content-Type":"application/json" };
   if (currentUser && currentUser.token) headers["Authorization"] = "Bearer " + currentUser.token;
-  const r = await fetch(API, { method:"POST", headers, body:JSON.stringify(body) });
-  const d = await r.json();
-  if (r.status === 401 && currentUser) logout(); // session expired → back to login
-  if (!d.ok) throw new Error(d.error || "API error");
-  return d;
+  let r;
+  try { r = await fetch(API, { method:"POST", headers, body:JSON.stringify(body) }); } catch (e) { throw apiNoAnswer(0); }
+  return apiAnswer(r);
 }
 
 
@@ -1342,7 +1366,17 @@ document.addEventListener("keydown", function(e) {
   if (e.key === "Enter" && document.getElementById("s-login").classList.contains("active")) doLogin();
 });
 
-function logout() {
+function logout(auto) {
+  // R5-B: carts still waiting stay on this phone under YOUR name and send when
+  // you sign in again — but say so, since nothing sends while signed out.
+  // `auto` = an expired session; nothing to ask, the carts are kept either way.
+  var waitingCarts = 0;
+  try { waitingCarts = loadOutbox().length; } catch (e) {}
+  if (!auto && waitingCarts && currentUser &&
+      !confirm(waitingCarts + " saved cart" + (waitingCarts === 1 ? " hasn't" : "s haven't") +
+               " been sent yet. They stay on this phone and send when you sign in again. Log out?")) return;
+  try { localStorage.removeItem(OFFLINE_LISTS_KEY); } catch (e) {}
+  offlineListsAt = null;
   hideUndoBar();   // never leave someone else an Undo for your cart
   currentUser = null; currentLocation = null;
   attState = { pending: null, unmatched: null, partnums: null, orders: null, low: null };
@@ -1354,21 +1388,62 @@ function logout() {
   document.getElementById("login-err").textContent = "";
   document.getElementById("login-btn").disabled = false;
   document.getElementById("login-btn").textContent = "Sign In";
+  renderOutbox();   // hides it — nothing shows while signed out
   showScreen("login");
 }
 
 // ═══════════════════════════════════════════════════════════
 // PRELOAD
 // ═══════════════════════════════════════════════════════════
+// ── Offline lists (R5-B) ─────────────────────────────────────────────────────
+// Every good load is kept on the phone, so the app can start with no signal.
+// Stock figures are NOT kept — only the pick lists a cart needs.
+var OFFLINE_LISTS_KEY = "nee_inv_offline_lists";
+var offlineListsAt = null;   // set when running on the saved lists; null when live
+
 async function preload() {
   try {
-    var results = await Promise.all([apiGet("jobs"), apiGet("locations"), apiGet("items")]);
-    allJobs      = results[0].jobs;
-    allLocations = results[1].locations;
-    allItems     = results[2].items;
-    dataReady    = true;
-    refreshHomeTiles();
-  } catch(ex) { console.error("Preload failed:", ex); }
+    // A weak signal can hang for a long time; after 8 s use the saved lists
+    // and let the live load finish quietly in the background.
+    var live = Promise.all([apiGet("jobs"), apiGet("locations"), apiGet("items")]);
+    var results = await Promise.race([live, new Promise(function(_, rej){
+      setTimeout(function(){ rej(apiNoAnswer(0)); }, 8000);
+    })]);
+    useLiveLists(results);
+  } catch(ex) {
+    console.error("Preload failed:", ex);
+    if (ex && ex.offline && useSavedLists()) {
+      // Keep trying in the background; the live lists replace these when they come.
+      if (typeof live !== "undefined") live.then(useLiveLists).catch(function(){});
+    }
+  }
+}
+
+function useLiveLists(results) {
+  allJobs      = results[0].jobs;
+  allLocations = results[1].locations;
+  allItems     = results[2].items;
+  dataReady    = true;
+  offlineListsAt = null;
+  try {
+    localStorage.setItem(OFFLINE_LISTS_KEY, JSON.stringify({
+      at: Date.now(), jobs: allJobs, locations: allLocations, items: allItems }));
+  } catch (e) { /* full or blocked storage: offline start just won't be available */ }
+  refreshHomeTiles();
+  renderOutbox();
+  flushOutbox();
+}
+
+function useSavedLists() {
+  var s = null;
+  try { s = JSON.parse(localStorage.getItem(OFFLINE_LISTS_KEY) || "null"); } catch (e) {}
+  if (!s || !s.items || !s.items.length) return false;
+  allJobs = s.jobs || []; allLocations = s.locations || []; allItems = s.items || [];
+  dataReady = true;
+  offlineListsAt = s.at || Date.now();
+  refreshHomeTiles();
+  renderOutbox();
+  return true;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2030,19 +2105,41 @@ async function submitCart() {
     };
   });
 
+  var payload = { action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: submitLocationId,
+                  enteredBy: currentUser.name, submitId: cartSubmitId, loggedAt: new Date().toISOString() };
+  var snapshot = { mode: logMode, jobName: jobName, jobId: jobId, locationId: submitLocationId,
+                   items: JSON.parse(JSON.stringify(cart)) };
   try {
-    await apiPost({ action:"submitCart", lines, jobName, jobId: jobId || undefined, locationId: submitLocationId, enteredBy: currentUser.name, submitId: cartSubmitId });
+    // A request with no answer after 15 s is treated like no signal: the cart
+    // is saved and resent later. Safe even if this attempt DID land — the
+    // resend carries the same submitId, and the server ignores a repeat.
+    await Promise.race([apiPost(payload), new Promise(function(_, rej){
+      setTimeout(function(){ rej(apiNoAnswer(0)); }, 15000);
+    })]);
     // The confirmation carries the Undo (#6) instead of a plain toast. It keeps a
     // copy of the cart so an Undo puts everything straight back to fix.
-    showUndoBar(cartSubmitId, cart.length, jobName, logMode, {
-      mode: logMode, jobName: jobName, jobId: jobId, locationId: submitLocationId,
-      items: JSON.parse(JSON.stringify(cart))
-    });
+    showUndoBar(cartSubmitId, cart.length, jobName, logMode, snapshot);
     cart = [];
     cartSubmitId = null;   // accepted — the next cart is a new submission
     goHome();
   } catch(ex) {
-    showToast("Error: " + ex.message, true);
+    if (ex && ex.offline) {
+      // R5-B: no signal. Keep the cart on the phone and send it later, stamped
+      // with the time it was logged here (`queued` tells the server to use it).
+      var saved = queueCart({ submitId: cartSubmitId, payload: Object.assign({}, payload, { queued: true }),
+        jobName: jobName, count: cart.length, mode: logMode, at: Date.now(), status: "waiting", snapshot: snapshot });
+      if (saved) {
+        showToast("📶 No signal — cart saved on this phone. It will send by itself.");
+        cart = [];
+        cartSubmitId = null;
+        goHome();
+        renderOutbox();
+        return;
+      }
+      showToast("No signal, and this phone couldn't save the cart. Keep this screen open and try again.", true);
+    } else {
+      showToast("Error: " + ex.message, true);
+    }
     btn.disabled = false; btn.textContent = "Submit";
   }
 }
@@ -7497,6 +7594,134 @@ function handleScanResult(val) {
 // TOAST
 // ═══════════════════════════════════════════════════════════
 var toastTimer;
+// ── OUTBOX: carts saved with no signal (R5-B) ───────────────────────────────
+// A cart that can't reach the server is kept on the phone and sent later with
+// the SAME submit id, which the server ignores if it already has it (ON
+// CONFLICT) — so a cart that did arrive before the signal dropped can never be
+// logged twice, however many times it is resent. Per person, like the drafts.
+// Entries: { submitId, payload, jobName, count, mode, at, status, error, snapshot }
+//   status "waiting" — retried automatically
+//   status "refused" — the server said no (4xx); kept, shown in red, never dropped
+var outboxBusy = false;
+function outboxKey() { return "nee_inv_outbox_" + ((currentUser && currentUser.id) || "anon"); }
+function loadOutbox() {
+  try { var a = JSON.parse(localStorage.getItem(outboxKey()) || "[]"); return Array.isArray(a) ? a : []; }
+  catch (e) { return []; }
+}
+function saveOutbox(list) {
+  try { localStorage.setItem(outboxKey(), JSON.stringify(list)); return true; } catch (e) { return false; }
+}
+function queueCart(entry) {
+  var list = loadOutbox().filter(function(x){ return x.submitId !== entry.submitId; });
+  list.push(entry);
+  return saveOutbox(list);
+}
+
+function fmtClock(ms) {
+  try { return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); } catch (e) { return ""; }
+}
+
+function renderOutbox() {
+  var el = document.getElementById("outbox-strip");
+  if (!el) return;
+  if (!currentUser) { el.style.display = "none"; el.innerHTML = ""; return; }
+  var list = loadOutbox();
+  var waiting = list.filter(function(x){ return x.status !== "refused"; });
+  var refused = list.filter(function(x){ return x.status === "refused"; });
+  var html = "";
+  if (offlineListsAt) {
+    html += '<div class="ob ob-off">📶 <b>Offline</b> — using lists from ' + fmtClock(offlineListsAt) +
+            '. Use on Job and Returns still work; carts are saved and sent when you have signal.</div>';
+  }
+  if (waiting.length) {
+    var n = waiting.reduce(function(s, x){ return s + (x.count || 0); }, 0);
+    html += '<div class="ob ob-wait"><div class="ob-row"><span>📤 <b>' + waiting.length + ' cart' + (waiting.length === 1 ? '' : 's') +
+            '</b> (' + n + ' item' + (n === 1 ? '' : 's') + ') saved on this phone, waiting to send</span>' +
+            '<button class="ob-btn" onclick="flushOutbox(true)">' + (outboxBusy ? 'Sending…' : 'Send now') + '</button></div></div>';
+  }
+  refused.forEach(function(x){
+    var sid = escapeAttr(x.submitId);
+    html += '<div class="ob ob-bad"><div>⚠ A saved cart for <b>' + escapeAttr(x.jobName || "no job") + '</b> (' + (x.count || 0) +
+            ' item' + (x.count === 1 ? '' : 's') + ', ' + fmtClock(x.at) + ') was refused: ' + escapeAttr(x.error || "") + '</div>' +
+            '<div class="ob-row" style="justify-content:flex-end;margin-top:8px;gap:8px;">' +
+            '<button class="ob-btn" data-sid="' + sid + '" onclick="outboxEdit(this.dataset.sid)">Edit &amp; resend</button>' +
+            '<button class="ob-btn" style="background:transparent;border:1px solid var(--red);color:#fca5a5;" data-sid="' + sid + '" onclick="outboxDiscard(this.dataset.sid)">Discard</button>' +
+            '</div></div>';
+  });
+  el.innerHTML = html;
+  el.style.display = html ? "block" : "none";
+}
+
+// Sends waiting carts one at a time, oldest first. Stops at the first "no
+// signal" (the rest would fail the same way). A refusal is kept and shown;
+// a 401/403/5xx is treated as "try again later", never as a refusal.
+async function flushOutbox(manual) {
+  if (outboxBusy || !currentUser) return;
+  var list = loadOutbox().filter(function(x){ return x.status !== "refused"; });
+  if (!list.length) { renderOutbox(); return; }
+  outboxBusy = true; renderOutbox();
+  var sent = 0, sentItems = 0, lastJob = "";
+  try {
+    for (var k = 0; k < list.length; k++) {
+      var x = list[k];
+      try {
+        await apiPost(x.payload);
+        var after = loadOutbox().filter(function(y){ return y.submitId !== x.submitId; });
+        saveOutbox(after);
+        sent++; sentItems += (x.count || 0); lastJob = x.jobName || lastJob;
+      } catch (ex) {
+        if (ex && ex.offline) break;                                    // still no signal
+        var st = ex && ex.status;
+        if (st && st >= 400 && st < 500 && st !== 401 && st !== 403 && st !== 408 && st !== 429) {
+          var all = loadOutbox();
+          all.forEach(function(y){ if (y.submitId === x.submitId) { y.status = "refused"; y.error = String(ex.message || ex); } });
+          saveOutbox(all);
+          continue;
+        }
+        break;                                                          // transient: later
+      }
+    }
+  } finally {
+    outboxBusy = false;
+    renderOutbox();
+  }
+  if (sent) {
+    showToast("✓ " + sent + " saved cart" + (sent === 1 ? "" : "s") + " sent" +
+              (sent === 1 && lastJob ? " to " + lastJob : "") + " (" + sentItems + " item" + (sentItems === 1 ? "" : "s") + ")");
+    try { refreshHomeCounts(); } catch (e) {}
+  } else if (manual && loadOutbox().some(function(x){ return x.status !== "refused"; })) {
+    showToast("Still no signal — they'll send by themselves", true);
+  }
+}
+
+function outboxDiscard(sid) {
+  var x = loadOutbox().find(function(y){ return y.submitId === sid; });
+  if (!x) return;
+  if (!confirm("Discard this saved cart (" + (x.count || 0) + " items for " + (x.jobName || "no job") + ")? It was never logged.")) return;
+  saveOutbox(loadOutbox().filter(function(y){ return y.submitId !== sid; }));
+  renderOutbox();
+}
+
+// Put a refused cart back on the screen to fix (e.g. swap a retired item).
+// Leaves the outbox only once it is back in the cart.
+function outboxEdit(sid) {
+  var x = loadOutbox().find(function(y){ return y.submitId === sid; });
+  if (!x || !x.snapshot) return;
+  if (refillCart(x.snapshot)) {
+    saveOutbox(loadOutbox().filter(function(y){ return y.submitId !== sid; }));
+    renderOutbox();
+    showToast("Saved cart is back — fix it and submit");
+  }
+}
+
+// Retry triggers: signal returns, app comes back to the front, and every 30 s
+// while anything is waiting.
+window.addEventListener("online", function(){ if (offlineListsAt && currentUser) preload(); flushOutbox(); });
+document.addEventListener("visibilitychange", function(){ if (!document.hidden) flushOutbox(); });
+setInterval(function(){
+  if (currentUser && loadOutbox().some(function(x){ return x.status !== "refused"; })) flushOutbox();
+}, 30000);
+
 // ── COUNT STOCK (R5-A) ──────────────────────────────────────────────────────
 // Type what is really on the truck/shelf; Review shows only the differences;
 // Apply sends every typed row to countApply, which posts the difference from
@@ -10239,6 +10464,7 @@ async function loadAttention() {
 // goHome(), so coming back after a push shows the new figure. No timers.
 function refreshHomeCounts() {
   if (!currentUser) return;   // goHome can run before sign-in; nothing to count yet
+  renderOutbox();             // R5-B: offline notice + saved carts, from the phone
   loadReorderCount();
   loadOrdersCount();
   loadAttention();

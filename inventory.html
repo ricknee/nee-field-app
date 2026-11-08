@@ -74,7 +74,8 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .count-row .cr-main{flex:1;min-width:0;}
 .count-row .cr-name{font-size:14px;font-weight:600;color:var(--text);overflow-wrap:anywhere;}
 .count-row .cr-sys{font-size:14px;color:var(--dim);margin-top:4px;}
-.count-row .cr-sys b{color:var(--gold);font-size:16px;font-weight:800;}
+.count-row .cr-sys b{color:var(--dim);font-size:16px;font-weight:800;}   /* zero */
+.count-row .cr-sys b.pos{color:var(--green);}
 .count-row .cr-sys b.neg{color:var(--red);}
 .count-inp{width:78px;background:var(--navy-mid);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:16px;padding:8px;text-align:right;outline:none;flex-shrink:0;}
 .count-inp:focus{border-color:var(--gold);}
@@ -7826,7 +7827,7 @@ function renderCountList() {
       var q = lv ? lv.qtyOnHand : 0;
       // "Current" (owner wording), big and bold: what the records say is here.
       // Negative = the records are off, so it shows red.
-      var sysTxt = 'Current: <b class="' + (q < 0 ? 'neg' : '') + '">' + fmtQty(q) + '</b> ' + escapeAttr(uom) +
+      var sysTxt = 'Current: <b class="' + (q < 0 ? 'neg' : q > 0 ? 'pos' : '') + '">' + fmtQty(q) + '</b> ' + escapeAttr(uom) +
         (isWire && lv && lv.wireFt > 0 ? ' · ' + fmtQty(Math.round(lv.wireFt)) + ' ft' : '');
       var val = countState.entries[i.id] != null ? countState.entries[i.id] : "";
       html += '<div class="count-row' + (String(val).trim() !== "" ? ' done' : '') + '">' +

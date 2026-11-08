@@ -99,6 +99,16 @@ html,body{height:100%;background:var(--navy);color:var(--text);font-family:'DM S
 .att-chip:active{background:var(--slate);}
 .att-warn{display:block;width:100%;margin-top:8px;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.45);border-radius:10px;padding:8px 12px;color:#fca5a5;font-size:13px;text-align:left;cursor:pointer;}
 .att-ok{font-size:13px;color:#4ade80;}
+/* Collapsed Needs attention: one tappable line with the figures. */
+.att-fold > summary{list-style:none;cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:4px 10px;}
+.att-fold > summary::-webkit-details-marker{display:none;}
+.att-fold > summary::before{content:"▸";font-size:12px;color:var(--muted);transition:transform .15s;}
+.att-fold[open] > summary::before{transform:rotate(90deg);}
+.att-fold > summary .att-h{margin-bottom:0;}
+.att-mini{font-size:13px;color:var(--dim);}
+.att-mini b{color:var(--gold);}
+.att-fold[open] > summary .att-mini{display:none;}
+.att-fold[open] .att-chips{margin-top:10px;}
 .big-btn.scan-home .ico{font-size:24px;}
 /* Scan Item action sheet */
 .ss-bg{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:900;display:flex;align-items:flex-end;justify-content:center;}
@@ -9853,8 +9863,27 @@ function renderAttention() {
     }
     return;
   }
-  el.innerHTML = '<div class="att-h">Needs attention</div><div class="att-chips">' + chips.join("") + '</div>' + warn;
+  // Collapsed to ONE line by default (owner: it took too much room). The line
+  // still carries every figure; tap to open the buttons. The warning is outside
+  // the fold on purpose: a job that can't be pushed must never be hidden.
+  var mini = [];
+  if (st.pending && st.pending.length) mini.push('💰 <b>' + fmtCurrency(pushGrandTotal(st.pending)) + '</b>');
+  if (st.partnums) mini.push('🔗 <b>' + st.partnums + '</b>');
+  if (st.orders)   mini.push('📦 <b>' + st.orders + '</b>');
+  if (st.low)      mini.push('🔴 <b>' + st.low + '</b>');
+  var open = false;
+  try { open = localStorage.getItem("nee_inv_att_open") === "1"; } catch (e) {}
+  el.innerHTML = (chips.length
+      ? '<details class="att-fold"' + (open ? ' open' : '') + ' ontoggle="rememberAttOpen(this)">' +
+          '<summary><span class="att-h">Needs attention</span>' +
+          '<span class="att-mini">' + mini.join(' · ') + '</span></summary>' +
+          '<div class="att-chips">' + chips.join("") + '</div></details>'
+      : '') + warn;
   el.style.display = "block";
+}
+
+function rememberAttOpen(el) {
+  try { localStorage.setItem("nee_inv_att_open", el.open ? "1" : "0"); } catch (e) {}
 }
 
 // The two numbers only the strip needs. Admin-only, and fired without await by

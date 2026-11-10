@@ -804,6 +804,17 @@ await test("updateJobInfo: completionMetOn takes a date or a clear, and refuses 
      "the job read carries it back, or the flag would vanish on reload");
 });
 
+await test("updateJobInfo: customer first/last name save on their own and are read back", async () => {
+  mockTables = {};
+  const r = await POST("updateJobInfo", { jobId: "recJ1", customerFirstName: " Ryan ", customerLastName: "" });
+  eq(r.statusCode === 400, false, "a name alone is accepted (not 'nothing to update')");
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  ok(/put\("customer_first_name"/.test(src) && /put\("customer_last_name"/.test(src), "both columns are written");
+  ok(/customerFirstName: s\(r\.customer_first_name\), customerLastName: s\(r\.customer_last_name\)/.test(src),
+     "the job read carries them back");
+});
+
 await test("expected hours: NULL survives the read, and no target is a PROMPT not a dash", async () => {
   const fs = await import("node:fs/promises");
   const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

@@ -14635,7 +14635,7 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, expectedHours, generatorInstalled } = body || {};
+  const { jobId, customerFirstName, customerLastName, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, expectedHours, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -14681,6 +14681,10 @@ async function handleUpdateJobInfo(body) {
   if (customerCity   !== undefined) put("address_city",    customerCity   || null);
   if (customerState  !== undefined) put("address_state",   customerState  || null);
   if (customerZip    !== undefined) put("address_zip",     customerZip    || null);
+  // Customer name (owner 2026-11-10). Neon only — the columns were filled at
+  // job creation and by the old import, and had no edit path until now.
+  if (customerFirstName !== undefined) put("customer_first_name", String(customerFirstName || "").trim() || null);
+  if (customerLastName  !== undefined) put("customer_last_name",  String(customerLastName  || "").trim() || null);
   if (customerPhone  !== undefined) put("customer_phone",  customerPhone  || null);
   if (customerEmail  !== undefined) put("customer_email",  customerEmail  || null);
   if (notes          !== undefined) put("notes",           notes          || null);

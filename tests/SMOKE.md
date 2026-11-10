@@ -70,6 +70,8 @@ anything that upserts `job_estimates`.
   row updates. Return to Shop and Move to another job… still work.
   "✓ Due date met" (schema 088): on an OVERDUE job (Trail Cabinet), tap it → "· ✓ Met (date)" in green,
   no OVERDUE; reload and it stays; "undo" brings the OVERDUE back. Status is NOT changed by it.
+  Customer name (2026-11-10): a "Customer" line sits above Phone. ✏ Edit → change First/Last Name → the
+  one save bar says "project info" → Save → the line updates; reload and it stays. Clearing both shows "—".
 - [ ] **Power Co. + Inspections tabs** (2026-11-09): info is one compact list. As admin, "✏ Edit power co.
   info" opens the same form — pick a company, then a contact, fill AIC/Temp/Perm/Meter, Save → the list
   updates. "✏ Edit inspection info" (now BELOW the list) — agency, inspector, permit, and "does not

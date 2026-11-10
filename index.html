@@ -3863,6 +3863,12 @@
               <div class="info-label">Generator Installed</div>
               <div class="info-value" id="piGenerator">—</div>
             </div>
+            <!-- Customer name (owner 2026-11-10) — right above Phone, so Call /
+                 Text say who they reach. -->
+            <div class="info-box" id="piCustomerCard">
+              <div class="info-label">Customer</div>
+              <div class="info-value" id="piCustomerName">—</div>
+            </div>
             <div class="info-box" id="piPhoneCard">
               <div class="info-label">Phone</div>
               <div class="info-value" id="piCustomerPhone">—</div>
@@ -3936,6 +3942,17 @@
                 <input id="piEditCity"   type="text"  class="edit-input" placeholder="City" />
                 <input id="piEditState"  type="text"  class="edit-input" placeholder="State" maxlength="2" style="text-transform:uppercase;" />
                 <input id="piEditZip"    type="text"  class="edit-input" placeholder="Zip" />
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+              <div>
+                <label class="edit-label">Customer First Name</label>
+                <input id="piEditFirstName" type="text" class="edit-input" autocomplete="off" />
+              </div>
+              <div>
+                <label class="edit-label">Customer Last Name</label>
+                <input id="piEditLastName" type="text" class="edit-input" autocomplete="off" />
               </div>
             </div>
 
@@ -5971,6 +5988,7 @@
     $("piJobType").innerHTML = atPill(job.type, TYPE_COLORS);
     if (isAdmin() || isViewer()) $("piTaxStatus").innerHTML = atPill(job.taxStatus, TAX_COLORS);
     $("piContractor").textContent = val(job.contractor);
+    refreshCustomerName(job);
     $("piGenerator").textContent = job.generatorInstalled ? "✅ Yes" : "No";
 
     // Customer Phone — tel link if present, em-dash placeholder otherwise.
@@ -12227,6 +12245,8 @@
   // dirty check and the write can never disagree about what "changed" means.
   function piInfoValues() {
     return {
+      customerFirstName: $("piEditFirstName").value.trim(),
+      customerLastName:  $("piEditLastName").value.trim(),
       customerStreet: $("piEditStreet").value.trim(),
       customerCity:   $("piEditCity").value.trim(),
       customerState:  $("piEditState").value.trim().toUpperCase(),
@@ -12246,6 +12266,8 @@
   // !== would call every job dirty the moment the panel opened.
   function piInfoCurrent(job) {
     return {
+      customerFirstName: (job.customerFirstName || "").trim(),
+      customerLastName:  (job.customerLastName  || "").trim(),
       customerStreet: job.customerStreet || "",
       customerCity:   job.customerCity   || "",
       customerState:  job.customerState  || "",
@@ -14212,6 +14234,14 @@
     }
   }
 
+  // "Ryan Koehn" from the job's first + last name; "—" when neither is set.
+  function refreshCustomerName(job) {
+    const el = $("piCustomerName");
+    if (!el || !job) return;
+    const n = [job.customerFirstName, job.customerLastName].map(s => String(s || "").trim()).filter(Boolean).join(" ");
+    el.textContent = n || "—";
+  }
+
   function refreshAddressCard() {
     const job = state.selected; if (!job) return;
     $("piAddress").innerHTML = addressHtml(job.address);
@@ -14222,6 +14252,8 @@
     const job = state.selected;
 
     // Prefill all inputs from the current state.
+    $("piEditFirstName").value = (job.customerFirstName || "").trim();
+    $("piEditLastName").value  = (job.customerLastName  || "").trim();
     $("piEditStreet").value = job.customerStreet || "";
     $("piEditCity").value   = job.customerCity   || "";
     $("piEditState").value  = job.customerState  || "";
@@ -14336,6 +14368,7 @@
     piSyncJob({ address: buildJobAddress(v.customerStreet, v.customerCity, v.customerState, v.customerZip) });
 
     // Mirror the saved values back to the read-only displays.
+    refreshCustomerName(job);
     const piPhEl = $("piCustomerPhone");
     if (job.customerPhone) {
       piPhEl.innerHTML = phoneActionsHtml(job.customerPhone);
@@ -18356,7 +18389,8 @@
     if (piSaveBtn) piSaveBtn.addEventListener("click", savePiPending);
     // The edit panel's inputs are static markup, so these bind once. Every one
     // of them has to report, or the bar would miss the only field you touched.
-    ["piEditStreet", "piEditCity", "piEditState", "piEditZip", "piEditPhone",
+    ["piEditFirstName", "piEditLastName",
+     "piEditStreet", "piEditCity", "piEditState", "piEditZip", "piEditPhone",
      "piEditEmail", "piEditNotes", "piEditCompletionDate", "piEditExpectedHours"].forEach(id => {
       const el = $(id);
       if (!el) return;

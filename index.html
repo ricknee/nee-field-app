@@ -1480,6 +1480,13 @@
       background: var(--panel-3);
       border-color: var(--accent);
     }
+    /* One line per job (2026-11-09): name · code ........ badges */
+    .job-item--line { padding: 11px 12px; margin-bottom: 2px; }
+    .job-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+    .job-line .job-item-name { margin: 0; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .job-line .job-item-po { margin: 0; flex: 0 0 auto; white-space: nowrap; color: var(--muted); }
+    .job-line-badges { margin-left: auto; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+    .job-line-status { display: inline-flex; align-items: center; gap: 4px; }
 
     .job-item-name {
       font-weight: 600;
@@ -5537,17 +5544,23 @@
       }
 
       const isActive = state.selected?.id === job.id;
+      // ONE line per job (owner 2026-11-09): "Bellaire · CLB 312". The PO is
+      // "<name> (<code>)", so it repeated the name; only the code is shown —
+      // the LAST bracket, so "Craig Davidson (Garage) (MIC 287)" gives MIC 287.
+      // A PO in any other shape is shown whole. The status line is dropped:
+      // the group heading above already says it (kept only under "Other").
+      const poStr  = String(job.po || "");
+      const poCode = (poStr.match(/\(([^()]+)\)\s*$/) || [])[1] || poStr || "No PO";
       html += `
-        <div class="job-item${isActive ? " active" : ""}" data-id="${esc(job.id)}">
-          <div class="job-item-name">${esc(job.name||"Untitled")}</div>
-          <div class="job-item-po">${esc(job.po||"No PO")}</div>
-          <div class="job-item-meta">
-            <span>
-              <span class="status-dot" style="background:${statusDotColor(job.status)}"></span>
-              ${esc(job.status||"—")}
+        <div class="job-item job-item--line${isActive ? " active" : ""}" data-id="${esc(job.id)}">
+          <div class="job-line">
+            <span class="job-item-name">${esc(job.name||"Untitled")}</span>
+            <span class="job-item-po">${esc(poCode)}</span>
+            <span class="job-line-badges">
+              ${group === "Other" ? `<span class="job-line-status"><span class="status-dot" style="background:${statusDotColor(job.status)}"></span>${esc(job.status||"—")}</span>` : ""}
+              ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}
+              ${job.prevailingWage ? `<span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}" title="${job.pwRateMissing ? "Prevailing wage is on but no rate is set — hours are costing the normal rate" : "Prevailing wage job"}">🏛 PW</span>` : ""}
             </span>
-            ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}
-            ${job.prevailingWage ? `<span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}" title="${job.pwRateMissing ? "Prevailing wage is on but no rate is set — hours are costing the normal rate" : "Prevailing wage job"}">🏛 PW</span>` : ""}
           </div>
         </div>`;
     });

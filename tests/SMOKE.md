@@ -70,6 +70,11 @@ anything that upserts `job_estimates`.
   row updates. Return to Shop and Move to another job… still work.
   "✓ Due date met" (schema 088): on an OVERDUE job (Trail Cabinet), tap it → "· ✓ Met (date)" in green,
   no OVERDUE; reload and it stays; "undo" brings the OVERDUE back. Status is NOT changed by it.
+- [ ] **Power Co. + Inspections tabs** (2026-11-09): info is one compact list. As admin, "✏ Edit power co.
+  info" opens the same form — pick a company, then a contact, fill AIC/Temp/Perm/Meter, Save → the list
+  updates. "✏ Edit inspection info" (now BELOW the list) — agency, inspector, permit, and "does not
+  require inspections" all save as before. + Add Inspection and the record status buttons unchanged.
+  Employee/viewer: no Edit bars.
 - [ ] **Quick 🧾 Receipt** (`docs/PLAN-receipt-and-offline-prints.md`), on a phone, as an EMPLOYEE:
   top-bar 🧾 Receipt with no job open and scheduled today. The job is today's job. Enter an amount, no
   photo, Save: "✓ $X on <job>", and My Expenses on that job shows it waiting for approval, dated TODAY

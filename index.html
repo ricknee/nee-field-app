@@ -753,12 +753,21 @@
        Name, PO, status, type and generator are already in the job header, so
        their boxes are hidden (.pi-dup) — the elements stay, so every function
        that fills them still works. */
-    #tab-project > .info-grid { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 2px 14px; }
-    #tab-project > .info-grid > .info-box { display: flex; align-items: baseline; gap: 12px; background: none; border: none; border-bottom: 1px solid var(--line); border-radius: 0; padding: 11px 0; }
-    #tab-project > .info-grid > .info-box:last-child { border-bottom: none; }
-    #tab-project > .info-grid > .info-box > .info-label { flex: 0 0 84px; margin: 0; }
-    #tab-project > .info-grid > .info-box > .info-value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    /* Same compact list on Power Co. and Inspections (2026-11-09). */
+    :is(#tab-project, #tab-powerco, #tab-inspections) > .info-grid { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 2px 14px; }
+    :is(#tab-project, #tab-powerco, #tab-inspections) > .info-grid > .info-box { display: flex; align-items: baseline; gap: 12px; background: none; border: none; border-bottom: 1px solid var(--line); border-radius: 0; padding: 11px 0; }
+    :is(#tab-project, #tab-powerco, #tab-inspections) > .info-grid > .info-box:last-child { border-bottom: none; }
+    :is(#tab-project, #tab-powerco, #tab-inspections) > .info-grid > .info-box > .info-label { flex: 0 0 84px; margin: 0; }
+    :is(#tab-powerco, #tab-inspections) > .info-grid > .info-box > .info-label { flex-basis: 104px; }
+    :is(#tab-project, #tab-powerco, #tab-inspections) > .info-grid > .info-box > .info-value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     #tab-project > .info-grid > .info-box.full { flex-wrap: wrap; }
+    /* Edit forms on those tabs fold to one "✏ Edit …" line. */
+    details.tab-edit-fold { margin-top: 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; }
+    details.tab-edit-fold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 12px 14px; font-size: 14px; font-weight: 600; color: var(--blue); }
+    details.tab-edit-fold > summary::-webkit-details-marker { display: none; }
+    details.tab-edit-fold > summary .js-chev { display: inline-block; transition: transform .15s; color: var(--muted); }
+    details.tab-edit-fold[open] > summary .js-chev { transform: rotate(90deg); }
+    details.tab-edit-fold > .tab-edit-body { padding: 4px 16px 16px; border-top: 1px solid var(--line); }
     #tab-project > .info-grid > .info-box.full > #piMiles { flex-basis: 100%; padding-left: 96px; margin-top: 0 !important; }
     #tab-project > .info-grid > .pi-dup { display: none !important; }
 
@@ -3862,11 +3871,11 @@
         <div class="tab-content" id="tab-powerco">
           <div class="info-grid">
             <div class="info-box">
-              <div class="info-label">Power Company</div>
+              <div class="info-label">Company</div>
               <div class="info-value" id="pcName">—</div>
             </div>
             <div class="info-box">
-              <div class="info-label">Primary Contact</div>
+              <div class="info-label">Contact</div>
               <div class="info-value" id="pcContact">—</div>
             </div>
             <div class="info-box">
@@ -3878,25 +3887,28 @@
               <div class="info-value" id="pcEmail">—</div>
             </div>
             <div class="info-box">
-              <div class="info-label">AIC Number</div>
+              <div class="info-label">AIC #</div>
               <div class="info-value" id="pcAic">—</div>
             </div>
             <div class="info-box">
-              <div class="info-label">Temporary Work Order #</div>
+              <div class="info-label">Temp WO #</div>
               <div class="info-value" id="pcTemp">—</div>
             </div>
             <div class="info-box">
-              <div class="info-label">Permanent Work Order #</div>
+              <div class="info-label">Perm WO #</div>
               <div class="info-value" id="pcPerm">—</div>
             </div>
             <div class="info-box">
-              <div class="info-label">Meter Number</div>
+              <div class="info-label">Meter #</div>
               <div class="info-value" id="pcMeter">—</div>
             </div>
           </div>
-          <div class="admin-only hidden" id="pcEditForm" style="margin-top:20px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px;">
-            <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">⚡ Update Power Co. Info</div>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <!-- Folded to one line (2026-11-09); the form inside is unchanged —
+               same fields, pickers, ids and Save. -->
+          <details class="admin-only hidden tab-edit-fold" id="pcEditForm">
+            <summary><span class="js-chev">▸</span>✏ Edit power co. info</summary>
+            <div class="tab-edit-body">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
               <div style="grid-column:1/-1;">
                 <!-- Typeahead picker host — populated by renderPcCompanyPicker()
                      from selectJob. Drives pcState; does NOT feed the save path. -->
@@ -3953,17 +3965,57 @@
               <span id="pcSaveMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
               <span id="pcSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
             </div>
-          </div>
+            </div>
+          </details>
         </div>
 
         <!-- TAB: INSPECTIONS -->
         <div class="tab-content" id="tab-inspections">
+          <!-- Job/Agency info (existing) -->
+          <div class="info-grid">
+            <div class="info-box">
+              <div class="info-label">Permit #</div>
+              <div class="info-value" id="inPermit">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Agency</div>
+              <div class="info-value" id="inAgency">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Agency phone</div>
+              <div class="info-value" id="inPhone">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Agency email</div>
+              <div class="info-value" id="inEmail">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Contacts</div>
+              <div class="info-value" id="inContacts">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Inspector phone</div>
+              <div class="info-value" id="inInspectorPhone">—</div>
+            </div>
+            <div class="info-box">
+              <div class="info-label">Inspector email</div>
+              <div class="info-value" id="inInspectorEmail">—</div>
+            </div>
+            <div class="info-box full link-val">
+              <div class="info-label">Scheduling</div>
+              <div class="info-value" id="inSchedulingLink">—</div>
+            </div>
+          </div>
+
           <!-- Admin-only edit form: agency picker + permit number. Lookup
-               fields on the info-grid below (agency phone/email/scheduling
+               fields in the info list ABOVE (agency phone/email/scheduling
                link) refresh automatically once the linked Inspection Agency
                record is changed. -->
-          <div class="admin-only hidden" id="inspectionEditForm" style="background:var(--panel-2); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px;">
-            <div style="font-family:'Rajdhani',sans-serif; font-size:15px; font-weight:700; color:var(--accent); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:14px; padding-bottom:8px; border-bottom:1px solid var(--line);">📋 Update Inspection Info</div>
+          <!-- Folded to one line and moved BELOW the info (2026-11-09); the form
+               inside is unchanged — same fields, pickers, ids and Save. -->
+          <details class="admin-only hidden tab-edit-fold" id="inspectionEditForm" style="margin-bottom:14px;">
+            <summary><span class="js-chev">▸</span>✏ Edit inspection info</summary>
+            <div class="tab-edit-body" style="padding-top:12px;">
             <!-- Not-required toggle: when checked, the agency/inspector/permit
                  pickers hide and the info-grid below renders "Not Required". -->
             <div style="margin-bottom:14px;">
@@ -4000,43 +4052,9 @@
               <button id="saveJobInspectionBtn" class="btn btn-primary btn-sm" type="button">Save Changes</button>
               <span id="inspectionEditStatus" style="font-size:12px;"></span>
             </div>
-          </div>
+            </div>
+          </details>
 
-          <!-- Job/Agency info (existing) -->
-          <div class="info-grid">
-            <div class="info-box">
-              <div class="info-label">Permit Number</div>
-              <div class="info-value" id="inPermit">—</div>
-            </div>
-            <div class="info-box">
-              <div class="info-label">Inspection Agency</div>
-              <div class="info-value" id="inAgency">—</div>
-            </div>
-            <div class="info-box">
-              <div class="info-label">Agency Phone #</div>
-              <div class="info-value" id="inPhone">—</div>
-            </div>
-            <div class="info-box">
-              <div class="info-label">Agency Email</div>
-              <div class="info-value" id="inEmail">—</div>
-            </div>
-            <div class="info-box">
-              <div class="info-label">Inspection Contacts</div>
-              <div class="info-value" id="inContacts">—</div>
-            </div>
-            <div class="info-box">
-              <div class="info-label">Inspector Phone</div>
-              <div class="info-value" id="inInspectorPhone">—</div>
-            </div>
-            <div class="info-box">
-              <div class="info-label">Inspector Email</div>
-              <div class="info-value" id="inInspectorEmail">—</div>
-            </div>
-            <div class="info-box full link-val">
-              <div class="info-label">Inspection Scheduling Link</div>
-              <div class="info-value" id="inSchedulingLink">—</div>
-            </div>
-          </div>
 
           <!-- Inspection Records -->
           <div style="margin-top:18px;">

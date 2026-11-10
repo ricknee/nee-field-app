@@ -1343,6 +1343,22 @@
       box-shadow: 0 0 0 2px rgba(248,113,113,0.25);
     }
 
+    /* Inspection records, modern card (2026-11-09). Same buttons, classes and
+       data-* hooks as before — wireInspectionRowHandlers finds them by those. */
+    .insp-row.insp-card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-bottom:10px; }
+    .insp-card .insp-top { display:flex; align-items:center; gap:10px; }
+    .insp-card .insp-top .insp-type-pill { font-size:13px; padding:4px 10px; border-radius:8px; margin:0; }
+    .insp-card .insp-date { font-size:14px; color:var(--text); font-weight:600; }
+    .insp-card .insp-state { margin-left:auto; font-size:13px; font-weight:800; white-space:nowrap; }
+    .insp-card .insp-sub { font-size:12px; color:var(--muted); margin-top:4px; }
+    .insp-card .insp-sub a { color:var(--blue); text-decoration:none; }
+    .insp-card .insp-seg { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; margin-top:10px; }
+    .insp-card .insp-seg .insp-pill-btn { justify-content:center; padding:8px 4px; font-size:13px; border-radius:10px; }
+    .insp-card .insp-notes-edit { margin-top:10px; border-radius:10px; font-size:14px; }
+    .insp-card .insp-req { font-size:11px; color:#991b1b; margin-top:8px; }
+    .insp-card .insp-row-msg { display:block; margin:6px 0 0; }
+    .insp-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .insp-head #btnAddInspection { flex:0 0 auto; width:auto !important; }
     .insp-row-msg { font-size: 11px; margin-left: 4px; }
     .insp-row-msg.ok   { color: #166534; }
     .insp-row-msg.warn { color: #991b1b; }
@@ -4058,9 +4074,9 @@
 
           <!-- Inspection Records -->
           <div style="margin-top:18px;">
-            <div class="section-header" style="display:flex; justify-content:space-between; align-items:center;">
-              <span>📋 Inspection Records</span>
-              <button id="btnAddInspection" class="btn btn-primary btn-sm" type="button" style="font-size:12px;">+ Add Inspection</button>
+            <div class="section-header insp-head">
+              <span>📋 Inspections</span>
+              <button id="btnAddInspection" class="btn btn-primary btn-sm" type="button" style="font-size:13px;">+ Add</button>
             </div>
 
             <!-- Add Inspection Form -->
@@ -14180,38 +14196,44 @@
         list.innerHTML = `<div class="empty-msg">No inspection records yet.</div>`;
         return;
       }
-      list.innerHTML = inspections.map(ins => `
-        <div class="insp-row" data-insp-id="${esc(ins.id)}"
-             style="border:1px solid var(--line-2); border-radius:10px;
-                    padding:12px 14px; margin-bottom:8px; background:var(--panel);">
-          <div style="display:flex; justify-content:space-between; align-items:center;
-                      gap:10px; margin-bottom:8px; flex-wrap:wrap;">
-            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-              <span class="insp-type-pill">${esc(ins.inspectionType || '—')}</span>
-              <span style="font-size:13px; color:var(--muted);">${fmtDate(ins.date) || '—'}</span>
-            </div>
-            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-              <span style="font-size:11px; color:var(--muted);">Set status:</span>
-              <button type="button" class="insp-pill-btn passed ${ins.status === 'Passed' ? 'active' : 'inactive'}"
-                      data-action="set-insp-status" data-status="Passed">✓ Passed</button>
-              <button type="button" class="insp-pill-btn failed ${ins.status === 'Failed' ? 'active' : 'inactive'}"
-                      data-action="set-insp-status" data-status="Failed">✗ Failed</button>
-              <button type="button" class="insp-pill-btn reinspect ${ins.status === 'Re-Inspect Needed' ? 'active' : 'inactive'}"
-                      data-action="set-insp-status" data-status="Re-Inspect Needed">↻ Re-Inspect</button>
-              <span class="insp-row-msg" data-role="row-msg" style="display:none;"></span>
-            </div>
+      // Permit / agency phone are already in the info list above; a record
+      // only repeats them when they DIFFER from the job's (an older permit).
+      const jobPermit = ($("inPermit")?.textContent || "").trim();
+      const jobPhone  = ($("inPhone")?.textContent || "").trim();
+      const stateOf = s =>
+          s === "Passed"            ? `<span class="insp-state" style="color:#16a34a;">✓ Passed</span>`
+        : s === "Failed"            ? `<span class="insp-state" style="color:#dc2626;">✗ Failed</span>`
+        : s === "Re-Inspect Needed" ? `<span class="insp-state" style="color:#ca8a04;">↻ Re-inspect</span>`
+        : s                         ? `<span class="insp-state" style="color:var(--blue);">${esc(s)}</span>` : "";
+      list.innerHTML = inspections.map(ins => {
+        const sub = [
+          ins.permitNumber && ins.permitNumber !== jobPermit ? `Permit ${esc(ins.permitNumber)}` : "",
+          ins.agencyPhone && ins.agencyPhone !== jobPhone ? `<a href="tel:${esc(ins.agencyPhone)}">📞 ${esc(ins.agencyPhone)}</a>` : "",
+        ].filter(Boolean).join(" · ");
+        const needNotes = ins.status === 'Failed' || ins.status === 'Re-Inspect Needed';
+        return `
+        <div class="insp-row insp-card" data-insp-id="${esc(ins.id)}">
+          <div class="insp-top">
+            <span class="insp-type-pill">${esc(ins.inspectionType || '—')}</span>
+            <span class="insp-date">${fmtDate(ins.date) || '—'}</span>
+            ${stateOf(ins.status)}
           </div>
-          ${ins.permitNumber ? `<div style="font-size:13px; color:var(--muted); margin-bottom:4px;">📄 Permit: ${esc(ins.permitNumber)}</div>` : ''}
-          ${ins.agencyPhone ? `<div style="font-size:13px; color:var(--muted); margin-bottom:4px;">📞 ${esc(ins.agencyPhone)}</div>` : ''}
-          <div style="margin-top:6px;">
-            <div style="font-size:11px; color:var(--muted); margin-bottom:3px;">
-              📝 Notes${(ins.status === 'Failed' || ins.status === 'Re-Inspect Needed') ? ' <span style="color:#991b1b;">(required)</span>' : ''}
-            </div>
-            <textarea class="insp-notes-edit" data-field="insp-notes"
-                      data-initial="${esc(ins.notes || '')}"
-                      placeholder="Add notes…">${esc(ins.notes || '')}</textarea>
+          ${sub ? `<div class="insp-sub">${sub}</div>` : ''}
+          <div class="insp-seg">
+            <button type="button" class="insp-pill-btn passed ${ins.status === 'Passed' ? 'active' : 'inactive'}"
+                    data-action="set-insp-status" data-status="Passed">✓ Passed</button>
+            <button type="button" class="insp-pill-btn failed ${ins.status === 'Failed' ? 'active' : 'inactive'}"
+                    data-action="set-insp-status" data-status="Failed">✗ Failed</button>
+            <button type="button" class="insp-pill-btn reinspect ${ins.status === 'Re-Inspect Needed' ? 'active' : 'inactive'}"
+                    data-action="set-insp-status" data-status="Re-Inspect Needed">↻ Re-Inspect</button>
           </div>
-        </div>`).join("");
+          <span class="insp-row-msg" data-role="row-msg" style="display:none;"></span>
+          ${needNotes ? `<div class="insp-req">📝 Notes required for this status</div>` : ''}
+          <textarea class="insp-notes-edit" data-field="insp-notes"
+                    data-initial="${esc(ins.notes || '')}"
+                    placeholder="📝 Notes…">${esc(ins.notes || '')}</textarea>
+        </div>`;
+      }).join("");
       wireInspectionRowHandlers();
     } catch(err) {
       list.innerHTML = `<div class="empty-msg" style="color:var(--red);">Error: ${esc(err.message)}</div>`;

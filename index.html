@@ -743,6 +743,32 @@
     .clock-row:last-child { border-bottom: none; }
 
     #statusChangeRow:not(.hidden) { display: flex; }
+    /* Status is changed by tapping the status pill (2026-11-09): the row stays
+       folded away until then, and picking a status saves it. */
+    #statusChangeRow.collapsed { display: none !important; }
+    body.can-status #dStatusPill { cursor: pointer; }
+    body.can-status #dStatusPill::after { content: " ▾"; font-size: .85em; opacity: .7; }
+
+    /* Project Info as ONE compact list (2026-11-09), not a card per fact.
+       Name, PO, status, type and generator are already in the job header, so
+       their boxes are hidden (.pi-dup) — the elements stay, so every function
+       that fills them still works. */
+    #tab-project > .info-grid { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 2px 14px; }
+    #tab-project > .info-grid > .info-box { display: flex; align-items: baseline; gap: 12px; background: none; border: none; border-bottom: 1px solid var(--line); border-radius: 0; padding: 11px 0; }
+    #tab-project > .info-grid > .info-box:last-child { border-bottom: none; }
+    #tab-project > .info-grid > .info-box > .info-label { flex: 0 0 84px; margin: 0; }
+    #tab-project > .info-grid > .info-box > .info-value { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    #tab-project > .info-grid > .info-box.full { flex-wrap: wrap; }
+    #tab-project > .info-grid > .info-box.full > #piMiles { flex-basis: 100%; padding-left: 96px; margin-top: 0 !important; }
+    #tab-project > .info-grid > .pi-dup { display: none !important; }
+
+    /* Job settings folded into one line (2026-11-09). */
+    #jobSettingsFold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 11px 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; color: var(--text); }
+    #jobSettingsFold > summary::-webkit-details-marker { display: none; }
+    #jobSettingsFold > summary .js-chev { display: inline-block; transition: transform .15s; color: var(--muted); }
+    #jobSettingsFold[open] > summary .js-chev { transform: rotate(90deg); }
+    #jobSettingsFold > summary .js-sum { color: var(--muted); }
+    #jobSettingsFold[open] > summary { margin-bottom: 12px; }
     #piSaveBar:not(.hidden) { display: flex; }
 
     /* ── SERVICE CALL ACTION BUTTONS ── */
@@ -3541,11 +3567,14 @@
               <span id="dStatusPill" class="pill default">—</span>
               <span id="dTypePill" class="pill default hidden">—</span>
               <span id="dGenPill" class="pill gen-no">No Generator</span>
+              <!-- Prevailing-wage marker. Lived beside the name in the Project
+                   Info "Job Name" box, which is now hidden as a duplicate. -->
+              <span id="dPwPill" class="hidden" style="display:inline-flex; align-items:center;"></span>
               <button id="btnNewJobEstimate" class="action-btn admin-only hidden" style="font-size:12px; padding:6px 12px; cursor:pointer; border:none;">📋 New Job Estimate</button>
             </div>
           </div>
           <!-- ADMIN: Change Job Status -->
-          <div class="admin-only hidden" id="statusChangeRow" style="align-items:center; gap:10px; padding: 10px 0 4px; flex-wrap:wrap;">
+          <div class="admin-only hidden collapsed" id="statusChangeRow" style="align-items:center; gap:10px; padding: 10px 0 4px; flex-wrap:wrap;">
             <label style="font-size:12px; font-weight:600; color:var(--muted); white-space:nowrap;">Change Status:</label>
             <select id="statusChangeSelect" style="background:var(--panel-2); border:1px solid var(--line-2); border-radius:8px; padding:6px 10px; font-size:13px; color:var(--text); outline:none; flex:1; max-width:220px;">
               <option value="">— Select New Status —</option>
@@ -3557,7 +3586,9 @@
               <option value="Completed">Completed</option>
               <option value="Not Awarded">Not Awarded</option>
             </select>
-            <button id="statusChangeSaveBtn" class="btn btn-primary btn-sm" type="button" style="font-size:13px;">Save</button>
+            <!-- Kept (handleStatusChange reads its state) but not shown: picking
+                 a status saves it. -->
+            <button id="statusChangeSaveBtn" class="btn btn-primary btn-sm" type="button" style="font-size:13px; display:none;">Save</button>
             <span id="statusChangeMsg" style="font-size:12px; color:var(--green); display:none;">✓ Saved</span>
           </div>
         </div>
@@ -3636,23 +3667,28 @@
             <span id="piSaveErr" style="font-size:12px; color:var(--red); display:none;"></span>
           </div>
           <div class="info-grid">
-            <div class="info-box">
+            <!-- pi-dup boxes: already shown in the job header (name, PO line,
+                 status/type/generator pills). Hidden, NOT removed — the code
+                 that fills them still runs. -->
+            <div class="info-box pi-dup">
               <div class="info-label">Job Name</div>
               <div class="info-value" id="piJobName">—</div>
             </div>
-            <div class="info-box">
+            <div class="info-box pi-dup">
               <div class="info-label">Job PO</div>
               <div class="info-value" id="piJobPo">—</div>
             </div>
-            <div class="info-box">
+            <div class="info-box pi-dup">
               <div class="info-label">Job Status</div>
               <div class="info-value" id="piJobStatus">—</div>
             </div>
-            <div class="info-box">
+            <div class="info-box pi-dup">
               <div class="info-label">Job Type</div>
               <div class="info-value" id="piJobType">—</div>
             </div>
-            <div class="info-box admin-only hidden">
+            <!-- Viewers see this; for admin/office it is the "Sales tax" line in
+                 ⚙ Job settings, so refreshJobCityTaxView hides it for them. -->
+            <div class="info-box admin-only hidden" id="piTaxStatusCard">
               <div class="info-label">Tax Status</div>
               <div class="info-value" id="piTaxStatus">—</div>
             </div>
@@ -3660,20 +3696,20 @@
               <div class="info-label">Contractor</div>
               <div class="info-value" id="piContractor">—</div>
             </div>
-            <div class="info-box">
+            <div class="info-box pi-dup">
               <div class="info-label">Generator Installed</div>
               <div class="info-value" id="piGenerator">—</div>
             </div>
             <div class="info-box" id="piPhoneCard">
-              <div class="info-label">Customer Phone</div>
+              <div class="info-label">Phone</div>
               <div class="info-value" id="piCustomerPhone">—</div>
             </div>
             <div class="info-box" id="piEmailCard">
-              <div class="info-label">Customer Email</div>
+              <div class="info-label">Email</div>
               <div class="info-value" id="piCustomerEmail">—</div>
             </div>
             <div class="info-box full" id="piAddressCard">
-              <div class="info-label">Job Address — Tap to Open in Maps</div>
+              <div class="info-label">Address</div>
               <div class="info-value" id="piAddress">—</div>
               <div id="piMiles" style="font-size:12px; color:var(--muted); margin-top:5px; display:none;"></div>
             </div>
@@ -5107,6 +5143,9 @@
         el.classList.toggle("hidden", isStrictAdmin);
       });
 
+      // Status pill is tappable to change status (admin + office only).
+      document.body.classList.toggle("can-status", isAdmin() && !isViewer());
+
       // writer-only: everyone who can create things — hidden only from viewers,
       // who would get a 403 (the quick 🧾 Receipt buttons).
       document.querySelectorAll(".writer-only").forEach(el => {
@@ -5693,6 +5732,13 @@
     // escaped explicitly. A job name is customer-supplied text.
     $("piJobName").innerHTML = esc(val(job.name)) + (job.prevailingWage
       ? ` <span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}">🏛 PW</span>` : "");
+    // The same marker in the header, where it is now seen.
+    const pwPill = $("dPwPill");
+    if (pwPill) {
+      pwPill.innerHTML = job.prevailingWage
+        ? `<span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}">🏛 Prevailing wage</span>` : "";
+      pwPill.classList.toggle("hidden", !job.prevailingWage);
+    }
     $("piJobPo").textContent = val(job.po);
     $("piJobStatus").innerHTML = atPill(job.status, STATUS_COLORS);
     $("piJobType").innerHTML = atPill(job.type, TYPE_COLORS);
@@ -5889,6 +5935,7 @@
     if (isAdmin()) {
       $("statusChangeSelect").value = job.status || "";
       $("statusChangeMsg").style.display = "none";
+      $("statusChangeRow").classList.add("collapsed");   // each job opens folded
       // Pre-fill Power Co edit form
       $("pcEditCompany").value = job.powerCompanyIntake || "";
       // Hydrate the new typeahead picker from the link-field-backed mapJob
@@ -13703,12 +13750,65 @@
     const host = $("piCityTaxView");
     if (!host) return;
     const job = state.selected;
-    if (!job || !isAdmin()) { host.classList.add("hidden"); host.innerHTML = ""; return; }
-    host.innerHTML = renderJobCityTaxBar(job) + renderJobPrevailingWageBar(job);
+    const taxCard = $("piTaxStatusCard");
+    if (!job || !isAdmin()) {
+      host.classList.add("hidden"); host.innerHTML = "";
+      if (taxCard) taxCard.style.display = "";
+      return;
+    }
+    // Admin/office: tax status is the "Sales tax" line inside the fold below.
+    if (taxCard) taxCard.style.display = "none";
+
+    /* ⚙ Job settings, folded to ONE line (owner 2026-11-09). These are set
+     * once per job, so they no longer sit open on every visit. The controls
+     * inside, the ONE save bar (PI_SECTIONS) and prevailing wage's own button
+     * are unchanged — this is only a wrapper.
+     *
+     * Open/closed is remembered for the SAME job, because a save re-renders
+     * this host — without that the fold would snap shut mid-edit. Opens by
+     * itself when prevailing wage is on with no rate (the one state here that
+     * is costing money quietly) or the city tax is not set.
+     */
+    const pwOn = job.prevailingWage === true;
+    const pwBroken = pwOn && (job.pwRateMissing === true || !job.pwRate);
+    const noCityTax = job.cityTax == null || job.cityTax === "";
+    const bills = job.type === "Contract" ? "Contract %"
+                : job.type === "Time & Material" ? "T&M"
+                : job.type === "Service Calls" ? "Service Calls"
+                : "Bills as T&M (not set)";
+    const clock = job.clockVisibility === "all" ? "Clock: overhead"
+                : job.clockVisibility === "admin" ? "Clock: overhead (admin)"
+                : job.clockVisibility === "hidden" ? "Clock: never shown"
+                : "";
+    const parts = [
+      noCityTax ? `<span style="color:var(--amber,#c90); font-weight:600;">City tax not set</span>` : esc(job.cityTax),
+      esc(bills),
+      esc(job.taxStatus === "Tax Exempt" ? "Tax Exempt" : "Taxable"),
+      clock ? `<span style="color:var(--accent);">${esc(clock)}</span>` : "",
+      pwBroken ? `<span style="color:var(--red); font-weight:700;">PW: no rate ⚠</span>`
+        : pwOn ? `<span style="color:var(--accent); font-weight:600;">PW: yes</span>` : "PW: no",
+    ].filter(Boolean);
+    const remembered = jobSettingsFoldState.jobId === String(job.id) ? jobSettingsFoldState.open : null;
+    // A missing city tax only opens the fold on a job hours are being booked
+    // to — 54 of 67 completed jobs and every lost bid have none, and opening
+    // on all of those would undo the fold. The amber note shows regardless.
+    const active = ["Awarded", "Service Call Scheduled", "Ready to Invoice"].includes(job.status);
+    const open = remembered != null ? remembered : (pwBroken || (noCityTax && active));
+
+    host.innerHTML = `
+      <details id="jobSettingsFold" ${open ? "open" : ""}>
+        <summary><span class="js-chev">▸</span><span>⚙ <b>Job settings</b> <span class="js-sum">· ${parts.join(" · ")}</span></span></summary>
+        ${renderJobCityTaxBar(job) + renderJobPrevailingWageBar(job)}
+      </details>`;
     host.classList.remove("hidden");
+    const fold = $("jobSettingsFold");
+    jobSettingsFoldState = { jobId: String(job.id), open };
+    fold.addEventListener("toggle", () => { jobSettingsFoldState = { jobId: String(job.id), open: fold.open }; });
     wireJobCityTaxBar(job);
     wireJobPrevailingWageBar(job);
   }
+  // var, not let: hoisted, so a call before this line runs can't hit the TDZ.
+  var jobSettingsFoldState = { jobId: "", open: null };
 
   /* ── ESTIMATED vs ACTUAL HOURS (docs/PLAN-hours-capacity.md) ─────────────
    * One line answering "how are we doing on hours for this job", and the same
@@ -13946,7 +14046,11 @@
 
       msg.style.display = "inline";
       setTimeout(() => { msg.style.display = "none"; }, 2500);
+      // The row folds away after a pick, so the inline ✓ is gone with it.
+      showAppToast(`✓ Status: ${newStatus}`);
     } catch(err) {
+      // Put the picker back to what is actually saved.
+      $("statusChangeSelect").value = state.selected?.status || "";
       alert("Failed to update status: " + err.message);
     } finally {
       btn.disabled = false;
@@ -17860,6 +17964,21 @@
     $("yearFilter")?.addEventListener("change", applyFilters);
 
     $("statusChangeSaveBtn").addEventListener("click", handleStatusChange);
+    // Tap the status pill (admin/office) to open the status choices; picking
+    // one saves it. Viewers never get .can-status, so nothing happens for them.
+    $("dStatusPill").addEventListener("click", () => {
+      if (!document.body.classList.contains("can-status") || !state.selected) return;
+      const row = $("statusChangeRow");
+      const opening = row.classList.contains("collapsed");
+      row.classList.toggle("collapsed", !opening);
+      if (opening) { $("statusChangeSelect").value = state.selected.status || ""; $("statusChangeSelect").focus(); }
+    });
+    $("statusChangeSelect").addEventListener("change", async () => {
+      const v = $("statusChangeSelect").value;
+      if (!v || !state.selected || v === state.selected.status) return;
+      await handleStatusChange();
+      $("statusChangeRow").classList.add("collapsed");
+    });
     const piEditBtn = $("piEditBtn");
     if (piEditBtn) piEditBtn.addEventListener("click", handleEditToggle);
     const piSaveBtn = $("piSaveBtn");

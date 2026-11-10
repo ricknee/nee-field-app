@@ -55,6 +55,13 @@ anything that upserts `job_estimates`.
 - [ ] **Roles:** admin / office / viewer / employee each see only their intended tabs/buttons.
 - [ ] Estimates, Inspections (+ inspector picker), Generator commissioning + warranties.
 - [ ] Scheduling (add/edit/delete, conflict banner), Fleet (mileage + service), Scissor lifts.
+- [ ] **Job screen streamline** (2026-11-09), as ADMIN on a phone: no Change Status row until you tap
+  the status pill ▾; picking a status saves it (toast), and the job moves group in the list. Project Info
+  is one compact list (contractor, phone, email, address + miles); no Job Name/PO/Status/Type/Generator
+  boxes. "⚙ Job settings · …" is one line; open it and change City tax, Bills as and Sales tax → the ONE
+  Unsaved bar saves them and the fold stays open. Prevailing wage still has its own button. Edit → Cancel
+  still swaps the panel. A PW job shows "🏛 Prevailing wage" in the header. As an EMPLOYEE/VIEWER: the pill
+  does nothing, a viewer still sees Tax Status.
 - [ ] **Quick 🧾 Receipt** (`docs/PLAN-receipt-and-offline-prints.md`), on a phone, as an EMPLOYEE:
   top-bar 🧾 Receipt with no job open and scheduled today. The job is today's job. Enter an amount, no
   photo, Save: "✓ $X on <job>", and My Expenses on that job shows it waiting for approval, dated TODAY

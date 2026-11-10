@@ -2137,34 +2137,43 @@
     @media (max-width: 768px) {
       .exp-cards, .exp-cards tbody { display: block; width: 100%; }
       .exp-cards thead { display: none; }
+      /* Fixed to the card's width (minmax(0,…) + box-sizing): a long invoice
+         number like HD-3866-00062-40063-20261016 used to size the column and
+         push the amounts off the right edge (owner's screenshot 2026-11-09).
+           row 1  description (full width, wraps)
+           row 2  date · type ............ $total
+           row 3  markup · billable? ..... bill $
+           row 4  Approve ☐ ............... 🧾 🗑                          */
       .exp-cards tr:not(.exp-group-header) {
-        display: grid; grid-template-columns: auto auto 1fr auto; column-gap: 10px; row-gap: 4px;
+        display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; column-gap: 10px; row-gap: 5px;
+        width: 100%; box-sizing: border-box; min-width: 0;
         background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 0 0 8px; }
-      .exp-cards tr:not(.exp-group-header) > td { display: block; padding: 0; border: none !important; background: none !important; text-align: left !important; font-size: 13px; }
+      .exp-cards tr:not(.exp-group-header) > td { display: block; min-width: 0; padding: 0; border: none !important; background: none !important; text-align: left !important; font-size: 13px; }
       /* A search hit lights the whole card rather than one cell. */
       .exp-cards tr.exp-row-hit { background: #fff3bf; border-color: #f59e0b; }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(3) { grid-column: 1 / 4; grid-row: 1; font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(4) { grid-column: 4; grid-row: 1; font-size: 16px; font-weight: 800; text-align: right !important; white-space: nowrap; }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(1) { grid-column: 1; grid-row: 2; color: var(--muted); }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(3) { grid-column: 1 / -1; grid-row: 1; font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; word-break: break-word; }
       .exp-cards tr:not(.exp-group-header) > td:nth-child(2) { display: none; }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(7) { grid-column: 2 / 4; grid-row: 2; color: var(--muted); }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(6) { grid-column: 4; grid-row: 2; text-align: right !important; white-space: nowrap; color: var(--muted); }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(6)::before { content: "bill "; font-size: 11px; color: var(--muted); }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(5) { grid-column: 1; grid-row: 3; color: var(--muted); align-self: center; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(1) { grid-column: 1; grid-row: 2; color: var(--muted); white-space: nowrap; align-self: center; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(7) { grid-column: 2; grid-row: 2; color: var(--muted); align-self: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(4) { grid-column: 3; grid-row: 2; font-size: 17px; font-weight: 800; text-align: right !important; white-space: nowrap; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(5) { grid-column: 1; grid-row: 3; color: var(--muted); white-space: nowrap; }
       .exp-cards tr:not(.exp-group-header) > td:nth-child(5)::before { content: "Markup "; }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(8) { grid-column: 2; grid-row: 3; color: var(--muted); align-self: center; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(8) { grid-column: 2; grid-row: 3; color: var(--muted); white-space: nowrap; }
       .exp-cards tr:not(.exp-group-header) > td:nth-child(8)::before { content: "Billable "; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(6) { grid-column: 3; grid-row: 3; text-align: right !important; white-space: nowrap; color: var(--muted); }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(6)::before { content: "bill "; font-size: 11px; }
       .exp-cards tr:not(.exp-group-header) > td:nth-child(9),
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(10) { grid-row: 3; justify-self: end; align-self: center; display: flex; align-items: center; gap: 6px; }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(9) { grid-column: 3; }
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(10) { grid-column: 4; }
-      /* Reviewed table has 9 cells: its 9th is the 🧾 — put it at the far right. */
-      .exp-cards tr:not(.exp-group-header) > td:nth-child(9):last-child { grid-column: 4; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(10) { grid-row: 4; align-self: center; display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(9) { grid-column: 1 / 3; justify-self: start; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(10) { grid-column: 3; justify-self: end; }
+      /* Reviewed table has 9 cells: its 9th is the 🧾 — far right. */
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(9):last-child { grid-column: 3; justify-self: end; }
       /* Approve checkbox: a bigger target, labelled. */
       .exp-cards .exp-review-chk { width: 22px !important; height: 22px !important; }
       .exp-cards tr:not(.exp-group-header) > td:nth-child(9):not(:last-child)::before { content: "Approve"; font-size: 12px; color: var(--green); font-weight: 700; }
       /* Vendor group header: name + count on the left, total on the right. */
-      .exp-cards tr.exp-group-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 10px 2px 8px; margin-top: 6px; }
+      .exp-cards tr.exp-group-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 10px 2px 8px; margin-top: 6px; width: 100%; box-sizing: border-box; }
+      .exp-cards tr.exp-group-header > td:first-child { flex: 1; min-width: 0; }
       .exp-cards tr.exp-group-header > td { display: block; padding: 0; border: none !important; background: none !important; }
       .exp-cards tr.exp-group-header > td:nth-child(n+3) { display: none; }
       .exp-cards tr.exp-group-header > td:nth-child(2) { font-weight: 800; white-space: nowrap; }

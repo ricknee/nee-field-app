@@ -2126,6 +2126,13 @@
     /* Live Perf is one card now (renderLivePerf), not a 3-column grid that
        broke "$234,242.03" across two lines on a phone. */
     #livePerfGrid { display: block; }
+    /* Add Expense menu (2026-11-09). */
+    .exp-add-menu { margin-top: 8px; max-width: 360px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .exp-add-menu[hidden] { display: none; }
+    .exp-add-menu > button { display: block; width: 100%; text-align: left; background: none; border: none; border-bottom: 1px solid var(--line); padding: 12px 14px; font-size: 15px; font-weight: 600; color: var(--text); cursor: pointer; font-family: inherit; }
+    .exp-add-menu > button:last-child { border-bottom: none; }
+    .exp-add-menu > button:hover { background: var(--panel-2); }
+    .exp-add-menu > button small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); margin-top: 2px; }
 
     /* ── Expenses on a PHONE: each row becomes a card (owner 2026-11-09) ────
        The <table> is unchanged — same cells, same checkboxes and 🧾/🗑
@@ -4538,9 +4545,17 @@
         <div class="tab-content" id="tab-expenses">
           <!-- Admin action buttons -->
           <div class="admin-only hidden" id="expenseActionBtns" style="display:none; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
-            <button id="btnAddGeneralExpense" class="btn btn-sm" type="button" style="font-size:12px;">➕ Add Expense</button>
-            <button id="btnAddLiftExpense" class="btn btn-sm" type="button" style="font-size:12px;">🏗 Add Lift Expense</button>
-            <button id="btnAddBucketExpense" class="btn btn-sm" type="button" style="font-size:12px;">🚛 Add Bucket Truck Expense</button>
+            <!-- ONE "Add Expense" with a menu (owner 2026-11-09) instead of three
+                 buttons on two rows. The three buttons keep their ids and their
+                 own click handlers; the menu only shows and hides them. -->
+            <div style="flex:1 1 100%;">
+              <button id="btnExpAddMenu" class="btn btn-primary btn-sm" type="button" aria-expanded="false" style="font-size:13px; padding:8px 16px;">➕ Add Expense ▾</button>
+              <div id="expAddMenu" class="exp-add-menu" hidden>
+                <button id="btnAddGeneralExpense" type="button">🧾 Expense<small>receipt, materials, other</small></button>
+                <button id="btnAddLiftExpense" type="button">🏗 Lift rental<small>scissor lifts on this job</small></button>
+                <button id="btnAddBucketExpense" type="button">🚛 Bucket truck<small>truck time on this job</small></button>
+              </div>
+            </div>
           </div>
 
           <!-- General Expense Form -->
@@ -18343,6 +18358,22 @@
     if (qrTopBtn) qrTopBtn.addEventListener("click", () => openQuickReceipt(null));
     const qrJobBtn = $("btnJobReceipt");
     if (qrJobBtn) qrJobBtn.addEventListener("click", (e) => { e.preventDefault(); openQuickReceipt(state.selected); });
+
+    // ➕ Add Expense ▾ — shows/hides the three choices. Each choice keeps its
+    // own handler (below and elsewhere); a tap on any of them also closes the
+    // menu, because this container listener runs after the button's own.
+    const expAddMenuBtn = $("btnExpAddMenu"), expAddMenu = $("expAddMenu");
+    if (expAddMenuBtn && expAddMenu) {
+      expAddMenuBtn.addEventListener("click", () => {
+        expAddMenu.hidden = !expAddMenu.hidden;
+        expAddMenuBtn.setAttribute("aria-expanded", String(!expAddMenu.hidden));
+      });
+      expAddMenu.addEventListener("click", (e) => {
+        if (!e.target.closest("button")) return;
+        expAddMenu.hidden = true;
+        expAddMenuBtn.setAttribute("aria-expanded", "false");
+      });
+    }
 
     // General Expense
     const btnAddGen = $("btnAddGeneralExpense");

@@ -12949,8 +12949,11 @@
           <span style="font-size:13px; color:var(--red); font-weight:600;">⬜ Pending: ${fmtCurrency(totalPend)}<span style="font-weight:500; color:var(--muted);"> · billable ${fmtCurrency(billPend)}</span></span>
           ${allPendingExpIds.length ? `<button id="exp-approve-all-btn" class="btn btn-sm" style="margin-left:auto; background:var(--green); color:white; border:none; font-size:12px; padding:6px 14px;">✅ Approve All (${allPendingExpIds.length})</button>` : ""}
         </div>
-        <!-- Find an expense (searches BOTH sub-tabs) -->
-        <div style="margin-bottom:14px;">
+        <!-- Find an expense (searches BOTH sub-tabs). Folded behind the 🔍 on
+             the sub-tab row (owner 2026-11-09) — open while a search is on, a
+             cost is mistyped, or the caret belongs in it; per job, like the
+             search terms. -->
+        <div id="exp-search-box" style="margin-bottom:14px;${(S.open || searchOn || costBad || S.focus) ? "" : " display:none;"}">
           <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
             <input id="exp-search-vendor" class="edit-input" type="text" autocomplete="off"
                    placeholder="Vendor (or description)" value="${esc(S.vendor || "")}"
@@ -12984,6 +12987,8 @@
         <div style="display:flex; gap:0; margin-bottom:14px; border-bottom:2px solid var(--line);">
           <button id="exp-tab-pending" onclick="expShowTab('pending')" style="padding:8px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; border-bottom:3px solid var(--accent); color:var(--accent); margin-bottom:-2px;">⬜ Not Reviewed (${pending.length})</button>
           <button id="exp-tab-reviewed" onclick="expShowTab('reviewed')" style="padding:8px 18px; font-size:13px; font-weight:600; border:none; background:none; cursor:pointer; color:var(--muted); border-bottom:3px solid transparent; margin-bottom:-2px;">✅ Reviewed (${reviewed.length})</button>
+          <button id="exp-search-toggle" type="button" title="Find an expense" aria-label="Find an expense"
+                  style="margin-left:auto; padding:6px 12px; font-size:18px; border:none; background:none; cursor:pointer; ${(searchOn || costBad) ? "color:var(--accent);" : ""}">🔍</button>
         </div>
         <div id="exp-pending-content" style="overflow-x:auto;">${renderPendingTab(pending)}</div>
         <div id="exp-reviewed-content" style="overflow-x:auto; display:none;">${renderReviewedTab(reviewed)}</div>`;
@@ -13001,6 +13006,14 @@
         loadExpenses(jobId);
       };
       $("exp-search-btn").addEventListener("click", () => runExpSearch(""));
+      // 🔍 opens/closes the find box in place — no reload, nothing searched.
+      $("exp-search-toggle").addEventListener("click", () => {
+        const box = $("exp-search-box");
+        const show = box.style.display === "none";
+        box.style.display = show ? "" : "none";
+        window.__expSearch.open = show;
+        if (show) expSearchVendor.focus();
+      });
       [["vendor", expSearchVendor], ["cost", expSearchCost]].forEach(([name, inp]) => {
         inp.addEventListener("keydown", ev => {
           if (ev.key !== "Enter") return;
@@ -13013,6 +13026,7 @@
         window.__expSearch.vendor = "";
         window.__expSearch.cost   = "";
         window.__expSearch.focus  = "vendor";
+        window.__expSearch.open   = true;   // stay open for the next search
         loadExpenses(jobId);
       });
 

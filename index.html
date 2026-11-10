@@ -2126,6 +2126,49 @@
     /* Live Perf is one card now (renderLivePerf), not a 3-column grid that
        broke "$234,242.03" across two lines on a phone. */
     #livePerfGrid { display: block; }
+
+    /* ── Expenses on a PHONE: each row becomes a card (owner 2026-11-09) ────
+       The <table> is unchanged — same cells, same checkboxes and 🧾/🗑
+       buttons, same column count (a test pins it). Below 768px the cells are
+       laid out by position instead:
+         1 date · 2 vendor · 3 description · 4 total · 5 markup · 6 billable $
+         7 type · 8 billable? · 9 approve (pending) or 🧾 (reviewed) · 10 🧾🗑
+       Vendor is hidden on the card — the group header above already says it. */
+    @media (max-width: 768px) {
+      .exp-cards, .exp-cards tbody { display: block; width: 100%; }
+      .exp-cards thead { display: none; }
+      .exp-cards tr:not(.exp-group-header) {
+        display: grid; grid-template-columns: auto auto 1fr auto; column-gap: 10px; row-gap: 4px;
+        background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 0 0 8px; }
+      .exp-cards tr:not(.exp-group-header) > td { display: block; padding: 0; border: none !important; background: none !important; text-align: left !important; font-size: 13px; }
+      /* A search hit lights the whole card rather than one cell. */
+      .exp-cards tr.exp-row-hit { background: #fff3bf; border-color: #f59e0b; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(3) { grid-column: 1 / 4; grid-row: 1; font-size: 14px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(4) { grid-column: 4; grid-row: 1; font-size: 16px; font-weight: 800; text-align: right !important; white-space: nowrap; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(1) { grid-column: 1; grid-row: 2; color: var(--muted); }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(2) { display: none; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(7) { grid-column: 2 / 4; grid-row: 2; color: var(--muted); }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(6) { grid-column: 4; grid-row: 2; text-align: right !important; white-space: nowrap; color: var(--muted); }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(6)::before { content: "bill "; font-size: 11px; color: var(--muted); }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(5) { grid-column: 1; grid-row: 3; color: var(--muted); align-self: center; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(5)::before { content: "Markup "; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(8) { grid-column: 2; grid-row: 3; color: var(--muted); align-self: center; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(8)::before { content: "Billable "; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(9),
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(10) { grid-row: 3; justify-self: end; align-self: center; display: flex; align-items: center; gap: 6px; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(9) { grid-column: 3; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(10) { grid-column: 4; }
+      /* Reviewed table has 9 cells: its 9th is the 🧾 — put it at the far right. */
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(9):last-child { grid-column: 4; }
+      /* Approve checkbox: a bigger target, labelled. */
+      .exp-cards .exp-review-chk { width: 22px !important; height: 22px !important; }
+      .exp-cards tr:not(.exp-group-header) > td:nth-child(9):not(:last-child)::before { content: "Approve"; font-size: 12px; color: var(--green); font-weight: 700; }
+      /* Vendor group header: name + count on the left, total on the right. */
+      .exp-cards tr.exp-group-header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 10px 2px 8px; margin-top: 6px; }
+      .exp-cards tr.exp-group-header > td { display: block; padding: 0; border: none !important; background: none !important; }
+      .exp-cards tr.exp-group-header > td:nth-child(n+3) { display: none; }
+      .exp-cards tr.exp-group-header > td:nth-child(2) { font-weight: 800; white-space: nowrap; }
+    }
     /* Closeout + Est. GP as compact lists (2026-11-09): label left, amount
        right-aligned, one card per section — same infoBox()/checkBox() markup. */
     :is(#closeoutGrid, #closeoutCompareGrid, #closeoutCheckGrid, #estGpGrid) { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 2px 14px; }
@@ -12853,7 +12896,7 @@
             : g.rows.map(e => expenseRow(e, true)).join("");
           return header + rows;
         }).join("");
-        return `<table class="expense-table">
+        return `<table class="expense-table exp-cards">
           <thead><tr>
             <th>Date</th><th>Vendor</th><th>Description</th>
             <th style="text-align:right;">Total Cost</th><th>Markup %</th>
@@ -12874,7 +12917,7 @@
             : g.rows.map(e => expenseRow(e, false)).join("");
           return header + rows;
         }).join("");
-        return `<table class="expense-table">
+        return `<table class="expense-table exp-cards">
           <thead><tr>
             <th>Date</th><th>Vendor</th><th>Description</th>
             <th style="text-align:right;">Total Cost</th><th>Markup %</th>

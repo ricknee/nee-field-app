@@ -6328,6 +6328,12 @@ const JOB_SELECT = `
          j.completion_date::text AS completion_date, j.start_date::text AS start_date,
          -- "Due date met" (db/schema/088): display only — stops the OVERDUE.
          j.completion_met_on::text AS completion_met_on,
+         -- The contractor's contact person (db/schema/089), read LIVE from
+         -- contacts so a changed phone shows on every job. Emitted in the same
+         -- COALESCE form the contact pickers speak.
+         COALESCE(cc.airtable_id, cc.id::text) AS gc_contact_id,
+         cc.first_name AS gc_contact_first, cc.last_name AS gc_contact_last,
+         cc.primary_phone AS gc_contact_phone, cc.primary_email AS gc_contact_email,
          j.workflow_status, j.billable_hourly_rate,
          -- The hours TARGET for this job, overriding the estimate rollup when
          -- set. NULL means nobody has said — the rollup answers if there is one.
@@ -6377,6 +6383,7 @@ const JOB_SELECT = `
     LEFT JOIN v_job_rollups_true      r ON r.id = j.id
     LEFT JOIN v_job_financials_true   f ON f.id = j.id
     LEFT JOIN v_job_labor_cost_true_by_job t ON t.job_id = j.id
+    LEFT JOIN contacts cc ON cc.id = j.contractor_contact_id
     -- The OPEN rate (effective_end IS NULL), which is the one the form edits and
     -- the screen shows. pw_rates_one_open_per_job guarantees there is at most one,
     -- so this cannot silently pick between two.
@@ -6453,6 +6460,11 @@ function mapJobFromNeon(r) {
     billingMethod: s(r.billing_method),
     baseContractAmount: n(r.base_contract_amount), totalContractBilled: n(r.total_contract_billed),
     customerFirstName: s(r.customer_first_name), customerLastName: s(r.customer_last_name),
+    // The contractor's person (db/schema/089) — separate from the customer.
+    contractorContactId:    r.gc_contact_id || null,
+    contractorContactName:  [r.gc_contact_first, r.gc_contact_last].map(v => s(v).trim()).filter(Boolean).join(" "),
+    contractorContactPhone: s(r.gc_contact_phone),
+    contractorContactEmail: s(r.gc_contact_email),
     // NULL deliberately survives as null rather than becoming "" — "not yet
     // decided" and "decided: no tax" are different answers and the UI shows both.
     cityTax: r.city_tax ?? null,
@@ -11745,11 +11757,16 @@ async function handleListContactsByCompany(params) {
   // reorder the list.
   if (neonEnabled()) {
     const q = await neonQuery(
-      `SELECT c.airtable_id, c.first_name, c.last_name, c.primary_phone,
+      // ⚠ COALESCE on both ids (2026-11-10). The bare airtable_id handed a
+      // native contact (4 today) an EMPTY id, and a native company never
+      // matched its own people — "a query that matches only on airtable_id
+      // silently drops native rows". company_id is set on every contact.
+      `SELECT COALESCE(c.airtable_id, c.id::text) AS airtable_id, c.first_name, c.last_name, c.primary_phone,
               c.primary_email, c.role, c.street, c.city, c.state, c.zip,
-              c.company_airtable_id, co.name AS company_name
+              COALESCE(co.airtable_id, co.id::text, c.company_airtable_id) AS company_airtable_id,
+              co.id::text AS company_uuid, co.name AS company_name
          FROM contacts c
-         LEFT JOIN companies co ON co.airtable_id = c.company_airtable_id
+         LEFT JOIN companies co ON co.id = c.company_id
         WHERE c.active
         ORDER BY lower(coalesce(c.last_name, '')), lower(coalesce(c.first_name, ''))`);
     if (q?.rows) {
@@ -11768,7 +11785,7 @@ async function handleListContactsByCompany(params) {
       });
       const own = [], other = [];
       for (const r of q.rows) {
-        if (r.company_airtable_id === companyId) own.push(shapeN(r));
+        if (r.company_airtable_id === companyId || r.company_uuid === companyId) own.push(shapeN(r));
         else other.push({ ...shapeN(r), companyId: s(r.company_airtable_id),
                           companyName: s(r.company_name) });
       }
@@ -14635,7 +14652,7 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerFirstName, customerLastName, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, expectedHours, generatorInstalled } = body || {};
+  const { jobId, contractorContactId, customerFirstName, customerLastName, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, expectedHours, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -14685,6 +14702,21 @@ async function handleUpdateJobInfo(body) {
   // job creation and by the old import, and had no edit path until now.
   if (customerFirstName !== undefined) put("customer_first_name", String(customerFirstName || "").trim() || null);
   if (customerLastName  !== undefined) put("customer_last_name",  String(customerLastName  || "").trim() || null);
+  // Contractor's contact person (db/schema/089). "" clears it; anything else
+  // must be a real contact (either id form) — refused rather than written
+  // NULL, so a stale picker can't quietly unlink someone.
+  if (contractorContactId !== undefined) {
+    const raw = String(contractorContactId || "").trim();
+    if (!raw) put("contractor_contact_id", null, "::uuid");
+    else {
+      const cq = await neonQuery(
+        `SELECT id::text AS id FROM contacts WHERE id::text = $1 OR airtable_id = $1 LIMIT 1`, [raw]);
+      if (!cq || !cq.rows) throw unavailableError("Can't check that contact right now — the database is unavailable.");
+      const cid = cq.rows[0]?.id;
+      if (!cid) return resp(400, { ok: false, error: "That contact wasn't found — reopen Edit and pick again." });
+      put("contractor_contact_id", cid, "::uuid");
+    }
+  }
   if (customerPhone  !== undefined) put("customer_phone",  customerPhone  || null);
   if (customerEmail  !== undefined) put("customer_email",  customerEmail  || null);
   if (notes          !== undefined) put("notes",           notes          || null);

@@ -815,6 +815,21 @@ await test("updateJobInfo: customer first/last name save on their own and are re
      "the job read carries them back");
 });
 
+await test("contractor contact (schema 089): clear accepted, read LIVE via join, list ids COALESCEd", async () => {
+  mockTables = {};
+  const r = await POST("updateJobInfo", { jobId: "recJ1", contractorContactId: "" });
+  eq(r.statusCode === 400, false, "clearing the contact alone is accepted");
+  const fs = await import("node:fs/promises");
+  const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const html = await fs.readFile(new URL("../index.html", import.meta.url), "utf8");
+  ok(/LEFT JOIN contacts cc ON cc\.id = j\.contractor_contact_id/.test(src), "JOB_SELECT joins the contact");
+  ok(/COALESCE\(cc\.airtable_id, cc\.id::text\) AS gc_contact_id/.test(src), "emits the either-form id");
+  ok(/contractorContactId:\s+r\.gc_contact_id/.test(src), "the mapper carries it");
+  ok(/COALESCE\(c\.airtable_id, c\.id::text\) AS airtable_id/.test(src), "listContactsByCompany gives native contacts an id");
+  ok(/contractorContactId: \$\("piEditGcContact"\)\.value/.test(html) && /contractorContactId: job\.contractorContactId/.test(html),
+     "the edit panel's dirty check covers the picker");
+});
+
 await test("expected hours: NULL survives the read, and no target is a PROMPT not a dash", async () => {
   const fs = await import("node:fs/promises");
   const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

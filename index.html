@@ -792,6 +792,9 @@
     details.tab-edit-fold > .tab-edit-body { padding: 4px 16px 16px; border-top: 1px solid var(--line); }
     #tab-project > .info-grid > .info-box.full > #piMiles { flex-basis: 100%; padding-left: 96px; margin-top: 0 !important; }
     #tab-project > .info-grid > .pi-dup { display: none !important; }
+    /* A contact block with nothing in it (refreshContactCards). A class, not
+       style.display — edit mode drives style.display on the same cards. */
+    #tab-project > .info-grid > .pi-empty { display: none !important; }
 
     /* Hours + Completion Date read as ONE "progress" card when both show
        (2026-11-09): the two boxes join, no gap. Each still shows/hides on its
@@ -3863,8 +3866,16 @@
               <div class="info-label">Generator Installed</div>
               <div class="info-value" id="piGenerator">—</div>
             </div>
+            <!-- The contractor's person (db/schema/089, owner 2026-11-10) — e.g.
+                 Jeff Miller for Aviary Poultry. Linked to the contact, so it is
+                 read live. Hidden (.pi-empty) when the job has none. -->
+            <div class="info-box pi-empty" id="piGcContactCard">
+              <div class="info-label">Contractor contact</div>
+              <div class="info-value" id="piGcContact">—</div>
+            </div>
             <!-- Customer name (owner 2026-11-10) — right above Phone, so Call /
-                 Text say who they reach. -->
+                 Text say who they reach. Customer / Phone / Email hide together
+                 (.pi-empty) when all three are blank. -->
             <div class="info-box" id="piCustomerCard">
               <div class="info-label">Customer</div>
               <div class="info-value" id="piCustomerName">—</div>
@@ -3942,6 +3953,20 @@
                 <input id="piEditCity"   type="text"  class="edit-input" placeholder="City" />
                 <input id="piEditState"  type="text"  class="edit-input" placeholder="State" maxlength="2" style="text-transform:uppercase;" />
                 <input id="piEditZip"    type="text"  class="edit-input" placeholder="Zip" />
+              </div>
+            </div>
+
+            <!-- Contractor's person (db/schema/089). Picked from the contractor's
+                 own contacts; "+ New contact" files a new one under the
+                 contractor on Save. Hidden when the job has no contractor. -->
+            <div id="piEditGcWrap" style="margin-bottom:14px;">
+              <label class="edit-label" for="piEditGcContact">Contractor contact</label>
+              <select id="piEditGcContact" class="edit-input"></select>
+              <div id="piEditGcNew" class="hidden" style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px;">
+                <input id="piEditGcFirst" type="text" class="edit-input" placeholder="First name" autocomplete="off" />
+                <input id="piEditGcLast"  type="text" class="edit-input" placeholder="Last name" autocomplete="off" />
+                <input id="piEditGcPhone" type="tel" class="edit-input" placeholder="Phone" />
+                <input id="piEditGcEmail" type="email" class="edit-input" placeholder="Email" />
               </div>
             </div>
 
@@ -12245,6 +12270,8 @@
   // dirty check and the write can never disagree about what "changed" means.
   function piInfoValues() {
     return {
+      // "" none · a contact id · "__new__" (created on Save, see savePiInfo).
+      contractorContactId: $("piEditGcContact").value || "",
       customerFirstName: $("piEditFirstName").value.trim(),
       customerLastName:  $("piEditLastName").value.trim(),
       customerStreet: $("piEditStreet").value.trim(),
@@ -12266,6 +12293,7 @@
   // !== would call every job dirty the moment the panel opened.
   function piInfoCurrent(job) {
     return {
+      contractorContactId: job.contractorContactId || "",
       customerFirstName: (job.customerFirstName || "").trim(),
       customerLastName:  (job.customerLastName  || "").trim(),
       customerStreet: job.customerStreet || "",
@@ -14234,12 +14262,78 @@
     }
   }
 
-  // "Ryan Koehn" from the job's first + last name; "—" when neither is set.
+  // The two contact blocks on Project Info (owner 2026-11-10):
+  //   Contractor contact — the linked person (db/schema/089), hidden if none.
+  //   Customer / Phone / Email — the job's own boxes, hidden together when all
+  //   three are blank. Phone and Email are still FILLED by their old code.
   function refreshCustomerName(job) {
+    if (!job) return;
     const el = $("piCustomerName");
-    if (!el || !job) return;
     const n = [job.customerFirstName, job.customerLastName].map(s => String(s || "").trim()).filter(Boolean).join(" ");
-    el.textContent = n || "—";
+    if (el) el.textContent = n || "—";
+    const noCustomer = !n && !String(job.customerPhone || "").trim() && !String(job.customerEmail || "").trim();
+    ["piCustomerCard", "piPhoneCard", "piEmailCard"].forEach(id => $(id)?.classList.toggle("pi-empty", noCustomer));
+
+    const gcCard = $("piGcContactCard"), gcEl = $("piGcContact");
+    const has = !!job.contractorContactId;
+    gcCard?.classList.toggle("pi-empty", !has);
+    if (gcEl && has) {
+      const email = String(job.contractorContactEmail || "").trim();
+      gcEl.innerHTML = `<div>${esc(job.contractorContactName || "—")}</div>` +
+        (job.contractorContactPhone ? `<div style="margin-top:4px;">${phoneActionsHtml(job.contractorContactPhone)}</div>` : "") +
+        (email ? `<div style="margin-top:4px;"><a href="mailto:${esc(email)}">${esc(email)}</a></div>` : "");
+    }
+  }
+
+  // ── Contractor contact picker (edit panel) ──
+  // Filled from the contractor's own contacts each time Edit opens. The job's
+  // current contact is always an option, even if it is filed elsewhere, so
+  // opening Edit can never silently change it.
+  let piGcContacts = [];
+  function piGcLabel(c) {
+    return [c.firstName, c.lastName].map(s => String(s || "").trim()).filter(Boolean).join(" ") || "(no name)";
+  }
+  function piGcRenderOptions(job, list) {
+    const sel = $("piEditGcContact");
+    if (!sel) return;
+    const cur = job.contractorContactId || "";
+    const rows = list.slice();
+    if (cur && !rows.some(c => c.id === cur)) {
+      const [firstName, ...rest] = String(job.contractorContactName || "").split(" ");
+      rows.unshift({ id: cur, firstName, lastName: rest.join(" "),
+                     primaryPhone: job.contractorContactPhone || "", primaryEmail: job.contractorContactEmail || "" });
+    }
+    piGcContacts = rows;
+    sel.innerHTML = `<option value="">— none —</option>` +
+      rows.map(c => `<option value="${esc(c.id)}">${esc(piGcLabel(c))}${c.primaryPhone ? " · " + esc(c.primaryPhone) : ""}</option>`).join("") +
+      `<option value="__new__">+ New contact…</option>`;
+    sel.value = cur;
+  }
+  function piGcToggleNew() {
+    const isNew = $("piEditGcContact")?.value === "__new__";
+    $("piEditGcNew")?.classList.toggle("hidden", !isNew);
+    if (isNew) $("piEditGcFirst")?.focus();
+  }
+  async function piGcLoad(job) {
+    const wrap = $("piEditGcWrap");
+    if (!wrap) return;
+    ["piEditGcFirst", "piEditGcLast", "piEditGcPhone", "piEditGcEmail"].forEach(id => { if ($(id)) $(id).value = ""; });
+    $("piEditGcNew")?.classList.add("hidden");
+    // No contractor → nowhere to file a new contact; keep any existing link visible.
+    wrap.classList.toggle("hidden", !job.contractorId && !job.contractorContactId);
+    piGcRenderOptions(job, []);
+    if (!job.contractorId) return;
+    try {
+      const res = await apiGet("listContactsByCompany", { companyId: job.contractorId });
+      // Only repaint if the same job is still open and the picker untouched.
+      if (state.selected?.id !== job.id) return;
+      const sel = $("piEditGcContact");
+      if (sel && sel.value !== (job.contractorContactId || "")) return;
+      const list = (res.contacts || []).slice().sort((a, b) => piGcLabel(a).localeCompare(piGcLabel(b), undefined, { sensitivity: "base" }));
+      piGcRenderOptions(job, list);
+    } catch (e) {
+      console.warn("contractor contacts failed to load:", e);
+    }
   }
 
   function refreshAddressCard() {
@@ -14252,6 +14346,7 @@
     const job = state.selected;
 
     // Prefill all inputs from the current state.
+    piGcLoad(job);
     $("piEditFirstName").value = (job.customerFirstName || "").trim();
     $("piEditLastName").value  = (job.customerLastName  || "").trim();
     $("piEditStreet").value = job.customerStreet || "";
@@ -14279,6 +14374,9 @@
     $("piPhoneCard").style.display   = "none";
     $("piEmailCard").style.display   = "none";
     $("piAddressCard").style.display = "none";
+    // The edit panel has boxes for these two as well.
+    $("piCustomerCard").style.display  = "none";
+    $("piGcContactCard").style.display = "none";
     $("piNotesView").classList.add("hidden");
     $("piNotesAdd")?.classList.add("hidden");
     $("piCompletionDateView").classList.add("hidden");
@@ -14306,6 +14404,8 @@
     if (emailCard) emailCard.style.display = "";
     const addressCard = $("piAddressCard");
     if (addressCard) addressCard.style.display = "";
+    // Back to the CSS; .pi-empty still hides an empty block.
+    ["piCustomerCard", "piGcContactCard"].forEach(id => { const el = $(id); if (el) el.style.display = ""; });
     const editPanel = $("piEditPanel");
     if (editPanel) editPanel.classList.add("hidden");
     const saveBar = $("piSaveBar");
@@ -14355,10 +14455,42 @@
     if (!job) return;
     const v = piInfoValues();
 
+    // Contractor contact. "+ New contact…" files the person under the job's
+    // contractor FIRST, then links the job to it — same order New Project
+    // uses, so a failed create aborts before the job is touched.
+    let gc = v.contractorContactId ? piGcContacts.find(c => c.id === v.contractorContactId) : null;
+    if (v.contractorContactId === "__new__") {
+      const nc = {
+        firstName:    $("piEditGcFirst").value.trim(),
+        lastName:     $("piEditGcLast").value.trim(),
+        primaryPhone: $("piEditGcPhone").value.trim(),
+        primaryEmail: $("piEditGcEmail").value.trim(),
+      };
+      if (!nc.firstName && !nc.lastName) {
+        $("piEditGcFirst").focus();
+        throw new Error("New contractor contact needs a first or last name.");
+      }
+      const res = await apiPost("createContact", { ...nc, companyId: job.contractorId });
+      if (!res.ok || !res.contact?.id) throw new Error(res.error || "Couldn't add the contact.");
+      gc = { ...nc, id: res.contact.id };
+      piGcContacts.push(gc);
+      v.contractorContactId = gc.id;
+      // So a second Save (if another section fails) doesn't create it twice.
+      const sel = $("piEditGcContact");
+      sel.insertAdjacentHTML("afterbegin", `<option value="${esc(gc.id)}">${esc(piGcLabel(gc))}</option>`);
+      sel.value = gc.id;
+      piGcToggleNew();
+    }
+
     // expectedHours goes as a number or "" (which clears it). The server
     // refuses anything else rather than writing NULL, so a typo is reported
     // instead of quietly dropping the job out of the year view.
     await apiPost("updateJobInfo", { jobId: job.id, ...v });
+    piSyncJob({
+      contractorContactName:  gc ? piGcLabel(gc) : "",
+      contractorContactPhone: gc?.primaryPhone || "",
+      contractorContactEmail: gc?.primaryEmail || "",
+    });
 
     // Update local state so subsequent reads (and re-entering edit
     // mode) see the saved values.
@@ -18389,7 +18521,8 @@
     if (piSaveBtn) piSaveBtn.addEventListener("click", savePiPending);
     // The edit panel's inputs are static markup, so these bind once. Every one
     // of them has to report, or the bar would miss the only field you touched.
-    ["piEditFirstName", "piEditLastName",
+    $("piEditGcContact")?.addEventListener("change", piGcToggleNew);
+    ["piEditGcContact", "piEditFirstName", "piEditLastName",
      "piEditStreet", "piEditCity", "piEditState", "piEditZip", "piEditPhone",
      "piEditEmail", "piEditNotes", "piEditCompletionDate", "piEditExpectedHours"].forEach(id => {
       const el = $(id);

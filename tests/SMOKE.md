@@ -72,6 +72,10 @@ anything that upserts `job_estimates`.
   no OVERDUE; reload and it stays; "undo" brings the OVERDUE back. Status is NOT changed by it.
   Customer name (2026-11-10): a "Customer" line sits above Phone. ✏ Edit → change First/Last Name → the
   one save bar says "project info" → Save → the line updates; reload and it stays. Clearing both shows "—".
+  Contractor contact (schema 089): ✏ Edit → "Contractor contact" lists the contractor's people → pick one →
+  Save → a "Contractor contact" block with Call/Text shows under Contractor; reload and it stays. "+ New
+  contact…" → type a name → Save → it is added under the contractor AND linked. "— none —" removes the
+  block. A job with no customer name/phone/email shows no Customer/Phone/Email lines.
 - [ ] **Power Co. + Inspections tabs** (2026-11-09): info is one compact list. As admin, "✏ Edit power co.
   info" opens the same form — pick a company, then a contact, fill AIC/Temp/Perm/Meter, Save → the list
   updates. "✏ Edit inspection info" (now BELOW the list) — agency, inspector, permit, and "does not

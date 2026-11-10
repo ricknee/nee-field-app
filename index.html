@@ -1504,6 +1504,9 @@
     }
     /* One line per job (2026-11-09): name · code ........ badges */
     .job-item--line { padding: 11px 12px; margin-bottom: 2px; }
+    /* Every other row lightly shaded. Declared before .active is not enough —
+       .active must still win, so it is excluded here. */
+    .job-item--alt:not(.active) { background: var(--panel-2); }
     .job-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
     .job-line .job-item-name { margin: 0; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .job-line .job-item-po { margin: 0; flex: 0 0 auto; white-space: nowrap; color: var(--muted); }
@@ -5580,6 +5583,7 @@
 
     let html = "";
     let lastGroup = null;
+    let rowInGroup = 0;
 
     sorted.forEach(job => {
       const st = (job.status||"").toLowerCase();
@@ -5596,7 +5600,12 @@
       if (group !== lastGroup) {
         html += `<div class="section-label">${esc(group)}</div>`;
         lastGroup = group;
+        rowInGroup = 0;
       }
+      // Every other row lightly shaded (owner 2026-11-09), counted per group
+      // so each group starts the same way — CSS :nth-child can't, because the
+      // group headings sit between the rows as siblings.
+      const zebra = rowInGroup++ % 2 === 1;
 
       const isActive = state.selected?.id === job.id;
       // ONE line per job (owner 2026-11-09): "Bellaire · CLB 312". The PO is
@@ -5607,7 +5616,7 @@
       const poStr  = String(job.po || "");
       const poCode = (poStr.match(/\(([^()]+)\)\s*$/) || [])[1] || poStr || "No PO";
       html += `
-        <div class="job-item job-item--line${isActive ? " active" : ""}" data-id="${esc(job.id)}">
+        <div class="job-item job-item--line${zebra ? " job-item--alt" : ""}${isActive ? " active" : ""}" data-id="${esc(job.id)}">
           <div class="job-line">
             <span class="job-item-name">${esc(job.name||"Untitled")}</span>
             <span class="job-item-po">${esc(poCode)}</span>

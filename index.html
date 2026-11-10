@@ -232,6 +232,28 @@
 
     .user-badge.admin { border-color: var(--accent); color: var(--accent); }
 
+    /* 📞 Call · 💬 Text · 🧭 Navigate under a phone number / address. */
+    .ph-num { white-space: nowrap; }
+    .ph-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; }
+    .ph-btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: 999px; font-size: 13px; font-weight: 600;
+      background: var(--panel-2); border: 1px solid var(--line-2); color: var(--blue) !important; text-decoration: none !important; }
+
+    .topbar-menu-user { padding: 8px 12px 10px; margin-bottom: 4px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+    .topbar-menu-user b { color: var(--text); }
+    /* ONE-ROW TOP BAR on a phone (owner 2026-11-09): logo · buttons · ☰.
+       The "Northeastern Electric / FIELD APP" words and the name badge go
+       (the name is at the top of the ☰ menu), and "All Charts" / "New
+       Project" shorten to "Charts" / "Project". Every button is the same
+       element with the same handler. ⚠ The row stays overflow:visible — the
+       ☰ menu hangs off it and would be clipped otherwise. */
+    @media (max-width: 600px) {
+      .topbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; }
+      .topbar-row1 { margin: 0; flex: 0 0 auto; }
+      .topbar .brand-text, #userBadge { display: none !important; }
+      .topbar-row2 { flex: 1 1 auto; min-width: 0; padding-bottom: 0; }
+      .tb-long { display: none; }
+    }
+
     /* Compact topbar buttons — DIRECT CHILDREN OF THE ROW ONLY.
        ⚠⚠ THE `>` IS LOAD-BEARING. This used to be `.topbar-row2 .btn`, a
        descendant selector, and once the overflow actions moved into the ☰ menu
@@ -3570,12 +3592,12 @@
       <span id="userBadge" class="user-badge">—</span>
     </div>
     <div class="topbar-row2">
-      <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ New Project</button>
+      <button id="btnNewJobIntake" type="button" class="btn btn-primary btn-sm admin-only hidden">+ <span class="tb-long">New </span>Project</button>
       <!-- Ungated like Fleet and Mileage — it's a code reference, not company
            data, and the crew is who needs it. It reads NOTHING from the
            backend, so there is no authzFor tier to pick: the whole thing is
            static NEC tables and arithmetic in the browser. -->
-      <button id="btnAllCharts" class="btn btn-sm" type="button">📐 All Charts</button>
+      <button id="btnAllCharts" class="btn btn-sm" type="button">📐 <span class="tb-long">All </span>Charts</button>
       <!-- Quick receipt (docs/PLAN-receipt-and-offline-prints.md #3): job,
            amount, store, save — photo optional. In the top bar so it is one
            tap from anywhere, not five screens deep in a job. Hidden for
@@ -3585,6 +3607,9 @@
         <button id="topbarMenuBtn" class="btn btn-sm topbar-menu-btn" type="button"
                 aria-label="Open menu" aria-expanded="false" aria-controls="topbarMenu">☰</button>
         <div id="topbarMenu" class="topbar-menu" hidden>
+          <!-- Who is signed in. On a phone the name badge is hidden from the
+               top bar to keep it one row, so it is said here instead. -->
+          <div id="menuUser" class="topbar-menu-user"></div>
           <!-- These retain their original IDs and role classes so existing
                authorization visibility and event wiring continue to apply. -->
           <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
@@ -4880,6 +4905,23 @@
       .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
+  // A phone number as "(330) 749-1127" with 📞 Call (and 💬 Text) buttons
+  // (owner 2026-11-09). Only a plain 10-digit number (or 1 + 10) is
+  // reformatted; anything else — an extension, a note — is shown and dialled
+  // exactly as stored. Display only: the stored value is never changed.
+  function phoneActionsHtml(raw, { text = true } = {}) {
+    const s = String(raw || "").trim();
+    if (!s) return "—";
+    let d = s.replace(/\D/g, "");
+    if (d.length === 11 && d[0] === "1") d = d.slice(1);
+    const plain  = d.length === 10;
+    const pretty = plain ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : s;
+    const dial   = plain ? d : s;
+    return `<span class="ph-num">${esc(pretty)}</span>` +
+      `<span class="ph-acts"><a class="ph-btn" href="tel:${esc(dial)}">📞 Call</a>` +
+      (text ? `<a class="ph-btn" href="sms:${esc(dial)}">💬 Text</a>` : "") + `</span>`;
+  }
+
   // Split a Companies "Billing Address" value into mailing-label lines for
   // the BILL TO default. Multi-line input is preserved as-is. A single-line
   // US-format string ("Street, City, ST ZIP[-####]") is auto-split into two
@@ -4961,6 +5003,17 @@
   function mapsLink(address) {
     if (!address || address === "—") return null;
     return `https://maps.google.com/?q=${encodeURIComponent(address)}`;
+  }
+
+  // The job address: tap it to see it on the map, or 🧭 Navigate for turn-by-
+  // turn directions from where you are (owner 2026-11-09). Google's documented
+  // directions URL — on a phone it opens the Maps app straight into a route.
+  function addressHtml(address) {
+    const mlink = mapsLink(address);
+    if (!mlink || !address) return esc(val(address));
+    const nav = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address)}`;
+    return `<a href="${esc(mlink)}" target="_blank" rel="noopener">📍 ${esc(address)}</a>` +
+      `<span class="ph-acts"><a class="ph-btn" href="${esc(nav)}" target="_blank" rel="noopener">🧭 Navigate</a></span>`;
   }
 
   function val(v, fallback="—") {
@@ -5267,6 +5320,8 @@
       const badge = $("userBadge");
       badge.textContent = `${state.user.name} (${state.user.role})`;
       badge.className = "user-badge" + (isAdmin() ? " admin" : "");
+      const menuUser = $("menuUser");
+      if (menuUser) menuUser.innerHTML = `Signed in as <b>${esc(state.user.name)}</b> (${esc(state.user.role)})`;
 
       const adminOrViewer = isAdmin() || isViewer();
       // "Strict admin" means role === "admin" only. Excludes office staff.
@@ -5908,7 +5963,7 @@
     // Customer Phone — tel link if present, em-dash placeholder otherwise.
     const piPhEl = $("piCustomerPhone");
     if (job.customerPhone) {
-      piPhEl.innerHTML = `<a href="tel:${esc(job.customerPhone)}">${esc(job.customerPhone)}</a>`;
+      piPhEl.innerHTML = phoneActionsHtml(job.customerPhone);
     } else { piPhEl.textContent = "—"; }
 
     // Customer Email — mailto link if present.
@@ -6013,13 +6068,7 @@
     const aif = $("addInspectionForm");
     if (aif) aif.style.display = "none";
 
-    const addrEl = $("piAddress");
-    const mlink = mapsLink(job.address);
-    if (mlink && job.address) {
-      addrEl.innerHTML = `<a href="${esc(mlink)}" target="_blank" rel="noopener">📍 ${esc(job.address)}</a>`;
-    } else {
-      addrEl.textContent = val(job.address);
-    }
+    $("piAddress").innerHTML = addressHtml(job.address);
 
     // ── MILEAGE FROM SHOP ──
     const milesEl = $("piMiles");
@@ -6053,7 +6102,7 @@
 
     const phEl = $("pcPhone");
     if (job.powerCompanyPhone) {
-      phEl.innerHTML = `<a href="tel:${esc(job.powerCompanyPhone)}">${esc(job.powerCompanyPhone)}</a>`;
+      phEl.innerHTML = phoneActionsHtml(job.powerCompanyPhone, { text: false });
     } else { phEl.textContent = "—"; }
 
     const emEl = $("pcEmail");
@@ -13878,7 +13927,7 @@
 
       const phEl = $("pcPhone");
       if (j.powerCompanyPhone) {
-        phEl.innerHTML = `<a href="tel:${esc(j.powerCompanyPhone)}">${esc(j.powerCompanyPhone)}</a>`;
+        phEl.innerHTML = phoneActionsHtml(j.powerCompanyPhone, { text: false });
       } else { phEl.textContent = "—"; }
 
       const emEl = $("pcEmail");
@@ -14152,13 +14201,7 @@
 
   function refreshAddressCard() {
     const job = state.selected; if (!job) return;
-    const addrEl = $("piAddress");
-    const mlink  = mapsLink(job.address);
-    if (mlink && job.address) {
-      addrEl.innerHTML = `<a href="${esc(mlink)}" target="_blank" rel="noopener">📍 ${esc(job.address)}</a>`;
-    } else {
-      addrEl.textContent = val(job.address);
-    }
+    $("piAddress").innerHTML = addressHtml(job.address);
   }
 
   function enterEditMode() {
@@ -14282,7 +14325,7 @@
     // Mirror the saved values back to the read-only displays.
     const piPhEl = $("piCustomerPhone");
     if (job.customerPhone) {
-      piPhEl.innerHTML = `<a href="tel:${esc(job.customerPhone)}">${esc(job.customerPhone)}</a>`;
+      piPhEl.innerHTML = phoneActionsHtml(job.customerPhone);
     } else { piPhEl.textContent = "—"; }
     const piEmEl = $("piCustomerEmail");
     if (job.customerEmail) {

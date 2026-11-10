@@ -55,6 +55,12 @@ anything that upserts `job_estimates`.
 - [ ] **Roles:** admin / office / viewer / employee each see only their intended tabs/buttons.
 - [ ] Estimates, Inspections (+ inspector picker), Generator commissioning + warranties.
 - [ ] Scheduling (add/edit/delete, conflict banner), Fleet (mileage + service), Scissor lifts.
+- [ ] **Quick 🧾 Receipt** (`docs/PLAN-receipt-and-offline-prints.md`), on a phone, as an EMPLOYEE:
+  top-bar 🧾 Receipt with no job open and scheduled today. The job is today's job. Enter an amount, no
+  photo, Save: "✓ $X on <job>", and My Expenses on that job shows it waiting for approval, dated TODAY
+  (try after 7 pm too). Again with 📷 Add photo: the camera opens, the thumbnail shows, and the expense's 🧾
+  has the photo. Pick Lowe's: the amber double-charge warning shows. From inside a job, the 🧾 Receipt
+  button uses that job. As a viewer: no Receipt buttons.
 - [ ] Inventory: receive, transfer, adjust, reorder alerts, estimate templates, orders.
 - [ ] **Inventory home** (`docs/PLAN-inventory-usability.md` #1–3):
   - Location line: with no location set it reads "Pick where you're working from". Pick one, and the

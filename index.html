@@ -1630,6 +1630,31 @@
       color: #14b8a6;
     }
 
+    /* Quick receipt — money green. */
+    .action-btn.receipt {
+      background: rgba(52,211,153,0.12);
+      border-color: rgba(52,211,153,0.40);
+      color: #34d399;
+    }
+    /* Quick receipt screen. Big targets: this is used standing at a counter. */
+    #quickReceiptModal .qr-label { font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; margin:14px 0 6px; }
+    #quickReceiptModal .qr-chips { display:flex; flex-wrap:wrap; gap:8px; }
+    #quickReceiptModal .qr-chip { background:var(--panel-2); border:1px solid var(--line-2); color:var(--text); border-radius:999px; padding:9px 14px; font-size:14px; cursor:pointer; }
+    #quickReceiptModal .qr-chip.on { background:rgba(52,211,153,0.16); border-color:#34d399; color:#34d399; font-weight:700; }
+    #quickReceiptModal input.qr-input, #quickReceiptModal select.qr-input { width:100%; box-sizing:border-box; background:var(--panel-2); border:1px solid var(--line-2); border-radius:10px; padding:12px; font-size:16px; color:var(--text); outline:none; }
+    #quickReceiptModal .qr-amount { font-size:24px !important; font-weight:800; }
+    #quickReceiptModal .qr-job { display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--panel-2); border:1px solid var(--line-2); border-radius:10px; padding:12px; font-size:15px; font-weight:700; }
+    #quickReceiptModal .qr-job.none { color:var(--muted); font-weight:400; }
+    #quickReceiptModal .qr-result { padding:11px 12px; border-bottom:1px solid var(--line-2); cursor:pointer; font-size:14px; }
+    #quickReceiptModal .qr-result small { color:var(--muted); margin-left:6px; }
+    #quickReceiptModal .qr-photo-btn { width:100%; padding:14px; font-size:16px; font-weight:700; border-radius:12px; }
+    #quickReceiptModal .qr-thumbs { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    #quickReceiptModal .qr-thumb { position:relative; width:72px; height:72px; border-radius:8px; overflow:hidden; background:var(--panel-2); border:1px solid var(--line-2); display:flex; align-items:center; justify-content:center; font-size:26px; }
+    #quickReceiptModal .qr-thumb img { width:100%; height:100%; object-fit:cover; }
+    #quickReceiptModal .qr-thumb button { position:absolute; top:2px; right:2px; background:rgba(0,0,0,.65); color:#fff; border:none; border-radius:999px; width:22px; height:22px; font-size:13px; line-height:22px; padding:0; cursor:pointer; }
+    #quickReceiptModal .qr-warn { margin-top:8px; padding:10px 12px; border-radius:10px; background:rgba(251,191,36,0.12); border:1px solid rgba(251,191,36,0.45); color:#fbbf24; font-size:13px; line-height:1.4; }
+    #quickReceiptModal .qr-save { width:100%; padding:15px; font-size:17px; font-weight:800; border-radius:12px; margin-top:18px; }
+
     /* Prints — blueprint blue, distinct from Trello's blue by being lighter and
        sitting next to the photo buttons rather than the integrations. */
     .action-btn.prints {
@@ -3393,6 +3418,11 @@
            backend, so there is no authzFor tier to pick: the whole thing is
            static NEC tables and arithmetic in the browser. -->
       <button id="btnAllCharts" class="btn btn-sm" type="button">📐 All Charts</button>
+      <!-- Quick receipt (docs/PLAN-receipt-and-offline-prints.md #3): job,
+           amount, store, save — photo optional. In the top bar so it is one
+           tap from anywhere, not five screens deep in a job. Hidden for
+           viewers (writer-only), who can't create an expense. -->
+      <button id="btnQuickReceipt" class="btn btn-sm writer-only" type="button">🧾 Receipt</button>
       <div class="topbar-menu-wrap">
         <button id="topbarMenuBtn" class="btn btn-sm topbar-menu-btn" type="button"
                 aria-label="Open menu" aria-expanded="false" aria-controls="topbarMenu">☰</button>
@@ -3556,6 +3586,8 @@
           <!-- The badge here counts OPEN items across every list on the job, so
                "✅ Lists 7" means seven things still to bring. -->
           <a id="btnJobLists" href="#" class="action-btn lists disabled">✅ Lists</a>
+          <!-- Same quick receipt as the top bar, but the job is THIS job. -->
+          <a id="btnJobReceipt" href="#" class="action-btn receipt writer-only">🧾 Receipt</a>
           <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled">📋 Trello Card</a>
           <a id="btnInventory" href="/inventory" target="_blank" class="action-btn inventory">📦 Inventory</a>
         </div>
@@ -5073,6 +5105,12 @@
       // the admin's view with a duplicate button.
       document.querySelectorAll(".non-admin-only").forEach(el => {
         el.classList.toggle("hidden", isStrictAdmin);
+      });
+
+      // writer-only: everyone who can create things — hidden only from viewers,
+      // who would get a 403 (the quick 🧾 Receipt buttons).
+      document.querySelectorAll(".writer-only").forEach(el => {
+        el.classList.toggle("hidden", isViewer());
       });
 
       // Show/hide payroll-eligible-only elements — admin + employee, hidden
@@ -16957,7 +16995,7 @@
     const bp = $("bucketExpensePanel"); if (bp) bp.style.display = "none";
     $("expenseActionBtns").style.display = "none";
     // Set today's date
-    $("genExpDate").value = new Date().toISOString().slice(0,10);
+    $("genExpDate").value = localYmd();
     // Init/refresh the Vendor picker (lazy-loads vendor list on first open;
     // resets hidden id + search input on every open).
     await populateVendorDropdown();
@@ -17150,7 +17188,7 @@
     const vsel = $("myExpVendor");
     vsel.innerHTML = `<option value="">— none —</option>` +
       (_vendors || []).map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
-    $("myExpDate").value     = expense?.date || new Date().toISOString().slice(0, 10);
+    $("myExpDate").value     = expense?.date || localYmd();
     $("myExpType").value     = expense?.expenseType || "Materials";
     $("myExpAmount").value   = (expense && expense.totalCost != null) ? expense.totalCost : "";
     $("myExpCredit").value   = "";
@@ -17226,6 +17264,317 @@
     }
   }
 
+  /* ── QUICK RECEIPT ─────────────────────────────────────────────────────────
+   * docs/PLAN-receipt-and-offline-prints.md #3. Owner 2026-11-09: receipts
+   * first, photo OPTIONAL, warn on the stores whose receipts already come in
+   * by email, signal-only for now.
+   *
+   * It is the My Expenses save with the decisions pre-made: type Materials,
+   * billable, dated today, job guessed. Same endpoint (addGeneralExpense →
+   * "Not Reviewed", so an employee's receipt waits for approval exactly as
+   * before) and the same upload-after-save receipt path.
+   *
+   * ⚠ DOUBLE CHARGE. These stores' receipts reach the job on their own through
+   * the email bot (ACCEPTED_VENDORS in _vendor-invoices.js). A paper copy keyed
+   * in here as well charges the job twice, and nothing downstream notices — so
+   * picking one shows a warning (owner chose warn, not hide).
+   */
+  const QR_EMAILED_STORES = ["Lowe's", "Home Depot", "CED", "Wolff Brothers", "Contractor Lighting & Supply"];
+  const QR_CHIP_STORES    = ["Lowe's", "Home Depot", "CED", "Wolff Brothers"];
+  const qr = { jobId: "", jobName: "", jobTouched: false, vendorId: "", files: [], urls: [], saving: false,
+               suggest: [], storeChips: [], openToken: 0 };
+
+  // LOCAL date. toISOString() is UTC, which after ~7 pm here is tomorrow.
+  function localYmd(d = new Date()) {
+    const p = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+  // Per person, so a shared phone doesn't hand one person's job to the next.
+  function qrStoreKey(name) { return `nee_receipt_${name}_${state.user?.id || ""}`; }
+  function qrRemember(name, v) { try { localStorage.setItem(qrStoreKey(name), JSON.stringify(v)); } catch {} }
+  function qrRecall(name) { try { return JSON.parse(localStorage.getItem(qrStoreKey(name)) || "null"); } catch { return null; } }
+  function qrJob(id) { return (state.jobs || []).find(j => String(j.id) === String(id)) || null; }
+
+  let qrWired = false;
+  function qrWire() {
+    if (qrWired) return;
+    qrWired = true;
+    $("qrCloseBtn").addEventListener("click", closeQuickReceipt);
+    $("qrPhotoBtn").addEventListener("click", () => qrPickFiles(true));
+    $("qrFileLink").addEventListener("click", (e) => { e.preventDefault(); qrPickFiles(false); });
+    $("qrJobChange").addEventListener("click", (e) => {
+      e.preventDefault();
+      const picker = $("qrJobPicker");
+      const show = picker.style.display === "none";
+      picker.style.display = show ? "" : "none";
+      if (show) { $("qrJobSearch").value = ""; qrRenderJobResults(); $("qrJobSearch").focus(); }
+    });
+    $("qrJobSearch").addEventListener("input", qrRenderJobResults);
+    $("qrJobResults").addEventListener("click", (e) => {
+      const row = e.target.closest("[data-job]");
+      if (!row) return;
+      const j = qrJob(row.dataset.job);
+      if (j) { qr.jobTouched = true; qrSetJob(j.id, j.name); $("qrJobPicker").style.display = "none"; }
+    });
+    $("qrJobSuggest").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-i]");
+      if (!b) return;
+      const s = qr.suggest[Number(b.dataset.i)];
+      if (s) { qr.jobTouched = true; qrSetJob(s.id, s.name); }
+    });
+    $("qrVendorChips").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-i]");
+      if (!b) return;
+      const c = qr.storeChips[Number(b.dataset.i)];
+      if (!c) return;
+      if (c.other) {
+        const sel = $("qrVendorOther");
+        sel.style.display = "";
+        sel.focus();
+        return;
+      }
+      $("qrVendorOther").style.display = "none";
+      qrSetVendor(qr.vendorId === c.id ? "" : c.id);   // tap again = unpick
+    });
+    $("qrVendorOther").addEventListener("change", () => qrSetVendor($("qrVendorOther").value));
+    $("qrThumbs").addEventListener("click", (e) => {
+      const b = e.target.closest("[data-rm]");
+      if (!b) return;
+      const i = Number(b.dataset.rm);
+      qr.files.splice(i, 1);
+      qrRenderThumbs();
+    });
+    $("qrSaveBtn").addEventListener("click", saveQuickReceipt);
+  }
+
+  async function openQuickReceipt(fromJob) {
+    if (!state.user || isViewer()) return;
+    qrWire();
+    const token = ++qr.openToken;
+    qr.files = []; qrRenderThumbs();
+    qr.saving = false; qr.jobTouched = false; qr.suggest = []; qr.today = [];
+    $("qrAmount").value = ""; $("qrNote").value = "";
+    $("qrErr").style.display = "none";
+    $("qrJobPicker").style.display = "none";
+    $("qrVendorOther").style.display = "none";
+    const btn = $("qrSaveBtn"); btn.disabled = false; btn.textContent = "Save";
+
+    // Job: this job if opened from inside one; otherwise the open job, then the
+    // last receipt's job — and today's schedule (below) may still improve it.
+    const last = qrRecall("job");
+    const start = fromJob || state.selected || (last && qrJob(last.id)) || null;
+    if (fromJob) qr.jobTouched = true;   // from a job's own button: that's the answer
+    qrSetJob(start ? start.id : "", start ? start.name : "");
+    qrRenderSuggest();
+
+    qrSetVendor("");
+    $("quickReceiptModal").style.display = "flex";
+    pushBackEntry("quickReceipt", () => { $("quickReceiptModal").style.display = "none"; qrFreeUrls(); });
+
+    // Vendors and today's schedule load behind the open screen.
+    loadVendors().then(() => { if (token === qr.openToken) qrRenderStores(); });
+    qrRenderStores();
+    qrLoadToday(token);
+  }
+
+  function closeQuickReceipt() {
+    popBackEntry("quickReceipt");
+    $("quickReceiptModal").style.display = "none";
+    qrFreeUrls();
+  }
+
+  async function qrLoadToday(token) {
+    try {
+      const today = localYmd();
+      const d = await apiGet("scheduleEntries", { since: today, until: today });
+      if (token !== qr.openToken) return;
+      const me = String(state.user?.id || "");
+      const seen = new Set();
+      const mine = [];
+      (d.entries || []).forEach(en => {
+        if (!en.jobId || !(en.crewIds || []).map(String).includes(me)) return;
+        const j = qrJob(en.jobId);
+        if (!j || seen.has(String(j.id))) return;
+        seen.add(String(j.id));
+        mine.push({ id: j.id, name: j.name, why: "today" });
+      });
+      qr.today = mine;
+      // Scheduled today wins over "last used" — unless the person already
+      // chose, or came in from a job's own button.
+      if (mine.length && !qr.jobTouched && !state.selected) qrSetJob(mine[0].id, mine[0].name);
+      qrRenderSuggest();
+    } catch { /* no schedule is fine — the job is still pickable */ }
+  }
+
+  function qrSetJob(id, name) {
+    qr.jobId = id ? String(id) : "";
+    qr.jobName = name || "";
+    const card = $("qrJobCard");
+    $("qrJobName").textContent = qr.jobId ? qr.jobName : "Pick a job";
+    card.classList.toggle("none", !qr.jobId);
+    qrRenderSuggest();
+  }
+
+  // Quick-pick chips: today's scheduled jobs, the open job, the last one used.
+  function qrRenderSuggest() {
+    const out = [], seen = new Set();
+    const add = (j, why) => {
+      if (!j || !j.id || seen.has(String(j.id))) return;
+      seen.add(String(j.id));
+      out.push({ id: j.id, name: j.name, why });
+    };
+    (qr.today || []).forEach(j => add(j, "today"));
+    add(state.selected, "open");
+    const last = qrRecall("job");
+    if (last) add(qrJob(last.id), "last");
+    qr.suggest = out.filter(s => String(s.id) !== qr.jobId).slice(0, 4);
+    $("qrJobSuggest").innerHTML = qr.suggest.map((s, i) =>
+      `<button type="button" class="qr-chip" data-i="${i}">${s.why === "today" ? "📅 " : ""}${esc(s.name)}</button>`).join("");
+  }
+
+  const QR_STATUS_RANK = { "Service Call Scheduled": 0, "Awarded": 0, "Ready to Invoice": 1, "Estimating": 2, "New Lead": 2, "Completed": 3, "Not Awarded": 4 };
+  function qrRenderJobResults() {
+    const q = ($("qrJobSearch").value || "").trim().toLowerCase();
+    const words = q.split(/\s+/).filter(Boolean);
+    const list = (state.jobs || []).filter(j => {
+      const hay = `${j.name || ""} ${j.po || ""} ${j.contractor || ""}`.toLowerCase();
+      return words.every(w => hay.includes(w));
+    }).sort((a, b) => (QR_STATUS_RANK[a.status] ?? 2) - (QR_STATUS_RANK[b.status] ?? 2)
+                      || String(a.name || "").localeCompare(String(b.name || "")))
+      .slice(0, 30);
+    $("qrJobResults").innerHTML = list.length
+      ? list.map(j => `<div class="qr-result" data-job="${esc(j.id)}">${esc(j.name || "—")}<small>${esc(j.po || "")}${j.status ? " · " + esc(j.status) : ""}</small></div>`).join("")
+      : `<div class="qr-result" style="color:var(--muted); cursor:default;">No job matches.</div>`;
+  }
+
+  // Store chips: the last store used first, then the usual suppliers that
+  // exist in expense_vendors, then "Other…" for the full list.
+  function qrRenderStores() {
+    const vendors = _vendors || [];
+    const byName = n => vendors.find(v => String(v.name).toLowerCase() === String(n).toLowerCase());
+    const chips = [], seen = new Set();
+    const add = v => { if (v && !seen.has(String(v.id))) { seen.add(String(v.id)); chips.push({ id: String(v.id), name: v.name }); } };
+    const last = qrRecall("vendor");
+    if (last) add(vendors.find(v => String(v.id) === String(last.id)));
+    QR_CHIP_STORES.forEach(n => add(byName(n)));
+    // A vendor picked from "Other…" stays visible as a chip so it reads as chosen.
+    if (qr.vendorId) add(vendors.find(v => String(v.id) === qr.vendorId));
+    chips.push({ other: true, name: "Other…" });
+    qr.storeChips = chips;
+    $("qrVendorChips").innerHTML = chips.map((c, i) =>
+      `<button type="button" class="qr-chip${!c.other && c.id === qr.vendorId ? " on" : ""}" data-i="${i}">${esc(c.name)}</button>`).join("");
+    const sel = $("qrVendorOther");
+    sel.innerHTML = `<option value="">— pick a store —</option>` +
+      vendors.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)))
+        .map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
+    sel.value = qr.vendorId;
+  }
+
+  function qrSetVendor(id) {
+    qr.vendorId = id ? String(id) : "";
+    const v = (_vendors || []).find(x => String(x.id) === qr.vendorId);
+    const warn = $("qrVendorWarn");
+    if (v && QR_EMAILED_STORES.some(n => n.toLowerCase() === String(v.name).toLowerCase())) {
+      warn.textContent = `⚠ ${v.name} receipts come in by email on their own. Only add this one if it was NOT bought on the company account — otherwise the job gets charged twice.`;
+      warn.style.display = "";
+    } else {
+      warn.style.display = "none";
+    }
+    qrRenderStores();
+  }
+
+  // camera=true opens the back camera on a phone (on a PC `capture` is
+  // ignored and it is a normal picker). The plain link keeps the PC / ScanSnap
+  // PDF path, which is why the existing receipt pickers have no `capture`.
+  function qrPickFiles(camera) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = camera ? "image/*" : "image/*,application/pdf";
+    if (camera) input.setAttribute("capture", "environment");
+    else input.multiple = true;
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", () => {
+      const picked = Array.from(input.files || []).filter(isReceiptFile);
+      input.remove();
+      // Append: a long receipt can take two photos. Server max is 10.
+      qr.files = qr.files.concat(picked).slice(0, 10);
+      qrRenderThumbs();
+    });
+    input.click();
+  }
+
+  function qrFreeUrls() {
+    qr.urls.forEach(u => { try { URL.revokeObjectURL(u); } catch {} });
+    qr.urls = [];
+  }
+
+  function qrRenderThumbs() {
+    qrFreeUrls();
+    $("qrThumbs").innerHTML = qr.files.map((f, i) => {
+      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
+      let inner = "📄";
+      if (!isPdf) { const u = URL.createObjectURL(f); qr.urls.push(u); inner = `<img src="${u}" alt="">`; }
+      return `<div class="qr-thumb">${inner}<button type="button" data-rm="${i}" aria-label="Remove">✕</button></div>`;
+    }).join("");
+    $("qrPhotoBtn").innerHTML = qr.files.length
+      ? `📷 Add another photo`
+      : `📷 Add photo <span style="font-weight:400; color:var(--muted);">(optional)</span>`;
+  }
+
+  async function saveQuickReceipt() {
+    if (qr.saving) return;
+    const err = $("qrErr");
+    const say = (t) => { err.textContent = t; err.style.display = ""; };
+    err.style.display = "none";
+    const amount = Math.round(parseFloat($("qrAmount").value) * 100) / 100;
+    if (!qr.jobId) { say("Pick the job."); return; }
+    if (!(amount > 0)) { say("Enter the amount."); $("qrAmount").focus(); return; }
+    const vendor = (_vendors || []).find(v => String(v.id) === qr.vendorId) || null;
+    const note = ($("qrNote").value || "").trim();
+    const payload = {
+      jobId: qr.jobId,
+      date: localYmd(),
+      type: "Materials",
+      amount,
+      credit: 0,
+      description: note || (vendor ? `${vendor.name} receipt` : "Receipt"),
+      billable: true,
+    };
+    if (vendor && isRecordHandle(vendor.id)) payload.vendorId = String(vendor.id);
+
+    const btn = $("qrSaveBtn");
+    qr.saving = true; btn.disabled = true; btn.textContent = "Saving…";
+    let saved;
+    try {
+      saved = await apiPost("addGeneralExpense", payload);
+    } catch (e) {
+      qr.saving = false; btn.disabled = false; btn.textContent = "Save";
+      say("Couldn't save: " + e.message);
+      return;
+    }
+    // From here the expense EXISTS. A failed photo never undoes it.
+    const jobId = qr.jobId, jobName = qr.jobName, files = qr.files.slice();
+    qrRemember("job", { id: jobId });
+    if (vendor) qrRemember("vendor", { id: String(vendor.id) });
+    let photoNote = "";
+    if (files.length && saved?.id) {
+      try {
+        const { done, failed } = await uploadReceiptFiles(saved.id, files, (t) => { btn.textContent = t; });
+        if (failed) photoNote = ` · ${failed} photo${failed === 1 ? "" : "s"} didn't upload — add from 🧾 on the expense`;
+      } catch (e) {
+        photoNote = " · photo didn't upload — add it from 🧾 on the expense";
+      }
+    }
+    qr.saving = false;
+    closeQuickReceipt();
+    showAppToast(`✓ $${amount.toFixed(2)} on ${jobName}${photoNote}`);
+    // If that job is open behind, bring its expense list up to date.
+    if (state.selected && String(state.selected.id) === String(jobId)) {
+      try { if (isAdmin()) loadExpenses(jobId); else loadMyExpenses(jobId); } catch {}
+    }
+  }
+
   // ── SCISSOR LIFT EXPENSE ──
   const LIFT_RATES = {
     "Lift #1":1,"Lift #2":1,"Lift #3":1,"Lift #4":1,"Lift #5":1,
@@ -17248,7 +17597,7 @@
   function initLiftExpensePanel(liftsOnJob) {
     // Set today's date
     const dateEl = $("slExpDate");
-    if (dateEl) dateEl.value = new Date().toISOString().slice(0,10);
+    if (dateEl) dateEl.value = localYmd();
 
     // Build lift rows
     const rows = $("liftExpenseRows");
@@ -17345,7 +17694,7 @@
 
     // Set today's date
     const dateEl = $("btExpDate");
-    if (dateEl) dateEl.value = new Date().toISOString().slice(0,10);
+    if (dateEl) dateEl.value = localYmd();
 
     // Pull miles from shop on the job; if missing, prompt user to calculate first
     const oneWay = (job.milesFromShop != null) ? Number(job.milesFromShop) : null;
@@ -17582,6 +17931,12 @@
     // which runs on first open.
     const chartsBtn = $("btnAllCharts");
     if (chartsBtn) chartsBtn.addEventListener("click", openCharts);
+    // Quick receipt. Only the two launch buttons are wired here — the modal is
+    // far below this script and is wired on first open (qrWire).
+    const qrTopBtn = $("btnQuickReceipt");
+    if (qrTopBtn) qrTopBtn.addEventListener("click", () => openQuickReceipt(null));
+    const qrJobBtn = $("btnJobReceipt");
+    if (qrJobBtn) qrJobBtn.addEventListener("click", (e) => { e.preventDefault(); openQuickReceipt(state.selected); });
 
     // General Expense
     const btnAddGen = $("btnAddGeneralExpense");
@@ -17620,7 +17975,7 @@
       const bp = $("bucketExpensePanel"); if (bp) bp.style.display = "none";
       $("expenseActionBtns").style.display = "none";
       // Set today's date
-      $("slExpDate").value = new Date().toISOString().slice(0,10);
+      $("slExpDate").value = localYmd();
       // Load lifts at this job
       const jobName = state.selected?.name || "";
       apiGet("scissorLiftsByJob", { jobName }).then(d => {
@@ -34711,6 +35066,47 @@
         <span style="font-size:11px; color:var(--muted); margin-left:8px;">photo or scanned PDF — or drag files anywhere into this window</span>
       </div>
       <div id="expReceiptsGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr)); gap:10px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Quick receipt (docs/PLAN-receipt-and-offline-prints.md #3). Photo is
+     OPTIONAL (owner, 2026-11-09) — so the screen comes first and the camera
+     only opens from the 📷 tap. Store chips and the job are wired with
+     addEventListener + data-i, never inline handlers: esc() does not escape
+     apostrophes and "Lowe's" is a store name. -->
+<div id="quickReceiptModal" class="sl-modal-backdrop" style="display:none;">
+  <div class="sl-modal" style="max-width:480px; width:95%;">
+    <div class="sl-modal-header">
+      <h2>🧾 Receipt</h2>
+      <button id="qrCloseBtn" class="btn btn-sm" type="button" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
+    </div>
+    <div class="sl-modal-body">
+      <button id="qrPhotoBtn" class="btn qr-photo-btn" type="button">📷 Add photo <span style="font-weight:400; color:var(--muted);">(optional)</span></button>
+      <div style="text-align:center; margin-top:6px;"><a href="#" id="qrFileLink" style="font-size:12px; color:var(--blue);">or pick a file / scanned PDF</a></div>
+      <div id="qrThumbs" class="qr-thumbs"></div>
+
+      <div class="qr-label">Job</div>
+      <div id="qrJobCard" class="qr-job none"><span id="qrJobName">Pick a job</span><a href="#" id="qrJobChange" style="font-size:13px; font-weight:600; color:var(--blue); white-space:nowrap;">Change</a></div>
+      <div id="qrJobSuggest" class="qr-chips" style="margin-top:8px;"></div>
+      <div id="qrJobPicker" style="display:none; margin-top:8px;">
+        <input id="qrJobSearch" class="qr-input" type="search" placeholder="Search jobs or PO…" autocomplete="off" />
+        <div id="qrJobResults" style="max-height:240px; overflow:auto;"></div>
+      </div>
+
+      <div class="qr-label">Store</div>
+      <div id="qrVendorChips" class="qr-chips"></div>
+      <select id="qrVendorOther" class="qr-input" style="display:none; margin-top:8px;"></select>
+      <div id="qrVendorWarn" class="qr-warn" style="display:none;"></div>
+
+      <div class="qr-label">Amount</div>
+      <input id="qrAmount" class="qr-input qr-amount" type="number" inputmode="decimal" step="0.01" min="0" placeholder="$0.00" />
+
+      <div class="qr-label">Note <span style="text-transform:none; font-weight:400;">(optional)</span></div>
+      <input id="qrNote" class="qr-input" type="text" placeholder="What was it for?" maxlength="200" />
+
+      <div id="qrErr" style="display:none; margin-top:12px; color:var(--red); font-size:14px;"></div>
+      <button id="qrSaveBtn" class="btn btn-primary qr-save" type="button">Save</button>
     </div>
   </div>
 </div>

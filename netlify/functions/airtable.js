@@ -13823,7 +13823,9 @@ async function handleGetScheduleEntriesFromNeon(params) {
   const q = await neonQuery(
     `SELECT s.id::text AS id, s.title, s.entry_type, s.notes,
             s.start_date::text AS start_date, s.end_date::text AS end_date,
-            j.airtable_id AS job_at_id, j.name AS job_name,
+            -- Dual handle: airtable_id alone gave an app-made job an EMPTY id,
+            -- so its schedule pill opened nothing (2 entries, found 2026-11-09).
+            COALESCE(j.airtable_id, j.id::text) AS job_at_id, j.name AS job_name,
             j.contractor_name, j.status AS job_status,
             -- WARNING: THESE TWO ARRAYS ARE POSITIONALLY PAIRED BY THE CLIENT,
             -- and they used to be built with DIFFERENT filters -- ids on

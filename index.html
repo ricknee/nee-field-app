@@ -2123,7 +2123,20 @@
     .info-box--blue   { background: rgba(33, 150, 243, 0.12); border-color: rgba(33, 150, 243, 0.35); }
     .info-box--purple { background: rgba(156, 39, 176, 0.12); border-color: rgba(156, 39, 176, 0.35); }
 
-    #livePerfGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    /* Live Perf is one card now (renderLivePerf), not a 3-column grid that
+       broke "$234,242.03" across two lines on a phone. */
+    #livePerfGrid { display: block; }
+    /* Closeout + Est. GP as compact lists (2026-11-09): label left, amount
+       right-aligned, one card per section — same infoBox()/checkBox() markup. */
+    :is(#closeoutGrid, #closeoutCompareGrid, #closeoutCheckGrid, #estGpGrid) { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 2px 14px; }
+    :is(#closeoutGrid, #closeoutCompareGrid, #closeoutCheckGrid, #estGpGrid) > .info-box { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; background: none !important; border: none !important; border-bottom: 1px solid var(--line) !important; border-radius: 0; padding: 11px 0; }
+    :is(#closeoutGrid, #closeoutCompareGrid, #closeoutCheckGrid, #estGpGrid) > .info-box:last-child { border-bottom: none !important; }
+    :is(#closeoutGrid, #closeoutCompareGrid, #closeoutCheckGrid, #estGpGrid) > .info-box > .info-label { flex: 1; min-width: 0; margin: 0; }
+    :is(#closeoutGrid, #closeoutCompareGrid, #closeoutCheckGrid, #estGpGrid) > .info-box > .info-value { flex: 0 0 auto; text-align: right; font-size: 15px; font-weight: 700; }
+    #estGpGrid > .info-box--green > .info-value { color: var(--green); }
+    #estGpGrid > .info-box--red > .info-value { color: var(--red); }
+    #estGpGrid > .info-box.kv-strong > .info-value { font-size: 18px; font-weight: 800; }
+    #closeoutGrid:empty, #closeoutCompareGrid:empty, #closeoutCheckGrid:empty { display: none; }
 
     .info-label {
       font-size: 10px;
@@ -4408,9 +4421,9 @@
                the cost/markup split. The cards above blend two populations and
                this is where that is admitted. -->
           <div id="estGpLegacyNote" style="display:none; margin-top:10px; padding:9px 13px; background:#fff7ed; border:1px dashed #fdba74; border-radius:8px; font-size:12px; color:#9a3412; line-height:1.5;"></div>
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-top:18px; gap:10px; flex-wrap:wrap;">
-            <div class="section-header" style="margin:0;">📋 Job Estimates</div>
-            <button id="estGpNewBtn" class="btn btn-primary btn-sm" type="button" style="font-size:12px; padding:6px 12px;" onclick="openNewEstModal(state.selected)">+ New From Template</button>
+          <div class="insp-head" style="margin-top:18px;">
+            <div class="section-header" style="margin:0; flex:1; min-width:0;">📋 Job Estimates</div>
+            <button id="estGpNewBtn" class="btn btn-primary btn-sm" type="button" style="font-size:13px; padding:6px 12px; flex:0 0 auto; width:auto !important;" onclick="openNewEstModal(state.selected)">+ New</button>
           </div>
           <div id="estGpEstimates" style="margin-top:10px;">
             <div class="loading-msg">Select a job to view estimates.</div>
@@ -6182,16 +6195,59 @@
       </div>`;
   }
 
+  /* Live Perf as ONE card (owner 2026-11-09): profit up top, a bar showing
+   * where the revenue went, then the figures as a compact list. Same six
+   * numbers as the old boxes, straight off the job — nothing re-derived
+   * except the bar's widths, which are only proportions of those numbers. */
   function renderLivePerf(job) {
     const g = $("livePerfGrid");
-    g.innerHTML = overheadNote(job) + [
-      infoBox("Total Revenue (Live)", fmtCurrency(job.totalRevenueLive), false, "info-box--green"),
-      infoBox("Total Materials (Live)", fmtCurrency(job.totalMaterialsLive), false, "info-box--red"),
-      infoBox("Total Labor Cost (Live)", fmtCurrency(job.totalLaborCostLive), false, "info-box--red"),
-      infoBox("Hours (from Time Entries)", job.hoursRollup != null ? job.hoursRollup : "—", false, "info-box--orange"),
-      infoBox("Gross Profit (Live) $", fmtCurrency(job.grossProfitLiveDollar), false, "info-box--green"),
-      infoBox("Gross Profit (Live) %", job.grossProfitLivePct != null ? Math.round(job.grossProfitLivePct * 100) + "%" : "—", false, "info-box--green"),
-    ].join("");
+    const num = v => (v == null || v === "" || !isFinite(Number(v))) ? null : Number(v);
+    const rev = num(job.totalRevenueLive), mat = num(job.totalMaterialsLive), lab = num(job.totalLaborCostLive);
+    const gp = num(job.grossProfitLiveDollar), pct = num(job.grossProfitLivePct);
+    const pctTxt = pct != null ? Math.round(pct * 100) + "%" : "—";
+    const tone = pct == null ? "var(--muted)" : pct < 0 ? "var(--red)" : pct < 0.10 ? "var(--red)" : pct < 0.20 ? "var(--amber,#c90)" : "var(--green)";
+
+    // Where the money went. Scaled to whichever is bigger, revenue or cost, so
+    // a job under water shows costs overrunning the revenue line.
+    let bar = "";
+    if (rev != null && rev > 0 && (mat != null || lab != null)) {
+      const m = Math.max(0, mat || 0), l = Math.max(0, lab || 0);
+      const scale = Math.max(rev, m + l);
+      const w = v => (v / scale * 100).toFixed(2) + "%";
+      const profit = Math.max(0, rev - m - l);
+      bar = `
+        <div style="display:flex; height:12px; border-radius:99px; overflow:hidden; background:var(--line); margin-top:14px;">
+          <div title="Materials" style="width:${w(m)}; background:#f87171;"></div>
+          <div title="Labor" style="width:${w(l)}; background:#fb923c;"></div>
+          <div title="Profit" style="width:${w(profit)}; background:#22c55e;"></div>
+        </div>
+        <div style="display:flex; gap:14px; flex-wrap:wrap; font-size:11px; color:var(--muted); margin-top:6px;">
+          <span><span style="color:#f87171;">●</span> Materials</span>
+          <span><span style="color:#fb923c;">●</span> Labor</span>
+          <span><span style="color:#22c55e;">●</span> Profit</span>
+        </div>`;
+    }
+    const row = (label, value) => `
+      <div style="display:flex; align-items:baseline; gap:12px; padding:11px 0; border-top:1px solid var(--line);">
+        <div class="info-label" style="flex:0 0 96px; margin:0;">${label}</div>
+        <div style="flex:1; min-width:0; font-size:15px; color:var(--text); font-weight:600;">${value}</div>
+      </div>`;
+
+    g.innerHTML = overheadNote(job) + `
+      <div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 14px 4px;">
+        <div class="info-label" style="margin:0 0 4px;">Gross profit (live)</div>
+        <div style="display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;">
+          <span style="font-size:28px; font-weight:800; color:${tone};">${fmtCurrency(job.grossProfitLiveDollar)}</span>
+          <span style="font-size:20px; font-weight:800; color:${tone};">${pctTxt}</span>
+        </div>
+        ${bar}
+        <div style="margin-top:12px;">
+          ${row("Revenue", fmtCurrency(job.totalRevenueLive))}
+          ${row("Materials", fmtCurrency(job.totalMaterialsLive))}
+          ${row("Labor", fmtCurrency(job.totalLaborCostLive))}
+          ${row("Hours", job.hoursRollup != null ? `${fmtHours(job.hoursRollup)} h` : "—")}
+        </div>
+      </div>`;
   }
 
   function renderCloseout(job) {
@@ -6356,11 +6412,14 @@
     // exactly as it was rather than quietly "fixed" inside a GP rewrite.
     const legacyN = Number(job.estimateLegacyCount || 0);
     const totalN  = Number(job.estimateCount || 0);
+    // Compact list (owner 2026-11-09). The Job Name tile is gone — it's the
+    // header — and the category tints on Revenue / GP $ / Markup / Labor Sell
+    // are dropped: in a list a red Expected Revenue reads as "bad". GP % keeps
+    // its green/red, which IS a judgement (vs GP_TARGET_PCT).
     grid.innerHTML = `
-      ${infoBox("Job Name", val(job.name))}
-      ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus), false, "info-box--red")}
+      ${infoBox("Expected Revenue", fmtCurrency(job.expectedRevenueAllStatus))}
       ${infoBox("Estimated Direct Cost", fmtCurrency(job.projectedEstimatedTotalCost))}
-      ${infoBox("Estimated Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar), false, "info-box--orange")}
+      ${infoBox("Estimated Gross Profit $", fmtCurrency(job.projectedGrossProfitDollar), false, "kv-strong")}
       ${infoBox("Estimated GP %", job.projectedGrossProfitPct != null ? (job.projectedGrossProfitPct * 100).toFixed(1) + "%" : "—",
                 false,
                 // ⚠ The rollup is a FRACTION here — x100 before comparing, or
@@ -6375,9 +6434,9 @@
            six figures with nothing on screen accounting for the change. Subs,
            quoted gear, rentals and the sales tax paid on them. -->
       ${infoBox("Other Costs + Tax", fmtCurrency(job.projectedEstimatedOtherCost))}
-      ${infoBox("Material Markup", fmtCurrency(job.projectedEstimatedMaterialMarkup), false, "info-box--purple")}
+      ${infoBox("Material Markup", fmtCurrency(job.projectedEstimatedMaterialMarkup))}
       ${infoBox("Material Sell", fmtCurrency(job.projectedEstimatedMaterialSell))}
-      ${infoBox("Labor Sell", fmtCurrency(job.projectedEstimatedLaborSell), false, "info-box--blue")}`;
+      ${infoBox("Labor Sell", fmtCurrency(job.projectedEstimatedLaborSell))}`;
 
     // The screen has to say which of its numbers are records and which are
     // guesses. Cost and GP are exact for a pre-split estimate — they reproduce

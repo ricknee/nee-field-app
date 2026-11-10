@@ -1715,6 +1715,24 @@
     }
     .action-btn.panels .count-badge { background: rgba(245,158,11,0.25); }
 
+    /* ── Job buttons as an ICON GRID (owner 2026-11-09) ─────────────────────
+       Icon on top, short label under it, count badge on the corner — like a
+       phone home screen. 5 across on a phone so all ten fit in two rows instead
+       of four. Every button's own colour class above still applies. The markup
+       comes from actionTileHtml(); anything that repaints a button goes through
+       it, so the tile shape can't be lost on a badge refresh. */
+    #jobDetail .action-buttons { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; }
+    #jobDetail .action-buttons > .action-btn { flex-direction: column; justify-content: center; gap: 5px; position: relative;
+      padding: 10px 4px 9px; min-height: 66px; font-size: 12px; line-height: 1.15; text-align: center; white-space: normal; border-radius: 12px; }
+    #jobDetail .action-buttons > .action-btn .ab-ico { font-size: 22px; line-height: 1; }
+    #jobDetail .action-buttons > .action-btn .ab-lbl { display: block; overflow-wrap: anywhere; }
+    #jobDetail .action-buttons > .action-btn .count-badge { position: absolute; top: 4px; right: 4px; min-width: 18px; padding: 1px 5px; font-size: 10.5px;
+      line-height: 15px; border-radius: 9px; background: var(--panel); border: 1px solid currentColor; }
+    @media (max-width: 768px) {
+      #jobDetail .action-buttons { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+      #jobDetail .action-buttons > .action-btn { min-height: 62px; padding: 9px 2px 8px; font-size: 11px; }
+    }
+
     /* Load Calc — violet, to stand apart from the amber Panels beside it. */
     .action-btn.loadcalc {
       background: rgba(139,92,246,0.12);
@@ -3595,32 +3613,32 @@
 
         <!-- ACTION BUTTONS -->
         <div class="action-buttons">
-          <a id="btnAddPhotos" href="#" target="_blank" class="action-btn photo-add disabled">📷 Add Photos</a>
-          <a id="btnViewPhotos" href="#" target="_blank" class="action-btn photo-view disabled">🖼 View pCloud Photos</a>
+          <a id="btnAddPhotos" href="#" target="_blank" class="action-btn photo-add disabled"><span class="ab-ico">📷</span><span class="ab-lbl">Add Photos</span></a>
+          <a id="btnViewPhotos" href="#" target="_blank" class="action-btn photo-view disabled"><span class="ab-ico">🖼</span><span class="ab-lbl">View Photos</span></a>
           <!-- Prints sit in the action row rather than on a tab deliberately:
                this strip is above the tab bar, so it is on screen whichever tab
                you are on, and it is the first thing on a job. The count badge is
                what makes it useful without opening anything — a crew can see at
                a glance whether this job HAS drawings. -->
-          <a id="btnJobPrints" href="#" class="action-btn prints disabled">📐 Prints</a>
+          <a id="btnJobPrints" href="#" class="action-btn prints disabled"><span class="ab-ico">📐</span><span class="ab-lbl">Prints</span></a>
           <!-- Specs: cut sheets and submittals, kept out of Prints so the
                drawings aren't buried under 30 fixture PDFs. Same modal, same
                tiers — a second list nested at _prints/_specs/ in R2. -->
-          <a id="btnJobSpecs" href="#" class="action-btn specs disabled">📄 Specs</a>
+          <a id="btnJobSpecs" href="#" class="action-btn specs disabled"><span class="ab-ico">📄</span><span class="ab-lbl">Specs</span></a>
           <!-- Panel schedules sit beside Prints for the same reason: both are
                things a crew opens on arrival, and both want to be reachable
                from whichever tab you happen to be on. -->
-          <a id="btnJobPanels" href="#" class="action-btn panels disabled">⚡ Panels</a>
+          <a id="btnJobPanels" href="#" class="action-btn panels disabled"><span class="ab-ico">⚡</span><span class="ab-lbl">Panels</span></a>
           <!-- The job's saved load calculations (All Charts tab 7, scoped to
                this job). Everyone can open them; admin/office save. -->
-          <a id="btnJobLoadCalc" href="#" class="action-btn loadcalc disabled">🔌 Load Calc</a>
+          <a id="btnJobLoadCalc" href="#" class="action-btn loadcalc disabled"><span class="ab-ico">🔌</span><span class="ab-lbl">Load Calc</span></a>
           <!-- The badge here counts OPEN items across every list on the job, so
                "✅ Lists 7" means seven things still to bring. -->
-          <a id="btnJobLists" href="#" class="action-btn lists disabled">✅ Lists</a>
+          <a id="btnJobLists" href="#" class="action-btn lists disabled"><span class="ab-ico">✅</span><span class="ab-lbl">Lists</span></a>
           <!-- Same quick receipt as the top bar, but the job is THIS job. -->
-          <a id="btnJobReceipt" href="#" class="action-btn receipt writer-only">🧾 Receipt</a>
-          <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled">📋 Trello Card</a>
-          <a id="btnInventory" href="/inventory" target="_blank" class="action-btn inventory">📦 Inventory</a>
+          <a id="btnJobReceipt" href="#" class="action-btn receipt writer-only"><span class="ab-ico">🧾</span><span class="ab-lbl">Receipt</span></a>
+          <a id="btnTrello" href="#" target="_blank" class="action-btn trello disabled"><span class="ab-ico">📋</span><span class="ab-lbl">Trello</span></a>
+          <a id="btnInventory" href="/inventory" target="_blank" class="action-btn inventory"><span class="ab-ico">📦</span><span class="ab-lbl">Inventory</span></a>
         </div>
 
         <!-- TABS -->
@@ -5623,14 +5641,14 @@
       const ap = $("btnAddPhotos");
       ap.href = "#";
       ap.removeAttribute("target");
-      ap.textContent = "📷 Add Photos";
+      ap.innerHTML = actionTileHtml("📷", "Add Photos");
       ap.classList.remove("disabled");
       ap.onclick = (e) => { e.preventDefault(); openAddPhotos(); };
 
       const vp = $("btnViewPhotos");
       vp.href = "#";
       vp.removeAttribute("target");
-      vp.textContent = "🖼 View Photos";
+      vp.innerHTML = actionTileHtml("🖼", "View Photos");
       vp.classList.remove("disabled");
       vp.onclick = (e) => { e.preventDefault(); openJobPhotos(); };
 
@@ -5705,15 +5723,15 @@
     const trelloBtn = $("btnTrello");
     if (job.trelloCardId) {
       trelloBtn.href = `https://trello.com/c/${job.trelloCardId}`;
-      trelloBtn.textContent = "📋 Trello Card";
+      trelloBtn.innerHTML = actionTileHtml("📋", "Trello");
       trelloBtn.classList.remove("disabled");
     } else if (job.name) {
       trelloBtn.href = `https://trello.com/search?q=${encodeURIComponent(job.name)}`;
-      trelloBtn.textContent = "📋 Find in Trello";
+      trelloBtn.innerHTML = actionTileHtml("📋", "Find in Trello");
       trelloBtn.classList.remove("disabled");
     } else {
       trelloBtn.href = "#";
-      trelloBtn.textContent = "📋 Trello Card";
+      trelloBtn.innerHTML = actionTileHtml("📋", "Trello");
       trelloBtn.classList.add("disabled");
     }
 
@@ -8065,13 +8083,20 @@
    * re-fetch. */
   const printBadge = { prints: { jobId: null, count: null }, specs: { jobId: null, count: null } };
 
+  // The job buttons' inside: icon, label, optional count. EVERY repaint of a
+  // job button uses this — a plain "⚡ Panels" string would drop that tile
+  // back to a squashed one-liner in the icon grid. Zero renders as no badge at
+  // all — an empty pill reads as "still loading".
+  function actionTileHtml(icon, label, n) {
+    return `<span class="ab-ico">${icon}</span><span class="ab-lbl">${esc(label)}</span>` +
+      (n ? `<span class="count-badge">${n}</span>` : "");
+  }
+
   function paintPrintBadge(kind) {
     const k = PRINT_KINDS[kind];
     const btn = k && $(k.btn);
     if (!btn) return;
-    const n = printBadge[kind].count;
-    // Zero renders as no badge at all — an empty pill reads as "still loading".
-    btn.innerHTML = `${k.icon} ${k.label}${n ? ` <span class="count-badge">${n}</span>` : ""}`;
+    btn.innerHTML = actionTileHtml(k.icon, k.label, printBadge[kind].count);
   }
 
   async function loadPrintBadge(jobId, kind) {
@@ -8194,7 +8219,7 @@
     const btn = $("btnJobLists");
     if (!btn) return;
     const n = listBadge.count;
-    btn.innerHTML = `✅ Lists${n ? ` <span class="count-badge">${n}</span>` : ""}`;
+    btn.innerHTML = actionTileHtml("✅", "Lists", n);
   }
 
   async function loadListBadge(jobId) {
@@ -8801,7 +8826,7 @@
     const btn = $("btnJobPanels");
     if (!btn) return;
     const n = panelBadge.count;
-    btn.innerHTML = `⚡ Panels${n ? ` <span class="count-badge">${n}</span>` : ""}`;
+    btn.innerHTML = actionTileHtml("⚡", "Panels", n);
   }
 
   async function loadPanelBadge(jobId) {
@@ -33111,7 +33136,7 @@
     if (jobId != null) { lcBadge.jobId = jobId; lcBadge.count = n; }
     const btn = $("btnJobLoadCalc");
     if (!btn || lcBadge.jobId !== (state.selected && state.selected.id)) return;
-    btn.innerHTML = `🔌 Load Calc${lcBadge.count ? ` <span class="count-badge">${lcBadge.count}</span>` : ""}`;
+    btn.innerHTML = actionTileHtml("🔌", "Load Calc", lcBadge.count);
   }
   // Fire and forget, like the Panels badge — the job header never waits on it.
   async function loadLcBadge(jobId) {

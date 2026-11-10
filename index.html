@@ -1510,6 +1510,9 @@
     .job-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
     .job-line .job-item-name { margin: 0; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .job-line .job-item-po { margin: 0; flex: 0 0 auto; white-space: nowrap; color: var(--muted); }
+    /* Contractor in brackets after the code (owner 2026-11-10). It gives way
+       first on a narrow screen (shrink 3 vs the name's 1), then ellipsizes. */
+    .job-line-gc { flex: 0 3 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
     .job-line-badges { margin-left: auto; flex: 0 0 auto; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
     .job-line-status { display: inline-flex; align-items: center; gap: 4px; }
 
@@ -5620,6 +5623,7 @@
           <div class="job-line">
             <span class="job-item-name">${esc(job.name||"Untitled")}</span>
             <span class="job-item-po">${esc(poCode)}</span>
+            ${(job.contractor || "").trim() ? `<span class="job-line-gc">(${esc(job.contractor.trim())})</span>` : ""}
             <span class="job-line-badges">
               ${group === "Other" ? `<span class="job-line-status"><span class="status-dot" style="background:${statusDotColor(job.status)}"></span>${esc(job.status||"—")}</span>` : ""}
               ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}

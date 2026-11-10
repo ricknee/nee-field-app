@@ -762,6 +762,14 @@
     #tab-project > .info-grid > .info-box.full > #piMiles { flex-basis: 100%; padding-left: 96px; margin-top: 0 !important; }
     #tab-project > .info-grid > .pi-dup { display: none !important; }
 
+    /* Hours + Completion Date read as ONE "progress" card when both show
+       (2026-11-09): the two boxes join, no gap. Each still shows/hides on its
+       own exactly as before — this is only how they meet. */
+    #piHoursView:not(.hidden):has(+ #piCompletionDateView:not(.hidden)) {
+      border-bottom: none !important; border-bottom-left-radius: 0 !important; border-bottom-right-radius: 0 !important; padding-bottom: 8px !important; }
+    #piHoursView:not(.hidden) + #piCompletionDateView:not(.hidden) {
+      margin-top: 0 !important; border-top: 1px dashed var(--line) !important; border-top-left-radius: 0 !important; border-top-right-radius: 0 !important; padding-top: 10px !important; }
+
     /* Job settings folded into one line (2026-11-09). */
     #jobSettingsFold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 11px 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; font-size: 13px; color: var(--text); }
     #jobSettingsFold > summary::-webkit-details-marker { display: none; }
@@ -3743,6 +3751,10 @@
             <div class="info-label" style="margin-bottom:6px;">📝 Job Notes</div>
             <div id="piNotesText" style="white-space:pre-wrap; font-size:13px; color:var(--text); line-height:1.5;">—</div>
           </div>
+          <!-- No note → no card (owner 2026-11-09). Admin/office get this link
+               instead; it opens Edit with the notes box focused. Shown/hidden by
+               refreshNotesView, never by the admin-only sweep. -->
+          <a href="#" id="piNotesAdd" class="hidden" style="display:inline-block; margin-top:12px; font-size:13px; color:var(--blue); text-decoration:none;">📝 + Add job note</a>
 
           <!-- City tax for work on this job. Admin/office, populated by
                refreshJobCityTaxView() on every job switch. It lives here rather
@@ -3832,7 +3844,7 @@
               <span>🏗 Scissor Lifts at this Job</span>
               <button id="btnAddLiftToJob" class="btn btn-sm" style="font-size:12px;" type="button">+ Add Lift</button>
             </div>
-            <div id="jobLiftsList" style="display:flex; flex-wrap:wrap; gap:10px; margin-top:10px;"></div>
+            <div id="jobLiftsList" style="display:flex; flex-direction:column; gap:8px; margin-top:10px;"></div>
             <div id="addLiftPanel" style="display:none; margin-top:10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:12px;">
               <div style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">Deploy a Lift to this Job</div>
               <!-- Photo cards, not a dropdown: the lifts are told apart by sight, not by number. -->
@@ -13901,8 +13913,17 @@
     if (isAdmin() && cd) {
       const txt = $("piCompletionDateText");
       if (txt) {
-        const countdown = completionCountdownLabel(cd);
-        txt.innerHTML = `${esc(fmtCompletionDate(cd))}${countdown ? ` <span style="color:var(--muted); font-weight:600;">· ${esc(countdown)}</span>` : ""}`;
+        // Overdue on a job that isn't finished is RED (owner 2026-11-09) — in
+        // muted grey "due 21 days ago" read as calm next to a red OVER.
+        const c = completionDaysUntil(cd);
+        const done = ["completed", "not awarded"].includes(String(job.status || "").toLowerCase());
+        if (c && c.totalDays < 0 && !done) {
+          const n = Math.abs(c.totalDays);
+          txt.innerHTML = `${esc(fmtCompletionDate(cd))} <span style="color:var(--red); font-weight:700;">· ${n} day${n === 1 ? "" : "s"} OVERDUE</span>`;
+        } else {
+          const countdown = completionCountdownLabel(cd);
+          txt.innerHTML = `${esc(fmtCompletionDate(cd))}${countdown ? ` <span style="color:var(--muted); font-weight:600;">· ${esc(countdown)}</span>` : ""}`;
+        }
       }
       view.classList.remove("hidden");
     } else {
@@ -13952,6 +13973,7 @@
     $("piEmailCard").style.display   = "none";
     $("piAddressCard").style.display = "none";
     $("piNotesView").classList.add("hidden");
+    $("piNotesAdd")?.classList.add("hidden");
     $("piCompletionDateView").classList.add("hidden");
     $("piHoursView").classList.add("hidden");
     $("piEditPanel").classList.remove("hidden");
@@ -13983,8 +14005,7 @@
     if (saveBar) saveBar.classList.add("hidden");
     // Every role gets the notes back when leaving edit mode — only admin/office
     // can reach edit mode in the first place, so this is not a permission gate.
-    const notesView = $("piNotesView");
-    if (notesView) notesView.classList.remove("hidden");
+    refreshNotesView();
     refreshCompletionDateView();
     refreshJobHoursView();
     refreshJobCityTaxView();
@@ -13997,6 +14018,17 @@
     // Cancel discards the panel AND any un-saved setting change, because
     // refreshJobCityTaxView has just re-rendered those controls from the job.
     refreshPiSaveBar();
+  }
+
+  // Job notes: the card only when there IS a note (every role reads it); an
+  // empty job shows admin/office a small "+ Add job note" link instead of a
+  // card holding a dash.
+  function refreshNotesView() {
+    const view = $("piNotesView"), add = $("piNotesAdd");
+    const job = state.selected;
+    const has = !!(job && job.notes && String(job.notes).trim());
+    if (view) view.classList.toggle("hidden", !has);
+    if (add) add.classList.toggle("hidden", has || !job || !isAdmin() || isViewer());
   }
 
   function handleEditToggle() {
@@ -15924,11 +15956,28 @@
       if (!onJob.length) {
         list.innerHTML = `<div style="font-size:13px; color:var(--muted);">No lifts currently at this job.</div>`;
       } else {
+        /* One compact full-width row per lift (owner 2026-11-09): thumbnail,
+         * name, who has it, what was left, and Edit. The controls are the SAME
+         * ones as before, folded into .jl-edit — and the Save handler below
+         * reads its fields from btn.parentElement, so every input and the
+         * Save button must stay direct-ish children of .jl-edit. */
         list.innerHTML = onJob.map(l => `
-          <div style="background:var(--panel); border:1px solid var(--line-2); border-radius:10px; padding:12px 14px; min-width:160px;">
-            ${l.photoUrl ? `<img src="${esc(l.photoThumbUrl || l.photoUrl)}" alt="${esc(l.name)}" loading="lazy" decoding="async" style="width:100%; height:100px; object-fit:cover; border-radius:6px; margin-bottom:8px;" />` : ""}
-            <div style="font-weight:700; color:var(--accent); font-size:14px; margin-bottom:8px;">🏗 ${esc(l.name)}</div>
-            ${l.assignedTo ? `<div style="font-size:12px; color:var(--muted); margin-bottom:8px;">👤 ${esc(l.assignedTo)}</div>` : ""}
+          <div class="jl-card" style="background:var(--panel); border:1px solid var(--line-2); border-radius:12px; padding:10px 12px;">
+            <div style="display:flex; align-items:center; gap:12px;">
+              ${l.photoUrl
+                ? `<a href="${esc(l.photoUrl)}" target="_blank" rel="noopener" style="flex:0 0 auto;"><img src="${esc(l.photoThumbUrl || l.photoUrl)}" alt="${esc(l.name)}" loading="lazy" decoding="async" style="width:64px; height:48px; object-fit:cover; border-radius:8px; display:block;" /></a>`
+                : `<div style="flex:0 0 auto; width:64px; height:48px; border-radius:8px; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:22px;">🏗</div>`}
+              <div style="flex:1; min-width:0;">
+                <div style="font-weight:700; color:var(--accent); font-size:15px;">${esc(l.name)}${l.assignedTo ? `<span style="font-weight:500; color:var(--muted); font-size:13px;"> · ${esc(l.assignedTo)}</span>` : ""}</div>
+                <div style="font-size:12px; color:var(--muted); margin-top:2px;">
+                  Hooks <b style="color:${l.hooksLeft ? "var(--green)" : "var(--muted)"};">${l.hooksLeft ? "✓" : "✗"}</b>
+                  &nbsp;Box <b style="color:${l.boxLeft ? "var(--green)" : "var(--muted)"};">${l.boxLeft ? "✓" : "✗"}</b>
+                  ${l.notes ? ` · ${esc(l.notes)}` : ""}
+                </div>
+              </div>
+              <button type="button" class="btn btn-sm jl-edit-btn" style="flex:0 0 auto; font-size:13px;">Edit</button>
+            </div>
+            <div class="jl-edit" style="display:none; margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
             <div style="margin-bottom:6px;">
               <label style="font-size:10px; font-weight:700; letter-spacing:0.6px; text-transform:uppercase; color:var(--muted); display:block; margin-bottom:3px;">Status</label>
               <select data-lift-id="${esc(l.id)}" class="job-lift-status edit-input" style="font-size:12px; padding:5px 8px;">
@@ -15960,7 +16009,17 @@
             </div>
             <button data-lift-id="${esc(l.id)}" data-job="${esc(jobName)}" class="job-lift-save btn btn-primary btn-sm" style="width:100%; font-size:12px; margin-top:4px;">Save</button>
             <span class="job-lift-msg" style="font-size:11px; color:var(--green); display:none; margin-top:4px;">✓ Updated</span>
+            </div>
           </div>`).join("");
+
+        list.querySelectorAll(".jl-edit-btn").forEach(b => {
+          b.addEventListener("click", () => {
+            const edit = b.closest(".jl-card").querySelector(".jl-edit");
+            const open = edit.style.display === "none";
+            edit.style.display = open ? "" : "none";
+            b.textContent = open ? "Close" : "Edit";
+          });
+        });
 
         // "Move to another job…" — a job-to-job move in one save, instead of
         // Return to Shop here and Deploy over there. A visible, tappable list, not
@@ -18006,6 +18065,12 @@
     });
     const piEditBtn = $("piEditBtn");
     if (piEditBtn) piEditBtn.addEventListener("click", handleEditToggle);
+    const piNotesAdd = $("piNotesAdd");
+    if (piNotesAdd) piNotesAdd.addEventListener("click", (e) => {
+      e.preventDefault();
+      enterEditMode();
+      setTimeout(() => { const t = $("piEditNotes"); if (t) { t.focus(); t.scrollIntoView({ block: "center", behavior: "smooth" }); } }, 50);
+    });
     const piSaveBtn = $("piSaveBtn");
     if (piSaveBtn) piSaveBtn.addEventListener("click", savePiPending);
     // The edit panel's inputs are static markup, so these bind once. Every one

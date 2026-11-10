@@ -62,6 +62,12 @@ anything that upserts `job_estimates`.
   Unsaved bar saves them and the fold stays open. Prevailing wage still has its own button. Edit → Cancel
   still swaps the panel. A PW job shows "🏛 Prevailing wage" in the header. As an EMPLOYEE/VIEWER: the pill
   does nothing, a viewer still sees Tax Status.
+- [ ] **Job page, lower half** (2026-11-09): a job with no note shows no Job Notes card; admin sees
+  "📝 + Add job note", which opens Edit on the notes box; save a note and the card appears (an employee
+  sees it too). Hours + Completion Date are one joined card; a past date on an unfinished job reads
+  "N days OVERDUE" in red. Scissor lifts: one full-width row each (thumbnail, name · who, Hooks/Box ✓✗,
+  notes); tap the thumbnail for the big photo; Edit opens the old controls — change Hooks, Save, and the
+  row updates. Return to Shop and Move to another job… still work.
 - [ ] **Quick 🧾 Receipt** (`docs/PLAN-receipt-and-offline-prints.md`), on a phone, as an EMPLOYEE:
   top-bar 🧾 Receipt with no job open and scheduled today. The job is today's job. Enter an amount, no
   photo, Save: "✓ $X on <job>", and My Expenses on that job shows it waiting for approval, dated TODAY

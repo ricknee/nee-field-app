@@ -2135,7 +2135,9 @@
          7 type · 8 billable? · 9 approve (pending) or 🧾 (reviewed) · 10 🧾🗑
        Vendor is hidden on the card — the group header above already says it. */
     @media (max-width: 768px) {
-      .exp-cards, .exp-cards tbody { display: block; width: 100%; }
+      /* min-width 0 overrides .expense-table's min-width:700px — THAT is what
+         made every card 700px wide and the amounts need a sideways scroll. */
+      .exp-cards, .exp-cards tbody { display: block; width: 100%; min-width: 0 !important; }
       .exp-cards thead { display: none; }
       /* Fixed to the card's width (minmax(0,…) + box-sizing): a long invoice
          number like HD-3866-00062-40063-20261016 used to size the column and

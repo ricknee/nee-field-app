@@ -13917,13 +13917,43 @@
         // muted grey "due 21 days ago" read as calm next to a red OVER.
         const c = completionDaysUntil(cd);
         const done = ["completed", "not awarded"].includes(String(job.status || "").toLowerCase());
-        if (c && c.totalDays < 0 && !done) {
+        const metBtn = (label) =>
+          ` <button type="button" id="piMetBtn" class="btn btn-sm" style="font-size:12px; padding:4px 10px; margin-left:6px;">${label}</button>`;
+        if (job.completionMetOn) {
+          // "Due date met" (db/schema/088, owner 2026-11-09): the date was hit
+          // even though the job isn't Completed — Trail Cabinet could operate
+          // with a few unrelated items still open. No more OVERDUE.
+          txt.innerHTML = `${esc(fmtCompletionDate(cd))} <span style="color:var(--green); font-weight:700;">· ✓ Met</span>` +
+            `<span style="color:var(--muted); font-size:12px;"> (${esc(fmtCompletionDate(job.completionMetOn))})</span>` +
+            ` <a href="#" id="piMetUndo" style="font-size:12px; color:var(--blue); margin-left:6px;">undo</a>`;
+        } else if (c && c.totalDays < 0 && !done) {
           const n = Math.abs(c.totalDays);
-          txt.innerHTML = `${esc(fmtCompletionDate(cd))} <span style="color:var(--red); font-weight:700;">· ${n} day${n === 1 ? "" : "s"} OVERDUE</span>`;
+          txt.innerHTML = `${esc(fmtCompletionDate(cd))} <span style="color:var(--red); font-weight:700;">· ${n} day${n === 1 ? "" : "s"} OVERDUE</span>` +
+            metBtn("✓ Due date met");
         } else {
           const countdown = completionCountdownLabel(cd);
           txt.innerHTML = `${esc(fmtCompletionDate(cd))}${countdown ? ` <span style="color:var(--muted); font-weight:600;">· ${esc(countdown)}</span>` : ""}`;
         }
+        // One tap, like the generator pill — not a form field on the save bar:
+        // it's a statement about the date, made once, and undoable right here.
+        const setMet = async (value, el) => {
+          if (el) { el.disabled = true; el.style.pointerEvents = "none"; el.textContent = "Saving…"; }
+          try {
+            await apiPost("updateJobInfo", { jobId: job.id, completionMetOn: value });
+            // Patch THIS job (and its list row), not whatever is open now —
+            // a job switch mid-save must not land the flag on another job.
+            job.completionMetOn = value;
+            const row = (state.jobs || []).find(j => j.id === job.id);
+            if (row) row.completionMetOn = value;
+          } catch (e) {
+            alert("Couldn't save: " + e.message);
+          }
+          refreshCompletionDateView();
+        };
+        const mb = $("piMetBtn");
+        if (mb) mb.onclick = () => setMet(localYmd(), mb);
+        const mu = $("piMetUndo");
+        if (mu) mu.onclick = (e) => { e.preventDefault(); setMet("", mu); };
       }
       view.classList.remove("hidden");
     } else {

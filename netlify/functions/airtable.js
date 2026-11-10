@@ -6326,6 +6326,8 @@ const JOB_SELECT = `
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.completion_date::text AS completion_date, j.start_date::text AS start_date,
+         -- "Due date met" (db/schema/088): display only — stops the OVERDUE.
+         j.completion_met_on::text AS completion_met_on,
          j.workflow_status, j.billable_hourly_rate,
          -- The hours TARGET for this job, overriding the estimate rollup when
          -- set. NULL means nobody has said — the rollup answers if there is one.
@@ -6497,6 +6499,7 @@ function mapJobFromNeon(r) {
     serviceCallCreated: r.service_call_created === true,
     projectComplete: r.project_complete === true,
     milesFromShop: n(r.miles_from_shop), notes: s(r.notes), completionDate: s(r.completion_date),
+    completionMetOn: s(r.completion_met_on),
     startDate: s(r.start_date),
     totalRevenueLive: n(r.total_revenue_live), totalMaterialsLive: n(r.total_materials_live),
     totalLaborCostLive: n(r.total_labor_cost_live), totalWireCost: n(r.total_wire_cost),
@@ -14632,7 +14635,7 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 async function handleUpdateJobInfo(body) {
-  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, startDate, expectedHours, generatorInstalled } = body || {};
+  const { jobId, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, expectedHours, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -14682,6 +14685,14 @@ async function handleUpdateJobInfo(body) {
   if (customerEmail  !== undefined) put("customer_email",  customerEmail  || null);
   if (notes          !== undefined) put("notes",           notes          || null);
   if (completionDate !== undefined) put("completion_date", completionDate || null, "::date");
+  // "Due date met" (db/schema/088). "" clears it. Display only — it stops the
+  // OVERDUE on Project Info and changes nothing else.
+  if (completionMetOn !== undefined) {
+    if (completionMetOn && !/^\d{4}-\d{2}-\d{2}$/.test(String(completionMetOn))) {
+      return resp(400, { ok: false, error: "Met date must be a date." });
+    }
+    put("completion_met_on", completionMetOn || null, "::date");
+  }
   // Planned start — when work is expected to BEGIN, so 📊 Workload can tell a job
   // that is ready now from one awarded but not starting for months. Reuses
   // jobs.start_date: imported from Airtable's "Start Date", set on 1 of 21 awarded

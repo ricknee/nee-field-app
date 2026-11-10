@@ -68,6 +68,8 @@ anything that upserts `job_estimates`.
   "N days OVERDUE" in red. Scissor lifts: one full-width row each (thumbnail, name · who, Hooks/Box ✓✗,
   notes); tap the thumbnail for the big photo; Edit opens the old controls — change Hooks, Save, and the
   row updates. Return to Shop and Move to another job… still work.
+  "✓ Due date met" (schema 088): on an OVERDUE job (Trail Cabinet), tap it → "· ✓ Met (date)" in green,
+  no OVERDUE; reload and it stays; "undo" brings the OVERDUE back. Status is NOT changed by it.
 - [ ] **Quick 🧾 Receipt** (`docs/PLAN-receipt-and-offline-prints.md`), on a phone, as an EMPLOYEE:
   top-bar 🧾 Receipt with no job open and scheduled today. The job is today's job. Enter an amount, no
   photo, Save: "✓ $X on <job>", and My Expenses on that job shows it waiting for approval, dated TODAY

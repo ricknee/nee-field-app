@@ -787,6 +787,23 @@ await test("updateJobInfo: expected hours refuses a non-number rather than writi
   }
 });
 
+// ── "Due date met" (db/schema/088) ──
+await test("updateJobInfo: completionMetOn takes a date or a clear, and refuses anything else", async () => {
+  mockTables = {};
+  for (const bad of ["yesterday", "11/9/2026"]) {
+    const r = await POST("updateJobInfo", { jobId: "recJ1", completionMetOn: bad });
+    eq(r.statusCode, 400, `"${bad}" is refused`);
+  }
+  for (const good of ["2026-11-09", ""]) {
+    const r = await POST("updateJobInfo", { jobId: "recJ1", completionMetOn: good });
+    eq(r.statusCode === 400, false, `"${good}" is accepted (alone — not 'nothing to update')`);
+  }
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  ok(/completion_met_on::text AS completion_met_on/.test(src) && /completionMetOn: s\(r\.completion_met_on\)/.test(src),
+     "the job read carries it back, or the flag would vanish on reload");
+});
+
 await test("expected hours: NULL survives the read, and no target is a PROMPT not a dash", async () => {
   const fs = await import("node:fs/promises");
   const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

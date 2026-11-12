@@ -2943,7 +2943,10 @@ async function handleEstimatesList(params) {
   // with 591 lines counted on both sides.
   const q = await neonQuery(
     `SELECT e.id, e.job_name, e.job_airtable_id, e.created_at, e.created_by,
-            e.status, e.notes, t.total, t.line_count
+            e.status, e.notes, t.total, t.line_count,
+            -- Calendar dates in the shop's zone, rendered here (never sliced in JS).
+            to_char(e.created_at AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS created_day,
+            to_char(e.updated_at AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS edited_day
        FROM material_estimates e
        LEFT JOIN v_material_estimate_totals t ON t.estimate_id = e.id
       ORDER BY e.created_at DESC NULLS LAST`);
@@ -2960,6 +2963,8 @@ async function handleEstimatesList(params) {
         notes:       r.notes || "",
         total:       Number(r.total ?? 0),
         lineCount:   Number(r.line_count ?? 0),
+        createdDay:  r.created_day || "",
+        editedDay:   r.edited_day || "",   // "" = Airtable-era, unknown
       })),
     });
   }
@@ -3081,7 +3086,8 @@ async function handleEstimateUpdate(body) {
        notes           = COALESCE($3, notes),
        job_name        = COALESCE($4, job_name),
        job_airtable_id = COALESCE($5, job_airtable_id),
-       synced_at       = now()
+       synced_at       = now(),
+       updated_at      = now()   -- the list's "Edited" date (schema 093)
      WHERE id = $1::uuid RETURNING id`,
     [id,
      status  === undefined ? null : String(status),

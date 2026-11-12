@@ -319,6 +319,22 @@ details.recent .recent-row{padding-bottom:4px;}
 .est-menu hr{border:none;border-top:1px solid var(--border);margin:6px 4px;}
 .est-menu .danger{color:var(--red);}
 #est-undo{bottom:calc(84px + env(safe-area-inset-bottom));}
+.estc-head{display:flex;align-items:center;gap:8px;width:100%;background:none;border:none;border-bottom:1px solid var(--border);color:var(--text);font-family:inherit;padding:12px 2px 6px;margin-top:4px;cursor:pointer;text-align:left;}
+.estc-chev{color:var(--gold);font-size:12px;transition:transform .15s;}
+.estc-head.folded .estc-chev{transform:rotate(-90deg);}
+.estc-name{flex:1;min-width:0;font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--gold);}
+.estc-name small{color:var(--dim);font-weight:600;letter-spacing:0;margin-left:4px;}
+.estc-sum{font-size:13px;}
+.estc-body{display:flex;flex-direction:column;gap:6px;padding-top:6px;}
+.estc-body[hidden]{display:none;}
+.est-status{display:flex;gap:6px;flex-wrap:wrap;}
+.est-status button{flex:1;min-width:70px;background:var(--navy-lt);border:1px solid var(--border);border-radius:20px;color:var(--dim);font-family:inherit;font-size:13px;font-weight:700;padding:9px 6px;cursor:pointer;}
+.est-status button.on{background:var(--sc);border-color:var(--sc);color:#fff;}
+.est-notes{background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:10px 12px;}
+.est-notes summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text);list-style:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.est-notes summary::-webkit-details-marker{display:none;}
+.est-notes summary span{color:var(--dim);font-weight:400;margin-left:6px;}
+.est-notes[open] summary span{display:none;}
 ::-webkit-scrollbar{width:3px;}
 ::-webkit-scrollbar-thumb{background:var(--slate);border-radius:2px;}
 /* 🏷 QR bin labels (docs/PLAN-barcode-labels.md). DK-1208 = 90.3 × 38 mm die-cut,
@@ -8342,7 +8358,11 @@ function estimateFilterPill(value, label, count) {
 
 function estimateRowHtml(e) {
   var statusColor = estimateStatusColor(e.status);
-  var dateStr     = formatEstDate(e.dateCreated);
+  // "Created Oct 21" — plus "Edited Oct 23" when it was saved on a later day.
+  // Days come from Postgres in Eastern time; Airtable-era rows have no edit date.
+  var created = e.createdDay ? fmtEstDay(e.createdDay) : formatEstDate(e.dateCreated);
+  var dateStr = (created ? "Created " + created : "") +
+    (e.editedDay && e.editedDay !== e.createdDay ? " · Edited " + fmtEstDay(e.editedDay) : "");
   var totalStr    = fmtCurrency(e.total || 0);
   var jobLine     = e.jobName || '<span style="color:var(--dim);font-style:italic;">No job</span>';
   return '<div onclick="openEstimate(\'' + e.id + '\')" ' +
@@ -8351,7 +8371,7 @@ function estimateRowHtml(e) {
       '<div style="flex:1;min-width:0;">' +
         '<div style="font-weight:600;font-size:15px;color:var(--text);overflow:hidden;text-overflow:ellipsis;">' + jobLine + '</div>' +
         '<div style="font-size:12px;color:var(--dim);margin-top:3px;">' + dateStr +
-          (e.createdBy ? ' · ' + e.createdBy : '') +
+          (e.createdBy ? ' · ' + escapeHtml(e.createdBy) : '') +
           ' · ' + (e.lineCount || 0) + ' line' + (e.lineCount === 1 ? '' : 's') +
         '</div>' +
       '</div>' +
@@ -8370,6 +8390,16 @@ function estimateStatusColor(status) {
     case "Rejected": return "#E74C3C";  // red
     default:         return "#88A088";  // muted (Draft)
   }
+}
+
+// "2026-10-21" → "Oct 21" (adds the year only when it isn't this year). Built
+// from the parts — new Date("2026-10-21") is UTC midnight = Oct 20 in Ohio.
+function fmtEstDay(ymd) {
+  var p = String(ymd || "").split("-");
+  if (p.length !== 3) return "";
+  var mons = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  var s = mons[Number(p[1]) - 1] + " " + Number(p[2]);
+  return Number(p[0]) === new Date().getFullYear() ? s : s + ", " + p[0];
 }
 
 function formatEstDate(iso) {
@@ -8424,6 +8454,7 @@ async function openEstimate(id) {
   try {
     var d = await apiGet("estimateGet", { id: id });
     estimateState.current = d.estimate;
+    estimateState.foldedCats = {};   // every estimate opens with all groups showing
     document.getElementById("estimate-title").textContent =
       (d.estimate.jobName || "Estimate");
     renderEstimateForm();
@@ -8462,22 +8493,27 @@ function renderEstimateForm() {
   }
 
   // Status dropdown
+  // Status: one tap, colored like the list's badges (was a dropdown).
   var statusSection =
-    '<label class="field-lbl">Status</label>' +
-    '<select class="field-inp" id="est-status" onchange="estimateState.current.status=this.value;estUpdateFooter();">' +
+    '<div class="est-status" id="est-status">' +
       ESTIMATE_STATUSES.map(function(s) {
-        return '<option value="' + s + '"' + (s === e.status ? ' selected' : '') + '>' + s + '</option>';
+        return '<button type="button" data-status="' + s + '" class="' + (s === (e.status || "Draft") ? "on" : "") + '" ' +
+          'style="--sc:' + estimateStatusColor(s) + '" onclick="setEstStatus(\'' + s + '\')">' + s + '</button>';
       }).join("") +
-    '</select>';
+    '</div>';
 
-  // Notes
+  // Notes: folded away under one line so the lines come first; the summary
+  // previews the first line so a note is never hidden without a trace.
+  var notesPreview = (e.notes || "").trim().split("\n")[0].slice(0, 60);
   var notesSection =
-    '<label class="field-lbl">Notes</label>' +
-    '<textarea class="field-inp" id="est-notes" rows="2" placeholder="Internal notes (not on PDF)" ' +
-      'oninput="estimateState.current.notes=this.value;estUpdateFooter();" ' +
-      'style="resize:vertical;min-height:50px;font-family:inherit;">' +
-      (e.notes || "").replace(/</g, "&lt;") +
-    '</textarea>';
+    '<details class="est-notes">' +
+      '<summary>📝 Notes <span>' + (notesPreview ? escapeHtml(notesPreview) : 'internal, not on the PDF') + '</span></summary>' +
+      '<textarea class="field-inp" id="est-notes" rows="2" placeholder="Internal notes (not on PDF)" ' +
+        'oninput="estimateState.current.notes=this.value;estUpdateFooter();" ' +
+        'style="resize:vertical;min-height:50px;font-family:inherit;margin-top:8px;width:100%;box-sizing:border-box;">' +
+        (e.notes || "").replace(/</g, "&lt;") +
+      '</textarea>' +
+    '</details>';
 
   // Lines section
   var linesSection = renderEstimateLines();
@@ -8569,7 +8605,35 @@ function renderEstimateLines() {
       return sortLineItemsByCategory(a.l, b.l);
     });
 
+  // Category groups (2026-11-12): a heading + subtotal over each run of the
+  // sort above; tap to fold. Just-added rows form their own "Just added" group
+  // at the bottom, matching where the sort holds them.
+  var groupTotals = {};
+  sortedPairs.forEach(function(p) {
+    var k = estCatKey(p.l);
+    groupTotals[k] = (groupTotals[k] || 0) + (Number(p.l.qty) || 0) * (Number(p.l.unitCost) || 0);
+  });
+  var groupCounts = {};
+  sortedPairs.forEach(function(p) { var k = estCatKey(p.l); groupCounts[k] = (groupCounts[k] || 0) + 1; });
+  var folded = estimateState.foldedCats || (estimateState.foldedCats = {});
+  var curGroup = null;
+
   var rowsHtml = sortedPairs.length ? sortedPairs.map(function(pair) {
+    var gk = estCatKey(pair.l);
+    var head = "";
+    if (gk !== curGroup) {
+      head = (curGroup !== null ? '</div>' : '') +
+        '<button type="button" class="estc-head' + (folded[gk] ? ' folded' : '') + '" data-cat="' + escapeHtml(gk) + '" onclick="toggleEstCat(this)">' +
+          '<span class="estc-chev">▾</span>' +
+          '<span class="estc-name">' + escapeHtml(estCatLabel(gk)) + ' <small>' + groupCounts[gk] + '</small></span>' +
+          '<b class="estc-sum" data-cat-sum="' + escapeHtml(gk) + '">' + fmtCurrency(groupTotals[gk]) + '</b>' +
+        '</button>' +
+        '<div class="estc-body"' + (folded[gk] ? ' hidden' : '') + '>';
+      curGroup = gk;
+    }
+    return head + estLineCardHtml(pair, itemMap);
+  }).join("") + '</div>' : '<div style="padding:14px;text-align:center;color:var(--dim);background:var(--navy-lt);border-radius:8px;border:1px dashed var(--border);">No line items yet</div>';
+  function estLineCardHtml(pair, itemMap) {
     var l = pair.l;
     var idx = pair.idx;
     var isMisc = l.isMisc || !l.itemId;
@@ -8704,7 +8768,7 @@ function renderEstimateLines() {
       wireHint +
       priceHint +
     '</div>';
-  }).join("") : '<div style="padding:14px;text-align:center;color:var(--dim);background:var(--navy-lt);border-radius:8px;border:1px dashed var(--border);">No line items yet</div>';
+  }
 
   // Running total — use stored lbs qty (which is what actually gets saved)
   var total = lines.reduce(function(s, l) { return s + (Number(l.qty) || 0) * (Number(l.unitCost) || 0); }, 0);
@@ -8767,6 +8831,41 @@ function estUpdateFooter() {
   if (subEl) subEl.textContent = fmtCurrency(sub);
   var dot = document.getElementById("est-dirty");
   if (dot) dot.classList.toggle("on", estIsDirty());
+  // Category subtotals, in place (typing in a box must not re-render the rows).
+  var cats = {};
+  (e.lines || []).forEach(function(l) {
+    var k = estCatKey(l);
+    cats[k] = (cats[k] || 0) + (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
+  });
+  document.querySelectorAll("#est-lines-rows [data-cat-sum]").forEach(function(el) {
+    el.textContent = fmtCurrency(cats[el.getAttribute("data-cat-sum")] || 0);
+  });
+}
+
+// Group key for a line — must agree with the render sort (new rows last).
+function estCatKey(l) {
+  if (l && l._isNew) return "__new";
+  var c = l && l.category ? String(l.category).trim() : "";
+  return c || "__none";
+}
+function estCatLabel(k) {
+  return k === "__new" ? "Just added" : k === "__none" ? "Other" : k;
+}
+function toggleEstCat(btn) {
+  var k = btn.getAttribute("data-cat");
+  var folded = estimateState.foldedCats || (estimateState.foldedCats = {});
+  folded[k] = !folded[k];
+  btn.classList.toggle("folded", !!folded[k]);
+  var body = btn.nextElementSibling;
+  if (body) body.hidden = !!folded[k];
+}
+function setEstStatus(s) {
+  if (!estimateState.current) return;
+  estimateState.current.status = s;
+  document.querySelectorAll("#est-status button").forEach(function(b) {
+    b.classList.toggle("on", b.getAttribute("data-status") === s);
+  });
+  estUpdateFooter();
 }
 function toggleEstMenu(ev) {
   if (ev) ev.stopPropagation();

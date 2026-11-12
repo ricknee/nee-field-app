@@ -280,6 +280,45 @@ details.recent .recent-row{padding-bottom:4px;}
 .undo-bar .ub-undo{background:var(--gold);border:none;border-radius:9px;color:var(--navy);font-family:inherit;font-size:14px;font-weight:700;padding:9px 16px;cursor:pointer;flex-shrink:0;}
 .undo-bar .ub-undo:disabled{opacity:.5;}
 .undo-bar .ub-x{background:transparent;border:none;color:var(--dim);font-size:18px;padding:4px 6px;cursor:pointer;flex-shrink:0;}
+
+/* ── Estimate editor, phone-first (2026-11-12) ── line cards + pinned bar */
+.estl{background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;padding:10px 10px 10px 12px;display:flex;flex-direction:column;gap:8px;}
+.estl.repriced{border-color:var(--gold);}
+.estl-top{display:flex;align-items:flex-start;gap:8px;}
+.estl-name{flex:1;min-width:0;font-weight:600;font-size:14px;line-height:1.3;padding-top:4px;word-break:break-word;}
+.estl-misc{display:inline-block;font-size:10px;font-weight:700;color:var(--gold);border:1px solid rgba(245,166,35,.5);border-radius:6px;padding:0 5px;margin-left:6px;vertical-align:1px;}
+.estl-del{flex-shrink:0;width:32px;height:32px;border-radius:8px;background:transparent;border:1px solid var(--border);color:var(--dim);font-size:16px;line-height:1;cursor:pointer;padding:0;}
+.estl-del:active{color:var(--red);border-color:var(--red);}
+.estl-nums{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;align-items:end;}
+.estl-f{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.estl-f>span,.estl-tot>span{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);display:flex;align-items:center;gap:6px;min-height:18px;}
+.estl-f input{font-size:15px!important;padding:8px!important;text-align:right;width:100%;box-sizing:border-box;}
+.estl-unit{display:inline-flex;}
+.estl-unit button{background:transparent;color:var(--dim);border:1px solid var(--border);font-family:inherit;font-size:10px;font-weight:700;padding:1px 7px;cursor:pointer;}
+.estl-unit button:first-child{border-radius:4px 0 0 4px;border-right:none;}
+.estl-unit button:last-child{border-radius:0 4px 4px 0;}
+.estl-unit button.on{background:var(--gold);color:var(--navy-dk);}
+.estl-tot{display:flex;flex-direction:column;align-items:flex-end;gap:3px;min-width:84px;}
+.estl-tot b{font-size:15px;padding:8px 0;white-space:nowrap;}
+.estl-hint{font-size:11px;color:var(--dim);}
+.estl-was{font-size:11px;color:var(--gold);}
+.est-foot{flex-shrink:0;display:flex;align-items:center;gap:10px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));background:var(--navy-mid);border-top:1px solid var(--border);position:relative;}
+.est-foot-sum{flex:1;min-width:0;}
+.est-foot-sum small{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);font-weight:600;}
+.est-foot-sum b{font-size:18px;}
+.est-dirty{display:none;align-items:center;gap:5px;color:var(--gold);}
+.est-dirty.on{display:inline-flex;}
+.est-dirty::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--gold);}
+.est-more{background:var(--navy-lt);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:20px;line-height:1;width:46px;height:46px;cursor:pointer;flex-shrink:0;}
+.est-save{background:var(--gold);border:none;border-radius:10px;color:var(--navy);font-family:inherit;font-size:15px;font-weight:700;padding:0 22px;height:46px;cursor:pointer;flex-shrink:0;}
+.est-save:disabled{opacity:.6;}
+.est-menu{position:absolute;right:16px;bottom:calc(100% + 6px);background:var(--navy-mid);border:1px solid var(--border);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.5);padding:6px;display:none;flex-direction:column;min-width:200px;z-index:160;}
+.est-menu.open{display:flex;}
+.est-menu button{background:none;border:none;color:var(--text);font-family:inherit;font-size:15px;text-align:left;padding:12px;border-radius:8px;cursor:pointer;}
+.est-menu button:active{background:var(--navy-lt);}
+.est-menu hr{border:none;border-top:1px solid var(--border);margin:6px 4px;}
+.est-menu .danger{color:var(--red);}
+#est-undo{bottom:calc(84px + env(safe-area-inset-bottom));}
 ::-webkit-scrollbar{width:3px;}
 ::-webkit-scrollbar-thumb{background:var(--slate);border-radius:2px;}
 /* 🏷 QR bin labels (docs/PLAN-barcode-labels.md). DK-1208 = 90.3 × 38 mm die-cut,
@@ -581,10 +620,13 @@ details.recent .recent-row{padding-bottom:4px;}
 <!-- ESTIMATE EDIT (also used for new) -->
 <div id="s-estimate" class="screen">
   <div class="hdr">
-    <button class="hdr-back" onclick="goEstimates()">‹</button>
+    <button class="hdr-back" onclick="estBack()">‹</button>
     <h2 id="estimate-title">Estimate</h2>
   </div>
   <div class="log-body" id="estimate-body"></div>
+  <!-- Pinned bar: total, unsaved dot, ⋯ menu, Save. Filled by renderEstimateForm. -->
+  <div class="est-foot" id="est-foot" style="display:none"></div>
+  <div class="undo-bar" id="est-undo" style="display:none"></div>
 </div>
 
 <!-- ESTIMATE TEMPLATES LIST -->
@@ -1484,6 +1526,14 @@ window.addEventListener("popstate", function() {
   }
   // User hit back — return to whatever was on top of the stack
   var prev = navBackStack.pop();
+  // Leaving an estimate with unsaved edits: ask first. On "Cancel" the history
+  // entry the browser just consumed is put back, so stack and history stay level.
+  var onEst = document.getElementById("s-estimate");
+  if (prev && onEst && onEst.classList.contains("active") && typeof estIsDirty === "function" && estIsDirty() &&
+      !confirm("You have unsaved changes on this estimate. Leave without saving?")) {
+    navPushScreen(prev.screen);
+    return;
+  }
   if (prev && prev.screen) {
     // Swap screens directly without re-pushing history (we're handling
     // the popstate event, not navigating forward)
@@ -8343,6 +8393,7 @@ async function goEstimateNew() {
     lines:     []
   };
   showScreen("estimate");
+  document.getElementById("est-foot").style.display = "none";   // until the form draws
   document.getElementById("estimate-title").textContent = "New Estimate";
   var body = document.getElementById("estimate-body");
   body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading job list…</div>';
@@ -8365,6 +8416,7 @@ async function goEstimateNew() {
 // ── OPEN EXISTING ESTIMATE ────────────────────────────────
 async function openEstimate(id) {
   showScreen("estimate");
+  document.getElementById("est-foot").style.display = "none";   // until the form draws
   document.getElementById("estimate-title").textContent = "Estimate";
   var body = document.getElementById("estimate-body");
   body.innerHTML = '<div class="loading"><div class="spinner"></div><br>Loading…</div>';
@@ -8412,7 +8464,7 @@ function renderEstimateForm() {
   // Status dropdown
   var statusSection =
     '<label class="field-lbl">Status</label>' +
-    '<select class="field-inp" id="est-status" onchange="estimateState.current.status=this.value;">' +
+    '<select class="field-inp" id="est-status" onchange="estimateState.current.status=this.value;estUpdateFooter();">' +
       ESTIMATE_STATUSES.map(function(s) {
         return '<option value="' + s + '"' + (s === e.status ? ' selected' : '') + '>' + s + '</option>';
       }).join("") +
@@ -8422,7 +8474,7 @@ function renderEstimateForm() {
   var notesSection =
     '<label class="field-lbl">Notes</label>' +
     '<textarea class="field-inp" id="est-notes" rows="2" placeholder="Internal notes (not on PDF)" ' +
-      'oninput="estimateState.current.notes=this.value;" ' +
+      'oninput="estimateState.current.notes=this.value;estUpdateFooter();" ' +
       'style="resize:vertical;min-height:50px;font-family:inherit;">' +
       (e.notes || "").replace(/</g, "&lt;") +
     '</textarea>';
@@ -8430,30 +8482,31 @@ function renderEstimateForm() {
   // Lines section
   var linesSection = renderEstimateLines();
 
-  // Action buttons — 5-across peer row when an estimate already exists.
-  // Padding/font shrunk so all 5 fit comfortably without wrapping on
-  // desktop/tablet (the primary form factor for this app).
-  var saveLabel  = isNew ? "💾 Create" : "💾 Save";
-  var btnBase    = "border-radius:8px;font-weight:700;padding:10px 6px;cursor:pointer;font-size:12px;flex:1;line-height:1.2;";
-  var saveBtn    = '<button onclick="saveEstimate()" id="est-save-btn" ' +
-    'style="background:var(--gold);border:none;color:var(--navy);' + btnBase + '">' + saveLabel + '</button>';
-  var tmplBtn    = isNew ? "" :
-    '<button onclick="openSaveAsTemplateModal()" ' +
-      'style="background:var(--navy-lt);border:1px solid var(--gold);color:var(--gold);' + btnBase + '">📋 Template</button>';
-  var pdfBtn     = isNew ? "" :
-    '<button onclick="downloadEstimatePDF()" ' +
-      'style="background:var(--navy-lt);border:1px solid var(--border);color:var(--text);' + btnBase + '">📄 PDF</button>';
-  var orderBtn   = isNew ? "" :
-    '<button onclick="goOrderBuild()" ' +
-      'style="background:var(--navy-lt);border:1px solid var(--gold);color:var(--gold);' + btnBase + '">📦 Order</button>';
-  var deleteBtn  = isNew ? "" :
-    '<button onclick="confirmDeleteEstimate()" ' +
-      'style="background:var(--red);border:none;color:#fff;' + btnBase + '">🗑 Delete</button>';
+  // Save / total live in the PINNED bar (#est-foot) so they're reachable at
+  // line 49 without scrolling. PDF, Order, Template and Delete moved into the
+  // ⋯ menu — Delete no longer sits one thumb-width from Save.
+  var foot = document.getElementById("est-foot");
+  foot.innerHTML =
+    '<div class="est-foot-sum">' +
+      '<small>Materials <span class="est-dirty" id="est-dirty">Unsaved</span></small>' +
+      '<b id="est-subtotal">$0.00</b>' +
+    '</div>' +
+    (isNew ? "" :
+      '<button type="button" class="est-more" onclick="toggleEstMenu(event)" aria-label="More">⋯</button>' +
+      '<div class="est-menu" id="est-menu">' +
+        '<button type="button" onclick="closeEstMenu();downloadEstimatePDF()">📄 PDF</button>' +
+        '<button type="button" onclick="closeEstMenu();goOrderBuild()">📦 Order materials</button>' +
+        '<button type="button" onclick="closeEstMenu();openSaveAsTemplateModal()">📋 Save as template</button>' +
+        '<hr>' +
+        '<button type="button" class="danger" onclick="closeEstMenu();confirmDeleteEstimate()">🗑 Delete estimate</button>' +
+      '</div>') +
+    '<button type="button" class="est-save" id="est-save-btn" onclick="saveEstimate()">' +
+      (isNew ? "Create" : "Save") + '</button>';
+  foot.style.display = "";
+  hideEstUndo();
 
-  var actionsSection =
-    '<div style="display:flex;gap:6px;margin-top:18px;">' +
-      saveBtn + tmplBtn + pdfBtn + orderBtn + deleteBtn +
-    '</div>';
+  // The "unsaved" baseline is taken once, when the estimate is first drawn.
+  if (e._baseline === undefined) e._baseline = estSnapshot(e);
 
   document.getElementById("estimate-body").innerHTML =
     '<div style="display:flex;flex-direction:column;gap:14px;">' +
@@ -8461,8 +8514,8 @@ function renderEstimateForm() {
       statusSection +
       notesSection +
       linesSection +
-      actionsSection +
     '</div>';
+  estUpdateFooter();
 
   // Pre-fill job for existing
   if (!isNew) {
@@ -8523,8 +8576,8 @@ function renderEstimateLines() {
     var nameHtml = isMisc
       ? '<input type="text" class="field-inp" id="estl-desc-' + idx + '" value="' + (l.description || "").replace(/"/g, "&quot;") +
           '" placeholder="Misc description" oninput="updateLineField(' + idx + ', \'description\', this.value);" ' +
-          'style="font-size:13px;padding:7px 9px;" />'
-      : '<div style="font-weight:600;font-size:13px;padding:7px 0;">' + (l.itemName || "Item") + '</div>';
+          'style="font-size:15px;padding:8px 9px;width:100%;box-sizing:border-box;" />'
+      : escapeHtml(l.itemName || "Item");
 
     // Wire lines get special treatment: ft/lbs toggle + price-per-ft display.
     // Storage is always lbs (line.qty in lbs), but Rick can ENTER in feet.
@@ -8552,23 +8605,14 @@ function renderEstimateLines() {
     }
 
     // Toggle buttons (only for wire items)
+    // Sits beside the "Qty" label so the box itself keeps its full width.
     var unitToggleHtml = "";
     if (isWire) {
-      var ftActive  = displayUnit === "ft";
-      var lbsActive = displayUnit === "lbs";
       unitToggleHtml =
-        '<div style="display:flex;gap:0;margin-top:4px;">' +
-          '<button type="button" onclick="setEstLineUnit(' + idx + ',\'ft\')" ' +
-            'style="flex:1;background:' + (ftActive ? 'var(--gold)' : 'transparent') + ';' +
-            'color:' + (ftActive ? 'var(--navy-dk)' : 'var(--dim)') + ';' +
-            'border:1px solid var(--border);border-right:none;border-radius:4px 0 0 4px;' +
-            'font-family:inherit;font-size:10px;font-weight:700;padding:3px 0;cursor:pointer;">ft</button>' +
-          '<button type="button" onclick="setEstLineUnit(' + idx + ',\'lbs\')" ' +
-            'style="flex:1;background:' + (lbsActive ? 'var(--gold)' : 'transparent') + ';' +
-            'color:' + (lbsActive ? 'var(--navy-dk)' : 'var(--dim)') + ';' +
-            'border:1px solid var(--border);border-radius:0 4px 4px 0;' +
-            'font-family:inherit;font-size:10px;font-weight:700;padding:3px 0;cursor:pointer;">lb</button>' +
-        '</div>';
+        '<span class="estl-unit">' +
+          '<button type="button" class="' + (displayUnit === "ft" ? "on" : "") + '" onclick="setEstLineUnit(' + idx + ',\'ft\')">ft</button>' +
+          '<button type="button" class="' + (displayUnit === "lbs" ? "on" : "") + '" onclick="setEstLineUnit(' + idx + ',\'lbs\')">lb</button>' +
+        '</span>';
     }
 
     // Below the row: conversion hint for wire items — shows the equivalent unit
@@ -8593,7 +8637,7 @@ function renderEstimateLines() {
         ? (cost > 0 ? '  ·  $' + cost.toFixed(4) + ' / lb' : '')
         : (ftPerLb > 0 && cost > 0 ? '  ·  $' + (cost / ftPerLb).toFixed(4) + ' / ft' : '');
       wireHint =
-        '<div id="estl-hint-' + idx + '" style="grid-column:1 / -1;font-size:10px;color:var(--dim);padding:0 2px;margin-top:-2px;">' +
+        '<div id="estl-hint-' + idx + '" class="estl-hint">' +
           '= ' + altTxt + costTxt + '  ·  ' + ftPerLb + ' ft/lb' +
         '</div>';
     }
@@ -8620,6 +8664,9 @@ function renderEstimateLines() {
       visibleCost = cost;
     }
     var costPlaceholder = (isWire && displayUnit === "ft") ? "$ / ft" : "Cost";
+    // The label says what the price box is per — the old row had no labels at all.
+    var costLabel = isWire ? (displayUnit === "ft" ? "$ per ft" : "$ per lb")
+                  : (l.uom && !/^(ea|each)$/i.test(l.uom) ? "$ per " + escapeHtml(l.uom) : "$ each");
 
     // Transient "was $X" trail left by Refresh Prices, so the user can see at a
     // glance which rows the reprice actually moved (and by how much) before
@@ -8630,30 +8677,30 @@ function renderEstimateLines() {
       var wasCost = Number(l._prevUnitCost) || 0;
       var moved   = cost - wasCost;
       priceHint =
-        '<div id="estl-was-' + idx + '" style="grid-column:1 / -1;font-size:10px;color:var(--gold);padding:0 2px;margin-top:-2px;">' +
+        '<div id="estl-was-' + idx + '" class="estl-was">' +
           'was ' + fmtCurrency(wasCost) + ' → ' + fmtCurrency(cost) +
           '  ·  ' + (moved > 0 ? '+' : '') + fmtCurrency(moved) + ' / ' + (isWire ? 'lb' : (l.uom || 'unit')) +
         '</div>';
     }
 
-    return '<div style="background:var(--navy-lt);border:1px solid ' +
-      (priceHint ? 'var(--gold)' : 'var(--border)') +
-      ';border-radius:8px;padding:10px;display:grid;grid-template-columns:1fr 70px 80px 80px 28px;gap:8px;align-items:center;">' +
-      '<div>' + nameHtml + (isMisc ? '<div style="font-size:10px;color:var(--gold);margin-top:3px;">MISC</div>' : '') + '</div>' +
-      '<div>' +
-        '<input type="number" step="' + qtyStep + '" class="field-inp" id="estl-qty-' + idx + '" value="' + visibleQty +
-          '" oninput="updateLineField(' + idx + ', \'qty\', this.value);" ' +
-          'style="font-size:13px;padding:7px 6px;text-align:right;width:100%;box-sizing:border-box;" placeholder="Qty" />' +
-        unitToggleHtml +
+    // Phone-first card: the name gets the whole top row; the boxes sit below
+    // with labels. Delete is top-right, away from the total, and undoable.
+    return '<div class="estl' + (priceHint ? ' repriced' : '') + '">' +
+      '<div class="estl-top">' +
+        '<div class="estl-name">' + nameHtml + (isMisc ? '<span class="estl-misc">MISC</span>' : '') + '</div>' +
+        '<button type="button" class="estl-del" onclick="removeEstimateLine(' + idx + ')" aria-label="Remove line" title="Remove line">✕</button>' +
       '</div>' +
-      '<input type="number" step="0.0001" class="field-inp" id="estl-cost-' + idx + '" value="' + visibleCost +
-        '" oninput="updateLineField(' + idx + ', \'unitCost\', this.value);" ' +
-        'style="font-size:13px;padding:7px 6px;text-align:right;" placeholder="' + costPlaceholder + '" />' +
-      '<div id="estl-total-' + idx + '" style="text-align:right;font-weight:600;font-size:13px;color:var(--text);">' +
-        fmtCurrency(lbs * cost) +
+      '<div class="estl-nums">' +
+        '<label class="estl-f"><span>Qty' + unitToggleHtml + '</span>' +
+          '<input type="number" inputmode="decimal" step="' + qtyStep + '" class="field-inp" id="estl-qty-' + idx + '" value="' + visibleQty +
+            '" oninput="updateLineField(' + idx + ', \'qty\', this.value);" placeholder="Qty" />' +
+        '</label>' +
+        '<label class="estl-f"><span>' + costLabel + '</span>' +
+          '<input type="number" inputmode="decimal" step="0.0001" class="field-inp" id="estl-cost-' + idx + '" value="' + visibleCost +
+            '" oninput="updateLineField(' + idx + ', \'unitCost\', this.value);" placeholder="' + costPlaceholder + '" />' +
+        '</label>' +
+        '<div class="estl-tot"><span>Total</span><b id="estl-total-' + idx + '">' + fmtCurrency(lbs * cost) + '</b></div>' +
       '</div>' +
-      '<button onclick="removeEstimateLine(' + idx + ')" ' +
-        'style="background:none;border:none;color:var(--red);font-size:18px;cursor:pointer;padding:0;line-height:1;">×</button>' +
       wireHint +
       priceHint +
     '</div>';
@@ -8688,11 +8735,71 @@ function renderEstimateLines() {
     linesHeader +
     '<div id="est-lines-rows" style="display:flex;flex-direction:column;gap:6px;">' + rowsHtml + '</div>' +
     addButtons +
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding:10px 12px;background:var(--navy-lt);border-radius:8px;border:1px solid var(--border);">' +
-      '<span style="font-weight:600;color:var(--dim);font-size:13px;">Materials Subtotal</span>' +
-      '<span id="est-subtotal" style="font-weight:700;font-size:16px;color:var(--text);">' + fmtCurrency(total) + '</span>' +
+    // The running total lives in the pinned bar now (#est-subtotal).
+    '<div style="text-align:center;font-size:12px;color:var(--dim);margin-top:10px;">' +
+      lines.length + ' line' + (lines.length === 1 ? '' : 's') + ' · ' + fmtCurrency(total) +
     '</div>' +
   '</div>';
+}
+
+// ── Pinned bar + unsaved dot + undoable line delete (2026-11-12) ──────────
+// Only the fields Save actually sends, in Save's shape — so a ft/lb toggle or a
+// "was $X" trail never counts as an unsaved change.
+function estSnapshot(e) {
+  return JSON.stringify({
+    s: e.status || "", n: e.notes || "",
+    l: (e.lines || []).map(function(l) {
+      return [!!l.isMisc, l.itemId || "", l.description || "", Number(l.qty || 0), Number(l.unitCost || 0)];
+    })
+  });
+}
+function estIsDirty() {
+  var e = estimateState.current;
+  return !!(e && e._baseline !== undefined && estSnapshot(e) !== e._baseline);
+}
+function estUpdateFooter() {
+  var e = estimateState.current;
+  if (!e) return;
+  var sub = (e.lines || []).reduce(function(s, l) {
+    return s + (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
+  }, 0);
+  var subEl = document.getElementById("est-subtotal");
+  if (subEl) subEl.textContent = fmtCurrency(sub);
+  var dot = document.getElementById("est-dirty");
+  if (dot) dot.classList.toggle("on", estIsDirty());
+}
+function toggleEstMenu(ev) {
+  if (ev) ev.stopPropagation();
+  var m = document.getElementById("est-menu");
+  if (m) m.classList.toggle("open");
+}
+function closeEstMenu() {
+  var m = document.getElementById("est-menu");
+  if (m) m.classList.remove("open");
+}
+document.addEventListener("click", function(ev) {
+  if (!ev.target.closest || !ev.target.closest("#est-menu")) closeEstMenu();
+});
+// Header ‹ — asks before throwing away edits. (Phone back: see popstate.)
+function estBack() {
+  if (estIsDirty() && !confirm("You have unsaved changes on this estimate. Leave without saving?")) return;
+  goEstimates();
+}
+
+var estUndo = null;   // { line, idx, timer } — the last removed line only
+function hideEstUndo() {
+  if (estUndo && estUndo.timer) clearTimeout(estUndo.timer);
+  estUndo = null;
+  var bar = document.getElementById("est-undo");
+  if (bar) { bar.style.display = "none"; bar.innerHTML = ""; }
+}
+function undoRemoveEstimateLine() {
+  var e = estimateState.current;
+  if (!estUndo || !e) return hideEstUndo();
+  var lines = e.lines || (e.lines = []);
+  lines.splice(Math.min(estUndo.idx, lines.length), 0, estUndo.line);
+  hideEstUndo();
+  refreshLines();
 }
 
 // Toggle a specific estimate line's display unit. Preserves stored lbs value,
@@ -8770,13 +8877,6 @@ function updateLineField(idx, field, value) {
     if (lineTotalEl) {
       lineTotalEl.textContent = fmtCurrency((Number(line.qty) || 0) * (Number(line.unitCost) || 0));
     }
-    var subEl = document.getElementById("est-subtotal");
-    if (subEl) {
-      var sub = estimateState.current.lines.reduce(function(s, l) {
-        return s + (Number(l.qty) || 0) * (Number(l.unitCost) || 0);
-      }, 0);
-      subEl.textContent = fmtCurrency(sub);
-    }
 
     // Refresh the wire hint line (alt-unit + $/ft) without re-rendering the row
     var hintEl = document.getElementById("estl-hint-" + idx);
@@ -8801,6 +8901,7 @@ function updateLineField(idx, field, value) {
       }
     }
   }
+  estUpdateFooter();
 }
 
 function refreshLines() {
@@ -8808,12 +8909,25 @@ function refreshLines() {
   var block = document.getElementById("est-lines-block");
   if (!block) return;
   block.outerHTML = renderEstimateLines();
+  estUpdateFooter();
 }
 
+// No confirm (it would nag on every cleanup) — an Undo bar instead, for 8 s.
 function removeEstimateLine(idx) {
   if (!estimateState.current || !estimateState.current.lines) return;
-  estimateState.current.lines.splice(idx, 1);
+  var removed = estimateState.current.lines.splice(idx, 1)[0];
   refreshLines();
+  if (!removed) return;
+  hideEstUndo();
+  var name = removed.isMisc ? (removed.description || "Misc line") : (removed.itemName || "Line");
+  var bar = document.getElementById("est-undo");
+  if (!bar) return;
+  bar.innerHTML =
+    '<div class="ub-msg">Removed <b style="color:var(--text);">' + escapeHtml(name) + '</b></div>' +
+    '<button class="ub-undo" onclick="undoRemoveEstimateLine()">Undo</button>' +
+    '<button class="ub-x" onclick="hideEstUndo()" aria-label="Dismiss">✕</button>';
+  bar.style.display = "flex";
+  estUndo = { line: removed, idx: idx, timer: setTimeout(hideEstUndo, 8000) };
 }
 
 function addMiscLine() {
@@ -9239,7 +9353,7 @@ async function saveEstimate() {
     }
   } catch(ex) {
     showToast("Save failed: " + (ex.message || ex), true);
-    if (btn) { btn.disabled = false; btn.textContent = isNew ? "Create Estimate" : "Save Changes"; }
+    if (btn) { btn.disabled = false; btn.textContent = isNew ? "Create" : "Save"; }
   }
 }
 

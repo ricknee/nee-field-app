@@ -9228,49 +9228,69 @@ async function handleDeleteFleetService(body) {
 // Neon-native, no Airtable side. Every open item plus the last 30 days of done
 // ones (the Done fold, so a wrong tick can be undone). vehicleId "" = not tied
 // to one truck. Same tier as the rest of fleet: any role reads, non-viewers write.
-async function handleFleetTodos() {
-  if (!neonEnabled()) return resp(503, { ok: false, error: "The fleet checklist is unavailable (database not configured)." });
+//
+// Lifts got the same list on 2026-11-12 (lift_todos, schema 091). One set of
+// handlers serves both; `kind` picks the table. Table/column names come ONLY
+// from this constant, never from the request. Each row comes back with a
+// generic itemId/itemName; fleet also keeps vehicleId/vehicleName.
+const EQUIP_TODO = {
+  fleet: { table: "fleet_todos", fk: "vehicle_id", parent: "fleet_vehicles", idKey: "vehicleId",
+           resolve: (id) => resolveVehicle(id), notFound: "Vehicle not found.", label: "fleet" },
+  lifts: { table: "lift_todos",  fk: "lift_id",    parent: "scissor_lifts",  idKey: "liftId",
+           resolve: (id) => resolveLift(id),    notFound: "Lift not found.",    label: "lift" },
+};
+
+async function handleEquipTodos(kind) {
+  const k = EQUIP_TODO[kind];
+  if (!neonEnabled()) return resp(503, { ok: false, error: `The ${k.label} checklist is unavailable (database not configured).` });
   const q = await neonQuery(
-    `SELECT t.id::text, t.vehicle_id::text AS vehicle_id, v.name AS vehicle_name, t.task,
+    `SELECT t.id::text, t.${k.fk}::text AS item_id, p.name AS item_name, t.task,
             t.added_by, t.done_by,
             -- Calendar dates rendered in Postgres, in the shop's zone: slicing an
             -- ISO timestamp in JS shows tomorrow for anything added after 7-8 pm.
             to_char(t.created_at AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS created_at,
             to_char(t.done_at    AT TIME ZONE 'America/New_York', 'YYYY-MM-DD') AS done_at
-       FROM fleet_todos t LEFT JOIN fleet_vehicles v ON v.id = t.vehicle_id
+       FROM ${k.table} t LEFT JOIN ${k.parent} p ON p.id = t.${k.fk}
       WHERE t.done_at IS NULL OR t.done_at > now() - interval '30 days'
       ORDER BY (t.done_at IS NULL) DESC, COALESCE(t.done_at, t.created_at) DESC, t.id`);
-  if (!q?.rows) return resp(503, { ok: false, error: "Can't load the fleet checklist right now — try again in a moment." });
-  const todos = q.rows.map(r => ({
-    id: r.id, vehicleId: r.vehicle_id || "", vehicleName: r.vehicle_name || "",
-    task: r.task || "", addedBy: r.added_by || "", createdAt: r.created_at,
-    doneAt: r.done_at || null, doneBy: r.done_by || "",
-  }));
+  if (!q?.rows) return resp(503, { ok: false, error: `Can't load the ${k.label} checklist right now — try again in a moment.` });
+  const todos = q.rows.map(r => {
+    const t = {
+      id: r.id, itemId: r.item_id || "", itemName: r.item_name || "",
+      task: r.task || "", addedBy: r.added_by || "", createdAt: r.created_at,
+      doneAt: r.done_at || null, doneBy: r.done_by || "",
+    };
+    if (kind === "fleet") { t.vehicleId = t.itemId; t.vehicleName = t.itemName; }
+    return t;
+  });
   return resp(200, { ok: true, todos });
 }
 
-async function handleAddFleetTodo(body, authUser) {
+async function handleAddEquipTodo(kind, body, authUser) {
+  const k = EQUIP_TODO[kind];
   const task = String(body?.task || "").trim().slice(0, 500);
   if (!task) return resp(400, { ok: false, error: "Type what needs fixing." });
-  let vehicleId = null;
-  if (body?.vehicleId) {
-    const target = await resolveVehicle(body.vehicleId);
-    if (!target) return resp(404, { ok: false, error: "Vehicle not found." });
-    vehicleId = target.id;
+  let itemId = null;
+  const given = body?.[k.idKey] || body?.itemId;
+  if (given) {
+    const target = await k.resolve(given);
+    if (!target) return resp(404, { ok: false, error: k.notFound });
+    itemId = target.id;
   }
-  const rows = await neonWrite("fleet.addTodo",
-    `INSERT INTO fleet_todos (vehicle_id, task, added_by) VALUES ($1, $2, $3) RETURNING id::text`,
-    [vehicleId, task, await actorName(authUser)]);
+  const rows = await neonWrite(`${kind}.addTodo`,
+    `INSERT INTO ${k.table} (${k.fk}, task, added_by) VALUES ($1, $2, $3) RETURNING id::text`,
+    [itemId, task, await actorName(authUser)]);
   return resp(200, { ok: true, id: rows?.[0]?.id || null });
 }
 
 // done:true ticks it (stamps who/when); done:false un-ticks it.
-async function handleSetFleetTodoDone(body, authUser) {
+async function handleSetEquipTodoDone(kind, body, authUser) {
+  const k = EQUIP_TODO[kind];
   const id = String(body?.todoId || "");
   if (!id) return resp(400, { ok: false, error: "Missing todoId." });
   const done = body?.done !== false;
-  const rows = await neonWrite("fleet.setTodoDone",
-    `UPDATE fleet_todos
+  const rows = await neonWrite(`${kind}.setTodoDone`,
+    `UPDATE ${k.table}
         SET done_at = CASE WHEN $2 THEN COALESCE(done_at, now()) END,
             done_by = CASE WHEN $2 THEN COALESCE(done_by, $3) END
       WHERE id::text = $1 RETURNING id::text`,
@@ -9279,11 +9299,12 @@ async function handleSetFleetTodoDone(body, authUser) {
   return resp(200, { ok: true, id, done });
 }
 
-async function handleDeleteFleetTodo(body) {
+async function handleDeleteEquipTodo(kind, body) {
+  const k = EQUIP_TODO[kind];
   const id = String(body?.todoId || "");
   if (!id) return resp(400, { ok: false, error: "Missing todoId." });
-  const rows = await neonWrite("fleet.deleteTodo",
-    `DELETE FROM fleet_todos WHERE id::text = $1 RETURNING id::text`, [id]);
+  const rows = await neonWrite(`${kind}.deleteTodo`,
+    `DELETE FROM ${k.table} WHERE id::text = $1 RETURNING id::text`, [id]);
   if (!rows?.length) return resp(404, { ok: false, error: "That item is gone — refresh." });
   return resp(200, { ok: true, deleted: id });
 }
@@ -17183,7 +17204,8 @@ export async function handler(event) {
       if (action === "scheduleEntries")    return await handleGetScheduleEntries(params);
       if (action === "schedulingCrew")     return await handleListEmployeesForScheduling();
       if (action === "fleetVehicles")      return await handleFleetVehicles();
-      if (action === "fleetTodos")         return await handleFleetTodos();
+      if (action === "fleetTodos")         return await handleEquipTodos("fleet");
+      if (action === "liftTodos")          return await handleEquipTodos("lifts");
       if (action === "fleetServiceHistory")return await handleFleetServiceHistory(params);
       if (action === "vendors")            return await handleVendors();
       if (action === "companies")          return await handleCompanies();
@@ -17267,9 +17289,12 @@ export async function handler(event) {
       if (body.action === "addFleetService")      return await handleAddFleetService(body);
       if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);
-      if (body.action === "addFleetTodo")         return await handleAddFleetTodo(body, authUser);
-      if (body.action === "setFleetTodoDone")     return await handleSetFleetTodoDone(body, authUser);
-      if (body.action === "deleteFleetTodo")      return await handleDeleteFleetTodo(body);
+      if (body.action === "addFleetTodo")         return await handleAddEquipTodo("fleet", body, authUser);
+      if (body.action === "setFleetTodoDone")     return await handleSetEquipTodoDone("fleet", body, authUser);
+      if (body.action === "deleteFleetTodo")      return await handleDeleteEquipTodo("fleet", body);
+      if (body.action === "addLiftTodo")          return await handleAddEquipTodo("lifts", body, authUser);
+      if (body.action === "setLiftTodoDone")      return await handleSetEquipTodoDone("lifts", body, authUser);
+      if (body.action === "deleteLiftTodo")       return await handleDeleteEquipTodo("lifts", body);
       if (body.action === "startServiceCall")     return await handleStartServiceCall(body);
       if (body.action === "completeServiceCall")  return await handleCompleteServiceCall(body);
       if (body.action === "saveInvoice")          return await handleSaveInvoice(body);

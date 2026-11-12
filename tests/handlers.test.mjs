@@ -2150,6 +2150,24 @@ await test("fleet: employees get full parity with admin; viewer stays read-only"
   }
 });
 
+await test("lifts 'Needs fixing' list: crews add and tick, viewer read-only (schema 091)", async () => {
+  for (const tok of [EMP_TOK, VIEWER_TOK]) {
+    ok((await GET("liftTodos", {}, tok)).statusCode !== 403, "reads the lift fix list");
+  }
+  const writes = [
+    ["addLiftTodo",     { liftId: "recL1", task: "Replace charger cord" }],
+    ["setLiftTodoDone", { todoId: "00000000-0000-0000-0000-000000000000", done: true }],
+    ["deleteLiftTodo",  { todoId: "00000000-0000-0000-0000-000000000000" }],
+  ];
+  for (const [action, body] of writes) {
+    ok((await POST(action, body, EMP_TOK)).statusCode !== 403, `${action} employee allowed`);
+    eq((await POST(action, body, VIEWER_TOK)).statusCode, 403, `${action} viewer blocked`);
+  }
+  // Table names come from a fixed map, never the request.
+  const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  ok(/const EQUIP_TODO = \{/.test(src) && !/EQUIP_TODO\[body/.test(src), "kind is a constant, not from the body");
+});
+
 // ── panel schedules (docs/PLAN-panel-schedules.md) ──
 // DATABASE_URL is deliberately unset in this harness, so every panel handler
 // short-circuits to 503 before touching Neon. That is exactly what makes these

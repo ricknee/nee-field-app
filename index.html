@@ -1277,6 +1277,46 @@
     .sl-status-pill.available   { background:#dcfce7; border-color:#86efac; color:#166534; }
     .sl-status-pill.on-job      { background:#fef9c3; border-color:#fde047; color:#854d0e; }
     .sl-status-pill.needs-service { background:#fee2e2; border-color:#f87171; color:#991b1b; }
+
+    /* Lifts, modern (2026-11-12) — same look as Fleet: compact rows that open
+       in place, a "Needs fixing" list (lift_todos, schema 091), status chips.
+       Scoped to #slModal: .sl-modal* is shared by ~10 other modals. */
+    #slModal .sl-modal { max-width:720px; }
+    #slModal .sl-modal-header { padding:12px 16px; }
+    #slModal .sl-modal-header h2 { font-family:inherit; text-transform:none; letter-spacing:0; font-size:18px; font-weight:800; color:var(--text); }
+    #slModal .sl-modal-header .btn { width:auto; }
+    #slModal .sl-modal-body { padding:14px 16px 20px; }
+    @media (max-width: 600px) {
+      #slModal .sl-modal { width:100%; max-height:100%; height:100%; border-radius:0; }
+    }
+    #slSummaryBar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+    .sl-chip { font-size:13px; font-weight:700; padding:5px 11px; border-radius:999px; border:1px solid; white-space:nowrap; }
+    .sl-chip.available     { background:#dcfce7; border-color:#86efac; color:#166534; }
+    .sl-chip.on-job        { background:#fef9c3; border-color:#fde047; color:#854d0e; }
+    .sl-chip.needs-service { background:#fee2e2; border-color:#f87171; color:#991b1b; }
+    #slModal .sl-grid { grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr)); gap:10px; align-items:start; }
+    #slModal .sl-card { padding:0; background:var(--panel); border-radius:12px; overflow:hidden; }
+    #slModal .sl-card.open { border-color:var(--accent); }
+    .sl-row { display:flex; align-items:center; gap:12px; padding:10px; cursor:pointer; }
+    .sl-row-img { flex:0 0 64px; width:64px; height:50px; border-radius:8px; object-fit:cover; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:22px; }
+    .sl-row-main { flex:1; min-width:0; }
+    .sl-row-name { font-size:16px; font-weight:800; color:var(--text); }
+    .sl-row-sub { font-size:13px; color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .sl-row-side { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:5px; }
+    .sl-row-side .sl-status-pill { font-size:12px; padding:2px 9px; }
+    .sl-row-chev { color:var(--muted); font-size:18px; line-height:1; transition:transform .15s; }
+    .sl-card.open .sl-row-chev { transform:rotate(90deg); }
+    .sl-body { display:none; padding:4px 12px 12px; border-top:1px solid var(--line); background:var(--panel-2); }
+    .sl-card.open .sl-body { display:block; }
+    #slModal .sl-body .sl-field { margin-top:8px; }
+    #slModal .sl-field label { font-size:11px; }
+    #slModal .sl-field select, #slModal .sl-field input[type="text"], #slModal .sl-field input[type="date"] { font-size:15px; padding:9px 10px; border-radius:10px; }
+    #slModal .sl-save-row { flex-wrap:wrap; }
+    #slModal .sl-save-row .btn { width:auto; font-size:13px !important; }
+    .sl-fix-box { margin:10px 0 4px; border:1px solid var(--line); border-radius:10px; background:var(--panel); overflow:hidden; }
+    .sl-fix-head { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; font-size:13px; font-weight:800; color:var(--text); }
+    .sl-fix-head .btn { width:auto; font-size:12px; padding:4px 10px; }
+    .sl-fix-box .fleet-todo-add { border-top:1px solid var(--line); border-bottom:none; }
     .sl-field { margin-bottom: 8px; }
     .sl-field label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted); margin-bottom: 3px; }
     .sl-field select, .sl-field input { width: 100%; background: var(--panel); border: 1px solid var(--line-2); border-radius: 7px; padding: 6px 8px; font-size: 12px; color: var(--text); outline: none; font-family: 'Inter', sans-serif; }
@@ -16045,13 +16085,14 @@
     renderFleetTodos();
   }
 
-  function fleetTodoRow(t, showTruck) {
+  // Shared by the Lifts screen (lift_todos) — rows carry itemName for both.
+  function fleetTodoRow(t, showTruck, anyLabel = "Shop / any") {
     const canEdit = !isViewer();
     const done = !!t.doneAt;
     const when = fmtDate(done ? t.doneAt : t.createdAt);   // YYYY-MM-DD, Eastern, from Postgres
     const who  = done ? (t.doneBy ? `Fixed by ${esc(t.doneBy)} · ${when}` : `Fixed ${when}`)
                       : (t.addedBy ? `${esc(t.addedBy)} · ${when}` : when);
-    const truck = showTruck ? `<span class="fleet-todo-truck">${esc(t.vehicleName || "Shop / any")}</span>` : "";
+    const truck = showTruck ? `<span class="fleet-todo-truck">${esc(t.itemName || t.vehicleName || anyLabel)}</span>` : "";
     return `
       <div class="fleet-todo${done ? " done" : ""}" data-todo-id="${esc(t.id)}">
         <button type="button" class="fleet-todo-tick" data-act="tick" ${canEdit ? "" : "disabled"}
@@ -17416,7 +17457,142 @@
   async function openScissorLifts() {
     $("slModal").style.display = "flex";
     pushBackEntry("scissorLifts", () => { $("slModal").style.display = "none"; });
+    wireLiftTodos();
+    loadLiftTodos();
     await loadScissorLifts();
+  }
+
+  // ── Lifts "Needs fixing" (lift_todos, schema 091) — same as Fleet's ──
+  // One list for every lift at the top; each open lift card shows its own
+  // items with an inline add. Rows render with fleetTodoRow.
+  const liftUi = { lifts: [], todos: [], showDone: false, open: new Set() };
+
+  async function loadLiftTodos() {
+    try {
+      const d = await apiGet("liftTodos");
+      liftUi.todos = d.todos || [];
+    } catch (e) {
+      $("slTodoList").innerHTML = `<div class="fleet-todo-empty" style="color:var(--red);">Couldn't load the list: ${esc(e.message)}</div>`;
+      return;
+    }
+    renderLiftTodos();
+  }
+
+  function renderLiftTodos() {
+    const open = liftUi.todos.filter(t => !t.doneAt);
+    const done = liftUi.todos.filter(t => t.doneAt);
+    const cnt = $("slTodoCount");
+    cnt.textContent = open.length; cnt.style.display = open.length ? "" : "none";
+    let html = open.length ? open.map(t => fleetTodoRow(t, true, "Any lift")).join("")
+                           : `<div class="fleet-todo-empty">✅ Nothing needs fixing.</div>`;
+    if (done.length) {
+      html += `<button type="button" class="fleet-done-fold" data-act="fold">${liftUi.showDone ? "▾" : "▸"} Done (${done.length})</button>`;
+      if (liftUi.showDone) html += done.map(t => fleetTodoRow(t, true, "Any lift")).join("");
+    }
+    $("slTodoList").innerHTML = html;
+    $("slTodoAddBtn").style.display = isViewer() ? "none" : "";
+
+    // Per-lift: the 🔧 badge on each row and the list inside each open card.
+    const byLift = {};
+    for (const t of open) if (t.itemId) (byLift[t.itemId] = byLift[t.itemId] || []).push(t);
+    $("slGrid").querySelectorAll(".sl-card[data-lift-id]").forEach(card => {
+      const mine = byLift[card.dataset.liftId] || [];
+      const badge = card.querySelector(".sl-row-fix");
+      if (badge) { badge.textContent = `🔧 ${mine.length}`; badge.style.display = mine.length ? "" : "none"; }
+      const list = card.querySelector(".sl-fix-list");
+      if (list) list.innerHTML = mine.length ? mine.map(t => fleetTodoRow(t, false)).join("")
+        : `<div class="fleet-todo-empty">✅ Nothing to fix on this lift.</div>`;
+    });
+  }
+
+  async function liftTodoAct(e) {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    if (btn.dataset.act === "fold") { liftUi.showDone = !liftUi.showDone; renderLiftTodos(); return; }
+    const row = btn.closest("[data-todo-id]");
+    const t = liftUi.todos.find(x => x.id === row?.dataset.todoId);
+    if (!t) return;
+    try {
+      if (btn.dataset.act === "tick") {
+        btn.disabled = true;
+        const done = !t.doneAt;
+        await apiPost("setLiftTodoDone", { todoId: t.id, done });
+        if (done) showAppToast("Marked fixed ✓");
+      } else if (btn.dataset.act === "del") {
+        if (!confirm(`Delete this item?\n\n${t.task}`)) return;
+        await apiPost("deleteLiftTodo", { todoId: t.id });
+      }
+    } catch (err) { alert("Error: " + err.message); }
+    await loadLiftTodos();
+  }
+
+  async function liftTodoSave(liftId, input, saveBtn, addBox) {
+    const task = input.value.trim();
+    if (!task) { input.focus(); return; }
+    saveBtn.disabled = true;
+    try {
+      await apiPost("addLiftTodo", { liftId: liftId || "", task });
+      input.value = "";
+      addBox.classList.remove("open");
+      await loadLiftTodos();
+    } catch (err) { alert("Error: " + err.message); }
+    finally { saveBtn.disabled = false; }
+  }
+
+  // Wired on first open, not at load: the modal markup comes after this script.
+  let liftTodoWired = false;
+  function wireLiftTodos() {
+    if (liftTodoWired) return;
+    liftTodoWired = true;
+    $("slTodoList").addEventListener("click", liftTodoAct);
+    $("slTodoAddBtn").addEventListener("click", () => {
+      const box = $("slTodoAdd");
+      const opening = !box.classList.contains("open");
+      box.classList.toggle("open", opening);
+      if (!opening) return;
+      const sel = $("slTodoLift"), keep = sel.value;
+      sel.innerHTML = `<option value="">Which lift?</option>` +
+        liftUi.lifts.map(l => `<option value="${esc(l.id)}">${esc(l.name)}</option>`).join("") +
+        `<option value="__any">Any lift / shop</option>`;
+      sel.value = keep;
+      $("slTodoText").focus();
+    });
+    $("slTodoSaveBtn").addEventListener("click", () => {
+      const sel = $("slTodoLift");
+      if (!sel.value) { alert("Pick which lift (or Any lift / shop)."); sel.focus(); return; }
+      liftTodoSave(sel.value === "__any" ? "" : sel.value, $("slTodoText"), $("slTodoSaveBtn"), $("slTodoAdd"));
+    });
+    $("slTodoText").addEventListener("keydown", e => { if (e.key === "Enter") $("slTodoSaveBtn").click(); });
+
+    // Card-level: open/close a row, and the per-lift fix list + inline add.
+    // Delegated on the grid, which survives every loadScissorLifts repaint.
+    $("slGrid").addEventListener("click", e => {
+      const card = e.target.closest(".sl-card[data-lift-id]");
+      if (!card) return;
+      if (e.target.closest(".sl-row")) {
+        const id = card.dataset.liftId;
+        const opening = !card.classList.contains("open");
+        card.classList.toggle("open", opening);
+        opening ? liftUi.open.add(id) : liftUi.open.delete(id);
+        return;
+      }
+      if (e.target.closest(".sl-fix-list")) { liftTodoAct(e); return; }
+      if (e.target.closest(".sl-fix-addbtn")) {
+        const box = card.querySelector(".sl-fix-box .fleet-todo-add");
+        box.classList.toggle("open");
+        if (box.classList.contains("open")) box.querySelector("input").focus();
+        return;
+      }
+      if (e.target.closest(".sl-fix-save")) {
+        const box = card.querySelector(".sl-fix-box .fleet-todo-add");
+        liftTodoSave(card.dataset.liftId, box.querySelector("input"), e.target.closest(".sl-fix-save"), box);
+      }
+    });
+    $("slGrid").addEventListener("keydown", e => {
+      if (e.key === "Enter" && e.target.matches(".sl-fix-box input")) {
+        e.target.closest(".sl-card").querySelector(".sl-fix-save").click();
+      }
+    });
   }
 
   function closeScissorLifts() {
@@ -17696,9 +17872,10 @@
       const onJob   = lifts.filter(l => l.status === "On Job").length;
       const service = lifts.filter(l => l.status === "Needs Service").length;
       $("slSummaryBar").innerHTML = `
-        <span style="color:var(--green);">✅ Available: ${avail}</span>
-        <span style="color:#854d0e;">🟡 On Job: ${onJob}</span>
-        <span style="color:var(--red);">🔴 Needs Service: ${service}</span>`;
+        <span class="sl-chip available">${avail} Available</span>
+        <span class="sl-chip on-job">${onJob} On job</span>
+        ${service ? `<span class="sl-chip needs-service">${service} Needs service</span>` : ""}`;
+      liftUi.lifts = lifts;
 
       // Wired once, here rather than at open, because loadScissorLifts is also
       // the refresh path — re-binding on every load would stack listeners.
@@ -17711,11 +17888,38 @@
       // Render cards
       $("slGrid").innerHTML = lifts.map(lift => {
         const statusClass = lift.status === "Available" ? "available" : lift.status === "On Job" ? "on-job" : "needs-service";
+        // Compact row (2026-11-12): tap to open the full card in place. The
+        // body keeps every control and class the save/photo/history wiring
+        // below looks for — only the wrapper changed.
+        const thumb = (lift.photos || [])[0];
+        const thumbUrl = thumb ? (thumb.thumbUrl || thumb.url) : lift.photoUrl;
+        const where = lift.currentJob
+          ? [lift.currentJob, lift.assignedTo].filter(Boolean).join(" · ")
+          : (lift.lastJob?.job ? `Last: ${lift.lastJob.job}` : (lift.assignedTo || ""));
         return `
-          <div class="sl-card">
-            <div class="sl-card-header">
-              <span class="sl-card-title">${esc(lift.name)}</span>
-              <span class="sl-status-pill ${statusClass}">${esc(lift.status || "—")}</span>
+          <div class="sl-card${liftUi.open.has(lift.id) ? " open" : ""}" data-lift-id="${esc(lift.id)}">
+            <div class="sl-row">
+              ${thumbUrl ? `<img class="sl-row-img" src="${esc(thumbUrl)}" alt="" loading="lazy" decoding="async" />`
+                         : `<div class="sl-row-img">🏗</div>`}
+              <div class="sl-row-main">
+                <div class="sl-row-name">${esc(lift.name)}</div>
+                ${where ? `<div class="sl-row-sub">${esc(where)}</div>` : ""}
+              </div>
+              <div class="sl-row-side">
+                <span class="sl-status-pill ${statusClass}">${esc(lift.status || "—")}</span>
+                <span class="fleet-vrow-fix sl-row-fix" style="display:none;"></span>
+              </div>
+              <span class="sl-row-chev">›</span>
+            </div>
+            <div class="sl-body">
+            <div class="sl-fix-box">
+              <div class="sl-fix-head"><span>🔧 Needs fixing</span>
+                ${isViewer() ? "" : `<button type="button" class="btn btn-sm sl-fix-addbtn">+ Add</button>`}</div>
+              <div class="sl-fix-list"></div>
+              <div class="fleet-todo-add">
+                <input type="text" maxlength="500" placeholder="e.g. Replace charger cord" enterkeyhint="done" />
+                <button type="button" class="btn btn-primary btn-sm sl-fix-save">Add</button>
+              </div>
             </div>
             ${renderLiftPhotos(lift)}
             ${renderLiftLastJob(lift)}
@@ -17773,8 +17977,10 @@
                 title="Remove this lift and its photos — for when one is sold">Retire</button>` : ""}
             </div>
             <div class="sl-history" style="display:none;"></div>
+            </div>
           </div>`;
       }).join("");
+      renderLiftTodos();   // fills the 🔧 badges and each card's fix list
 
       wireLiftPhotoControls();
       wireLiftRetire();
@@ -35267,16 +35473,32 @@
 <div id="slModal" class="sl-modal-backdrop" style="display:none;">
   <div class="sl-modal">
     <div class="sl-modal-header">
-      <h2>🏗 Scissor Lift Tracker</h2>
+      <h2>🏗 Scissor Lifts</h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <!-- Admin/office only, wired in loadScissorLifts. Adding equipment to the
              books is not a field action; marking a lift on/off a job still is. -->
-        <button id="slAddBtn" class="btn btn-primary btn-sm" style="display:none; font-size:12px;">+ Add Lift</button>
+        <button id="slAddBtn" class="btn btn-primary btn-sm" style="display:none; font-size:13px;">+ Lift</button>
         <button onclick="closeScissorLifts()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
       </div>
     </div>
     <div class="sl-modal-body">
-      <div id="slSummaryBar" style="display:flex; gap:16px; flex-wrap:wrap; margin-bottom:16px; padding:10px 14px; background:var(--panel-2); border:1px solid var(--line); border-radius:8px; font-size:13px; font-weight:600;"></div>
+      <div id="slSummaryBar"></div>
+
+      <!-- Needs fixing — running checklist (lift_todos, schema 091) -->
+      <div class="fleet-sec-head">
+        <h3>🔧 Needs fixing<span id="slTodoCount" class="fleet-count" style="display:none;"></span></h3>
+        <button id="slTodoAddBtn" class="btn btn-primary btn-sm" type="button">+ Add</button>
+      </div>
+      <div class="fleet-todo-card">
+        <div id="slTodoAdd" class="fleet-todo-add">
+          <select id="slTodoLift"></select>
+          <input id="slTodoText" type="text" maxlength="500" placeholder="e.g. Replace charger cord" enterkeyhint="done" />
+          <button id="slTodoSaveBtn" class="btn btn-primary btn-sm" type="button">Add</button>
+        </div>
+        <div id="slTodoList"><div class="fleet-todo-empty">Loading…</div></div>
+      </div>
+
+      <div class="fleet-sec-head"><h3>🏗 Lifts</h3></div>
       <div id="slGrid" class="sl-grid">
         <div class="loading-msg">Loading lifts...</div>
       </div>

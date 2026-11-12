@@ -2131,6 +2131,7 @@ await test("fleet: employees get full parity with admin; viewer stays read-only"
   for (const tok of [EMP_TOK, VIEWER_TOK]) {
     ok((await GET("fleetVehicles", {}, tok)).statusCode !== 403, "reads vehicles");
     ok((await GET("fleetServiceHistory", { vehicleId: "recV1" }, tok)).statusCode !== 403, "reads history");
+    ok((await GET("fleetTodos", {}, tok)).statusCode !== 403, "reads the fix list");
   }
   const writes = [
     ["updateFleetVehicle", { vehicleId: "recV1", currentMileage: 1000 }],
@@ -2138,6 +2139,10 @@ await test("fleet: employees get full parity with admin; viewer stays read-only"
     ["addFleetService",    { vehicleId: "recV1", date: "2026-08-03", serviceTypes: ["Oil Change"] }],
     ["updateFleetService", { serviceRecordId: "recS1", date: "2026-08-03" }],
     ["deleteFleetService", { serviceRecordId: "recS1" }],
+    // "Needs fixing" checklist (schema 090) — same tier: crews add and tick.
+    ["addFleetTodo",       { vehicleId: "recV1", task: "Fix driver's mirror" }],
+    ["setFleetTodoDone",   { todoId: "00000000-0000-0000-0000-000000000000", done: true }],
+    ["deleteFleetTodo",    { todoId: "00000000-0000-0000-0000-000000000000" }],
   ];
   for (const [action, body] of writes) {
     ok((await POST(action, body, EMP_TOK)).statusCode !== 403, `${action} employee allowed`);

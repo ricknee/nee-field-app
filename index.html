@@ -1179,6 +1179,64 @@
       display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;
     }
     .fleet-form-grid .full { grid-column:1/-1; }
+
+    /* Fleet, modern (2026-11-11): compact truck rows + the "Needs fixing"
+       checklist (fleet_todos, schema 090). Phone = full-height sheet. */
+    /* Scoped to #fleetModal — the Power Co. specs and Mileage modals share
+       the .fleet-modal* classes and are not part of this change. */
+    #fleetModal .fleet-modal { max-width:720px; }
+    #fleetModal .fleet-modal-header { padding:12px 16px; }
+    #fleetModal .fleet-modal-header h2 { font-family:inherit; text-transform:none; letter-spacing:0; font-size:18px; font-weight:800; color:var(--text); }
+    #fleetModal .fleet-modal-body { padding:14px 16px 20px; }
+    @media (max-width: 600px) {
+      #fleetModal .fleet-modal { width:100%; max-height:100%; height:100%; border-radius:0; }
+    }
+    .fleet-sec-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:4px 0 8px; }
+    .fleet-sec-head h3 { font-size:15px; font-weight:800; color:var(--text); margin:0; }
+    .fleet-sec-head .btn { width:auto; flex:0 0 auto; font-size:13px; }
+    .fleet-count { display:inline-block; min-width:20px; padding:1px 7px; margin-left:6px; border-radius:999px; background:#fee2e2; color:#991b1b; font-size:12px; font-weight:800; text-align:center; }
+    .fleet-todo-card { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; margin-bottom:18px; }
+    .fleet-todo-add { display:none; padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel-2); gap:8px; flex-wrap:wrap; }
+    .fleet-todo-add.open { display:flex; }
+    .fleet-todo-add select, .fleet-todo-add input { font-size:15px; padding:9px 10px; border:1px solid var(--line-2); border-radius:10px; background:var(--panel); color:var(--text); }
+    .fleet-todo-add select { flex:1 1 140px; }
+    .fleet-todo-add input { flex:3 1 200px; }
+    .fleet-todo-add .btn { flex:0 0 auto; width:auto; }
+    .fleet-todo { display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border-top:1px solid var(--line); }
+    .fleet-todo:first-child { border-top:none; }
+    .fleet-todo-tick { flex:0 0 26px; width:26px; height:26px; border-radius:50%; border:2px solid var(--line-2); background:var(--panel); cursor:pointer; display:flex; align-items:center; justify-content:center; font-size:14px; color:#fff; padding:0; }
+    .fleet-todo-tick:disabled { cursor:default; }
+    .fleet-todo.done .fleet-todo-tick { background:var(--green); border-color:var(--green); }
+    .fleet-todo-main { flex:1; min-width:0; }
+    .fleet-todo-task { font-size:15px; color:var(--text); line-height:1.3; word-wrap:break-word; }
+    .fleet-todo.done .fleet-todo-task { text-decoration:line-through; color:var(--muted); }
+    .fleet-todo-meta { font-size:12px; color:var(--muted); margin-top:2px; }
+    .fleet-todo-truck { display:inline-block; font-size:11px; font-weight:700; padding:1px 7px; border-radius:6px; background:#dbeafe; color:#1e40af; margin-right:6px; }
+    .fleet-todo-del { flex:0 0 auto; background:none; border:none; color:var(--muted); font-size:16px; cursor:pointer; padding:2px 4px; }
+    .fleet-todo-empty { padding:12px; font-size:14px; color:var(--muted); }
+    .fleet-done-fold { display:block; width:100%; text-align:left; padding:9px 12px; border:none; border-top:1px solid var(--line); background:var(--panel-2); color:var(--muted); font-size:13px; font-weight:700; cursor:pointer; }
+    #fleetVehiclesGrid { grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr)); gap:10px; }
+    .fleet-vrow { display:flex; align-items:center; gap:12px; padding:10px; border:1px solid var(--line); border-radius:12px; background:var(--panel); cursor:pointer; }
+    .fleet-vrow:hover { border-color:var(--accent); }
+    .fleet-vrow-img { flex:0 0 76px; width:76px; height:56px; border-radius:8px; object-fit:cover; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:26px; }
+    .fleet-vrow-main { flex:1; min-width:0; }
+    .fleet-vrow-name { font-size:16px; font-weight:800; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .fleet-vrow-sub { font-size:13px; color:var(--muted); margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .fleet-vrow-miles { font-size:13px; color:var(--text); font-weight:600; margin-top:2px; }
+    .fleet-vrow-side { flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; gap:6px; }
+    .fleet-vrow-fix { font-size:12px; font-weight:800; color:#991b1b; background:#fee2e2; border-radius:999px; padding:2px 8px; white-space:nowrap; }
+    .fleet-vrow-chev { color:var(--muted); font-size:20px; line-height:1; }
+    #fleetModal .fleet-detail-header { margin-bottom:12px; }
+    #fleetModal .fleet-back-btn { font-size:14px; padding:6px 12px; border-radius:10px; }
+    .fleet-miles-bar { display:flex; align-items:center; gap:8px; margin-bottom:14px; padding:10px 12px; background:var(--panel-2); border:1px solid var(--line); border-radius:12px; flex-wrap:wrap; }
+    .fleet-miles-bar input { flex:1 1 120px; font-size:15px; }
+    .fleet-miles-bar .btn { width:auto; flex:0 0 auto; }
+    .fleet-spec-list { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:4px 12px; margin-bottom:16px; }
+    .fleet-spec { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-top:1px solid var(--line); font-size:14px; }
+    .fleet-spec:first-child { border-top:none; }
+    .fleet-spec span:first-child { color:var(--muted); }
+    .fleet-spec span:last-child { color:var(--text); font-weight:600; text-align:right; word-break:break-word; }
+    #fleetModal .fleet-service-row { border-radius:12px; }
     .sl-modal-backdrop {
       position: fixed; inset: 0; background: rgba(0,0,0,0.45);
       z-index: 500; display: flex; align-items: center; justify-content: center;
@@ -15962,8 +16020,153 @@
   async function openFleet() {
     $("fleetModal").style.display = "flex";
     pushBackEntry("fleet", () => { $("fleetModal").style.display = "none"; });
+    wireFleetTodos();
     fleetShowList();
+    loadFleetTodos();
     await loadFleetVehicles();
+  }
+
+  // ── "Needs fixing" checklist (fleet_todos, schema 090) ──
+  // One list for the whole fleet on the main screen, and the same items
+  // filtered to one truck on its detail screen. Ticking marks it done (it moves
+  // to the Done fold for 30 days, where it can be un-ticked); 🗑 removes a
+  // mistaken entry. Viewers see it read-only, matching the backend tier.
+  fleetState.todos = [];
+  fleetState.showDone = false;
+
+  async function loadFleetTodos() {
+    try {
+      const d = await apiGet("fleetTodos");
+      fleetState.todos = d.todos || [];
+    } catch (e) {
+      $("fleetTodoList").innerHTML = `<div class="fleet-todo-empty" style="color:var(--red);">Couldn't load the list: ${esc(e.message)}</div>`;
+      return;
+    }
+    renderFleetTodos();
+  }
+
+  function fleetTodoRow(t, showTruck) {
+    const canEdit = !isViewer();
+    const done = !!t.doneAt;
+    const when = fmtDate(done ? t.doneAt : t.createdAt);   // YYYY-MM-DD, Eastern, from Postgres
+    const who  = done ? (t.doneBy ? `Fixed by ${esc(t.doneBy)} · ${when}` : `Fixed ${when}`)
+                      : (t.addedBy ? `${esc(t.addedBy)} · ${when}` : when);
+    const truck = showTruck ? `<span class="fleet-todo-truck">${esc(t.vehicleName || "Shop / any")}</span>` : "";
+    return `
+      <div class="fleet-todo${done ? " done" : ""}" data-todo-id="${esc(t.id)}">
+        <button type="button" class="fleet-todo-tick" data-act="tick" ${canEdit ? "" : "disabled"}
+                title="${done ? "Not done yet" : "Mark fixed"}">${done ? "✓" : ""}</button>
+        <div class="fleet-todo-main">
+          <div class="fleet-todo-task">${esc(t.task)}</div>
+          <div class="fleet-todo-meta">${truck}${who}</div>
+        </div>
+        ${canEdit ? `<button type="button" class="fleet-todo-del" data-act="del" title="Delete">🗑</button>` : ""}
+      </div>`;
+  }
+
+  function renderFleetTodos() {
+    const all  = fleetState.todos || [];
+    const open = all.filter(t => !t.doneAt);
+    const done = all.filter(t => t.doneAt);
+
+    const cnt = $("fleetTodoCount");
+    cnt.textContent = open.length; cnt.style.display = open.length ? "" : "none";
+    let html = open.length ? open.map(t => fleetTodoRow(t, true)).join("")
+                           : `<div class="fleet-todo-empty">✅ Nothing needs fixing.</div>`;
+    if (done.length) {
+      html += `<button type="button" class="fleet-done-fold" data-act="fold">${fleetState.showDone ? "▾" : "▸"} Done (${done.length})</button>`;
+      if (fleetState.showDone) html += done.map(t => fleetTodoRow(t, true)).join("");
+    }
+    $("fleetTodoList").innerHTML = html;
+    $("fleetTodoAddBtn").style.display = isViewer() ? "none" : "";
+
+    // This truck's items, when its detail screen is open.
+    const veh = fleetState.selectedVehicle;
+    if (veh && $("fleetDetailView").classList.contains("active")) {
+      const mine = open.filter(t => t.vehicleId === veh.id);
+      const dc = $("fleetDetailTodoCount");
+      dc.textContent = mine.length; dc.style.display = mine.length ? "" : "none";
+      $("fleetDetailTodoList").innerHTML = mine.length ? mine.map(t => fleetTodoRow(t, false)).join("")
+        : `<div class="fleet-todo-empty">✅ Nothing to fix on this truck.</div>`;
+      $("fleetDetailTodoAddBtn").style.display = isViewer() ? "none" : "";
+    }
+    if (fleetState.vehicles.length) renderFleetGrid();   // the 🔧 badges
+  }
+
+  async function fleetTodoAct(e) {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    if (btn.dataset.act === "fold") { fleetState.showDone = !fleetState.showDone; renderFleetTodos(); return; }
+    const row = btn.closest("[data-todo-id]");
+    const t = (fleetState.todos || []).find(x => x.id === row?.dataset.todoId);
+    if (!t) return;
+    try {
+      if (btn.dataset.act === "tick") {
+        btn.disabled = true;
+        const done = !t.doneAt;
+        await apiPost("setFleetTodoDone", { todoId: t.id, done });
+        if (done) showAppToast("Marked fixed ✓");
+      } else if (btn.dataset.act === "del") {
+        if (!confirm(`Delete this item?\n\n${t.task}`)) return;
+        await apiPost("deleteFleetTodo", { todoId: t.id });
+      }
+    } catch (err) { alert("Error: " + err.message); }
+    await loadFleetTodos();
+  }
+  // Wired on first open, not at load: the modal markup comes after this script.
+  let fleetTodoWired = false;
+  function wireFleetTodos() {
+  if (fleetTodoWired) return;
+  fleetTodoWired = true;
+  $("fleetTodoList").addEventListener("click", fleetTodoAct);
+  $("fleetDetailTodoList").addEventListener("click", fleetTodoAct);
+
+  async function fleetTodoSave(vehicleId, input, saveBtn, addBox) {
+    const task = input.value.trim();
+    if (!task) { input.focus(); return; }
+    saveBtn.disabled = true;
+    try {
+      await apiPost("addFleetTodo", { vehicleId: vehicleId || "", task });
+      input.value = "";
+      addBox.classList.remove("open");
+      await loadFleetTodos();
+    } catch (err) { alert("Error: " + err.message); }
+    finally { saveBtn.disabled = false; }
+  }
+
+  $("fleetTodoAddBtn").addEventListener("click", () => {
+    const box = $("fleetTodoAdd");
+    const opening = !box.classList.contains("open");
+    box.classList.toggle("open", opening);
+    if (!opening) return;
+    const sel = $("fleetTodoVehicle"), keep = sel.value;
+    sel.innerHTML = `<option value="">Which truck?</option>` +
+      [...fleetState.vehicles].sort(fleetVehicleOrder).map(v => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("") +
+      `<option value="__shop">Shop / any truck</option>`;
+    sel.value = keep;
+    $("fleetTodoText").focus();
+  });
+  $("fleetTodoSaveBtn").addEventListener("click", () => {
+    const sel = $("fleetTodoVehicle");
+    if (!sel.value) { alert("Pick which truck (or Shop / any truck)."); sel.focus(); return; }
+    fleetTodoSave(sel.value === "__shop" ? "" : sel.value, $("fleetTodoText"), $("fleetTodoSaveBtn"), $("fleetTodoAdd"));
+  });
+  $("fleetTodoText").addEventListener("keydown", e => { if (e.key === "Enter") $("fleetTodoSaveBtn").click(); });
+
+  $("fleetDetailTodoAddBtn").addEventListener("click", () => {
+    const box = $("fleetDetailTodoAdd");
+    box.classList.toggle("open");
+    if (box.classList.contains("open")) $("fleetDetailTodoText").focus();
+  });
+  $("fleetDetailTodoSaveBtn").addEventListener("click", () =>
+    fleetTodoSave(fleetState.selectedVehicle?.id, $("fleetDetailTodoText"), $("fleetDetailTodoSaveBtn"), $("fleetDetailTodoAdd")));
+  $("fleetDetailTodoText").addEventListener("keydown", e => { if (e.key === "Enter") $("fleetDetailTodoSaveBtn").click(); });
+  }
+
+  function fleetVehicleOrder(a, b) {
+    const numA = parseInt((a.name.match(/\d+/) || [99])[0]);
+    const numB = parseInt((b.name.match(/\d+/) || [99])[0]);
+    return numA - numB;
   }
 
   function closeFleet() {
@@ -16002,11 +16205,9 @@
   }
 
   function renderFleetGrid() {
-    const v = [...fleetState.vehicles].sort((a, b) => {
-      const numA = parseInt((a.name.match(/\d+/) || [99])[0]);
-      const numB = parseInt((b.name.match(/\d+/) || [99])[0]);
-      return numA - numB;
-    });
+    const v = [...fleetState.vehicles].sort(fleetVehicleOrder);
+    const openFix = {};
+    for (const t of fleetState.todos || []) if (!t.doneAt && t.vehicleId) openFix[t.vehicleId] = (openFix[t.vehicleId] || 0) + 1;
     if (!v.length) { $("fleetVehiclesGrid").innerHTML = `<div class="empty-msg">No vehicles found.</div>`; return; }
     // loading="lazy": equipment photos are stored as FULL-SIZE originals — unlike
     // jobsite photos and receipts, the upload path does no compressImage and writes
@@ -16014,21 +16215,28 @@
     // card was therefore pulling multiple MB to fill a 130px slot, times 11
     // vehicles, on open. Lazy limits that to the cards actually on screen.
     // The real fix is a thumbnail pipeline; delete this comment when it lands.
-    $("fleetVehiclesGrid").innerHTML = v.map(veh => `
-      <div class="fleet-vehicle-card" onclick="openFleetDetail('${esc(veh.id)}')">
-        ${veh.photoUrl ? `<img src="${esc(veh.photoThumbUrl || veh.photoUrl)}" alt="${esc(veh.name)}" loading="lazy" decoding="async" style="width:100%; height:130px; object-fit:cover;" />` : ""}
-        <div class="fleet-vehicle-card-header">
-          <span class="fleet-vehicle-card-title">${esc(veh.name)}</span>
-          ${fleetTypePill(veh.type)}
+    // Compact rows (2026-11-11): small photo, name, year/make/model, mileage,
+    // and a 🔧 badge when the truck has open "Needs fixing" items. Oil, tires
+    // and the rest moved to the truck's Specs list one tap in.
+    $("fleetVehiclesGrid").innerHTML = v.map(veh => {
+      const ymm = [veh.year, veh.make, veh.model].filter(Boolean).join(" ");
+      const sub = [ymm, veh.color].filter(Boolean).join(" · ");
+      const fix = openFix[veh.id] || 0;
+      return `
+      <div class="fleet-vrow" onclick="openFleetDetail('${esc(veh.id)}')">
+        ${veh.photoUrl ? `<img class="fleet-vrow-img" src="${esc(veh.photoThumbUrl || veh.photoUrl)}" alt="${esc(veh.name)}" loading="lazy" decoding="async" />`
+                       : `<div class="fleet-vrow-img">🚚</div>`}
+        <div class="fleet-vrow-main">
+          <div class="fleet-vrow-name">${esc(veh.name)}</div>
+          ${sub ? `<div class="fleet-vrow-sub">${esc(sub)}</div>` : ""}
+          ${veh.currentMileage ? `<div class="fleet-vrow-miles">📍 ${veh.currentMileage.toLocaleString()} mi</div>` : ""}
         </div>
-        <div class="fleet-vehicle-card-body">
-          <div class="fleet-stat"><span class="fleet-stat-label">Year / Make / Model</span><span class="fleet-stat-value">${veh.year ? veh.year+" " : ""}${esc(veh.make||"")} ${esc(veh.model||"")}</span></div>
-          <div class="fleet-stat"><span class="fleet-stat-label">Color</span><span class="fleet-stat-value">${esc(veh.color||"—")}</span></div>
-          ${veh.currentMileage ? `<div class="fleet-stat"><span class="fleet-stat-label">Mileage</span><span class="fleet-stat-value">${veh.currentMileage.toLocaleString()} mi</span></div>` : ""}
-          ${veh.oilType ? `<div class="fleet-stat"><span class="fleet-stat-label">Oil</span><span class="fleet-stat-value">${esc(veh.oilType)}</span></div>` : ""}
-          ${veh.tireBrand ? `<div class="fleet-stat"><span class="fleet-stat-label">Tires</span><span class="fleet-stat-value">${esc(veh.tireBrand)} ${esc(veh.tireSize||"")}</span></div>` : ""}
+        <div class="fleet-vrow-side">
+          ${fix ? `<span class="fleet-vrow-fix">🔧 ${fix}</span>` : ""}
+          <span class="fleet-vrow-chev">›</span>
         </div>
-      </div>`).join("");
+      </div>`;
+    }).join("");
   }
 
   async function openFleetDetail(vehicleId) {
@@ -16055,24 +16263,28 @@
       // while the phone decodes it down to a 200px box.
       img.decoding = "async";
       img.style.cssText = "width:100%; max-height:200px; object-fit:cover; border-radius:10px; margin-bottom:14px;";
-      $("fleetVehicleInfo").before(img);
+      $("fleetMileageInput").closest(".fleet-miles-bar").before(img);
     }
 
-    // Vehicle info grid
+    // Specs as a label/value list. Blank values are left out rather than
+    // showing a column of dashes.
+    const spec = (label, value) => value ? `<div class="fleet-spec"><span>${esc(label)}</span><span>${esc(String(value))}</span></div>` : "";
     $("fleetVehicleInfo").innerHTML = [
-      infoBox("Year / Make / Model", `${veh.year||""} ${veh.make||""} ${veh.model||""}`),
-      infoBox("Color", veh.color||"—"),
-      infoBox("Type", veh.type||"—"),
-      infoBox("VIN", veh.vin||"—"),
-      infoBox("Current Mileage", veh.currentMileage ? veh.currentMileage.toLocaleString()+" mi" : "—"),
-      infoBox("Oil Type", veh.oilType||"—"),
-      infoBox("Oil Capacity", veh.oilCapacity ? veh.oilCapacity+" qts" : "—"),
-      infoBox("Oil Drain Wrench", veh.wrenchSize||"—"),
-      infoBox("Lug Torque", veh.lugTorque ? veh.lugTorque+" ft-lbs" : "—"),
-      infoBox("Tire Brand", veh.tireBrand||"—"),
-      infoBox("Tire Size", veh.tireSize||"—"),
-      infoBox("Tire Install Date", veh.tireInstallDate ? fmtDate(veh.tireInstallDate) : "—"),
-    ].join("");
+      spec("Year / Make / Model", [veh.year, veh.make, veh.model].filter(Boolean).join(" ")),
+      spec("Color", veh.color),
+      spec("Type", veh.type),
+      spec("Plate", veh.plate),
+      spec("VIN", veh.vin),
+      spec("Oil", veh.oilType),
+      spec("Oil capacity", veh.oilCapacity ? veh.oilCapacity + " qts" : ""),
+      spec("Oil drain wrench", veh.wrenchSize),
+      spec("Lug torque", veh.lugTorque ? veh.lugTorque + " ft-lbs" : ""),
+      spec("Tires", [veh.tireBrand, veh.tireSize].filter(Boolean).join(" ")),
+      spec("Tires installed", veh.tireInstallDate ? fmtDate(veh.tireInstallDate) : ""),
+    ].join("") || `<div class="fleet-spec"><span>No specs on file.</span><span></span></div>`;
+
+    $("fleetDetailTodoAdd").classList.remove("open");
+    renderFleetTodos();
 
     // Wire mileage save
     $("fleetMileageSaveBtn").onclick = async () => {
@@ -34248,13 +34460,28 @@
 <div id="fleetModal" class="fleet-modal-backdrop" style="display:none;">
   <div class="fleet-modal">
     <div class="fleet-modal-header">
-      <h2>🚗 Fleet Maintenance</h2>
-      <button onclick="closeFleet()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
+      <h2>🚗 Fleet</h2>
+      <button onclick="closeFleet()" class="btn btn-sm" style="font-size:18px; padding:4px 10px; width:auto;">&times;</button>
     </div>
     <div class="fleet-modal-body">
 
       <!-- Vehicle List View -->
       <div id="fleetListView">
+        <!-- Needs fixing — running checklist (fleet_todos, schema 090) -->
+        <div class="fleet-sec-head">
+          <h3>🔧 Needs fixing<span id="fleetTodoCount" class="fleet-count" style="display:none;"></span></h3>
+          <button id="fleetTodoAddBtn" class="btn btn-primary btn-sm" type="button">+ Add</button>
+        </div>
+        <div class="fleet-todo-card">
+          <div id="fleetTodoAdd" class="fleet-todo-add">
+            <select id="fleetTodoVehicle"></select>
+            <input id="fleetTodoText" type="text" maxlength="500" placeholder="e.g. Fix driver's mirror" enterkeyhint="done" />
+            <button id="fleetTodoSaveBtn" class="btn btn-primary btn-sm" type="button">Add</button>
+          </div>
+          <div id="fleetTodoList"><div class="fleet-todo-empty">Loading…</div></div>
+        </div>
+
+        <div class="fleet-sec-head"><h3>🚚 Trucks</h3></div>
         <div id="fleetVehiclesGrid" class="fleet-vehicles-grid">
           <div class="loading-msg">Loading fleet...</div>
         </div>
@@ -34268,20 +34495,34 @@
         </div>
 
         <!-- Update mileage — TOP of detail view -->
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; padding:10px 14px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; flex-wrap:wrap;">
-          <span style="font-size:13px; font-weight:700; color:var(--text);">📍 Current Mileage:</span>
-          <input type="number" id="fleetMileageInput" class="edit-input" style="width:130px; font-size:13px;" placeholder="Miles" />
-          <button id="fleetMileageSaveBtn" class="btn btn-primary btn-sm" style="font-size:12px;">Save Mileage</button>
-          <span id="fleetMileageMsg" style="font-size:12px; color:var(--green); display:none;">✓ Updated</span>
+        <div class="fleet-miles-bar">
+          <span style="font-size:14px; font-weight:700; color:var(--text);">📍 Mileage</span>
+          <input type="number" inputmode="numeric" id="fleetMileageInput" class="edit-input" placeholder="Miles" />
+          <button id="fleetMileageSaveBtn" class="btn btn-primary btn-sm">Save</button>
+          <span id="fleetMileageMsg" style="font-size:13px; color:var(--green); display:none;">✓ Updated</span>
         </div>
 
-        <!-- Vehicle info cards -->
-        <div class="info-grid" id="fleetVehicleInfo" style="margin-bottom:16px;"></div>
+        <!-- This truck's open "Needs fixing" items -->
+        <div class="fleet-sec-head">
+          <h3>🔧 Needs fixing<span id="fleetDetailTodoCount" class="fleet-count" style="display:none;"></span></h3>
+          <button id="fleetDetailTodoAddBtn" class="btn btn-primary btn-sm" type="button">+ Add</button>
+        </div>
+        <div class="fleet-todo-card">
+          <div id="fleetDetailTodoAdd" class="fleet-todo-add">
+            <input id="fleetDetailTodoText" type="text" maxlength="500" placeholder="e.g. Fix driver's mirror" enterkeyhint="done" />
+            <button id="fleetDetailTodoSaveBtn" class="btn btn-primary btn-sm" type="button">Add</button>
+          </div>
+          <div id="fleetDetailTodoList"></div>
+        </div>
+
+        <!-- Vehicle specs -->
+        <div class="fleet-sec-head"><h3>📋 Specs</h3></div>
+        <div class="fleet-spec-list" id="fleetVehicleInfo"></div>
 
         <!-- Service History -->
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-          <div class="section-header" style="margin:0;">🔧 Service History</div>
-          <button id="btnAddService" class="btn btn-primary btn-sm" style="font-size:12px;">+ Log Service</button>
+        <div class="fleet-sec-head">
+          <h3>🛠 Service history</h3>
+          <button id="btnAddService" class="btn btn-primary btn-sm">+ Log Service</button>
         </div>
 
         <!-- Add Service Form -->

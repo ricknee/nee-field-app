@@ -1208,6 +1208,8 @@
     .fleet-todo-tick:disabled { cursor:default; }
     .fleet-todo.done .fleet-todo-tick { background:var(--green); border-color:var(--green); }
     .fleet-todo-main { flex:1; min-width:0; }
+    .fleet-todo-thumb { flex:0 0 52px; width:52px; height:38px; border-radius:6px; object-fit:cover; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:20px; margin-top:-2px; }
+    .fleet-todo.done .fleet-todo-thumb { opacity:.5; }
     .fleet-todo-task { font-size:15px; color:var(--text); line-height:1.3; word-wrap:break-word; }
     .fleet-todo.done .fleet-todo-task { text-decoration:line-through; color:var(--muted); }
     .fleet-todo-meta { font-size:12px; color:var(--muted); margin-top:2px; }
@@ -16072,6 +16074,8 @@
     fleetShowList();
     loadFleetTodos();
     await loadFleetVehicles();
+    // The list's truck pictures come from the vehicle list — redraw once it's in.
+    if ((fleetState.todos || []).length) renderFleetTodos();
   }
 
   // ── "Needs fixing" checklist (fleet_todos, schema 090) ──
@@ -16094,7 +16098,8 @@
   }
 
   // Shared by the Lifts screen (lift_todos) — rows carry itemName for both.
-  function fleetTodoRow(t, showTruck, anyLabel = "Shop / any") {
+  // thumb: undefined = no picture column; "" = placeholder icon; else an image URL.
+  function fleetTodoRow(t, showTruck, anyLabel = "Shop / any", thumb) {
     const canEdit = !isViewer();
     const done = !!t.doneAt;
     const when = fmtDate(done ? t.doneAt : t.createdAt);   // YYYY-MM-DD, Eastern, from Postgres
@@ -16105,6 +16110,9 @@
       <div class="fleet-todo${done ? " done" : ""}" data-todo-id="${esc(t.id)}">
         <button type="button" class="fleet-todo-tick" data-act="tick" ${canEdit ? "" : "disabled"}
                 title="${done ? "Not done yet" : "Mark fixed"}">${done ? "✓" : ""}</button>
+        ${thumb === undefined ? ""
+          : thumb ? `<img class="fleet-todo-thumb" src="${esc(thumb)}" alt="" loading="lazy" decoding="async" />`
+                  : `<div class="fleet-todo-thumb">🛻</div>`}
         <div class="fleet-todo-main">
           <div class="fleet-todo-task">${esc(t.task)}</div>
           <div class="fleet-todo-meta">${truck}${who}</div>
@@ -16120,11 +16128,18 @@
 
     const cnt = $("fleetTodoCount");
     cnt.textContent = open.length; cnt.style.display = open.length ? "" : "none";
-    let html = open.length ? open.map(t => fleetTodoRow(t, true)).join("")
+    // A small picture of the truck on each item; no photo / "Shop / any" → 🛻 placeholder.
+    const thumbOf = t => {
+      if (!t.vehicleId) return "";
+      const v = (fleetState.vehicles || []).find(x => x.id === t.vehicleId);
+      return v ? (v.photoThumbUrl || v.photoUrl || "") : "";
+    };
+    const row = t => fleetTodoRow(t, true, "Shop / any", thumbOf(t));
+    let html = open.length ? open.map(row).join("")
                            : `<div class="fleet-todo-empty">✅ Nothing needs fixing.</div>`;
     if (done.length) {
       html += `<button type="button" class="fleet-done-fold" data-act="fold">${fleetState.showDone ? "▾" : "▸"} Done (${done.length})</button>`;
-      if (fleetState.showDone) html += done.map(t => fleetTodoRow(t, true)).join("");
+      if (fleetState.showDone) html += done.map(row).join("");
     }
     $("fleetTodoList").innerHTML = html;
     $("fleetTodoAddBtn").style.display = isViewer() ? "none" : "";

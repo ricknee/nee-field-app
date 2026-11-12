@@ -1278,6 +1278,14 @@
     .sl-status-pill.on-job      { background:#fef9c3; border-color:#fde047; color:#854d0e; }
     .sl-status-pill.needs-service { background:#fee2e2; border-color:#f87171; color:#991b1b; }
 
+    /* Scissor-lift icon (owner 2026-11-12: "more like a scissor lift" — there is
+       no emoji for one; 🏗 is a crane). Guard rail, deck, two-stage scissor,
+       base, wheels. Sized in em so it sits in a line of text like an emoji. */
+    .ico-lift {
+      display:inline-block; width:1.15em; height:1.15em; vertical-align:-0.2em;
+      background:no-repeat center/contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M4 2.5h16M4 2.5v4.5M20 2.5v4.5M12 2.5v4.5' stroke='%23f59e0b' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3Crect x='3' y='6.8' width='18' height='2.4' rx='.5' fill='%23ea580c'/%3E%3Cpath d='M5.5 9.4 18.5 14M18.5 9.4 5.5 14M5.5 14 18.5 18.6M18.5 14 5.5 18.6' stroke='%23475569' stroke-width='1.7' fill='none' stroke-linecap='round'/%3E%3Crect x='3' y='18.4' width='18' height='2.6' rx='.6' fill='%23334155'/%3E%3Ccircle cx='6.5' cy='22.3' r='1.4' fill='%231f2937'/%3E%3Ccircle cx='17.5' cy='22.3' r='1.4' fill='%231f2937'/%3E%3C/svg%3E");
+    }
+
     /* Lifts, modern (2026-11-12) — same look as Fleet: compact rows that open
        in place, a "Needs fixing" list (lift_todos, schema 091), status chips.
        Scoped to #slModal: .sl-modal* is shared by ~10 other modals. */
@@ -3720,8 +3728,8 @@
           <!-- These retain their original IDs and role classes so existing
                authorization visibility and event wiring continue to apply. -->
           <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
-          <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button">🏗 Lifts</button>
-          <button id="btnFleet" class="btn btn-sm" type="button">🚗 Fleet</button>
+          <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button"><span class="ico-lift" aria-hidden="true"></span> Lifts</button>
+          <button id="btnFleet" class="btn btn-sm" type="button">🛻 Fleet</button>
           <button id="btnPowerSpecs" class="btn btn-sm" type="button">⚡ Power Co. Specs</button>
           <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
           <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
@@ -4118,7 +4126,7 @@
         <!-- Scissor Lifts at this job (visible to all) -->
           <div id="jobLiftsSection" style="margin-top:16px; display:none;">
             <div class="section-header" style="display:flex; justify-content:space-between; align-items:center;">
-              <span>🏗 Scissor Lifts at this Job</span>
+              <span><span class="ico-lift" aria-hidden="true"></span> Scissor Lifts at this Job</span>
               <button id="btnAddLiftToJob" class="btn btn-sm" style="font-size:12px;" type="button">+ Add Lift</button>
             </div>
             <div id="jobLiftsList" style="display:flex; flex-direction:column; gap:8px; margin-top:10px;"></div>
@@ -4730,7 +4738,7 @@
               <button id="btnExpAddMenu" class="btn btn-primary btn-sm" type="button" aria-expanded="false" style="font-size:13px; padding:8px 16px;">➕ Add Expense ▾</button>
               <div id="expAddMenu" class="exp-add-menu" hidden>
                 <button id="btnAddGeneralExpense" type="button">🧾 Expense<small>receipt, materials, other</small></button>
-                <button id="btnAddLiftExpense" type="button">🏗 Lift rental<small>scissor lifts on this job</small></button>
+                <button id="btnAddLiftExpense" type="button"><span class="ico-lift" aria-hidden="true"></span> Lift rental<small>scissor lifts on this job</small></button>
                 <button id="btnAddBucketExpense" type="button">🚛 Bucket truck<small>truck time on this job</small></button>
               </div>
             </div>
@@ -4809,7 +4817,7 @@
 
           <!-- Scissor Lift Expense Form -->
           <div id="liftExpensePanel" class="sl-expense-panel" style="display:none; margin-bottom:14px;">
-            <h4>🏗 Scissor Lift Expenses</h4>
+            <h4><span class="ico-lift" aria-hidden="true"></span> Scissor Lift Expenses</h4>
             <div style="font-size:11px; color:var(--muted); margin-bottom:10px;">Check each charge to include. Edit amounts as needed.</div>
             <div id="liftExpenseRows"></div>
             <hr class="sl-expense-divider" />
@@ -16266,7 +16274,7 @@
       return `
       <div class="fleet-vrow" onclick="openFleetDetail('${esc(veh.id)}')">
         ${veh.photoUrl ? `<img class="fleet-vrow-img" src="${esc(veh.photoThumbUrl || veh.photoUrl)}" alt="${esc(veh.name)}" loading="lazy" decoding="async" />`
-                       : `<div class="fleet-vrow-img">🚚</div>`}
+                       : `<div class="fleet-vrow-img">🛻</div>`}
         <div class="fleet-vrow-main">
           <div class="fleet-vrow-name">${esc(veh.name)}</div>
           ${sub ? `<div class="fleet-vrow-sub">${esc(sub)}</div>` : ""}
@@ -16639,7 +16647,7 @@
                     style="width:104px; padding:6px; background:var(--panel); border:2px solid var(--line-2); border-radius:10px; cursor:pointer; text-align:center; color:inherit; font-family:inherit;">
               ${l.photoUrl
                 ? `<img src="${esc(l.photoThumbUrl || l.photoUrl)}" alt="${esc(l.name)}" loading="lazy" decoding="async" style="width:100%; height:72px; object-fit:cover; border-radius:6px; display:block;" />`
-                : `<div style="width:100%; height:72px; border-radius:6px; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:26px;">🏗</div>`}
+                : `<div style="width:100%; height:72px; border-radius:6px; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:40px;"><span class="ico-lift" aria-hidden="true"></span></div>`}
               <div style="font-size:12px; font-weight:700; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(l.name)}</div>
             </button>`).join("")
           : `<div style="font-size:13px; color:var(--muted);">No lifts available</div>`;
@@ -16665,7 +16673,7 @@
             <div style="display:flex; align-items:center; gap:12px;">
               ${l.photoUrl
                 ? `<a href="${esc(l.photoUrl)}" target="_blank" rel="noopener" style="flex:0 0 auto;"><img src="${esc(l.photoThumbUrl || l.photoUrl)}" alt="${esc(l.name)}" loading="lazy" decoding="async" style="width:64px; height:48px; object-fit:cover; border-radius:8px; display:block;" /></a>`
-                : `<div style="flex:0 0 auto; width:64px; height:48px; border-radius:8px; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:22px;">🏗</div>`}
+                : `<div style="flex:0 0 auto; width:64px; height:48px; border-radius:8px; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:34px;"><span class="ico-lift" aria-hidden="true"></span></div>`}
               <div style="flex:1; min-width:0;">
                 <div style="font-weight:700; color:var(--accent); font-size:15px;">${esc(l.name)}${l.assignedTo ? `<span style="font-weight:500; color:var(--muted); font-size:13px;"> · ${esc(l.assignedTo)}</span>` : ""}</div>
                 <div style="font-size:12px; color:var(--muted); margin-top:2px;">
@@ -17909,7 +17917,7 @@
           <div class="sl-card${liftUi.open.has(lift.id) ? " open" : ""}" data-lift-id="${esc(lift.id)}">
             <div class="sl-row">
               ${thumbUrl ? `<img class="sl-row-img" src="${esc(thumbUrl)}" alt="" loading="lazy" decoding="async" />`
-                         : `<div class="sl-row-img">🏗</div>`}
+                         : `<div class="sl-row-img" style="font-size:34px;"><span class="ico-lift" aria-hidden="true"></span></div>`}
               <div class="sl-row-main">
                 <div class="sl-row-name">${esc(lift.name)}</div>
                 ${where ? `<div class="sl-row-sub">${esc(where)}</div>` : ""}
@@ -34675,7 +34683,7 @@
 <div id="fleetModal" class="fleet-modal-backdrop" style="display:none;">
   <div class="fleet-modal">
     <div class="fleet-modal-header">
-      <h2>🚗 Fleet</h2>
+      <h2>🛻 Fleet</h2>
       <button onclick="closeFleet()" class="btn btn-sm" style="font-size:18px; padding:4px 10px; width:auto;">&times;</button>
     </div>
     <div class="fleet-modal-body">
@@ -34696,7 +34704,7 @@
           <div id="fleetTodoList"><div class="fleet-todo-empty">Loading…</div></div>
         </div>
 
-        <div class="fleet-sec-head"><h3>🚚 Trucks</h3></div>
+        <div class="fleet-sec-head"><h3>🛻 Trucks</h3></div>
         <div id="fleetVehiclesGrid" class="fleet-vehicles-grid">
           <div class="loading-msg">Loading fleet...</div>
         </div>
@@ -35482,7 +35490,7 @@
 <div id="slModal" class="sl-modal-backdrop" style="display:none;">
   <div class="sl-modal">
     <div class="sl-modal-header">
-      <h2>🏗 Scissor Lifts</h2>
+      <h2><span class="ico-lift" aria-hidden="true"></span> Scissor Lifts</h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <!-- Admin/office only, wired in loadScissorLifts. Adding equipment to the
              books is not a field action; marking a lift on/off a job still is. -->
@@ -35507,7 +35515,7 @@
         <div id="slTodoList"><div class="fleet-todo-empty">Loading…</div></div>
       </div>
 
-      <div class="fleet-sec-head"><h3>🏗 Lifts</h3></div>
+      <div class="fleet-sec-head"><h3><span class="ico-lift" aria-hidden="true"></span> Lifts</h3></div>
       <div id="slGrid" class="sl-grid">
         <div class="loading-msg">Loading lifts...</div>
       </div>

@@ -16420,6 +16420,8 @@
       // a viewer clicking these would only earn a 403.
       const canEdit = !isViewer();
       const SERVICE_TYPES = ["Oil Change","Air Filter","Fuel Filter","Tire Rotation","Tires Replaced","Inspection","Brakes","Battery","Other"];
+      // Shown as "🛞 New Tires"; the stored value stays "Tires Replaced" (history + the 7,000 mi check match on it).
+      const svcLabel = t => t === "Tires Replaced" ? "🛞 New Tires" : t;
 
       list.innerHTML = records.map(r => `
         <div class="fleet-service-row" id="svcrow-${esc(r.id)}">
@@ -16441,7 +16443,7 @@
                         : t==="Fuel Filter" ? "fuel-filter"
                         : t==="Tire Rotation" ? "tire-rotation"
                         : "";
-              return `<span class="fleet-service-chip ${cls}">${esc(t)}</span>`;
+              return `<span class="fleet-service-chip ${cls}">${esc(svcLabel(t))}</span>`;
             }).join("")}
           </div>
           ${r.oilBrand||r.oilType||r.oilQty ? `<div style="font-size:12px; color:var(--muted); margin-top:4px;">🛢 ${[r.oilType, r.oilQty ? r.oilQty+"qts" : "", r.oilBrand ? "Filter: "+r.oilBrand : ""].filter(Boolean).join(" · ")}</div>` : ""}
@@ -16458,7 +16460,7 @@
                 <label class="edit-label">Service Types</label>
                 <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
                   ${SERVICE_TYPES.map(t => `<label style="display:flex; align-items:center; gap:3px; font-size:12px; cursor:pointer;">
-                    <input type="checkbox" value="${t}" class="ed-type-${esc(r.id)}" ${(r.serviceTypes||[]).includes(t)?"checked":""} /> ${t}
+                    <input type="checkbox" value="${t}" class="ed-type-${esc(r.id)}" ${(r.serviceTypes||[]).includes(t)?"checked":""} /> ${svcLabel(t)}
                   </label>`).join("")}
                 </div>
               </div>
@@ -34777,7 +34779,7 @@
                 <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Air Filter" class="svc-type-chk" /> Air Filter</label>
                 <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Fuel Filter" class="svc-type-chk" /> Fuel Filter</label>
                 <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Tire Rotation" class="svc-type-chk" /> Tire Rotation</label>
-                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Tires Replaced" class="svc-type-chk" /> Tires Replaced</label>
+                <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Tires Replaced" class="svc-type-chk" /> 🛞 New Tires</label>
                 <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Inspection" class="svc-type-chk" /> Inspection</label>
                 <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Brakes" class="svc-type-chk" /> Brakes</label>
                 <label style="display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer;"><input type="checkbox" value="Battery" class="svc-type-chk" /> Battery</label>

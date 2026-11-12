@@ -9131,6 +9131,7 @@ async function handleAddFleetService(body, authUser) {
   // A rotation / new tires closes the reminder FIRST, then the check runs —
   // a service logged at a higher mileage can also make a truck due.
   await closeTireRotationTodo(target.id, serviceTypes, authUser ? await actorName(authUser) : null);
+  await syncTruckTiresFromService(neonSvcId);
   const tiresDue = await safeTireRotationCheck(target.id);
   if (!target.airtable_id) return resp(200, { ok: true, id: neonSvcId, tiresDue });
 
@@ -9197,6 +9198,7 @@ async function handleUpdateFleetService(body, authUser) {
     `UPDATE fleet_maintenance SET ${sets.join(", ")} WHERE id = $1 RETURNING vehicle_id`, vals);
   const svcVehicle = svcRows?.[0]?.vehicle_id || null;
   await closeTireRotationTodo(svcVehicle, serviceTypes, authUser ? await actorName(authUser) : null);
+  await syncTruckTiresFromService(target.id);
   if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id });
 
   const fields = {};
@@ -9290,6 +9292,27 @@ async function checkTireRotationDue(vehicleUuid) {
 async function safeTireRotationCheck(vehicleUuid) {
   try { return await checkTireRotationDue(vehicleUuid); }
   catch (e) { console.error(`tire rotation check failed for ${vehicleUuid}: ${e?.message || e}`); return false; }
+}
+
+// A "Tires Replaced" (shown as 🛞 New Tires) service also becomes the truck's
+// tire specs — brand, size, installed date — so the Specs card is never staler
+// than the service log. Keyed on the SERVICE row, so add and edit share it.
+// Never moves the installed date backward (editing an old set of tires must not
+// overwrite the current set).
+async function syncTruckTiresFromService(serviceUuid) {
+  if (!serviceUuid) return;
+  try {
+    await neonWrite("fleet.tiresFromService",
+      `UPDATE fleet_vehicles v
+          SET tire_brand        = COALESCE(NULLIF(m.tire_brand, ''), v.tire_brand),
+              tire_size         = COALESCE(NULLIF(m.tire_size, ''),  v.tire_size),
+              tire_install_date = COALESCE(m.service_date, v.tire_install_date)
+         FROM fleet_maintenance m
+        WHERE m.id = $1 AND v.id = m.vehicle_id
+          AND m.service_types::text[] && ARRAY['Tires Replaced']::text[]
+          AND (v.tire_install_date IS NULL OR m.service_date IS NULL OR m.service_date >= v.tire_install_date)`,
+      [serviceUuid]);
+  } catch (e) { console.error(`tires-from-service failed for ${serviceUuid}: ${e?.message || e}`); }
 }
 
 // A service logged as a rotation / new tires closes the open reminder.

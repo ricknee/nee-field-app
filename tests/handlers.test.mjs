@@ -2188,6 +2188,11 @@ await test("fleet: tire-rotation reminder runs on every mileage save and is fail
      "one open reminder per truck");
   ok(/closeTireRotationTodo\(/.test(body("handleAddFleetService")) && /closeTireRotationTodo\(/.test(body("handleUpdateFleetService")),
      "a logged rotation closes the reminder");
+  ok(/syncTruckTiresFromService\(neonSvcId\)/.test(body("handleAddFleetService")) &&
+     /syncTruckTiresFromService\(target\.id\)/.test(body("handleUpdateFleetService")),
+     "a New Tires service updates the truck's tire specs (add + edit)");
+  ok(/m\.service_date >= v\.tire_install_date/.test(body("syncTruckTiresFromService")),
+     "editing an OLD tire service never overwrites the current set");
   ok(/WHERE id = \(SELECT service_id FROM fleet_todos WHERE id::text = \$1 AND auto_key = 'tire_rotation'\)/.test(body("handleSetEquipTodoDone")),
      "un-tick deletes only the tick's own service record");
 });

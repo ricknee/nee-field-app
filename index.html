@@ -1704,6 +1704,15 @@
       text-transform: uppercase;
       padding: 10px 14px 4px;
     }
+    /* Contractor sub-heading inside a status group (owner 2026-11-12). */
+    .job-gc-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent, #1f6feb);
+      padding: 12px 14px 4px;
+      border-bottom: 1px solid var(--border, rgba(0,0,0,.08));
+      margin: 0 6px 4px;
+    }
 
     /* ── DETAIL PANEL ── */
     .detail-panel {
@@ -5721,6 +5730,11 @@
     return [...jobs].sort((a,b) => {
       const oa = order(a.status), ob = order(b.status);
       if (oa !== ob) return oa - ob;
+      // Then by contractor A→Z (owner 2026-11-12), jobs with none last.
+      const ga = (a.contractor || "").trim(), gb = (b.contractor || "").trim();
+      if (!ga !== !gb) return ga ? -1 : 1;
+      const gc = ga.localeCompare(gb, undefined, { sensitivity: "base" });
+      if (gc) return gc;
       return (a.name||"").localeCompare(b.name||"");
     });
   }
@@ -5736,6 +5750,7 @@
 
     let html = "";
     let lastGroup = null;
+    let lastGc = null;
     let rowInGroup = 0;
 
     sorted.forEach(job => {
@@ -5753,6 +5768,15 @@
       if (group !== lastGroup) {
         html += `<div class="section-label">${esc(group)}</div>`;
         lastGroup = group;
+        lastGc = null;
+        rowInGroup = 0;
+      }
+      // Contractor sub-heading (owner 2026-11-12): status → contractor A→Z →
+      // job A→Z. sortJobs orders them; this only prints a heading on change.
+      const gcName = (job.contractor || "").trim() || "No contractor";
+      if (gcName.toLowerCase() !== (lastGc || "").toLowerCase()) {
+        html += `<div class="job-gc-label">${esc(gcName)}</div>`;
+        lastGc = gcName;
         rowInGroup = 0;
       }
       // Every other row lightly shaded (owner 2026-11-09), counted per group
@@ -5773,7 +5797,6 @@
           <div class="job-line">
             <span class="job-item-name">${esc(job.name||"Untitled")}</span>
             <span class="job-item-po">${esc(poCode)}</span>
-            ${(job.contractor || "").trim() ? `<span class="job-line-gc">(${esc(job.contractor.trim())})</span>` : ""}
             <span class="job-line-badges">
               ${group === "Other" ? `<span class="job-line-status"><span class="status-dot" style="background:${statusDotColor(job.status)}"></span>${esc(job.status||"—")}</span>` : ""}
               ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}

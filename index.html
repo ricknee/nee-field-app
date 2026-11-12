@@ -17425,7 +17425,10 @@
   function renderLiftLastJob(lift) {
     const p = lift.lastJob;
     if (!p || !p.job) return "";
-    return `<div class="sl-last">Last job: <b>${esc(p.job)}</b>`
+    // On a lift that's out, its current job is the line that matters; "last
+    // job" there was the previous one. In the shop it's "came back from".
+    if (lift.status === "On Job") return "";
+    return `<div class="sl-last">Came back from <b>${esc(p.job)}</b>`
       + (p.assignedTo ? ` · ${esc(p.assignedTo)}` : "")
       + (p.leftOn ? ` · left ${esc(fmtDate(p.leftOn))}` : "")
       + `</div>`;
@@ -17872,7 +17875,7 @@
       const onJob   = lifts.filter(l => l.status === "On Job").length;
       const service = lifts.filter(l => l.status === "Needs Service").length;
       $("slSummaryBar").innerHTML = `
-        <span class="sl-chip available">${avail} Available</span>
+        <span class="sl-chip available">${avail} At shop</span>
         <span class="sl-chip on-job">${onJob} On job</span>
         ${service ? `<span class="sl-chip needs-service">${service} Needs service</span>` : ""}`;
       liftUi.lifts = lifts;
@@ -17893,9 +17896,15 @@
         // below looks for — only the wrapper changed.
         const thumb = (lift.photos || [])[0];
         const thumbUrl = thumb ? (thumb.thumbUrl || thumb.url) : lift.photoUrl;
-        const where = lift.currentJob
-          ? [lift.currentJob, lift.assignedTo].filter(Boolean).join(" · ")
-          : (lift.lastJob?.job ? `Last: ${lift.lastJob.job}` : (lift.assignedTo || ""));
+        // WHERE IT IS, said plainly (owner 2026-11-12: "only 2 at Trail Cabinet,
+        // 4 are back at the shop"). The row used to say "Last: Trail Cabinet"
+        // on the four lifts sitting in the shop, which read as six lifts there.
+        const back = lift.lastJob?.job
+          ? ` · back from ${lift.lastJob.job}${lift.lastJob.leftOn ? " " + fmtDate(lift.lastJob.leftOn) : ""}` : "";
+        const where = lift.status === "On Job"
+          ? `📍 ${[lift.currentJob || "Job not set", lift.assignedTo].filter(Boolean).join(" · ")}`
+          : lift.status === "Available" ? `🏠 At the shop${back}`
+          : `🔧 Out of service${lift.notes ? " · " + lift.notes : ""}`;
         return `
           <div class="sl-card${liftUi.open.has(lift.id) ? " open" : ""}" data-lift-id="${esc(lift.id)}">
             <div class="sl-row">
@@ -17906,7 +17915,7 @@
                 ${where ? `<div class="sl-row-sub">${esc(where)}</div>` : ""}
               </div>
               <div class="sl-row-side">
-                <span class="sl-status-pill ${statusClass}">${esc(lift.status || "—")}</span>
+                <span class="sl-status-pill ${statusClass}">${esc(lift.status === "Available" ? "At shop" : (lift.status || "—"))}</span>
                 <span class="fleet-vrow-fix sl-row-fix" style="display:none;"></span>
               </div>
               <span class="sl-row-chev">›</span>

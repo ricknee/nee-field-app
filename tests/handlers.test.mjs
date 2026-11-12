@@ -2168,6 +2168,30 @@ await test("lifts 'Needs fixing' list: crews add and tick, viewer read-only (sch
   ok(/const EQUIP_TODO = \{/.test(src) && !/EQUIP_TODO\[body/.test(src), "kind is a constant, not from the body");
 });
 
+// Tire rotation every 7,000 mi (schema 092, owner 2026-11-12). Static: the DB is
+// offline here, so these pin the wiring — every mileage write path runs the
+// check, the check can never fail the save, and un-ticking only removes the
+// service record the tick itself created.
+await test("fleet: tire-rotation reminder runs on every mileage save and is fail-soft", async () => {
+  const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const body = (name) => {
+    const i = src.indexOf(`async function ${name}(`);
+    ok(i >= 0, `${name} exists`);
+    return src.slice(i, src.indexOf("\nasync function ", i + 10));
+  };
+  ok(/const TIRE_ROTATION_MILES = 7000;/.test(src), "interval is 7,000 mi");
+  for (const h of ["handleUpdateFleetVehicle", "handleLogMileage", "handleAddFleetService"]) {
+    ok(/safeTireRotationCheck\(target\.id\)/.test(body(h)), `${h} runs the check`);
+  }
+  ok(/try \{ return await checkTireRotationDue/.test(body("safeTireRotationCheck")), "check is wrapped, never fails the save");
+  ok(/ON CONFLICT \(vehicle_id, auto_key\) WHERE done_at IS NULL AND auto_key IS NOT NULL DO NOTHING/.test(body("checkTireRotationDue")),
+     "one open reminder per truck");
+  ok(/closeTireRotationTodo\(/.test(body("handleAddFleetService")) && /closeTireRotationTodo\(/.test(body("handleUpdateFleetService")),
+     "a logged rotation closes the reminder");
+  ok(/WHERE id = \(SELECT service_id FROM fleet_todos WHERE id::text = \$1 AND auto_key = 'tire_rotation'\)/.test(body("handleSetEquipTodoDone")),
+     "un-tick deletes only the tick's own service record");
+});
+
 // ── panel schedules (docs/PLAN-panel-schedules.md) ──
 // DATABASE_URL is deliberately unset in this harness, so every panel handler
 // short-circuits to 503 before touching Neon. That is exactly what makes these

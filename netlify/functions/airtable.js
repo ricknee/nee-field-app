@@ -9018,8 +9018,9 @@ async function handleUpdateFleetVehicle(body) {
   if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
   await neonWrite("fleet.update",
     `UPDATE fleet_vehicles SET ${sets.join(", ")} WHERE id = $1`, vals);
+  const tiresDue = currentMileage !== undefined ? await safeTireRotationCheck(target.id) : false;
 
-  if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id });
+  if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id, tiresDue });
   const fields = {};
   if (currentMileage !== undefined) { fields[FV.mileage]=Number(currentMileage); fields[FV.mileageDate]=new Date().toISOString().slice(0,10); }
   if (oilType        !== undefined) fields[FV.oilType]=oilType;
@@ -9033,7 +9034,7 @@ async function handleUpdateFleetVehicle(body) {
   await mirrorToAirtable("updateFleetVehicle", () =>
     atFetch(`${encodeURIComponent(FLEET_TABLES.vehicles)}/${target.airtable_id}`,
       { method: "PATCH", body: JSON.stringify({ fields }) }));
-  return resp(200, { ok: true, updatedId: target.id });
+  return resp(200, { ok: true, updatedId: target.id, tiresDue });
 }
 
 // ── LOG MILEAGE: creates entry in Fleet Mileage Log AND updates Fleet Vehicles ──
@@ -9073,8 +9074,9 @@ async function handleLogMileage(body) {
      SELECT id FROM ins`,
     [target.id, effectiveDate, mileageNum, recordedBy || null, notes || null]);
   const neonLogId = rows?.[0]?.id;
+  const tiresDue = await safeTireRotationCheck(target.id);
 
-  if (!target.airtable_id) return resp(200, { ok: true, logId: neonLogId, vehicleId: target.id });
+  if (!target.airtable_id) return resp(200, { ok: true, logId: neonLogId, vehicleId: target.id, tiresDue });
 
   // 1. Create log entry in Fleet Mileage Log table
   const logFields = {};
@@ -9106,10 +9108,10 @@ async function handleLogMileage(body) {
       neonWrite("fleet.stampLogId",
         `UPDATE fleet_mileage_log SET airtable_id = $2 WHERE id = $1`, [neonLogId, logData.id]));
   }
-  return resp(200, { ok: true, logId: neonLogId, vehicleId: target.id });
+  return resp(200, { ok: true, logId: neonLogId, vehicleId: target.id, tiresDue });
 }
 
-async function handleAddFleetService(body) {
+async function handleAddFleetService(body, authUser) {
   const { vehicleId, vehicleName, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
   if (!vehicleId) return resp(400, { ok: false, error: `Missing vehicleId. Keys: ${Object.keys(body||{}).join(",")}` });
 
@@ -9126,7 +9128,11 @@ async function handleAddFleetService(body) {
      tireBrand || null, tireSize || null, cost ? Number(cost) : null,
      performedBy || null, shop || null, notes || null]);
   const neonSvcId = svcRows?.[0]?.id;
-  if (!target.airtable_id) return resp(200, { ok: true, id: neonSvcId });
+  // A rotation / new tires closes the reminder FIRST, then the check runs —
+  // a service logged at a higher mileage can also make a truck due.
+  await closeTireRotationTodo(target.id, serviceTypes, authUser ? await actorName(authUser) : null);
+  const tiresDue = await safeTireRotationCheck(target.id);
+  if (!target.airtable_id) return resp(200, { ok: true, id: neonSvcId, tiresDue });
 
   const fields = {};
   fields["fld12gpaArqYw7BWU"] = vehicleName ? [vehicleName] : [String(vehicleId)];
@@ -9150,7 +9156,7 @@ async function handleAddFleetService(body) {
       neonWrite("fleet.stampServiceId",
         `UPDATE fleet_maintenance SET airtable_id = $2 WHERE id = $1`, [neonSvcId, data.id]));
   }
-  return resp(200, { ok: true, id: neonSvcId, airtableId: data?.id || null });
+  return resp(200, { ok: true, id: neonSvcId, airtableId: data?.id || null, tiresDue });
 }
 
 // Resolves a service record by either id form, same as the vehicle resolver.
@@ -9161,7 +9167,7 @@ async function resolveFleetService(serviceRecordId) {
   return rows?.[0] || null;
 }
 
-async function handleUpdateFleetService(body) {
+async function handleUpdateFleetService(body, authUser) {
   const { serviceRecordId, date, mileage, serviceTypes, oilBrand, oilType, oilQty, cost, tireBrand, tireSize, performedBy, shop, notes } = body || {};
   if (!serviceRecordId) return resp(400, { ok: false, error: "Missing serviceRecordId." });
 
@@ -9187,8 +9193,10 @@ async function handleUpdateFleetService(body) {
   if (shop        !== undefined) put("shop", shop || null);
   if (notes       !== undefined) put("notes", notes || null);
   if (!sets.length) return resp(400, { ok: false, error: "Nothing to update." });
-  await neonWrite("fleet.updateService",
-    `UPDATE fleet_maintenance SET ${sets.join(", ")} WHERE id = $1`, vals);
+  const svcRows = await neonWrite("fleet.updateService",
+    `UPDATE fleet_maintenance SET ${sets.join(", ")} WHERE id = $1 RETURNING vehicle_id`, vals);
+  const svcVehicle = svcRows?.[0]?.vehicle_id || null;
+  await closeTireRotationTodo(svcVehicle, serviceTypes, authUser ? await actorName(authUser) : null);
   if (!target.airtable_id) return resp(200, { ok: true, updatedId: target.id });
 
   const fields = {};
@@ -9240,6 +9248,62 @@ const EQUIP_TODO = {
            resolve: (id) => resolveLift(id),    notFound: "Lift not found.",    label: "lift" },
 };
 
+// ── Automatic list items: tire rotation every 7,000 mi (schema 092, owner 2026-11-12) ──
+// "If I update the miles on a vehicle and it's over 7,000 since the last
+// rotation, add it to the list." The baseline is the highest-mileage service
+// marked "Tire Rotation" OR "Tires Replaced" (new tires restart the count); a
+// truck with neither on record counts from 0. The truck's reading is the
+// GREATER of current_mileage and its newest service mileage, because several
+// trucks have service entries logged past their stored odometer.
+// At most one open row per truck (partial unique index → ON CONFLICT DO NOTHING),
+// so saving mileage again never duplicates it. Deleting the row is allowed; it
+// comes back on the next mileage save if the truck is still due, as asked.
+const TIRE_ROTATION_MILES = 7000;
+const TIRE_SERVICE_TYPES = ["Tire Rotation", "Tires Replaced"];
+
+async function checkTireRotationDue(vehicleUuid) {
+  if (!vehicleUuid) return false;
+  const rows = await neonWrite("fleet.tireRotationCheck",
+    `WITH v AS (
+       SELECT fv.id, GREATEST(COALESCE(fv.current_mileage, 0),
+                COALESCE((SELECT max(m.mileage) FROM fleet_maintenance m WHERE m.vehicle_id = fv.id), 0)) AS miles
+         FROM fleet_vehicles fv WHERE fv.id = $1 AND fv.active IS NOT FALSE
+     ), last AS (
+       SELECT max(m.mileage) AS mi FROM fleet_maintenance m
+        WHERE m.vehicle_id = $1 AND m.service_types::text[] && $3::text[]
+     )
+     INSERT INTO fleet_todos (vehicle_id, task, added_by, auto_key)
+     SELECT v.id,
+            '🛞 Rotate tires — every ' || to_char($2::int, 'FM999,999') || ' mi (' ||
+              CASE WHEN last.mi IS NULL THEN 'none on record'
+                   ELSE 'last at ' || to_char(last.mi, 'FM999,999,999') || ' mi' END || ')',
+            'Auto (mileage)', 'tire_rotation'
+       FROM v, last
+      WHERE v.miles > 0 AND v.miles - COALESCE(last.mi, 0) >= $2
+     ON CONFLICT (vehicle_id, auto_key) WHERE done_at IS NULL AND auto_key IS NOT NULL DO NOTHING
+     RETURNING id::text`,
+    [vehicleUuid, TIRE_ROTATION_MILES, TIRE_SERVICE_TYPES]);
+  return !!rows?.length;
+}
+
+// A side effect of a mileage/service save — it must never fail that save.
+async function safeTireRotationCheck(vehicleUuid) {
+  try { return await checkTireRotationDue(vehicleUuid); }
+  catch (e) { console.error(`tire rotation check failed for ${vehicleUuid}: ${e?.message || e}`); return false; }
+}
+
+// A service logged as a rotation / new tires closes the open reminder.
+async function closeTireRotationTodo(vehicleUuid, serviceTypes, who) {
+  if (!vehicleUuid || !Array.isArray(serviceTypes)) return;
+  if (!serviceTypes.some(t => TIRE_SERVICE_TYPES.includes(t))) return;
+  try {
+    await neonWrite("fleet.tireRotationClose",
+      `UPDATE fleet_todos SET done_at = now(), done_by = $2
+        WHERE vehicle_id = $1 AND auto_key = 'tire_rotation' AND done_at IS NULL`,
+      [vehicleUuid, who || "Service log"]);
+  } catch (e) { console.error(`tire rotation close failed for ${vehicleUuid}: ${e?.message || e}`); }
+}
+
 async function handleEquipTodos(kind) {
   const k = EQUIP_TODO[kind];
   if (!neonEnabled()) return resp(503, { ok: false, error: `The ${k.label} checklist is unavailable (database not configured).` });
@@ -9289,14 +9353,54 @@ async function handleSetEquipTodoDone(kind, body, authUser) {
   const id = String(body?.todoId || "");
   if (!id) return resp(400, { ok: false, error: "Missing todoId." });
   const done = body?.done !== false;
-  const rows = await neonWrite(`${kind}.setTodoDone`,
-    `UPDATE ${k.table}
-        SET done_at = CASE WHEN $2 THEN COALESCE(done_at, now()) END,
-            done_by = CASE WHEN $2 THEN COALESCE(done_by, $3) END
-      WHERE id::text = $1 RETURNING id::text`,
-    [id, done, done ? await actorName(authUser) : null]);
+  const who = await actorName(authUser);
+  let rows;
+  try {
+    rows = await neonWrite(`${kind}.setTodoDone`,
+      `UPDATE ${k.table}
+          SET done_at = CASE WHEN $2 THEN COALESCE(done_at, now()) END,
+              done_by = CASE WHEN $2 THEN COALESCE(done_by, $3) END
+        WHERE id::text = $1 RETURNING id::text`,
+      [id, done, done ? who : null]);
+  } catch (e) {
+    // Un-ticking an old tire reminder while a newer one is open trips the
+    // one-open-per-truck index (schema 092).
+    if (/fleet_todos_auto_open_uq|duplicate key/i.test(String(e?.message || e))) {
+      return resp(409, { ok: false, error: "That truck already has an open tire rotation item." });
+    }
+    throw e;
+  }
   if (!rows?.length) return resp(404, { ok: false, error: "That item is gone — refresh." });
-  return resp(200, { ok: true, id, done });
+
+  // Tire reminder (schema 092): ticking it LOGS the rotation in service history
+  // at the truck's current reading, so the 7,000 mi restarts from here. Un-ticking
+  // removes exactly that record (service_id), never one typed in by hand.
+  let loggedService = false;
+  if (kind === "fleet" && done) {
+    const svc = await neonWrite("fleet.tireRotationTick",
+      `WITH t AS (
+         SELECT id, vehicle_id FROM fleet_todos
+          WHERE id::text = $1 AND auto_key = 'tire_rotation' AND service_id IS NULL AND vehicle_id IS NOT NULL
+       ), v AS (
+         SELECT fv.id, GREATEST(COALESCE(fv.current_mileage, 0),
+                  COALESCE((SELECT max(m.mileage) FROM fleet_maintenance m WHERE m.vehicle_id = fv.id), 0)) AS miles
+           FROM fleet_vehicles fv JOIN t ON t.vehicle_id = fv.id
+       ), ins AS (
+         INSERT INTO fleet_maintenance (vehicle_id, service_date, mileage, service_types, performed_by, notes)
+         SELECT v.id, (now() AT TIME ZONE 'America/New_York')::date, NULLIF(v.miles, 0),
+                ARRAY['Tire Rotation'], $2, 'Ticked off the Needs fixing list'
+           FROM v RETURNING id
+       )
+       UPDATE fleet_todos f SET service_id = ins.id FROM t, ins WHERE f.id = t.id RETURNING f.id::text`,
+      [id, who]);
+    loggedService = !!svc?.length;
+  } else if (kind === "fleet" && !done) {
+    await neonWrite("fleet.tireRotationUntick",
+      `DELETE FROM fleet_maintenance
+        WHERE id = (SELECT service_id FROM fleet_todos WHERE id::text = $1 AND auto_key = 'tire_rotation')`,
+      [id]);
+  }
+  return resp(200, { ok: true, id, done, loggedService });
 }
 
 async function handleDeleteEquipTodo(kind, body) {
@@ -17286,8 +17390,8 @@ export async function handler(event) {
       if (body.action === "updateJobTaxStatus")   return await handleUpdateJobTaxStatus(body);
       if (body.action === "updateJobClockVisibility") return await handleUpdateJobClockVisibility(body);
       if (body.action === "setJobPrevailingWage") return await handleSetJobPrevailingWage(body);
-      if (body.action === "addFleetService")      return await handleAddFleetService(body);
-      if (body.action === "updateFleetService")   return await handleUpdateFleetService(body);
+      if (body.action === "addFleetService")      return await handleAddFleetService(body, authUser);
+      if (body.action === "updateFleetService")   return await handleUpdateFleetService(body, authUser);
       if (body.action === "deleteFleetService")   return await handleDeleteFleetService(body);
       if (body.action === "addFleetTodo")         return await handleAddEquipTodo("fleet", body, authUser);
       if (body.action === "setFleetTodoDone")     return await handleSetEquipTodoDone("fleet", body, authUser);

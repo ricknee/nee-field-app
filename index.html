@@ -16153,8 +16153,13 @@
       if (btn.dataset.act === "tick") {
         btn.disabled = true;
         const done = !t.doneAt;
-        await apiPost("setFleetTodoDone", { todoId: t.id, done });
-        if (done) showAppToast("Marked fixed ✓");
+        const r = await apiPost("setFleetTodoDone", { todoId: t.id, done });
+        if (done) showAppToast(r?.loggedService ? "🛞 Tire rotation logged in service history ✓" : "Marked fixed ✓");
+        // Ticking/un-ticking a tire reminder adds/removes a service record.
+        const veh = fleetState.selectedVehicle;
+        if (veh && veh.id === t.vehicleId && /🛞/.test(t.task) && $("fleetDetailView").classList.contains("active")) {
+          loadFleetServiceHistory(veh.id);
+        }
       } else if (btn.dataset.act === "del") {
         if (!confirm(`Delete this item?\n\n${t.task}`)) return;
         await apiPost("deleteFleetTodo", { todoId: t.id });
@@ -16341,11 +16346,12 @@
       if (isNaN(miles)) return;
       $("fleetMileageSaveBtn").disabled = true;
       try {
-        await apiPost("updateFleetVehicle", { vehicleId: veh.id, currentMileage: miles });
+        const r = await apiPost("updateFleetVehicle", { vehicleId: veh.id, currentMileage: miles });
         veh.currentMileage = miles;
         $("fleetMileageMsg").style.display = "inline";
         setTimeout(() => { $("fleetMileageMsg").style.display = "none"; }, 2000);
-        renderFleetGrid();
+        if (r?.tiresDue) showAppToast("🛞 Tires are due for rotation — added to Needs fixing");
+        await loadFleetTodos();   // also redraws the grid
       } catch(e) { alert("Error: " + e.message); }
       finally { $("fleetMileageSaveBtn").disabled = false; }
     };
@@ -16367,7 +16373,7 @@
       msg.style.display = "none"; err.style.display = "none";
       try {
         const types = [...document.querySelectorAll(".svc-type-chk:checked")].map(c => c.value);
-        await apiPost("addFleetService", {
+        const r = await apiPost("addFleetService", {
           vehicleId:   veh.id,
           vehicleName: veh.name,
           date:        $("svcDate").value,
@@ -16389,7 +16395,9 @@
         $("fleetAddForm").style.display = "none";
         msg.style.display = "inline";
         setTimeout(() => { msg.style.display = "none"; }, 2500);
+        if (r?.tiresDue) showAppToast("🛞 Tires are due for rotation — added to Needs fixing");
         await loadFleetServiceHistory(veh.id);
+        await loadFleetTodos();   // a rotation closes the reminder; higher miles can open one
       } catch(e) {
         err.textContent = "Error: " + e.message; err.style.display = "inline";
       } finally { btn.disabled = false; btn.textContent = "Save Service Record"; }
@@ -16507,6 +16515,7 @@
               msg.style.display = "inline";
               setTimeout(() => { msg.style.display = "none"; }, 2000);
               await loadFleetServiceHistory(vehicleId);
+              loadFleetTodos();
             } catch(e) { alert("Error: " + e.message); }
             finally { btn.disabled = false; btn.textContent = "Save"; }
           });
@@ -16603,9 +16612,10 @@
     const btn = $("mileageSaveBtn");
     btn.disabled = true;
     try {
-      await apiPost("logMileage", { vehicleId, mileage, date, recordedBy, notes });
+      const r = await apiPost("logMileage", { vehicleId, mileage, date, recordedBy, notes });
       // Update local cache so next open shows the new value immediately
       if (veh) { veh.currentMileage = mileage; veh.mileageDate = date; }
+      if (r?.tiresDue) showAppToast("🛞 Tires are due for rotation — added to the Fleet list");
       // Auto-close the modal on success
       closeMileage();
     } catch(e) {

@@ -16480,7 +16480,7 @@
       <h3 style="margin:0;">🔄 Google Contacts — ${esc(r.account || "rick@")}</h3>
       <div class="ct-note">${r.preview
         ? `PREVIEW — nothing has been written. ${r.mode === "on" ? "" : `The sync is <b>${esc(r.mode)}</b> in Netlify (GOOGLE_CONTACTS).`}`
-        : "Synced this batch."}</div>
+        : "Synced this batch."}${r.snapshot ? `<br>📦 A copy of your contacts was saved ${r.snapshot.taken ? `just now (${r.snapshot.contacts} contacts)` : "earlier today"} before anything was changed.` : ""}</div>
       <div class="ct-g-counts">
         ${row("➕ New in Google", c.create)}${row("🔗 Already in Google — will link", c.adopt)}
         ${row("🔁 Merged in Google — will re-link", c.relink)}

@@ -6159,8 +6159,8 @@ await test("google sync (2026-11-15): rick@ only; preview writes nothing; adopt/
       { ...base, id: "E", gid: null, first_name: "Ed", last_name: "E", primary_phone: null },
     ];
     const writes = [];
-    const q = async () => rows;
-    const write = async (label, text, params) => { writes.push({ label, params }); return []; };
+    const q = async (t) => (/google_contacts_snapshots/.test(t) ? [] : rows);
+    const write = async (label, text, params) => { writes.push({ label, params }); return label === "google.snapshot" ? [{ id: 1, taken_at: "now" }] : []; };
     const sync = await import(`../netlify/functions/_google-contacts-sync.js?s=${Date.now()}`);
 
     delete process.env.GOOGLE_CONTACTS;
@@ -6234,10 +6234,10 @@ await test("google sync: contacts merged in Google are RE-LINKED, app duplicates
       { ...base, id: "BM", gid: "dead", first_name: "Benji", last_name: "Mast", primary_phone: "(330) 473-5112" },
     ];
     const writes = [];
-    const write = async (label, text, params) => { writes.push({ label, params }); return []; };
+    const write = async (label, text, params) => { writes.push({ label, params }); return label === "google.snapshot" ? [{ id: 1, taken_at: "now" }] : []; };
     const sync = await import(`../netlify/functions/_google-contacts-sync.js?rl=${Date.now()}`);
 
-    const pv = await sync.runGoogleContactsSync({ q: async () => rows, write, dryRun: true });
+    const pv = await sync.runGoogleContactsSync({ q: async (t) => (/google_contacts_snapshots/.test(t) ? [] : rows), write, dryRun: true });
     eq(pv.counts.relink, 2, "T1 re-pointed at the merged contact; BM found again by phone");
     eq(pv.counts.sharedInGoogle, 1, "T2 lands on the same Google contact → left alone");
     eq(pv.counts.missingInGoogle, 0, "nothing left 'gone'");
@@ -6246,13 +6246,68 @@ await test("google sync: contacts merged in Google are RE-LINKED, app duplicates
 
     process.env.GOOGLE_CONTACTS = "on";
     calls.length = 0;
-    await sync.runGoogleContactsSync({ q: async () => rows, write, dryRun: false, budgetMs: 20000 });
+    await sync.runGoogleContactsSync({ q: async (t) => (/google_contacts_snapshots/.test(t) ? [] : rows), write, dryRun: false, budgetMs: 20000 });
     delete process.env.GOOGLE_CONTACTS;
     ok(writes.some(w => w.label === "google.relink" && w.params[0] === "T1" && w.params[1] === "c5"), "T1 now stores c5");
     ok(writes.some(w => w.label === "google.relink" && w.params[0] === "BM" && w.params[1] === "c6"), "BM now stores c6");
     ok(!writes.some(w => w.params[0] === "T2"), "T2 untouched");
     ok(!calls.some(c => c.u.includes("people:createContact")), "nothing re-created");
     ok(!calls.some(c => c.u.includes("people/old1:")), "updates go to the merged contact's id, not the old one");
+  });
+});
+
+await test("google sync: a COPY of rick@ is saved before the first write — no copy, no write", async () => {
+  // Owner 2026-11-15: "keep a copy of my current contacts before the edit gets pushed".
+  await withOauthEnv(async () => {
+    delete process.env.GOOGLE_REFRESH_TOKEN_2;
+    const c1 = { resourceName: "people/c1", etag: "e1", names: [{ givenName: "Ann" }], phoneNumbers: [{ value: "3301112222" }], memberships: [] };
+    const order = [];
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url), m = opts.method || "GET";
+      const okj = (j) => ({ ok: true, status: 200, json: async () => j });
+      if (u.includes("oauth2.googleapis.com/token")) return okj({ access_token: "t", expires_in: 3600 });
+      if (m !== "GET") order.push("google-write");
+      if (u.includes("people:batchGet")) return okj({ responses: [{ requestedResourceName: "people/c1", person: c1 }] });
+      if (u.includes("people/me/connections")) return okj({ connections: [c1] });
+      if (u.includes("/contactGroups") && m === "GET") return okj({ contactGroups: [{ resourceName: "contactGroups/g", name: "Old", groupType: "USER_CONTACT_GROUP" }] });
+      if (u.endsWith("/contactGroups") && m === "POST") return okj({ resourceName: "contactGroups/n" });
+      if (u.includes(":updateContact")) return okj({});
+      return okj({});
+    };
+    const rows = [{ role: "Customer", primary_email: null, street: null, city: null, state: null, zip: null, org_name: "Case Farms",
+                    hash: null, active: true, kind: "contact", id: "A", gid: "c1", first_name: "Ann", last_name: "A", primary_phone: "(330) 111-2222" }];
+    const sync = await import(`../netlify/functions/_google-contacts-sync.js?sn=${Date.now()}`);
+    process.env.GOOGLE_CONTACTS = "on";
+    try {
+      // 1. No recent copy → one is taken, BEFORE anything is sent to Google.
+      let saved = null;
+      const write = async (label, text, params) => {
+        order.push(label);
+        if (label === "google.snapshot") { saved = JSON.parse(params[4]); return [{ id: 7, taken_at: "now" }]; }
+        return [];
+      };
+      const q = async (t) => (/google_contacts_snapshots/.test(t) ? [] : rows);
+      const r = await sync.runGoogleContactsSync({ q, write, dryRun: false, budgetMs: 20000 });
+      ok(r.snapshot?.taken && r.snapshot.id === 7, "snapshot taken");
+      eq(saved.contacts.length, 1, "every contact copied"); eq(saved.groups.length, 1, "labels copied");
+      ok(order.indexOf("google.snapshot") < order.indexOf("google-write") && order.includes("google-write"), "copy BEFORE the first Google write");
+
+      // 2. A copy from the last 20 h → not taken again.
+      order.length = 0;
+      const r2 = await sync.runGoogleContactsSync({ q: async (t) => (/google_contacts_snapshots/.test(t) ? [{ id: 7, taken_at: "x" }] : rows),
+                                                     write, dryRun: false, budgetMs: 20000 });
+      ok(!r2.snapshot.taken && !order.includes("google.snapshot"), "one copy a day, not every run");
+
+      // 3. The copy fails → NOTHING goes to Google.
+      order.length = 0;
+      const r3 = await sync.runGoogleContactsSync({ q, write: async (label) => { order.push(label); return []; }, dryRun: false, budgetMs: 20000 });
+      eq(r3.ok, false, "refuses"); ok(!order.includes("google-write"), "no Google write without a copy");
+
+      // 4. A preview never takes one.
+      order.length = 0;
+      await sync.runGoogleContactsSync({ q, write, dryRun: true });
+      ok(!order.includes("google.snapshot"), "preview saves nothing");
+    } finally { delete process.env.GOOGLE_CONTACTS; }
   });
 });
 

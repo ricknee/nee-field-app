@@ -133,6 +133,33 @@ function comparable(p) {
 }
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+// ── A COPY BEFORE ANY WRITE (schema 095) ──────────────────────────────────
+// Owner 2026-11-15: "keep a copy of my current contacts before the edit gets
+// pushed". A live run writes NOTHING to Google unless a snapshot of the
+// account from the last 20 h exists; if none, it takes one first, and if THAT
+// fails the run stops. The snapshot holds every contact with exactly the
+// fields this sync can change (PERSON_FIELDS) + the label list, so anything it
+// touched can be put back. Newest 30 kept per account.
+export async function ensureGoogleSnapshot({ q, write, subject, reason = "before sync" }) {
+  const recent = await q(
+    `SELECT id, taken_at FROM google_contacts_snapshots
+      WHERE account = $1 AND taken_at > now() - interval '20 hours'
+      ORDER BY taken_at DESC LIMIT 1`, [subject]);
+  if (recent?.length) return { ok: true, taken: false, id: recent[0].id, takenAt: recent[0].taken_at };
+  const contacts = await listConnections(subject);
+  const groups = await listContactGroups(subject);
+  const ins = await write("google.snapshot",
+    `INSERT INTO google_contacts_snapshots (account, reason, contact_count, group_count, data)
+     VALUES ($1, $2, $3, $4, $5::jsonb) RETURNING id, taken_at`,
+    [subject, reason, contacts.length, groups.length, JSON.stringify({ contacts, groups })]);
+  const row = ins?.[0];
+  if (!row?.id) throw new Error("the snapshot didn't save");
+  await write("google.snapshotPrune",
+    `DELETE FROM google_contacts_snapshots WHERE account = $1 AND id NOT IN
+       (SELECT id FROM google_contacts_snapshots WHERE account = $1 ORDER BY taken_at DESC LIMIT 30)`, [subject]);
+  return { ok: true, taken: true, id: row.id, takenAt: row.taken_at, contacts: contacts.length };
+}
+
 // One pass. opts: { q, write, dryRun, budgetMs, only:{kind,id} }
 //   q(text, params) → rows        write(label, text, params) → rows
 export async function runGoogleContactsSync({ q, write, dryRun = true, budgetMs = 7000, only = null } = {}) {
@@ -150,6 +177,15 @@ export async function runGoogleContactsSync({ q, write, dryRun = true, budgetMs 
   };
   if (!googleConfigured()) {
     return { ...report, ok: false, error: "Google isn't connected (no credentials for rick@)." };
+  }
+
+  if (live) {
+    try {
+      report.snapshot = await ensureGoogleSnapshot({ q, write, subject: dest.subject });
+    } catch (e) {
+      return { ...report, ok: false, preview: true,
+        error: `Couldn't save a copy of ${dest.subject}'s contacts first, so nothing was written to Google: ${String(e?.message || e).slice(0, 200)}` };
+    }
   }
 
   const people = await loadSyncPeople(q, only);

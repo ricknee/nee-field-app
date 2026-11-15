@@ -7,7 +7,7 @@ untouched). Background and the hazards: `docs/PLAN-google-contacts.md`.
 
 | Step | Who | State |
 |---|---|---|
-| 1. Merge & fix in Google (rick@) | owner | ⬜ |
+| 1. Merge & fix in Google (rick@) | owner | ✅ "no new suggestions"; 1st preview OK (token live) |
 | 2. Merge the 12 duplicate people in the app | Claude | ⬜ after 1 |
 | 3. Build the sync, inert | Claude | ✅ `_google-contacts-sync.js`, schema 094 |
 | 4. Preview → read it → switch on | owner + Claude | ⬜ after 2 |
@@ -44,6 +44,16 @@ suggested merges. Say when done.
   + the company / utility / agency name. Missing labels are created.
 - Live: a save on the Contacts screen syncs that person at once; the hourly
   `qb-time-pull` catches up the rest (~6 s a run, after the timesheet pull).
+
+## Added after the first preview (2026-11-15)
+- Ids merged in Google are re-pointed / found again by phone-email (`relink`);
+  two app rows on one Google contact → `shared`, left alone.
+- **Backup:** a live run first saves rick@'s contacts to
+  `google_contacts_snapshots` (schema 095) unless one is <20 h old; no copy →
+  no write. Owner should ALSO export from contacts.google.com and knows about
+  Google's own Settings → Undo changes (30 days).
+- Gavyn Lopez = wrong name for Gavyn Carper's number → Lopez set inactive, his
+  one job (Harlin Smith 2 Barn) moved to Carper.
 
 ## Step 4 — switch on
 1. Owner opens Contacts → 🔄 Google sync → reads the preview. Expected roughly:

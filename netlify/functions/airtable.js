@@ -27,6 +27,8 @@ import { fireJobStatusWebhooks, fireServiceCallWebhook } from "./_job-webhooks.j
 // ever allocate a PO number. See the header of that file.
 import { createJobRecord, JobInputError, isJobHandle, jobCreateSource, jobsAreNative, normalisePwRate } from "./_jobs.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
+// 📇 Contacts screen (owner 2026-11-15) — see the header of that file.
+import { handleContactsDirectory, handleContactsDirectorySave, DirectoryInputError } from "./_contacts-directory.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
 // pCloud lost the store decision when its app-registration page turned out to
@@ -596,6 +598,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // for the same reason: it is reference data the whole business bills against,
   // not a field action.
   "createCompany",
+  // 📇 Contacts screen edits (owner 2026-11-15: "admin + office edit, crew
+  // views"). Reading it (contactsDirectory) stays open to every role.
+  "contactsDirectorySave",
   // Estimate templates carry the base price, labor hours and material cost that
   // seed a customer quote. Editing one is a back-office money op in the same
   // sense as updateJobBillableRate — the numbers land in front of a customer —
@@ -17377,6 +17382,7 @@ export async function handler(event) {
       if (action === "companies")          return await handleCompanies();
       if (action === "listContractors")    return await handleListContractors();
       if (action === "listContactsByCompany") return await handleListContactsByCompany(params);
+      if (action === "contactsDirectory")     return resp(200, { ok: true, ...(await handleContactsDirectory()) });
       if (action === "laborBillableRates") return await handleLaborBillableRates();
       if (action === "getInspectionAgencies") return await handleGetInspectionAgencies();
       if (action === "inspectorsForAgency")   return await handleGetInspectorsForAgency(params);
@@ -17518,6 +17524,13 @@ export async function handler(event) {
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "createContact")        return await handleCreateContact(body);
+      if (body.action === "contactsDirectorySave") {
+        try { return resp(200, await handleContactsDirectorySave(body)); }
+        catch (e) {
+          if (e instanceof DirectoryInputError) return resp(400, { ok: false, error: e.message });
+          throw e;
+        }
+      }
       if (body.action === "createCompany")        return await handleCreateCompany(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);
       if (body.action === "calculateMileage")     return await handleCalculateMileage(body);

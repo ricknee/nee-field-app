@@ -2206,6 +2206,24 @@ await test("updatePowerCo copies the power contact's name/phones/email onto the 
   ok(/mapJobFromNeon\(q\.rows\[0\]\)/.test(b), "returns the job as Neon holds it");
 });
 
+await test("📇 contacts directory: admin/office save, job copies re-synced, contractor name locked (2026-11-15)", async () => {
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const mod = fs.readFileSync(new URL("../netlify/functions/_contacts-directory.js", import.meta.url), "utf8");
+  const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const ao = src.slice(src.indexOf("const _ADMIN_OFFICE_POSTS = new Set(["), src.indexOf("]);", src.indexOf("const _ADMIN_OFFICE_POSTS = new Set([")));
+  ok(ao.includes('"contactsDirectorySave"'), "save is admin + office");
+  ok(/action === "contactsDirectory"\)/.test(src) && /body\.action === "contactsDirectorySave"/.test(src), "both actions dispatched");
+  ok(!/airtable|atFetch/i.test(mod.replace(/airtable_id/g, "").replace(/\/\/.*$/gm, "")), "directory module never talks to Airtable");
+  ok(/createOnly: \["name"\]/.test(mod), "a contractor's name is create-only");
+  for (const k of ["powerContact", "powerCompany", "inspectionAgency", "inspectionContact"]) {
+    ok(new RegExp(`kind === "${k}"`).test(mod), `${k} edits re-copy onto jobs`);
+  }
+  ok(/IN \(x\.id::text, x\.airtable_id\)/.test(mod), "job copies match both id forms");
+  ok(/id="btnContacts"/.test(html) && /function openContacts\(/.test(html), "menu entry + screen exist");
+  ok(/const ctCanEdit = \(\) => isAdmin\(\);/.test(html), "edit controls only for admin/office");
+});
+
 await test("fleet: tire-rotation reminder runs on every mileage save and is fail-soft", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
   const body = (name) => {

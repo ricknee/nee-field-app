@@ -1185,6 +1185,46 @@
     /* Scoped to #fleetModal — the Power Co. specs and Mileage modals share
        the .fleet-modal* classes and are not part of this change. */
     #fleetModal .fleet-modal { max-width:720px; }
+    /* ── 📇 Contacts (owner 2026-11-15). Scoped to #contactsModal. ── */
+    #contactsModal .fleet-modal { max-width:720px; }
+    @media (max-width:768px) {
+      #contactsModal .fleet-modal { width:100%; max-height:100%; height:100%; border-radius:0; }
+    }
+    #contactsModal .ct-tabs { display:flex; gap:6px; overflow-x:auto; padding-bottom:8px; }
+    #contactsModal .ct-tabs button { flex:0 0 auto; border:1px solid var(--border, #d0d5dd); background:var(--panel, #fff);
+      color:inherit; border-radius:999px; padding:7px 14px; font-size:14px; font-weight:600; cursor:pointer; }
+    #contactsModal .ct-tabs button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+    #contactsModal .ct-tools { display:flex; gap:8px; align-items:center; }
+    #contactsModal .ct-tools input { flex:1; min-width:0; padding:10px 12px; font-size:16px;
+      border:1px solid var(--border, #d0d5dd); border-radius:8px; }
+    #contactsModal .ct-tools .btn { width:auto; white-space:nowrap; }
+    #contactsModal .ct-inactive { display:inline-flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); margin:8px 0 4px; }
+    #contactsModal .ct-org { margin-top:14px; }
+    #contactsModal .ct-org-head { display:flex; align-items:baseline; gap:8px; padding:6px 2px;
+      border-bottom:2px solid var(--accent); }
+    #contactsModal .ct-org-name { font-weight:700; font-size:15px; color:var(--accent); flex:1; min-width:0; }
+    #contactsModal .ct-org-n { font-size:12px; color:var(--muted); }
+    #contactsModal .ct-edit { border:none; background:none; color:var(--accent); font-size:13px; cursor:pointer; padding:2px 4px; }
+    #contactsModal .ct-org-info { font-size:13px; color:var(--muted); padding:6px 2px 0; display:grid; gap:4px; }
+    #contactsModal .ct-person { padding:10px 2px; border-bottom:1px solid var(--border, rgba(0,0,0,.08)); }
+    #contactsModal .ct-person-top { display:flex; align-items:baseline; gap:8px; }
+    #contactsModal .ct-person-name { font-weight:600; font-size:15px; flex:1; min-width:0; }
+    #contactsModal .ct-role { font-size:12px; color:var(--muted); }
+    #contactsModal .ct-line { margin-top:4px; font-size:14px; display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
+    #contactsModal .ct-line .ct-lbl { font-size:12px; color:var(--muted); min-width:44px; }
+    #contactsModal .ct-off { opacity:.55; }
+    #contactsModal .ct-empty { color:var(--muted); font-size:14px; padding:14px 2px; }
+    #contactsModal .ct-form { display:grid; gap:10px; }
+    #contactsModal .ct-form label { display:grid; gap:4px; font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+    #contactsModal .ct-form input, #contactsModal .ct-form select, #contactsModal .ct-form textarea {
+      font-size:16px; padding:9px 10px; border:1px solid var(--border, #d0d5dd); border-radius:8px; text-transform:none; letter-spacing:0; font-weight:400; color:inherit; background:var(--panel, #fff); }
+    #contactsModal .ct-form .ct-row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    #contactsModal .ct-form .ct-check { display:flex; align-items:center; gap:8px; text-transform:none; font-size:14px; color:inherit; }
+    #contactsModal .ct-form .ct-check input { width:20px; height:20px; }
+    #contactsModal .ct-form-btns { display:flex; gap:8px; margin-top:6px; }
+    #contactsModal .ct-form-btns .btn { flex:1; }
+    #contactsModal .ct-note { font-size:12px; color:var(--muted); }
+    #contactsModal .ct-err { color:var(--red); font-size:14px; }
     #fleetModal .fleet-modal-header { padding:12px 16px; }
     #fleetModal .fleet-modal-header h2 { font-family:inherit; text-transform:none; letter-spacing:0; font-size:18px; font-weight:800; color:var(--text); }
     #fleetModal .fleet-modal-body { padding:14px 16px 20px; }
@@ -3741,6 +3781,9 @@
           <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
           <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button"><span class="ico-lift" aria-hidden="true"></span> Lifts</button>
           <button id="btnFleet" class="btn btn-sm" type="button">🛻 Fleet</button>
+          <!-- 📇 Contacts (owner 2026-11-15): everyone can look people up and
+               call them; admin + office can edit (contactsDirectorySave tier). -->
+          <button id="btnContacts" class="btn btn-sm" type="button">📇 Contacts</button>
           <button id="btnPowerSpecs" class="btn btn-sm" type="button">⚡ Power Co. Specs</button>
           <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
           <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>
@@ -16098,6 +16141,297 @@
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════
+  // ── 📇 CONTACTS (owner 2026-11-15) ─────────────────────────────
+  // One place to look up and edit customers, contractors, power companies and
+  // inspection agencies, and their people. Backend: _contacts-directory.js
+  // (contactsDirectory / contactsDirectorySave). Everyone can look and call;
+  // only admin + office see the edit controls (.ct-editor), matching the
+  // server's tier. Saving a power-co or inspection person re-copies their
+  // details onto every job that shows them — the server does that.
+  // ═══════════════════════════════════════════════════════════════
+  const ctState = { tab: "customers", data: null, q: "", showInactive: false, wired: false };
+  // Keep in step with GC_ROLES (the job's contractor-contact picker): a contact
+  // with one of these roles, or none, is a CUSTOMER; anything else is the
+  // contractor's own people.
+  const CT_CUSTOMER_ROLES = ["customer", "friends & family", ""];
+  const ctIsCustomer = p => CT_CUSTOMER_ROLES.includes(String(p.role || "").trim().toLowerCase());
+  const CT_TABS = {
+    customers:   { orgKind: "company",          personKind: "contact",           orgWord: "company",
+                   people: p => ctIsCustomer(p), emptyOrgs: false, newRole: "Customer" },
+    contractors: { orgKind: "company",          personKind: "contact",           orgWord: "contractor",
+                   people: p => !ctIsCustomer(p), emptyOrgs: true, newRole: "Contractor Contact" },
+    power:       { orgKind: "powerCompany",     personKind: "powerContact",      orgWord: "power company",
+                   people: () => true, emptyOrgs: true },
+    inspection:  { orgKind: "inspectionAgency", personKind: "inspectionContact", orgWord: "inspection agency",
+                   people: () => true, emptyOrgs: true },
+  };
+  const ctCanEdit = () => isAdmin();
+  const ctName = p => [p.firstName, p.lastName].map(s => String(s || "").trim()).filter(Boolean).join(" ") || "(no name)";
+
+  async function openContacts() {
+    $("contactsModal").style.display = "flex";
+    pushBackEntry("contacts", () => { $("contactsModal").style.display = "none"; });
+    if (!ctState.wired) wireContacts();
+    $("contactsModal").querySelectorAll(".ct-editor").forEach(el => el.style.display = ctCanEdit() ? "" : "none");
+    ctShowList();
+    await ctLoad();
+  }
+  window.openContacts = openContacts;
+
+  function closeContacts() {
+    popBackEntry("contacts");
+    $("contactsModal").style.display = "none";
+  }
+  window.closeContacts = closeContacts;
+
+  function wireContacts() {
+    ctState.wired = true;
+    $("ctTabs").addEventListener("click", e => {
+      const b = e.target.closest("button[data-tab]");
+      if (!b) return;
+      ctState.tab = b.dataset.tab;
+      $("ctTabs").querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+      ctRender();
+    });
+    $("ctSearch").addEventListener("input", e => { ctState.q = e.target.value; ctRender(); });
+    $("ctShowInactive").addEventListener("change", e => { ctState.showInactive = e.target.checked; ctRender(); });
+    $("ctAddBtn").addEventListener("click", () => ctOpenAddChooser());
+    $("ctList").addEventListener("click", e => {
+      const b = e.target.closest("[data-ct-edit]");
+      if (b) { ctOpenEdit(b.dataset.ctKind, b.dataset.ctEdit, b.dataset.ctOrg || ""); }
+    });
+  }
+
+  async function ctLoad() {
+    const list = $("ctList");
+    if (!ctState.data) list.innerHTML = `<div class="loading-msg">Loading contacts...</div>`;
+    try {
+      const d = await apiGet("contactsDirectory");
+      ctState.data = { orgs: d.orgs || [], people: d.people || [], roleOptions: d.roleOptions || [] };
+      ctRender();
+    } catch (e) {
+      list.innerHTML = `<div class="ct-err">Couldn't load contacts: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function ctShowList() {
+    $("ctListView").style.display = "";
+    $("ctEditView").style.display = "none";
+    $("ctEditView").innerHTML = "";
+  }
+
+  function ctRender() {
+    const list = $("ctList");
+    const d = ctState.data;
+    if (!d) return;
+    const tab = CT_TABS[ctState.tab];
+    const q = ctState.q.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, "");
+    const showOff = ctState.showInactive;
+    const edit = ctCanEdit();
+
+    const orgs = d.orgs.filter(o => o.kind === tab.orgKind);
+    const people = d.people.filter(p => p.kind === tab.personKind && tab.people(p) && (showOff || p.active));
+    const hit = (...vals) => {
+      if (!q) return true;
+      return vals.some(v => {
+        const s = String(v || "").toLowerCase();
+        if (s.includes(q)) return true;
+        return qDigits.length >= 3 && s.replace(/\D/g, "").includes(qDigits);
+      });
+    };
+
+    const byOrg = new Map();
+    const orgIds = new Set(orgs.map(o => o.id));
+    people.forEach(p => {
+      const k = orgIds.has(p.orgId) ? p.orgId : "";
+      (byOrg.get(k) || byOrg.set(k, []).get(k)).push(p);
+    });
+
+    let html = "", shown = 0;
+    const orgList = orgs.slice();
+    // People filed under nothing still need a home on screen.
+    if (byOrg.has("")) orgList.push({ kind: tab.orgKind, id: "", name: "(not filed under anyone)", active: true, _none: true });
+    orgList.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+
+    for (const o of orgList) {
+      // Customers are listed whatever their company's "active contractor" flag.
+      if (ctState.tab !== "customers" && !showOff && !o.active) continue;
+      const mine = (byOrg.get(o.id) || []).slice();
+      const orgHit = hit(o.name, o.phone, o.email);
+      const ps = orgHit ? mine : mine.filter(p => hit(ctName(p), p.role, p.phone, p.officePhone, p.email, p.city));
+      if (!ps.length && !(tab.emptyOrgs && orgHit)) continue;
+      ps.sort((a, b) => ctName(a).localeCompare(ctName(b), undefined, { sensitivity: "base" }));
+      shown += ps.length;
+
+      const info = [];
+      if (ctState.tab !== "customers" && !o._none) {
+        if (o.phone)   info.push(`<div class="ct-line"><span class="ct-lbl">Phone</span>${phoneActionsHtml(o.phone)}</div>`);
+        if (o.email)   info.push(`<div class="ct-line"><span class="ct-lbl">Email</span><a href="mailto:${esc(o.email)}">${esc(o.email)}</a></div>`);
+        if (o.address) info.push(`<div class="ct-line"><span class="ct-lbl">Address</span>${esc(o.address)}</div>`);
+        if (o.link)    info.push(`<div class="ct-line"><span class="ct-lbl">Schedule</span><a href="${esc(o.link)}" target="_blank" rel="noopener">Inspection scheduling ↗</a></div>`);
+        if (o.region)  info.push(`<div class="ct-line"><span class="ct-lbl">Region</span>${esc(o.region)}</div>`);
+        if (o.notes)   info.push(`<div class="ct-line"><span class="ct-lbl">Notes</span>${esc(o.notes)}</div>`);
+      }
+      const orgEdit = edit && !o._none && ctState.tab !== "customers"
+        ? `<button class="ct-edit" type="button" data-ct-edit="${esc(o.id)}" data-ct-kind="${esc(o.kind)}">✏ Edit</button>` : "";
+      const addHere = edit && !o._none
+        ? `<button class="ct-edit" type="button" data-ct-edit="" data-ct-kind="${esc(tab.personKind)}" data-ct-org="${esc(o.id)}">+ Person</button>` : "";
+      html += `<div class="ct-org${o.active ? "" : " ct-off"}">
+        <div class="ct-org-head"><span class="ct-org-name">${esc(o.name)}${o.active ? "" : " (inactive)"}</span>
+          <span class="ct-org-n">${ps.length || ""}</span>${addHere}${orgEdit}</div>
+        ${info.length ? `<div class="ct-org-info">${info.join("")}</div>` : ""}
+        ${ps.map(p => ctPersonHtml(p, edit)).join("")}
+      </div>`;
+    }
+    list.innerHTML = html || `<div class="ct-empty">${q ? "Nobody matches that search." : "Nobody here yet."}</div>`;
+  }
+
+  function ctPersonHtml(p, edit) {
+    const lines = [];
+    const phoneLbl = p.kind === "powerContact" ? "Cell" : "Phone";
+    if (p.phone)       lines.push(`<div class="ct-line"><span class="ct-lbl">${phoneLbl}</span>${phoneActionsHtml(p.phone)}</div>`);
+    if (p.officePhone) lines.push(`<div class="ct-line"><span class="ct-lbl">Office</span>${phoneActionsHtml(p.officePhone, { text: false })}</div>`);
+    if (p.email)       lines.push(`<div class="ct-line"><span class="ct-lbl">Email</span><a href="mailto:${esc(p.email)}">${esc(p.email)}</a></div>`);
+    const addr = [p.street, [p.city, [p.state, p.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")].filter(Boolean).join(", ");
+    if (addr)          lines.push(`<div class="ct-line"><span class="ct-lbl">Address</span><a href="https://maps.google.com/?q=${encodeURIComponent(addr)}" target="_blank" rel="noopener">${esc(addr)}</a></div>`);
+    if (p.notes)       lines.push(`<div class="ct-line"><span class="ct-lbl">Notes</span>${esc(p.notes)}</div>`);
+    return `<div class="ct-person${p.active ? "" : " ct-off"}">
+      <div class="ct-person-top"><span class="ct-person-name">${esc(ctName(p))}${p.active ? "" : " (inactive)"}</span>
+        ${p.role ? `<span class="ct-role">${esc(p.role)}</span>` : ""}
+        ${edit ? `<button class="ct-edit" type="button" data-ct-edit="${esc(p.id)}" data-ct-kind="${esc(p.kind)}">✏</button>` : ""}</div>
+      ${lines.join("")}
+    </div>`;
+  }
+
+  // ── Add / edit form ──
+  // Field lists per kind: [key, label, type]. Keys match DIRECTORY_KINDS in
+  // _contacts-directory.js.
+  const CT_FORMS = {
+    contact:           [["firstName","First name"],["lastName","Last name"],["role","Type","role"],["phone","Phone","tel"],
+                        ["email","Email","email"],["street","Street"],["city","City"],["state","State"],["zip","ZIP"]],
+    powerContact:      [["firstName","First name"],["lastName","Last name"],["role","Job role (e.g. Engineer)"],["phone","Cell phone","tel"],
+                        ["officePhone","Office phone","tel"],["email","Email","email"],["notes","Notes","area"]],
+    inspectionContact: [["firstName","First name"],["lastName","Last name"],["phone","Phone","tel"],["email","Email","email"],["notes","Notes","area"]],
+    company:           [["name","Company name"],["phone","Phone","tel"],["email","Email","email"],["address","Billing address","area"]],
+    powerCompany:      [["name","Power company name"],["region","Region"],["notes","Notes","area"]],
+    inspectionAgency:  [["name","Agency name"],["phone","Phone","tel"],["email","Email","email"],["link","Scheduling link","url"],["notes","Notes","area"]],
+  };
+  const CT_ORG_OF = { contact: "company", powerContact: "powerCompany", inspectionContact: "inspectionAgency" };
+
+  function ctOpenAddChooser() {
+    const tab = CT_TABS[ctState.tab];
+    const v = $("ctEditView");
+    $("ctListView").style.display = "none";
+    v.style.display = "";
+    pushBackEntry("contactsEdit", ctShowList);
+    v.innerHTML = `<div class="ct-form">
+      <h3 style="margin:0;">Add to ${esc({customers:"Customers",contractors:"Contractors",power:"Power Co.",inspection:"Inspection"}[ctState.tab])}</h3>
+      <button class="btn btn-primary" type="button" id="ctAddPerson">+ New person</button>
+      <button class="btn" type="button" id="ctAddOrg">+ New ${esc(tab.orgWord)}</button>
+      <button class="btn" type="button" id="ctAddCancel">Cancel</button>
+    </div>`;
+    // The chooser's back entry carries over to the form it opens (no pop +
+    // push in one tick — history.back() is async and would eat the new entry).
+    $("ctAddPerson").onclick = () => ctOpenEdit(tab.personKind, "", "", true);
+    $("ctAddOrg").onclick    = () => ctOpenEdit(tab.orgKind, "", "", true);
+    $("ctAddCancel").onclick = () => { popBackEntry("contactsEdit"); ctShowList(); };
+  }
+
+  function ctOpenEdit(kind, id, orgId, keepBackEntry) {
+    const d = ctState.data;
+    if (!d || !CT_FORMS[kind]) return;
+    const isOrg = !CT_ORG_OF[kind];
+    const rec = id ? (isOrg ? d.orgs : d.people).find(r => r.kind === kind && r.id === id) : null;
+    if (id && !rec) return;
+    const cur = rec || { active: true, role: CT_TABS[ctState.tab].newRole || "", orgId };
+    const v = $("ctEditView");
+    $("ctListView").style.display = "none";
+    v.style.display = "";
+    if (!keepBackEntry) pushBackEntry("contactsEdit", ctShowList);
+
+    const field =([key, label, type]) => {
+      const val = cur[key] || "";
+      if (type === "role") {
+        const opts = (d.roleOptions || []).slice();
+        if (val && !opts.includes(val)) opts.unshift(val);
+        return `<label>${esc(label)}<select data-k="${key}"><option value="">—</option>${opts.map(o =>
+          `<option${o === val ? " selected" : ""}>${esc(o)}</option>`).join("")}</select></label>`;
+      }
+      if (type === "area") return `<label>${esc(label)}<textarea data-k="${key}" rows="2">${esc(val)}</textarea></label>`;
+      const ro = kind === "company" && key === "name" && id;
+      return `<label>${esc(label)}<input data-k="${key}" type="${type || "text"}" value="${esc(val)}"${ro ? " readonly" : ""}
+        ${type === "tel" ? 'inputmode="tel"' : ""} autocomplete="off" />${ro
+        ? `<span class="ct-note">A contractor's name is in every PO, QB Time and pCloud — it can't be changed here.</span>` : ""}</label>`;
+    };
+    const fields = CT_FORMS[kind];
+    let rows = "";
+    for (let i = 0; i < fields.length; i++) {
+      const [k] = fields[i];
+      // Pair short fields side by side on a phone.
+      if ((k === "firstName" || k === "city" || k === "phone") && fields[i + 1] && !["area"].includes(fields[i + 1][2])) {
+        rows += `<div class="ct-row2">${field(fields[i])}${field(fields[i + 1])}</div>`; i++;
+      } else rows += field(fields[i]);
+    }
+
+    let orgPick = "";
+    if (!isOrg) {
+      const orgKind = CT_ORG_OF[kind];
+      const choices = d.orgs.filter(o => o.kind === orgKind && (o.active || o.id === cur.orgId))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+      const word = { company: "Company (contractor they come through)", powerCompany: "Power company", inspectionAgency: "Inspection agency" }[orgKind];
+      orgPick = `<label>${esc(word)}<select id="ctOrgPick"><option value="">— pick one —</option>${choices.map(o =>
+        `<option value="${esc(o.id)}"${o.id === cur.orgId ? " selected" : ""}>${esc(o.name)}</option>`).join("")}</select></label>`;
+    }
+    const activeWord = kind === "company" ? "Active contractor" : "Active (shows in pickers)";
+    const title = (id ? "Edit " : "New ") + ({ contact: "contact", powerContact: "power co. contact",
+      inspectionContact: "inspector", company: "contractor / company", powerCompany: "power company",
+      inspectionAgency: "inspection agency" })[kind];
+
+    v.innerHTML = `<div class="ct-form">
+      <h3 style="margin:0;">${esc(title)}</h3>
+      ${orgPick}${rows}
+      <label class="ct-check"><input type="checkbox" id="ctActive"${cur.active !== false ? " checked" : ""} /> ${esc(activeWord)}</label>
+      ${!isOrg && kind !== "contact" && id ? `<span class="ct-note">Saving also updates this person's details on every job that shows them.</span>` : ""}
+      ${kind === "contact" && id ? `<span class="ct-note">A job's customer name and phone are saved on the job itself — editing here won't change existing jobs.</span>` : ""}
+      <div id="ctFormErr" class="ct-err" style="display:none;"></div>
+      <div class="ct-form-btns">
+        <button class="btn" type="button" id="ctCancel">Cancel</button>
+        <button class="btn btn-primary" type="button" id="ctSave">Save</button>
+      </div>
+    </div>`;
+    $("ctCancel").onclick = () => { popBackEntry("contactsEdit"); ctShowList(); };
+    $("ctSave").onclick = () => ctSave(kind, id, isOrg);
+    const first = v.querySelector("input:not([readonly]), select");
+    if (first && !id) first.focus();
+  }
+
+  async function ctSave(kind, id, isOrg) {
+    const v = $("ctEditView");
+    const btn = $("ctSave"), err = $("ctFormErr");
+    const fields = {};
+    v.querySelectorAll("[data-k]").forEach(el => { if (!el.readOnly) fields[el.dataset.k] = el.value.trim(); });
+    fields.active = $("ctActive").checked;
+    const body = { kind, fields };
+    if (id) body.id = id;
+    if (!isOrg) body.orgId = $("ctOrgPick").value;
+    err.style.display = "none";
+    btn.disabled = true; btn.textContent = "Saving…";
+    try {
+      const r = await apiPost("contactsDirectorySave", body);
+      if (!r?.ok) throw new Error(r?.error || "Couldn't save.");
+      popBackEntry("contactsEdit");
+      ctShowList();
+      showAppToast(r.jobsUpdated ? `Saved ✓ — updated on ${r.jobsUpdated} job${r.jobsUpdated === 1 ? "" : "s"}` : "Saved ✓");
+      await ctLoad();
+    } catch (e) {
+      err.textContent = e.message || String(e);
+      err.style.display = "";
+      btn.disabled = false; btn.textContent = "Save";
+    }
+  }
+
   async function openFleet() {
     $("fleetModal").style.display = "flex";
     pushBackEntry("fleet", () => { $("fleetModal").style.display = "none"; });
@@ -19039,6 +19373,8 @@
     if (slBtn) slBtn.addEventListener("click", openScissorLifts);
     const fleetBtn = $("btnFleet");
     if (fleetBtn) fleetBtn.addEventListener("click", openFleet);
+    const contactsBtn = $("btnContacts");
+    if (contactsBtn) contactsBtn.addEventListener("click", () => { closeTopbarMenu(); openContacts(); });
     // ONLY the top-bar button is wired here, for the same reason btnPeople is:
     // the Power Co. Specs modal lives at the bottom of <body> and does not
     // exist yet. Its own controls are wired in wirePowerSpecControls().
@@ -34739,6 +35075,34 @@
 </div>
 
 <!-- FLEET MODAL -->
+<!-- 📇 CONTACTS (owner 2026-11-15) — _contacts-directory.js. Reuses the
+     fleet modal shell; every style of its own is scoped to #contactsModal. -->
+<div id="contactsModal" class="fleet-modal-backdrop" style="display:none;">
+  <div class="fleet-modal">
+    <div class="fleet-modal-header">
+      <h2>📇 Contacts</h2>
+      <button onclick="closeContacts()" class="btn btn-sm" style="font-size:18px; padding:4px 10px; width:auto;">&times;</button>
+    </div>
+    <div class="fleet-modal-body">
+      <div id="ctListView">
+        <div class="ct-tabs" id="ctTabs">
+          <button type="button" data-tab="customers" class="on">Customers</button>
+          <button type="button" data-tab="contractors">Contractors</button>
+          <button type="button" data-tab="power">Power Co.</button>
+          <button type="button" data-tab="inspection">Inspection</button>
+        </div>
+        <div class="ct-tools">
+          <input id="ctSearch" type="search" placeholder="Search name, company, phone, email" autocomplete="off" />
+          <button id="ctAddBtn" class="btn btn-primary btn-sm ct-editor" type="button">+ Add</button>
+        </div>
+        <label class="ct-inactive"><input type="checkbox" id="ctShowInactive" /> Show inactive</label>
+        <div id="ctList"><div class="loading-msg">Loading contacts...</div></div>
+      </div>
+      <div id="ctEditView" style="display:none;"></div>
+    </div>
+  </div>
+</div>
+
 <div id="fleetModal" class="fleet-modal-backdrop" style="display:none;">
   <div class="fleet-modal">
     <div class="fleet-modal-header">

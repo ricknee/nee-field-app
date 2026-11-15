@@ -15047,7 +15047,19 @@ async function handleUpdateJobInfo(body) {
 async function handleCreateJob(body) {
   try {
     const { record, poNumber } = await createJobRecord(atFetch, body || {});
-    return resp(200, { ok: true, job: mapJob(record), ...(poNumber != null ? { poNumber } : {}) });
+    // Hand back the job as the job list reads it (owner 2026-11-15, Monroe
+    // Yoder MIM 315): `record` is Airtable-shaped intake fields, so mapJob
+    // found no "Job Address - Full", "Contractor Name (Text)" or "Job Year" and
+    // the new job showed a blank address and no contractor until a reload.
+    // Fail-soft — the job exists either way, so a failed re-read falls back.
+    let job = null;
+    try {
+      const q = await neonQuery(`${JOB_SELECT} WHERE j.airtable_id = $1 OR j.id::text = $1`, [String(record.id)]);
+      if (q?.rows?.length) job = mapJobFromNeon(q.rows[0]);
+    } catch (e) {
+      console.warn("createJob: re-read failed, returning the intake shape —", e?.message || e);
+    }
+    return resp(200, { ok: true, job: job || mapJob(record), ...(poNumber != null ? { poNumber } : {}) });
   } catch (e) {
     if (e instanceof JobInputError) return resp(400, { ok: false, error: e.message });
     throw e;

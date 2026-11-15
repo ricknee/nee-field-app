@@ -2172,6 +2172,16 @@ await test("lifts 'Needs fixing' list: crews add and tick, viewer read-only (sch
 // offline here, so these pin the wiring — every mileage write path runs the
 // check, the check can never fail the save, and un-ticking only removes the
 // service record the tick itself created.
+await test("createJob returns the job as the list reads it (address, contractor) — Monroe Yoder 2026-11-15", async () => {
+  const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleCreateJob(");
+  ok(i >= 0, "handleCreateJob exists");
+  const b = src.slice(i, src.indexOf("\nasync function ", i + 10));
+  ok(/\$\{JOB_SELECT\} WHERE j\.airtable_id = \$1 OR j\.id::text = \$1/.test(b), "re-reads the new job from Neon");
+  ok(/mapJobFromNeon\(q\.rows\[0\]\)/.test(b), "maps it the way the list does");
+  ok(/job \|\| mapJob\(record\)/.test(b), "falls back to the intake shape if the re-read fails");
+});
+
 await test("fleet: tire-rotation reminder runs on every mileage save and is fail-soft", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
   const body = (name) => {

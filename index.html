@@ -3781,9 +3781,9 @@
           <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
           <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button"><span class="ico-lift" aria-hidden="true"></span> Lifts</button>
           <button id="btnFleet" class="btn btn-sm" type="button">🛻 Fleet</button>
-          <!-- 📇 Contacts (owner 2026-11-15): everyone can look people up and
-               call them; admin + office can edit (contactsDirectorySave tier). -->
-          <button id="btnContacts" class="btn btn-sm" type="button">📇 Contacts</button>
+          <!-- 📇 Contacts (owner 2026-11-15): admin + office only — the read
+               (contactsDirectory) and the save are both _ADMIN_OFFICE. -->
+          <button id="btnContacts" class="btn btn-sm admin-only hidden" type="button">📇 Contacts</button>
           <button id="btnPowerSpecs" class="btn btn-sm" type="button">⚡ Power Co. Specs</button>
           <button id="btnPayroll" class="btn btn-sm admin-only hidden" type="button">💵 Payroll</button>
           <button id="btnHoursByJob" class="btn btn-sm admin-only hidden" type="button">📊 Hours by Job</button>

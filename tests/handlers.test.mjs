@@ -2213,6 +2213,9 @@ await test("📇 contacts directory: admin/office save, job copies re-synced, co
   const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const ao = src.slice(src.indexOf("const _ADMIN_OFFICE_POSTS = new Set(["), src.indexOf("]);", src.indexOf("const _ADMIN_OFFICE_POSTS = new Set([")));
   ok(ao.includes('"contactsDirectorySave"'), "save is admin + office");
+  const aoR = src.slice(src.indexOf("const _ADMIN_OFFICE_READS = new Set(["), src.indexOf("]);", src.indexOf("const _ADMIN_OFFICE_READS = new Set([")));
+  ok(aoR.includes('"contactsDirectory"'), "the screen's read is admin + office too (owner: admin side only)");
+  ok(/id="btnContacts" class="btn btn-sm admin-only hidden"/.test(html), "menu entry hidden from the crew");
   ok(/action === "contactsDirectory"\)/.test(src) && /body\.action === "contactsDirectorySave"/.test(src), "both actions dispatched");
   ok(!/airtable|atFetch/i.test(mod.replace(/airtable_id/g, "").replace(/\/\/.*$/gm, "")), "directory module never talks to Airtable");
   ok(/createOnly: \["name"\]/.test(mod), "a contractor's name is create-only");

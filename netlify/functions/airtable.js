@@ -775,6 +775,8 @@ const _ADMIN_OFFICE_READS = new Set([
   "vendorInvoices",
   // Supplier statements (db/schema/083) — matches its own intake/review tier.
   "vendorStatements",
+  // 📇 Contacts screen — admin + office only (owner 2026-11-15).
+  "contactsDirectory",
   // The specs bin, matching its own restore/purge tier exactly as
   // jobPrintsDeleted matches its. `powerCompanySpecs` and
   // `powerCompaniesWithSpecs` are deliberately ABSENT from every set here so

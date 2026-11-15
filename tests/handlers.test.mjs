@@ -2195,6 +2195,17 @@ await test("contractor-contact picker lists the contractor's own people, never i
   ok(/role:\s+"Customer"/.test(html), "New Project files its customer as Customer");
 });
 
+await test("updatePowerCo copies the power contact's name/phones/email onto the job and returns the job (2026-11-15)", async () => {
+  const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleUpdatePowerCo(");
+  const b = src.slice(i, src.indexOf("\nasync function ", i + 10));
+  for (const c of ["power_company_contact", "power_company_cell_phone", "power_company_office_phone", "power_company_email"]) {
+    ok(new RegExp(`${c} = \\$\\{pc\\(`).test(b), `${c} resolved from power_contacts`);
+  }
+  ok(/FROM power_contacts WHERE airtable_id = \$\{p\} OR id::text = \$\{p\}/.test(b), "matches native and legacy contact ids");
+  ok(/mapJobFromNeon\(q\.rows\[0\]\)/.test(b), "returns the job as Neon holds it");
+});
+
 await test("fleet: tire-rotation reminder runs on every mileage save and is fail-soft", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
   const body = (name) => {

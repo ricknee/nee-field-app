@@ -7045,11 +7045,22 @@ async function handleUpdatePowerCo(body) {
     nVals.push(t);
     nSets.push(`power_company_name = (SELECT name FROM power_companies WHERE airtable_id = $${nVals.length} OR id::text = $${nVals.length})`);
   }
-  // ⚠ `power_company_contact` (the contact's display name) is NOT updated: the
-  // power-contact table is still Airtable-only, so there is nothing to resolve
-  // it against yet. The link id is correct immediately and the name catches up
-  // on the hourly sync. Fix this when Contacts land — item 06's last slice.
-  if (powerContactId !== undefined) nPut("power_contact_at_id", String(powerContactId).trim() || null);
+  // The contact's name, phones and email are copied onto the job WITH the link
+  // (owner 2026-11-15, Martin Valley Farms). They used to be left for "the
+  // hourly sync" — which is retired, so the card stayed "—" forever after
+  // picking or adding a contact. power_contacts is in Neon; resolve from it.
+  // A cleared link clears them too (the sub-selects return NULL).
+  if (powerContactId !== undefined) {
+    const t = String(powerContactId).trim() || null;
+    nPut("power_contact_at_id", t);
+    nVals.push(t);
+    const p = `$${nVals.length}`;
+    const pc = (col) => `(SELECT ${col} FROM power_contacts WHERE airtable_id = ${p} OR id::text = ${p} LIMIT 1)`;
+    nSets.push(`power_company_contact = ${pc("name")}`,
+               `power_company_cell_phone = ${pc("cell_phone")}`,
+               `power_company_office_phone = ${pc("office_phone")}`,
+               `power_company_email = ${pc("email")}`);
+  }
   if (aicNumber      !== undefined) nPut("aic_number", aicNumber);
   if (tempWorkOrder  !== undefined) nPut("temp_work_order", tempWorkOrder);
   if (permWorkOrder  !== undefined) nPut("work_order_number", permWorkOrder);
@@ -7063,8 +7074,18 @@ async function handleUpdatePowerCo(body) {
   // ⚠ `data` is null for a native job — the mirror is absent by design. Answer
   // with the handle the caller sent and the job as Neon holds it; re-reading an
   // Airtable record that does not exist is not a fallback, it is a crash.
+  // The job as Neon now holds it, so the card repaints with the contact's name,
+  // phone and email straight away — a native job has no Airtable `data`, and
+  // without this the card stayed "—" until a reload. Fail-soft.
+  let job = null;
+  try {
+    const q = await neonQuery(`${JOB_SELECT} WHERE j.airtable_id = $1 OR j.id::text = $1`, [String(jobId)]);
+    if (q?.rows?.length) job = mapJobFromNeon(q.rows[0]);
+  } catch (e) {
+    console.warn("updatePowerCo: re-read failed —", e?.message || e);
+  }
   return resp(200, { ok: true, updatedId: data?.id || jobId,
-                     ...(data ? { job: mapJob(data) } : {}) });
+                     ...(job ? { job } : data ? { job: mapJob(data) } : {}) });
 }
 
 async function handleStartServiceCall(body) {

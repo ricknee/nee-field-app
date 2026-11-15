@@ -53,6 +53,8 @@ import { runIntegrityChecks, reportIntegrity } from "./_integrity.js";
 import { makeAtFetch } from "./_jobs.js";
 import { readPendingTicketLines } from "./_ticket-lines.js";
 import { getObjectBytes, r2Enabled } from "./_r2.js";
+import { runGoogleContactsSync } from "./_google-contacts-sync.js";
+import { googleContactsMode } from "./_google-contacts.js";
 
 const QB = "https://rest.tsheets.com/api/v1";
 
@@ -499,7 +501,25 @@ export const handler = async () => {
     : new Date(Date.now() - COLD_START_LOOKBACK_MS);
 
   try {
-    const report = { ...(await runPull({ sql, token, since })), jobLinks: linkReport,
+    const pulled = await runPull({ sql, token, since });
+
+    // ── Google contacts → rick@ (_google-contacts-sync.js) ─────────────────
+    // AFTER the timesheet pull on purpose: it is the least urgent thing here
+    // and must never eat the pull's time. Only when GOOGLE_CONTACTS=on; ~6 s
+    // budget, and whatever doesn't fit is picked up next hour. Fails soft.
+    let googleReport = { mode: googleContactsMode() };
+    if (googleContactsMode() === "on") {
+      try {
+        const g = await runGoogleContactsSync({ q: (t, p) => sql.query(t, p), write: (_l, t, p) => sql.query(t, p),
+                                                dryRun: false, budgetMs: 6000 });
+        googleReport = { mode: g.mode, counts: g.counts, errors: g.errors.length, remaining: g.remaining };
+      } catch (e) {
+        console.error("qb-time-pull: Google contacts sync failed (continuing)", e);
+        googleReport = { mode: "on", error: String(e?.message || e) };
+      }
+    }
+
+    const report = { ...pulled, jobLinks: linkReport, googleContacts: googleReport,
                      generatorServiceCalls: generatorReport,
                      ticketLines: ticketReport,
                      integrity: { failures: integrityReport.failures ?? null,

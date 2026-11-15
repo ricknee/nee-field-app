@@ -29,6 +29,7 @@ import { createJobRecord, JobInputError, isJobHandle, jobCreateSource, jobsAreNa
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 // 📇 Contacts screen (owner 2026-11-15) — see the header of that file.
 import { handleContactsDirectory, handleContactsDirectorySave, DirectoryInputError } from "./_contacts-directory.js";
+import { runGoogleContactsSync } from "./_google-contacts-sync.js";
 // Jobsite photos. Optional infrastructure like _neon.js — see docs/PLAN-job-photos.md.
 // Photo storage. netlify/functions/_pcloud.js is deliberately NOT imported —
 // pCloud lost the store decision when its app-registration page turned out to
@@ -526,6 +527,9 @@ const _TIME_SELF_WRITES = new Set([
 ]);
 const _ADMIN_POSTS = new Set([
   "updateTimeEntryPayroll", "payrollRunCreate",
+  // Google contacts sync preview / run (_google-contacts-sync.js). Writes to
+  // the OWNER's own address book, so strict admin.
+  "googleContactsSync",
   // ⚠ Deleting a job estimate has NO STATUS GUARD — owner's explicit call
   // 2026-08-20 — so a Sent or Approved estimate can be erased. Strict admin
   // rather than admin+office precisely because this tier IS the guard; office
@@ -15078,6 +15082,14 @@ async function handleUpdateJobInfo(body) {
 //     into state.jobs and selectJob() it without a full list refetch.
 //   · A JobInputError is the caller's fault and answers 400; anything else
 //     (Airtable down, network) stays a 500, which is correct.
+// Row-returning reader for _google-contacts-sync.js. Throws on a failed read —
+// the sync must never mistake "couldn't read" for "nobody to sync".
+async function syncQ(text, params) {
+  const r = await neonQuery(text, params || []);
+  if (!r?.rows) throw new Error(r?.error || "Database read failed.");
+  return r.rows;
+}
+
 async function handleCreateJob(body) {
   try {
     const { record, poNumber } = await createJobRecord(atFetch, body || {});
@@ -17527,11 +17539,32 @@ export async function handler(event) {
       if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "createContact")        return await handleCreateContact(body);
       if (body.action === "contactsDirectorySave") {
-        try { return resp(200, await handleContactsDirectorySave(body)); }
+        let saved;
+        try { saved = await handleContactsDirectorySave(body); }
         catch (e) {
           if (e instanceof DirectoryInputError) return resp(400, { ok: false, error: e.message });
           throw e;
         }
+        // Push that one person to Google straight away when the sync is ON.
+        // Fail-soft and short: the save already happened, and the hourly run
+        // catches anything this misses.
+        if (googleContactsMode() === "on" && /Contact$|^contact$/.test(String(body.kind)) && saved?.id) {
+          try {
+            const g = await runGoogleContactsSync({ q: syncQ, write: neonWrite, dryRun: false, budgetMs: 4000,
+                                                    only: { kind: String(body.kind), id: saved.id } });
+            saved.google = { ok: g.ok && !g.errors.length, counts: g.counts };
+          } catch (e) {
+            console.warn("contactsDirectorySave: Google sync failed (will retry hourly) —", e?.message || e);
+            saved.google = { ok: false };
+          }
+        }
+        return resp(200, saved);
+      }
+      if (body.action === "googleContactsSync") {
+        // Preview by default. Writes only when GOOGLE_CONTACTS=on AND dryRun:false.
+        const r = await runGoogleContactsSync({ q: syncQ, write: neonWrite,
+                                                dryRun: body.dryRun !== false, budgetMs: 8000 });
+        return resp(r.ok ? 200 : 503, r);
       }
       if (body.action === "createCompany")        return await handleCreateCompany(body);
       if (body.action === "updateInspection")     return await handleUpdateInspection(body);

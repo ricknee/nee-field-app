@@ -5963,7 +5963,9 @@ await test("googleContacts: JWT is RS256 over the right claims, and impersonates
   };
   try {
     // Fresh import so the credential cache is not carried over from another case.
+    process.env.GOOGLE_CONTACTS_NEE = "on"; // two-account mode (owner switched to rick@ only 2026-11-15)
     const gc = await import(`../netlify/functions/_google-contacts.js?jwt=${Date.now()}`);
+    delete process.env.GOOGLE_CONTACTS_NEE;
     const st = await gc.googleStatus();
     ok(st.ok, "status ok against the stub");
     eq(st.checks.length, 2, "both destinations probed independently");
@@ -6115,6 +6117,86 @@ function withOauthEnv(fn) {
   });
 }
 
+await test("google sync (2026-11-15): rick@ only; preview writes nothing; adopt/create/update/missing behave", async () => {
+  await withOauthEnv(async () => {
+    const gc = await import(`../netlify/functions/_google-contacts.js?only=${Date.now()}`);
+    eq(gc.DESTINATIONS.length, 1, "rick@ only by default (owner 2026-11-15)");
+    eq(gc.DESTINATIONS[0].subject, "rick@northeasternelec.com", "and it is rick@");
+    delete process.env.GOOGLE_REFRESH_TOKEN_2;
+    eq(gc.googleConfigured(), true, "nee@ token not needed any more");
+
+    const google = {
+      c1: { resourceName: "people/c1", etag: "e1", names: [{ givenName: "Ann", familyName: "A" }],
+            phoneNumbers: [{ value: "(330) 111-2222" }, { value: "330-999-0000", type: "home" }], memberships: [] },
+      c2: { resourceName: "people/c2", etag: "e2", names: [{ givenName: "Bob" }], phoneNumbers: [{ value: "3303334444" }], memberships: [] },
+    };
+    const calls = [];
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url), m = opts.method || "GET";
+      const body = opts.body && typeof opts.body === "string" && opts.body.startsWith("{") ? JSON.parse(opts.body) : null;
+      const okj = (j) => ({ ok: true, status: 200, json: async () => j });
+      if (u.includes("oauth2.googleapis.com/token")) return okj({ access_token: "t", expires_in: 3600 });
+      calls.push({ m, u, body });
+      if (u.includes("people:batchGet")) {
+        const names = new URL(u).searchParams.getAll("resourceNames");
+        return okj({ responses: names.map(n => ({ requestedResourceName: n, person: google[n.replace("people/", "")] })) });
+      }
+      if (u.includes("people/me/connections")) return okj({ connections: Object.values(google) });
+      if (u.includes("/contactGroups") && m === "GET") return okj({ contactGroups: [{ resourceName: "contactGroups/g1", name: "NEE Customers", groupType: "USER_CONTACT_GROUP" }] });
+      if (u.endsWith("/contactGroups") && m === "POST") return okj({ resourceName: `contactGroups/new_${body.contactGroup.name}` });
+      if (u.includes("members:modify")) return okj({});
+      if (u.includes("people:createContact")) return okj({ resourceName: "people/cNEW", etag: "n" });
+      if (u.includes(":updateContact")) return okj(body);
+      return { ok: false, status: 500, json: async () => ({ error: { message: "unexpected " + u } }) };
+    };
+    const base = { role: "Customer", primary_email: null, cell_phone: null, office_phone: null, email: null, phone: null,
+                   street: null, city: null, state: null, zip: null, org_name: "Case Farms", hash: null, active: true, kind: "contact" };
+    const rows = [
+      { ...base, id: "A", gid: "c1", first_name: "Ann", last_name: "A", primary_phone: "(330) 111-2222", primary_email: "ann@x.com" },
+      { ...base, id: "B", gid: null, first_name: "Bob", last_name: "B", primary_phone: "(330) 333-4444" },
+      { ...base, id: "C", gid: null, first_name: "Cy", last_name: "C", primary_phone: "(330) 555-6666" },
+      { ...base, id: "D", gid: "c9", first_name: "Di", last_name: "D", primary_phone: "(330) 777-8888" },
+      { ...base, id: "E", gid: null, first_name: "Ed", last_name: "E", primary_phone: null },
+    ];
+    const writes = [];
+    const q = async () => rows;
+    const write = async (label, text, params) => { writes.push({ label, params }); return []; };
+    const sync = await import(`../netlify/functions/_google-contacts-sync.js?s=${Date.now()}`);
+
+    delete process.env.GOOGLE_CONTACTS;
+    const pv = await sync.runGoogleContactsSync({ q, write, dryRun: true });
+    eq(writes.length, 0, "preview writes nothing to Neon");
+    ok(!calls.some(c => c.m !== "GET"), "preview sends nothing but reads to Google");
+    eq(pv.counts.update, 1, "A: details to update"); eq(pv.counts.adopt, 1, "B: found by phone, linked");
+    eq(pv.counts.create, 1, "C: new"); eq(pv.counts.missingInGoogle, 1, "D: gone from Google is reported");
+    eq(pv.counts.noDetails, 1, "E: no phone/email skipped");
+    ok(pv.labels.toCreate.includes("Case Farms") && !pv.labels.toCreate.includes("NEE Customers"), "only missing labels are new");
+
+    // "on" but asked for a preview is still a preview.
+    process.env.GOOGLE_CONTACTS = "on";
+    calls.length = 0;
+    await sync.runGoogleContactsSync({ q, write, dryRun: true });
+    eq(writes.length, 0, "dryRun wins over mode=on");
+
+    calls.length = 0;
+    const live = await sync.runGoogleContactsSync({ q, write, dryRun: false, budgetMs: 20000 });
+    delete process.env.GOOGLE_CONTACTS;
+    eq(calls.filter(c => c.u.includes("people:createContact")).length, 1, "exactly one create (C) — D is never re-created");
+    const idWrites = writes.filter(w => w.label === "google.create" || w.label === "google.adopt");
+    ok(idWrites.some(w => w.params[0] === "C" && w.params[1] === "cNEW"), "C's new id stored");
+    ok(idWrites.some(w => w.params[0] === "B" && w.params[1] === "c2"), "B adopted c2");
+    ok(!idWrites.some(w => w.params[0] === "D"), "D untouched");
+    const upd = calls.find(c => c.u.includes("people/c1:updateContact"));
+    ok(upd, "A updated");
+    ok(upd.body.phoneNumbers.some(p => p.value === "330-999-0000"), "an extra phone added on the phone is KEPT");
+    ok(upd.body.emailAddresses?.[0]?.value === "ann@x.com", "the app's email added");
+    ok(!calls.some(c => c.m === "DELETE" || c.u.includes("deleteContact") || c.u.includes("resourceNamesToRemove")), "never deletes");
+    ok(calls.some(c => c.u.endsWith("/contactGroups") && c.m === "POST" && c.body.contactGroup.name === "Case Farms"), "missing company label created");
+    ok(writes.some(w => w.label === "google.hash" && w.params[0] === "A"), "fingerprint stored after success");
+    ok(!live.errors.length, "no errors");
+  });
+});
+
 await test("googleContacts/oauth: refreshes per destination with the right token", async () => {
   await withOauthEnv(async () => {
     const seen = [];
@@ -6135,7 +6217,9 @@ await test("googleContacts/oauth: refreshes per destination with the right token
       }
       return { ok: true, status: 200, json: async () => ({ connections: [], totalPeople: 5 }) };
     };
+    process.env.GOOGLE_CONTACTS_NEE = "on"; // two-account mode (owner switched to rick@ only 2026-11-15)
     const gc = await import(`../netlify/functions/_google-contacts.js?oa=${Date.now()}`);
+    delete process.env.GOOGLE_CONTACTS_NEE;
     eq(gc.googleAuthMode(), "oauth", "auth mode");
     eq(gc.googleConfigured(), true, "configured");
     await gc.googleStatus();
@@ -6217,7 +6301,9 @@ await test("googleContacts/oauth: a half-configured pair refuses rather than hal
   await withOauthEnv(async () => {
     delete process.env.GOOGLE_REFRESH_TOKEN_2;
     globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ access_token: "t", expires_in: 3600 }) });
+    process.env.GOOGLE_CONTACTS_NEE = "on"; // two-account mode (owner switched to rick@ only 2026-11-15)
     const gc = await import(`../netlify/functions/_google-contacts.js?half=${Date.now()}`);
+    delete process.env.GOOGLE_CONTACTS_NEE;
     // Half-configured is worse than unconfigured: the reconcile would otherwise
     // report a clean pass over an account it never reached.
     eq(gc.googleConfigured(), false, "not configured until BOTH destinations have a token");

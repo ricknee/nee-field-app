@@ -62,7 +62,10 @@ const PEOPLE_BASE = "https://people.googleapis.com/v1";
 // and a mismatch between them is the classic way an update silently drops data:
 // updating with a narrower mask than you read does not merge, it REPLACES the
 // masked fields and leaves the rest — so the two lists must stay aligned.
-export const PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations,addresses,metadata";
+// `memberships` is READ so the sync can see which labels a person already has;
+// it is never in UPDATE_FIELDS — labels are added through contactGroups
+// members:modify, which can't drop a label somebody added on their phone.
+export const PERSON_FIELDS = "names,emailAddresses,phoneNumbers,organizations,addresses,memberships,metadata";
 export const UPDATE_FIELDS = "names,emailAddresses,phoneNumbers,organizations,addresses";
 
 // ── DESTINATIONS ──────────────────────────────────────────────────────────
@@ -78,12 +81,20 @@ export const UPDATE_FIELDS = "names,emailAddresses,phoneNumbers,organizations,ad
 // otherwise resolve to "no destinations" and the sync would report success
 // having written nothing, which is the silent-failure shape this codebase keeps
 // getting bitten by. Override per-environment if the accounts ever change.
-export const DESTINATIONS = [
+export const ALL_DESTINATIONS = [
   { key: 1, column: "google_person_id_1", refreshTokenEnv: "GOOGLE_REFRESH_TOKEN_1",
     subject: process.env.GOOGLE_CONTACTS_DEST_1 || "rick@northeasternelec.com" },
   { key: 2, column: "google_person_id_2", refreshTokenEnv: "GOOGLE_REFRESH_TOKEN_2",
     subject: process.env.GOOGLE_CONTACTS_DEST_2 || "nee@northeasternelec.com" },
 ];
+// ⚠ OWNER 2026-11-15: "Only rick@". The August decision (both rick@ and nee@)
+// is superseded — the sync reads and writes rick@ ONLY. nee@ is left exactly as
+// it is: nothing reads it, nothing writes it, and google_person_id_2 is kept
+// untouched in Neon in case that ever changes. Set GOOGLE_CONTACTS_NEE=on to
+// bring it back (every caller iterates DESTINATIONS, so that is the one switch).
+export const DESTINATIONS = String(process.env.GOOGLE_CONTACTS_NEE || "").toLowerCase() === "on"
+  ? ALL_DESTINATIONS
+  : ALL_DESTINATIONS.filter(d => d.key === 1);
 
 export class GoogleError extends Error {
   constructor(code, message, detail) {
@@ -568,6 +579,41 @@ export async function listConnections(subject, timeoutMs = DEFAULT_TIMEOUT_MS) {
     pageToken = page.nextPageToken;
   } while (pageToken);
   return out;
+}
+
+// ── LABELS (contact groups) ───────────────────────────────────────────────
+// Owner 2026-11-15: label every person by tab AND by company. Only ever ADDS a
+// person to a label — never removes, never deletes a label — so a label
+// somebody made or filled by hand on their phone is never touched.
+export async function listContactGroups(subject, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  const out = [];
+  let pageToken;
+  do {
+    const page = await callPeople(subject, "contactGroups", {
+      query: { pageSize: 1000, pageToken, groupFields: "name,groupType" }, timeoutMs,
+    });
+    out.push(...(page.contactGroups || []));
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return out;
+}
+
+export async function createContactGroup(subject, name, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  return await callPeople(subject, "contactGroups", {
+    method: "POST", body: { contactGroup: { name } }, timeoutMs,
+  });
+}
+
+// Up to 1000 people per call (Google's cap). Adding someone already in the
+// label is a no-op on Google's side.
+export async function addToContactGroup(subject, groupResourceName, personResourceNames, timeoutMs = DEFAULT_TIMEOUT_MS) {
+  for (let i = 0; i < personResourceNames.length; i += 1000) {
+    await callPeople(subject, `${groupResourceName}/members:modify`, {
+      method: "POST",
+      body: { resourceNamesToAdd: personResourceNames.slice(i, i + 1000).map(toResourceName) },
+      timeoutMs,
+    });
+  }
 }
 
 // ── DIAGNOSTICS ───────────────────────────────────────────────────────────

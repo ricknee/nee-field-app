@@ -12093,6 +12093,12 @@ async function handleCreateContact(body) {
   const primaryPhone = String(body?.primaryPhone || "").trim();
   const primaryEmail = String(body?.primaryEmail || "").trim();
   const companyId    = String(body?.companyId    || "").trim();
+  // Optional (owner 2026-11-15). New Project files the job's customer as
+  // "Customer"; the contractor-contact picker files "Contractor Contact" — so
+  // that picker can tell the contractor's own people from its customers.
+  // Anything else is dropped rather than stored.
+  const CONTACT_ROLES = ["Customer", "Contractor Contact"];
+  const role = CONTACT_ROLES.includes(String(body?.role || "").trim()) ? String(body.role).trim() : null;
 
   if (!companyId) return resp(400, { ok: false, error: "Missing companyId." });
   if (!firstName && !lastName) return resp(400, { ok: false, error: "First Name or Last Name is required." });
@@ -12122,11 +12128,11 @@ async function handleCreateContact(body) {
   const rows = await neonWrite("contact.create",
     `INSERT INTO contacts (first_name, last_name, primary_phone,
                            primary_email, company_airtable_id,
-                           company_id, active, synced_at)
-     VALUES ($1,$2,$3,$4,$5,(SELECT id FROM companies WHERE airtable_id=$5 OR id::text=$5),true,now())
+                           company_id, role, active, synced_at)
+     VALUES ($1,$2,$3,$4,$5,(SELECT id FROM companies WHERE airtable_id=$5 OR id::text=$5),$6,true,now())
      RETURNING id`,
     [firstName || null, lastName || null, primaryPhone || null,
-     primaryEmail || null, companyId]);
+     primaryEmail || null, companyId, role]);
   const neonId = rows?.[0]?.id;
 
   // ⚠ The mirror can only run when the company still has a rec id — `Contact`'s

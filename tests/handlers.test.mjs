@@ -2182,6 +2182,19 @@ await test("createJob returns the job as the list reads it (address, contractor)
   ok(/job \|\| mapJob\(record\)/.test(b), "falls back to the intake shape if the re-read fails");
 });
 
+await test("contractor-contact picker lists the contractor's own people, never its customers (2026-11-15)", async () => {
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const i = src.indexOf("async function handleCreateContact(");
+  const b = src.slice(i, src.indexOf("\nasync function ", i + 10));
+  ok(/CONTACT_ROLES = \["Customer", "Contractor Contact"\]/.test(b), "createContact accepts only known roles");
+  ok(/company_id, role, active, synced_at\)/.test(b), "role is written");
+  ok(/GC_ROLES = \["owner", "foreman", "jobsite contact", "inspector", "contractor contact"\]/.test(html), "picker filters by contractor-side role");
+  ok(/role: "Contractor Contact" \}\)/.test(html), "picker's + New contact is filed as Contractor Contact");
+  ok(/role:\s+"Customer"/.test(html), "New Project files its customer as Customer");
+});
+
 await test("fleet: tire-rotation reminder runs on every mileage save and is fail-soft", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
   const body = (name) => {

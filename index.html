@@ -14460,7 +14460,15 @@
       if (state.selected?.id !== job.id) return;
       const sel = $("piEditGcContact");
       if (sel && sel.value !== (job.contractorContactId || "")) return;
-      const list = (res.contacts || []).slice().sort((a, b) => piGcLabel(a).localeCompare(piGcLabel(b), undefined, { sensitivity: "base" }));
+      // Contractor-side people only (owner 2026-11-15): contacts filed under a
+      // contractor are mostly its CUSTOMERS (Miller Poultry's growers), so the
+      // list showed nothing but customers. Only these roles are the
+      // contractor's own people; a blank role is left out too, because the New
+      // Project form filed customers with no role until today.
+      const GC_ROLES = ["owner", "foreman", "jobsite contact", "inspector", "contractor contact"];
+      const list = (res.contacts || [])
+        .filter(c => GC_ROLES.includes(String(c.role || "").trim().toLowerCase()))
+        .sort((a, b) => piGcLabel(a).localeCompare(piGcLabel(b), undefined, { sensitivity: "base" }));
       piGcRenderOptions(job, list);
     } catch (e) {
       console.warn("contractor contacts failed to load:", e);
@@ -14601,7 +14609,7 @@
         $("piEditGcFirst").focus();
         throw new Error("New contractor contact needs a first or last name.");
       }
-      const res = await apiPost("createContact", { ...nc, companyId: job.contractorId });
+      const res = await apiPost("createContact", { ...nc, companyId: job.contractorId, role: "Contractor Contact" });
       if (!res.ok || !res.contact?.id) throw new Error(res.error || "Couldn't add the contact.");
       gc = { ...nc, id: res.contact.id };
       piGcContacts.push(gc);
@@ -23727,7 +23735,8 @@
           lastName:     $("npCustLast").value,
           primaryPhone: $("npPhone").value,
           primaryEmail: $("npEmail").value,
-          companyId:    contractorId
+          companyId:    contractorId,
+          role:         "Customer"
         });
         if (!contactRes.ok || !contactRes.contact) {
           throw new Error(contactRes.error || "Contact create failed");

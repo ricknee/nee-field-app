@@ -16468,9 +16468,10 @@
     }
     const c = r.counts || {};
     const row = (label, n) => n ? `<span>${esc(label)}</span><b>${n}</b>` : "";
-    const WORD = { create: "➕ New in Google", adopt: "🔗 Already in Google — will link", update: "✏ Details to update",
-                   missing: "⚠ Linked contact gone from Google", ambiguous: "⚠ More than one match — left alone",
-                   skip: "— Skipped" };
+    const WORD = { create: "➕ New in Google", adopt: "🔗 Already in Google — will link",
+                   relink: "🔁 Merged in Google — will re-link", update: "✏ Details to update",
+                   missing: "⚠ Linked contact gone from Google", shared: "⚠ App duplicate — same Google contact",
+                   ambiguous: "⚠ More than one match — left alone", skip: "— Skipped" };
     const groups = {};
     (r.items || []).forEach(i => (groups[i.action] = groups[i.action] || []).push(i));
     const labelLines = Object.entries(r.labels?.adds || {}).sort((a, b) => b[1] - a[1])
@@ -16482,15 +16483,17 @@
         : "Synced this batch."}</div>
       <div class="ct-g-counts">
         ${row("➕ New in Google", c.create)}${row("🔗 Already in Google — will link", c.adopt)}
+        ${row("🔁 Merged in Google — will re-link", c.relink)}
         ${row("✏ Details to update", c.update)}${row("🏷 Only labels to add", c.labelsOnly)}
         ${row("✓ Already up to date", c.unchanged)}${row("⚠ Linked contact gone from Google", c.missingInGoogle)}
+        ${row("⚠ App duplicate — same Google contact", c.sharedInGoogle)}
         ${row("⚠ More than one match", c.ambiguous)}${row("— No phone or email (skipped)", c.noDetails)}
         ${row("— Inactive (skipped)", c.inactive)}${row("⚠ Couldn't reach", c.notReached)}
       </div>
       ${r.budgetHit || r.remaining ? `<div class="ct-note">${r.remaining || "Some"} still to do — run again to continue.</div>` : ""}
       ${labelLines ? `<h4 style="margin:6px 0 0;">Labels</h4><div class="ct-g-counts">${labelLines}</div>` : ""}
       ${(r.errors || []).length ? `<div class="ct-err">${r.errors.map(e => esc((e.name || e.label || "") + ": " + e.error)).join("<br>")}</div>` : ""}
-      ${Object.keys(WORD).filter(k => groups[k]).map(k => `<details${k === "missing" || k === "ambiguous" ? " open" : ""}>
+      ${Object.keys(WORD).filter(k => groups[k]).map(k => `<details${k === "missing" || k === "ambiguous" || k === "shared" ? " open" : ""}>
           <summary><b>${esc(WORD[k])}</b> (${groups[k].length})</summary>
           ${groups[k].map(i => `<div class="ct-g-item">${esc(i.name)}<small>${esc(i.detail || "")}</small></div>`).join("")}
         </details>`).join("")}

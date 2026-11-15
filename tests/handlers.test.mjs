@@ -6197,6 +6197,65 @@ await test("google sync (2026-11-15): rick@ only; preview writes nothing; adopt/
   });
 });
 
+await test("google sync: contacts merged in Google are RE-LINKED, app duplicates on one contact are left alone", async () => {
+  // Real preview 2026-11-15: 7 "gone" after the owner's Merge & fix, and pairs
+  // of app duplicates whose old ids both answered with one merged contact.
+  await withOauthEnv(async () => {
+    delete process.env.GOOGLE_REFRESH_TOKEN_2;
+    const c5 = { resourceName: "people/c5", etag: "e5", names: [{ givenName: "Tim", familyName: "Yoder" }],
+                 phoneNumbers: [{ value: "(330) 257-8297" }], memberships: [] };
+    const c6 = { resourceName: "people/c6", etag: "e6", names: [{ givenName: "Benji", familyName: "Mast" }],
+                 phoneNumbers: [{ value: "330-473-5112" }], memberships: [] };
+    // Old ids answer with the SURVIVOR (a different resourceName); "dead" answers nothing.
+    const byRequested = { old1: c5, old2: c5 };
+    const calls = [];
+    globalThis.fetch = async (url, opts = {}) => {
+      const u = String(url), m = opts.method || "GET";
+      const body = opts.body && typeof opts.body === "string" && opts.body.startsWith("{") ? JSON.parse(opts.body) : null;
+      const okj = (j) => ({ ok: true, status: 200, json: async () => j });
+      if (u.includes("oauth2.googleapis.com/token")) return okj({ access_token: "t", expires_in: 3600 });
+      calls.push({ m, u, body });
+      if (u.includes("people:batchGet")) {
+        const names = new URL(u).searchParams.getAll("resourceNames");
+        return okj({ responses: names.map(n => ({ requestedResourceName: n, person: byRequested[n.replace("people/", "")] })) });
+      }
+      if (u.includes("people/me/connections")) return okj({ connections: [c5, c6] });
+      if (u.includes("/contactGroups") && m === "GET") return okj({ contactGroups: [] });
+      if (u.endsWith("/contactGroups") && m === "POST") return okj({ resourceName: `contactGroups/n_${body.contactGroup.name}` });
+      if (u.includes("members:modify")) return okj({});
+      if (u.includes(":updateContact")) return okj(body);
+      return { ok: false, status: 500, json: async () => ({ error: { message: "unexpected " + u } }) };
+    };
+    const base = { role: "Customer", primary_email: null, cell_phone: null, office_phone: null, email: null, phone: null,
+                   street: null, city: null, state: null, zip: null, org_name: "Misc Jobs", hash: null, active: true, kind: "contact" };
+    const rows = [
+      { ...base, id: "T1", gid: "old1", first_name: "Tim", last_name: "Yoder", primary_phone: "(330) 257-8297" },
+      { ...base, id: "T2", gid: "old2", first_name: "Tim", last_name: "Yoder", primary_phone: "3302578297" },
+      { ...base, id: "BM", gid: "dead", first_name: "Benji", last_name: "Mast", primary_phone: "(330) 473-5112" },
+    ];
+    const writes = [];
+    const write = async (label, text, params) => { writes.push({ label, params }); return []; };
+    const sync = await import(`../netlify/functions/_google-contacts-sync.js?rl=${Date.now()}`);
+
+    const pv = await sync.runGoogleContactsSync({ q: async () => rows, write, dryRun: true });
+    eq(pv.counts.relink, 2, "T1 re-pointed at the merged contact; BM found again by phone");
+    eq(pv.counts.sharedInGoogle, 1, "T2 lands on the same Google contact → left alone");
+    eq(pv.counts.missingInGoogle, 0, "nothing left 'gone'");
+    eq(writes.length, 0, "preview writes nothing");
+    ok(pv.items.every(i => i.action !== "update" || /will set/.test(i.detail)), "updates say what they'd set");
+
+    process.env.GOOGLE_CONTACTS = "on";
+    calls.length = 0;
+    await sync.runGoogleContactsSync({ q: async () => rows, write, dryRun: false, budgetMs: 20000 });
+    delete process.env.GOOGLE_CONTACTS;
+    ok(writes.some(w => w.label === "google.relink" && w.params[0] === "T1" && w.params[1] === "c5"), "T1 now stores c5");
+    ok(writes.some(w => w.label === "google.relink" && w.params[0] === "BM" && w.params[1] === "c6"), "BM now stores c6");
+    ok(!writes.some(w => w.params[0] === "T2"), "T2 untouched");
+    ok(!calls.some(c => c.u.includes("people:createContact")), "nothing re-created");
+    ok(!calls.some(c => c.u.includes("people/old1:")), "updates go to the merged contact's id, not the old one");
+  });
+});
+
 await test("googleContacts/oauth: refreshes per destination with the right token", async () => {
   await withOauthEnv(async () => {
     const seen = [];

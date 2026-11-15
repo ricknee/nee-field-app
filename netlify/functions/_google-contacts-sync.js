@@ -13,7 +13,12 @@
 // that matter most here:
 //   • ID-FIRST. A stored google_person_id_1 is always an UPDATE, never a create.
 //   • Only a genuine 404 means "gone". A stored id that no longer resolves is
-//     REPORTED, never re-created (it is usually a person merged in Google).
+//     NEVER re-created (it is usually a person merged in Google). It is looked
+//     for again by phone/email and re-linked on exactly one unclaimed match;
+//     otherwise REPORTED. An old id that answers with a merged contact under a
+//     new name is re-pointed at that name.
+//   • Two app rows on ONE Google contact (an app duplicate) → the second is
+//     reported "shared" and left alone, so they can't overwrite each other.
 //   • NO DELETE. Not people, not labels, not label memberships.
 //   • A create's new id is written to Neon IMMEDIATELY, before anything else
 //     can fail — an unrecorded create happens again next run.
@@ -138,8 +143,8 @@ export async function runGoogleContactsSync({ q, write, dryRun = true, budgetMs 
   const live = !dryRun && mode === "on";
   const report = {
     ok: true, mode, account: dest.subject, preview: !live,
-    counts: { create: 0, adopt: 0, update: 0, labelsOnly: 0, unchanged: 0, missingInGoogle: 0,
-              ambiguous: 0, noDetails: 0, inactive: 0, notReached: 0 },
+    counts: { create: 0, adopt: 0, relink: 0, update: 0, labelsOnly: 0, unchanged: 0, missingInGoogle: 0,
+              sharedInGoogle: 0, ambiguous: 0, noDetails: 0, inactive: 0, notReached: 0 },
     labels: { toCreate: [], adds: {} },
     items: [], errors: [], budgetHit: false,
   };
@@ -167,7 +172,14 @@ export async function runGoogleContactsSync({ q, write, dryRun = true, budgetMs 
   // creating, rick@'s whole list to adopt from.
   const withId = work.filter(p => p.gid);
   const existing = withId.length ? await getPeopleBatch(dest.subject, withId.map(p => p.gid)) : new Map();
-  const needAdopt = work.some(p => !p.gid);
+  // ⚠ When Google merges two contacts, the old id can still answer — with the
+  // SURVIVOR, whose resourceName is different. The survivor's id is the one to
+  // store, and it counts as taken.
+  const canonOf = (gid) => { const c = gid && existing.get(gid); return c?.resourceName ? toStoredId(c.resourceName) : null; };
+  for (const p of withId) { const cn = canonOf(p.gid); if (cn) takenIds.add(cn); }
+  const claimed = new Map(); // canonical id -> app person who claimed it this run
+  // People whose stored id is gone are looked for again by phone/email.
+  const needAdopt = work.some(p => !p.gid || !existing.get(p.gid));
   const byPhone = new Map(), byEmail = new Map();
   if (needAdopt) {
     for (const c of await listConnections(dest.subject)) {
@@ -189,17 +201,45 @@ export async function runGoogleContactsSync({ q, write, dryRun = true, budgetMs 
   for (const p of work) {
     if (live && timeLeft() < 1500) { report.budgetHit = true; break; }
     try {
-      let gid = p.gid, current = gid ? existing.get(gid) : null, action;
-      if (gid && !current) {
-        report.counts.missingInGoogle++;
-        report.items.push({ action: "missing", kind: p.kind, name: p.name,
-          detail: "linked to a Google contact that no longer exists (merged or deleted there) — left alone; needs a look" });
-        continue;
-      }
-      if (!gid) {
+      let gid = p.gid, current = gid ? existing.get(gid) : null, action, relinkWhy = "";
+      const hitsFor = () => {
         const hits = new Set();
         for (const e of p.emails) for (const rn of byEmail.get(e) || []) hits.add(rn);
         for (const d of p.phones) for (const rn of byPhone.get(d) || []) hits.add(rn);
+        return hits;
+      };
+      if (gid && current) {
+        const cn = canonOf(gid);
+        if (cn && cn !== gid) { gid = cn; relinkWhy = "merged in Google — re-linked to the merged contact"; }
+      }
+      if (gid && !current) {
+        // The old id is gone. Find the person again — but only an exact,
+        // unclaimed, single match. Never re-created.
+        const hits = hitsFor();
+        const free = [...hits].filter(rn => !takenIds.has(rn));
+        if (free.length === 1) {
+          gid = free[0]; current = existing.get(gid); takenIds.add(gid);
+          relinkWhy = "old Google contact gone — found again by phone/email, re-linked";
+        } else {
+          report.counts.missingInGoogle++;
+          report.items.push({ action: "missing", kind: p.kind, name: p.name,
+            detail: free.length > 1 ? `old Google contact gone; ${free.length} contacts now match — left alone`
+                  : hits.size ? "old Google contact gone; its phone/email belongs to a contact another app person is linked to (an app duplicate?) — left alone"
+                  : "old Google contact gone and nothing matches its phone/email — left alone, never re-created" });
+          continue;
+        }
+      }
+      if (gid && claimed.has(gid)) {
+        report.counts.sharedInGoogle++;
+        report.items.push({ action: "shared", kind: p.kind, name: p.name,
+          detail: `same Google contact as ${claimed.get(gid)} in the app — left alone (merge the app duplicate)` });
+        continue;
+      }
+      if (relinkWhy && live) {
+        await write("google.relink", `UPDATE ${TABLE[p.kind]} SET google_person_id_1 = $2 WHERE id::text = $1`, [p.id, gid]);
+      }
+      if (!gid) {
+        const hits = hitsFor();
         const free = [...hits].filter(rn => !takenIds.has(rn));
         if (free.length > 1 || (hits.size && !free.length)) {
           report.counts.ambiguous++;
@@ -223,15 +263,23 @@ export async function runGoogleContactsSync({ q, write, dryRun = true, budgetMs 
           }
         }
       }
+      if (gid) claimed.set(gid, p.name);
       if (action !== "create") {
+        const before = comparable(current);
         const merged = mergePerson(current, p.person);
-        const changed = !same(comparable(current), merged);
+        const changed = !same(before, merged);
         if (changed && live) await updatePerson(dest.subject, gid, current.etag, merged);
-        if (!action) action = changed ? "update" : "labelsOnly";
-        if (action === "update" || action === "adopt") {
+        if (!action) action = relinkWhy ? "relink" : changed ? "update" : "labelsOnly";
+        // Say WHAT would change, so the preview can be judged, not just counted.
+        const FIELD = { names: "name", phoneNumbers: "phone", emailAddresses: "email",
+                        organizations: "company/title", addresses: "address" };
+        const what = changed ? Object.keys(FIELD).filter(k => !same(before[k], merged[k])).map(k => FIELD[k]) : [];
+        const fields = what.length ? ` (${what.join(", ")})` : "";
+        if (action === "update" || action === "adopt" || action === "relink") {
           report.items.push({ action, kind: p.kind, name: p.name,
-            detail: action === "adopt" ? `found already in Google${changed ? " — details will be brought up to date" : ""}`
-                                       : "details changed in the app" });
+            detail: action === "adopt" ? `found already in Google${changed ? " — will set" + fields : ""}`
+                  : action === "relink" ? `${relinkWhy}${changed ? " — will set" + fields : ""}`
+                  : `will set${fields}` });
         }
       } else {
         report.items.push({ action, kind: p.kind, name: p.name, detail: "new in Google" });
@@ -278,8 +326,9 @@ export async function runGoogleContactsSync({ q, write, dryRun = true, budgetMs 
       await write("google.hash", `UPDATE ${TABLE[h.kind]} SET google_sync_hash = $2 WHERE id::text = $1`, [h.id, h.hash]);
     }
   }
-  report.remaining = Math.max(0, work.length - (report.counts.create + report.counts.adopt + report.counts.update +
-    report.counts.labelsOnly + report.counts.missingInGoogle + report.counts.ambiguous + report.counts.notReached));
+  report.remaining = Math.max(0, work.length - (report.counts.create + report.counts.adopt + report.counts.relink +
+    report.counts.update + report.counts.labelsOnly + report.counts.missingInGoogle + report.counts.sharedInGoogle +
+    report.counts.ambiguous + report.counts.notReached));
   // Keep the preview readable on a phone: the routine "labels only" rows are
   // counted, not listed.
   report.items.sort((a, b) => a.action.localeCompare(b.action) || a.name.localeCompare(b.name));

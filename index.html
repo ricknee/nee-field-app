@@ -16208,11 +16208,15 @@
       // Details are folded until the name is tapped (owner 2026-11-15).
       const t = e.target.closest("[data-ct-open]");
       if (t) {
+        // Flip what is ON SCREEN (a search shows groups open regardless of
+        // the remembered state), then remember it.
         const k = t.dataset.ctOpen;
-        ctState.open.has(k) ? ctState.open.delete(k) : ctState.open.add(k);
         const box = t.closest(".ct-person, .ct-org")?.querySelector(":scope > .ct-details");
-        if (box) box.hidden = !ctState.open.has(k);
-        t.classList.toggle("ct-is-open", ctState.open.has(k));
+        if (!box) return;
+        const nowOpen = box.hidden;
+        box.hidden = !nowOpen;
+        nowOpen ? ctState.open.add(k) : ctState.open.delete(k);
+        t.classList.toggle("ct-is-open", nowOpen);
       }
     });
   }
@@ -16292,13 +16296,18 @@
         ? `<button class="ct-edit" type="button" data-ct-edit="${esc(o.id)}" data-ct-kind="${esc(o.kind)}">✏ Edit</button>` : "";
       const addHere = edit && !o._none
         ? `<button class="ct-edit" type="button" data-ct-edit="" data-ct-kind="${esc(tab.personKind)}" data-ct-org="${esc(o.id)}">+ Person</button>` : "";
-      const ok = "o:" + o.kind + ":" + o.id, oOpen = ctState.open.has(ok);
+      // Each company heading folds its whole group (owner 2026-11-15): closed
+      // by default so the list reads as a list of companies; a search opens
+      // every group that matched.
+      const ok = "o:" + o.kind + ":" + o.id, oOpen = !!q || ctState.open.has(ok);
       html += `<div class="ct-org${o.active ? "" : " ct-off"}">
-        <div class="ct-org-head"><span class="ct-org-name${info.length ? " ct-tap" : ""}${oOpen ? " ct-is-open" : ""}"
-          ${info.length ? `data-ct-open="${esc(ok)}"` : ""}>${esc(o.name)}${o.active ? "" : " (inactive)"}</span>
+        <div class="ct-org-head"><span class="ct-org-name ct-tap${oOpen ? " ct-is-open" : ""}"
+          data-ct-open="${esc(ok)}">${esc(o.name)}${o.active ? "" : " (inactive)"}</span>
           <span class="ct-org-n">${ps.length || ""}</span>${addHere}${orgEdit}</div>
-        ${info.length ? `<div class="ct-org-info ct-details"${oOpen ? "" : " hidden"}>${info.join("")}</div>` : ""}
-        ${ps.map(p => ctPersonHtml(p, edit)).join("")}
+        <div class="ct-org-body ct-details"${oOpen ? "" : " hidden"}>
+          ${info.length ? `<div class="ct-org-info">${info.join("")}</div>` : ""}
+          ${ps.map(p => ctPersonHtml(p, edit)).join("") || `<div class="ct-empty">No people yet.</div>`}
+        </div>
       </div>`;
     }
     list.innerHTML = html || `<div class="ct-empty">${q ? "Nobody matches that search." : "Nobody here yet."}</div>`;

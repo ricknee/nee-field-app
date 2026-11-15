@@ -1213,6 +1213,11 @@
     #contactsModal .ct-line { margin-top:4px; font-size:14px; display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
     #contactsModal .ct-line .ct-lbl { font-size:12px; color:var(--muted); min-width:44px; }
     #contactsModal .ct-off { opacity:.55; }
+    /* Folded details: tap the name (owner 2026-11-15). */
+    #contactsModal .ct-tap { cursor:pointer; }
+    #contactsModal .ct-tap::before { content:"▸"; display:inline-block; width:16px; color:var(--muted); font-size:12px; transition:transform .15s; }
+    #contactsModal .ct-tap.ct-is-open::before { transform:rotate(90deg); }
+    #contactsModal .ct-details[hidden] { display:none; }
     #contactsModal .ct-empty { color:var(--muted); font-size:14px; padding:14px 2px; }
     #contactsModal .ct-form { display:grid; gap:10px; }
     #contactsModal .ct-form label { display:grid; gap:4px; font-size:12px; font-weight:600; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
@@ -16150,7 +16155,7 @@
   // server's tier. Saving a power-co or inspection person re-copies their
   // details onto every job that shows them — the server does that.
   // ═══════════════════════════════════════════════════════════════
-  const ctState = { tab: "customers", data: null, q: "", showInactive: false, wired: false };
+  const ctState = { tab: "customers", data: null, q: "", showInactive: false, wired: false, open: new Set() };
   // Keep in step with GC_ROLES (the job's contractor-contact picker): a contact
   // with one of these roles, or none, is a CUSTOMER; anything else is the
   // contractor's own people.
@@ -16199,7 +16204,16 @@
     $("ctAddBtn").addEventListener("click", () => ctOpenAddChooser());
     $("ctList").addEventListener("click", e => {
       const b = e.target.closest("[data-ct-edit]");
-      if (b) { ctOpenEdit(b.dataset.ctKind, b.dataset.ctEdit, b.dataset.ctOrg || ""); }
+      if (b) { ctOpenEdit(b.dataset.ctKind, b.dataset.ctEdit, b.dataset.ctOrg || ""); return; }
+      // Details are folded until the name is tapped (owner 2026-11-15).
+      const t = e.target.closest("[data-ct-open]");
+      if (t) {
+        const k = t.dataset.ctOpen;
+        ctState.open.has(k) ? ctState.open.delete(k) : ctState.open.add(k);
+        const box = t.closest(".ct-person, .ct-org")?.querySelector(":scope > .ct-details");
+        if (box) box.hidden = !ctState.open.has(k);
+        t.classList.toggle("ct-is-open", ctState.open.has(k));
+      }
     });
   }
 
@@ -16278,10 +16292,12 @@
         ? `<button class="ct-edit" type="button" data-ct-edit="${esc(o.id)}" data-ct-kind="${esc(o.kind)}">✏ Edit</button>` : "";
       const addHere = edit && !o._none
         ? `<button class="ct-edit" type="button" data-ct-edit="" data-ct-kind="${esc(tab.personKind)}" data-ct-org="${esc(o.id)}">+ Person</button>` : "";
+      const ok = "o:" + o.kind + ":" + o.id, oOpen = ctState.open.has(ok);
       html += `<div class="ct-org${o.active ? "" : " ct-off"}">
-        <div class="ct-org-head"><span class="ct-org-name">${esc(o.name)}${o.active ? "" : " (inactive)"}</span>
+        <div class="ct-org-head"><span class="ct-org-name${info.length ? " ct-tap" : ""}${oOpen ? " ct-is-open" : ""}"
+          ${info.length ? `data-ct-open="${esc(ok)}"` : ""}>${esc(o.name)}${o.active ? "" : " (inactive)"}</span>
           <span class="ct-org-n">${ps.length || ""}</span>${addHere}${orgEdit}</div>
-        ${info.length ? `<div class="ct-org-info">${info.join("")}</div>` : ""}
+        ${info.length ? `<div class="ct-org-info ct-details"${oOpen ? "" : " hidden"}>${info.join("")}</div>` : ""}
         ${ps.map(p => ctPersonHtml(p, edit)).join("")}
       </div>`;
     }
@@ -16297,11 +16313,12 @@
     const addr = [p.street, [p.city, [p.state, p.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")].filter(Boolean).join(", ");
     if (addr)          lines.push(`<div class="ct-line"><span class="ct-lbl">Address</span><a href="https://maps.google.com/?q=${encodeURIComponent(addr)}" target="_blank" rel="noopener">${esc(addr)}</a></div>`);
     if (p.notes)       lines.push(`<div class="ct-line"><span class="ct-lbl">Notes</span>${esc(p.notes)}</div>`);
+    const k = "p:" + p.kind + ":" + p.id, open = ctState.open.has(k);
     return `<div class="ct-person${p.active ? "" : " ct-off"}">
-      <div class="ct-person-top"><span class="ct-person-name">${esc(ctName(p))}${p.active ? "" : " (inactive)"}</span>
+      <div class="ct-person-top"><span class="ct-person-name ct-tap${open ? " ct-is-open" : ""}" data-ct-open="${esc(k)}">${esc(ctName(p))}${p.active ? "" : " (inactive)"}</span>
         ${p.role ? `<span class="ct-role">${esc(p.role)}</span>` : ""}
         ${edit ? `<button class="ct-edit" type="button" data-ct-edit="${esc(p.id)}" data-ct-kind="${esc(p.kind)}">✏</button>` : ""}</div>
-      ${lines.join("")}
+      <div class="ct-details"${open ? "" : " hidden"}>${lines.join("") || `<div class="ct-line ct-role">No phone or email on file.</div>`}</div>
     </div>`;
   }
 

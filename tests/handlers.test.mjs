@@ -2168,6 +2168,15 @@ await test("lifts 'Needs fixing' list: crews add and tick, viewer read-only (sch
   ok(/const EQUIP_TODO = \{/.test(src) && !/EQUIP_TODO\[body/.test(src), "kind is a constant, not from the body");
 });
 
+await test("payrollEntries emits the job id the dropdown speaks — native jobs showed No Job 2026-11-16", async () => {
+  const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const i = src.indexOf("async function handlePayrollEntries(");
+  ok(i >= 0, "handlePayrollEntries exists");
+  const b = src.slice(i, src.indexOf("\nasync function ", i + 10));
+  ok(/COALESCE\(j\.airtable_id, j\.id::text\)\s+AS job_id/.test(b), "job_id is COALESCE(airtable_id, id::text)");
+  ok(!/j\.airtable_id\s+AS job_id/.test(b), "no bare airtable_id emit (a native job would read NULL → Save All unlinks it)");
+});
+
 // Tire rotation every 7,000 mi (schema 092, owner 2026-11-12). Static: the DB is
 // offline here, so these pin the wiring — every mileage write path runs the
 // check, the check can never fail the save, and un-ticking only removes the

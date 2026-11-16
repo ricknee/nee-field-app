@@ -1040,7 +1040,13 @@ async function handlePayrollEntries(params) {
               t.duration_seconds::float8 AS duration,
               t.hours::float8          AS hours,
               t.city_taxes, t.class,
-              j.airtable_id            AS job_id,
+              -- ⚠⚠ COALESCE, NOT A BARE airtable_id (fixed 2026-11-16). A
+              -- native job has no airtable_id, so the bare emit handed the
+              -- Payroll Manager jobId NULL: the row showed "— No Job —", and
+              -- because Save All sends the dropdown's value back as jobId, any
+              -- edit to that row would have UNLINKED the hours from the job.
+              -- Must match JOB_SELECT's id form, which the dropdown is built from.
+              COALESCE(j.airtable_id, j.id::text) AS job_id,
               t.job_name, t.labor_reviewed
          FROM time_entries t
          LEFT JOIN employees e ON e.id = t.employee_id

@@ -5327,20 +5327,30 @@
   // [DEBUG-PCLOUD-UPLOAD-2026-05] - placeholder URL, fill in once Make scenario is live
   const MAKE_PCLOUD_UPLOAD_WEBHOOK = 'https://hook.us1.make.com/q74u68tcuseg8spi4l164wu3i8rvb5oe';
 
+  // ⚠ Fixed 2026-11-16. The old loader polled for 4.5 s and never removed a
+  // failed <script>, so ONE slow or dropped load meant every later PDF button
+  // failed too, until the page was reloaded. Now: a failed or timed-out tag is
+  // removed so the next click really re-downloads, and the wait is 20 s.
   function ensureJsPDF() {
     return new Promise((resolve, reject) => {
       if (window.jspdf) return resolve();
-      if (!document.getElementById("jspdf-script")) {
-        const s = document.createElement("script");
+      let s = document.getElementById("jspdf-script");
+      if (s && s.dataset.failed === "1") { s.remove(); s = null; }
+      if (!s) {
+        s = document.createElement("script");
         s.id  = "jspdf-script";
         s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+        s.onerror = () => { s.dataset.failed = "1"; };
         document.head.appendChild(s);
       }
-      let tries = 15;
+      let tries = 67;   // × 300 ms ≈ 20 s
       (function wait() {
         if (window.jspdf) resolve();
-        else if (--tries > 0) setTimeout(wait, 300);
-        else reject(new Error("PDF library failed to load"));
+        else if (s.dataset.failed === "1" || --tries <= 0) {
+          s.dataset.failed = "1";
+          reject(new Error("PDF library failed to load"));
+        }
+        else setTimeout(wait, 300);
       })();
     });
   }
@@ -31232,8 +31242,16 @@
       }
     }
 
-    ensureJsPDF().then(runBuildAndArchive)
-      .catch(() => alert("PDF library failed to load. Check your internet connection and try again."));
+    // ⚠ Two different failures, two different messages (2026-11-16). This used
+    // to be one .catch after .then(runBuildAndArchive), so a crash INSIDE the
+    // PDF build was reported as "library failed to load" and hid the real bug.
+    ensureJsPDF().then(() => {
+      try { runBuildAndArchive(); }
+      catch (e) {
+        console.error("Payroll PDF build failed:", e);
+        alert(`Couldn't build the payroll PDF: ${e?.message || e}\n\nSend a screenshot of this message.`);
+      }
+    }, () => alert("PDF library failed to load. Check your internet connection and try again."));
   }
   window.generatePayrollPDF = generatePayrollPDF;
 

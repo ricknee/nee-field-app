@@ -2168,6 +2168,19 @@ await test("lifts 'Needs fixing' list: crews add and tick, viewer read-only (sch
   ok(/const EQUIP_TODO = \{/.test(src) && !/EQUIP_TODO\[body/.test(src), "kind is a constant, not from the body");
 });
 
+await test("payroll PDF colours never go NaN — a new hire broke the PDF 2026-11-16", async () => {
+  const html = (await import("node:fs")).readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const i = html.indexOf("function hexToRgb(hex)");
+  ok(i >= 0, "hexToRgb exists");
+  const src = html.slice(i, html.indexOf("\n  }\n", i) + 4);
+  const hexToRgb = new Function(`${src}; return hexToRgb;`)();
+  eq(JSON.stringify(hexToRgb("#444")), "[68,68,68]", "3-digit fallback colour reads");
+  eq(JSON.stringify(hexToRgb("#00838F")), "[0,131,143]", "6-digit reads");
+  for (const bad of [undefined, "", "teal", "#12"]) {
+    ok(hexToRgb(bad).every(Number.isFinite), `"${bad}" gives numbers, not NaN`);
+  }
+});
+
 await test("payrollEntries emits the job id the dropdown speaks — native jobs showed No Job 2026-11-16", async () => {
   const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
   const i = src.indexOf("async function handlePayrollEntries(");

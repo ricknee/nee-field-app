@@ -30499,9 +30499,17 @@
       <tr data-entry-id="${eid}"${newAttrs}>
         <td><input type="date" class="pr-input pr-date" value="${esc(e.workDate || "")}" /></td>
         <td>
-          <select class="pr-select pr-job">
-            ${buildJobOptgroupsHtml(e.jobId)}
-          </select>
+          ${/* PTO / Paid Holiday never carry a job, so a "— No Job —" dropdown on
+               them read like a mistake (owner 2026-11-16). Label only, and ONLY
+               when there is no job — a row that somehow has one keeps the
+               dropdown so it can't be hidden. Save is unchanged: with no .pr-job
+               element saveAll sends jobId null, which is what these rows hold. */
+            !e.jobId && (e.class === "PTO" || e.class === "Paid Holiday")
+              ? `<span class="pr-job-label" style="display:inline-block; padding:6px 2px; font-weight:600; color:var(--green, #15803d);">${
+                  e.class === "PTO" ? "🌴 Paid vacation" : "🎉 Paid holiday"}</span>`
+              : `<select class="pr-select pr-job">
+                   ${buildJobOptgroupsHtml(e.jobId)}
+                 </select>`}
         </td>
         <td><input type="number" class="pr-input pr-hours" value="${fmtHrs(hrs)}" min="0" max="24" step="0.25" style="width:72px;" /></td>
         <td>

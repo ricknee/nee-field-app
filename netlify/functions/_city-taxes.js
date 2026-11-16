@@ -46,6 +46,10 @@ export const CITY_TAX_OPTS = [
   // Offered by QuickBooks, absent here, never yet picked. Present so the first
   // person to pick one is not silently mis-taxed.
   "Lisbon Tax", "Loudenville Tax",
+
+  // Added 2026-11-16 for the Bellaire job (owner). ⚠ Must be spelled exactly as
+  // the option added to QuickBooks Workforce custom field 65840.
+  "Bellaire City Tax",
 ];
 
 // Single-quote escaped for inlining into a SQL literal list. The values are a

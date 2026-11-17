@@ -6027,11 +6027,12 @@
     if (_hdBusy) return _hdBusy;
     _hdBusy = (async () => {
       try {
-        const [wl, wk] = await Promise.all([
+        const [wl, wk, inv] = await Promise.all([
           apiGet("workload").catch(e => ({ _err: e.message })),
           apiGet("recentHoursByJob", { days: 7 }).catch(e => ({ _err: e.message })),
+          apiGet("allInvoices").catch(e => ({ _err: e.message })),
         ]);
-        _hdCache = { wl, wk };
+        _hdCache = { wl, wk, inv };
         _hdAt = Date.now();
       } finally { _hdBusy = null; }
       renderHomeDash();
@@ -6161,11 +6162,30 @@
     // badges already fetched at login; the badge renderers re-render this card.
     const viN = viData?.counts?.needsReview || 0;
     const vsN = window._vsNewCount || 0;
+    // Customer invoices OUTSTANDING = status Sent or Disputed, valued at
+    // snapshotTotal || total — the SAME rule as renderSummaryStats() on the
+    // Customer Invoices screen, so the tile and that screen always agree.
+    let invSub = "Invoices you send out", invAlert = false;
+    const inv = _hdCache.inv;
+    if (inv && !inv._err && Array.isArray(inv.invoices)) {
+      let amt = 0, cnt = 0, old = 0;
+      inv.invoices.forEach(i => {
+        const st = String(i.status || "").toLowerCase();
+        if (st !== "sent" && st !== "disputed") return;
+        const a = Number(i.snapshotTotal || i.total || 0);
+        amt += a; cnt++;
+        if (i.date && hdDaysBetween(String(i.date).slice(0, 10), today) > 60) old += a;
+      });
+      invSub = cnt ? `<b>${fmtCurrency(amt)}</b> outstanding · ${cnt} sent` +
+                     (old > 0 ? `<br>${fmtCurrency(old)} over 60 days` : "")
+                   : "Nothing outstanding";
+      invAlert = old > 0;
+    }
     const tile = (btnId, icon, label, sub, alert) =>
       `<button type="button" class="hd-tile" onclick="document.getElementById('${btnId}').click()">
         <div class="t1">${icon}</div><div class="t2">${label}</div><div class="t3${alert ? " alert" : ""}">${sub}</div></button>`;
     const paperHtml = `<div class="hd-tiles">
-        ${tile("btnAllInvoices", "💰", "Customer Invoices", "Invoices you send out", false)}
+        ${tile("btnAllInvoices", "💰", "Customer Invoices", invSub, invAlert)}
         ${tile("btnVendorInvoices", "🧾", "Supplier Invoices to Review", viN ? `${viN} need a job` : "All placed on jobs", viN > 0)}
         ${tile("btnVendorStatements", "📑", "Supplier Statements", vsN ? `${vsN} new` : "CED / Wolff statements", vsN > 0)}
       </div>`;

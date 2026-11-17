@@ -6171,19 +6171,16 @@
     let invSub = `<span style="color:var(--red);">Couldn't load the outstanding total — click to open</span>`, invAlert = false;
     const inv = _hdCache.inv;
     if (inv && !inv._err && Array.isArray(inv.invoices)) {
-      let amt = 0, cnt = 0, old = 0;
+      let amt = 0;
       inv.invoices.forEach(i => {
         const st = String(i.status || "").toLowerCase();
         if (st !== "sent" && st !== "disputed") return;
-        const a = Number(i.snapshotTotal || i.total || 0);
-        amt += a; cnt++;
-        if (i.date && hdDaysBetween(String(i.date).slice(0, 10), today) > 60) old += a;
+        amt += Number(i.snapshotTotal || i.total || 0);
       });
       // The amount in the same red (#dc2626) as the Outstanding stat on the
       // Customer Invoices screen, so it reads as the same number.
-      invSub = cnt ? `<span class="hd-money">${fmtCurrency(amt)}</span>outstanding · ${cnt} invoice${cnt === 1 ? "" : "s"}` +
-                     (old > 0 ? `<br><span style="color:#dc2626; font-weight:700;">${fmtCurrency(old)} over 60 days</span>` : "")
-                   : "Nothing outstanding";
+      // Owner 2026-11-16: the total outstanding ONLY — no count, no aging line.
+      invSub = `<span class="hd-money">${fmtCurrency(amt)}</span>`;
     }
     const tile = (btnId, icon, label, sub, alert) =>
       `<button type="button" class="hd-tile" onclick="document.getElementById('${btnId}').click()">

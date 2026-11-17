@@ -795,6 +795,9 @@ const _ADMIN_OFFICE_READS = new Set([
   // describes is office's job. The "people" roster stays strict admin because
   // that one carries cost rates; this is the same names with the money left out.
   "workload",
+  // The desktop home dashboard's "this week" card — hours per job, no money.
+  // Same audience and tier as workload, which feeds the rest of that screen.
+  "recentHoursByJob",
 ]);
 
 function authzFor(method, action) {
@@ -4480,6 +4483,38 @@ async function handleSetCapacityCrew(body) {
     [String(employeeId), counts]);
   if (!rows?.length) return resp(404, { ok: false, error: "Employee not found." });
   return resp(200, { ok: true, name: rows[0].name, counts: rows[0].counts !== false });
+}
+
+/* ── RECENT HOURS BY JOB — the desktop home dashboard's "this week" card ────
+ * Hours booked in the last N days (default 7, today included), grouped by job.
+ * Grouped on the job LINK, with the time entry's own job-name snapshot as the
+ * label when there is no link, so an unlinked entry still shows up instead of
+ * vanishing. Overhead buckets (Shop Work, PTO) appear too: this is where the
+ * crew's hours actually went, not a backlog figure.
+ * Emits COALESCE(airtable_id, id::text) so it matches the job list's ids.
+ */
+async function handleRecentHoursByJob(params) {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Recent hours are unavailable (database not configured)." });
+  const d = Math.round(Number(params?.days));
+  const days = Number.isFinite(d) && d >= 1 && d <= 60 ? d : 7;
+  const rows = await neonWrite("dashboard.recentHours",
+    `SELECT CASE WHEN j.id IS NULL THEN NULL ELSE COALESCE(j.airtable_id, j.id::text) END AS job_id,
+            COALESCE(j.name, t.job_name, '(no job)') AS name,
+            j.status,
+            sum(t.hours)::float8               AS hours,
+            count(DISTINCT t.employee_id)::int AS people,
+            max(t.work_date)::text             AS last_worked
+       FROM time_entries t
+       LEFT JOIN jobs j ON j.id = t.job_id
+      WHERE t.work_date > current_date - $1::int AND t.work_date <= current_date
+      GROUP BY 1, 2, 3
+      ORDER BY sum(t.hours) DESC`, [days]);
+  const jobs = (rows || []).map(r => ({
+    jobId: r.job_id || "", name: r.name || "", status: r.status || "",
+    hours: Number(r.hours) || 0, people: Number(r.people) || 0, lastWorked: r.last_worked || "",
+  }));
+  const total = Math.round(jobs.reduce((t, j) => t + j.hours, 0) * 100) / 100;
+  return resp(200, { ok: true, days, jobs, total, _source: "neon" });
 }
 
 async function handleHoursByJob() {
@@ -17383,6 +17418,7 @@ export async function handler(event) {
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();
       if (action === "workload")                    return await handleWorkload(params);
+      if (action === "recentHoursByJob")            return await handleRecentHoursByJob(params);
       if (action === "scissorLifts")       return await handleScissorLifts();
       if (action === "scissorLiftsByJob")  return await handleScissorLiftsByJob(params);
       if (action === "scissorLiftHistory") return await handleScissorLiftHistory(params);

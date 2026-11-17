@@ -1796,6 +1796,37 @@
 
     .no-selection .icon { font-size: 48px; opacity: 0.3; }
 
+    /* ── DESKTOP HOME DASHBOARD (no job selected; admin + office) ── */
+    .home-dash { padding: 24px 28px 40px; max-width: 1400px; }
+    .home-dash h2 { font-size: 20px; margin: 0 0 4px; color: var(--text); }
+    .home-dash .hd-sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+    .hd-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; align-items: start; }
+    .hd-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+    .hd-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
+    .hd-card h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; display: flex; justify-content: space-between; gap: 8px; }
+    .hd-card h3 .hd-count { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); }
+    .hd-empty { color: var(--muted); font-size: 13px; padding: 4px 0; }
+    .hd-row { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(0, 2fr) auto; gap: 12px; align-items: center; padding: 7px 6px; border-radius: 8px; cursor: pointer; }
+    .hd-row:hover { background: var(--panel-2); }
+    .hd-name { font-weight: 600; font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hd-name small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
+    .hd-bar { position: relative; height: 14px; background: var(--panel-3); border-radius: 7px; overflow: hidden; }
+    .hd-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 7px; }
+    .hd-bar.over > span { background: var(--red); }
+    .hd-bar.none { background: repeating-linear-gradient(45deg, var(--panel-2), var(--panel-2) 6px, var(--panel-3) 6px, var(--panel-3) 12px); }
+    .hd-nums { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; min-width: 150px; }
+    .hd-nums b { color: var(--text); }
+    .hd-nums .hd-over { color: var(--red); font-weight: 700; }
+    .hd-list-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    .hd-list-row:hover { background: var(--panel-2); }
+    .hd-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+    .hd-pill.red { background: var(--red-dim); color: var(--red); }
+    .hd-pill.amber { background: var(--yellow-dim); color: var(--yellow); }
+    .hd-pill.blue { background: var(--blue-dim); color: var(--blue); }
+    .hd-pill.grey { background: var(--panel-3); color: var(--muted); }
+    .hd-legend { font-size: 11px; color: var(--muted); margin-top: 10px; }
+    @media (max-width: 1100px) { .hd-grid { grid-template-columns: minmax(0, 1fr); } }
+
     /* ── JOB DETAIL HEADER ── */
     .job-header {
       background: var(--panel);
@@ -3898,6 +3929,11 @@
         <div class="icon">📋</div>
         <div>Select a job to view details</div>
       </div>
+      <!-- Desktop home dashboard (admin + office). Fills the empty detail pane
+           when no job is open. Phones never see it — the whole detail panel is
+           display:none there until a job is picked — and loadHomeDash() also
+           skips the fetch below 769px. See renderHomeDash(). -->
+      <div id="homeDash" class="home-dash hidden"></div>
 
       <div id="jobDetail" class="hidden">
 
@@ -5738,6 +5774,9 @@
       state.jobs = Array.isArray(d.jobs) ? d.jobs : [];
       populateYearFilter();
       applyFilters();
+      // A fresh job list makes the dashboard's Ready to Invoice / Coming Due
+      // cards stale, so force a re-read (only matters while no job is open).
+      loadHomeDash(true);
 
       // If we arrived from another app (e.g. Inventory) with ?jobId=recXXX
       // in the URL, auto-select that job. Only do this on the very first
@@ -5898,12 +5937,198 @@
     $("noSelection").classList.remove("hidden");
     $("jobDetail").classList.add("hidden");
     document.body.classList.remove("has-selection");
+    loadHomeDash();
     if (window.matchMedia("(max-width: 768px)").matches) {
       // Scroll the job list to the top so the user sees something useful
       window.scrollTo({ top: 0, behavior: "smooth" });
     }
   }
   window.deselectJob = deselectJob;
+
+  // ── DESKTOP HOME DASHBOARD ─────────────────────────────────────────────
+  // Fills the empty "Select a job" pane on a computer. Admin + office only —
+  // the same tier as `workload`, whose rows feed the hours bars. Crew keep the
+  // plain placeholder. Five cards:
+  //   1. Awarded jobs — hours worked vs the hours target (workload rows)
+  //   3. Stalled — started, but nothing booked in 21+ days (workload rows)
+  //   4. Coming due — completion date overdue or within 30 days (state.jobs)
+  //   5. Ready to Invoice — finished work not yet billed (state.jobs)
+  //   6. This week — hours booked per job, last 7 days (recentHoursByJob)
+  //
+  // ⚠ A job with NO hours target gets a striped bar and "no target", never an
+  // empty bar: an empty bar reads as "not started", and a target-less job is
+  // exactly what made the Workload totals look wrong.
+  // ⚠ The target's SOURCE is shown ("est" = estimate rollup, "set" = the
+  // Expected Hours override) — the owner has to be able to tell a real number
+  // from a placeholder estimate.
+  const HD_STALL_DAYS = 21;
+  const HD_DUE_DAYS = 30;
+  let _hdCache = null, _hdAt = 0, _hdBusy = null;
+
+  function hdWanted() {
+    return !!state.user && isAdmin() && !state.selected &&
+      window.matchMedia("(min-width: 769px)").matches;
+  }
+
+  async function loadHomeDash(force) {
+    const box = $("homeDash");
+    if (!box) return;
+    if (!hdWanted()) {
+      box.classList.add("hidden");
+      // Crew (or a narrow window) get the plain placeholder back — it may have
+      // been hidden by an admin session earlier in this tab.
+      if (!state.selected) $("noSelection").classList.remove("hidden");
+      return;
+    }
+    $("noSelection").classList.add("hidden");
+    box.classList.remove("hidden");
+    // Re-read at most every 5 minutes unless forced; render the cache meanwhile.
+    if (_hdCache && !force && Date.now() - _hdAt < 5 * 60 * 1000) { renderHomeDash(); return; }
+    if (!_hdCache) box.innerHTML = `<div class="hd-empty" style="padding:40px;">Loading dashboard…</div>`;
+    if (_hdBusy) return _hdBusy;
+    _hdBusy = (async () => {
+      try {
+        const [wl, wk] = await Promise.all([
+          apiGet("workload").catch(e => ({ _err: e.message })),
+          apiGet("recentHoursByJob", { days: 7 }).catch(e => ({ _err: e.message })),
+        ]);
+        _hdCache = { wl, wk };
+        _hdAt = Date.now();
+      } finally { _hdBusy = null; }
+      renderHomeDash();
+    })();
+    return _hdBusy;
+  }
+  window.loadHomeDash = loadHomeDash;
+
+  // workload/recentHours ids are COALESCE(airtable_id, id::text), the same
+  // handle the job list carries — fall back to the name for safety.
+  function hdFindJob(id, name) {
+    return (state.jobs || []).find(j => id && j.id === id) ||
+           (state.jobs || []).find(j => name && j.name === name) || null;
+  }
+  // One delegated listener, reading data attributes — NOT inline onclick with
+  // the name in a JS string: "Neal's Shop" would end the string early.
+  document.addEventListener("click", (e) => {
+    const row = e.target.closest && e.target.closest("#homeDash [data-hd-id], #homeDash [data-hd-name]");
+    if (!row) return;
+    const job = hdFindJob(row.dataset.hdId, row.dataset.hdName);
+    if (job) selectJob(job);
+  });
+
+  function hdDaysBetween(fromYmd, toYmd) {
+    const a = new Date(fromYmd + "T00:00:00"), b = new Date(toYmd + "T00:00:00");
+    return Math.round((b - a) / 86400000);
+  }
+  function hdToday() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  const hdH = (n) => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString();
+  const hdClick = (id, name) => `data-hd-id="${esc(id || "")}" data-hd-name="${esc(name || "")}"`;
+
+  function renderHomeDash() {
+    const box = $("homeDash");
+    if (!box || !hdWanted() || !_hdCache) return;
+    const { wl, wk } = _hdCache;
+    const today = hdToday();
+    const card = (title, count, body) =>
+      `<div class="hd-card"><h3><span>${title}</span>${count != null ? `<span class="hd-count">${count}</span>` : ""}</h3>${body}</div>`;
+    const err = (r) => `<div class="hd-empty" style="color:var(--red);">Couldn't load: ${esc(r._err || "unknown error")}</div>`;
+
+    // 1 ─ Awarded jobs: worked vs target
+    let barsHtml, stalledHtml, stalledCount = null, awardedCount = null;
+    if (wl._err) { barsHtml = err(wl); stalledHtml = err(wl); }
+    else {
+      const rows = (wl.jobs || []).slice();
+      awardedCount = rows.length;
+      const withT = rows.filter(r => r.target != null)
+        .sort((a, b) => (b.target - b.worked) - (a.target - a.worked));
+      const noT = rows.filter(r => r.target == null).sort((a, b) => b.worked - a.worked);
+      const bar = (r) => {
+        if (r.target == null) {
+          return `<div class="hd-row" ${hdClick(r.jobId, r.name)} title="No hours target — open the job, Project Info → Edit → Expected Hours">
+            <div class="hd-name">${esc(r.name)}<small>${esc(r.contractor)}</small></div>
+            <div class="hd-bar none"></div>
+            <div class="hd-nums"><b>${hdH(r.worked)} h</b> worked · <span style="color:var(--yellow);">no target</span></div></div>`;
+        }
+        const over = r.worked > r.target;
+        const pct = r.target > 0 ? Math.min(100, r.worked / r.target * 100) : 100;
+        const left = r.target - r.worked;
+        const src = r.fromEstimate ? "est" : "set";
+        return `<div class="hd-row" ${hdClick(r.jobId, r.name)}>
+          <div class="hd-name">${esc(r.name)}<small>${esc(r.contractor)}</small></div>
+          <div class="hd-bar${over ? " over" : ""}"><span style="width:${pct.toFixed(1)}%"></span></div>
+          <div class="hd-nums"><b>${hdH(r.worked)}</b> / ${hdH(r.target)} h <span title="${src === "est" ? "Target comes from the estimate's labor hours" : "Target is the Expected Hours set on the job"}">(${src})</span> · ${
+            over ? `<span class="hd-over">${hdH(-left)} h over</span>` : `<b>${hdH(left)} h</b> left`}</div></div>`;
+      };
+      const totWorked = withT.reduce((t, r) => t + r.worked, 0);
+      const totLeft = withT.reduce((t, r) => t + Math.max(r.target - r.worked, 0), 0);
+      barsHtml = (rows.length ? withT.map(bar).join("") + noT.map(bar).join("") : `<div class="hd-empty">No awarded jobs.</div>`) +
+        `<div class="hd-legend">${withT.length} of ${rows.length} have an hours target · ${hdH(totWorked)} h worked · <b>${hdH(totLeft)} h left</b> on those ${withT.length}` +
+        (noT.length ? ` · ${noT.length} with no target aren't in that total` : "") +
+        ` · <b>est</b> = from the estimate, <b>set</b> = Expected Hours on the job</div>`;
+
+      // 3 ─ Stalled: has hours, but none in HD_STALL_DAYS+ days
+      const stalled = rows.filter(r => r.worked > 0 && r.lastWorked &&
+          hdDaysBetween(r.lastWorked.slice(0, 10), today) >= HD_STALL_DAYS)
+        .map(r => ({ ...r, idle: hdDaysBetween(r.lastWorked.slice(0, 10), today) }))
+        .sort((a, b) => b.idle - a.idle);
+      stalledCount = stalled.length;
+      stalledHtml = stalled.length ? stalled.map(r => `<div class="hd-list-row" ${hdClick(r.jobId, r.name)}>
+          <span><b>${esc(r.name)}</b> <span style="color:var(--muted); font-size:12px;">last worked ${esc(fmtCompletionDate(r.lastWorked.slice(0, 10)))}</span></span>
+          <span class="hd-pill amber">${r.idle} days idle</span></div>`).join("")
+        : `<div class="hd-empty">Every started awarded job has hours in the last ${HD_STALL_DAYS} days.</div>`;
+    }
+
+    // 4 ─ Coming due: open jobs whose completion date is past or within HD_DUE_DAYS
+    const OPEN = ["Awarded", "Service Call Scheduled"];
+    const due = (state.jobs || []).filter(j => OPEN.includes(j.status) && j.completionDate && !j.completionMetOn)
+      .map(j => ({ j, days: hdDaysBetween(today, String(j.completionDate).slice(0, 10)) }))
+      .filter(x => x.days <= HD_DUE_DAYS)
+      .sort((a, b) => a.days - b.days);
+    const dueHtml = due.length ? due.map(({ j, days }) => `<div class="hd-list-row" ${hdClick(j.id, j.name)}>
+        <span><b>${esc(j.name)}</b> <span style="color:var(--muted); font-size:12px;">${esc(j.po || "")} · due ${esc(fmtCompletionDate(String(j.completionDate).slice(0, 10)))}</span></span>
+        <span class="hd-pill ${days < 0 ? "red" : days <= 7 ? "amber" : "blue"}">${
+          days < 0 ? `${-days} days overdue` : days === 0 ? "due today" : `${days} days`}</span></div>`).join("")
+      : `<div class="hd-empty">Nothing due in the next ${HD_DUE_DAYS} days.</div>`;
+
+    // 5 ─ Ready to Invoice
+    const rti = (state.jobs || []).filter(j => j.status === "Ready to Invoice")
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    const rtiHtml = rti.length ? rti.map(j => `<div class="hd-list-row" ${hdClick(j.id, j.name)}>
+        <span><b>${esc(j.name)}</b> <span style="color:var(--muted); font-size:12px;">${esc(j.po || "")}${j.contractor ? " · " + esc(j.contractor) : ""}</span></span>
+        <span class="hd-pill grey">invoice</span></div>`).join("")
+      : `<div class="hd-empty">Nothing waiting to be invoiced.</div>`;
+
+    // 6 ─ This week
+    let wkHtml, wkTotal = null;
+    if (wk._err) wkHtml = err(wk);
+    else {
+      const list = wk.jobs || [];
+      wkTotal = `${hdH(wk.total)} h`;
+      const max = Math.max(1, ...list.map(r => r.hours));
+      wkHtml = list.length ? list.map(r => `<div class="hd-row" ${r.jobId ? hdClick(r.jobId, r.name) : ""} style="grid-template-columns:minmax(110px,1.2fr) minmax(0,1.5fr) auto;">
+          <div class="hd-name">${esc(r.name)}<small>${esc(r.status || "")}</small></div>
+          <div class="hd-bar"><span style="width:${(r.hours / max * 100).toFixed(1)}%; background:var(--green);"></span></div>
+          <div class="hd-nums" style="min-width:90px;"><b>${hdH(r.hours)} h</b> · ${r.people} ${r.people === 1 ? "person" : "people"}</div></div>`).join("")
+        : `<div class="hd-empty">No hours booked in the last 7 days.</div>`;
+      wkHtml += `<div class="hd-legend">Last 7 days, from QuickBooks Time (pulled hourly).</div>`;
+    }
+
+    box.innerHTML = `
+      <h2>Overview</h2>
+      <div class="hd-sub">Pick a job on the left to open it. Click any row below to jump to that job.</div>
+      <div class="hd-grid">
+        <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml)}</div>
+        <div class="hd-col">
+          ${card("📅 Coming due / overdue", due.length, dueHtml)}
+          ${card("🕒 This week", wkTotal, wkHtml)}
+          ${card("💤 Stalled — no hours in " + HD_STALL_DAYS + "+ days", stalledCount, stalledHtml)}
+          ${card("🧾 Ready to invoice", rti.length, rtiHtml)}
+        </div>
+      </div>`;
+  }
 
   // ── "- " BECOMES "• " AS YOU TYPE ──────────────────────────────────────
   // The estimate and invoice description boxes have always PROMISED this in
@@ -5986,6 +6211,7 @@
     renderJobList(); // re-render to update active state
 
     $("noSelection").classList.add("hidden");
+    $("homeDash").classList.add("hidden");
     $("jobDetail").classList.remove("hidden");
     // On mobile, this class flips the layout from "full-screen job list +
     // bottom hint pill" to the normal split (50vh sidebar + detail panel).

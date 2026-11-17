@@ -870,6 +870,21 @@ await test("workload: admin and office, employee and viewer out — and the crew
   eq((await POST("setCapacityCrew", { counts: false }, ADMIN_TOK)).statusCode, 400, "employeeId required");
 });
 
+// The desktop home dashboard's "this week" card — same audience as workload.
+await test("recentHoursByJob: admin and office, employee and viewer out", async () => {
+  mockTables = {};
+  eq((await GET("recentHoursByJob", {}, EMP_TOK)).statusCode, 403, "employee blocked");
+  eq((await GET("recentHoursByJob", {}, VIEWER_TOK)).statusCode, 403, "viewer blocked");
+  ok((await GET("recentHoursByJob", {}, ADMIN_TOK)).statusCode !== 403, "admin allowed");
+  ok((await GET("recentHoursByJob", {}, OFFICE_TOK)).statusCode !== 403, "office allowed");
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleRecentHoursByJob"), src.indexOf("async function handleHoursByJob"));
+  // Native jobs have no airtable_id — matching/emitting only it drops them.
+  ok(/COALESCE\(j\.airtable_id, j\.id::text\)/.test(fn), "emits COALESCE(airtable_id, id::text)");
+  ok(/LEFT JOIN jobs/.test(fn), "unlinked entries are kept, not dropped");
+});
+
 await test("workload: only AWARDED is backlog, and coverage rides with the total", async () => {
   const fs = await import("node:fs/promises");
   const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

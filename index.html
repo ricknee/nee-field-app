@@ -1811,16 +1811,22 @@
     .no-selection .icon { font-size: 48px; opacity: 0.3; }
 
     /* ── DESKTOP HOME DASHBOARD (no job selected; admin + office) ── */
-    .home-dash { padding: 24px 28px 40px; max-width: 1400px; }
-    .home-dash h2 { font-size: 20px; margin: 0 0 4px; color: var(--text); }
-    .home-dash .hd-sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
-    .hd-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 18px; align-items: start; }
-    .hd-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
-    .hd-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; }
-    .hd-card h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; display: flex; justify-content: space-between; gap: 8px; }
+    .home-dash { padding: 16px 20px 16px; max-width: 1500px; }
+    .home-dash h2 { font-size: 18px; margin: 0 0 2px; color: var(--text); }
+    .home-dash .hd-sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+    .hd-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 14px; align-items: start; }
+    .hd-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+    .hd-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+    .hd-card h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 8px; display: flex; justify-content: space-between; gap: 8px; }
+    /* Lists scroll INSIDE their card so the overview fits one screen. The
+       hours list gets the height; the right-hand lists split what is left. */
+    .hd-body { max-height: max(110px, calc((100vh - 400px) / 3)); overflow-y: auto; }
+    .hd-body.tall { max-height: max(300px, calc(100vh - 190px)); }
+    .hd-body::-webkit-scrollbar { width: 4px; }
+    .hd-body::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 2px; }
     .hd-card h3 .hd-count { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); }
     .hd-empty { color: var(--muted); font-size: 13px; padding: 4px 0; }
-    .hd-row { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(0, 2fr) auto; gap: 12px; align-items: center; padding: 7px 6px; border-radius: 8px; cursor: pointer; }
+    .hd-row { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(0, 2fr) auto; gap: 12px; align-items: center; padding: 4px 6px; border-radius: 8px; cursor: pointer; }
     .hd-row:hover { background: var(--panel-2); }
     .hd-name { font-weight: 600; font-size: 14px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .hd-name small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
@@ -1831,7 +1837,7 @@
     .hd-nums { font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; min-width: 150px; }
     .hd-nums b { color: var(--text); }
     .hd-nums .hd-over { color: var(--red); font-weight: 700; }
-    .hd-list-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 6px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+    .hd-list-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 8px; cursor: pointer; font-size: 13px; }
     .hd-list-row:hover { background: var(--panel-2); }
     .hd-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
     .hd-pill.red { background: var(--red-dim); color: var(--red); }
@@ -1839,7 +1845,19 @@
     .hd-pill.blue { background: var(--blue-dim); color: var(--blue); }
     .hd-pill.grey { background: var(--panel-3); color: var(--muted); }
     .hd-legend { font-size: 11px; color: var(--muted); margin-top: 10px; }
-    @media (max-width: 1100px) { .hd-grid { grid-template-columns: minmax(0, 1fr); } }
+    .hd-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .hd-tile { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; text-align: left; cursor: pointer; font: inherit; color: var(--text); }
+    .hd-tile:hover { border-color: var(--accent); }
+    .hd-tile .t1 { font-size: 16px; line-height: 1; }
+    .hd-tile .t2 { font-weight: 700; font-size: 12px; margin-top: 3px; line-height: 1.2; }
+    .hd-tile .t3 { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .hd-tile .t3.alert { color: var(--red); font-weight: 700; }
+    /* Narrow computer window: one column, so stop capping heights — the page
+       scrolls instead of every card scrolling separately. */
+    @media (max-width: 1100px) {
+      .hd-grid { grid-template-columns: minmax(0, 1fr); }
+      .hd-body, .hd-body.tall { max-height: none; }
+    }
 
     /* ── JOB DETAIL HEADER ── */
     .job-header {
@@ -3858,7 +3876,7 @@
                someone already goes to ask "where did the time go"; this asks the
                same question forwards. docs/PLAN-hours-capacity.md -->
           <button id="btnWorkload" class="btn btn-sm admin-only hidden" type="button">📊 Workload</button>
-          <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Invoices</button>
+          <button id="btnAllInvoices" class="btn btn-sm admin-only hidden" type="button">💰 Customer Invoices</button>
           <!-- Supplier invoices whose PO matched no job, or matched two.
                admin-only (= admin + office here) matches the backend's
                _ADMIN_OFFICE tier on vendorInvoices/vendorInvoiceAssign — this is
@@ -3867,11 +3885,11 @@
                for money owed; the badge is what actually brings them here. An
                invoice nobody sees is material cost missing from a job's GP, and
                nothing anywhere else would ever mention it. -->
-          <button id="btnVendorInvoices" class="btn btn-sm admin-only hidden" type="button">🧾 Invoice Review<span id="vendorInvoiceBadge"></span></button>
+          <button id="btnVendorInvoices" class="btn btn-sm admin-only hidden" type="button">🧾 Supplier Invoices to Review<span id="vendorInvoiceBadge"></span></button>
           <!-- CED/Wolff account statements (db/schema/083). REFERENCE ONLY —
                nothing on that screen creates an expense or touches a job.
                admin-only (= admin + office) matches the backend tier. -->
-          <button id="btnVendorStatements" class="btn btn-sm admin-only hidden" type="button">📑 Statements<span id="vendorStatementBadge"></span></button>
+          <button id="btnVendorStatements" class="btn btn-sm admin-only hidden" type="button">📑 Supplier Statements<span id="vendorStatementBadge"></span></button>
           <button id="btnSchedule" class="btn btn-sm strict-admin-only hidden" type="button">📅 Schedule</button>
           <button id="btnPeople" class="btn btn-sm strict-admin-only hidden" type="button">👥 People</button>
           <button id="btnWhosWorking" class="btn btn-sm strict-admin-only hidden" type="button">🟢 Who's Working</button>
@@ -5967,12 +5985,13 @@
   // ── DESKTOP HOME DASHBOARD ─────────────────────────────────────────────
   // Fills the empty "Select a job" pane on a computer. Admin + OFFICE only —
   // owner 2026-11-16. Crew and viewers keep the plain placeholder, and phones
-  // never see it. Five cards:
-  //   1. Awarded jobs — hours worked vs the hours target (workload rows)
-  //   3. Stalled — started, but nothing booked in 21+ days (workload rows)
-  //   4. Coming due — completion date overdue or within 30 days (state.jobs)
-  //   5. Ready to Invoice — finished work not yet billed (state.jobs)
-  //   6. This week — hours booked per job, last 7 days (recentHoursByJob)
+  // never see it. Cards:
+  //   - Awarded jobs — hours worked vs the hours target (workload rows)
+  //   - 💼 Paperwork — tiles into the customer/supplier invoice screens
+  //   - Coming due — completion date overdue or within 30 days (state.jobs)
+  //   - This week — hours booked per job, last 7 days (recentHoursByJob)
+  //   - Ready to Invoice — finished work not yet billed (state.jobs)
+  // (A "Stalled 21+ days" card shipped first; owner dropped it 2026-11-16.)
   //
   // ⚠ A job with NO hours target gets a striped bar and "no target", never an
   // empty bar: an empty bar reads as "not started", and a target-less job is
@@ -5980,7 +5999,6 @@
   // ⚠ The target's SOURCE is shown ("est" = estimate rollup, "set" = the
   // Expected Hours override) — the owner has to be able to tell a real number
   // from a placeholder estimate.
-  const HD_STALL_DAYS = 21;
   const HD_DUE_DAYS = 30;
   let _hdCache = null, _hdAt = 0, _hdBusy = null;
 
@@ -6061,13 +6079,16 @@
     if (!box || !hdWanted() || !_hdCache) return;
     const { wl, wk } = _hdCache;
     const today = hdToday();
-    const card = (title, count, body) =>
-      `<div class="hd-card"><h3><span>${title}</span>${count != null ? `<span class="hd-count">${count}</span>` : ""}</h3>${body}</div>`;
+    // `tall` = the hours list, which gets most of the screen height; the
+    // others are capped short. Both scroll INSIDE the card so the whole
+    // overview fits one screen without the page itself scrolling.
+    const card = (title, count, body, tall) =>
+      `<div class="hd-card"><h3><span>${title}</span>${count != null ? `<span class="hd-count">${count}</span>` : ""}</h3><div class="hd-body${tall ? " tall" : ""}">${body}</div></div>`;
     const err = (r) => `<div class="hd-empty" style="color:var(--red);">Couldn't load: ${esc(r._err || "unknown error")}</div>`;
 
     // 1 ─ Awarded jobs: worked vs target
-    let barsHtml, stalledHtml, stalledCount = null, awardedCount = null;
-    if (wl._err) { barsHtml = err(wl); stalledHtml = err(wl); }
+    let barsHtml, awardedCount = null;
+    if (wl._err) { barsHtml = err(wl); }
     else {
       const rows = (wl.jobs || []).slice();
       awardedCount = rows.length;
@@ -6097,17 +6118,6 @@
         `<div class="hd-legend">${withT.length} of ${rows.length} have an hours target · ${hdH(totWorked)} h worked · <b>${hdH(totLeft)} h left</b> on those ${withT.length}` +
         (noT.length ? ` · ${noT.length} with no target aren't in that total` : "") +
         ` · <b>est</b> = from the estimate, <b>set</b> = Expected Hours on the job</div>`;
-
-      // 3 ─ Stalled: has hours, but none in HD_STALL_DAYS+ days
-      const stalled = rows.filter(r => r.worked > 0 && r.lastWorked &&
-          hdDaysBetween(r.lastWorked.slice(0, 10), today) >= HD_STALL_DAYS)
-        .map(r => ({ ...r, idle: hdDaysBetween(r.lastWorked.slice(0, 10), today) }))
-        .sort((a, b) => b.idle - a.idle);
-      stalledCount = stalled.length;
-      stalledHtml = stalled.length ? stalled.map(r => `<div class="hd-list-row" ${hdClick(r.jobId, r.name)}>
-          <span><b>${esc(r.name)}</b> <span style="color:var(--muted); font-size:12px;">last worked ${esc(fmtCompletionDate(r.lastWorked.slice(0, 10)))}</span></span>
-          <span class="hd-pill amber">${r.idle} days idle</span></div>`).join("")
-        : `<div class="hd-empty">Every started awarded job has hours in the last ${HD_STALL_DAYS} days.</div>`;
     }
 
     // 4 ─ Coming due: open jobs whose completion date is past or within HD_DUE_DAYS
@@ -6145,15 +6155,30 @@
       wkHtml += `<div class="hd-legend">Last 7 days, from QuickBooks Time (pulled hourly).</div>`;
     }
 
+    // 💼 Paperwork — shortcuts to the three ☰ menu screens, with their counts.
+    // The tiles CLICK the menu buttons, so each screen opens exactly as it does
+    // from the menu (one code path). viData / _vsNewCount are what the menu
+    // badges already fetched at login; the badge renderers re-render this card.
+    const viN = viData?.counts?.needsReview || 0;
+    const vsN = window._vsNewCount || 0;
+    const tile = (btnId, icon, label, sub, alert) =>
+      `<button type="button" class="hd-tile" onclick="document.getElementById('${btnId}').click()">
+        <div class="t1">${icon}</div><div class="t2">${label}</div><div class="t3${alert ? " alert" : ""}">${sub}</div></button>`;
+    const paperHtml = `<div class="hd-tiles">
+        ${tile("btnAllInvoices", "💰", "Customer Invoices", "Invoices you send out", false)}
+        ${tile("btnVendorInvoices", "🧾", "Supplier Invoices to Review", viN ? `${viN} need a job` : "All placed on jobs", viN > 0)}
+        ${tile("btnVendorStatements", "📑", "Supplier Statements", vsN ? `${vsN} new` : "CED / Wolff statements", vsN > 0)}
+      </div>`;
+
     box.innerHTML = `
       <h2>Overview</h2>
       <div class="hd-sub">Pick a job on the left to open it. Click any row below to jump to that job.</div>
       <div class="hd-grid">
-        <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml)}</div>
+        <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml, true)}</div>
         <div class="hd-col">
+          ${card("💼 Paperwork", null, paperHtml)}
           ${card("📅 Coming due / overdue", due.length, dueHtml)}
           ${card("🕒 This week", wkTotal, wkHtml)}
-          ${card("💤 Stalled — no hours in " + HD_STALL_DAYS + "+ days", stalledCount, stalledHtml)}
           ${card("🧾 Ready to invoice", rti.length, rtiHtml)}
         </div>
       </div>`;
@@ -27201,6 +27226,7 @@
     // ⚠ Shared with 📑 Statements — each badge counts the other's too, or
     // whichever refreshed last would clear the dot the other one raised.
     $("topbarMenuBtn")?.classList.toggle("has-alert", n > 0 || (window._vsNewCount || 0) > 0);
+    renderHomeDash();   // the 💼 Paperwork tile shows this count too
   }
 
   // Checked once when a role is applied, so the count is right without opening
@@ -27998,6 +28024,7 @@
     // Shared with Invoice Review's badge — see renderVendorInvoiceBadge.
     const viN = viData?.counts?.needsReview || 0;
     $("topbarMenuBtn")?.classList.toggle("has-alert", n > 0 || viN > 0);
+    renderHomeDash();   // the 💼 Paperwork tile shows this count too
   }
 
   async function refreshVendorStatementBadge() {
@@ -35131,7 +35158,7 @@
 <div id="allInvoicesModal" class="payroll-modal-backdrop" style="display:none;">
   <div class="payroll-modal" style="max-width: 1400px;">
     <div class="payroll-modal-header">
-      <h2>💰 All Invoices</h2>
+      <h2>💰 Customer Invoices</h2>
       <button onclick="closeAllInvoices()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
     </div>
     <div class="payroll-modal-body">
@@ -35298,7 +35325,7 @@
 <div id="vendorInvoiceModal" class="payroll-modal-backdrop" style="display:none;">
   <div class="payroll-modal" style="max-width:820px;">
     <div class="payroll-modal-header">
-      <h2>🧾 Invoice Review</h2>
+      <h2>🧾 Supplier Invoices to Review</h2>
       <button onclick="closeVendorInvoices()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
     </div>
     <div class="payroll-modal-body">
@@ -35312,7 +35339,7 @@
 <div id="vendorStatementModal" class="payroll-modal-backdrop" style="display:none;">
   <div class="payroll-modal" style="max-width:820px;">
     <div class="payroll-modal-header">
-      <h2>📑 Statements</h2>
+      <h2>📑 Supplier Statements</h2>
       <button onclick="closeVendorStatements()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
     </div>
     <div class="payroll-modal-body">

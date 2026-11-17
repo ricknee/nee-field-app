@@ -796,7 +796,8 @@ const _ADMIN_OFFICE_READS = new Set([
   // that one carries cost rates; this is the same names with the money left out.
   "workload",
   // The desktop home dashboard's "this week" card — hours per job, no money.
-  // Same audience and tier as workload, which feeds the rest of that screen.
+  // Admin + office, owner 2026-11-16; same tier as workload, which feeds the
+  // rest of that screen.
   "recentHoursByJob",
 ]);
 

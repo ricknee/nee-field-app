@@ -1643,6 +1643,20 @@
 
     .filter-row select:focus { border-color: var(--accent); }
 
+    .home-dash-btn {
+      flex: 0 0 auto;
+      background: var(--panel-2);
+      border: 1px solid var(--line-2);
+      border-radius: 8px;
+      padding: 7px 12px;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .home-dash-btn:hover { border-color: var(--accent); color: var(--accent); }
+    @media (max-width: 768px) { .home-dash-btn { display: none !important; } }
+
     .sidebar-jobs {
       flex: 1;
       overflow-y: auto;
@@ -3915,6 +3929,11 @@
           <select id="yearFilter">
             <option value="">All Years</option>
           </select>
+          <!-- Back to the desktop home dashboard. Shown/hidden by
+               loadHomeDash() (admin + office, computer width) — NOT the
+               .admin-only class, which lets viewers in, and workload 403s them. -->
+          <button id="btnHomeDash" class="home-dash-btn hidden" type="button"
+                  onclick="goHomeDash()" title="Back to the overview">🏠 Home</button>
         </div>
       </div>
 
@@ -5946,9 +5965,9 @@
   window.deselectJob = deselectJob;
 
   // ── DESKTOP HOME DASHBOARD ─────────────────────────────────────────────
-  // Fills the empty "Select a job" pane on a computer. Admin + office only —
-  // the same tier as `workload`, whose rows feed the hours bars. Crew keep the
-  // plain placeholder. Five cards:
+  // Fills the empty "Select a job" pane on a computer. Admin + OFFICE only —
+  // owner 2026-11-16. Crew and viewers keep the plain placeholder, and phones
+  // never see it. Five cards:
   //   1. Awarded jobs — hours worked vs the hours target (workload rows)
   //   3. Stalled — started, but nothing booked in 21+ days (workload rows)
   //   4. Coming due — completion date overdue or within 30 days (state.jobs)
@@ -5973,6 +5992,8 @@
   async function loadHomeDash(force) {
     const box = $("homeDash");
     if (!box) return;
+    const homeBtn = $("btnHomeDash");
+    if (homeBtn) homeBtn.classList.toggle("hidden", !(state.user && isAdmin()));
     if (!hdWanted()) {
       box.classList.add("hidden");
       // Crew (or a narrow window) get the plain placeholder back — it may have
@@ -6000,6 +6021,14 @@
     return _hdBusy;
   }
   window.loadHomeDash = loadHomeDash;
+
+  // 🏠 Home (beside the year filter). Pops the open job's back entry first,
+  // the same as closing it — otherwise Back would later fire on a job that is
+  // already closed and appear to do nothing.
+  window.goHomeDash = function () {
+    if (state.selected) { popBackEntry("job"); deselectJob(); }
+    else loadHomeDash(true);   // already home: treat it as a refresh
+  };
 
   // workload/recentHours ids are COALESCE(airtable_id, id::text), the same
   // handle the job list carries — fall back to the name for safety.

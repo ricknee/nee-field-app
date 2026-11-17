@@ -870,7 +870,7 @@ await test("workload: admin and office, employee and viewer out — and the crew
   eq((await POST("setCapacityCrew", { counts: false }, ADMIN_TOK)).statusCode, 400, "employeeId required");
 });
 
-// The desktop home dashboard's "this week" card — same audience as workload.
+// The desktop home dashboard's "this week" card — admin + office, owner 2026-11-16.
 await test("recentHoursByJob: admin and office, employee and viewer out", async () => {
   mockTables = {};
   eq((await GET("recentHoursByJob", {}, EMP_TOK)).statusCode, 403, "employee blocked");

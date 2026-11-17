@@ -3649,6 +3649,12 @@
          list for the home dashboard. Search + filters stay on top so the
          📋 Jobs button (same spot) takes you back. */
       body.dash-mode #jobsList { display: none; }
+      /* Owner 2026-11-16: in Overview the search box and filters only eat the
+         screen — hide them, keep the 📋 Jobs button. The "pick a job on the
+         left" line is desktop wording, so it goes too. */
+      body.dash-mode .search-input-wrap,
+      body.dash-mode .filter-row select,
+      body.dash-mode .home-dash .hd-sub { display: none; }
       body.dash-mode .detail-panel { display: block; }
       body.dash-mode::after { display: none; }
       body.dash-mode .home-dash { padding: 12px 12px 24px; }

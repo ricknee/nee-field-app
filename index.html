@@ -1852,6 +1852,7 @@
     .hd-tile .t2 { font-weight: 700; font-size: 12px; margin-top: 3px; line-height: 1.2; }
     .hd-tile .t3 { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .hd-tile .t3.alert { color: var(--red); font-weight: 700; }
+    .hd-tile .hd-money { display: block; color: #dc2626; font-size: 18px; font-weight: 800; margin: 2px 0 1px; }
     /* Narrow computer window: one column, so stop capping heights — the page
        scrolls instead of every card scrolling separately. */
     @media (max-width: 1100px) {
@@ -6165,7 +6166,9 @@
     // Customer invoices OUTSTANDING = status Sent or Disputed, valued at
     // snapshotTotal || total — the SAME rule as renderSummaryStats() on the
     // Customer Invoices screen, so the tile and that screen always agree.
-    let invSub = "Invoices you send out", invAlert = false;
+    // ⚠ Never fall back to a generic caption: a tile that quietly says
+    // "Invoices you send out" when the fetch failed looks like $0 owed.
+    let invSub = `<span style="color:var(--red);">Couldn't load the outstanding total — click to open</span>`, invAlert = false;
     const inv = _hdCache.inv;
     if (inv && !inv._err && Array.isArray(inv.invoices)) {
       let amt = 0, cnt = 0, old = 0;
@@ -6176,10 +6179,11 @@
         amt += a; cnt++;
         if (i.date && hdDaysBetween(String(i.date).slice(0, 10), today) > 60) old += a;
       });
-      invSub = cnt ? `<b>${fmtCurrency(amt)}</b> outstanding · ${cnt} sent` +
-                     (old > 0 ? `<br>${fmtCurrency(old)} over 60 days` : "")
+      // The amount in the same red (#dc2626) as the Outstanding stat on the
+      // Customer Invoices screen, so it reads as the same number.
+      invSub = cnt ? `<span class="hd-money">${fmtCurrency(amt)}</span>outstanding · ${cnt} invoice${cnt === 1 ? "" : "s"}` +
+                     (old > 0 ? `<br><span style="color:#dc2626; font-weight:700;">${fmtCurrency(old)} over 60 days</span>` : "")
                    : "Nothing outstanding";
-      invAlert = old > 0;
     }
     const tile = (btnId, icon, label, sub, alert) =>
       `<button type="button" class="hd-tile" onclick="document.getElementById('${btnId}').click()">

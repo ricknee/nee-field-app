@@ -6155,7 +6155,7 @@
       wkHtml += `<div class="hd-legend">Last 7 days, from QuickBooks Time (pulled hourly).</div>`;
     }
 
-    // 💼 Paperwork — shortcuts to the three ☰ menu screens, with their counts.
+    // 💼 Office Work — shortcuts to the three ☰ menu screens, with their counts.
     // The tiles CLICK the menu buttons, so each screen opens exactly as it does
     // from the menu (one code path). viData / _vsNewCount are what the menu
     // badges already fetched at login; the badge renderers re-render this card.
@@ -6176,8 +6176,8 @@
       <div class="hd-grid">
         <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml, true)}</div>
         <div class="hd-col">
-          ${card("💼 Paperwork", null, paperHtml)}
-          ${card("📅 Coming due / overdue", due.length, dueHtml)}
+          ${card("💼 Office Work", null, paperHtml)}
+          ${card("📅 Jobs coming due / overdue", due.length, dueHtml)}
           ${card("🕒 This week", wkTotal, wkHtml)}
           ${card("🧾 Ready to invoice", rti.length, rtiHtml)}
         </div>

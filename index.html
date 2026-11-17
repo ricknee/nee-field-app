@@ -1845,6 +1845,13 @@
     .hd-pill.blue { background: var(--blue-dim); color: var(--blue); }
     .hd-pill.grey { background: var(--panel-3); color: var(--muted); }
     .hd-legend { font-size: 11px; color: var(--muted); margin-top: 10px; }
+    .stage-pill { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
+    .stage-pill.blue  { background: var(--blue-dim);   color: var(--blue); }
+    .stage-pill.green { background: var(--green-dim);  color: var(--green); }
+    .stage-pill.amber { background: var(--yellow-dim); color: var(--yellow); }
+    .stage-pill.grey  { background: var(--panel-3);    color: var(--muted); }
+    .hd-group { font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 10px 6px 2px; }
+    .hd-group:first-child { margin-top: 0; }
     .hd-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     .hd-tile { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; text-align: left; cursor: pointer; font: inherit; color: var(--text); }
     .hd-tile:hover { border-color: var(--accent); }
@@ -4264,9 +4271,24 @@
               </div>
             </div>
 
-            <div style="margin-bottom:14px;">
-              <label class="edit-label">🚧 Planned Start <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(when work begins — 📊 Workload counts only this year's share of the hours)</span></label>
-              <input id="piEditStartDate" type="date" class="edit-input" />
+            <!-- Stage (db/schema/096) — a sub-status of Awarded, never a new
+                 status: too much keys off status = 'Awarded' exactly. Blank =
+                 nobody has said; the Overview then goes by Planned Start. -->
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
+              <div>
+                <label class="edit-label">📍 Stage <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(where the job is at)</span></label>
+                <select id="piEditStage" class="edit-input">
+                  <option value="">— not set —</option>
+                  <option value="preconstruction">📦 Pre-construction (ordering, not on site)</option>
+                  <option value="onsite">🔨 On site</option>
+                  <option value="punchlist">🧹 Punch list</option>
+                  <option value="onhold">⏸ On hold</option>
+                </select>
+              </div>
+              <div>
+                <label class="edit-label">🚧 Planned Start <span style="font-weight:400; text-transform:none; letter-spacing:0; opacity:0.7;">(when work begins on site)</span></label>
+                <input id="piEditStartDate" type="date" class="edit-input" />
+              </div>
             </div>
 
             <div style="margin-bottom:14px;">
@@ -5967,6 +5989,7 @@
             <span class="job-item-po">${esc(poCode)}</span>
             <span class="job-line-badges">
               ${group === "Other" ? `<span class="job-line-status"><span class="status-dot" style="background:${statusDotColor(job.status)}"></span>${esc(job.status||"—")}</span>` : ""}
+              ${jobStagePill(job)}
               ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}
               ${job.prevailingWage ? `<span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}" title="${job.pwRateMissing ? "Prevailing wage is on but no rate is set — hours are costing the normal rate" : "Prevailing wage job"}">🏛 PW</span>` : ""}
             </span>
@@ -5982,6 +6005,38 @@
         if (job) selectJob(job);
       });
     });
+  }
+
+  // ── STAGE on an awarded job (db/schema/096) ──────────────────────────────
+  // A sub-status of Awarded, picked in Project Info → Edit. When nobody has
+  // picked one, a Planned Start in the FUTURE reads as Upcoming (marked
+  // `auto`, so the screen can say why). Not Awarded → no stage at all.
+  const JOB_STAGE_META = {
+    preconstruction: { icon: "📦", label: "Pre-construction", short: "Pre-con",  cls: "blue"  },
+    onsite:          { icon: "🔨", label: "On site",          short: "On site",  cls: "green" },
+    punchlist:       { icon: "🧹", label: "Punch list",       short: "Punch",    cls: "amber" },
+    onhold:          { icon: "⏸",  label: "On hold",          short: "On hold",  cls: "grey"  },
+  };
+  function jobStageOf(j) {
+    if (!j || j.status !== "Awarded") return null;
+    if (j.stage && JOB_STAGE_META[j.stage]) return { key: j.stage, auto: false, ...JOB_STAGE_META[j.stage] };
+    const sd = String(j.startDate || "").slice(0, 10);
+    if (sd && sd > hdToday()) return { key: "preconstruction", auto: true, ...JOB_STAGE_META.preconstruction };
+    return null;
+  }
+  // "Feb" / "Feb 2027" — the year only when it isn't this one.
+  function fmtStartMonth(ymd) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd || "");
+    if (!m) return "";
+    const mon = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m[2]) - 1];
+    return Number(m[1]) === new Date().getFullYear() ? mon : `${mon} ${m[1]}`;
+  }
+  function jobStagePill(j) {
+    const s = jobStageOf(j);
+    if (!s) return "";
+    const when = s.key === "preconstruction" && j.startDate ? ` · ${fmtStartMonth(j.startDate)}` : "";
+    const why = s.auto ? "From the Planned Start — pick a Stage in Project Info → Edit to set it" : s.label;
+    return `<span class="stage-pill ${s.cls}" title="${esc(why)}">${s.icon} ${esc(s.short)}${esc(when)}</span>`;
   }
 
   // ── SELECT JOB ──
@@ -6189,7 +6244,29 @@
       };
       const totWorked = withT.reduce((t, r) => t + r.worked, 0);
       const totLeft = withT.reduce((t, r) => t + Math.max(r.target - r.worked, 0), 0);
-      barsHtml = (rows.length ? withT.map(bar).join("") + noT.map(bar).join("") : `<div class="hd-empty">No awarded jobs.</div>`) +
+      // Grouped by STAGE (db/schema/096). Workload rows are all Awarded, so
+      // jobStageOf works on them directly. Punch list rides with On site
+      // (crew still going there); its pill says which.
+      const ordered = withT.concat(noT);
+      const GROUPS = [
+        { title: "🔨 On site now",  test: s => s && (s.key === "onsite" || s.key === "punchlist") },
+        { title: "📦 Upcoming — ordering / not started", test: s => s && s.key === "preconstruction" },
+        { title: "⏸ On hold",       test: s => s && s.key === "onhold" },
+        { title: "❔ Stage not set — pick one in Project Info → Edit", test: s => !s },
+      ];
+      const withStage = ordered.map(r => ({ r, s: jobStageOf({ status: "Awarded", stage: r.stage, startDate: r.startDate }) }));
+      const barWithPill = ({ r, s }) => {
+        const pill = s ? jobStagePill({ status: "Awarded", stage: r.stage, startDate: r.startDate }) : "";
+        return bar(r).replace(`<small>${esc(r.contractor)}</small>`, `<small>${esc(r.contractor)} ${pill}</small>`);
+      };
+      const groupedHtml = GROUPS.map(g => {
+        const list = withStage.filter(x => g.test(x.s));
+        if (!list.length) return "";
+        const hrsLeft = list.reduce((t, x) => t + (x.r.target != null ? Math.max(x.r.target - x.r.worked, 0) : 0), 0);
+        return `<div class="hd-group">${g.title} · ${list.length} job${list.length === 1 ? "" : "s"} · ${hdH(hrsLeft)} h left</div>` +
+               list.map(barWithPill).join("");
+      }).join("");
+      barsHtml = (rows.length ? groupedHtml : `<div class="hd-empty">No awarded jobs.</div>`) +
         `<div class="hd-legend">${withT.length} of ${rows.length} have an hours target · ${hdH(totWorked)} h worked · <b>${hdH(totLeft)} h left</b> on those ${withT.length}` +
         (noT.length ? ` · ${noT.length} with no target aren't in that total` : "") +
         ` · <b>est</b> = from the estimate, <b>set</b> = Expected Hours on the job</div>`;
@@ -12860,6 +12937,7 @@
       notes:          $("piEditNotes").value,
       completionDate: $("piEditCompletionDate").value,   // "" or YYYY-MM-DD
       startDate:      $("piEditStartDate").value,        // "" or YYYY-MM-DD
+      stage:          $("piEditStage").value,            // "" or a JOB_STAGES key
       expectedHours:  $("piEditExpectedHours").value.trim(),   // "" or a number
     };
   }
@@ -12882,6 +12960,7 @@
       notes:          job.notes          || "",
       completionDate: job.completionDate || "",
       startDate:      job.startDate      || "",
+      stage:          job.stage          || "",
       expectedHours:  job.expectedHours == null ? "" : String(job.expectedHours),
     };
   }
@@ -14943,6 +15022,7 @@
     $("piEditNotes").value  = job.notes          || "";
     $("piEditCompletionDate").value = job.completionDate || "";
     $("piEditStartDate").value      = job.startDate      || "";
+    $("piEditStage").value          = job.stage          || "";
     $("piEditExpectedHours").value  = job.expectedHours == null ? "" : String(job.expectedHours);
     // Say what a blank box will fall back to, so leaving it empty is a choice
     // rather than an oversight.
@@ -15080,6 +15160,10 @@
     // Update local state so subsequent reads (and re-entering edit
     // mode) see the saved values.
     piSyncJob({ ...v, expectedHours: v.expectedHours === "" ? null : Number(v.expectedHours) });
+    // Stage / start / hours feed the job-list pill and the Overview: redraw the
+    // list now, and make the Overview re-read on its next showing.
+    _hdAt = 0;
+    renderJobList();
     // Reconstruct the formula-computed Job Address - Full client-side
     // so the read-only card refreshes instantly.
     piSyncJob({ address: buildJobAddress(v.customerStreet, v.customerCity, v.customerState, v.customerZip) });
@@ -19834,7 +19918,10 @@
     $("piEditGcContact")?.addEventListener("change", piGcToggleNew);
     ["piEditGcContact", "piEditFirstName", "piEditLastName",
      "piEditStreet", "piEditCity", "piEditState", "piEditZip", "piEditPhone",
-     "piEditEmail", "piEditNotes", "piEditCompletionDate", "piEditExpectedHours"].forEach(id => {
+     "piEditEmail", "piEditNotes", "piEditCompletionDate", "piEditExpectedHours",
+     // piEditStartDate was missing here, so changing ONLY the planned start
+     // never lit the save bar (fixed 2026-11-17 with Stage).
+     "piEditStartDate", "piEditStage"].forEach(id => {
       const el = $(id);
       if (!el) return;
       el.addEventListener("input", refreshPiSaveBar);

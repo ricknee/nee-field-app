@@ -885,6 +885,20 @@ await test("recentHoursByJob: admin and office, employee and viewer out", async 
   ok(/LEFT JOIN jobs/.test(fn), "unlinked entries are kept, not dropped");
 });
 
+// Stage on an awarded job (db/schema/096). An unknown value is refused, never
+// written NULL — and the server list must match the schema's CHECK.
+await test("updateJobInfo: stage — unknown value refused; list matches the schema", async () => {
+  mockTables = {};
+  const r = await POST("updateJobInfo", { jobId: "recJ1", stage: "started" }, ADMIN_TOK);
+  eq(r.statusCode, 400, "unknown stage refused");
+  const fs = await import("node:fs/promises");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const sql = await fs.readFile(new URL("../db/schema/096_job_stage.sql", import.meta.url), "utf8");
+  const list = JSON.parse(src.match(/const JOB_STAGES = (\[[^\]]*\]);/)[1].replace(/'/g, '"'));
+  for (const k of list) ok(sql.includes(`'${k}'`), `schema CHECK allows ${k}`);
+  ok(/j\.stage,/.test(src), "job reads emit stage");
+});
+
 await test("workload: only AWARDED is backlog, and coverage rides with the total", async () => {
   const fs = await import("node:fs/promises");
   const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

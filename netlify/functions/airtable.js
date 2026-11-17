@@ -4367,6 +4367,7 @@ async function handleWorkload(params) {
             j.name, j.contractor_name,
             j.completion_date::text AS completion_date,
             j.start_date::text      AS start_date,
+            j.stage,
             j.expected_hours,
             r.est_labor_hours_rollup AS est_hours,
             r.hours_rollup           AS worked_hours,
@@ -4434,6 +4435,7 @@ async function handleWorkload(params) {
       jobId: r.job_id, name: r.name || "", contractor: r.contractor_name || "",
       completionDate: r.completion_date || "",
       startDate: r.start_date || "",
+      stage: r.stage || "",
       target, worked, remaining,
       thisYear: thisYearShare(remaining, r, cap.through || ""),
       fromEstimate: r.expected_hours == null && est > 0,
@@ -6379,6 +6381,8 @@ const JOB_SELECT = `
          j.customer_phone, j.customer_email, j.start_service_call,
          j.service_call_created, j.project_complete, j.miles_from_shop, j.notes,
          j.completion_date::text AS completion_date, j.start_date::text AS start_date,
+         -- Stage on an awarded job (db/schema/096) — a sub-status, never a status.
+         j.stage,
          -- "Due date met" (db/schema/088): display only — stops the OVERDUE.
          j.completion_met_on::text AS completion_met_on,
          -- The contractor's contact person (db/schema/089), read LIVE from
@@ -6566,6 +6570,7 @@ function mapJobFromNeon(r) {
     milesFromShop: n(r.miles_from_shop), notes: s(r.notes), completionDate: s(r.completion_date),
     completionMetOn: s(r.completion_met_on),
     startDate: s(r.start_date),
+    stage: s(r.stage),
     totalRevenueLive: n(r.total_revenue_live), totalMaterialsLive: n(r.total_materials_live),
     totalLaborCostLive: n(r.total_labor_cost_live), totalWireCost: n(r.total_wire_cost),
     pipeCost: n(r.pipe_cost), materialsInProgress: n(r.materials_in_progress),
@@ -14943,8 +14948,11 @@ async function handleUpdateJobInspection(body) {
 // untouched server-side. Empty strings clear the field (e.g. "" on
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
+// db/schema/096 — must match the CHECK constraint there.
+const JOB_STAGES = ["preconstruction", "onsite", "punchlist", "onhold"];
+
 async function handleUpdateJobInfo(body) {
-  const { jobId, contractorContactId, customerFirstName, customerLastName, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, expectedHours, generatorInstalled } = body || {};
+  const { jobId, contractorContactId, customerFirstName, customerLastName, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, stage, expectedHours, generatorInstalled } = body || {};
   if (!jobId) return resp(400, { ok: false, error: "Missing jobId." });
 
   const fields = {};
@@ -15031,6 +15039,16 @@ async function handleUpdateJobInfo(body) {
       return resp(400, { ok: false, error: "Start date must be a date." });
     }
     put("start_date", startDate || null, "::date");
+  }
+  // Stage (db/schema/096). "" clears it back to "nobody has said". An unknown
+  // value is REFUSED, not written NULL — silently dropping a pick would read
+  // as "saved" while the job stays in the wrong Overview group.
+  if (stage !== undefined) {
+    const v = String(stage || "").trim();
+    if (v && !JOB_STAGES.includes(v)) {
+      return resp(400, { ok: false, error: "Unknown stage." });
+    }
+    put("stage", v || null);
   }
   // Hours target. "" clears it back to "nobody has said" — which is NOT the
   // same as 0, so an empty box must never arrive as a zero. A number that

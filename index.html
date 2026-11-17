@@ -1655,7 +1655,7 @@
       cursor: pointer;
     }
     .home-dash-btn:hover { border-color: var(--accent); color: var(--accent); }
-    @media (max-width: 768px) { .home-dash-btn { display: none !important; } }
+    body.dash-mode .home-dash-btn { background: var(--accent); border-color: var(--accent); color: #fff; }
 
     .sidebar-jobs {
       flex: 1;
@@ -3645,6 +3645,17 @@
         pointer-events: none;
         white-space: nowrap;
       }
+      /* 📊 Overview on a phone (admin + office): body.dash-mode swaps the job
+         list for the home dashboard. Search + filters stay on top so the
+         📋 Jobs button (same spot) takes you back. */
+      body.dash-mode #jobsList { display: none; }
+      body.dash-mode .detail-panel { display: block; }
+      body.dash-mode::after { display: none; }
+      body.dash-mode .home-dash { padding: 12px 12px 24px; }
+      .hd-row { grid-template-columns: minmax(0, 1fr) auto !important; gap: 4px 10px; padding: 6px 4px; }
+      .hd-row .hd-bar { grid-column: 1 / -1; grid-row: 2; }
+      .hd-nums { min-width: 0 !important; }
+      .hd-tiles { grid-template-columns: minmax(0, 1fr); }
       .info-grid { grid-template-columns: 1fr; }
       .action-buttons { padding: 10px 14px; }
       .tab-content { padding: 14px; }
@@ -3948,11 +3959,13 @@
           <select id="yearFilter">
             <option value="">All Years</option>
           </select>
-          <!-- Back to the desktop home dashboard. Shown/hidden by
-               loadHomeDash() (admin + office, computer width) — NOT the
-               .admin-only class, which lets viewers in, and workload 403s them. -->
+          <!-- 📊 Overview — the home dashboard. Computer: back to it from an
+               open job. Phone: swaps the job list for it, and the button turns
+               into 📋 Jobs to swap back. Shown/hidden by loadHomeDash()
+               (admin + office) — NOT the .admin-only class, which lets viewers
+               in, and workload 403s them. -->
           <button id="btnHomeDash" class="home-dash-btn hidden" type="button"
-                  onclick="goHomeDash()" title="Back to the overview">🏠 Home</button>
+                  onclick="goHomeDash()" title="Overview">📊 Overview</button>
         </div>
       </div>
 
@@ -6005,14 +6018,21 @@
 
   function hdWanted() {
     return !!state.user && isAdmin() && !state.selected &&
-      window.matchMedia("(min-width: 769px)").matches;
+      (window.matchMedia("(min-width: 769px)").matches || document.body.classList.contains("dash-mode"));
   }
 
   async function loadHomeDash(force) {
     const box = $("homeDash");
     if (!box) return;
     const homeBtn = $("btnHomeDash");
-    if (homeBtn) homeBtn.classList.toggle("hidden", !(state.user && isAdmin()));
+    const allowed = !!(state.user && isAdmin());
+    if (homeBtn) homeBtn.classList.toggle("hidden", !allowed);
+    // ⚠ dash-mode HIDES THE JOB LIST on a phone. If an admin left it on and a
+    // crew member logs in on the same phone, they must not inherit it.
+    if (!allowed && document.body.classList.contains("dash-mode")) {
+      document.body.classList.remove("dash-mode");
+      hdSyncBtn();
+    }
     if (!hdWanted()) {
       box.classList.add("hidden");
       // Crew (or a narrow window) get the plain placeholder back — it may have
@@ -6042,10 +6062,49 @@
   }
   window.loadHomeDash = loadHomeDash;
 
-  // 🏠 Home (beside the year filter). Pops the open job's back entry first,
-  // the same as closing it — otherwise Back would later fire on a job that is
-  // already closed and appear to do nothing.
+  // 📊 Overview (beside the year filter).
+  //  Computer: closes the open job (popping its back entry, the same as closing
+  //    it — otherwise Back would later fire on a closed job and do nothing), or
+  //    refreshes when already on the overview.
+  //  Phone: toggles body.dash-mode, which swaps the job list for the
+  //    dashboard; the button reads 📋 Jobs while it is up. A "dash" back entry
+  //    makes the phone's Back button return to the job list.
+  const hdIsPhone = () => window.matchMedia("(max-width: 768px)").matches;
+  function hdSyncBtn() {
+    const b = $("btnHomeDash");
+    if (b) b.textContent = document.body.classList.contains("dash-mode") ? "📋 Jobs" : "📊 Overview";
+  }
+  // fromBack: the Back button already removed our history entry.
+  function hdExitPhoneDash(fromBack) {
+    if (!document.body.classList.contains("dash-mode")) return;
+    document.body.classList.remove("dash-mode");
+    hdSyncBtn();
+    if (!fromBack) popBackEntry("dash");
+    loadHomeDash();   // hides the dashboard again on a phone
+    window.scrollTo({ top: 0 });
+  }
+  // ⚠ Never popBackEntry() then pushBackEntry() back to back: history.back()
+  // is ASYNC, so the pop lands after the push and eats the wrong entry. When
+  // one view replaces another, RELABEL the top entry in place instead — the
+  // browser history keeps exactly one entry for whichever view is showing.
+  function hdRetagTop(fromKind, toKind, closeFn) {
+    const top = backStack[backStack.length - 1];
+    if (!top || top.kind !== fromKind) return false;
+    top.kind = toKind; top.close = closeFn;
+    return true;
+  }
   window.goHomeDash = function () {
+    if (hdIsPhone()) {
+      if (document.body.classList.contains("dash-mode")) { hdExitPhoneDash(false); return; }
+      const reused = state.selected && hdRetagTop("job", "dash", () => hdExitPhoneDash(true));
+      if (state.selected) deselectJob();
+      document.body.classList.add("dash-mode");
+      hdSyncBtn();
+      if (!reused) pushBackEntry("dash", () => hdExitPhoneDash(true));
+      loadHomeDash();
+      window.scrollTo({ top: 0 });
+      return;
+    }
     if (state.selected) { popBackEntry("job"); deselectJob(); }
     else loadHomeDash(true);   // already home: treat it as a refresh
   };
@@ -6062,7 +6121,15 @@
     const row = e.target.closest && e.target.closest("#homeDash [data-hd-id], #homeDash [data-hd-name]");
     if (!row) return;
     const job = hdFindJob(row.dataset.hdId, row.dataset.hdName);
-    if (job) selectJob(job);
+    if (!job) return;
+    // Phone: leave the overview for the job. The "dash" history entry becomes
+    // the "job" entry (see hdRetagTop), so Back closes the job in one press.
+    if (document.body.classList.contains("dash-mode")) {
+      document.body.classList.remove("dash-mode");
+      hdSyncBtn();
+      hdRetagTop("dash", "job", deselectJob);
+    }
+    selectJob(job);
   });
 
   function hdDaysBetween(fromYmd, toYmd) {

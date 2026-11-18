@@ -14957,7 +14957,8 @@ async function handleUpdateJobInspection(body) {
 // customerEmail wipes the address) — that's intentional so the edit
 // form supports both updating and clearing.
 // db/schema/096 — must match the CHECK constraint there.
-const JOB_STAGES = ["preconstruction", "onsite", "punchlist", "onhold"];
+// rough / finish: residential stages, schema 097 (owner 2026-11-18).
+const JOB_STAGES = ["preconstruction", "onsite", "rough", "finish", "punchlist", "onhold"];
 
 async function handleUpdateJobInfo(body) {
   const { jobId, contractorContactId, customerFirstName, customerLastName, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, stage, expectedHours, generatorInstalled } = body || {};

@@ -4281,6 +4281,8 @@
                   <option value="">— not set —</option>
                   <option value="preconstruction">📦 Pre-construction (ordering, not on site)</option>
                   <option value="onsite">🔨 On site</option>
+                  <option value="rough">🔌 Rough &amp; Service</option>
+                  <option value="finish">💡 Finish</option>
                   <option value="punchlist">🧹 Punch list</option>
                   <option value="onhold">⏸ On hold</option>
                 </select>
@@ -6014,6 +6016,8 @@
   const JOB_STAGE_META = {
     preconstruction: { icon: "📦", label: "Pre-construction", short: "Pre-con",  cls: "blue"  },
     onsite:          { icon: "🔨", label: "On site",          short: "On site",  cls: "green" },
+    rough:           { icon: "🔌", label: "Rough & Service",  short: "Rough",    cls: "green" },
+    finish:          { icon: "💡", label: "Finish",           short: "Finish",   cls: "green" },
     punchlist:       { icon: "🧹", label: "Punch list",       short: "Punch",    cls: "amber" },
     onhold:          { icon: "⏸",  label: "On hold",          short: "On hold",  cls: "grey"  },
   };
@@ -6249,7 +6253,7 @@
       // (crew still going there); its pill says which.
       const ordered = withT.concat(noT);
       const GROUPS = [
-        { title: "🔨 On site now",  test: s => s && (s.key === "onsite" || s.key === "punchlist") },
+        { title: "🔨 On site now",  test: s => s && ["onsite", "rough", "finish", "punchlist"].includes(s.key) },
         { title: "📦 Upcoming — ordering / not started", test: s => s && s.key === "preconstruction" },
         { title: "⏸ On hold",       test: s => s && s.key === "onhold" },
         { title: "❔ Stage not set — pick one in Project Info → Edit", test: s => !s },

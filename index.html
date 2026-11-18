@@ -30749,6 +30749,52 @@
     };
   }
 
+  // ── PREVAILING WAGE hours, for the accountant (owner 2026-11-18) ──
+  // PW belongs to the JOB (db/schema/072): every hour clocked to a job flagged
+  // prevailing wage IS a PW hour. Nobody picks PW per entry the way they pick a
+  // city tax — two answers that can disagree is the mismatch that design refuses.
+  // So this only READS the flag off prJobs (the full job list, which carries
+  // prevailingWage + pwRate), keyed on the same id form the Job dropdown uses.
+  //
+  // Hours use secToHrs per entry, the same rounding as the city-tax rows. The
+  // weekly round-up is NOT spread onto PW: it is at most 0.25 h, it already lands
+  // in the city-tax breakdown, and putting it here would claim PW time nobody
+  // clocked. Salaried people get these lines too — their PW hours still have to
+  // be paid at the PW rate, and the accountant can only do that if she sees them.
+  function prPwJob(jobId) {
+    if (!jobId) return null;
+    const j = (prJobs || []).find(x => x.id === jobId);
+    return j && j.prevailingWage === true ? j : null;
+  }
+  // [{ name, hours, rate }] — one per PW job worked in these entries. rate is the
+  // straight-time determination rate (base + fringe), or null when the job is
+  // flagged with no rate, which is printed as such rather than hidden.
+  function pwBreakdown(entries) {
+    const map = new Map();
+    (entries || []).forEach(e => {
+      if (NONWORKED_CLASSES.includes(e.class)) return;
+      const j = prPwJob(e.jobId);
+      if (!j) return;
+      const row = map.get(j.id) || { name: j.name || e.jobName || "PW job", hours: 0,
+        rate: j.pwRate?.straightHourly ?? null };
+      row.hours += secToHrs(e.duration || 0);
+      map.set(j.id, row);
+    });
+    return [...map.values()].filter(r => r.hours > 0)
+      .map(r => ({ ...r, hours: Math.round(r.hours * 100) / 100 }));
+  }
+  function pwLineText(r) {
+    return `${r.name}  ${fmtHrs(r.hours)} hrs  @ ${r.rate == null ? "RATE NOT SET" : "$" + Number(r.rate).toFixed(2)}`;
+  }
+  // The owner works no overtime on PW jobs. If a week holds PW hours AND goes past
+  // 40, some PW hours may be overtime, which carries the determination's OT rate.
+  // Which ones depends on the order the days were worked, so say so; don't guess.
+  function pwOvertimeWarning(pwRows, workedHours) {
+    return pwRows.length && workedHours > 40
+      ? "Over 40 hrs in a week with PW hours - check if any PW hours were overtime"
+      : "";
+  }
+
   function weekHoursPaid(entries) {
     const list  = entries || [];
     const secs  = list.reduce((s, e) => s + (Number(e.duration) || 0), 0);
@@ -31048,6 +31094,18 @@
           })()
         }</span>
       </div>
+      ${(() => {
+        // PW hours this week, as the PDF will print them. Computed from the
+        // LOADED entries: an unsaved job change here shows after Save + Load.
+        const all = Object.values(week?.days || {}).flat();
+        const rows = pwBreakdown(all);
+        if (!rows.length) return "";
+        const warn = pwOvertimeWarning(rows, weekHoursPaid(splitWorked(all).worked));
+        return `<div class="pr-pw-note" style="font-size:12px; padding:6px 10px; background:#fff7e6; border-left:3px solid #d97706; color:#333;">
+          🏛 <b>Prevailing wage:</b> ${rows.map(r => esc(pwLineText(r))).join(" · ")}
+          ${warn ? `<div style="color:#b91c1c; font-weight:600; margin-top:2px;">⚠ ${esc(warn)}</div>` : ""}
+        </div>`;
+      })()}
       <div class="pr-table-wrap">
         <table class="pr-table pr-week-table" data-week="${wkNum}">
           <thead><tr><th>Date</th><th>Job</th><th>Hours</th><th>Class</th><th>City Tax</th><th></th></tr></thead>
@@ -32145,6 +32203,34 @@
       });
     }
 
+    // Same shape as cityTaxSection's mixed-tax header, so the accountant reads PW
+    // hours exactly the way she already reads city-tax hours. Absent entirely on
+    // a week with no PW work — no "0.00" line on every normal week.
+    function pwSection(entries, workedHours) {
+      const rows = pwBreakdown(entries);
+      if (!rows.length) return;
+      checkSpace(ROW_H);
+      doc.setFillColor(240,240,240);
+      doc.rect(M, y, W-M*2, ROW_H, "F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(8);
+      doc.setTextColor(80,80,80);
+      doc.text("Prevailing Wage Hours:", M+18, y + ROW_H - 4);
+      doc.setTextColor(0,0,0);
+      y += ROW_H;
+      rows.forEach((r, i) => dataRow(
+        `${r.name}  @ ${r.rate == null ? "RATE NOT SET" : "$" + Number(r.rate).toFixed(2) + "/hr"}`,
+        fmtHrs(r.hours), i%2===0));
+      const warn = pwOvertimeWarning(rows, workedHours);
+      if (warn) {
+        checkSpace(ROW_H);
+        doc.setFont("helvetica","bold"); doc.setFontSize(8);
+        doc.setTextColor(185,28,28);
+        doc.text(warn, M+18, y + ROW_H - 4);
+        doc.setTextColor(0,0,0);
+        y += ROW_H;
+      }
+    }
+
     function bonusRow(amt, col) {
       checkSpace(ROW_H);
       doc.setDrawColor(190,190,190); doc.setLineWidth(0.3);
@@ -32248,6 +32334,7 @@
         if (s1.holidayHours > 0) sumRow(`Paid Holiday Hrs  ${fmtHrs(s1.holidayHours)}`);
         sumRow(`Total Hrs  ${fmtHrs(wk1Total)}`);
         cityTaxSection(taxBreakdown(wk1, wk1Adj), col);
+        pwSection(wk1, wk1Worked);
 
         // Week 2
         wkLabel("Week #2", wk2Label, col);
@@ -32257,6 +32344,7 @@
         if (s2.holidayHours > 0) sumRow(`Paid Holiday Hrs  ${fmtHrs(s2.holidayHours)}`);
         sumRow(`Total Hrs  ${fmtHrs(wk2Total)}`);
         cityTaxSection(taxBreakdown(wk2, wk2Adj), col);
+        pwSection(wk2, wk2Worked);
       } else {
         // Salaried — show city tax hrs only if non-A-No-Tax exists.
         // Empty-week placeholder ("No hours this week") fires symmetrically
@@ -32266,12 +32354,14 @@
         if (city1.length) { city1.forEach(([t,h],i) => dataRow(t, fmtHrs(h), i%2===1)); }
         else if (!wk1.length) dataRow("No hours this week", "", false);
         else dataRow("No City Taxes", "", false);
+        pwSection(wk1, wk1Worked);
 
         wkLabel("Week #2  —  Bi-weekly Salary", wk2Label, col);
         const city2 = taxBreakdown(wk2).filter(([t]) => t !== "A No Tax");
         if (city2.length) { city2.forEach(([t,h],i) => dataRow(t, fmtHrs(h), i%2===1)); }
         else if (!wk2.length) dataRow("No hours this week", "", false);
         else dataRow("No City Taxes", "", false);
+        pwSection(wk2, wk2Worked);
       }
 
       bonusRow(bonus, col);

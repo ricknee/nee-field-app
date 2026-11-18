@@ -3792,7 +3792,7 @@
     .schp-title b { display: block; font-size: 16pt; letter-spacing: 0.5px; }
     .schp-title span { font-size: 8pt; color: #555; }
     .schp .sch-grid { grid-template-columns: repeat(7, 1fr) !important; gap: 4px; margin: 0; }
-    .schp .sch-day { background: #fff; border: 1px solid #bbb; min-height: 88px; padding: 4px 5px; flex-direction: column !important;
+    .schp .sch-day { background: #fff; border: 1px solid #bbb; min-height: 64px; padding: 2px 4px; gap: 2px; flex-direction: column !important;
                      align-items: stretch !important; break-inside: avoid; page-break-inside: avoid; cursor: default; }
     .schp .sch-day.today { background: #fff; border-color: #bbb; }
     .schp .sch-day.today .sch-day-num { color: #111; }
@@ -3800,11 +3800,19 @@
     .schp .sch-day.sch-day-holiday { background: #fbe1e1; }
     .schp .sch-day-header { flex-direction: row !important; min-width: 0 !important; }
     .schp .sch-day-name { color: #666; }
-    .schp .sch-day-num { color: #111; font-size: 13pt; }
+    .schp .sch-day-num { color: #111; font-size: 10pt; }
+    .schp .sch-day-name { font-size: 7pt; }
+    .schp .sch-day-blocks { gap: 1px; }
     .schp .sch-block.past { opacity: 1; }
-    .schp .sch-block { font-size: 9pt; padding: 2px 5px; }
-    .schp .sch-block strong { font-size: 9pt; }
-    .schp .sch-block .crew { font-size: 7.5pt; opacity: 1; }
+    /* ONE line per pill on paper: "Jeff · Neal's Shop" — halves the height. */
+    .schp .sch-block { font-size: 7.5pt; padding: 1px 4px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .schp .sch-block strong { display: inline; font-size: 7.5pt; }
+    .schp .sch-block .crew { display: inline; font-size: 7pt; opacity: 1; }
+    .schp .sch-block .crew::before { content: " · "; }
+    .schp-head { padding-bottom: 4px; margin-bottom: 5px; }
+    .schp-head img { height: 34px; width: 34px; }
+    .schp-co { font-size: 12pt; }
+    .schp-title b { font-size: 12pt; }
     .schp .sch-block.sch-holiday { color: #555; border-color: #aaa; }
     /* The panel schedule sheet — mirrors downloadPanelPdf. Heavier, darker
        rules than screen convention: it gets read inside a door by torchlight. */
@@ -30000,8 +30008,15 @@
       return;
     }
     const month = $("schRangeLabel")?.textContent || "";
-    printHtmlPages(`
-      <div class="schp">
+    // ONE PAGE, ALWAYS (owner 2026-11-18: "make it smaller and still read it
+    // and fit it on one page"). Lay the sheet out off-screen at the printable
+    // width of letter landscape (11in − 2×0.35in), measure it, and if it is
+    // taller than the printable height (8.5in − 2×0.35in, less a little slack)
+    // shrink the whole sheet by exactly that ratio. A light month prints at
+    // full size; only a packed month gets smaller.
+    const PX_IN = 96, pageW = (11 - 0.7) * PX_IN, pageH = (8.5 - 0.7) * PX_IN - 12;
+    const sheet = (zoom) => `
+      <div class="schp" style="width:${pageW / zoom}px;${zoom < 1 ? ` zoom:${zoom};` : ""}">
         <div class="schp-head">
           <img src="${NEE_LOGO_B64}" alt="" onerror="this.style.display='none'">
           <div>
@@ -30012,7 +30027,15 @@
             <span>Printed ${esc(new Date().toLocaleDateString())}</span></div>
         </div>
         <div class="sch-grid">${grid.innerHTML}</div>
-      </div>`, "size: letter landscape; margin: 0.35in;");
+      </div>`;
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed; left:-20000px; top:0; visibility:hidden;";
+    probe.innerHTML = sheet(1);
+    document.body.appendChild(probe);
+    const h = probe.firstElementChild.offsetHeight;
+    probe.remove();
+    const zoom = h > pageH ? Math.max(0.5, Math.floor((pageH / h) * 100) / 100) : 1;
+    printHtmlPages(sheet(zoom), "size: letter landscape; margin: 0.35in;");
   };
 
   window.schShiftMonth = function(delta) {

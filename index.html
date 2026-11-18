@@ -3796,6 +3796,8 @@
     .schp-title b { display: block; font-size: 16pt; letter-spacing: 0.5px; }
     .schp-title span { font-size: 8pt; color: #555; }
     .schp .sch-grid { grid-template-columns: repeat(7, 1fr) !important; gap: 4px; margin: 0; }
+    .schp.schp-fill { display: flex; flex-direction: column; box-sizing: border-box; }
+    .schp.schp-fill .sch-grid { flex: 1; min-height: 0; grid-auto-rows: 1fr; }
     .schp .sch-day { background: #fff; border: 1px solid #bbb; min-height: 64px; padding: 2px 4px; gap: 2px; flex-direction: column !important;
                      align-items: stretch !important; break-inside: avoid; page-break-inside: avoid; cursor: default; }
     .schp .sch-day.today { background: #fff; border-color: #bbb; }
@@ -30039,7 +30041,12 @@
     const h = probe.firstElementChild.offsetHeight;
     probe.remove();
     const zoom = h > pageH ? Math.max(0.5, Math.floor((pageH / h) * 100) / 100) : 1;
-    printHtmlPages(sheet(zoom), "size: letter landscape; margin: 0.35in;");
+    // A light month FILLS the page (owner 2026-11-18, December left the bottom
+    // half blank): the sheet takes the full printable height and the week rows
+    // share it equally. A packed month is shrunk instead and keeps its height.
+    let html = sheet(zoom);
+    if (zoom === 1) html = html.replace('<div class="schp" style="', `<div class="schp schp-fill" style="height:${pageH}px; `);
+    printHtmlPages(html, "size: letter landscape; margin: 0.35in;");
   };
 
   window.schShiftMonth = function(delta) {

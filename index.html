@@ -3780,6 +3780,32 @@
       body.printing-app { background: #fff !important; margin: 0; padding: 0; }
       body.printing-app #appPrintArea { display: block; }
     }
+    /* 🖨 Crew Schedule month (schPrintMonth) — the on-screen grid, copied as-is,
+       on white paper with the NEE header. Past days are NOT faded on paper, and
+       the "today" highlight is dropped; the other month's spill-over stays grey. */
+    .schp { font-family: Helvetica, Arial, sans-serif; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .schp-head { display: flex; align-items: center; gap: 12px; border-bottom: 2px solid #1565c0; padding-bottom: 6px; margin-bottom: 8px; }
+    .schp-head img { height: 46px; width: 46px; object-fit: contain; }
+    .schp-co { font-size: 15pt; font-weight: 700; color: #1565c0; line-height: 1.1; }
+    .schp-addr { font-size: 8pt; color: #555; }
+    .schp-title { margin-left: auto; text-align: right; }
+    .schp-title b { display: block; font-size: 16pt; letter-spacing: 0.5px; }
+    .schp-title span { font-size: 8pt; color: #555; }
+    .schp .sch-grid { grid-template-columns: repeat(7, 1fr) !important; gap: 4px; margin: 0; }
+    .schp .sch-day { background: #fff; border: 1px solid #bbb; min-height: 88px; padding: 4px 5px; flex-direction: column !important;
+                     align-items: stretch !important; break-inside: avoid; page-break-inside: avoid; cursor: default; }
+    .schp .sch-day.today { background: #fff; border-color: #bbb; }
+    .schp .sch-day.today .sch-day-num { color: #111; }
+    .schp .sch-day.weekend { background: #fdf1f1; border-color: #f0caca; }
+    .schp .sch-day.sch-day-holiday { background: #fbe1e1; }
+    .schp .sch-day-header { flex-direction: row !important; min-width: 0 !important; }
+    .schp .sch-day-name { color: #666; }
+    .schp .sch-day-num { color: #111; font-size: 13pt; }
+    .schp .sch-block.past { opacity: 1; }
+    .schp .sch-block { font-size: 9pt; padding: 2px 5px; }
+    .schp .sch-block strong { font-size: 9pt; }
+    .schp .sch-block .crew { font-size: 7.5pt; opacity: 1; }
+    .schp .sch-block.sch-holiday { color: #555; border-color: #aaa; }
     /* The panel schedule sheet — mirrors downloadPanelPdf. Heavier, darker
        rules than screen convention: it gets read inside a door by torchlight. */
     .pp-sheet { font-family: Helvetica, Arial, sans-serif; color: #0f0f0f; width: 512pt; }
@@ -29963,6 +29989,32 @@
     schEditingId = null;
     loadScheduleData();
   };
+  // 🖨 Print the month exactly as the grid shows it (owner 2026-11-18: "i would
+  // like to print this just as it is" + "with a northeastern logo and or
+  // header"). Copies the rendered grid, so it can never disagree with the
+  // screen. Desktop only — the phone view is a 14-day list, not a month.
+  window.schPrintMonth = function() {
+    const grid = $("schGrid");
+    if (!grid || !grid.innerHTML.trim() || grid.style.display === "none") {
+      showAppToast("Wait for the schedule to load, then print.", { kind: "warn" });
+      return;
+    }
+    const month = $("schRangeLabel")?.textContent || "";
+    printHtmlPages(`
+      <div class="schp">
+        <div class="schp-head">
+          <img src="${NEE_LOGO_B64}" alt="" onerror="this.style.display='none'">
+          <div>
+            <div class="schp-co">Northeastern Electric, Inc.</div>
+            <div class="schp-addr">5909 Bandy Rd, Homeworth OH 44634 · 330-257-0447</div>
+          </div>
+          <div class="schp-title"><b>CREW SCHEDULE — ${esc(month.toUpperCase())}</b>
+            <span>Printed ${esc(new Date().toLocaleDateString())}</span></div>
+        </div>
+        <div class="sch-grid">${grid.innerHTML}</div>
+      </div>`, "size: letter landscape; margin: 0.35in;");
+  };
+
   window.schShiftMonth = function(delta) {
     // Displayed month = month of (schRangeStart + 6 days). The first
     // calendar row spans Sun–Sat, so the 1st of the month is guaranteed
@@ -35703,6 +35755,7 @@
         <span class="sch-range-label" id="schRangeLabel">—</span>
         <button class="sch-nav-btn sch-mobile-only" onclick="schShiftRange(14)">Next 2 wks →</button>
         <button class="sch-nav-btn sch-desktop-only" onclick="schShiftMonth(1)">Next month →</button>
+        <button class="sch-nav-btn sch-desktop-only" onclick="schPrintMonth()" title="Print this month">🖨 Print</button>
         <button class="sch-add-btn" onclick="schOpenNew()" id="schAddBtn">+ New Entry</button>
       </div>
 

@@ -4905,7 +4905,10 @@ async function handlePayrollHoursBreakdown(params) {
                 ON t.employee_id = e.id
                AND t.work_date >= $1::date AND t.work_date <= $2::date
         WHERE lower(coalesce(e.role, 'employee')) NOT IN ('office','viewer')
-        GROUP BY e.airtable_id, e.name, e.active
+        -- ⚠ e.id, NOT e.airtable_id: the SELECT emits COALESCE(e.airtable_id, e.id::text),
+        -- so grouping by airtable_id alone makes Postgres refuse the query outright
+        -- (broken 2026-08-24 → 2026-11-18). e.id is the PK and covers name/active.
+        GROUP BY e.id
        HAVING e.active OR coalesce(sum(t.hours), 0) > 0
         ORDER BY e.name`,
       [dateToYmd(bucketStart), dateToYmd(sumEnd)]);
@@ -14171,7 +14174,12 @@ async function handleGetScheduleEntriesFromNeon(params) {
         -- always kept, otherwise it shows when its range meets the window.
         AND ($2 = '' OR s.start_date IS NULL OR COALESCE(s.end_date, s.start_date) >= $2::date)
         AND ($3 = '' OR s.start_date IS NULL OR COALESCE(s.start_date, s.end_date) <= $3::date)
-      GROUP BY s.id, j.airtable_id, j.name, j.contractor_name, j.status
+      -- ⚠ j.id, NOT j.airtable_id: the SELECT emits COALESCE(j.airtable_id, j.id::text),
+      -- and grouping by airtable_id alone makes Postgres refuse the whole query
+      -- ("j.id must appear in the GROUP BY"). That broke the Crew Schedule for
+      -- everyone from 2026-11-09 to 2026-11-18. j.id is the PK, so it covers the
+      -- other j columns.
+      GROUP BY s.id, j.id
       ORDER BY s.start_date ASC NULLS FIRST`,
     [jobId, since, until]);
   if (!q?.rows) return null;

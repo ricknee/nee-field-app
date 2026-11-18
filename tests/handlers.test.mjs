@@ -9141,5 +9141,27 @@ await test("no Airtable key: STATIC — nothing requires it, and the hourly pull
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);
+await test("SQL: STATIC — GROUP BY never names x.airtable_id when the query emits COALESCE(x.airtable_id, x.id::text)", async () => {
+  // Postgres refuses the WHOLE query ("x.id must appear in the GROUP BY") — the
+  // Crew Schedule (2026-11-09) and the payroll hours drill-down (2026-08-24)
+  // were both dead this way until 2026-11-18. Group by the PK x.id instead.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  for (const f of ["airtable.js", "inventory.js"]) {
+    const src = readFileSync(fileURLToPath(new URL(`../netlify/functions/${f}`, import.meta.url)), "utf8");
+    for (const m of src.matchAll(/GROUP BY([^\n`]*)/g)) {
+      const cols = m[1];
+      const qStart = Math.max(src.lastIndexOf("neonQuery(", m.index), src.lastIndexOf("sql`", m.index));
+      const query = src.slice(qStart, m.index);
+      for (const a of cols.matchAll(/\b(\w+)\.airtable_id\b/g)) {
+        const alias = a[1];
+        const emits = new RegExp(`COALESCE\(${alias}\.airtable_id,\s*${alias}\.id`).test(query);
+        const grouped = new RegExp(`\b${alias}\.id\b`).test(cols);
+        ok(!emits || grouped, `${f}: GROUP BY${cols.trim()} — add ${alias}.id`);
+      }
+    }
+  }
+});
+
 console.log(`\n  ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

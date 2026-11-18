@@ -3779,6 +3779,10 @@
       body.printing-app > *:not(#appPrintArea) { display: none !important; }
       body.printing-app { background: #fff !important; margin: 0; padding: 0; }
       body.printing-app #appPrintArea { display: block; }
+      /* The phone "👆 Tap a job to view details" hint is a body::after, which
+         the rule above can't reach; the print page is narrow enough to trigger
+         it, so it landed on the Crew Schedule print (2026-11-18). */
+      body.printing-app::before, body.printing-app::after { content: none !important; display: none !important; }
     }
     /* 🖨 Crew Schedule month (schPrintMonth) — the on-screen grid, copied as-is,
        on white paper with the NEE header. Past days are NOT faded on paper, and

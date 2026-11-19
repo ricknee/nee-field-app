@@ -893,8 +893,8 @@ await test("updateJobInfo: stage — unknown value refused; list matches the sch
   eq(r.statusCode, 400, "unknown stage refused");
   const fs = await import("node:fs/promises");
   const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
-  // 097 replaced 096's CHECK (adds rough / finish), so the LATEST one is the truth.
-  const sql = await fs.readFile(new URL("../db/schema/097_job_stage_rough_finish.sql", import.meta.url), "utf8");
+  // 098 replaced 097's CHECK (adds complete), so the LATEST one is the truth.
+  const sql = await fs.readFile(new URL("../db/schema/098_job_stage_complete.sql", import.meta.url), "utf8");
   const list = JSON.parse(src.match(/const JOB_STAGES = (\[[^\]]*\]);/)[1].replace(/'/g, '"'));
   for (const k of list) ok(sql.includes(`'${k}'`), `schema CHECK allows ${k}`);
   ok(/j\.stage,/.test(src), "job reads emit stage");

@@ -4325,6 +4325,7 @@
                   <option value="finish">💡 Finish</option>
                   <option value="punchlist">🧹 Punch list</option>
                   <option value="onhold">⏸ On hold</option>
+                  <option value="complete">✅ Complete (set automatically when the job is Completed)</option>
                 </select>
               </div>
               <div>
@@ -6060,6 +6061,7 @@
     finish:          { icon: "💡", label: "Finish",           short: "Finish",   cls: "green" },
     punchlist:       { icon: "🧹", label: "Punch list",       short: "Punch",    cls: "amber" },
     onhold:          { icon: "⏸",  label: "On hold",          short: "On hold",  cls: "grey"  },
+    complete:        { icon: "✅", label: "Complete",         short: "Complete", cls: "green" },
   };
   function jobStageOf(j) {
     if (!j || j.status !== "Awarded") return null;
@@ -15246,8 +15248,14 @@
       await apiPost("updateJobStatus", { jobId: state.selected.id, status: newStatus });
 
       // Update local state so sidebar re-renders correctly
-      state.selected.status = newStatus;
-      state.jobs = state.jobs.map(j => j.id === state.selected.id ? { ...j, status: newStatus } : j);
+      // Stage follows Completed server-side (schema 098) — mirror it here so
+      // Project Info → Edit shows it without a reload.
+      const sel = state.selected;
+      const newStage = newStatus === "Completed" ? "complete"
+                     : (sel.stage === "complete" ? "" : (sel.stage || ""));
+      sel.status = newStatus;
+      sel.stage  = newStage;
+      state.jobs = state.jobs.map(j => j.id === sel.id ? { ...j, status: newStatus, stage: newStage } : j);
 
       // Update the status pill in the header
       const sp = $("dStatusPill");

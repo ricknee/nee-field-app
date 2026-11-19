@@ -6880,6 +6880,11 @@ async function handleUpdateJobStatus(body) {
      UPDATE jobs j
         SET status = $2,
             po_locked = CASE WHEN $2 <> 'New Lead' THEN COALESCE(j.po_locked, j.po) ELSE j.po_locked END,
+            -- Stage follows a Completed status (schema 098, owner 2026-11-19);
+            -- moving OFF Completed clears an auto 'complete' so it can't go stale.
+            stage = CASE WHEN $2 = 'Completed' THEN 'complete'
+                         WHEN j.stage = 'complete' THEN NULL
+                         ELSE j.stage END,
             project_completed_at = CASE WHEN $2 = 'Completed'
                                         THEN COALESCE(j.project_completed_at, current_date)
                                         ELSE j.project_completed_at END,
@@ -14958,7 +14963,8 @@ async function handleUpdateJobInspection(body) {
 // form supports both updating and clearing.
 // db/schema/096 — must match the CHECK constraint there.
 // rough / finish: residential stages, schema 097 (owner 2026-11-18).
-const JOB_STAGES = ["preconstruction", "onsite", "rough", "finish", "punchlist", "onhold"];
+// complete: set automatically when status → Completed, schema 098.
+const JOB_STAGES = ["preconstruction", "onsite", "rough", "finish", "punchlist", "onhold", "complete"];
 
 async function handleUpdateJobInfo(body) {
   const { jobId, contractorContactId, customerFirstName, customerLastName, customerStreet, customerCity, customerState, customerZip, customerPhone, customerEmail, notes, completionDate, completionMetOn, startDate, stage, expectedHours, generatorInstalled } = body || {};

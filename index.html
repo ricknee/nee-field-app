@@ -30185,6 +30185,8 @@
     const isTimeOff = schEditingType === "Time Off";
     const jobWrap = $("schEditJobWrap");
     if (jobWrap) jobWrap.style.display = isTimeOff ? "none" : "";
+    const stageWrap = $("schEditStageWrap");
+    if (stageWrap) stageWrap.style.display = isTimeOff ? "none" : "";
     const crewLabel = $("schCrewLabel");
     if (crewLabel) crewLabel.textContent = isTimeOff ? "Who's off (tap to toggle)" : "Crew (tap to toggle)";
     const notesInp = $("schEditNotes");
@@ -30247,8 +30249,24 @@
     return list;
   }
 
+  // Job stage picker — mirrors the picked job's jobs.stage. Options come from
+  // JOB_STAGE_META so they never drift from Project Info's list.
+  function schSyncStage(jobId) {
+    const sel = $("schEditStage");
+    if (!sel) return;
+    if (!sel.options.length) {
+      sel.innerHTML = `<option value="">— not set —</option>` +
+        Object.entries(JOB_STAGE_META).map(([k, m]) =>
+          `<option value="${k}">${m.icon} ${esc(m.label)}</option>`).join("");
+    }
+    const j = jobId ? (schJobs || []).find(x => x.id === jobId) : null;
+    sel.value = (j && j.stage && JOB_STAGE_META[j.stage]) ? j.stage : "";
+    sel.disabled = !j;
+  }
+
   // Open the job picker for a new/edit form. selectedId may be empty.
   function populateJobDropdown(selectedId) {
+    schSyncStage(selectedId);
     const list   = schJobCandidates(selectedId);
     const hidden = $("schEditJob");
     const search = $("schJobSearch");
@@ -30316,6 +30334,7 @@
       const pick = (jobId) => {
         const j = (search._jobs || []).find(x => x.id === jobId);
         hidden.value = jobId || "";
+        schSyncStage(jobId);
         if (j) {
           search.value = j.name + (j.contractor ? " (" + j.contractor + ")" : "");
           search.classList.add("has-pick");
@@ -30461,6 +30480,26 @@
       } else {
         const r = await apiPost("addScheduleEntry", payload);
         if (!r?.ok) throw new Error(r?.error || "Save failed");
+      }
+      // Job stage — saved to the JOB only if it changed. After the entry, so a
+      // failed stage save never loses the schedule entry; it says so instead.
+      if (!isTimeOff) {
+        const job = (schJobs || []).find(j => j.id === jobId);
+        const newStage = $("schEditStage")?.value || "";
+        if (job && newStage !== (job.stage || "")) {
+          try {
+            const r = await apiPost("updateJobInfo", { jobId, stage: newStage });
+            if (r && r.ok === false) throw new Error(r.error || "Save failed");
+            state.jobs = (state.jobs || []).map(j => j.id === jobId ? { ...j, stage: newStage } : j);
+            if (state.selected?.id === jobId) state.selected.stage = newStage;
+            schJobs = state.jobs;
+            if (typeof applyFilters === "function") applyFilters();
+            const m = JOB_STAGE_META[newStage];
+            showAppToast(`✓ Stage: ${m ? m.icon + " " + m.label : "not set"}`);
+          } catch (se) {
+            alert("The entry saved, but the job stage didn't: " + se.message);
+          }
+        }
       }
       $("schEditPanel").style.display = "none";
       schEditingId = null;
@@ -35821,6 +35860,13 @@
           <div>
             <label>Notes (optional)</label>
             <input type="text" id="schEditNotes" placeholder="rough-in, trim out, vacation..." />
+          </div>
+          <!-- The JOB's stage (owner 2026-11-19) — the same jobs.stage as Project
+               Info → Edit, not a per-day value. Shows the job's current stage
+               when a job is picked; a change is saved to the job on Save. -->
+          <div id="schEditStageWrap">
+            <label>Job stage</label>
+            <select id="schEditStage"></select>
           </div>
           <!-- ONE date by default — owner 2026-10-02: "i only schedule 1 day at a time".
                The end date hides until "Multiple days" is tapped (vacations, long

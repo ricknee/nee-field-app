@@ -1845,6 +1845,26 @@
     .hd-pill.blue { background: var(--blue-dim); color: var(--blue); }
     .hd-pill.grey { background: var(--panel-3); color: var(--muted); }
     .hd-legend { font-size: 11px; color: var(--muted); margin-top: 10px; }
+    /* 📅 Two-week schedule on the Overview — weekends squeezed narrow. */
+    .hd-cal { display: grid; grid-template-columns: minmax(0, .55fr) repeat(5, minmax(0, 1fr)) minmax(0, .55fr); gap: 3px; margin-bottom: 6px; }
+    .hd-cal-dow { font-size: 10px; font-weight: 700; color: var(--muted); text-align: center; }
+    .hd-cal-day { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 3px 4px; min-height: 58px; min-width: 0; }
+    .hd-cal-day.wknd { background: var(--panel-3); }
+    .hd-cal-day.past { opacity: .55; }
+    .hd-cal-day.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); opacity: 1; }
+    .hd-cal-num { font-size: 10.5px; font-weight: 700; color: var(--muted); margin-bottom: 2px; }
+    .hd-cal-num[onclick] { cursor: pointer; }
+    .hd-cal-num[onclick]:hover { color: var(--accent); }
+    .hd-cal-day.today .hd-cal-num { color: var(--accent); }
+    .hd-cal-e { font-size: 10.5px; line-height: 1.2; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 4px; padding: 2px 3px; margin-top: 2px; overflow: hidden; }
+    .hd-cal-e[data-hd-id] { cursor: pointer; }
+    .hd-cal-e[data-hd-id]:hover { border-color: var(--accent); }
+    .hd-cal-e b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; }
+    .hd-cal-e small { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .hd-cal-e small.none { color: var(--red); }
+    .hd-cal-e.off { border-left-color: var(--yellow); color: var(--muted); white-space: nowrap; text-overflow: ellipsis; }
+    .hd-cal-e.due { border-left-color: var(--blue); color: var(--blue); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+    .hd-cal-more { font-size: 10px; color: var(--muted); margin-top: 2px; }
     .stage-pill { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
     .stage-pill.blue  { background: var(--blue-dim);   color: var(--blue); }
     .stage-pill.green { background: var(--green-dim);  color: var(--green); }
@@ -6120,7 +6140,6 @@
   // ⚠ The target's SOURCE is shown ("est" = estimate rollup, "set" = the
   // Expected Hours override) — the owner has to be able to tell a real number
   // from a placeholder estimate.
-  const HD_DUE_DAYS = 30;
   let _hdCache = null, _hdAt = 0, _hdBusy = null;
 
   function hdWanted() {
@@ -6155,12 +6174,16 @@
     if (_hdBusy) return _hdBusy;
     _hdBusy = (async () => {
       try {
-        const [wl, wk, inv] = await Promise.all([
+        // 📅 Two-week schedule: Sunday of THIS week through Saturday next week.
+        const cal0 = hdCalStart();
+        const [wl, wk, inv, cal] = await Promise.all([
           apiGet("workload").catch(e => ({ _err: e.message })),
           apiGet("recentHoursByJob", { days: 7 }).catch(e => ({ _err: e.message })),
           apiGet("allInvoices").catch(e => ({ _err: e.message })),
+          apiGet("scheduleEntries", { since: hdYMD(cal0), until: hdYMD(hdAddDays(cal0, 13)) })
+            .catch(e => ({ _err: e.message })),
         ]);
-        _hdCache = { wl, wk, inv };
+        _hdCache = { wl, wk, inv, cal };
         _hdAt = Date.now();
       } finally { _hdBusy = null; }
       renderHomeDash();
@@ -6250,6 +6273,60 @@
   const hdH = (n) => (Math.round((Number(n) || 0) * 10) / 10).toLocaleString();
   const hdClick = (id, name) => `data-hd-id="${esc(id || "")}" data-hd-name="${esc(name || "")}"`;
 
+  // ── 📅 TWO-WEEK SCHEDULE on the Overview (owner 2026-11-19) ─────────────
+  // Replaces "Jobs coming due": the 🏁 due markers ride on the calendar, and
+  // anything already OVERDUE is listed under it so it can't scroll out of view.
+  // Read-only — a job line opens the job; the day number opens 📅 Schedule.
+  function hdYMD(d) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  function hdAddDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+  function hdCalStart() { const d = new Date(); d.setHours(0, 0, 0, 0); return hdAddDays(d, -d.getDay()); }
+  const HD_CAL_MAX = 4;   // lines per day before "+N more"
+  function hdCalHtml(cal) {
+    const start = hdCalStart();
+    const today = hdYMD(new Date());
+    const entries = cal.entries || [];
+    const dues = cal.completionDates || [];
+    const first = (n) => String(n || "").split(" ")[0];
+    const canOpen = isStrictAdminRole();
+    let html = `<div class="hd-cal">` +
+      ["S", "M", "T", "W", "T", "F", "S"].map(d => `<div class="hd-cal-dow">${d}</div>`).join("");
+    for (let i = 0; i < 14; i++) {
+      const d = hdAddDays(start, i), ymd = hdYMD(d), dow = d.getDay();
+      const lines = [];
+      for (const e of entries) {
+        if (!e.startDate || !e.endDate || e.startDate > ymd || e.endDate < ymd) continue;
+        const names = (e.crew || []).map(first).filter(Boolean).join(", ");
+        if (e.type === "Time Off") {
+          lines.push(`<div class="hd-cal-e off" title="Time off${e.notes ? " — " + esc(e.notes) : ""}">🏖 ${esc(names || "Time off")}</div>`);
+        } else {
+          lines.push(`<div class="hd-cal-e" ${e.jobId ? hdClick(e.jobId, e.jobName) : ""}
+                        title="${esc((e.jobName || "—") + (names ? " — " + names : "") + (e.notes ? " — " + e.notes : ""))}">
+                        <b>${esc(e.jobName || "—")}</b>${names ? `<small>${esc(names)}</small>` : `<small class="none">no crew</small>`}</div>`);
+        }
+      }
+      for (const b of dues.filter(x => x.date === ymd)) {
+        lines.push(`<div class="hd-cal-e due" ${hdClick(b.jobId, b.jobName)} title="🏁 Target completion — ${esc(b.jobName || "")}">🏁 ${esc(b.jobName || b.contractor || "Due")}</div>`);
+      }
+      const more = lines.length - HD_CAL_MAX;
+      const shown = more > 0 ? lines.slice(0, HD_CAL_MAX - 1).join("") +
+        `<div class="hd-cal-more">+${more + 1} more</div>` : lines.join("");
+      html += `<div class="hd-cal-day${ymd === today ? " today" : ""}${ymd < today ? " past" : ""}${dow === 0 || dow === 6 ? " wknd" : ""}">
+          <div class="hd-cal-num"${canOpen ? ` onclick="hdOpenScheduleAt('${ymd}')" title="Open 📅 Schedule"` : ""}>${d.getDate() === 1 || i === 0 ? d.toLocaleDateString("en-US", { month: "short" }) + " " : ""}${d.getDate()}</div>
+          ${shown}</div>`;
+    }
+    return html + `</div>`;
+  }
+  // Day number → the full Schedule screen with that day's detail open.
+  window.hdOpenScheduleAt = function (ymd) {
+    if (typeof openSchedule !== "function") return;
+    // loadScheduleData opens this day's detail once ITS data is in — a timer
+    // here would race the fetch and show an empty day.
+    window._schPendingDay = ymd;
+    openSchedule();
+  };
+
   function renderHomeDash() {
     const box = $("homeDash");
     if (!box || !hdWanted() || !_hdCache) return;
@@ -6318,17 +6395,22 @@
         ` · <b>est</b> = from the estimate, <b>set</b> = Expected Hours on the job</div>`;
     }
 
-    // 4 ─ Coming due: open jobs whose completion date is past or within HD_DUE_DAYS
+    // 4 ─ 📅 Schedule, this week + next (replaced "Jobs coming due", owner
+    // 2026-11-19). Upcoming due dates show on the calendar as 🏁; a job already
+    // PAST its date would fall off the calendar, so those are listed under it.
     const OPEN = ["Awarded", "Service Call Scheduled"];
-    const due = (state.jobs || []).filter(j => OPEN.includes(j.status) && j.completionDate && !j.completionMetOn)
+    const overdue = (state.jobs || []).filter(j => OPEN.includes(j.status) && j.completionDate && !j.completionMetOn)
       .map(j => ({ j, days: hdDaysBetween(today, String(j.completionDate).slice(0, 10)) }))
-      .filter(x => x.days <= HD_DUE_DAYS)
+      .filter(x => x.days < 0)
       .sort((a, b) => a.days - b.days);
-    const dueHtml = due.length ? due.map(({ j, days }) => `<div class="hd-list-row" ${hdClick(j.id, j.name)}>
-        <span><b>${esc(j.name)}</b> <span style="color:var(--muted); font-size:12px;">${esc(j.po || "")} · due ${esc(fmtCompletionDate(String(j.completionDate).slice(0, 10)))}</span></span>
-        <span class="hd-pill ${days < 0 ? "red" : days <= 7 ? "amber" : "blue"}">${
-          days < 0 ? `${-days} days overdue` : days === 0 ? "due today" : `${days} days`}</span></div>`).join("")
-      : `<div class="hd-empty">Nothing due in the next ${HD_DUE_DAYS} days.</div>`;
+    const cal = _hdCache.cal;
+    let calHtml = (!cal || cal._err) ? err(cal || { _err: "no data" }) : hdCalHtml(cal);
+    calHtml += overdue.map(({ j, days }) => `<div class="hd-list-row" ${hdClick(j.id, j.name)}>
+        <span><b>${esc(j.name)}</b> <span style="color:var(--muted); font-size:12px;">due ${esc(fmtCompletionDate(String(j.completionDate).slice(0, 10)))}</span></span>
+        <span class="hd-pill red">${-days} day${days === -1 ? "" : "s"} overdue</span></div>`).join("");
+    const calTitle = isStrictAdminRole()
+      ? `📅 Schedule — this week &amp; next <a href="#" onclick="event.preventDefault(); openSchedule();" style="text-transform:none; letter-spacing:0; color:var(--accent); font-weight:600; margin-left:6px;">Open →</a>`
+      : `📅 Schedule — this week &amp; next`;
 
     // 5 ─ Ready to Invoice
     const rti = (state.jobs || []).filter(j => j.status === "Ready to Invoice")
@@ -6394,7 +6476,7 @@
         <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml, true)}</div>
         <div class="hd-col">
           ${card("💼 Office Work", null, paperHtml)}
-          ${card("📅 Jobs coming due / overdue", due.length, dueHtml)}
+          <div class="hd-card"><h3><span>${calTitle}</span></h3>${calHtml}</div>
           ${card("🕒 This week", wkTotal, wkHtml)}
           ${card("🧾 Ready to invoice", rti.length, rtiHtml)}
         </div>
@@ -29629,6 +29711,11 @@
       $("schStatus").style.display = "none";
       $("schGrid").style.display = "";
       renderScheduleGrid();
+      // Opened from a day on the Overview's 📅 calendar (hdOpenScheduleAt).
+      if (window._schPendingDay) {
+        const d = window._schPendingDay; window._schPendingDay = null;
+        schShowDayDetail(d);
+      }
     } catch(e) {
       $("schStatus").textContent = "Couldn't load schedule: " + e.message;
       $("schStatus").style.color = "var(--red, #dc2626)";

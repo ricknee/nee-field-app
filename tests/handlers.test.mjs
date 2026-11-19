@@ -900,6 +900,31 @@ await test("updateJobInfo: stage — unknown value refused; list matches the sch
   ok(/j\.stage,/.test(src), "job reads emit stage");
 });
 
+// db/schema/099 — first hours move an Awarded job to On site (owner 2026-11-19).
+await test("autoStage: first hours → onsite, only from pre-con/unset, only NEW hours; wired + clock resets", async () => {
+  const { runAutoStageOnsite, AUTO_STAGE_SQL } = await import("../netlify/functions/_job-stage-auto.js");
+  let seen = null;
+  const r = await runAutoStageOnsite(async (t, p) => { seen = t; return [{ name: "WatersEdge 1" }]; });
+  eq(r.movedToOnsite, 1, "reports moved jobs");
+  eq(r.jobs[0], "WatersEdge 1", "names them");
+  ok(seen === AUTO_STAGE_SQL, "runs the one statement");
+  ok(/SET stage = 'onsite'/.test(AUTO_STAGE_SQL), "sets onsite — never rough (owner: all jobs → On site)");
+  ok(/j\.status = 'Awarded'/.test(AUTO_STAGE_SQL), "Awarded jobs only");
+  ok(/j\.stage IS NULL OR j\.stage = 'preconstruction'/.test(AUTO_STAGE_SQL), "never overrides a hand-set stage");
+  ok(/t\.created_at > j\.stage_auto_after/.test(AUTO_STAGE_SQL), "only hours recorded after the clock");
+  ok(/stage_auto_after = now\(\)/.test(AUTO_STAGE_SQL), "stamps the clock so it fires once");
+  const fs = await import("node:fs/promises");
+  const pull = await fs.readFile(new URL("../netlify/functions/qb-time-pull.js", import.meta.url), "utf8");
+  ok(/import \{ runAutoStageOnsite \} from "\.\/_job-stage-auto\.js"/.test(pull), "hourly pull imports it");
+  ok(pull.indexOf("runAutoStageOnsite((t, p)") > pull.indexOf("await runPull({ sql, token, since })"),
+     "runs AFTER the timesheet pull");
+  const src = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  ok(/stage_auto_after = CASE WHEN stage IS DISTINCT FROM/.test(src), "hand stage change resets the clock");
+  ok(/stage_auto_after = CASE WHEN j\.status IS DISTINCT FROM \$2/.test(src), "status change resets the clock");
+  const sql = await fs.readFile(new URL("../db/schema/099_job_stage_auto_after.sql", import.meta.url), "utf8");
+  ok(/ADD COLUMN IF NOT EXISTS stage_auto_after timestamptz/.test(sql), "schema adds the column");
+});
+
 await test("workload: only AWARDED is backlog, and coverage rides with the total", async () => {
   const fs = await import("node:fs/promises");
   const src  = await fs.readFile(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");

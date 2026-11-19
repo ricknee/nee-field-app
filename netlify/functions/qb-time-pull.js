@@ -50,6 +50,7 @@ import { neon } from "@neondatabase/serverless";
 import { backfillJobLinks } from "./_jobs-sync.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 import { runIntegrityChecks, reportIntegrity } from "./_integrity.js";
+import { runAutoStageOnsite } from "./_job-stage-auto.js";
 import { makeAtFetch } from "./_jobs.js";
 import { readPendingTicketLines } from "./_ticket-lines.js";
 import { getObjectBytes, r2Enabled } from "./_r2.js";
@@ -503,6 +504,16 @@ export const handler = async () => {
   try {
     const pulled = await runPull({ sql, token, since });
 
+    // ── First hours → 🔨 On site (_job-stage-auto.js, db/schema/099) ────────
+    // AFTER the pull so this hour's timesheets count. Fails soft.
+    let stageReport = { ok: false, error: "not run" };
+    try {
+      stageReport = await runAutoStageOnsite((t, p) => sql.query(t, p));
+    } catch (e) {
+      console.error("qb-time-pull: auto stage failed (continuing)", e);
+      stageReport = { ok: false, error: String(e?.message || e) };
+    }
+
     // ── Google contacts → rick@ (_google-contacts-sync.js) ─────────────────
     // AFTER the timesheet pull on purpose: it is the least urgent thing here
     // and must never eat the pull's time. Only when GOOGLE_CONTACTS=on; ~6 s
@@ -519,7 +530,7 @@ export const handler = async () => {
       }
     }
 
-    const report = { ...pulled, jobLinks: linkReport, googleContacts: googleReport,
+    const report = { ...pulled, jobLinks: linkReport, autoStage: stageReport, googleContacts: googleReport,
                      generatorServiceCalls: generatorReport,
                      ticketLines: ticketReport,
                      integrity: { failures: integrityReport.failures ?? null,

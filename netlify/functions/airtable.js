@@ -6885,6 +6885,10 @@ async function handleUpdateJobStatus(body) {
             stage = CASE WHEN $2 = 'Completed' THEN 'complete'
                          WHEN j.stage = 'complete' THEN NULL
                          ELSE j.stage END,
+            -- db/schema/099: a status change (e.g. → Awarded) restarts the
+            -- "first hours → On site" clock, so estimating-time hours don't count.
+            stage_auto_after = CASE WHEN j.status IS DISTINCT FROM $2 THEN now()
+                                    ELSE j.stage_auto_after END,
             project_completed_at = CASE WHEN $2 = 'Completed'
                                         THEN COALESCE(j.project_completed_at, current_date)
                                         ELSE j.project_completed_at END,
@@ -15064,6 +15068,11 @@ async function handleUpdateJobInfo(body) {
       return resp(400, { ok: false, error: "Unknown stage." });
     }
     put("stage", v || null);
+    // db/schema/099 — a stage CHANGED by hand restarts the "first hours → On
+    // site" clock, so a job put back to Pre-con stays there until NEW hours
+    // land. Only on a real change: the one Project Info save bar sends the
+    // stage on every save. (RHS `stage` is the old value in an UPDATE.)
+    nSets.push(`stage_auto_after = CASE WHEN stage IS DISTINCT FROM $${nVals.length} THEN now() ELSE stage_auto_after END`);
   }
   // Hours target. "" clears it back to "nobody has said" — which is NOT the
   // same as 0, so an empty box must never arrive as a zero. A number that

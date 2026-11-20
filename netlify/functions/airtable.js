@@ -7,6 +7,7 @@ import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, assertAirtableReadable, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
+import { contractLines, invoiceEstimateWarnings } from "./_invoice-estimate-check.js";
 import { CITY_TAX_OPTS } from "./_city-taxes.js";
 import { neonLoginCandidate, neonEmployees, neonEmployeeById,
          isEmployeeHandle } from "./_employees.js";
@@ -729,7 +730,7 @@ const _ADMIN_OFFICE_POSTS = new Set([
 // start and stop their paid time. Office is excluded from payroll throughout.
 // `clockReconcile` compares everyone's hours across two systems — a payroll-wide
 // read, so it sits with the roster at strict admin.
-const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "people", "employeePin", "employeeRates",
+const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "clientErrors","people", "employeePin", "employeeRates",
                               // db/schema/072. Names the specific misconfiguration the same
                               // way r2Status does, because a PW job with no usable rate
                               // produces a plausible number rather than an error.
@@ -809,6 +810,8 @@ function authzFor(method, action) {
   }
   // POST
   if (_READ_LIKE_POSTS.has(action))    return null;
+  // Every signed-in role, viewers included: their screens throw errors too.
+  if (action === "logClientError")     return null;
   if (_TIME_SELF_WRITES.has(action))   return _PAYROLL;
   if (_ADMIN_POSTS.has(action))        return _ADMIN;
   if (_ADMIN_OFFICE_POSTS.has(action)) return _ADMIN_OFFICE;
@@ -7547,6 +7550,7 @@ async function handleJobEstimates(params) {
               e.estimate_date::text AS estimate_date, e.actual_estimate_sent,
               e.estimated_labor_hours, e.estimated_material_cost,
               e.calculated_estimated_total, e.notes, e.display_number,
+              e.title,  -- db/schema/101, hand-set label; NULL = not set
               -- db/schema/065. A NULL material_raw_cost is the legacy tell and
               -- the client keys its "pre-split" badge on it, so it is emitted raw
               -- rather than coalesced into something tidy.
@@ -7633,6 +7637,7 @@ async function handleJobEstimates(params) {
         // be read as a cost. The card says so rather than showing a made-up GP.
         legacyMaterialBasis: r.material_raw_cost === null,
         calculatedTotal: n(r.calculated_estimated_total), notes: s(r.notes),
+        title: s(r.title),
         displayNumber: r.display_number ?? null, snapshot: s(r.snapshot),
         pdfs: pdfsById.get(r.id) || [],
       }));
@@ -8062,6 +8067,44 @@ async function handleUpdateEstimate(body) {
       }));
   }
   return resp(200, { ok: true, updatedId: rows[0].handle });
+}
+
+// db/schema/101. The words on an estimate: its hand-set title and its proposal
+// text (notes). Kept out of handleUpdateEstimate on purpose — that handler is a
+// money write with a "nothing to update" rule and derived columns, and a text
+// edit should never be able to move a price. Partial: a field left out (undefined)
+// is unchanged; an empty title clears it back to "not set".
+// ⚠ notes is NOT display only: it becomes the "Scope:" text when an invoice line
+// is built from this estimate. That is the point (fix the scope once, every new
+// invoice line reads right) but a PDF already sent keeps its own copy.
+async function handleUpdateEstimateText(body) {
+  const { estimateId, title, notes } = body || {};
+  if (!estimateId) return resp(400, { ok: false, error: "Missing estimateId." });
+  if (title === undefined && notes === undefined) return resp(400, { ok: false, error: "Nothing to update." });
+  if (title !== undefined && title !== null && String(title).length > 120) {
+    return resp(400, { ok: false, error: "Keep the title under 120 characters." });
+  }
+  if (notes !== undefined && notes !== null && String(notes).length > 20000) {
+    return resp(400, { ok: false, error: "That proposal text is too long (20,000 characters max)." });
+  }
+  if (!neonEnabled()) {
+    return resp(503, { ok: false, error: "Can't update the estimate right now — the database is unavailable. Try again in a moment." });
+  }
+  const sets = [], vals = [String(estimateId)];
+  if (title !== undefined) { vals.push(String(title ?? "").trim() || null); sets.push(`title = $${vals.length}`); }
+  if (notes !== undefined) { vals.push(String(notes ?? "").replace(/\r\n/g, "\n")); sets.push(`notes = $${vals.length}`); }
+  let rows;
+  try {
+    rows = await neonWrite("estimate.text",
+      `UPDATE job_estimates SET ${sets.join(", ")}, synced_at = now()
+        WHERE airtable_id = $1 OR id::text = $1
+        RETURNING COALESCE(airtable_id, id::text) AS handle, title, notes`, vals);
+  } catch (e) {
+    console.error(`updateEstimateText: ${e?.message || e}`);
+    return resp(502, { ok: false, error: "Couldn't save that. Please try again." });
+  }
+  if (!rows?.length) return resp(404, { ok: false, error: "That estimate no longer exists." });
+  return resp(200, { ok: true, updatedId: rows[0].handle, title: rows[0].title || "", notes: rows[0].notes || "" });
 }
 
 // Neon-first, dual handle, mirror best-effort (cutover slice 3).
@@ -14804,10 +14847,42 @@ async function handleGetJobInvoices(body) {
         ORDER BY invoice_date DESC NULLS LAST`, [jobId]);
     if (q?.rows) {
       const s = (v) => (v === null || v === undefined ? "" : String(v));
+      // Owner 2026-11-20: flag an open invoice whose estimate was rejected,
+      // deleted or cut below what's been billed. See _invoice-estimate-check.js.
+      // Fails soft: a broken check leaves the list without warnings, never empty.
+      let warnings = new Map();
+      try {
+        const invs = q.rows.map(r => ({ id: r.id, status: s(r.invoice_status), snapshot: r.invoice_snapshot }));
+        const handles = [...new Set(invs.flatMap(i => contractLines(i.snapshot).map(l => l.handle)))];
+        if (handles.length) {
+          const eq = await neonQuery(
+            `SELECT airtable_id, id::text AS uuid, status, actual_estimate_sent, estimate_type, title,
+                    estimate_date::text AS estimate_date,
+                    substring(notes from '(?m)^##\\s+([^\\n]+)') AS heading
+               FROM job_estimates
+              WHERE airtable_id = ANY($1::text[]) OR id::text = ANY($1::text[])`, [handles]);
+          if (eq?.rows) {
+            const ests = new Map();
+            for (const e of eq.rows) {
+              const label = `"${String(e.title || e.heading || e.estimate_type || "Estimate").trim()}"` +
+                            (e.estimate_date ? ` (${e.estimate_date})` : "");
+              const v = { status: s(e.status), label,
+                          price: e.actual_estimate_sent == null ? null : Number(e.actual_estimate_sent) };
+              // A line may name either handle form, so index both.
+              if (e.airtable_id) ests.set(e.airtable_id, v);
+              ests.set(e.uuid, v);
+            }
+            warnings = invoiceEstimateWarnings(invs, ests);
+          }
+        }
+      } catch (e) {
+        console.error("getJobInvoices: estimate check failed:", e?.message || e);
+      }
       return resp(200, {
         ok: true,
         invoices: q.rows.map(r => ({
           id: r.id, displayNumber: r.invoice_display_no ?? null,
+          estimateWarnings: warnings.get(r.id) || [],
           invoiceNumber: s(r.invoice_number), date: s(r.invoice_date),
           status: s(r.invoice_status), billingMode: s(r.billing_mode),
           invoiceType: s(r.invoice_type),
@@ -15282,6 +15357,53 @@ async function handleTicketLinesRun(body) {
 // before a payroll run, or when a number looks wrong.
 //
 // ⚠ Read-only, like every check in that file. It reports; it never repairs.
+// ── Browser errors (schema 100) ──────────────────────────────────────────────
+// The page posts uncaught errors and failed promises here, so an error on a
+// crew member's phone stops being invisible. The browser dedupes and caps what
+// it sends; this side truncates every field and caps each person at 60 rows an
+// hour, so a page stuck in an error loop can't fill the table. Logging must
+// never become an error itself: every failure here answers 200 { logged:false }.
+const CLIENT_ERROR_HOURLY_CAP = 60;
+async function handleLogClientError(body, authUser) {
+  if (!neonEnabled()) return resp(200, { ok: true, logged: false });
+  const cut = (v, n) => (v == null ? null : String(v).slice(0, n));
+  try {
+    const who = authUser?.id ? String(authUser.id) : null;
+    const recent = await neonQuery(
+      `SELECT count(*)::int AS n FROM client_errors
+        WHERE employee_id IS NOT DISTINCT FROM $1 AND created_at > now() - interval '1 hour'`, [who]);
+    if ((recent?.rows?.[0]?.n || 0) >= CLIENT_ERROR_HOURLY_CAP) {
+      return resp(200, { ok: true, logged: false, reason: "cap" });
+    }
+    await neonQuery(
+      `INSERT INTO client_errors (employee_id, role, app, kind, message, source, stack, url, user_agent, app_build)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [who, cut(authUser?.role, 20), cut(body.app || "field", 20), cut(body.kind, 20),
+       cut(body.message, 1000), cut(body.source, 300), cut(body.stack, 4000),
+       cut(body.url, 300), cut(body.userAgent, 300), cut(body.build, 60)]);
+    return resp(200, { ok: true, logged: true });
+  } catch (e) {
+    console.error("logClientError failed:", e?.message || e);
+    return resp(200, { ok: true, logged: false });
+  }
+}
+
+// Admin read: the latest browser errors, newest first, with the person's name.
+async function handleClientErrors(params) {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  const days = Math.min(Math.max(parseInt(params.days, 10) || 7, 1), 90);
+  const q = await neonQuery(
+    `SELECT c.id, to_char(c.created_at AT TIME ZONE 'America/New_York', 'YYYY-MM-DD HH24:MI') AS at,
+            COALESCE(e.name, c.employee_id) AS who, c.role, c.app, c.kind, c.message, c.source,
+            c.stack, c.url, c.user_agent, c.app_build
+       FROM client_errors c
+       LEFT JOIN employees e ON e.airtable_id = c.employee_id OR e.id::text = c.employee_id
+      WHERE c.created_at > now() - make_interval(days => $1)
+      ORDER BY c.created_at DESC LIMIT 200`, [days]);
+  if (!q?.rows) return resp(503, { ok: false, error: q?.error || "Database unavailable." });
+  return resp(200, { ok: true, days, errors: q?.rows || [] });
+}
+
 async function handleIntegrityCheck() {
   if (!neonEnabled()) {
     return resp(503, { ok: false, error: "Integrity checks need the database. DATABASE_URL is unset." });
@@ -17412,6 +17534,7 @@ export async function handler(event) {
       if (action === "jobById")            return await handleJobById(params);
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "integrityCheck")     return await handleIntegrityCheck();
+      if (action === "clientErrors")       return await handleClientErrors(params);
       if (action === "ticketLinesStatus")  return await handleTicketLinesStatus();
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
       if (action === "prevailingWageStatus") return await handlePrevailingWageStatus();
@@ -17496,6 +17619,7 @@ export async function handler(event) {
     if (event.httpMethod === "POST") {
       const body = event.body ? JSON.parse(event.body) : {};
       if (body.action === "login")                return await handleLogin(body);
+      if (body.action === "logClientError")       return await handleLogClientError(body, authUser);
       if (body.action === "updateJobStatus")      return await handleUpdateJobStatus(body);
       if (body.action === "updatePowerCo")        return await handleUpdatePowerCo(body);
       if (body.action === "createPowerCompany")   return await handleCreatePowerCompany(body);
@@ -17541,6 +17665,7 @@ export async function handler(event) {
       if (body.action === "deleteLiftPhoto")      return await handleDeleteLiftPhoto(body);
       if (body.action === "createInspection")     return await handleCreateInspection(body);
       if (body.action === "updateEstimate")       return await handleUpdateEstimate(body);
+      if (body.action === "updateEstimateText")   return await handleUpdateEstimateText(body);
       if (body.action === "updateEstimateStatus") return await handleUpdateEstimateStatus(body);
       if (body.action === "getNextEstimateNumber") return await handleGetNextEstimateNumber();
       if (body.action === "saveEstimate")         return await handleSaveEstimate(body);

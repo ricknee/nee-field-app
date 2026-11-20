@@ -9164,6 +9164,71 @@ await test("no Airtable key: STATIC — nothing requires it, and the hourly pull
   ok(!/throw new Error\("makeAtFetch: apiKey and baseId are required"\)/.test(mk), "makeAtFetch accepts no key");
 });
 
+await test("clientErrors: a viewer can log, only admin can read, no database never errors", async () => {
+  const saved = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  const v = await POST("logClientError", { kind: "error", message: "x is undefined" }, VIEWER_TOK);
+  eq(v.statusCode, 200, "a viewer may log (logging must never be refused for role)");
+  eq(JSON.parse(v.body).logged, false, "no database → logged:false, still a 200");
+  const r = await GET("clientErrors", {}, OFFICE_TOK);
+  eq(r.statusCode, 403, "office cannot read the error log");
+  if (saved) process.env.DATABASE_URL = saved;
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const cap = html.slice(html.indexOf("function installErrorCapture"), html.indexOf("function installErrorCapture") + 3000);
+  ok(/fetch\(API,/.test(cap) && !/apiPost\(/.test(cap), "the reporter calls fetch directly, never apiPost (no error loops)");
+  ok(/sent >= 15/.test(cap), "the reporter caps what one page load sends");
+});
+
+await test("updateEstimateText: words only — refuses empty, long and no-database; never touches a price", async () => {
+  const none = await POST("updateEstimateText", { estimateId: "recEst" }, ADMIN_TOK);
+  eq(none.statusCode, 400, "nothing to update");
+  const long = await POST("updateEstimateText", { estimateId: "recEst", title: "x".repeat(121) }, ADMIN_TOK);
+  eq(long.statusCode, 400, "title over 120 refused");
+  const saved = process.env.DATABASE_URL;
+  delete process.env.DATABASE_URL;
+  const nd = await POST("updateEstimateText", { estimateId: "recEst", title: "One generator" }, ADMIN_TOK);
+  eq(nd.statusCode, 503, "no database → 503");
+  if (saved) process.env.DATABASE_URL = saved;
+  const vw = await POST("updateEstimateText", { estimateId: "recEst", title: "x" }, VIEWER_TOK);
+  eq(vw.statusCode, 403, "viewers can't edit estimates");
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleUpdateEstimateText"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(!/actual_estimate_sent|calculated_|material_|labor_/.test(body), "the text update names no money column");
+  ok(/notes = \$/.test(body) && /title = \$/.test(body), "it writes title and notes");
+  ok(/e\.title/.test(src.slice(src.indexOf("async function handleJobEstimates"), src.indexOf("async function handleJobEstimates") + 3000)),
+     "jobEstimates reads the title back");
+});
+
+await test("invoice ↔ estimate check: rejected, deleted, and over-billed warn on OPEN invoices only", async () => {
+  const { invoiceEstimateWarnings, contractLines } = await import("../netlify/functions/_invoice-estimate-check.js");
+  const snap = (lines) => JSON.stringify({ lines });
+  eq(contractLines("not json").length, 0, "a junk snapshot reads as no lines");
+  eq(contractLines(snap([{ id: "tm_1", amount: 5 }, { id: "contract_recA", amount: 10 }])).length, 1, "only contract_ lines count");
+  const invs = [
+    { id: "i1", status: "Paid",  snapshot: snap([{ id: "contract_recA", amount: 90440 }]) },
+    { id: "i2", status: "Sent",  snapshot: snap([{ id: "contract_recA", amount: 22610 }]) },
+    { id: "i3", status: "Sent",  snapshot: snap([{ id: "contract_recB", amount: 1000 }]) },
+    { id: "i4", status: "Sent",  snapshot: snap([{ id: "contract_gone", amount: 5 }]) },
+    { id: "i5", status: "Voided", snapshot: snap([{ id: "contract_recC", amount: 99999 }]) },
+    { id: "i6", status: "Sent",  snapshot: snap([{ id: "contract_recC", amount: 100 }]) },
+    { id: "i7", status: "Paid",  snapshot: snap([{ id: "contract_recB", amount: 1 }]) },
+  ];
+  const ests = new Map([
+    ["recA", { status: "Approved", price: 111550, label: '"A"' }],
+    ["recB", { status: "Rejected", price: 5000, label: '"B"' }],
+    ["recC", { status: "Approved", price: 100, label: '"C"' }],
+  ]);
+  const w = invoiceEstimateWarnings(invs, ests);
+  ok(/over by \$1,500\.00/.test((w.get("i2") || []).join()), "Paid + Sent billed past the price → over-billed on the open one");
+  ok(!w.has("i1") && !w.has("i7"), "paid invoices carry no warning");
+  ok(/Rejected/.test((w.get("i3") || []).join()), "a rejected estimate warns");
+  ok(/deleted/.test((w.get("i4") || []).join()), "a deleted estimate warns");
+  ok(!w.has("i6"), "a Voided invoice's billing doesn't count toward over-billed");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

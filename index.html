@@ -5501,6 +5501,55 @@
     return d;
   }
 
+  // ── Browser error capture (schema 100, POST logClientError) ──
+  // Uncaught errors and failed promises used to live only in the phone's console,
+  // so nobody knew they happened. They are now saved to Neon's client_errors
+  // table for the admin to read. Rules that keep this from becoming a problem:
+  //   • only when signed in (the server needs a token to say who);
+  //   • the same message+place is sent once per page load, at most 15 in all;
+  //   • it calls fetch directly, never apiPost, and swallows every failure,
+  //     so a logging error can't trigger another logging error;
+  //   • cross-origin "Script error." (no detail at all) is skipped.
+  (function installErrorCapture() {
+    const seen = new Set();
+    let sent = 0;
+    function report(kind, message, source, stack) {
+      try {
+        if (!state.user?.token || sent >= 15) return;
+        message = String(message || "").trim();
+        if (!message || message === "Script error.") return;
+        const key = kind + "|" + message + "|" + (source || "");
+        if (seen.has(key)) return;
+        seen.add(key); sent++;
+        fetch(API, {
+          method: "POST",
+          keepalive: true,
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + state.user.token },
+          body: JSON.stringify({
+            action: "logClientError", app: "field", kind, message, source,
+            stack: stack ? String(stack).slice(0, 4000) : null,
+            url: location.pathname + location.search + location.hash,
+            userAgent: navigator.userAgent,
+            build: document.lastModified || null
+          })
+        }).catch(() => {});
+      } catch (_) { /* never let logging throw */ }
+    }
+    window.addEventListener("error", ev => {
+      // Resource load failures (a broken <img>) arrive here with no message; skip.
+      if (!ev || !ev.message) return;
+      const src = ev.filename ? `${ev.filename.split("/").pop() || ev.filename}:${ev.lineno || 0}:${ev.colno || 0}` : "";
+      report("error", ev.message, src, ev.error?.stack);
+    });
+    window.addEventListener("unhandledrejection", ev => {
+      try {
+        const r = ev?.reason;
+        const msg = r instanceof Error ? (r.name + ": " + r.message) : (typeof r === "string" ? r : JSON.stringify(r ?? null));
+        report("rejection", msg, "", r?.stack);
+      } catch (_) { /* a circular reason can't be stringified; skip it */ }
+    });
+  })();
+
   // ── pCloud upload via Make.com webhook ──
   // [DEBUG-PCLOUD-UPLOAD-2026-05] - placeholder URL, fill in once Make scenario is live
   const MAKE_PCLOUD_UPLOAD_WEBHOOK = 'https://hook.us1.make.com/q74u68tcuseg8spi4l164wu3i8rvb5oe';
@@ -7537,7 +7586,8 @@
                 <span style="font-size:11px; font-weight:700; background:${pillColor}; color:white; padding:2px 10px; border-radius:999px; letter-spacing:0.3px;">${esc(pillLabel)}</span>
                 ${(() => {
                   // Tells two same-named estimates apart: proposal title, date, price.
-                  const t = estProposalTitle(est.notes);
+                  // db/schema/101: a hand-set title wins; else the proposal's heading.
+                  const t = String(est.title || "").trim() || estProposalTitle(est.notes);
                   // est.date may be "2026-06-17" or a stringified Date — read the
                   // UTC parts either way (it's a calendar date stored at midnight UTC).
                   const dt = est.date ? new Date(/^\d{4}-\d{2}-\d{2}$/.test(est.date) ? est.date + "T00:00:00Z" : est.date) : null;
@@ -7556,11 +7606,25 @@
               </div>
             </div>
 
-            ${String(est.notes || "").trim() ? `
-            <details style="margin-bottom:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2);">
-              <summary style="cursor:pointer; padding:8px 12px; font-size:12.5px; font-weight:700; color:var(--accent);">📄 What's in this proposal</summary>
-              <div style="padding:2px 14px 12px; font-size:12.5px; line-height:1.5; color:var(--text); max-height:60vh; overflow:auto;">${estScopeHtml(est.notes)}</div>
-            </details>` : ""}
+            <details class="est-text-box" data-est-id="${esc(est.id)}" style="margin-bottom:12px; border:1px solid var(--line); border-radius:8px; background:var(--panel-2);">
+              <summary style="cursor:pointer; padding:8px 12px; font-size:12.5px; font-weight:700; color:var(--accent);">📄 ${String(est.notes || "").trim() ? "What's in this proposal" : "Title & proposal text (none yet)"}</summary>
+              <div class="est-text-view" style="padding:2px 14px 12px; font-size:12.5px; line-height:1.5; color:var(--text); max-height:60vh; overflow:auto;">
+                ${String(est.notes || "").trim() ? estScopeHtml(est.notes) : `<p style="margin:4px 0; color:var(--muted);">No proposal text on this estimate.</p>`}
+                <button type="button" class="est-text-edit btn btn-sm" data-est-id="${esc(est.id)}" style="margin-top:8px; font-size:12px;">✏ Edit title &amp; text</button>
+              </div>
+              <!-- db/schema/101. Words only (updateEstimateText): saving here can't move a price. -->
+              <div class="est-text-form" style="display:none; padding:4px 14px 12px;">
+                <label class="edit-label">Title <span style="font-weight:400; color:var(--muted);">— tells this estimate apart, e.g. "Standby generator – 1 unit"</span></label>
+                <input type="text" maxlength="120" class="est-text-title edit-input" style="font-size:13px; margin-bottom:8px;" value="${esc(est.title || "")}" placeholder="${esc(estProposalTitle(est.notes) || "e.g. Standby generator – 1 unit")}" />
+                <label class="edit-label">Proposal text <span style="font-weight:400; color:var(--muted);">— ## heading, * bullet, **bold**, --- line. Used as the Scope on new invoice lines.</span></label>
+                <textarea class="est-text-notes edit-input" rows="14" style="font-size:12.5px; font-family:ui-monospace,Menlo,Consolas,monospace; width:100%; resize:vertical;">${esc(est.notes || "")}</textarea>
+                ${est.pdfs && est.pdfs.length ? `<div style="font-size:11.5px; color:var(--muted); margin-top:4px;">A PDF already sent keeps its own wording. Changes here show in the app and on invoices made from now on.</div>` : ""}
+                <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+                  <button type="button" class="est-text-save btn btn-primary btn-sm" data-est-id="${esc(est.id)}" style="font-size:12px;">Save title &amp; text</button>
+                  <button type="button" class="est-text-cancel btn btn-sm" style="font-size:12px;">Cancel</button>
+                </div>
+              </div>
+            </details>
 
             ${est.legacyMaterialBasis ? `
             <div style="margin-bottom:10px; padding:8px 12px; background:#fff7ed; border:1px dashed #fdba74; border-radius:7px; font-size:11.5px; color:#9a3412; line-height:1.5;">
@@ -7836,6 +7900,39 @@
             alert("Error: " + e.message);
           } finally {
             btn.disabled = false; btn.textContent = "Save Changes";
+          }
+        });
+      });
+
+      // Title & proposal text (db/schema/101). Words only — updateEstimateText
+      // can't touch a price, so no GP refresh is needed after a save.
+      estimatesSection.querySelectorAll(".est-text-box").forEach(box => {
+        const view = box.querySelector(".est-text-view");
+        const form = box.querySelector(".est-text-form");
+        const show = (editing) => { view.style.display = editing ? "none" : ""; form.style.display = editing ? "" : "none"; };
+        box.querySelector(".est-text-edit").addEventListener("click", () => {
+          show(true); box.querySelector(".est-text-title").focus();
+        });
+        box.querySelector(".est-text-cancel").addEventListener("click", () => {
+          const est = byId.get(String(box.dataset.estId)) || {};
+          box.querySelector(".est-text-title").value = est.title || "";
+          box.querySelector(".est-text-notes").value = est.notes || "";
+          show(false);
+        });
+        box.querySelector(".est-text-save").addEventListener("click", async (ev) => {
+          const btn = ev.currentTarget;
+          btn.disabled = true; btn.textContent = "Saving…";
+          try {
+            await apiPost("updateEstimateText", {
+              estimateId: box.dataset.estId,
+              title: box.querySelector(".est-text-title").value,
+              notes: box.querySelector(".est-text-notes").value,
+            });
+            // Re-render the list so the subtitle and scope view pick it up.
+            await renderEstGp(job);
+          } catch (e) {
+            alert("Couldn't save: " + (e.message || e));
+            btn.disabled = false; btn.textContent = "Save title & text";
           }
         });
       });
@@ -19900,8 +19997,8 @@
       msgEl.style.display = "";
       setTimeout(() => {
         msgEl.style.display = "none";
-        $("liftExpensePanel").style.display = "none";
-        $("btnToggleLiftExpense").textContent = "💰 Add Scissor Lift Expense";
+        const panel = $("liftExpensePanel");
+        if (panel) panel.style.display = "none";
       }, 2000);
     } catch(e) {
       errEl.textContent = "Error: " + e.message;
@@ -21017,6 +21114,16 @@
                   <td style="padding:8px; text-align:right; font-weight:600;">${total}</td>
                   <td style="padding:8px; text-align:right;">${editBtn}${backupBtn}${reprintBtn}</td>
                 </tr>
+                ${(inv.estimateWarnings || []).length ? `
+                <tr style="border-bottom:1px solid var(--line);">
+                  <td colspan="7" style="padding:0 8px 8px;">
+                    <div style="background:#fff7ed; border:1px solid #fdba74; color:#9a3412; border-radius:7px; padding:7px 10px; font-size:12px; line-height:1.45;">
+                      ⚠ <strong>The estimate behind this invoice changed.</strong>
+                      ${inv.estimateWarnings.map(w => `<div>• ${esc(w)}</div>`).join("")}
+                      <div style="color:#7c2d12; margin-top:2px;">Check the amount before the customer pays it. A credit or an edited invoice may be needed.</div>
+                    </div>
+                  </td>
+                </tr>` : ""}
               `;
             }).join("")}
           </tbody>

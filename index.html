@@ -1870,6 +1870,16 @@
     .stage-pill.green { background: var(--green-dim);  color: var(--green); }
     .stage-pill.amber { background: var(--yellow-dim); color: var(--yellow); }
     .stage-pill.grey  { background: var(--panel-3);    color: var(--muted); }
+    .stage-pill--tap { cursor: pointer; box-shadow: inset 0 0 0 1px currentColor; }
+    .stage-pill--tap:active { filter: brightness(.9); }
+    .stage-pill--empty { opacity: .7; }
+    .stage-menu { position: fixed; z-index: 3000; min-width: 190px; background: var(--panel); border: 1px solid var(--line);
+      border-radius: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.25); padding: 4px; display: flex; flex-direction: column; }
+    .stage-menu-head { font-size: 11px; font-weight: 700; color: var(--muted); padding: 6px 10px 4px; }
+    .stage-menu button { text-align: left; background: none; border: 0; padding: 10px 10px; font-size: 14px; border-radius: 6px;
+      color: var(--text); cursor: pointer; }
+    .stage-menu button:hover { background: var(--panel-2); }
+    .stage-menu button.on { font-weight: 700; background: var(--blue-dim); }
     .hd-group { font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 10px 6px 2px; }
     .hd-group:first-child { margin-top: 0; }
     .hd-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -6101,7 +6111,7 @@
             <span class="job-item-po">${esc(poCode)}</span>
             <span class="job-line-badges">
               ${group === "Other" ? `<span class="job-line-status"><span class="status-dot" style="background:${statusDotColor(job.status)}"></span>${esc(job.status||"—")}</span>` : ""}
-              ${jobStagePill(job)}
+              ${jobStagePillTappable(job)}
               ${job.generatorInstalled ? `<span class="gen-badge">⚡ GEN</span>` : ""}
               ${job.prevailingWage ? `<span class="pw-badge${job.pwRateMissing ? " pw-broken" : ""}" title="${job.pwRateMissing ? "Prevailing wage is on but no rate is set — hours are costing the normal rate" : "Prevailing wage job"}">🏛 PW</span>` : ""}
             </span>
@@ -6112,7 +6122,10 @@
     list.innerHTML = html;
 
     list.querySelectorAll(".job-item").forEach(el => {
-      el.addEventListener("click", () => {
+      el.addEventListener("click", (ev) => {
+        // Admin tapped the stage pill: change the stage, don't open the job.
+        const pill = ev.target.closest(".stage-pill--tap");
+        if (pill) { ev.stopPropagation(); openStageMenu(pill, el.dataset.id); return; }
         const job = state.jobs.find(j => j.id === el.dataset.id);
         if (job) selectJob(job);
       });
@@ -6153,6 +6166,75 @@
     const why = s.auto ? "From the Planned Start — pick a Stage in Project Info → Edit to set it" : s.label;
     return `<span class="stage-pill ${s.cls}" title="${esc(why)}">${s.icon} ${esc(s.short)}${esc(when)}</span>`;
   }
+
+  // Job list only (owner 2026-11-21): a STRICT admin taps the pill to change
+  // the stage right from the list. Awarded jobs only, same as the pill itself;
+  // an Awarded job with no stage gets a faint "＋ Stage" to tap. Everyone else
+  // sees the plain pill. Saves through updateJobInfo, same as Project Info.
+  function jobStagePillTappable(j) {
+    if (!isStrictAdminRole() || !j || j.status !== "Awarded") return jobStagePill(j);
+    const pill = jobStagePill(j);
+    if (!pill) return `<span class="stage-pill grey stage-pill--tap stage-pill--empty" title="Set the stage">＋ Stage</span>`;
+    return pill.replace('class="stage-pill ', 'class="stage-pill stage-pill--tap ').replace(/title="[^"]*"/, 'title="Tap to change the stage"');
+  }
+
+  function closeStageMenu() {
+    const m = document.getElementById("stageMenu");
+    if (m) m.remove();
+    document.removeEventListener("click", _stageMenuOutside, true);
+    window.removeEventListener("scroll", closeStageMenu, true);
+  }
+  function _stageMenuOutside(ev) {
+    const m = document.getElementById("stageMenu");
+    if (m && !m.contains(ev.target)) { ev.stopPropagation(); ev.preventDefault(); closeStageMenu(); }
+  }
+  function openStageMenu(pillEl, jobId) {
+    closeStageMenu();
+    const job = (state.jobs || []).find(j => j.id === jobId);
+    if (!job) return;
+    const cur = job.stage || "";
+    const opts = Object.entries(JOB_STAGE_META).map(([k, m]) =>
+      `<button type="button" data-stage="${k}" class="${k === cur ? "on" : ""}">${m.icon} ${esc(m.label)}</button>`).join("")
+      + `<button type="button" data-stage="" class="${cur ? "" : "on"}" style="color:var(--muted);">— Not set</button>`;
+    const menu = document.createElement("div");
+    menu.id = "stageMenu";
+    menu.className = "stage-menu";
+    menu.innerHTML = `<div class="stage-menu-head">${esc(job.name || "Job")}</div>${opts}`;
+    document.body.appendChild(menu);
+    // Under the pill, kept on screen (right-aligned pills sit at the edge).
+    const r = pillEl.getBoundingClientRect();
+    const w = menu.offsetWidth, h = menu.offsetHeight;
+    let left = Math.min(r.right - w, window.innerWidth - w - 8);
+    left = Math.max(8, left);
+    let top = r.bottom + 4;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 4);
+    menu.style.left = left + "px";
+    menu.style.top = top + "px";
+    menu.addEventListener("click", async (ev) => {
+      const b = ev.target.closest("button[data-stage]");
+      if (!b) return;
+      ev.stopPropagation();
+      const next = b.dataset.stage;
+      closeStageMenu();
+      if (next === cur) return;
+      try {
+        const res = await apiPost("updateJobInfo", { jobId, stage: next });
+        if (res && res.ok === false) throw new Error(res.error || "Save failed");
+        state.jobs = state.jobs.map(j => j.id === jobId ? { ...j, stage: next } : j);
+        if (state.selected?.id === jobId) state.selected.stage = next;
+        if (typeof applyFilters === "function") applyFilters(); else renderJobList();
+        const m = JOB_STAGE_META[next];
+        showAppToast(`✓ ${job.name}: ${m ? m.icon + " " + m.label : "stage cleared"}`);
+      } catch (e) {
+        alert("Couldn't change the stage: " + e.message);
+      }
+    });
+    setTimeout(() => {
+      document.addEventListener("click", _stageMenuOutside, true);
+      window.addEventListener("scroll", closeStageMenu, true);
+    }, 0);
+  }
+  window.openStageMenu = openStageMenu;
 
   // ── SELECT JOB ──
   // Return to the job list view (used by the back button on mobile).

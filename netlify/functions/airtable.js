@@ -8,6 +8,7 @@ import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, assertAirtableReadable, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
 import { contractLines, invoiceEstimateWarnings } from "./_invoice-estimate-check.js";
+import { aiEnabled, triggerAiInvoiceSuggest } from "./_ai-invoice-match.js";
 import { CITY_TAX_OPTS } from "./_city-taxes.js";
 import { neonLoginCandidate, neonEmployees, neonEmployeeById,
          isEmployeeHandle } from "./_employees.js";
@@ -690,6 +691,9 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // marking one reviewed is the moment it stops being anyone's problem. Same tier as
   // approveExpense and updateJobBillableRate — back-office money ops.
   "vendorInvoiceAssign", "vendorInvoiceMarkReviewed", "vendorInvoiceDelete",
+  // 🤖 schema 102: asks Claude for a SUGGESTION; moves no money, but it spends
+  // API money and sends the invoice out, so the same people who place invoices.
+  "vendorInvoiceSuggest",
   // ── Vendor statements (db/schema/083) ───────────────────────────────────
   // Intake is the bot's endpoint (the bot is `office`), same reasoning as
   // vendorInvoiceIntake. A statement moves no money, but it shows what the
@@ -773,6 +777,8 @@ const _ADMIN_READS = new Set(["r2Status", "jobCreateStatus", "integrityCheck", "
 // scope and terms text that ends up on the estimate anyway.
 const _ADMIN_OFFICE_READS = new Set([
   "jobPhotosDeleted", "jobDocs", "jobPrintsDeleted", "estimateTemplatesAll",
+  // ☀ The Overview's "This morning" card: same audience as the Overview.
+  "morningDigest",
   // The vendor-invoice review queue (db/schema/069). It lists supplier invoices
   // with their totals and a link to the PDF, and every action offered on the
   // rows it returns is _ADMIN_OFFICE, so the read matches. It is also the only
@@ -10903,6 +10909,9 @@ async function handleVendorInvoiceIntake(body, authUser) {
   if (!jobId) {
     await neonWrite("vendorInvoice.park",
       `UPDATE vendor_invoices SET match_reason = $2 WHERE id = $1`, [id, reason]);
+    // 🤖 schema 102: have Claude read the PDF and SUGGEST a job. Fire-and-forget,
+    // inert without ANTHROPIC_API_KEY; the hourly pull sweeps up anything missed.
+    if (pdfKey) await triggerAiInvoiceSuggest(id);
     return resp(200, { ok: true, id, status: "needs_review", reason,
                        candidates: candidates.map(c => ({ id: c.id, name: c.name })) });
   }
@@ -11108,9 +11117,13 @@ async function handleVendorInvoices(params, authUser) {
             vi.amount, vi.tax_amount, vi.status, vi.match_reason,
             vi.pdf_key, vi.received_at, vi.resolved_at, vi.resolved_by, vi.note,
             vi.job_id, vi.expense_id, j.name AS job_name,
-            COALESCE(j.po_locked, j.po) AS job_po
+            COALESCE(j.po_locked, j.po) AS job_po,
+            -- 🤖 schema 102: the AI's suggestion (a suggestion only).
+            vi.ai_job_id, aj.name AS ai_job_name, vi.ai_confidence, vi.ai_reason,
+            vi.ai_read_at, vi.ai_error
        FROM vendor_invoices vi
        LEFT JOIN jobs j ON j.id = vi.job_id
+       LEFT JOIN jobs aj ON aj.id = vi.ai_job_id
       -- "Everything" still leaves out deleted rows (db/schema/081): they are
       -- not invoices, only kept so a re-send dedupes.
       WHERE (($1::boolean AND vi.status <> 'deleted') OR vi.status = $2)
@@ -11144,6 +11157,11 @@ async function handleVendorInvoices(params, authUser) {
     jobName: r.job_name,
     jobPo: r.job_po,
     expenseId: r.expense_id,
+    ai: {
+      jobId: r.ai_job_id || null, jobName: r.ai_job_name || null,
+      confidence: r.ai_confidence || null, reason: r.ai_reason || null,
+      readAt: r.ai_read_at || null, error: r.ai_error || null,
+    },
     // Presigned, short-lived, and null when R2 is unconfigured or the bot never
     // sent a PDF. The screen shows the parsed figures either way.
     pdfUrl: r.pdf_key ? await presignGet(r.pdf_key).catch(() => null) : null,
@@ -11176,7 +11194,25 @@ async function handleVendorInvoices(params, authUser) {
     else if (c.status === "reviewed") counts.reviewed = c.n;
   }
 
-  return resp(200, { ok: true, invoices: rows, counts });
+  return resp(200, { ok: true, invoices: rows, counts, aiEnabled: aiEnabled() });
+}
+
+// 🤖 POST { invoiceId } — ask Claude (again) to suggest a job for one parked
+// invoice. Admin + office, like assigning one. Answers at once; the reading
+// happens in the background function and the screen re-checks shortly after.
+async function handleVendorInvoiceSuggest(body) {
+  const { invoiceId } = body || {};
+  if (!invoiceId) return resp(400, { ok: false, error: "Missing invoiceId." });
+  if (!aiEnabled()) return resp(409, { ok: false, error: "AI suggestions are off: ANTHROPIC_API_KEY isn't set in Netlify." });
+  const q = await neonQuery(
+    `UPDATE vendor_invoices SET ai_read_at = NULL, ai_error = NULL
+      WHERE id::text = $1 AND status = 'needs_review' AND pdf_key IS NOT NULL
+      RETURNING id::text AS id`, [String(invoiceId)]);
+  if (!q?.rows) return resp(503, { ok: false, error: "The invoice queue is unavailable right now." });
+  if (!q.rows.length) return resp(409, { ok: false, error: "That invoice has no PDF, or it's no longer waiting for review." });
+  const t = await triggerAiInvoiceSuggest(String(invoiceId));
+  if (!t.triggered) return resp(502, { ok: false, error: `Couldn't start the AI read (${t.reason || t.status}). The hourly sweep will try again.` });
+  return resp(200, { ok: true, started: true });
 }
 
 // ── ASSIGN A PARKED INVOICE TO A JOB ──────────────────────────────────────
@@ -15388,6 +15424,83 @@ async function handleLogClientError(body, authUser) {
   }
 }
 
+// ── ☀ This morning (owner 2026-11-20) ────────────────────────────────────────
+// One read behind the Overview's "This morning" card: the things worth knowing
+// before the day starts. Every section fails soft (null + an error note), so one
+// broken check never blanks the card. Read-only.
+// The owner said NO to "hours with no job" and the hours-target nudge here.
+async function handleMorningDigest() {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  const out = { ok: true, errors: null, invoiceWarnings: null, supplierInvoices: null, sync: null, integrity: null, problems: [] };
+  const soft = async (name, fn) => {
+    try { out[name] = await fn(); } catch (e) { out[name] = null; out.problems.push(`${name}: ${String(e?.message || e).slice(0, 120)}`); }
+  };
+  const rowsOf = (q) => { if (!q?.rows) throw new Error(q?.error || "database unavailable"); return q.rows; };
+
+  await Promise.all([
+    soft("errors", async () => {
+      const r = rowsOf(await neonQuery(
+        `SELECT c.message, count(*)::int AS n, count(DISTINCT c.employee_id)::int AS people,
+                max(COALESCE(e.name, c.employee_id)) AS who
+           FROM client_errors c
+           LEFT JOIN employees e ON e.airtable_id = c.employee_id OR e.id::text = c.employee_id
+          WHERE c.created_at > now() - interval '24 hours'
+          GROUP BY c.message ORDER BY count(*) DESC LIMIT 5`));
+      return { total: r.reduce((s, x) => s + x.n, 0), top: r };
+    }),
+    soft("invoiceWarnings", async () => {
+      const r = rowsOf(await neonQuery(
+        `SELECT COALESCE(i.airtable_id, i.id::text) AS id, i.invoice_status AS status,
+                i.invoice_snapshot AS snapshot, i.invoice_number,
+                COALESCE((i.invoice_snapshot::jsonb)->>'invNum', i.invoice_display_no::text) AS num,
+                j.name AS job_name, COALESCE(j.airtable_id, j.id::text) AS job_id
+           FROM invoices i LEFT JOIN jobs j ON j.id = i.job_id
+          WHERE i.invoice_snapshot ~ '^\\s*\\{' AND i.invoice_snapshot LIKE '%"contract\\_%'`));
+      const handles = [...new Set(r.flatMap(i => contractLines(i.snapshot).map(l => l.handle)))];
+      if (!handles.length) return [];
+      const er = rowsOf(await neonQuery(
+        `SELECT airtable_id, id::text AS uuid, status, actual_estimate_sent, estimate_type, title,
+                estimate_date::text AS estimate_date, substring(notes from '(?m)^##\\s+([^\\n]+)') AS heading
+           FROM job_estimates WHERE airtable_id = ANY($1::text[]) OR id::text = ANY($1::text[])`, [handles]));
+      const ests = new Map();
+      for (const e of er) {
+        const v = { status: String(e.status || ""),
+                    label: `"${String(e.title || e.heading || e.estimate_type || "Estimate").trim()}"`,
+                    price: e.actual_estimate_sent == null ? null : Number(e.actual_estimate_sent) };
+        if (e.airtable_id) ests.set(e.airtable_id, v);
+        ests.set(e.uuid, v);
+      }
+      const w = invoiceEstimateWarnings(r.map(i => ({ id: i.id, status: i.status, snapshot: i.snapshot })), ests);
+      return r.filter(i => w.has(i.id)).map(i => ({
+        invoiceId: i.id, number: i.num || i.invoice_number, status: i.status,
+        jobName: i.job_name, jobId: i.job_id, warnings: w.get(i.id) }));
+    }),
+    soft("supplierInvoices", async () => {
+      const r = rowsOf(await neonQuery(
+        `SELECT count(*)::int AS n, COALESCE(sum(amount), 0)::numeric AS total,
+                count(*) FILTER (WHERE ai_job_id IS NOT NULL)::int AS suggested
+           FROM vendor_invoices WHERE status = 'needs_review'`));
+      return { waiting: r[0].n, total: Number(r[0].total), aiSuggested: r[0].suggested };
+    }),
+    soft("sync", async () => {
+      const r = rowsOf(await neonQuery(
+        `SELECT updated_at, EXTRACT(EPOCH FROM now() - updated_at)::int AS age_s
+           FROM sync_state WHERE key = 'hourly_pull'`));
+      const age = r[0]?.age_s ?? null;
+      return { lastRun: r[0]?.updated_at || null, ageMinutes: age == null ? null : Math.round(age / 60),
+               healthy: age != null && age < 2.5 * 3600 };
+    }),
+    soft("integrity", async () => {
+      // Same adapter handleIntegrityCheck uses.
+      const rep = await runIntegrityChecks({ query: async (t, p) => await neonQuery(t, p || []) }, { perCheckLimit: 3 });
+      return { healthy: rep.failures === 0 && rep.brokenChecks === 0, failures: rep.failures,
+               brokenChecks: rep.brokenChecks,
+               findings: (rep.findings || []).map(f => ({ check: f.check, severity: f.severity, count: f.count, detail: f.detail || [] })) };
+    }),
+  ]);
+  return resp(200, out);
+}
+
 // Admin read: the latest browser errors, newest first, with the person's name.
 async function handleClientErrors(params) {
   if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
@@ -17535,6 +17648,7 @@ export async function handler(event) {
       if (action === "r2Status")           return await handleR2Status(params);
       if (action === "integrityCheck")     return await handleIntegrityCheck();
       if (action === "clientErrors")       return await handleClientErrors(params);
+      if (action === "morningDigest")      return await handleMorningDigest();
       if (action === "ticketLinesStatus")  return await handleTicketLinesStatus();
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
       if (action === "prevailingWageStatus") return await handlePrevailingWageStatus();
@@ -17786,6 +17900,7 @@ export async function handler(event) {
       if (body.action === "vendorInvoiceIntake")  return await handleVendorInvoiceIntake(body, authUser);
       if (body.action === "linkExistingVendorInvoice") return await handleLinkExistingVendorInvoice(body, authUser);
       if (body.action === "vendorInvoiceAssign")  return await handleVendorInvoiceAssign(body, authUser);
+      if (body.action === "vendorInvoiceSuggest") return await handleVendorInvoiceSuggest(body);
       if (body.action === "vendorInvoiceMarkReviewed") return await handleVendorInvoiceMarkReviewed(body, authUser);
       if (body.action === "vendorInvoiceDelete")  return await handleVendorInvoiceDelete(body, authUser);
       if (body.action === "vendorStatementIntake") return await handleVendorStatementIntake(body, authUser);

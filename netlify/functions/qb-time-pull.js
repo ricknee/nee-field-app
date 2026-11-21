@@ -51,6 +51,7 @@ import { backfillJobLinks } from "./_jobs-sync.js";
 import { runGeneratorServiceCheck } from "./_generator-service.js";
 import { runIntegrityChecks, reportIntegrity } from "./_integrity.js";
 import { runAutoStageOnsite } from "./_job-stage-auto.js";
+import { aiEnabled, triggerAiInvoiceSuggest } from "./_ai-invoice-match.js";
 import { makeAtFetch } from "./_jobs.js";
 import { readPendingTicketLines } from "./_ticket-lines.js";
 import { getObjectBytes, r2Enabled } from "./_r2.js";
@@ -530,7 +531,25 @@ export const handler = async () => {
       }
     }
 
+    // ── 🤖 AI job suggestions sweep (schema 102) ───────────────────────────
+    // Intake already wakes the worker for each parked invoice; this catches any
+    // it missed. Only wakes it when something is actually waiting. Inert with no
+    // ANTHROPIC_API_KEY. Fails soft.
+    let aiReport = { enabled: aiEnabled() };
+    if (aiEnabled()) {
+      try {
+        const w = await sql.query(
+          `SELECT count(*)::int AS n FROM vendor_invoices
+            WHERE status = 'needs_review' AND pdf_key IS NOT NULL AND ai_read_at IS NULL`, []);
+        const waiting = w?.[0]?.n || 0;
+        aiReport = { enabled: true, waiting, ...(waiting ? await triggerAiInvoiceSuggest() : {}) };
+      } catch (e) {
+        aiReport = { enabled: true, error: String(e?.message || e) };
+      }
+    }
+
     const report = { ...pulled, jobLinks: linkReport, autoStage: stageReport, googleContacts: googleReport,
+                     aiInvoiceSuggest: aiReport,
                      generatorServiceCalls: generatorReport,
                      ticketLines: ticketReport,
                      integrity: { failures: integrityReport.failures ?? null,

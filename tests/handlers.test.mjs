@@ -9229,6 +9229,83 @@ await test("invoice ↔ estimate check: rejected, deleted, and over-billed warn 
   ok(!w.has("i6"), "a Voided invoice's billing doesn't count toward over-billed");
 });
 
+await test("AI invoice match: the answer is untrusted — invented ids dropped, bad JSON refused", async () => {
+  const m = await import("../netlify/functions/_ai-invoice-match.js");
+  const ids = new Set(["j1", "j2"]);
+  const good = m.parseSuggestion(JSON.stringify({ job_id: "j1", confidence: "high", reason: "Ship-to 12 Oak Rd" }), ids);
+  ok(good.ok && good.jobId === "j1" && good.confidence === "high", "a listed id is kept");
+  const fake = m.parseSuggestion(JSON.stringify({ job_id: "DROP TABLE", confidence: "high", reason: "x" }), ids);
+  ok(fake.ok && fake.jobId === null && fake.confidence === "none", "an id we didn't send is dropped");
+  ok(!m.parseSuggestion("not json", ids).ok, "unreadable answer is an error, not a guess");
+  const unsure = m.parseSuggestion(JSON.stringify({ job_id: "", confidence: "low", reason: "Harlin or Rebecca" }), ids);
+  ok(unsure.jobId === null && unsure.confidence === "low", "unsure stays unsure with no job");
+  const p = m.buildPrompt({ vendor_name: "Wolff", po_text: "2 BARN", match_reason: "ambiguous-po" },
+                          [{ id: "j1", name: "Harlin Smith (2 Barn)", po: "HS1", status: "Awarded" }]);
+  ok(/Harlin Smith \(2 Barn\)/.test(p) && /MORE THAN ONE job/.test(p), "the prompt lists jobs and flags an ambiguous PO");
+});
+
+await test("AI invoice match: runner writes SUGGESTION columns only, stamps failures, inert with no key", async () => {
+  const { runAiInvoiceSuggestions } = await import("../netlify/functions/ai-invoice-suggest-background.js");
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  eq((await runAiInvoiceSuggestions({ q: async () => { throw new Error("must not query"); } })).reason, "no-key", "no key → nothing runs");
+  process.env.ANTHROPIC_API_KEY = "test-key";
+  const savedDb = process.env.DATABASE_URL, savedR2 = { ...process.env };
+  process.env.DATABASE_URL = process.env.DATABASE_URL || "postgresql://u:p@fake.neon.tech/db";
+  Object.assign(process.env, { R2_ACCOUNT_ID: "a", R2_ACCESS_KEY_ID: "b", R2_SECRET_ACCESS_KEY: "c", R2_BUCKET: "d" });
+  const writes = [];
+  const q = async (sql, p) => {
+    if (/FROM vendor_invoices/.test(sql) && /SELECT/.test(sql)) return { rows: [
+      { id: "inv1", vendor_name: "Wolff", invoice_no: "1", po_text: "x", amount: 5, match_reason: "no-job-match", pdf_key: "k1" },
+      { id: "inv2", vendor_name: "CED", invoice_no: "2", po_text: "y", amount: 6, match_reason: "no-job-match", pdf_key: "k2" }] };
+    if (/FROM jobs j/.test(sql)) return { rows: [{ id: "j1", name: "Bethel" }] };
+    writes.push({ sql, p }); return { rows: [] };
+  };
+  const create = async () => ({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify({ job_id: "j1", confidence: "medium", reason: "ship-to" }) }] });
+  const readPdf = async (k) => { if (k === "k2") throw new Error("R2 get failed"); return new Uint8Array([37, 80, 68, 70]); };
+  const r = await runAiInvoiceSuggestions({ q, readPdf, create });
+  eq(r.read, 1, "one read"); eq(r.failed, 1, "one failed");
+  ok(writes.every(w => /^UPDATE vendor_invoices SET ai_/.test(w.sql.trim())), "only ai_* columns are written");
+  ok(writes.every(w => !/status\s*=\s*'matched'|expense/i.test(w.sql.split("WHERE")[0])), "never sets status or an expense");
+  ok(writes.every(w => /status = 'needs_review'/.test(w.sql)), "only rows still waiting are touched");
+  ok(writes.some(w => /ai_error = \$2/.test(w.sql) && /R2 get failed/.test(w.p[1])), "a failure is stamped so it isn't re-billed hourly");
+  if (savedKey) process.env.ANTHROPIC_API_KEY = savedKey; else delete process.env.ANTHROPIC_API_KEY;
+  for (const k of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]) {
+    if (savedR2[k] === undefined) delete process.env[k]; else process.env[k] = savedR2[k];
+  }
+  if (savedDb === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = savedDb;
+});
+
+await test("AI invoice match: the background worker refuses anything but its scope token", async () => {
+  const { handler: bg } = await import("../netlify/functions/ai-invoice-suggest-background.js");
+  const { signScope } = await import("../netlify/functions/_auth.js");
+  eq((await bg({ body: JSON.stringify({}) })).statusCode, 401, "no token → refused");
+  eq((await bg({ body: JSON.stringify({ scope: signScope(["something-else"]) }) })).statusCode, 401, "another scope → refused");
+  const savedKey = process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_API_KEY;
+  eq((await bg({ body: JSON.stringify({ scope: signScope(["ai-invoice-suggest"]) }) })).statusCode, 202, "right scope → accepted");
+  if (savedKey) process.env.ANTHROPIC_API_KEY = savedKey;
+  const s = await POST("vendorInvoiceSuggest", { invoiceId: "x" }, VIEWER_TOK);
+  eq(s.statusCode, 403, "viewers can't ask for a read");
+  const { readFileSync } = await import("node:fs");
+  const toml = readFileSync(new URL("../netlify.toml", import.meta.url), "utf8");
+  ok(/external_node_modules = \[[^\]]*"@anthropic-ai\/sdk"/.test(toml), "the SDK ships as an external module");
+  const pkg = JSON.parse(readFileSync(new URL("../netlify/functions/package.json", import.meta.url), "utf8"));
+  ok(pkg.dependencies["@anthropic-ai/sdk"], "the SDK is a declared dependency");
+});
+
+await test("morningDigest: admin + office only, never a hard failure", async () => {
+  eq((await GET("morningDigest", {}, VIEWER_TOK)).statusCode, 403, "viewer refused");
+  const saved = process.env.DATABASE_URL; delete process.env.DATABASE_URL;
+  eq((await GET("morningDigest", {}, OFFICE_TOK)).statusCode, 503, "no database → 503, not an all-clear");
+  if (saved) process.env.DATABASE_URL = saved;
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const fn = src.slice(src.indexOf("async function handleMorningDigest"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  ok(!/\b(INSERT|UPDATE|DELETE)\b/.test(body), "the digest is read-only");
+  ok(!/time_entries/.test(body), "owner said no to hours-with-no-job here");
+});
+
 // ── report ──
 console.log("\nTier-1 backend handler tests (airtable.js)\n");
 for (const [s, n] of log) console.log(`  ${s} ${n}`);

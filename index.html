@@ -6218,6 +6218,7 @@
     $("noSelection").classList.add("hidden");
     box.classList.remove("hidden");
     // Re-read at most every 5 minutes unless forced; render the cache meanwhile.
+    hdLoadMorning(force);   // ☀ its own fetch; fills #hdMorning when it lands
     if (_hdCache && !force && Date.now() - _hdAt < 5 * 60 * 1000) { renderHomeDash(); return; }
     if (!_hdCache) box.innerHTML = `<div class="hd-empty" style="padding:40px;">Loading dashboard…</div>`;
     if (_hdBusy) return _hdBusy;
@@ -6376,6 +6377,65 @@
     openSchedule();
   };
 
+  // ── ☀ THIS MORNING (owner 2026-11-20) ────────────────────────────────────
+  // One card at the top of the Overview: app errors, invoices whose estimate
+  // changed, supplier invoices waiting, and whether the hourly sync and the
+  // data checks are healthy. Its own fetch (morningDigest runs the integrity
+  // checks, which take a moment), so it never holds up the rest of the page.
+  // The owner said NO to "hours with no job" and the hours-target nudge here.
+  let _hdMorning = null, _hdMorningAt = 0, _hdMorningBusy = null;
+  function hdLoadMorning(force) {
+    if (_hdMorningBusy) return _hdMorningBusy;
+    if (_hdMorning && !force && Date.now() - _hdMorningAt < 5 * 60 * 1000) return Promise.resolve();
+    _hdMorningBusy = apiGet("morningDigest")
+      .then(d => { _hdMorning = d; }, e => { _hdMorning = { _err: e.message }; })
+      .finally(() => {
+        _hdMorningAt = Date.now(); _hdMorningBusy = null;
+        const el = $("hdMorning");
+        if (el) el.innerHTML = hdMorningHtml();
+      });
+    return _hdMorningBusy;
+  }
+  function hdMorningHtml() {
+    const d = _hdMorning;
+    const shell = (inner, n) => `<div class="hd-card"><h3><span>☀ This morning</span>${n != null ? `<span class="hd-count">${n}</span>` : ""}</h3><div style="font-size:12.5px; line-height:1.5;">${inner}</div></div>`;
+    if (!d) return shell(`<div class="hd-empty">Checking…</div>`);
+    if (d._err) return shell(`<div class="hd-empty" style="color:var(--red);">Couldn't load: ${esc(d._err)}</div>`);
+    const items = [];
+    const item = (icon, html, attrs = "") =>
+      items.push(`<div class="hd-row" ${attrs} style="display:block; padding:5px 0; border-bottom:1px solid var(--line);${attrs ? " cursor:pointer;" : ""}">${icon} ${html}</div>`);
+
+    for (const w of d.invoiceWarnings || []) {
+      item("⚠", `<strong>Invoice ${esc(String(w.number || ""))}</strong> · ${esc(w.jobName || "")} (${esc(w.status || "")})
+        ${w.warnings.map(x => `<div style="color:var(--muted); font-size:12px;">${esc(x)}</div>`).join("")}`, hdClick(w.jobId, w.jobName));
+    }
+    const si = d.supplierInvoices;
+    if (si && si.waiting > 0) {
+      item("🧾", `<strong>${si.waiting} supplier invoice${si.waiting === 1 ? "" : "s"}</strong> need a job (${fmtCurrency(si.total)})${si.aiSuggested ? ` · 🤖 ${si.aiSuggested} with a suggestion ready` : ""}`,
+           `onclick="document.getElementById('btnVendorInvoices')?.click()"`);
+    }
+    const er = d.errors;
+    if (er && er.total > 0) {
+      item("🐞", `<strong>${er.total} app error${er.total === 1 ? "" : "s"}</strong> in the last 24 h
+        ${er.top.map(t => `<div style="color:var(--muted); font-size:12px;">${t.n}× ${esc(String(t.message).slice(0, 140))}${t.who ? ` — ${esc(t.who)}${t.people > 1 ? ` +${t.people - 1}` : ""}` : ""}</div>`).join("")}
+        <div style="color:var(--muted); font-size:11.5px;">Ask Claude to look into these.</div>`);
+    }
+    if (d.sync && !d.sync.healthy) {
+      item("🔴", `<strong>The hourly QuickBooks Time sync hasn't run</strong> for ${d.sync.ageMinutes == null ? "a while" : `${Math.round(d.sync.ageMinutes / 60)} h`}. Hours may be missing.`);
+    }
+    if (d.integrity && !d.integrity.healthy) {
+      for (const f of d.integrity.findings || []) {
+        item("🔎", `<strong>Data check: ${esc(f.check)}</strong>${f.count ? ` (${f.count})` : ""}
+          ${(f.detail || []).slice(0, 3).map(x => `<div style="color:var(--muted); font-size:12px;">${esc(String(x))}</div>`).join("")}`);
+      }
+    }
+    for (const p of d.problems || []) item("⚪", `<span style="color:var(--muted);">Couldn't check ${esc(p)}</span>`);
+    if (!items.length) {
+      return shell(`<div style="color:var(--green); font-weight:600;">✓ All clear: no app errors, no invoice problems, nothing waiting, sync and data checks healthy.</div>`, 0);
+    }
+    return shell(items.join(""), items.length);
+  }
+
   function renderHomeDash() {
     const box = $("homeDash");
     if (!box || !hdWanted() || !_hdCache) return;
@@ -6521,6 +6581,7 @@
     box.innerHTML = `
       <h2>Overview</h2>
       <div class="hd-sub">Pick a job on the left to open it. Click any row below to jump to that job.</div>
+      <div id="hdMorning" style="margin-bottom:14px;">${hdMorningHtml()}</div>
       <div class="hd-grid">
         <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml, true)}</div>
         <div class="hd-col">
@@ -27887,6 +27948,7 @@
             <div class="vi-sub">PO on paper: ${r.poText ? `<strong>${esc(r.poText)}</strong>` : "<em>none found</em>"}</div>
             ${isPending ? `<div class="vi-reason">${esc(VI_REASON[r.reason] || r.reason || "Needs review")}</div>` : ""}
             ${cands}
+            ${isPending ? viAiHtml(r) : ""}
             ${settledLine}
             <!-- Preview first, because it is the one you want nearly every time:
                  it answers "what does this ticket say" without leaving the
@@ -28703,6 +28765,64 @@
   // Puts the invoice on a job as a Materials expense. The backend does the
   // creating, so a credit memo lands in the credit column and a normal invoice
   // in the cost column without the client having to know the difference.
+  // ── 🤖 AI job suggestion (schema 102) ────────────────────────────────────
+  // Claude reads the PDF and SUGGESTS a job. It never places anything: "Use
+  // this" fills the picker and runs the ordinary viAssign, confirm included.
+  const VI_AI_CONF = { high: "Strong match", medium: "Likely", low: "Unsure", none: "No job found" };
+  function viAiHtml(r) {
+    const ai = r.ai || {};
+    const on = !!viData?.aiEnabled;
+    const askBtn = on && r.pdfUrl
+      ? `<button type="button" class="btn btn-sm" style="font-size:11.5px;" onclick="viAskAi('${esc(r.id)}')">🤖 ${ai.readAt ? "Ask again" : "Suggest a job"}</button>`
+      : "";
+    let body = "";
+    if (window._viAiAsking?.has(r.id)) {
+      body = `🤖 Reading the invoice… this takes about 20 seconds.`;
+    } else if (ai.error) {
+      body = `🤖 Couldn't read it: ${esc(ai.error)}`;
+    } else if (ai.readAt) {
+      const conf = VI_AI_CONF[ai.confidence] || ai.confidence || "";
+      body = ai.jobId
+        ? `🤖 <strong>${esc(ai.jobName || "a job")}</strong> <span style="opacity:.8;">(${esc(conf)})</span>${ai.reason ? `<div style="margin-top:2px;">${esc(ai.reason)}</div>` : ""}
+           <button type="button" class="btn btn-primary btn-sm" style="font-size:11.5px; margin-top:5px;" onclick="viUseAi('${esc(r.id)}')">Use this</button>`
+        : `🤖 ${esc(conf)}${ai.reason ? ` — ${esc(ai.reason)}` : ""}`;
+    } else if (on && r.pdfUrl) {
+      body = `🤖 Not read yet. It reads new invoices on its own within the hour.`;
+    }
+    if (!body && !askBtn) return "";
+    return `<div style="margin-top:6px; padding:7px 10px; border:1px dashed var(--line-2, #cbd5e1); border-radius:7px; font-size:12px; line-height:1.45;">
+              ${body}${askBtn ? `<div style="margin-top:5px;">${askBtn}</div>` : ""}
+            </div>`;
+  }
+  async function viAskAi(invoiceId) {
+    window._viAiAsking = window._viAiAsking || new Set();
+    try {
+      await apiPost("vendorInvoiceSuggest", { invoiceId });
+    } catch (e) { alert(e.message || "Couldn't start the AI read."); return; }
+    window._viAiAsking.add(invoiceId);
+    renderVendorInvoices();
+    // The read runs in the background; look again a few times rather than
+    // making the person press Refresh.
+    for (const wait of [15000, 15000, 20000, 30000]) {
+      await new Promise(res => setTimeout(res, wait));
+      try { viData = await apiGet("vendorInvoices", { status: "all" }); } catch { continue; }
+      const inv = (viData?.invoices || []).find(x => x.id === invoiceId);
+      if (!inv || inv.status !== "needs_review" || inv.ai?.readAt) break;
+    }
+    window._viAiAsking.delete(invoiceId);
+    renderVendorInvoices();
+  }
+  window.viAskAi = viAskAi;
+  function viUseAi(invoiceId) {
+    const inv = (viData?.invoices || []).find(r => r.id === invoiceId);
+    const wrap = document.querySelector(`.vi-pick[data-inv="${CSS.escape(invoiceId)}"]`);
+    if (!inv?.ai?.jobId || !wrap) { alert("That suggestion is no longer available — refresh the list."); return; }
+    wrap.querySelector("input.vi-job-id").value = inv.ai.jobId;
+    wrap.querySelector("input.sch-job-search").value = inv.ai.jobName || "";
+    viAssign(invoiceId);
+  }
+  window.viUseAi = viUseAi;
+
   async function viAssign(invoiceId) {
     const wrap = document.querySelector(`.vi-pick[data-inv="${CSS.escape(invoiceId)}"]`);
     const jobId = wrap?.querySelector("input.vi-job-id")?.value;
@@ -28716,7 +28836,8 @@
       return;
     }
     const inv = (viData?.invoices || []).find(r => r.id === invoiceId);
-    const jobName = viPickerJobs.find(j => j.id === jobId)?.name || "that job";
+    const jobName = viPickerJobs.find(j => j.id === jobId)?.name
+                 || (inv?.ai?.jobId === jobId ? inv.ai.jobName : null) || "that job";
     if (!confirm(`Add ${inv ? `${inv.vendor} ${inv.invoiceNo} (${viMoney(inv.amount)})` : "this invoice"} to ${jobName} as a materials expense?`))
       return;
     try {

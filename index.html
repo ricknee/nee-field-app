@@ -27995,6 +27995,11 @@
     const pendHtml = pending.length
       ? `<div class="section-header">Waiting on me (${pending.length})</div>${pending.map(row).join("")}`
       : `<div class="clock-note">Nothing waiting${who ? ` from ${who}` : " — every invoice found its job"}.</div>`;
+    // 🤖 schema 102: say plainly whether the reader is switched on, so adding
+    // the key can be checked even when the queue is empty.
+    const aiLine = `<div class="clock-note" style="font-size:11.5px;">${viData?.aiEnabled
+      ? "🤖 AI job suggestions: <strong>on</strong>. New invoices with no job get a suggested job here."
+      : "🤖 AI job suggestions: <strong>off</strong> (ANTHROPIC_API_KEY isn't set in Netlify)."}</div>`;
 
     // ── Placed invoices, GROUPED BY JOB ──────────────────────────────────
     // "Show me every CED invoice on Bethel School" is the question this screen
@@ -28057,6 +28062,7 @@
       </div>
       ${filterBar}
       ${pendHtml}
+      ${aiLine}
       ${settledHtml}
       <div style="margin-top:12px; display:flex; gap:8px;">
         <button class="btn btn-sm" onclick="viRefresh()">↺ Refresh</button>

@@ -30389,22 +30389,83 @@
   // like to print this just as it is" + "with a northeastern logo and or
   // header"). Copies the rendered grid, so it can never disagree with the
   // screen. Desktop only — the phone view is a 14-day list, not a month.
-  window.schPrintMonth = function() {
+  // 💾 SAVE AS A REAL LANDSCAPE PDF FILE (owner 2026-11-20). The 🖨 Print route
+  // goes through the browser's print dialog, and with a Windows PDF printer the
+  // landscape sheet came out turned sideways on a portrait page: unreadable on a
+  // phone and awkward to send. This builds the file itself: the same sheet as
+  // the print (schPrintMonth's layout, same one-page shrink), drawn to an image
+  // by html2canvas and put on a letter LANDSCAPE page by jsPDF, then downloaded
+  // as "Crew Schedule - December 2026.pdf". Text isn't selectable (it's a
+  // picture of the sheet), which is fine for viewing and sending.
+  function ensureHtml2Canvas() {
+    return new Promise((resolve, reject) => {
+      if (window.html2canvas) return resolve();
+      let s = document.getElementById("h2c-script");
+      if (s && s.dataset.failed === "1") { s.remove(); s = null; }
+      if (!s) {
+        s = document.createElement("script");
+        s.id = "h2c-script";
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+        s.onerror = () => { s.dataset.failed = "1"; };
+        document.head.appendChild(s);
+      }
+      let tries = 67;
+      (function wait() {
+        if (window.html2canvas) resolve();
+        else if (s.dataset.failed === "1" || --tries <= 0) { s.dataset.failed = "1"; reject(new Error("Image library failed to load")); }
+        else setTimeout(wait, 300);
+      })();
+    });
+  }
+  window.schSavePdf = async function(btn) {
     const grid = $("schGrid");
     if (!grid || !grid.innerHTML.trim() || grid.style.display === "none") {
-      showAppToast("Wait for the schedule to load, then print.", { kind: "warn" });
+      showAppToast("Wait for the schedule to load, then save.", { kind: "warn" });
       return;
     }
+    const label = btn?.textContent;
+    if (btn) { btn.disabled = true; btn.textContent = "Making PDF…"; }
+    let holder = null;
+    try {
+      await Promise.all([ensureJsPDF(), ensureHtml2Canvas()]);
+      const { html, widthPx } = schMonthSheet({ forImage: true });
+      holder = document.createElement("div");
+      // On the page (html2canvas needs it laid out) but behind everything.
+      holder.style.cssText = `position:absolute; left:0; top:0; z-index:-1; background:#fff; width:${widthPx}px;`;
+      holder.innerHTML = html;
+      document.body.appendChild(holder);
+      // Measure what actually laid out; that is what the image will hold.
+      const heightPx = holder.firstElementChild.offsetHeight;
+      const canvas = await window.html2canvas(holder.firstElementChild, {
+        scale: 2, backgroundColor: "#ffffff", useCORS: true, logging: false,
+        windowWidth: Math.ceil(widthPx), scrollX: 0, scrollY: -window.scrollY,
+      });
+      // Letter landscape, 0.35 in margins — the same paper the print uses.
+      const pdf = new window.jspdf.jsPDF({ orientation: "landscape", unit: "in", format: "letter" });
+      const m = 0.35, maxW = 11 - 2 * m, maxH = 8.5 - 2 * m;
+      const ratio = Math.min(maxW / widthPx, maxH / heightPx);
+      const w = widthPx * ratio, h = heightPx * ratio;
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", m + (maxW - w) / 2, m, w, h);
+      const month = ($("schRangeLabel")?.textContent || "").trim();
+      pdf.save(`Crew Schedule - ${month || "month"}.pdf`);
+      showAppToast("✓ PDF saved — check your Downloads.");
+    } catch (e) {
+      alert("Couldn't make the PDF: " + (e.message || e));
+    } finally {
+      holder?.remove();
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+  };
+
+  // The month sheet both routes share. For the print, a packed month is shrunk
+  // with CSS zoom; html2canvas can't draw zoom, so for the image the sheet is
+  // laid out WIDER instead (same proportions) and the PDF scales it to fit.
+  function schMonthSheet({ forImage = false } = {}) {
+    const grid = $("schGrid");
     const month = $("schRangeLabel")?.textContent || "";
-    // ONE PAGE, ALWAYS (owner 2026-11-18: "make it smaller and still read it
-    // and fit it on one page"). Lay the sheet out off-screen at the printable
-    // width of letter landscape (11in − 2×0.35in), measure it, and if it is
-    // taller than the printable height (8.5in − 2×0.35in, less a little slack)
-    // shrink the whole sheet by exactly that ratio. A light month prints at
-    // full size; only a packed month gets smaller.
     const PX_IN = 96, pageW = (11 - 0.7) * PX_IN, pageH = (8.5 - 0.7) * PX_IN - 12;
     const sheet = (zoom) => `
-      <div class="schp" style="width:${pageW / zoom}px;${zoom < 1 ? ` zoom:${zoom};` : ""}">
+      <div class="schp" style="width:${pageW / zoom}px;${zoom < 1 && !forImage ? ` zoom:${zoom};` : ""}">
         <div class="schp-head">
           <img src="${NEE_LOGO_B64}" alt="" onerror="this.style.display='none'">
           <div>
@@ -30423,12 +30484,19 @@
     const h = probe.firstElementChild.offsetHeight;
     probe.remove();
     const zoom = h > pageH ? Math.max(0.5, Math.floor((pageH / h) * 100) / 100) : 1;
-    // A light month FILLS the page (owner 2026-11-18, December left the bottom
-    // half blank): the sheet takes the full printable height and the week rows
-    // share it equally. A packed month is shrunk instead and keeps its height.
     let html = sheet(zoom);
     if (zoom === 1) html = html.replace('<div class="schp" style="', `<div class="schp schp-fill" style="height:${pageH}px; `);
-    printHtmlPages(html, "size: letter landscape; margin: 0.35in;");
+    return { html, widthPx: pageW / zoom };
+  }
+
+  window.schPrintMonth = function() {
+    const grid = $("schGrid");
+    if (!grid || !grid.innerHTML.trim() || grid.style.display === "none") {
+      showAppToast("Wait for the schedule to load, then print.", { kind: "warn" });
+      return;
+    }
+    // ONE PAGE, ALWAYS (owner 2026-11-18): schMonthSheet lays it out and shrinks a packed month.
+    printHtmlPages(schMonthSheet().html, "size: letter landscape; margin: 0.35in;");
   };
 
   window.schShiftMonth = function(delta) {
@@ -36211,6 +36279,7 @@
         <button class="sch-nav-btn sch-mobile-only" onclick="schShiftRange(14)">Next 2 wks →</button>
         <button class="sch-nav-btn sch-desktop-only" onclick="schShiftMonth(1)">Next month →</button>
         <button class="sch-nav-btn sch-desktop-only" onclick="schPrintMonth()" title="Print this month">🖨 Print</button>
+        <button class="sch-nav-btn sch-desktop-only" onclick="schSavePdf(this)" title="Save this month as a landscape PDF file, to send or open on a phone">💾 PDF</button>
         <button class="sch-add-btn" onclick="schOpenNew()" id="schAddBtn">+ New Entry</button>
       </div>
 

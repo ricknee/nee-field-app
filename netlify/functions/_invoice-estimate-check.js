@@ -30,10 +30,27 @@ export function contractLines(snapshot) {
     .map(l => ({ handle: l.id.slice(CONTRACT_LINE_PREFIX.length), amount: Number(l.amount) || 0 }));
 }
 
-// invoices: [{ id, status, snapshot }]
+// "OK, I know" (owner 2026-11-21, MT Liberty DG): each warning has a KEY that
+// carries its numbers. invoices.estimate_warning_ok stores the keys someone
+// okayed; a warning whose key is stored is hidden. If the estimate or billing
+// moves again the key changes, so the warning comes back on its own.
+//
+// invoices: [{ id, status, snapshot, acked? (array of keys) }]
 // estimates: Map(handle -> { status, price, label })  (handle = airtable_id or uuid)
-// returns Map(invoiceId -> [warning string])
+// returns Map(invoiceId -> [warning string])  (acked ones left out)
 export function invoiceEstimateWarnings(invoices, estimates) {
+  const items = invoiceEstimateWarningItems(invoices, estimates);
+  const out = new Map();
+  for (const inv of invoices || []) {
+    const ok = new Set(Array.isArray(inv.acked) ? inv.acked : []);
+    const left = (items.get(inv.id) || []).filter(w => !ok.has(w.key)).map(w => w.text);
+    if (left.length) out.set(inv.id, left);
+  }
+  return out;
+}
+
+// Same check, every warning as { key, text }, nothing hidden.
+export function invoiceEstimateWarningItems(invoices, estimates) {
   const billed = new Map();          // handle -> $ billed on non-Voided invoices
   const linesByInv = new Map();
   for (const inv of invoices || []) {
@@ -53,12 +70,12 @@ export function invoiceEstimateWarnings(invoices, estimates) {
       if (seen.has(l.handle)) continue;
       seen.add(l.handle);
       const e = estimates.get(l.handle);
-      if (!e) { warns.push("The estimate this invoice billed has been deleted."); continue; }
+      if (!e) { warns.push({ key: `deleted:${l.handle}`, text: "The estimate this invoice billed has been deleted." }); continue; }
       const name = e.label || "the estimate";
-      if (e.status === "Rejected") warns.push(`${name} is now Rejected, but this invoice still bills it (${money(l.amount)}).`);
+      if (e.status === "Rejected") warns.push({ key: `rejected:${l.handle}:${Number(l.amount).toFixed(2)}`, text: `${name} is now Rejected, but this invoice still bills it (${money(l.amount)}).` });
       const total = billed.get(l.handle) || 0;
       if (e.price != null && total - Number(e.price) > 0.005) {
-        warns.push(`${money(total)} has been billed against ${name}, which is now priced at ${money(e.price)}: over by ${money(total - Number(e.price))}.`);
+        warns.push({ key: `over:${l.handle}:${total.toFixed(2)}:${Number(e.price).toFixed(2)}`, text: `${money(total)} has been billed against ${name}, which is now priced at ${money(e.price)}: over by ${money(total - Number(e.price))}.` });
       }
     }
     if (warns.length) out.set(inv.id, warns);

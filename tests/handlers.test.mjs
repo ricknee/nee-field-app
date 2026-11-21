@@ -9229,6 +9229,24 @@ await test("invoice ↔ estimate check: rejected, deleted, and over-billed warn 
   ok(!w.has("i6"), "a Voided invoice's billing doesn't count toward over-billed");
 });
 
+await test("invoice ↔ estimate check: 'OK, I know' hides a warning until its numbers change", async () => {
+  const { invoiceEstimateWarnings, invoiceEstimateWarningItems } = await import("../netlify/functions/_invoice-estimate-check.js");
+  const snap = (amount) => JSON.stringify({ lines: [{ id: "contract_recA", amount }] });
+  const ests = new Map([["recA", { status: "Approved", price: 111550, label: '"A"' }]]);
+  const inv = { id: "i1", status: "Sent", snapshot: snap(113050) };
+  const keys = (invoiceEstimateWarningItems([inv], ests).get("i1") || []).map(w => w.key);
+  eq(keys.length, 1, "one over-billed warning, with a key");
+  ok(!invoiceEstimateWarnings([{ ...inv, acked: keys }], ests).has("i1"), "okayed → hidden");
+  const moved = new Map([["recA", { status: "Approved", price: 110000, label: '"A"' }]]);
+  ok(invoiceEstimateWarnings([{ ...inv, acked: keys }], moved).has("i1"), "estimate price changed → it comes back");
+  ok(invoiceEstimateWarnings([{ ...inv, snapshot: snap(114000), acked: keys }], ests).has("i1"), "billing changed → it comes back");
+  const src = (await import("node:fs")).readFileSync(new URL("../netlify/functions/airtable.js", import.meta.url), "utf8");
+  const body = src.slice(src.indexOf("async function handleAckInvoiceEstimateWarning"), src.indexOf("async function handleMorningDigest"));
+  ok(/UPDATE invoices SET estimate_warning_ok/.test(body) && !/invoice_total|amount\s*=/.test(body.replace(/estimate_warning_ok/g, "")),
+     "ack writes only estimate_warning_ok");
+  ok(/_ADMIN_OFFICE_POSTS = new Set\(\[\s*"ackInvoiceEstimateWarning"/.test(src), "ack is admin + office only");
+});
+
 await test("AI invoice match: the answer is untrusted — invented ids dropped, bad JSON refused", async () => {
   const m = await import("../netlify/functions/_ai-invoice-match.js");
   const ids = new Set(["j1", "j2"]);

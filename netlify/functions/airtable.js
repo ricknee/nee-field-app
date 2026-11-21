@@ -7,7 +7,7 @@ import { signToken, authedUser, hasRole, signScope, verifyScope } from "./_auth.
 import { isSessionRevoked, clearRevocationCache } from "./_revocation.js";
 import { scrubFabricatingLinks, airtableWriteBlocked, airtableWritesEnabled, assertAirtableReadable, SKIPPED_WRITE, UUID_RE } from "./_airtable-write-guard.js";
 import { runIntegrityChecks } from "./_integrity.js";
-import { contractLines, invoiceEstimateWarnings } from "./_invoice-estimate-check.js";
+import { contractLines, invoiceEstimateWarnings, invoiceEstimateWarningItems } from "./_invoice-estimate-check.js";
 import { aiEnabled, triggerAiInvoiceSuggest } from "./_ai-invoice-match.js";
 import { CITY_TAX_OPTS } from "./_city-taxes.js";
 import { neonLoginCandidate, neonEmployees, neonEmployeeById,
@@ -589,6 +589,7 @@ const _ADMIN_POSTS = new Set([
   "fillHolidays", "ptoRollover",
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
+  "ackInvoiceEstimateWarning",
   // Who counts toward capacity — the checkboxes on the Workload screen, so it
   // matches that screen's tier. Offering office a control that is guaranteed to
   // 403 is worse than not offering it: it reads as the feature being broken.
@@ -14891,6 +14892,13 @@ async function handleGetJobInvoices(body) {
         const invs = q.rows.map(r => ({ id: r.id, status: s(r.invoice_status), snapshot: r.invoice_snapshot }));
         const handles = [...new Set(invs.flatMap(i => contractLines(i.snapshot).map(l => l.handle)))];
         if (handles.length) {
+          // "OK, I know" keys (schema 103) — v_invoices doesn't carry them.
+          const ak = await neonQuery(
+            `SELECT COALESCE(airtable_id, id::text) AS id, estimate_warning_ok AS acked
+               FROM invoices WHERE estimate_warning_ok IS NOT NULL
+                AND COALESCE(airtable_id, id::text) = ANY($1::text[])`, [invs.map(i => i.id)]);
+          const ackMap = new Map((ak?.rows || []).map(a => [a.id, a.acked]));
+          for (const i of invs) i.acked = ackMap.get(i.id) || [];
           const eq = await neonQuery(
             `SELECT airtable_id, id::text AS uuid, status, actual_estimate_sent, estimate_type, title,
                     estimate_date::text AS estimate_date,
@@ -15429,6 +15437,45 @@ async function handleLogClientError(body, authUser) {
 // before the day starts. Every section fails soft (null + an error note), so one
 // broken check never blanks the card. Read-only.
 // The owner said NO to "hours with no job" and the hours-target nudge here.
+// "OK, I know" on an invoice/estimate warning (owner 2026-11-21, MT Liberty DG
+// over by $1,500 on purpose). The SERVER recomputes the invoice's warnings and
+// stores their keys, so the client can't okay something it wasn't shown. The
+// keys carry the numbers (see _invoice-estimate-check.js): if anything moves
+// again, the warning comes back. Writes only invoices.estimate_warning_ok.
+async function handleAckInvoiceEstimateWarning(body) {
+  const invoiceId = String(body?.invoiceId || "").trim();
+  if (!invoiceId) return resp(400, { ok: false, error: "invoiceId required." });
+  const inv = await neonQuery(
+    `SELECT id::text AS id, job_id FROM invoices WHERE airtable_id = $1 OR id::text = $1 LIMIT 1`, [invoiceId]);
+  if (inv?.error) return resp(503, { ok: false, error: "Database unavailable." });
+  const row = inv?.rows?.[0];
+  if (!row) return resp(404, { ok: false, error: "Invoice not found." });
+  // Billed totals add up across the job's invoices, so load all of them.
+  const all = await neonQuery(
+    `SELECT id::text AS uuid, invoice_status AS status, invoice_snapshot AS snapshot
+       FROM invoices WHERE job_id = $1`, [row.job_id]);
+  if (all?.error) return resp(503, { ok: false, error: "Database unavailable." });
+  const invs = (all.rows || []).map(r => ({ id: r.uuid, status: String(r.status || ""), snapshot: r.snapshot }));
+  const handles = [...new Set(invs.flatMap(i => contractLines(i.snapshot).map(l => l.handle)))];
+  const ests = new Map();
+  if (handles.length) {
+    const er = await neonQuery(
+      `SELECT airtable_id, id::text AS uuid, status, actual_estimate_sent
+         FROM job_estimates WHERE airtable_id = ANY($1::text[]) OR id::text = ANY($1::text[])`, [handles]);
+    if (er?.error) return resp(503, { ok: false, error: "Database unavailable." });
+    for (const e of er.rows || []) {
+      const v = { status: String(e.status || ""), label: "",
+                  price: e.actual_estimate_sent == null ? null : Number(e.actual_estimate_sent) };
+      if (e.airtable_id) ests.set(e.airtable_id, v);
+      ests.set(e.uuid, v);
+    }
+  }
+  const keys = (invoiceEstimateWarningItems(invs, ests).get(String(row.id)) || []).map(w => w.key);
+  await neonWrite("invoice.ackEstimateWarning", `UPDATE invoices SET estimate_warning_ok = $2 WHERE id = $1`,
+                  [row.id, keys.length ? keys : null]);
+  return resp(200, { ok: true, okayed: keys.length });
+}
+
 async function handleMorningDigest() {
   if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
   const out = { ok: true, errors: null, invoiceWarnings: null, supplierInvoices: null, sync: null, integrity: null, problems: [] };
@@ -15451,7 +15498,7 @@ async function handleMorningDigest() {
     soft("invoiceWarnings", async () => {
       const r = rowsOf(await neonQuery(
         `SELECT COALESCE(i.airtable_id, i.id::text) AS id, i.invoice_status AS status,
-                i.invoice_snapshot AS snapshot, i.invoice_number,
+                i.invoice_snapshot AS snapshot, i.invoice_number, i.estimate_warning_ok AS acked,
                 COALESCE((i.invoice_snapshot::jsonb)->>'invNum', i.invoice_display_no::text) AS num,
                 j.name AS job_name, COALESCE(j.airtable_id, j.id::text) AS job_id
            FROM invoices i LEFT JOIN jobs j ON j.id = i.job_id
@@ -15470,7 +15517,7 @@ async function handleMorningDigest() {
         if (e.airtable_id) ests.set(e.airtable_id, v);
         ests.set(e.uuid, v);
       }
-      const w = invoiceEstimateWarnings(r.map(i => ({ id: i.id, status: i.status, snapshot: i.snapshot })), ests);
+      const w = invoiceEstimateWarnings(r.map(i => ({ id: i.id, status: i.status, snapshot: i.snapshot, acked: i.acked || [] })), ests);
       return r.filter(i => w.has(i.id)).map(i => ({
         invoiceId: i.id, number: i.num || i.invoice_number, status: i.status,
         jobName: i.job_name, jobId: i.job_id, warnings: w.get(i.id) }));
@@ -17860,6 +17907,7 @@ export async function handler(event) {
       if (body.action === "createInspectionAgency") return await handleCreateInspectionAgency(body);
       if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
+      if (body.action === "ackInvoiceEstimateWarning") return await handleAckInvoiceEstimateWarning(body);
       if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "createContact")        return await handleCreateContact(body);
       if (body.action === "contactsDirectorySave") {

@@ -6478,6 +6478,23 @@
       });
     return _hdMorningBusy;
   }
+  // "OK, I know" on an invoice/estimate warning (owner 2026-11-21). The server
+  // stores the warning's numbers; if they change again, it comes back.
+  window.ackInvWarn = async function (btn, invoiceId) {
+    if (!confirm("Hide this warning? It comes back by itself if the estimate or the billing changes again.")) return;
+    btn.disabled = true;
+    try {
+      const r = await apiPost("ackInvoiceEstimateWarning", { invoiceId });
+      if (r && r.ok === false) throw new Error(r.error || "Save failed");
+      (btn.closest(".hd-row") || btn.closest("tr"))?.remove();
+      _hdMorningAt = 0;
+      if ($("hdMorning")) hdLoadMorning(true);
+      showAppToast("✓ Warning hidden");
+    } catch (e) {
+      btn.disabled = false;
+      alert("Couldn't hide it: " + e.message);
+    }
+  };
   function hdMorningHtml() {
     const d = _hdMorning;
     const shell = (inner, n) => `<div class="hd-card"><h3><span>☀ This morning</span>${n != null ? `<span class="hd-count">${n}</span>` : ""}</h3><div style="font-size:12.5px; line-height:1.5;">${inner}</div></div>`;
@@ -6489,7 +6506,9 @@
 
     for (const w of d.invoiceWarnings || []) {
       item("⚠", `<strong>Invoice ${esc(String(w.number || ""))}</strong> · ${esc(w.jobName || "")} (${esc(w.status || "")})
-        ${w.warnings.map(x => `<div style="color:var(--muted); font-size:12px;">${esc(x)}</div>`).join("")}`, hdClick(w.jobId, w.jobName));
+        ${w.warnings.map(x => `<div style="color:var(--muted); font-size:12px;">${esc(x)}</div>`).join("")}
+        <button type="button" class="btn btn-ghost" style="margin-top:4px; padding:2px 10px; font-size:11.5px;"
+          onclick="event.stopPropagation(); ackInvWarn(this, '${esc(w.invoiceId)}')">✓ OK, I know</button>`, hdClick(w.jobId, w.jobName));
     }
     const si = d.supplierInvoices;
     if (si && si.waiting > 0) {
@@ -21264,6 +21283,8 @@
                       ⚠ <strong>The estimate behind this invoice changed.</strong>
                       ${inv.estimateWarnings.map(w => `<div>• ${esc(w)}</div>`).join("")}
                       <div style="color:#7c2d12; margin-top:2px;">Check the amount before the customer pays it. A credit or an edited invoice may be needed.</div>
+                      ${isAdmin() ? `<button type="button" class="btn btn-ghost" style="margin-top:5px; padding:2px 10px; font-size:11.5px;"
+                        onclick="ackInvWarn(this, '${esc(inv.id)}')">✓ OK, I know — hide this</button>` : ""}
                     </div>
                   </td>
                 </tr>` : ""}

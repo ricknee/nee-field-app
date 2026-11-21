@@ -27998,8 +27998,8 @@
     // 🤖 schema 102: say plainly whether the reader is switched on, so adding
     // the key can be checked even when the queue is empty.
     const aiLine = `<div class="clock-note" style="font-size:11.5px;">${viData?.aiEnabled
-      ? "🤖 AI job suggestions: <strong>on</strong>. New invoices with no job get a suggested job here."
-      : "🤖 AI job suggestions: <strong>off</strong> (ANTHROPIC_API_KEY isn't set in Netlify)."}</div>`;
+      ? "Job suggestions: <strong>on</strong>"
+      : "Job suggestions: <strong>off</strong>"}</div>`;
 
     // ── Placed invoices, GROUPED BY JOB ──────────────────────────────────
     // "Show me every CED invoice on Bethel School" is the question this screen

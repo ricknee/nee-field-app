@@ -3325,6 +3325,14 @@
     }
     .sch-block.sch-holiday strong { font-style: italic; font-weight: 600; }
     .sch-block.sch-holiday .crew  { font-style: italic; opacity: 0.85; }
+    /* Payweek marker (every other Friday): purple, not a crew assignment. */
+    .sch-block.sch-payweek {
+      background: #7c3aed;
+      color: #fff;
+      border: 1px solid #6d28d9;
+      font-weight: 700;
+      cursor: default;
+    }
 
     /* Target completion date. Blue fill (matches the crew palette but distinct
        from the warm assignment colors) so it reads as a heads-up, not a crew
@@ -30070,6 +30078,17 @@
   }
   function schIsHoliday(ymd) { return schGetHolidayName(ymd) !== null; }
 
+  // Payweek (owner 2026-11-23): every other Friday, starting Fri 2026-11-13
+  // (then 11-27, 12-11, ...). Pure date math like the holidays, so there's nothing
+  // to store. If the pay cycle ever shifts, change the anchor date.
+  const SCH_PAYWEEK_ANCHOR = Date.UTC(2026, 10, 13);
+  function schIsPayweek(ymd) {
+    if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return false;
+    const [y, m, d] = ymd.split("-").map(Number);
+    const days = Math.round((Date.UTC(y, m - 1, d) - SCH_PAYWEEK_ANCHOR) / 86400000);
+    return days >= 0 && days % 14 === 0;
+  }
+
   // Day-of-month for the Nth occurrence of `dow` in (year, month1). month1 is 1-12.
   function schNthWeekdayOfMonth(year, month1, dow, n) {
     const first = new Date(year, month1 - 1, 1);
@@ -30276,6 +30295,9 @@
              <span class="crew">PTO</span>
            </div>`
         : "";
+      const payweekBlock = schIsPayweek(ymd)
+        ? `<div class="sch-block sch-payweek" title="Payweek">💜 Payweek</div>`
+        : "";
       return `
         <div class="sch-day ${isToday ? "today" : ""} ${weekend ? "weekend" : ""} ${isWeekdayHoliday ? "sch-day-holiday" : ""} ${isOtherMonth ? "other-month" : ""}"
              onclick="schShowDayDetail('${ymd}')" data-ymd="${ymd}">
@@ -30283,7 +30305,7 @@
             <span class="sch-day-name">${dowName}</span>
             <span class="sch-day-num">${d.getDate()}</span>
           </div>
-          <div class="sch-day-blocks">${holidayBlock}${blocks}${completionBlocks}</div>
+          <div class="sch-day-blocks">${holidayBlock}${payweekBlock}${blocks}${completionBlocks}</div>
         </div>`;
     }).join("");
     // Wire drag/drop handlers (desktop, non-read-only)

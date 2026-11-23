@@ -131,6 +131,13 @@
   status = 200
   force = true
 
+# NEE T-Sheets — the same trick at /tsheets: manifest-tsheets.json, opens My Hours.
+[[redirects]]
+  from = "/tsheets"
+  to = "/index.html"
+  status = 200
+  force = true
+
 [[redirects]]
   from = "/materials*"
   to = "/inventory"

@@ -39,8 +39,11 @@
     // (netlify.toml 200 rewrite) installs as its own home-screen app, because
     // it points at its own manifest (id /schedule, start_url /schedule). Runs
     // before Chrome reads the manifest. handleClockDeepLink opens the schedule.
+    // NEE T-Sheets (same day) is the same trick at /tsheets → My Hours.
     if (/^\/schedule\/?$/.test(location.pathname)) {
       document.getElementById("appManifest").href = "/manifest-schedule.json";
+    } else if (/^\/tsheets\/?$/.test(location.pathname)) {
+      document.getElementById("appManifest").href = "/manifest-tsheets.json";
     }
   </script>
   <link rel="apple-touch-icon" href="/assets/NEE-Gray-Logo-400.png" />
@@ -29531,8 +29534,10 @@
     const want = (params.get("clock") || "").toLowerCase();
     // /schedule is the NEE Schedule app (its own home-screen icon) — same as
     // ?open=schedule. The path is kept so a refresh stays in that app.
+    // /tsheets is the NEE T-Sheets app — same as ?open=myhours.
     const atSchedule = /^\/schedule\/?$/.test(location.pathname);
-    const open = atSchedule ? "schedule" : (params.get("open") || "").toLowerCase();
+    const atTsheets  = /^\/tsheets\/?$/.test(location.pathname);
+    const open = atSchedule ? "schedule" : atTsheets ? "myhours" : (params.get("open") || "").toLowerCase();
     if (!want && open !== "myhours" && open !== "schedule") return;
     window._neeClockLinkDone = true;
 

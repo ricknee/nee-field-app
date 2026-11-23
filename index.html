@@ -26625,6 +26625,9 @@
   // ─── My Hours: self-service hour view (employee + admin) ───────────────
   function openMyHours() {
     $("myHoursModal").style.display = "flex";
+    // Whose clock this is, at the top (owner 2026-11-23) — phones get handed around.
+    const who = $("mhWho");
+    if (who) who.textContent = state.user?.name ? `👤 ${state.user.name}` : "";
     pushBackEntry("myHours", () => { $("myHoursModal").style.display = "none"; });
     fetchAndRenderMyHoursTiles();
     refreshClock().catch(() => {});
@@ -37068,7 +37071,10 @@
        reads as a wall. On a phone the width rule is the 98% below anyway. -->
   <div class="payroll-modal" style="max-width:560px;">
     <div class="payroll-modal-header">
-      <h2>⏱ T-Sheets</h2>
+      <div style="min-width:0;">
+        <h2>⏱ T-Sheets</h2>
+        <div id="mhWho" style="font-size:14px; font-weight:700; color:var(--text); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;"></div>
+      </div>
       <button onclick="closeMyHours()" class="btn btn-sm" style="font-size:18px; padding:4px 10px;">&times;</button>
     </div>
     <div class="payroll-modal-body">

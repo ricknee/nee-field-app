@@ -494,7 +494,7 @@ const _NON_VIEWER   = ["admin", "office", "employee"];
 const _PAYROLL_READS = new Set([
   "payrollEntries", "findMatchingPayrollRun", "payrollRunsList",
   "payrollHoursRollup", "payrollHoursBreakdown", "payrollBonusesRollup",
-  "payrollEmployeeBonusHistory", "myHoursRollup", "myHoursBreakdown",
+  "payrollEmployeeBonusHistory", "myHoursRollup", "myHoursBreakdown", "myHoursWeeks",
   "hoursByJob",
   // Your own PTO balance and your own requests — the employee is taken from the
   // token inside the handler, so admin+employee is the whole audience.
@@ -5127,8 +5127,38 @@ async function handleMyHoursRollup(params) {
   });
 }
 
+// 🕒 Every week of a year for one person (owner 2026-11-23: crew tap "Hours
+// this week" to see any week and the year to date). Weeks are Mon–Sun by
+// time_entries.week_start_date, the same Monday the tiles use. Worked hours are
+// split from PTO and paid holidays, which are paid but not worked.
+async function handleMyHoursWeeks(params) {
+  const employeeId = params?.employeeId;
+  if (!employeeId || !isEmployeeHandle(employeeId)) return resp(400, { ok: false, error: "Missing or invalid employeeId." });
+  const year = /^\d{4}$/.test(String(params?.year || "")) ? Number(params.year) : new Date().getFullYear();
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  const q = await neonQuery(
+    `SELECT to_char(t.week_start_date, 'YYYY-MM-DD') AS wk,
+            round(sum(t.hours) FILTER (WHERE t.class IS DISTINCT FROM 'PTO' AND t.class IS DISTINCT FROM 'Paid Holiday'), 2)::float8 AS worked,
+            round(sum(t.hours) FILTER (WHERE t.class = 'PTO'), 2)::float8 AS pto,
+            round(sum(t.hours) FILTER (WHERE t.class = 'Paid Holiday'), 2)::float8 AS holiday,
+            round(sum(t.hours), 2)::float8 AS total
+       FROM time_entries t
+       JOIN employees e ON e.id = t.employee_id
+      WHERE (e.airtable_id = $1 OR e.id::text = $1)
+        AND t.work_date >= make_date($2, 1, 1) AND t.work_date < make_date($2 + 1, 1, 1)
+        AND t.work_date <= current_date
+      GROUP BY t.week_start_date
+      ORDER BY t.week_start_date DESC`, [employeeId, year]);
+  if (!q?.rows) return resp(503, { ok: false, error: "Can't load that right now — the database is unavailable." });
+  const n = (v) => Math.round((Number(v) || 0) * 100) / 100;
+  const weeks = q.rows.map(r => ({ weekStart: r.wk, worked: n(r.worked), pto: n(r.pto), holiday: n(r.holiday), total: n(r.total) }));
+  const sum = (k) => n(weeks.reduce((t, w) => t + w[k], 0));
+  return resp(200, { ok: true, year, weeks,
+    totals: { worked: sum("worked"), pto: sum("pto"), holiday: sum("holiday"), total: sum("total") } });
+}
+
 async function handleMyHoursBreakdown(params) {
-  const VALID_BUCKETS = new Set(["thisWeek", "payPeriod", "thisMonth", "ytd"]);
+  const VALID_BUCKETS = new Set(["thisWeek", "payPeriod", "thisMonth", "ytd", "week"]);
   const employeeId = params?.employeeId;
   const bucket = params?.bucket;
   if (!employeeId || !isEmployeeHandle(employeeId)) {
@@ -5154,6 +5184,12 @@ async function handleMyHoursBreakdown(params) {
   if      (bucket === "thisWeek")  { bucketStart = ranges.thisWeekStart;  bucketEnd = ranges.thisWeekEnd; }
   else if (bucket === "payPeriod") { bucketStart = ranges.payPeriodStart; bucketEnd = ranges.payPeriodEnd; }
   else if (bucket === "thisMonth") { bucketStart = ranges.monthStart;     bucketEnd = today; }
+  else if (bucket === "week") {
+    // Any Mon–Sun week (myHoursWeeks drill-down). weekStart is that Monday.
+    const ws = ymdToDate(params?.weekStart || "");
+    if (!ws) return resp(400, { ok: false, error: "weekStart (YYYY-MM-DD) required." });
+    bucketStart = ws; bucketEnd = shiftDays(ws, 6);
+  }
   else                             { bucketStart = ranges.yearStart;      bucketEnd = today; }
 
   // Clip the fetch at today — entries beyond today aren't real yet (matches
@@ -5177,7 +5213,9 @@ async function handleMyHoursBreakdown(params) {
          FROM time_entries t
          JOIN employees e ON e.id = t.employee_id
          LEFT JOIN jobs j ON j.id = t.job_id
-        WHERE e.airtable_id = $1 OR e.id::text = $1
+        -- ⚠ Parentheses — see myHoursRollup: without them the date window
+        -- vanished and the drill-down listed every entry ever.
+        WHERE (e.airtable_id = $1 OR e.id::text = $1)
           AND t.work_date >= $2::date AND t.work_date <= $3::date
         ORDER BY t.work_date`,
       [employeeId, dateToYmd(bucketStart), dateToYmd(sumEnd)]);
@@ -17913,6 +17951,13 @@ export async function handler(event) {
       if (action === "ptoBalance")                  return await handlePtoBalance(params, authUser);
       if (action === "ptoRequests")                 return await handlePtoRequests(params);
       if (action === "ptoHistory")                  return await handlePtoHistory(params);
+      // Your OWN hours only, unless admin (owner 2026-11-23). These took any
+      // employeeId, so one crew member could read another's hours.
+      if (["myHoursRollup", "myHoursBreakdown", "myHoursWeeks"].includes(action) &&
+          authUser?.role !== "admin" && String(params?.employeeId || "") !== String(authUser?.id || "")) {
+        return resp(403, { ok: false, error: "You can only see your own hours." });
+      }
+      if (action === "myHoursWeeks")                return await handleMyHoursWeeks(params);
       if (action === "myHoursRollup")               return await handleMyHoursRollup(params);
       if (action === "myHoursBreakdown")            return await handleMyHoursBreakdown(params);
       if (action === "hoursByJob")                  return await handleHoursByJob();

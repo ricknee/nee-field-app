@@ -29455,7 +29455,7 @@
   window.wwClockOut = wwClockOut;
 
   // ═══ HOME-SCREEN DEEP LINKS ══════════════════════════════════════════════
-  // /?clock=in, /?clock=out, /?open=myhours — the targets behind the home-screen
+  // /?clock=in, /?clock=out, /?open=myhours, /?open=schedule — the targets behind the home-screen
   // icon and Android's long-press shortcuts. One tap from the home screen to a
   // punch, without hunting through the app.
   // ⚠ THE ONCE-PER-LOAD FLAG LIVES ON `window`, AND MUST NOT BECOME A `let` HERE.
@@ -29489,7 +29489,7 @@
     const params = new URLSearchParams(location.search);
     const want = (params.get("clock") || "").toLowerCase();
     const open = (params.get("open") || "").toLowerCase();
-    if (!want && open !== "myhours") return;
+    if (!want && open !== "myhours" && open !== "schedule") return;
     window._neeClockLinkDone = true;
 
     // Strip the parameter immediately so a refresh, a back-navigation or a
@@ -29498,6 +29498,13 @@
     const qs = params.toString();
     history.replaceState({}, "", location.pathname + (qs ? "?" + qs : ""));
 
+    // /?open=schedule (owner 2026-11-23) — straight to this month's Crew
+    // Schedule from a phone bookmark / home-screen shortcut. Strict admin gets
+    // the editable one; everyone else the same view-only one My Schedule opens.
+    if (!want && open === "schedule") {
+      if (isStrictAdminRole()) openSchedule(); else openMySchedule();
+      return;
+    }
     openMyHours();
     if (!want) return;
 

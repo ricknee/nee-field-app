@@ -34,6 +34,12 @@
       "short_name": "T-Sheets",
       "description": "Your clock, PTO and hours",
       "url": "/?open=myhours"
+    },
+    {
+      "name": "Crew Schedule",
+      "short_name": "Schedule",
+      "description": "This month's crew schedule",
+      "url": "/?open=schedule"
     }
   ]
 }

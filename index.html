@@ -30136,18 +30136,18 @@
       });
       // Build pills: one per (employee, entry) pair. Show employee first
       // name, color-coded to match Payroll. Click hits the entry's edit panel.
-      const blocks = todayEntries.flatMap(e => {
+      const blockItems = todayEntries.flatMap(e => {
         const isTimeOff = e.type === "Time Off";
         if (!e.crewIds?.length) {
           // No crew assigned — show one neutral pill with the job name so
           // the user can still see + click the entry to assign crew. Not
           // draggable (no employee to move) — use the edit panel instead.
-          return [`<div class="sch-block past-or-now${isTimeOff ? " timeoff" : ""}" data-entry-id="${esc(e.id)}" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
+          return [{ who: "", html: `<div class="sch-block past-or-now${isTimeOff ? " timeoff" : ""}" data-entry-id="${esc(e.id)}" style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};"
                         onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                         title="${isTimeOff ? "🏖 Time Off — no one assigned" : esc(e.jobName) + " — no crew assigned"}${e.notes ? " — " + esc(e.notes) : ""}">
                     ${isTimeOff ? "🏖 Time Off" : esc(e.jobName || "—")}<br>
                     <span class="crew">${isTimeOff ? "no one" : "no crew"}</span>
-                  </div>`];
+                  </div>` }];
         }
         // Iterate over crewIds (source of truth for the entry's crew). Names
         // come from schCrew (the active employee list); we fall back to
@@ -30164,14 +30164,24 @@
             : `${empName} — ${e.jobName}${e.notes ? " — " + e.notes : ""}`;
           // Approved time off (e.pto) comes from 🌴 Time Off and is changed
           // there, so it is never draggable here.
-          return `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${e.pto ? "" : dragAttr} data-entry-id="${esc(e.id)}" data-emp-id="${esc(cid)}" data-source-ymd="${esc(ymd)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+          return { who: cid, html: `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${e.pto ? "" : dragAttr} data-entry-id="${esc(e.id)}" data-emp-id="${esc(cid)}" data-source-ymd="${esc(ymd)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                        title="${esc(tooltip)}">
                     <strong>${esc(first)}</strong>
                     <span class="crew">${esc(subtitle)}</span>
-                  </div>`;
+                  </div>` };
         });
-      }).join("");
+      });
+      // One person's entries sit together (owner 2026-11-23: Rick on two jobs
+      // showed split by whoever was added in between). People keep the order
+      // they first appear in; pills with no crew go last.
+      const firstAt = new Map();
+      blockItems.forEach((it, i) => { if (it.who && !firstAt.has(it.who)) firstAt.set(it.who, i); });
+      const rank = it => it.who ? firstAt.get(it.who) : Infinity;
+      const blocks = blockItems
+        .map((it, i) => ({ it, i }))
+        .sort((x, y) => (rank(x.it) - rank(y.it)) || (x.i - y.i))
+        .map(x => x.it.html).join("");
       // Target completion dates falling on this day. Small blue pill, sits at
       // the bottom of the stack. Click opens the job.
       const dueToday = schCompletionDates.filter(b => b.date === ymd);

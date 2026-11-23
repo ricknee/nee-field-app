@@ -1868,6 +1868,10 @@
     .home-dash { padding: 16px 20px 16px; max-width: 1500px; }
     .home-dash h2 { font-size: 18px; margin: 0 0 2px; color: var(--text); }
     .home-dash .hd-sub { color: var(--muted); font-size: 12px; margin-bottom: 12px; }
+    .hd-toprow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; margin-bottom: 14px; }
+    .hd-toprow .hd-body { max-height: 180px; }
+    #hdMorning > .hd-card > div { max-height: 180px; overflow-y: auto; }
+    @media (max-width: 1100px) { .hd-toprow { grid-template-columns: minmax(0, 1fr); } }
     .hd-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 14px; align-items: start; }
     .hd-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
     .hd-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
@@ -6896,7 +6900,9 @@
     }
     for (const p of d.problems || []) item("⚪", `<span style="color:var(--muted);">Couldn't check ${esc(p)}</span>`);
     if (!items.length) {
-      return shell(`<div style="color:var(--green); font-weight:600;">✓ All clear: no app errors, no invoice problems, nothing waiting, sync and data checks healthy.</div>`, 0);
+      // All clear: one slim line, not a whole card (owner 2026-11-23).
+      return `<div class="hd-card" style="padding:8px 14px; font-size:12.5px;"><b style="color:var(--muted); font-size:11.5px; letter-spacing:.04em; text-transform:uppercase;">☀ This morning</b>
+        <span style="color:var(--green); font-weight:600; margin-left:8px;">✓ All clear: no app errors, no invoice problems, nothing waiting, sync and data checks healthy.</span></div>`;
     }
     return shell(items.join(""), items.length);
   }
@@ -7047,7 +7053,11 @@
     box.innerHTML = `
       <h2>Overview</h2>
       <div class="hd-sub">Pick a job on the left to open it. Click any row below to jump to that job.</div>
-      <div id="hdMorning" style="margin-bottom:14px;">${hdMorningHtml()}</div>
+      <!-- ☀ This morning and 🧾 Ready to invoice side by side (owner 2026-11-23). -->
+      <div class="hd-toprow">
+        <div id="hdMorning">${hdMorningHtml()}</div>
+        <div>${card("🧾 Ready to invoice", rti.length, rtiHtml)}</div>
+      </div>
       <div class="hd-grid">
         <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml, true)}</div>
         <div class="hd-col">
@@ -7055,7 +7065,6 @@
           <div class="hd-card" id="hdBoard">${hdBoardHtml()}</div>
           <div class="hd-card"><h3><span>${calTitle}</span></h3>${calHtml}</div>
           ${card("🕒 This week", wkTotal, wkHtml)}
-          ${card("🧾 Ready to invoice", rti.length, rtiHtml)}
         </div>
       </div>`;
   }

@@ -1858,6 +1858,29 @@
     #scheduleModal.sch-phone-month .sch-block:has(.off-badge) { padding-right: 12px; }
     #scheduleModal.sch-phone-month .off-badge { font-size: 11px; right: 2px; }
     .off-badge.paid { color: #16a34a; }
+    /* 🛢 Machines in Lifts & Equipment (schema 105) */
+    .eq-box { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 10px 0; background: var(--panel); }
+    .eq-head { display: flex; justify-content: space-between; align-items: center; font-weight: 700; font-size: 13.5px; margin-bottom: 6px; }
+    .eq-meter { font-weight: 500; font-size: 13px; }
+    .eq-meter small, .eq-plan-row small, .eq-hist-row small { color: var(--muted); font-weight: 400; }
+    .eq-meter-set { display: flex; gap: 6px; margin-bottom: 8px; }
+    .eq-meter-set input, .eq-log-form input[type=number], .eq-log-form input[type=date], .eq-notes { border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font-size: 13px; min-width: 0; }
+    .eq-meter-in { width: 140px; }
+    .eq-plan-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; padding: 4px 0; border-top: 1px solid var(--line); }
+    .eq-plan-row:first-child { border-top: none; }
+    .eq-plan-row .eq-left { white-space: nowrap; }
+    .eq-plan-row.due .eq-left { color: #dc2626; font-weight: 700; }
+    .eq-plan-row.soon .eq-left { color: #b45309; font-weight: 700; }
+    .eq-plan-row.ok .eq-left { color: #16a34a; }
+    .eq-plan-row.unknown .eq-left { color: var(--muted); font-style: italic; }
+    .eq-log summary { cursor: pointer; font-weight: 700; font-size: 13px; color: var(--accent); margin-top: 6px; }
+    .eq-log-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+    .eq-chks { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+    .eq-chk { font-size: 12.5px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+    .eq-hist { margin-top: 8px; }
+    .eq-hist-title { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .eq-hist-row { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; padding: 3px 0; border-top: 1px solid var(--line); }
+    .eq-due-chip { font-size: 11px; font-weight: 700; color: #fff; background: #dc2626; border-radius: 10px; padding: 1px 7px; white-space: nowrap; }
     .off-badge.unpaid { color: #dc2626; }
     .off-badge.pay-click { cursor: pointer; border-radius: 4px; padding: 0 3px; }
     .off-badge.pay-click:hover { background: #fee2e2; outline: 1px solid #dc2626; }
@@ -19651,6 +19674,106 @@
   // the record is the thing that matters, and a cancelled or failed upload must
   // still leave you with a lift rather than nothing. It just shows a "+ Photo"
   // slot until you add one.
+  // ── 🛢 MACHINES (schema 105, owner 2026-11-23: JCB 35Z-1 mini ex) ─────────
+  // A machine has an hour meter, a service plan (item + every N hours) and a
+  // service log. "Due" = hours since that item was last logged >= its interval.
+  // Never logged = counted from 0 h on the meter.
+  function machineDue(lift) {
+    const meter = Number(lift.hourMeter);
+    const hasMeter = lift.hourMeter != null && Number.isFinite(meter);
+    return (lift.plan || []).map(p => {
+      const last = (lift.services || []).find(sv => (sv.items || []).includes(p.item));
+      const lastHours = last && last.hours != null ? Number(last.hours) : (last ? null : 0);
+      const dueAt = lastHours == null ? null : lastHours + Number(p.everyHours);
+      const left = hasMeter && dueAt != null ? Math.round((dueAt - meter) * 10) / 10 : null;
+      const state = left == null ? "unknown" : left <= 0 ? "due" : left <= Math.max(5, p.everyHours * 0.1) ? "soon" : "ok";
+      return { item: p.item, every: Number(p.everyHours), last, dueAt, left, state };
+    });
+  }
+  function renderMachineService(lift) {
+    const id = esc(lift.id);
+    const rows = machineDue(lift).map(x => {
+      const when = x.last ? `last ${x.last.hours != null ? x.last.hours + " h" : ""}${x.last.date ? " · " + fmtDate(x.last.date) : ""}` : "never logged";
+      const status = x.left == null ? "set the hour meter"
+        : x.state === "due" ? `<b>DUE</b>${x.left < 0 ? ` (${-x.left} h over)` : ""}`
+        : `in ${x.left} h`;
+      return `<div class="eq-plan-row ${x.state}"><span><b>${esc(x.item)}</b> <small>every ${x.every} h · ${esc(when)}</small></span><span class="eq-left">${status}</span></div>`;
+    }).join("") || `<div class="ch-none">No service plan yet.</div>`;
+    const items = (lift.plan || []).map(p =>
+      `<label class="eq-chk"><input type="checkbox" value="${esc(p.item)}" /> ${esc(p.item)}</label>`).join("");
+    const hist = (lift.services || []).slice(0, 8).map(sv =>
+      `<div class="eq-hist-row"><span>${esc(fmtDate(sv.date))}${sv.hours != null ? ` · ${sv.hours} h` : ""} — ${esc((sv.items || []).join(", ") || "")}${sv.notes ? ` <small>${esc(sv.notes)}</small>` : ""}<small>${sv.by ? " · " + esc(sv.by) : ""}</small></span>
+        ${isAdmin() ? `<button type="button" class="btn btn-sm" style="font-size:10px; padding:0 6px;" onclick="eqDeleteService('${esc(sv.id)}')" title="Delete this entry">✕</button>` : ""}</div>`).join("");
+    const today = new Date().toISOString().slice(0, 10);
+    return `<div class="eq-box" data-eq-id="${id}">
+      <div class="eq-head"><span>🛢 Service</span>
+        <span class="eq-meter">⏱ ${lift.hourMeter != null ? `<b>${lift.hourMeter} h</b>` : "no reading"}${lift.hourMeterOn ? ` <small>(${esc(fmtDate(lift.hourMeterOn))})</small>` : ""}</span></div>
+      ${isViewer() ? "" : `<div class="eq-meter-set"><input type="number" step="0.1" min="0" class="eq-meter-in" placeholder="Hour meter now" />
+        <button type="button" class="btn btn-sm" onclick="eqSetHours('${id}', this)">Update hours</button></div>`}
+      <div class="eq-plan">${rows}</div>
+      ${isViewer() ? "" : `<details class="eq-log"><summary>+ Log service</summary>
+        <div class="eq-log-form">
+          <div style="display:flex; gap:6px; flex-wrap:wrap;">
+            <input type="date" class="eq-date" value="${today}" />
+            <input type="number" step="0.1" min="0" class="eq-hours" placeholder="Hours on meter" value="${lift.hourMeter != null ? lift.hourMeter : ""}" />
+          </div>
+          <div class="eq-chks">${items}</div>
+          <input type="text" class="eq-notes" maxlength="1000" placeholder="Notes (oil brand, parts, anything else)" />
+          <button type="button" class="btn btn-primary btn-sm" onclick="eqLogService('${id}', this)">Save service</button>
+        </div></details>`}
+      ${hist ? `<div class="eq-hist"><div class="eq-hist-title">Service log</div>${hist}</div>` : ""}
+    </div>`;
+  }
+  window.eqSetHours = async function (liftId, btn) {
+    const box = btn.closest(".eq-box"), v = box.querySelector(".eq-meter-in").value;
+    if (v === "") { box.querySelector(".eq-meter-in").focus(); return; }
+    btn.disabled = true;
+    try { await apiPost("setEquipmentHours", { liftId, hours: Number(v) }); showAppToast("Hours updated"); await loadScissorLifts(); }
+    catch (e) { alert("Couldn't save: " + (e.message || e)); btn.disabled = false; }
+  };
+  window.eqLogService = async function (liftId, btn) {
+    const box = btn.closest(".eq-box");
+    const items = [...box.querySelectorAll(".eq-chks input:checked")].map(c => c.value);
+    const hours = box.querySelector(".eq-hours").value;
+    btn.disabled = true;
+    try {
+      await apiPost("logEquipmentService", { liftId, date: box.querySelector(".eq-date").value,
+        hours: hours === "" ? null : Number(hours), items, notes: box.querySelector(".eq-notes").value });
+      showAppToast("Service logged");
+      await loadScissorLifts();
+    } catch (e) { alert("Couldn't save: " + (e.message || e)); btn.disabled = false; }
+  };
+  window.eqDeleteService = async function (id) {
+    if (!confirm("Delete this service entry?")) return;
+    try { await apiPost("deleteEquipmentService", { id }); await loadScissorLifts(); }
+    catch (e) { alert("Couldn't delete: " + (e.message || e)); }
+  };
+  // Admin + office: make a row a machine, or edit its plan. One line per item,
+  // "what | every how many hours". Clearing everything turns it back into a lift.
+  window.eqSetup = async function (liftId) {
+    const lift = (liftUi.lifts || []).find(l => String(l.id) === String(liftId));
+    if (!lift) return;
+    const cur = lift.kind === "machine" ? (lift.plan || []) : null;
+    const text = cur ? cur.map(p => `${p.item} | ${p.everyHours}`).join("\n") : "";
+    const msg = cur
+      ? "Service plan, one per line:  what | every how many hours\n(Empty = turn it back into a plain lift.)"
+      : "Make this a machine (hour meter + service reminders)?\nLeave this as is for a starter plan you can edit later, or type your own, one per line:  what | every how many hours";
+    const typed = prompt(msg, text);
+    if (typed === null) return;
+    const lines = typed.split(/\n|;/).map(x => x.trim()).filter(Boolean);
+    let body;
+    if (!lines.length) body = cur ? { liftId, kind: "lift" } : { liftId, kind: "machine" };
+    else {
+      const plan = lines.map(l => { const [a, b] = l.split("|"); return { item: (a || "").trim(), everyHours: Number((b || "").trim()) }; });
+      const bad = plan.filter(p => !p.item || !(p.everyHours > 0));
+      if (bad.length) { alert("Each line needs:  what | hours  (e.g. Engine oil & filter | 500)"); return; }
+      body = { liftId, kind: "machine", plan };
+    }
+    if (body.kind === "lift" && !confirm("Turn this back into a plain lift? The service log is kept.")) return;
+    try { await apiPost("setEquipmentSetup", body); await loadScissorLifts(); }
+    catch (e) { alert("Couldn't save: " + (e.message || e)); }
+  };
+
   async function addScissorLift() {
     const name = prompt("Name of the new lift or machine (e.g. Lift #11, JCB 35Z-1 Mini Ex):", "");
     if (name === null) return;
@@ -19658,7 +19781,8 @@
 
     let liftId;
     try {
-      const d = await apiPost("createScissorLift", { name: name.trim(), status: "Available" });
+      const machine = confirm(`Is "${name.trim()}" a machine with an engine (mini ex, skid steer…)?\n\nOK = machine: hour meter, oil changes, grease reminders\nCancel = a lift`);
+      const d = await apiPost("createScissorLift", { name: name.trim(), status: "Available", kind: machine ? "machine" : "lift" });
       liftId = d.id;
     } catch (e) {
       alert("Couldn't add the lift: " + e.message);
@@ -19788,6 +19912,8 @@
               <div class="sl-row-side">
                 <span class="sl-status-pill ${statusClass}">${esc(lift.status === "Available" ? "At shop" : (lift.status || "—"))}</span>
                 <span class="fleet-vrow-fix sl-row-fix" style="display:none;"></span>
+                ${(() => { const n = lift.kind === "machine" ? machineDue(lift).filter(x => x.state === "due").length : 0;
+                   return n ? `<span class="eq-due-chip" title="Service due">🛢 ${n} due</span>` : ""; })()}
               </div>
               <span class="sl-row-chev">›</span>
             </div>
@@ -19803,6 +19929,7 @@
             </div>
             ${renderLiftPhotos(lift)}
             ${renderLiftLastJob(lift)}
+            ${lift.kind === "machine" ? renderMachineService(lift) : ""}
             <div class="sl-field">
               <label>Status</label>
               <select data-lift-id="${esc(lift.id)}" class="sl-status-sel">
@@ -19833,7 +19960,7 @@
               <label>Notes</label>
               <input type="text" data-lift-id="${esc(lift.id)}" class="sl-notes-input" value="${esc(lift.notes || "")}" placeholder="Notes..." />
             </div>
-            <div class="sl-field" style="gap:12px;">
+            ${lift.kind === "machine" ? "" : `<div class="sl-field" style="gap:12px;">
               <label>Left at Job</label>
               <label style="display:flex; align-items:center; gap:5px; font-size:13px; font-weight:400; cursor:pointer;">
                 <input type="checkbox" class="sl-hooks-chk" ${lift.hooksLeft?"checked":""} style="accent-color:var(--yellow); width:16px; height:16px;" />
@@ -19843,11 +19970,13 @@
                 <input type="checkbox" class="sl-box-chk" ${lift.boxLeft?"checked":""} style="accent-color:var(--accent); width:16px; height:16px;" />
                 <span>📦 Box</span>
               </label>
-            </div>
+            </div>`}
             <div class="sl-save-row">
               <button data-lift-id="${esc(lift.id)}" class="sl-save-btn btn btn-primary btn-sm" style="font-size:12px;">Save</button>
               <span data-lift-id="${esc(lift.id)}" class="sl-save-msg">✓ Saved</span>
               <button data-lift-id="${esc(lift.id)}" class="sl-history-btn btn btn-sm" type="button" style="font-size:11px;">🕘 History</button>
+              ${isAdmin() ? `<button type="button" class="btn btn-sm" style="font-size:11px;" onclick="eqSetup('${esc(lift.id)}')"
+                title="${lift.kind === "machine" ? "Change what gets serviced and how often" : "Turn this into a machine with an hour meter and service reminders"}">${lift.kind === "machine" ? "⚙ Service plan" : "⚙ Make it a machine"}</button>` : ""}
               ${isAdmin() ? `<button data-lift-id="${esc(lift.id)}" data-lift-name="${esc(lift.name)}"
                 class="sl-retire-btn btn btn-sm" style="font-size:11px; margin-left:auto; color:var(--red);"
                 title="Remove this lift and its photos — for when one is sold">Retire</button>` : ""}
@@ -19885,8 +20014,8 @@
           const assignedTo = card.querySelector(".sl-emp-sel").value;
           const date       = card.querySelector(".sl-date-input").value;
           const notes      = card.querySelector(".sl-notes-input").value;
-          const hooksLeft  = card.querySelector(".sl-hooks-chk").checked;
-          const boxLeft    = card.querySelector(".sl-box-chk").checked;
+          const hooksLeft  = !!card.querySelector(".sl-hooks-chk")?.checked;
+          const boxLeft    = !!card.querySelector(".sl-box-chk")?.checked;
           btn.disabled = true; btn.textContent = "...";
           try {
             await apiPost("updateScissorLift", { liftId: id, status, currentJob, assignedTo, dateDeployed: date, notes, hooksLeft, boxLeft });

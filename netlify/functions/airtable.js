@@ -640,6 +640,10 @@ const _ADMIN_OFFICE_POSTS = new Set([
   // But adding equipment to the books, and RETIRING a sold one along with its
   // photos, is not a field action. Same for removing a photo.
   "createScissorLift", "deleteScissorLift", "deleteLiftPhoto",
+  // Machines (schema 105): what a row IS, its service plan, and deleting a
+  // logged service are office calls. Logging a service or the hour meter is a
+  // crew action (default _NON_VIEWER).
+  "setEquipmentSetup", "deleteEquipmentService",
   // Adding or replacing an equipment photo, and backfilling a thumbnail for one
   // that predates them. All three write objects into the bucket, so they sit
   // with the other equipment-photo writes rather than at _NON_VIEWER.
@@ -5056,7 +5060,12 @@ async function handleMyHoursRollup(params) {
               round(coalesce(sum(t.hours), 0), 2)::float8 AS ytd
          FROM time_entries t
          JOIN employees e ON e.id = t.employee_id
-        WHERE e.airtable_id = $1 OR e.id::text = $1
+        -- ⚠ PARENTHESES. Without them AND binds tighter than OR, so for anyone
+        -- matched by airtable_id the date window vanished: "Hours this week"
+        -- counted holidays booked ahead (Patrick showed 16.0 h on 2026-11-23 —
+        -- Thanksgiving + Christmas, 8 h each, nothing worked) and YTD summed
+        -- every year.
+        WHERE (e.airtable_id = $1 OR e.id::text = $1)
           AND t.work_date >= $2::date AND t.work_date <= $7::date`,
       [employeeId, dateToYmd(yearStart), dateToYmd(thisWeekStart), dateToYmd(payPeriodStart),
        dateToYmd(payPeriodEnd), dateToYmd(monthStart), todayStr]
@@ -9607,7 +9616,9 @@ async function handleDeleteEquipTodo(kind, body) {
 // leave a stale key behind.
 const LIFT_SELECT = `
   SELECT id::text, airtable_id, name, status, current_job, assigned_to,
-         date_deployed::text AS date_deployed, notes, hooks_left, box_left
+         date_deployed::text AS date_deployed, notes, hooks_left, box_left,
+         kind, hour_meter::float8 AS hour_meter, to_char(hour_meter_on, 'YYYY-MM-DD') AS hour_meter_on,
+         service_plan
     FROM scissor_lifts`;
 const LIFT_ORDER = `
    ORDER BY NULLIF(regexp_replace(name, '\\D', '', 'g'), '')::int NULLS LAST, name`;
@@ -9663,6 +9674,11 @@ function mapLiftRow(r) {
     currentJob: r.current_job || "", assignedTo: r.assigned_to || "",
     dateDeployed: r.date_deployed || "", notes: r.notes || "",
     hooksLeft: r.hooks_left === true, boxLeft: r.box_left === true,
+    // Machines (schema 105): hour meter + service plan. Lifts carry nulls.
+    kind: r.kind === "machine" ? "machine" : "lift",
+    hourMeter: r.hour_meter == null ? null : Number(r.hour_meter),
+    hourMeterOn: r.hour_meter_on || "",
+    plan: Array.isArray(r.service_plan) ? r.service_plan : [],
   };
 }
 
@@ -9697,10 +9713,14 @@ const LIFT_ASSIGNEES_SQL = `
 
 async function handleScissorLifts() {
   if (neonEnabled()) {
-    const [q, lastQ, empQ] = await Promise.all([
+    const [q, lastQ, empQ, svcQ] = await Promise.all([
       neonQuery(`${LIFT_SELECT}${LIFT_ORDER}`),
       neonQuery(LIFT_LAST_JOB_SQL),
       neonQuery(LIFT_ASSIGNEES_SQL),
+      // Machine service log (schema 105). Fails soft like the two above.
+      neonQuery(`SELECT id::text, lift_id::text, to_char(service_date, 'YYYY-MM-DD') AS d,
+                        hours::float8 AS hours, items, notes, done_by
+                   FROM equipment_service ORDER BY service_date DESC, created_at DESC`),
     ]);
     if (q?.rows) {
       // Both extras fail SOFT: the lift list is the screen, and a missing "last
@@ -9710,7 +9730,12 @@ async function handleScissorLifts() {
       const lifts = q.rows.map(r => {
         const l = mapLiftRow(r);
         const p = last.get(l.id);
-        return { ...l, lastJob: p ? { job: p.current_job, assignedTo: p.assigned_to || "", leftOn: p.left_on || "" } : null };
+        const services = l.kind === "machine"
+          ? (svcQ?.rows || []).filter(x => x.lift_id === l.id).map(x => ({
+              id: x.id, date: x.d, hours: x.hours == null ? null : Number(x.hours),
+              items: x.items || [], notes: x.notes || "", by: x.done_by || "" }))
+          : [];
+        return { ...l, services, lastJob: p ? { job: p.current_job, assignedTo: p.assigned_to || "", leftOn: p.left_on || "" } : null };
       });
       return resp(200, {
         ok: true, lifts: await attachEquipPhotos("lifts", lifts),
@@ -9755,6 +9780,76 @@ async function resolveLift(liftId) {
 // ── NEW 2026-08-05: add a lift ─────────────────────────────────────────────
 // Did not exist before — lifts could only be created in Airtable directly.
 // Born in Neon with no airtable_id; the Airtable mirror stamps one if it lands.
+// ── 🛢 Machines: hour meter, service plan, service log (schema 105) ─────────
+// Starter plan for a compact excavator. TYPICAL intervals only: the owner sets
+// the real ones from the machine's manual (Edit plan on the card).
+const DEFAULT_MACHINE_PLAN = [
+  { item: "Grease pivot points", everyHours: 10 },
+  { item: "Track tension check", everyHours: 50 },
+  { item: "Engine oil & filter", everyHours: 500 },
+  { item: "Fuel filter", everyHours: 500 },
+  { item: "Air filter", everyHours: 500 },
+  { item: "Hydraulic return filter", everyHours: 500 },
+  { item: "Hydraulic oil", everyHours: 2000 },
+];
+function cleanServicePlan(plan) {
+  if (!Array.isArray(plan)) return null;
+  return plan.map(p => ({ item: String(p?.item || "").trim().slice(0, 80), everyHours: Number(p?.everyHours) }))
+    .filter(p => p.item && Number.isFinite(p.everyHours) && p.everyHours > 0 && p.everyHours <= 100000)
+    .slice(0, 30);
+}
+// Admin + office: make a row a machine (or a lift again) and set its plan.
+async function handleSetEquipmentSetup(body) {
+  const lift = await resolveLift(body?.liftId);
+  if (!lift) return resp(404, { ok: false, error: "Not found." });
+  const kind = body?.kind === "machine" ? "machine" : "lift";
+  const plan = kind === "machine" ? (cleanServicePlan(body?.plan) ?? DEFAULT_MACHINE_PLAN) : null;
+  await neonWrite("equip.setup",
+    `UPDATE scissor_lifts SET kind = $2,
+            service_plan = CASE WHEN $2 = 'machine' THEN $3::jsonb ELSE service_plan END
+      WHERE id = $1`, [lift.id, kind, plan ? JSON.stringify(plan) : null]);
+  return resp(200, { ok: true, kind, plan });
+}
+// Anyone but a viewer: read the hour meter off the machine.
+async function handleSetEquipmentHours(body) {
+  const lift = await resolveLift(body?.liftId);
+  if (!lift) return resp(404, { ok: false, error: "Not found." });
+  const h = Number(body?.hours);
+  if (body?.hours === "" || !Number.isFinite(h) || h < 0 || h > 100000) return resp(400, { ok: false, error: "Hours must be a number." });
+  await neonWrite("equip.hours",
+    `UPDATE scissor_lifts SET hour_meter = $2, hour_meter_on = current_date WHERE id = $1`, [lift.id, h]);
+  return resp(200, { ok: true });
+}
+// Anyone but a viewer: log a service (grease, oil change...). Raises the hour
+// meter when the reading on the service is higher than the one on file.
+async function handleLogEquipmentService(body, authUser) {
+  const lift = await resolveLift(body?.liftId);
+  if (!lift) return resp(404, { ok: false, error: "Not found." });
+  const date = /^d{4}-d{2}-d{2}$/.test(String(body?.date || "")) ? body.date : null;
+  if (!date) return resp(400, { ok: false, error: "Pick a date." });
+  const items = (Array.isArray(body?.items) ? body.items : []).map(x => String(x).trim().slice(0, 80)).filter(Boolean).slice(0, 30);
+  const notes = String(body?.notes || "").trim().slice(0, 1000);
+  if (!items.length && !notes) return resp(400, { ok: false, error: "Tick what was done (or write a note)." });
+  const h = body?.hours === "" || body?.hours == null ? null : Number(body.hours);
+  if (h != null && (!Number.isFinite(h) || h < 0 || h > 100000)) return resp(400, { ok: false, error: "Hours must be a number." });
+  const who = await actorName(authUser);
+  await neonWrite("equip.service.add",
+    `INSERT INTO equipment_service (lift_id, service_date, hours, items, notes, done_by)
+     VALUES ($1, $2::date, $3, $4::text[], NULLIF($5, ''), $6)`, [lift.id, date, h, items, notes, who]);
+  if (h != null) {
+    await neonWrite("equip.service.meter",
+      `UPDATE scissor_lifts SET hour_meter = $2, hour_meter_on = $3::date
+        WHERE id = $1 AND (hour_meter IS NULL OR hour_meter < $2)`, [lift.id, h, date]);
+  }
+  return resp(200, { ok: true });
+}
+async function handleDeleteEquipmentService(body) {
+  const id = String(body?.id || "");
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return resp(400, { ok: false, error: "id required." });
+  const rows = await neonWrite("equip.service.delete", `DELETE FROM equipment_service WHERE id = $1::uuid RETURNING id`, [id]);
+  return resp(200, { ok: true, deleted: rows.length });
+}
+
 async function handleCreateScissorLift(body, authUser) {
   const name = String(body?.name || "").trim();
   if (!name) return resp(400, { ok: false, error: "Missing lift name." });
@@ -9763,15 +9858,17 @@ async function handleCreateScissorLift(body, authUser) {
   // new lift's trail starts at the day it was added rather than at its first move.
   const rows = await neonWrite("lifts.insert",
     `WITH ins AS (
-       INSERT INTO scissor_lifts (name, status, current_job, assigned_to, notes)
-       VALUES ($1, $2, $3, $4, $5) RETURNING *)
+       INSERT INTO scissor_lifts (name, status, current_job, assigned_to, notes, kind, service_plan)
+       VALUES ($1, $2, $3, $4, $5, $7, $8::jsonb) RETURNING *)
      INSERT INTO scissor_lift_history
             (lift_id, changed_by, status, current_job, assigned_to, date_deployed, notes, hooks_left, box_left)
      SELECT ins.id, $6, ins.status, ins.current_job, ins.assigned_to, ins.date_deployed, ins.notes, ins.hooks_left, ins.box_left
        FROM ins
      RETURNING lift_id AS id`,
     [name, body?.status || "Available", body?.currentJob || null,
-     body?.assignedTo || null, body?.notes || null, await actorName(authUser)]);
+     body?.assignedTo || null, body?.notes || null, await actorName(authUser),
+     body?.kind === "machine" ? "machine" : "lift",
+     body?.kind === "machine" ? JSON.stringify(cleanServicePlan(body?.plan) || DEFAULT_MACHINE_PLAN) : null]);
   const liftId = rows?.[0]?.id;
 
   const fields = { "Lift Name": name, "Status": body?.status || "Available" };
@@ -17895,6 +17992,10 @@ export async function handler(event) {
       if (body.action === "updateScissorLift")    return await handleUpdateScissorLift(body, authUser);
       if (body.action === "createScissorLift")    return await handleCreateScissorLift(body, authUser);
       if (body.action === "deleteScissorLift")    return await handleDeleteScissorLift(body);
+      if (body.action === "setEquipmentSetup")    return await handleSetEquipmentSetup(body);
+      if (body.action === "setEquipmentHours")    return await handleSetEquipmentHours(body);
+      if (body.action === "logEquipmentService")  return await handleLogEquipmentService(body, authUser);
+      if (body.action === "deleteEquipmentService") return await handleDeleteEquipmentService(body);
       if (body.action === "liftPhotoUploadUrl")   return await handleLiftPhotoUploadUrl(body);
       if (body.action === "fleetPhotoUploadUrl")  return await handleFleetPhotoUploadUrl(body);
       if (body.action === "equipThumbUploadUrl")  return await handleEquipThumbUploadUrl(body);

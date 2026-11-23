@@ -6013,7 +6013,9 @@
     state.filtered = state.jobs.filter(j => {
       const hay = [j.name, j.po, j.address, j.status, j.type, j.contractor].join(" ").toLowerCase();
       const mq = !q || hay.includes(q);
-      const ms = !st || (j.status||"").toLowerCase() === st;
+      // Overhead jobs sit in their own group whatever their status says, so a
+      // status filter doesn't pull them in.
+      const ms = !st || (!j.overhead && (j.status||"").toLowerCase() === st);
       const mc = !cId || j.contractorId === cId;
       // A job with no year is only hidden when a specific year is selected —
       // "All Years" must never drop a record just because the field is blank.
@@ -6039,8 +6041,11 @@
       const idx = STATUS_ORDER.indexOf(n);
       return idx === -1 ? STATUS_ORDER.length : idx;
     };
+    // Overhead jobs (jobs.overhead, schema 038: Shop Work, Office Work) go last,
+    // in their own group — owner 2026-11-23: "it will never be invoiced".
+    const ordOf = j => j.overhead ? STATUS_ORDER.length + 1 : order(j.status);
     return [...jobs].sort((a,b) => {
-      const oa = order(a.status), ob = order(b.status);
+      const oa = ordOf(a), ob = ordOf(b);
       if (oa !== ob) return oa - ob;
       // Then by contractor A→Z (owner 2026-11-12), jobs with none last.
       const ga = (a.contractor || "").trim(), gb = (b.contractor || "").trim();
@@ -6068,7 +6073,8 @@
     sorted.forEach(job => {
       const st = (job.status||"").toLowerCase();
       let group = null;
-      if (st === "service call scheduled") group = "🔴 Service Call Scheduled";
+      if (job.overhead) group = "⚙ Overhead — not billed";
+      else if (st === "service call scheduled") group = "🔴 Service Call Scheduled";
       else if (st === "awarded") group = "🟢 Awarded";
       else if (st === "estimating") group = "🔵 Estimating";
       else if (st === "new lead") group = "⚪ New Lead";
@@ -6623,7 +6629,8 @@
       : `📅 Schedule — this week &amp; next`;
 
     // 5 ─ Ready to Invoice
-    const rti = (state.jobs || []).filter(j => j.status === "Ready to Invoice")
+    // Overhead (Shop Work, Office Work) is never invoiced — owner 2026-11-23.
+    const rti = (state.jobs || []).filter(j => j.status === "Ready to Invoice" && !j.overhead)
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
     const rtiHtml = rti.length ? rti.map(j => `<div class="hd-list-row" ${hdClick(j.id, j.name)}>
         <span><b>${esc(j.name)}</b> <span style="color:var(--muted); font-size:12px;">${esc(j.po || "")}${j.contractor ? " · " + esc(j.contractor) : ""}</span></span>
@@ -30791,7 +30798,8 @@
   // otherwise be filtered, so editing an existing entry never loses it.
   function schJobCandidates(selectedId) {
     const SKIP_STATUSES = new Set(["New Lead", "Not Awarded"]);
-    let list = (schJobs || []).filter(j => !SKIP_STATUSES.has(j.status));
+    // Overhead (Office Work, Shop Work) is always offered, whatever its status.
+    let list = (schJobs || []).filter(j => j.overhead || !SKIP_STATUSES.has(j.status));
     if (selectedId && !list.find(j => j.id === selectedId)) {
       const j = (schJobs || []).find(jj => jj.id === selectedId);
       if (j) list = [j, ...list];

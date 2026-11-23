@@ -1859,7 +1859,12 @@
     .ch-cal-e.hol { border: 1px dashed #aaa; font-style: italic; color: var(--muted); }
     .ch-board-empty { padding: 8px 14px !important; display: flex; gap: 8px; align-items: center; font-size: 13px; }
     .ch-board-empty b { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-    .ch-cal-more { font-size: 10px; color: var(--muted); }
+    .ch-cal-more { font-size: 10.5px; color: var(--accent); font-weight: 700; cursor: pointer; margin-top: 2px; }
+    .ch-cal-more:hover { text-decoration: underline; }
+    .ch-day-pop { position: fixed; inset: 0; background: rgba(0,0,0,0.35); z-index: 900; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .ch-day-pop-card { background: var(--panel); border-radius: var(--radius); padding: 12px 14px; width: 100%; max-width: 360px; max-height: 80vh; overflow-y: auto; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+    .ch-day-pop-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .ch-day-pop .ch-cal-e { font-size: 13px; padding: 3px 6px; margin-top: 4px; white-space: normal; }
     @media (max-width: 768px) {
       .ch-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .ch-cal { gap: 1px; }
@@ -6495,6 +6500,26 @@
     await chLoadMonth();
     renderCrewHome();
   };
+  // One day, every pill, in a small card over the calendar. Lives inside
+  // #homeDash so its job pills open the job like the calendar's do.
+  window.chShowDay = function (ymd) {
+    chCloseDay();
+    const lines = (_ch.dayLines || {})[ymd] || [];
+    const box = $("homeDash");
+    if (!box) return;
+    const d = new Date(ymd + "T00:00:00");
+    const el = document.createElement("div");
+    el.id = "chDayPop";
+    el.className = "ch-day-pop";
+    el.innerHTML = `<div class="ch-day-pop-card">
+        <div class="ch-day-pop-head"><b>${esc(d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }))}</b>
+          <button class="btn btn-sm" type="button" onclick="chCloseDay()">✕</button></div>
+        ${lines.join("") || `<div class="ch-none">Nothing scheduled.</div>`}
+      </div>`;
+    el.addEventListener("click", (e) => { if (e.target === el) chCloseDay(); });
+    box.appendChild(el);
+  };
+  window.chCloseDay = function () { const p = $("chDayPop"); if (p) p.remove(); };
   window.chToggleMine = function () { _ch.mine = !_ch.mine; renderCrewHome(); };
 
   function chCalHtml() {
@@ -6510,6 +6535,7 @@
     const phone = hdIsPhone();
     const MAX = phone ? 3 : (_ch.maxLines || 4);
     const rowStyle = !phone && _ch.rowH ? ` style="height:${_ch.rowH}px; min-height:0;"` : "";
+    _ch.dayLines = {};
     let html = `<div class="ch-cal">` +
       ["S", "M", "T", "W", "T", "F", "S"].map(d => `<div class="ch-cal-dow">${d}</div>`).join("");
     for (let d = new Date(start); d <= end; d = hdAddDays(d, 1)) {
@@ -6552,7 +6578,10 @@
       pills.map((p, i) => ({ p, i })).sort((x, y) => (rank(x.p) - rank(y.p)) || (x.i - y.i))
         .forEach(x => lines.push(x.p.html));
       const more = lines.length - MAX;
-      const shown = more > 0 ? lines.slice(0, MAX - 1).join("") + `<div class="ch-cal-more">+${more + 1} more</div>` : lines.join("");
+      // "+N more" opens the whole day (owner 2026-11-23: the crew couldn't see
+      // what the more was). Every day's full list is kept for chShowDay.
+      _ch.dayLines[ymd] = lines;
+      const shown = more > 0 ? lines.slice(0, MAX - 1).join("") + `<div class="ch-cal-more" onclick="event.stopPropagation(); chShowDay('${ymd}')">+${more + 1} more</div>` : lines.join("");
       html += `<div class="ch-cal-day${ymd === today ? " today" : ""}${wknd ? " wknd" : ""}${d.getMonth() !== month ? " other" : ""}"${rowStyle}>
           <div class="ch-cal-num">${d.getDate()}</div>${shown}</div>`;
     }

@@ -19246,6 +19246,34 @@
   // offered two people who had left. A lift still assigned to someone who is no
   // longer eligible keeps that name as a marked option, so saving the notes on
   // that card cannot silently clear who has it.
+  // Current Job choices (owner 2026-11-23): every job, not just Awarded — a lift
+  // can sit at a Completed job (Bethel School volunteer work) or at the shop
+  // job. Grouped so the active ones stay on top. Not Awarded / lost bids are
+  // left out unless they're overhead (Office Work) or the lift is already there.
+  function liftJobOptions(current) {
+    const groups = [
+      ["Awarded", j => /^(awarded|service call scheduled)$/i.test(j.status || "")],
+      ["Shop & office", j => !!j.overhead],
+      ["Ready to invoice", j => /^ready to invoice$/i.test(j.status || "")],
+      ["Completed", j => /^completed$/i.test(j.status || "")],
+      ["Estimating / leads", j => /^(estimating|new lead)$/i.test(j.status || "")],
+    ];
+    const used = new Set();
+    let html = "";
+    for (const [label, test] of groups) {
+      const list = (state.jobs || []).filter(j => j.name && !used.has(j.name) && test(j))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      if (!list.length) continue;
+      list.forEach(j => used.add(j.name));
+      html += `<optgroup label="${esc(label)}">` + list.map(j =>
+        `<option value="${esc(j.name)}" ${current === j.name ? "selected" : ""}>${esc(j.name)}</option>`).join("") + `</optgroup>`;
+    }
+    // Never drop what the lift already says, even if that job is filtered out.
+    if (current && !used.has(current)) html += `<option value="${esc(current)}" selected>${esc(current)}</option>`;
+    return html;
+  }
+  window.liftJobOptions = liftJobOptions;
+
   function liftAssigneeOptions(assignees, current) {
     const opts = assignees.map(n => `<option value="${esc(n)}" ${current===n?"selected":""}>${esc(n)}</option>`);
     if (current && !assignees.includes(current)) {
@@ -19777,11 +19805,7 @@
               <label>Current Job</label>
               <select data-lift-id="${esc(lift.id)}" class="sl-job-input">
                 <option value="">— None —</option>
-                ${state.jobs
-                  .filter(j => ["awarded","service call scheduled"].includes((j.status||"").toLowerCase()))
-                  .sort((a,b) => (a.name||"").localeCompare(b.name||""))
-                  .map(j => `<option value="${esc(j.name)}" ${lift.currentJob===j.name?"selected":""}>${esc(j.name)}</option>`)
-                  .join("")}
+                ${liftJobOptions(lift.currentJob)}
               </select>
             </div>
             <div class="sl-field">

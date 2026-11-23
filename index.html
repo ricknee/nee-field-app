@@ -44,6 +44,8 @@
       document.getElementById("appManifest").href = "/manifest-schedule.json";
     } else if (/^\/tsheets\/?$/.test(location.pathname)) {
       document.getElementById("appManifest").href = "/manifest-tsheets.json";
+      // The T-Sheets screen fills the whole window in this app (CSS below).
+      document.documentElement.classList.add("app-tsheets");
     }
   </script>
   <link rel="apple-touch-icon" href="/assets/NEE-Gray-Logo-400.png" />
@@ -2873,6 +2875,14 @@
          min-width:0 restores the obvious behaviour — the box obeys its width and
          the content wraps or scrolls inside it. */
       min-width: 0;
+    }
+    /* NEE T-Sheets app (/tsheets, owner 2026-11-23): T-Sheets is the whole
+       screen, not a card over the job list. !important beats the inline
+       max-width:560px on the modal and the phone rules further down. */
+    html.app-tsheets #myHoursModal { padding: 0 !important; background: var(--panel); }
+    html.app-tsheets #myHoursModal .payroll-modal {
+      width: 100% !important; max-width: none !important; border-radius: 0 !important; box-shadow: none;
+      min-height: 100vh; min-height: 100dvh; max-height: none !important;
     }
     .payroll-modal-header {
       padding: 16px 22px 12px; border-bottom: 1px solid var(--line);

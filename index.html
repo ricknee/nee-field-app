@@ -6566,8 +6566,13 @@
     else {
       const rem = Number(p.balance?.remaining_hours) || 0;
       const pend = Number(p.pendingHours) || 0;
-      ptoTile = `<div class="v">${ptoDays(rem)} days</div>
-        <div class="s">${rem.toFixed(1)} h${pend > 0 ? ` · ${ptoDaysLabel(pend)} waiting approval` : ""}</div>`;
+      // A negative balance reads as "3 days over", never "-3 days" (owner
+      // 2026-11-23: the minus sign looked like days left).
+      ptoTile = rem < 0
+        ? `<div class="v" style="color:var(--red);">${ptoDaysLabel(-rem)} over</div>
+           <div class="s">Used more than the ${ptoDaysLabel(Number(p.balance?.entitled_hours) || 0)} allowed</div>`
+        : `<div class="v">${ptoDaysLabel(rem)}</div>
+           <div class="s">${rem.toFixed(1)} h${pend > 0 ? ` · ${ptoDaysLabel(pend)} waiting approval` : ""}</div>`;
     }
     let pay = null;
     for (let i = 0; i < 15 && !pay; i++) { const d = hdAddDays(start, i); if (schIsPayweek(hdYMD(d))) pay = d; }
@@ -6593,7 +6598,7 @@
       <div class="hd-sub">Your hours, time off, the crew board and the schedule. Information only. Ask the office if something looks wrong.</div>
       <div class="ch-tiles">
         <div class="ch-tile"><div class="l">🕒 Hours this week</div>${hrsTile}</div>
-        <div class="ch-tile"><div class="l">🌴 PTO left</div>${ptoTile}</div>
+        <div class="ch-tile"><div class="l">🌴 PTO ${p && !p._err && p.tracked && Number(p.balance?.remaining_hours) < 0 ? "" : "left"}</div>${ptoTile}</div>
         <div class="ch-tile pay"><div class="l">💲 Next payweek</div>${payTile}</div>
       </div>
       ${boardCard}
@@ -18751,8 +18756,8 @@
             ${p.pto ? `
               <div>
                 <div style="color:var(--muted);">PTO left ${p.pto.year}</div>
-                <div style="font-weight:600;">${ptoDaysLabel(p.pto.remaining)}
-                  <span style="font-weight:400; color:var(--muted);">of ${ptoDays(p.pto.entitled)} · ${p.pto.remaining.toFixed(1)} h</span></div>
+                <div style="font-weight:600;${p.pto.remaining < 0 ? " color:var(--red);" : ""}">${p.pto.remaining < 0 ? `${ptoDaysLabel(-p.pto.remaining)} over` : ptoDaysLabel(p.pto.remaining)}
+                  <span style="font-weight:400; color:var(--muted);">of ${ptoDays(p.pto.entitled)} · ${p.pto.remaining < 0 ? `${(-p.pto.remaining).toFixed(1)} h over` : `${p.pto.remaining.toFixed(1)} h`}</span></div>
               </div>
               <div>
                 <div style="color:var(--muted);">PTO used</div>

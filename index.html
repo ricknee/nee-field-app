@@ -3325,11 +3325,12 @@
     }
     .sch-block.sch-holiday strong { font-style: italic; font-weight: 600; }
     .sch-block.sch-holiday .crew  { font-style: italic; opacity: 0.85; }
-    /* Payweek marker (every other Friday): purple, not a crew assignment. */
+    /* Payweek marker (every other Friday): hot pink, a colour no crew member
+       has (purple is Larry's). Not a crew assignment. */
     .sch-block.sch-payweek {
-      background: #7c3aed;
+      background: #db2777;
       color: #fff;
-      border: 1px solid #6d28d9;
+      border: 1px solid #be185d;
       font-weight: 700;
       cursor: default;
     }
@@ -30296,7 +30297,7 @@
            </div>`
         : "";
       const payweekBlock = schIsPayweek(ymd)
-        ? `<div class="sch-block sch-payweek" title="Payweek">💜 Payweek</div>`
+        ? `<div class="sch-block sch-payweek" title="Payweek">💲 Payweek</div>`
         : "";
       return `
         <div class="sch-day ${isToday ? "today" : ""} ${weekend ? "weekend" : ""} ${isWeekdayHoliday ? "sch-day-holiday" : ""} ${isOtherMonth ? "other-month" : ""}"

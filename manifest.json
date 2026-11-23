@@ -39,7 +39,7 @@
       "name": "Crew Schedule",
       "short_name": "Schedule",
       "description": "This month's crew schedule",
-      "url": "/?open=schedule"
+      "url": "/schedule"
     }
   ]
 }

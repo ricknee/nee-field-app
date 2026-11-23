@@ -6515,6 +6515,9 @@
         const s = e.startDate, en = e.endDate || e.startDate;
         if (!s || s > ymd || en < ymd) continue;
         const off = e.type === "Time Off";
+        // Time off never shows on a weekend (owner 2026-11-23): a week off
+        // reads Mon–Fri, not seven pills.
+        if (off && wknd) continue;
         const what = off ? "🏖 Off" : (e.jobName || e.title || e.type || "—");
         const click = !off && e.jobId ? hdClick(e.jobId, e.jobName) : "";
         const ids = e.crewIds || [];
@@ -6791,6 +6794,7 @@
         if (!e.startDate || !e.endDate || e.startDate > ymd || e.endDate < ymd) continue;
         const names = (e.crew || []).map(first).filter(Boolean).join(", ");
         if (e.type === "Time Off") {
+          if (dow === 0 || dow === 6) continue;   // time off skips weekends
           lines.push(`<div class="hd-cal-e off" title="Time off${e.notes ? " — " + esc(e.notes) : ""}">🏖 ${esc(names || "Time off")}</div>`);
         } else {
           lines.push(`<div class="hd-cal-e" ${e.jobId ? hdClick(e.jobId, e.jobName) : ""}
@@ -30530,6 +30534,8 @@
       // Find entries whose [start, end] range covers this day
       const todayEntries = schEntries.filter(e => {
         if (!e.startDate || !e.endDate) return false;
+        // Time off skips weekends (owner 2026-11-23); the entry still spans them.
+        if (weekend && e.type === "Time Off") return false;
         return e.startDate <= ymd && e.endDate >= ymd;
       });
       // Build pills: one per (employee, entry) pair. Show employee first

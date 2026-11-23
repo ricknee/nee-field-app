@@ -14227,7 +14227,7 @@ const SCHED_F = {
 //
 // Crew is a real many-to-many (schedule_entry_crew), not an array column. It is
 // the first slice to need that, and Step 4c's generator service history will too.
-async function handleGetScheduleEntriesFromNeon(params) {
+async function handleGetScheduleEntriesFromNeon(params, authUser) {
   const since = params?.since || "";
   const until = params?.until || "";
   const jobId = params?.jobId || "";
@@ -14345,10 +14345,28 @@ async function handleGetScheduleEntriesFromNeon(params) {
     }
   }
 
-  return { entries, completionDates, ms: q.ms };
+  // ✓ / ✗ on time-off pills (owner 2026-11-23): which person-days have PAID
+  // PTO hours (class PTO time entries). A schedule "Time Off" entry alone pays
+  // nothing, so a day with no PTO hours is unpaid. Admin + office see everyone's;
+  // anyone else only their own — a coworker's pay is not theirs to see.
+  let paidOff = [];
+  const seesAll = ["admin", "office"].includes(String(authUser?.role || ""));
+  if (!jobId && authUser) {
+    const pd = await neonQuery(
+      `SELECT DISTINCT COALESCE(e.airtable_id, e.id::text) AS emp_id, t.work_date::text AS d
+         FROM time_entries t JOIN employees e ON e.id = t.employee_id
+        WHERE t.class = 'PTO' AND t.hours > 0
+          AND ($1 = '' OR t.work_date >= $1::date)
+          AND ($2 = '' OR t.work_date <= $2::date)
+          AND ($3 OR COALESCE(e.airtable_id, e.id::text) = $4 OR e.id::text = $4)`,
+      [since, until, seesAll, String(authUser.id || "")]);
+    paidOff = (pd?.rows || []).map(r => `${r.emp_id}|${r.d}`);
+  }
+
+  return { entries, completionDates, paidOff, ms: q.ms };
 }
 
-async function handleGetScheduleEntries(params) {
+async function handleGetScheduleEntries(params, authUser) {
   // Optional date-range filter: ?since=YYYY-MM-DD & ?until=YYYY-MM-DD.
   // Filter is "any overlap" — an entry shows if its [start, end] range
   // overlaps the requested window. Job filter: ?jobId=recXXX.
@@ -14357,8 +14375,8 @@ async function handleGetScheduleEntries(params) {
   const jobId = params?.jobId || "";
 
   if (neonEnabled()) {
-    const r = await handleGetScheduleEntriesFromNeon(params);
-    if (r) return resp(200, { ok: true, entries: r.entries, completionDates: r.completionDates,
+    const r = await handleGetScheduleEntriesFromNeon(params, authUser);
+    if (r) return resp(200, { ok: true, entries: r.entries, completionDates: r.completionDates, paidOff: r.paidOff,
                               _source: "neon", _ms: r.ms });
     // ⚠ REFUSE, DO NOT FALL BACK (2026-08-25): Airtable has been frozen since 2026-08-25, so a fallback answers with yesterday's world.
     console.error("scheduleEntries: Neon read failed, refusing to serve frozen Airtable data");
@@ -17793,7 +17811,7 @@ export async function handler(event) {
       if (action === "estimateTemplatesAll") return await handleEstimateTemplatesAll();
       if (action === "sentEstimatePDFs")   return await handleSentEstimatePDFs(params);
       if (action === "allInvoices")        return await handleGetAllInvoices();
-      if (action === "scheduleEntries")    return await handleGetScheduleEntries(params);
+      if (action === "scheduleEntries")    return await handleGetScheduleEntries(params, authUser);
       if (action === "schedulingCrew")     return await handleListEmployeesForScheduling();
       if (action === "fleetVehicles")      return await handleFleetVehicles();
       if (action === "fleetTodos")         return await handleEquipTodos("fleet");

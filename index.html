@@ -1849,6 +1849,9 @@
     .ch-cal-num { font-size: 10.5px; font-weight: 700; color: var(--muted); }
     .ch-cal-day.today .ch-cal-num { color: var(--accent); }
     .ch-cal-e { font-size: 10.5px; line-height: 1.25; border-radius: 3px; padding: 0 4px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .off-badge { display: inline-block; font-weight: 800; margin-left: 4px; font-style: normal; }
+    .off-badge.paid { color: #16a34a; }
+    .off-badge.unpaid { color: #dc2626; }
     .ch-cal-e.mine { outline: 2px solid #111827; outline-offset: -1px; }
     .ch-cal-e[data-hd-id] { cursor: pointer; }
     .ch-cal-e[data-hd-id]:hover { filter: brightness(0.95); }
@@ -6476,7 +6479,7 @@
     _ch.calKey = key; _ch.cal = null;
     try {
       const d = await apiGet("scheduleEntries", { since: hdYMD(start), until: hdYMD(end) });
-      if (_ch.calKey === key) _ch.cal = { entries: d.entries || [] };
+      if (_ch.calKey === key) _ch.cal = { entries: d.entries || [], paid: new Set(d.paidOff || []) };
     } catch (e) {
       if (_ch.calKey === key) _ch.cal = { _err: e.message || "unknown error" };
     }
@@ -6510,7 +6513,7 @@
       const lines = [];
       if (schIsPayweek(ymd)) lines.push(`<div class="ch-cal-e pay" title="Payweek">💲 Payweek</div>`);
       const hol = schGetHolidayName(ymd);
-      if (hol && !wknd) lines.push(`<div class="ch-cal-e hol" title="${esc(hol)}">${esc(hol)}</div>`);
+      if (hol && !wknd) lines.push(`<div class="ch-cal-e hol" title="${esc(hol)} — paid holiday for everyone">${esc(hol)} <span class="off-badge paid">✓</span></div>`);
       // One pill per (person, entry) in that person's colour, the same as the
       // admin Crew Schedule (schPillColors / EMP_COLORS), one person's pills
       // kept together.
@@ -6536,7 +6539,7 @@
           const c = schPillColors(name);
           pills.push({ who: String(cid), html: `<div class="ch-cal-e${String(cid) === me ? " mine" : ""}" ${click}
               style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
-              title="${esc(name + " — " + what + (e.notes ? " — " + e.notes : ""))}"><b>${esc(first(name))}</b> ${esc(what)}</div>` });
+              title="${esc(name + " — " + what + (e.notes ? " — " + e.notes : ""))}"><b>${esc(first(name))}</b> ${esc(what)}${off ? schOffBadge(cid, ymd, _ch.cal.paid) : ""}</div>` });
         });
       }
       const firstAt = new Map();
@@ -26143,6 +26146,19 @@
   // ═══════════════════════════════════════════════════════════════════════
   // Module state
   let schEntries        = [];     // entries from backend
+  // "empId|YYYY-MM-DD" for days with PAID PTO hours → ✓ on a time-off pill,
+  // otherwise ✗ (unpaid). Server limits non-admins to their own days.
+  let schPaidOff = new Set();
+  // The ✓/✗ badge for one person's time-off pill. Crew only see it on their own.
+  function schOffBadge(cid, ymd, paidSet) {
+    const me = String(state.user?.id || "");
+    if (!isAdmin() && String(cid) !== me) return "";
+    // A company holiday is paid for everyone (Paid Holiday hours, not PTO).
+    return (paidSet.has(`${cid}|${ymd}`) || schGetHolidayName(ymd))
+      ? `<span class="off-badge paid" title="Paid (PTO hours recorded)">✓</span>`
+      : `<span class="off-badge unpaid" title="Unpaid (no PTO hours for this day)">✗</span>`;
+  }
+  window.schOffBadge = schOffBadge;
   let schCompletionDates = [];    // target job completion dates ({jobId,jobName,contractor,date})
   let schCrew           = [];     // active employees, role-filtered (for crew picker)
   let schJobs           = [];     // jobs for the dropdown
@@ -30441,6 +30457,7 @@
       if (!crewRes?.ok)    throw new Error(crewRes?.error    || "Failed to load crew");
       schEntries = entriesRes.entries || [];
       schCompletionDates = entriesRes.completionDates || [];
+      schPaidOff = new Set(entriesRes.paidOff || []);
       // Filter crew: only employee or admin roles. Office + viewer get
       // hidden from the picker. If `role` is missing for some reason
       // (older records, backend hiccup), fall back to including the
@@ -30572,6 +30589,7 @@
           const c = schPillColors(empName);
           const first = (empName || "").split(" ")[0];
           const subtitle = isTimeOff ? "🏖 Off" : (e.jobName || "—");
+          const badge = isTimeOff ? schOffBadge(cid, ymd, schPaidOff) : "";
           const tooltip  = isTimeOff
             ? `${empName} — Time Off${e.notes ? " — " + e.notes : ""}`
             : `${empName} — ${e.jobName}${e.notes ? " — " + e.notes : ""}`;
@@ -30581,7 +30599,7 @@
                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                        title="${esc(tooltip)}">
                     <strong>${esc(first)}</strong>
-                    <span class="crew">${esc(subtitle)}</span>
+                    <span class="crew">${esc(subtitle)}${badge}</span>
                   </div>` };
         });
       });
@@ -30614,7 +30632,7 @@
       const holidayBlock = isWeekdayHoliday
         ? `<div class="sch-block sch-holiday" title="Paid holiday — ${esc(holidayName)}">
              <strong>${esc(holidayName)}</strong>
-             <span class="crew">PTO</span>
+             <span class="crew">Paid holiday <span class="off-badge paid">✓</span></span>
            </div>`
         : "";
       const payweekBlock = schIsPayweek(ymd)

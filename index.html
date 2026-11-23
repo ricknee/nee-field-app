@@ -1824,6 +1824,31 @@
 
     .no-selection .icon { font-size: 48px; opacity: 0.3; }
 
+    /* ── CREW HOME (employees, no job selected): read-only info ── */
+    .no-selection.has-crew-home { display: block; height: auto; color: var(--text); font-size: 14px; }
+    .no-selection.has-crew-home > .icon,
+    .no-selection.has-crew-home > div:not(.crew-home) { display: none; }
+    .crew-home { padding: 18px 22px; max-width: 760px; }
+    .crew-home h2 { font-size: 18px; margin: 0 0 2px; }
+    .crew-home .ch-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
+    .ch-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
+    .ch-card h3 { font-size: 14px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .ch-day { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); }
+    .ch-day:first-of-type { border-top: none; }
+    .ch-day.today { background: rgba(37, 99, 235, 0.06); border-radius: 6px; padding-left: 6px; }
+    .ch-date { font-weight: 700; font-size: 13px; }
+    .ch-date small { display: block; color: var(--muted); font-weight: 500; font-size: 11.5px; }
+    .ch-e { font-size: 13.5px; line-height: 1.3; margin-bottom: 3px; }
+    .ch-e[data-hd-id] { cursor: pointer; }
+    .ch-e[data-hd-id]:hover b { color: var(--accent); text-decoration: underline; }
+    .ch-e small { color: var(--muted); }
+    .ch-e .ch-note { display: block; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+    .ch-none { color: var(--muted); font-size: 13px; }
+    .ch-tag { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 10px; padding: 1px 7px; margin-right: 4px; }
+    .ch-tag.pay { background: #db2777; color: #fff; }
+    .ch-tag.hol { background: rgba(0,0,0,0.06); color: var(--muted); font-style: italic; }
+    .ch-tag.off { background: #fef3c7; color: #92400e; }
+
     /* ── DESKTOP HOME DASHBOARD (no job selected; admin + office) ── */
     .home-dash { padding: 16px 20px 16px; max-width: 1500px; }
     .home-dash h2 { font-size: 18px; margin: 0 0 2px; color: var(--text); }
@@ -4111,6 +4136,9 @@
       <div class="no-selection" id="noSelection">
         <div class="icon">📋</div>
         <div>Select a job to view details</div>
+        <!-- Crew home (employees, desktop): their own schedule, read-only.
+             Lives INSIDE #noSelection so opening a job hides it for free. -->
+        <div id="crewHome" class="crew-home hidden"></div>
       </div>
       <!-- Desktop home dashboard (admin + office). Fills the empty detail pane
            when no job is open. Phones never see it — the whole detail panel is
@@ -6350,8 +6378,10 @@
       // Crew (or a narrow window) get the plain placeholder back — it may have
       // been hidden by an admin session earlier in this tab.
       if (!state.selected) $("noSelection").classList.remove("hidden");
+      loadCrewHome(force);
       return;
     }
+    loadCrewHome(force);   // admin: hides it
     $("noSelection").classList.add("hidden");
     box.classList.remove("hidden");
     // Re-read at most every 5 minutes unless forced; render the cache meanwhile.
@@ -6378,6 +6408,101 @@
     return _hdBusy;
   }
   window.loadHomeDash = loadHomeDash;
+
+  // ── 👷 CREW HOME (owner 2026-11-23) ──────────────────────────────────────
+  // The empty "Select a job" pane on an EMPLOYEE's computer shows their own
+  // next two weeks from the Crew Schedule, plus the next payday. Information
+  // only: nothing here edits anything. A job line opens the job, same as the
+  // list. Phones never show the detail pane with no job, so this is desktop.
+  let _chCache = null, _chAt = 0, _chFor = "";
+  async function loadCrewHome(force) {
+    const box = $("crewHome"), ns = $("noSelection");
+    if (!box || !ns) return;
+    const wanted = !!state.user && !isAdmin() && !state.selected &&
+      window.matchMedia("(min-width: 769px)").matches;
+    if (!wanted) {
+      box.classList.add("hidden");
+      ns.classList.remove("has-crew-home");
+      return;
+    }
+    box.classList.remove("hidden");
+    ns.classList.add("has-crew-home");
+    const me = String(state.user.id || "");
+    if (_chCache && _chFor === me && !force && Date.now() - _chAt < 5 * 60 * 1000) { renderCrewHome(); return; }
+    if (!_chCache || _chFor !== me) box.innerHTML = `<div class="ch-none" style="padding:30px;">Loading your schedule…</div>`;
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    try {
+      const d = await apiGet("scheduleEntries", { since: hdYMD(start), until: hdYMD(hdAddDays(start, 13)) });
+      _chCache = { entries: d.entries || [] };
+    } catch (e) {
+      _chCache = { _err: e.message || "unknown error" };
+    }
+    _chAt = Date.now(); _chFor = me;
+    renderCrewHome();
+  }
+  window.loadCrewHome = loadCrewHome;
+
+  function renderCrewHome() {
+    const box = $("crewHome");
+    if (!box || box.classList.contains("hidden") || !_chCache) return;
+    const me = String(state.user?.id || "");
+    const first = String(state.user?.name || "").split(" ")[0];
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const today = hdYMD(start);
+    const fmtDay = (d) => d.toLocaleDateString(undefined, { weekday: "short" });
+    const fmtDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+    // Next payday: the first payweek Friday from today on.
+    let pay = null;
+    for (let i = 0; i < 15 && !pay; i++) { const d = hdAddDays(start, i); if (schIsPayweek(hdYMD(d))) pay = d; }
+    const payTxt = pay ? (hdYMD(pay) === today ? "today" : `${pay.toLocaleDateString(undefined, { weekday: "long" })}, ${fmtDate(pay)}`) : "";
+
+    let body;
+    if (_chCache._err) {
+      body = `<div class="ch-none" style="color:var(--red);">Couldn't load the schedule: ${esc(_chCache._err)}</div>`;
+    } else {
+      const mine = (_chCache.entries || []).filter(en => (en.crewIds || []).map(String).includes(me) && en.startDate);
+      const rows = [];
+      for (let i = 0; i < 14; i++) {
+        const d = hdAddDays(start, i), ymd = hdYMD(d), dow = d.getDay();
+        const todays = mine.filter(en => en.startDate <= ymd && (en.endDate || en.startDate) >= ymd);
+        const hol = schGetHolidayName(ymd);
+        const payday = schIsPayweek(ymd);
+        // Weekends only when something is on them.
+        if ((dow === 0 || dow === 6) && !todays.length) continue;
+        const tags = (payday ? `<span class="ch-tag pay">💲 Payweek</span>` : "") +
+                     (hol && dow !== 0 && dow !== 6 ? `<span class="ch-tag hol">${esc(hol)}</span>` : "");
+        const lines = todays.map(en => {
+          const isJob = !!en.jobId && en.type !== "Time Off";
+          const name = isJob ? (en.jobName || en.title || "Job") : (en.title || en.type || "Time off");
+          const others = (en.crew || []).filter((n, k) => String((en.crewIds || [])[k]) !== me);
+          return `<div class="ch-e" ${isJob ? hdClick(en.jobId, en.jobName) : ""}>
+              ${en.type === "Time Off" ? `<span class="ch-tag off">🌴 Time off</span>` : ""}<b>${esc(name)}</b>
+              ${isJob && en.contractor ? `<small> · ${esc(en.contractor)}</small>` : ""}
+              ${others.length ? `<small> · with ${esc(others.join(", "))}</small>` : ""}
+              ${en.notes ? `<span class="ch-note">${esc(en.notes)}</span>` : ""}
+            </div>`;
+        }).join("");
+        rows.push(`<div class="ch-day${ymd === today ? " today" : ""}">
+            <div class="ch-date">${ymd === today ? "Today" : fmtDay(d)}<small>${fmtDate(d)}</small></div>
+            <div>${tags ? `<div style="margin-bottom:3px;">${tags}</div>` : ""}${lines || (hol && dow !== 0 && dow !== 6 ? "" : `<span class="ch-none">Nothing scheduled</span>`)}</div>
+          </div>`);
+      }
+      body = rows.join("");
+    }
+
+    box.innerHTML = `
+      <h2>Hi ${esc(first || "there")}</h2>
+      <div class="ch-sub">Your next two weeks from the Crew Schedule. Ask the office if something looks wrong.</div>
+      ${payTxt ? `<div class="ch-card" style="display:flex; align-items:center; gap:10px;">
+          <span class="ch-tag pay" style="font-size:13px;">💲 Payweek</span>
+          <span>Next payweek Friday: <b>${esc(payTxt)}</b></span></div>` : ""}
+      <div class="ch-card">
+        <h3><span>📅 My schedule</span>
+          <button class="btn btn-sm" type="button" onclick="openMySchedule()">Whole crew calendar</button></h3>
+        ${body}
+      </div>`;
+  }
 
   // 📊 Overview (beside the year filter).
   //  Computer: closes the open job (popping its back entry, the same as closing
@@ -6435,7 +6560,7 @@
   // One delegated listener, reading data attributes — NOT inline onclick with
   // the name in a JS string: "Neal's Shop" would end the string early.
   document.addEventListener("click", (e) => {
-    const row = e.target.closest && e.target.closest("#homeDash [data-hd-id], #homeDash [data-hd-name]");
+    const row = e.target.closest && e.target.closest("#homeDash [data-hd-id], #homeDash [data-hd-name], #crewHome [data-hd-id]");
     if (!row) return;
     const job = hdFindJob(row.dataset.hdId, row.dataset.hdName);
     if (!job) return;

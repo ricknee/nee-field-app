@@ -4052,7 +4052,11 @@
           <!-- These retain their original IDs and role classes so existing
                authorization visibility and event wiring continue to apply. -->
           <button id="btnMyHours" class="btn btn-sm payroll-eligible-only hidden" type="button">⏱ T-Sheets</button>
-          <button id="btnScissorLifts" class="btn btn-sm admin-only hidden" type="button"><span class="ico-lift" aria-hidden="true"></span> Lifts</button>
+          <!-- Lifts open to the crew (owner 2026-11-23), like Fleet: they move a
+               lift on/off a job, set who has it, add a fix-it item. Adding a lift,
+               Retire and removing photos stay admin + office — the screen hides
+               them (isAdmin) and the backend refuses them (_ADMIN_OFFICE_POSTS). -->
+          <button id="btnScissorLifts" class="btn btn-sm writer-only" type="button"><span class="ico-lift" aria-hidden="true"></span> Lifts</button>
           <button id="btnFleet" class="btn btn-sm" type="button">🛻 Fleet</button>
           <!-- 📇 Contacts (owner 2026-11-15): admin + office only — the read
                (contactsDirectory) and the save are both _ADMIN_OFFICE. -->

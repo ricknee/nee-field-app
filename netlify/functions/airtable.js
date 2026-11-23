@@ -2445,6 +2445,25 @@ async function handleAdminAddPto(body, authUser) {
       error: "Those dates are all weekend or company holidays — no PTO needed." });
   }
 
+  // From the Crew Schedule's red $ (owner 2026-11-23): "if they don't have any
+  // PTO left then of course it could not be paid time". Only checked when the
+  // caller asks — Book time off on People can still go over on purpose.
+  if (body?.requireBalance === true) {
+    const need = Number(info.rows[0].total_hours) || 0;
+    const bal = await neonQuery(
+      `SELECT remaining_hours::float8 AS left FROM v_pto_balances
+        WHERE employee_id = $1 AND year = EXTRACT(year FROM $2::date)::int`, [emp.id, from]);
+    if (bal?.error) { await cleanup(); return resp(503, { ok: false, error: "Database unavailable." }); }
+    const left = bal?.rows?.[0] ? Number(bal.rows[0].left) : null;
+    if (left == null || left < need) {
+      await cleanup();
+      return resp(409, { ok: false, noBalance: true, left,
+        error: left == null
+          ? `${emp.name} has no PTO set up for that year, so this day can't be paid as PTO.`
+          : `${emp.name} has ${Math.max(0, left)} h of PTO left, not enough for ${need} h. This day stays unpaid.` });
+    }
+  }
+
   const clashes = await ptoConflicts(id);
   if (clashes.length && body?.force !== true) {
     await cleanup();

@@ -1852,6 +1852,8 @@
     .off-badge { display: inline-block; font-weight: 800; margin-left: 4px; font-style: normal; }
     .off-badge.paid { color: #16a34a; }
     .off-badge.unpaid { color: #dc2626; }
+    .off-badge.pay-click { cursor: pointer; border-radius: 4px; padding: 0 3px; }
+    .off-badge.pay-click:hover { background: #fee2e2; outline: 1px solid #dc2626; }
     .ch-cal-e.mine { outline: 2px solid #111827; outline-offset: -1px; }
     .ch-cal-e[data-hd-id] { cursor: pointer; }
     .ch-cal-e[data-hd-id]:hover { filter: brightness(0.95); }
@@ -6543,11 +6545,11 @@
       const lines = [];
       if (schIsPayweek(ymd)) lines.push(`<div class="ch-cal-e pay" title="Payweek">💲 Payweek</div>`);
       const hol = schGetHolidayName(ymd);
-      if (hol && !wknd) lines.push(`<div class="ch-cal-e hol" title="${esc(hol)} — paid holiday for everyone">${esc(hol)} <span class="off-badge paid">✓</span></div>`);
+      if (hol && !wknd) lines.push(`<div class="ch-cal-e hol" title="${esc(hol)} — paid holiday for everyone">${esc(hol)} <span class="off-badge paid">$</span></div>`);
       // One pill per (person, entry) in that person's colour, the same as the
       // admin Crew Schedule (schPillColors / EMP_COLORS), one person's pills
       // kept together.
-      const pills = [];
+      const pills = [], offSeen = new Set();
       for (const e of _ch.cal.entries) {
         const s = e.startDate, en = e.endDate || e.startDate;
         if (!s || s > ymd || en < ymd) continue;
@@ -6565,6 +6567,7 @@
         }
         ids.forEach((cid, k) => {
           if (_ch.mine && String(cid) !== me) return;
+          if (off) { if (offSeen.has(String(cid))) return; offSeen.add(String(cid)); }
           const name = (e.crew || [])[k] || "";
           const c = schPillColors(name);
           pills.push({ who: String(cid), html: `<div class="ch-cal-e${String(cid) === me ? " mine" : ""}" ${click}
@@ -26223,10 +26226,33 @@
     const me = String(state.user?.id || "");
     if (!isAdmin() && String(cid) !== me) return "";
     // A company holiday is paid for everyone (Paid Holiday hours, not PTO).
-    return (paidSet.has(`${cid}|${ymd}`) || schGetHolidayName(ymd))
-      ? `<span class="off-badge paid" title="Paid (PTO hours recorded)">✓</span>`
-      : `<span class="off-badge unpaid" title="Unpaid (no PTO hours for this day)">✗</span>`;
+    if (paidSet.has(`${cid}|${ymd}`) || schGetHolidayName(ymd))
+      return `<span class="off-badge paid" title="Paid — PTO or holiday hours recorded">$</span>`;
+    // Strict admin on the Crew Schedule: the red $ pays the day as PTO, out of
+    // the person's balance (refused when they have none left).
+    const canPay = isStrictAdminRole() && paidSet === schPaidOff && !schReadOnly;
+    return canPay
+      ? `<span class="off-badge unpaid pay-click" role="button" title="Unpaid — click to pay this day as PTO"
+           onclick="event.stopPropagation(); schPayAsPto('${esc(String(cid))}', '${ymd}')">$</span>`
+      : `<span class="off-badge unpaid" title="Unpaid — no PTO hours for this day">$</span>`;
   }
+  // Red $ → book 8 h PTO for that person on that day (adminAddPto with
+  // requireBalance). No PTO left = the server refuses and it stays unpaid.
+  window.schPayAsPto = async function (cid, ymd) {
+    const person = (schCrew.find(c => String(c.id) === String(cid))?.name) || "this person";
+    const day = new Date(ymd + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    if (!confirm(`Pay ${person}'s day off on ${day} as PTO?
+
+8 h comes out of their PTO balance. If they have none left it stays unpaid.`)) return;
+    try {
+      await apiPost("adminAddPto", { employeeId: cid, startDate: ymd, endDate: ymd, hoursPerDay: 8, requireBalance: true,
+                                     note: "Paid from the Crew Schedule" });
+      showAppToast(`${person}: ${day} paid as PTO`);
+      if (typeof loadScheduleData === "function") await loadScheduleData();
+    } catch (e) {
+      alert(e.message || String(e));
+    }
+  };
   window.schOffBadge = schOffBadge;
   let schCompletionDates = [];    // target job completion dates ({jobId,jobName,contractor,date})
   let schCrew           = [];     // active employees, role-filtered (for crew picker)
@@ -30664,7 +30690,7 @@
             : `${empName} — ${e.jobName}${e.notes ? " — " + e.notes : ""}`;
           // Approved time off (e.pto) comes from 🌴 Time Off and is changed
           // there, so it is never draggable here.
-          return { who: cid, html: `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${e.pto ? "" : dragAttr} data-entry-id="${esc(e.id)}" data-emp-id="${esc(cid)}" data-source-ymd="${esc(ymd)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+          return { who: cid, off: isTimeOff, html: `<div class="sch-block ${isPast ? "past" : ""}${isTimeOff ? " timeoff" : ""}"${e.pto ? "" : dragAttr} data-entry-id="${esc(e.id)}" data-emp-id="${esc(cid)}" data-source-ymd="${esc(ymd)}" style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
                        onclick="event.stopPropagation(); schEditEntry('${esc(e.id)}')"
                        title="${esc(tooltip)}">
                     <strong>${esc(first)}</strong>
@@ -30675,6 +30701,14 @@
       // One person's entries sit together (owner 2026-11-23: Rick on two jobs
       // showed split by whoever was added in between). People keep the order
       // they first appear in; pills with no crew go last.
+      // One "Off" pill per person per day: a day paid from the red $ adds an
+      // approved-PTO entry on top of the schedule's own Time Off entry.
+      const offSeen = new Set();
+      for (let i = blockItems.length - 1; i >= 0; i--) {
+        const it = blockItems[i];
+        if (!it.off || !it.who) continue;
+        if (offSeen.has(it.who)) blockItems.splice(i, 1); else offSeen.add(it.who);
+      }
       const firstAt = new Map();
       blockItems.forEach((it, i) => { if (it.who && !firstAt.has(it.who)) firstAt.set(it.who, i); });
       const rank = it => it.who ? firstAt.get(it.who) : Infinity;
@@ -30701,7 +30735,7 @@
       const holidayBlock = isWeekdayHoliday
         ? `<div class="sch-block sch-holiday" title="Paid holiday — ${esc(holidayName)}">
              <strong>${esc(holidayName)}</strong>
-             <span class="crew">Paid holiday <span class="off-badge paid">✓</span></span>
+             <span class="crew">Paid holiday <span class="off-badge paid">$</span></span>
            </div>`
         : "";
       const payweekBlock = schIsPayweek(ymd)

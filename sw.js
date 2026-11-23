@@ -4,7 +4,7 @@
 // Bumped when the shell list changes, so the activate handler drops the old
 // cache. Without a bump, a phone that already installed v1 keeps serving the old
 // shell list and never picks up the manifest or the icon.
-const CACHE_NAME = 'nee-app-v4';   // v4: offline fallback serves the right app (inventory)
+const CACHE_NAME = 'nee-app-v5';   // v5: manifests network-first (Schedule shortcut never reached phones)
 
 // A weak cellular connection is often worse than being fully offline: fetch()
 // stays pending for a long time, so its rejection handler never gets a chance to
@@ -113,7 +113,11 @@ self.addEventListener('fetch', event => {
   // /shared/ is CODE both apps load (shared/order-pdf.js), not a picture.
   // Cache-first would pin a phone to the first version it ever saw, so it is
   // network-first, falling back to the cached copy only when offline.
-  if (url.pathname.startsWith('/shared/')) {
+  // The manifests are network-first too (2026-11-23). Cache-first pinned every
+  // phone to the manifest it first saw, so a new home-screen shortcut (Schedule)
+  // never showed up — not even after uninstalling and reinstalling the app,
+  // because uninstalling doesn't clear this cache. Offline still gets the copy.
+  if (url.pathname.startsWith('/shared/') || /^\/manifest[^/]*\.json$/.test(url.pathname)) {
     event.respondWith(
       fetch(event.request).then(response => {
         if (response && response.ok) {

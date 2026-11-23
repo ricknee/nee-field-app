@@ -3571,8 +3571,26 @@
     .sch-free { font-size: 12px; color: var(--muted); margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
     .sch-free strong { color: var(--green, #16a34a); }
 
+    .sch-phone-toggle { display: none; }
     @media (max-width: 768px) {
-      .sch-grid { grid-template-columns: 1fr; gap: 4px; }
+      .sch-phone-toggle { display: inline-block; }
+      /* Phone MONTH view: 7 narrow columns, tiny pills; tap a day for detail. */
+      #scheduleModal.sch-phone-month .sch-mobile-only { display: none; }
+      #scheduleModal.sch-phone-month .sch-month-nav { display: inline-block; }
+      #scheduleModal.sch-phone-month .payroll-modal-body { padding-left: 4px; padding-right: 4px; }
+      #scheduleModal.sch-phone-month .sch-grid { grid-template-columns: repeat(7, minmax(0, 1fr)) !important; gap: 2px; }
+      #scheduleModal.sch-phone-month .sch-day { min-height: 70px; flex-direction: column !important; align-items: stretch;
+        gap: 2px; padding: 2px; border-radius: 4px; overflow: hidden; }
+      #scheduleModal.sch-phone-month .sch-day-header { flex-direction: row; min-width: 0 !important; gap: 0; justify-content: space-between; }
+      #scheduleModal.sch-phone-month .sch-day-name { font-size: 7px; letter-spacing: 0; }
+      #scheduleModal.sch-phone-month .sch-day-num { font-size: 11px; }
+      #scheduleModal.sch-phone-month .sch-day-blocks { gap: 1px; }
+      #scheduleModal.sch-phone-month .sch-block { padding: 1px 2px; border-radius: 3px; overflow: hidden; }
+      #scheduleModal.sch-phone-month .sch-block strong { font-size: 8.5px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #scheduleModal.sch-phone-month .sch-block .crew { font-size: 7px; line-height: 1.1; }
+    }
+    @media (max-width: 768px) {
+      #scheduleModal:not(.sch-phone-month) .sch-grid { grid-template-columns: 1fr; gap: 4px; }
       .sch-day { min-height: 60px; flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px; }
       .sch-day-header { flex-direction: row; min-width: 70px; gap: 6px; }
       .sch-day-blocks { flex: 1; }
@@ -25820,6 +25838,20 @@
     return Math.round((satEnd - sunStart) / 86400000) + 1;
   }
 
+  // Phone layout (owner 2026-11-23): the whole month as a small 7-across
+  // calendar by default; "☰ List" flips to the old 2-week list, remembered on
+  // this phone. Desktop is always the month.
+  let schPhoneList = false;
+  try { schPhoneList = localStorage.getItem("nee_sch_phone_list") === "1"; } catch {}
+  function schMonthMode() {
+    return !window.matchMedia("(max-width: 768px)").matches || !schPhoneList;
+  }
+  window.schTogglePhoneView = function () {
+    schPhoneList = !schPhoneList;
+    try { localStorage.setItem("nee_sch_phone_list", schPhoneList ? "1" : "0"); } catch {}
+    schGoToday();
+  };
+
   function schDoOpen(headerText) {
     $("scheduleModal").style.display = "flex";
     pushBackEntry("schedule", () => { $("scheduleModal").style.display = "none"; });
@@ -25833,7 +25865,7 @@
     // collapses the grid to one day per row, so a 14-day list anchored
     // at today is more useful than a 5-week month view. Always re-set
     // schDayCount on each open in case a prior session toggled it.
-    if (window.matchMedia("(max-width: 768px)").matches) {
+    if (!schMonthMode()) {
       schRangeStart = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
       schDayCount   = 14;
     } else {
@@ -30092,7 +30124,13 @@
     // month" is whatever month covers the bulk of the grid, computed
     // from (schRangeStart + 6 days) — the first Sun–Sat row always
     // contains the 1st of the focal month.
-    const isDesktop = window.matchMedia("(min-width: 769px)").matches;
+    // "isDesktop" here means MONTH LAYOUT — a phone shows it too unless the
+    // person flipped to the 2-week list (owner 2026-11-23).
+    const isDesktop = schMonthMode();
+    const _schPhone = window.matchMedia("(max-width: 768px)").matches;
+    $("scheduleModal")?.classList.toggle("sch-phone-month", _schPhone && isDesktop);
+    const _tg = $("schPhoneToggle");
+    if (_tg) _tg.textContent = isDesktop ? "☰ List" : "📅 Month";
     let displayedMonth = null;
     if (isDesktop) {
       const ref = new Date(schRangeStart);
@@ -30652,7 +30690,7 @@
     loadScheduleData();
   };
   window.schGoToday = function() {
-    if (window.matchMedia("(max-width: 768px)").matches) {
+    if (!schMonthMode()) {
       schRangeStart = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
       schDayCount   = 14;
     } else {
@@ -36407,11 +36445,12 @@
     <div class="payroll-modal-body">
       <div class="sch-toolbar">
         <button class="sch-nav-btn sch-mobile-only" onclick="schShiftRange(-14)">← Prev 2 wks</button>
-        <button class="sch-nav-btn sch-desktop-only" onclick="schShiftMonth(-1)">← Prev month</button>
+        <button class="sch-nav-btn sch-desktop-only sch-month-nav" onclick="schShiftMonth(-1)">← Prev month</button>
         <button class="sch-nav-btn" onclick="schGoToday()">Today</button>
         <span class="sch-range-label" id="schRangeLabel">—</span>
         <button class="sch-nav-btn sch-mobile-only" onclick="schShiftRange(14)">Next 2 wks →</button>
-        <button class="sch-nav-btn sch-desktop-only" onclick="schShiftMonth(1)">Next month →</button>
+        <button class="sch-nav-btn sch-desktop-only sch-month-nav" onclick="schShiftMonth(1)">Next month →</button>
+        <button class="sch-nav-btn sch-phone-toggle" id="schPhoneToggle" onclick="schTogglePhoneView()">☰ List</button>
         <button class="sch-nav-btn sch-desktop-only" onclick="schPrintMonth()" title="Print this month">🖨 Print</button>
         <button class="sch-nav-btn sch-desktop-only" onclick="schSavePdf(this)" title="Save this month as a landscape PDF file, to send or open on a phone">💾 PDF</button>
         <button class="sch-add-btn" onclick="schOpenNew()" id="schAddBtn">+ New Entry</button>

@@ -19853,6 +19853,18 @@
       $("slGrid").querySelectorAll(".sl-history-btn").forEach(b =>
         b.addEventListener("click", () => toggleLiftHistory(b)));
 
+      // Picking a job means the lift is ON that job (owner 2026-11-23: #10 set to
+      // Bethel School still read "At shop", because Status stayed Available and
+      // the row goes by status). Clearing the job puts it back at the shop.
+      $("slGrid").querySelectorAll(".sl-job-input").forEach(sel => {
+        sel.addEventListener("change", () => {
+          const st = sel.closest(".sl-card")?.querySelector(".sl-status-sel");
+          if (!st) return;
+          if (sel.value && st.value !== "Needs Service") st.value = "On Job";
+          else if (!sel.value && st.value === "On Job") st.value = "Available";
+        });
+      });
+
       // Wire save buttons
       $("slGrid").querySelectorAll(".sl-save-btn").forEach(btn => {
         btn.addEventListener("click", async () => {

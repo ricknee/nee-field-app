@@ -3736,6 +3736,22 @@
       #scheduleModal.sch-phone-month .sch-block strong { font-size: 8.5px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       #scheduleModal.sch-phone-month .sch-block .crew { font-size: 7px; line-height: 1.1; }
     }
+    /* 🔍 Phone month view: tap a day to see it full size (owner 2026-11-23). */
+    .sch-zoom { position: fixed; inset: 0; z-index: 10050; background: rgba(15,23,42,0.45);
+      display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .sch-zoom-card { background: var(--card, #fff); border-radius: 14px; width: 100%; max-width: 420px;
+      max-height: 85vh; overflow-y: auto; padding: 12px 14px 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.25); }
+    .sch-zoom-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+    .sch-zoom-head b { font-size: 16px; }
+    .sch-zoom .sch-day { min-height: 0 !important; border: none !important; background: none !important;
+      padding: 0 !important; opacity: 1 !important; cursor: default; display: block !important; }
+    .sch-zoom .sch-day-header { display: none !important; }
+    .sch-zoom .sch-day-blocks { display: flex; flex-direction: column; gap: 6px !important; }
+    .sch-zoom .sch-block { padding: 8px 10px !important; border-radius: 8px !important; font-size: 14px; position: relative; }
+    .sch-zoom .sch-block strong { font-size: 15px !important; white-space: normal !important; overflow: visible !important; }
+    .sch-zoom .sch-block .crew { font-size: 13px !important; white-space: normal !important; overflow: visible !important; display: block; }
+    .sch-zoom .off-badge { font-size: 20px !important; }
+    .sch-zoom-empty { color: var(--muted); font-size: 14px; padding: 10px 0; }
     @media (max-width: 768px) {
       #scheduleModal:not(.sch-phone-month) .sch-grid { grid-template-columns: 1fr; gap: 4px; }
       .sch-day { min-height: 60px; flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px; }
@@ -30824,6 +30840,50 @@
       $("schStatus").style.color = "var(--red, #dc2626)";
     }
   }
+
+  // 🔍 Phone month view (owner 2026-11-23): the cells are too small to read,
+  // so a tap anywhere on a day opens that day full size first. Tapping a pill
+  // in the big view does what tapping it always did (edit / view the entry).
+  function schZoomClose() {
+    const z = $("schDayZoom");
+    if (z) { z.remove(); popBackEntry("schZoom"); }
+  }
+  window.schZoomClose = schZoomClose;
+  function schZoomOpen(dayEl) {
+    schZoomClose();
+    const ymd = dayEl.dataset.ymd;
+    const nice = schParseYMD(ymd).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    const clone = dayEl.cloneNode(true);
+    clone.removeAttribute("onclick");
+    clone.querySelectorAll("[draggable]").forEach(n => n.removeAttribute("draggable"));
+    const z = document.createElement("div");
+    z.id = "schDayZoom";
+    z.className = "sch-zoom";
+    z.innerHTML = `<div class="sch-zoom-card"><div class="sch-zoom-head"><b>${esc(nice)}</b>
+        <button class="btn btn-sm" type="button" onclick="schZoomClose()">✕</button></div></div>`;
+    const card = z.firstElementChild;
+    if (clone.querySelector(".sch-block")) card.appendChild(clone);
+    else card.insertAdjacentHTML("beforeend", `<div class="sch-zoom-empty">Nothing scheduled.</div>`);
+    // Admin: open the day panel too, so "+ New" is one tap away after closing.
+    if (!schReadOnly) card.insertAdjacentHTML("beforeend",
+      `<button class="btn btn-sm" type="button" style="margin-top:10px; width:100%;" onclick="schZoomClose(); schShowDayDetail('${esc(ymd)}')">Day details / add</button>`);
+    z.addEventListener("click", (e) => {
+      if (e.target === z) { schZoomClose(); return; }
+      // A pill's own onclick runs first (edit / view / pay); then get out of its way.
+      if (e.target.closest(".sch-block[onclick]")) setTimeout(schZoomClose, 0);
+    });
+    $("scheduleModal").appendChild(z);
+    pushBackEntry("schZoom", () => { const el = $("schDayZoom"); if (el) el.remove(); });
+  }
+  document.addEventListener("click", (e) => {
+    const modal = $("scheduleModal");
+    if (!modal || !modal.classList.contains("sch-phone-month")) return;
+    const day = e.target.closest?.("#schGrid .sch-day");
+    if (!day || !day.dataset.ymd) return;
+    e.stopPropagation();
+    e.preventDefault();
+    schZoomOpen(day);
+  }, true);
 
   // Employee colors come from EMP_COLORS at the top of the file (same palette
   // as the Payroll tab). Lookup by full name; fall back to a neutral gray pill.

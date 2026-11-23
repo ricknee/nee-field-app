@@ -1848,21 +1848,20 @@
     .ch-cal-day.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
     .ch-cal-num { font-size: 10.5px; font-weight: 700; color: var(--muted); }
     .ch-cal-day.today .ch-cal-num { color: var(--accent); }
-    .ch-cal-e { font-size: 10.5px; line-height: 1.2; border-left: 3px solid var(--accent); background: rgba(0,0,0,0.03); border-radius: 3px; padding: 1px 3px; margin-top: 2px; overflow: hidden; }
-    .ch-cal-e.mine { border-left-color: #16a34a; background: #dcfce7; }
+    .ch-cal-e { font-size: 10.5px; line-height: 1.25; border-radius: 3px; padding: 0 4px; margin-top: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .ch-cal-e.mine { outline: 2px solid #111827; outline-offset: -1px; }
     .ch-cal-e[data-hd-id] { cursor: pointer; }
-    .ch-cal-e b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ch-cal-e small { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .ch-cal-e.off { border-left-color: var(--yellow); color: var(--muted); white-space: nowrap; text-overflow: ellipsis; }
-    .ch-cal-e.pay { border-left-color: #be185d; background: #db2777; color: #fff; font-weight: 700; white-space: nowrap; }
-    .ch-cal-e.hol { border-left-color: #aaa; font-style: italic; color: var(--muted); white-space: nowrap; }
+    .ch-cal-e[data-hd-id]:hover { filter: brightness(0.95); }
+    .ch-cal-e.pay { background: #db2777; color: #fff; font-weight: 700; }
+    .ch-cal-e.hol { border: 1px dashed #aaa; font-style: italic; color: var(--muted); }
+    .ch-board-empty { padding: 8px 14px !important; display: flex; gap: 8px; align-items: center; font-size: 13px; }
+    .ch-board-empty b { font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
     .ch-cal-more { font-size: 10px; color: var(--muted); }
     @media (max-width: 768px) {
       .ch-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .ch-cal { gap: 1px; }
       .ch-cal-day { min-height: 56px; padding: 1px; border-radius: 3px; }
-      .ch-cal-e { font-size: 9px; padding: 0 2px; border-left-width: 2px; }
-      .ch-cal-e small { display: none; }
+      .ch-cal-e { font-size: 9px; padding: 0 2px; }
     }
 
     /* ── DESKTOP HOME DASHBOARD (no job selected; admin + office) ── */
@@ -6495,7 +6494,11 @@
     const today = hdToday();
     const month = _ch.month.getMonth();
     const { start, end } = chGridRange();
-    const MAX = hdIsPhone() ? 3 : 5;
+    // Computer: rows are sized to fit the screen (chFitCal), and as many pills
+    // as fit a row show before "+N more".
+    const phone = hdIsPhone();
+    const MAX = phone ? 3 : (_ch.maxLines || 4);
+    const rowStyle = !phone && _ch.rowH ? ` style="height:${_ch.rowH}px; min-height:0;"` : "";
     let html = `<div class="ch-cal">` +
       ["S", "M", "T", "W", "T", "F", "S"].map(d => `<div class="ch-cal-dow">${d}</div>`).join("");
     for (let d = new Date(start); d <= end; d = hdAddDays(d, 1)) {
@@ -6504,24 +6507,39 @@
       if (schIsPayweek(ymd)) lines.push(`<div class="ch-cal-e pay" title="Payweek">💲 Payweek</div>`);
       const hol = schGetHolidayName(ymd);
       if (hol && !wknd) lines.push(`<div class="ch-cal-e hol" title="${esc(hol)}">${esc(hol)}</div>`);
+      // One pill per (person, entry) in that person's colour, the same as the
+      // admin Crew Schedule (schPillColors / EMP_COLORS), one person's pills
+      // kept together.
+      const pills = [];
       for (const e of _ch.cal.entries) {
         const s = e.startDate, en = e.endDate || e.startDate;
         if (!s || s > ymd || en < ymd) continue;
-        const isMine = (e.crewIds || []).map(String).includes(me);
-        if (_ch.mine && !isMine) continue;
-        const names = (e.crew || []).map(first).filter(Boolean).join(", ");
-        if (e.type === "Time Off") {
-          lines.push(`<div class="ch-cal-e off" title="Time off">🏖 ${esc(names || "Time off")}</div>`);
-        } else {
-          const nm = e.jobName || e.title || "—";
-          lines.push(`<div class="ch-cal-e${isMine ? " mine" : ""}" ${e.jobId ? hdClick(e.jobId, e.jobName) : ""}
-              title="${esc(nm + (names ? " — " + names : "") + (e.notes ? " — " + e.notes : ""))}">
-              <b>${esc(nm)}</b>${names ? `<small>${esc(names)}</small>` : ""}</div>`);
+        const off = e.type === "Time Off";
+        const what = off ? "🏖 Off" : (e.jobName || e.title || e.type || "—");
+        const click = !off && e.jobId ? hdClick(e.jobId, e.jobName) : "";
+        const ids = e.crewIds || [];
+        if (!ids.length) {
+          if (_ch.mine) continue;
+          pills.push({ who: "", html: `<div class="ch-cal-e" ${click} style="background:${SCH_DEFAULT_PILL.bg}; color:${SCH_DEFAULT_PILL.text}; border:1px solid ${SCH_DEFAULT_PILL.border};" title="${esc(what)}"><b>${esc(what)}</b></div>` });
+          continue;
         }
+        ids.forEach((cid, k) => {
+          if (_ch.mine && String(cid) !== me) return;
+          const name = (e.crew || [])[k] || "";
+          const c = schPillColors(name);
+          pills.push({ who: String(cid), html: `<div class="ch-cal-e${String(cid) === me ? " mine" : ""}" ${click}
+              style="background:${c.bg}; color:${c.text}; border:1px solid ${c.border};"
+              title="${esc(name + " — " + what + (e.notes ? " — " + e.notes : ""))}"><b>${esc(first(name))}</b> ${esc(what)}</div>` });
+        });
       }
+      const firstAt = new Map();
+      pills.forEach((p, i) => { if (p.who && !firstAt.has(p.who)) firstAt.set(p.who, i); });
+      const rank = p => p.who ? firstAt.get(p.who) : Infinity;
+      pills.map((p, i) => ({ p, i })).sort((x, y) => (rank(x.p) - rank(y.p)) || (x.i - y.i))
+        .forEach(x => lines.push(x.p.html));
       const more = lines.length - MAX;
       const shown = more > 0 ? lines.slice(0, MAX - 1).join("") + `<div class="ch-cal-more">+${more + 1} more</div>` : lines.join("");
-      html += `<div class="ch-cal-day${ymd === today ? " today" : ""}${wknd ? " wknd" : ""}${d.getMonth() !== month ? " other" : ""}">
+      html += `<div class="ch-cal-day${ymd === today ? " today" : ""}${wknd ? " wknd" : ""}${d.getMonth() !== month ? " other" : ""}"${rowStyle}>
           <div class="ch-cal-num">${d.getDate()}</div>${shown}</div>`;
     }
     return html + `</div>`;
@@ -6563,8 +6581,11 @@
     let boardHtml;
     if (!b) boardHtml = `<div class="ch-none">Loading…</div>`;
     else if (b._err) boardHtml = `<div class="ch-none" style="color:var(--red);">Couldn't load: ${esc(b._err)}</div>`;
-    else if (!b.length) boardHtml = `<div class="ch-none">Nothing posted right now.</div>`;
-    else boardHtml = b.map(chBoardItemHtml).join("");
+    else if (b.length) boardHtml = b.map(it => chBoardItemHtml(it)).join("");
+    // Empty board: one slim line instead of a whole card.
+    const boardCard = Array.isArray(b) && !b.length
+      ? `<div class="hd-card ch-board-empty" style="margin-bottom:12px;"><b>📣 Crew board</b><span class="ch-none">Nothing posted right now.</span></div>`
+      : `<div class="hd-card" style="margin-bottom:12px;"><h3><span>📣 Crew board</span></h3>${boardHtml}</div>`;
 
     const monthName = _ch.month.toLocaleDateString(undefined, { month: "long", year: "numeric" });
     box.innerHTML = `
@@ -6575,7 +6596,7 @@
         <div class="ch-tile"><div class="l">🌴 PTO left</div>${ptoTile}</div>
         <div class="ch-tile pay"><div class="l">💲 Next payweek</div>${payTile}</div>
       </div>
-      <div class="hd-card" style="margin-bottom:12px;"><h3><span>📣 Crew board</span></h3>${boardHtml}</div>
+      ${boardCard}
       <div class="hd-card">
         <h3 style="flex-wrap:wrap; gap:6px;">
           <span>📅 ${esc(monthName)}</span>
@@ -6586,10 +6607,33 @@
             <button class="btn btn-sm${_ch.mine ? " btn-primary" : ""}" type="button" onclick="chToggleMine()">${_ch.mine ? "👥 Whole crew" : "📅 My calendar"}</button>
           </span>
         </h3>
-        ${_ch.mine ? `<div class="ch-none" style="margin-bottom:6px;">Showing just your days.</div>` : `<div class="ch-none" style="margin-bottom:6px;">Your jobs are green.</div>`}
+        ${_ch.mine ? `<div class="ch-none" style="margin-bottom:6px;">Showing just your days.</div>` : `<div class="ch-none" style="margin-bottom:6px;">Your days have a dark outline.</div>`}
         ${chCalHtml()}
       </div>`;
+    chFitCal();
   }
+
+  // Computer: size the calendar rows so the whole month fits the screen
+  // without scrolling. Measures where the grid starts, then re-renders once
+  // if the row height changed (the guard stops it looping).
+  function chFitCal() {
+    if (hdIsPhone()) { _ch.rowH = 0; return; }
+    const grid = document.querySelector("#homeDash .ch-cal");
+    if (!grid || !grid.querySelector(".ch-cal-day")) return;
+    const weeks = Math.round(grid.querySelectorAll(".ch-cal-day").length / 7) || 5;
+    const top = grid.getBoundingClientRect().top;
+    const avail = window.innerHeight - top - 18 /* weekday row */ - 30 /* card padding + margin */ - weeks * 3;
+    const rowH = Math.max(52, Math.floor(avail / weeks));
+    const maxLines = Math.max(1, Math.floor((rowH - 18) / 16));
+    if (rowH === _ch.rowH && maxLines === _ch.maxLines) return;
+    _ch.rowH = rowH; _ch.maxLines = maxLines;
+    renderCrewHome();
+  }
+  let _chResizeT = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(_chResizeT);
+    _chResizeT = setTimeout(() => { if (state.user && !isAdmin()) renderCrewHome(); }, 150);
+  });
 
   function chBoardItemHtml(it, admin) {
     const when = it.at ? new Date(it.at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";

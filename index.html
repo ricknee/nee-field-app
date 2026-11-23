@@ -1840,7 +1840,8 @@
     .ch-board-k.note { background: #dbeafe; color: #1e40af; }
     .ch-board-k.task { background: #fef3c7; color: #92400e; }
     .ch-none { color: var(--muted); font-size: 13px; }
-    .ch-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+    /* Sat + Sun half width so the work days get the room (owner 2026-11-23). */
+    .ch-cal { display: grid; grid-template-columns: minmax(0, .45fr) repeat(5, minmax(0, 1fr)) minmax(0, .45fr); gap: 3px; }
     .ch-cal-dow { font-size: 10.5px; font-weight: 700; color: var(--muted); text-align: center; }
     .ch-cal-day { min-height: 78px; border: 1px solid var(--line); border-radius: 5px; padding: 2px 3px; background: var(--panel); overflow: hidden; }
     .ch-cal-day.wknd { background: rgba(0,0,0,0.025); }

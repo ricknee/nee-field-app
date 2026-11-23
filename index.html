@@ -1910,6 +1910,22 @@
     .ch-wk-days { padding: 0 6px 8px 12px; }
     .ch-wk-day { font-size: 12.5px; padding: 3px 0; }
     .ch-wk-day small { color: var(--muted); }
+    /* Phone (owner 2026-11-23): the calendar first, then the tiles small and
+       three across, then the crew board. */
+    @media (max-width: 768px) {
+      .ch-wrap { display: flex; flex-direction: column; }
+      .ch-wrap > .ch-hello { order: 0; font-size: 16px; margin-bottom: 6px; }
+      .ch-wrap > .ch-calcard { order: 1; margin-bottom: 10px; padding: 8px; }
+      .ch-wrap > .ch-tiles { order: 2; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+      .ch-wrap > .ch-board { order: 3; }
+      .ch-calcard h3 { font-size: 13px; margin-bottom: 4px; }
+      .ch-calcard h3 .btn { padding: 3px 9px; font-size: 12px; }
+      .ch-tiles .ch-tile { padding: 6px 8px; }
+      .ch-tiles .ch-tile .l { font-size: 10.5px; }
+      .ch-tiles .ch-tile .v { font-size: 15px; }
+      .ch-tiles .ch-tile.pay .v { font-size: 13px; }
+      .ch-tiles .ch-tile .s { font-size: 10px; }
+    }
     @media (max-width: 768px) { .ch-ytd { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
     .ch-day-pop .ch-cal-e { font-size: 13px; padding: 3px 6px; margin-top: 4px; white-space: normal; }
     @media (max-width: 768px) {
@@ -6756,7 +6772,8 @@
 
     const monthName = _ch.month.toLocaleDateString(undefined, { month: "long", year: "numeric" });
     box.innerHTML = `
-      <h2>Hi ${esc(firstName || "there")}</h2>
+      <div class="ch-wrap">
+      <h2 class="ch-hello">Hi ${esc(firstName || "there")}</h2>
       <div class="hd-sub">Your hours, time off, the crew board and the schedule. Information only. Ask the office if something looks wrong.</div>
       <div class="ch-tiles">
         <div class="ch-tile ch-tile-click" role="button" tabindex="0" onclick="chOpenWeeks()" title="See every week and the year so far">
@@ -6764,8 +6781,8 @@
         <div class="ch-tile"><div class="l">🌴 PTO ${p && !p._err && p.tracked && Number(p.balance?.remaining_hours) < 0 ? "" : "left"}</div>${ptoTile}</div>
         <div class="ch-tile pay"><div class="l">💲 Next payweek</div>${payTile}</div>
       </div>
-      ${boardCard}
-      <div class="hd-card">
+      <div class="ch-board">${boardCard}</div>
+      <div class="hd-card ch-calcard">
         <h3 style="flex-wrap:wrap; gap:6px;">
           <span>📅 ${esc(monthName)}</span>
           <span style="display:flex; gap:4px; flex-wrap:wrap;">
@@ -6777,6 +6794,7 @@
         </h3>
         ${_ch.mine ? `<div class="ch-none" style="margin-bottom:6px;">Showing just your days.</div>` : `<div class="ch-none" style="margin-bottom:6px;">Your days have a dark outline.</div>`}
         ${chCalHtml()}
+      </div>
       </div>`;
     chFitCal();
   }

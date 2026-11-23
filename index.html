@@ -1825,29 +1825,45 @@
     .no-selection .icon { font-size: 48px; opacity: 0.3; }
 
     /* ── CREW HOME (employees, no job selected): read-only info ── */
-    .no-selection.has-crew-home { display: block; height: auto; color: var(--text); font-size: 14px; }
-    .no-selection.has-crew-home > .icon,
-    .no-selection.has-crew-home > div:not(.crew-home) { display: none; }
-    .crew-home { padding: 18px 22px; max-width: 760px; }
-    .crew-home h2 { font-size: 18px; margin: 0 0 2px; }
-    .crew-home .ch-sub { color: var(--muted); font-size: 12.5px; margin-bottom: 14px; }
-    .ch-card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
-    .ch-card h3 { font-size: 14px; margin: 0 0 8px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-    .ch-day { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); }
-    .ch-day:first-of-type { border-top: none; }
-    .ch-day.today { background: rgba(37, 99, 235, 0.06); border-radius: 6px; padding-left: 6px; }
-    .ch-date { font-weight: 700; font-size: 13px; }
-    .ch-date small { display: block; color: var(--muted); font-weight: 500; font-size: 11.5px; }
-    .ch-e { font-size: 13.5px; line-height: 1.3; margin-bottom: 3px; }
-    .ch-e[data-hd-id] { cursor: pointer; }
-    .ch-e[data-hd-id]:hover b { color: var(--accent); text-decoration: underline; }
-    .ch-e small { color: var(--muted); }
-    .ch-e .ch-note { display: block; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+    /* Crew Overview (employees): tiles, crew board, month calendar. */
+    .ch-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .ch-tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
+    .ch-tile .l { font-size: 11.5px; color: var(--muted); }
+    .ch-tile .v { font-size: 22px; font-weight: 800; line-height: 1.2; }
+    .ch-tile .s { font-size: 11.5px; color: var(--muted); }
+    .ch-tile.pay .v { color: #db2777; font-size: 17px; }
+    .ch-board-i { padding: 7px 0; border-top: 1px solid var(--line); font-size: 13.5px; display: flex; gap: 8px; align-items: flex-start; }
+    .ch-board-i:first-child { border-top: none; }
+    .ch-board-i .t { flex: 1; white-space: pre-wrap; }
+    .ch-board-i small { display: block; color: var(--muted); font-size: 11px; }
+    .ch-board-k { font-size: 11px; font-weight: 700; border-radius: 10px; padding: 1px 7px; white-space: nowrap; }
+    .ch-board-k.note { background: #dbeafe; color: #1e40af; }
+    .ch-board-k.task { background: #fef3c7; color: #92400e; }
     .ch-none { color: var(--muted); font-size: 13px; }
-    .ch-tag { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 10px; padding: 1px 7px; margin-right: 4px; }
-    .ch-tag.pay { background: #db2777; color: #fff; }
-    .ch-tag.hol { background: rgba(0,0,0,0.06); color: var(--muted); font-style: italic; }
-    .ch-tag.off { background: #fef3c7; color: #92400e; }
+    .ch-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+    .ch-cal-dow { font-size: 10.5px; font-weight: 700; color: var(--muted); text-align: center; }
+    .ch-cal-day { min-height: 78px; border: 1px solid var(--line); border-radius: 5px; padding: 2px 3px; background: var(--panel); overflow: hidden; }
+    .ch-cal-day.wknd { background: rgba(0,0,0,0.025); }
+    .ch-cal-day.other { opacity: 0.45; }
+    .ch-cal-day.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+    .ch-cal-num { font-size: 10.5px; font-weight: 700; color: var(--muted); }
+    .ch-cal-day.today .ch-cal-num { color: var(--accent); }
+    .ch-cal-e { font-size: 10.5px; line-height: 1.2; border-left: 3px solid var(--accent); background: rgba(0,0,0,0.03); border-radius: 3px; padding: 1px 3px; margin-top: 2px; overflow: hidden; }
+    .ch-cal-e.mine { border-left-color: #16a34a; background: #dcfce7; }
+    .ch-cal-e[data-hd-id] { cursor: pointer; }
+    .ch-cal-e b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ch-cal-e small { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ch-cal-e.off { border-left-color: var(--yellow); color: var(--muted); white-space: nowrap; text-overflow: ellipsis; }
+    .ch-cal-e.pay { border-left-color: #be185d; background: #db2777; color: #fff; font-weight: 700; white-space: nowrap; }
+    .ch-cal-e.hol { border-left-color: #aaa; font-style: italic; color: var(--muted); white-space: nowrap; }
+    .ch-cal-more { font-size: 10px; color: var(--muted); }
+    @media (max-width: 768px) {
+      .ch-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .ch-cal { gap: 1px; }
+      .ch-cal-day { min-height: 56px; padding: 1px; border-radius: 3px; }
+      .ch-cal-e { font-size: 9px; padding: 0 2px; border-left-width: 2px; }
+      .ch-cal-e small { display: none; }
+    }
 
     /* ── DESKTOP HOME DASHBOARD (no job selected; admin + office) ── */
     .home-dash { padding: 16px 20px 16px; max-width: 1500px; }
@@ -4118,9 +4134,9 @@
           </select>
           <!-- 📊 Overview — the home dashboard. Computer: back to it from an
                open job. Phone: swaps the job list for it, and the button turns
-               into 📋 Jobs to swap back. Shown/hidden by loadHomeDash()
-               (admin + office) — NOT the .admin-only class, which lets viewers
-               in, and workload 403s them. -->
+               into 📋 Jobs to swap back. Shown by loadHomeDash() for everyone
+               signed in: admin + office get the full dashboard, the crew the
+               read-only crew Overview (loadCrewHome). -->
           <button id="btnHomeDash" class="home-dash-btn hidden" type="button"
                   onclick="goHomeDash()" title="Overview">📊 Overview</button>
         </div>
@@ -4136,9 +4152,6 @@
       <div class="no-selection" id="noSelection">
         <div class="icon">📋</div>
         <div>Select a job to view details</div>
-        <!-- Crew home (employees, desktop): their own schedule, read-only.
-             Lives INSIDE #noSelection so opening a job hides it for free. -->
-        <div id="crewHome" class="crew-home hidden"></div>
       </div>
       <!-- Desktop home dashboard (admin + office). Fills the empty detail pane
            when no job is open. Phones never see it — the whole detail panel is
@@ -6357,7 +6370,9 @@
   let _hdCache = null, _hdAt = 0, _hdBusy = null;
 
   function hdWanted() {
-    return !!state.user && isAdmin() && !state.selected &&
+    // Everyone gets an Overview now (owner 2026-11-23): admin + office the full
+    // dashboard, everyone else the read-only crew one (loadCrewHome).
+    return !!state.user && !state.selected &&
       (window.matchMedia("(min-width: 769px)").matches || document.body.classList.contains("dash-mode"));
   }
 
@@ -6365,7 +6380,7 @@
     const box = $("homeDash");
     if (!box) return;
     const homeBtn = $("btnHomeDash");
-    const allowed = !!(state.user && isAdmin());
+    const allowed = !!state.user;
     if (homeBtn) homeBtn.classList.toggle("hidden", !allowed);
     // ⚠ dash-mode HIDES THE JOB LIST on a phone. If an admin left it on and a
     // crew member logs in on the same phone, they must not inherit it.
@@ -6378,14 +6393,17 @@
       // Crew (or a narrow window) get the plain placeholder back — it may have
       // been hidden by an admin session earlier in this tab.
       if (!state.selected) $("noSelection").classList.remove("hidden");
-      loadCrewHome(force);
       return;
     }
-    loadCrewHome(force);   // admin: hides it
     $("noSelection").classList.add("hidden");
     box.classList.remove("hidden");
+    // Crew: their own read-only Overview. ⚠ Never the admin one — it carries
+    // money (invoices, hours vs target) the crew must not see, and its reads
+    // are admin/office only anyway.
+    if (!isAdmin()) return loadCrewHome(force);
     // Re-read at most every 5 minutes unless forced; render the cache meanwhile.
     hdLoadMorning(force);   // ☀ its own fetch; fills #hdMorning when it lands
+    if (force || !_hdBoard) hdLoadBoard();   // 📣 likewise, fills #hdBoard
     if (_hdCache && !force && Date.now() - _hdAt < 5 * 60 * 1000) { renderHomeDash(); return; }
     if (!_hdCache) box.innerHTML = `<div class="hd-empty" style="padding:40px;">Loading dashboard…</div>`;
     if (_hdBusy) return _hdBusy;
@@ -6409,100 +6427,213 @@
   }
   window.loadHomeDash = loadHomeDash;
 
-  // ── 👷 CREW HOME (owner 2026-11-23) ──────────────────────────────────────
-  // The empty "Select a job" pane on an EMPLOYEE's computer shows their own
-  // next two weeks from the Crew Schedule, plus the next payday. Information
-  // only: nothing here edits anything. A job line opens the job, same as the
-  // list. Phones never show the detail pane with no job, so this is desktop.
-  let _chCache = null, _chAt = 0, _chFor = "";
+  // ── 👷 CREW OVERVIEW (owner 2026-11-23) ──────────────────────────────────
+  // What an EMPLOYEE gets behind 📊 Overview (computer and phone): hours this
+  // week, PTO left, next payweek, the 📣 crew board, and a month calendar of
+  // the whole crew (📅 My calendar narrows it to just them). Information only:
+  // nothing here edits anything. A job line opens the job, same as the list.
+  // Each piece is its own fetch and fails on its own, so one slow read never
+  // blanks the page.
+  let _ch = { month: null, mine: false, cal: null, calKey: "", hours: null, pto: null, board: null, at: 0, who: "" };
+  function chMonthStart(d) { const x = new Date(d.getFullYear(), d.getMonth(), 1); x.setHours(0, 0, 0, 0); return x; }
   async function loadCrewHome(force) {
-    const box = $("crewHome"), ns = $("noSelection");
-    if (!box || !ns) return;
-    const wanted = !!state.user && !isAdmin() && !state.selected &&
-      window.matchMedia("(min-width: 769px)").matches;
-    if (!wanted) {
-      box.classList.add("hidden");
-      ns.classList.remove("has-crew-home");
-      return;
-    }
-    box.classList.remove("hidden");
-    ns.classList.add("has-crew-home");
-    const me = String(state.user.id || "");
-    if (_chCache && _chFor === me && !force && Date.now() - _chAt < 5 * 60 * 1000) { renderCrewHome(); return; }
-    if (!_chCache || _chFor !== me) box.innerHTML = `<div class="ch-none" style="padding:30px;">Loading your schedule…</div>`;
-    const start = new Date(); start.setHours(0, 0, 0, 0);
-    try {
-      const d = await apiGet("scheduleEntries", { since: hdYMD(start), until: hdYMD(hdAddDays(start, 13)) });
-      _chCache = { entries: d.entries || [] };
-    } catch (e) {
-      _chCache = { _err: e.message || "unknown error" };
-    }
-    _chAt = Date.now(); _chFor = me;
+    const box = $("homeDash");
+    if (!box || isAdmin()) return;
+    const me = String(state.user?.id || "");
+    if (_ch.who !== me) _ch = { month: null, mine: false, cal: null, calKey: "", hours: null, pto: null, board: null, at: 0, who: me };
+    if (!_ch.month) _ch.month = chMonthStart(new Date());
+    const stale = force || Date.now() - _ch.at > 5 * 60 * 1000;
     renderCrewHome();
+    const jobs = [];
+    if (stale || !_ch.hours) jobs.push(apiGet("myHoursRollup", { employeeId: me })
+      .then(d => { _ch.hours = d?.ranges || {}; }, e => { _ch.hours = { _err: e.message }; }));
+    if (stale || !_ch.pto) jobs.push(apiGet("ptoBalance")
+      .then(d => { _ch.pto = d || {}; }, e => { _ch.pto = { _err: e.message }; }));
+    if (stale || !_ch.board) jobs.push(apiGet("crewBoard")
+      .then(d => { _ch.board = d?.items || []; }, e => { _ch.board = { _err: e.message }; }));
+    if (stale) _ch.calKey = "";
+    jobs.push(chLoadMonth());
+    if (stale) _ch.at = Date.now();
+    await Promise.all(jobs.map(p => p.then(renderCrewHome)));
   }
   window.loadCrewHome = loadCrewHome;
 
-  function renderCrewHome() {
-    const box = $("crewHome");
-    if (!box || box.classList.contains("hidden") || !_chCache) return;
+  // The grid runs Sunday before the 1st to Saturday after the last day.
+  function chGridRange() {
+    const first = _ch.month;
+    const start = hdAddDays(first, -first.getDay());
+    const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+    const end = hdAddDays(last, 6 - last.getDay());
+    return { start, end };
+  }
+  async function chLoadMonth() {
+    const { start, end } = chGridRange();
+    const key = hdYMD(start);
+    if (_ch.calKey === key && _ch.cal) return;
+    _ch.calKey = key; _ch.cal = null;
+    try {
+      const d = await apiGet("scheduleEntries", { since: hdYMD(start), until: hdYMD(end) });
+      if (_ch.calKey === key) _ch.cal = { entries: d.entries || [] };
+    } catch (e) {
+      if (_ch.calKey === key) _ch.cal = { _err: e.message || "unknown error" };
+    }
+  }
+  window.chMonthNav = async function (step) {
+    _ch.month = step === 0 ? chMonthStart(new Date())
+      : new Date(_ch.month.getFullYear(), _ch.month.getMonth() + step, 1);
+    renderCrewHome();
+    await chLoadMonth();
+    renderCrewHome();
+  };
+  window.chToggleMine = function () { _ch.mine = !_ch.mine; renderCrewHome(); };
+
+  function chCalHtml() {
+    if (!_ch.cal) return `<div class="ch-none" style="padding:20px;">Loading the schedule…</div>`;
+    if (_ch.cal._err) return `<div class="ch-none" style="color:var(--red);">Couldn't load the schedule: ${esc(_ch.cal._err)}</div>`;
     const me = String(state.user?.id || "");
-    const first = String(state.user?.name || "").split(" ")[0];
+    const first = (n) => String(n || "").split(" ")[0];
+    const today = hdToday();
+    const month = _ch.month.getMonth();
+    const { start, end } = chGridRange();
+    const MAX = hdIsPhone() ? 3 : 5;
+    let html = `<div class="ch-cal">` +
+      ["S", "M", "T", "W", "T", "F", "S"].map(d => `<div class="ch-cal-dow">${d}</div>`).join("");
+    for (let d = new Date(start); d <= end; d = hdAddDays(d, 1)) {
+      const ymd = hdYMD(d), dow = d.getDay(), wknd = dow === 0 || dow === 6;
+      const lines = [];
+      if (schIsPayweek(ymd)) lines.push(`<div class="ch-cal-e pay" title="Payweek">💲 Payweek</div>`);
+      const hol = schGetHolidayName(ymd);
+      if (hol && !wknd) lines.push(`<div class="ch-cal-e hol" title="${esc(hol)}">${esc(hol)}</div>`);
+      for (const e of _ch.cal.entries) {
+        const s = e.startDate, en = e.endDate || e.startDate;
+        if (!s || s > ymd || en < ymd) continue;
+        const isMine = (e.crewIds || []).map(String).includes(me);
+        if (_ch.mine && !isMine) continue;
+        const names = (e.crew || []).map(first).filter(Boolean).join(", ");
+        if (e.type === "Time Off") {
+          lines.push(`<div class="ch-cal-e off" title="Time off">🏖 ${esc(names || "Time off")}</div>`);
+        } else {
+          const nm = e.jobName || e.title || "—";
+          lines.push(`<div class="ch-cal-e${isMine ? " mine" : ""}" ${e.jobId ? hdClick(e.jobId, e.jobName) : ""}
+              title="${esc(nm + (names ? " — " + names : "") + (e.notes ? " — " + e.notes : ""))}">
+              <b>${esc(nm)}</b>${names ? `<small>${esc(names)}</small>` : ""}</div>`);
+        }
+      }
+      const more = lines.length - MAX;
+      const shown = more > 0 ? lines.slice(0, MAX - 1).join("") + `<div class="ch-cal-more">+${more + 1} more</div>` : lines.join("");
+      html += `<div class="ch-cal-day${ymd === today ? " today" : ""}${wknd ? " wknd" : ""}${d.getMonth() !== month ? " other" : ""}">
+          <div class="ch-cal-num">${d.getDate()}</div>${shown}</div>`;
+    }
+    return html + `</div>`;
+  }
+
+  function renderCrewHome() {
+    const box = $("homeDash");
+    if (!box || isAdmin() || box.classList.contains("hidden") || !_ch.month) return;
+    const firstName = String(state.user?.name || "").split(" ")[0];
     const start = new Date(); start.setHours(0, 0, 0, 0);
     const today = hdYMD(start);
-    const fmtDay = (d) => d.toLocaleDateString(undefined, { weekday: "short" });
-    const fmtDate = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
-    // Next payday: the first payweek Friday from today on.
+    // Tiles: hours this week, PTO left, next payweek.
+    const h = _ch.hours;
+    const hrsTile = !h ? `<div class="v">…</div>`
+      : h._err ? `<div class="s" style="color:var(--red);">Couldn't load</div>`
+      : `<div class="v">${(Number(h.thisWeek?.hours) || 0).toFixed(1)} h</div>
+         <div class="s">${h.payPeriod ? `Pay period: ${(Number(h.payPeriod.hours) || 0).toFixed(1)} h` : ""}</div>`;
+    const p = _ch.pto;
+    let ptoTile = "";
+    if (!p) ptoTile = `<div class="v">…</div>`;
+    else if (p._err) ptoTile = `<div class="s" style="color:var(--red);">Couldn't load</div>`;
+    else if (!p.tracked) ptoTile = `<div class="v">—</div><div class="s">Not tracked</div>`;
+    else {
+      const rem = Number(p.balance?.remaining_hours) || 0;
+      const pend = Number(p.pendingHours) || 0;
+      ptoTile = `<div class="v">${ptoDays(rem)} days</div>
+        <div class="s">${rem.toFixed(1)} h${pend > 0 ? ` · ${ptoDaysLabel(pend)} waiting approval` : ""}</div>`;
+    }
     let pay = null;
     for (let i = 0; i < 15 && !pay; i++) { const d = hdAddDays(start, i); if (schIsPayweek(hdYMD(d))) pay = d; }
-    const payTxt = pay ? (hdYMD(pay) === today ? "today" : `${pay.toLocaleDateString(undefined, { weekday: "long" })}, ${fmtDate(pay)}`) : "";
+    const payTile = pay
+      ? `<div class="v">${hdYMD(pay) === today ? "Today" : pay.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</div>
+         <div class="s">every other Friday</div>`
+      : `<div class="v">—</div>`;
 
-    let body;
-    if (_chCache._err) {
-      body = `<div class="ch-none" style="color:var(--red);">Couldn't load the schedule: ${esc(_chCache._err)}</div>`;
-    } else {
-      const mine = (_chCache.entries || []).filter(en => (en.crewIds || []).map(String).includes(me) && en.startDate);
-      const rows = [];
-      for (let i = 0; i < 14; i++) {
-        const d = hdAddDays(start, i), ymd = hdYMD(d), dow = d.getDay();
-        const todays = mine.filter(en => en.startDate <= ymd && (en.endDate || en.startDate) >= ymd);
-        const hol = schGetHolidayName(ymd);
-        const payday = schIsPayweek(ymd);
-        // Weekends only when something is on them.
-        if ((dow === 0 || dow === 6) && !todays.length) continue;
-        const tags = (payday ? `<span class="ch-tag pay">💲 Payweek</span>` : "") +
-                     (hol && dow !== 0 && dow !== 6 ? `<span class="ch-tag hol">${esc(hol)}</span>` : "");
-        const lines = todays.map(en => {
-          const isJob = !!en.jobId && en.type !== "Time Off";
-          const name = isJob ? (en.jobName || en.title || "Job") : (en.title || en.type || "Time off");
-          const others = (en.crew || []).filter((n, k) => String((en.crewIds || [])[k]) !== me);
-          return `<div class="ch-e" ${isJob ? hdClick(en.jobId, en.jobName) : ""}>
-              ${en.type === "Time Off" ? `<span class="ch-tag off">🌴 Time off</span>` : ""}<b>${esc(name)}</b>
-              ${isJob && en.contractor ? `<small> · ${esc(en.contractor)}</small>` : ""}
-              ${others.length ? `<small> · with ${esc(others.join(", "))}</small>` : ""}
-              ${en.notes ? `<span class="ch-note">${esc(en.notes)}</span>` : ""}
-            </div>`;
-        }).join("");
-        rows.push(`<div class="ch-day${ymd === today ? " today" : ""}">
-            <div class="ch-date">${ymd === today ? "Today" : fmtDay(d)}<small>${fmtDate(d)}</small></div>
-            <div>${tags ? `<div style="margin-bottom:3px;">${tags}</div>` : ""}${lines || (hol && dow !== 0 && dow !== 6 ? "" : `<span class="ch-none">Nothing scheduled</span>`)}</div>
-          </div>`);
-      }
-      body = rows.join("");
-    }
+    // 📣 Crew board.
+    const b = _ch.board;
+    let boardHtml;
+    if (!b) boardHtml = `<div class="ch-none">Loading…</div>`;
+    else if (b._err) boardHtml = `<div class="ch-none" style="color:var(--red);">Couldn't load: ${esc(b._err)}</div>`;
+    else if (!b.length) boardHtml = `<div class="ch-none">Nothing posted right now.</div>`;
+    else boardHtml = b.map(chBoardItemHtml).join("");
 
+    const monthName = _ch.month.toLocaleDateString(undefined, { month: "long", year: "numeric" });
     box.innerHTML = `
-      <h2>Hi ${esc(first || "there")}</h2>
-      <div class="ch-sub">Your next two weeks from the Crew Schedule. Ask the office if something looks wrong.</div>
-      ${payTxt ? `<div class="ch-card" style="display:flex; align-items:center; gap:10px;">
-          <span class="ch-tag pay" style="font-size:13px;">💲 Payweek</span>
-          <span>Next payweek Friday: <b>${esc(payTxt)}</b></span></div>` : ""}
-      <div class="ch-card">
-        <h3><span>📅 My schedule</span>
-          <button class="btn btn-sm" type="button" onclick="openMySchedule()">Whole crew calendar</button></h3>
-        ${body}
+      <h2>Hi ${esc(firstName || "there")}</h2>
+      <div class="hd-sub">Your hours, time off, the crew board and the schedule. Information only. Ask the office if something looks wrong.</div>
+      <div class="ch-tiles">
+        <div class="ch-tile"><div class="l">🕒 Hours this week</div>${hrsTile}</div>
+        <div class="ch-tile"><div class="l">🌴 PTO left</div>${ptoTile}</div>
+        <div class="ch-tile pay"><div class="l">💲 Next payweek</div>${payTile}</div>
+      </div>
+      <div class="hd-card" style="margin-bottom:12px;"><h3><span>📣 Crew board</span></h3>${boardHtml}</div>
+      <div class="hd-card">
+        <h3 style="flex-wrap:wrap; gap:6px;">
+          <span>📅 ${esc(monthName)}</span>
+          <span style="display:flex; gap:4px; flex-wrap:wrap;">
+            <button class="btn btn-sm" type="button" onclick="chMonthNav(-1)" aria-label="Previous month">‹</button>
+            <button class="btn btn-sm" type="button" onclick="chMonthNav(0)">Today</button>
+            <button class="btn btn-sm" type="button" onclick="chMonthNav(1)" aria-label="Next month">›</button>
+            <button class="btn btn-sm${_ch.mine ? " btn-primary" : ""}" type="button" onclick="chToggleMine()">${_ch.mine ? "👥 Whole crew" : "📅 My calendar"}</button>
+          </span>
+        </h3>
+        ${_ch.mine ? `<div class="ch-none" style="margin-bottom:6px;">Showing just your days.</div>` : `<div class="ch-none" style="margin-bottom:6px;">Your jobs are green.</div>`}
+        ${chCalHtml()}
       </div>`;
   }
+
+  function chBoardItemHtml(it, admin) {
+    const when = it.at ? new Date(it.at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "";
+    return `<div class="ch-board-i">
+        <span class="ch-board-k ${it.kind === "task" ? "task" : "note"}">${it.kind === "task" ? "🔧 Shop task" : "📣 Note"}</span>
+        <div class="t">${esc(it.body)}<small>${esc([it.by, when].filter(Boolean).join(" · "))}</small></div>
+        ${admin ? `<button class="btn btn-sm" type="button" title="Take it down (the crew stops seeing it)" onclick="hdBoardArchive('${esc(it.id)}')">✕</button>` : ""}
+      </div>`;
+  }
+
+  // 📣 Crew board on the ADMIN Overview: post + take down. Own fetch, like ☀.
+  let _hdBoard = null;
+  function hdLoadBoard() {
+    return apiGet("crewBoard").then(d => { _hdBoard = d?.items || []; }, e => { _hdBoard = { _err: e.message }; })
+      .finally(() => { const el = $("hdBoard"); if (el) el.innerHTML = hdBoardHtml(); });
+  }
+  function hdBoardHtml() {
+    const b = _hdBoard;
+    const list = !b ? `<div class="hd-empty">Loading…</div>`
+      : b._err ? `<div class="hd-empty" style="color:var(--red);">Couldn't load: ${esc(b._err)}</div>`
+      : !b.length ? `<div class="hd-empty">Nothing posted. The crew sees what you post here on their Overview.</div>`
+      : b.map(it => chBoardItemHtml(it, true)).join("");
+    return `<h3><span>📣 Crew board</span>${Array.isArray(b) ? `<span class="hd-count">${b.length}</span>` : ""}</h3>
+      <div style="display:flex; gap:6px; margin-bottom:6px; flex-wrap:wrap;">
+        <input id="hdBoardText" class="ww-input" style="flex:1; min-width:160px;" maxlength="1000" placeholder="Announcement or shop task for the crew…" />
+        <select id="hdBoardKind" class="ww-input" style="width:auto;"><option value="note">📣 Note</option><option value="task">🔧 Shop task</option></select>
+        <button class="btn btn-primary btn-sm" type="button" onclick="hdBoardPost()">Post</button>
+      </div>${list}`;
+  }
+  window.hdBoardPost = async function () {
+    const t = $("hdBoardText"), k = $("hdBoardKind");
+    const body = (t?.value || "").trim();
+    if (!body) { t?.focus(); return; }
+    try {
+      await apiPost("postCrewBoard", { body, kind: k?.value || "note" });
+      showAppToast("Posted to the crew board");
+      await hdLoadBoard();
+    } catch (e) { alert("Couldn't post: " + (e.message || e)); }
+  };
+  window.hdBoardArchive = async function (id) {
+    if (!confirm("Take this down? The crew stops seeing it.")) return;
+    try { await apiPost("archiveCrewBoard", { id }); await hdLoadBoard(); }
+    catch (e) { alert("Couldn't take it down: " + (e.message || e)); }
+  };
 
   // 📊 Overview (beside the year filter).
   //  Computer: closes the open job (popping its back entry, the same as closing
@@ -6560,7 +6691,7 @@
   // One delegated listener, reading data attributes — NOT inline onclick with
   // the name in a JS string: "Neal's Shop" would end the string early.
   document.addEventListener("click", (e) => {
-    const row = e.target.closest && e.target.closest("#homeDash [data-hd-id], #homeDash [data-hd-name], #crewHome [data-hd-id]");
+    const row = e.target.closest && e.target.closest("#homeDash [data-hd-id], #homeDash [data-hd-name]");
     if (!row) return;
     const job = hdFindJob(row.dataset.hdId, row.dataset.hdName);
     if (!job) return;
@@ -6719,7 +6850,7 @@
 
   function renderHomeDash() {
     const box = $("homeDash");
-    if (!box || !hdWanted() || !_hdCache) return;
+    if (!box || !hdWanted() || !_hdCache || !isAdmin()) return;
     const { wl, wk } = _hdCache;
     const today = hdToday();
     // `tall` = the hours list, which gets most of the screen height; the
@@ -6868,6 +6999,7 @@
         <div class="hd-col">${card("⏱ Awarded jobs — hours worked vs target", awardedCount, barsHtml, true)}</div>
         <div class="hd-col">
           ${card("💼 Office Work", null, paperHtml)}
+          <div class="hd-card" id="hdBoard">${hdBoardHtml()}</div>
           <div class="hd-card"><h3><span>${calTitle}</span></h3>${calHtml}</div>
           ${card("🕒 This week", wkTotal, wkHtml)}
           ${card("🧾 Ready to invoice", rti.length, rtiHtml)}

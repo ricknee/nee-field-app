@@ -590,6 +590,9 @@ const _ADMIN_POSTS = new Set([
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   "ackInvoiceEstimateWarning",
+  // Crew board (schema 104): the office posts announcements / shop tasks; the
+  // crew only reads them (GET crewBoard, any signed-in role).
+  "postCrewBoard", "archiveCrewBoard",
   // Who counts toward capacity — the checkboxes on the Workload screen, so it
   // matches that screen's tier. Offering office a control that is guaranteed to
   // 403 is worse than not offering it: it reads as the feature being broken.
@@ -15476,6 +15479,40 @@ async function handleAckInvoiceEstimateWarning(body) {
   return resp(200, { ok: true, okayed: keys.length });
 }
 
+// ── 📣 Crew board (schema 104, owner 2026-11-23) ─────────────────────────────
+// Announcements + shop tasks for the crew. Everyone signed in reads the live
+// ones; admin + office post and take down. Taking down archives, never deletes.
+async function handleCrewBoard() {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  const q = await neonQuery(
+    `SELECT id::text AS id, kind, body, created_by, created_at
+       FROM crew_board WHERE archived_at IS NULL
+      ORDER BY kind = 'task', created_at DESC LIMIT 50`);
+  if (!q?.rows) return resp(503, { ok: false, error: "Database unavailable." });
+  return resp(200, { ok: true, items: q.rows.map(r => ({
+    id: r.id, kind: r.kind, body: r.body, by: r.created_by || "",
+    at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || "") })) });
+}
+async function handlePostCrewBoard(body, authUser) {
+  const text = String(body?.body ?? "").trim().slice(0, 1000);
+  const kind = body?.kind === "task" ? "task" : "note";
+  if (!text) return resp(400, { ok: false, error: "Type something to post." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  const rows = await neonWrite("crewBoard.post",
+    `INSERT INTO crew_board (kind, body, created_by) VALUES ($1, $2, $3) RETURNING id::text AS id`,
+    [kind, text, authUser?.name || null]);
+  return resp(200, { ok: true, id: rows[0]?.id });
+}
+async function handleArchiveCrewBoard(body, authUser) {
+  const id = String(body?.id ?? "").trim();
+  if (!/^\d+$/.test(id)) return resp(400, { ok: false, error: "id required." });
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  const rows = await neonWrite("crewBoard.archive",
+    `UPDATE crew_board SET archived_at = now(), archived_by = $2
+      WHERE id = $1::bigint AND archived_at IS NULL RETURNING id`, [id, authUser?.name || null]);
+  return resp(200, { ok: true, archived: rows.length });
+}
+
 async function handleMorningDigest() {
   if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
   const out = { ok: true, errors: null, invoiceWarnings: null, supplierInvoices: null, sync: null, integrity: null, problems: [] };
@@ -17696,6 +17733,7 @@ export async function handler(event) {
       if (action === "integrityCheck")     return await handleIntegrityCheck();
       if (action === "clientErrors")       return await handleClientErrors(params);
       if (action === "morningDigest")      return await handleMorningDigest();
+      if (action === "crewBoard")          return await handleCrewBoard();
       if (action === "ticketLinesStatus")  return await handleTicketLinesStatus();
       if (action === "jobCreateStatus")    return await handleJobCreateStatus();
       if (action === "prevailingWageStatus") return await handlePrevailingWageStatus();
@@ -17908,6 +17946,8 @@ export async function handler(event) {
       if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "ackInvoiceEstimateWarning") return await handleAckInvoiceEstimateWarning(body);
+      if (body.action === "postCrewBoard")        return await handlePostCrewBoard(body, authUser);
+      if (body.action === "archiveCrewBoard")     return await handleArchiveCrewBoard(body, authUser);
       if (body.action === "createJob")            return await handleCreateJob(body);
       if (body.action === "createContact")        return await handleCreateContact(body);
       if (body.action === "contactsDirectorySave") {

@@ -4070,7 +4070,7 @@
                lift on/off a job, set who has it, add a fix-it item. Adding a lift,
                Retire and removing photos stay admin + office — the screen hides
                them (isAdmin) and the backend refuses them (_ADMIN_OFFICE_POSTS). -->
-          <button id="btnScissorLifts" class="btn btn-sm writer-only" type="button"><span class="ico-lift" aria-hidden="true"></span> Lifts</button>
+          <button id="btnScissorLifts" class="btn btn-sm writer-only" type="button"><span class="ico-lift" aria-hidden="true"></span> Lifts &amp; Equip.</button>
           <button id="btnFleet" class="btn btn-sm" type="button">🛻 Fleet</button>
           <!-- 📇 Contacts (owner 2026-11-15): admin + office only — the read
                (contactsDirectory) and the save are both _ADMIN_OFFICE. -->
@@ -4501,8 +4501,8 @@
         <!-- Scissor Lifts at this job (visible to all) -->
           <div id="jobLiftsSection" style="margin-top:16px; display:none;">
             <div class="section-header" style="display:flex; justify-content:space-between; align-items:center;">
-              <span><span class="ico-lift" aria-hidden="true"></span> Scissor Lifts at this Job</span>
-              <button id="btnAddLiftToJob" class="btn btn-sm" style="font-size:12px;" type="button">+ Add Lift</button>
+              <span><span class="ico-lift" aria-hidden="true"></span> Lifts &amp; Equipment at this Job</span>
+              <button id="btnAddLiftToJob" class="btn btn-sm" style="font-size:12px;" type="button">+ Add</button>
             </div>
             <div id="jobLiftsList" style="display:flex; flex-direction:column; gap:8px; margin-top:10px;"></div>
             <div id="addLiftPanel" style="display:none; margin-top:10px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:12px;">
@@ -18485,7 +18485,7 @@
                 : `<div style="width:100%; height:72px; border-radius:6px; background:var(--panel-2); display:flex; align-items:center; justify-content:center; font-size:40px;"><span class="ico-lift" aria-hidden="true"></span></div>`}
               <div style="font-size:12px; font-weight:700; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(l.name)}</div>
             </button>`).join("")
-          : `<div style="font-size:13px; color:var(--muted);">No lifts available</div>`;
+          : `<div style="font-size:13px; color:var(--muted);">Nothing available at the shop</div>`;
         picker.querySelectorAll(".add-lift-card").forEach(card => {
           card.addEventListener("click", () => {
             picker.querySelectorAll(".add-lift-card").forEach(c => { c.style.borderColor = "var(--line-2)"; });
@@ -18496,7 +18496,7 @@
       }
 
       if (!onJob.length) {
-        list.innerHTML = `<div style="font-size:13px; color:var(--muted);">No lifts currently at this job.</div>`;
+        list.innerHTML = `<div style="font-size:13px; color:var(--muted);">No lifts or equipment at this job.</div>`;
       } else {
         /* One compact full-width row per lift (owner 2026-11-09): thumbnail,
          * name, who has it, what was left, and Edit. The controls are the SAME
@@ -19624,7 +19624,7 @@
       btn.addEventListener("click", async () => {
         const name = btn.dataset.liftName;
         if (!confirm(`Retire ${name}?\n\nThis removes the lift and all of its photos for good. Use this when a lift has been sold.`)) return;
-        const typed = prompt(`This cannot be undone.\n\nType the lift name to confirm:`, "");
+        const typed = prompt(`This cannot be undone.\n\nType the name to confirm:`, "");
         if (typed === null) return;
         if (typed.trim().toLowerCase() !== String(name).trim().toLowerCase()) {
           alert("That didn't match — nothing was removed.");
@@ -19652,7 +19652,7 @@
   // still leave you with a lift rather than nothing. It just shows a "+ Photo"
   // slot until you add one.
   async function addScissorLift() {
-    const name = prompt("New lift name (e.g. Lift #11):", "");
+    const name = prompt("Name of the new lift or machine (e.g. Lift #11, JCB 35Z-1 Mini Ex):", "");
     if (name === null) return;
     if (!name.trim()) { alert("A name is required."); return; }
 
@@ -37867,11 +37867,11 @@
 <div id="slModal" class="sl-modal-backdrop" style="display:none;">
   <div class="sl-modal">
     <div class="sl-modal-header">
-      <h2><span class="ico-lift" aria-hidden="true"></span> Scissor Lifts</h2>
+      <h2><span class="ico-lift" aria-hidden="true"></span> Lifts &amp; Equipment</h2>
       <div style="display:flex; gap:8px; align-items:center;">
         <!-- Admin/office only, wired in loadScissorLifts. Adding equipment to the
              books is not a field action; marking a lift on/off a job still is. -->
-        <button id="slAddBtn" class="btn btn-primary btn-sm" style="display:none; font-size:13px;">+ Lift</button>
+        <button id="slAddBtn" class="btn btn-primary btn-sm" style="display:none; font-size:13px;">+ Add</button>
         <button onclick="closeScissorLifts()" class="btn btn-sm" style="font-size:18px; line-height:1; padding:4px 10px;">&times;</button>
       </div>
     </div>
@@ -37892,7 +37892,7 @@
         <div id="slTodoList"><div class="fleet-todo-empty">Loading…</div></div>
       </div>
 
-      <div class="fleet-sec-head"><h3><span class="ico-lift" aria-hidden="true"></span> Lifts</h3></div>
+      <div class="fleet-sec-head"><h3><span class="ico-lift" aria-hidden="true"></span> Lifts &amp; equipment</h3></div>
       <div id="slGrid" class="sl-grid">
         <div class="loading-msg">Loading lifts...</div>
       </div>

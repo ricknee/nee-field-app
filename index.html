@@ -33,7 +33,16 @@
        there the win is the icon itself plus the ?clock= links below.
        apple-touch-icon is what iOS uses for Add to Home Screen — without it you
        get a blurry screenshot of the page as the icon. -->
-  <link rel="manifest" href="/manifest.json" />
+  <link rel="manifest" href="/manifest.json" id="appManifest" />
+  <script>
+    // NEE Schedule (owner 2026-11-23): the SAME app served at /schedule
+    // (netlify.toml 200 rewrite) installs as its own home-screen app, because
+    // it points at its own manifest (id /schedule, start_url /schedule). Runs
+    // before Chrome reads the manifest. handleClockDeepLink opens the schedule.
+    if (/^\/schedule\/?$/.test(location.pathname)) {
+      document.getElementById("appManifest").href = "/manifest-schedule.json";
+    }
+  </script>
   <link rel="apple-touch-icon" href="/assets/NEE-Gray-Logo-400.png" />
   <link rel="icon" href="/assets/NEE-Gray-Logo-400.png" />
   <meta name="theme-color" content="#1e3a5f" />
@@ -29520,7 +29529,10 @@
 
     const params = new URLSearchParams(location.search);
     const want = (params.get("clock") || "").toLowerCase();
-    const open = (params.get("open") || "").toLowerCase();
+    // /schedule is the NEE Schedule app (its own home-screen icon) — same as
+    // ?open=schedule. The path is kept so a refresh stays in that app.
+    const atSchedule = /^\/schedule\/?$/.test(location.pathname);
+    const open = atSchedule ? "schedule" : (params.get("open") || "").toLowerCase();
     if (!want && open !== "myhours" && open !== "schedule") return;
     window._neeClockLinkDone = true;
 

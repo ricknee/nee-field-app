@@ -121,13 +121,14 @@
   force = true
 
 # ── App routes ───────────────────────────────────────────────────────────────
-# Short phone link to this month's Crew Schedule (owner 2026-11-23). The app
-# reads ?open=schedule after login (handleClockDeepLink). 302, not 301, so a
-# phone never caches it for good if the target ever changes.
+# NEE Schedule (owner 2026-11-23): /schedule serves the field app itself (a 200
+# rewrite, the address stays /schedule). index.html sees the path, points at
+# manifest-schedule.json so it installs as its OWN home-screen app, and opens
+# this month's Crew Schedule after login (handleClockDeepLink).
 [[redirects]]
   from = "/schedule"
-  to = "/?open=schedule"
-  status = 302
+  to = "/index.html"
+  status = 200
   force = true
 
 [[redirects]]

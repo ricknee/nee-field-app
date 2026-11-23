@@ -4,7 +4,7 @@
 // Bumped when the shell list changes, so the activate handler drops the old
 // cache. Without a bump, a phone that already installed v1 keeps serving the old
 // shell list and never picks up the manifest or the icon.
-const CACHE_NAME = 'nee-app-v5';   // v5: manifests network-first (Schedule shortcut never reached phones)
+const CACHE_NAME = 'nee-app-v6';   // v6: NEE Schedule app (manifest-schedule.json); v5 made manifests network-first
 
 // A weak cellular connection is often worse than being fully offline: fetch()
 // stays pending for a long time, so its rejection handler never gets a chance to
@@ -27,6 +27,7 @@ const APP_SHELL = [
   // and the reasoning above applies to it identically.
   '/inventory.html',
   '/manifest-inventory.json',
+  '/manifest-schedule.json',
   '/assets/NEE-Orange-Logo-400.png'
 ];
 

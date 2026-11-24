@@ -32336,6 +32336,9 @@
     const map = new Map();
     (entries || []).forEach(e => {
       if (NONWORKED_CLASSES.includes(e.class)) return;
+      // Travel to a PW job is paid at the normal rate, not PW (owner 2026-11-24;
+      // db/schema/106 does the same for job cost).
+      if (e.class === "Travel") return;
       const j = prPwJob(e.jobId);
       if (!j) return;
       const row = map.get(j.id) || { name: j.name || e.jobName || "PW job", hours: 0,

@@ -48,8 +48,20 @@
       document.documentElement.classList.add("app-tsheets");
     }
   </script>
-  <link rel="apple-touch-icon" href="/assets/NEE-Gray-Logo-400.png" />
-  <link rel="icon" href="/assets/NEE-Gray-Logo-400.png" />
+  <link rel="apple-touch-icon" href="/assets/NEE-Gray-Logo-400.png" id="appTouchIcon" />
+  <link rel="icon" href="/assets/NEE-Gray-Logo-400.png" id="appFavicon" />
+  <script>
+    // Each home-screen app has its own logo color (owner 2026-11-23):
+    // Schedule green, T-Sheets red (Field gray, Inventory orange).
+    (function () {
+      var logo = /^\/schedule\/?$/.test(location.pathname) ? "/assets/NEE-Green-Logo-400.png"
+               : /^\/tsheets\/?$/.test(location.pathname) ? "/assets/NEE-Red-Logo-400.png" : null;
+      if (logo) {
+        document.getElementById("appTouchIcon").href = logo;
+        document.getElementById("appFavicon").href = logo;
+      }
+    })();
+  </script>
   <meta name="theme-color" content="#1e3a5f" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="NEE Field" />

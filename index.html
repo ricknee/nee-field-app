@@ -27539,6 +27539,7 @@
                   Clock Out for something you tap once a day. -->
              <button class="clock-btn clock-btn-travel" style="margin-bottom:8px;" onclick="clockQuickTravel()">${onTravel
                  ? "🔨 Arrived — back to work" : "🚗 Start Travel"}</button>
+             ${clockQuickAtHtml(onTravel)}
              <div class="clock-btn-row">
                <button class="clock-btn clock-btn-switch clock-btn-sm" onclick="clockSwitchSheet()">Switch</button>
                <button class="clock-btn clock-btn-break clock-btn-sm" onclick="clockBreak(true)">Lunch</button>
@@ -28070,10 +28071,11 @@
         // A NEW cycle id: the segment being closed keeps the old one, and the
         // segment being opened needs its own so a later punch-out matches it.
         clientPunchId: newPunchId(),
-        at: new Date().toISOString(),
+        at: quick?.at || new Date().toISOString(),
       });
       try {
         const d = await apiPost("clockSwitch", body);
+        clockQuickAtShown = false;
         if (d.open) clockState.open = { ...d.open };
         clockSwitchShown = false;
         showAppToast(`${d.closed?.class || "Time"} banked — now on ${d.open?.class || body.class}.`);
@@ -28101,18 +28103,60 @@
   // normal rate on a prevailing-wage job (db/schema/106) and is never city-taxed.
   // The class you were on before travel is remembered for 🔨 Arrived.
   const CLOCK_LAST_WORK_KEY = "nee_clock_last_work_class";
-  window.clockQuickTravel = function () {
+  window.clockQuickTravel = function (at) {
     const o = clockState.open; if (!o) return;
     if (o.class === CLOCK_TRAVEL_CLASS) {
       let back = ""; try { back = localStorage.getItem(CLOCK_LAST_WORK_KEY) || ""; } catch (e) {}
       const list = clockClasses();
       if (!list.includes(back)) back = list.find(c => c !== CLOCK_TRAVEL_CLASS) || list[0];
       const job = (state.jobs || []).find(j => (j.name || "") === (o.job_name || ""));
-      clockSwitchGo({ cls: back, city: clockDefaultCityTax(job, back) });
+      clockSwitchGo({ cls: back, city: clockDefaultCityTax(job, back), at });
     } else {
       try { localStorage.setItem(CLOCK_LAST_WORK_KEY, o.class || ""); } catch (e) {}
-      clockSwitchGo({ cls: CLOCK_TRAVEL_CLASS, city: "A No Tax" });
+      clockSwitchGo({ cls: CLOCK_TRAVEL_CLASS, city: "A No Tax", at });
     }
+  };
+
+  // ⏪ Forgot to tap Arrived / Start Travel (owner 2026-11-25): pick the time it
+  // really happened. The shift splits there: before it stays what it was, after
+  // it becomes the new class. Only between the segment's start and now.
+  var clockQuickAtShown = false;   // var: renderClockPanel can run before this line
+  function clockQuickAtHtml(onTravel) {
+    if (!clockQuickAtShown) {
+      return `<div style="text-align:center; margin:-2px 0 10px;">
+        <a href="#" style="font-size:12.5px; color:var(--accent);"
+           onclick="event.preventDefault(); clockQuickAtToggle(true)">Forgot to tap? Set the time ${onTravel ? "you arrived" : "you left"}</a></div>`;
+    }
+    const d = new Date();
+    const hhmm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    return `<div style="border:1px solid #fdba74; background:#fff7ed; border-radius:10px; padding:10px; margin:0 0 10px;">
+        <label class="clock-field" style="margin-top:0;">${onTravel ? "🔨 I arrived at" : "🚗 I left at"}
+          <input id="clockQuickAt" type="time" value="${hhmm}" />
+        </label>
+        <div class="clock-note">Time before this stays ${onTravel ? "Travel" : esc(clockState.open?.class || "")}; time after it becomes ${onTravel ? "work" : "Travel"}.</div>
+        <div class="clock-btn-row" style="margin-top:8px;">
+          <button class="clock-btn clock-btn-out clock-btn-sm" onclick="clockQuickAtToggle(false)">Cancel</button>
+          <button class="clock-btn clock-btn-in clock-btn-sm" onclick="clockQuickAtGo()">Save</button>
+        </div>
+        <div id="clockQuickAtErr" class="clock-note" style="color:#b91c1c;"></div>
+      </div>`;
+  }
+  window.clockQuickAtToggle = function (show) { clockQuickAtShown = !!show; renderClockPanel(); };
+  window.clockQuickAtGo = function () {
+    const o = clockState.open; if (!o) return;
+    const v = $("clockQuickAt")?.value || "";
+    const err = $("clockQuickAtErr");
+    const m = /^(\d{1,2}):(\d{2})$/.exec(v);
+    if (!m) { if (err) err.textContent = "Pick a time."; return; }
+    const t = new Date(); t.setHours(+m[1], +m[2], 0, 0);
+    const start = Date.parse(o.started_at || "");
+    if (t.getTime() > Date.now() + 60 * 1000) { if (err) err.textContent = "That time hasn't happened yet."; return; }
+    if (Number.isFinite(start) && t.getTime() < start) {
+      if (err) err.textContent = "That's before this part of the shift started ("
+        + new Date(start).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ").";
+      return;
+    }
+    clockQuickTravel(t.toISOString());
   };
   // Clocked out: clock in straight onto Travel for the job picked above.
   window.clockStartTravel = function () {

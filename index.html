@@ -7107,6 +7107,14 @@
       alert("Couldn't hide it: " + e.message);
     }
   };
+  window.clearAppErrors = async function (btn) {
+    btn.disabled = true;
+    try {
+      await apiPost("clearClientErrors", {});
+      showAppToast("✓ Errors cleared");
+      hdLoadMorning(true);
+    } catch (e) { btn.disabled = false; alert("Couldn't clear: " + e.message); }
+  };
   function hdMorningHtml() {
     const d = _hdMorning;
     const shell = (inner, n) => `<div class="hd-card"><h3><span>☀ This morning</span>${n != null ? `<span class="hd-count">${n}</span>` : ""}</h3><div style="font-size:12.5px; line-height:1.5;">${inner}</div></div>`;
@@ -7131,7 +7139,9 @@
     if (er && er.total > 0) {
       item("🐞", `<strong>${er.total} app error${er.total === 1 ? "" : "s"}</strong> in the last 24 h
         ${er.top.map(t => `<div style="color:var(--muted); font-size:12px;">${t.n}× ${esc(String(t.message).slice(0, 140))}${t.who ? ` — ${esc(t.who)}${t.people > 1 ? ` +${t.people - 1}` : ""}` : ""}</div>`).join("")}
-        <div style="color:var(--muted); font-size:11.5px;">Ask Claude to look into these.</div>`);
+        <div style="color:var(--muted); font-size:11.5px;">Ask Claude to look into these, or clear them once handled.</div>
+        <button type="button" class="btn btn-ghost" style="margin-top:4px; padding:2px 10px; font-size:11.5px;"
+          onclick="event.stopPropagation(); clearAppErrors(this)">✓ Clear</button>`);
     }
     if (d.sync && !d.sync.healthy) {
       item("🔴", `<strong>The hourly QuickBooks Time sync hasn't run</strong> for ${d.sync.ageMinutes == null ? "a while" : `${Math.round(d.sync.ageMinutes / 60)} h`}. Hours may be missing.`);

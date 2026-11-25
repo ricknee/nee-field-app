@@ -590,6 +590,8 @@ const _ADMIN_POSTS = new Set([
 ]);
 const _ADMIN_OFFICE_POSTS = new Set([
   "ackInvoiceEstimateWarning",
+  // ✓ Clear on the Overview's app-error line (schema 107).
+  "clearClientErrors",
   // Crew board (schema 104): the office posts announcements / shop tasks; the
   // crew only reads them (GET crewBoard, any signed-in role).
   "postCrewBoard", "archiveCrewBoard",
@@ -15700,7 +15702,7 @@ async function handleMorningDigest() {
                 max(COALESCE(e.name, c.employee_id)) AS who
            FROM client_errors c
            LEFT JOIN employees e ON e.airtable_id = c.employee_id OR e.id::text = c.employee_id
-          WHERE c.created_at > now() - interval '24 hours'
+          WHERE c.created_at > now() - interval '24 hours' AND c.cleared_at IS NULL
           GROUP BY c.message ORDER BY count(*) DESC LIMIT 5`));
       return { total: r.reduce((s, x) => s + x.n, 0), top: r };
     }),
@@ -15755,6 +15757,16 @@ async function handleMorningDigest() {
     }),
   ]);
   return resp(200, out);
+}
+
+// ✓ Clear (owner 2026-11-24): hides every error logged so far from ☀ This
+// morning. The rows stay (clientErrors still lists them); a NEW error shows up.
+async function handleClearClientErrors() {
+  if (!neonEnabled()) return resp(503, { ok: false, error: "Needs the database." });
+  const q = await neonQuery(
+    `UPDATE client_errors SET cleared_at = now() WHERE cleared_at IS NULL RETURNING id`);
+  if (!q?.rows) return resp(503, { ok: false, error: q?.error || "Database unavailable." });
+  return resp(200, { ok: true, cleared: q.rows.length });
 }
 
 // Admin read: the latest browser errors, newest first, with the person's name.
@@ -18129,6 +18141,7 @@ export async function handler(event) {
       if (body.action === "createInspectionContact") return await handleCreateInspectionContact(body);
       if (body.action === "updateJobInfo")        return await handleUpdateJobInfo(body);
       if (body.action === "ackInvoiceEstimateWarning") return await handleAckInvoiceEstimateWarning(body);
+      if (body.action === "clearClientErrors")    return await handleClearClientErrors();
       if (body.action === "postCrewBoard")        return await handlePostCrewBoard(body, authUser);
       if (body.action === "archiveCrewBoard")     return await handleArchiveCrewBoard(body, authUser);
       if (body.action === "createJob")            return await handleCreateJob(body);

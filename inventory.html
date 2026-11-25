@@ -12328,7 +12328,7 @@ var ESTIMATE_LOGO_GRAY_B64 = "iVBORw0KGgoAAAANSUhEUgAAALQAAAC0CAIAAACyr5FlAAAs1U
   // alone still gets you the badged bookmark this replaces.
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/sw.js')
-      .then(reg => { try { reg.update(); } catch {} })
+      .then(reg => { try { reg.update().catch(() => {}); } catch {} })   // offline update check is not an error
       .catch(() => {});
   }
 </script>
